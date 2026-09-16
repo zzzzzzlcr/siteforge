@@ -181,6 +181,9 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
     { "kind": "frame-error",  "detail": "...", "frame_path": ["main", "<frameId>"] },
     { "kind": "frame-blind",  "detail": "主帧有 3 个 iframe，只枚举到 1 个子帧", "frame_path": ["main"] }
   ],
+  // frame_path 的语义（2026-09-16 定）：单帧 Observe 给 [frameID]（"" → ["main"]）——
+  // 它不知道祖先链，但消费者要的正是「该把动作发给哪一帧」；
+  // ObserveAll 给从根到叶的完整路径 ["main", <childId>, ...]。
   "actions": [
     { "selector": "#schedule-now",
       "alternates": ["button[data-testid=schedule]", "div.hero > button"],
