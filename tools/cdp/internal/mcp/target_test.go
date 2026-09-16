@@ -186,8 +186,12 @@ func TestResolvePrecedenceFlagOverEnvOverDefault(t *testing.T) {
 
 // TestResolveRejectsBadEnvPort：CDP_PORT 写错了必须报错。
 //
-// ⚠️ 这一条与 CLI **有意不同**（cmd/root.go 会静默忽略掉解析不了的 CDP_PORT）。
-// 静默忽略 = 「我设了 CDP_PORT，但它没生效」而这种错**不报错** ——
+// ⚠️ 这条注释原先写的是「这一条与 CLI **有意不同**（cmd/root.go 会静默忽略掉解析不了的
+// CDP_PORT）」—— 那句现在不成立了：13e8361 把那道门也改成拒绝，两道门对同一个输入
+// 报同一句话（文案逐字相同），也都先 TrimSpace。所以这条钉的不再是「本门比 CLI 严」，
+// 而是「两道门必须给出同一个答复」—— 不一致正是这个缺陷最容易被搬家的形式。
+//
+// 为什么两道门都得拒绝：静默忽略 = 「我设了 CDP_PORT，但它没生效」，而这种错**不报错** ——
 // 它是 C81 那个缺陷的另一半。MCP 这道门是给 agent 用的，它拿不到 shell 里的
 // 上下文，只能靠一句明确的报错。
 func TestResolveRejectsBadEnvPort(t *testing.T) {
