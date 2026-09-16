@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"cdp/internal/mcp"
@@ -113,11 +114,38 @@ func run(args []string) int {
 	return 0
 }
 
+// dialer 是这道门对「连浏览器」的**全部**要求。
+//
+// 收成 interface 而不是直接吃 mcp.Connector：让「一次调用一把锁」那条契约能在
+// 没有浏览器的情况下测（见 main_test.go —— 一个只记数、不连浏览器的假连接器）。
+// 能不能注入，决定了这条契约有没有闸门。
+type dialer interface {
+	Dial() (mcp.Browser, func(), error)
+}
+
+// door 是这道门的「一次调用」：一个连接器，外加把调用**串起来**的那把锁。
+//
+// ⚠️ 锁不是可有可无的：SDK 对**每一条** tools/call 都起一个独立的 goroutine 处理
+// （go-sdk v1.8.0 mcp/server.go:2004 的 `jsonrpc2.Async(ctx)`），而每一次调用都自己
+// 连一条 CDP（Connector.Dial）。客户端 pipeline 两条调用 → **同一个 Bit 窗口上同时
+// 挂着两个独立的 CDP 会话**：鼠标/键盘事件交错，observe 可能拍到动作做了一半的页面，
+// 而两个结果都报成功（performed() 只说「命令下发了」）。
+// CLI 撞不上这件事（一个进程一条命令），所以这道门必须自己把它挡掉。
+//
+// ⚠️ 锁必须罩住 **dial + execute 整段**（不只是 execute）：只锁执行的话，两条
+// CDP 会话照样是同时开着的 —— 而「两个会话同时开着」正是要消掉的那件事。
+// 放在 defer 里而不是散在各条返回路径上：忘了某一条就是**整道门锁死**，
+// 那种坏法比并发本身更贵。
+type door struct {
+	conn dialer
+	mu   sync.Mutex
+}
+
 // newServer 把 internal/mcp 的工具表挂到 MCP 传输上。
 //
 // 这一层刻意做得很薄：查名字、解参数、校验、连浏览器、调用 —— 全在 internal/mcp 里
 // （那一层可以不起传输、不起浏览器地单测）。这里只剩「把结果包成 MCP 的形状」。
-func newServer(conn mcp.Connector) *sdkmcp.Server {
+func newServer(conn dialer) *sdkmcp.Server {
 	srv := sdkmcp.NewServer(&sdkmcp.Implementation{
 		Name:        "cdp",
 		Title:       "cdp 工具层（同一内核的 MCP 门）",
@@ -130,12 +158,13 @@ func newServer(conn mcp.Connector) *sdkmcp.Server {
 			"写类动作（click/form/scroll）返回 ok 只代表「命令下发了」，不代表页面动了。",
 	})
 
+	d := &door{conn: conn}
 	for _, tool := range mcp.Tools() {
 		srv.AddTool(&sdkmcp.Tool{
 			Name:        tool.Name,
 			Description: tool.Description,
 			InputSchema: tool.Schema,
-		}, toolHandler(conn, tool.Name))
+		}, d.toolHandler(tool.Name))
 	}
 	return srv
 }
@@ -144,8 +173,14 @@ func newServer(conn mcp.Connector) *sdkmcp.Server {
 //
 // name 在闭包里就定死了（不用 req.Params.Name）：SDK 已经按名字分派过，
 // 再信一次请求里的名字等于给「名字被换了」留门。
-func toolHandler(conn mcp.Connector, name string) sdkmcp.ToolHandler {
+func (d *door) toolHandler(name string) sdkmcp.ToolHandler {
 	return func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		// 一次调用一把锁，罩住「连浏览器 → 执行 → 放开」整段（见 door 的注释）。
+		// 拿到锁才算开始：第二条调用在这里等第一条把浏览器放开，于是
+		// 「做动作前后各看一眼」那条序列在**并发到达**时也不会被打断。
+		d.mu.Lock()
+		defer d.mu.Unlock()
+
 		var rawArgs any
 		if req != nil && req.Params != nil {
 			rawArgs = req.Params.Arguments
@@ -156,7 +191,7 @@ func toolHandler(conn mcp.Connector, name string) sdkmcp.ToolHandler {
 			return toolError(err), nil
 		}
 
-		browser, release, err := conn.Dial()
+		browser, release, err := d.conn.Dial()
 		if err != nil {
 			return toolError(err), nil
 		}
