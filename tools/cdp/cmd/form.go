@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"cdp/internal"
 
@@ -87,11 +88,26 @@ func runForm(cmd *cobra.Command, args []string) error {
 	}
 	defer client.Disconnect()
 
+	var err2 error
 	if value != "" {
-		return client.FillText(selector, value, frameID, track)
+		err2 = client.FillText(selector, value, frameID, track)
+	} else if check != "" {
+		err2 = client.CheckElement(selector, check == "true", frameID, track)
+	} else {
+		err2 = client.SelectOption(selector, selectOpt, frameID, track)
 	}
-	if check != "" {
-		return client.CheckElement(selector, check == "true", frameID, track)
+
+	// 落点判据（G1）说的话，这条路**也要说**（与 cdp click 同一口径）。
+	//
+	// 为什么非补不可：`form` 的每个动作内部都在点鼠标（点控件、点选项、点日历按钮……），
+	// 那些点击**同样会扣下抬起**、同样可能因为跨站子帧而**判据全瞎** ——
+	// 而这条路上原先这些事**一个字节都没有**（复审实测：0 字节）。
+	// 「不静默」必须两条路都真，只在一条路上说等于没说。
+	//
+	// ⚠️ 这些行**只在判据有话要说时才印**（扣下、判不了、判成重建）——
+	// 正常点击一个字都不多：常驻的提示等于没有提示。
+	for _, d := range client.LandingDiags() {
+		fmt.Fprintf(os.Stderr, "cdp form：落点判据 —— %s\n", d.Detail)
 	}
-	return client.SelectOption(selector, selectOpt, frameID, track)
+	return err2
 }

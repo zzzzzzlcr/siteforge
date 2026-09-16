@@ -39,6 +39,13 @@ type Client struct {
 	// 而这件事跟帧数无关（错的是整个 tab）。所以逐帧的 observeFrame 不发它，
 	// 由两个**入口**各自补一条。
 	targetDiags []Diagnostic
+	// landingDiags 是落点判据（G1）发过的诊断：判据**没能跑成**的那些
+	// （跨站子帧盲区 / 取不到证）—— 见 LandingDiags 与 dispatchMouseClick。
+	//
+	// ⚠️ 为什么攒一份而不是只走返回值：`form` 那条路（FillText / CheckElement /
+	// SelectOption）不返回结构化回执，但它的点击**同样会扣下抬起**。
+	// 复审实测：`cdp form` 上「不静默」是 **0 字节** —— 与 targetDiags 同一套办法补上。
+	landingDiags []Diagnostic
 }
 
 // FrameSnapshot captures the full state of a single frame.
@@ -998,13 +1005,34 @@ func (c *Client) DispatchMouseScrollEventAt(x, y, deltaX, deltaY float64) error 
 //
 // 机制（按下之后重新做一次**浏览器自己的命中测试**）：
 //
-//	① 按下**之前**问一次：这个坐标上是哪个节点（frame + backendNodeId）
-//	② 发 MouseMoved + MousePressed（mousedown 的处理器在这里跑完，DOM 已经变了）
-//	③ 按下**之后**再问一次
-//	④ 两次是同一个节点 → 照常发 MouseReleased（正常点击，57 个生产脚本的路径）
+//	① 发 MouseMoved（**判据窗口从这一步之后才开始** —— 见下面的 ⚠️）
+//	② 问一次：这个坐标上是哪个节点（frame + backendNodeId）
+//	③ 发 MousePressed（mousedown 的处理器在这里跑完，DOM 已经变了）
+//	④ 再问一次
+//	⑤ 同一个节点 → 照常发 MouseReleased（正常点击，57 个生产脚本的路径）
 //	   换了人 → **扣下这次 released**：既不发给新落点，也不让浏览器把这次按下-抬起
 //	   合成为一个落在新元素上的 click（真站实测：那一下的 mouseup 落在新出现的
 //	   菜单项/backdrop 上，click 落在两者的公共祖先上 —— 两条都是「交给新落点」）
+//
+// ⚠️ **判据窗口 = 按下之前那一刻 → 按下之后**，**不含** MouseMoved 那一段。
+// 规矩说的是「按下与抬起之间」，而悬停引起的重渲染发生在**按下之前** ——
+// 把它算进来会让「鼠标掠过页面」本身就触发扣下（复审端到端复现过：hover 换节点
+// 会把一次正常点击静默吞掉）。所以 MouseMoved 先发，落点在那之后才取。
+//
+// ⚠️⚠️ 扣下的**必要条件**（2026-09-17 修复轮 1，复审两条 Critical）：
+// 「换了节点」**不等于**「有人盖上来」。`backendNodeId` 在**节点重建**时也会变
+// （markup 逐字节相同的重建、子元素换标签类型），而重建**没有任何东西盖上来** ——
+// 照直扣下就把一次正常点击**静默吞掉**，那比原来那个病更坏。所以扣下还要求：
+//
+//	① 前后两个节点的**指纹不同**（标签 + 属性规范化后的串）：逐字节重建的那份
+//	   指纹一模一样 → 判成「同一个东西被重建」→ 照常发抬起；
+//	② 按下**之前**那个节点**还在文档里**（`isConnected`）：目标自己没了
+//	   （被替换/被摘除）说明变的是目标自己，不是「有人盖上来」→ 照常发抬起。
+//
+// 两条都是**正向取证**：取不到证（读不到指纹、问不到连通性）就**不扣**，
+// 并把「为什么没扣/为什么判不了」写进 MouseClickOutcome.Note。
+// 理由是不对称的：扣错了 = 一次正常点击**静静地**消失（看不见的失败），
+// 不扣 = 退回原来的行为（菜单被自己关掉，**看得见**）。
 //
 // 为什么用 `DOM.getNodeForLocation` 而不是自写 JS 命中测试：
 // 它就是**真实输入走的那条代码路**（同一套 HitTestResult），并且**穿 shadow DOM**
@@ -1014,13 +1042,17 @@ func (c *Client) DispatchMouseScrollEventAt(x, y, deltaX, deltaY float64) error 
 // ⚠️ 判不出来时（点不在视口里、协议报错）**按老行为走**（不扣）：扣下抬起是
 // 「不把点击交给一个可疑的新落点」的保护，判不出来时凭据不足，不额外拿走一次点击。
 // 这条路径**不静默**：返回值里带着前后两次的落点描述（见 MouseClickOutcome）。
+//
+// ⚠️ **跨站 iframe 是这套判据的一个已知盲区**（复审实测 + 本机复验）：
+// 跨站子帧里 `DOM.getNodeForLocation` **只返回父页的 `<iframe>` 元素**（同 site
+// 跨 origin 才下钻），于是前后两次问到的都是同一个 `<iframe>` —— 判据**恒不触发**。
+// 实测：`http://127.0.0.1:8731` 里嵌 `https://chameleon-na.www.gowizard.com/...`，
+// 主帧坐标 (640,129) 命中 `IFRAME`（frame = 父页）。这个盲区**必须可听见**
+// （见 MouseClickOutcome.Blind / Note 与 DiagKindLandingBlind），不许静默空转。
 type domHit struct {
 	FrameID   cdp.FrameID
 	BackendID cdp.BackendNodeID
 }
-
-// Empty 说这次命中测试**没拿到东西**（而不是「拿到一个空节点」）。
-func (h domHit) Empty() bool { return h.BackendID == 0 && h.FrameID == "" }
 
 // hitTestAt 问浏览器：这个坐标上现在是谁。第二个返回值为 false = 判不出来。
 func (c *Client) hitTestAt(x, y float64) (domHit, bool) {
@@ -1045,27 +1077,48 @@ func (c *Client) hitTestAt(x, y float64) (domHit, bool) {
 	return h, ok
 }
 
-// describeHit 把一次命中印成一行人话（`<div class="MuiBackdrop-root …">`）。
+// hitFacts 是一次命中的「可读事实」——描述给人看，指纹给判据用。
+type hitFacts struct {
+	// Desc 是给人看的一行（`<div class="MuiBackdrop-root …">`）。
+	Desc string
+	// Tag 是小写标签名（IFRAME / FRAME 用来识别「命中停在子帧容器上」）。
+	Tag string
+	// Fingerprint 是**标签 + 属性**规范化后的串：用来回答「前后这两个节点
+	// 是不是同一个东西」。节点被**重建**（markup 逐字节相同）时它逐字相同 ——
+	// 那正是「没有东西盖上来」却换了 backendNodeId 的那种情况。
+	Fingerprint string
+}
+
+// hitFactsOf 读一次命中的事实（一次 describeNode 出三条产出）。
 //
-// 只在与「按下前」不同时才调（见 dispatchMouseClick）—— 那是罕见路径，
-// 多一次往返换「覆盖者是谁」这个**能查下去**的事实，值。
-// 取不到描述不算失败：交空串，落点身份本身已经在 MouseClickOutcome 里。
-func (c *Client) describeHit(h domHit) string {
-	var out string
-	_ = chromedp.Run(c.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+// 只在落点**变了**的罕见路径上调（见 dispatchMouseClick）。读不到就返回 err，
+// 调用方据此**不扣**（正向取证，见 domHit 上面那段）。
+func (c *Client) hitFactsOf(h domHit) (hitFacts, error) {
+	var f hitFacts
+	err := chromedp.Run(c.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		cc := chromedp.FromContext(ctx)
 		if cc == nil || cc.Target == nil {
 			return fmt.Errorf("invalid context")
 		}
 		exec := cdp.WithExecutor(ctx, cc.Target)
 		n, err := dom.DescribeNode().WithBackendNodeID(h.BackendID).Do(exec)
-		if err != nil || n == nil {
+		if err != nil {
 			return err
 		}
-		var b strings.Builder
+		if n == nil {
+			return fmt.Errorf("describeNode 没给节点")
+		}
+		f.Tag = strings.ToLower(n.NodeName)
+		var b, fp strings.Builder
 		b.WriteString("<")
-		b.WriteString(strings.ToLower(n.NodeName))
+		b.WriteString(f.Tag)
+		// 指纹用**全部**属性（规范化：属性名 + 值，按 DOM 给的顺序）——
+		// 只比 id/class/role 的话，「同一个类名但 aria-* 变了」会被误判成同一个东西。
 		for i := 0; i+1 < len(n.Attributes); i += 2 {
+			fp.WriteString(n.Attributes[i])
+			fp.WriteString("=")
+			fp.WriteString(n.Attributes[i+1])
+			fp.WriteString("\x00")
 			k, v := n.Attributes[i], n.Attributes[i+1]
 			if k != "id" && k != "class" && k != "role" {
 				continue
@@ -1073,10 +1126,50 @@ func (c *Client) describeHit(h domHit) string {
 			fmt.Fprintf(&b, " %s=%q", k, capRunes(v, 40))
 		}
 		b.WriteString(">")
-		out = b.String()
+		f.Desc = b.String()
+		f.Fingerprint = fp.String()
 		return nil
 	}))
-	return out
+	if err != nil {
+		return hitFacts{}, err
+	}
+	return f, nil
+}
+
+// hitStillConnected 问：按下**之前**那个节点还在文档里吗（`isConnected`）。
+//
+// 这是「**别人盖上来**」与「**同一个东西被重建**」之间最利落的一条判据：
+// 被盖住的目标**还在**（只是被挡在后面），被重建的目标**已经不在文档里了**。
+// 实测（真站 MUI）：mousedown 展开菜单之后，那个 combobox 节点 **connected** ✓。
+//
+// 问不到（resolve 失败 / 调用失败）返回 err —— 调用方据此**不扣**。
+func (c *Client) hitStillConnected(h domHit) (bool, error) {
+	var out bool
+	err := chromedp.Run(c.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		cc := chromedp.FromContext(ctx)
+		if cc == nil || cc.Target == nil {
+			return fmt.Errorf("invalid context")
+		}
+		exec := cdp.WithExecutor(ctx, cc.Target)
+		obj, err := dom.ResolveNode().WithBackendNodeID(h.BackendID).Do(exec)
+		if err != nil {
+			return err
+		}
+		if obj == nil || obj.ObjectID == "" {
+			return fmt.Errorf("resolveNode 没给对象")
+		}
+		res, _, err := runtime.CallFunctionOn("function(){ return !!(this && this.isConnected); }").
+			WithObjectID(obj.ObjectID).Do(exec)
+		if err != nil {
+			return err
+		}
+		out = res.Value.String() == "true"
+		return nil
+	}))
+	if err != nil {
+		return false, err
+	}
+	return out, nil
 }
 
 // MouseClickOutcome 是一次点击**后半段**的事实：这次抬起交给了谁。
@@ -1090,39 +1183,133 @@ type MouseClickOutcome struct {
 	// LandedBefore / LandedAfter 是按下前 / 按下后那个坐标上的节点。
 	LandedBefore string
 	LandedAfter  string
+	// Blind 说**判据这一次没能跑**（跨站子帧 / 判不出落点）：可见的行为与从前一样
+	// （抬起照发），但「落点变了就不交给新落点」这条保护**在这一帧不存在**。
+	//
+	// ⚠️ 它必须能听见：跨站 iframe 里命中测试不下钻，判据**恒不触发** ——
+	// 不说的话，这一帧上的点击看起来和别处一样「有保护」，其实一点都没有。
+	Blind bool
+	// Note 是这一次判据说的话（判不了 / 判成了重建所以没扣 / 取不到证所以没扣）。
+	// 空串 = 判据跑成了、也没什么要说的。
+	Note string
 }
 
 // DispatchMouseClick dispatches mouse move, press, and release at (x, y) —
 // 但**按下与抬起之间落点换了人时，抬起不发**（理由见 domHit 上面那一大段）。
 //
-// 回执（落点前后是谁、扣没扣）走 dispatchMouseClick；这个入口只报错，
-// 因为 57 个生产脚本与 form 侧的动作全都只关心「成没成」。
+// 回执（落点前后是谁、扣没扣、判据是不是瞎的）走 dispatchMouseClick；
+// 这个入口只报错，因为 57 个生产脚本的动作全都只关心「成没成」。
 func (c *Client) DispatchMouseClick(x, y float64) error {
 	_, err := c.dispatchMouseClick(x, y)
 	return err
+}
+
+// LandingDiags 交出**这次连接上**落点判据发过的诊断（判据没跑成的那些）。
+//
+// 为什么单独攒一份：`form` 那条路（FillText / CheckElement / SelectOption）不返回
+// 结构化回执，但它的点击**同样会扣下抬起** —— 复审实测那条路上「不静默」是 0 字节。
+// 攒在这儿，由调用方（cmd/form.go）印出去。与 `targetDiags` 同一套办法。
+func (c *Client) LandingDiags() []Diagnostic {
+	return c.landingDiags
+}
+
+// noteLanding 记一条落点判据的诊断，并把它写进回执的 Note。
+//
+// kind 取 DiagKindLandingBlind（判据没能跑）或 DiagKindLandingWithheld（扣下了）。
+// 两条都要记：`form` 那条路只有这份诊断能说话（见 LandingDiags）。
+func (c *Client) noteLanding(out *MouseClickOutcome, kind, detail string) {
+	out.Note = detail
+	if kind == DiagKindLandingBlind {
+		out.Blind = true
+	}
+	c.landingDiags = append(c.landingDiags, Diagnostic{
+		Kind:      kind,
+		Detail:    detail,
+		FramePath: []string{mainFramePath},
+	})
 }
 
 // dispatchMouseClick 是 DispatchMouseClick 的实现，额外把落点判定的事实交出来。
 func (c *Client) dispatchMouseClick(x, y float64) (MouseClickOutcome, error) {
 	var out MouseClickOutcome
 
-	before, beforeOK := c.hitTestAt(x, y)
-
+	// ⚠️ MouseMoved 先发：判据窗口是「按下之前那一刻 → 按下之后」，
+	// 悬停引起的重渲染不算在内（见 domHit 上面那段 ⚠️）。
 	if err := c.dispatchMouseEvent(input.MouseMoved, x, y); err != nil {
 		return out, err
 	}
+
+	before, beforeOK := c.hitTestAt(x, y)
+
 	if err := c.dispatchMouseEvent(input.MousePressed, x, y); err != nil {
 		return out, err
 	}
 
 	after, afterOK := c.hitTestAt(x, y)
-	if beforeOK && afterOK && before != after {
-		out.ReleaseWithheld = true
-		out.LandedBefore = c.describeHit(before)
-		out.LandedAfter = c.describeHit(after)
-		return out, nil
+
+	// ① 判不出落点：不扣 + 说清楚（判据这次是瞎的）。
+	if !beforeOK || !afterOK {
+		c.noteLanding(&out, DiagKindLandingBlind, "落点判据这次没跑成：那个坐标上取不到节点（点可能在视口外）—— "+
+			"按老行为把抬起发出去，这一次没有「落点变了就不交给新落点」这层保护")
+		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
 	}
-	return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
+
+	// ② 命中**停在 `<iframe>`/`<frame>` 上**：判据在这一点不可用。
+	//
+	// 跨站子帧时浏览器不下钻（实测：父页 127.0.0.1 嵌 gowizard 的跨站子帧，
+	// 主帧坐标命中 `IFRAME` 且 frame = 父页），于是前后两次问到的都是同一个
+	// `<iframe>` —— 判据**恒不触发**。这是沉默的空转，必须说出来。
+	if bf, err := c.hitFactsOf(before); err == nil && (bf.Tag == "iframe" || bf.Tag == "frame") {
+		c.noteLanding(&out, DiagKindLandingBlind, fmt.Sprintf("落点判据在这一点不可用：命中栈停在 %s 上（没有下钻到子帧内部）。"+
+			"跨站子帧就是这种 —— 跨站时 DOM.getNodeForLocation 只返回父页的 iframe 元素，"+
+			"判据在子帧内部**恒不触发**（同 site 跨 origin 才会下钻）。这一帧里的点击没有这层保护", bf.Desc))
+		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
+	}
+
+	// ③ 落点没变 → 正常点击。
+	if before == after {
+		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
+	}
+
+	// ④ 落点变了 —— 但「换了节点」≠「有人盖上来」，扣下要**正向取证**。
+	beforeFacts, bErr := c.hitFactsOf(before)
+	afterFacts, aErr := c.hitFactsOf(after)
+	if bErr == nil {
+		out.LandedBefore = beforeFacts.Desc
+	}
+	if aErr == nil {
+		out.LandedAfter = afterFacts.Desc
+	}
+
+	if bErr != nil || aErr != nil {
+		c.noteLanding(&out, DiagKindLandingBlind, "落点判据这次没跑成：换了节点，但读不出前后两个节点的属性"+
+			"（取证不全）—— 按老行为把抬起发出去，宁可不扣也不误扣")
+		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
+	}
+	if beforeFacts.Fingerprint == afterFacts.Fingerprint {
+		// 逐字节相同的重建：没有任何东西盖上来，是**同一个东西**换了个节点。
+		// 实测踩过：照直扣下会把一次正常点击静静吞掉（复审端到端复现）。
+		c.noteLanding(&out, DiagKindLandingWithheld, fmt.Sprintf("按下之后落点换成了**同一个东西的另一个节点**（%s —— 标签与属性逐字相同，"+
+			"是重建不是覆盖）—— 照常把抬起发出去", afterFacts.Desc))
+		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
+	}
+	if conn, err := c.hitStillConnected(before); err != nil || !conn {
+		why := "原目标自己从文档里没了（被替换/被摘除），不是有人盖上来"
+		if err != nil {
+			why = "问不到原目标还在不在文档里（取证不全），按「可能被替换」处理"
+		}
+		c.noteLanding(&out, DiagKindLandingWithheld, fmt.Sprintf("按下之后落点换了人，但%s —— 照常把抬起发出去（%s → %s）",
+			why, beforeFacts.Desc, afterFacts.Desc))
+		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
+	}
+
+	// ⑤ 取证齐了：**原目标还在文档里**（它只是被盖住），而站在那个点上的是
+	// 一个**不同的东西** —— 这正是「别人盖上来」。扣下。
+	out.ReleaseWithheld = true
+	c.noteLanding(&out, DiagKindLandingWithheld, fmt.Sprintf("**抬起已扣下**：按下之后落点换成了 %s"+
+		"（原目标 %s 还在文档里、也不是它的重建）—— 这一次 mouseup 没有发出去",
+		afterFacts.Desc, beforeFacts.Desc))
+	return out, nil
 }
 
 // dispatchMouseEvent 发一条鼠标事件（按下/抬起带左键与 clickCount=1）。
@@ -1381,6 +1568,8 @@ func (c *Client) clickAndReport(selector, frameID string, track bool, strict boo
 	if outcome.ReleaseWithheld {
 		result.CoveredBy = outcome.LandedAfter
 	}
+	result.LandingBlind = outcome.Blind
+	result.LandingNote = outcome.Note
 
 	result.X = clickX
 	result.Y = clickY

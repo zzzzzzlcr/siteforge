@@ -2,9 +2,12 @@ package internal
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chromedp/cdproto/input"
 )
@@ -356,6 +359,327 @@ func TestDispatchMouseClick_WithholdsReleaseWhenPointGetsCovered(t *testing.T) {
 	if _, _, _, optionClick, _ := state(); optionClick != 1 {
 		t.Errorf("③ 菜单项的 click 触发 %d 次，应为 1 —— 落点没变的那一下必须照常点击", optionClick)
 	}
+}
+
+// ── G1 修复轮 1 · Critical-1：**节点被重建**不是「有人盖上来」──────────────────
+//
+// 复审端到端复现过两个场景：**没东西盖上来，却 `release_withheld=true`、`clicks=0`**，
+// 而且回执里 `covered_by` 印出的元素与目标**逐字相同**。根因是身份只比
+// `(frameId, backendNodeId)` 一对，而 `backendNodeId` 在**节点重建**时也会变。
+//
+// ⚠️ 一次正常点击被**静静地**扣掉，比原来那个病更坏（原来的病看得见：菜单被自己关掉）。
+//
+// 判据的断言设计（**关键**）：每格都在**同一份夹具**上先跑一遍**原始三连**
+// （moved → press → release，**绕过我们的门**）当作**浏览器裸行为基线**，
+// 再跑一遍被测路径，然后比**两者是否一致**：
+//
+//	鼠标序列必须与浏览器裸行为**逐项相同** —— 我们不许比裸行为少给任何东西。
+//
+// 为什么不用「clicks==1」这种写死的期望：mousedown 那一格**浏览器自己**就不合成 click
+// （实测：按下时那个节点已被摘掉，Blink 不合成 click —— 原始三连也是 clicks=0，
+// mouseups=1）。写死 1 会把「浏览器的合成规则」当成我们的契约，下次 Chrome 改规则
+// 就会红；而**与裸行为比对**这件事才是我们真正要保证的（而且它自动跟着浏览器走）。
+//
+// 两个场景合起来也把**判据窗口**钉住了：窗口是「按下之前 → 按下之后」，
+// **不含 MouseMoved 那一段** —— 悬停引起的重渲染发生在按下**之前**，
+// 把那一段算进来，鼠标掠过页面本身就触发扣下（场景 A 就是这一条）。
+//
+// 每格都**自证夹具真的重建了节点**（`rebuilt`），否则「点击发出去了」这句
+// 可能在证明一件不存在的事。
+func TestDispatchMouseClick_NodeRebuildIsNotACover(t *testing.T) {
+	host := os.Getenv("CDP_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := 9222
+
+	pages, err := ListPageTargets(host, port, false)
+	if err != nil || len(pages) == 0 {
+		t.Skipf("Chrome not available: %v", err)
+	}
+
+	client, err := NewClient(host, port)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Disconnect()
+
+	// ⚠️ 先换一张白纸：这个 Chrome 页是**长命**的（跨测试、跨整轮 `go test` 都在），
+	// 前几轮留下的**文档级监听器**不会随 body.innerHTML 清掉 —— 不清的话
+	// 「文档收到几个 mouseup」数的是「这一格 + 前面所有轮」，与裸行为比出来的差
+	// 就变成一个常数偏移（看着对，其实什么都没比）。
+	if _, err := client.Navigate("about:blank", ""); err != nil {
+		t.Fatalf("清场失败: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	// 夹具外壳：一个按钮 + 挂在**容器**上的事件计数（事件委托 —— 节点被换掉之后
+	// 克隆自己是没有监听器的，而浏览器把 click 派发到按下/抬起两个节点的**公共祖先**
+	// 上，也就是容器）。每格自己通过 `extra` 挂上它的触发逻辑。
+	//
+	// 三种触发各考一条判据（见下面的表）：逐字节克隆（考「重建不是覆盖」）、
+	// 悬停浮出覆盖物（考「判据窗口不含 MouseMoved 那一段」）。
+	setup := func(extra string) string {
+		return `(function(){
+			document.body.innerHTML =
+				'<div id="rb-wrap" style="position:fixed;left:100px;top:100px;width:300px;height:60px;background:#eee">' +
+				'<button id="rb-btn" class="rb" style="width:100%;height:100%">rebuild me</button></div>';
+			window.__rb = { clicks: 0, mouseups: 0, mousedowns: 0, rebuilt: 0,
+			                docMouseUps: 0, docClicks: 0 };
+			var wrap = document.getElementById('rb-wrap');
+			['click','mouseup','mousedown'].forEach(function(ty){
+				wrap.addEventListener(ty, function(){ window.__rb[ty+'s']++; });
+			});
+			// 文档级（捕获相）计数：**鼠标事件有没有递出去**这件事，容器上的计数看不全
+			// （覆盖物是 body 的兄弟，事件不经过容器）—— 这一对才是「抬起照发了没有」的证据。
+			//
+			// ⚠️ 只挂**一次**（document 上的监听器不随 body.innerHTML 清掉）：
+			// 每格注入一次夹具，挂多次的话计数会把前面几格累加进去，与裸行为比不出东西。
+			if (!window.__rbDocHooked) {
+				window.__rbDocHooked = true;
+				document.addEventListener('mouseup', function(){ if (window.__rb) window.__rb.docMouseUps++; }, true);
+				document.addEventListener('click', function(){ if (window.__rb) window.__rb.docClicks++; }, true);
+			}
+			` + extra + `
+			return 'ok';
+		})()`
+	}
+	cloneOn := func(trigger string) string {
+		return `wrap.addEventListener('` + trigger + `', function(e){
+				var b = document.getElementById('rb-btn');
+				if (!b || e.target.id !== 'rb-btn') return;
+				window.__rb.rebuilt++;
+				b.parentNode.replaceChild(b.cloneNode(true), b);   // 逐字节相同
+			});`
+	}
+	reset := func(extra string) {
+		t.Helper()
+		var r string
+		if err := client.EvalInFrame("", setup(extra), &r); err != nil {
+			t.Fatalf("夹具注入失败: %v", err)
+		}
+	}
+	type counts struct {
+		Clicks, MouseUps, MouseDowns, Rebuilt int
+		DocMouseUps, DocClicks                  int
+	}
+	read := func(who string) counts {
+		t.Helper()
+		var raw string
+		if err := client.EvalInFrame("", `JSON.stringify(window.__rb)`, &raw); err != nil {
+			t.Fatalf("%s：读状态失败: %v", who, err)
+		}
+		var m counts
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			t.Fatalf("%s：状态解不开: %v (%s)", who, err, raw)
+		}
+		return m
+	}
+	// sub 取两次读数之差：文档上的计数是**累计**的（监听器只挂一次），
+	// 比累计值等于比「前面几格碰巧对不对」，比**增量**才是这一格到底发生了什么。
+	sub := func(a, b counts) counts {
+		return counts{
+			Clicks: a.Clicks - b.Clicks, MouseUps: a.MouseUps - b.MouseUps,
+			MouseDowns: a.MouseDowns - b.MouseDowns, Rebuilt: a.Rebuilt - b.Rebuilt,
+			DocMouseUps: a.DocMouseUps - b.DocMouseUps, DocClicks: a.DocClicks - b.DocClicks,
+		}
+	}
+	center := func() (float64, float64) {
+		t.Helper()
+		rect, err := client.GetElementCenter("#rb-btn", "")
+		if err != nil {
+			t.Fatalf("取坐标失败: %v", err)
+		}
+		return rect["centerX"], rect["centerY"]
+	}
+
+	for _, c := range []struct{ name, extra, why string }{
+		{"悬停换节点", cloneOn("mousemove"),
+			"重渲染发生在**按下之前**（MouseMoved 那一段）—— 判据窗口不含它"},
+		{"mousedown 触发重渲染", cloneOn("mousedown"),
+			"重渲染发生在**按下与抬起之间**，但没有任何东西盖上来"},
+		{"悬停浮出一层覆盖物", `wrap.addEventListener('mousemove', function(){
+				window.__rb.rebuilt++;
+				var o = document.createElement('div');
+				o.id = 'rb-cover';
+				o.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;z-index:9999;background:rgba(0,0,0,.1)';
+				document.body.appendChild(o);
+			});`,
+			"覆盖物是**悬停**招来的（按下之前就铺好了），不是「按下之后有人盖上来」—— "+
+				"判据窗口一旦含 MouseMoved，鼠标掠过页面本身就会把点击扣掉"},
+	} {
+		// 基线：**绕过我们的门**的原始三连（浏览器裸行为）
+		reset(c.extra)
+		snap := read(c.name + "（基线前）")
+		x, y := center()
+		for _, typ := range []input.MouseType{input.MouseMoved, input.MousePressed, input.MouseReleased} {
+			if err := client.dispatchMouseEvent(typ, x, y); err != nil {
+				t.Fatalf("%s：基线发事件失败: %v", c.name, err)
+			}
+		}
+		time.Sleep(150 * time.Millisecond)
+		raw := sub(read(c.name+"（基线）"), snap)
+		if raw.Rebuilt == 0 {
+			t.Fatalf("%s：夹具**没有**重建节点（rebuilt=0）—— 这条测试什么都没考到（%s）", c.name, c.why)
+		}
+
+		// 被测路径
+		reset(c.extra)
+		snap = read(c.name + "（被测前）")
+		result, err := client.ClickElement("#rb-btn", "", false)
+		if err != nil {
+			t.Fatalf("%s：ClickElement 失败: %v", c.name, err)
+		}
+		time.Sleep(150 * time.Millisecond)
+		got := sub(read(c.name), snap)
+
+		if got.Rebuilt == 0 {
+			t.Fatalf("%s：被测那一遍没重建节点（rebuilt=0）—— 断言会空转", c.name)
+		}
+		if result.ReleaseWithheld {
+			t.Errorf("%s：抬起被扣下了（covered_by=%q）—— 但**没有任何东西盖上来**，换掉的只是同一个"+
+				"元素的另一个节点（%s）。一次正常点击被静静吞掉，比原来那个病更坏",
+				c.name, result.CoveredBy, c.why)
+		}
+		if got.DocMouseUps != raw.DocMouseUps {
+			t.Errorf("%s：文档收到 %d 个 mouseup，浏览器裸行为是 %d 个 —— 我们的门比裸行为**少给了**"+
+				"东西（%s）", c.name, got.DocMouseUps, raw.DocMouseUps, c.why)
+		}
+		if got.DocClicks != raw.DocClicks {
+			t.Errorf("%s：文档收到 %d 个 click，浏览器裸行为是 %d 个 —— 门比裸行为少给了东西（%s）",
+				c.name, got.DocClicks, raw.DocClicks, c.why)
+		}
+		if got.MouseUps != raw.MouseUps || got.Clicks != raw.Clicks {
+			t.Errorf("%s：容器上的计数也与裸行为不一致（mouseup %d/%d、click %d/%d）",
+				c.name, got.MouseUps, raw.MouseUps, got.Clicks, raw.Clicks)
+		}
+		t.Logf("%s：重建 %d 次；被测（withheld=%v）doc: mouseup=%d click=%d ／ 裸行为 doc: mouseup=%d click=%d（%s）；note=%q",
+			c.name, got.Rebuilt, result.ReleaseWithheld, got.DocMouseUps, got.DocClicks,
+			raw.DocMouseUps, raw.DocClicks, c.why, result.LandingNote)
+	}
+}
+
+// ── G1 修复轮 1 · Critical-2：跨站子帧里判据**恒不触发**，这件事必须能听见 ──────
+//
+// 复审实测的机制（本机复验过）：跨站子帧里 `DOM.getNodeForLocation` **只返回父页的
+// `<iframe>` 元素**（同 site 跨 origin 才下钻），于是按下前后问到的都是同一个
+// `<iframe>` → 判据**恒不触发**、而且**一声不吭** —— 这一帧上的点击看起来和别处
+// 一样「有保护」，其实一点都没有。
+//
+// 夹具用 `localhost` vs `127.0.0.1` 造出**真的跨站**（同一个 httptest 服务器，
+// 只换 host 名）：本地实测这一对**确实**跨进程，命中栈停在 `<iframe>` 上 ——
+// 与浏览器真的跨站时同形，而且**不依赖外网**。
+//
+// 两条断言：
+//
+//	① 跨站那一格：判据**说出来了**（`landing_blind` + diagnostics 里一条 landing-blind），
+//	   并且可见行为与从前一样（抬起照发，不因为「判不了」就动老行为）；
+//	② 正向对照（同源 iframe）：命中下钻进去了 → **不许**报盲区。
+//	   没有 ② 的话，「任何 iframe 都报盲区」这种坏实现也是绿的。
+func TestClickElement_CrossSiteFrameReportsBlindLanding(t *testing.T) {
+	host := os.Getenv("CDP_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := 9222
+
+	pages, err := ListPageTargets(host, port, false)
+	if err != nil || len(pages) == 0 {
+		t.Skipf("Chrome not available: %v", err)
+	}
+
+	client, err := NewClient(host, port)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Disconnect()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		if r.URL.Path == "/inner.html" {
+			_, _ = w.Write([]byte(`<!doctype html><html><body style="margin:0">` +
+				`<button id="inner-btn" onclick="window.__inner=1" ` +
+				`style="position:absolute;left:0;top:0;width:400px;height:200px">inner</button></body></html>`))
+			return
+		}
+		src := r.URL.Query().Get("src")
+		if src == "" {
+			src = "inner.html" // 同源（同一个 host 名）
+		}
+		_, _ = w.Write([]byte(`<!doctype html><html><body style="margin:0">` +
+			`<iframe id="fr" src="` + src + `" ` +
+			`style="position:absolute;left:0;top:0;width:600px;height:300px;border:0"></iframe></body></html>`))
+	}))
+	defer srv.Close()
+
+	crossSite := strings.Replace(srv.URL, "127.0.0.1", "localhost", 1) + "/inner.html"
+
+	// ① 跨站
+	if _, err := client.Navigate(srv.URL+"/outer.html?src="+crossSite, ""); err != nil {
+		t.Fatalf("导航到跨站夹具失败: %v", err)
+	}
+	time.Sleep(3000 * time.Millisecond)
+	probe, err := client.probeClickTarget("#fr", "")
+	if err != nil || probe.MatchCount != 1 {
+		t.Fatalf("夹具里的 iframe 取不到（%v）—— 下面的断言会空转", err)
+	}
+	// 自证这一格**真的是**跨站：命中栈停在 iframe 上（没有下钻）
+	h, ok := client.hitTestAt(300, 150)
+	facts, ferr := client.hitFactsOf(h)
+	if !ok || ferr != nil || facts.Tag != "iframe" {
+		t.Fatalf("夹具自检失败：iframe 内部那一点的命中是 %q（err=%v）—— 这一格**没有**复现出"+
+			"「跨站不下钻」，下面的断言在证明一件不存在的事（先查 localhost/127.0.0.1 这一对"+
+			"在当前 Chrome 上还跨不跨站）", facts.Desc, ferr)
+	}
+	result, err := client.ClickElement("#fr", "", false)
+	if err != nil {
+		t.Fatalf("跨站那一格 ClickElement 失败: %v", err)
+	}
+	if !result.LandingBlind {
+		t.Errorf("跨站子帧里的点击**没有报盲区**（landing_blind 缺省）—— 判据在这一帧恒不触发，"+
+			"而回执里一个字都不说 = 沉默的空转：调用方会以为这层保护在（result=%+v）", result)
+	}
+	if !strings.Contains(result.LandingNote, "iframe") || !strings.Contains(result.LandingNote, "恒不触发") {
+		t.Errorf("盲区那句话没说清是哪一种盲区：%q —— 它要能回答「判据为什么在这儿不可用」", result.LandingNote)
+	}
+	if result.ReleaseWithheld {
+		t.Errorf("判据说它判不了，却还是把抬起扣下了（covered_by=%q）—— 判不了时按老行为走"+
+			"（凭据不足不额外拿走一次点击）", result.CoveredBy)
+	}
+	var blindDiags int
+	for _, d := range client.LandingDiags() {
+		if d.Kind == DiagKindLandingBlind {
+			blindDiags++
+		}
+	}
+	if blindDiags == 0 {
+		t.Errorf("LandingDiags 里一条 landing-blind 都没有 —— `form` 那条路只有这份诊断能说话"+
+			"（复审实测它在 form 上是 0 字节）；diags=%+v", client.LandingDiags())
+	}
+	t.Logf("跨站：命中=%s → landing_blind=%v，note=%q，landing-blind 诊断 %d 条",
+		facts.Desc, result.LandingBlind, result.LandingNote, blindDiags)
+
+	// ② 正向对照：同源 iframe 必须下钻进去 → **不许**报盲区
+	if _, err := client.Navigate(srv.URL+"/outer.html", ""); err != nil {
+		t.Fatalf("导航到同源夹具失败: %v", err)
+	}
+	time.Sleep(3000 * time.Millisecond)
+	h2, ok2 := client.hitTestAt(300, 150)
+	facts2, ferr2 := client.hitFactsOf(h2)
+	if !ok2 || ferr2 != nil || facts2.Tag != "button" {
+		t.Fatalf("正向对照的夹具不对：同源 iframe 内部那一点的命中是 %q（err=%v），应下钻到 <button> —— "+
+			"这一格不成立的话，上面那条「跨站报盲区」就没有对照（任何 iframe 都报盲区的坏实现也会绿）",
+			facts2.Desc, ferr2)
+	}
+	result2, err := client.ClickElement("#fr", "", false)
+	if err != nil {
+		t.Fatalf("同源那一格 ClickElement 失败: %v", err)
+	}
+	if result2.LandingBlind {
+		t.Errorf("同源 iframe 里报了盲区（note=%q）—— 命中栈**下钻进去了**，判据在这儿能用。"+
+			"「一律报盲区」会让这条诊断变成常驻噪音（常驻的警告等于没有警告）", result2.LandingNote)
+	}
+	t.Logf("对照（同源）：命中=%s → landing_blind=%v", facts2.Desc, result2.LandingBlind)
 }
 
 // TestClickElement_SmallButtonOnClick verifies that the full ClickElement pipeline

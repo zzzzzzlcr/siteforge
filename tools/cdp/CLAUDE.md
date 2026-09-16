@@ -33,10 +33,10 @@ go mod tidy                           # 整理依赖
 **子命令 Flags:**
 - `eval`: `--frame-id` (目标 frame)、`--file` (JS 文件路径)
 - `snapshot`: 无额外 flags
-- `click`: `[selector]` (位置参数) 或 `--selector`、`--frame-id`、`--track` (显示鼠标轨迹)、`--strict` (歧义选择器 / 禁用目标**当场失败**；默认 **false**，MCP 门默认走严格那一版)。每次点击在 **stderr** 上留一行「命中几个 / 点的第几个 / 禁没禁用」，stdout 仍是纯 JSON（回执多了 `match_count` / `match_index` / `target` / `target_disabled`）
+- `click`: `[selector]` (位置参数) 或 `--selector`、`--frame-id`、`--track` (显示鼠标轨迹)、`--strict` (歧义选择器 / 禁用目标**当场失败**；默认 **false**，MCP 门默认走严格那一版)。每次点击在 **stderr** 上留一行「命中几个 / 点的第几个 / 禁没禁用」，stdout 仍是纯 JSON（回执多了 `match_count` / `match_index` / `target` / `target_disabled`）。**落点判据**：按下与抬起之间落点换了人（典型：mousedown 展开的下拉铺了 backdrop 上来）→ 这一次 `released` **不发**，回执里 `release_withheld` + `covered_by`；扣下要正向取证（原目标还在文档里 ∧ 新落点不是它的重建），**节点重建不是覆盖**；判据跑不了时（跨站子帧的 `<iframe>` 上命中栈不下钻 → 判据在那儿**恒不触发**）出 `landing_blind` + `landing_note`，判不了就按老行为走但**必须能听见**
 - `scroll`: `[selector]` (位置参数) 或 `--selector`、`--frame-id`、`--track` (显示鼠标轨迹)
 - `navi`: `[url]` (必填位置参数)、`--frame-id` (目标 frame，默认主 frame)
-- `form`: `[selector]` (位置参数) 或 `--selector`、`--value` / `--check` / `--select` (三选一)、`--frame-id`、`--track`
+- `form`: `[selector]` (位置参数) 或 `--selector`、`--value` / `--check` / `--select` (三选一)、`--frame-id`、`--track`。内部每一次点击都走同一条落点判据，判据说的话也印在 **stderr**（只有判据有话可说时才印 —— 扣下 / 判不了 / 判成重建）
 - `observe`: `--json` (默认 true；`--json=false` 出人话摘要)、`--frame-id` (只观察指定帧 —— 传的必须是 **CDP frameID**，不是 frame_path 里给人读的 `"main"`)、`--expect-url` (预期 URL 子串；模型的 `url` 不含它就**非 0 退出**且不输出模型 —— 拿错页时的主动闸门)
 - `diff`: `--before` (**必填**，动作前那份 `observe` 快照的路径)、`--json` (默认 true)、`--frame-id` (⚠️ **只影响「动作后」那一次观测**；拿整页快照配它会把其它帧的元素全报成 disappeared → 假的 `actionable=true`，非调试别传)
 - `targets`: 无额外 flags
@@ -69,6 +69,10 @@ diagnostics，跨源 iframe 自动逐帧合并、每条带 `frame_path`），是
 `pickActivePage`）—— 那是个猜测，所以模型里会带一条 `target-ambiguous` 诊断（整个 tab
 可能选错了，不是某一帧没取到；真站实测过：返回一份完全合法、说的是**另一个页**的模型）；
 diff 命令比「动作前快照」与「现在的页面」，回答「刚才那一下有没有推进」。
+⚠️ click / form 的**落点判据**（`landing-blind` / `landing-withheld`）走的是**另一份**
+`Client.LandingDiags()`，**不混进** PageModel 的 `diagnostics`（那一份说的是「观测本身
+不完整」；这两条说的是「这一次点击的判据怎么样了」）—— `cdp form` 把它们印在 stderr，
+`cdp click` 走回执字段（见上面 click 那条）。
 
 ## Architecture
 
@@ -95,6 +99,7 @@ cdp/
 │   │   └── conn.go      # 每条工具调用现连现断；连不上点名 host:port
 │   ├── client.go        # CDP 客户端，WebSocket 连接管理、逐帧 eval（含 OOPIF 回退）
 │   ├── click.go         # click 的目标解析：命中几个 / 点的是第几个 / 禁没禁用 + 严格判据
+│   │                    # （落点判据与回执字段在 client.go 的 dispatchMouseClick）
 │   ├── observe.go       # PageModel 契约 + observeJS（单帧页面模型）
 │   ├── observe_frames.go# 跨帧枚举与合并（ObserveAll）、帧覆盖守卫
 │   ├── diff.go          # DiffModels：前进判据（对选择器改名免疫）+ 人话渲染用的数据

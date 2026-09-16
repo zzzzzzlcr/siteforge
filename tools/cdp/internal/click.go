@@ -243,6 +243,21 @@ type ClickResult struct {
 	// 只在 ReleaseWithheld 时有值 —— 报告里要能回答「那一下本该点到谁身上」。
 	CoveredBy string `json:"covered_by,omitempty"`
 
+	// LandingBlind 说**落点判据这一次没能跑**：命中栈停在跨站子帧的 `<iframe>`
+	// 上（跨站时浏览器不下钻，判据在子帧内部**恒不触发**），或者那个坐标上取不到
+	// 节点。可见行为与从前一样（抬起照发），但「落点变了就不交给新落点」这层保护
+	// **在这一点上不存在**。
+	//
+	// ⚠️ 必须能听见：不说的话，跨站 iframe 里的点击看起来和别处一样「有保护」，
+	// 其实一点都没有 —— 那是**沉默的空转**，比没有保护更坏。
+	LandingBlind bool `json:"landing_blind,omitempty"`
+	// LandingNote 是落点判据这一次说的话：判不了 / 判成了「同一个东西被重建」
+	// 或「原目标自己没了」所以**没有**扣下 / 取证不全所以没有扣。
+	//
+	// 空串 = 判据跑成了，没什么要说的。有值就必须能读懂 —— 它要么解释一次
+	// **没有扣下**（为什么不扣），要么解释判据为什么是瞎的。
+	LandingNote string `json:"landing_note,omitempty"`
+
 	// Probe 是探测的原始结果（含候选全表）。`json:"-"`：JSON 里只放上面那几个
 	// 扁平字段（agent 读的是那些），这张全表只给 Go 侧渲染人话那一行用。
 	Probe *ClickProbe `json:"-"`

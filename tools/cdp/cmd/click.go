@@ -90,6 +90,14 @@ func runClick(cmd *cobra.Command, args []string) error {
 			"这一次 mouseup 没有发给它（那正是「下拉点开又自己关掉」的成因；"+
 			"菜单若由 mousedown 展开，此刻已经是开着的）\n", result.CoveredBy)
 	}
+	// 判据没跑成（跨站子帧盲区 / 取证不全）或判成了「没东西盖上来」——
+	// 两种都要说：前者是**保护不存在**，后者是**这次没扣**（免得与实际不符）。
+	//
+	// ⚠️ 扣下那一格**不在这儿重复印**：上面那条 `release_withheld` 的行说的就是它
+	// （同一件事印两遍 = 噪音，而噪音会让真话变得不值钱）。
+	if result.LandingNote != "" && !result.ReleaseWithheld {
+		fmt.Fprintf(os.Stderr, "cdp click：落点判据 —— %s\n", result.LandingNote)
+	}
 
 	enc := json.NewEncoder(os.Stdout)
 	return enc.Encode(result)

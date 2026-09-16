@@ -35,6 +35,20 @@ const (
 	// 在可见性检查超时后就是这个状态，而 observe 照样返回一份完全合法、字段齐全、
 	// 退出码 0 的**另一个页**的模型（连 diagnostics 都是空的）。
 	DiagKindTargetAmbiguous = "target-ambiguous"
+
+	// DiagKindLandingBlind —— click 的**落点判据（G1）这一次没能跑**：
+	// 命中栈停在跨站子帧的 `<iframe>` 上（跨站时浏览器不下钻，判据在子帧内部
+	// **恒不触发**），或者那个坐标上取不到节点。
+	//
+	// ⚠️ 为什么值得单列一条：判据失效是**静默**的 —— 这一帧上的点击看起来和别处
+	// 一样「有保护」，其实一点都没有。取值的地方见 client.go 的 dispatchMouseClick。
+	DiagKindLandingBlind = "landing-blind"
+
+	// DiagKindLandingWithheld —— 落点判据**扣下了这次抬起**：按下之后有一个
+	// **不同的**东西盖到了那个坐标上，而原目标还在文档里。这次点击只发出了按下的
+	// 那一半，页面收到的鼠标事件比从前少一个 —— 必须能听见（`form` 那条路只有
+	// 这份诊断能说话，见 Client.LandingDiags）。
+	DiagKindLandingWithheld = "landing-withheld"
 )
 
 // targetDiagsFor 把「挑页面目标」的结果翻成诊断：**只有退回时才说话**。
