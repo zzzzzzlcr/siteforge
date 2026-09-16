@@ -527,6 +527,9 @@ class Filler:
     frames = ()
     #: 同上（活帧）：不进 `__init__` 的实例上也要有一个空表可读 —— 见 `_read_frames`。
     live_frames = ()
+    #: 同上（替身）：不进 `__init__` 的实例没有 CDPHelper —— `_iframe_srcs` 靠它判「读不了」，
+    #: 而不是抛 AttributeError（单测里那些只 stub 了 `_url`/`page_signature` 的实例）。
+    cdp = None
 
     def __init__(self, ws_url, form_file, correlation_id, task_id="",
                  trace=None, stop_at=None, shots="failed", delay=DELAY_RANGE,
@@ -547,6 +550,8 @@ class Filler:
             self.log.info("[%s] 这一次不上报（--no-report）：结果不往生产接口写", self.cid)
         self.step = 0          # 当前第几步（全局编号，与 --stop-at 同一套）
         self.stuck = 0         # 连续没做成的步数（早停看它）
+        self.skipped = 0       # 被 `when` 判据整组跳过的步数（最后那句总结要报出来）
+        self.skipped_states = {}   # 状态名 → 被跳过的步数（报「跳过最多的是哪个状态」）
         self.stalled = 0       # 连续「点了但页面没动」的步数（另一种原地打转）
         self._reported_url = ""
         self.missing = set()   # 这个 cdp 没有的命令（认出来一次就够：之后不再白跑、不再喊）
@@ -565,6 +570,8 @@ class Filler:
         #: 读不出东西的那些帧（多半已经不在了）—— `_read_frames` 靠它判断
         #: 「声明里那几帧是不是**全死了**」，全死了才去找活帧（见那个 docstring）。
         self._dead = set()
+        #: 最近一次 observe 的模型（`page_signature` 一路都读不到正文时用它兜底）
+        self._last_model = None
 
     # ── 基础设施 ────────────────────────────────────────────
 
@@ -632,10 +639,34 @@ class Filler:
         （`_applies` 返回 False 是不出声的）：产物看着跑完了，其实一步没走。
         """
         out = []
-        for url in [self._url()] + [self._frame_url(fid) for fid in self._read_frames()]:
+        for url in ([self._url()] + self._iframe_srcs()
+                    + [self._frame_url(fid) for fid in self._read_frames()]):
             if url and url not in out:
                 out.append(url)
         return out
+
+    def _iframe_srcs(self):
+        """主帧里那些 `<iframe>` 的 `src`（**读得出地址，读不到内容**）。
+
+        为什么要它（2026-09-17 真站实测的那一格）：流程活在跨源 iframe 里时，账本里
+        那个状态的 `when.url_contains` **就是子帧的地址**（observe 报的 `url` 是子帧的）。
+        而子帧地址有两处能读：那一帧的 `location.href`（要帧号、帧号会漂）和**主帧里那个
+        `<iframe>` 的 `src`**（跨源也读得到 ✓，永远不用帧号 ✓）。
+        实测踩到的形状：某一步 observe 的模型里**一个子帧元素都没有**（件在换题的间隙），
+        `_read_frames()` 于是没有活帧 → 地址判据**一条都匹配不上** → 整组步骤静默跳过。
+        补上这一路之后，「要含子帧地址」这条判据不再依赖帧号能不能用。
+        """
+        if getattr(self, "cdp", None) is None:
+            return []                      # 没有助手（单测里的替身）→ 读不了，别抛
+        # ⚠️ **先读 `fs[i].src`（属性会解析成绝对地址），再退回 getAttribute('src')** ——
+        # 真站实测踩到的：页面上写的是**相对地址**（`/forms/7878/...` 或 `//host/...`），
+        # 而判据里要的是**绝对地址**（observe 报的是绝对的）→ 一条都对不上 → 整组跳过。
+        js = ("var fs=document.getElementsByTagName('iframe'),out=[];"
+              "for(var i=0;i<fs.length;i++){var s=fs[i].src||fs[i].getAttribute('src')||'';"
+              "if(s&&s.indexOf('about:')!==0)out.push(s);}"
+              "return out.join('|');")
+        raw = self._ev(js)
+        return [part.strip() for part in (raw or "").split("|") if part.strip()]
 
     def _frame_url(self, frame_id):
         """某一帧现在的地址（读不到就空串 —— 读不到不是「它是空的」，是没法判）。
@@ -674,7 +705,14 @@ class Filler:
         """
         parts = [_norm(self._ev(_PAGE_TEXT_JS))]
         parts += [_norm(self._ev(_PAGE_TEXT_JS, fid)) for fid in self._read_frames()]
-        return " ".join(p for p in parts if p)
+        text = " ".join(p for p in parts if p)
+        if not text.strip():
+            # 一路都读不到（这一页的正文不在主帧里、而帧又够不着）→ 用**最近一次 observe
+            # 的正文**兜底（它与这里**同一口径**：observe 的 page_text 就是跨帧拼起来的）。
+            # 「读不到」与「页面上没有那句话」是两件事 —— 前者不该让判据判成「不成立」。
+            model = self._last_model or {}
+            text = _norm(model.get("page_text") or "")
+        return text
 
     def _trace(self, line):
         """往 trace 追一行 JSON（JSON Lines）。不给 --trace 时它什么都不做。"""
@@ -788,10 +826,12 @@ class Filler:
             self.observe_why = "cdp 重新看这一页没成"
             return None
         try:
-            return json.loads(done.stdout)
+            model = json.loads(done.stdout)
         except ValueError:
             self.observe_why = "cdp 重新看这一页给的答复看不懂（不是 JSON）"
             return None
+        self._last_model = model if isinstance(model, dict) else None
+        return model
 
     def _diff(self, before_path):
         """刚才那一下有没有推进：True / False；**算不出来时 None**（原因写在 self.progress_why）。
@@ -1242,6 +1282,32 @@ class Filler:
 
     # ── 一步的执行 ──────────────────────────────────────────
 
+    def _skip_peak(self):
+        """被跳过最多的那个状态名（没有就空串）—— 收尾那句话要指出**卡在哪个状态**。"""
+        if not self.skipped_states:
+            return ""
+        return max(self.skipped_states.items(), key=lambda kv: kv[1])[0]
+
+    def _when_why(self, when):
+        """这条 `when` 为什么不成立 —— 说成人话（给日志与 trace 用）。
+
+        ⚠️ 「这一页不像那个状态」是一句**结论**，读的人要的是**哪一条判据不成立**：
+        URL 对不上（现在在哪儿）还是正文里没有那句话（页面上写着什么）。
+        """
+        when = when or {}
+        if not when:
+            return "这一步没有 when 判据"
+        want_url = when.get("url_contains")
+        if want_url and want_url not in self._url():
+            return "地址对不上：要含「%s」，现在是「%s」" % (want_url, self._url()[:60])
+        wants = when.get("text_contains") or []
+        if wants:
+            signature = self.page_signature().lower()
+            missing = [w for w in wants if _norm(str(w)).lower() not in signature]
+            if missing:
+                return "正文里没有「%s」" % str(missing[0])[:60]
+        return "判据说不清为什么不成立（url 与正文都对上了却判成不像）"
+
     def _applies(self, when):
         """这一页看着像不像这个状态（防 A/B 变体、防步骤增减）。
 
@@ -1369,8 +1435,23 @@ class Filler:
                     index += 1
                     self.step = index
                     if not applies:
-                        self.log.info("[%s] 第 %d 步跳过：这一页不像「%s」那个状态",
-                                      self.cid, index, name)
+                        # **跳过必须出声**（2026-09-17 加，与「没做成不许说做成」同一条规矩）：
+                        # 「`when` 不成立就整组静默跳过」是这套产物最贵的一类失败 ——
+                        # 跑完什么都没做，日志里却只有一句「走完了 N 步也没见到成功文案」，
+                        # 读的人根本看不出是**判据把整组步骤吞了**。
+                        # 所以：① 日志里说明**为什么**（哪一条判据不成立）；
+                        # ② trace 里也落一行（`skipped: true`）—— 自测/Console 读的是 trace；
+                        # ③ 计入 `self.skipped`，最后那句总结里报出来。
+                        why = self._when_why(state.get("when"))
+                        self.skipped += 1
+                        self.skipped_states[name] = self.skipped_states.get(name, 0) + 1
+                        self.log.info("[%s] 第 %d 步**跳过**：这一页不像「%s」那个状态（%s）"
+                                      "；页面上现在写着「%s」", self.cid, index, name, why,
+                                      (self.page_signature() or "")[:80])
+                        self._trace({"step": index, "action": (step.get("action") or ""),
+                                     "skipped": True, "state": name, "why": why,
+                                     "note": "第 %d 步跳过：这一页不像「%s」那个状态（%s）"
+                                             % (index, name, why)})
                         continue
                     self._rpt_if_moved(name)
                     if (step.get("action") or "") == "goto":
@@ -1411,7 +1492,18 @@ class Filler:
             if self._succeeded():
                 self._rpt("success")
                 return True
-            self.log.error("[%s] 走完了 %d 步也没见到成功文案", self.cid, total)
+            # **没见到成功文案就必须大声说「我没到」**，并说清停在哪、跳过了多少 ——
+            # 「走完了 N 步」这句话本身**不是**一个结论（它听着像「跑完了」）。
+            self.log.error(
+                "[%s] **没走到成功**：%d 步里真做了 %d 步、被 when 判据跳过 %d 步%s；"
+                "页面上**从头到尾没有出现过成功文案**（要认的那段：%s）……",
+                self.cid, total, total - self.skipped, self.skipped,
+                ("（跳过最多的那个状态是「%s」）" % self._skip_peak()) if self.skipped else "",
+                " / ".join(SUCCESS_TEXTS[:2]))
+            # ⚠️ 这一句**只进日志、不进 trace**：trace 的每一行都是「一步」
+            # （下游按 `line["ok"]` 读它，加一行没有 ok 的会把它读崩 ——
+            # `tests/test_template.py` 的截图那条就是这么读的）。
+            # 「跳过」那几行**是**步（带 `skipped: true`、不带 ok），所以它们在。
             self._rpt("no_success")
             return False
         except Exception as exc:

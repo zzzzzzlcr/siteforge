@@ -1119,6 +1119,8 @@ class _State:
         #: 同意弹层的答复（`"<选择器>|<按钮文字>"`，空串 = 没有弹层）——
         #: 产物 `_clear_obstructions` 的探针认这个形状。
         self.consent = ""
+        #: 主帧里那些 `<iframe>` 的 src（判据里「要含子帧地址」那一条靠它认）
+        self.iframe_srcs = []
         #: 遮挡判据的答复（`"COVER|tag#id.class"`，空串 = 没被盖着）——
         #: 产物 `_covered_by` **只认带 `COVER|` 前缀**的答复。
         self.cover = ""
@@ -1187,6 +1189,8 @@ class CDPHelper:
             return json.dumps(STATE.consent)
         if "elementFromPoint" in script:     # 遮挡判据那个探针
             return json.dumps(STATE.cover)
+        if "getElementsByTagName('iframe')" in script:   # 主帧里 iframe 的 src
+            return json.dumps("|".join(STATE.iframe_srcs))
         if "innerText" in script:
             return json.dumps(STATE.current_text())
         if "location.href" in script:
@@ -1471,3 +1475,110 @@ def test_form_steps_carry_the_strict_gate_and_the_field_identity(sandbox, form_f
     assert all(strict for _sel, strict, _lab in got), got
     assert any(lab == "ZIP code" for _sel, _s, lab in got), (
         "字段身份要跟着下去（认人靠它）：%s" % (got,))
+
+
+# ─────── 跳过必须出声（2026-09-17：与「没做成不许说做成」同一条规矩）───────
+#
+# 「`when` 不成立就整组静默跳过」是这套产物最贵的一类失败：跑完什么都没做，
+# 日志里只有一句「走完了 N 步」，读的人看不出是**判据把整组步骤吞了**。
+
+
+def test_a_skipped_state_leaves_a_line_in_the_trace_with_the_reason(sandbox, form_file):
+    """被跳过的步要**在 trace 里留下一行**（带 `skipped` 与「哪条判据不成立」）。"""
+    states = [
+        {"name": "never", "when": {"url_contains": "this-never-matches.test"},
+         "steps": [{"action": "click", "note": "点「Go」",
+                    "target": {"text": "Go", "role": "button", "near": None,
+                               "selectors": ["#go"]}}]},
+    ]
+    module, _ = _load(
+        "run_silent_skip",
+        template.render("example-skip", "Thank you", states, [], SAMPLE_PROVENANCE),
+        sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    trace = sandbox / "skip.jsonl"
+    ok = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                       trace=str(trace)).run()
+
+    assert ok is False
+    lines = [json.loads(l) for l in trace.read_text(encoding="utf-8").splitlines() if l.strip()]
+    skipped = [l for l in lines if l.get("skipped")]
+    assert skipped, "跳过必须留下痕迹：%s" % lines
+    assert skipped[0]["state"] == "never", skipped[0]
+    assert "this-never-matches.test" in skipped[0]["why"], skipped[0]
+    assert not [a for a in common.STATE.actions if a[1] == "#go"], "跳过的步不许真做"
+
+
+def test_the_end_says_out_loud_that_it_did_not_arrive(sandbox, form_file, caplog):
+    """跑完没见到成功文案 → **大声说「没到」**，并报出「真做了几步 / 跳过几步」。
+
+    「走完了 N 步」这句话本身不是结论（听着像「跑完了」）。
+    """
+    import logging as _logging
+    states = [
+        {"name": "ok", "when": None,
+         "steps": [{"action": "click", "note": "点「Go」",
+                    "target": {"text": "Go", "role": "button", "near": None,
+                               "selectors": ["#go"]}}]},
+        {"name": "never", "when": {"text_contains": ["这句话页面上没有"]},
+         "steps": [{"action": "click", "note": "点「Go」",
+                    "target": {"text": "Go", "role": "button", "near": None,
+                               "selectors": ["#go2"]}}]},
+    ]
+    module, _ = _load(
+        "run_loud_noarrive",
+        template.render("example-noarrive", "Thank you", states, [], SAMPLE_PROVENANCE),
+        sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    logger = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).log
+    records = []
+    handler = _logging.Handler()
+    handler.emit = lambda rec: records.append(rec.getMessage())
+    logger.addHandler(handler)
+    try:
+        assert module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run() is False
+    finally:
+        logger.removeHandler(handler)
+    hit = [m for m in records if "没走到成功" in m]
+    assert hit, records
+    assert "真做了 1 步" in hit[0] and "跳过 1 步" in hit[0], hit[0]
+    assert "没有出现过成功文案" in hit[0], hit[0]
+
+
+def test_the_url_judgement_reads_iframe_srcs_from_the_main_frame(sandbox, form_file):
+    """账本里的 `when.url_contains` 是**子帧的地址**时，主意要能从主帧里那条 `src` 认出来。
+
+    真站实测的那一格（2026-09-17）：某一步 observe 的模型里**一个子帧元素都没有**
+    （件在换题的间隙）→ `_read_frames()` 没有活帧 → 地址判据一条都匹配不上 →
+    **整组步骤静默跳过**（那趟 24 步里后 11 步全这么没的）。
+    跨源 iframe 的**内容**读不到，但它的**地址**在主帧里一直读得到。
+    """
+    states = [{"name": "quiz",
+               "when": {"url_contains": "chameleon.example.test/forms/7878"},
+               "steps": [{"action": "click", "note": "点「Continue」",
+                          "target": {"text": "Continue", "role": "button", "near": None,
+                                     "selectors": ["#continue"]}}]}]
+    module, _ = _load(
+        "run_iframe_src",
+        template.render("example-iframe-src", "Thank you", states, [], SAMPLE_PROVENANCE),
+        sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    # 主帧里挂着一个跨源 iframe（地址就是判据要的那条），而**模型里一个子帧元素都没有**
+    common.STATE.iframe_srcs = ["https://chameleon.example.test/forms/7878/default/gowizard"]
+    trace = sandbox / "iframesrc.jsonl"
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                  trace=str(trace)).run()
+
+    lines = [json.loads(l) for l in trace.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert not [l for l in lines if l.get("skipped")], (
+        "地址能从主帧那条 src 认出来，就不该判成「这一页不像」：%s" % lines)
+    assert ("click", "#continue") in common.STATE.actions, common.STATE.actions
