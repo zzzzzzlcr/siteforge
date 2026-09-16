@@ -19,8 +19,11 @@
 
 from __future__ import annotations
 
+import copy
+import json
 import pathlib
 import sys
+import threading
 import time
 from dataclasses import dataclass
 
@@ -136,16 +139,19 @@ class FakeGraph:
     这些用真图很难造（真图不会自己抛异常）。
     """
 
-    def __init__(self, *, steps=None, raise_on=None):
+    def __init__(self, *, steps=None, raise_on=None, hold=None):
         #: 每次 `invoke` 依次返回的东西；用完了就返回最后一个
         self.steps = list(steps or [])
         self.raise_on = raise_on or []
+        #: `hold(第几次 invoke)` —— 让测试能**停在**一次 invoke 中间看状态（不靠抢时序）
+        self.hold = hold or (lambda n: None)
         self.invokes: list = []
         self.updates: list = []
         self.state = _Snap(values={}, next=(), interrupts=())
 
     def invoke(self, payload, config):
         self.invokes.append(payload)
+        self.hold(len(self.invokes))
         if len(self.invokes) in self.raise_on:
             raise RuntimeError("窗口连不上了：connect to 192.168.1.197:55555 failed")
         out = self.steps[min(len(self.invokes) - 1, len(self.steps) - 1)] if self.steps else {}
@@ -196,9 +202,12 @@ def _client(*, graph_factory, window=None, **kw):
     """一个装好桩的 TestClient —— **不碰**进程级默认（那会去连 Postgres / 真 Bit 窗口）。"""
     if "checkpointer" not in kw and "checkpointer_url" not in kw:
         kw["checkpointer"] = InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)
-    # 「活窗口现在多大」默认量不出来（真实现要起 cdp 子进程）→ 测试里是「不知道」，
-    # 「不知道」不许拦路。专门验那根探针的那条测试自己注入一个会说真话的桩。
-    kw.setdefault("viewport_probe", lambda ws_url: None)
+    # 桩窗口默认**真的会变尺寸**：探针报的就是刚被推上去的那个尺寸。
+    # （真实现要起 cdp 子进程去量，测试里不必。）要演「量不出来」「推了但没变」的，
+    # 各自显式传一个 `viewport_probe`。
+    if isinstance(window, StubWindow):
+        kw.setdefault("viewport_probe",
+                      lambda ws_url, w=window: (w.calls[-1] if w.calls else None))
     app = service.create_app(graph_factory=graph_factory, window=window, **kw)
     return TestClient(app)
 
@@ -729,11 +738,16 @@ def test_a_viewport_that_did_not_actually_change_is_refused():
     ok._viewport_cb(ws)(1024, 768)          # 不抛就算过
 
 
-def test_the_viewport_probe_is_skipped_when_we_have_no_window_to_measure():
-    """没有 ws_url（没人给窗口）→ 量不了 → **不拦**。不知道不等于没做成。"""
+def test_the_viewport_knob_cannot_verify_anything_without_a_window_to_measure():
+    """**量不了就是没验到** —— 没有窗口可量时也一样，不许静默当成功。
+
+    （实际上这条分支到不了：没有窗口时 `_selftest` 在更前面就以 `no_window` 停下了。
+    但规则保持一致比「这里特殊一次」安全 —— 特殊的那次就是将来漏掉的那次。）
+    """
     svc = service.Service(window=StubWindow(), viewport_probe=lambda _ws: (1, 1),
                           checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
-    svc._viewport_cb(None)(1024, 768)       # 不抛
+    with pytest.raises(RuntimeError):
+        svc._viewport_cb(None)(1024, 768)
 
 
 # ───────────────────────── 6. 窗口层：两条线的**真实形状**（真 worker 上量的）─────
@@ -793,3 +807,296 @@ def test_set_viewport_writes_the_whole_record_so_the_proxy_is_not_dropped():
     assert seen["browserFingerPrint"]["coreVersion"] == "134", "原来那几项要原样带回去"
     assert (seen["proxyMethod"], seen["proxyType"], seen["host"], seen["port"]) == \
         (1, "socks5", "10.0.0.9", 1081), "代理那几项一个都不能丢：%r" % seen
+
+
+# ═══════════════════ 修复轮 1（评审的 5 条 Important）═══════════════════
+#
+# 这五条都是「桩测不出来 / 只在那条路上才现形」的那一类。所以每条测试都刻意做成
+# **在出厂那版代码上会红**的形状 —— 对 bug 也绿的测试什么也证明不了。
+
+
+# ── Important 1：状态已经在 Postgres 里了，/health 却翻脸说「内存、重启就没了」──
+
+
+def test_health_still_says_postgres_after_the_saver_has_actually_been_built(tmp_path):
+    """`kind` 原先看的是「**还没建**」这件事：`self._saver is None and self._url`。
+
+    第一次真要用（`get()`）之后 `_saver` 不再是 None —— 于是 `/health` 翻成
+    「状态只存在这个进程的内存里：**服务一重启就没了**」，而那个部署的状态明明在 Postgres 里。
+    这条把「建完之后再读一次」钉住：错的不是那句话本身，是它**在什么时候**说。
+    """
+    app = service.create_app(
+        graph_factory=lambda brief, deps: FakeGraph(steps=[_Snap(
+            values={"visits": ["intake"]}, next=("intake",), interrupts=(_gate(),))]),
+        checkpointer_url="postgresql://u:p@127.0.0.1:1/none")
+    client = TestClient(app)
+    svc = app.state.service
+    # 把它换成「建得出来」的替身（这条测的是 kind 的判据，不是 psycopg 连不连得上）
+    svc._check._connect = lambda url: InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)
+
+    assert client.get("/health").json()["checkpointer"] == "postgres"      # 建之前：对
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, job_id)
+    svc._check.get()          # 生产里第一次真要用（拼图 / 读状态）就会走到这里
+
+    body = client.get("/health").json()
+    assert body["checkpointer"] == "postgres", "建完 saver 之后 /health 翻脸了：%r" % body
+    assert "重启就没了" not in body["say"], body["say"]
+
+
+# ── Important 2：回完话还说「在等人」，第二句回话会落到下一道闸上 ──
+
+
+def test_a_reply_moves_the_job_out_of_waiting_and_a_second_reply_is_refused(tmp_path):
+    """回完话**必须**把 job 从「停住」挪开。
+
+    原先 `reply()` 回完直接返回 `_view()`，而 job 还停在 `_advance` 留下的 `DONE` 上 ——
+    `_view` 只短路 `FAILED/QUEUED/RUNNING`，于是它**从 checkpoint 投影**，而 checkpoint 里
+    那个中断还在 → 响应说「在等人」（还是旧那道闸）。调用方（Console / 脚本）看到「还在等人」
+    就会再回一次话 —— 那第二句 `Command(resume=...)` 会**落到下一道闸上**：
+    **一步在没人看着的情况下跑掉了**（§6.2/D16 的核心承诺）。
+
+    这条同时钉两件事：①回话的响应立刻是 `running`；②那段时间里再来一句回话被**拒**。
+    """
+    release = threading.Event()
+    fg = FakeGraph(
+        steps=[_Snap(values={"visits": ["intake"]}, next=("intake",), interrupts=(_gate("intake"),)),
+               _Snap(values={"visits": ["intake", "explore"]}, next=("explore",),
+                     interrupts=(_gate("explore"),))],
+        hold=lambda n: release.wait(10) if n == 2 else None)   # 第 2 次 invoke 卡住，好观察
+    client = _client(graph_factory=lambda brief, deps: fg)
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    assert _wait(client, job_id)["status"] == "waiting"
+
+    r = client.post("/job/%s/reply" % job_id, json={"action": "continue"})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "running", (
+        "回完话的响应还说「在等人」—— 调用方会再回一次，而那一句会落到**下一道闸**上：%r"
+        % r.json())
+
+    again = client.post("/job/%s/reply" % job_id, json={"action": "continue"})
+    assert again.status_code == 409, "第二句回话被收下了 —— 那一步就没人看着了：%r" % again.text
+
+    release.set()
+    view = _wait(client, job_id)
+    assert view["gate"]["step"] == "explore", view["gate"]     # 下一道闸是人回完第一句之后才到的
+
+
+def test_reading_a_job_does_not_queue_behind_another_jobs_run():
+    """生产的形状（服务自己拼图）：**读走读连接**，不跟正在跑的 invoke 抢那把写锁。
+
+    一个 explore 的 invoke 可能跑几分钟，而 Console 的 `GET /job/{id}` 会排在它后面 ——
+    「进展」读几分钟才回来，人以为卡死了。这条把写锁按住，再去读一次：
+    读**必须**还能立刻回来。
+    """
+    svc = service.Service(checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
+    done = threading.Event()
+
+    def read():
+        svc._snapshot("job-nobody")
+        done.set()
+
+    with svc._check.lock:                       # 模拟「正跑着一次 invoke」
+        threading.Thread(target=read, daemon=True).start()
+        assert done.wait(5), "读被写锁挡住了 —— 它会一直排到那次 invoke 跑完（几分钟）"
+
+
+# ── Important 3：探针量不出来时，那一遍**不许**被记成「跑过了」──
+
+
+def test_a_viewport_round_that_could_not_be_measured_is_not_a_pass():
+    """**量不出来 ≠ 做成了。**
+
+    `live_viewport` 在这些情况下返回 `None`：没有 cdp 二进制、子进程失败、输出看不懂、
+    或者 `ws_url` 不认识。原先 `None` 被当成「没问题」，回调返回成功 →
+    自测把第 4 遍记成**跑了** → `_judge` 可能判过 → 交出去的产物带着
+    「折叠 / 遮挡 / 坐标假设**验过了**」，而**一个数都没量到**。
+
+    这正是这段代码自己的 docstring 骂的那件事。抛出去的后果是**对的**那一头：
+    `selftest.run` 会把回调抛错记成「这一遍没跑」（`selftest.py:475`）——
+    **不是**把整跑杀掉，是那一遍不算过。
+    """
+    svc = service.Service(window=StubWindow(), viewport_probe=lambda _ws: None,
+                          checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
+    with pytest.raises(RuntimeError) as exc:
+        svc._viewport_cb("ws://192.168.1.197:61129/devtools/browser/x")(1024, 768)
+    assert "量" in str(exc.value), str(exc.value)
+    assert "allow_skips" in str(exc.value) or "放弃" in str(exc.value), \
+        "得告诉人两条明路（修好 / 明确放弃），不然他们只会看到「失败了」：%s" % exc.value
+
+
+def test_a_window_update_that_did_not_say_success_is_not_a_success():
+    """`/browser/update` 的应答里没有 `success: true` 就不算成功。
+
+    实测两种应答：成功 `{"success":true,"data":{…}}`；被拒 `{"success":false,"msg":"请选择代理方式"}`。
+    原先只看 `success is False`，于是**一个空应答 / 换了形状的应答**会被当成「改好了」。
+    """
+    for reply in ({}, {"msg": "什么也没说"}, {"data": {"whatever": 1}}):
+        win = _bit_window(lambda p, b, r=reply: (
+            {"success": True, "data": {"b" * 32: {"browserFingerPrint": {}}}}
+            if p == "/browser/detail" else r))
+        # `/browser/detail` 的形状不对时它自己就会抛；这里只要求**不许**静默当成功
+        with pytest.raises(RuntimeError):
+            win.set_viewport(1024, 768)
+
+
+# ── Important 4：整条记录回写（键一个都不能少）──
+
+
+def test_set_viewport_writes_back_every_key_of_the_real_record():
+    """`/browser/update` 是**整条记录**更新，不是补丁 —— 回写时漏掉的键就是把那个设置弄丢了。
+
+    这条**照着真应答的键集合**比：`tests/fixtures/bit_window_detail.json` 是真从
+    Bit worker 的 `POST /browser/detail` 抓的（126 个顶层键 / 112 个指纹键，只把**值**redact 了，
+    键一个没删）。照着我们自己以为的那几个键写一条 fixture 去比 —— 那正是这个 bug 能活下来的原因。
+
+    另外实测过：**整条原样回写（只改尺寸）→ `success:true`，回读 126/112 个键一个不少**，
+    所以「全都写回去」这条路上没有服务端不认的键。
+    """
+    fixture = json.loads((ROOT / "tests" / "fixtures" / "bit_window_detail.json")
+                         .read_text(encoding="utf-8"))
+    real = fixture["response"]["data"]
+    assert len(real) > 100 and len(real["browserFingerPrint"]) > 100, "fixture 不像真应答"
+    seen: dict = {}
+
+    def reply(path, body):
+        if path == "/browser/detail":
+            return {"success": True, "data": copy.deepcopy(real)}
+        seen.update(body)
+        return {"success": True, "data": "操作成功"}
+
+    _bit_window(reply).set_viewport(1024, 768)
+
+    missing = sorted(set(real) - set(seen))
+    assert not missing, "回写时漏了这些顶层键（整条替换会把它们弄丢）：%r" % missing[:12]
+    fp_missing = sorted(set(real["browserFingerPrint"]) - set(seen["browserFingerPrint"]))
+    assert not fp_missing, "回写时漏了这些指纹键：%r" % fp_missing[:12]
+    assert seen["browserFingerPrint"]["openWidth"] == 1024
+    assert seen["browserFingerPrint"]["openHeight"] == 768
+    # 值也要原样带回去（不是被清空）—— 代理那几项 + 一个原来就有的、跟尺寸无关的设置
+    assert seen["browserFingerPrint"]["resolution"] == real["browserFingerPrint"]["resolution"]
+    assert seen["proxyMethod"] == real["proxyMethod"] and seen["port"] == real["port"]
+    assert seen["clearCookiesBeforeLaunch"] == real["clearCookiesBeforeLaunch"]
+
+
+# ── Important 5：P6 要覆盖的是「探路途中窗口就死了」那一支（而且那是大概率那支）──
+
+
+def _scripted_deps(rec: Rec, tmp_path, script):
+    """`explore` 按 `script` 依次来：返回一个 Journey，或者抛一个异常。"""
+    calls = {"n": 0}
+
+    def explore(url, goal, budget=None, should_pause=None):
+        rec.explore.append({"url": url})
+        item = script[min(calls["n"], len(script) - 1)]
+        calls["n"] += 1
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def selftest_stub(py_path, ws_url, form_file, site, **kw):
+        rec.selftest.append({"py_path": str(py_path), "ws_url": ws_url, "site": site, **kw})
+        return _pass_report(site)
+
+    return graph.Deps(explore=explore, selftest=selftest_stub, set_viewport=None)
+
+
+def _reopenable_client(rec, tmp_path, script, *, saver=None):
+    saver = saver or InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)
+    deps = _scripted_deps(rec, tmp_path, script)
+    return _client(graph_factory=lambda brief, d: graph.build(checkpointer=saver, deps=deps),
+                   window=StubWindow(), checkpointer=saver)
+
+
+def test_reopen_picks_up_a_run_whose_window_died_during_the_explore(tmp_path):
+    """窗口**探路途中**没了 → 图停在 `explore_unfinished`（那一趟白探了一半）。
+
+    原先的 `reopen` 只认 `no_window`@自测，所以这一支直接 409 ——
+    唯一的出路变成**重新开一个任务**，也就是**整轮重来**，而 P6 明令不许这个。
+
+    修法：停在**探路那一步**的 run 也接得住 —— 重开窗口之后探路**重跑一遍**
+    （页面状态没了，账本必须从头收），但开场白、人说过的话、以及 checkpoint 都还在。
+    """
+    rec = Rec()
+    client = _reopenable_client(rec, tmp_path, [
+        _journey(stop_reason="budget_steps"),      # 第一次：探路没走完
+        _journey(),                                # 重开之后：走完了
+    ])
+    job_id = client.post("/run", json=_brief(
+        tmp_path, allow_skips=["country", "viewport"])).json()["job_id"]
+
+    view = _wait(client, job_id)
+    assert view["status"] == "waiting" and view["gate"]["step"] == "intake"
+    client.post("/job/%s/reply" % job_id, json={"action": "revise", "note": "ZIP 要填真的"})
+    view = _reply_until_done(client, job_id)
+
+    assert view["status"] == "done", view
+    assert view["result"]["end_reason"] == "explore_unfinished", view["result"]
+    assert list(view["result"]["visits"])[-1] == "explore", view["result"]["visits"]
+    assert len(rec.explore) == 1
+
+    r = client.post("/job/%s/reopen" % job_id, json={"ws_url": NEW_WS_URL})
+    assert r.status_code == 200, r.text
+    assert "探路" in r.json()["say"] and ("重" in r.json()["say"] or "再走" in r.json()["say"]), \
+        "得用**人话**说清「探路要从头再走一遍」：%s" % r.json()["say"]
+
+    view = _reply_until_done(client, job_id)
+    assert view["status"] == "done", view
+    assert view["delivered"] is True, view
+    assert len(rec.explore) == 2, "重开之后的探路没有重跑"
+    assert rec.selftest[-1]["ws_url"] == NEW_WS_URL, "自测用的还是旧窗口"
+
+    hints = client.app.state.service._snapshot(job_id).values.get("hints") or []
+    assert any("ZIP 要填真的" in h for h in hints), "重开之后人说过的话丢了：%r" % hints
+
+
+def test_reopen_picks_up_a_job_that_blew_up_during_the_explore(tmp_path):
+    """更糟的那一支：探路**抛异常**（窗口的传输断了 / MCP 门起不来）→ `_advance` 把 job 记成 `failed`。
+
+    那时候 `reopen` 与 `reply` **双双 409** —— 出路只剩「重新开一个任务」，也就是整轮重来。
+    而窗口只活几分钟、一次探路可能跑更久，所以**这一支是大概率那支，不是稀奇的那支**。
+    """
+    rec = Rec()
+    client = _reopenable_client(rec, tmp_path, [
+        RuntimeError("窗口连不上了：connect to 192.168.1.197:61129 failed"),
+        _journey(),
+    ])
+    job_id = client.post("/run", json=_brief(
+        tmp_path, allow_skips=["country", "viewport"])).json()["job_id"]
+    _wait(client, job_id)                                  # 停在 intake 前
+    view = _reply_until_done(client, job_id)               # 回一句 → 探路抛 → failed
+
+    assert view["status"] == "failed", view
+    assert "窗口连不上" in str(view["say"]), view["say"]
+    # ⚠️ 这里最后**落下**的是 intake，不是 explore —— 探路那一步是在**它的身体里**炸的，
+    # 所以它的输出（连同 visits）从来没提交过。`reopen` 的 FAILED 那一支就是照这个形状判的
+    # （「接在最后落下的那一步上，炸掉的是它的下一跳」）。
+    assert list(client.app.state.service._snapshot(job_id).values.get("visits") or [])[-1] == "intake"
+
+    r = client.post("/job/%s/reopen" % job_id, json={"ws_url": NEW_WS_URL})
+    assert r.status_code == 200, "探路炸掉的 job 接不下去 —— 那就只剩「整轮重来」了：%s" % r.text
+
+    view = _reply_until_done(client, job_id)
+    assert view["status"] == "done", view
+    assert view["delivered"] is True, view
+    assert len(rec.explore) == 2
+
+
+def test_reopen_still_refuses_a_job_that_died_somewhere_else(tmp_path):
+    """反向钉子：接得住的是「窗口那一支」，不是「什么都能用重开窗口糊过去」。
+
+    停在 draft 上的、交付过的 —— 一律照旧 409（重开窗口解决不了它们）。
+    """
+    fg = FakeGraph(steps=[_Snap(values={"visits": ["intake", "explore", "draft"]},
+                                next=("draft",), interrupts=(_gate("draft"),))],
+                   raise_on=[2])
+    client = _client(graph_factory=lambda brief, deps: fg)
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, job_id)
+    client.post("/job/%s/reply" % job_id, json={"action": "continue"})
+    view = _wait(client, job_id, until=("failed", "done"))
+    assert view["status"] == "failed", view
+
+    r = client.post("/job/%s/reopen" % job_id, json={"ws_url": NEW_WS_URL})
+    assert r.status_code == 409, r.text
+    assert "探路" in r.json()["detail"], r.json()["detail"]

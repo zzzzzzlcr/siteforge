@@ -62,7 +62,7 @@ from pydantic import BaseModel, Field
 
 from agent import browser_agent, graph, selftest
 from agent.graph import NODES, STEP_SAY
-from agent.state import END_DELIVERED, END_NO_WINDOW
+from agent.state import END_DELIVERED, END_EXPLORE_UNFINISHED, END_NO_WINDOW
 
 __all__ = ["create_app", "app", "BitWindow", "Service", "Checkpointer",
            "QUEUED", "RUNNING", "WAITING", "DONE", "FAILED"]
@@ -85,6 +85,14 @@ WINDOW_LAYER = ("set_viewport", "alive")
 
 #: Bit 的窗口服务（§4.6）。bit.sh 里写死的就是这个端口。
 BIT_API_PORT = 54345
+
+#: `reopen` 接得住的**两步**，以及各自要接在**哪一步**上（= 重跑那一步）：
+#:   探路 ← intake（探路重跑）；自测 ← lint（自测重跑，探路与起草都不重来）
+WINDOW_STEPS = {"explore": "intake", "selftest": "lint"}
+#: 反查：某个「上一步」下面接着的是哪一步（给 `failed` 那一支用）
+_AFTER = {prev: step for step, prev in WINDOW_STEPS.items()}
+#: 「停在那一步」的哪几种结局算**窗口**造成的（只有 DONE 的 job 需要看这个）
+WINDOW_END_REASONS = {"explore": (END_EXPLORE_UNFINISHED,), "selftest": (END_NO_WINDOW,)}
 
 
 # ─────────────────────────────── 窗口层（§4.6）───────────────────────────────
@@ -149,25 +157,28 @@ class BitWindow:
         1. **`/browser/update` 是整条记录更新，不是补丁。** 只发 `{id, browserFingerPrint}`
            会被拒：`{"success":false,"msg":"请选择代理方式"}` —— 也就是说，随手发一小段 JSON
            去改尺寸，**会把代理那几项一起弄丢**（`bit.sh update` 那个残缺包装的同一个坑）。
-           所以这里先 `detail()` 读回整条，只改尺寸，再原样写回去（代理字段一个不动）。
+           所以这里先 `detail()` 读回整条，**只改尺寸、其余一个字节不动地写回去**。
+           真应答有 **126 个顶层键 / 112 个指纹键**（`tests/fixtures/bit_window_detail.json`
+           就是从真 worker 抓的那份）—— 手工挑几个键回写，挑漏的那个就是被悄悄弄丢的设置
+           （比如 `resolution`：它会把重开窗口的宽度卡住）。实测整条回写
+           → `success:true`、回读 126/112 个键一个不少。
         2. **写进去的尺寸要等下次启动才生效。** 实测：`success:true`、回读 `openWidth/Height`
            已经是新值，而**活着的那个窗口纹丝不动**（还是 377x757）。所以这个方法**只写配置**，
            「活窗口到底变没变」由调用方去量（见 `Service._viewport_cb`）——
            只回读配置就报「改好了」，等于把一次空转记成跑过了。
         """
         want = (int(width), int(height))
-        record = self.detail()
-        fp = dict(record.get("browserFingerPrint") or {})
+        body = dict(self.detail())                   # **整条原样带回**（见下面第 1 条）
+        fp = dict(body.get("browserFingerPrint") or {})
         fp["openWidth"], fp["openHeight"] = want
-        body = {"id": self.bit_id, "browserFingerPrint": fp}
-        for key in ("proxyMethod", "proxyType", "host", "port",
-                    "proxyUserName", "proxyPassword", "syncTabs",
-                    "clearCacheFilesBeforeLaunch", "clearCookiesBeforeLaunch"):
-            if record.get(key) is not None:
-                body[key] = record[key]              # 代理那几项一个都不能丢
+        body["browserFingerPrint"] = fp
+        body["id"] = self.bit_id
         out = self._post("/browser/update", body)
-        if isinstance(out, dict) and out.get("success") is False:
-            raise RuntimeError("换窗口大小的请求被拒了：%s" % str(out)[:200])
+        # 只有**明确说成功**才算成功：实测成功是 `{"success":true,…}`、被拒是
+        # `{"success":false,"msg":"请选择代理方式"}` —— 而「没这个键」的应答**什么也没承诺**，
+        # 按「不是 false 就是成功」读，等于把没答应当答应。
+        if not (isinstance(out, dict) and out.get("success") is True):
+            raise RuntimeError("换窗口大小的请求没被确认成功：%s" % str(out)[:200])
 
     def alive(self) -> Optional[bool]:
         """窗口还活着吗。**三态**：True 活 / False 死 / None 问不出来（别拿它当死）。
@@ -265,11 +276,18 @@ class Checkpointer:
         self._saver = saver
         self._url = url or os.environ.get("DATABASE_URL") or None
         self._lock = threading.RLock()
+        self._read_lock = threading.RLock()
+        self._reader = None
         self._conn = None
+        #: 「这是哪种 saver」在**建的那一刻**就定下来，之后不变。
+        #: ⚠️ 不能靠「还没建」（`_saver is None`）去判：第一次真要用之后 `_saver` 就有值了，
+        #: 那样 `/health` 会在一个**状态明明在 Postgres 里**的部署上说「重启就没了」
+        #: —— 而那句话恰好是这套系统最不该说错的一句（R-19）。
+        self._kind = "memory" if saver is not None else ("postgres" if self._url else "memory")
 
     @property
     def kind(self) -> str:
-        return "postgres" if (self._saver is None and self._url) else "memory"
+        return self._kind
 
     def say(self) -> str:
         if self.kind == "postgres":
@@ -284,15 +302,48 @@ class Checkpointer:
         return self._lock
 
     def get(self):
+        """写侧 saver（图跑起来用的那条连接）。"""
         with self._lock:
             if self._saver is not None:
                 return self._saver
             if not self._url:
                 from langgraph.checkpoint.memory import InMemorySaver
                 self._saver = graph.allowlisted(InMemorySaver())
+                self._kind = "memory"
                 return self._saver
             self._saver = self._connect(self._url)
+            self._kind = "postgres"
             return self._saver
+
+    def reader(self):
+        """**读**侧 saver：另开一条连接，专给 `GET /job/{id}` 这类读用。
+
+        为什么要有第二条：一次 `invoke` 可能跑几分钟（真浏览器 + 模型），
+        而它整段都持着写锁（一个 Postgres 连接不能被两个线程同时用）。
+        读要是也走那条连接，Console 的「进展」就会排在一次探路后面 —— 人以为卡死了。
+        """
+        with self._read_lock:
+            if self._reader is not None:
+                return self._reader
+            if self._saver is not None:
+                self._reader = self._saver          # 调用方给的 saver：读也问它
+                return self._reader
+            if not self._url:
+                self._reader = self.get()           # 内存 saver：同一条（没有连接可抢）
+                return self._reader
+            conn = self._connect_conn(self._url)    # 另一条连接（表已经建过）
+            from langgraph.checkpoint.postgres import PostgresSaver
+            self._reader = graph.allowlisted(PostgresSaver(conn))
+            return self._reader
+
+    @property
+    def reader_lock(self) -> threading.RLock:
+        """读侧那把锁（与写侧分开 —— 读不该排在一次 invoke 后面）。"""
+        return self._read_lock
+
+    def _connect_conn(self, url: str):
+        import psycopg
+        return psycopg.connect(url, autocommit=True)
 
     def _connect(self, url: str):
         """建 Postgres saver 并 `setup()`（建表）。
@@ -446,7 +497,18 @@ class Service:
         def cb(width, height):
             self._window.set_viewport(width, height)
             got = self._viewport_probe(ws_url) if ws_url else None
-            if got is not None and tuple(got) != (int(width), int(height)):
+            if got is None:
+                # **量不出来 ≠ 做成了**：没有 cdp / 连不上 / ws_url 不认识时探针给 None，
+                # 而「没量到」被当成「没问题」的话，第 4 遍会被记成**跑过了**，
+                # 于是产物带着「折叠/遮挡/坐标假设验过了」出门 —— 而一个数都没量到。
+                # 抛出去的后果是**对的**那一头：`selftest.run` 把回调抛错记成
+                # 「这一遍没跑」（`selftest.py:475`），不是把整跑杀掉。
+                raise RuntimeError(
+                    "换窗口大小之后**量不出活窗口现在多大**（没有 cdp 二进制 / 连不上 / "
+                    "ws_url 认不出来），所以这一遍扰动没法诚实地说自己做成了。"
+                    "把它当成「没验到」：要么修好这根线（`SITEFORGE_CDP_BIN` / 窗口还活着），"
+                    "要么明确放弃第 4 遍（把 \"viewport\" 写进 `allow_skips`）。")
+            if tuple(got) != (int(width), int(height)):
                 raise RuntimeError(
                     "把窗口换成 %sx%s 了，但**活着的那个窗口**量出来还是 %sx%s —— 这一遍扰动"
                     "等于没做。Bit 的窗口尺寸是**启动时**生效的（实测：写配置回 success、"
@@ -459,20 +521,29 @@ class Service:
     def _probe_graph(self):
         """一个只用来 `get_state()` 的图（不跑节点）—— 服务重启后靠它把 job 读回来。
 
-        ⚠️ 它建在**本服务的** checkpointer 上（不是 `graph_factory` 那个）：一个 job 的图
-        是调用方拼的，而「这个 job 现在什么样」这件事得由一个**确定接在同一份状态上**的
-        东西来回答（R-19：状态住在 saver 里 —— 那就得问同一个 saver）。
+        ⚠️ 它建在**本服务的** checkpointer 的**读连接**上（不是 `graph_factory` 那个、
+        也不是写连接）：一个 job 的图是调用方拼的，而「这个 job 现在什么样」这件事得由一个
+        **确定接在同一份状态上**的东西来回答（R-19：状态住在 saver 里 —— 那就得问同一个 saver）；
+        而**读**这条线不该排在一次 `invoke` 后面（那个可能跑几分钟）。
         """
         if self._probe is None:
-            self._probe = graph.build(checkpointer=self._check.get(), deps=graph.Deps())
+            self._probe = graph.build(checkpointer=self._check.reader(), deps=graph.Deps())
         return self._probe
 
     def _cfg(self, job_id: str) -> dict:
         return {"configurable": {"thread_id": job_id}}
 
     def _snapshot(self, job_id: str):
-        """读这个 job 的状态：**优先问它自己那张图**（它接在哪份 saver 上，它最清楚）。"""
+        """读这个 job 的状态。
+
+        - **服务自己拼的图**（生产，`graph_factory is None`）→ 走**读连接**：
+          读不跟正在跑的那次 `invoke` 抢写锁（那个可能持几分钟）。
+        - **调用方自己拼的图** → 读也问它那张图（它接在哪份 saver 上，它最清楚）。
+        """
         job = self._jobs.get(job_id)
+        if self._graph_factory is None:
+            with self._check.reader_lock:
+                return self._probe_graph().get_state(self._cfg(job_id))
         g = job.graph if (job is not None and job.graph is not None) else self._probe_graph()
         with self._check.lock:
             return g.get_state(self._cfg(job_id))
@@ -721,40 +792,54 @@ class Service:
                                 "报告会把「连不上」说成产物的问题 —— 那是误导。\n"
                                 "重开一个窗口，再从这里接着走（账本和这一步的进展都还在）：\n"
                                 "    POST /job/%s/reopen  {\"ws_url\": \"<新窗口>\"}" % job_id)
+        # ⚠️ 先把 job 从「停住」挪开，**再**交下去。
+        # 不挪的话：`_view` 会从 checkpoint 投影（那个中断还在）→ 响应说「在等人」+
+        # 旧那道闸 → 调用方再回一次话 → 那一句 resume 落到**下一道闸**上 →
+        # **一步在没人看着的情况下跑掉了**（§6.2/D16 的核心承诺）。
+        with job.lock:
+            job.status = RUNNING
+            job.say = "收到你的话，接着跑（下一个要你拿主意的地方会再停下来）。"
         self._submit(job, Command(resume={"action": body.action, "note": body.note}))
         return self._view(job_id)
 
     def reopen(self, job_id: str, body: ReopenRequest) -> dict:
+        """窗口没了 → 换一个新窗口，**从 checkpoint 接着跑**（P6）。
+
+        接得住的是**窗口那一支**，两步：
+        - **自测**（`no_window`）：探路那一段**不重来**（账本在 checkpoint 里）；
+        - **探路**（`explore_unfinished`，或者探路里**炸了**的那个 `failed`）：
+          探路**要从头再走一遍** —— 页面状态没了，账本必须重新收。这一句必须用**人话**
+          说给调用方听（它意味着又一次真窗口 + 模型的钱），不许含糊过去。
+        """
         job = self._jobs.get(job_id) or self._recover(job_id)
         if job is None:
             raise KeyError(job_id)
         view = self._view(job_id)
-        reason = (view.get("result") or {}).get("end_reason")
-        if view["status"] != DONE or reason != END_NO_WINDOW:
+        point = self._resume_point(job_id, view)
+        if point is None:
             raise HTTPException(status_code=409, detail=self._cannot_reopen_say(job_id, view))
         if not (body.ws_url or "").strip():
             raise HTTPException(status_code=400, detail="`ws_url` 是空的 —— 重开窗口要给出新窗口那串。")
-
-        stopped = list((view.get("result") or {}).get("visits") or [""])[-1]
-        if stopped != "selftest":
-            raise HTTPException(status_code=409, detail=(
-                "停的地方不是自测那一步（是「%s」），这个服务**不猜**该怎么接 —— "
-                "请把这次运行交给一个人看。" % STEP_SAY.get(stopped, stopped or "不知道哪一步")))
-
-        # 把新窗口放回状态，并**把那次诚实的停止收掉**（它是上一次的结论，不是这一次的）。
-        # `as_node="lint"`：自测的上一步是 lint，于是图接着跑的正是**自测** ——
-        # 探路（`explore`）与起草都不会重来，账本是从 checkpoint 回来的。
-        patch = {"ws_url": body.ws_url, "end_reason": "", "end_note": ""}
-        if body.entry_url:
-            patch["entry_url"] = body.entry_url
         if body.set_viewport and not (self._window is not None
                                       and hasattr(self._window, "set_viewport")):
             raise HTTPException(status_code=400, detail=(
                 "要接窗口层那根线（`set_viewport`），但这个部署没有窗口层 —— 换不了窗口大小。"
                 "要么把窗口层接上（`BIT_WORKER_IP`/`BIT_ID`），要么重开时别要它"
                 "（那就还是老样子：没人给这根线，图停在自测那一步点名）。"))
+
+        resume_from, step = point
+        # 把新窗口放回状态，并**把上一次那个诚实的停止收掉**（它是上一次的结论，不是这一次的）。
+        # `as_node=<上一步>`：图接着跑的正是**停下来的那一步** ——
+        # 自测接在 lint 上（探路与起草都不重来）、探路接在 intake 上（探路重跑）。
+        patch = {"ws_url": body.ws_url, "end_reason": "", "end_note": ""}
+        if body.entry_url:
+            patch["entry_url"] = body.entry_url
+        if step == "explore":
+            patch["explore_say"] = ""          # 上一趟探路的说法收掉（新的探路会写新的）
+            patch["end_note"] = ""
         with job.lock:
             job.brief.update({"ws_url": body.ws_url})
+            job.brief.pop("_failed_at", None)
             if body.entry_url:
                 job.brief["entry_url"] = body.entry_url
             if body.set_viewport and not job.brief.get("set_viewport"):
@@ -764,11 +849,41 @@ class Service:
                 job.brief["set_viewport"] = True
                 job.graph = self._build_graph(job.brief)
             job.status = RUNNING
-            job.say = "窗口重开了，从上次停下的地方接着跑（探路那一段不重来）。"
+            job.error = None                    # 上一次那个失败不再是这个 job 的现状
+            job.say = ("窗口重开了，探路要从头再走一遍（页面状态没了，账本得重新收）——"
+                       "你之前说的话和开场白都还在。" if step == "explore" else
+                       "窗口重开了，从上次停下的地方接着跑（探路那一段不重来）。")
         with self._check.lock:
-            job.graph.update_state(self._cfg(job_id), patch, as_node="lint")
+            job.graph.update_state(self._cfg(job_id), patch, as_node=resume_from)
         self._submit(job, None)                      # None = 「接着跑」，不是新的输入
         return self._view(job_id)
+
+    def _resume_point(self, job_id: str, view: dict) -> Optional[tuple]:
+        """这个 job 能不能用「重开窗口 + 接着跑」接住？能就回 `(接在哪一步, 要重跑哪一步)`。
+
+        两种「停」，判据不同（这是这一条最容易写错的地方）：
+
+        - **DONE**：图是**在那一步里**停下的 —— 那一步的结论已经落进状态了
+          （`visits[-1]` 就是它）→ 接在它的**上一步**上，于是接着跑的正是它。
+        - **FAILED**：图是**在那一步的下一跳里**炸的（那一步落下了、下一步没有）
+          → 接在**最后落下的那一步**上。窗口在探路途中断开就是这个形状：
+          `visits[-1] == "intake"`，炸掉的是 `explore`。
+
+        两种情况都只认**窗口那一支**（`WINDOW_STEPS` 里那两步）。
+        """
+        values = dict(getattr(self._snapshot(job_id), "values", None) or {})
+        visits = list(values.get("visits") or [])
+        last = str(visits[-1]) if visits else ""
+        failed = view["status"] == FAILED
+        if failed:
+            step = _AFTER.get(last)             # 在「上一步」的下一跳里炸的
+            return (last, step) if step else None
+        if view["status"] != DONE:
+            return None
+        reason = str(values.get("end_reason") or "")
+        if last in WINDOW_STEPS and reason in WINDOW_END_REASONS.get(last, ()):
+            return (WINDOW_STEPS[last], last)
+        return None
 
     # ── 人话 ──────────────────────────────────────────────────────
     def _window_is_gone(self, ws_url) -> bool:
@@ -778,19 +893,27 @@ class Service:
         return self._window.alive() is False
 
     def _cannot_reopen_say(self, job_id: str, view: dict) -> str:
-        if view["status"] != DONE:
-            return ("重开窗口只对「因为窗口没了而停下」的任务有意义 —— "
-                    "这个任务现在是「%s」，不用重开。" % self._status_say(view["status"]))
+        """接不住时说的**人话**：这个任务现在什么形状、以及「重开窗口」接得住的是哪两种。"""
+        can = ("能接住的是**窗口那一支**两种：①自测那一步发现窗口没了（探路不重来）；"
+               "②探路没走完、或者探路里炸了（探路要从头再走一遍）。")
+        if view["status"] in (QUEUED, RUNNING):
+            return ("重开窗口要等这个任务停下来 —— 它现在是「%s」。%s"
+                    % (self._status_say(view["status"]), can))
         result = view.get("result") or {}
         reason = result.get("end_reason")
         if reason == END_DELIVERED:
-            return ("不用重开：这一趟**已经交付**了（产物在 %s）。要再走一遍就另起一个任务。"
-                    % result.get("py_path"))
-        return ("不用重开：这一趟停下来不是因为窗口没了，而是「%s」：\n%s\n"
+            return ("不用重开：这一趟**已经交付**了（产物在 %s）。要再走一遍就另起一个任务。%s"
+                    % (result.get("py_path"), can))
+        where = str(result.get("visits", [""])[-1] if result.get("visits") else "") or ""
+        if view["status"] == FAILED:
+            return ("不用重开：这一趟是**炸**在「%s」那一步的（不是窗口没了）：\n%s\n%s\n"
+                    "重开一个窗口解决不了它 —— 按上面那句话说的办。"
+                    % (STEP_SAY.get(where, where or "不知道哪一步"),
+                       str(view.get("say") or "")[:400], can))
+        return ("不用重开：这一趟停下来不是因为窗口没了，而是「%s」：\n%s\n%s\n"
                 "重开一个窗口解决不了它 —— 按上面那句话说的办。"
-                % (STEP_SAY.get(str(result.get("visits", [""])[-1] if result.get("visits") else ""),
-                                reason or "没说清"),
-                   str(view.get("say") or "")[:500]))
+                % (STEP_SAY.get(where, reason or "没说清"),
+                   str(view.get("say") or "")[:400], can))
 
     @staticmethod
     def _problems_say(problems: list) -> str:

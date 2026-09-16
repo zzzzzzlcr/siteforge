@@ -42,7 +42,7 @@ from langgraph.types import Command
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import browser_agent, graph, selftest  # noqa: E402
+from agent import browser_agent, graph, selftest, service  # noqa: E402
 from test_service import (Rec, _brief, _deps, _journey, _pass_report,  # noqa: E402
                           _real_factory, _reply_until_done, _wait, _client)
 
@@ -170,3 +170,46 @@ def test_the_service_survives_a_restart_on_postgres(tmp_path):
     again = third.get("/job/%s" % job_id).json()
     assert again["delivered"] is True, again
     assert again["result"]["end_reason"] == "delivered"
+
+
+def test_reads_go_through_a_second_connection_so_progress_does_not_wait_for_a_run():
+    """生产形状（`graph_factory=None`）：**读走第二条连接**。
+
+    判据两条：
+    ① 写锁被占着（模拟一次 `invoke` 正在跑）时，读**照样回得来** ——
+       不排在那次可能跑几分钟的 invoke 后面；
+    ② 那条读连接看到的是**同一份状态**（不是另开了一个空库）。
+
+    这是「重要 2」的第二半：光把回话的状态挪开还不够 —— 如果 `GET /job/{id}` 要排在
+    一次探路后面几分钟，Console 那边看上去和卡死没区别。
+    """
+    import threading
+    import uuid as _uuid
+    from fastapi.testclient import TestClient
+
+    app = service.create_app(checkpointer_url=PG_URL)          # graph_factory=None = 生产形状
+    svc = app.state.service
+    thread = "pg-read-%s" % _uuid.uuid4().hex[:8]
+
+    g = graph.build(checkpointer=svc._check.get(), deps=_deps(Rec(), pathlib.Path("/tmp")))
+    g.invoke({"url": URL, "goal": "走通", "success_text": "Thank you",
+              "ws_url": "ws://window/1", "form_file": "/tmp/form.json",
+              "allow_skips": ["country", "viewport"],
+              "out_dir": "/tmp/sf-pg-test/forms/sites"},
+             {"configurable": {"thread_id": thread}})
+
+    got: dict = {}
+
+    def read():
+        got["values"] = dict(svc._snapshot(thread).values)
+
+    with svc._check.lock:                       # ← 写连接被占着（一次 invoke 的全过程）
+        t = threading.Thread(target=read, daemon=True)
+        t.start()
+        t.join(timeout=15)
+    assert not t.is_alive(), "读卡在写锁后面了 —— 它会一直排到那次 invoke 跑完"
+    assert got["values"].get("url") == URL, "读连接看到的不是同一份状态：%r" % got.get("values")
+
+    # 而 /health 那边也得接着说「postgres」（重要 1：建完之后不许翻脸）
+    body = TestClient(app).get("/health").json()
+    assert body["checkpointer"] == "postgres", body
