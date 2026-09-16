@@ -1,10 +1,18 @@
 package internal
 
 import (
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/chromedp/cdproto/page"
 )
 
 // 行为验证：observe 在真页面上的四档覆盖（Task 3）。
@@ -28,9 +36,9 @@ import (
 // 没浏览器时 Skip（沿用 shadow_integration_test.go 的 shadowTestEndpoint）。
 //
 // fixture 由 httptest 自带服务（C30：不得依赖外部 mock-server，如 localhost:8080）。
-// 跨源 iframe 那一档（ObserveAll 合并）按 C1 移到 Task 4 —— 本文件**不得**出现
-// ObserveAll，否则引用未定义的方法会让整个 internal 包编不过。
-
+// 跨源 iframe 那一档（ObserveAll 合并）按 C1 从 Task 3 移到 Task 4 ——
+// 见文件末尾 TestObserveCrossOriginFrameMerge：它引用 ObserveAll，Task 3 期间
+// 留着会让整个 internal 包编不过。
 func serveFixtures(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.FileServer(http.Dir("testdata")))
@@ -176,4 +184,253 @@ func TestObserveShadowRegionNotAllBody(t *testing.T) {
 	if len(regions) == 1 && regions["body"] {
 		t.Error("region 全部退化成 body —— parentElement 出不了 shadow 边界（陷阱 ③）")
 	}
+}
+
+// ─────────────────────────── 跨源 iframe（Task 4 / ObserveAll） ───────────────────────────
+
+// hardcodedFixtureOrigin 是 testdata/outer.html 里 iframe 写死的绝对 URL 前缀
+// （8892 = R3 探针那台 `python3 -m http.server` 的端口）。
+const hardcodedFixtureOrigin = "http://localhost:8892"
+
+// serveCrossOriginFixtures 起一台 fixture 服务器，并在**服务层**把 outer 页里那个
+// 写死的 iframe 端口换成本次 httptest 真正用的端口。
+//
+// 为什么必须换（C3/C39，两位实现者独立踩过）：httptest 是**随机端口**，照搬 fixture
+// 的话子帧会去连一个不存在的 localhost:8892 → 子帧连不上 → 测试以「**没有子帧**」
+// 的形式**假失败**（不是报错，最难查）。
+//
+// 出路选的是「服务层改写 src 的端口」，不是「测试里另写一个 outer 页」：
+// 页面结构仍然一字不差地来自 fixture（h1 / iframe id / 尺寸），唯一的合成物是
+// origin 里的端口号，而且改写**当场自证** —— 换不上就立刻报错，不进「没有子帧」那条
+// 最难查的路径。fixture 将来若改了端口，这里会以一条明确的错误说话，而不是静默退化。
+//
+// 跨源关系照旧：外层页走 srv.URL（httptest 绑 127.0.0.1），子帧走 localhost。
+// 主机名不同 ⇒ 既不同源也不同 site ⇒ 真正的 OOPIF（实测见 task-4-report.md 第 1 节）。
+func serveCrossOriginFixtures(t *testing.T) *httptest.Server {
+	t.Helper()
+
+	raw, err := os.ReadFile("testdata/outer.html")
+	if err != nil {
+		t.Fatalf("读 testdata/outer.html 失败: %v", err)
+	}
+	if !strings.Contains(string(raw), hardcodedFixtureOrigin) {
+		t.Fatalf("testdata/outer.html 里找不到 %s —— 端口改写的锚点没了（fixture 被改过？），"+
+			"照现在的写法子帧会连不上，而症状是「没有子帧」的假失败", hardcodedFixtureOrigin)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/outer.html" {
+			http.FileServer(http.Dir("testdata")).ServeHTTP(w, r)
+			return
+		}
+		_, port, err := net.SplitHostPort(r.Host)
+		if err != nil {
+			t.Errorf("从 Host %q 取端口失败: %v", r.Host, err)
+			http.Error(w, "bad host", http.StatusInternalServerError)
+			return
+		}
+		want := "http://localhost:" + port
+		out := strings.ReplaceAll(string(raw), hardcodedFixtureOrigin, want)
+		if !strings.Contains(out, want+"/inner.html") {
+			// 静默退化的后果就是「没有子帧」假失败 —— 这里当场喊出来
+			t.Errorf("outer 页的 iframe src 没被换成本次端口（想换成 %s）", want+"/inner.html")
+			http.Error(w, "rewrite failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.WriteString(w, out)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// waitForChildFrame 轮询到子帧出现在帧树里为止；超时就把帧树打出来再 Fatal。
+//
+// 这是**前置条件**，不是断言：子帧没起来的话，后面每条断言都会以「合并里没有子帧
+// 的东西」的形式红 —— 那正是 C3/C39 说的假失败形态。所以这里失败必须**当场说清**
+// 是「子帧没起来」，而不同一个看不出所以然的红。
+//
+// 轮询用 GetFrameTreeWithEvents（和 ObserveAll 同一来源）：裸 GetFrameTree 在
+// 跨源（OOPIF）子帧上**永远**返回空（2026-09-16 实测，本机 Chrome 150 的
+// page.getFrameTree 不报 OOPIF 子帧），拿它轮询等于必然超时。
+func waitForChildFrame(t *testing.T, c *Client, timeout time.Duration) *page.FrameTree {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		ft, err := c.GetFrameTreeWithEvents(200 * time.Millisecond)
+		if err != nil {
+			t.Fatalf("取帧树失败: %v", err)
+		}
+		if len(ft.ChildFrames) > 0 {
+			return ft
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s 内主帧下一个子帧都没有 —— 子帧没加载起来（最经典的假失败形态）。帧树:\n%s",
+				timeout, describeFrameTree(ft))
+		}
+	}
+}
+
+// describeFrameTree 把帧树摊成多行文本，失败时贴进错误信息里用。
+func describeFrameTree(ft *page.FrameTree) string {
+	var b strings.Builder
+	var walk func(ft *page.FrameTree, ind string)
+	walk = func(ft *page.FrameTree, ind string) {
+		if ft == nil || ft.Frame == nil {
+			fmt.Fprintf(&b, "%s<nil>\n", ind)
+			return
+		}
+		fmt.Fprintf(&b, "%s%s name=%q url=%s\n", ind, ft.Frame.ID, ft.Frame.Name, ft.Frame.URL)
+		for _, ch := range ft.ChildFrames {
+			walk(ch, ind+"  ")
+		}
+	}
+	walk(ft, "")
+	return b.String()
+}
+
+// findAction / findField 按 selector 精确找一条，找不到返回零值 + 报错文案。
+func findAction(m *PageModel, sel string) (Action, bool) {
+	for _, a := range m.Actions {
+		if a.Selector == sel {
+			return a, true
+		}
+	}
+	return Action{}, false
+}
+
+func findField(m *PageModel, sel string) (Field, bool) {
+	for _, f := range m.Fields {
+		if f.Selector == sel {
+			return f, true
+		}
+	}
+	return Field{}, false
+}
+
+// TestObserveCrossOriginFrameMerge —— 跨源 iframe 那一档（Task 4 的交付验收）。
+//
+// 为什么必须有这一条：同源策略决定**单次 eval 看不见跨源帧的内容**。本测试的证据链
+// 就是拿这件事做对照的：
+//
+//	① 主帧单帧 Observe("") —— **看不见**子帧里的 #fn / #submit（反证）
+//	② 帧树里确实有一个**真的是跨源**的子帧（contentDocument === null 自证）
+//	③ ObserveAll 合并后 —— 子帧的内容**在**结果里，且每条都带着指向该子帧的 frame_path
+//
+// 只有 ③ 没有 ①② 的话，一个「同源的 fixture」也能让它绿 —— 那测的就不是跨源。
+func TestObserveCrossOriginFrameMerge(t *testing.T) {
+	srv := serveCrossOriginFixtures(t)
+
+	host, port := shadowTestEndpoint()
+	c, err := NewClient(host, port)
+	if err != nil {
+		t.Skipf("Chrome 不可用: %v", err) // 环境缺失 —— 全文件**只有这一处**允许 skip
+	}
+	t.Cleanup(c.Disconnect)
+
+	outerURL := srv.URL + "/outer.html"
+	// 导航失败不能 skip：url 是本测试刚起的 fixture server，连不上是缺陷不是环境缺失
+	if _, err := c.Navigate(outerURL, ""); err != nil {
+		t.Fatalf("导航到自带 fixture server 失败: %v", err)
+	}
+
+	// ── 前置条件：子帧真的在帧树里（不是盲睡固定时间）──
+	ft := waitForChildFrame(t, c, 10*time.Second)
+	childID := string(ft.ChildFrames[0].Frame.ID)
+	t.Logf("子帧 frameID=%s url=%s", childID, ft.ChildFrames[0].Frame.URL)
+
+	// ── ② 自证跨源：同源时 contentDocument 拿得到，跨源必然是 null ──
+	var probe string
+	if err := c.EvalInFrame("", `(function(){var f=document.getElementById('ci');`+
+		`if(!f)return 'no-iframe';return f.contentDocument===null?'cross-origin':'same-origin';})()`, &probe); err != nil {
+		t.Fatalf("主帧 eval 失败: %v", err)
+	}
+	if probe != "cross-origin" {
+		t.Fatalf("iframe 不是跨源的（contentDocument 探测 = %q）—— 这条测试就测不到跨源合并", probe)
+	}
+
+	// ── ① 反证：单帧 Observe 看不见子帧里的东西 —— 这正是 ObserveAll 存在的理由 ──
+	main, err := c.Observe("")
+	if err != nil {
+		t.Fatalf("主帧 observe 失败: %v", err)
+	}
+	if _, ok := findField(main, "#fn"); ok {
+		t.Errorf("主帧单帧 observe 里出现了子帧的字段 #fn —— 那就不需要 ObserveAll 了，先查这条测试是不是在测同源")
+	}
+	if _, ok := findAction(main, "#submit"); ok {
+		t.Errorf("主帧单帧 observe 里出现了子帧的动作 #submit")
+	}
+	t.Logf("主帧单帧观测：fields=%d actions=%d text=%q（outer.html 只有 h1 + iframe，本就该是空的）",
+		len(main.Fields), len(main.Actions), main.PageText)
+
+	// ── ③ 合并 ──
+	merged, err := c.ObserveAll()
+	if err != nil {
+		t.Fatalf("ObserveAll 失败: %v", err)
+	}
+
+	// URL 取先序遍历里第一个取到的帧（= 主帧）
+	if merged.URL != outerURL {
+		t.Errorf("merged.URL = %q，应为外层页 %q（URL 取第一帧）", merged.URL, outerURL)
+	}
+
+	wantChildPath := []string{mainFramePath, childID}
+
+	// 子帧的字段：inner.html 的表单在**两层 shadow root** 里，能取到说明
+	// 逐帧 Observe 那一趟连穿透一起在子帧里生效了
+	fn, ok := findField(merged, "#fn")
+	if !ok {
+		t.Fatalf("合并结果里没有子帧的字段 #fn —— 跨帧合并没生效。fields=%d", len(merged.Fields))
+	}
+	if !slices.Equal(fn.FramePath, wantChildPath) {
+		t.Errorf("#fn 的 frame_path = %v，应为 %v（agent 靠它决定动作发给哪一帧）", fn.FramePath, wantChildPath)
+	}
+	if fn.ShadowDepth < 2 {
+		t.Errorf("#fn 的 shadow_depth = %d，应 >= 2（inner.html 把表单放在两层 shadow 里）", fn.ShadowDepth)
+	}
+
+	// 子帧的动作：同样必须带帧路径
+	submit, ok := findAction(merged, "#submit")
+	if !ok {
+		t.Fatalf("合并结果里没有子帧的动作 #submit。actions=%d", len(merged.Actions))
+	}
+	if !slices.Equal(submit.FramePath, wantChildPath) {
+		t.Errorf("#submit 的 frame_path = %v，应为 %v", submit.FramePath, wantChildPath)
+	}
+
+	// 子帧正文（也来自 shadow 里）必须进了 page_text
+	if !strings.Contains(merged.PageText, "Get your free quote") {
+		t.Errorf("合并后的 page_text 里没有子帧正文: %q", merged.PageText)
+	}
+	// 主帧正文也要在（合并是并集，不是覆盖）
+	if !strings.Contains(merged.PageText, "跨源 iframe 外层") {
+		t.Errorf("合并后的 page_text 里没有主帧正文: %q", merged.PageText)
+	}
+
+	// 所有带子帧路径的条目，路径必须一致地指向那个子帧（漏盖 / 串路径都会在这里露头）
+	for _, a := range merged.Actions {
+		if len(a.FramePath) > 1 && !slices.Equal(a.FramePath, wantChildPath) {
+			t.Errorf("动作 %s 的 frame_path = %v，应为 %v", a.Selector, a.FramePath, wantChildPath)
+		}
+	}
+	for _, f := range merged.Fields {
+		if len(f.FramePath) > 1 && !slices.Equal(f.FramePath, wantChildPath) {
+			t.Errorf("字段 %s 的 frame_path = %v，应为 %v", f.Selector, f.FramePath, wantChildPath)
+		}
+	}
+
+	// 子帧的 shadow root 数并进来了（主帧 0 个，所以 >= 2 只可能来自子帧）
+	if merged.ShadowRoots < 2 {
+		t.Errorf("merged.ShadowRoots = %d，应 >= 2（inner.html 的两层 shadow root 没并进来）", merged.ShadowRoots)
+	}
+
+	// 正常路径上不该有「某帧取不到」的痕迹：有的话说明有帧静默失败了，
+	// 而不是「少的那几条本来就没有」
+	for _, o := range merged.Obstructions {
+		if o.Kind == frameErrorKind {
+			t.Errorf("有取不到的帧被记进 obstruction: selector=%s text=%s", o.Selector, o.Text)
+		}
+	}
+	t.Logf("合并后：fields=%d actions=%d shadow_roots=%d page_text=%d字",
+		len(merged.Fields), len(merged.Actions), merged.ShadowRoots, len([]rune(merged.PageText)))
 }
