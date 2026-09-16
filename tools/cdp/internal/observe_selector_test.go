@@ -59,11 +59,11 @@ func fieldByPlaceholder(t *testing.T, m *PageModel, ph string) Field {
 func selectorFixture(t *testing.T) *PageModel {
 	t.Helper()
 	m := navigateAndObserve(t, serveFixtures(t).URL+"/selector.html")
-	// 自证有效：fixture 现在有 11 个按钮 + 3 个 input = 14 个可动作元素（实测 14）。
+	// 自证有效：fixture 现有 19 个按钮 + 6 个 input = 25 个可动作元素（实测 25）。
 	// 阈值取 10 是**地板**不是等值：少一两个元素说明不了什么，掉到个位数就是观测
 	// 退化了，下面按文本取的断言会以 Fatal 说话，但这里先说清是**观测**的问题。
 	if len(m.Actions) < 10 {
-		t.Fatalf("selector.html 只观测到 %d 个可动作元素（fixture 有 11 按钮 + 3 输入，实测 14）—— 观测退化了", len(m.Actions))
+		t.Fatalf("selector.html 只观测到 %d 个可动作元素（fixture 有 19 按钮 + 6 输入，实测 25）—— 观测退化了", len(m.Actions))
 	}
 	// 原始输出留档：报告里的「逐条实测结果」直接取这里。
 	for _, a := range m.Actions {
@@ -320,13 +320,14 @@ func assertNoRandomToken(t *testing.T, c randomTokenCase) {
 	}
 }
 
-// RAND 的两种形态（observe.go:147）：
+// RAND 的三种形态（定义与理由见 observe.go 的 RAND 上方注释）：
 //
-//	形态① 被 -/_ 或串首尾夹住的 **8 位以上** hex 片段
-//	形态② 整个串 = 字母 + **6 位以上**数字
+//	形态① 被 -/_ 或串首尾夹住的 **≥8 位 hex** 片段
+//	形态② 同上边界内的「可选字母前缀 + **≥6 位数字**」
+//	形态③ 同上边界内、**≥5 位**、字母与数字**来回交替 ≥2 次**
 //
-// 这一条跑**三种落点里 RAND 咬得住的那几档** —— 它们是现在就能过的部分，
-// 在这里钉住，将来谁把 RAND 或 candidates() 的过滤改坏，这里先红。
+// 这一条跑**四个落点里 RAND 咬得住的那几档** —— 在这里钉住，将来谁把 RAND 或
+// candidates() 的过滤改坏，这里先红。
 func TestObserveSelectorRandomTokensNotPreferred(t *testing.T) {
 	m := selectorFixture(t)
 
@@ -335,6 +336,15 @@ func TestObserveSelectorRandomTokensNotPreferred(t *testing.T) {
 			name: "8 位 hex class（形态①）", elemText: "E hash8", token: "css-1a2b3c4d",
 			act:     actionByText(t, m, "E hash8"),
 			whyRand: "`-` 后 8 位纯 hex，正好落在形态①的门槛上（≥8 位）",
+		},
+		{
+			// 这一例是**形态①的专用守卫**：`abcdef` 全是字母、`1234` 全是数字，
+			// 字母→数字只翻**一次**，所以 ③（要交替 ≥2 次）与 ②（要 ≥6 位数字）都够不着，
+			// 只有 ① 认得出。没有它就删得掉①而套件全绿 —— ①会变成没人守的孤儿
+			// （修复轮 1 加③之后，①原先独有的用例都被③接管了）。
+			name: "只翻转一次的 10 位 hex class（**只有**形态①认得出）", elemText: "N hex10 form1-only", token: "css-abcdef1234",
+			act:     actionByText(t, m, "N hex10 form1-only"),
+			whyRand: "abcdef 全字母 + 1234 全数字：字母→数字只翻一次，③ 的「交替 ≥2 次」与 ② 的「≥6 位数字」都不成立",
 		},
 		{
 			name: "12 位 hex id（形态①）", elemText: "J random id", token: "a1b2c3d4e5f6",
@@ -448,4 +458,53 @@ func TestObserveSelectorLegitTokensNotRejected(t *testing.T) {
 			"step2", f.Selector)
 	}
 	t.Logf("反向边界：7 个正常类名 + 1 个正常 name 全部仍被采用（selector=button.<class> / input[name=] ）")
+}
+
+// ── name 落点的**双向**边界（协调者审查 ①）────────────────────────────
+//
+// 为什么单独一条：`name` 是**修复轮 1 改动的那处落点**，而首轮只钉了单向
+// （「随机 name 必须丢」）。③ 在 name 上新危及的是 **L→D→L 家族** ——
+// `step2a` / `address1a` / `opt2b` 这类「步骤+序号+子项」的人写惯例，
+// 那一家被误抓时套件里**原本没有任何东西会说话**。两个方向都钉住（7e-1 / 7e-2）：
+//
+//	7e-1 `name="a1b2c3"`（随机，③ 形态）→ **必须丢**，且退化成结构路径
+//	7e-2 `name="step2a"`（人写的子字段名）→ **接受被丢**，但必须**确实退化成结构路径**
+//
+// 7e-2 不是「红断言」，也不是「假装没事」：控制器裁定**接受 name 也适用 ③**
+// （一条规则、一个偏置，不给 name 开特例 —— 按落点分叉会让同一个 token 有不同命运，
+// 那正是本仓反复踩的「两份判据」），理由是退化的代价**轻微**（仍能选中元素，
+// 只是不再抗结构变化）。取舍写在 observe.go 的 name 那一行旁边，这里把**代价**
+// 钉成可观测的事实。若将来有人收窄了 ③ 让 `step2a` 不再被丢，这条会红，
+// 而它的错误信息会告诉那个人：**连带改掉那处注释**，别让代码注释与本测试各说一套。
+func TestObserveSelectorNameLandingBothWays(t *testing.T) {
+	m := selectorFixture(t)
+
+	// 方向一：随机 name 必须丢，且退化成结构路径（不是变成别的随机串、也不是把元素丢了）
+	const randName = "a1b2c3"
+	requireTokenCarriedBy(t, "N random name 3", randName)
+	rf := fieldByPlaceholder(t, m, "N random name 3")
+	if strings.Contains(rf.Selector, randName) {
+		t.Errorf("随机 name %q 仍在首选里（selector=%q，stability=%q）—— name 落点的 RAND 过滤没生效",
+			randName, rf.Selector, rf.Stability)
+	}
+	if !strings.HasPrefix(rf.Selector, "body:nth-of-type(1) > input:nth-of-type(") {
+		t.Errorf("随机 name %q 被滤掉后应退化成结构路径，实际 %q", randName, rf.Selector)
+	}
+
+	// 方向二：人写的子字段名 —— ③ 会抓走它。断言「确实被抓走而且退化得干净」，
+	// 让代价始终可观测；而不是让它悄悄发生、也没人知道规则边界在哪。
+	const subName = "step2a"
+	requireTokenCarriedBy(t, "N subfield name", subName)
+	sf := fieldByPlaceholder(t, m, "N subfield name")
+	if strings.Contains(sf.Selector, subName) {
+		t.Errorf("子字段名 %q 没被 ③ 抓走（selector=%q）—— 若这是**有意**收窄了 ③，"+
+			"请同步改掉 observe.go 里 name 那一行的取舍注释（「接受 ③ 也适用于 name」），"+
+			"并连带更新本测试的期望：别让注释和测试各说一套", subName, sf.Selector)
+	}
+	if !strings.HasPrefix(sf.Selector, "body:nth-of-type(1) > input:nth-of-type(") {
+		t.Errorf("子字段名 %q 被 ③ 抓走后应退化成结构路径（退化本身是良性代价），实际 %q",
+			subName, sf.Selector)
+	}
+	t.Logf("name 双向：随机 %q → %q ；子字段 %q → %q（③ 的已知代价，控制器裁定接受）",
+		randName, rf.Selector, subName, sf.Selector)
 }

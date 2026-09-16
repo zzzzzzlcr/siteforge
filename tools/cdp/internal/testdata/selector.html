@@ -24,8 +24,9 @@
          （emotion 的 hash 是 murmur2 → toString(36)，通常 6~7 位。
           ⚠️ 这句「6~7 位」是本仓的既有知识，**没有在真站上核实过** ——
           核实它就是规格 R5 的活；能核实的是另一半：brief 把 `css-1x2y3z4`
-         当成随机 hash 的字面例子，而 RAND 不认它）
-         brief 的字面例子，实测**没被 RAND 滤掉** → 见 README 的 ⚠️ 与 task-5-report.md -->
+         当成随机 hash 的字面例子）
+         brief 的字面例子。修复轮 1 **之前**它没被 RAND 滤掉、直接当上首选选择器
+         （button.css-1x2y3z4、medium）；修复轮 1 加了形态③之后被滤掉、退化成结构路径。 -->
 <button class="css-1x2y3z4">D hash7</button>
 
 <!-- 2b. 8 位纯 hex hash —— RAND 的 `[0-9a-f]{8,}` 正好咬得住的那一档 -->
@@ -78,10 +79,12 @@
      被去重滤掉 → **alternates 恒为空**。见报告「alternates 的结构性空洞」一节 -->
 <button id="pure-id">L pure id</button>
 
-<!-- ── 7. 随机 token 的三个落点（id / data-* / name）────────────────────
-     RAND = /(^|[-_])[0-9a-f]{8,}($|[-_])|^[a-z]*\d{6,}$/i ，即
-       形态① 被 -/_ 或串首尾夹住的 8 位以上 hex 片段
-       形态② 整个串 = 字母 + 6 位以上数字 -->
+<!-- ── 7. 随机 token 的落点（id / data-* / name）──────────────────────
+     RAND 现为**三形态**（修复轮 1 加了③，定义与理由见 observe.go 的 RAND 上方注释）：
+       形态① 被 -/_ 或串首尾夹住的 ≥8 位 hex 片段
+       形态② 同上边界内的「可选字母前缀 + ≥6 位数字」
+       形态③ 同上边界内、≥5 位、字母与数字**来回交替 ≥2 次**
+     四个落点（id / name / data-* / class）**全部**过 RAND。 -->
 
 <!-- 7a. 随机 id（形态①：串首尾夹住的 12 位 hex）—— id 这一路 RAND 是过的 -->
 <button id="a1b2c3d4e5f6">J random id</button>
@@ -89,7 +92,25 @@
 <!-- 7b. 随机 data-testid（形态②：字母 + 10 位数字）—— data-* 这一路 RAND 也是过的 -->
 <button data-testid="x1234567890">K random tid</button>
 
-<!-- 7c. 随机 name（形态①：`_` 夹住的 12 位 hex）—— name 这一路**没有** RAND -->
+<!-- 7c. 随机 name（形态①：`_` 夹住的 12 位 hex）—— name 这一路在**修复轮 1 之前没过 RAND**，
+         是四处里唯一的漏网；修复轮 1 补齐后它退化成结构路径 -->
 <input name="sid_9f8e7d6c5b4a" type="text" placeholder="K random name">
+
+<!-- 7d. 只翻转一次的 hex（`abcdef` 全是字母、`1234` 全是数字，字母→数字只翻一次）
+         —— 这个形态**只有形态①认得出**：③ 要「来回交替 ≥2 次」，② 要 ≥6 位数字。
+         它的存在是为了**把形态①单独隔出来**：没有它，删掉①套件照样全绿
+         （①原先独有的用例都被③接管了），①就成了没人守的孤儿代码。 -->
+<button class="css-abcdef1234">N hex10 form1-only</button>
+
+<!-- 7e. ③ 在 name 落点上的两个方向（协调者审查 ①：name 是这轮改动的落点，
+         双向都得钉住）。取舍与理由写在 observe.go 的 name 那一行旁边 -->
+
+<!-- 7e-1. 随机 name（形态③：字母数字交替）—— **必须丢** -->
+<input name="a1b2c3" type="text" placeholder="N random name 3">
+
+<!-- 7e-2. 人写的子字段名（`step2a` = 步骤2的第a个子字段）—— ③ 会把它也抓走。
+         这是**已知且被接受的代价**：断言它确实退化成结构路径，而不是假装它没发生。
+         真站上 `address1a` / `opt2b` 这一家会同样退化 → 记进残留清单，R5 校准。 -->
+<input name="step2a" type="text" placeholder="N subfield name">
 
 </body></html>

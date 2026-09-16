@@ -163,8 +163,14 @@ func observeJS() string {
   // 双向都被 observe_selector_test.go 钉住（正向「该抓的抓到」+ 反向「不该抓的别抓」）。
   //
   // 已知遗漏（留给 R5 用真站样本校准，别当成"已完备"）：
-  //   全字母 hash（styled-components 的 sc-bdVaJa）与只翻转一次的 hash（css-abcdefg1）
-  //   仍认不出 —— 前者没有数字可认，后者要放宽「交替 ≥2 次」就会开始误伤 section1 那一家。
+  //   a) 全字母 hash（styled-components 的 sc-bdVaJa）—— 没有数字可认，三形态都够不着。
+  //      要认得引前缀表（css- / sc- / jss …），那是站点知识，应由真站样本得出。
+  //   b) **≤4 字符的 hash 段**（css-a1b2）—— ③ 有一个 ≥5 位的长度地板（防 md5x 这类
+  //      短词误伤），4 字符的段整个漏网。短 hash 的构建配置（CSS-modules 的 4~5 位 hash）
+  //      会落在这一格；要收得先把「短到什么程度还算类名」在真站上量出来。
+  //   c) 只翻转一次的 hash（css-abcdefg1）—— 被 ③ 的「交替 ≥2 次」挡在门外（那是
+  //      为了不误伤 step1/section1 一家的代价）；其中 hex 且 ≥8 位的形态由①兜住
+  //      （fixture 的 N hex10 form1-only = css-abcdef1234 专门守①这一条）。
   //   （注意本文件是 Go 的裸字符串字面量：注释里**不能出现反引号**。）
   var RAND = /(^|[-_])[0-9a-f]{8,}($|[-_])|(^|[-_])[a-z]*\d{6,}($|[-_])|(^|[-_])(?=[a-z0-9]{5,}($|[-_]))[a-z0-9]*([a-z][0-9]+[a-z]|[0-9][a-z]+[0-9])[a-z0-9]*($|[-_])/i;
   function pathSel(el) {
@@ -185,6 +191,17 @@ func observeJS() string {
     // name 也要过 RAND（修复轮 1）：它是四个落点里**唯一**原先没过的一道 ——
     // 随机 name（如 sid_9f8e7d6c5b4a，RAND 形态①本来就认得）会直接当上首选、
     // 且判据里 [name= 落进 high 分支 → 判据明写 high 须「不含随机 hash」。
+    //
+    // ⚠️ 这里有一个**刻意的取舍**，写在这儿免得下一个人以为是漏了：
+    //   RAND 形态③（字母数字交替）对 class 是「捡便宜」—— class 由框架生成，hash 常见；
+    //   对 name 却是「收益小、代价稍大」—— name 是人写的，hash 罕见，而人写的子字段名
+    //   （step2a / address1a / opt2b 这类「步骤+序号+子项」惯例）正好落进 ③ 的
+    //   「字母→数字→字母」形态，会被一起抓走、退化成位置路径（medium）。
+    //   为什么不给 name 开特例（比如只让它过①②）：**一条规则、一个偏置**比按落点
+    //   分叉更好维护 —— 分叉意味着同一个 token 在不同落点有不同命运，那种「两份判据」
+    //   正是本仓反复踩的坑；而且退化的代价是**轻微**的（回退到结构路径，仍能选中元素，
+    //   只是不再抗结构变化）。控制器（Task 5 审查）裁定：接受 name 也适用 ③。
+    //   代价已量化留档：fixture 的 "N subfield name"(name=step2a) 就是断言它确实退化了。
     if (el.name && !RAND.test(el.name)) out.push(el.tagName.toLowerCase() + '[name="' + el.name + '"]');
     ['data-testid', 'data-test', 'data-id', 'data-value'].forEach(function (a) {
       var v = el.getAttribute && el.getAttribute(a);

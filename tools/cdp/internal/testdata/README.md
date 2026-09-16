@@ -34,17 +34,33 @@
 | `J random id` / `K random tid` | 随机 id / 随机 data-* | 被 RAND 滤掉（`id` / `data-*` 两路都过了 RAND） |
 | `K random name` (`sid_9f8e7d6c5b4a`) | 随机 name | 被 RAND 滤掉（修复轮 1 之前**没走 RAND**、直接当首选且 `high`） |
 | `M btn-primary` … `M text-2xl`（7 个） + `M name step2` | **正常类名/name**（反向边界） | 仍被采用（`button.<class>` / `input[name=]`）—— 放宽 RAND 时最容易被静默误伤的那一家 |
+| `N hex10 form1-only` (`css-abcdef1234`) | 只翻转一次的 10 位 hex | 被 RAND **形态①** 滤掉。**它是形态①的专用守卫**：②要 ≥6 位数字、③要交替 ≥2 次，都够不着它 —— 删掉①这条就红（实测过：删①只红这一条） |
+| `N random name 3` (`a1b2c3`) | 随机 name（形态③） | 被 RAND 滤掉，退化成结构路径 —— name 落点的**正向**边界 |
+| `N subfield name` (`step2a`) | 人写的子字段名（`address1a`/`opt2b` 一家） | ⚠️ **被 ③ 一起抓走**、退化成结构路径 —— **已知且被接受的代价**（控制器裁定：一条规则、一个偏置，不给 name 开特例）。断言把这条代价钉成可观测事实 |
 
-### 修复轮 1（RAND 放宽）：两个方向都必须钉住
+### 修复轮 1（RAND 放宽）与修复轮 2（把边界补成双向）
 
 Task 5 首轮报出的真发现是 **RAND 够不着 `css-1x2y3z4` 这类 6~7 位 base36 hash**，
 且 `name` 是四个落点里唯一没过 RAND 的。控制器裁定「修实现，不改测试」，修法是
 给 RAND 加**形态③**（字母与数字来回交替 ≥2 次的片段）+ 给 `name` 补 `!RAND.test`。
 
 ⚠️ 但放宽 RAND 有**反向**风险：开始静默拒绝正常类名（`btn-primary` / `col-md-6` /
-`step1` 这类），那会让 stability 全面变差且**不报任何错**。所以 fixture 里有上表最后
-一行的七个类名 + 一个 name，专门守这一半 —— `TestObserveSelectorLegitTokensNotRejected`。
-**改 RAND 时两条测试都要看**：一条管「该抓的抓到」，一条管「不该抓的别抓」。
+`step1` 这类），那会让 stability 全面变差且**不报任何错**。所以 fixture 里有上表
+`M …` 那一行（7 个类名 + 1 个 name）专门守这一半 —— `TestObserveSelectorLegitTokensNotRejected`。
+**改 RAND 时两条都要看**：一条管「该抓的抓到」，一条管「不该抓的别抓」。
+
+修复轮 2 补齐了两处缺口（审查指出）：**`name` 落点原先只钉了单向** ——
+而 name 正是这一轮改动的地方，③ 新危及的 `step2a`/`address1a` 一家被误抓时
+套件不会说话；现在由 `TestObserveSelectorNameLandingBothWays` 双向钉住。
+另给**形态①**补了专用用例（`css-abcdef1234`）：在此之前①独有的用例都被③接管了，
+**删掉①套件照样全绿**（孤儿代码）。
+
+**已知残留**（写在此处以免被当成已完备，真站校准 = R5）：
+全字母 hash（`sc-bdVaJa`）、**≤4 字符的 hash 段**（`css-a1b2`，被③的 ≥5 位长度地板挡住）、
+只翻转一次的非 hex hash（`css-abcdefg1`）。
+
+RAND 的波及面**超出**这两个已测落点：`pathSel` 的祖先 id 检查、选项组 scope、
+遮挡物/关闭按钮选择器**三处都没有断言**（本轮未做，已记录）。
 
 原委、逐条实测与变异验证见
 `.superpowers/sdd/2026-09-16-tool-layer-observe/task-5-report.md`（该目录 gitignore，
