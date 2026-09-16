@@ -49,6 +49,12 @@
 - **没被提到过的步骤是 `not_reached`** —— 「没提到」本身**不算**终态。
 - **`【第 99 步】` / 没标记 → 位置不动**：号不在计划里就**什么都不动**（**不猜**）。
 
+⚠️ **一处已知的读法歧义（复审 2026-09-17 记录在案，行为不改）**：
+「**首报**就是第 5 步」（前面从没报过位置）这一趟，设计注 §2.4 那句话**字面上**
+更像「前面几步算跳过去了」；这里记 `not_reached`，依据是同一节那句
+「如实记『不知道』，**不猜**」（说不出「跳过去了」是因为**没有前一个位置可比**）。
+复审判这个读法站得住、且下游零差异 —— **要改就改这一条**，别顺手改 `ledger()` 的行为。
+
 ## 编号认得两条路：**行首** 与 **行内成串**（2026-09-17 裁定）
 
 | 形状 | 例子 | 认不认 |
@@ -109,10 +115,12 @@ _STEP_RE = re.compile(r"^\s*(\d+)\s*[.、)．]\s*(\S.*)$")
 #: **行内**编号项：`N.` / `N、` / `N)`（同一行**成串 ≥2 项**才当清单 —— 见模块 docstring）。
 #: `[.．](?!\d)` 是裁定点名的边界：`.` / `．` 后面**紧跟数字的不算分隔符**
 #: （`评分 4.5 星` 里的 `4.` 是小数，不是第 4 步）；`、` 与 `)` 不受这条限制。
+#: 开头的 `\(?` 收「两边都带括号」的 `(1) …` —— 它属于**标记**，不进正文，
+#: 所以前一项的正文尾巴上不会拖一个 `(`（`(1) 点 A (2) 点 B` → `点 A` / `点 B`）。
 #: ⚠️ 这里**不需要**再挡「从长数字中间起头」（`2026` 里的 `026`）：
 #: 只要某一项能在内层数字起头匹配上，同一个分隔符在**数字串的开头**必然也匹配得上，
 #: 而 `finditer` 从左往右扫，先撞上的就是串首那个 —— 内层那一位永远轮不到。
-_INLINE_ITEM_RE = re.compile(r"(\d+)\s*(?:[.．](?!\d)|[、)])")
+_INLINE_ITEM_RE = re.compile(r"\(?(\d+)\s*(?:[.．](?!\d)|[、)])")
 
 #: 位置标记：模型每轮开头报的 `【第 k 步】`（约定，不是新工具）。
 #: 全角方括号与全角数字都收 —— 模型经常混着打。
@@ -189,13 +197,13 @@ def _steps_in_line(line: str) -> List[Step]:
     return [Step(n=int(m.group(1)), text=m.group(2))]
 
 
-def mark(content: str, *, plan: Optional[Plan] = None) -> Optional[int]:
+def mark(content: str, *, plan: Plan) -> Optional[int]:
     """从模型那一轮的话里读 `【第 k 步】`；**读不出就给 `None`，不猜**（§2.4）。
 
-    给了 `plan` 就顺带校验这个号**在不在计划里** —— 不存在同样是 `None`
-    （Task 3 的「`【第 99 步】` → 位置不动」就落在这一条上）。
-    不给 `plan` 时只能如实读号（号在不在要拿清单才判得了）；
-    范围那一层由 `ledger()` 兜住 —— 不在计划里的号**什么都不动**。
+    ⚠️ **`plan` 是必填的**（修复轮 2 的裁定，取代简报里那个 `mark(content: str)`）：
+    简报那条判据要求「认出个**不存在**的号 → `None`」，
+    而「号不存在」只有拿清单才判得出来 —— 留个默认值等于让那条判据落空
+    （`mark("【第 99 步】")` 会老老实实给出 `99`）。
     """
     if not isinstance(content, str):
         return None
@@ -206,9 +214,10 @@ def mark(content: str, *, plan: Optional[Plan] = None) -> Optional[int]:
         k = int(m.group(1).translate(_FULLWIDTH_DIGITS))
     except ValueError:                  # 理论上到不了（正则已经限制了字符集）
         return None
-    if k < 1:                           # 「第 0 步」不是一个位置
-        return None
-    if plan is not None and k not in {s.n for s in plan.steps}:
+    # 位置就是**清单上的号**：在清单里才算数，不在就 `None`（不猜）。
+    # ⚠️ 这里**不另设「第 0 步不算」那种门槛**（修复轮 2 删掉的）：描述可以从 0 开始编号
+    # （`Step.n` 不重编），那时 `【第 0 步】` 就是个正当位置；判它算不算的**只有清单**。
+    if k not in {s.n for s in plan.steps}:
         return None
     return k
 
@@ -222,9 +231,6 @@ def ledger(plan: Plan, rounds: List[dict]) -> List[dict]:
         {"n": s.n, "text": s.text, "state": "not_reached", "why": _NOT_REACHED_WHY}
         for s in plan.steps
     ]
-    if not entries:
-        return entries
-
     # 号 → 下标。同一个号出现两次时按**第一次**算（清单不重编，描述可能重号）。
     by_n: dict = {}
     for i, s in enumerate(plan.steps):
@@ -242,24 +248,21 @@ def ledger(plan: Plan, rounds: List[dict]) -> List[dict]:
             continue                    # 【第 99 步】这种 → 位置**不动**（不猜）
         statement = r.get("contradiction")
 
-        if idx > pos:
+        if idx > pos and pos >= 0:
             # 往前跳：中间那几个是被**绕开**的（分支），不是矛盾 —— 只记账（§2.3.1）。
             # ⚠️ 只有**前面报过位置**时才敢说「跳过去了」；一开始就报第 5 步，
             #    前面那几步是「没报到」，如实记 not_reached（§2.4：不猜）。
-            if pos >= 0:
-                for i in range(pos + 1, idx):
-                    if entries[i]["state"] == "not_reached":
-                        entries[i]["state"] = "jumped_over"
-                        entries[i]["why"] = (
-                            f"从第 {plan.steps[pos].n} 步跳到第 {k} 步，"
-                            f"这一步没被报到（这一趟绕开了它）"
-                        )
-            _settle(entries[idx], round_no, k, statement)
-        else:
-            # 往回跳也照记（§2.4）：中间那几步是**走到过的**，不许被记成 jumped_over。
-            # 已经记成 contradicted 的不许被这一轮降级成 done。
-            if statement or entries[idx]["state"] != "contradicted":
-                _settle(entries[idx], round_no, k, statement)
+            for i in range(pos + 1, idx):
+                if entries[i]["state"] == "not_reached":
+                    entries[i]["state"] = "jumped_over"
+                    entries[i]["why"] = (
+                        f"从第 {plan.steps[pos].n} 步跳到第 {k} 步，"
+                        f"这一步没被报到（这一趟绕开了它）"
+                    )
+        # 往回跳也照记（§2.4）：中间那几步是**走到过的**，不许被记成 jumped_over。
+        # 「报过的矛盾不许被降级」那条规矩只写在 `_settle` **一处**
+        # （修复轮 2：原先只有往回跳那支守着它，往前跳那支照样能把 contradicted 抹成 done）。
+        _settle(entries[idx], round_no, k, statement)
         pos = idx
 
     return entries
@@ -270,7 +273,9 @@ def _settle(entry: dict, round_no: int, k: int, statement) -> None:
     if statement:
         entry["state"] = "contradicted"
         entry["why"] = str(statement)   # 模型的话**原样**记着，改写就不是事实了
-    else:
+    elif entry["state"] != "contradicted":
+        # ⚠️ 报过的矛盾是**事实**（「描述第 3 步与页面不符」），
+        # 后面某一轮再报一次位置**不许**把它抹成 done —— 不然后汇总就漏了它。
         entry["state"] = "done"
         entry["why"] = f"第 {round_no} 轮报到第 {k} 步"
 
@@ -288,8 +293,9 @@ def from_states(src: str) -> Plan:
     except Exception:                   # 坏 py 什么样都可能 —— 一律当「解析不了」
         return Plan(raw=raw, source="", steps=[])
 
+    # 找不到 `STATES` 就 `value` 一直是 `None` → 下面取不出步骤 → 自然落进
+    # 「没解析出步骤」那一档（**不需要**再写一个 `if not found` 的早退分支）。
     value = None
-    found = False
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             targets = node.targets
@@ -305,10 +311,7 @@ def from_states(src: str) -> Plan:
             value = ast.literal_eval(node.value)
         except Exception:
             return Plan(raw=raw, source="", steps=[])
-        found = True
         break
-    if not found:
-        return Plan(raw=raw, source="", steps=[])
 
     steps: List[Step] = []
     for state in value if isinstance(value, (list, tuple)) else []:

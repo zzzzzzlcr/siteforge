@@ -142,14 +142,24 @@ def test_source_is_kept_when_there_is_a_plan():
     "评分 4.5 星",             # ← 裁定点名的反例：`.` 后面跟数字**不算**分隔符
     "版本 1.2 的页面",
     "见 3.4 节",
-    "1) 这种是编号行",          # ← 反面：这个**该**被认出来，下面单独断言
+    "引导: 1.只此一条",         # ← 行内**单独一项**不算（要成串才认）
 ])
 def test_prose_numbers_are_not_mistaken_for_steps(prose):
-    if prose.startswith("1)"):
-        assert [s.n for s in plan_mod.parse(prose + "\n2.点 B").steps] == [1, 2]
-        return
-    plan = plan_mod.parse(prose)
-    assert plan.steps == [], f"这行是散文/约束，不是步骤：{prose!r}"
+    """⚠️ **每条反例前面都垫两个真步骤**（修复轮 2 补的）。
+
+    原先每条都是**单独一行**送进去的 —— 那样就算它被误认成步骤，
+    总数也凑不够 `MIN_STEPS`，**门槛替你兜住，测试恒绿而判据根本没被钉住**
+    （复审点名的「装饰性用例」，就是这一类）。垫两个之后，
+    那一行只要多吐一个步骤，下面的断言立刻红。
+    """
+    plan = plan_mod.parse("1.点 A\n2.点 B\n" + prose)
+    assert [(s.n, s.text) for s in plan.steps] == [(1, "点 A"), (2, "点 B")]
+
+
+def test_a_number_at_line_start_is_still_a_step():
+    """反面：`1) …` / `1. …` 这种**该**被认出来（它们确实是编号行）。"""
+    plan = plan_mod.parse("1) 点 A\n2) 点 B")
+    assert [(s.n, s.text) for s in plan.steps] == [(1, "点 A"), (2, "点 B")]
 
 
 def test_round_count_line_is_not_step_thirty():
@@ -209,8 +219,33 @@ def test_a_run_may_start_the_line_too():
 
 
 def test_a_dot_followed_by_a_digit_is_not_a_separator():
-    """裁定：边界要严 —— `评分 4.5 星` 里的 `4.` **不许**被当成第 4 步。"""
-    assert plan_mod.parse("评分 4.5 星\n版本 1.2").steps == []
+    """裁定：边界要严 —— `评分 4.5 星` 里的 `4.` **不许**被当成第 4 步。
+
+    ⚠️ **一行里必须放两个小数**（修复轮 2 补的）：只放一个的话它永远凑不成
+    「成串」，成串规则替你兜住 —— 那条测试是装饰性的，恒绿而判据没被钉住。
+    两个小数同处一行就够成串了，这才试得出小数点守卫真的在挡。
+    （旁边再垫两个真步骤，免得又被 `MIN_STEPS` 兜住。）
+    """
+    plan = plan_mod.parse("1.点 A\n2.点 B\n评分 4.5 星，版本 1.2 页")
+    assert [(s.n, s.text) for s in plan.steps] == [(1, "点 A"), (2, "点 B")]
+
+
+def test_inline_items_keep_their_numbers_as_written():
+    """行内那条路也**不重编**：号是几就是几（与行首那条路同一条规矩）。"""
+    plan = plan_mod.parse("引导: 3.点 A 5.点 B 8.点 C")
+    assert [(s.n, s.text) for s in plan.steps] == [(3, "点 A"), (5, "点 B"), (8, "点 C")]
+
+
+def test_a_step_with_no_text_is_not_a_step():
+    """光一个 `1.` 后面什么都没有，不是一步（空正文不进清单）—— 两条路都一样。"""
+    assert plan_mod.parse("1. 2.点 B").steps == []      # 行内：那一项是空的
+    assert plan_mod.parse("1.\n2.\n").steps == []       # 行首：两项都是空的
+
+
+def test_parenthesised_inline_items_leave_the_bracket_out_of_the_text():
+    """`(1) … (2) …`：`\\(?` 属于**标记**，正文一字不改，也不许拖个 `(` 在尾巴上。"""
+    plan = plan_mod.parse("引导: (1) 点 A (2) 点 B")
+    assert [(s.n, s.text) for s in plan.steps] == [(1, "点 A"), (2, "点 B")]
 
 
 def test_a_decimal_inside_a_step_text_survives():
@@ -242,43 +277,80 @@ def test_step_has_exactly_two_fields():
 
 # ── mark()：位置标记只读事实，不猜 ───────────────────────────────────
 def test_mark_reads_the_marker_at_the_head_of_a_round():
-    assert plan_mod.mark("【第 3 步】这一页是问卷，我点了 Next") == 3
+    assert plan_mod.mark("【第 3 步】这一页是问卷，我点了 Next", plan=_plan(5)) == 3
+
+
+def test_mark_accepts_the_half_width_brackets_too():
+    """模型经常把 `【】` 打成 `[]` —— 两种都认（这是本模块自己的扩展，测试钉住它）。"""
+    assert plan_mod.mark("[第 3 步] 我点了 Next", plan=_plan(5)) == 3
+
+
+def test_mark_reads_the_full_width_digits_too():
+    """`【第 ３ 步】`（全角数字）也认。"""
+    assert plan_mod.mark("【第 ３ 步】我点了 Next", plan=_plan(5)) == 3
 
 
 def test_mark_returns_none_when_the_round_did_not_say():
-    assert plan_mod.mark("我点了 Next，页面变了") is None
-    assert plan_mod.mark("") is None
-
-
-def test_mark_returns_none_for_a_number_that_cannot_be_a_position():
-    """「第 0 步」不是一个位置 —— 认不出就给 None，**不猜**。"""
-    assert plan_mod.mark("【第 0 步】") is None
+    assert plan_mod.mark("我点了 Next，页面变了", plan=_plan(5)) is None
+    assert plan_mod.mark("", plan=_plan(5)) is None
+    assert plan_mod.mark(None, plan=_plan(5)) is None      # 这一轮根本没有话
 
 
 def test_mark_returns_none_for_a_step_the_plan_does_not_have():
     plan = _plan(5)
     assert plan_mod.mark("【第 99 步】", plan=plan) is None
+    assert plan_mod.mark("【第 0 步】", plan=plan) is None   # 这份清单从 1 起，没有第 0 步
     assert plan_mod.mark("【第 3 步】", plan=plan) == 3
 
 
-def test_mark_without_a_plan_only_reads_the_number():
-    """号在不在计划里要拿 `plan` 才判得了 —— 单独读时只如实读号。
+def test_mark_follows_the_plans_own_numbering():
+    """清单从 0 起编号时，`【第 0 步】` 就是个**正当位置**（`Step.n` 不重编）。
 
-    范围这一层由 `ledger()` 兜住（不在计划里的号**什么都不动**）。
+    修复轮 2：原先 `mark()` 里有一条「`k < 1` 一律给 None」的门槛 ——
+    它不只是多余的（号不在清单里本来就会给 None），还会**跟「描述可以从 0 开始」打架**
+    （0 在清单里却被它一票否决）。位置的合法性**只由清单说了算**。
     """
-    assert plan_mod.mark("【第 99 步】") == 99
+    plan = plan_mod.parse("0.零\n1.一\n2.二")
+    assert [s.n for s in plan.steps] == [0, 1, 2]
+    assert plan_mod.mark("【第 0 步】", plan=plan) == 0
+    assert plan_mod.mark("【第 2 步】", plan=plan) == 2
+    assert plan_mod.mark("【第 9 步】", plan=plan) is None
+
+
+def test_mark_requires_a_plan():
+    """修复轮 2 的裁定：`plan` **必填**，简报那个 `mark(content: str)` 被取代。
+
+    不给清单就判不出「这个号**不存在**」，而简报的判据正是
+    「认出个不存在的号 → `None`」—— 留个默认值等于让那条判据落空。
+    """
+    with pytest.raises(TypeError):
+        plan_mod.mark("【第 3 步】")
 
 
 def test_mark_takes_the_first_marker_when_a_round_mentions_two():
-    assert plan_mod.mark("【第 2 步】描述说点『有没有浴缸』，页面上是『屋顶类型』") == 2
+    """一轮里提到两个号（比如「已经到第 5 步了，但第 2 步对不上」）→ 取**头一个**。
+
+    ⚠️ 修复轮 2：这条原先的正文里**只有一个标记**，名字说「mentions two」而正文没有 ——
+    名不副实，也就钉不住「取头一个」这条判据。
+    """
+    content = "【第 2 步】描述说点『有没有浴缸』，页面上是『屋顶类型』，现在已经到【第 5 步】了"
+    assert plan_mod.mark(content, plan=_plan(5)) == 2
 
 
 # ── ledger()：每一步一个终态 ─────────────────────────────────────────
-def test_ledger_has_one_entry_per_step_in_plan_order():
-    plan = _plan(5)
+@pytest.mark.parametrize("n", [0, 2, 5])
+def test_ledger_has_one_entry_per_step_in_plan_order(n):
+    """B2 的契约：`len(ledger) == len(plan.steps)`，**一条不多一条不少**。
+
+    `n=0` 是这条契约的边界（0 == 0）—— 原先它是单独一条测试，
+    但它钉的是**同一件事**，合并到这里以后它才跟着这个契约一起承重。
+    （没有 `n=1`：一个步骤的输入被 `MIN_STEPS` 判成「没有计划」，
+    `parse` 到不了那个形状 —— 不测走不到的态。）
+    """
+    plan = _plan(n)
     led = plan_mod.ledger(plan, [])
-    assert len(led) == len(plan.steps) == 5
-    assert [e["n"] for e in led] == [1, 2, 3, 4, 5]
+    assert len(led) == len(plan.steps) == n
+    assert [e["n"] for e in led] == [s.n for s in plan.steps]
     assert [e["text"] for e in led] == [s.text for s in plan.steps]   # 原话照搬
 
 
@@ -288,10 +360,12 @@ def test_ledger_entry_has_the_four_fields_task_3_reads():
 
 
 def test_every_state_is_one_of_the_four():
+    """四种终态各自出现在**该出现的那一步**上（不是「取值是这四个之一」那种空断言）。"""
     plan = _plan(5)
     rounds = [{"mark": 2}, {"mark": 5}, {"mark": 3, "contradiction": "描述说点 A，页面上是 B"}]
     led = plan_mod.ledger(plan, rounds)
-    assert {e["state"] for e in led} <= set(plan_mod.OUTCOMES)
+    assert [e["state"] for e in led] == [
+        "not_reached", "done", "contradicted", "jumped_over", "done"]
     assert set(plan_mod.OUTCOMES) == {"done", "jumped_over", "contradicted", "not_reached"}
 
 
@@ -332,6 +406,8 @@ def test_a_first_mark_at_a_later_step_leaves_the_earlier_ones_not_reached():
     [{"mark": None}],
     [{}],
     [{"mark": "三步"}],
+    [{"mark": True}],           # `True` 在 Python 里等于 1 —— 不许被当成「第 1 步」
+    [{"mark": [1]}],            # 读不出形状的东西不许把账本炸掉
     [{"mark": 99}, {"mark": None}],
 ])
 def test_marks_that_are_unknown_or_absent_move_nothing(rounds):
@@ -354,9 +430,34 @@ def test_a_contradicted_step_is_not_downgraded_when_the_walk_goes_on():
 
 
 def test_backward_jump_is_recorded_as_a_fact_not_as_a_skip():
-    """往回跳也照记（§2.4）；中间那几步是**走到过的**，不许被记成 `jumped_over`。"""
-    led = plan_mod.ledger(_plan(4), [{"mark": 3}, {"mark": 2}])
-    assert [e["state"] for e in led] == ["not_reached", "done", "done", "not_reached"]
+    """往回跳也照记（§2.4）；中间那几步是**走到过的**，不许被记成 `jumped_over`。
+
+    ⚠️ 退**不止一步**才试得出这条（修复轮 2）：退一步时中间是空的，
+    「不许记成 jumped_over」那半句根本没被执行到。
+    """
+    led = plan_mod.ledger(_plan(5), [{"mark": 2}, {"mark": 5}, {"mark": 3}])
+    assert [e["state"] for e in led] == [
+        "not_reached", "done", "done", "jumped_over", "done"]
+
+
+def test_a_contradiction_on_the_way_back_is_recorded_too():
+    """往回跳那一轮报了矛盾，照样记 `contradicted`（那条路也得有交代）。"""
+    led = plan_mod.ledger(_plan(4), [{"mark": 3}, {"mark": 2, "contradiction": "对不上"}])
+    assert led[1]["state"] == "contradicted"
+    assert "对不上" in led[1]["why"]
+
+
+def test_a_contradiction_is_never_erased_by_a_later_round():
+    """报过的矛盾是**事实**，后面某一轮再报一次位置不许把它抹成 `done`。
+
+    ⚠️ 修复轮 2 改出来的：原先**只有往回跳那支**守着这条规矩，
+    往前跳那支照样能把 `contradicted` 抹掉 —— 两处不一致，而且汇总时会漏掉那个矛盾。
+    现在规矩写在 `_settle` 一处，这条用例盯的就是它。
+    """
+    led = plan_mod.ledger(_plan(4), [
+        {"mark": 2, "contradiction": "对不上"}, {"mark": 1}, {"mark": 2}])
+    assert led[1]["state"] == "contradicted"
+    assert "对不上" in led[1]["why"]
 
 
 def test_why_is_always_a_sentence():
@@ -367,8 +468,6 @@ def test_why_is_always_a_sentence():
         assert isinstance(entry["why"], str) and entry["why"]
 
 
-def test_ledger_of_a_plan_with_no_steps_is_empty():
-    assert plan_mod.ledger(plan_mod.parse("走到报价页就行。"), [{"mark": 1}]) == []
 
 
 # ── from_states()：旧 py 的 STATES → Plan（可选口子，§2.3）────────────
@@ -512,7 +611,10 @@ def test_blinkist_fixture_constraints_are_not_steps():
     assert not any("浏览" in t for t in texts)
     assert not any("成功条件" in t for t in texts)
     assert 30 not in numbers                    # `轮次: 30` 不是第 30 步
-    assert 2 not in texts                       # `浏览: 2` 的值没变成一步正文
+    # ⚠️ 修复轮 2：这里原来是 `assert 2 not in texts` —— `int` 对 `list[str]`，
+    # **恒真**（`2 not in ["2","3"]` 也是 True），是一条看起来在钉、其实什么都没钉的断言。
+    # 换成同样有判别力的写法：`浏览: 2` 的值真要是被读成一步，正文就会是字符串 `"2"`。
+    assert "2" not in texts
     assert numbers == [1, 2, 3, 4]
 
 
