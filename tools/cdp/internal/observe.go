@@ -23,6 +23,42 @@ type PageModel struct {
 	Diagnostics []Diagnostic `json:"diagnostics"`
 }
 
+// normalizeNilLists 把**空列表**从 `null` 掰成 `[]`，并返回同一个模型。
+//
+// 为什么必须统一（2026-09-16 Task 6 修复轮 1，控制器裁定）：
+// 同一份 PageModel 里，「空列表」原本有**两种形状** ——
+//
+//	JS 来的（actions/fields/option_groups/obstructions 解出来是 []) + alternates /
+//	nearby_text / frame_path   → `[]`
+//	Go 侧构造的（diagnostics，以及合并后没有元素的那些切片）→ nil → **`null`**
+//
+// py 侧 `for d in model["diagnostics"]` 会 TypeError —— 而这是**运行阶段唯一的接口**，
+// 且正好在最需要它的时候炸：selector 全挂 → 重新 observe → 读 diagnostics。
+//
+// 两条路都要走一遍：Observe（单帧）与 ObserveAll（合并；空列表在那里**恰恰是常态** ——
+// `append(nil)` 一个元素都没加就还是 nil，实测 base.html 的 option_groups 就是这样变 null 的）。
+func normalizeNilLists(m *PageModel) *PageModel {
+	if m == nil {
+		return nil
+	}
+	if m.Actions == nil {
+		m.Actions = []Action{}
+	}
+	if m.Fields == nil {
+		m.Fields = []Field{}
+	}
+	if m.OptionGroups == nil {
+		m.OptionGroups = []OptionGroup{}
+	}
+	if m.Obstructions == nil {
+		m.Obstructions = []Obstruction{}
+	}
+	if m.Diagnostics == nil {
+		m.Diagnostics = []Diagnostic{}
+	}
+	return m
+}
+
 // Diagnostic 是一条「这里我没看清」的记录。
 //
 // FramePath 指向出问题的那一帧（主帧是 ["main"]），agent/Console 顺着能查是哪一帧。
@@ -366,5 +402,7 @@ func (c *Client) Observe(frameID string) (*PageModel, error) {
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		return nil, fmt.Errorf("observe 契约解析失败: %w\n原始: %.300s", err, raw)
 	}
-	return &m, nil
+	// 空列表一律编成 []（见 normalizeNilLists）。单帧这条路必须自己走一遍：
+	// JS 不产出 diagnostics，不归一化的话它编出来就是 null。
+	return normalizeNilLists(&m), nil
 }

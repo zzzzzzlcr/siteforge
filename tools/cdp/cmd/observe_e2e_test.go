@@ -89,7 +89,7 @@ func newTestEnv() (*testEnv, error) {
 	}
 	e.bin, e.tempDirs = bin, append(e.tempDirs, binDir)
 
-	e.srv = httptest.NewServer(http.FileServer(http.Dir(filepath.Join("..", "internal", "testdata"))))
+	e.srv = newFixtureServer()
 	e.fixture = e.srv.URL
 
 	port, err := freePort()
@@ -201,6 +201,29 @@ func buildBinary() (string, string, error) {
 		return "", "", fmt.Errorf("go build 失败: %w\n%s", err, stderr.String())
 	}
 	return bin, dir, nil
+}
+
+// ---- fixture 服务 ----
+
+// newFixtureServer 提供两样东西：仓库里的 internal/testdata（Task 3/4/5 用的同一批）
+// **外加**一张本测试自己造的**空页**（`/__empty.html`）。
+//
+// 为什么要那张空页：`null` vs `[]` 这个毛病**只在空列表上现形** ——
+// base.html / outer_same.html 里五类列表几乎都有元素，拿它们测等于空转。
+// 也不借 `outer.html`（iframe 指向死端口 8892）那张：它依赖「此刻没人监听 8892」，
+// 是个会随时间变质的夹具。这张空页是本测试自己的资产，与别人无关。
+//
+// 服务由 testEnv 持有、TestMain 关闭 —— **不能**挂 t.Cleanup：三条测试共用一个服务，
+// 第一条测完就关掉的话，后面两条会连不上。
+func newFixtureServer() *httptest.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/__empty.html", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.WriteString(w, `<!doctype html><html><head><meta charset="utf-8"><title>R3 empty</title></head>`+
+			`<body><p>这一页没有可动作元素、表单字段、选项组，也没有遮挡物</p></body></html>`)
+	})
+	mux.Handle("/", http.FileServer(http.Dir(filepath.Join("..", "internal", "testdata"))))
+	return httptest.NewServer(mux)
 }
 
 // ---- 私有浏览器 ----
@@ -418,13 +441,13 @@ func TestObserveCommandEndToEnd(t *testing.T) {
 	if s := string(raw["actions"]); len(s) == 0 || s[0] != '[' {
 		t.Errorf("actions 不是 JSON 数组: %.80s", s)
 	}
-	// ③ 类型正确：空切片在 Go 里编码成 **null**（不是 []，见报告「自查发现 ①」），
-	// 两种都放行 —— 那是 internal 的编码选择，不是 CLI 能决定的；但**不允许**
-	// 第三种形状（对象、字符串），那说明字段被换掉了。
-	for _, k := range []string{"diagnostics", "obstructions", "fields", "option_groups"} {
+	// ③ 类型正确：五个列表**一律**是 JSON 数组。空列表必须是 `[]`，
+	// **不许**是 `null`（Task 6 修复轮 1 收紧的：py 侧 `for d in model["diagnostics"]`
+	// 撞上 null 就 TypeError，而这是运行阶段唯一的接口）。
+	for _, k := range []string{"actions", "fields", "option_groups", "obstructions", "diagnostics"} {
 		s := string(raw[k])
-		if len(s) > 0 && s[0] != '[' && s != "null" {
-			t.Errorf("%s 既不是数组也不是 null: %.80s", k, s)
+		if len(s) == 0 || s[0] != '[' {
+			t.Errorf("%s 不是 JSON 数组（空列表必须是 []，不是 null）: %.80s", k, s)
 		}
 	}
 	var m internal.PageModel
@@ -565,8 +588,131 @@ func TestObserveCommandMergesChildFrames(t *testing.T) {
 		t.Errorf("option_groups[0].options = %v, want 2 个选项", m.OptionGroups[0].Options)
 	}
 
-	t.Logf("退出码=0；actions=%d fields=%d shadow_roots=%d 子帧=%s\n前 3 行输出:\n%s",
-		len(m.Actions), len(m.Fields), m.ShadowRoots, childFrameID, firstLines(out, 3))
+	// 单帧模式（--frame-id）走的是**另一条路** —— `Observe` 而不是 `ObserveAll`。
+	// 空列表归一化两条路都要覆盖（单帧那条约 `diagnostics` 曾经恒为 null），
+	// 所以这里拿刚取到的子帧 ID 再观测一次。
+	//
+	// ⚠️ 这里**刻意不断言** frame_path：单帧输出里每条动作的 frame_path 是
+	// observeJS **写死的** `['main']`（internal/observe.go:282），而这一帧其实是子帧 ——
+	// 那是本任务报出去的**另一条**契约问题（报告 7-③），本轮不修。
+	// 断言它等于把错的行为钉死，所以只断言"总量对得上 + 五个列表都是数组"。
+	outSingle, errOutSingle, codeSingle := e.observe(t, "--frame-id", childFrameID)
+	if codeSingle != 0 {
+		t.Fatalf("单帧 observe 退出码 = %d\nstderr: %s", codeSingle, errOutSingle)
+	}
+	var rawSingle map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(outSingle), &rawSingle); err != nil {
+		t.Fatalf("单帧输出不是合法 JSON: %v\n%.300s", err, outSingle)
+	}
+	for _, k := range []string{"actions", "fields", "option_groups", "obstructions", "diagnostics"} {
+		if s := string(rawSingle[k]); len(s) == 0 || s[0] != '[' {
+			t.Errorf("单帧输出 %s 不是 JSON 数组（空列表必须是 []）: %.80s", k, s)
+		}
+	}
+	var single internal.PageModel
+	if err := json.Unmarshal([]byte(outSingle), &single); err != nil {
+		t.Fatalf("单帧输出按 internal.PageModel 解不动: %v", err)
+	}
+	if single.URL != e.fixture+"/inner.html" {
+		t.Errorf("单帧 url = %q, want …/inner.html —— --frame-id 指的不是那一帧", single.URL)
+	}
+	if len(single.Actions) != 6 || len(single.Fields) != 3 {
+		t.Errorf("单帧 actions/fields = %d/%d, want 6/3（与整页模式里那一帧的内容一致）",
+			len(single.Actions), len(single.Fields))
+	}
+	if len(single.Diagnostics) != 0 {
+		t.Errorf("单帧 diagnostics 应为空（这一帧取得到），实际 %d 条", len(single.Diagnostics))
+	}
+
+	t.Logf("退出码=0；actions=%d fields=%d shadow_roots=%d 子帧=%s\n单帧：actions=%d fields=%d url=%s\n前 3 行输出:\n%s",
+		len(m.Actions), len(m.Fields), m.ShadowRoots, childFrameID,
+		len(single.Actions), len(single.Fields), single.URL, firstLines(out, 3))
+}
+
+// TestObserveCommandEmptyListsAreArrays 是「空列表必须是 `[]`、不许是 `null`」的守门测试
+// （Task 6 修复轮 1：控制器裁定**修实现**并**收紧这条测试**）。
+//
+// 为什么单开一条、为什么用一张自造的空页：缺陷**只在空列表上现形**。
+// 这一页五类列表**全空**，一条断言同时钉住 ObserveAll 的合并路径 ——
+// 那里 `merged := &PageModel{}` 起手，某类一个元素都没并进来时 `append` 不改变 nil，
+// 于是编成 `null`（实测 base.html 的 option_groups 正是这么变 null 的）。
+func TestObserveCommandEmptyListsAreArrays(t *testing.T) {
+	e := env(t)
+	fixtureURL := e.fixture + "/__empty.html"
+	e.navigate(t, fixtureURL)
+
+	out, errOut, code := e.observe(t)
+	if code != 0 {
+		t.Fatalf("退出码 = %d, want 0\nstderr: %s", code, errOut)
+	}
+	if !json.Valid([]byte(out)) {
+		t.Fatalf("stdout 不是合法 JSON:\n%.400s", out)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		t.Fatalf("解析成 map 失败: %v", err)
+	}
+	// 字面量断言：**必须是 `[]`**。退回 `null` 这条立刻红 —— 这正是它该守的东西。
+	for _, k := range []string{"actions", "fields", "option_groups", "obstructions", "diagnostics"} {
+		if got := string(raw[k]); got != "[]" {
+			t.Errorf("%s = %s，want []（空列表不许是 null —— py 侧 for x in model[%q] 会 TypeError）", k, got, k)
+		}
+	}
+
+	// 再从 Go 侧看一遍：解出来必须是「非 nil 的空切片」，而不是 nil。
+	var m internal.PageModel
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatalf("按 internal.PageModel 解不动: %v", err)
+	}
+	if m.Actions == nil || m.Fields == nil || m.OptionGroups == nil || m.Obstructions == nil || m.Diagnostics == nil {
+		t.Errorf("解出来有 nil 切片（= 编码时是 null）: %s %s %s %s %s",
+			describeSlice("actions", m.Actions == nil, len(m.Actions)),
+			describeSlice("fields", m.Fields == nil, len(m.Fields)),
+			describeSlice("option_groups", m.OptionGroups == nil, len(m.OptionGroups)),
+			describeSlice("obstructions", m.Obstructions == nil, len(m.Obstructions)),
+			describeSlice("diagnostics", m.Diagnostics == nil, len(m.Diagnostics)))
+	}
+	if len(m.Actions)+len(m.Fields)+len(m.OptionGroups)+len(m.Obstructions)+len(m.Diagnostics) != 0 {
+		t.Errorf("空页上不该有内容: %d/%d/%d/%d/%d",
+			len(m.Actions), len(m.Fields), len(m.OptionGroups), len(m.Obstructions), len(m.Diagnostics))
+	}
+	t.Logf("退出码=0；五个列表都是 []：%s", firstLines(out, 8))
+}
+
+// TestObserveCommandHumanFormat 钉住 `--json=false` —— 它必须**真的**给人话
+// （Task 6 修复轮 1：一个看起来能切格式、实际不切的 flag 正是本项目反复栽的那类）。
+func TestObserveCommandHumanFormat(t *testing.T) {
+	e := env(t)
+	fixtureURL := e.fixture + "/base.html"
+	e.navigate(t, fixtureURL)
+
+	out, errOut, code := e.observe(t, "--json=false")
+	if code != 0 {
+		t.Fatalf("--json=false 退出码 = %d, want 0\nstderr: %s", code, errOut)
+	}
+	if json.Valid([]byte(out)) {
+		t.Fatalf("--json=false 还是吐了 JSON（flag 静默不做事）:\n%.300s", out)
+	}
+	if strings.HasPrefix(strings.TrimSpace(out), "{") {
+		t.Errorf("--json=false 的输出以 { 开头 —— 像是半截 JSON:\n%.300s", out)
+	}
+	// 摘要该有的东西：页面身份、动作正文+评级、遮挡物与**可点的**关闭选择器。
+	for _, want := range []string{
+		fixtureURL,
+		"R3 base",
+		"可动作元素",
+		"Schedule Now",                 // 动作正文
+		"high",                         // 稳定性评级
+		"cookie-banner",                // 遮挡物
+		"#onetrust-accept-btn-handler", // dismiss_selector：人下一步该点的东西
+		"#schedule-now",                // 选择器
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("人话输出里没有 %q：\n%s", want, out)
+		}
+	}
+	t.Logf("退出码=0；--json=false 输出：\n%s", out)
 }
 
 // TestObserveCommandExitCodeOnBadFrame 钉住失败约定：拿不到模型 → 非 0 退出码，
@@ -593,6 +739,15 @@ func TestObserveCommandExitCodeOnBadFrame(t *testing.T) {
 }
 
 // ---- 小工具 ----
+
+// describeSlice 把「nil 还是空」印清楚：`%v` 对两者都印 `[]`，
+// 而调试时**正是这个差别在咬人**（本条断言的由来就是它）。
+func describeSlice(name string, isNil bool, n int) string {
+	if isNil {
+		return name + "=nil(会编成 null)"
+	}
+	return fmt.Sprintf("%s=[](len=%d)", name, n)
+}
 
 func hasSelector(actions []internal.Action, sel string) bool {
 	for _, a := range actions {

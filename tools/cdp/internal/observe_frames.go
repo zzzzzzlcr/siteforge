@@ -80,7 +80,10 @@ func (c *Client) ObserveAll() (*PageModel, error) {
 	if err := c.observeInto(merged, tree, []string{mainFramePath}, true, seen); err != nil {
 		return nil, err
 	}
-	return merged, nil
+	// 合并这条路**尤其**要归一化：merged 是 `&PageModel{}` 起的（五个切片全是 nil），
+	// 某一类一个元素都没并进来时 append 不改变 nil —— 实测 base.html 的
+	// option_groups / diagnostics 就是这样编成 null 的（见 normalizeNilLists）。
+	return normalizeNilLists(merged), nil
 }
 
 // observeInto 把 ft 这一帧（及其子树）的模型并进 merged。
