@@ -1,10 +1,9 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
-	"strconv"
-	"strings"
+
+	"cdp/internal"
 
 	"github.com/spf13/cobra"
 )
@@ -46,23 +45,16 @@ func init() {
 			}
 		}
 		if !cmd.Flags().Changed("port") {
-			if v := os.Getenv("CDP_PORT"); v != "" {
-				// TrimSpace as well: internal/mcp does `Atoi(TrimSpace(...))`,
-				// so " 9999 " has to mean 9999 on both doors -- otherwise a
-				// padded value is an error on one door and works on the other.
-				n, err := strconv.Atoi(strings.TrimSpace(v))
-				if err != nil {
-					// Refuse it. Ignoring an unparseable CDP_PORT means "I set
-					// CDP_PORT, but it had no effect": the operator believes the
-					// command talks to the port they named while it silently
-					// talks to the default one -- a *different browser*, and no
-					// error anywhere. cmd/mcp already refuses this exact case
-					// (internal/mcp/target.go, ResolveTarget); this is the same
-					// ruling on the other door, and the message is word-for-word
-					// the one that door produces, so both doors name the same
-					// problem the same way.
-					return fmt.Errorf("CDP_PORT=%q 不是端口号（要么改成数字，要么去掉它，要么显式给 --port）", v)
-				}
+			// CDP_PORT 的读法（空 = 没设、前后空白不算数、坏的当场拒绝且报哪句错）
+			// 只有一份：internal.EnvPort。这道门不再自带一段 Atoi —— 同一个规矩
+			// 在两处各写一遍，正是它最容易分家的形态：改掉其中一句文案，两道门
+			// 从此对同一个输入说两句不同的话，而两边的测试都还是绿的。
+			// （跨门逐字对齐的闸门在 cmd/port_parity_test.go。）
+			n, set, err := internal.EnvPort(os.Getenv("CDP_PORT"))
+			if err != nil {
+				return err
+			}
+			if set {
 				port = n
 			}
 		}

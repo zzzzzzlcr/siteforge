@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"cdp/internal"
 )
 
 // 这道门连**哪个**浏览器 —— 本文件只干这件事（计划二 Task 2 的那一节）。
@@ -75,30 +77,34 @@ func ResolveTarget(o Options) (Target, error) {
 	if !o.HostSet && o.EnvHost != "" {
 		host = o.EnvHost
 	}
-	if !o.PortSet && o.EnvPort != "" {
-		n, err := strconv.Atoi(strings.TrimSpace(o.EnvPort))
+	if !o.PortSet {
+		// CDP_PORT 怎么读（空 = 没设、前后空白不算数、坏的**拒绝**且说哪句话）
+		// 只有一份：internal.EnvPort —— cmd/root.go 那道门调的是同一个函数。
+		//
+		// ⚠️ 两道门是**同一条规矩**（13e8361）：解析不了就拒绝，不静默回落 ——
+		// 静默回落 = 「我设了 CDP_PORT，但它没生效」：操作者以为指着 9999，命令连的
+		// 却是 9222，那是**另一个浏览器**，而且全程没有一句错。这道门后面站着 agent，
+		// 它看不到 shell 里的上下文，只能靠一句明确的报错。
+		//
+		// ⚠️ 规矩本身原先在这里又写了一遍（连文案都逐字抄），两边的测试却只各自断言
+		// `strings.Contains(err, "CDP_PORT")` —— 改掉一句话，两道门从此答复不一致，
+		// 而两套测试全绿。现在文案只有一个来源，且 cmd/port_parity_test.go 拿两道门
+		// 逐字对过。
+		//
+		// ⚠️ 别把这次校验提到 `!o.PortSet` 之外：显式 --port 一旦给了，环境里那个值
+		// **根本不会被读** —— 坏的也一样，既不覆盖 flag，也不把命令拦下来。
+		// 空串同理：internal.EnvPort 把它当成「没设」（既有行为）。
+		//
+		// ⚠️ 运维后果：环境里留着一个坏的 CDP_PORT，会让**每一条** cdp 命令都非零
+		// 退出（只有 --help / 裸跑那类不跑钩子的用法例外），除非显式给 --port。
+		// 生产 py 脚本不受影响 —— 它们每条命令都显式带 --host/--port。
+		n, set, err := internal.EnvPort(o.EnvPort)
 		if err != nil {
-			// 解析不了就**拒绝**，不静默回落 —— 静默回落 = 「我设了 CDP_PORT，但它
-			// 没生效」：操作者以为指着 9999，命令连的却是 9222，那是**另一个浏览器**，
-			// 而且全程没有一句错。那正是 C81 那个缺陷的另一半。这道门后面站着 agent，
-			// 它看不到 shell 里的上下文，只能靠一句明确的报错。
-			//
-			// ⚠️ 两道门现在是**同一条规矩**（13e8361）：cmd/root.go 对同一个输入也拒绝，
-			// 文案与这句**逐字相同**，两边也都先 TrimSpace（于是 " 9999 " 在两道门上都
-			// 等于 9999）。本处原先写着「与 CLI **有意不同**，那边静默忽略」—— 那句话
-			// 随该提交一起作废：两道门给出不一致的答复，正是这个缺陷最容易被搬家的形式。
-			//
-			// ⚠️ 别把校验提到 PortSet 之外：显式 --port 一旦给了，环境里那个值**根本不会
-			// 被读** —— 坏的也一样，既不覆盖 flag，也不把命令拦下来。空串同理：上面那个
-			// `o.EnvPort != ""` 就把它挡在门外了（空 = 「没设」）。全是空白不算「没设」：
-			// 它过得了 `!= ""`，TrimSpace 之后是空串，两道门一样拒绝。
-			//
-			// ⚠️ 运维后果：环境里留着一个坏的 CDP_PORT，现在会让**每一条** cdp 命令都非零
-			// 退出（只有 --help / 裸跑那类不跑钩子的用法例外），除非显式给 --port。
-			// 生产 py 脚本不受影响 —— 它们每条命令都显式带 --host/--port。
-			return Target{}, fmt.Errorf("CDP_PORT=%q 不是端口号（要么改成数字，要么去掉它，要么显式给 --port）", o.EnvPort)
+			return Target{}, err
 		}
-		port = n
+		if set {
+			port = n
+		}
 	}
 	return Target{Host: host, Port: port}, nil
 }
