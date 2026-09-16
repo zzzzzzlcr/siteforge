@@ -239,7 +239,12 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | ./cdp-mcp | head -5
 | `dispatchEvent(new Event('input'` / `'change'` | 合成事件站点 React 常不认 |
 | `Object.getOwnPropertyDescriptor(...'value')` | 手拼 native setter |
 | `.click()` 形式的 JS 点击 | 不是拟人手势 |
-| 裸 `document.querySelector` 出现在**写**路径 | 穿不透 shadow DOM |
+| `e.value = ` / `.value=` 形式的直接赋值 | 绕过 cdp 的拟人键入手势 |
+
+> ⚠️ **预检修正（S1）**：原表里有一条「**裸 `document.querySelector` 出现在写路径**」——
+> **删掉了**。理由：**「读路径 vs 写路径」在静态上不可判定**，而 `querySelector` **只是查找**，
+> 读写都用它 —— 拿它当违规会**误伤合法的读**（产物里的 `cdp eval` 读页面本来就要用）。
+> 判据要盯**写动作本身**（上面四条），不要盯查找。
 
 - [ ] **Step 1: 写失败测试（每条违规一个用例 + 合规产物不误报）**
 
@@ -322,7 +327,8 @@ spike 测到的「连续 ≥3 轮」是**同一件事看了三遍**，**不是�
 ## Task 7: LangGraph 图（把上面几件串起来，含人可暂停）
 
 **Files:**
-- Create: `agent/state.py`, `agent/graph.py`, `agent/service.py`, `tests/test_graph.py`
+- Create: `agent/state.py`, `agent/graph.py`, `tests/test_graph.py`
+  （⚠️ **预检修正（S2）**：`agent/service.py` 归 Task 8，本任务不建 —— 原先两条都写它）
 
 **Interfaces:**
 - Consumes: Task 1/3/4/5/6 的全部
@@ -378,6 +384,25 @@ selftest 挂 → 走 diagnose 且**带上了 failed_step**；预算耗尽 → �
 - [ ] **Step 6: 提交**
 
 ---
+
+## 预检扫描（2026-09-17，派发 Task 4–8 之前）
+
+对**还没派的任务**做的一次冲突扫描（计划一那次扫出 9 个、其中一个会直接卡死，所以这是常规动作）。
+
+| # | 发现 | 裁定 |
+|---|---|---|
+| **S1** | Task 4 的 lint 规则「裸 `document.querySelector` 出现在**写**路径」—— **静态不可判定**；而且 `querySelector` 只是查找，**读写都用**，拿它当违规会**误伤合法的读** | **删掉那条**，判据改盯**写动作本身**（四条写模式）。已改 |
+| **S2** | **Task 7 与 Task 8 都创建 `agent/service.py`** | 归 Task 8；Task 7 只建 `state.py` + `graph.py`。已改 |
+
+**扫描过、确认没问题的**：
+- 各任务的**文件清单两两不重叠**（除已修的 S2）—— Task 3 的 `fixtures/` 只被 Task 4 读，不被写
+- Task 5 修改 Task 1 的 `agent/tools.py` ✓ 是**有意的**（spike 的桩接成真 MCP）
+- Task 6 的「换代理国家」那遍扰动需要重拉链，计划已标为**可选**（先跑 1–4）✓
+- 没有任务再引用已删除的 `.superpowers/` workspace ✓
+
+**并发期的已知折扣**（实测发生）：同一 Go module 里并发跑 `go test ./...` 会看到**对方半成品**的代码
+（一次红是因为另一个 agent 的 `cmd/mcp_e2e_test.go` 正在写）。→ **「测试绿」在并发期要打折扣，
+等所有 agent 停下再跑一次才算数。**
 
 ## 后续计划（不在本计划内）
 
