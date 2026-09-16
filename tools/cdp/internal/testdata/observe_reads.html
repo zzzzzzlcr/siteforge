@@ -234,19 +234,37 @@
 <!--
   ⑦ id 撞上 Object.prototype 的名字（真站上完全合法的 id）。
 
-     label 的 for→文本表如果是个**普通对象**，这一族 id 会当场出两种静默错：
+     label 的 for→文本表如果是个**普通对象**，这一族 id 会当场出两种静默错
+     （2026-09-17 用 node 逐条实测过机制，别照抄直觉）：
        · 读 LABELS['constructor'] 拿到的是**函数**、LABELS['__proto__'] 拿到的是
-         **Object.prototype** —— 都是真值，于是「名字」成了一个对象，串进 JSON 之后
-         Go 侧的 *string 解不开 → **整条 observe 失败**（喂一个 id 就能让整个观测崩掉）
-       · 往 m['__proto__'] 上写会走原型 setter、被静默忽略 —— 名字丢了还没人说
+         **Object.prototype** —— 都是真值，于是 labelOf 把一个**对象**当成了名字返回，
+         串进 JSON 之后 Go 侧的 *string 解不开 → **整条 observe 失败**
+       · 写：`m['__proto__'] = 文本` 那一步**走不到** —— 上面 `if (f && t && !m[f])`
+         的守卫先命中（node 实测 `!({})['__proto__'] === false`：取到的是
+         Object.prototype，真值），整条写被跳过。净效果仍是「名字丢了」，
+         但机制是**守卫拦下**，不是「原型 setter 静默忽略」——那一步压根没执行。
 
      两格各承一面：
        #__proto__    有 label 指着它 → 必须**真的取到那个名字**（不是 null、更不是对象）
-       #constructor  没有 label       → observe 必须**照常跑完**，label 如实为 null
+       #constructor  没有 label       → label 如实为 null（**对照**，判别力见下）
+
+     ⚠️ 两格的判别力**不一样**，写清楚免得下一个人以为抓到了两个证据：
+       · #__proto__ 这一格**真的在考字典的写路径**：它的 label 摆在
+         `<div class="lbl-wrap">` 里，**不是**按钮紧挨着的前一个兄弟 —— 于是
+         labelOf 的规则③（相邻 LABEL 兄弟）够不着它，只剩规则①（字典）一条路。
+         把 Object.create(null) 退回 {} → 写被守卫跳过 → 名字取不到 → 测试**变红**。
+         （原先那个 label 就贴在按钮紧挨着的前一个兄弟上：规则③独立地把名字取了
+          回来，写路径根本没被考到 —— 退回 {} 也全绿。那种「接上了但不响」，
+          正是这一轮在治的病。）
+       · #constructor 这一格判别力约等于零，修复前后都是绿的。机制决定了它不可能有：
+         `JSON.stringify({label: ({}).constructor})` → `{}`（**函数被 JSON 丢掉**，
+         不是让它崩掉），Go 侧拿到 nil、如实解成 null，两条路都不报错。
+         它真正的价值是**对照**：没有 label 时如实交 null，且整条 observe 跑得完。
 -->
 <h2>id 撞上 Object.prototype 的名字</h2>
 <div class="proto-block">
-  <label for="__proto__">Proto named</label>
+  <!-- 刻意**不紧挨着**按钮：包一层 div 之后规则③就够不着（这一格要考的是字典那条路） -->
+  <div class="lbl-wrap"><label for="__proto__">Proto named</label></div>
   <button id="__proto__">Proto id button</button>
   <button id="constructor">Constructor id button</button>
 </div>
@@ -282,6 +300,40 @@
   We use cookies. This banner is fixed, covers more than 8% of the viewport, and has z-index 9999.
   <button id="cookie-dismiss">Accept cookies</button>
 </div>
+
+<!--
+  ⑩ 遮挡物（第二格）：**没有 id、也没有关闭按钮**的那一支。
+
+     ⑨ 那一格两个分支都跑不到：它有 id（→ selector_unique 必然 true）、
+     有关闭按钮（→ dismiss_selector_unique 必然非 null）。于是
+     「没有关闭按钮 → 必须交 null」与 obstruction 的 `selector_unique: false`
+     **零覆盖** —— 实现是对的（复审用 Go 三态实验直接编解码验过），缺的是覆盖：
+     将来有人把 null 写成 false，没有测试会红。
+
+     影子里的那一份与光 DOM 的孪生兄弟同形（同一套 ⑥/⑧ 的手法）：CSS 选择器
+     跨不过 shadow 边界，所以影子里那条地址**必然**同时命中光 DOM 这一份 →
+     unique=false。于是**一个元素同时把两个分支都跑起来**：
+       selector_unique        → false（影子里那份唯一不了）
+       dismiss_selector       → null （里面没有 button/a）
+       dismiss_selector_unique→ null （与上面那条**一起**为 null，不是 false）
+
+     ⚠️ 摆在视口**外面**（left:-9999px）是刻意的：真实尺寸照给（>8% 视口），
+     但它不遮任何东西 —— 视口里那几格（三个 combobox / 按钮）的坐标与
+     occluded_by 因此一个都不变。
+-->
+<h2>没有 id、也没有关闭按钮的遮挡物</h2>
+<div id="cover-light" style="position:absolute;left:-9999px;top:200px">
+  <div class="cover-plain"
+       style="position:fixed;left:-9999px;top:0;width:900px;height:700px;z-index:9998;background:#ddd">
+    Overlay with no id and no dismiss control.
+  </div>
+</div>
+<div id="cover-host" style="position:absolute;left:-9999px;top:400px"></div>
+<script>
+  // 与 ⑥/⑧ 同一个道理：宿主里不放光 DOM 子节点（没有 slot 的话它们根本不渲染）。
+  document.getElementById('cover-host').attachShadow({ mode: 'open' }).innerHTML =
+    '<div class="cover-plain" style="position:fixed;left:-9999px;top:0;width:900px;height:700px;z-index:9998;background:#ddd">Overlay with no id and no dismiss control.</div>';
+</script>
 
 </body>
 </html>
