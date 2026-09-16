@@ -1,7 +1,13 @@
 <!doctype html><html><head><meta charset="utf-8"><title>R3 shadow</title></head>
 <body style="font-family:sans-serif;padding:20px;margin:0">
 <h1>Shadow 表单页</h1>
-<div id="host1"></div>
+<!-- Task 3（2026-09-16）：host 外面**必须**有一层 landmark，否则陷阱③分辨不出来 ——
+     region 的逻辑是「沿合成树找 header/nav/footer/aside/main」，没有 landmark 时
+     正确实现（走 getRootNode().host 爬出 shadow）与陷阱③实现（只走 parentElement，
+     爬到 shadow root 顶就断）**都答 body**，测试对两种实现一样红 = 空转。
+     实测见 .superpowers/sdd/2026-09-16-tool-layer-observe/task-3-report.md。
+     注意：这一层是 testdata 副本相对 docs/probes/…/fixtures/shadow.html 的**唯一**差异。 -->
+<main><div id="host1"></div></main>
 <script>
 var f = '<div class="card" id="lead-card">\n  <h3>Get your free quote</h3>\n  <label for="fn">First Name</label><input id="fn" name="firstName" type="text" placeholder="First Name" required>\n  <label for="ph">Phone</label><input id="ph" name="phone" type="tel" placeholder="Phone">\n  <label for="st">State</label>\n  <select id="st" name="state"><option value="">Choose</option><option value="GA">Georgia</option><option value="CA">California</option></select>\n  <div class="opts" id="shower-opts">\n    <button type="button">Tub to walk-in shower</button>\n    <button type="button">I need help deciding</button>\n  </div>\n  <button id="submit" type="submit">Get My Quote</button>\n</div>\n';
 var r1 = document.getElementById('host1').attachShadow({mode:'open'});
