@@ -292,6 +292,26 @@ def test_session_capture_refuses_a_blob_that_is_not_a_png(tmp_path):
     assert list(dest.parent.iterdir()) == []
 
 
+def test_the_iend_check_tolerance_is_what_the_docstring_says(tmp_path):
+    """把 `IEND` 那道闸的**实测边界**钉住（复审：机制要写准）。
+
+    它是「够用就好」的一道闸，不是「整张解码」：切掉末尾 **1–4 字节**（`IEND` 后面那个
+    chunk CRC）**仍放行**，切到 `IEND` 本身（**≥5 字节**）**拒**。
+    够用的理由（核过内核）：`cmd/screenshot.go` 写的是 `shot.PNG()`，
+    `internal/screenshot.go` 里它就是 CDP `CaptureScreenshot` 原样给的那串字节 ——
+    不重编码、不尾随填充，所以那 ≤4 字节只在「写一半断了」时出现。
+
+    ⚠️ 这是一条**表征测试**（先量后钉），不是先红后绿的那一类：它记的是实测事实。
+    它存在的理由：这句话上一轮**写错过一次**（写成「截断则一定不在」）——
+    改准还不够，得有东西在它**再次变假**时说话。
+    """
+    assert shots._png_trouble(PNG_1X1) == "", "整张图必须放行"
+    for cut in (1, 2, 3, 4):
+        assert shots._png_trouble(PNG_1X1[:-cut]) == "", f"切 {cut} 字节只丢尾 CRC，该放行"
+    for cut in (5, 8, 40):
+        assert "IEND" in shots._png_trouble(PNG_1X1[:-cut]), f"切 {cut} 字节该拒"
+
+
 def test_session_capture_refuses_a_half_png(tmp_path):
     """能解码、magic 也对，但**没有写完**（没有 IEND 收尾）→ 一样拒绝。
 
@@ -404,7 +424,8 @@ def test_cli_capture_does_not_believe_a_zero_exit_that_wrote_nothing(tmp_path):
 
     name, why = shots.capture_via_cli("ws://worker:9333/x", dest, cdp_bin=cdp)
     assert name is None
-    assert "没拍成" in why and "0" in why and dest.name in why, why
+    # 人话里要**全路径**：只给一个 `pause-1.png`，运维拿着这句话在盘上找不到那张图
+    assert "没拍成" in why and "0" in why and str(dest) in why, why
     assert not dest.exists()
 
     dest.write_bytes(b"stale png from an earlier run")   # 上一趟留下来的同名文件
@@ -508,9 +529,14 @@ def test_host_port_says_none_instead_of_guessing():
 
 
 def test_neither_capture_throws_on_a_destination_it_cannot_use(tmp_path):
-    """契约第一条是「**都不抛**」—— 连落点本身不可用（路径里有 NUL）时也一样：
+    """契约第一条是「**都不抛**」—— 连落点本身不可用（路径里有 NUL、或者干脆没有文件名）时也一样：
 
     说人话、给 `None`，**不把异常丢给调用方**（拍照是旁路，它不许把探路搞挂）。
+
+    ⚠️ 「没有文件名」那一格（`""` / `.` / `/` / `./`）是收尾轮的复审抓到的**契约破坏**：
+    临时名是 `dest.with_name(dest.name + ".part")` 算出来的，而 `pathlib` 对这几个输入
+    直接抛 `ValueError`（`'.' has an empty name`）—— 若这个计算发生在 `try` 之外，
+    整条 `capture_via_cli` 就**无条件**破了「不抛」。现在这两条路都在动手之前先过这一格。
     """
     log = tmp_path / "call.json"
     cdp = _fake_cdp(tmp_path, mode="ok", log=log)
@@ -521,6 +547,16 @@ def test_neither_capture_throws_on_a_destination_it_cannot_use(tmp_path):
     name, why = shots.capture_via_cli("ws://worker:9333/x", "\0坏路径", cdp_bin=cdp)
     assert name is None and "没拍成" in why, why
     assert not log.exists(), "落点都不对，就不该起进程"
+
+    for nameless in ("", ".", "/", "./"):
+        session = _StubSession(_shot_result())
+        name, why = shots.capture_via_session(session, nameless)
+        assert name is None and "没拍成" in why, (nameless, why)
+        assert session.calls == [], "落点都不对，就别去拍（那一下是真的开销）"
+
+        name, why = shots.capture_via_cli("ws://worker:9333/x", nameless, cdp_bin=cdp)
+        assert name is None and "没拍成" in why, (nameless, why)
+    assert not log.exists(), "落点连文件名都没有，更不该起进程"
 
 
 def test_the_shared_parser_agrees_with_the_call_site_it_is_meant_to_replace():

@@ -165,13 +165,32 @@ def _drop(path: pathlib.Path) -> None:
         pass
 
 
+def _nameless(dest: pathlib.Path) -> str:
+    """落点**连文件名都没有**（`""` / `.` / `/` / `./`）→ 人话；正常 → `""`。
+
+    这一格必须在**动手之前**过：临时名是 `dest.with_name(dest.name + ".part")` 算出来的，
+    而 `pathlib` 对这几个输入直接抛 `ValueError: PosixPath('.') has an empty name` ——
+    放在 `try` 外面就等于**无条件**破掉「两个 capture 都不抛」那条契约
+    （2026-09-17 收尾轮复审抓到的；`fe6f893` 那版这四个输入都是返回人话的）。
+    """
+    if dest.name:
+        return ""
+    return (f"{_FAIL}这个落点连文件名都没有（{str(dest)!r}）—— 落点要 "
+            "`dir_for(job_id) / \"pause-1.png\"` 那样带文件名的完整路径")
+
+
 def _png_trouble(blob: bytes) -> str:
     """这串字节像不像一张**完整**的 PNG。像 → `""`，不像 → **人话**（说清缺什么）。
 
-    三道：非空 / PNG magic / 末尾有 `IEND` 收尾。第三道是「半张图」的判据 ——
+    三道：非空 / PNG magic / 末尾 16 字节里有 `IEND` 收尾。第三道是「半张图」的判据 ——
     写一半断掉的 PNG **头几个字节是对的**，只看 magic 会把一张缺了下半截的图放过去，
     而它在页面上与一张完整的图长得几乎一样，还会被人当证据用。
-    （容忍末尾 16 字节里有 `IEND`：编解码器偶有尾随填充，截断则一定不在。）
+
+    ⚠️ 它的**实测**边界（别把它读强了）：切掉末尾 **1–4 字节**仍会放行 —— 那 4 个字节是
+    `IEND` 后面那个 chunk CRC，丢了不影响 Decode（`cmd/screenshot.go` 写的是 Chrome 给的
+    原始字节，不尾随填充，所以这一格只在「写一半断了」时出现）；切到 `IEND` 本身
+    （**≥5 字节**）才拒。要更强就得整张解码，代价不成比例 —— 这里要挡的是
+    「缺了下半截的图被当成证据」，不是「末尾 CRC 坏了一位」。
     """
     if not blob:
         return "它是空的（0 字节）"
@@ -194,11 +213,11 @@ def _promote(tmp: pathlib.Path, dest: pathlib.Path) -> str:
     try:
         blob = tmp.read_bytes()
     except (OSError, ValueError) as exc:
-        return f"{_FAIL}读不回刚写下的临时文件 {tmp}（{_why(exc)}）—— {dest.name} 没被动过"
+        return f"{_FAIL}读不回刚写下的临时文件 {tmp}（{_why(exc)}）—— {dest} 没被动过"
     trouble = _png_trouble(blob)
     if trouble:
         _drop(tmp)
-        return f"{_FAIL}刚写下的不是一张完整的 PNG：{trouble}（{dest.name} 没被动过）"
+        return f"{_FAIL}刚写下的不是一张完整的 PNG：{trouble}（{dest} 没被动过）"
     try:
         os.replace(tmp, dest)
     except (OSError, ValueError) as exc:
@@ -234,6 +253,9 @@ def capture_via_session(session, dest) -> tuple[str | None, str]:
     **不抛**：会话是外部世界，它什么都可能抛（见模块头第 1 条纪律）。
     """
     dest = pathlib.Path(dest)
+    trouble = _nameless(dest)
+    if trouble:                                    # 落点就不对 → 别去拍（那一下是真的开销）
+        return None, trouble
     try:
         shot = session.call_tool("screenshot", {})
     except Exception as exc:                       # noqa: BLE001 —— 外部世界，什么都可能抛
@@ -275,6 +297,9 @@ def capture_via_cli(ws_url, dest, *, cdp_bin=None, timeout: float = 30.0) -> tup
     **写出来的不是一张完整的图**。所以这里**信文件，不信退出码**。
     """
     dest = pathlib.Path(dest)
+    trouble = _nameless(dest)
+    if trouble:                                    # 落点就不对 → 一个进程都不起
+        return None, trouble
     pair = host_port(ws_url)
     if pair is None:
         return None, (f"{_FAIL}认不出 ws_url 里的 host/port（{ws_url!r}）—— 这里**不会**"
@@ -307,7 +332,7 @@ def capture_via_cli(ws_url, dest, *, cdp_bin=None, timeout: float = 30.0) -> tup
         return None, f"{_FAIL}cdp screenshot 退出码 {done.returncode}，它说：{said}"
     if not tmp.is_file() or tmp.stat().st_size == 0:
         _drop(tmp)
-        return None, (f"{_FAIL}cdp 说成了（退出码 0），但它没写出 {tmp.name}（或 0 字节）"
-                      f"—— 这中间有一步在说谎，别信这张图；{dest.name} 没被动过")
+        return None, (f"{_FAIL}cdp 说成了（退出码 0），但它没写出 {tmp}（或 0 字节）"
+                      f"—— 这中间有一步在说谎，别信这张图；{dest} 没被动过")
     trouble = _promote(tmp, dest)
     return (None, trouble) if trouble else (dest.name, "")
