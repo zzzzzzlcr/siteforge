@@ -378,6 +378,39 @@ selector A 失败 → selector B 失败 → 重新 observe 当前页面 → 按 
 + native setter + dispatchEvent —— 正是要禁掉的那种写法）。selector 一改版就挂，
 而 text+role+语境 比 CSS 路径稳。
 
+### 5.1c py 的调试契约（`--trace` / `--stop-at`）
+
+**Debug 是主线（D13/D15），而 Debug 的前提是产物「能被看见」。** 所以 py 的 CLI 契约加两个
+**可选**参数（不加则行为与今天完全一致）：
+
+```
+py --ws-url … --form-file … --correlation-id … --trace <file> [--shots all]
+py … --stop-at <N>
+py …                                   # 普通重跑 = 验证 patch 的那一次
+```
+
+**`--trace <file>`：JSON Lines，每步追加一行。** Console 读它来渲染「一轮一句话 + 一对截图」：
+
+```jsonc
+{ "step": 6, "action": "click", "target": "Get Started",
+  "selector_used": "#submit", "fallback_level": 2,   // 用到第几个候选（0=首选）
+  "ok": false, "progress": false,                    // progress = cdp diff 的 actionable
+  "url": "https://…", "page_sig": "…",
+  "shot_before": "6-before.png", "shot_after": "6-after.png",
+  "note": "页面无变化" }                               // 人话，Console 直接显示
+```
+
+- **截图默认只在 `progress=false` 的步骤落**（失败的那几步才需要人看；省空间）。
+  `--shots all` 时每步都落。
+- `note` 是**给人看的一句话**（D16：使用者是非技术人员）—— 不是错误码、不是选择器。
+
+**`--stop-at <N>`：执行到第 N 步后退出**，浏览器**保持原状不关**（谁开的谁关）。
+用途：人要**亲眼看**那一步的页面。trace 里记一行 `{"stopped_at": N}`。
+
+**⚠️ 明确不做 `--from-step`**（2026-09-16 用户定）。理由：**要到第 N 步的状态，本来就得先跑完前
+N-1 步** —— 它省不了时间。而 py 跑一遍 30–90 秒，**从头重跑完全可接受**，且更少一种「未定义状态」
+（调用方没把页面带到第 N 步时行为未定义）。
+
 ### 5.2 契约检查器（lint）—— 把原则变成机器可执行的约束
 
 产物里出现下列手拼填充/点击 → **打回 agent 重写**：
