@@ -143,6 +143,16 @@ class Journey:
     final_answer: str = ""
     pages: list = field(default_factory=list)
 
+    #: 这一趟**问了几轮模型**（G2：`_wrap_up` 原先用完 `rounds` 就丢，于是基线 M3 量不到）。
+    #: ⚠️ `0` 有两种意思，读的时候要连 `stop_reason` 一起看：
+    #:   - `no_rounds` → 真的 0 轮（模型一次都没回话）；
+    #:   - `paused`    → **没量到**（被人打断时 `rounds` 是工具循环的局部变量，拿不到）。
+    #:     `measure.baseline()` 按 `stop_reason` 把后者记成 `None`，不记成 0。
+    rounds: int = 0
+    #: `llm.summarize(rounds)` 的产物（几轮 / 几次工具调用 / token / 耗时）。
+    #: 被人打断那条路是空的 `{}` —— 与 `rounds == 0` 同一个道理。
+    usage: dict = field(default_factory=dict)
+
     # ── 给 Task 7 的 draft 节点用：直接喂 template.render() ──
 
     def states(self) -> list:
@@ -301,6 +311,14 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
     except _Stop as stop:
         journey.stop_reason = stop.reason
         journey.notes.append(_stop_note(stop.reason, len(journey.steps), stop.detail))
+        # 被打断这一路**拿不到轮数**：`rounds` 是 `run_tool_loop` 的局部变量，
+        # `_Stop`（BaseException）一穿出去就没了。所以只能是 0 + 一句人话 ——
+        # **不许编一个数**（P5）。那个 0 的意思是「没量到」，读账的人（`measure.baseline`）
+        # 按 `stop_reason == "paused"` 把它记成 `None`，不记成「这一趟没花轮数」。
+        journey.rounds = 0
+        journey.usage = {}
+        journey.notes.append("这一趟被人打断了，**没记到轮数**（打断的信号一穿出工具循环，"
+                             "那个数就没了）—— 这里的 0 是「没量到」，不是「一轮都没花」。")
     finally:
         journey.pages = [{"name": p["name"], "when": p["when"], "url": p["url"],
                           "title": p["title"]} for p in pages.pages]
@@ -361,7 +379,13 @@ def _wrap_up(journey: Journey, rounds: list, plan: Budget) -> None:
 
     ⚠️ 模型每一轮说的话**不在这里记** —— 归 `_Gate`（它每轮都在场，包括被人打断的
     那条路上；见它的 docstring）。两处都记就会在没被打断时记成两份。
+
+    轮数（G2）与它的汇总账**在这里落**：原先 `rounds` 用完就丢，于是「一次探路问了几轮」
+    这个数**算出来了却没人接住**，基线 M3 只能靠 `steps` 反推 —— 而 steps 数的是
+    **工具调用**（含 observe），与「模型想了几轮」不是一回事（实测 60 步 ≠ 60 轮）。
     """
+    journey.rounds = len(rounds)
+    journey.usage = llm.summarize(rounds)
     last = rounds[-1] if rounds else None
     if last is None:
         journey.stop_reason = "no_rounds"

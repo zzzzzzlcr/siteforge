@@ -1,0 +1,38 @@
+页面URL: https://www.homebuddy.com/walk-in-showers/cr640
+
+成功条件: Thank you
+
+操作:
+1.填 Enter ZIP Code
+2.点 Get estimate
+3.随机选择一个选项
+4.点 Next
+5.选 Yes
+6.点 Next
+7.随机选择一个选项
+8.点 Next
+9.随机选择一个选项
+10.点 Next
+11.随机选择一个选项
+12.点 Next
+13.随机选择一个选项
+14.点 Next
+15.随机选择一个选项
+16.点 Next
+17.随机选择一个选项
+18.点 Next
+19.随机选择一个选项
+20.点 Next
+21.随机选择一个选项
+22.点 Next
+23.选择第一个选项
+24.点 Next
+25.选 No
+26.点 Next
+27.选 Yes
+28.点 Next
+29.填 Full Name
+30.填 Email address
+31.点 Next
+32.填 Phone number
+33.点 submit my request

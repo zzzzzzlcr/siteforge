@@ -359,6 +359,49 @@ def test_on_step_hook_sees_every_step_as_it_happens(tmp_path):
     assert seen == journey.steps
 
 
+# ───────────────────── 轮数要落账（G2：基线 M3 量不到它）─────────────────────
+
+
+def test_wrap_up_records_the_rounds_that_were_actually_spent(tmp_path):
+    """`_wrap_up` 拿到 `rounds` 之后**用完不许丢**（G2）。
+
+    基线 M3（一次探路花几轮模型）全靠它 —— 今天这个数算出来了却没人接住，
+    于是「一次探路多贵」只能靠 `steps` 反推，而 steps 数的是**工具调用**（含 observe），
+    与「模型想了几轮」不是一回事（run 4/5 实测：60 步 ≠ 60 轮）。
+    """
+    journey, fake, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]}, {"calls": [("observe", {})]}, {"content": "看完了"}],
+    )
+    assert journey.stop_reason == "model_done"
+    assert journey.rounds == len(fake.calls) == 3, "轮数要与真发出去的模型调用对得上"
+    assert journey.usage["rounds"] == 3, "usage 是 llm.summarize 的产物（Task 1 的接口）"
+    assert journey.usage["tool_calls"] == 2
+
+
+def test_a_run_cut_short_still_accounts_for_its_rounds(tmp_path):
+    """**被人打断**那条路（`_Stop` 穿过 `run_tool_loop`）也要有数。
+
+    ⚠️ 但那个数**拿不到** —— `rounds` 是 `run_tool_loop` 的局部变量，异常一穿出去就没了。
+    所以这一路的 `journey.rounds` 只能是 `0` + **一句人话**说清「没记到」：
+    **不许编一个数**（P5），也**不许**让 0 悄悄冒充「这一趟一轮都没花」——
+    那条由 `measure.baseline()` 按 `stop_reason` 判（见 `tests/test_measure.py`）。
+    """
+    journey, _, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]}] * 5,
+        budget=browser_agent.Budget(max_steps=50, max_rounds=50),
+        should_pause=lambda j: len(j.steps) >= 1,
+    )
+    assert journey.stop_reason == "paused" and len(journey.steps) == 1
+    assert journey.rounds == 0
+    assert journey.usage == {}
+    assert any("轮数" in n for n in journey.notes), (
+        f"0 得配一句「没记到」，不然读起来就是「这一趟没花轮数」：{journey.notes}")
+
+
 # ─────────────────────────── 每步入账 ───────────────────────────
 
 

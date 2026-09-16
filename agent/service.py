@@ -50,6 +50,7 @@ import os
 import pathlib
 import queue
 import threading
+import time
 import traceback
 import urllib.error
 import urllib.request
@@ -60,7 +61,7 @@ from fastapi import FastAPI, HTTPException
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from agent import browser_agent, graph, selftest
+from agent import browser_agent, graph, measure, selftest
 from agent.graph import NODES, STEP_SAY
 from agent.state import END_DELIVERED, END_EXPLORE_UNFINISHED, END_NO_WINDOW
 
@@ -180,6 +181,43 @@ class BitWindow:
         if not (isinstance(out, dict) and out.get("success") is True):
             raise RuntimeError("换窗口大小的请求没被确认成功：%s" % str(out)[:200])
 
+    def probe(self) -> dict:
+        """窗口还活着吗 + **它是哪个进程**：`{"alive": bool|None, "pid": int|None}`。
+
+        为什么要 PID（计划四 Task 1 / G3）：`alive()` 一直把它扔掉，于是「窗口换过没有」
+        谁也答不了 —— 而 E2 实测**一次跑里 PID 至少换过 3 次**。没有 PID，
+        「一个 run 重开了几次」「这一次探路跨了几个窗口」这两件事都只能靠猜。
+
+        ⚠️ 三态照旧：`True` 活 / `False` 死 / `None` **问不出来**（别拿它当死）。
+        `pid` 只在「活着」那条路上有（`data` 是空 dict 时什么都没有）——
+        问不出来就给 `None`，**不许沿用上一次那个 PID**。
+        """
+        try:
+            out = self._post("/browser/pids/alive", {"ids": [self.bit_id]})
+        except RuntimeError:
+            return {"alive": None, "pid": None}
+        if not isinstance(out, dict):
+            return {"alive": None, "pid": None}
+        data = out.get("data")
+        if isinstance(data, dict):
+            pid = data.get(self.bit_id)
+            if pid is None and self.bit_id not in data:
+                return {"alive": False, "pid": None}
+            return {"alive": True, "pid": pid if isinstance(pid, int) else None}
+        if isinstance(data, list):                     # 老形状（P6 之前遇到过）
+            return {"alive": self.bit_id in [str(x) for x in data], "pid": None}
+        if isinstance(data, bool):
+            return {"alive": data, "pid": None}
+        if isinstance(data, str):
+            low = data.strip().lower()
+            if low in ("true", "1", "yes"):
+                return {"alive": True, "pid": None}
+            if low in ("false", "0", "no", ""):
+                return {"alive": False, "pid": None}
+            # 比如「操作成功」——那只说明这次调用成了，没说窗口活着
+            return {"alive": None, "pid": None}
+        return {"alive": None, "pid": None}
+
     def alive(self) -> Optional[bool]:
         """窗口还活着吗。**三态**：True 活 / False 死 / None 问不出来（别拿它当死）。
 
@@ -189,28 +227,11 @@ class BitWindow:
         **一开始这里只认 list/bool/str，于是真跑时恒返回 `None`（「不知道」）——
         这根线看起来接好了，其实永远不响。** 这种「接上了但不响」比没接更坏：
         它让 P6 的那道前置看起来存在。测试钉住这两种形状。
+
+        形状的判定全在 `probe()` 里（同一个应答、同一个坑）；这里只把它折成 bool。
+        **返回类型一个字都不许变** —— 它是 `WINDOW_LAYER` 的两个名字之一，被测试钉着。
         """
-        try:
-            out = self._post("/browser/pids/alive", {"ids": [self.bit_id]})
-        except RuntimeError:
-            return None
-        if not isinstance(out, dict):
-            return None
-        data = out.get("data")
-        if isinstance(data, dict):
-            return self.bit_id in data
-        if isinstance(data, list):
-            return self.bit_id in [str(x) for x in data]
-        if isinstance(data, bool):
-            return data
-        if isinstance(data, str):
-            low = data.strip().lower()
-            if low in ("true", "1", "yes"):
-                return True
-            if low in ("false", "0", "no", ""):
-                return False
-            return None                  # 比如「操作成功」—— 那只说明这次调用成了，没说窗口活着
-        return None
+        return self.probe()["alive"]
 
 
 def live_viewport(ws_url: str) -> Optional[tuple]:
@@ -455,7 +476,9 @@ class Service:
 
     def __init__(self, *, graph_factory: Optional[Callable] = None,
                  window: Any = None, checkpointer=None, checkpointer_url: Optional[str] = None,
-                 out_dir: Optional[str] = None, viewport_probe: Optional[Callable] = None):
+                 out_dir: Optional[str] = None, viewport_probe: Optional[Callable] = None,
+                 explore_dir: Optional[str] = None,
+                 window_probe_seconds: Optional[float] = None):
         self._jobs: dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
         self._queue: "queue.Queue[tuple]" = queue.Queue()
@@ -469,35 +492,218 @@ class Service:
         self._probe = None
         self._worker: Optional[threading.Thread] = None
         self._worker_lock = threading.Lock()
+        # ── 运行产物（计划四 Task 1）：`runtime/explore/<job_id>/` ──────
+        #: 账落在哪（`runtime/` 不进 git；与 `runtime/selftest/` 同层不同目录）
+        self._explore_root = str(explore_dir or os.environ.get("SITEFORGE_EXPLORE_DIR")
+                                 or measure.DEFAULT_ROOT)
+        #: 窗口时间线多久探一次。**这个间隔就是 M1 的精度**（要连着它一起读寿命）。
+        self._probe_seconds = float(window_probe_seconds
+                                    or os.environ.get("SITEFORGE_WINDOW_PROBE_SECONDS")
+                                    or 15.0)
+        self._window_probe_thread: Optional[threading.Thread] = None
+        self._active_job: Optional[str] = None
 
     # ── 外面那三层：图、窗口、检查点 ────────────────────────────────
-    def _build_graph(self, brief: dict):
+    def _build_graph(self, brief: dict, job_id: str = ""):
         """给一个 job 拼一张图。**旋钮就在这儿给**（R-31：服务是窗口层的供给方）。
 
         `graph_factory(brief, deps)` 收到的是**本服务拼好的 `Deps`** —— 于是调用方
         （测试 / 计划三的 Console）可以只换掉贵的那些（探路、自测），而**继承**窗口层那根线。
         生产走 `graph_factory=None` 那条：全是真接线。
         """
-        deps = graph.Deps(explore=self._explore_for(brief),
+        deps = graph.Deps(explore=self._explore_for(brief, job_id),
                           set_viewport=(self._viewport_cb(brief.get("ws_url"))
                                         if brief.get("set_viewport") else None))
         if self._graph_factory is not None:
             return self._graph_factory(brief, deps)
         return graph.build(checkpointer=self._check.get(), deps=deps)
 
-    def _explore_for(self, brief: dict) -> Optional[Callable]:
+    def _explore_for(self, brief: dict, job_id: str = "") -> Optional[Callable]:
         """探路要朝**载荷里那个窗口**去（服务是知道窗口的那一层）。
 
         为什么要这一根线：`browser_agent.explore()` 自己不收 `ws_url`（图调它时只给
         url/goal/预算/暂停谓词），窗口是从 `tools.McpSession.open(ws_url=…)` 或环境变量
         `CDP_WS_URL` 进去的。载荷里那个窗口不给它，它就会退回默认的 `127.0.0.1:9222` ——
         也就是**别的**浏览器（本机那个 headless，或者更糟：别的任务的窗口）。
+
+        另外两件（计划四 Task 1，都是**加**）：每一步落 journal（G1：`on_step` 早就有，
+        服务没接）、一次探路收场时记一行账（`attempts.jsonl` —— 基线 M2/M3 的输入）。
         """
         ws_url = str(brief.get("ws_url") or "").strip()
         if not ws_url:
             return None                       # 没人给窗口 → 用默认（图会在自测那步停下点名）
-        return lambda url, goal, budget=None, should_pause=None: browser_agent.explore(
-            url, goal, budget=budget, should_pause=should_pause, ws_url=ws_url)
+        on_step = self._journal_for(job_id, self._next_attempt_no(job_id)) if job_id else None
+
+        def run(url, goal, budget=None, should_pause=None):
+            started = measure._now()
+            try:
+                journey = browser_agent.explore(url, goal, budget=budget,
+                                                should_pause=should_pause, ws_url=ws_url,
+                                                on_step=on_step)
+            except BaseException as exc:       # noqa: BLE001 —— `_Stop` 也是 BaseException
+                # 探路自己炸了（或是人喊停穿透）—— 也得留一行，不然「这一次尝试」凭空消失，
+                # 而消失的那一次恰恰是最该被看见的那一次。记完**原样再抛**。
+                self._note_attempt(job_id, started=started, journey=None, boom=exc)
+                raise
+            self._note_attempt(job_id, started=started, journey=journey)
+            return journey
+
+        return run
+
+    # ── 旁路：运行产物（计划四 Task 1）──────────────────────────────
+    # ⚠️ 这一整节都是**旁路**：它坏掉不许把主路带塌（同 Console 那片对 shooter 的规矩）。
+    #    「记不上账」是可惜，「跑挂了」是另一件事 —— 两件事不能混成同一件。
+
+    def _explore_dir(self, job_id: str) -> pathlib.Path:
+        """`runtime/explore/<job_id>/`。⚠️ `job_id` 是从 HTTP 进来的字符串 —— 必须挡住 `../`，
+        否则一个能爬出去的 id 就等于**任意写**。"""
+        jid = str(job_id or "")
+        if (not jid or jid in (".", "..") or "/" in jid or "\\" in jid
+                or jid.startswith(".") or pathlib.PurePosixPath(jid).name != jid):
+            raise ValueError("不像个 job_id：%r（它要拿来拼目录，不许带路径分隔符）" % jid)
+        return pathlib.Path(self._explore_root) / jid
+
+    def _next_attempt_no(self, job_id: str) -> int:
+        """这是第几次尝试。从**盘上已有的** `attempt-*.jsonl` 数出来 —— 于是服务重启过、
+        或者图又进了一次 `explore`，编号都接着走（不会把上一趟的账覆盖掉）。"""
+        try:
+            done = [int(p.stem.split("-", 1)[1]) for p in self._explore_dir(job_id).glob("attempt-*.jsonl")
+                    if p.stem.split("-", 1)[1].isdigit()]
+        except (OSError, ValueError):
+            return 1
+        return (max(done) + 1) if done else 1
+
+    def _journal_for(self, job_id: str, n: int) -> Callable:
+        """`on_step`：每一步**发生的那一刻**追加一行（G1：今天一个字节都不落）。
+
+        为什么必须是**当场**而不是跑完再写：窗口就在这一步到下一步之间死掉
+        （`operTime`→`closeTime` 那一段）—— 跑完再写的话，死的正是**没写下来的那一段**。
+        """
+        try:
+            path = self._explore_dir(job_id) / ("attempt-%d.jsonl" % n)
+        except ValueError:
+            return lambda step: None
+
+        def on_step(step: dict) -> None:
+            try:
+                measure.append_step(path, step)
+            except Exception:                  # noqa: BLE001 —— 旁路坏掉不许带塌探路
+                traceback.print_exc()
+        return on_step
+
+    def _note_attempt(self, job_id: str, *, started: str, journey, boom: BaseException = None) -> None:
+        """一次尝试收场 → `attempts.jsonl` 一行（墙钟 / 轮数 / 步数 / 停因）。
+
+        ⚠️ 被人打断那一路 `rounds` 是**拿不到**的（`_Stop` 穿过 `run_tool_loop`）——
+        记 `None`（= 没量到），**不记 0**：0 会被读成「这一趟没花轮数」，于是 M3 偏低，
+        而偏低看起来像好消息（`measure.record_attempt` 的 docstring）。
+        """
+        if not job_id:
+            return
+        try:
+            path = self._explore_dir(job_id) / "attempts.jsonl"
+            if journey is None:
+                why = "%s: %s" % (type(boom).__name__, boom) if boom is not None else "没有账本"
+                measure.record_attempt(path, started_at=started, ended_at=measure._now(),
+                                       rounds=None, steps=None, path_shape=None,
+                                       stop_reason="failed", notes=["这一趟连账本都没生成：" + why])
+                return
+            paused = str(getattr(journey, "stop_reason", "")) == "paused"
+            steps = list(getattr(journey, "steps", []) or [])
+            measure.record_attempt(
+                path, started_at=started, ended_at=measure._now(),
+                rounds=None if paused else int(getattr(journey, "rounds", 0) or 0),
+                steps=len(steps),
+                stop_reason=str(getattr(journey, "stop_reason", "") or ""),
+                # M9 的载体（**一次样本一存**）：分支站的两次跑长度不同，只有存下每趟的形状，
+                # M10 的跨度才算得出来（§2.2）。
+                path_shape=measure.path_shape(steps),
+                notes=list(getattr(journey, "notes", []) or [])[-6:])
+        except Exception:                      # noqa: BLE001
+            traceback.print_exc()
+
+    def _last_window_row(self, job_id: str) -> Optional[dict]:
+        """上一行时间线（判「PID 换了吗」只能靠它）—— 从盘上读，服务重启也不丢。"""
+        try:
+            rows = [r for r in measure.read_rows(self._explore_dir(job_id) / "window.jsonl")
+                    if "_corrupt" not in r]
+        except Exception:                      # noqa: BLE001
+            return None
+        return rows[-1] if rows else None
+
+    def _probe_window_row(self, job_id: str, *, at: Optional[str] = None,
+                          note: str = "") -> dict:
+        """一次探活 → 时间线一行（落 `window.jsonl`）。
+
+        探不出来（没有窗口层 / 接口答非所问）→ 记 `unknown`，**不许记成死**。
+        """
+        probe = {"alive": None, "pid": None}
+        try:
+            if self._window is not None:
+                probe = (self._window.probe() if hasattr(self._window, "probe")
+                         else {"alive": self._window.alive(), "pid": None})
+        except Exception:                      # noqa: BLE001
+            traceback.print_exc()
+            probe = {"alive": None, "pid": None}
+        row = measure.window_row(probe, at=at or measure._now(), note=note,
+                                 prev=self._last_window_row(job_id))
+        measure.append_row(self._explore_dir(job_id) / "window.jsonl", row)
+        return row
+
+    def _start_window_probe(self) -> None:
+        """起一条窗口时间线探针（只在**能给 PID** 的窗口层上起 —— 桩窗口没有 PID，
+        那样的时间线只有活/死，判不出「重开了几次」）。"""
+        if self._window_probe_thread is not None or self._window is None:
+            return
+        if not hasattr(self._window, "probe"):
+            return
+        t = threading.Thread(target=self._window_probe_loop, name="window-timeline", daemon=True)
+        self._window_probe_thread = t
+        t.start()
+
+    def _window_probe_loop(self) -> None:
+        while True:
+            time.sleep(self._probe_seconds)
+            job_id = self._active_job
+            if not job_id:
+                continue
+            try:
+                self._probe_window_row(job_id)
+            except Exception:                  # noqa: BLE001 —— 旁路不许把工作线程带死
+                traceback.print_exc()
+
+    def _write_baseline(self, job_id: str, *, end: Optional[dict] = None) -> Optional[dict]:
+        """把这一趟的账压成 `baseline.json`（M1~M8）。**能算的算，算不出来的给 None + 为什么。**"""
+        try:
+            d = self._explore_dir(job_id)
+            rows = [r for r in measure.read_rows(d / "window.jsonl") if "_corrupt" not in r]
+            steps: list = []
+            for p in sorted(d.glob("attempt-*.jsonl")):
+                steps.extend(r for r in measure.read_rows(p) if "_corrupt" not in r)
+            return measure.baseline(
+                d / "baseline.json",
+                window_lifetimes=measure.window_lifetimes(rows),
+                attempts=measure.read_attempts(d / "attempts.jsonl"),
+                end=dict(end or {}), window_rows=rows,
+                path_steps=steps, probe_seconds=self._probe_seconds)
+        except Exception:                      # noqa: BLE001
+            traceback.print_exc()
+            return None
+
+    def _measure_after(self, job_id: str) -> None:
+        """job 停下时：记一行时间线 + 汇总一份 baseline。**全程吞异常**（旁路不许带塌主路）。"""
+        try:
+            self._probe_window_row(job_id, note="job 停在这一刻")
+        except Exception:                      # noqa: BLE001
+            traceback.print_exc()
+        end: dict = {}
+        try:
+            values = dict(getattr(self._snapshot(job_id), "values", None) or {})
+            end = {"end_reason": values.get("end_reason") or "",
+                   "delivered": bool(values.get("delivered"))}
+        except Exception:                      # noqa: BLE001
+            traceback.print_exc()
+        self._write_baseline(job_id, end=end)
 
     def _viewport_cb(self, ws_url: Optional[str] = None) -> Optional[Callable]:
         """窗口层那根线（第 4 遍扰动要换窗口大小）。
@@ -606,7 +812,9 @@ class Service:
                 job.error = "%s: %s" % (type(exc).__name__, exc)
                 job.say = ("这一步没跑成，停下了：%s\n"
                            "（任务没有交付任何东西 —— 产物目录里不会有它写的 py。）" % exc)
+            self._measure_after(job.job_id)          # 旁路：跑挂了也要留账（吞异常）
             return
+        self._measure_after(job.job_id)              # 旁路：记一行时间线 + 汇总 baseline
         with job.lock:
             # 登记表只补「正在跑 / 跑挂了」这两件 checkpoint 答不了的事。
             # 「停在等人」还是「跑到头了」、以及**为什么停**，一律**从 checkpoint 投影**
@@ -639,7 +847,7 @@ class Service:
         job = Job(job_id=job_id, brief=brief, status=DONE,
                   say="（服务重启过：这个任务是从 checkpoint 里捡回来的）",
                   created_at=datetime.datetime.now().astimezone().isoformat(timespec="seconds"))
-        job.graph = self._build_graph(brief)
+        job.graph = self._build_graph(brief, job_id)
         with self._jobs_lock:
             self._jobs.setdefault(job_id, job)
             return self._jobs[job_id]
@@ -771,13 +979,17 @@ class Service:
         with self._jobs_lock:
             self._jobs[job_id] = job
         try:
-            job.graph = self._build_graph(brief)
+            job.graph = self._build_graph(brief, job_id)
         except BaseException as exc:                 # 拼不起来（saver 连不上之类）
             with job.lock:
                 job.status = FAILED
                 job.error = "%s: %s" % (type(exc).__name__, exc)
                 job.say = ("起不来：%s\n（这一趟**没有**开浏览器、也没有写任何产物。）" % exc)
             return self._view(job_id)
+        # 窗口时间线探针：从这一刻起盯住「窗口是哪个进程」（Task 1 / G3）。
+        # **只在能给 PID 的窗口层上起** —— 桩窗口没有 PID，那样的线判不出「重开了几次」。
+        self._active_job = job_id
+        self._start_window_probe()
         self._submit(job, self._payload(brief))
         return self._view(job_id)
 
@@ -872,7 +1084,7 @@ class Service:
             # 换一张图接着跑是安全的：状态在 checkpoint 里（Test Graph 那条
             # 「另一个图对象接着跑」的用例钉的就是这件事）。
             job.brief["set_viewport"] = bool(job.brief.get("set_viewport") or body.set_viewport)
-            job.graph = self._build_graph(job.brief)
+            job.graph = self._build_graph(job.brief, job_id)
             job.status = RUNNING
             job.error = None                    # 上一次那个失败不再是这个 job 的现状
             job.say = ("窗口重开了，探路要从头再走一遍（页面状态没了，账本得重新收）——"
@@ -960,15 +1172,21 @@ class Service:
 
 def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                checkpointer=None, checkpointer_url: Optional[str] = None,
-               out_dir: Optional[str] = None, viewport_probe: Optional[Callable] = None) -> FastAPI:
+               out_dir: Optional[str] = None, viewport_probe: Optional[Callable] = None,
+               explore_dir: Optional[str] = None,
+               window_probe_seconds: Optional[float] = None) -> FastAPI:
     """拼一个 app。测试从这里注入桩图 / 桩窗口 / 内存 saver。
 
     `window=None` 是**默认且合法**的：这个部署没接窗口层 —— 于是 `set_viewport` 那根线
     不存在，图会在 `intake` 停下点名（R-31 要的正是这个，不是要服务糊一个假回调）。
+
+    `explore_dir` 是**运行产物**落哪（`runtime/explore/<job_id>/`，Task 1）。默认给的是
+    仓库里那个 `runtime/`（不进 git）；测试一律传自己的 `tmp_path`。
     """
     svc = Service(graph_factory=graph_factory, window=window, checkpointer=checkpointer,
                   checkpointer_url=checkpointer_url, out_dir=out_dir,
-                  viewport_probe=viewport_probe)
+                  viewport_probe=viewport_probe, explore_dir=explore_dir,
+                  window_probe_seconds=window_probe_seconds)
     api = FastAPI(title="siteforge", version="0.1",
                   description="看着真页面产出 cdp-first py 脚本的 agent 服务（计划二 Task 8）")
 

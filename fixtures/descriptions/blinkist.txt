@@ -1,0 +1,9 @@
+页面URL: https://www.blinkist.com/magazine/posts/the-5-hour-rule
+成功条件: Subscribe to Blinkist Pro
+成功条件URL: /news-feed,/welcome
+答题方式: 记录
+意图: 浏览网页并完成表单注册
+引导: 1.滚动到底部 2.点击Featured Titles 3.等待3秒 4.点击Verity
+禁止点击: Cookie Policy,Privacy Policy,Terms
+轮次: 30
+浏览: 2

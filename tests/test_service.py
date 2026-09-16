@@ -198,6 +198,17 @@ def _real_factory(rec: Rec, tmp_path, *, saver=None):
                                            deps=_deps(rec, tmp_path, inherit=deps))
 
 
+@pytest.fixture(autouse=True)
+def _runtime_goes_to_tmp(tmp_path, monkeypatch):
+    """运行产物（`runtime/explore/<job_id>/`）在测试里一律落 `tmp_path`。
+
+    `Service` 的默认根是**仓库里**那个 `runtime/`（生产就该是那儿 —— `runtime/` 不进 git），
+    而套件会跑几十个 job，每个都留一份账：那是把仓库当垃圾场（Task 1 实测：一次全量
+    `pytest` 在 `runtime/explore/` 下留了 48 个目录）。
+    """
+    monkeypatch.setattr(service.measure, "DEFAULT_ROOT", tmp_path / "runtime" / "explore")
+
+
 def _client(*, graph_factory, window=None, **kw):
     """一个装好桩的 TestClient —— **不碰**进程级默认（那会去连 Postgres / 真 Bit 窗口）。"""
     if "checkpointer" not in kw and "checkpointer_url" not in kw:
@@ -780,6 +791,119 @@ def test_alive_reads_the_shape_the_real_worker_actually_returns():
     # 别把「问不出来」读成「死了」——那会误杀一个本来能跑的运行
     assert _bit_window(lambda p, b: {"success": True, "data": "看不懂"}).alive() is None
     assert _bit_window(lambda p, b: (_ for _ in ()).throw(RuntimeError("连不上"))).alive() is None
+
+
+# ═══════════ Task 1（计划四）：基线的三样东西 —— 都只是**加**，不改语义 ═══════════
+#
+# 计划四整片建在「一次探路装不进一个窗口」上，而支撑它的只有**一次**观察（7m42s）。
+# 这三样是量它的前提，全是加法：
+#   ① `probe()` 把 PID 带出来（`alive()` 的返回类型**一个字都不改** —— 上面那条钉着它）
+#   ② 窗口时间线（活/死 + PID）落 `window.jsonl`
+#   ③ 每一步**发生的那一刻**落 `attempt-<n>.jsonl`（`on_step` 今天没人接，G1）
+
+
+def test_probe_hands_back_the_pid_and_alive_keeps_its_type():
+    """`probe()` 是**加法**：`alive()` 的返回类型被上面那条测试钉着，不许变成 dict。
+
+    PID 是「窗口换过没有」唯一的证据（E2：一次跑里 PID 至少换过 3 次）。今天它被
+    `/browser/pids/alive` 的应答白送过来，然后被 `alive()` **扔掉**（G3）。
+    """
+    bid = "b" * 32
+    alive = _bit_window(lambda p, b: {"success": True, "data": {bid: 4256}})
+    p = alive.probe()
+    assert p["alive"] is True and p["pid"] == 4256
+
+    dead = _bit_window(lambda p, b: {"success": True, "data": {}})
+    assert dead.probe() == {"alive": False, "pid": None}, "死了就没有 PID 可给"
+    assert dead.alive() is False, "alive() 还是 bool"
+
+    unknown = _bit_window(lambda p, b: (_ for _ in ()).throw(RuntimeError("连不上")))
+    assert unknown.probe() == {"alive": None, "pid": None}, "问不出来 = 不知道，不是死"
+    assert unknown.alive() is None
+
+
+class ProbeWindow:
+    """一个会**换 PID** 的窗口层桩：演「窗口自己死了、重开了一个」。"""
+
+    def __init__(self, answers: list):
+        self.answers = list(answers)
+        self.alive_ = True
+
+    def set_viewport(self, width, height):
+        pass
+
+    def alive(self):
+        return self.alive_
+
+    def probe(self):
+        return self.answers.pop(0) if self.answers else {"alive": None, "pid": None}
+
+
+def test_the_window_timeline_calls_a_changed_pid_a_new_window(tmp_path):
+    """窗口时间线：一次探活一行，PID 换了就是**另一个窗口**（不是「还是那个」）。
+
+    服务是唯一知道 job 与窗口的那一层 —— 所以这条线归它（计划四 Task 1）。
+    """
+    win = ProbeWindow([{"alive": True, "pid": 4772},
+                       {"alive": True, "pid": 4772},
+                       {"alive": True, "pid": 2788}])
+    svc = service.Service(window=win, explore_dir=str(tmp_path / "explore"))
+    rows = [svc._probe_window_row("job-abc", at="2026-09-17T10:0%d:00+08:00" % i)
+            for i in range(3)]
+    assert [r["window"] for r in rows] == [1, 1, 2], "PID 4772→2788 是换了一个窗口"
+    assert [r["new_window"] for r in rows] == [True, False, True]
+    lines = [json.loads(x) for x in
+             (tmp_path / "explore" / "job-abc" / "window.jsonl").read_text(
+                 encoding="utf-8").strip().splitlines()]
+    assert lines == rows, "落盘的就是返回的那份（一行一次）"
+
+
+def test_every_step_lands_on_disk_the_moment_it_happens(tmp_path):
+    """`on_step`（`browser_agent.explore` 早就有）要有人接 —— G1：今天一个字节都不落。
+
+    为什么是**发生的那一刻**而不是跑完再写：窗口就在这一步到下一步之间死掉
+    （`operTime`→`closeTime` 那一段）。跑完再写的话，死的正是**没写下来的那一段**。
+    """
+    svc = service.Service(window=ProbeWindow([]), explore_dir=str(tmp_path / "explore"))
+    on_step = svc._journal_for("job-abc", 1)
+    on_step({"state": "start", "action": "click", "target": {"text": "Yes"},
+             "result": {"ok": True}, "note": "点了「Yes」"})
+    on_step({"state": "start", "action": "observe", "target": {},
+             "result": {"ok": True}, "note": "看了一眼页面"})
+    p = tmp_path / "explore" / "job-abc" / "attempt-1.jsonl"
+    rows = [json.loads(x) for x in p.read_text(encoding="utf-8").strip().splitlines()]
+    assert [r["note"] for r in rows] == ["点了「Yes」", "看了一眼页面"]
+    assert rows[0]["action"] == "click", "journal 的一行就是 Journey 的那一步（同一个 dict）"
+
+
+def test_job_ids_with_a_path_separator_cannot_escape_the_runtime_dir(tmp_path):
+    """job_id 是外面（HTTP）来的字符串 —— 拼路径时要挡住 `../` 那种。
+
+    落盘的位置在 `runtime/explore/<job_id>/`，一个能爬出去的 id 就等于**任意写**。
+    """
+    svc = service.Service(window=ProbeWindow([]), explore_dir=str(tmp_path / "explore"))
+    for bad in ("../../etc", "..", "a/b", ""):
+        with pytest.raises(ValueError):
+            svc._explore_dir(bad)
+
+
+def test_a_stopped_job_leaves_a_baseline_behind(tmp_path):
+    """job 停下时留一份 `baseline.json`：一个 run 的墙钟 / 轮数 / 窗口重启次数。
+
+    ⚠️ 这一条**不许**把主路带塌（与 Task 4 对 journal 的规矩同一条）：
+    记不上账是旁路的事，跑挂了是另一件事。
+    """
+    rec = Rec()
+    client = _client(graph_factory=_real_factory(rec, tmp_path),
+                     window=ProbeWindow([{"alive": True, "pid": 1}]),
+                     explore_dir=str(tmp_path / "explore"))
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    view = _reply_until_done(client, job_id)
+    assert view["status"] == "done", view
+    b = json.loads((tmp_path / "explore" / job_id / "baseline.json").read_text(encoding="utf-8"))
+    assert b["end"]["end_reason"], "汇总要说清这个 run 是怎么收的场"
+    assert b["M1"]["value"] is None, "这一趟窗口没死过 —— 寿命量不到，不许填 0"
+    assert b["M1"]["why"]
 
 
 def test_set_viewport_writes_the_whole_record_so_the_proxy_is_not_dropped():
