@@ -385,6 +385,24 @@ selftest 挂 → 走 diagnose 且**带上了 failed_step**；预算耗尽 → �
 
 ---
 
+## 跨任务接口：`template.render()` 的输入形状（Task 3 定，Task 5/7 必须对齐）
+
+Task 3 定了这个形状（写在 `agent/template.py` 的模块 docstring 里，`fixtures/reference_site.py` 是最好的样例）：
+
+```python
+render(site, success_text, states, fills, provenance) -> str
+  states  每项 {name, when, steps}
+          when = 进这个状态的页面判据（url_contains / text_contains），不匹配整组跳过
+          ↑ 为什么要有 when：防 A/B 变体、防步骤增减（blinkist 那种站每轮都不一样）
+  fills   {name: {source, kind, label, target, fallback}}
+```
+
+**Task 5（browser agent）产出的 `Journey` 必须能喂进 `states` / `fills`；Task 7 调 `render()`。**
+→ 两边**都以 `fixtures/reference_site.py` 为准**，别各写各的。
+
+⚠️ **这是本计划最容易漂的地方**：Task 3 的形状是它自己定的（计划里只说了「固定骨架」）。
+Task 5 开工前**先读那个 fixture**。
+
 ## 预检扫描（2026-09-17，派发 Task 4–8 之前）
 
 对**还没派的任务**做的一次冲突扫描（计划一那次扫出 9 个、其中一个会直接卡死，所以这是常规动作）。
