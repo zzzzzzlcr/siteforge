@@ -45,12 +45,15 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
 
 ---
 
-## 二、已确认的设计决策（8 条）
+## 二、已确认的设计决策（12 条）
 
 | # | 决策 | 内容 |
 |---|---|---|
-| **D1** | **项目与边界** | 新项目 `/company/siteforge`。**迁入** `cdpcli`（Go，4644 行）作工具层；**不动** `auto-farm-skill`（生产 py 执行路径）、worker、Bit 窗口机制 |
-| **D2** | **agent 主视角 = `observe`** | agent 看页面走一个**结构化**工具，不是 DOM 树、也不是让 agent 自己写 JS。一次调用返回可动作元素表 + 选择器候选 + 平台/环境指纹 |
+| **D1** | **项目与边界** | 新项目 `/company/siteforge`。**迁入** `cdpcli`（Go，4644 行）作工具层；**不动** `auto-farm-skill`（生产 py 执行路径）、worker、Bit 窗口机制。**MVP 不引入 OpenClaw**（见 D10） |
+| **D2** | **agent 主视角 = `observe`（且必须 CLI 化）** | agent 看页面走一个**结构化**工具，不是 DOM 树、也不是让 agent 自己写 JS。一次调用返回可动作元素表 + 选择器候选 + 平台/环境指纹。**`observe` 必须同时是 CLI 子命令（`cdp observe`）** —— 系统有两个阶段：生成阶段 agent 走 MCP，**运行阶段 py 在 worker 容器里只能调 CLI**。若只做 MCP，「selector 全挂 → 重新 observe」这条回退在运行时根本调不到 |
+| **D10** | **OpenClaw 移出 MVP** | MVP 用 **LangGraph(+Agent Server) + MCP + cdp** 即可，4 个节点跑两个框架是纯负担 —— 与「两套执行器」同类病。OpenClaw 留到 **Phase 3** 作运营入口（「修一下 georgiapower」），它接 MCP，届时零改动接入 |
+| **D11** | **perception ≠ cognition：语义不进 `observe`** | `observe` 只给**感知**（布局/视觉原始信号），不给**判断**。烘焙 `"intent":"book appointment"` / `"importance":"primary CTA"` 等于又写一套规则（`_trace_to_json` 同类病）。语义由 agent 从原始信号推 |
+| **D12** | **视觉是按需工具，不进 `observe` 契约** | `vision.inspect()` 单独一个工具，agent 需要时才调（同名按钮、SPA、shadow/iframe 里 DOM 分不出时）。**2026-09-16 已实测可行**：`deepseek-v4-flash` 看图准确（数矩形 → `2`、认颜色 → `红色`），pro 在 800 token 预算下看图返回空（reasoning 吃满） |
 | **D3** | **选择器候选 + 稳定性评级，第一版就做** | 每个元素给多个选择器候选和 `high/medium/low` 评级。**选择器是 py 准不准的头号因素** |
 | **D4** | **环境指纹随 py 落盘（契约）** | 产物头部写 `PROVENANCE` 元数据块（代理国家/DPR/UA/视口/平台/自测结果/来源）。同一个 URL 在不同代理国家是**不同的页面** |
 | **D5** | **自测 3 遍** | 在真浏览器上连跑 3 遍全过才算「自测通过」；任一遍挂 = 自测未过 + 卡在哪 |
@@ -65,13 +68,13 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ OpenClaw   入口 / skill 管理 / 工具网关                        │
-│  · 接 worker 的请求（失败单 / 新站）                            │
+│ OpenClaw   入口 / skill 管理 / 工具网关        ← **Phase 3**    │
+│  · 接运营的自然语言请求（「修一下 georgiapower」）              │
 │  · skills: bit-window、cdp-browser                            │
 └───────────────────────────┬──────────────────────────────────┘
                             │ MCP
 ┌───────────────────────────▼──────────────────────────────────┐
-│ LangGraph   业务流程 / 状态 / 人机介入                          │
+│ LangGraph   业务流程 / 状态 / 人机介入     ← MVP 从这里开始      │
 │  intake → explore → draft → lint → selftest → deliver         │
 │                    ↑        │        │                        │
 │                    └────────┴────────┘  diagnose              │
@@ -82,8 +85,9 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
 │ Browser Agent      │            │ Memory / DB                 │
 │ （LangGraph 子图）  │            │ 站点指纹 · 失败证据 ·        │
 │  ReAct over cdp    │            │ py 版本 · 自测记录 · 环境指纹 │
+│  + vision.inspect  │            │ + site_memory · correction  │
 └─────────┬──────────┘            └────────────────────────────┘
-          │ MCP（stdio）
+          │ MCP（生成阶段）
 ┌─────────▼──────────────────────────────────────────────────┐
 │ cdp 工具层（Go 内核，迁自 /company/cdpcli）                    │
 │   ┌───────────────── internal/ ─────────────────┐           │
@@ -92,6 +96,8 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
 │          │                          │                       │
 │   cmd/cdp（CLI）              cmd/mcp（MCP server）          │
 │   生产 py 脚本用               agent 用                      │
+│   ↑ 运行阶段 py 只能走这里                                    │
+│   （observe 也必须在这里有；见 D2）                            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -124,16 +130,21 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
 
 ### 4.2 工具清单（MCP 暴露给 agent）
 
-| 工具 | 作用 |
-|---|---|
-| `observe` | **主视角**：结构化页面模型（见 §4.3） |
-| `diff` | 动作前后差分：可见元素集合 / URL / 正文 / 报错 → 回答「刚才那一下有没有推进」 |
-| `click` | 拟人点击（穿透 shadow / 跨源 iframe） |
-| `form` | 填值 / 选下拉 / 勾选（拟人手势） |
-| `scroll` | 滚动（穿透） |
-| `goto` | 导航 |
-| `eval` | 逃生舱：执行 JS（只能用来**读**） |
-| `window_open` / `window_update` / `window_close` | Bit 窗口生命周期（对应 skill `bit-window`） |
+| 工具 | 作用 | 形态 |
+|---|---|---|
+| `observe` | **主视角**：结构化页面模型（见 §4.3） | **CLI + MCP 双形态**（D2） |
+| `diff` | 动作前后差分：可见元素集合 / URL / 正文 / 报错 → 回答「刚才那一下有没有推进」 | CLI + MCP |
+| `vision.inspect` | **按需**视觉：截图给多模态模型（D12）。不是主视角，只在 DOM 分不出时调 | MCP |
+| `click` | 拟人点击（穿透 shadow / 跨源 iframe） | CLI + MCP |
+| `form` | 填值 / 选下拉 / 勾选（拟人手势） | CLI + MCP |
+| `scroll` | 滚动（穿透） | CLI + MCP |
+| `goto` | 导航 | CLI + MCP |
+| `eval` | 逃生舱：执行 JS（只能用来**读**） | CLI + MCP |
+| `window_open` / `window_update` / `window_close` | Bit 窗口生命周期（对应 skill `bit-window`） | MCP（Agent 阶段专用） |
+
+**为什么 `vision.inspect` 不进 `observe`**（D11/D12）：`observe` 给感知、不给判断。
+把视觉理解塞进 `observe` 会让它慢慢长成一个专家系统（`if hero: primary CTA`），
+就是我们要逃出来的那个坑。视觉单独一个工具，agent 需要时才付出它的代价（token）。
 
 ### 4.3 `observe` 契约
 
@@ -155,7 +166,16 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
       "stability": "high",
       "text": "Schedule Now", "role": "button", "tag": "BUTTON",
       "visible": true, "occluded_by": null,
-      "shadow_depth": 2, "frame_path": ["main"], "bbox": [812, 640, 180, 44] }
+      "shadow_depth": 2, "frame_path": ["main"], "bbox": [812, 640, 180, 44],
+      // ── 感知信号（D11：只给原始事实，不给「这是主 CTA」这种判断）──
+      "region": "hero",            // header / hero / main / aside / footer / nav
+      "above_fold": true,
+      "relative_size": 1.8,        // 相对同 tag 同级元素的中位面积
+      "peer_count": 3,             // 同区域内同类元素个数（同名按钮有几个）
+      "z_index": 99999,
+      "contrast": "high",          // 前景/背景对比度分档
+      "nearby_text": ["Get Started", "Free Quote"]   // 邻近静态文本（帮助判断语境）
+    }
   ],
   "fields": [
     { "selector": "input#firstName", "alternates": ["input[name=firstName]"],
@@ -254,6 +274,34 @@ agent 在能看页面之前，必须先把这个窗口**配对**。顺序不能�
 - `from common import CDPHelper, setup_logger, report_url`
 - **动作必须走 cdp**：`self.cdp.form(...)` / `self.cdp.click(...)` / `self.cdp.scroll(...)`
 - `eval` **只准用来读**
+
+### 5.1b target 是**声明式多元描述**，运行时逐级回退
+
+py 里不写死单个选择器，写一个 target 声明（**这是 §7 那 7 类信息的落地形态**）：
+
+```python
+TARGET_SCHEDULE = {
+    "text": "Schedule Now", "role": "button",
+    "near": "hero",                       # 语境约束：优先 hero 区那个
+    "selectors": ["#schedule-now",        # 按稳定性排序，逐级回退
+                  "button[data-testid=schedule]",
+                  "div.hero > button"],
+}
+```
+
+运行时的回退链（**不是 selector 挂了就结束**）：
+
+```
+selector A 失败 → selector B 失败 → 重新 observe 当前页面 → 按 text+role+near 重定位 → 再失败才算失败
+```
+
+> **设计后果（D2 的来源）**：最后那一步「重新 observe」发生在 **worker 容器里的 py 中**，
+> 它只能调 `cdp` CLI。所以 `observe` 必须是 CLI 子命令，不能只做 MCP 工具。
+
+**为什么不能只靠 selector**：现状 `forms/sites/*.py` 是手写 JS + 硬编码 selector +
+`try/except`（实测 `ace.py` 直接 `document.querySelector('input[placeholder*="First"]')`
++ native setter + dispatchEvent —— 正是要禁掉的那种写法）。selector 一改版就挂，
+而 text+role+语境 比 CSS 路径稳。
 
 ### 5.2 契约检查器（lint）—— 把原则变成机器可执行的约束
 
@@ -373,30 +421,45 @@ stage 2  debian:bookworm-slim + python3 + LangGraph 依赖
 
 ---
 
-## 十、验收
+## 十、验收：扰动测试，不是「跑 3 遍」
 
-**「自测通过」= 在 siteforge 自己的浏览器上连跑 3 遍全过。**
+**同一环境连跑 3 遍容易假通过** —— 它证明的是「同一个条件下能重复」，
+而生产失败几乎都来自条件变化。所以自测是**扰动序列**：
 
-但必须如实标注（沿用 09-15 设计规格 R1）：**工具侧自测通过 ≠ 生产一定过** ——
-工具侧浏览器与 worker 的代理出口、指纹、时序都不是一套。
+| Run | 扰动 | 打的是什么 |
+|---|---|---|
+| 1 | 正常 | 基线 |
+| 2 | **刷新页面后重跑** | 状态残留 / 首次加载假设 |
+| 3 | **注入延迟**（每步 +2s） | 时序竞争 / 未等待就点 |
+| 4 | **换 viewport**（如 1280×800 → 1024×768） | 折叠/遮挡/坐标假设 |
+| 5 | **换代理国家** | 地区内容差异（R1 的主要来源） |
 
-端到端验收（第一版）：拿 **homebuddy**（非 shadow 站，描述现成
-`/tmp/desc_hb.txt`）跑通「描述 → observe → draft → lint → selftest 3 遍 → 交付」，
+任一遍挂 → 自测未过 + 卡在哪。**每遍淘汰的是不同类失败**，这才是「准确」的证据。
+
+仍必须如实标注（沿用 09-15 设计规格 R1）：**工具侧自测通过 ≠ 生产一定过** ——
+工具侧浏览器与 worker 的代理出口、指纹、时序都不是一套。扰动测试缩小这个差，
+但不消除它。
+
+**端到端验收（Phase 1）**：拿 **homebuddy**（非 shadow 站，描述现成
+`/tmp/desc_hb.txt`）跑通「描述 → observe → draft → lint → 扰动自测 → 交付」，
 产出一条真能跑的 `forms/sites/homebuddy.py`。
 
 ---
 
 ## 十一、范围与非目标
 
-**做**：工具层（内核 + MCP 门 + `observe`/`diff`）· py 产出契约与 lint ·
-LangGraph 图 · 两个 skill · 容器化 · 债务清理。
+**MVP（Phase 1）做**：工具层（内核 + CLI/MCP 双门 + `observe`/`diff`）·
+py 产出契约与 lint · 扰动自测 · LangGraph 图 · `site_memory`/`correction` 埋点 ·
+容器化 · 债务清理。详见 §13.1。
 
 **不做**：
+- **不引入 OpenClaw**（D10，Phase 3 再说）
 - 不改 `auto-farm-skill` 的生产 py 执行路径
 - 不做自动上线（py 进 worker 仍是人工 `docker cp`/`scp`）
 - 不做 farmer 的 failures 接口本身（是前置依赖，另立项）
 - 不重写 `clickthrough` / `json_executor` / `py_emitter`（它们留在原处，
   新项目不依赖它们；是否退役后续单独决定）
+- 不做完整知识图谱（§13.2 只埋点）
 
 ---
 
@@ -415,10 +478,61 @@ LangGraph 图 · 两个 skill · 容器化 · 债务清理。
 | **R9** | **`bit.sh update` 是残缺包装**（收 10 个参数只下发 4 个，见 §4.6）—— 拿它下发指纹/代理会静默失效 | 已定位；skill 里必须写明「直接 POST `/browser/update`」，并且 **agent 侧不要调用 `bit.sh update`** |
 | **R10** | agent 的 gost 端口未定（见 D9）；`config/gost*.chain` + `gost-watch.sh` 现在只维护 :1080/:1081 | 未定，需指定端口 |
 | **R11** | `PROXY_API`（`https://tmk.3tkj.cn/api/get_proxies`）的可用性与配额 | 未核；拉链失败时 agent 必须有降级路径（否则 explore 直接卡死） |
+| **R12** | 视觉能力 | ✅ **2026-09-16 已实测**：`deepseek-v4-flash` 看图准确（数矩形→`2`、认颜色→`红色`）。`pro` 在 800 token 预算下看图返回空（reasoning 1432 字符吃满），纯文本正常 —— 视觉走 flash，pro 要调预算或不用 |
+| **R13** | **Phase 1 的 correction 事件从哪来**（无 HITL UI） | **未决，需你定**。目前唯一渠道是「selftest 失败后工程师手工改 py 的 diff」。不定这条最小记录路径，§13.3 的 schema 就是空表 |
+| **R14** | 扰动测试里「换代理国家」那遍要重新拉链 + 重启 gost，单遍成本高 | 已知；可在 Phase 1 先跑 Run1–4，代理扰动作为可选 |
+| **R15** | `observe` 的 `relative_size` / `contrast` / `region` 计算依赖布局，**在 shadow/iframe 里是否可靠未验** | 归入 R3 的能力探针一起验 |
 
 ---
 
-## 十三、与既有资产的关系
+## 十三、分期与埋点
+
+### 14.1 分期
+
+| 期 | 做什么 | 交付判据 |
+|---|---|---|
+| **Phase 1（MVP）** | `observe`（CLI+MCP）· `draft` · `lint` · **扰动自测** · LangGraph 图 · **site_memory 与 correction 埋点** | homebuddy 出一条真能跑的 py |
+| **Phase 2** | HITL UI（人工选正确元素）· Site Memory 消费（平台经验复用） | 人工修正进得去、同类站复用得上 |
+| **Phase 3** | OpenClaw 入口（运营自然语言提单）· 自动运营交互 | 运营自助 |
+
+**MVP 不引入 OpenClaw**（D10）—— 4 个节点跑两个框架是纯负担。
+
+### 14.2 `site_memory`（Phase 1 只埋点，不做知识图谱）
+
+```jsonc
+{ "site": "www.georgiapower.com",
+  "platform": "salesforce-lightning",
+  "successful_action": { "text": "Schedule Now", "role": "button", "region": "hero",
+                         "selector_used": "#schedule-now", "fallback_level": 0 },
+  "failed_action":     { "text": "Schedule Now", "reason": "occluded_by:#onetrust-banner" },
+  "selector_pattern":  { "id_stable": false, "text_unique": true } }
+```
+
+**为什么 Phase 1 就开始记**：整套方案的经济学是「agent 贵一次、py 便宜一万次」，
+**这只在 py 真泛化时成立**。若每个站、每次改版都要重跑 agent，成本模型就崩 ——
+而那正是现在 62 个脚本各写各的、改版就挂的现状。所以 Site Memory 不是锦上添花，
+**它是成本模型的一部分**。而记忆要有价值，必须**从第一天开始积累**，不能等 Phase 2。
+
+### 14.3 Correction Event（Phase 1 定 schema + 最小记录路径）
+
+```jsonc
+{ "task": "fill form",
+  "ai_action":       { "click": "#submit" },
+  "human_correction":{ "click": "#continue" },
+  "context": { "url": "...", "dom_snapshot_ref": "...", "screenshot_ref": "...",
+               "observe_ref": "..." },
+  "diff": { "text": "Submit→Continue", "region": "main→main", "selector": "#submit→#continue" } }
+```
+
+**差异化在这里**：会操作网页的 agent 遍地都是（OpenAI / Anthropic / 各种
+Browser Agent），**「运营教 AI」才是这套系统的护城河**。所以修正数据要从第一版
+就结构化落库。
+
+⚠️ **Phase 1 有个前提没解决（需你定）**：Phase 1 **没有 HITL UI**，那 correction
+事件从哪来？目前只有一条渠道 —— **selftest 失败后由工程师手工改 py 时的 diff**。
+若不定这条最小记录路径，14.3 的 schema 就是一张空表（就是前面说的「埋点变摆设」）。
+
+## 十四、与既有资产的关系
 
 | 既有资产 | 关系 |
 |---|---|
