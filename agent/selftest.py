@@ -75,8 +75,8 @@ DEFAULT_ALLOWED_SKIPS = ("country",)
 
 #: 自测拼给产物的参数 —— 每一个都必须是产物 CLI 上真有的（`agent/template.py` §5.1c）。
 #: `test_selftest_and_the_template_agree_on_the_artifact_cli` 拿它当闸门。
-ARTIFACT_FLAGS = ("--ws-url", "--form-file", "--correlation-id", "--log-level",
-                  "--trace", "--delay")
+ARTIFACT_FLAGS = ("--ws-url", "--form-file", "--correlation-id", "--task-id",
+                  "--log-level", "--trace", "--delay")
 
 #: 跑一遍产物的上限（秒）。与 `scripts/ad-task.py:1532` 的 `communicate(timeout=600)`
 #: 同一个数：自测不该比生产更宽容，也不该更苛刻。
@@ -241,12 +241,17 @@ def _read_trace(path) -> tuple:
     return lines, bad
 
 
-def _artifact_cmd(py, ws_url, form_file, correlation_id, log_level, trace_path, delay=None) -> list:
+def _artifact_cmd(py, ws_url, form_file, correlation_id, log_level, trace_path,
+                  task_id=None, delay=None) -> list:
     """起产物的命令行。
 
     形态**照抄** `scripts/ad-task.py:1525`（生产就这么调的）：
     `python3 <script> --ws-url … --form-file … --correlation-id … --log-level INFO`，
-    成功判据是退出码 0。调试参数（`--trace` / `--delay`）是加法式的。
+    成功判据是退出码 0。`--trace` / `--delay` / `--task-id` 是加法式的。
+
+    `--task-id` 要显式给：产物成功时会往上报告接口写一条 URL 记录，那是它自带的行为
+    （关掉就等于改产物），所以**报的是哪个 id**必须由自测说了算 —— 默认 `selftest-<site>…`，
+    免得自测在生产那边留下一个看着像真任务的 id。
     """
     cmd = ["python3", str(py),
            "--ws-url", ws_url,
@@ -254,6 +259,8 @@ def _artifact_cmd(py, ws_url, form_file, correlation_id, log_level, trace_path, 
            "--correlation-id", correlation_id,
            "--log-level", log_level,
            "--trace", str(trace_path)]
+    if task_id:
+        cmd += ["--task-id", task_id]
     if delay is not None:
         cmd += ["--delay", ("%g" % float(delay))]
     return cmd
@@ -317,10 +324,12 @@ def _default_cdp_bin() -> Optional[str]:
 
 
 def _execute(name: str, py, ws_url, form_file, correlation_id, log_level, env,
-             run_dir: pathlib.Path, site: str, timeout: float, delay=None) -> Run:
+             run_dir: pathlib.Path, site: str, timeout: float, task_id=None,
+             delay=None) -> Run:
     """跑一遍产物，按 trace + 退出码下结论。"""
     trace = run_dir / ("%s.%s.trace.jsonl" % (site, name))
-    cmd = _artifact_cmd(py, ws_url, form_file, correlation_id, log_level, trace, delay)
+    cmd = _artifact_cmd(py, ws_url, form_file, correlation_id, log_level, trace,
+                        task_id, delay)
     rc, timed_out, out, err = None, False, "", ""
     try:
         done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
@@ -409,7 +418,7 @@ def run(py_path, ws_url, form_file, site, *,
 
     def _once(name, **kw):
         return _execute(name, py, ws_url, form_file, correlation_id, log_level, env,
-                        run_dir, site, timeout, **kw)
+                        run_dir, site, timeout, task_id=task_id, **kw)
 
     runs = [_once("baseline")]
 

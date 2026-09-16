@@ -411,6 +411,22 @@ def test_the_artifact_is_pointed_at_the_cdp_we_choose(env):
     assert all(cmd[0] == env["cdp"] for cmd in env["stub"].cdp_calls) or not env["stub"].cdp_calls
 
 
+def test_the_reported_task_id_is_ours_to_choose(env):
+    """产物成功时会往上报告接口写一条 URL 记录（那是它自带的行为，关掉就是改产物），
+    所以「报的是哪个 id」必须自测说了算：默认是**自测的** id，真任务的 id 要自己传。"""
+    stub = env["install"](_scripts())
+    selftest.run(str(env["py"]), WS, env["form"], SITE, run_dir=env["dir"], cdp_bin=env["cdp"],
+                 set_viewport=lambda w, h: None)
+    cid = _flag(stub.artifact_calls[0], "--correlation-id")
+    assert cid.startswith("selftest-%s_" % SITE), cid
+    assert _flag(stub.artifact_calls[0], "--task-id") == cid.split("_")[0], "别让它冒充某个真任务"
+
+    stub = env["install"](_scripts())
+    selftest.run(str(env["py"]), WS, env["form"], SITE, run_dir=env["dir"], cdp_bin=env["cdp"],
+                 set_viewport=lambda w, h: None, correlation_id="cid_1", task_id="task_9")
+    assert _flag(stub.artifact_calls[0], "--task-id") == "task_9"
+
+
 # ── 报告本身 ──────────────────────────────────────────────────────
 
 def test_the_report_carries_the_brief_shape_plus_a_status(env):
