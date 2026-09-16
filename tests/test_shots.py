@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import pathlib
 import sys
 import time
@@ -162,6 +163,36 @@ def test_the_default_root_is_runtime_shots_and_runtime_is_not_in_git(monkeypatch
     assert "runtime/" in (ROOT / ".gitignore").read_text(encoding="utf-8")
 
 
+def test_path_for_only_resolves_and_touches_nothing_on_disk(tmp_path, monkeypatch):
+    """**只解析、不建目录**的那个出口（复审 Important-2）。
+
+    读路由（`GET /shot?…` / 列图）是**未鉴权**的：它要是一个 GET 就建一个目录，
+    任何人拿一个 job_id 就能在盘上造目录 —— 所以读的那一侧必须有一个**不碰盘**的入口。
+    这里钉的就是「它一个字节都没写」。
+    """
+    monkeypatch.setenv("SITEFORGE_SHOTS_DIR", str(tmp_path / "from-env"))
+
+    where = shots.path_for("job-1")
+
+    assert where == tmp_path / "from-env" / "job-1"
+    assert not where.exists(), "只解析的那个出口**不许**建目录"
+    assert not where.parent.exists()
+    assert shots.path_for("job-1", root=tmp_path / "explicit") == tmp_path / "explicit" / "job-1"
+    assert not (tmp_path / "explicit").exists()
+    # 与写的那一侧同一条路径（同一个 job_id 不该出现在两个地方）
+    assert shots.dir_for("job-1", root=tmp_path / "explicit") == tmp_path / "explicit" / "job-1"
+
+
+def test_path_for_refuses_the_same_job_ids_as_dir_for(tmp_path):
+    """两个出口过**同一份**判据：坏 job_id 在读的那一侧一样要报错（别在别处放它过去）。"""
+    for bad in ("", ".", "..", "../x", "a/b", "/etc"):
+        with pytest.raises(ValueError):
+            shots.path_for(bad, root=tmp_path / "shots")
+        with pytest.raises(ValueError):
+            shots.dir_for(bad, root=tmp_path / "shots")
+    assert not (tmp_path / "shots").exists()
+
+
 def test_a_job_id_that_could_write_outside_the_root_is_refused(tmp_path):
     """job_id 只许是**一个**目录名：带斜杠或 `..` 就不是「参数写错了」，是**写到别处去**。
 
@@ -261,6 +292,22 @@ def test_session_capture_refuses_a_blob_that_is_not_a_png(tmp_path):
     assert list(dest.parent.iterdir()) == []
 
 
+def test_session_capture_refuses_a_half_png(tmp_path):
+    """能解码、magic 也对，但**没有写完**（没有 IEND 收尾）→ 一样拒绝。
+
+    一张「缺了下半截」的图在页面上与一张完整的图长得几乎一样，而它会被人当证据用 ——
+    所以判「完整」这件事得有判据，不能只看头几个字节。
+    """
+    dest = shots.dir_for("j", root=tmp_path) / "pause-1.png"
+    half = base64.b64encode(PNG_1X1[:40]).decode("ascii")
+
+    name, why = shots.capture_via_session(_StubSession({"png_base64": half}), dest)
+
+    assert name is None
+    assert "没拍成" in why and "IEND" in why, why
+    assert list(dest.parent.iterdir()) == []
+
+
 def test_session_capture_leaves_nothing_behind_when_the_write_fails(tmp_path):
     """写不进去（落点被一个目录占了）→ `(None, 人话)` + 不留 `.part`，也不许把占位的删掉。"""
     dest = shots.dir_for("j", root=tmp_path) / "pause-1.png"
@@ -294,7 +341,8 @@ def test_cli_capture_reads_the_ws_url_and_drops_stdout(tmp_path):
     assert dest.read_bytes() == PNG_1X1
     called = _called(log)
     assert called["argv"][:5] == ["--host", "10.0.0.9", "--port", "9333", "screenshot"], called
-    assert called["argv"][-2:] == ["--out", str(dest)], called
+    assert called["argv"][-2:] == ["--out", str(dest) + ".part"], (
+        called, "cdp 该写**临时名**（先验后换名）：目标名只由一次 replace 产生")
     assert called["stdout"] == "/dev/null", (
         "stdout 必须丢进 /dev/null，实际是 %r —— 不丢就等于把裸 base64 收回内存" % called["stdout"])
 
@@ -346,8 +394,9 @@ def test_cli_capture_refuses_an_unreadable_ws_url_and_never_points_at_localhost(
 def test_cli_capture_does_not_believe_a_zero_exit_that_wrote_nothing(tmp_path):
     """**信文件，不信退出码**：退出 0 但没写文件 = 「一半成功」，跟成功长得一样。
 
-    顺带把「上一趟留下的同名文件」这条也堵死：起进程前先把落点清掉，
-    否则一张**旧图**会被当成这一趟的证据 —— 静默的假证据比没图坏得多。
+    另一面同等重要（复审 Important-1）：这种情况下**旧图不许被删** —— 它只是这一趟没被
+    更新，删掉就成了「新的没成、旧的也没了」。返回 `(None, 人话)` 已经足够：调用方
+    不会把这个名字记进这一趟的账本。
     """
     log = tmp_path / "call.json"
     dest = shots.dir_for("j", root=tmp_path) / "pause-1.png"
@@ -355,13 +404,62 @@ def test_cli_capture_does_not_believe_a_zero_exit_that_wrote_nothing(tmp_path):
 
     name, why = shots.capture_via_cli("ws://worker:9333/x", dest, cdp_bin=cdp)
     assert name is None
-    assert "没拍成" in why and "0" in why and str(dest) in why, why
+    assert "没拍成" in why and "0" in why and dest.name in why, why
     assert not dest.exists()
 
     dest.write_bytes(b"stale png from an earlier run")   # 上一趟留下来的同名文件
     name, why = shots.capture_via_cli("ws://worker:9333/x", dest, cdp_bin=cdp)
-    assert name is None, "旧图不许被当成这一趟的"
-    assert not dest.exists(), "同名旧文件要先清掉，免得它冒充这一趟的证据"
+    assert name is None, "这一趟没成，就不许报成"
+    assert dest.read_bytes() == b"stale png from an earlier run", "失败的这一趟**不许删掉**旧图"
+    assert sorted(p.name for p in dest.parent.iterdir()) == ["pause-1.png"], "不许留临时文件"
+
+
+def test_cli_capture_refuses_a_half_written_png(tmp_path):
+    """**半张图**（写完一半就断了）不许被放到目标名上 —— 这是复审 Important-1 的核心。
+
+    假 cdp 写的是真 PNG 的**前 40 字节**（magic 与 IHDR 都在，就是没有 IEND）并**退出 0**：
+    退出码说「成了」，文件也在，只有「它是不是一张完整的图」这一条能戳穿它。
+    """
+    log = tmp_path / "call.json"
+    dest = shots.dir_for("j", root=tmp_path) / "pause-1.png"
+    half = PNG_1X1[:40]
+    cdp = _fake_cdp(tmp_path, mode="ok", log=log, body=half)
+
+    name, why = shots.capture_via_cli("ws://worker:9333/x", dest, cdp_bin=cdp)
+
+    assert name is None
+    assert "没拍成" in why and "IEND" in why, why
+    assert not dest.exists(), "半张图不许出现在目标名上"
+    assert sorted(p.name for p in dest.parent.iterdir()) == [], "临时文件也要清掉"
+
+
+def test_a_failed_name_swap_leaves_the_target_alone_and_no_leftovers(tmp_path, monkeypatch):
+    """**要么完整地出现在目标名上，要么什么都没有** —— 落盘原子性的那条断言（复审 Minor-4）。
+
+    用故障注入钉住最后一步：把 `os.replace` 弄挂（真实世界里它真会挂：跨设备、权限、
+    目标被并发换掉）。目标是**只由这一次 replace 产生**的，所以它必须**仍然不存在**；
+    临时文件也必须被清掉。
+
+    ⚠️ 这条测试的判别力在于：把「先写临时名再换名」换成直接 `dest.write_bytes()`（复审的
+    M3 变异），目标是会被直接写出来的 —— 于是这条**红**。没有它，原子性只是注释里的一句话。
+    """
+    dest = shots.dir_for("j", root=tmp_path) / "pause-1.png"
+    cdp = _fake_cdp(tmp_path, mode="ok", log=tmp_path / "call.json")
+
+    def boom(*_args, **_kwargs):
+        raise OSError(18, "Invalid cross-device link")
+
+    monkeypatch.setattr(os, "replace", boom)
+
+    name, why = shots.capture_via_session(_StubSession(_shot_result()), dest)
+    assert name is None and "没拍成" in why, why
+    assert not dest.exists(), "换名没成，目标名就不该出现（直接写目标名会留一张半成品）"
+    assert sorted(p.name for p in dest.parent.iterdir()) == [], "不许留下临时文件"
+
+    name, why = shots.capture_via_cli("ws://worker:9333/x", dest, cdp_bin=cdp)
+    assert name is None and "没拍成" in why, why
+    assert not dest.exists()
+    assert sorted(p.name for p in dest.parent.iterdir()) == []
 
 
 def test_cli_capture_gives_up_after_the_timeout(tmp_path):

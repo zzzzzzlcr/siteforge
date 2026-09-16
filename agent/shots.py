@@ -31,6 +31,11 @@ CLI 那条**必须把 stdout 丢进 /dev/null**：内核的 `cmd/screenshot.go` 
 吐**一整条裸 base64**（那里的 `--out` 是「另外还写份文件」，不是「只写文件」），
 不丢就等于绕开这一层的边界，把几 MB 的字符串顺着管道收回内存里。
 
+**两条路都「先写临时名（`<dest>.part`）→ 验过 → 换名」**：目标名只由一次 `os.replace`
+产生，于是「一张完整的图」与「旧图原样还在」之间没有第三种状态 —— 不会留下半张图，
+失败时也不会把旧图删掉。CLI 那条因此**不再需要信任退出码**：算数的是临时文件里
+是不是一张完整的 PNG（非空 + magic + `IEND` 收尾）。
+
 ## ws_url → host/port：**一份**，不是三份
 
 `Service.live_viewport()` 与 `selftest._host_port()` 各有一份自己的拆法，这里抽成
@@ -49,7 +54,7 @@ import pathlib
 import re
 import subprocess
 
-__all__ = ["DEFAULT_ROOT", "dir_for", "name_ok", "host_port",
+__all__ = ["DEFAULT_ROOT", "path_for", "dir_for", "name_ok", "host_port",
            "capture_via_session", "capture_via_cli"]
 
 _REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -87,19 +92,29 @@ def _root(root=None) -> pathlib.Path:
     return pathlib.Path(root or os.environ.get("SITEFORGE_SHOTS_DIR") or DEFAULT_ROOT)
 
 
-def dir_for(job_id: str, *, root=None) -> pathlib.Path:
-    """`<root>/<job_id>/`，**按需**建（同一趟会问很多次，得幂等）。
+def path_for(job_id: str, *, root=None) -> pathlib.Path:
+    """`<root>/<job_id>/` —— **只解析，不碰盘**（一个字节都不写）。
+
+    **读**的那一侧（列图、`GET /shot?…`）要用这个：那些请求是**未鉴权**的，
+    用 `dir_for` 就等于「一个 GET 建一个目录」—— 谁拿一个 job_id 都能在盘上造目录。
 
     job_id 只许是**一个**目录名：带斜杠或 `..` 的 id 能让图落到 `runtime/shots/` 外面去 ——
     那不是「参数写错了」，那是**写到别处去**，所以这里**报错**（`ValueError`），
-    不静默改名（改名会把图悄悄挪到一个没人找得到的地方）。
+    不静默改名（改名会把图悄悄挪到一个没人找得到的地方）。⚠️ 这是**响的**失败，
+    不是沉默的失败：调用方（Task 3 的路由）该先过一道 / `catch` 成 400，
+    而不是把它读成「这一趟没有图」。
     """
     text = str(job_id or "")
     if not _JOB_RE.fullmatch(text) or text in (".", ".."):
         raise ValueError(
             "job_id 得是单个目录名（字母数字与 . _ -，1–64 字）：%r —— "
             "带斜杠或 .. 的 id 会把图写到 runtime/shots/ 外面去" % (job_id,))
-    where = _root(root) / text
+    return _root(root) / text
+
+
+def dir_for(job_id: str, *, root=None) -> pathlib.Path:
+    """`path_for()` + **按需建**（同一趟会问很多次，得幂等）—— **写**的那一侧用这个。"""
+    where = path_for(job_id, root=root)
     where.mkdir(parents=True, exist_ok=True)
     return where
 
@@ -142,24 +157,73 @@ def _why(exc: BaseException) -> str:
     return f"{type(exc).__name__}：{said}" if said else type(exc).__name__
 
 
-def _write_png(dest: pathlib.Path, png: bytes) -> str:
-    """原子落盘（先写 `.part` 再 rename）。成了给 `""`，没成给**人话**。
+def _drop(path: pathlib.Path) -> None:
+    """把临时文件清掉。清不掉**不抛** —— 收尾失败不许盖掉上面那条人话。"""
+    try:
+        path.unlink()
+    except (OSError, ValueError):
+        pass
 
-    为什么要原子：失败留下半个文件的话，看图的人会拿一张**缺了下半截**的图当证据 ——
-    「有一张图」与「有一张完整的图」在页面上长得一样。
+
+def _png_trouble(blob: bytes) -> str:
+    """这串字节像不像一张**完整**的 PNG。像 → `""`，不像 → **人话**（说清缺什么）。
+
+    三道：非空 / PNG magic / 末尾有 `IEND` 收尾。第三道是「半张图」的判据 ——
+    写一半断掉的 PNG **头几个字节是对的**，只看 magic 会把一张缺了下半截的图放过去，
+    而它在页面上与一张完整的图长得几乎一样，还会被人当证据用。
+    （容忍末尾 16 字节里有 `IEND`：编解码器偶有尾随填充，截断则一定不在。）
     """
-    part = dest.with_name(dest.name + ".part")
+    if not blob:
+        return "它是空的（0 字节）"
+    if not blob.startswith(_PNG_MAGIC):
+        return f"它头几字节是 {blob[:8]!r}，PNG 该是 {_PNG_MAGIC!r}"
+    if b"IEND" not in blob[-16:]:
+        return "它末尾没有 IEND 收尾 —— 像一张**没写完**的图"
+    return ""
+
+
+def _promote(tmp: pathlib.Path, dest: pathlib.Path) -> str:
+    """临时文件 → 正式落点：**先验后换名**。成了给 `""`，没成给**人话**（并清掉临时文件）。
+
+    这是 CLI 那条路**唯一**算数的判据：`cdp` 的退出码只说明它**觉得自己**成了，
+    真正算数的是「临时文件里是不是一张完整的图」—— 信文件，不信退出码。
+
+    目标名**只由这一次 `os.replace` 产生**，于是「新的完整图」与「旧图原样还在」之间
+    没有第三种状态（不会出现「写了一半的新图把旧图顶掉」）。
+    """
+    try:
+        blob = tmp.read_bytes()
+    except (OSError, ValueError) as exc:
+        return f"{_FAIL}读不回刚写下的临时文件 {tmp}（{_why(exc)}）—— {dest.name} 没被动过"
+    trouble = _png_trouble(blob)
+    if trouble:
+        _drop(tmp)
+        return f"{_FAIL}刚写下的不是一张完整的 PNG：{trouble}（{dest.name} 没被动过）"
+    try:
+        os.replace(tmp, dest)
+    except (OSError, ValueError) as exc:
+        _drop(tmp)
+        return f"{_FAIL}换名成 {dest} 失败（{_why(exc)}）"
+    return ""
+
+
+def _store(dest: pathlib.Path, png: bytes) -> str:
+    """字节已经在手：**先写临时名 → 验过 → 换名**。成了给 `""`，没成给**人话**。
+
+    为什么不直接 `dest.write_bytes()`：失败留下半个文件的话，看图的人会拿一张
+    **缺了下半截**的图当证据 —— 「有一张图」与「有一张完整的图」在页面上长得一样。
+    """
+    trouble = _png_trouble(png)
+    if trouble:
+        return f"{_FAIL}解出来的不是一张完整的 PNG：{trouble}"
+    tmp = dest.with_name(dest.name + ".part")
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        part.write_bytes(png)
-        os.replace(part, dest)
+        tmp.write_bytes(png)
     except (OSError, ValueError) as exc:           # ValueError：路径本身不可用（NUL 之类）
-        try:
-            part.unlink()
-        except (OSError, ValueError):              # 收尾失败**不许**盖掉上面那条人话
-            pass
+        _drop(tmp)
         return f"{_FAIL}写不进 {dest}（{_why(exc)}）"
-    return ""
+    return _promote(tmp, dest)
 
 
 def capture_via_session(session, dest) -> tuple[str | None, str]:
@@ -185,10 +249,7 @@ def capture_via_session(session, dest) -> tuple[str | None, str]:
         png = base64.b64decode(b64.strip(), validate=True)
     except ValueError as exc:                      # binascii.Error 也是 ValueError
         return None, (f"{_FAIL}png_base64 不是合法的 base64（{len(b64)} 个字符，{_why(exc)}）")
-    if not png.startswith(_PNG_MAGIC):
-        return None, (f"{_FAIL}解出来的不是 PNG（头几字节是 {png[:8]!r}，"
-                      f"PNG 该是 {_PNG_MAGIC!r}）")
-    trouble = _write_png(dest, png)
+    trouble = _store(dest, png)
     return (None, trouble) if trouble else (dest.name, "")
 
 
@@ -205,10 +266,13 @@ def capture_via_cli(ws_url, dest, *, cdp_bin=None, timeout: float = 30.0) -> tup
     ⚠️ **stdout 丢进 /dev/null**：内核的 `screenshot` 默认往 stdout 吐裸 base64
     （`cmd/screenshot.go`），`--out` 不是「只写文件」，是「另外还写份文件」。
 
+    ⚠️ **让 cdp 写临时名**（`<dest>.part`），**验过再换名**（`_promote`）：这样
+    「写了一半的新图把旧图顶掉」不可能发生 —— 目标名只由一次 `os.replace` 产生，
+    失败时旧图**原样还在**（它只是这一趟没被更新，删掉它就成了「新的没成、旧的也没了」）。
+
     失败都**看得见**：认不出 ws_url（**绝不**退回本机）、起不来（二进制不在）、
-    它自己说没成（退出码 + stderr）。外加一条最容易骗人的：**退出码 0 但没写文件** ——
-    那是「一半成功」，跟成功长得一样，所以这里**信文件，不信退出码**，
-    而且起进程前先把落点清掉（否则上一趟的同名旧图会冒充这一趟的证据）。
+    它自己说没成（退出码 + stderr），以及最容易骗人的两条 —— **退出码 0 但没写出文件**、
+    **写出来的不是一张完整的图**。所以这里**信文件，不信退出码**。
     """
     dest = pathlib.Path(dest)
     pair = host_port(ws_url)
@@ -217,27 +281,33 @@ def capture_via_cli(ws_url, dest, *, cdp_bin=None, timeout: float = 30.0) -> tup
                       "退回 127.0.0.1:9222：那是去拍本机的**另一个**浏览器，拍出来的图会"
                       "看着像证据。请给 `bit.sh open` 吐出来的那个 ws_url。")
     host, port = pair
+    tmp = dest.with_name(dest.name + ".part")
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.unlink(missing_ok=True)               # 清掉同名旧文件（它不许冒充这一趟）
+        _drop(tmp)                                 # 清掉上次残留的临时名；**目标名不动**
     except (OSError, ValueError) as exc:
         return None, f"{_FAIL}动不了落点 {dest}（{_why(exc)}）"
 
-    argv = [_cdp_bin(cdp_bin), "--host", host, "--port", port, "screenshot", "--out", str(dest)]
+    argv = [_cdp_bin(cdp_bin), "--host", host, "--port", port, "screenshot", "--out", str(tmp)]
     try:
         done = subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                               text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
+        _drop(tmp)
         return None, (f"{_FAIL}cdp screenshot 等了 {timeout} 秒还没回来（超时）—— "
                       "窗口可能卡住了")
     except (OSError, ValueError) as exc:
+        _drop(tmp)
         return None, (f"{_FAIL}起不来 cdp（{_cdp_bin(cdp_bin)}）：{_why(exc)} —— "
                       "设 SITEFORGE_CDP_BIN 指到那个二进制")
 
     if done.returncode != 0:
+        _drop(tmp)
         said = _snippet(done.stderr or "它什么都没说", 300)
         return None, f"{_FAIL}cdp screenshot 退出码 {done.returncode}，它说：{said}"
-    if not dest.is_file() or dest.stat().st_size == 0:
-        return None, (f"{_FAIL}cdp 说成了（退出码 0），但 {dest} 没有（或 0 字节）—— "
-                      "这中间有一步在说谎，别信这张图")
-    return dest.name, ""
+    if not tmp.is_file() or tmp.stat().st_size == 0:
+        _drop(tmp)
+        return None, (f"{_FAIL}cdp 说成了（退出码 0），但它没写出 {tmp.name}（或 0 字节）"
+                      f"—— 这中间有一步在说谎，别信这张图；{dest.name} 没被动过")
+    trouble = _promote(tmp, dest)
+    return (None, trouble) if trouble else (dest.name, "")
