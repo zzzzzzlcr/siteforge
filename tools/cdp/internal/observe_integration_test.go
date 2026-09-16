@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -205,7 +206,7 @@ const hardcodedFixtureOrigin = "http://localhost:8892"
 // 最难查的路径。fixture 将来若改了端口，这里会以一条明确的错误说话，而不是静默退化。
 //
 // 跨源关系照旧：外层页走 srv.URL（httptest 绑 127.0.0.1），子帧走 localhost。
-// 主机名不同 ⇒ 既不同源也不同 site ⇒ 真正的 OOPIF（实测见 task-4-report.md 第 1 节）。
+// 主机名不同 ⇒ 既不同源也不同 site ⇒ 真正的 OOPIF（原始协议证据见 testdata/README.md「帧枚举」一节）。
 func serveCrossOriginFixtures(t *testing.T) *httptest.Server {
 	t.Helper()
 
@@ -310,14 +311,22 @@ func findField(m *PageModel, sel string) (Field, bool) {
 
 // TestObserveCrossOriginFrameMerge —— 跨源 iframe 那一档（Task 4 的交付验收）。
 //
-// 为什么必须有这一条：同源策略决定**单次 eval 看不见跨源帧的内容**。本测试的证据链
-// 就是拿这件事做对照的：
+// 为什么必须有这一条：同源策略决定**单次 eval 看不见跨源帧的内容**。判据分四段，
+// 前两段是「这条测试有没有测到跨源」的自证，后两段才是合并本身：
 //
-//	① 主帧单帧 Observe("") —— **看不见**子帧里的 #fn / #submit（反证）
-//	② 帧树里确实有一个**真的是跨源**的子帧（contentDocument === null 自证）
-//	③ ObserveAll 合并后 —— 子帧的内容**在**结果里，且每条都带着指向该子帧的 frame_path
+//	判据 1（主判据）：从**子帧自己**取 location.href，host 必须与主帧不同
+//	判据 2：父帧的 JS 够不到子帧（contentDocument === null）
+//	判据 3：ObserveAll 合并后子帧的内容**在**结果里，且带着指向该子帧的 frame_path
+//	判据 4：退化守卫（checkFrameCoverage）在「帧树被截断」时**必须喊**
 //
-// 只有 ③ 没有 ①② 的话，一个「同源的 fixture」也能让它绿 —— 那测的就不是跨源。
+// ⚠️ 判据 1 是**唯一**能同时担保「跨源」和「子帧文档真的 commit 了」的一条，
+// 所以它是主判据：判据 2 单独用会有一个没验的口子（同源帧若尚未 commit 文档，
+// contentDocument 也是 null → 同源误配照样绿）；判据 3 单独用则**同源夹具也能过**
+// （合并逻辑对同源子帧一样工作）。
+//
+// ⚠️ **不要**拿「主帧单帧观测看不见子帧里的 #fn」当跨源判据（Task 4 修复轮 1 删掉了
+// 那条）：穿透助手只跟 .shadowRoot、**从不进 contentDocument**，所以主帧在任何情况下
+// 都看不见 iframe 的内容 —— 同源也一样，它对源的异同完全不敏感。
 func TestObserveCrossOriginFrameMerge(t *testing.T) {
 	srv := serveCrossOriginFixtures(t)
 
@@ -339,31 +348,48 @@ func TestObserveCrossOriginFrameMerge(t *testing.T) {
 	childID := string(ft.ChildFrames[0].Frame.ID)
 	t.Logf("子帧 frameID=%s url=%s", childID, ft.ChildFrames[0].Frame.URL)
 
-	// ── ② 自证跨源：同源时 contentDocument 拿得到，跨源必然是 null ──
+	// ── 判据 1：从子帧自己取 location.href，host 必须与主帧不同 ──
+	var mainHref, childHref string
+	if err := c.EvalInFrame("", "location.href", &mainHref); err != nil {
+		t.Fatalf("从主帧取 location.href 失败: %v", err)
+	}
+	// 这一行本身就是「跨源子帧能 eval」的证据：它走的是 OOPIF 回退
+	// （page 目标上的 CreateIsolatedWorld 对 OOPIF 必然失败，实测 -32602）
+	if err := c.EvalInFrame(childID, "location.href", &childHref); err != nil {
+		t.Fatalf("从子帧取 location.href 失败: %v", err)
+	}
+	mainU, err := url.Parse(mainHref)
+	if err != nil {
+		t.Fatalf("主帧 href 解析失败 %q: %v", mainHref, err)
+	}
+	childU, err := url.Parse(childHref)
+	if err != nil {
+		t.Fatalf("子帧 href 解析失败 %q: %v", childHref, err)
+	}
+	// 子帧文档真的 commit 了、且就是 fixture 那一页（不是 about:blank、不是错误页）
+	// —— 顺带堵掉「帧存在 ≠ 文档就绪」那个假失败口子
+	if !strings.HasSuffix(childU.Path, "/inner.html") {
+		t.Fatalf("子帧 href = %q，不是 fixture 的 inner.html —— 子帧没加载起来或加载失败", childHref)
+	}
+	if mainU.Host == childU.Host {
+		t.Fatalf("子帧与主帧**同源**（host 都是 %q）—— 这条测试测不到跨源合并，"+
+			"先查 fixture 的 iframe src 是不是被改成了同源地址", mainU.Host)
+	}
+	t.Logf("主帧 %s ／ 子帧 %s —— host 不同（真跨源，且子帧文档已 commit）", mainHref, childHref)
+
+	// ── 判据 2：父帧的 JS 确实够不到子帧 —— 同源策略在这一对帧上真的生效 ──
+	// （判据 1 已证明子帧文档 commit 了，所以这条不再有「还没 commit 也返回 null」
+	//   那个口子；它证明的是另一半：**必须**逐帧 eval 才行）
 	var probe string
 	if err := c.EvalInFrame("", `(function(){var f=document.getElementById('ci');`+
 		`if(!f)return 'no-iframe';return f.contentDocument===null?'cross-origin':'same-origin';})()`, &probe); err != nil {
 		t.Fatalf("主帧 eval 失败: %v", err)
 	}
 	if probe != "cross-origin" {
-		t.Fatalf("iframe 不是跨源的（contentDocument 探测 = %q）—— 这条测试就测不到跨源合并", probe)
+		t.Fatalf("主帧能碰到子帧文档（contentDocument 探测 = %q）—— 这一对帧不是跨源", probe)
 	}
 
-	// ── ① 反证：单帧 Observe 看不见子帧里的东西 —— 这正是 ObserveAll 存在的理由 ──
-	main, err := c.Observe("")
-	if err != nil {
-		t.Fatalf("主帧 observe 失败: %v", err)
-	}
-	if _, ok := findField(main, "#fn"); ok {
-		t.Errorf("主帧单帧 observe 里出现了子帧的字段 #fn —— 那就不需要 ObserveAll 了，先查这条测试是不是在测同源")
-	}
-	if _, ok := findAction(main, "#submit"); ok {
-		t.Errorf("主帧单帧 observe 里出现了子帧的动作 #submit")
-	}
-	t.Logf("主帧单帧观测：fields=%d actions=%d text=%q（outer.html 只有 h1 + iframe，本就该是空的）",
-		len(main.Fields), len(main.Actions), main.PageText)
-
-	// ── ③ 合并 ──
+	// ── 判据 3：合并 ──
 	merged, err := c.ObserveAll()
 	if err != nil {
 		t.Fatalf("ObserveAll 失败: %v", err)
@@ -424,13 +450,41 @@ func TestObserveCrossOriginFrameMerge(t *testing.T) {
 		t.Errorf("merged.ShadowRoots = %d，应 >= 2（inner.html 的两层 shadow root 没并进来）", merged.ShadowRoots)
 	}
 
-	// 正常路径上不该有「某帧取不到」的痕迹：有的话说明有帧静默失败了，
-	// 而不是「少的那几条本来就没有」
+	// 判据 3 附加：正常路径上 diagnostics 必须是**空的**。
+	// 有 frame-error = 有帧静默失败了（不是「那几条本来就没有」）；
+	// 有 frame-blind = 守卫自己喊了（枚举可能不完整）。两种都得让这条测试红，
+	// 否则诊断通道就成了摆设 —— 这正是本项目最忌的那种「写了但没人验证会响」。
+	if len(merged.Diagnostics) != 0 {
+		t.Errorf("正常路径不该有诊断，实际 %d 条: %+v", len(merged.Diagnostics), merged.Diagnostics)
+	}
+	// 遮挡物通道要干净：帧的问题**不许**再混进 obstructions
+	// （混进去会让忽略 kind 的消费者拿 frameId 当选择器去点）
 	for _, o := range merged.Obstructions {
-		if o.Kind == frameErrorKind {
-			t.Errorf("有取不到的帧被记进 obstruction: selector=%s text=%s", o.Selector, o.Text)
+		if o.Kind == DiagKindFrameError {
+			t.Errorf("帧取不到被记进了 obstructions（kind=%s）—— 两个通道没分开", o.Kind)
 		}
 	}
-	t.Logf("合并后：fields=%d actions=%d shadow_roots=%d page_text=%d字",
-		len(merged.Fields), len(merged.Actions), merged.ShadowRoots, len([]rune(merged.PageText)))
+	t.Logf("合并后：fields=%d actions=%d shadow_roots=%d page_text=%d字 diagnostics=%d",
+		len(merged.Fields), len(merged.Actions), merged.ShadowRoots, len([]rune(merged.PageText)),
+		len(merged.Diagnostics))
+
+	// ── 判据 4：退化守卫必须会喊 ──
+	//
+	// 把帧树截成「只剩主帧」—— 这正是 DOM 穿透失败时 GetFrameTreeWithEvents 返回的形态
+	// （本机实测：跨源页上裸 page.getFrameTree 就是这个输出，见 testdata/README.md）。
+	// 此时主帧 DOM 里明明有 iframe 元素，枚举却报 0 个子帧 → 守卫必须开口。
+	// 不这么测的话，它就是一段从没被观察到「会响」的代码。
+	truncated := &page.FrameTree{Frame: ft.Frame} // 同一次导航的帧树，掐掉所有子帧
+	guardModel := &PageModel{}
+	c.checkFrameCoverage(guardModel, "", truncated, []string{mainFramePath})
+	blind := false
+	for _, d := range guardModel.Diagnostics {
+		if d.Kind == DiagKindFrameBlind {
+			blind = true
+		}
+	}
+	if !blind {
+		t.Errorf("帧树被截断成「只剩主帧」之后守卫没喊 —— 跨源子帧整个消失会变成静默的（diagnostics=%+v）",
+			guardModel.Diagnostics)
+	}
 }

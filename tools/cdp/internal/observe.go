@@ -16,6 +16,20 @@ type PageModel struct {
 	Fields       []Field       `json:"fields"`
 	OptionGroups []OptionGroup `json:"option_groups"`
 	Obstructions []Obstruction `json:"obstructions"`
+	// Diagnostics 是**观测者自己的问题**，与「页面上的东西」分开：
+	//   - Obstructions = 页面上真有个 cookie 横幅挡着（有 selector / dismiss_selector 语义）
+	//   - Diagnostics  = 这一次观测本身不完整（某帧没取到、帧枚举可能退化了）
+	// 混用会让消费者拿错东西（把 frameId 当选择器去点）。kind 用导出的常量。
+	Diagnostics []Diagnostic `json:"diagnostics"`
+}
+
+// Diagnostic 是一条「这里我没看清」的记录。
+//
+// FramePath 指向出问题的那一帧（主帧是 ["main"]），agent/Console 顺着能查是哪一帧。
+type Diagnostic struct {
+	Kind      string   `json:"kind"`
+	Detail    string   `json:"detail"`
+	FramePath []string `json:"frame_path"`
 }
 
 type Action struct {

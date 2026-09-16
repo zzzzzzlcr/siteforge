@@ -27,6 +27,58 @@
 
 （`outer_same.html` 是相对路径的同源对照，没被这条测试用到：它验不到跨源。）
 
+## 帧枚举：为什么 `ObserveAll` 用 `GetFrameTreeWithEvents`（原始协议证据）
+
+**结论先说**：本机 Chrome 150.0.7871.124 headless（`127.0.0.1:9222`）实测，
+page 目标的 **`Page.getFrameTree` 不报 OOPIF（跨源）子帧** —— 同源子帧报，跨源子帧
+**一个都不报**。所以 `ObserveAll` 枚举走 `GetFrameTreeWithEvents`（帧树 ∪ DOM 穿透），
+裸 `GetFrameTree` 会让它对**所有**跨源 iframe 视而不见。这段 JSON 是那条结论的原始凭据，
+存在这里而不是工作区的报告里 —— 报告会被删，仓库不会。
+
+### ① 跨源子帧：`Page.getFrameTree` 的响应里**根本没有 `childFrames` 这个键**
+
+页面：`outer.html`（iframe 指向 `http://localhost:<port>/inner.html`），主帧 session，裸协议：
+
+```json
+{"frameTree":{"frame":{"id":"E5DDABB7C915EBF68A2AFBF0F4D7AA67","loaderId":"BF4923C1C0CDC9489ED68983CC084B44",
+"url":"http://127.0.0.1:44759/outer_dyn.html","domainAndRegistry":"","securityOrigin":"http://127.0.0.1:44759",
+"securityOriginDetails":{"isLocalhost":true},"mimeType":"text/html","adFrameStatus":{"adFrameType":"none"},
+"secureContextType":"SecureLocalhost","crossOriginIsolatedContextType":"NotIsolated","gatedAPIFeatures":[]}}}
+```
+
+**不是 auto-attach 的问题**：在 page session 上先 `Target.setAutoAttach({autoAttach:true,
+waitForDebuggerOnStart:false,flatten:true})`、等 2s 再查，响应**逐字节相同**，子帧数仍是 0。
+
+**同源对照**（`outer_same.html`，相对路径 `src`）：同一个命令**报**子帧 ——
+`childFrames` 里是 `{id: "FE79CEAF…", name: "ci", url: "…/inner.html"}`。
+一句话：**只有跨源的那些消失，同源的一个不少**。
+
+### ② 帧确实存在，只是不从这条路出来
+
+- `Target.getTargets` 里有 `{type: "iframe", id: "F0060DA68E16997570DF113FD60866B1",
+  url: "http://localhost:44139/inner.html"}`，而同一轮 `GetFrameTreeWithEvents`
+  报的子帧 `frameID` **与这个 targetId 完全相同**（OOPIF：targetId == frameId）。
+- 那个子帧 target **自己的** `Page.getFrameTree` 里带着父子关系：
+  `{"frame":{"id":"F0060DA68E16997570DF113FD60866B1","parentId":"E5DDABB7C915EBF68A2AFBF0F4D7AA67", …}}`
+  —— 所以不是 Chrome 不知道，是 page 目标这一路不带。
+- 子帧的 eval 走的是 OOPIF 回退：page 目标上 `CreateIsolatedWorld(子帧)`
+  报 `No frame for given id found (-32602)`，然后 `Target.attachToTarget(frameId)` 才成功。
+
+### ③ 已知缺口：**跨源帧里面的**子帧，枚举看不见（当前会发诊断，但收不进来）
+
+实测 `main(127.0.0.1) → OOPIF(localhost) → 同源子帧`（两层）：
+
+| 来源 | 结果 |
+|---|---|
+| `GetFrameTreeWithEvents` | 2 帧（主帧 + OOPIF）—— **看不见 OOPIF 里面的那一层** |
+| OOPIF target 自己的 `Page.getFrameTree` | **有**：`childFrames:[{id:"62F0B452…", parentId:"BCC65730…", name:"ci", url:"…/inner.html"}]` |
+
+原因：OOPIF 的 `<iframe>` 元素在**父**文档里，父文档的 DOM 穿透看得见它；但**跨进程
+没有 `contentDocument`**，所以穿不进 OOPIF 内部，它的子孙帧就整个消失。
+要真收进来得**逐 OOPIF target 取树**（`Target.getTargets` → attach → `Page.getFrameTree`，
+机制已实测可行），Task 4 没做 —— 它现在由 `ObserveAll` 的逐帧对账守卫兜成一条
+`diagnostics`（`kind:"frame-blind"`），**不再静默**，但内容确实拿不到。
+
 ## ⚠️ `shadow.html` 与探针副本**不同**（有意为之，别"修回去"）
 
 ```diff
