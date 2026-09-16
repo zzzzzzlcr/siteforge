@@ -306,6 +306,10 @@ type stubBrowser struct {
 	err   error
 
 	iframeSelector string
+	// landingDiags 是桩攒下的落点判据诊断（form 那条路只有它能说话）
+	landingDiags []internal.Diagnostic
+	// clickResult 让用例决定 click 回执长什么样（默认给一个普通的成功回执）
+	clickResult *internal.ClickResult
 }
 
 func (s *stubBrowser) rec(call string) { s.calls = append(s.calls, call) }
@@ -337,6 +341,9 @@ func (s *stubBrowser) ClickElementStrict(selector, frameID string, track bool) (
 	if s.err != nil {
 		return nil, s.err
 	}
+	if s.clickResult != nil {
+		return s.clickResult, nil
+	}
 	return &internal.ClickResult{X: 1, Y: 2, MatchCount: 1, TargetDisabled: false}, nil
 }
 
@@ -363,6 +370,14 @@ func (s *stubBrowser) ScrollToElement(selector string, track bool) error {
 func (s *stubBrowser) ScrollIntoView(selector, frameID string) error {
 	s.rec(callf("ScrollIntoView", selector, frameID))
 	return s.err
+}
+
+// LandingDiags **不进 calls**：它是读一份**回执**，不是一次内核**动作**。
+// 上面那条「一次 form 只许打一次内核调用」的断言说的是动作 —— 把读回执混进去
+// 会让它变成「一次 form 只许打一次调用 + 一次读」，而那是另一件事
+// （放宽断言正是这一轮反复被点名的病）。
+func (s *stubBrowser) LandingDiags() []internal.Diagnostic {
+	return s.landingDiags
 }
 
 func (s *stubBrowser) ResolveIframeSelector(frameID string) (string, error) {

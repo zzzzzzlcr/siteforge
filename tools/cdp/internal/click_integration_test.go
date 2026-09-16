@@ -498,6 +498,18 @@ func TestDispatchMouseClick_NodeRebuildIsNotACover(t *testing.T) {
 			"重渲染发生在**按下之前**（MouseMoved 那一段）—— 判据窗口不含它"},
 		{"mousedown 触发重渲染", cloneOn("mousedown"),
 			"重渲染发生在**按下与抬起之间**，但没有任何东西盖上来"},
+		{"mousedown 重建且属性变了", `wrap.addEventListener('mousedown', function(e){
+				var b = document.getElementById('rb-btn');
+				if (!b || e.target.id !== 'rb-btn') return;
+				window.__rb.rebuilt++;
+				// ⚠️ 这一格与上一格**考的不是同一条闸**：带上一个不同的属性之后，
+				// 「指纹逐字相同」那条不成立，只剩「原目标已不在文档里」能救它。
+				// 没有这一格，连通性那条判据**没有断言**（上面两格都被指纹那条接住了）。
+				var c = b.cloneNode(true);
+				c.setAttribute('data-pass', '2');
+				b.parentNode.replaceChild(c, b);
+			});`,
+			"重渲染 + 属性变了 → 指纹那条判据不成立，只有「原目标已不在文档里」能拦住误扣"},
 		{"悬停浮出一层覆盖物", `wrap.addEventListener('mousemove', function(){
 				window.__rb.rebuilt++;
 				var o = document.createElement('div');
@@ -556,6 +568,164 @@ func TestDispatchMouseClick_NodeRebuildIsNotACover(t *testing.T) {
 		t.Logf("%s：重建 %d 次；被测（withheld=%v）doc: mouseup=%d click=%d ／ 裸行为 doc: mouseup=%d click=%d（%s）；note=%q",
 			c.name, got.Rebuilt, result.ReleaseWithheld, got.DocMouseUps, got.DocClicks,
 			raw.DocMouseUps, raw.DocClicks, c.why, result.LandingNote)
+	}
+}
+
+// ── G1 修复轮 2 · N-2：浮层长在**目标自己的子树里** → 那一次点击必须照发 ──────────
+//
+// 复审实测的那一格：在目标自己的子树里浮出一层（不带 `pointer-events:none`）时，
+// 闸的两条取证**全部成立** → 一次正常点击的 click 被**整根拿走**（裸行为 1/1 → 被测 0/0）。
+//
+// 判据（本轮补的 ancestry）：**「里面长出来」不是「外面盖上来」**。
+// 浮层长在目标自己的子树里时，递出去的事件照样从目标身上过（冒泡），目标这一侧
+// 并没有被绕开 —— 而「盖上来」那种（Portal / backdrop / 别人家的浮层）才是
+// 「这一次抬起交给了另一个东西」。
+//
+// 三格，**覆盖物的 markup 完全一样，只有它的父亲不同**（这样差值只能来自 ancestry）：
+//
+//	A 长在按钮里（子树内）        → 放行，点击照发（事件照样冒泡到按钮上）
+//	B 挂在 body 上（子树外）      → **扣下**（对照：证明 A 不是「一律不扣」换来的）
+//	C 长在按钮里 + pointer-events:none → 命中测试根本不看它（实测不扣）—— 这一格是
+//	   防止 ancestry 判据把「命中栈压根没变」那条路弄坏（复审点名别弄坏它）
+func TestDispatchMouseClick_OverlayInsideTargetSubtreeIsNotACover(t *testing.T) {
+	host := os.Getenv("CDP_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := 9222
+
+	pages, err := ListPageTargets(host, port, false)
+	if err != nil || len(pages) == 0 {
+		t.Skipf("Chrome not available: %v", err)
+	}
+
+	client, err := NewClient(host, port)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	defer client.Disconnect()
+
+	// 清场：页面是长命的，前几轮留下的文档级监听器会让计数带上常数偏移。
+	if _, err := client.Navigate("about:blank", ""); err != nil {
+		t.Fatalf("清场失败: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	type counts struct{ Clicks, MouseUps, Covers int }
+
+	// build(where, pointerNone)：where 取 "inside"（按钮里）或 "outside"（body 上）
+	build := func(where string, pointerNone bool) string {
+		pos := "position:absolute;left:0;top:0;right:0;bottom:0;z-index:5"
+		parent := `document.getElementById('n2-btn')`
+		if where == "outside" {
+			pos = "position:fixed;left:0;top:0;right:0;bottom:0;z-index:5"
+			parent = `document.body`
+		}
+		pe := ""
+		if pointerNone {
+			pe = ";pointer-events:none"
+		}
+		return `(function(){
+			document.body.innerHTML =
+				'<div id="n2-wrap" style="position:fixed;left:100px;top:100px;width:300px;height:60px;background:#eee">' +
+				'<button id="n2-btn" style="position:relative;width:100%;height:100%">cover me</button></div>';
+			window.__n2 = { clicks: 0, mouseups: 0, covers: 0 };
+			var wrap = document.getElementById('n2-wrap');
+			wrap.addEventListener('click', function(){ window.__n2.clicks++; });
+			wrap.addEventListener('mousedown', function(){
+				if (document.getElementById('n2-cover')) return;
+				window.__n2.covers++;
+				var o = document.createElement('div');
+				o.id = 'n2-cover';
+				o.style.cssText = '` + pos + pe + `;background:rgba(0,0,0,.1)';
+				` + parent + `.appendChild(o);
+			});
+			if (!window.__n2Hooked) {
+				window.__n2Hooked = true;
+				document.addEventListener('mouseup', function(){ if (window.__n2) window.__n2.mouseups++; }, true);
+			}
+			return 'ok';
+		})()`
+	}
+	read := func(who string) counts {
+		t.Helper()
+		var raw string
+		if err := client.EvalInFrame("", `JSON.stringify(window.__n2)`, &raw); err != nil {
+			t.Fatalf("%s：读状态失败: %v", who, err)
+		}
+		var m counts
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			t.Fatalf("%s：状态解不开: %v (%s)", who, err, raw)
+		}
+		return m
+	}
+	sub := func(a, b counts) counts {
+		return counts{Clicks: a.Clicks - b.Clicks, MouseUps: a.MouseUps - b.MouseUps, Covers: a.Covers - b.Covers}
+	}
+
+	for _, c := range []struct {
+		name        string
+		where       string
+		pointerNone bool
+		wantWithheld bool
+		why         string
+	}{
+		{"A 浮层长在按钮里", "inside", false, false,
+			"浮层在目标**自己的子树里**：事件照样从目标身上过（冒泡），目标没被绕开 —— 扣下等于把一次正常点击整根拿走"},
+		{"B 浮层挂在 body 上", "outside", false, true,
+			"对照：同一个浮层的 markup，只是父亲换成了 body（子树外）—— 这才是「外面盖上来」"},
+		{"C 浮层在按钮里 + pointer-events:none", "inside", true, false,
+			"命中测试根本不看它（实测不扣）—— 这一格是防 ancestry 判据把「命中栈压根没变」那条路弄坏"},
+	} {
+		// 基线：绕过我们的门的原始三连（浏览器裸行为）
+		var r string
+		if err := client.EvalInFrame("", build(c.where, c.pointerNone), &r); err != nil {
+			t.Fatalf("%s：夹具注入失败: %v", c.name, err)
+		}
+		snap := read(c.name + "（基线前）")
+		rect, err := client.GetElementCenter("#n2-btn", "")
+		if err != nil {
+			t.Fatalf("%s：取坐标失败: %v", c.name, err)
+		}
+		for _, typ := range []input.MouseType{input.MouseMoved, input.MousePressed, input.MouseReleased} {
+			if err := client.dispatchMouseEvent(typ, rect["centerX"], rect["centerY"]); err != nil {
+				t.Fatalf("%s：基线发事件失败: %v", c.name, err)
+			}
+		}
+		time.Sleep(150 * time.Millisecond)
+		raw := sub(read(c.name+"（基线）"), snap)
+
+		// 被测路径
+		if err := client.EvalInFrame("", build(c.where, c.pointerNone), &r); err != nil {
+			t.Fatalf("%s：夹具复位失败: %v", c.name, err)
+		}
+		snap = read(c.name + "（被测前）")
+		result, err := client.ClickElement("#n2-btn", "", false)
+		if err != nil {
+			t.Fatalf("%s：ClickElement 失败: %v", c.name, err)
+		}
+		time.Sleep(150 * time.Millisecond)
+		got := sub(read(c.name), snap)
+
+		if got.Covers == 0 {
+			t.Fatalf("%s：夹具**没有**浮出那一层（covers=0）—— 这条测试什么都没考到（%s）", c.name, c.why)
+		}
+		if result.ReleaseWithheld != c.wantWithheld {
+			t.Errorf("%s：release_withheld=%v，want %v（%s）；covered_by=%q note=%q",
+				c.name, result.ReleaseWithheld, c.wantWithheld, c.why, result.CoveredBy, result.LandingNote)
+		}
+		if !c.wantWithheld {
+			if got.MouseUps != raw.MouseUps || got.Clicks != raw.Clicks {
+				t.Errorf("%s：被测 mouseup=%d click=%d，浏览器裸行为 mouseup=%d click=%d —— "+
+					"门比裸行为**少给了**东西（%s）", c.name, got.MouseUps, got.Clicks,
+					raw.MouseUps, raw.Clicks, c.why)
+			}
+		} else if got.MouseUps != 0 {
+			t.Errorf("%s：说要扣下，文档却收到了 %d 个 mouseup", c.name, got.MouseUps)
+		}
+		t.Logf("%s：浮层 %d 次；withheld=%v 被测 mouseup=%d click=%d ／ 裸行为 mouseup=%d click=%d；note=%q",
+			c.name, got.Covers, result.ReleaseWithheld, got.MouseUps, got.Clicks,
+			raw.MouseUps, raw.Clicks, result.LandingNote)
 	}
 }
 
@@ -650,6 +820,13 @@ func TestClickElement_CrossSiteFrameReportsBlindLanding(t *testing.T) {
 	for _, d := range client.LandingDiags() {
 		if d.Kind == DiagKindLandingBlind {
 			blindDiags++
+			// frame_path 要写**这次命中落在哪一帧**，不是一律 ["main"]
+			// （复审点名：一律写主帧在跨帧时不实）。这一格命中的是父页里那个
+			// <iframe> 元素，所以那一帧就是命中测试报的 frame。
+			if len(d.FramePath) != 1 || d.FramePath[0] != string(h.FrameID) {
+				t.Errorf("诊断的 frame_path = %v，want [%q]（命中测试报的那一帧）—— "+
+					"一律写 [\"main\"] 在跨帧时不实", d.FramePath, h.FrameID)
+			}
 		}
 	}
 	if blindDiags == 0 {

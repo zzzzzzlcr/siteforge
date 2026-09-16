@@ -46,6 +46,14 @@ type Browser interface {
 	ScrollIntoView(selector, frameID string) error
 	ResolveIframeSelector(frameID string) (string, error)
 	Navigate(url, frameID string) (*page.FrameTree, error)
+	// LandingDiags 是**落点判据**（click 的 G1）攒下的诊断：抬起被扣下、
+	// 或者判据在这一点上根本跑不了（跨站子帧）。
+	//
+	// ⚠️ 为什么这道门非有不可（2026-09-17 复审实测）：`click` 走的是返回的
+	// `*ClickResult`（那几个字段本来就在里面），但 `form` 这条路上原先
+	// **一个字节都传不出来** —— agent 拿到的是「填好了」，看不到「这一次点击
+	// 只发出了按下的那一半」。**agent 用的就是这道门，不是 CLI。**
+	LandingDiags() []internal.Diagnostic
 }
 
 // Handler 执行一次工具调用。b 是**这次调用**要打的那个浏览器（由 cmd/mcp 现连现给，

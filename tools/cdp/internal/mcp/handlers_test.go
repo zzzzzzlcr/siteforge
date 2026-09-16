@@ -175,6 +175,102 @@ func TestFormHandlerRoutesToTheRightKernelCall(t *testing.T) {
 	}
 }
 
+// TestFormHandlerSurfacesLandingFacts —— 落点判据（G1）说的话必须从**这道门**出来。
+//
+// 复审实测：CLI 那条路 ✅（stderr 出那行、选项照常选中），而**走 MCP 门时 agent
+// 拿到的是「填好了」** —— 一个字节都没有。**agent 用的就是这道门，不是 CLI**，
+// 所以「扣下抬起不静默」如果只在 CLI 上成立，对真正的消费方等于没做。
+//
+// 三格：
+//
+//	① 判据没话可说 → 那几个键**不出现**（常驻的提示等于没有提示）；
+//	② 扣下了抬起 → landing_note 说得出来，landing_blind=false，结构化那条也在；
+//	③ 判据瞎了（跨站子帧）→ landing_blind=true（「这一帧没有保护」这件事必须能听见）。
+func TestFormHandlerSurfacesLandingFacts(t *testing.T) {
+	// ①
+	out, err := runHandler(t, "form", `{"selector":"#s","select":"CA"}`, &stubBrowser{})
+	if err != nil {
+		t.Fatalf("form 失败: %v", err)
+	}
+	raw, _ := json.Marshal(out)
+	var plain map[string]any
+	if err := json.Unmarshal(raw, &plain); err != nil {
+		t.Fatalf("回执解不开: %v (%s)", err, raw)
+	}
+	for _, k := range []string{"landing_note", "landing_blind", "landing"} {
+		if _, ok := plain[k]; ok {
+			t.Errorf("判据一句话都没说，回执里却带着 %q —— 常驻的提示等于没有提示（%s）", k, raw)
+		}
+	}
+
+	// ②
+	withheld := "**抬起已扣下**：按下之后落点换成了 <div class=\"MuiBackdrop-root\">（原目标还在文档里）"
+	b2 := &stubBrowser{landingDiags: []internal.Diagnostic{{
+		Kind: internal.DiagKindLandingWithheld, Detail: withheld, FramePath: []string{"main"},
+	}}}
+	out2, err := runHandler(t, "form", `{"selector":"#s","select":"CA"}`, b2)
+	if err != nil {
+		t.Fatalf("form 失败: %v", err)
+	}
+	raw2, _ := json.Marshal(out2)
+	var m2 map[string]any
+	if err := json.Unmarshal(raw2, &m2); err != nil {
+		t.Fatalf("回执解不开: %v (%s)", err, raw2)
+	}
+	note, _ := m2["landing_note"].(string)
+	if !strings.Contains(note, "抬起已扣下") {
+		t.Errorf("扣下了抬起，回执里的 landing_note = %q —— agent 会以为这一步是普通的填值（%s）", note, raw2)
+	}
+	if blind, _ := m2["landing_blind"].(bool); blind {
+		t.Errorf("扣下抬起不是「判据瞎了」，landing_blind 却被置成 true（%s）", raw2)
+	}
+	if list, _ := m2["landing"].([]any); len(list) != 1 {
+		t.Errorf("结构化那条也该在（landing 有 %d 条，want 1）—— 机器读它、人读 note（%s）",
+			len(list), raw2)
+	}
+
+	// ③
+	b3 := &stubBrowser{landingDiags: []internal.Diagnostic{{
+		Kind: internal.DiagKindLandingBlind,
+		Detail: "落点判据在这一点不可用：命中栈停在 <iframe> 上（跨站子帧）……",
+		FramePath: []string{"main"},
+	}}}
+	out3, err := runHandler(t, "form", `{"selector":"#s","select":"CA"}`, b3)
+	if err != nil {
+		t.Fatalf("form 失败: %v", err)
+	}
+	raw3, _ := json.Marshal(out3)
+	var m3 map[string]any
+	_ = json.Unmarshal(raw3, &m3)
+	if blind, _ := m3["landing_blind"].(bool); !blind {
+		t.Errorf("判据在这一点跑不了（跨站子帧），landing_blind 却没置 —— 这一帧上的点击看起来"+
+			"和别处一样「有保护」，其实一点都没有（%s）", raw3)
+	}
+}
+
+// TestClickHandlerSurfacesLandingFacts —— click 那条路走的是**返回的 ClickResult**，
+// 落点那几个字段本来就在结构体里；这条钉住它们**真的到得了 agent**
+// （门那头是 json.Marshal(out)，所以断言打在编出来的 JSON 上）。
+func TestClickHandlerSurfacesLandingFacts(t *testing.T) {
+	b := &stubBrowser{clickResult: &internal.ClickResult{
+		X: 1, Y: 2, MatchCount: 1,
+		ReleaseWithheld: true,
+		CoveredBy:       `<div class="MuiBackdrop-root">`,
+		LandingNote:     "**抬起已扣下**：……",
+	}}
+	out, err := runHandler(t, "click", `{"selector":"#btn"}`, b)
+	if err != nil {
+		t.Fatalf("click 失败: %v", err)
+	}
+	raw, _ := json.Marshal(out)
+	for _, want := range []string{`"release_withheld":true`, `"covered_by"`, `"landing_note"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("click 回执里没有 %s —— agent 拿到的是「点完了」，看不到「这一次只发出了"+
+				"按下的那一半」：%s", want, raw)
+		}
+	}
+}
+
 // TestScrollHandlerResolvesIframeFirst 抄的是 CLI 的 scroll：跨源 iframe 里
 // 的元素**够不着**（选择器是外层文档的坐标系），得先用 frame_id 换出 iframe 元素
 // 的选择器，滚它，再滚里面那个元素。漏掉第一步的话，滚动**不报错**、只是没动。

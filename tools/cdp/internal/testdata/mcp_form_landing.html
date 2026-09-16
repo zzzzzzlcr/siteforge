@@ -1,0 +1,50 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>portal dropdown（落点判据的 e2e 夹具）</title></head>
+<body style="margin:0">
+<!--
+  MCP 门上的 form：控件在 wrapper 里，选项 Portal 到 body（真站 MUI 形态），
+  而 mousedown 铺上来的 backdrop **收到 mouseup 就把菜单关掉** ——
+  也就是「我们自己的抬起把刚打开的菜单又关掉」那条链的形状。
+
+  判据要能：① 抬起被扣下（`landing_note` 必须到得了 agent），
+            ② 覆盖者一个事件都不该收到（`__backdropMouseUps` 恒 0），
+            ③ 选项照常选得中（`__sel`）。
+-->
+<div id="mcpf-wrap" style="position:fixed;left:100px;top:100px;width:300px;height:50px;background:#eee;z-index:1">
+  <!-- 刻意不给 inline onclick：控件只能靠 [role=combobox] 那一趟找到 -->
+  <div id="mcpf-control" role="combobox" aria-haspopup="listbox" aria-expanded="false" tabindex="0"
+       style="width:100%;height:100%;line-height:50px">--</div>
+</div>
+<input id="mcpf-input" type="text" placeholder="plain" style="position:fixed;left:100px;top:250px;width:300px;height:40px">
+<script>
+  window.__sel = '';
+  window.__backdropMouseUps = 0;
+  window.__mcpfClose = function () {
+    var m = document.getElementById('mcpf-menu'); if (m) m.parentNode.removeChild(m);
+    var b = document.getElementById('mcpf-backdrop'); if (b) b.parentNode.removeChild(b);
+    document.getElementById('mcpf-control').setAttribute('aria-expanded', 'false');
+  };
+  document.getElementById('mcpf-control').addEventListener('mousedown', function () {
+    if (document.getElementById('mcpf-menu')) return;
+    var m = document.createElement('ul');
+    m.id = 'mcpf-menu';
+    m.setAttribute('role', 'listbox');
+    m.style.cssText = 'position:fixed;left:100px;top:150px;width:300px;margin:0;padding:0;list-style:none;background:#fff;z-index:6000';
+    ['Audi', 'BMW'].forEach(function (v) {
+      var li = document.createElement('li');
+      li.setAttribute('role', 'option');
+      li.textContent = v;
+      li.style.cssText = 'height:40px;line-height:40px';
+      li.addEventListener('click', function () { window.__sel = v; window.__mcpfClose(); });
+      m.appendChild(li);
+    });
+    document.body.appendChild(m);
+    var b = document.createElement('div');
+    b.id = 'mcpf-backdrop';
+    b.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;z-index:5000;background:rgba(0,0,0,.2)';
+    b.addEventListener('mouseup', function () { window.__backdropMouseUps++; window.__mcpfClose(); });
+    document.body.appendChild(b);
+    document.getElementById('mcpf-control').setAttribute('aria-expanded', 'true');
+  });
+</script>
+</body></html>

@@ -1091,8 +1091,13 @@ type hitFacts struct {
 
 // hitFactsOf 读一次命中的事实（一次 describeNode 出三条产出）。
 //
-// 只在落点**变了**的罕见路径上调（见 dispatchMouseClick）。读不到就返回 err，
-// 调用方据此**不扣**（正向取证，见 domHit 上面那段）。
+// ⚠️ 它**不是只在罕见路径上调**（上一版的注释这么写，与调用位不符 —— 复审点名）：
+// 「按下前」那一次**每次点击都要读**（要判断命中是不是停在子帧容器上，见
+// dispatchMouseClick 的 ②），「按下后」那一次才只在落点变了时读。
+// 代价是每次点击多一次往返，换来的是**盲区诊断不会静默** —— 这一次往返省不掉：
+// 试过用「这页有没有子帧」当快路的闸，而跨站子帧（OOPIF）根本不进父页的帧树，
+// 快路恰好在唯一需要它的场景下失效（详见 dispatchMouseClick ② 的注释）。
+// 读不到就返回 err，调用方据此**不扣**。
 func (c *Client) hitFactsOf(h domHit) (hitFacts, error) {
 	var f hitFacts
 	err := chromedp.Run(c.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
@@ -1136,41 +1141,81 @@ func (c *Client) hitFactsOf(h domHit) (hitFacts, error) {
 	return f, nil
 }
 
-// hitStillConnected 问：按下**之前**那个节点还在文档里吗（`isConnected`）。
+// hitForensics 一次往返问两件事（都在**按下前那个节点**的对象上问）：
 //
-// 这是「**别人盖上来**」与「**同一个东西被重建**」之间最利落的一条判据：
-// 被盖住的目标**还在**（只是被挡在后面），被重建的目标**已经不在文档里了**。
-// 实测（真站 MUI）：mousedown 展开菜单之后，那个 combobox 节点 **connected** ✓。
+//	connected  它还在文档里吗（isConnected）—— 「被盖住」与「被重建/摘除」的分水岭
+//	related    按下后那个节点是不是**长在它自己的子树里**（互为祖先/后代，走合成树，
+//	           所以 shadow 里的那份也算）—— 「里面长出来」与「外面盖上来」的分水岭
 //
-// 问不到（resolve 失败 / 调用失败）返回 err —— 调用方据此**不扣**。
-func (c *Client) hitStillConnected(h domHit) (bool, error) {
-	var out bool
-	err := chromedp.Run(c.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+// 为什么合成树而不是 Node.contains：宿主**不包含** shadow 里的内容
+// （`host.contains(shadowChild)` 是 false）—— 拿 contains 判，shadow 里的浮层
+// 会被误判成「外面盖上来」，而那正是这一轮要治的误扣。
+//
+// 问不到就返回 err —— 调用方据此**不扣**（正向取证，见 domHit 上面那段）。
+func (c *Client) hitForensics(before, after domHit) (connected, related bool, err error) {
+	err = chromedp.Run(c.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		cc := chromedp.FromContext(ctx)
 		if cc == nil || cc.Target == nil {
 			return fmt.Errorf("invalid context")
 		}
 		exec := cdp.WithExecutor(ctx, cc.Target)
-		obj, err := dom.ResolveNode().WithBackendNodeID(h.BackendID).Do(exec)
+		objBefore, err := dom.ResolveNode().WithBackendNodeID(before.BackendID).Do(exec)
 		if err != nil {
 			return err
 		}
-		if obj == nil || obj.ObjectID == "" {
-			return fmt.Errorf("resolveNode 没给对象")
+		if objBefore == nil || objBefore.ObjectID == "" {
+			return fmt.Errorf("resolveNode(按下前) 没给对象")
 		}
-		res, _, err := runtime.CallFunctionOn("function(){ return !!(this && this.isConnected); }").
-			WithObjectID(obj.ObjectID).Do(exec)
+		objAfter, err := dom.ResolveNode().WithBackendNodeID(after.BackendID).Do(exec)
 		if err != nil {
 			return err
 		}
-		out = res.Value.String() == "true"
+		if objAfter == nil || objAfter.ObjectID == "" {
+			return fmt.Errorf("resolveNode(按下后) 没给对象")
+		}
+		res, _, err := runtime.CallFunctionOn(hitForensicsJS).
+			WithObjectID(objBefore.ObjectID).
+			WithArguments([]*runtime.CallArgument{{ObjectID: objAfter.ObjectID}}).
+			WithReturnByValue(true).
+			Do(exec)
+		if err != nil {
+			return err
+		}
+		var got struct {
+			Connected bool `json:"connected"`
+			Related   bool `json:"related"`
+		}
+		// returnByValue 之后 res.Value 就是返回对象的 JSON 文本（直接解）。
+		// ⚠️ 别用 JSON.stringify + 手工去引号：那样拿到的是**转义过的字符串**，
+		// 里面的 \" 会让 Unmarshal 报「invalid character '\\'」（实测踩过）。
+		if err := json.Unmarshal(res.Value, &got); err != nil {
+			return fmt.Errorf("取证结果解不开: %w（原始 %s）", err, res.Value)
+		}
+		connected, related = got.Connected, got.Related
 		return nil
 	}))
-	if err != nil {
-		return false, err
-	}
-	return out, nil
+	return connected, related, err
 }
+
+// hitForensicsJS 在**按下前那个节点**上跑（this = 它），参数 other = 按下后那个。
+//
+// inTree 走**合成树**（getRootNode().host 那一步是 shadow 边界）：Node.contains
+// 在 shadow 里会把「宿主包含 shadow 内容」判成 false。
+const hitForensicsJS = `function(other){
+  function inTree(root, node) {
+    var n = node, r;
+    while (n) {
+      if (n === root) return true;
+      r = n.getRootNode ? n.getRootNode() : null;
+      n = (r && r.host) ? r.host : (n.parentNode || null);
+    }
+    return false;
+  }
+  return {
+    connected: !!(this && this.isConnected),
+    related: !!(other && (inTree(this, other) || inTree(other, this)))
+  };
+}`
 
 // MouseClickOutcome 是一次点击**后半段**的事实：这次抬起交给了谁。
 //
@@ -1217,7 +1262,11 @@ func (c *Client) LandingDiags() []Diagnostic {
 //
 // kind 取 DiagKindLandingBlind（判据没能跑）或 DiagKindLandingWithheld（扣下了）。
 // 两条都要记：`form` 那条路只有这份诊断能说话（见 LandingDiags）。
-func (c *Client) noteLanding(out *MouseClickOutcome, kind, detail string) {
+//
+// frameID 是这次命中**落在哪一帧**（命中测试给的）。诊断里的 frame_path 按
+// `framePathFor` 的同一套口径写：空 → ["main"]，否则就是那一帧的 id ——
+// 一律写 ["main"] 在跨帧时不实（复审点名），而位置这种东西写错比不写更坏。
+func (c *Client) noteLanding(out *MouseClickOutcome, kind, detail, frameID string) {
 	out.Note = detail
 	if kind == DiagKindLandingBlind {
 		out.Blind = true
@@ -1225,7 +1274,7 @@ func (c *Client) noteLanding(out *MouseClickOutcome, kind, detail string) {
 	c.landingDiags = append(c.landingDiags, Diagnostic{
 		Kind:      kind,
 		Detail:    detail,
-		FramePath: []string{mainFramePath},
+		FramePath: framePathFor(frameID),
 	})
 }
 
@@ -1250,7 +1299,7 @@ func (c *Client) dispatchMouseClick(x, y float64) (MouseClickOutcome, error) {
 	// ① 判不出落点：不扣 + 说清楚（判据这次是瞎的）。
 	if !beforeOK || !afterOK {
 		c.noteLanding(&out, DiagKindLandingBlind, "落点判据这次没跑成：那个坐标上取不到节点（点可能在视口外）—— "+
-			"按老行为把抬起发出去，这一次没有「落点变了就不交给新落点」这层保护")
+			"按老行为把抬起发出去，这一次没有「落点变了就不交给新落点」这层保护", "")
 		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
 	}
 
@@ -1259,10 +1308,21 @@ func (c *Client) dispatchMouseClick(x, y float64) (MouseClickOutcome, error) {
 	// 跨站子帧时浏览器不下钻（实测：父页 127.0.0.1 嵌 gowizard 的跨站子帧，
 	// 主帧坐标命中 `IFRAME` 且 frame = 父页），于是前后两次问到的都是同一个
 	// `<iframe>` —— 判据**恒不触发**。这是沉默的空转，必须说出来。
+	//
+	// ⚠️ 这次 describeNode 是**每次点击都要付**的（与上面「只在罕见路径上调」不同 ——
+	// 复审点名过注释与调用位不符）。
+	//
+	// ⚠️ 曾经想省掉它：先问一次「这一页有没有子帧」，没有就跳过 —— 判据是
+	// `Page.getFrameTree` 的 ChildFrames。**那是错的，而且错在正好要治的那一格上**：
+	// 跨站子帧（OOPIF）**不出现在父页会话的帧树里**（实测：主帧 URL 带
+	// `?src=http://localhost:37311/inner.html` 的跨站 iframe，`len(ChildFrames) == 0`）——
+	// 于是快路在**唯一需要它**的场景下恒判「没有子帧」，盲区诊断一声不吭。
+	// 「省一次往返」换来的是「诊断在最该响的地方不响」，不值。这次往返就是
+	// 「盲区必须能听见」的价钱。
 	if bf, err := c.hitFactsOf(before); err == nil && (bf.Tag == "iframe" || bf.Tag == "frame") {
 		c.noteLanding(&out, DiagKindLandingBlind, fmt.Sprintf("落点判据在这一点不可用：命中栈停在 %s 上（没有下钻到子帧内部）。"+
 			"跨站子帧就是这种 —— 跨站时 DOM.getNodeForLocation 只返回父页的 iframe 元素，"+
-			"判据在子帧内部**恒不触发**（同 site 跨 origin 才会下钻）。这一帧里的点击没有这层保护", bf.Desc))
+			"判据在子帧内部**恒不触发**（同 site 跨 origin 才会下钻）。这一帧里的点击没有这层保护", bf.Desc), string(before.FrameID))
 		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
 	}
 
@@ -1280,35 +1340,62 @@ func (c *Client) dispatchMouseClick(x, y float64) (MouseClickOutcome, error) {
 	if aErr == nil {
 		out.LandedAfter = afterFacts.Desc
 	}
-
 	if bErr != nil || aErr != nil {
 		c.noteLanding(&out, DiagKindLandingBlind, "落点判据这次没跑成：换了节点，但读不出前后两个节点的属性"+
-			"（取证不全）—— 按老行为把抬起发出去，宁可不扣也不误扣")
-		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
-	}
-	if beforeFacts.Fingerprint == afterFacts.Fingerprint {
-		// 逐字节相同的重建：没有任何东西盖上来，是**同一个东西**换了个节点。
-		// 实测踩过：照直扣下会把一次正常点击静静吞掉（复审端到端复现）。
-		c.noteLanding(&out, DiagKindLandingWithheld, fmt.Sprintf("按下之后落点换成了**同一个东西的另一个节点**（%s —— 标签与属性逐字相同，"+
-			"是重建不是覆盖）—— 照常把抬起发出去", afterFacts.Desc))
-		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
-	}
-	if conn, err := c.hitStillConnected(before); err != nil || !conn {
-		why := "原目标自己从文档里没了（被替换/被摘除），不是有人盖上来"
-		if err != nil {
-			why = "问不到原目标还在不在文档里（取证不全），按「可能被替换」处理"
-		}
-		c.noteLanding(&out, DiagKindLandingWithheld, fmt.Sprintf("按下之后落点换了人，但%s —— 照常把抬起发出去（%s → %s）",
-			why, beforeFacts.Desc, afterFacts.Desc))
+			"（取证不全）—— 按老行为把抬起发出去，宁可不扣也不误扣", string(before.FrameID))
 		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
 	}
 
-	// ⑤ 取证齐了：**原目标还在文档里**（它只是被盖住），而站在那个点上的是
-	// 一个**不同的东西** —— 这正是「别人盖上来」。扣下。
+	conn, related, fErr := c.hitForensics(before, after)
+	if fErr != nil {
+		c.noteLanding(&out, DiagKindLandingBlind, "落点判据这次没跑成：换了节点，但问不出「原目标还在不在文档里」"+
+			"（取证不全）—— 按老行为把抬起发出去，宁可不扣也不误扣", string(before.FrameID))
+		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
+	}
+
+	// ⑤ **里面长出来** ≠ **外面盖上来**（2026-09-17 复审实测的那一格）。
+	//
+	// 浮层长在目标**自己的子树里**时，递出去的事件照样从目标身上过（冒泡），
+	// 目标这一侧并没有被绕开 —— 扣下抬起却会把这一次点击**整根拿走**
+	// （实测：裸行为 1/1 → 被测 0/0）。所以先问 ancestry：
+	// 「覆盖者」是不是目标的祖先/后代（合成树，穿 shadow）。
+	if related {
+		c.noteLanding(&out, DiagKindLandingWithheld, fmt.Sprintf("按下之后那个点上换成了 %s —— "+
+			"它**长在原目标自己的子树里**（互为祖先/后代），不是「外面盖上来」：事件照样从目标身上过。"+
+			"照常把抬起发出去（原目标 %s）", afterFacts.Desc, beforeFacts.Desc), string(before.FrameID))
+		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
+	}
+
+	// ⑥ 原目标自己被替换/摘除：变的是**目标自己**，不是「有人盖上来」。
+	//
+	// 实测（复审端到端复现 + 本机复验）：节点**重建**时 backendNodeId 会变，
+	// 而那一刻**没有任何东西盖上来** —— 照直扣下会把一次正常点击静静吞掉。
+	if !conn {
+		c.noteLanding(&out, DiagKindLandingWithheld, fmt.Sprintf("按下之后落点换了人，但**原目标自己"+
+			"从文档里没了**（被替换/被摘除），不是有人盖上来 —— 照常把抬起发出去（%s → %s）",
+			beforeFacts.Desc, afterFacts.Desc), string(before.FrameID))
+		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
+	}
+
+	// ⑦ 标签与属性**逐字相同**的另一个节点。
+	//
+	// ⚠️ 这一格**判不出来**：逐字节重建与「一个逐字节相同的覆盖者」在现有证据下
+	// 一模一样。按不对称原则倒向「不扣」（扣错 = 一次正常点击静静地消失）。
+	// ⚠️ 话必须**这么说**（复审点名）：上一版这里写「是重建不是覆盖」——
+	// 那是**在说假话**，因为覆盖者也能长这样。如实说「分不出」。
+	if beforeFacts.Fingerprint == afterFacts.Fingerprint {
+		c.noteLanding(&out, DiagKindLandingWithheld, fmt.Sprintf("按下之后落点换成了 %s —— 它与原目标"+
+			"**标签与属性逐字相同**。判据**分不出**这是「同一个东西被重建」还是「一个逐字节相同的"+
+			"覆盖者」，按老行为把抬起发出去（宁可漏扣，也不误扣一次正常点击）", afterFacts.Desc), string(before.FrameID))
+		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
+	}
+
+	// ⑧ 取证齐了：**原目标还在文档里**（它只是被盖住）、盖上来的是**外面**的东西、
+	// 而且它与原目标不是同一个东西 —— 这正是「别人盖上来」。扣下。
 	out.ReleaseWithheld = true
 	c.noteLanding(&out, DiagKindLandingWithheld, fmt.Sprintf("**抬起已扣下**：按下之后落点换成了 %s"+
 		"（原目标 %s 还在文档里、也不是它的重建）—— 这一次 mouseup 没有发出去",
-		afterFacts.Desc, beforeFacts.Desc))
+		afterFacts.Desc, beforeFacts.Desc), string(before.FrameID))
 	return out, nil
 }
 
