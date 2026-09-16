@@ -1,0 +1,12 @@
+# agent 侧依赖 —— 与 worker 的依赖刻意不重叠（规格 §8.1：混装会重演「两套执行器」那种边界不清）。
+# 取自 Dockerfile 里那行 pip3 install；宿主上跑测试走 .venv（见 README「开发环境」）。
+# Dockerfile 另装 "psycopg[binary]" pyyaml（Phase 1 记忆层用），宿主跑测试暂不需要，要用再加。
+langgraph
+langchain-core
+langchain-openai
+fastapi
+uvicorn
+pydantic
+httpx
+openai
+pytest

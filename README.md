@@ -52,7 +52,33 @@ Dockerfile                多阶段：Go 构建工具层 → Python 运行时
 收 10 个参数只下发 4 个）。正确做法、权威 JSON、以及三个陷阱（`devicePixelRatio`
 字段名 / 换国家要换 gost 链 / close 要验死）都写在规格 **§4.6**。
 
+## 开发环境（宿主上跑测试用）
+
+**宿主 python 里没有 `langgraph` / `fastapi`** —— 它们只装在镜像里（`Dockerfile` 的
+`pip3 install` 那行）。在宿主上跑测试请用项目自带的 venv（`.venv/` 已在 `.gitignore` 里）：
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
+.venv/bin/python -m pytest tests/ -q
+```
+
+Go 侧（工具层）两个环境事实，踩过：
+
+```bash
+export PATH=/usr/local/go/bin:$PATH          # go 不在默认 PATH 里
+export GOPROXY=https://goproxy.cn            # 默认 proxy.golang.org 在这里 i/o timeout
+cd tools/cdp && go test ./... -count=1
+```
+
+本仓库**没有 remote**：一律本地 commit，不 push。
+
 ## 状态
+
+**计划二 Task 1–5 已交付并过审查**（2026-09-16）：spike（LLM 工具循环，结论「有条件能」）、
+MCP 门、py 产物骨架、契约检查器（lint）、浏览器 Agent 的工具循环（ReAct over MCP，
+含真依赖链 e2e）。Task 6（扰动自测）进行中；Task 7（LangGraph 图）/ Task 8（服务 + 真站端到端）
+未开工。
 
 **计划一（工具层）已交付**（2026-09-16）：cdp 已自 `/company/cdpcli` 迁入 `tools/cdp/`，
 `observe` / `diff` 两条子命令在真浏览器的四档页面（light DOM / 两层 shadow / 跨源 iframe）上
