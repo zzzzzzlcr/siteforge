@@ -25,8 +25,9 @@ RUN go mod download
 
 COPY tools/cdp/ ./
 # CLI 与 MCP 是同一个内核的两个入口(规格 §4.1) —— 不是包一层壳去调 CLI
-RUN go build -ldflags="-s -w" -o /out/cdp ./cmd/cdp \
- && go build -ldflags="-s -w" -o /out/cdp-mcp ./cmd/mcp \
+# 入口是仓库根目录的 main.go(cobra 根命令在 cmd/ 下), 不是 ./cmd/cdp
+# Task 8: cdp-mcp 上线后在此补回第二行 —— go build -ldflags="-s -w" -o /out/cdp-mcp ./cmd/mcp
+RUN go build -ldflags="-s -w" -o /out/cdp main.go \
  && /out/cdp --help >/dev/null \
  && echo "工具层构建成功"
 
@@ -57,7 +58,8 @@ RUN mkdir -p /opt/siteforge/logs \
 
 # 工具层: CLI 给生产 py 脚本用, MCP 给 agent 用 —— 同一内核两个门
 COPY --from=tools /out/cdp     /usr/local/bin/cdp
-COPY --from=tools /out/cdp-mcp /usr/local/bin/cdp-mcp
+# Task 8: 与 stage 1 同步 —— cdp-mcp 未构建, 此处 COPY 会让 build 失败, 故暂注释
+# COPY --from=tools /out/cdp-mcp /usr/local/bin/cdp-mcp
 
 COPY . /opt/siteforge/
 
