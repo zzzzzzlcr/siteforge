@@ -715,12 +715,15 @@ class Filler:
         parts = [_norm(self._ev(_PAGE_TEXT_JS))]
         parts += [_norm(self._ev(_PAGE_TEXT_JS, fid)) for fid in self._read_frames()]
         text = " ".join(p for p in parts if p)
-        if not text.strip():
-            # 一路都读不到（这一页的正文不在主帧里、而帧又够不着）→ 用**最近一次 observe
-            # 的正文**兜底（它与这里**同一口径**：observe 的 page_text 就是跨帧拼起来的）。
-            # 「读不到」与「页面上没有那句话」是两件事 —— 前者不该让判据判成「不成立」。
-            model = self._last_model or {}
-            text = _norm(model.get("page_text") or "")
+        # **再并上最近一次 observe 的正文**（不是只在读空的时候才用）——
+        # observe 的 page_text 是**跨帧拼起来**的，与这里同一口径，而且比「直接去读每一帧」
+        # 全：帧号会漂、帧可能读不到，而手上那份观测里**本来就写着**子帧的正文。
+        # 真站实测（2026-09-17 第六轮）：某一步 `when.text_contains` 要的是
+        # 「Progress: 60% Almost done Fill in your last few…」（子帧里的问卷文案），
+        # 而这一路只读得到**主帧那页落地页的推广文案** → 判成「不像」→ 整组静默跳过。
+        model_text = _norm((self._last_model or {}).get("page_text") or "")
+        if model_text and model_text not in text:
+            text = (text + " " + model_text).strip() if text.strip() else model_text
         return text
 
     def _trace(self, line):
@@ -1331,23 +1334,29 @@ class Filler:
         return max(self.skipped_states.items(), key=lambda kv: kv[1])[0]
 
     def _when_why(self, when):
-        """这条 `when` 为什么不成立 —— 说成人话（给日志与 trace 用）。
+        """这条 `when` 为什么不成立 —— **把手上实际有的东西原样摆出来**（给日志与 trace 用）。
 
-        ⚠️ 「这一页不像那个状态」是一句**结论**，读的人要的是**哪一条判据不成立**：
-        URL 对不上（现在在哪儿）还是正文里没有那句话（页面上写着什么）。
+        ⚠️ 「这一页不像那个状态」是一句**结论**；读的人要的是**哪条判据不成立**、
+        以及**我们手里当时有什么**。
+        2026-09-17 第五轮就是靠 `why` 的原文才定位到「子帧地址读不到」那一族 ——
+        所以这一轮把**实际看到的地址（全部）**与**实际看到的正文**都摆进来：
+        下一个同样的病不该再靠人翻 trace 去猜。
         """
         when = when or {}
         if not when:
             return "这一步没有 when 判据"
         want_url = when.get("url_contains")
-        if want_url and want_url not in self._url():
-            return "地址对不上：要含「%s」，现在是「%s」" % (want_url, self._url()[:60])
+        if want_url and not any(want_url in url for url in self._urls()):
+            have = " ｜ ".join(self._urls()) or "（一个都没读到）"
+            return ("地址对不上：要含「%s」；手里这些地址都不含它：%s"
+                    % (want_url, have))
         wants = when.get("text_contains") or []
         if wants:
-            signature = self.page_signature().lower()
-            missing = [w for w in wants if _norm(str(w)).lower() not in signature]
+            signature = self.page_signature()
+            missing = [w for w in wants if _norm(str(w)).lower() not in signature.lower()]
             if missing:
-                return "正文里没有「%s」" % str(missing[0])[:60]
+                return ("正文里没有「%s」；页面上**实际看到的**开头那段是：「%s」"
+                        % (str(missing[0])[:60], signature[:240]))
         return "判据说不清为什么不成立（url 与正文都对上了却判成不像）"
 
     def _matches(self, when):

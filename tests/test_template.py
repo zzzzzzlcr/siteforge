@@ -1668,3 +1668,44 @@ def test_the_artifact_survives_a_stale_common_py_but_says_so(sandbox, form_file,
 # 试过两版（替身的 readyState 与正文耦合起来），都不够干净、会随调用次序翻面，
 # 与其留一条会骗人的绿，不如明说没有。改法是 `agent/template.py` 的 `_wait_ready`
 # （`goto` 之后、判 `when` 之前调），真站上验过（那一趟 33 步里 32 步被跳过 → 修完不再跳）。
+
+
+def test_the_skip_reason_carries_what_we_actually_saw(sandbox, form_file):
+    """判成「不像」时，`why` 里要**原样摆出实际看到的东西**（地址全部 + 正文一段）。
+
+    2026-09-17 第五轮就是靠 `why` 的原文才定位到「子帧地址读不到」那一族 ——
+    下一个同样的病不该再靠人翻 trace 去猜。
+    """
+    states = [
+        {"name": "nope", "when": {"url_contains": "wanted.example.test/quiz",
+                                  "text_contains": ["这句话页面上没有"]},
+         "steps": [{"action": "click", "note": "点「Go」",
+                    "target": {"text": "Go", "role": "button", "near": None,
+                               "selectors": ["#go"]}}]},
+    ]
+    module, _ = _load(
+        "run_why_ev",
+        template.render("example-why", "Thank you", states, [], SAMPLE_PROVENANCE),
+        sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.url = "https://now.example.test/entry"
+    common.STATE.iframe_srcs = ["https://frame.example.test/widget"]
+    trace = sandbox / "why.jsonl"
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                  trace=str(trace)).run()
+
+    line = [json.loads(l) for l in trace.read_text(encoding="utf-8").splitlines()
+            if l.strip() and json.loads(l).get("skipped")][0]
+    why = line["why"]
+    assert "wanted.example.test/quiz" in why, why            # 要的是什么
+    assert "now.example.test/entry" in why, why              # 手里有的（主帧）
+    assert "frame.example.test/widget" in why, why           # 手里有的（主帧里那条 iframe 的 src）
+
+
+# ⚠️ 「`page_signature()` 并上最近一次 observe 的正文」这一格**没有钉子**：
+# 它在单跑时绿、进全量套件时红（替身的模块级 STATE 与调用次序耦合），
+# 与其留一条会骗人的绿，不如明说没有。改法在 `agent/template.py` 的 `page_signature()`
+# （并上 `self._last_model["page_text"]`），真站上验过（那一趟 17/7 → 修后见报告）。
