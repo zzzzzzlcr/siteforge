@@ -1004,7 +1004,22 @@ def _id_like(segment: str) -> bool:
     return bool(_ID_LIKE_RE.fullmatch(seg)) and any(c.isdigit() for c in seg)
 
 
+#: 页面正文开头那些**不稳定的装饰字符**（广告占位、分隔线、装饰性下划线……）。
+#: `observe` 的 page_text 开头常常是它们（真站实测：`___ The listings featured are…`，
+#: 那个 `___` 是广告位的占位符），而**它们会变**（广告加载完就没了）。
+_SNIPPET_JUNK = "_\u2014-\u00b7*| \t\r\n"
+
+
 def _snippet(text: str) -> str:
+    """一个状态的判据里带哪一段正文（从这一页的 page_text 里**取原文**）。
+
+    ⚠️ 从开头取，但要**跳过开头那些装饰字符**（真站实测，2026-09-17 第七轮）：
+    某站首页的 page_text 是 `___ The listings featured are compensated and…` ——
+    那个 `___` 是广告位的占位符，第二次跑页面时它没了 →
+    判据要含「___ The listings…」而页面上是「The listings…」→ **整组步骤被跳过**，
+    而两句话**明明是同一句**。取判据的时候把开头那串装饰字符削掉，这个坑就没了。
+    """
+    text = str(text or "").lstrip(_SNIPPET_JUNK)
     head = text[:WHEN_SNIPPET_CHARS]
     if len(text) > WHEN_SNIPPET_CHARS and " " in head:
         head = head.rsplit(" ", 1)[0]           # 别把一个词从中间切断（读起来是半截话）

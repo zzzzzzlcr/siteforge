@@ -1324,3 +1324,18 @@ def test_a_tel_field_with_no_words_is_decided_by_what_the_explore_typed_there():
     got = browser_agent._fill_info({"value": "90210"}, {"label": "Full Name:"}, text_elem,
                                    browser_agent.Journey())
     assert got["fallback"] == [{"random": "full_name"}], got
+
+
+def test_the_when_snippet_does_not_lead_with_decoration():
+    """判据里那段正文**不带开头的装饰字符**（真站实测的那一格）。
+
+    某站首页的 page_text 是 `___ The listings featured are compensated and…` ——
+    那个 `___` 是广告位的占位符，第二次跑时它没了 → 判据要含「___ The listings…」
+    而页面上是「The listings…」→ **整组步骤被跳过**，而两句话**明明是同一句**。
+    """
+    assert browser_agent._snippet("___ The listings featured are compensated and this") == \
+        "The listings featured are compensated and this"
+    assert browser_agent._snippet("--- Get your free quote today") == "Get your free quote today"
+    # 反例（同一格）：正文里本来就有意义的字一个都不许动
+    assert browser_agent._snippet("Progress: 30% What state do you live in?") == \
+        "Progress: 30% What state do you live in?"

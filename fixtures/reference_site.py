@@ -60,6 +60,10 @@ OFFSCREEN = "offscreen"
 # 见 _frame_of_element。target 里的 `frame_id`：空串 = 主帧，非空 = 那一帧的 CDP frameID。
 FRAME_MAIN = "main"
 
+#: 「去找活帧」那次 observe 至少隔这么久才再探一次（秒）—— 它是**读页面**这条路的
+#: 前置，而读页面每步都要发生；不节流就会在「这一页没有帧」时反复起进程。
+LIVE_PROBE_EVERY = 3.0
+
 #: `goto` 之后最多等多久（秒）让这一页加载到 `readyState=complete`。
 #: 等不到也照旧往下走（一句人话说明），**不许**把它当成失败。
 WAIT_READY_SECONDS = 10.0
@@ -509,7 +513,7 @@ class Filler:
         self.live_frames = []
         #: 读不出东西的那些帧（多半已经不在了）—— `_read_frames` 靠它判断
         #: 「声明里那几帧是不是**全死了**」，全死了才去找活帧（见那个 docstring）。
-        self._dead = set()
+        self._probe_at = 0.0    # 上一次「去找活帧」的时刻（节流用）
         #: 最近一次 observe 的模型（`page_signature` 一路都读不到正文时用它兜底）
         self._last_model = None
 
@@ -537,42 +541,72 @@ class Filler:
         return raw.splitlines()[0].strip().strip('"').strip("'") if raw else ""
 
     def _read_frames(self):
-        """**读页面**时该读哪几帧：账本里那几帧 + 最近一次重新 observe 看见的活帧。
+        """**读页面**时该读哪几帧：**当场活着的那几个**（账本里的号只是线索）。
 
-        两串都要，因为**账本里的 frameID 只活在录它的那一次会话里**：重放一开始的
-        `goto` 会把页面重载、子帧重建 → 账本那一串全成了死号（真站实测：
-        `OOPIF eval: attach failed: No target with given id found`）。只读死号 = 什么都
-        读不到 + **不出声**，于是「成功文案在子帧里」这件事又变回看不见了。
+        为什么不能只信账本里的号：**frameID 只活在录它的那一次会话里** ——
+        重放一开始的 `goto` 把页面重载、子帧重建，账本那一串全成死号
+        （真站实测：`OOPIF eval: attach failed: No target with given id found`）。
+        只读死号 = 什么都读不到 + **不出声**，于是「成功文案在子帧里」这件事就变回看不见 ——
+        而产物会一路说「每一步都做成了」（2026-09-17 第七轮量出来的）。
 
-        ⚠️ **一个必须自己解的套**（真站实测踩到过）：活帧本来是回退链那一跳（`_relocate`）
-        顺手记下的 —— 可要是**判据（`when`）先要用帧**（流程活在 iframe 里时就是这样），
-        而账本那几帧已经死了，就会「读不到 → 整组步骤静默跳过 → 一次 relocate 都不发生
-        → 永远学不到活帧」。所以这里补一次**只做一次**的探测：声明里那几帧还没被证明
-        活着、手上又没有活帧时，`observe` 一次，把模型里出现的帧记下来。
+        ⚠️ **老写法有个套**（这一轮才解开）：找活帧那一下挂在一个**不会被调用**的判据上 ——
+        `_frames_all_dead()` 依赖 `_dead`，而 `_dead` 只有 `_urls()` 会填；
+        判据（`when`）是**纯文本**的时候根本不走 `_urls()` → 探测从来不触发 →
+        `live_frames` 永远是空的 → 读页面只剩主帧 → **子帧正文（含成功文案）永远读不到**。
+        旁证：`runtime/selftest/` 下几十趟自测，**没有任何一趟报过成功**。
 
-        代价说清楚：**带帧的产物、每跑一次多一次 observe**（不带帧的产物一次都不多）；
-        换来的是「帧里的判据与成功文案还看得见」—— 这笔账在 §13 那条「重跑要便宜」
-        面前是划算的（那一条说的是不调模型、不截图、不做**调试**动作）。
+        现在：**读之前先确认手上那几个活帧真的还活着**（读一眼就知道）；
+        确认不了就去找一次（`observe`，节流见 `LIVE_PROBE_EVERY`）——
+        与 `_relocate` 那条路**同一个口径**：能用的帧 = 当场活着的帧。
         """
-        if self.frames and not self.live_frames and self._frames_all_dead():
-            model = self._observe()
-            if model:
-                self._note_live_frames(model)
+        if self.frames and not self._live_frames_ok():
+            self._refresh_live_frames()
         out = []
         for fid in list(self.frames) + list(self.live_frames):
             if fid and fid not in out:
                 out.append(fid)
         return out
 
+    def _live_frames_ok(self):
+        """手上记着的活帧**现在还活着吗**（读一眼就知道 —— 读得到就是活着）。"""
+        for fid in self.live_frames:
+            if self._frame_url(fid):
+                return True
+        return False
+
+    def _refresh_live_frames(self):
+        """去找一次活帧（`observe` 一次，把模型里出现的帧记下来）。
+
+        **节流**：`page_signature()` 每步都要读页面，不节流会在「这一页没有帧」的页面上
+        反复起进程。
+        """
+        now = time.time()
+        if now - self._probe_at < LIVE_PROBE_EVERY:
+            return
+        self._probe_at = now
+        model = self._observe()
+        if model:
+            self._note_live_frames(model)
+
     def _note_live_frames(self, model):
-        """把这一份观测里出现的（非主帧）帧记下来 —— 它们是**现在活着**的那几个。"""
+        """把这一份观测里出现的（非主帧）帧记下来 —— 它们是**现在活着**的那几个。
+
+        ⚠️ **是替换，不是累加**（2026-09-17 第七轮量出来的）：累加版本里，
+        页面上的**广告帧**（`id-msp.newsbreak.com` 那种）会一直留在表里 ——
+        它们活着、`_live_frames_ok()` 于是永远为真 → **再也不会去找那个真正的问卷帧** →
+        读页面只剩主帧 + 广告帧，而问卷正文（与成功文案）**永远读不到**。
+        外部对照实验（同一窗口同一时刻 `cdp eval --frame-id <问卷帧>`）证明那一刻
+        「`Progress: 80% … Phone Number: …`」**读得到** —— 读不到是产物自己的事。
+        """
+        seen = []
         for key in ("actions", "fields"):
             for element in (model or {}).get(key) or []:
                 if not isinstance(element, dict):
                     continue
                 fid = _frame_of_element(element, None)
-                if fid and fid not in self.live_frames:
-                    self.live_frames.append(fid)
+                if fid and fid not in seen:
+                    seen.append(fid)
+        self.live_frames = seen
 
     def _urls(self):
         """这一页的地址：**主帧的 + 这条流程动过手的每一帧的**（去重、保序）。
@@ -616,25 +650,10 @@ class Filler:
     def _frame_url(self, frame_id):
         """某一帧现在的地址（读不到就空串 —— 读不到不是「它是空的」，是没法判）。
 
-        读不到时把这一帧记进 `_dead`：`_read_frames` 用它判断「声明里那几帧是不是全死了」。
         """
         if not frame_id:
             return ""
-        url = self._ev("return window.location.href;", frame_id).strip().strip('"').strip("'")
-        if not url:
-            self._dead = set(self._dead) | {frame_id}
-        return url
-
-    def _frames_all_dead(self):
-        """声明里那几帧是不是**一个都活不了**。
-
-        ⚠️ 为什么不是「探测只做一次」（真站实测踩到的形状）：探针要是**太早**打掉
-        （第一个 `when` 判在入口页上，那会儿问卷 iframe 还没出生），后面流程进了 iframe
-        也永远不会再找活帧 —— 于是判据全落在主帧上，**整组步骤静默跳过**
-        （实测：基线只走了 5 步就「走完」，而账本里明明有几十步）。
-        改成「**看一眼就知道它们全死了**」才去找 —— 找不到就下一轮再找，直到找到为止。
-        """
-        return bool(self.frames) and all(fid in self._dead for fid in self.frames)
+        return self._ev("return window.location.href;", frame_id).strip().strip('"').strip("'")
 
     def page_signature(self):
         """这一页长什么样：可见正文，归一化口径与 cdp observe 的 page_text 一致（§4.3）。
@@ -1291,8 +1310,14 @@ class Filler:
             signature = self.page_signature()
             missing = [w for w in wants if _norm(str(w)).lower() not in signature.lower()]
             if missing:
-                return ("正文里没有「%s」；页面上**实际看到的**开头那段是：「%s」"
-                        % (str(missing[0])[:60], signature[:240]))
+                # 「实际看到的那段」+ **读页面用的帧** + 手上那份观测的正文 ——
+                # 三样一起摆出来：下一步的人不用再猜「是帧没找着，还是页面上真没有」。
+                model_text = _norm((self._last_model or {}).get("page_text") or "")
+                return ("正文里没有「%s」；页面上**实际看到的**开头那段是：「%s」；"
+                        "读页面用的帧：账本 %s ／ 活帧 %s；手上那份观测的正文开头：「%s」"
+                        % (str(missing[0])[:60], signature[:200],
+                           list(self.frames) or "（无）", list(self.live_frames) or "（无）",
+                           model_text[:120] or "（没有观测）"))
         return "判据说不清为什么不成立（url 与正文都对上了却判成不像）"
 
     def _matches(self, when):

@@ -1709,3 +1709,35 @@ def test_the_skip_reason_carries_what_we_actually_saw(sandbox, form_file):
 # 它在单跑时绿、进全量套件时红（替身的模块级 STATE 与调用次序耦合），
 # 与其留一条会骗人的绿，不如明说没有。改法在 `agent/template.py` 的 `page_signature()`
 # （并上 `self._last_model["page_text"]`），真站上验过（那一趟 17/7 → 修后见报告）。
+
+
+def test_live_frames_are_the_ones_in_the_latest_observation(sandbox, form_file):
+    """`live_frames` 是**最近一次观测里出现的帧**（替换，不是累加）。
+
+    2026-09-17 第七轮量出来的：累加版本里页面上的**广告帧**会一直留在表里，
+    它们活着 → `_live_frames_ok()` 永远为真 → **再也不会去找真正的问卷帧** →
+    读页面只剩主帧 + 广告帧，问卷正文（与成功文案）**永远读不到**。
+    外部对照实验（同一窗口同一时刻读那个问卷帧）证明那一刻那段文本**读得到**。
+    """
+    fill = module_filler = None
+    module, _ = _load(
+        "run_live_frames",
+        template.render("example-live", "Thank you",
+                        [{"name": "w", "when": None, "steps": [
+                            {"action": "click", "note": "点「Go」",
+                             "target": {"text": "Go", "role": "button", "near": None,
+                                        "selectors": ["#go"]}}]}],
+                        [], SAMPLE_PROVENANCE),
+        sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))
+    # 第一次观测：只有广告帧
+    f._note_live_frames({"actions": [{"selector": "#ad", "frame_path": ["main", "ADFRAME1"]}]})
+    assert f.live_frames == ["ADFRAME1"], f.live_frames
+    # 第二次观测：问卷帧出现了（广告帧这一眼没看见）→ 表里就该只剩问卷帧
+    f._note_live_frames({"actions": [{"selector": "#q", "frame_path": ["main", "QUIZFRAME"]}]})
+    assert f.live_frames == ["QUIZFRAME"], (
+        "活帧表要跟着最近一次观测走（累加会让广告帧把真正的问卷帧挡在外面）：%s" % f.live_frames)
