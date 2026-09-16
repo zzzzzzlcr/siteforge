@@ -6,6 +6,9 @@
     export OPENAI_API_KEY=$(docker exec auto-llm-script printenv OPENAI_API_KEY)
     RUN_LLM=1 python3 -m pytest tests/test_tool_loop.py -v -s
 
+token 预算由 `SPIKE_MAX_TOKENS` 定（不给就是 `llm.DEFAULT_MAX_TOKENS`，即 12000）——
+报告里 `mt4000-*` / `mt12000-*` 那组矩阵就靠它复现，见下面 MAX_TOKENS 的注释。
+
 前置（本文件**不**替你起浏览器 —— 那是「另一个 agent 正在用 9222」那条约束的下游）：
 自起一个 headless Chrome 并把页面推到漏斗页：
 
@@ -38,6 +41,15 @@ from agent import llm, tools  # noqa: E402
 
 RUN = os.environ.get("RUN_LLM") == "1"
 DUMP_DIR = pathlib.Path(os.environ.get("SPIKE_DUMP_DIR", "/tmp/siteforge-spike"))
+
+#: token 预算。报告 §2 条件 1：`deepseek-v4-*` 把**思考 token 算在 max_tokens 里**，
+#: 4000 那一档实测 1/8 次最终答案是**空**的（而空答案看起来跟「模型说没有」一样）。
+#: 默认取 `llm.DEFAULT_MAX_TOKENS`（≥12000，C1）；要跑别的档就用这个环境变量 ——
+#: 报告里 `mt4000-*` / `mt12000-*` 那组矩阵就是这么跑的（每次运行都把预算落在 dump 里）：
+#:
+#:     SPIKE_MAX_TOKENS=4000  RUN_LLM=1 python3 -m pytest tests/test_tool_loop.py -q -s -k q2
+#:     SPIKE_MAX_TOKENS=12000 RUN_LLM=1 python3 -m pytest tests/test_tool_loop.py -q -s -k q2
+MAX_TOKENS = int(os.environ.get("SPIKE_MAX_TOKENS", str(llm.DEFAULT_MAX_TOKENS)))
 
 pytestmark = pytest.mark.skipif(
     not RUN, reason="打真 LLM 的 spike，默认 skip；RUN_LLM=1 才跑"
@@ -84,11 +96,13 @@ def _on_funnel_page():
 
 
 def _run(tag: str, user: str, max_rounds: int = 6) -> dict:
-    dispatch, page_log = tools.make_dispatch()
-    rounds = llm.run_tool_loop(SYSTEM, user, tools.specs(), dispatch, max_rounds=max_rounds)
+    dispatch, page_log = tools.make_spike_dispatch()
+    rounds = llm.run_tool_loop(SYSTEM, user, tools.spike_specs(), dispatch,
+                               max_rounds=max_rounds, max_tokens=MAX_TOKENS)
     result = {
         "tag": tag,
         "question": user,
+        "max_tokens": MAX_TOKENS,     # 证据要自带预算：4000 与 12000 的失败形状不一样
         "rounds": rounds,
         "summary": llm.summarize(rounds),
         "page_log_len": len(page_log),
@@ -178,7 +192,7 @@ def _pre_fix_shape(model: dict) -> dict:
 
 def test_q3b_control_honeypot_as_normal_field():
     """对照组：工具**没**帮它把陷阱挑出来时，它自己看不看得出来。"""
-    real = tools.observe()
+    real = tools.spike_observe()
     doctored = _pre_fix_shape(real)
     assert doctored["fields"], "对照组构造失败：fields 里应该有那条蜜罐"
     assert not doctored["honeypots"], "对照组构造失败：honeypots 应该被清空"
@@ -190,7 +204,8 @@ def test_q3b_control_honeypot_as_normal_field():
             return {"acknowledged": True, "answer": args.get("answer", "")}
         raise KeyError(f"没有这个工具: {name}")
 
-    rounds = llm.run_tool_loop(SYSTEM, Q3, tools.specs(), dispatch, max_rounds=6)
+    rounds = llm.run_tool_loop(SYSTEM, Q3, tools.spike_specs(), dispatch, max_rounds=6,
+                               max_tokens=MAX_TOKENS)
     res = {"tag": "q3b-control", "question": Q3, "rounds": rounds,
            "summary": llm.summarize(rounds), "page_log_len": 0}
     DUMP_DIR.mkdir(parents=True, exist_ok=True)

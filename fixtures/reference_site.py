@@ -6,7 +6,10 @@ siteforge 从真页面探索出来的重放脚本：按 STATES 走一遍，见�
 骨架固定（agent 只填 STATES / FILLS），调试契约见规格 §5.1c：
 
   --trace <file>  每步往 <file> 追一行 JSON：这一页长什么样、点没点到、有没有推进、
-                  失败那步的截图。note 是写给人看的一句话（不是错误码、不是选择器）
+                  失败那步的截图。note 是写给人看的一句话（不是错误码、不是选择器）。
+                  `progress` 判不出来时是 null，**旁边 `progress_why` 说明为什么**
+                  （例如「这个 cdp 不会 diff」）—— 观测故障不许被读成策略结论；
+                  截图没落成时 `shots_why` 同样说明原因。
   --stop-at <N>   跑完第 N 步就停，**浏览器保持原状不关**（谁开的谁关）
   --shots all     每步都截图。默认只在**没做成**、以及**判得出没推进**的那几步落
                   （点/导航那类才有推进可判；填/选没有通用判据，不算它「没推进」）
@@ -40,12 +43,38 @@ ERR_MARKERS = ("Error:", "error:", "not found", "BugError", "no page target",
 # 填/勾/选没有通用判据，别拿 diff 判它们（§4.6）。
 DIFF_JUDGES = ("click", "goto")
 
+# observe 用这个值说「元素只是不在当前视口里」—— **不是**被谁挡住（滚动就看得见）。
+# 判「能不能对它动手」时要把它与真遮挡（被横幅盖住那类）分开，见 _usable。
+OFFSCREEN = "offscreen"
+
+# ── 「这个 cdp 会不会做这件事」────────────────────────────
+# 生产那个 cdp 是**老版本**：`--help` 里只有 active/click/close/completion/eval/form/
+# help/navi/scroll/snapshot/targets —— **没有** observe / diff / screenshot
+# （2026-09-17 实测）。产物要用到这三条：observe 是回退链的最后一跳（生产路径），
+# diff 与 screenshot 在 trace 里。缺了不会让重跑跑不动，但会**静默**地少三样东西 ——
+# 而静默正是本项目最贵的失败：「没算出有没有推进」被读成「没推进」，
+# 「没截图」被读成「这步没问题」。所以缺哪条说哪条（人话 + 怎么办），每条只说一次。
+# 运维不用改产物就能指到带它们的新版：设 SITEFORGE_CDP_BIN。
+
+#: 命令 → （人话里它叫什么，缺了会怎样）
+MISSING_CDP = {
+    "observe": ("重新看一遍页面", "声明里的找法失效时没法换个找法再试，这一步只能算没做成"),
+    "diff": ("比一比页面变没变", "这一步有没有推动页面判不出来（如实记 null，不记「没推进」）"),
+    "screenshot": ("截图", "这次调试没留下截图"),
+}
+
+#: cobra 对不认识的子命令是这么答的（一行，在 **stderr** 上，退出码 1）
+COMMAND_UNKNOWN = "unknown command"
+
 # common.py 所在的那一层（生产：/opt/skills/auto-farm-skill/forms）
 FORMS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # cdp CLI 在它的**上一层**（生产：/opt/skills/auto-farm-skill/cdp，与 common.py 里
 # 写死的 CDP_PATH 同一个位置）。回退链的最后一跳（重新 observe）与 goto 都要用它 ——
 # 它们不是调试功能，是生产路径。
-CDP_BIN = os.path.join(os.path.dirname(FORMS_DIR), "cdp")
+#
+# 默认路径**一个字都不改**（生产就是这么摆的）。要指到别处的 cdp（比如带 observe /
+# diff / screenshot 的新版）就设 SITEFORGE_CDP_BIN —— 运维改环境变量，不用改产物。
+CDP_BIN = os.environ.get("SITEFORGE_CDP_BIN") or os.path.join(os.path.dirname(FORMS_DIR), "cdp")
 
 # 拟人：动作之间的随机停顿（秒）
 DELAY_RANGE = (0.4, 1.6)
@@ -72,6 +101,10 @@ PROVENANCE = { 'generated_at': '2026-09-17T02:00:00+08:00',
 #
 # 为什么不能只靠选择器：站上一改版 class 就变，而 text + role + 语境比 CSS 路径稳。
 # states[].when 是**进这个状态时**的页面判据，不匹配就整组跳过 —— 有的站每轮步骤都不一样。
+#
+# target 里的 `above_fold_only`：写了 true 才是「**必须**首屏看得见」；没写 / false
+# 表示折线下的候选也能用（重新 observe 找到的候选里，`above_fold: false` 或
+# `occluded_by: "offscreen"` 只是「不在视口里」，滚动一下就看得见，不是被挡住）。
 #
 # 动作只有这五种（别的会在运行时被当成「产物写错了」）：click / form / scroll /
 # goto（直接导航，走 cdp navi —— 写路径不许用 eval）/ wait。
@@ -186,6 +219,58 @@ def _ok(output):
     return not any(marker in text for marker in ERR_MARKERS)
 
 
+def _below_fold(element):
+    """这个元素在折线下吗。`above_fold` 是主判据；`occluded_by == "offscreen"` 是同一个
+    事实的另一种说法（老 observe 只填后者）—— 两边都认，免得因为少一个字段就把
+    屏幕外的元素当成首屏可见的。
+    """
+    if element.get("above_fold") is False:
+        return True
+    return str(element.get("occluded_by") or "").strip().lower() == OFFSCREEN
+
+
+def _missing_short(command):
+    """缺这条命令的**短**说法（trace 的 note 与「为什么是 null」用）。"""
+    what = MISSING_CDP.get(command, (command, ""))[0]
+    return "这个 cdp 不会「%s」（%s）" % (what, command)
+
+
+def _missing_say(command):
+    """缺这条命令时给人看的**整句话**：缺什么 + 什么后果 + 怎么换（D16：人话）。"""
+    what, outcome = MISSING_CDP.get(command, ("「%s」这件事" % command, "这一步做不了"))
+    return ("这个 cdp 不会「%s」（%s）：%s。换一个带它的 cdp，"
+            "或用环境变量 SITEFORGE_CDP_BIN 指到它。" % (what, command, outcome))
+
+
+def _unknown_command(out, err, command):
+    """这一次失败是「它**没有**这条命令」吗（不是「跑失败了」）。"""
+    low = ("%s\n%s" % (out or "", err or "")).lower()
+    return COMMAND_UNKNOWN in low and (command or "").lower() in low
+
+
+def _command_list(text):
+    """数 `cdp --help` 的命令表（cobra：`Available Commands:` 下面一行一个，名字在第一列）。
+
+    认不出来返回 None —— 「不知道它有什么」和「它什么都没有」是两件事，
+    混成一件事会让产物平白放弃一条本来能用的命令。
+    """
+    if "Available Commands" not in (text or ""):
+        return None
+    names, started = set(), False
+    for line in (text or "").splitlines():
+        if not started:
+            started = "Available Commands" in line
+            continue
+        if not line.strip():
+            if names:
+                break
+            continue
+        if not line.startswith(" "):
+            break                    # 命令表到头了（下一段是 Flags:）
+        names.add(line.split()[0])
+    return names or None
+
+
 def _clean_eval(raw):
     """cdp eval 的 stdout 是 JSON（字符串会带引号）；cobra 的报错行会混在 stderr 里。"""
     text = (raw or "").strip()
@@ -255,6 +340,12 @@ class Filler:
         self.stuck = 0         # 连续没做成的步数（早停看它）
         self.stalled = 0       # 连续「点了但页面没动」的步数（另一种原地打转）
         self._reported_url = ""
+        self.missing = set()   # 这个 cdp 没有的命令（认出来一次就够：之后不再白跑、不再喊）
+        self.commands = None   # 它的命令表（`--help` 数的）；None = 还没探过/探不出来
+        self.probed = False
+        self.observe_why = None    # 最近一次「重新看页面」没成的原因（人话）
+        self.progress_why = None   # 最近一步「为什么 progress 是 null」（人话）
+        self.shots_why = None      # 最近一步截图没落成的原因（人话）
 
     # ── 基础设施 ────────────────────────────────────────────
 
@@ -302,37 +393,115 @@ class Filler:
 
     # ── 调试路径（只有 --trace 时才走；重跑路径不碰这里）──────
 
-    def _cdp(self, *args, timeout=60):
-        """调 cdp CLI。参数是 host/port —— 与 CDPHelper._parse_ws_url 拆出来的同一对。"""
-        cmd = [CDP_BIN] + [str(a) for a in args]
-        cmd += ["--host", str(self.cdp.host), "--port", str(self.cdp.port)]
+    def _run(self, cmd, timeout=60):
+        """起一个 cdp 进程（调命令与探命令表都走这里）。起不来返回 None。"""
         try:
             return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         except Exception as exc:
-            self.log.warning("[%s] 调 cdp 失败（%s）：%s", self.cid, args[0] if args else "?", exc)
+            self.log.warning("[%s] 调 cdp 失败（%s）：%s",
+                             self.cid, cmd[1] if len(cmd) > 1 else "?", exc)
             return None
 
+    def _probe(self):
+        """这个 cdp 到底有哪些命令（跑一次 `cdp --help` 数它的命令表）。**最多探一次**。
+
+        ⚠️ 只在**出了问题**或**--trace 开始**时才探 —— 生产重跑那条路（声明里的找法都成）
+        一次都不探，所以不多花进程（§13：重跑要便宜）。
+        探不出来返回 None：**「不知道它有什么」不是「它什么都没有」**。
+        """
+        if not self.probed:
+            self.probed = True
+            done = self._run([CDP_BIN, "--help"], timeout=30)
+            if done is not None:
+                self.commands = _command_list((done.stdout or "") + "\n" + (done.stderr or ""))
+        return self.commands
+
+    def _note_missing(self, command):
+        """它没有这条命令：记下 + 用**人话**说一次（每条只说一次 —— 不刷屏，也不白跑）。"""
+        if command not in self.missing:
+            self.missing.add(command)
+            self.log.warning("[%s] %s", self.cid, _missing_say(command))
+
+    def _command_absent(self, command):
+        """光看命令表：这个 cdp 没有这条命令吗。**探不出来就不猜**（返回 False）。"""
+        known = self._probe()
+        return known is not None and command not in known
+
+    def _check_command(self, command, done):
+        """这一次失败是「它根本没有这条命令」吗。是就记下 + 说人话，返回 True。
+
+        两条证据：① 这一次的输出（cobra 会明说 `unknown command`）；② 它的命令表。
+        """
+        if _unknown_command(done.stdout, done.stderr, command) or self._command_absent(command):
+            self._note_missing(command)
+            return True
+        return False
+
+    def _check_capabilities(self):
+        """这次调试要用到的几条 cdp 命令，这个 cdp 到底有没有 —— 缺了就说人话。
+
+        ⚠️ **只在 --trace 时调**。老版本的 cdp 缺 observe / diff / screenshot，
+        缺了不会让重跑跑不动，但会让 trace 少三样东西，而那是**静默**的 ——
+        在这里一次说清，而不是等 trace 读出来才发现「怎么什么都没有」。
+        """
+        known = self._probe()
+        if known is None:
+            return                       # 探不出来就不猜
+        for command in ("observe", "diff", "screenshot"):
+            if command not in known:
+                self._note_missing(command)
+
+    def _cdp(self, *args, timeout=60):
+        """调 cdp CLI。参数是 host/port —— 与 CDPHelper._parse_ws_url 拆出来的同一对。"""
+        command = str(args[0]) if args else ""
+        if command in self.missing:
+            return None          # 已经知道它没有这条命令：别再白起一个进程
+        cmd = [CDP_BIN] + [str(a) for a in args]
+        cmd += ["--host", str(self.cdp.host), "--port", str(self.cdp.port)]
+        done = self._run(cmd, timeout=timeout)
+        if done is not None and done.returncode != 0 and self._check_command(command, done):
+            return None          # 按「它做不了这件事」处理，别当成一次普通失败
+        return done
+
     def _observe(self):
-        """重新 observe 当前页面：§5.1b 回退链的最后一跳 + trace 的推进判据都靠它。"""
+        """重新 observe 当前页面：§5.1b 回退链的最后一跳 + trace 的推进判据都靠它。
+
+        没成时把**为什么**记在 `self.observe_why`（人话）—— 调用方要把它带进 trace，
+        免得「没看成就说页面没变化」。
+        """
+        self.observe_why = None
         done = self._cdp("observe", "--json")
-        if done is None or done.returncode != 0:
+        if done is None:
+            self.observe_why = (_missing_short("observe") if "observe" in self.missing
+                                else "没能让 cdp 重新看这一页")
+            return None
+        if done.returncode != 0:
+            self.observe_why = "cdp 重新看这一页没成"
             return None
         try:
             return json.loads(done.stdout)
         except ValueError:
+            self.observe_why = "cdp 重新看这一页给的答复看不懂（不是 JSON）"
             return None
 
     def _diff(self, before_path):
-        """刚才那一下有没有推进：True / False；**算不出来时 None**。
+        """刚才那一下有没有推进：True / False；**算不出来时 None**（原因写在 self.progress_why）。
 
         观测故障不能说成「没推进」—— 那是一次观测问题被读成一次策略结论。
         """
+        self.progress_why = None
         done = self._cdp("diff", "--before", before_path, "--json")
-        if done is None or done.returncode != 0:
+        if done is None:
+            self.progress_why = (_missing_short("diff") if "diff" in self.missing
+                                 else "没能让 cdp 比这一步")
+            return None
+        if done.returncode != 0:
+            self.progress_why = "cdp 没能比出这一步有没有推动页面"
             return None
         try:
             return bool(json.loads(done.stdout).get("actionable"))
         except (ValueError, AttributeError):
+            self.progress_why = "cdp 给的对比结果看不懂（不是 JSON）"
             return None
 
     def _snapshot_path(self, model):
@@ -347,15 +516,26 @@ class Filler:
             return None
 
     def _shot(self, step, when):
-        """落一张截图（只在调试路径调）。返回文件名（相对 trace 那一层），失败给 None。"""
+        """落一张截图（只在调试路径调）。返回文件名（相对 trace 那一层），失败给 None。
+
+        没成时把原因记在 `self.shots_why` —— 「没截图」不许跟「这步没问题」长得一样。
+        """
         if not self.trace_path:
             return None
         try:
-            data = self.cdp.screenshot()
+            data = self.cdp.screenshot() or ""
         except Exception as exc:
             self.log.warning("[%s] 截图失败：%s", self.cid, exc)
+            self.shots_why = "截图没成：%s" % exc
             return None
-        if not data or not data.strip() or data.lstrip().startswith("{"):
+        if not data.strip() or data.lstrip().startswith("{"):
+            # 空输出 + 命令表里没有它 = 这个 cdp 根本不会截图。注意 CDPHelper.screenshot()
+            # 只把 stdout 交出来（common.py:244），命令行那句 unknown command 在 stderr 上、
+            # 被它丢了 —— 所以这里只能自己去数一次命令表（探一次，之后不再探）。
+            if not data.strip() and self._command_absent("screenshot"):
+                self._note_missing("screenshot")
+            self.shots_why = (_missing_short("screenshot") if "screenshot" in self.missing
+                              else "截图没成（cdp 没给出图）")
             return None
         try:
             raw = base64.b64decode(data.strip(), validate=True)
@@ -382,15 +562,25 @@ class Filler:
 
     # ── §5.1b：多元 target 的运行时逐级回退 ────────────────────
 
-    def _usable(self, element):
-        """能不能对它动手：看不见的、被挡住的、屏幕外的一律不要。
+    def _usable(self, element, target=None):
+        """能不能对它动手：**看不见的、真被挡住的**一律不要。
 
-        observe 说得出「被什么挡着」，蜜罐（left:-9983px 那类）也在这条线上现形。
         对看不见的元素动手不是「没点到」，是**点到别的东西**。
+        但**「在折线下」不算被挡住**：observe 给「只是不在视口里」的元素也填
+        `occluded_by: "offscreen"`（参考站实测：`Get Started` 是 `visible: true,
+        above_fold: false, occluded_by: "offscreen"` —— 滚动一下就看得见，声明里的
+        选择器那条路也照点不误）。拿 offscreen 当「被挡住」拒掉，回退链就**恰好**
+        拒掉它存在的那类元素：声明一失效 → 一个候选都找不到 → 这一步白算失败。
+        所以视口这一轴看 `above_fold`，不看 `occluded_by`：
+        折线下的候选**能用**，只是排在首屏可见的后面（见 `_relocate` 的排序）；
+        target 自己写了 `above_fold_only` 时才硬性要求首屏。
         """
         if not element.get("visible", True):
             return False
-        if element.get("occluded_by"):
+        occluded = str(element.get("occluded_by") or "").strip().lower()
+        if occluded and occluded != OFFSCREEN:
+            return False
+        if (target or {}).get("above_fold_only") and _below_fold(element):
             return False
         return True
 
@@ -412,7 +602,7 @@ class Filler:
         hits = []
         for relax in (False, True):     # 先带语境找；找不到再放宽 —— 语境是「优先」，不是「必须」
             for element in pool:
-                if not self._usable(element):
+                if not self._usable(element, target):
                     continue
                 if kind == "field":
                     key = _norm(element.get("label") or element.get("hint") or "").lower()
@@ -431,9 +621,10 @@ class Filler:
             if hits:
                 break
 
-        # 稳定性评级（D3）高的先试
+        # 稳定性评级（D3）高的先试；同样稳的里面，**首屏看得见的**先试 ——
+        # 折线下那个能用（见 _usable），但先试它可能白滚一屏。
         rank = {"high": 0, "medium": 1, "low": 2}
-        hits.sort(key=lambda el: rank.get((el.get("stability") or "").lower(), 3))
+        hits.sort(key=lambda el: (rank.get((el.get("stability") or "").lower(), 3), _below_fold(el)))
         out = []
         for element in hits:
             for selector in [element.get("selector")] + list(element.get("alternates") or []):
@@ -575,11 +766,16 @@ class Filler:
         label = _label(target, step)
 
         before_path, shot_before, signature = None, None, ""
+        self.progress_why, self.shots_why = None, None
         if self.tracing:
             signature = self.page_signature()
             model = self._observe()
             before_path = self._snapshot_path(model) if model else None
             shot_before = self._shot(index, "before")
+            if not before_path:
+                # 动作前的快照没落成 = 这一步的 progress 判不了：把原因写清楚，
+                # 别留一个光秃秃的 null（那会被读成「没推进」）。
+                self.progress_why = self.observe_why or "动作前没能留下页面快照，没得比"
 
         try:
             ok, selector, level, note = self._perform(action, step, target, label)
@@ -596,6 +792,8 @@ class Filler:
             note += "；页面没有变化"
         elif progress is None and self.tracing:
             note += "；没算出页面有没有变化"
+            if self.progress_why:
+                note += "（%s）" % self.progress_why
 
         if self.tracing:
             keep = (self.shots == "all") or (not ok) or (progress is False and action in DIFF_JUDGES)
@@ -611,10 +809,13 @@ class Filler:
                 "fallback_level": level,
                 "ok": ok,
                 "progress": progress,
+                # 判不出来时**带上为什么**（「没算出有没有推进」与「没有推进」是两件事）
+                "progress_why": self.progress_why if progress is None else None,
                 "url": self._url(),
                 "page_sig": (signature or self.page_signature())[:PAGE_TEXT_CHARS],
                 "shot_before": shot_before,
                 "shot_after": shot_after,
+                "shots_why": self.shots_why,     # 没落成图时说明原因
                 "note": note,
             })
         self.log.info("[%s] 第 %d 步：%s", self.cid, index, note)
@@ -639,6 +840,9 @@ class Filler:
                 self.log.warning("[%s] trace 打不开：%s", self.cid, exc)
                 self.trace_path = None
                 self.tracing = False
+            else:
+                # 这次调试要用到的 cdp 能力，缺了先**说清**（重跑路径上不探：§13）
+                self._check_capabilities()
 
         index = 0
         try:

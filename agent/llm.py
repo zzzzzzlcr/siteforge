@@ -25,7 +25,35 @@ DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com")
 # （`finish_reason: "stop"`、`completion_tokens_details.reasoning_tokens: 20`）。
 # 2026-09-16 那次「deepseek-v4-pro 在 800 预算下看图返回空」是同一个坑。
 # 所以这里的默认预算必须**远大于**答案本身需要 —— 它是「思考 + 答案」的总预算。
-DEFAULT_MAX_TOKENS = 4000
+#
+# **C1（计划二约束）：必须 ≥ 12000。** 计划一 spike 的预算矩阵实测：
+#   · 4000 那一档 1/8 次最终答案是**空**的（`q2-rep1`：`reasoning_tokens = 4000 =
+#     completion_tokens = max_tokens`，`content` 长度 0，而 `finish_reason` 是**正常**
+#     的 `length`，不是异常）—— 空答案看起来跟「模型说没有」一模一样；
+#   · 同一问句提到 12000 复跑 5/5 正常，`reasoning_tokens` 峰值 7164。
+# 所以别往下调：那不是省钱，是把已经验出来的能力又削掉。
+# （spike 报告 §5 第 5 条原写「默认 ≥8k」，低于这条约束 —— 以 C1 的 12000 为准。）
+DEFAULT_MAX_TOKENS = 12000
+
+
+def _budget_from_env(default: int = DEFAULT_MAX_TOKENS) -> int:
+    """预算可以由环境变量覆盖（`SPIKE_MAX_TOKENS`）—— spike 的预算矩阵靠它复现，
+    与上面 `SPIKE_MODEL` / `SPIKE_CDP_BIN` 是同一套约定。
+
+    ⚠️ 写错了（不是数字、不是正数）就**用默认值**：这个方向是安全的
+    （默认 ≥12000；反过来「静默把预算压小」正是 C1 要防的那条空答案的路）。
+    """
+    raw = os.environ.get("SPIKE_MAX_TOKENS", "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+DEFAULT_MAX_TOKENS = _budget_from_env(DEFAULT_MAX_TOKENS)
 
 
 class Dispatch(Protocol):

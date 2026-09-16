@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import logging
 import pathlib
 import subprocess
 import sys
@@ -486,13 +487,15 @@ def test_ladder_falls_back_to_observe(rendered, sandbox, form_file):
                     "occluded_by": None,
                     "alternates": [],
                 },
-                {  # 另一个陷阱：屏幕外/被遮挡
+                {  # 另一个陷阱：屏幕外 —— **能用**，但排在首屏可见的后面（见下面的
+                   # test_below_the_fold_candidate_is_usable：off-the-fold 不是不能用）
                     "selector": "#offscreen-cta",
                     "text": "Get Started",
                     "role": "button",
                     "region": "hero",
                     "visible": True,
                     "occluded_by": "offscreen",
+                    "above_fold": False,
                     "alternates": [],
                 },
                 {  # 真的那个
@@ -502,6 +505,7 @@ def test_ladder_falls_back_to_observe(rendered, sandbox, form_file):
                     "region": "hero",
                     "visible": True,
                     "occluded_by": None,
+                    "above_fold": True,
                     "alternates": ["button.cta"],
                 },
             ],
@@ -520,6 +524,83 @@ def test_ladder_falls_back_to_observe(rendered, sandbox, form_file):
     assert "#hidden-cta" not in [a[1] for a in common.STATE.actions], "看不见的元素不该点"
     assert "#offscreen-cta" not in [a[1] for a in common.STATE.actions], "屏幕外的元素不该点"
     assert any(line.startswith("observe") for line in _cdp_calls(sandbox)), _cdp_calls(sandbox)
+
+
+# ── §5.1b 回退链的候选筛选：「折线下」不是「不能用」────────────────────
+#
+# observe 对**只是不在视口里**的元素也填 `occluded_by: "offscreen"`（参考站实测：
+# `Get Started` = `visible: true, above_fold: false, occluded_by: "offscreen"` ——
+# 它同一次 observe 里也是模型唯一答对的那个按钮）。把 offscreen 当「被挡住」一律拒掉，
+# 回退链就**恰好**拒掉它存在的那类元素：声明里的选择器一失效，它一个候选都找不到，
+# 这一步白算失败 —— 而声明那条路对同一个元素是照点不误的。
+# 视口这一轴看 `above_fold`（target 侧对应 `above_fold_only`），不看 `occluded_by`。
+
+def _one_click_states(selectors=("#stale-a", "#stale-b"), **target_extra):
+    target = {"text": "Get Started", "role": "button", "near": None, "selectors": list(selectors)}
+    target.update(target_extra)
+    return [{"name": "walk", "when": None, "steps": [
+        {"action": "click", "note": "点「Get Started」", "target": target}]}]
+
+
+def _observe_action(selector, **kw):
+    action = {"selector": selector, "text": "Get Started", "role": "button", "region": "hero",
+              "visible": True, "occluded_by": None, "above_fold": True, "alternates": []}
+    action.update(kw)
+    return action
+
+
+def _relocate_only(sandbox, name, actions, target_extra=None):
+    """声明里的选择器全挂、observe 只给出 `actions` 这一个池子时的产物。"""
+    src = template.render(
+        "example-%s" % name, "Thank you",
+        _one_click_states(**target_extra or {}), [], SAMPLE_PROVENANCE,
+    )
+    module, _ = _load("run_%s" % name.replace("-", "_"), src, sandbox)
+    common = _stub(sandbox, observe={"url": "https://example.test/s", "fields": [], "actions": actions},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.fail_selectors = ("#stale-a", "#stale-b")
+    return module, common
+
+
+def test_below_the_fold_candidate_is_usable(sandbox, form_file):
+    """折线下 ≠ 不能用：滚动一下就看得见，而回退链存在的意义正是找到它。"""
+    module, common = _relocate_only(
+        sandbox, "below-fold",
+        [_observe_action("#below-cta", occluded_by="offscreen", above_fold=False)],
+    )
+    f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))
+    f.run()
+    assert ("click", "#below-cta") in common.STATE.actions, common.STATE.actions
+
+
+def test_covered_and_invisible_candidates_are_rejected(sandbox, form_file):
+    """另一半钉子：**真被挡住 / 看不见**的仍然一律不要 —— 对它们动手 = 点到别的东西。"""
+    module, common = _relocate_only(
+        sandbox, "covered",
+        [
+            _observe_action("#under-banner", occluded_by="#cookie-banner"),  # 被横幅盖住
+            _observe_action("#invisible", visible=False),                    # 看不见
+        ],
+    )
+    f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))
+    assert f.run() is False, "一个候选都不该用，这一步只能算没做成"
+    assert common.STATE.actions == [], common.STATE.actions
+
+
+def test_above_fold_only_target_skips_below_the_fold_candidate(sandbox, form_file):
+    """target 自己声明了「必须首屏看得见」（`above_fold_only`）时，折线下的不算数。
+
+    这一条同时钉住「`above_fold` 这个字段有人读」—— 在那之前它写在哪都没人看。
+    """
+    module, common = _relocate_only(
+        sandbox, "above-fold-only",
+        [_observe_action("#below-cta", occluded_by="offscreen", above_fold=False)],
+        target_extra={"above_fold_only": True},
+    )
+    f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))
+    assert f.run() is False
+    assert common.STATE.actions == [], common.STATE.actions
 
 
 def test_goto_and_wait_are_supported(sandbox, form_file):
@@ -650,6 +731,168 @@ def test_shots_all_keeps_every_step(rendered, sandbox, form_file, tmp_path):
     assert len(pngs) == 2 * total_steps, pngs
 
 
+# ── cdp 的能力缺口：observe / diff / screenshot ─────────────────────
+#
+# 生产那个 cdp 是**老版本**：`--help` 的命令表是
+# active/click/close/completion/eval/form/help/navi/scroll/snapshot/targets ——
+# **没有** observe、diff、screenshot（2026-09-17 实测）。产物要用到这三条：
+# observe 是回退链的最后一跳（生产路径），diff 与 screenshot 在 trace 里。
+# 缺了不会让重跑跑不动，但会**静默**地少三样东西 —— 而静默正是最贵的失败：
+# 「没算出有没有推进」会被读成「没推进」，「没截图」会被读成「这步没问题」。
+# 所以：缺口要用人话说出来（每条一次），trace 里的 null 要**带上为什么**。
+
+#: 生产那个 cdp 的命令表（2026-09-17 实测 `cdp --help`）
+PROD_CDP_COMMANDS = ("active", "click", "close", "completion", "eval", "form", "help",
+                     "navi", "scroll", "snapshot", "targets")
+#: siteforge 内核那个（两组之差 = diff / observe / screenshot）
+FULL_CDP_COMMANDS = PROD_CDP_COMMANDS + ("diff", "observe", "screenshot")
+
+
+def _ok_click(i):
+    return {"action": "click", "note": "第 %d 步：点「Go」" % i,
+            "target": {"text": "Go", "role": "button", "near": None, "selectors": ["#go"]}}
+
+
+def _gap_warnings(caplog, text="不会"):
+    return [r.getMessage() for r in caplog.records
+            if r.levelno >= logging.WARNING and text in r.getMessage()]
+
+
+def test_legacy_cdp_gaps_are_said_in_human_words(sandbox, form_file, tmp_path, caplog):
+    """缺命令 → **人话说一次**（每条一次）+ trace 里的 null 带上为什么，而不是静默。"""
+    src = template.render("example-legacy", "Thank you", _walk_states(2, _failed_click),
+                          [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_legacy", src, sandbox)
+    common = _stub(sandbox, commands=list(PROD_CDP_COMMANDS))
+    common.STATE.fail_actions = True
+    common.STATE.fail_screenshot = True
+    trace = tmp_path / "legacy.jsonl"
+
+    with caplog.at_level(logging.WARNING):
+        f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace))
+        assert f.run() is False
+
+    said = _gap_warnings(caplog)
+    for command in ("observe", "diff", "screenshot"):
+        hits = [m for m in said if command in m]
+        assert len(hits) == 1, (command, said)        # 两条步、每条要 observe 两次 —— 只喊一次
+    assert any("SITEFORGE_CDP_BIN" in m for m in said), ("要告诉人怎么换", said)
+    assert not [m for m in said if "#" in m], ("给人看的话里不许出现选择器", said)
+
+    lines = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(lines) == 2, lines
+    for line in lines:
+        assert line["progress"] is None, "判不出来就说判不出来 —— 不许当成「没推进」"
+        assert "cdp" in (line["progress_why"] or ""), line
+        assert "没算出页面有没有变化" in line["note"], line["note"]
+        assert line["shots_why"], line
+    # 认出来之后连试都不试：两个步骤本该各 observe 两次，实际一次都没起进程
+    observed = [c for c in _cdp_calls(sandbox) if c.startswith("observe")]
+    assert observed == [], ("知道它没有这条命令了就别再白起进程", _cdp_calls(sandbox))
+
+
+def test_unknown_command_output_is_enough_on_its_own(sandbox, form_file, tmp_path, caplog):
+    """另一条证据也够用：**这一次的输出**（cobra 明说 `unknown command`），
+    不依赖 `--help` 数得出来（探不出来时不许瞎猜「它什么都没有」）。
+    """
+    src = template.render("example-unknown-cmd", "Thank you",
+                          _walk_states(1, _failed_click), [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_unknown_cmd", src, sandbox)
+    common = _stub(sandbox, unknown=["observe", "diff"])     # 没有 commands 表可数
+    common.STATE.fail_actions = True
+    common.STATE.fail_screenshot = True
+    trace = tmp_path / "unknown.jsonl"
+
+    with caplog.at_level(logging.WARNING):
+        f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace))
+        assert f.run() is False
+
+    said = _gap_warnings(caplog)
+    assert len([m for m in said if "observe" in m]) == 1, said
+    line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert line["progress"] is None and "cdp" in (line["progress_why"] or ""), line
+    # screenshot 这条命令行（CDPHelper）把 stderr 丢了，认不出「没有这条命令」——
+    # 但**不许沉默**：至少要说「截图没成」并给出原因。
+    assert line["shots_why"], line
+
+
+def test_diff_gap_is_said_when_observe_itself_works(sandbox, form_file, tmp_path, caplog):
+    """diff 那条也要能被单独认出来（observe 好用、只有 diff 缺时，别把它说成别的）。"""
+    src = template.render("example-no-diff", "Thank you",
+                          _walk_states(1, _failed_click), [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_no_diff", src, sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/s", "actions": [], "fields": []},
+                   diff={"actionable": True}, unknown=["diff"])
+    common.STATE.fail_actions = True
+    trace = tmp_path / "no-diff.jsonl"
+
+    with caplog.at_level(logging.WARNING):
+        f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace))
+        assert f.run() is False
+
+    said = _gap_warnings(caplog)
+    assert len([m for m in said if "diff" in m]) == 1, said
+    assert not [m for m in said if "observe" in m], ("observe 好用，别说它不会", said)
+    line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert line["progress"] is None, line
+    assert "diff" in (line["progress_why"] or ""), line
+
+
+def test_a_cdp_that_has_the_commands_is_not_nagged_about(rendered, sandbox, form_file,
+                                                         tmp_path, caplog):
+    """反例：命令都在时**一个字都不许说** —— 警告变噪音就没人看了。"""
+    module, _ = _load("run_full", rendered, sandbox)
+    common = _stub(sandbox, commands=list(FULL_CDP_COMMANDS),
+                   observe={"url": "https://example.test/step-1", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = list(PAGE_TEXTS)
+    common.STATE.url = "https://example.test/step-1"
+    trace = tmp_path / "full.jsonl"
+
+    with caplog.at_level(logging.WARNING):
+        f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace))
+        assert f.run() is True
+
+    assert not _gap_warnings(caplog), _gap_warnings(caplog)
+    lines = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert [ln["progress"] for ln in lines] == [True] * len(lines)
+    assert not [ln for ln in lines if ln["shots_why"]], "命令都在，不该说截图做不了"
+    assert common.STATE.shots > 0, "trace 模式下本来就该真的去截图"
+
+
+def test_cdp_binary_can_be_pointed_elsewhere(sandbox, tmp_path, monkeypatch):
+    """`SITEFORGE_CDP_BIN`：运维不改产物就能指到带这三条命令的新版 cdp。"""
+    src = template.render("example-env-cdp", "Thank you", _one_click_states(), [], SAMPLE_PROVENANCE)
+    assert "SITEFORGE_CDP_BIN" in src, "要看得到那个环境变量的名字（不然没人知道能换）"
+
+    module, _ = _load("run_env_default", src, sandbox)
+    assert module.CDP_BIN == str(sandbox / "cdp"), "默认路径一个字都不许变"
+
+    newer = tmp_path / "cdp-new"
+    newer.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    newer.chmod(0o755)
+    monkeypatch.setenv("SITEFORGE_CDP_BIN", str(newer))
+    module, _ = _load("run_env_override", src, sandbox)
+    assert module.CDP_BIN == str(newer)
+
+
+def test_production_rerun_never_probes_the_binary(sandbox, form_file):
+    """§13：重跑那条路**一次都不许探**（声明里的找法都成时，连 `--help` 都不跑）。
+
+    这是「加能力探测」最容易踩坏的地方：探一次是几毫秒 —— 而重跑要跑成千上万次。
+    """
+    src = template.render("example-no-trace", "Thank you", _walk_states(1, _ok_click),
+                          [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_no_trace", src, sandbox)
+    common = _stub(sandbox, commands=list(PROD_CDP_COMMANDS))   # 哪怕它缺一堆命令
+    common.STATE.texts = ["Thank you"]
+
+    f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))
+    assert f.run() is True
+    assert _cdp_calls(sandbox) == [], _cdp_calls(sandbox)
+
+
 # ── 参考产物（Task 4 拿它跑 lint）─────────────────────────────────
 
 def test_reference_fixture_is_current():
@@ -693,6 +936,9 @@ class _State:
         self.text = ""
         self.fail_actions = False
         self.fail_selectors = ()
+        # 生产那个 cdp 没有 screenshot 命令，而真 CDPHelper.screenshot() 只交 stdout、
+        # 把 stderr 丢了（common.py:244 `return result.stdout.strip()`）—— 于是它返回空串。
+        self.fail_screenshot = False
         self.actions = []        # ("click", sel) / ("form", sel, value) / ("scroll", px) / ("goto", url)
         self.reports = []        # report_url 的 step 标签
         self.shots = 0
@@ -749,6 +995,8 @@ class CDPHelper:
 
     def screenshot(self):
         STATE.shots += 1
+        if STATE.fail_screenshot:
+            return ""
         return PNG
 
     def get_page_info(self):
@@ -775,7 +1023,12 @@ def report_url(cdp_helper, task_id, step, log=None, base64_content=""):
 # （Go，另一条线在改），这里给的是按契约手写的假货：只认 observe / diff。
 
 STUB_CDP = '''#!/usr/bin/env python3
-"""假 cdp（测试用）：只回答 observe / diff，内容从同目录的 fake_cdp.json 读。
+"""假 cdp（测试用）：observe / diff 从同目录的 fake_cdp.json 读，navi 一律成，
+`--help` 吐命令表（cobra 那个形状）。
+
+`fake_cdp.json` 里给了 `commands` 时，它还照**真 cdp（cobra）**的样子对待命令表以外的
+子命令：stderr 上一行 `Error: unknown command "x" for "cdp"`、退出码 1。
+生产那个 cdp 就是这么答的 —— 它**没有** observe / diff / screenshot（2026-09-17 实测）。
 
 每次被调都往 fake_cdp_calls.log 记一笔 —— 测试靠它数「产物在**生产重跑路径**上
 到底调了几次 cdp CLI」（§13 第 3 条：重跑不许做调试动作）。
@@ -796,6 +1049,29 @@ with open(os.path.join(HERE, "fake_cdp_calls.log"), "a", encoding="utf-8") as fp
     fp.write(" ".join(sys.argv[1:]) + "\\n")
 
 cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+known = CFG.get("commands")
+if cmd in ("--help", "-h", "help"):
+    if known is None:
+        print("stub cdp: 这份配置没给命令表")     # 探不出来（不是「什么都没有」）
+        sys.exit(0)
+    print("A CLI tool to interact with Chrome DevTools Protocol")
+    print("")
+    print("Usage:")
+    print("  cdp [command]")
+    print("")
+    print("Available Commands:")
+    for name in known:
+        print("  %-11s stub" % name)
+    print("")
+    print("Flags:")
+    print("  -h, --help   help for cdp")
+    sys.exit(0)
+if cmd in (CFG.get("unknown") or []):
+    sys.stderr.write('Error: unknown command "%s" for "cdp"\\n' % cmd)
+    sys.exit(1)
+if known is not None and cmd not in known:
+    sys.stderr.write('Error: unknown command "%s" for "cdp"\\n' % cmd)
+    sys.exit(1)
 if cmd in CFG:
     print(json.dumps(CFG[cmd]))
     sys.exit(0)
