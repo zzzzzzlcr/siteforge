@@ -678,7 +678,9 @@ class Service:
             d = self._explore_dir(job_id)
             rows = [r for r in measure.read_rows(d / "window.jsonl") if "_corrupt" not in r]
             steps: list = []
-            for p in sorted(d.glob("attempt-*.jsonl")):
+            # 按**数字**排（`attempt-10` 排在 `attempt-2` 后面）：字符串序会把两次尝试
+            # 的步**接反**，而 M9 的「状态序列」是靠顺序读出来的。
+            for p in sorted(d.glob("attempt-*.jsonl"), key=measure.attempt_no):
                 steps.extend(r for r in measure.read_rows(p) if "_corrupt" not in r)
             return measure.baseline(
                 d / "baseline.json",

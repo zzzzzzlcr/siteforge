@@ -248,6 +248,18 @@ def record_attempt(path: Any, *, started_at: Any, ended_at: Any, rounds: Any = N
     return row
 
 
+def attempt_no(path: Any) -> int:
+    """`attempt-<n>.jsonl` → `n`（给 `sorted(..., key=attempt_no)` 用）。
+
+    为什么不能用字符串序：`attempt-10` 会排在 `attempt-2` **前面** —— 两次尝试的步就被
+    接反了，而 M9 的状态序列是靠顺序读出来的。读不出编号就排到最后（`-1`），不抛。
+    """
+    try:
+        return int(pathlib.Path(path).stem.split("-", 1)[1])
+    except (IndexError, ValueError):
+        return -1
+
+
 def read_attempts(path: Any) -> list:
     """读回 `attempts.jsonl`。坏行不吞（原样留一条 `_corrupt`，数字全是 `None`）。"""
     out: list = []
