@@ -47,10 +47,15 @@ chrome --remote-debugging-port=9222
 ```
 
 **环境变量:** `CDP_HOST`（默认 127.0.0.1）、`CDP_PORT`（默认 9222）。
-⚠️ **与直觉相反、也与代码注释的意图相反：环境变量会覆盖显式传的 `--host`/`--port`**
-（`cmd/root.go` 的 PersistentPreRun 判的是**子命令**的 flagset，`Changed()` 恒为 false；
-2026-09-16 实测：`CDP_PORT=<死端口> cdp --port <活端口> targets` 报的是死端口的连接错误）。
-跑 e2e 时别在同一个 shell 里设 `CDP_PORT` —— 子进程会绕过 `--port` 打到别的浏览器上。
+**优先级：显式 flag > 环境变量 > 默认值**（2026-09-16 修正）。
+
+> 修前是反的 —— 环境变量会盖掉显式 `--host`/`--port`。原因：`PersistentPreRun` 拿到的是**子命令**，
+> 而 `--host/--port` 声明在 rootCmd 上；`cmd.PersistentFlags()` 在子命令上返回**它自己的空 flagset**，
+> 于是 `Changed()` 恒为 false、守卫恒成立。改用 `cmd.Flags()`（cobra 在 `ParseFlags` 时把 root 的
+> persistent flags 并了进来）。实测：`CDP_PORT=<死端口> cdp --port <活端口> targets`
+> 修前打**死端口**、修后打**活端口**。回归测试在 `cmd/root_test.go`。
+
+⚠️ **上游 `/company/cdpcli/cmd/root.go` 有同样的缺陷且未修** —— 两个工具此刻行为不一致。
 
 **功能说明:** snapshot 命令获取当前打开页面的所有 frame 信息（frameId、title、url、readyState）；
 observe 命令给出页面模型（规格 §4.3 契约：actions / fields / option_groups / obstructions /
