@@ -1,0 +1,21 @@
+# 注意: tests/ 绝不忽略。
+# 原项目把 tests/ 写进了 .gitignore，测试从不进 git，机器重建即丢 ——
+# 这是 2026-09-16 决定另起项目的原因之一(规格 §1.2)。
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+logs/
+tmp/
+runtime/
+config/*.local.*
+
+.env
+.env.*
+
+# 工具层构建产物(源码在 tools/cdp/)
+tools/cdp/cdp
+tools/cdp/cdp-mcp

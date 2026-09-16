@@ -1,0 +1,8 @@
+.git
+logs/
+tmp/
+runtime/
+__pycache__/
+*.pyc
+tools/cdp/cdp
+tools/cdp/cdp-mcp
