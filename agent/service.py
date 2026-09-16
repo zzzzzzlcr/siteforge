@@ -21,7 +21,7 @@ GET  /health              活着吗、状态存哪儿了、cdp 在哪
    - `allow_skips` 里有不认识的遍（图的边界**不校验**，P14：写错名字会先烧掉一次探路再炸）；
    - 显式的空 `allow_skips=[]`（和「没给」在图的边界**不可区分**，P15：约束会被静默吃掉，
      于是 `country` 回到默认放行）；
-   - 载荷要了 `viewport`（换窗口大小）而这个部署**给不了那根线**。
+   - 载荷要了 `set_viewport`（换窗口大小）而这个部署**给不了那根线**。
    三条都在这儿（免费）拦下，并在人话里说清该怎么改。
 4. **不把「跑挂了」写成「跑成了」**。`status` 说的是**job 走到哪了**，`delivered` 说的是
    **产物真的落盘了吗** —— 两件事分开摆，跑挂的 job 的 `result` 一律是 `None`。
@@ -170,7 +170,15 @@ class BitWindow:
             raise RuntimeError("换窗口大小的请求被拒了：%s" % str(out)[:200])
 
     def alive(self) -> Optional[bool]:
-        """窗口还活着吗。**三态**：True 活 / False 死 / None 问不出来（别拿它当死）。"""
+        """窗口还活着吗。**三态**：True 活 / False 死 / None 问不出来（别拿它当死）。
+
+        ⚠️ `data` 的真实形状是**测出来的**（2026-09-16 在真 worker 上量的）：
+        活着的窗口 → `{"success":true,"data":{"<bit_id>": 4256}}`（一个 **dict**，值是该窗口的 PID）；
+        关掉之后 → `{"success":true,"data":{}}`（空 dict）。
+        **一开始这里只认 list/bool/str，于是真跑时恒返回 `None`（「不知道」）——
+        这根线看起来接好了，其实永远不响。** 这种「接上了但不响」比没接更坏：
+        它让 P6 的那道前置看起来存在。测试钉住这两种形状。
+        """
         try:
             out = self._post("/browser/pids/alive", {"ids": [self.bit_id]})
         except RuntimeError:
@@ -178,12 +186,19 @@ class BitWindow:
         if not isinstance(out, dict):
             return None
         data = out.get("data")
+        if isinstance(data, dict):
+            return self.bit_id in data
         if isinstance(data, list):
             return self.bit_id in [str(x) for x in data]
         if isinstance(data, bool):
             return data
         if isinstance(data, str):
-            return data.strip().lower() in ("true", "1", "yes")
+            low = data.strip().lower()
+            if low in ("true", "1", "yes"):
+                return True
+            if low in ("false", "0", "no", ""):
+                return False
+            return None                  # 比如「操作成功」—— 那只说明这次调用成了，没说窗口活着
         return None
 
 
@@ -302,7 +317,7 @@ class RunRequest(BaseModel):
 
     图 **不自己发明** 任何「没验到也算过」的默认值（§2.5），所以它要的那几样只有调用方给得了：
     `success_text`（什么算成功，只有人知道）、`ws_url` / `form_file`（§4.6 前提层的产物）、
-    以及窗口层的旋钮（`viewport` / `allow_skips` / `entry_url`，R-31）。
+    以及窗口层的旋钮（`set_viewport` / `allow_skips` / `entry_url`，R-31）。
     """
 
     url: str = Field("", description="站点 URL")
@@ -644,7 +659,7 @@ class Service:
             can_do = (self._window is not None and hasattr(self._window, "set_viewport"))
             allowed = list(body.allow_skips or ())
             if not can_do and "viewport" not in allowed:
-                problems.append("载荷里要了 `viewport`（第 4 遍换窗口大小），但这个部署**没有接窗口层** —— "
+                problems.append("载荷里要了 `set_viewport`（第 4 遍换窗口大小），但这个部署**没有接窗口层** —— "
                                 "换不了。两条路，都摆在明面上：① 把窗口层接上（`BIT_WORKER_IP`/`BIT_ID`），"
                                 "那这一遍就真跑；② 明确放弃它：把 `\"viewport\"` 写进 `allow_skips` —— "
                                 "交出来的产物会带着「这一类失败这次**没验到**」。"
@@ -679,7 +694,7 @@ class Service:
 
     @staticmethod
     def _payload(brief: dict) -> dict:
-        """开场白 → 图认得的那几个键（多出来的（比如 viewport）留在服务这一层）。"""
+        """开场白 → 图认得的那几个键（服务这一层的开关，比如 `set_viewport`，不往里塞）。"""
         keep = ("url", "goal", "mode", "success_text", "evidence", "site", "ws_url",
                 "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url")
         return {k: brief[k] for k in keep if k in brief}

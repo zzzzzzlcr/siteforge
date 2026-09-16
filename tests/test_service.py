@@ -84,7 +84,6 @@ class Rec:
     def __init__(self):
         self.explore: list = []
         self.selftest: list = []
-        self.viewport: list = []
 
 
 def _deps(rec: Rec, tmp_path, *, inherit=None):
@@ -735,3 +734,62 @@ def test_the_viewport_probe_is_skipped_when_we_have_no_window_to_measure():
     svc = service.Service(window=StubWindow(), viewport_probe=lambda _ws: (1, 1),
                           checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
     svc._viewport_cb(None)(1024, 768)       # 不抛
+
+
+# ───────────────────────── 6. 窗口层：两条线的**真实形状**（真 worker 上量的）─────
+
+
+def _bit_window(reply):
+    """一个把 HTTP 换掉的 `BitWindow`（形状照真 worker 的应答）。"""
+    win = service.BitWindow("192.168.1.197", "b" * 32)
+
+    def _post(path, body):
+        return reply(path, body)
+    win._post = _post
+    return win
+
+
+def test_alive_reads_the_shape_the_real_worker_actually_returns():
+    """`/browser/pids/alive` 的 `data` 是**一个 dict**，不是一个 list：
+
+        活着 → {"success":true,"data":{"<bit_id>": 4256}}
+        死了 → {"success":true,"data":{}}
+
+    （两种形状都是 2026-09-16 在真 worker 上量的。）
+    一开始这里只认 list/bool/str —— 于是**真跑时永远返回 None（「不知道」）**，
+    这根线看着接好了，其实永远不响。这种「接上了但不响」比没接更坏：它让 P6 那道前置
+    看起来存在。所以这条测试钉死这两种形状。
+    """
+    bid = "b" * 32
+    assert _bit_window(lambda p, b: {"success": True, "data": {bid: 4256}}).alive() is True
+    assert _bit_window(lambda p, b: {"success": True, "data": {}}).alive() is False
+    # 别把「问不出来」读成「死了」——那会误杀一个本来能跑的运行
+    assert _bit_window(lambda p, b: {"success": True, "data": "看不懂"}).alive() is None
+    assert _bit_window(lambda p, b: (_ for _ in ()).throw(RuntimeError("连不上"))).alive() is None
+
+
+def test_set_viewport_writes_the_whole_record_so_the_proxy_is_not_dropped():
+    """`POST /browser/update` 是**整条记录更新**，不是补丁。
+
+    实测：只发 `{id, browserFingerPrint}` 会被拒 ——
+    `{"success":false,"msg":"请选择代理方式"}`（也就是说代理那几项会被丢掉，
+    与 `bit.sh update` 那个残缺包装同一个坑）。所以必须**先读回整条、只改尺寸、原样写回**。
+    """
+    seen: dict = {}
+
+    def reply(path, body):
+        if path == "/browser/detail":
+            return {"success": True, "data": {
+                "id": "b" * 32, "proxyMethod": 1, "proxyType": "socks5",
+                "host": "10.0.0.9", "port": 1081, "syncTabs": False,
+                "clearCookiesBeforeLaunch": True,
+                "browserFingerPrint": {"coreVersion": "134", "openWidth": 393, "openHeight": 852}}}
+        seen.update(body)
+        return {"success": True, "data": "操作成功"}
+
+    _bit_window(reply).set_viewport(1024, 768)
+    assert seen["browserFingerPrint"]["openWidth"] == 1024
+    assert seen["browserFingerPrint"]["openHeight"] == 768
+    assert seen["browserFingerPrint"]["coreVersion"] == "134", "原来那几项要原样带回去"
+    assert (seen["proxyMethod"], seen["proxyType"], seen["host"], seen["port"]) == \
+        (1, "socks5", "10.0.0.9", 1081), "代理那几项一个都不能丢：%r" % seen
