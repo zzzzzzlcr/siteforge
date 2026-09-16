@@ -18,12 +18,18 @@
 
 from __future__ import annotations
 
+import http.server
 import json
 import os
 import pathlib
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
+import threading
+import time
+import urllib.request
 
 import pytest
 
@@ -383,6 +389,24 @@ def test_a_run_that_never_wrote_a_trace_is_still_a_failure(env):
     assert "退出码" in bad.note and "ModuleNotFoundError" in bad.note, bad.note
 
 
+def test_exit_zero_with_no_trace_at_all_is_not_a_pass(env):
+    """退出码 0，但**一行 trace 都没有** —— 没有证据就不许被读成「过了」（R-27）。
+
+    两个「没有」撞在一起时，判据会变成空口白话：产物 trace 写不进去会警告一句然后接着跑
+    （`agent/template.py` 的 `_trace`），exit 0 照样返回；而 `_read_trace` 对「文件不在 /
+    读不动」交的是空列表。于是「trace 里没有没做成的步」这句话在**一行都没有**时也成立 ——
+    而这个模块存在的唯一理由就是当**证据**的闸门（Task 8 要拿它跑真站）。
+    """
+    report = _run(env, _scripts(baseline=_Script(rc=0, trace=False)),
+                  set_viewport=lambda w, h: None)
+    assert report.passed is False
+    first = report.runs[0]
+    assert first.status == "failed" and first.ok is False
+    assert first.failed_step is None, "「没有证据」不是「卡在第 N 步」"
+    assert "trace" in first.note and "证据" in first.note, first.note
+    assert "跑通了" not in report.summary(), report.summary()
+
+
 def test_a_hung_run_is_a_failure(env):
     """跑不完（超时）也是挂 —— 不能挂在那儿等它。"""
     report = _run(
@@ -596,6 +620,171 @@ def test_a_self_test_run_is_silent_in_every_run(env):
     assert stub.artifact_calls, "一次都没跑？"
     for cmd in stub.artifact_calls:
         assert "--no-report" in cmd, cmd
+
+
+# ── 真浏览器那把尺子（R-23）：桩之外，至少真跑一遍 ────────────────────
+#
+# 为什么必须有这一节：自测是**诚实性的量具**。如果它自己的诚实只由桩来断言，
+# 那这根链子上最弱的一环就是量具本身 —— 桩能证明「trace 读得对」，证明不了
+# 「真站上跑得通」。所以这里起一个**私有 headless Chrome**（绝不碰共享的 9222）、
+# 一个本地夹具页、真 cdp、真运行时，跑真产物。
+#
+# 拿不到环境（没 Chrome / 没 go）**宁可红也不 skip** —— 沿用 Task 5 的裁定
+# （`tests/test_browser_agent.py` 的评审特意夸了这一点）：skip 与 pass 长得一样。
+
+LIVE_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>live</title></head>
+<body><h1>Landing</h1>
+<button id="go" onclick="document.getElementById('done').textContent='Thank you'">Go</button>
+<div id="done"></div></body></html>"""
+
+
+class _LivePage(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = LIVE_PAGE.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _chrome_binary() -> str:
+    for candidate in (os.environ.get("CHROME_BIN"), "google-chrome", "google-chrome-stable",
+                      "chromium", "chromium-browser",
+                      "/usr/bin/google-chrome", "/usr/bin/chromium"):
+        if not candidate:
+            continue
+        found = shutil.which(candidate) or (candidate if os.path.exists(candidate) else None)
+        if found:
+            return found
+    raise AssertionError("找不到 Chrome/Chromium —— 这条闸门宁可红也不 skip")
+
+
+def _cdp_binary() -> str:
+    """真 cdp：环境变量 → 本仓库构建的那个 → 现构建一个（与 Go 侧 e2e 同一条路）。"""
+    given = os.environ.get("SITEFORGE_CDP_BIN")
+    if given and os.access(given, os.X_OK):
+        return given
+    built = ROOT / "tools" / "cdp" / "cdp"
+    if built.is_file() and os.access(built, os.X_OK):
+        return str(built)
+    go = shutil.which("go") or "/usr/local/go/bin/go"
+    if not os.path.exists(go):
+        raise AssertionError("既没有 tools/cdp/cdp，也没有 go 工具链（试过 %s）" % go)
+    env = dict(os.environ,
+               PATH="/usr/local/go/bin:" + os.environ.get("PATH", ""),
+               GOPROXY=os.environ.get("GOPROXY", "https://goproxy.cn,direct"))
+    out = pathlib.Path(tempfile.mkdtemp(prefix="siteforge-cdp-")) / "cdp"
+    done = subprocess.run([go, "build", "-ldflags", "-s -w", "-o", str(out), "main.go"],
+                          cwd=str(ROOT / "tools" / "cdp"), env=env,
+                          capture_output=True, text=True, timeout=300)
+    if done.returncode != 0:
+        raise AssertionError("构建 cdp 失败：\n" + done.stderr[-2000:])
+    return str(out)
+
+
+@pytest.fixture(scope="module")
+def live_site():
+    """本地夹具页 + 私有 headless Chrome（独立端口 / 独立 profile）+ 真 cdp。"""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _LivePage)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    entry = "http://127.0.0.1:%d/" % server.server_address[1]
+
+    port = _free_port()
+    profile = tempfile.mkdtemp(prefix="siteforge-live-profile-")
+    log = open(os.path.join(profile, "chrome.log"), "w")  # noqa: SIM115 —— 与子进程同寿
+    proc = subprocess.Popen(
+        [_chrome_binary(), "--headless=new", "--remote-debugging-port=%d" % port,
+         "--remote-debugging-address=127.0.0.1", "--no-first-run", "--no-default-browser-check",
+         "--disable-gpu", "--no-sandbox", "--disable-extensions", "--disable-crash-reporter",
+         "--user-data-dir=%s" % profile, entry],
+        stdout=log, stderr=log, start_new_session=True)
+    base = "http://127.0.0.1:%d" % port
+    ws_url = ""
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(base + "/json/version", timeout=1) as resp:
+                ws_url = json.loads(resp.read().decode("utf-8"))["webSocketDebuggerUrl"]
+            break
+        except Exception:  # noqa: BLE001 —— 还没起来
+            time.sleep(0.2)
+    if not ws_url:
+        raise AssertionError("私有 Chrome 没起来（%s 一直没有 page 目标）" % base)
+    try:
+        yield {"ws_url": ws_url, "entry": entry, "cdp": _cdp_binary()}
+    finally:
+        # 杀**整个进程组**：Chrome 会拉起 zygote / renderer 一串子进程，
+        # 只杀父进程会留孤儿（本仓库栽过：孤儿窗口 → 内存 95%）
+        try:
+            os.killpg(os.getpgid(proc.pid), 15)
+        except OSError:
+            pass
+        server.shutdown()
+        log.close()
+
+
+def _live_artifact(root, success_text):
+    """真产物（模板渲染）+ 真运行时拷贝，摆在 `<root>/forms/{common.py,sites/}` 里。"""
+    (root / "forms" / "sites").mkdir(parents=True)
+    shutil.copy(RUNTIME_COMMON, root / "forms" / "common.py")
+    states = [{"name": "landing", "when": None, "steps": [
+        {"action": "click", "note": "点「Go」",
+         "target": {"text": "Go", "role": "button", "near": None, "selectors": ["#go"]}}]}]
+    py = root / "forms" / "sites" / ("%s.py" % SITE)
+    py.write_text(template.render(SITE, success_text, states, [], {}), encoding="utf-8")
+    form = root / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    return py, form
+
+
+def test_a_real_run_passes_and_stays_off_production(live_site, tmp_path, monkeypatch):
+    """真 Chrome + 真 cdp + 真运行时 + 真产物：跑通了，并且**一个字节都没发去生产**。"""
+    py, form = _live_artifact(tmp_path / "good", "Thank you")
+    netlog = _install_net_guard(tmp_path, monkeypatch)
+
+    report = selftest.run(str(py), live_site["ws_url"], str(form), SITE,
+                          run_dir=tmp_path / "traces", cdp_bin=live_site["cdp"],
+                          entry_url=live_site["entry"], delay=0.05, timeout=180,
+                          allow_skips=("country", "viewport"))
+
+    assert report.passed is True, report.summary()
+    assert [r.status for r in report.runs[:3]] == ["passed"] * 3, report.summary()
+    for run in report.runs[:3]:
+        assert run.trace_path and os.path.exists(run.trace_path), run
+        rows = [json.loads(ln) for ln in pathlib.Path(run.trace_path).read_text(
+            encoding="utf-8").splitlines() if ln.strip()]
+        assert rows and all(ln.get("ok") is True for ln in rows), rows
+        assert rows[0]["step"] == 1 and "note" in rows[0]
+    # 第 2 遍真的「刷新后重跑」过（entry_url → cdp navi），所以它的 trace 也是新的
+    assert report.runs[1].trace_path != report.runs[0].trace_path
+    assert not netlog.exists(), "真跑这一遍往生产发了请求：\n%s" % (
+        netlog.read_text(encoding="utf-8") if netlog.exists() else "")
+
+
+def test_a_real_run_that_never_succeeds_is_not_a_pass(live_site, tmp_path, monkeypatch):
+    """成功文案永远等不到时：三遍都挂、都指得出「没走到成功」，而且**不是**「卡在第几步」。"""
+    py, form = _live_artifact(tmp_path / "bad", "NEVER-APPEARS")
+    _install_net_guard(tmp_path, monkeypatch)
+
+    report = selftest.run(str(py), live_site["ws_url"], str(form), SITE,
+                          run_dir=tmp_path / "traces", cdp_bin=live_site["cdp"],
+                          delay=0.05, timeout=180, allow_skips=("country", "viewport"))
+
+    assert report.passed is False
+    assert [r.name for r in report.failed_runs] == ["baseline", "rerun", "delay"]
+    for run in report.failed_runs:
+        assert run.failed_step is None, run
+        assert "成功" in run.note, run.note
 
 
 # ── 与模板的契约 ──────────────────────────────────────────────────

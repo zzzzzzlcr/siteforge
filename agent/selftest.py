@@ -280,7 +280,9 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
     first_bad = next((ln for ln in lines if ln.get("ok") is False), None)
     failed_step = first_bad.get("step") if first_bad else None
     step_said = (first_bad or {}).get("note") or "trace 里那一步没写为什么"
-    ok = (rc == 0) and first_bad is None and not timed_out
+    # `lines` 非空是承重的一环（R-27）：一行 trace 都没有时，「trace 里没有没做成的步」
+    # 这句话是**空口白话** —— 没有证据的东西不许被读成「过了」。
+    ok = (rc == 0) and bool(lines) and first_bad is None and not timed_out
 
     if timed_out:
         note = "这一遍没跑完就超时了（>%s 秒）—— 卡在第 %s 步" % (
@@ -289,6 +291,10 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
     elif rc == 0 and first_bad is not None:
         note = ("退出码说成功，但 trace 里第 %s 步没做成（%s）—— 按没做成算"
                 % (failed_step, step_said))
+    elif rc == 0 and not lines:
+        note = ("退出码说成功，但这一遍**一行 trace 都没有** —— 没有证据就不算过。"
+                "两种可能：trace 没写进去（产物会警告一句再接着跑），或者一步都没走到"
+                "（states 的 when 一个都没匹配上）。两种都不能当「验过了」。")
     elif rc == 0:
         note = "跑通了（退出码 0，trace 里没有没做成的步）"
     elif first_bad is not None:

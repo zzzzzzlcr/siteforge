@@ -86,9 +86,11 @@ def _md5(path) -> str:
 
 
 def compare(other=None, path=None) -> tuple:
-    """跟另一份逐行比。返回 `(是否有分歧, 给人看的报告)`。
+    """跟另一份逐行比。返回 `(两边是否**逐行逐字相同**, 给人看的报告)`。
 
-    ⚠️ 对方不在 = **比不了**，返回 `(False, …)` 且话里不许出现「没有分歧」。
+    ⚠️ `[0]` 读作**「一样吗」**（`True` = 没有分歧），不是「有分歧吗」——
+    在「漂了没有」这根轴上读反，比没有这个函数更坏。
+    ⚠️ 对方不在 = **比不了**，返回 `(False, …)` 且话里不许出现「没有分歧」那句结论。
     """
     mine = pathlib.Path(path or RUNTIME_PATH)
     theirs = pathlib.Path(other) if other else pathlib.Path(PRODUCTION_PATH)

@@ -276,6 +276,26 @@ def test_divergence_is_visible_on_demand(tmp_path):
         assert change in text, "已知的加法式改动要列出来（好分清「改的」与「漂的」）"
 
 
+def test_compare_says_which_way_round_its_first_value_is():
+    """`compare()[0]` 是**「两边一样吗」**，不是「有分歧吗」（R-28）。
+
+    原先 docstring 写的是「是否有分歧」，而实现返回的是 `identical` —— 恰好**反过来**。
+    这个模块存在的唯一理由就是让人看清「这两份漂了没有」，而在那一根轴上读反，
+    比没有这个函数更坏：`if compare()[0]:` 会在「两边已经不一样了」的时候当作「没事」。
+    """
+    doc = runtime.compare.__doc__ or ""
+    assert "相同" in doc, doc
+    assert "是否有分歧" not in doc, doc
+
+
+def test_the_artifact_landing_spot_is_part_of_the_contract():
+    """产物要落在 `<repo>/forms/sites/` —— 空目录 git 不跟踪，所以那儿放了个 `.gitkeep`：
+    落点是契约的一部分，而不是某台机器上的偶然（`git ls-files forms/sites/` 要看得见它）。
+    """
+    landing = runtime.RUNTIME_PATH.parent / "sites" / ".gitkeep"
+    assert landing.is_file(), "产物往哪落不能靠「这台机器上正好有这个目录」"
+
+
 def test_a_missing_other_copy_is_never_read_as_no_divergence(tmp_path):
     """比对的那份不在 = **没法比**，不是「没有分歧」（这两种绝不能混）。"""
     gone = tmp_path / "nope.py"
