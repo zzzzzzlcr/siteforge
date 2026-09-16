@@ -146,7 +146,9 @@ $summary
                   失败那步的截图。note 是写给人看的一句话（不是错误码、不是选择器）。
                   `progress` 判不出来时是 null，**旁边 `progress_why` 说明为什么**
                   （例如「这个 cdp 不会 diff」）—— 观测故障不许被读成策略结论；
-                  截图没落成时 `shots_why` 同样说明原因。
+                  截图没落成时 `shots_why` 同样说明原因；`frame_id` 是**这一步真在哪一帧
+                  里做的**（空串 = 主帧），元素在跨源 iframe 里时它就是那条 `--frame-id`，
+                  「帧内的动作有没有带帧号」读这一行就能看见。
   --stop-at <N>   跑完第 N 步就停，**浏览器保持原状不关**（谁开的谁关）
   --shots all     每步都截图。默认只在**没做成**、以及**判得出没推进**的那几步落
                   （点/导航那类才有推进可判；填/选没有通用判据，不算它「没推进」）
@@ -189,6 +191,11 @@ DIFF_JUDGES = ("click", "goto")
 # observe 用这个值说「元素只是不在当前视口里」—— **不是**被谁挡住（滚动就看得见）。
 # 判「能不能对它动手」时要把它与真遮挡（被横幅盖住那类）分开，见 _usable。
 OFFSCREEN = "offscreen"
+
+# observe 用 `frame_path` 里这个名字表示**主帧**（规格 §4.3：`""` → `["main"]`）。
+# ⚠️ 它是给人看的标记，**不是**能回传给 cdp 的 frameID —— 所以要把它翻成 `""`，
+# 见 _frame_of_element。target 里的 `frame_id`：空串 = 主帧，非空 = 那一帧的 CDP frameID。
+FRAME_MAIN = "main"
 
 # ── 「这个 cdp 会不会做这件事」────────────────────────────
 # 生产那个 cdp 是**老版本**：`--help` 里只有 active/click/close/completion/eval/form/
@@ -244,6 +251,13 @@ PROVENANCE = $provenance
 # 表示折线下的候选也能用（重新 observe 找到的候选里，`above_fold: false` 或
 # `occluded_by: "offscreen"` 只是「不在视口里」，滚动一下就看得见，不是被挡住）。
 #
+# target 里的 `frame_id`：这一步的元素**在哪一帧**里（空串 = 主帧，非空 = 那一帧的
+# CDP frameID，交给 `cdp --frame-id`）。**它跟 selectors 是一体的两半** —— 同一个
+# 选择器在主帧与子帧里可以是两个不同的元素，只搬选择器不搬帧，重放就会去主帧里找一个
+# 根本不存在的元素（真站实测：跨源 iframe 里的控件主帧命中 0、帧内命中 1，
+# 每一遍都「页面上没找到」，而账本里原先没有这个键，看不出是这个原因）。
+# 老产物 / 主帧里的元素没有这个键，按空串处理。
+#
 # 动作只有这五种（别的会在运行时被当成「产物写错了」）：click / form / scroll /
 # goto（直接导航，走 cdp navi —— 写路径不许用 eval）/ wait。
 STATES = $states
@@ -297,6 +311,44 @@ def _below_fold(element):
     if element.get("above_fold") is False:
         return True
     return str(element.get("occluded_by") or "").strip().lower() == OFFSCREEN
+
+
+def _frames_in_states(states):
+    """这条流程**动过手的帧**（STATES 里出现过的 `frame_id`，去重、按出现顺序）。
+
+    产物没有「枚举页面里有哪些帧」的本事（cdp CLI 那条路上没有这个命令），也不需要：
+    **它动手的那几帧就是它要读的那几帧** —— 见 `page_signature` / `_urls`。
+    """
+    out = []
+    for state in states or []:
+        for step in (state or {}).get("steps") or []:
+            fid = str(((step or {}).get("target") or {}).get("frame_id") or "")
+            if fid and fid not in out:
+                out.append(fid)
+    return out
+
+
+def _frame_of_element(element, fallback=""):
+    """重新 observe 找到的这个候选**在哪一帧**（读它自己的 `frame_path`）。
+
+    与 `agent/browser_agent.py:_frame_id_of_path` 同一套判据（那边写账本，这边读回来）：
+
+    - `["main"]` / 空 → `""`（主帧）
+    - `["main", "<frameID>"]` → 那个 frameID
+    - 读不出来（没有这个键 / 嵌了两层以上）→ `fallback`（`target` 里那一帧）
+
+    第三种为什么退回 `fallback` 而不是取最深那一段：`cdp` 换点击坐标只补**目标帧的
+    owner `<iframe>` 在主帧里**那一个原点，中间几层没人补 —— 猜一个更深的帧号不是
+    「够不着」，是**按错的坐标点了一下**。
+    """
+    path = (element or {}).get("frame_path")
+    if isinstance(path, str) or not isinstance(path, (list, tuple)):
+        return fallback
+    rest = [str(seg or "").strip() for seg in path]
+    rest = [seg for seg in rest if seg and seg.lower() != FRAME_MAIN]
+    if not rest:
+        return ""
+    return rest[0] if len(rest) == 1 else fallback
 
 
 def _missing_short(command):
@@ -365,7 +417,32 @@ def _label(target, step=None):
     return "没写名字的元素"
 
 
-def _say(action, label, ok, level=None, progress=None):
+def _landing_say(output):
+    """这条 cdp 回执里关于**落点判据**的那件事（没有就返回空串）。
+
+    ⚠️ 读的是**字段**（`release_withheld` / `landing_withheld` / `landing_blind`），
+    不是句子里扫「扣下」这类字 —— 扫字改一个词就失效，而失效的方向是**静默**
+    （又变回「填好了」）。字段契约见 `cdp form` / `cdp click` 的成功回执
+    （内核那一份 `SummarizeLanding`，CLI 与 MCP 两个门共用）。
+    """
+    raw = (output or "").strip()
+    if not raw.startswith("{"):
+        return ""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    if data.get("release_withheld") or data.get("landing_withheld"):
+        cover = data.get("covered_by") or "别的东西"
+        return "（按下之后 %s 盖了上来，这一次抬手没有交给它）" % cover
+    if data.get("landing_blind"):
+        return "（这一帧的落点判据用不了：跨站子帧里它不触发）"
+    return ""
+
+
+def _say(action, label, ok, level=None, progress=None, landing=""):
     """给人看的一句话（D16：使用者是非技术人员 —— 不是错误码、不是选择器）。"""
     if action == "click":
         line = "点了「%s」" % label if ok else "页面上没找到「%s」，这一步没做成" % label
@@ -381,6 +458,10 @@ def _say(action, label, ok, level=None, progress=None):
         line = "不认识的步骤「%s」" % action
     if ok and level:
         line += "（换了第 %d 个找法才找到）" % (level + 1)
+    if ok and landing:
+        # 落点被扣下 / 判据用不了时，光说「点了」「填好了」是**假话** ——
+        # 那一下到底交没交给目标，只有这条回执说得清（T2）。
+        line += landing
     if progress is False:
         line += "；页面没有变化"
     return line
@@ -392,6 +473,12 @@ class Filler:
     ⚠️ 运行期**绝不**调模型（规格 §13：重跑必须便宜）。出问题就按回退链找、
     找不着就早停，不在跑的时候让谁去「想办法」。
     """
+
+    #: 这条流程**动过手的帧**（`__init__` 里从 STATES 填）。**类属性上留一个空元组**：
+    #: 不经过 `__init__` 拿到的实例（单测里用 `object.__new__(Filler)` 直接问
+    #: 「这一页算不算这个状态」）也要能用 —— 那种实例没有 CDPHelper，读不了子帧，
+    #: 而空元组正好等于「只读主帧」，也就是加帧之前的那个行为。
+    frames = ()
 
     def __init__(self, ws_url, form_file, correlation_id, task_id="",
                  trace=None, stop_at=None, shots="failed", delay=DELAY_RANGE,
@@ -420,6 +507,10 @@ class Filler:
         self.observe_why = None    # 最近一次「重新看页面」没成的原因（人话）
         self.progress_why = None   # 最近一步「为什么 progress 是 null」（人话）
         self.shots_why = None      # 最近一步截图没落成的原因（人话）
+        #: 这条流程**动过手的帧**（STATES 里出现过的 frame_id）。产物读页面时也读它们 ——
+        #: 见 page_signature / _urls 的 docstring：动手在子帧、读页面却只看主帧，
+        #: 那两件事量的根本不是同一页。
+        self.frames = _frames_in_states(STATES)
 
     # ── 基础设施 ────────────────────────────────────────────
 
@@ -428,20 +519,53 @@ class Filler:
         if hi and hi > 0:
             time.sleep(random.uniform(lo, hi))
 
-    def _ev(self, js):
-        """读路径的 eval（规格 §5.2：动作一律走 cdp 的 click / form / scroll，不手拼 JS）。"""
-        return _clean_eval(self.cdp.eval("(function(){%s})()" % js, ""))
+    def _ev(self, js, frame_id=""):
+        """读路径的 eval（规格 §5.2：动作一律走 cdp 的 click / form / scroll，不手拼 JS）。
+
+        `frame_id` 给了就在**那一帧**里求值（`CDPHelper.eval` 的同名参数 → `--frame-id`）：
+        跨源 iframe 里的正文只有在那帧的上下文里读得到，主帧的 JS 看不见它。
+        """
+        return _clean_eval(self.cdp.eval("(function(){%s})()" % js, frame_id or ""))
 
     def _url(self):
         return self._ev("return window.location.href;").strip().strip('"').strip("'")
+
+    def _urls(self):
+        """这一页的地址：**主帧的 + 这条流程动过手的每一帧的**（去重、保序）。
+
+        为什么不是一个：流程活在跨源 iframe 里时，账本里那套判据的 URL **就是子帧的**
+        （`cdp observe` 报的 `url` 在这种页面上是子帧的 —— 实测 gowizard：19 个状态里
+        16 个的 `url_contains` 是 `chameleon-…`，而主帧的地址从头到尾是
+        `www.gowizard.com/auto/…`）。只拿主帧比 → 那 16 组步骤**静默跳过**
+        （`_applies` 返回 False 是不出声的）：产物看着跑完了，其实一步没走。
+        """
+        out = []
+        for url in [self._url()] + [self._frame_url(fid) for fid in self.frames]:
+            if url and url not in out:
+                out.append(url)
+        return out
+
+    def _frame_url(self, frame_id):
+        """某一帧现在的地址（读不到就空串 —— 读不到不是「它是空的」，是没法判）。"""
+        if not frame_id:
+            return ""
+        return self._ev("return window.location.href;", frame_id).strip().strip('"').strip("'")
 
     def page_signature(self):
         """这一页长什么样：可见正文，归一化口径与 cdp observe 的 page_text 一致（§4.3）。
 
         不裁长度 —— 成功文案可能在第 600 字之后；**trace 里落的那份才裁到 600**，
         于是 trace 的 page_sig 能与当时 observe 的 page_text 直接对上。
+
+        ⚠️ 「与 observe 的 page_text 同口径」这件事意味着它**必须跨帧**：observe 的
+        page_text 是「主帧 + 各子帧的正文**拼起来**」（`internal/observe_frames.go` 的
+        `mergeFrameModel`），而这里原先只读主文档（+shadow）—— 跨源 iframe 里的正文
+        一个字都读不到。真站实测的后果：**成功文案就在那个 iframe 里**，`_succeeded()`
+        永远看不见 → 产物**永远不可能报成功**，而它会一路说「每一步都做成了」。
         """
-        return _norm(self._ev(_PAGE_TEXT_JS))
+        parts = [_norm(self._ev(_PAGE_TEXT_JS))]
+        parts += [_norm(self._ev(_PAGE_TEXT_JS, fid)) for fid in self.frames]
+        return " ".join(p for p in parts if p)
 
     def _trace(self, line):
         """往 trace 追一行 JSON（JSON Lines）。不给 --trace 时它什么都不做。"""
@@ -663,12 +787,18 @@ class Filler:
     def _relocate(self, target, kind="action"):
         """最后一跳：重新 observe 当前页面，按 text + role + near 重定位（§5.1b）。
 
-        返回候选选择器列表（可能为空）。⚠️ **这一跳在生产路径上也会发生** ——
-        它不是调试功能，是产物「不因小改版就断」的承重结构（规格 §13 前提①）。
+        返回候选 `[(选择器, 帧), …]`（可能为空）—— **帧是每个候选自己的**，从它这次
+        观测里的 `frame_path` 读（页面重排后元素可能换了帧，甚至换回主帧；拿 target 里
+        那一帧去够新候选，正是这一跳最容易白跑的地方）。读不出帧的候选（嵌套两层以上、
+        老 cdp 不带这个键）退回 `target` 里那一帧。
+
+        ⚠️ **这一跳在生产路径上也会发生** —— 它不是调试功能，是产物「不因小改版就断」的
+        承重结构（规格 §13 前提①）。
         """
         model = self._observe()
         if not model:
             return []
+        fallback = str(target.get("frame_id") or "")
         pool = (model.get("fields") if kind == "field" else model.get("actions")) or []
         want_text = _norm(target.get("text") or "").lower()
         want_label = _norm(target.get("label") or "").lower()
@@ -703,23 +833,31 @@ class Filler:
         hits.sort(key=lambda el: (rank.get((el.get("stability") or "").lower(), 3), _below_fold(el)))
         out = []
         for element in hits:
+            frame = _frame_of_element(element, fallback)
             for selector in [element.get("selector")] + list(element.get("alternates") or []):
-                if selector and selector not in out:
-                    out.append(selector)
+                if selector and (selector, frame) not in out:
+                    out.append((selector, frame))
         return out
 
     # ── 动作 ────────────────────────────────────────────────
 
-    def _do(self, action, selector, value=None, kind="value"):
-        """一个动作只走这一条路：cdp 命令（规格 §5.2：动作一律走 cdp，不手拼 JS）。"""
+    def _do(self, action, selector, value=None, kind="value", frame_id=""):
+        """一个动作只走这一条路：cdp 命令（规格 §5.2：动作一律走 cdp，不手拼 JS）。
+
+        `frame_id` 交给 `CDPHelper.click / form` 的**同名参数**（`forms/common.py:146` /
+        `:202` 本来就收它，命令行上是 `--frame-id`）。元素在跨源 iframe 里时，**同一个
+        选择器在主帧里命中 0** —— 不带这一帧，重放每跑一遍都会「页面上没找到」，
+        而这件事在账本里原本看不出来（那份产物没有「帧」这个概念）。
+        """
         if action == "click":
-            return self.cdp.click(selector)
+            return self.cdp.click(selector, frame_id=frame_id or "")
         if action == "form":
             if kind == "check":
-                return self.cdp.form(selector, check=str(value).lower())
+                return self.cdp.form(selector, check=str(value).lower(),
+                                     frame_id=frame_id or "")
             if kind == "select":
-                return self.cdp.form(selector, select=str(value))
-            return self.cdp.form(selector, value=str(value))
+                return self.cdp.form(selector, select=str(value), frame_id=frame_id or "")
+            return self.cdp.form(selector, value=str(value), frame_id=frame_id or "")
         if action == "scroll":
             return self.cdp.scroll(str(value if value is not None else "400"))
         if action == "goto":
@@ -768,24 +906,26 @@ class Filler:
         raise ValueError("产物写错了：不认识这个随机值类型「%s」" % kind)
 
     def _perform(self, action, step, target, label):
-        """做一步。返回 (ok, selector_used, fallback_level, note)。
+        """做一步。返回 `(ok, selector_used, fallback_level, note, frame_used)`。
 
         回退链（§5.1b）：声明里的选择器逐个试 → 全挂了就重新 observe 按语义找 → 才算失败。
+        最后那一个是**这一步真在哪一帧里做的**（主帧是 `""`）—— trace 里要能看见它，
+        不然「这条动作带着帧号跑了吗」只能靠读产物源码去猜。
         """
         if action == "wait":
             self._dly(2, 4)
-            return True, "", None, _say("wait", label, True)
+            return True, "", None, _say("wait", label, True), ""
         if action == "scroll":
             out = self._do("scroll", "", step.get("pixels", "400"))
-            return _ok(out), "", None, _say("scroll", label, _ok(out))
+            return _ok(out), "", None, _say("scroll", label, _ok(out)), ""
         if action == "goto":
             url = step.get("url") or ""
             if not url:
-                return False, "", None, "产物写错了：goto 这一步没写 url"
+                return False, "", None, "产物写错了：goto 这一步没写 url", ""
             out = self._do("goto", "", url)
-            return _ok(out), "", None, _say("goto", url, _ok(out))
+            return _ok(out), "", None, _say("goto", url, _ok(out)), ""
         if action not in ("click", "form"):
-            return False, "", None, "产物写错了：不认识「%s」这个动作" % (action or "(空)")
+            return False, "", None, "产物写错了：不认识「%s」这个动作" % (action or "(空)"), ""
 
         value, kind = None, "value"
         if action == "form":
@@ -798,31 +938,44 @@ class Filler:
             kind = fill.get("kind") or "value"
             value = self._fill_value(fill, step)
 
+        # 这一步在哪一帧里做（主帧 = ""）。账本里没有这个键的老产物照旧跑 ——
+        # 空串就是「主帧」，与 CDPHelper.click / form 的默认行为一致。
+        frame = str(target.get("frame_id") or "")
+
         selectors = [s for s in (target.get("selectors") or []) if s]
         for level, selector in enumerate(selectors):
-            out = self._do(action, selector, value, kind)
+            out = self._do(action, selector, value, kind, frame)
             if _ok(out):
-                return True, selector, level, _say(action, label, True, level)
+                return (True, selector, level,
+                        _say(action, label, True, level, landing=_landing_say(out)), frame)
             self.log.info("[%s] 第 %d 个选择器没成：%s", self.cid, level + 1, selector)
 
         found = self._relocate(target, "field" if action == "form" else "action")
         if found:
             self.log.info("[%s] 声明里的选择器都失效了，重新 observe 找到 %d 个候选",
                           self.cid, len(found))
-        for extra, selector in enumerate(found):
+        for extra, (selector, cand_frame) in enumerate(found):
             level = len(selectors) + extra
-            out = self._do(action, selector, value, kind)
+            out = self._do(action, selector, value, kind, cand_frame)
             if _ok(out):
-                return True, selector, level, _say(action, label, True, level)
-        return False, "", None, _say(action, label, False)
+                return (True, selector, level,
+                        _say(action, label, True, level, landing=_landing_say(out)),
+                        cand_frame)
+        return False, "", None, _say(action, label, False), frame
 
     # ── 一步的执行 ──────────────────────────────────────────
 
     def _applies(self, when):
-        """这一页看着像不像这个状态（防 A/B 变体、防步骤增减）。"""
+        """这一页看着像不像这个状态（防 A/B 变体、防步骤增减）。
+
+        URL 与正文都按**这一页的每一帧**判（`_urls` / `page_signature`）：判据是从
+        `observe` 那份**跨帧合并**的模型里来的，只在主帧里比 = 拿两把不同的尺子量同一
+        件事 —— 而它失配的方向是**整组步骤被静默跳过**，本项目最贵的那类失败。
+        """
         if not when:
             return True
-        if when.get("url_contains") and when["url_contains"] not in self._url():
+        if when.get("url_contains") and not any(when["url_contains"] in url
+                                                for url in self._urls()):
             return False
         wants = when.get("text_contains") or []
         if wants:
@@ -854,7 +1007,7 @@ class Filler:
                 self.progress_why = self.observe_why or "动作前没能留下页面快照，没得比"
 
         try:
-            ok, selector, level, note = self._perform(action, step, target, label)
+            ok, selector, level, note, frame = self._perform(action, step, target, label)
             self._dly()
             progress = self._diff(before_path) if before_path else None
         finally:
@@ -883,6 +1036,9 @@ class Filler:
                 "target": label,
                 "selector_used": selector,
                 "fallback_level": level,
+                # 这一步真在哪一帧里做的（主帧 = ""）——「帧内的点击有没有带上帧号」
+                # 这件事，读 trace 就能看见，不用去读产物源码。
+                "frame_id": frame,
                 "ok": ok,
                 "progress": progress,
                 # 判不出来时**带上为什么**（「没算出有没有推进」与「没有推进」是两件事）

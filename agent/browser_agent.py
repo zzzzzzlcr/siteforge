@@ -57,10 +57,22 @@ Task 1 的 spike 证明了模型**肯**调工具（24 跑 0 编造、47 次真 o
   ⚠️ `when` 生成时会**当场验一遍**（`when_holds`）—— 一条当时就不成立的 `when`
   在重放时会让整组步骤被静默跳过（`_applies` 就是这么写的），那是这类产物最贵的错。
 
-⚠️ 有两处**已知有损**，不藏着：① `scroll` 工具是「把元素滚进视口」，而骨架的 scroll 是
+## 「帧」是跟着 target 走的（2026-09-17 补）
+
+第二条题起，漏斗常常整段活在一个**跨源 iframe** 里（实测 gowizard：`chameleon-…` 部件）。
+`observe` 早就把每条元素的 `frame_path` 报出来了，但账本里原先**没有帧**这个键 ——
+于是产物重放时那个选择器在主帧命中 0、在帧内命中 1，**每一遍都必挂在同一步**。
+
+现在：`_frame_of(args)` 把「这一步在哪一帧里做的」记进 `target["frame_id"]`
+（主帧 = `""`，见那个函数的 docstring：以**模型真给的那个参数**为准，因为 cdp 就是拿它去
+那一帧里解析选择器的），产物在 click / form 时把它交给 `cdp --frame-id`。
+
+⚠️ 有三处**已知有损**，不藏着：① `scroll` 工具是「把元素滚进视口」，而骨架的 scroll 是
 像素滚动（没有「滚到某个元素」这一档），重放只能滚一屏 —— 每次都会在 `notes` 里说出来；
 ② 字段的 `source`（form-file 的键）与 `fallback` 是按**标签文字猜的**，猜不准时宁可给
-保守的随机值，也不编一个假的值。
+保守的随机值，也不编一个假的值；③ **嵌了两层以上的子帧**表达不了（`_frame_id_of_path`
+的第三种形状）—— cdp 换坐标只补目标帧 owner 那一层的原点，中间几层没人补，所以那种
+target 会退回主帧（够不着 = 老老实实失败）而不是拿一个会**点偏**的帧号去试。
 """
 
 from __future__ import annotations
@@ -494,29 +506,89 @@ def _describe(name: str, args: dict, pages: "_Pages", journey: Journey) -> tuple
         # 「落到哪了」（很多站会重定向）—— 失败时也还有话说（「打不开 <url>」）。
         step["target"] = {"url": str(args.get("url") or "")}
     if name in ("click", "scroll", "form"):
-        element = _find_element(pages, "field" if name == "form" else "action", selector)
-        step["target"] = _target_of(element, name, selector)
+        frame_id = _frame_of(args)
+        element = _find_element(pages, "field" if name == "form" else "action",
+                                selector, frame_id)
+        step["target"] = _target_of(element, name, selector, frame_id)
         if name == "form":
             fill = _fill_info(args, step["target"], element, journey)
     return step, fill
 
 
-def _find_element(pages: "_Pages", kind: str, selector: str):
+#: `observe` 用这个名字表示**主帧**（规格 §4.3：单帧 observe 给 `[frameID]`，`""` → `["main"]`）。
+#: ⚠️ 它是**给人看的标记，不是能回传的 frameID** —— `cdp --frame-id main` 会报「没有这一帧」。
+FRAME_MAIN = "main"
+
+
+def _frame_of(args: dict) -> str:
+    """这一步**在哪一帧里做的**（主帧 = `""`）—— 从模型真给的那个参数读。
+
+    为什么以 `args` 为准、而不是「上一次观测里那个元素在 `frame_path` 的哪一段」：
+    `cdp` 的 click / form / scroll **就是拿 `frame_id` 去那一帧里解析选择器的**
+    （`tools/cdp/internal/mcp/handlers.go:110/119`）。所以「参数里给了哪一帧」**就是**
+    「这一步真在哪一帧发生的」，是**事实**，不是推测；而元素的 `frame_path` 是「它当时
+    在哪儿」的旁证 —— 两者不一致时，能重放的是前者（后者可能只是同一个选择器在主帧与
+    子帧里各有一个）。
+
+    没给这个参数 = 那一帧没被点名 = cdp 在主帧里解析的（`""`）。**不编 `"main"`**：
+    它只是个显示用的名字，传给 `--frame-id` 会被当成一个不存在的帧。
+
+    模型真写了 `"main"`（工具描述里那个词很容易被照抄）时归一成 `""` —— 不归一的话，
+    账本里存的是个**永远解析不出来的帧号**：重放时每一条这样的动作都会失败，
+    而原因（「模型把显示名当帧号用了」）在产物那一侧完全看不出来。
+    """
+    given = str((args or {}).get("frame_id") or "").strip()
+    return "" if given.lower() == FRAME_MAIN else given
+
+
+def _frame_id_of_path(path):
+    """`observe` 那条元素的 `frame_path` → 能回传给 cdp 的 frame_id。
+
+    三种形状（规格 §4.3）与各自的答案：
+
+    - `["main"]`（或空 `[]`）      → `""`：主帧
+    - `["main", "<frameID>"]`      → 那个 frameID
+    - 嵌了**两层以上**（`["main", a, b]`）→ `None`：**说不清**，不猜
+
+    第三种为什么是 `None` 而不是「取最里面那个」：cdp 换坐标时只补**目标帧的 owner
+    `<iframe>` 在主帧里**那一个原点（`internal/form.go` 的 `calcClickCoords` +
+    `ResolveIframeSelector`），中间那几层的偏移没人补 —— 传最里面那帧进去不是「够不着」，
+    是**按错的坐标点了一下**（本项目最忌讳的失败形状）。所以这里明说「说不清」，
+    由调用方决定退回哪一帧。
+    """
+    if isinstance(path, str) or not isinstance(path, (list, tuple)):
+        return None
+    rest = [str(seg or "").strip() for seg in path]
+    rest = [seg for seg in rest if seg and seg.lower() != FRAME_MAIN]
+    if not rest:
+        return ""
+    return rest[0] if len(rest) == 1 else None
+
+
+def _find_element(pages: "_Pages", kind: str, selector: str, frame_id: str = ""):
     """在上一次观测的模型里找这个选择器对应的元素（找不到就 None）。
 
     ⚠️ 找的是**上一次观测**——「它当时看到的是哪个元素」这件事只有那份模型说得清。
     找不到不是错：target 退回「只有选择器」的形态，重放的声明式回退链照样能跑。
+
+    同一个选择器**在主帧与子帧里可以是两个不同的元素**（跨源 iframe 的部件常常就是把
+    同一套结构再渲染一遍）。所以先挑**帧对得上**的那一个；一个都对不上时退回原先的
+    「文档序第一个」—— 「帧对不上」不等于「一定是它」，只是没有更好的线索。
     """
     model = pages.current_model
     if not model or not selector:
         return None
     pool = (model.get("fields") if kind == "field" else model.get("actions")) or []
+    fallback = None
     for element in pool:
         if not isinstance(element, dict):
             continue
         if element.get("selector") == selector or selector in (element.get("alternates") or []):
-            return element
-    return None
+            if _frame_id_of_path(element.get("frame_path")) == frame_id:
+                return element
+            if fallback is None:
+                fallback = element
+    return fallback
 
 
 def _selectors_of(element, selector: str) -> list:
@@ -530,20 +602,29 @@ def _selectors_of(element, selector: str) -> list:
     return out
 
 
-def _target_of(element, action: str, selector: str) -> dict:
-    """声明式多元 target（§5.1b）：**不写死单个选择器**，文字 + 角色 + 语境优先。"""
+def _target_of(element, action: str, selector: str, frame_id: str = "") -> dict:
+    """声明式多元 target（§5.1b）：**不写死单个选择器**，文字 + 角色 + 语境优先。
+
+    `frame_id` 是**这一步在哪一帧里做的**（主帧 = `""`）—— 见 `_frame_of`。
+    它跟 `selectors` 是一体的两半：**同一个选择器在主帧与子帧里可以指两个不同的元素**，
+    只搬选择器不搬帧，重放就会去主帧里找一个根本不存在的元素（实测：跨源 iframe 里的
+    控件，主帧命中 0、帧内命中 1，每一遍都「页面上没找到」）。所以它**跟着 target 一起存**，
+    产物在 click / form 时把它交给 `cdp --frame-id`。
+    """
     if action == "form":
         label = ""
         if element:
             label = element.get("label") or element.get("hint") or element.get("placeholder") or ""
         return {"text": None, "label": label or None, "role": None, "near": None,
-                "selectors": _selectors_of(element, selector), "above_fold_only": False}
+                "selectors": _selectors_of(element, selector), "above_fold_only": False,
+                "frame_id": frame_id}
     return {
         "text": (element or {}).get("text") or None,
         "role": (element or {}).get("role") or None,
         "near": (element or {}).get("region") or None,
         "selectors": _selectors_of(element, selector),
         "above_fold_only": False,
+        "frame_id": frame_id,
     }
 
 
