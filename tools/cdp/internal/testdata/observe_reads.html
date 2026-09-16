@@ -231,5 +231,57 @@
     '<div><button class="twin">Shadow twin</button></div>';
 </script>
 
+<!--
+  ⑦ id 撞上 Object.prototype 的名字（真站上完全合法的 id）。
+
+     label 的 for→文本表如果是个**普通对象**，这一族 id 会当场出两种静默错：
+       · 读 LABELS['constructor'] 拿到的是**函数**、LABELS['__proto__'] 拿到的是
+         **Object.prototype** —— 都是真值，于是「名字」成了一个对象，串进 JSON 之后
+         Go 侧的 *string 解不开 → **整条 observe 失败**（喂一个 id 就能让整个观测崩掉）
+       · 往 m['__proto__'] 上写会走原型 setter、被静默忽略 —— 名字丢了还没人说
+
+     两格各承一面：
+       #__proto__    有 label 指着它 → 必须**真的取到那个名字**（不是 null、更不是对象）
+       #constructor  没有 label       → observe 必须**照常跑完**，label 如实为 null
+-->
+<h2>id 撞上 Object.prototype 的名字</h2>
+<div class="proto-block">
+  <label for="__proto__">Proto named</label>
+  <button id="__proto__">Proto id button</button>
+  <button id="constructor">Constructor id button</button>
+</div>
+
+<!--
+  ⑧ 两个同形的**陷阱**（文档坐标负区），一个在光 DOM、一个在 shadow root 里 ——
+     honeypots 那条路上的「地址验没验证过」两个分支各一个（honeypots 没有 stability，
+     唯一性只能自己说，见 Go 侧 Honeypot.SelectorUnique）。
+
+     判据与 ⑥ 同一套：shadow 里那个的路径必然同时命中光 DOM 里的孪生兄弟
+     （CSS 选择器跨不过 shadow 边界）→ 交不出唯一地址。两份都**照交**，
+     只是标记不同 —— 丢掉它们会让消费侧连「这里有个陷阱」都不知道。
+-->
+<h2>同形的陷阱（一个在光 DOM、一个在 shadow 里）</h2>
+<div id="trap-light" style="position:absolute;left:-9999px;top:0">
+  <div><input name="trap_twin" value=""></div>
+</div>
+<div id="trap-host" style="position:absolute;left:-9999px;top:40px"></div>
+<script>
+  // 与 ⑥ 同一个道理：宿主里不放光 DOM 子节点（没有 slot 的话它们不渲染）。
+  document.getElementById('trap-host').attachShadow({ mode: 'open' }).innerHTML =
+    '<div><input name="trap_twin" value=""></div>';
+</script>
+
+<!--
+  ⑨ 遮挡物（cookie 横幅形态）：固定定位、z-index 高、盖住 >8% 的视口，里面有个关闭按钮。
+     option_groups / obstructions 这两条路同样要「地址验没验证过」有真值可断言 ——
+     没有这一格，那两条路上的断言会因为**列表是空的**而空转（本项目反复栽过的形态）。
+-->
+<h2>遮挡物</h2>
+<div id="cookie-banner"
+     style="position:fixed;left:0;right:0;bottom:0;height:120px;z-index:9999;background:#eee">
+  We use cookies. This banner is fixed, covers more than 8% of the viewport, and has z-index 9999.
+  <button id="cookie-dismiss">Accept cookies</button>
+</div>
+
 </body>
 </html>

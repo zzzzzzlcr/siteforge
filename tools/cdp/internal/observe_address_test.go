@@ -352,6 +352,151 @@ func TestObserveLabelIsNullWhenThereIsNone(t *testing.T) {
 	}
 }
 
+// ── 修复轮 1（复审 I1）：id 撞上 Object.prototype 的名字 ─────────────────────
+
+// TestObserveSurvivesIdsNamedAfterObjectPrototype —— `id="__proto__"` / `id="constructor"`
+// 这类名字是**页面上合法的 id**，而它们正好是 Object.prototype 上的键。
+//
+// 缺陷（复审用 node + Go 双向实测过）：label 的 for→文本表原先是普通对象 `{}`，
+// 于是 `LABELS['__proto__']` 取到的是 **Object.prototype**、`LABELS['constructor']`
+// 取到的是**函数** —— 都是真值，`labelOf` 就把一个**对象**当名字返回；那个对象串进
+// JSON 之后 Go 侧的 `*string` 解不开 → **整条 observe 失败**。
+// 页面上的一个 id 就能让整个观测崩掉，而报出来的错跟那行代码看不出关系 ——
+// 正是这一轮要消灭的「静默全崩」那一类。
+//
+// 两格各承一面（都在夹具 ⑦）：
+//
+//	#__proto__     有 label 指着它 → 名字必须**真的取到**（不是 null，更不是对象）
+//	#constructor   没有 label       → observe 必须**照常跑完**，label 如实为 null
+//
+// ⚠️ 「observe 没失败」这件事由 addressFixture 自证：求值出来的模型若带一个对象，
+// Go 侧解不开 → navigateAndObserve 当场 Fatal，根本走不到下面。
+func TestObserveSurvivesIdsNamedAfterObjectPrototype(t *testing.T) {
+	m := addressFixture(t)
+
+	proto := actionByText(t, m, "Proto id button")
+	if proto.Label == nil {
+		t.Errorf("#__proto__ 的 label = null，want \"Proto named\" —— 页面上有 " +
+			"label[for=\"__proto__\"] 指着它。拿不到名字说明那个 for→文本表把这一族键" +
+			"当成了原型上的东西（读出来是对象/函数，不是文本）")
+	} else if *proto.Label != "Proto named" {
+		t.Errorf("#__proto__ 的 label = %q，want \"Proto named\"", *proto.Label)
+	}
+	// 顺带钉住 id 那一路：`__proto__` 是合法 CSS ident，应当照常走 `#id`
+	if proto.Selector != "#__proto__" {
+		t.Errorf("#__proto__ 的首选 = %q，want \"#__proto__\"（它是合法的 CSS ident）", proto.Selector)
+	}
+	requireUniqueAddress(t, proto, "id=\"__proto__\" 的按钮")
+
+	ctor := actionByText(t, m, "Constructor id button")
+	if ctor.Label != nil {
+		t.Errorf("#constructor 的 label = %q，want null —— 页面上没有任何 label 指着它。"+
+			"这一格原先会让整条 observe 失败（LABELS['constructor'] 是**函数**，"+
+			"被当成名字返回）", *ctor.Label)
+	}
+	requireUniqueAddress(t, ctor, "id=\"constructor\" 的按钮")
+
+	t.Logf("#__proto__ label=%q selector=%q ；#constructor label=%v selector=%q —— "+
+		"两个 Object.prototype 上的名字都活下来了", *proto.Label, proto.Selector, ctor.Label, ctor.Selector)
+}
+
+// ── 修复轮 1（复审 I2）：另外三个列表也要说清「地址验没验证过」 ──────────────
+
+// TestObserveMarksUnverifiedAddressesOnTheOtherThreeLists —— option_groups / obstructions /
+// honeypots 这三条路同样把地址交给消费者（遮挡物那条是要**照着去点**的），
+// 但它们**没有 stability** 那个评级口径 —— 唯一性只能自己说（`scope_unique` /
+// `selector_unique` / `dismiss_selector_unique`，语义见 Go 侧注释）。
+//
+// 判据一条，但要求**两个分支都有真值**（夹具 ⑧ 就是为「false 那一支」造的）：
+//
+//	标记必须与浏览器说的事实**一致**：hits == 1  ⟺  标记为 true
+//
+// ⚠️ 反过来的错法要一并挡住：**不许**因为「不唯一」就把地址丢掉 ——
+// 丢掉了消费侧只会更瞎（横幅还挡着，模型里却一个字都没有）。所以这里同时断言
+// 「不唯一的那一条**在**模型里」。
+func TestObserveMarksUnverifiedAddressesOnTheOtherThreeLists(t *testing.T) {
+	m := addressFixture(t)
+
+	// ── honeypots：两个同形的陷阱，一个在光 DOM、一个在 shadow 里 ──
+	var twins []Honeypot
+	for _, h := range m.Honeypots {
+		if h.Hint == "trap_twin" {
+			twins = append(twins, h)
+		}
+	}
+	if len(twins) != 2 {
+		t.Fatalf("夹具里两个同形陷阱应各记一条 honeypot（hint=trap_twin），实际 %d 条 —— "+
+			"下面的断言会空转。全部 honeypots: %+v", len(twins), m.Honeypots)
+	}
+	unverified := 0
+	for i, h := range twins {
+		n := hitsOf(t, h.Selector)
+		if want := n == 1; h.SelectorUnique != want {
+			t.Errorf("陷阱 #%d（%q）的 selector_unique = %t，而浏览器说这条地址命中 %d 个 —— "+
+				"标记必须与事实一致（true ⟺ 命中恰好 1 个）", i, h.Selector, h.SelectorUnique, n)
+		}
+		if !h.SelectorUnique {
+			unverified++
+		}
+	}
+	if unverified != 1 {
+		t.Errorf("两个陷阱里「没验证过」的有 %d 个，want **恰好 1** —— shadow 里那个交不出唯一地址"+
+			"（CSS 选择器跨不过 shadow 边界），光 DOM 那个能。0 = 那个假分支根本没被测到，"+
+			"2 = 判据坏了（把能唯一的也判成不唯一）", unverified)
+	}
+	// 「如实标注」不是「删掉」：不唯一的那条地址必须**还在**模型里
+	for i, h := range twins {
+		if !h.SelectorUnique && h.Selector == "" {
+			t.Errorf("陷阱 #%d 交不出唯一地址，于是**地址被丢了**（selector 空）—— "+
+				"这三个列表要的是如实标注、不是删除：丢掉它，消费侧连「这里有个陷阱、在哪儿」都不知道", i)
+		}
+	}
+
+	// ── obstructions：cookie 横幅 + 它的关闭按钮（两条地址各带各的标记）──
+	if len(m.Obstructions) == 0 {
+		t.Fatalf("夹具里的 cookie 横幅没被识别成 obstruction —— 下面两条断言会空转")
+	}
+	for i, o := range m.Obstructions {
+		if n := hitsOf(t, o.Selector); o.SelectorUnique != (n == 1) {
+			t.Errorf("遮挡物 #%d（%q）的 selector_unique = %t，而浏览器说它命中 %d 个",
+				i, o.Selector, o.SelectorUnique, n)
+		}
+		if o.DismissSelector == "" {
+			if o.DismissSelectorUnique != nil {
+				t.Errorf("遮挡物 #%d 没有关闭按钮（dismiss_selector 空），"+
+					"dismiss_selector_unique 却是 %t —— 没有这条地址就该交 **null**，"+
+					"编一个布尔值等于替页面断言「有个关闭按钮，只是它不唯一」",
+					i, *o.DismissSelectorUnique)
+			}
+			continue
+		}
+		if o.DismissSelectorUnique == nil {
+			t.Errorf("遮挡物 #%d 有关闭按钮 %q，dismiss_selector_unique 却是 null —— "+
+				"有地址就必须说清它验没验证过", i, o.DismissSelector)
+			continue
+		}
+		if n := hitsOf(t, o.DismissSelector); *o.DismissSelectorUnique != (n == 1) {
+			t.Errorf("遮挡物 #%d 的关闭按钮 %q：dismiss_selector_unique = %t，浏览器说命中 %d 个",
+				i, o.DismissSelector, *o.DismissSelectorUnique, n)
+		}
+	}
+
+	// ── option_groups：夹具里的自定义问答题（#q-widget 那三个选项）──
+	if len(m.OptionGroups) == 0 {
+		t.Fatalf("夹具里的 role=radiogroup 没被识别成 option_group —— 下面的断言会空转")
+	}
+	for i, g := range m.OptionGroups {
+		if n := hitsOf(t, g.Scope); g.ScopeUnique != (n == 1) {
+			t.Errorf("选项组 #%d 的 scope %q：scope_unique = %t，浏览器说命中 %d 个",
+				i, g.Scope, g.ScopeUnique, n)
+		}
+	}
+
+	t.Logf("三个列表：honeypots=%d（其中未验证 %d）、obstructions=%d、option_groups=%d —— "+
+		"每个标记都与浏览器数出来的命中数一致",
+		len(m.Honeypots), unverified, len(m.Obstructions), len(m.OptionGroups))
+}
+
 // labelDesc 把三态印成人话（断言失败时要看得出「是 null 还是空串」）。
 func labelDesc(v *string) string {
 	if v == nil {

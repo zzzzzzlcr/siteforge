@@ -305,17 +305,43 @@ type Field struct {
 }
 
 type OptionGroup struct {
-	Scope       string   `json:"scope"`
+	Scope string `json:"scope"`
+	// ScopeUnique 说 Scope 这条地址**验证过唯一**没有（在这一帧里命中恰好 1 个、且就是它）。
+	//
+	// 为什么这三个列表（option_groups / obstructions / honeypots）要有它，
+	// 而 actions / fields 那边由 `stability` 承载：
+	//   actions / fields 有**成套的评级口径**（stability：high/medium/low，判据挂在
+	//   observe.go 的 stability() 上），那里「验证过没有」是评级的一部分；
+	//   这三个列表**没有** stability —— 可它们的地址同样会进消费者手里：遮挡物的
+	//   selector / dismiss_selector 是要**照着去点**的（去关掉那个横幅），选项组的
+	//   scope 是要照着去点的。在这里新编一套评级，就是「同一个量两个名字」
+	//   （本仓反复栽的那一类：DPR 那次、screenshot 那次），所以只回答那个唯一的问题：
+	//   **这条地址验证过没有**。
+	//
+	// ⚠️ false **不等于**「不要给」：交不出唯一地址时（元素在 shadow root 里、
+	// 而光 DOM 里有同形结构 —— CSS 选择器跨不过 shadow 边界）**照样交**，
+	// 只是如实标出来。直接丢掉会让消费侧**更瞎**（横幅还在那儿挡着，而模型里
+	// 一个字都没有）。消费侧拿 false 当「可能指错」用：点下去会落在文档序第一个身上。
+	ScopeUnique bool     `json:"scope_unique"`
 	Role        string   `json:"role"`
 	Options     []string `json:"options"`
 	ShadowDepth int      `json:"shadow_depth"`
 }
 
 type Obstruction struct {
-	Kind            string `json:"kind"`
-	Selector        string `json:"selector"`
+	Kind     string `json:"kind"`
+	Selector string `json:"selector"`
+	// SelectorUnique 与 OptionGroup.ScopeUnique **同义同判据**（见那边的长注释：
+	// 为什么这三个列表用布尔、而 actions/fields 用 stability；false 为什么照样要交）。
+	SelectorUnique  bool `json:"selector_unique"`
 	DismissSelector string `json:"dismiss_selector"`
-	Text            string `json:"text"`
+	// DismissSelectorUnique 说 DismissSelector 那条地址验证过唯一没有。
+	//
+	// ⚠️ 三态（与 Value / Selected 同一条规矩）：**没有关闭按钮时是 null**，
+	// 不是 false —— 「这条地址没验证过」与「根本没有这条地址」是两件事，
+	// 编一个 false 等于替页面断言「有个关闭按钮，但它的选择器不唯一」。
+	DismissSelectorUnique *bool  `json:"dismiss_selector_unique"`
+	Text                  string `json:"text"`
 }
 
 // Honeypot 是一条**被判为陷阱、已从 actions / fields 里排除**的元素。
@@ -343,6 +369,11 @@ type Obstruction struct {
 // 是**放行**（陷阱又回到 actions 里，没人会说话）。名字只作为线索记进 Hint。
 type Honeypot struct {
 	Selector string `json:"selector"`
+	// SelectorUnique 与 OptionGroup.ScopeUnique **同义同判据**（见那边的长注释：
+	// 为什么这三个列表用布尔、而 actions/fields 用 stability；false 为什么照样要交）。
+	// 陷阱的地址不拿去点（它就是**不该碰**的那个东西），但人/agent 会照着它去核对
+	// 「被排除的到底是哪一个」—— 指错了同样是在说假话。
+	SelectorUnique bool `json:"selector_unique"`
 	// Hint 是元素自报的 name / id / placeholder —— **只是线索，不是判据**。
 	// 给人和 agent 一眼看出「站点觉得这是个什么字段」，别拿它做分支。
 	Hint string `json:"hint"`
@@ -659,14 +690,34 @@ func observeJS() string {
   // 表按 for 的**字面值**键（不经过 getElementById）—— shadow root 里的 id 在
   // 文档级 getElementById 是查不到的，而「祖先的 id 等于这个 for」这件事
   // 在任何一个 root 里都成立。同一个 id 挂多个 label 时**第一个说了算**（文档序）。
+  //
+  // ⚠️⚠️ 字典**必须是无原型的**（Object.create(null)），读的时候再只认字符串 ——
+  // 两道闸都要，不是重复：id 是**页面作者写的任意字符串**，其中一族正好落在
+  // Object.prototype 的名字上（__proto__ / constructor / toString / valueOf 那一族）。
+  // 用普通对象 {} 存，这一族就当场出两种静默错：
+  //   ① 读：LABELS['constructor'] 取到的是**函数**、LABELS['__proto__'] 取到的是
+  //      **Object.prototype** —— 两者都是真值，于是 labelOf 把一个**对象**当成名字
+  //      返回，串进 JSON 之后 Go 侧的 *string 解不开 → **整条 observe 失败**。
+  //      一个页面上的 id 就能让整个观测崩掉，而报出来的错跟这行代码看不出关系。
+  //   ② 写：m['__proto__'] = 文本 走的是 Object.prototype 上那个 setter ——
+  //      它想把原型换成字符串，被静默忽略：名字丢了，也没人知道。
+  // 无原型字典把这一族变成普通键（读不到就是 undefined，写进去就是自己的属性）；
+  // labelAt 里那道 typeof 是第二道 —— **任何**非字符串都当「没有名字」，
+  // 绝不让一个非字符串漏进 JSON（这一轮要消灭的正是「静默全崩」那一类）。
   var LABELS = (function () {
-    var m = {}, ls = qsa('label[for]');
+    var m = Object.create(null), ls = qsa('label[for]');
     for (var i = 0; i < ls.length; i++) {
       var f = ls[i].getAttribute('for'), t = txt(ls[i], 40);
       if (f && t && !m[f]) m[f] = t;
     }
     return m;
   })();
+  // labelAt 读字典：只认**字符串**（两道闸的理由见上面 LABELS）。
+  // 没有 → 空串（调用方按「没有名字」处理）。
+  function labelAt(id) {
+    var v = LABELS[id];
+    return typeof v === 'string' ? v : '';
+  }
   // labelOf：按优先级取人话名字（与 Go 侧 Action.Label 的注释同一套）。
   //   ①② 用 label[for] 指过来的名字（自己 → 逐层祖先）；③ 前一个 LABEL 兄弟；④ null
   //
@@ -678,11 +729,11 @@ func observeJS() string {
   // 所以更靠上的、理它更远的 label 不会抢在近处的前面。
   // ⚠️ 都找不到就交 null：编一个名字出来比空着更坏（消费侧会把编的当页面事实用）。
   function labelOf(el) {
-    if (el.id && LABELS[el.id]) return LABELS[el.id];
-    var chain = composedAncestors(el), i, n, p, t;
+    var chain = composedAncestors(el), i, n, p, t, v;
+    if (el.id) { v = labelAt(el.id); if (v) return v; }
     for (i = 1; i < chain.length; i++) {
       n = chain[i];
-      if (n.id && LABELS[n.id]) return LABELS[n.id];
+      if (n.id) { v = labelAt(n.id); if (v) return v; }
     }
     for (i = 0; i < chain.length; i++) {
       p = chain[i].previousElementSibling;
@@ -709,8 +760,12 @@ func observeJS() string {
     if (!why) return null;
     if (trapEls.indexOf(el) === -1) {
       trapEls.push(el);
+      // 与 actions / fields 走**同一条**地址路（address），并带上它有没有验证过 ——
+      // 这三个列表没有 stability，唯一性只能自己说（见 Go 侧 Honeypot.SelectorUnique）。
+      var tad = address(el);
       traps.push({
-        selector: address(el).sel,
+        selector: tad.sel,
+        selector_unique: tad.unique,
         hint: el.name || el.id || el.placeholder || '',
         why: why
       });
@@ -939,7 +994,8 @@ func observeJS() string {
     var opts = Array.prototype.slice.call(g.querySelectorAll('button,[role=radio],[role=option],label,input[type=radio],input[type=checkbox]'))
       .filter(vis).map(function (o) { return txt(o, 40); }).filter(Boolean);
     if (opts.length >= 2) {
-      groups.push({ scope: address(g).sel, role: 'option', options: opts.slice(0, 12), shadow_depth: shadowDepth(g) });
+      var gad = address(g);
+      groups.push({ scope: gad.sel, scope_unique: gad.unique, role: 'option', options: opts.slice(0, 12), shadow_depth: shadowDepth(g) });
     }
   });
 
@@ -954,8 +1010,15 @@ func observeJS() string {
     return r.width * r.height > innerWidth * innerHeight * 0.08;
   }).slice(0, 6).forEach(function (el) {
     var btn = Array.prototype.slice.call(el.querySelectorAll('button,a')).filter(vis)[0];
+    // 两条地址各自过一遍 address，各自带自己的 unique 标记：
+    // 横幅那条（挡着什么）与关闭按钮那条（要点哪个）是**两件事**，一个唯一不等于另一个唯一。
+    // 没有关闭按钮时 dismiss_selector_unique 交 **null**（不是 false）—— 「没有这条地址」
+    // 与「这条地址没验证过」是两件事，见 Go 侧 Obstruction.DismissSelectorUnique。
+    var oad = address(el), bad = btn ? address(btn) : null;
     obs.push({ kind: /cookie|consent|gdpr|privacy/i.test(txt(el, 120) + el.id + el.className) ? 'cookie-banner' : 'overlay',
-      selector: address(el).sel, dismiss_selector: btn ? address(btn).sel : null, text: txt(el, 60) });
+      selector: oad.sel, selector_unique: oad.unique,
+      dismiss_selector: bad ? bad.sel : null, dismiss_selector_unique: bad ? bad.unique : null,
+      text: txt(el, 60) });
   });
 
   // ── 正文：探针发现两个坑 ──
