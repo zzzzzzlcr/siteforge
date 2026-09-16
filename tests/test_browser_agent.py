@@ -156,12 +156,19 @@ PAGE_QUIZ = {
 }
 
 
-def _stub(tmp_path: pathlib.Path, responses: dict) -> tuple:
-    """起一个桩 MCP 会话。返回 (session, 调用流水线路径)。"""
+def _stub(tmp_path: pathlib.Path, responses: dict, tools_table: list | None = None) -> tuple:
+    """起一个桩 MCP 会话。返回 (session, 调用流水线路径)。
+
+    `tools_table` 给了就由**测试**决定那道门的 `tools/list` 回什么（不给用桩的默认表）——
+    这是「工具声明来自门、不是本地第二份表」唯一验得出来的办法（见
+    `test_tool_specs_come_from_the_mcp_server`）。
+    """
     program = tmp_path / "program.json"
     log = tmp_path / "calls.jsonl"
-    program.write_text(json.dumps({"log": str(log), "responses": responses}, ensure_ascii=False),
-                       encoding="utf-8")
+    payload: dict = {"log": str(log), "responses": responses}
+    if tools_table is not None:
+        payload["tools"] = tools_table
+    program.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     session = tools.McpSession([sys.executable, str(STUB_SERVER), str(program)])
     return session, log
 
@@ -172,9 +179,9 @@ def _calls(log: pathlib.Path) -> list:
     return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def _run(tmp_path, responses, turns, **kwargs):
+def _run(tmp_path, responses, turns, tools_table: list | None = None, **kwargs):
     """一次标准的桩跑法：桩 MCP + 假模型 + 一条探路目标。"""
-    session, log = _stub(tmp_path, responses)
+    session, log = _stub(tmp_path, responses, tools_table)
     fake = FakeLLM(turns)
     try:
         journey = browser_agent.explore(
@@ -277,6 +284,66 @@ def test_pause_predicate_may_take_no_arguments(tmp_path):
         should_pause=lambda: True,
     )
     assert journey.stop_reason == "paused" and journey.steps == []
+
+
+def test_a_pause_gate_that_blows_up_stops_instead_of_failing_a_step(tmp_path):
+    """**R-12**：人那道闸自己抛异常时，唯一正确的处置是**停下**，不是「这一步失败了，接着跑」。
+
+    这道闸跑在 `dispatch` 里、在 `try` **外面**（那是对的：闸不该被工具的错误路径吃掉），
+    但它抛出来的若是普通 `Exception`，就会落到 `llm.run_tool_loop` 的
+    `except Exception` 上、被记成**一次工具失败**然后循环继续 ——
+    人的中断**静默降级**成「有个步骤失败了，继续吧」。那是这条路上最坏的一种：
+    喊停没停，而且没有任何人看得出来。
+
+    判据：模型第一轮就丢来一个 observe，闸在**第 2 次**被问时炸掉 ——
+    于是「正好问过 1 轮模型」是硬证据（`fake.calls`）。
+    """
+    asked: list = []
+
+    def gate_that_blows_up(journey):
+        asked.append(len(journey.steps))
+        if len(asked) == 2:                 # 第 1 次（轮边界）还好好的，第 2 次（步之前）炸了
+            raise RuntimeError("Console 的队列炸了")
+        return False
+
+    journey, fake, calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]}] * 5,
+        budget=browser_agent.Budget(max_steps=50, max_rounds=5),
+        should_pause=gate_that_blows_up,
+    )
+    assert journey.stop_reason == "paused", f"闸炸了却没停下，反而以 {journey.stop_reason} 收场"
+    assert len(fake.calls) == 1, f"闸炸了之后还在问模型（问了 {len(fake.calls)} 轮）"
+    assert journey.steps == [], f"闸炸了却还是走了 {len(journey.steps)} 步"
+    assert calls == [], f"闸炸了却还是把工具调用发出去了：{calls}"
+    assert any("闸" in n and "Console 的队列炸了" in n for n in journey.notes), (
+        f"没把「是那道闸自己坏了」说给人听（不然人以为自己喊停了）：{journey.notes}"
+    )
+
+
+def test_paused_journey_still_carries_what_the_model_said(tmp_path):
+    """**R-12**：被人打断的那次，**不该**比没被打断的那次知道得更少。
+
+    `journey.notes` 的契约里写着「含模型自己的话」。可 `_Stop` 是 `BaseException`，
+    它**穿过** `run_tool_loop` 直接落到 `explore` 的 `except` 里 —— 那些 `rounds`
+    记录就此丢掉，于是「收尾时统一记叙述」的写法在暂停这条路上**一个字都不落**。
+    人被暂停时正要靠那几句话判断「接下来要不要接着跑」，恰恰最需要它。
+    """
+    journey, _, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}]},
+        [{"content": "我先看一眼这一页，再决定要不要点。", "calls": [("observe", {})]},
+         {"content": "看清楚了。", "calls": [("observe", {})]}],
+        budget=browser_agent.Budget(max_steps=50, max_rounds=50),
+        should_pause=lambda j: len(j.steps) >= 1,
+    )
+    assert journey.stop_reason == "paused" and len(journey.steps) == 1
+    assert any("AI 说：" in n and "我先看一眼这一页" in n for n in journey.notes), (
+        f"被暂停的这份 Journey 里，模型说的话一句都没留下：{journey.notes}"
+    )
+    # 但**没有**最终答案 —— 它是被人打断的，不是它讲完了（这两件事不能混）
+    assert journey.final_answer == ""
 
 
 def test_on_step_hook_sees_every_step_as_it_happens(tmp_path):
@@ -441,17 +508,48 @@ def test_max_tokens_is_at_least_12000(tmp_path):
         assert call["model"] == "deepseek-v4-flash", f"模型被换成了 {call['model']}（C0 锁的是 flash）"
 
 
+# 测试**自己**推给那道门的工具表：只有三个，其中一个（`stub_extra`）生产那张表里
+# **不可能**有。判断依据就落在它身上 —— 见下面那条测试的 docstring。
+STUB_ONLY_TOOLS = [
+    {"name": "observe",
+     "description": "观察页面，返回结构化页面模型。",
+     "inputSchema": {"type": "object", "properties": {"frame_id": {"type": "string"}}}},
+    {"name": "click",
+     "description": "拟人点击一个元素。",
+     "inputSchema": {"type": "object", "properties": {"selector": {"type": "string"}},
+                     "required": ["selector"]}},
+    {"name": "stub_extra",
+     "description": "只在桩里存在的工具 —— 用来证明工具表是从这道门读的。",
+     "inputSchema": {"type": "object", "properties": {"probe": {"type": "string"}},
+                     "required": ["probe"]}},
+]
+
+
 def test_tool_specs_come_from_the_mcp_server(tmp_path):
-    """工具声明必须来自那道门的 `tools/list`，不是本地写死的第二份表。"""
+    """工具声明必须来自那道门的 `tools/list`，不是本地写死的第二份表。
+
+    ⚠️ 这条钉子**早先是空的**（评审指出）：桩默认那张表与「本地手抄一份」同名同参，
+    于是把 `tools.tool_specs` 整个换成一张写死的表，它照样绿 ——
+    断言拿的是同一份常量，比的是「常量等于常量」。
+
+    修法：**由测试决定那道门回什么**（`STUB_ONLY_TOOLS`），表里带一个生产表里
+    不可能有的名字。本地表产出的 specs 里不会有它，这道钉子就真的钉住了。
+    """
     _, fake, _ = _run(
         tmp_path,
         {"observe": [{"structured": PAGE_LANDING}]},
         [{"content": "不看了"}],
+        tools_table=STUB_ONLY_TOOLS,
     )
     specs = fake.calls[0]["tools"]
     names = [s["function"]["name"] for s in specs]
-    assert names == ["observe", "diff", "screenshot", "click", "form", "scroll", "goto"]
+    # ① 门口给什么，模型就收到什么：多出来的那个名字是**只可能从门里来**的证据
+    assert names == ["observe", "click", "stub_extra"], names
     assert all(s["type"] == "function" for s in specs)
+    # ② 三个字段都真的搬过来了（名字对而描述/schema 写死也会在这里红）
+    extra = next(s for s in specs if s["function"]["name"] == "stub_extra")
+    assert extra["function"]["parameters"]["required"] == ["probe"]
+    assert "只在桩里存在" in extra["function"]["description"]
     click = next(s for s in specs if s["function"]["name"] == "click")
     assert click["function"]["parameters"]["required"] == ["selector"]
 
@@ -789,6 +887,71 @@ def test_dependency_chain_click_then_observe_changed_page(live_browser, tmp_path
 RUN_LLM = os.environ.get("RUN_LLM") == "1"
 
 
+def _judge_a_live_run(journey) -> None:
+    """真模型那一跑的**放行判据** —— 单独提出来，是为了让它有一条确定性的红。
+
+    ⚠️ 它早先写成 `if clicks:`（评审指出）：那样一来「模型这一跑压根没点」与
+    「依赖链走通了」**都是绿的**，报告里引用的那次完全可能是**什么都没验到**的那次 ——
+    正是这个项目要消灭的「绿了但什么也没证明」的形状。
+
+    这条测试存在的唯一理由就是「做一步 → 看结果 → 再决定」这个**依赖链**，
+    所以没点 = 这一跑**什么也没验到** = 失败，而且要响：错消息里得写明
+    「不是机制坏了，是这一跑没验到东西」，免得下一个人把它当成噪音重跑掉。
+    真模型不可控是事实，但不可控的正确处置是**红**，不是把判据降级。
+    """
+    assert journey.steps, "模型一次工具都没调 —— 这条循环的全部意义就是「先看再动」"
+    assert journey.stop_reason in ("model_done", "budget_steps", "budget_rounds"), journey.stop_reason
+
+    clicks = [i for i, s in enumerate(journey.steps) if s["action"] == "click"]
+    assert clicks, (
+        "模型这一跑**一次都没点** —— 依赖链是这条测试唯一的判据，所以这一跑什么都没验到。"
+        "这不是「跳过」，更不能读成绿：请重跑。"
+        f"（它实际做的：{[(s['action'], s['note']) for s in journey.steps]}）"
+    )
+    look = [s for s in journey.steps[clicks[0] + 1:]
+            if s["action"] in ("observe", "diff") and s["result"].get("ok")]
+    assert look, "点了却不再看一眼 —— 「做一步 → 看结果 → 再决定」这条链子没走起来"
+    first = look[0]
+    if first["action"] == "observe":
+        assert "After the click" in first["result"]["page_text_head"], (
+            "点完 Go 之后看到的那一页**没变** —— 要么点空了，要么它看的是旧的快照"
+            f"（它看到的是：{first['result']['page_text_head']!r}）"
+        )
+
+
+def _steps(action: str, **result) -> list:
+    """造一步（给 `_judge_a_live_run` 的桩测试用）。"""
+    return [{"state": "start", "action": action, "target": None,
+             "result": result, "note": f"{action} 那一步"}]
+
+
+def test_the_live_judgement_is_red_when_nothing_was_exercised():
+    """放行判据本身要有确定性的红 —— 真模型那条默认 skip，否则它这一半永远没人验。
+
+    三种「看着像绿、其实什么都没验到」的跑法，都**必须**红：
+    ① 一次都没点（只 observe）；② 点了却没再看一眼；③ 看了，但页面根本没变。
+    """
+    never_clicked = browser_agent.Journey(
+        steps=_steps("observe", ok=True, page_text_head="Before you click"),
+        stop_reason="model_done", final_answer="我看完了。",
+    )
+    with pytest.raises(AssertionError, match="一次都没点"):
+        _judge_a_live_run(never_clicked)
+
+    clicked_but_blind = browser_agent.Journey(
+        steps=_steps("click", ok=True), stop_reason="model_done",
+    )
+    with pytest.raises(AssertionError, match="点了却不再看一眼"):
+        _judge_a_live_run(clicked_but_blind)
+
+    clicked_and_looked_at_the_same_page = browser_agent.Journey(
+        steps=_steps("click", ok=True) + _steps("observe", ok=True, page_text_head="Before you click"),
+        stop_reason="model_done",
+    )
+    with pytest.raises(AssertionError, match="没变"):
+        _judge_a_live_run(clicked_and_looked_at_the_same_page)
+
+
 @pytest.mark.skipif(
     not RUN_LLM,
     reason="打真 LLM（要 key、要钱、要网络），默认 skip；RUN_LLM=1 才跑 —— 它不能进常规 CI",
@@ -801,8 +964,12 @@ def test_live_llm_walks_a_real_dependency_chain(live_browser, capsys):
 
     - 它必须真的调过工具（不许凭常识编）
     - 循环必须自己收住（不能挂着）
-    - **如果**它点了 Go，那它随后看到的必须**是变过的那一页** —— 这条是机制：
+    - 它**必须**真的点过 Go，且随后看到的**是变过的那一页** —— 这条是机制：
       依赖链断了 / 它点完不看，都说明这条循环没在真的「做一步看一眼」
+
+    ⚠️ 判据在 `_judge_a_live_run` 里，并且**由一条桩测试守着**（`test_the_live_judgement_
+    is_red_when_nothing_was_exercised`）：真模型这一跑不可控，但「没验到东西」不可以
+    因此变成绿的 —— 那种绿正是这个项目存在要消灭的东西。
 
     跑它：
 
@@ -830,17 +997,5 @@ def test_live_llm_walks_a_real_dependency_chain(live_browser, capsys):
             print(f"  note: {note}")
         print("=" * 72)
 
-    assert journey.steps, "模型一次工具都没调 —— 这条循环的全部意义就是「先看再动」"
-    assert journey.stop_reason in ("model_done", "budget_steps", "budget_rounds"), journey.stop_reason
-
-    clicks = [i for i, s in enumerate(journey.steps) if s["action"] == "click"]
-    if clicks:
-        look = [s for s in journey.steps[clicks[0] + 1:]
-                if s["action"] in ("observe", "diff") and s["result"].get("ok")]
-        assert look, "点了却不再看一眼 —— 「做一步 → 看结果 → 再决定」这条链子没走起来"
-        first = look[0]
-        if first["action"] == "observe":
-            assert "After the click" in first["result"]["page_text_head"], (
-                "点完 Go 之后看到的那一页**没变** —— 要么点空了，要么它看的是旧的快照"
-                f"（它看到的是：{first['result']['page_text_head']!r}）"
-            )
+    # 判据在 `_judge_a_live_run` 里（它自己有一条桩测试守着）—— 这里只把原始证据留在上面
+    _judge_a_live_run(journey)

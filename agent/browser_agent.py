@@ -35,6 +35,14 @@ Task 1 的 spike 证明了模型**肯**调工具（24 跑 0 编造、47 次真 o
 停下来的信号是 `_Stop`，它**故意**继承 `BaseException`：`run_tool_loop` 对 dispatch 抛出的
 `Exception` 是「记成一次工具失败、接着跑」—— 那对工具自己的错是对的，对「人喊停」是错的。
 
+两条**同源**的诚实要求（R-12）：
+
+- 人那道闸**自己抛异常**时，归一成「暂停」而不是「一次工具失败」（`_stop_or_raise`）。
+  不然人的中断会静默降级成「有个步骤失败了，继续吧」—— 喊停没停，还没人看得出来。
+- 模型每轮说的话由 `_Gate` **当场**记进 `notes`，不在收尾时统一记。`_Stop` 会穿过
+  `run_tool_loop`，`rounds` 就此丢掉 —— 被暂停的那份 Journey 会**比没被暂停的少知道一截**，
+  而人正是要靠那几句话决定要不要接着跑。**人被暂停时不该比没暂停时知道得更少。**
+
 ## Journey 与 `template.render()` 的接口（跨任务，Task 3 定）
 
 `journey.states()` / `journey.fills()` 产出的就是 `render()` 要的 `states` / `fills`
@@ -203,9 +211,11 @@ class _Stop(BaseException):
     对「人喊停」是错的（那会变成「喊了停还在跑」）。与 KeyboardInterrupt 同一个道理。
     """
 
-    def __init__(self, reason: str):
+    def __init__(self, reason: str, detail: str = ""):
         super().__init__(reason)
         self.reason = reason
+        #: 停下来的**细节**（眼下只有一种：人那道闸自己坏了）。空 = 没什么好补充的。
+        self.detail = detail
 
 
 def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
@@ -245,7 +255,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         if not specs:
             raise RuntimeError("MCP 门上一个工具都没有 —— 工具循环没法开始")
         inner = client if client is not None else llm.client()
-        gate = _Gate(inner, lambda: _stop_or_raise(paused, journey, taken, plan))
+        gate = _Gate(inner, lambda: _stop_or_raise(paused, journey, taken, plan), journey)
 
         def dispatch(name: str, args: dict) -> Any:
             nonlocal taken
@@ -286,7 +296,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         _wrap_up(journey, rounds, plan)
     except _Stop as stop:
         journey.stop_reason = stop.reason
-        journey.notes.append(_stop_note(stop.reason, len(journey.steps)))
+        journey.notes.append(_stop_note(stop.reason, len(journey.steps), stop.detail))
     finally:
         journey.pages = [{"name": p["name"], "when": p["when"], "url": p["url"],
                           "title": p["title"]} for p in pages.pages]
@@ -308,13 +318,30 @@ def _stop_reason(paused, journey, taken: int, plan: Budget) -> str | None:
 
 
 def _stop_or_raise(paused, journey, taken: int, plan: Budget) -> None:
-    reason = _stop_reason(paused, journey, taken, plan)
+    """该停就抛 `_Stop` —— **两道闸共用这一个出口**（每步之前 / 每轮之前）。
+
+    ⚠️ 人那道闸**自己抛异常**时，这里把它**归一成「暂停」**。不这么做的话，闸的错误
+    会以普通 `Exception` 的身份落到 `llm.run_tool_loop` 的 `except Exception` 上 ——
+    被记成**一次工具失败**、然后**循环继续**：人的中断静默降级成「有个步骤失败了，继续吧」。
+    那是这条路上最坏的形状（喊停没停，而且没有任何人看得出来）。
+    闸坏了要**停下来**（带上它坏在哪），不能带着一个坏掉的闸往下跑。
+    """
+    try:
+        reason = _stop_reason(paused, journey, taken, plan)
+    except _Stop:
+        raise
+    except Exception as exc:                           # noqa: BLE001
+        raise _Stop("paused", detail=f"那道闸自己抛了 {type(exc).__name__}: {exc}") from exc
     if reason:
         raise _Stop(reason)
 
 
-def _stop_note(reason: str, steps: int) -> str:
+def _stop_note(reason: str, steps: int, detail: str = "") -> str:
     if reason == "paused":
+        if detail:
+            # 别骗人：这不是人喊的停，是**人的那道闸坏了**。两件事不能混成一句。
+            return (f"人那道闸自己出了问题（{detail}）—— 按「人喊停」处理：在第 {steps + 1} 步之前"
+                    "停下来，这一步**没有做**。宁可停下，也不带着一个坏掉的闸往下跑。")
         return (f"人喊停：在第 {steps + 1} 步之前停下来 —— 这一步**没有做**，页面保持原样"
                 "（§6.2：人是每一步都在的旁路，不是最后一关）")
     if reason == "budget_steps":
@@ -326,11 +353,11 @@ def _stop_note(reason: str, steps: int) -> str:
 
 
 def _wrap_up(journey: Journey, rounds: list, plan: Budget) -> None:
-    """把每一轮里模型说的话记进 notes，并判定它是怎么结束的。"""
-    for record in rounds:
-        content = (record.get("content") or "").strip()
-        if content:
-            journey.notes.append(f"AI 说：{content}")
+    """判定它**是怎么结束的**。
+
+    ⚠️ 模型每一轮说的话**不在这里记** —— 归 `_Gate`（它每轮都在场，包括被人打断的
+    那条路上；见它的 docstring）。两处都记就会在没被打断时记成两份。
+    """
     last = rounds[-1] if rounds else None
     if last is None:
         journey.stop_reason = "no_rounds"
@@ -381,16 +408,37 @@ def _as_predicate(callback) -> Callable[[Journey], bool] | None:
 
 class _Gate:
     """在两个工具轮之间也问一次「该停了吗」——否则模型一轮丢来五个动作时，
-    停只能发生在那一轮**做完之后**。"""
+    停只能发生在那一轮**做完之后**。
 
-    def __init__(self, inner, check: Callable[[], None]):
+    它同时是**叙述的落点**：模型每一轮说的话，在这里**当场**记进 `journey.notes`。
+    为什么不等到循环结束再统一记（那样更省事）：`_Stop` 是 `BaseException`，
+    它**穿过** `run_tool_loop` 直接落到 `explore` 的 `except` 里，那些 `rounds`
+    记录就此丢掉 —— 于是「被人打断」的那份 Journey 会比没被打断的那份**少掉模型的
+    全部叙述**，恰恰在人最需要它的时候（正要靠那几句话决定「要不要接着跑」）。
+    这道闸是唯一每轮都在场的东西，所以叙述归它。
+    """
+
+    def __init__(self, inner, check: Callable[[], None], journey: Journey):
         self._inner = inner
         self._check = check
+        self._journey = journey
         self.chat = _Namespace(completions=_Namespace(create=self._create))
 
     def _create(self, **kwargs):
         self._check()
-        return self._inner.chat.completions.create(**kwargs)
+        resp = self._inner.chat.completions.create(**kwargs)
+        self._note(resp)
+        return resp
+
+    def _note(self, resp) -> None:
+        try:
+            content = (resp.choices[0].message.content or "").strip()
+        except (AttributeError, IndexError, TypeError, KeyError):
+            # 形状不对不该在这里把循环带塌（真形状由 llm.py 保证，它就在下一步读同一片）。
+            # 吞的只是「记不上人话」这件事，不是任何一条错误。
+            return
+        if content:
+            self._journey.notes.append(f"AI 说：{content}")
 
 
 class _Namespace:

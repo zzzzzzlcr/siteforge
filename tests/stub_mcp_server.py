@@ -20,11 +20,15 @@ program.json 的形状：
 
     {
       "log": "/tmp/xxx.calls.jsonl",      # 可选：每次 tools/call 追一行 {name, args}
+      "tools": [...],                     # 可选：这道门 `tools/list` 回什么（不给用下面的 TOOLS）
       "responses": {                      # 按工具名给一串回答，**顺序消费，最后一个重复**
         "observe": [{"structured": {...页面模型...}}, ...],
         "click":   [{"error": "没有找到选择器 #ghost"}]
       }
     }
+
+`tools` 那一项是给「工具声明来自门」那道钉子用的：只有在**测试自己决定门口有什么**
+的时候，「本地另抄一份表」才会露馅（照抄默认表那种写法两下都是绿的）。
 """
 
 from __future__ import annotations
@@ -137,6 +141,7 @@ def main() -> int:
         with open(sys.argv[1], encoding="utf-8") as fp:
             program = json.load(fp)
     responses = program.get("responses") or {}
+    tools = program.get("tools") or TOOLS
     log_path = program.get("log")
     used: dict[str, int] = {}
 
@@ -158,7 +163,7 @@ def main() -> int:
                 },
             })
         elif method == "tools/list":
-            _send({"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}})
+            _send({"jsonrpc": "2.0", "id": mid, "result": {"tools": tools}})
         elif method == "tools/call":
             params = msg.get("params") or {}
             name = params.get("name") or ""
