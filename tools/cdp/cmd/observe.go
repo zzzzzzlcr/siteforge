@@ -34,7 +34,8 @@ import (
 //
 //	0 = 拿到了模型（★ 「模型里 diagnostics 非空」仍然是 0 —— 观测跑完了，
 //	    只是不完整；是否可用由调用方按 diagnostics 判断，别让 CLI 替它决定）
-//	1 = 没拿到模型（连不上 Chrome / 主帧 eval 失败 / --frame-id 指了不存在的帧）
+//	1 = 没拿到**可用**的模型：连不上 Chrome / 主帧 eval 失败 / --frame-id 指了
+//	    不存在的帧 / 传了 --expect-url 而模型的 url 不含那个子串
 //
 // 输出格式：默认 `--json`（true）—— py 侧**只该用这一种**；`--json=false`
 // 是给人看的一页摘要（见 renderHuman），别拿去解析。
@@ -58,6 +59,11 @@ func init() {
 	// 也正是「看起来能切格式、实际不说清楚」那一类。
 	observeCmd.Flags().Bool("json", true, "默认输出 JSON（py 侧只该用这一种）；--json=false 输出人话摘要（给人看，别解析）")
 	observeCmd.Flags().String("frame-id", "", "只观察指定帧（默认整页含子帧）")
+	// --expect-url 是**主动**那道闸：模型自己说的 target-ambiguous（C，被动）要靠
+	// 调用方读 diagnostics，而这条把「这一页得是我要的那一页」变成退出码 ——
+	// py 侧只要 `if subprocess.run(...): 重试` 就够，不必解析模型。
+	// 默认空 = 不检查（老行为一字不改）。
+	observeCmd.Flags().String("expect-url", "", "预期页面 URL 里含有的子串；模型的 url 不含它就非 0 退出（拿错页时别往下推理）")
 }
 
 func runObserve(cmd *cobra.Command, args []string) error {
@@ -81,6 +87,22 @@ func runObserve(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// B（主动）：模型观察到的页不是调用方要的那一页 → 非 0 退出。
+	//
+	// 为什么要在**输出之前**判：stdout 的约定是「要么一份完整模型，要么什么都没有」
+	// （见文件顶部退出码约定）—— 把一份错页的模型吐出去、再靠退出码叫调用方别信它，
+	// 等于给「解析到半份 JSON 也算成功」那种失败留门。
+	//
+	// ⚠️ 比的是模型**顶层**的 url（--frame-id 时也一样）：那是「这个 tab 现在停在哪」，
+	// 也正是拿错页时唯一会说真话的字段。
+	if expectURL, _ := cmd.Flags().GetString("expect-url"); expectURL != "" && !strings.Contains(m.URL, expectURL) {
+		return fmt.Errorf("observe 拿到的页面不是预期的那个：期望 URL 里含 %q，实际是 %q"+
+			"（典型成因：target=_blank 开的新标签页没拿到活动状态，观测到的还是旧页；"+
+			"模型已丢弃、没有输出，去掉 --expect-url 可看它到底观察了哪一页）",
+			expectURL, m.URL)
+	}
+
 	jsonOut, _ := cmd.Flags().GetBool("json")
 	if jsonOut {
 		enc := json.NewEncoder(os.Stdout)
@@ -144,12 +166,17 @@ func renderHuman(w io.Writer, m *internal.PageModel) error {
 	}
 
 	// 诊断：和遮挡物**分开**摆（前者是「我没看清」，后者是「页面上有东西」）。
+	//
+	// ⚠️ detail 截到 160 而不是别处的 40/80：诊断的详情就是**这一行的全部价值**
+	// （它要说清是哪一帧、哪个目标、为什么），截到 80 会把 target-ambiguous
+	// 那条里的 target ID / URL 掐掉 —— 而那正是人判断「是不是看错页了」的依据。
+	// 160 与 firstRunes(err, 160)（frame-error 那条的生成处）是同一个数。
 	if len(m.Diagnostics) == 0 {
 		fmt.Fprintf(tw, "诊断：无\n")
 	} else {
 		fmt.Fprintf(tw, "诊断（观测者自己的问题 —— 不是页面内容）：\n")
 		for _, d := range m.Diagnostics {
-			fmt.Fprintf(tw, "  %s\t%s\t%s\n", d.Kind, strings.Join(d.FramePath, " > "), truncRunes(d.Detail, 80))
+			fmt.Fprintf(tw, "  %s\t%s\t%s\n", d.Kind, strings.Join(d.FramePath, " > "), truncRunes(d.Detail, 160))
 		}
 	}
 	return tw.Flush()

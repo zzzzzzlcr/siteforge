@@ -18,10 +18,14 @@ func TestCloseTarget(t *testing.T) {
 		t.Skip("需要至少 2 个 page target，请打开多个 tab 后重试")
 	}
 
-	activeID, err := GetActivePageTargetID(host, port)
+	// 用 ChooseActivePageTarget 而不是旧的 GetActivePageTargetID：后者已被改名
+	// （它回的已经不止是 ID 了，见 targets.go 里 TargetChoice 的注释）。
+	// 这条测试只关心「别关掉活跃页」，所以 .ID 就够，Fallback 不看。
+	active, err := ChooseActivePageTarget(host, port)
 	if err != nil {
-		t.Fatalf("GetActivePageTargetID failed: %v", err)
+		t.Fatalf("ChooseActivePageTarget failed: %v", err)
 	}
+	activeID := active.ID
 
 	var targetToClose string
 	for _, p := range pagesBefore {

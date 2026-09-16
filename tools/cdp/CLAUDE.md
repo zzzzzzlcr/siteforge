@@ -35,7 +35,7 @@ go mod tidy                           # 整理依赖
 - `scroll`: `[selector]` (位置参数) 或 `--selector`、`--frame-id`、`--track` (显示鼠标轨迹)
 - `navi`: `[url]` (必填位置参数)、`--frame-id` (目标 frame，默认主 frame)
 - `form`: `[selector]` (位置参数) 或 `--selector`、`--value` / `--check` / `--select` (三选一)、`--frame-id`、`--track`
-- `observe`: `--json` (默认 true；`--json=false` 出人话摘要)、`--frame-id` (只观察指定帧 —— 传的必须是 **CDP frameID**，不是 frame_path 里给人读的 `"main"`)
+- `observe`: `--json` (默认 true；`--json=false` 出人话摘要)、`--frame-id` (只观察指定帧 —— 传的必须是 **CDP frameID**，不是 frame_path 里给人读的 `"main"`)、`--expect-url` (预期 URL 子串；模型的 `url` 不含它就**非 0 退出**且不输出模型 —— 拿错页时的主动闸门)
 - `diff`: `--before` (**必填**，动作前那份 `observe` 快照的路径)、`--json` (默认 true)、`--frame-id` (⚠️ **只影响「动作后」那一次观测**；拿整页快照配它会把其它帧的元素全报成 disappeared → 假的 `actionable=true`，非调试别传)
 - `targets`: 无额外 flags
 - `active`: `[target]` (位置参数) 或 `--target`
@@ -60,6 +60,9 @@ chrome --remote-debugging-port=9222
 **功能说明:** snapshot 命令获取当前打开页面的所有 frame 信息（frameId、title、url、readyState）；
 observe 命令给出页面模型（规格 §4.3 契约：actions / fields / option_groups / obstructions /
 diagnostics，跨源 iframe 自动逐帧合并、每条带 `frame_path`），是 py 与 agent 的主视角；
+⚠️ 没有页面目标报 visible 时，挑「活动页」会**退回第一个**（`internal/targets.go` 的
+`pickActivePage`）—— 那是个猜测，所以模型里会带一条 `target-ambiguous` 诊断（整个 tab
+可能选错了，不是某一帧没取到；真站实测过：返回一份完全合法、说的是**另一个页**的模型）；
 diff 命令比「动作前快照」与「现在的页面」，回答「刚才那一下有没有推进」。
 
 ## Architecture

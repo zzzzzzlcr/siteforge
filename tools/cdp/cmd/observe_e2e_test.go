@@ -223,9 +223,34 @@ func newFixtureServer() *httptest.Server {
 		io.WriteString(w, `<!doctype html><html><head><meta charset="utf-8"><title>R3 empty</title></head>`+
 			`<body><p>这一页没有可动作元素、表单字段、选项组，也没有遮挡物</p></body></html>`)
 	})
+	// __busy.html 是 C 的复现夹具：一个把主线程堵住十几秒的页。
+	// 为什么需要它 —— 见 TestObserveCommandReportsAmbiguousTarget 顶部。
+	mux.HandleFunc("/__busy.html", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.WriteString(w, fmt.Sprintf(`<!doctype html><html><head><meta charset="utf-8"><title>R3 busy</title></head>`+
+			`<body><p>这一页把主线程堵住 %d 毫秒</p><script>var t0=Date.now(); while(Date.now()-t0<%d){}</script></body></html>`,
+			busyHoldMS, busyHoldMS))
+	})
 	mux.Handle("/", http.FileServer(http.Dir(filepath.Join("..", "internal", "testdata"))))
 	return httptest.NewServer(mux)
 }
+
+// busyHoldMS 是 __busy.html 把主线程堵住的时长（毫秒）。
+//
+// 为什么必须**显著大于** checkPageActive 那 5 秒求值超时：这条测试要的就是那次检查
+// **失败**（真站实测：两个页面目标都返回 Active == nil，于是挑页面时退回了 pages[0]）。
+// 页面堵着的时候，Runtime.evaluate 排不到队 → 5 秒超时 → Active 保持 nil。
+//
+// 10 秒给了「检查开始得晚一点 / 机器慢一点」约 5 秒余量，代价是这条测试本身要跑
+// 十几秒 —— 换的是一次**确定性**的复现，不是碰运气等一个偶发的超时。
+const busyHoldMS = 10000
+
+// busyProbeDelay 是「导航起好、脚本开始堵」到「去 observe」之间的等待。
+//
+// 不能太短：/json/new 开出来的标签页一开始是 about:blank，导航 commit + 脚本开始执行
+// 需要一点时间；抢在它前面去 observe 的话，检查会落在那个还活着的 about:blank 上
+// （实测过：报 visible=true，于是这条测试假绿）。1.2 秒对本地 fixture 绰绰有余。
+const busyProbeDelay = 1200 * time.Millisecond
 
 // ---- 私有浏览器 ----
 
@@ -333,7 +358,10 @@ func countPageTargets(listURL string) (int, error) {
 	}
 	n := 0
 	for _, e := range entries {
-		if e.Type == "page" && e.URL != "" {
+		// 过滤条件与 internal.filterPageTargets **同一套**（type=page、URL 非空、
+		// 非 devtools://）—— C 的 e2e 要拿这个数去对诊断里那句「共 N 个候选」，
+		// 两边稍有出入就会让断言以「数字对不上」的形式红，而不是悄悄放过。
+		if e.Type == "page" && e.URL != "" && !strings.HasPrefix(e.URL, "devtools://") {
 			n++
 		}
 	}
@@ -402,6 +430,179 @@ func (e *testEnv) navigate(t *testing.T, url string) {
 func (e *testEnv) observe(t *testing.T, extraArgs ...string) (string, string, int) {
 	t.Helper()
 	return e.run(t, append([]string{"observe"}, extraArgs...)...)
+}
+
+// ---- 页面管理的辅助（C 的 e2e 要自己造第二个页面目标） ----
+
+// devtoolsClient 是给 /json/* 那些**改状态**的调用用的（开页面、关页面）：
+// 比探测用的 probeClient 宽松，但仍有超时 —— 关一个主线程堵住的页面要等渲染进程死掉。
+var devtoolsClient = &http.Client{Timeout: 10 * time.Second}
+
+func (e *testEnv) devtoolsURL(path string) string {
+	return fmt.Sprintf("http://127.0.0.1:%d%s", e.chromePort, path)
+}
+
+// createTab 让浏览器**新开一个标签页**，返回它的 target ID。
+//
+// 为什么必须另开一个、而不是复用测试环境里那个页：C 要复现的是「有两个候选人，
+// 但一个报 visible 的都没有」—— 单个页面目标时那条路也走得到，但那不是真站那次
+// 的形态（真站是两个目标都 nil）。多开一个才是同构的复现。
+//
+// 为什么不用 /json/new?url=...：本机 Chrome 150 实测**那个参数会被忽略**
+// （开出来仍是 about:blank）。正好 —— 导航必须另起一步，而且那一步不能等 load
+// （见 startNav）。
+func (e *testEnv) createTab(t *testing.T) string {
+	t.Helper()
+	req, err := http.NewRequest("PUT", e.devtoolsURL("/json/new"), nil)
+	if err != nil {
+		t.Fatalf("造 /json/new 请求失败: %v", err)
+	}
+	resp, err := devtoolsClient.Do(req)
+	if err != nil {
+		t.Fatalf("开新标签页失败（PUT /json/new）: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("读 /json/new 响应失败: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("开新标签页失败: HTTP %d: %.200s", resp.StatusCode, body)
+	}
+	var info struct {
+		ID  string `json:"id"`
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(body, &info); err != nil {
+		t.Fatalf("解析 /json/new 响应失败: %v\n%.200s", err, body)
+	}
+	if info.ID == "" {
+		t.Fatalf("/json/new 没回 target ID: %.200s", body)
+	}
+	return info.ID
+}
+
+// closeTab 关掉一个标签页。**失败不 Fatal**：它在 t.Cleanup 里跑，那时测试已经
+// 结束（可能已经以别的原因失败了），再往上抛一个错误只会把真正的死因盖掉。
+func (e *testEnv) closeTab(t *testing.T, id string) {
+	t.Helper()
+	resp, err := devtoolsClient.Get(e.devtoolsURL("/json/close/" + id))
+	if err != nil {
+		t.Logf("关标签页 %s 失败: %v", id, err)
+		return
+	}
+	resp.Body.Close()
+}
+
+// waitTabGone 轮询到那个标签页真的从目标列表里消失为止。
+//
+// 为什么要等：/json/close 返回之后浏览器内部还要拆页面。紧接着去 observe 的话，
+// 关掉的页可能还在候选列表里 —— 那正是这条测试的负例阶段最怕的假失败
+// （以为已经「有页报 visible 了」，其实只是那个堵住的页还没消失）。
+func (e *testEnv) waitTabGone(t *testing.T, id string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		body, err := e.targetListJSON()
+		if err == nil && !strings.Contains(body, id) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s 内标签页 %s 还没从目标列表里消失（最后错误: %v）", timeout, id, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (e *testEnv) targetListJSON() (string, error) {
+	resp, err := devtoolsClient.Get(e.devtoolsURL("/json/list"))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	return string(body), err
+}
+
+// startNav 起一个**不等它结束**的 navi 进程，把当前标签页导航到 url。
+//
+// 为什么不能等：__busy.html 的脚本会把主线程堵住十几秒，而 load 事件要等脚本跑完
+// 才来 —— 等它就是把这条测试变成「等 15 秒，然后页面已经空了」。要观测的恰恰是
+// **它堵着的时候**。返回的进程由调用方负责杀（它是真进程）。
+func (e *testEnv) startNav(t *testing.T, url string) *exec.Cmd {
+	t.Helper()
+	full := []string{"--host", "127.0.0.1", "--port", strconv.Itoa(e.chromePort), "navi", url}
+	cmd := exec.Command(e.bin, full...)
+	var log bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &log, &log
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("起 navi 进程失败: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+		if t.Failed() {
+			// 只在失败时把 navi 的输出贴出来：它此刻是「页面到底导航过去没有」的
+			// 唯一旁证，而这条测试的失败多半就出在那一步。
+			t.Logf("navi 输出: %s", log.String())
+		}
+	})
+	return cmd
+}
+
+// decodeModel 把 `cdp observe` 的 stdout 解成 PageModel（解不动就 Fatal ——
+// 输出是契约，py 侧解析的就是它）。
+func decodeModel(t *testing.T, out string) *internal.PageModel {
+	t.Helper()
+	var m internal.PageModel
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatalf("stdout 按 internal.PageModel 解不动: %v\n%.400s", err, out)
+	}
+	return &m
+}
+
+// countDiagKind 数模型里某一种诊断的条数。
+func countDiagKind(m *internal.PageModel, kind string) int {
+	n := 0
+	for _, d := range m.Diagnostics {
+		if d.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+// waitForVisiblePage 轮询到「浏览器里真有页报 visible」为止（退出条件就是
+// `cdp targets` 自己那套可见性检查，不是另一个尺子）。
+//
+// 负例阶段的前置条件：关掉那个堵住的页之后，必须**先确认**又有页真报 visible 了，
+// 否则随后 observe 里出现的 target-ambiguous 说不清是「没恢复」还是「实现错了」。
+func (e *testEnv) waitForVisiblePage(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last string
+	for {
+		out, errOut, code := e.run(t, "targets")
+		if code == 0 {
+			last = out
+			var pages []internal.PageTarget
+			if err := json.Unmarshal([]byte(out), &pages); err == nil {
+				for _, p := range pages {
+					if p.Active != nil && *p.Active {
+						return
+					}
+				}
+			}
+		} else {
+			last = errOut
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s 内没有任何页面目标报 visible —— 负例阶段的前提不成立（targets 输出: %.400s）", timeout, last)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // ---- 闸门 ----
@@ -830,4 +1031,207 @@ func firstLines(s string, n int) string {
 		lines = lines[:n]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// ─────────────────────────── B：--expect-url（主动那道闸） ───────────────────────────
+
+// TestObserveCommandExpectURL 钉住 `--expect-url` 的两个方向：
+//
+//	(i)  子串对得上 → 退出码 0，且**输出与不传这个 flag 时一模一样**（默认行为不许被动）
+//	(ii) 子串对不上 → 非 0 退出，消息里同时点名「期望的子串」与「实际的 URL」
+//
+// 为什么值得一条真闸门：这是拿错页时**唯一会主动说话**的一条路（C 那条是被动的 ——
+// 要调用方自己去读 diagnostics）。py 侧在 worker 里能用的只有退出码，所以「对不上
+// 就必须非 0」这件事，只能在这条真二进制上验。
+func TestObserveCommandExpectURL(t *testing.T) {
+	e := env(t)
+	fixtureURL := e.fixture + "/base.html"
+	e.navigate(t, fixtureURL)
+
+	// ── (i) 对得上：退出码 0，模型照常 ──
+	out, errOut, code := e.observe(t, "--expect-url", "base.html")
+	if code != 0 {
+		t.Fatalf("--expect-url 与页面相符却退出码 %d，want 0\nstderr: %s", code, errOut)
+	}
+	m := decodeModel(t, out)
+	if m.URL != fixtureURL {
+		t.Fatalf("url = %q, want %q —— 这次的模型不是这条测试导航过去的页", m.URL, fixtureURL)
+	}
+	if len(m.Actions) == 0 {
+		t.Fatal("actions 为空 —— --expect-url 不该改变观测本身")
+	}
+
+	// ── (ii) 对不上：非 0 退出 + 两个串都在消息里 ──
+	const wrong = "inner.html"
+	outBad, errOutBad, codeBad := e.observe(t, "--expect-url", wrong)
+	if codeBad == 0 {
+		t.Fatalf("期望子串对不上却退出码 0 —— 调用方会拿这份错页的模型接着跑。stdout: %.200s", outBad)
+	}
+	if codeBad != 1 {
+		t.Errorf("退出码 = %d, want 1（约定见 cmd/observe.go 顶部）", codeBad)
+	}
+	if outBad != "" {
+		// stdout 的约定是「要么一份完整模型，要么什么都没有」：半份/错页的模型
+		// 比没有更坏 —— 它长得跟成功一样。
+		t.Errorf("失败路径的 stdout 应当为空（模型已丢弃），实际: %.200s", outBad)
+	}
+	// %q 打出来会带引号，所以这里用 Contains 而不是相等。
+	for _, want := range []string{wrong, fixtureURL} {
+		if !strings.Contains(errOutBad, want) {
+			t.Errorf("错误消息里没有 %q —— 人看不出「要的是哪一页、实际是哪一页」:\n%s", want, errOutBad)
+		}
+	}
+	t.Logf("退出码=0（对得上）；退出码=%d（对不上）stderr 首行: %s", codeBad, firstLines(errOutBad, 1))
+}
+
+// TestObserveCommandExpectURLUsesModelURLWithFrameID 钉住 `--frame-id` 时比的是
+// **模型顶层的 url**，不是主帧的：单帧观测出来的 url 是**那一帧**的地址，
+// 而「我要的是不是这一页」问的正是那个地址。
+//
+// 为什么单开一条：这条腿的语义和整页那条不同（同一个 flag，两个来源），
+// 而写错成「永远比主帧」在下游会是静默的 —— 子帧页上永远判「对不上」，
+// 调用方只会看到莫名其妙的失败。
+func TestObserveCommandExpectURLUsesModelURLWithFrameID(t *testing.T) {
+	e := env(t)
+	e.navigate(t, e.fixture+"/outer_same.html")
+
+	// 先拿这一次观测，从里面取出子帧的 frameID（frame_path 第二段就是它）
+	out, errOut, code := e.observe(t)
+	if code != 0 {
+		t.Fatalf("整页 observe 退出码 = %d\nstderr: %s", code, errOut)
+	}
+	m := decodeModel(t, out)
+	childID := ""
+	for _, a := range m.Actions {
+		if len(a.FramePath) > 1 {
+			childID = a.FramePath[1]
+			break
+		}
+	}
+	if childID == "" {
+		t.Fatalf("动作里没有子帧 frame_path —— 这条测试的前提（有个子帧可观测）不成立: %+v", m.Actions)
+	}
+	innerURL := e.fixture + "/inner.html"
+
+	// ── 子帧的 url 含 inner.html → 对得上 ──
+	_, errOut2, code2 := e.observe(t, "--frame-id", childID, "--expect-url", "inner.html")
+	if code2 != 0 {
+		t.Fatalf("--frame-id 单帧观测子帧、期望 inner.html 却退出码 %d\nstderr: %s", code2, errOut2)
+	}
+
+	// ── 期望主帧的地址 → 对不上（因为模型顶层的 url 是子帧的），且消息里报的是子帧的 URL ──
+	outBad, errOutBad, codeBad := e.observe(t, "--frame-id", childID, "--expect-url", "base.html")
+	if codeBad == 0 {
+		t.Fatalf("子帧观测报的是 %s，期望 base.html 却退出码 0 —— 比错对象了", innerURL)
+	}
+	if outBad != "" {
+		t.Errorf("失败路径的 stdout 应当为空，实际: %.200s", outBad)
+	}
+	for _, want := range []string{"base.html", innerURL} {
+		if !strings.Contains(errOutBad, want) {
+			t.Errorf("错误消息里没有 %q —— 单帧那条腿报的应当是子帧的 url:\n%s", want, errOutBad)
+		}
+	}
+	t.Logf("子帧 %s：期望 inner.html → 0；期望 base.html → %d", childID, codeBad)
+}
+
+// ───────────────── C：target-ambiguous 诊断（被动） + 真浏览器复现 ─────────────────
+
+// TestObserveCommandReportsAmbiguousTarget 在本机真浏览器上**复现**真站那次测量，
+// 钉住 C 的两个方向：
+//
+//	正例：没有页报 visible（挑页面只能退回第一个）→ 模型里必须有一条 target-ambiguous，
+//	      detail 说清「几个候选、挑中的是哪个 target」
+//	负例：有页真报 visible 时不说话 —— 常驻的诊断等于没有诊断
+//
+// ── 怎么复现「没有页报 visible」 ──
+// 真站那次的形态是：两份 page 目标都返回 Active == nil（checkPageActive 求值失败/超时），
+// 于是挑页面时退回 pages[0] —— 而那是另一个页（夹具页）。要造出同一个状态，就得让
+// **可见性检查失败**：__busy.html 把主线程堵住十几秒，Runtime.evaluate 排不到队 →
+// 5 秒超时 → Active 保持 nil（页面此时**仍然是可以被观测的**，这正是缺陷的可怕之处：
+// 模型完全合法、退出码 0，只是说的是另一个页）。
+//
+// ⚠️ 这条测试为什么非得这么绕：一条「报告说它是猜的」的诊断，只有在**真的猜了**的时候
+// 才该出现 —— 用假造的输入喂进去只能证明函数会拼字符串，证明不了整条链路上真会发生。
+// 所以这里真起浏览器、真堵页面、真跑二进制（退出码与 stdout 都当真）。
+func TestObserveCommandReportsAmbiguousTarget(t *testing.T) {
+	e := env(t)
+
+	// 第二个页面目标：堵住主线程的那个。它同时是「退回」时会挑中的那一个
+	// （/json/list 的顺序近似 MRU，新开的标签页在最前 → 退回挑 pages[0] 就是它）。
+	busyID := e.createTab(t)
+	t.Cleanup(func() { e.closeTab(t, busyID) })
+	e.startNav(t, e.fixture+"/__busy.html")
+	time.Sleep(busyProbeDelay)
+
+	// 候选数得自己数一份：诊断里那句「共 N 个候选」是**这次**的 N，
+	// 而这条测试跑在共享的私有浏览器上（别的测试可能留着自己的页面目标）。
+	wantCandidates, err := countPageTargets(e.devtoolsURL("/json/list"))
+	if err != nil {
+		t.Fatalf("数页面目标失败: %v", err)
+	}
+	if wantCandidates < 2 {
+		t.Fatalf("只有 %d 个页面目标 —— 「多目标里一个报 visible 的都没有」这个复现形态不成立", wantCandidates)
+	}
+
+	// ── 正例 ──
+	out, errOut, code := e.observe(t)
+	if code != 0 {
+		t.Fatalf("退出码 = %d, want 0 —— 这一态下观测本身是成功的（这正是缺陷的样子）\nstderr: %s", code, errOut)
+	}
+	m := decodeModel(t, out)
+	if want := e.fixture + "/__busy.html"; m.URL != want {
+		t.Fatalf("模型 url = %q, want %q —— 退回挑中的不是这个页，后面的断言没有意义（挑页面顺序变了？）", m.URL, want)
+	}
+	diag := (*internal.Diagnostic)(nil)
+	for i := range m.Diagnostics {
+		if m.Diagnostics[i].Kind == internal.DiagKindTargetAmbiguous {
+			diag = &m.Diagnostics[i]
+		}
+	}
+	if diag == nil {
+		t.Fatalf("没有任何页面报 visible（挑页面只能退回第一个），模型却没有 target-ambiguous 诊断 —— "+
+			"agent 会把这份模型当成「就是这个页」照常推理。实际诊断: %+v", m.Diagnostics)
+	}
+	if n := countDiagKind(m, internal.DiagKindTargetAmbiguous); n != 1 {
+		t.Errorf("target-ambiguous = %d 条，want 1", n)
+	}
+	// detail 要可行动：候选数、挑中的 target（ID + URL）
+	for _, want := range []string{busyID, strconv.Itoa(wantCandidates), m.URL} {
+		if !strings.Contains(diag.Detail, want) {
+			t.Errorf("detail 里没有 %q —— 人没法判断挑错没有:\n%s", want, diag.Detail)
+		}
+	}
+	if len(diag.FramePath) != 1 || diag.FramePath[0] != "main" {
+		t.Errorf("frame_path = %q, want [\"main\"]（这是整个 tab 选错了，不是某一帧）", diag.FramePath)
+	}
+	// 这条诊断走的是 diagnostics 通道，不是 obstructions（混进去的话，
+	// 忽略 kind 的消费者会拿 targetID 当选择器去点）
+	for _, o := range m.Obstructions {
+		if o.Kind == internal.DiagKindTargetAmbiguous {
+			t.Errorf("target-ambiguous 混进了 obstructions: %+v", o)
+		}
+	}
+
+	// ⚠️ 人话输出（--json=false）那一条**故意不在这里**：这个状态是**一次性**的 ——
+	// 第一次观测的求值会排队等到主线程放开才返回，等它回来，页面已经不堵了，
+	// 第二次观测就恢复成「有页报 visible」（实测：这么写时第二遍拿到的是「诊断 0 条」，
+	// 断言红得毫无意义）。人话那一行由 TestRenderHumanSurfacesTargetAmbiguous 用
+	// 造好的模型直测（打的就是 renderHuman 本身，不需要真浏览器）。
+
+	// ── 负例：关掉堵住的页 → 又有页真报 visible → 这条诊断必须消失 ──
+	e.closeTab(t, busyID)
+	e.waitTabGone(t, busyID, 15*time.Second)
+	e.waitForVisiblePage(t, 20*time.Second)
+	outClean, errOutClean, codeClean := e.observe(t)
+	if codeClean != 0 {
+		t.Fatalf("恢复后 observe 退出码 = %d\nstderr: %s", codeClean, errOutClean)
+	}
+	clean := decodeModel(t, outClean)
+	if n := countDiagKind(clean, internal.DiagKindTargetAmbiguous); n != 0 {
+		t.Errorf("有页面真报了 visible 却仍然报 %s %d 条 —— 常驻的诊断会让消费者学会无视它:\n%+v",
+			internal.DiagKindTargetAmbiguous, n, clean.Diagnostics)
+	}
+	t.Logf("正例：url=%s candidates=%d 诊断=%d；负例（关掉堵住的页后）：诊断=%d",
+		m.URL, wantCandidates, len(m.Diagnostics), len(clean.Diagnostics))
 }

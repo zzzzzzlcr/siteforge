@@ -687,3 +687,125 @@ func TestObserveCrossOriginFrameMerge(t *testing.T) {
 			guardModel.Diagnostics)
 	}
 }
+
+// ─────────────────── 目标歧义诊断的接线（C：发了没有、发了几次） ───────────────────
+//
+// C 的判据分两层，两层都要钉住，因为它们坏起来的样子完全不同：
+//
+//	判据层（什么时候说话）：由 TestPickActivePage / TestTargetDiagsFor* 直测（纯逻辑）
+//	接线层（到手之后印几次）：就是这个 —— 每个模型**恰好一条**
+//
+// 为什么接线层也要单独一条：ObserveAll 是**逐帧**调 observeFrame 的。把这条诊断
+// 塞进逐帧那条路，N 帧的页面上就会印 N 条 —— 而这件事跟帧数毫无关系（错的是整个
+// tab），消费者会照着条数以为有 N 个问题。单帧页上「恰好一条」是**空转通过**的
+// （一帧一条也是一条），所以这条测试必须跑在一个真的有多个帧的页面上。
+
+// framesCovered 数「这次观测覆盖了几个帧」。
+//
+// ⚠️ **不能**只数动作/字段上出现的 frame_path 种类：外层页一个可动作元素都没有时
+// （outer_same.html 就是），主帧在元素上一片空白，于是「只有一个帧」是假的 ——
+// 实测这么数过一次，6 个 action 全来自子帧 → 数出 1 帧，把这条测试自己顶成了红灯。
+// 正确的算法：主帧一定观测过（合并主帧失败会整体报错，见 observeInto），
+// 再加上 frame_path 里出现过的不同**子帧** ID（第 2 段起，子帧嵌套时逐层不同）。
+func framesCovered(m *PageModel) int {
+	child := map[string]bool{}
+	note := func(p []string) {
+		if len(p) > 1 {
+			child[p[1]] = true
+		}
+	}
+	for _, a := range m.Actions {
+		note(a.FramePath)
+	}
+	for _, f := range m.Fields {
+		note(f.FramePath)
+	}
+	return 1 + len(child)
+}
+
+func countDiagKind(m *PageModel, kind string) int {
+	n := 0
+	for _, d := range m.Diagnostics {
+		if d.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+// TestObserveEmitsTargetDiagOncePerModel 是接线层那一条。
+//
+// 为什么用**注入**而不是真造一个「退回」的浏览器：真造得让页面的主线程堵死、逼
+// checkPageActive 超时（cmd/observe_e2e_test.go 的 TestObserveCommandReportsAmbiguousTarget
+// 就是这么干的：真二进制、真浏览器、真退出码）。那条路走得通，但它只能造出**单帧**页
+// —— 被堵住的页面没机会挂 iframe，而这里要量的恰恰是多帧下的条数。注入 targetDiags
+// 把「帧数」与「诊断条数」这两件事解耦，各自量清楚。
+//
+// ⚠️ 注入的是同包的内部字段，不是生产路径：NewClient **什么时候**会给出 Fallback
+// 已经由 TestPickActivePage / TestTargetDiagsFor* 钉住，这里只管它到手之后印几次。
+func TestObserveEmitsTargetDiagOncePerModel(t *testing.T) {
+	srv := serveFixtures(t)
+
+	host, port := shadowTestEndpoint()
+	c, err := NewClient(host, port)
+	if err != nil {
+		t.Skipf("Chrome 不可用: %v", err)
+	}
+	t.Cleanup(c.Disconnect)
+
+	// outer_same.html = 外层页 + 一个同源 iframe（inner.html）：两个帧，够了。
+	if _, err := c.Navigate(srv.URL+"/outer_same.html", ""); err != nil {
+		t.Fatalf("导航到自带 fixture server 失败（不是环境缺失，server 是本测试刚起的）: %v", err)
+	}
+	// 子帧真起来了才继续 —— 帧数是这条测试的前提，不是它的结论
+	waitForChildFrame(t, c, 10*time.Second)
+
+	// 注入「这次挑中的页是猜的」（值取自真站那一态：候选都不报 visible、退回第一个）
+	const pickedID = "MOCK-TARGET-ID-0123456789ABCDEF"
+	c.targetDiags = targetDiagsFor(TargetChoice{
+		ID: pickedID, URL: "https://mock.example/fixture", Candidates: 2, Fallback: true,
+	})
+	if len(c.targetDiags) != 1 {
+		t.Fatalf("注入不成立（targetDiags = %d 条）—— 后面的断言会空转通过", len(c.targetDiags))
+	}
+
+	// ── 整页那条路（ObserveAll）──
+	merged, err := c.ObserveAll()
+	if err != nil {
+		t.Fatalf("ObserveAll 失败: %v", err)
+	}
+	frames := framesCovered(merged)
+	if frames < 2 {
+		t.Fatalf("这次观测只覆盖了 %d 个帧（actions=%d fields=%d）—— "+
+			"「不会复制成 N 条」这条断言在单帧页上是空转的，必须多帧才有意义",
+			frames, len(merged.Actions), len(merged.Fields))
+	}
+	if n := countDiagKind(merged, DiagKindTargetAmbiguous); n != 1 {
+		t.Errorf("整页模型的 %s 诊断 = %d 条，want 1（覆盖了 %d 个帧 —— 每帧一条就是这里露头）:\n%+v",
+			DiagKindTargetAmbiguous, n, frames, merged.Diagnostics)
+	}
+	// 它说的是「整个 tab 选错了」，所以挂主帧、detail 里要点名挑中的那个 target
+	for _, d := range merged.Diagnostics {
+		if d.Kind != DiagKindTargetAmbiguous {
+			continue
+		}
+		if len(d.FramePath) != 1 || d.FramePath[0] != mainFramePath {
+			t.Errorf("target-ambiguous 的 frame_path = %q, want [%q]（这条不是「某一帧没取到」，是整个 tab 选错了）",
+				d.FramePath, mainFramePath)
+		}
+		if !strings.Contains(d.Detail, pickedID) {
+			t.Errorf("detail 里没点名挑中的 target %q —— 人没法判断是不是挑错了: %q", pickedID, d.Detail)
+		}
+	}
+
+	// ── 单帧那条路（Observe）──
+	single, err := c.Observe("")
+	if err != nil {
+		t.Fatalf("Observe(\"\") 失败: %v", err)
+	}
+	if n := countDiagKind(single, DiagKindTargetAmbiguous); n != 1 {
+		t.Errorf("单帧模型的 %s 诊断 = %d 条，want 1:\n%+v", DiagKindTargetAmbiguous, n, single.Diagnostics)
+	}
+	t.Logf("整页：帧数=%d actions=%d diagnostics=%d；单帧：actions=%d diagnostics=%d",
+		frames, len(merged.Actions), len(merged.Diagnostics), len(single.Actions), len(single.Diagnostics))
+}

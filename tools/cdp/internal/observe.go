@@ -449,10 +449,29 @@ func observeJS() string {
 
 // Observe 对指定帧求值并解析成 PageModel。frameID 为空表示主帧。
 //
+// 这是**单帧**那条路的入口（CLI 的 --frame-id、diff 的 after 观测都走它）。
+// 整页那条路见 ObserveAll。
+func (c *Client) Observe(frameID string) (*PageModel, error) {
+	m, err := c.observeFrame(frameID)
+	if err != nil {
+		return nil, err
+	}
+	// 「挑中的页是猜的」这条诊断在**入口**发，不在 observeFrame 里发 ——
+	// ObserveAll 逐帧调 observeFrame，在那一层发就成了 N 帧 N 条（见 Client.targetDiags）。
+	m.Diagnostics = append(m.Diagnostics, c.targetDiags...)
+	// 单帧这条路的两处归一化都在这里（合并那条路走 mergeFrameModel + normalizeNilLists）：
+	//   - 空列表一律编成 []（JS 不产出 diagnostics，不归一化它编出来就是 null）
+	//   - frame_path 按单帧契约盖成 [frameID]（JS 写死的 ['main'] 在子帧上是错的）
+	return normalizeFramePaths(normalizeNilLists(m), frameID), nil
+}
+
+// observeFrame 只做「观测这一帧」本身：求值 + 解析，**不带**目标歧义诊断。
+// 归一化也不在这里（两条路各自的形状不同，见 Observe 与 ObserveAll）。
+//
 // EvalInFrame 末尾是 json.Unmarshal(remoteObj.Value, result)：JS 返回字符串时
 // remoteObj.Value 是**带引号的 JSON 编码串**，解进 Go string 自动去引号，
 // 所以这里取 raw string 再解一次是对的。
-func (c *Client) Observe(frameID string) (*PageModel, error) {
+func (c *Client) observeFrame(frameID string) (*PageModel, error) {
 	var raw string
 	if err := c.EvalInFrame(frameID, observeJS(), &raw); err != nil {
 		return nil, fmt.Errorf("observe eval: %w", err)
@@ -461,8 +480,5 @@ func (c *Client) Observe(frameID string) (*PageModel, error) {
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		return nil, fmt.Errorf("observe 契约解析失败: %w\n原始: %.300s", err, raw)
 	}
-	// 单帧这条路的两处归一化都在这里（合并那条路走 mergeFrameModel + normalizeNilLists）：
-	//   - 空列表一律编成 []（JS 不产出 diagnostics，不归一化它编出来就是 null）
-	//   - frame_path 按单帧契约盖成 [frameID]（JS 写死的 ['main'] 在子帧上是错的）
-	return normalizeFramePaths(normalizeNilLists(&m), frameID), nil
+	return &m, nil
 }

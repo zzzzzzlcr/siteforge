@@ -25,7 +25,45 @@ const (
 	// 枚举到的子帧数对不上（典型成因：DOM 穿透失败时**跨源子帧会整个消失**，
 	// 而且没有任何别的声音）。取值的地方见 checkFrameCoverage。
 	DiagKindFrameBlind = "frame-blind"
+
+	// DiagKindTargetAmbiguous —— 比上面两条更重：连**页**都可能选错了。
+	// 没有任何页面目标报 visible，要观测的那个 tab 是「退回第一个」猜出来的
+	// （判据见 targets.go 的 pickActivePage）。
+	//
+	// 那两条说的是「某一帧没看清，其余部分是可信的」；这一条说的是「**整份模型
+	// 可能说的是另一个页**」—— 2026-09-16 真站实测，target=_blank 点开的新标签页
+	// 在可见性检查超时后就是这个状态，而 observe 照样返回一份完全合法、字段齐全、
+	// 退出码 0 的**另一个页**的模型（连 diagnostics 都是空的）。
+	DiagKindTargetAmbiguous = "target-ambiguous"
 )
+
+// targetDiagsFor 把「挑页面目标」的结果翻成诊断：**只有退回时才说话**。
+//
+// 「只在 Fallback 时说话」这个判据就是本次修正的全部内容，所以单独成一个函数：
+// 两个分支都能被直测（见 targets_test.go 的 TestTargetDiagsFor*），不必为了测它
+// 去伪造一个「所有页都不报 visible」的浏览器 —— 那个状态只能靠页面把主线程堵死、
+// 让 checkPageActive 超时来造（cmd 的 e2e 走的就是这条路，见 observe_e2e_test.go）。
+//
+// ⚠️ 「不说话」那半边同样是契约：模型里的 diagnostics 每一条都该指向**真问题**，
+// 常驻的警告等于没有警告（正常挑中页面时这里必须是 0 条）。
+func targetDiagsFor(ch TargetChoice) []Diagnostic {
+	if !ch.Fallback {
+		return nil
+	}
+	return []Diagnostic{{
+		Kind: DiagKindTargetAmbiguous,
+		// detail 要**可行动**：几个候选、为什么没挑出来、挑中的是哪个（ID + URL ——
+		// 只报 ID 的话人没法判断挑错没有）。
+		Detail: fmt.Sprintf("页面目标共 %d 个候选，没有一个报 visible（可能都是后台页，"+
+			"也可能可见性检查本身就失败了）—— 退回选中第一个：%s (%s)。"+
+			"这次观测的页面可能不是你要的那一个，用 cdp targets / cdp active <id> 确认并切换",
+			ch.Candidates, ch.ID, ch.URL),
+		// 这是「整个 tab 选错了」，不是「某一帧没取到」：帧路径按**主帧**记 ——
+		// 主帧就是 tab 的身份。⚠️ FramePath 不能留 nil：那是 JSON 里的 null，
+		// 而这一格是 []string（契约上各条诊断一律是数组，见 normalizeNilLists）。
+		FramePath: []string{mainFramePath},
+	}}
+}
 
 // frameEnumerationWait 是 GetFrameTreeWithEvents 的等待参数。
 //
@@ -80,6 +118,10 @@ func (c *Client) ObserveAll() (*PageModel, error) {
 	if err := c.observeInto(merged, tree, []string{mainFramePath}, true, seen); err != nil {
 		return nil, err
 	}
+	// 「挑中的页是猜的」这条在**合并之后补一条**，而且只补一条：它说的是「整个
+	// tab 可能选错了」，跟这次观测有几帧无关。逐帧那条路（observeFrame）刻意不发它
+	// —— 在这条链上 N 帧就是 N 条，消费者会以为有 N 个问题（见 Client.targetDiags）。
+	merged.Diagnostics = append(merged.Diagnostics, c.targetDiags...)
 	// 合并这条路**尤其**要归一化：merged 是 `&PageModel{}` 起的（五个切片全是 nil），
 	// 某一类一个元素都没并进来时 append 不改变 nil —— 实测 base.html 的
 	// option_groups / diagnostics 就是这样编成 null 的（见 normalizeNilLists）。
@@ -110,7 +152,7 @@ func (c *Client) observeInto(merged *PageModel, ft *page.FrameTree, path []strin
 		frameID = ""
 	}
 
-	m, err := c.Observe(frameID)
+	m, err := c.observeFrame(frameID)
 	if err != nil {
 		if isMain {
 			// 主帧取不到 = 这份观测整个没有意义，必须报错。

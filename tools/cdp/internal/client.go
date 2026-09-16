@@ -30,6 +30,14 @@ type Client struct {
 	frameCtxs map[cdp.FrameID]runtime.ExecutionContextID
 	// browser WebSocket URL for direct CDP access (iframe AX trees)
 	browserWSURL string
+	// targetDiags 是「这次连接挑中的页面是猜的」那条诊断（NewClient 按
+	// ChooseActivePageTarget 的 Fallback 决定一次，见 targetDiagsFor）。
+	//
+	// ⚠️ 发它的**位置**是刻意的：Observe（单帧）与 ObserveAll（整页）各发**一次**。
+	// ObserveAll 是逐帧调 observeFrame 的，若把这条塞进逐帧那条路，N 帧就是 N 条 ——
+	// 而这件事跟帧数无关（错的是整个 tab）。所以逐帧的 observeFrame 不发它，
+	// 由两个**入口**各自补一条。
+	targetDiags []Diagnostic
 }
 
 // FrameSnapshot captures the full state of a single frame.
@@ -92,16 +100,25 @@ func NewClient(host string, port int) (*Client, error) {
 		return nil, err
 	}
 
-	// Find the active page target
-	activeTargetID, err := GetActivePageTargetID(host, port)
+	// Find the active page target —— 拿的是**完整**的选择结果，不是裸 ID：
+	// 「一个报 visible 的都没有、这是退回第一个猜的」这件事必须能传到模型上
+	// （见 targetDiagsFor / DiagKindTargetAmbiguous）。
+	choice, err := ChooseActivePageTarget(host, port)
 	if err != nil {
 		return nil, err
 	}
 
 	allocCtx2, allocCancel2 := chromedp.NewRemoteAllocator(context.Background(), wsURL)
-	ctx2, cancel2 := chromedp.NewContext(allocCtx2, chromedp.WithTargetID(target.ID(activeTargetID)))
+	ctx2, cancel2 := chromedp.NewContext(allocCtx2, chromedp.WithTargetID(target.ID(choice.ID)))
 
-	return &Client{ctx: ctx2, cancel: cancel2, allocCancel: allocCancel2, frameCtxs: make(map[cdp.FrameID]runtime.ExecutionContextID), browserWSURL: wsURL}, nil
+	return &Client{
+		ctx:          ctx2,
+		cancel:       cancel2,
+		allocCancel:  allocCancel2,
+		frameCtxs:    make(map[cdp.FrameID]runtime.ExecutionContextID),
+		browserWSURL: wsURL,
+		targetDiags:  targetDiagsFor(choice),
+	}, nil
 }
 
 // -- Raw CDP over WebSocket (gobwas/ws) for OOPIF iframe AX trees --
