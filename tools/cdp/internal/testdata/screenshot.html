@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>screenshot 对齐夹具</title>
+<!--
+  ⚠️ 这一页是一把**尺子**，不是一张「难页面」。请勿为了好看改动这里的几何。
+
+  它钉住的是 `cmd/screenshot_test.go` 的那条断言链：
+
+      observe 的 bbox（CSS 像素，视口相对）
+        × dpr
+        = 截图上那个像素
+
+  这条链要能**真的红**，被测元素就得同时满足：
+
+    ① 位置/尺寸**已知且是整数** —— 所以是 position:absolute; left:40px; top:20px;
+       200×100。（绝对定位的包含块是初始包含块 = 视口，所以 rect 就是这组数，
+       与 body 的 margin 无关。）
+    ② 颜色**不寻常** —— 纯 rgb(255,0,255)：页面别处（白底）绝不会是这个色，
+       所以「取到的像素是它」这件事本身就说明映射落对了。
+    ③ **整块纯色、没有字** —— 按钮默认文字居中，一个黑色字形正好压在采样点上就会
+       把「映射错了」误判成「映射对了」。这里用 aria-label 标记身份、不放可见文本，
+       于是矩形内任意一点都是同一个颜色（测试因此能采多个点）。
+    ④ 必须进得了 observe 的 actions —— SEL 只认 a[href]/button/input/select/textarea/
+       [role=*]，纯粹的 div 是不报 bbox 的（这也是它是个 <button> 而不是 <div> 的原因）。
+    ⑤ 尺寸小、位置靠近原点 —— 这样「比例被忽略」（本该 ×2 却按 ×1 换算）时，
+       映射出来的点会掉到元素**外面**去，断言才会红；元素越大越靠右，
+       错一半的点反而还落在元素里，测试就废了。
+    ⑥ border/padding 归零、appearance 关掉 —— 否则按钮的总盒子不是 200×100，
+       ②③ 的整除性质就没了。
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: rgb(255, 255, 255); }
+  #magenta-cta {
+    position: absolute;
+    left: 40px;
+    top: 20px;
+    width: 200px;
+    height: 100px;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    appearance: none;
+    -webkit-appearance: none;
+    background-color: rgb(255, 0, 255);
+  }
+</style>
+</head>
+<body>
+  <!-- 200×100 @ (40,20)，纯 rgb(255,0,255)，无可见文字 ⇒ 矩形内处处同色 -->
+  <button id="magenta-cta" aria-label="magenta alignment probe"></button>
+</body>
+</html>
