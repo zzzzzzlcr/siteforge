@@ -148,6 +148,19 @@ func TestFindControlJS(t *testing.T) {
 	if !strings.Contains(js, "'no clickable control found'") {
 		t.Errorf("missing error message: %s", js)
 	}
+	// 第二趟判据（现代组件库的 ARIA 三件套）—— MUI / Ant / Radix 用 React 合成事件，
+	// 页面里没有 inline onclick，第①趟在它们身上恒为空。
+	for _, attr := range []string{"[role=combobox]", "[aria-haspopup]", "[aria-expanded]"} {
+		if !strings.Contains(js, attr) {
+			t.Errorf("missing modern control criterion %q: %s", attr, js)
+		}
+	}
+	// 顺序是判据的一部分：ARIA 那一趟必须在 onclick 那一趟**之后**问
+	// （先问老写法 → 老站点的命中与从前一模一样）。
+	if i, j := strings.Index(js, "[onclick*=\"toggle\"]"), strings.Index(js, "[role=combobox]"); i < 0 || j < 0 || i > j {
+		t.Errorf("ARIA 那一趟没有排在 onclick 那趟之后（onclick@%d aria@%d）—— "+
+			"顺序反了就等于把老站点的行为改掉了: %s", i, j, js)
+	}
 }
 
 func TestFindCustomOptionJS(t *testing.T) {
@@ -166,6 +179,24 @@ func TestFindCustomOptionJS(t *testing.T) {
 	}
 	if !strings.Contains(js, "r.width === 0") {
 		t.Errorf("missing zero-size skip: %s", js)
+	}
+	// 第二趟：菜单在 wrapper 外（Portal 形态）时，选项只能从**已展开的菜单容器**里找。
+	// 容器按角色认，不认 class（class 是框架生成物，改名/重渲染就换）。
+	for _, role := range []string{"[role=listbox]", "[role=menu]", "[role=dialog]"} {
+		if !strings.Contains(js, role) {
+			t.Errorf("missing menu container role %q: %s", role, js)
+		}
+	}
+	// ⚠️ 反向守卫：**不许**退化成整页 `*` 扫描。判据是「wrapper 子树那一趟必须
+	// 还在、且排在菜单那一趟之前」—— 只扫菜单会让经典自定义下拉（选项在 wrapper 里）
+	// 当场失效，而那条路是 57 个生产脚本在用。
+	wrapperScan := strings.Index(js, "__cdpQAIn(wrapper, '*')")
+	if wrapperScan < 0 {
+		t.Errorf("wrapper 子树那一趟（__cdpQAIn(wrapper, '*')）没了 —— 经典自定义下拉的选项就在 wrapper 里: %s", js)
+	}
+	if menuScan := strings.Index(js, "__cdpQA('[role=listbox]"); wrapperScan < 0 || menuScan < 0 || wrapperScan > menuScan {
+		t.Errorf("wrapper 那一趟没有排在菜单那一趟之前（wrapper@%d menu@%d）—— "+
+			"「wrapper 内优先、找不到再退到菜单」这个顺序就是判据的一部分: %s", wrapperScan, menuScan, js)
 	}
 }
 

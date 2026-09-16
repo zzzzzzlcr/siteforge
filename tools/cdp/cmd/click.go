@@ -82,6 +82,15 @@ func runClick(cmd *cobra.Command, args []string) error {
 			selector, result.Probe.MatchCount, result.Probe.MatchIndex+1, chosen.Describe(), state)
 	}
 
+	// 抬起被扣下时说清楚（JSON 里也有 release_withheld）—— 这一次点击只发出了
+	// 按下的那一半，页面收到的鼠标事件比从前少一个。那是刻意的（按下之后有东西盖上来，
+	// 见 client.go 的 dispatchMouseClick），但**不能说成一次普通点击**。
+	if result.ReleaseWithheld {
+		fmt.Fprintf(os.Stderr, "cdp click：**抬起已扣下** —— 按下之后落点换成了 %s，"+
+			"这一次 mouseup 没有发给它（那正是「下拉点开又自己关掉」的成因；"+
+			"菜单若由 mousedown 展开，此刻已经是开着的）\n", result.CoveredBy)
+	}
+
 	enc := json.NewEncoder(os.Stdout)
 	return enc.Encode(result)
 }

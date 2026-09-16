@@ -230,6 +230,19 @@ type ClickResult struct {
 	// 宁可不给，也不给一个看起来像答案的零值。
 	ProbeError string `json:"probe_error,omitempty"`
 
+	// ReleaseWithheld 说这次**抬起没有发**：按下之后，那个坐标上换了人
+	// （典型：mousedown 展开的下拉铺了一层 backdrop/菜单上来 —— 现代组件库的常态）。
+	//
+	// 为什么要有这个字段：扣下抬起 = 页面收到的鼠标事件比从前**少一个**。
+	// 那是有意的（见 client.go 的 dispatchMouseClick），但它必须**说出来** ——
+	// 不说的话，调用方拿到的是「exit 0 + 一对像样的坐标」，与一次普通点击长得一样，
+	// 而这次点击其实只发出了按下的那一半（MUI 的下拉正是靠 mousedown 展开的）。
+	// ⚠️ 它**不是失败**：真站实测里，那一半恰恰是「把菜单打开」的那一半。
+	ReleaseWithheld bool `json:"release_withheld,omitempty"`
+	// CoveredBy 是按下之后覆盖上来的那个元素（`<div class="MuiBackdrop-root">`）。
+	// 只在 ReleaseWithheld 时有值 —— 报告里要能回答「那一下本该点到谁身上」。
+	CoveredBy string `json:"covered_by,omitempty"`
+
 	// Probe 是探测的原始结果（含候选全表）。`json:"-"`：JSON 里只放上面那几个
 	// 扁平字段（agent 读的是那些），这张全表只给 Go 侧渲染人话那一行用。
 	Probe *ClickProbe `json:"-"`

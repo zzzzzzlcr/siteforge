@@ -264,7 +264,22 @@ func isNativeSelectJS(selector string) string {
 }
 
 // findControlJS generates JS to locate the clickable control inside a custom dropdown wrapper.
-// Searches for elements with onclick containing "toggle", "menu", or "open"; falls back to wrapper.
+//
+// 判据两趟（2026-09-16 真站实测补的第二趟）：
+//
+//	① inline 事件属性：`[onclick*="toggle"|"menu"|"open"]` —— 老站点（jQuery 时代）
+//	   的写法，**一字不改地留着**（57 个生产脚本靠它）
+//	② 现代组件库的 ARIA 三件套：`[role=combobox]` / `[aria-haspopup]` / `[aria-expanded]`
+//	   —— MUI / Ant / Radix 用 React 合成事件，**页面里根本没有 inline onclick**，
+//	   所以第①趟在它们身上恒为空。实测（gowizard 的 MUI 问卷）：`div[role=combobox]`
+//	   就带着 `aria-haspopup="listbox"` / `aria-expanded="false"`，一条都不想用，
+//	   于是每次都走下面「回退成 wrapper 自己」那条路 —— 真站上那次回退**恰好是对的**
+//	   （wrapper 里就一个 combobox），但那是运气，不是判据。
+//
+// 两趟**按顺序**问，不是合成一条选择器：合成会让老站点的命中与新站点的命中
+// 一起按文档序排，谁在前面取决于页面结构 —— 老行为就不再是原来那一个了。
+// 回退（wrapper 自己）保留：老站点还靠它，而且判据够不着时它仍是最后一条路。
+//
 // Returns bounding rect of the found control for DispatchMouseClick.
 func findControlJS(wrapperSelector string) string {
 	escaped := escapeJS(wrapperSelector)
@@ -272,6 +287,7 @@ func findControlJS(wrapperSelector string) string {
 		var wrapper = __cdpQ('%s');
 		if (!wrapper) return JSON.stringify({error: 'wrapper not found'});
 		var control = __cdpQIn(wrapper, '[onclick*="toggle"], [onclick*="menu"], [onclick*="open"]');
+		if (!control) control = __cdpQIn(wrapper, '[role=combobox], [aria-haspopup], [aria-expanded]');
 		if (!control) control = wrapper;
 		var r = control.getBoundingClientRect();
 		if (r.width === 0 || r.height === 0) return JSON.stringify({error: 'no clickable control found'});
@@ -279,33 +295,57 @@ func findControlJS(wrapperSelector string) string {
 	})()`, escaped))
 }
 
-// findCustomOptionJS generates JS to find a dropdown option by text match inside a wrapper.
-// Skips elements with zero bounding rect (display:none). Matches exact textContent.trim()
-// first, then falls back to substring match.
+// findCustomOptionJS generates JS to find a dropdown option by text match.
+//
+// 两趟（第二趟是 2026-09-16 真窗口实测补的）：
+//
+//	① **wrapper 子树** —— 经典自定义下拉：控件与选项在同一个盒子里，一字不改。
+//	② **已展开的菜单容器** —— 现代组件库把菜单 Portal 到 body，选项与 wrapper
+//	   **没有祖先关系**。实测 MUI Select 的选项祖先链：`li > ul[role=listbox] >
+//	   div.MuiPaper > div.MuiPopover-root > body` —— `liInsideWrap: false`。
+//	   第①趟在它身上**结构上就找不到**（不是「难找」，是「不在那棵树里」）。
+//
+// ⚠️ 第②趟**圈在菜单容器里**（`[role=listbox] / [role=menu] / [role=dialog]`），
+// 不是把整页 `*` 扫一遍：整页扫会把任何一段文本都当候选，点中的可能是页面上
+// **恰好也叫这个名字**的另一个东西 —— 那比找不到更坏（点错了还报成功）。
+// 容器由**角色**认（ARIA 不是框架生成物，改名/重渲染都不换），不认 class。
+//
+// 匹配规则两趟共用一份（精确优先、子串兜底、0×0 的跳过）—— 两份规则必然漂移，
+// 而「wrapper 里的选项按 A 规则找、菜单里的按 B 规则找」正是最难查的那种不一致。
 func findCustomOptionJS(wrapperSelector, optionText string) string {
 	escapedWrapper := escapeJS(wrapperSelector)
 	escapedOption := escapeJS(optionText)
 	return withPierce(fmt.Sprintf(`(function(){
 		var wrapper = __cdpQ('%s');
 		if (!wrapper) return JSON.stringify({error: 'wrapper not found'});
-		var all = __cdpQAIn(wrapper, '*');
-		var fallback = null;
-		for (var i = 0; i < all.length; i++) {
-			var el = all[i];
-			var r = el.getBoundingClientRect();
-			if (r.width === 0 || r.height === 0) continue;
-			var text = (el.textContent || '').trim();
-			if (text === '%s') {
-				return JSON.stringify({found: true, text: text, x: r.x, y: r.y, centerX: r.x+r.width/2, centerY: r.y+r.height/2, width: r.width, height: r.height});
+
+		function scan(list) {
+			var fallback = null;
+			for (var i = 0; i < list.length; i++) {
+				var el = list[i];
+				var r = el.getBoundingClientRect();
+				if (r.width === 0 || r.height === 0) continue;
+				var text = (el.textContent || '').trim();
+				if (text === '%s') return {r: r, text: text};
+				if (fallback === null && text.indexOf('%s') !== -1) fallback = {r: r, text: text};
 			}
-			if (fallback === null && text.indexOf('%s') !== -1) {
-				fallback = {el: el, r: r, text: text};
-			}
+			return fallback;
 		}
-		if (fallback !== null) {
-			var r = fallback.r;
-			return JSON.stringify({found: true, text: fallback.text, x: r.x, y: r.y, centerX: r.x+r.width/2, centerY: r.y+r.height/2, width: r.width, height: r.height});
+		function hit(h) {
+			if (h === null) return null;
+			var r = h.r;
+			return JSON.stringify({found: true, text: h.text, x: r.x, y: r.y, centerX: r.x+r.width/2, centerY: r.y+r.height/2, width: r.width, height: r.height});
 		}
+
+		var found = hit(scan(__cdpQAIn(wrapper, '*')));
+		if (found) return found;
+
+		var menus = __cdpQA('[role=listbox], [role=menu], [role=dialog]');
+		for (var m = 0; m < menus.length; m++) {
+			found = hit(scan(__cdpQAIn(menus[m], '*')));
+			if (found) return found;
+		}
+
 		return JSON.stringify({error: 'option not found: %s'});
 	})()`, escapedWrapper, escapedOption, escapedOption, escapedOption))
 }

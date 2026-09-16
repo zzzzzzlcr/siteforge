@@ -7,6 +7,7 @@ import (
 	"math"
 	mathrand "math/rand"
 	"net"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -981,23 +982,162 @@ func (c *Client) DispatchMouseScrollEventAt(x, y, deltaX, deltaY float64) error 
 	}))
 }
 
-// DispatchMouseClick dispatches mouse move, press, and release at (x, y).
-// MouseMoved must precede press+release so the browser synthesizes a proper
-// click event at the target coordinates.
+// ── 落点（landing）判定：按下与抬起之间，这个坐标上是不是**换了人** ──────────
+//
+// 为什么要这一层（2026-09-16 真窗口实测，gowizard 的 MUI 问卷）：
+//
+//	现代组件库的下拉在 **mousedown 就把菜单展开**（MUI 的 Select 在 mousedown 里
+//	setOpen(true)，React 同步重渲染、Portal 到 body），于是紧跟着的 `released`
+//	落在**刚出现的那一层**上 —— 那一层（backdrop / 菜单本身）常带「点外面就关掉」
+//	的处理器，于是**我们自己的抬起把刚打开的菜单又关掉**：点了没反应。
+//	实测：只发 mousedown → 菜单开着；moved→pressed→released 连着发 → 菜单被自己关掉。
+//
+// 判据是「**落点变了**」这件事本身，不是「等久一点希望它别变」：
+// 铺一层 backdrop 是**一帧之内**的事，press 与 release 之间 sleep 多久都拦不住 ——
+// 抬起的时候那层已经在了，落点仍然是它。所以这里**不靠时间**，靠**重新判落点**。
+//
+// 机制（按下之后重新做一次**浏览器自己的命中测试**）：
+//
+//	① 按下**之前**问一次：这个坐标上是哪个节点（frame + backendNodeId）
+//	② 发 MouseMoved + MousePressed（mousedown 的处理器在这里跑完，DOM 已经变了）
+//	③ 按下**之后**再问一次
+//	④ 两次是同一个节点 → 照常发 MouseReleased（正常点击，57 个生产脚本的路径）
+//	   换了人 → **扣下这次 released**：既不发给新落点，也不让浏览器把这次按下-抬起
+//	   合成为一个落在新元素上的 click（真站实测：那一下的 mouseup 落在新出现的
+//	   菜单项/backdrop 上，click 落在两者的公共祖先上 —— 两条都是「交给新落点」）
+//
+// 为什么用 `DOM.getNodeForLocation` 而不是自写 JS 命中测试：
+// 它就是**真实输入走的那条代码路**（同一套 HitTestResult），并且**穿 shadow DOM**
+// （`document.elementFromPoint` 返回的是 host，shadow 里的覆盖物它看不见 ——
+// cdp 全部力气都花在穿透上，这里不能瞎）。
+//
+// ⚠️ 判不出来时（点不在视口里、协议报错）**按老行为走**（不扣）：扣下抬起是
+// 「不把点击交给一个可疑的新落点」的保护，判不出来时凭据不足，不额外拿走一次点击。
+// 这条路径**不静默**：返回值里带着前后两次的落点描述（见 MouseClickOutcome）。
+type domHit struct {
+	FrameID   cdp.FrameID
+	BackendID cdp.BackendNodeID
+}
+
+// Empty 说这次命中测试**没拿到东西**（而不是「拿到一个空节点」）。
+func (h domHit) Empty() bool { return h.BackendID == 0 && h.FrameID == "" }
+
+// hitTestAt 问浏览器：这个坐标上现在是谁。第二个返回值为 false = 判不出来。
+func (c *Client) hitTestAt(x, y float64) (domHit, bool) {
+	var h domHit
+	ok := false
+	err := chromedp.Run(c.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		cc := chromedp.FromContext(ctx)
+		if cc == nil || cc.Target == nil {
+			return fmt.Errorf("invalid context")
+		}
+		exec := cdp.WithExecutor(ctx, cc.Target)
+		bID, fID, _, err := dom.GetNodeForLocation(int64(math.Round(x)), int64(math.Round(y))).Do(exec)
+		if err != nil {
+			return err
+		}
+		h, ok = domHit{FrameID: fID, BackendID: bID}, true
+		return nil
+	}))
+	if err != nil {
+		return domHit{}, false
+	}
+	return h, ok
+}
+
+// describeHit 把一次命中印成一行人话（`<div class="MuiBackdrop-root …">`）。
+//
+// 只在与「按下前」不同时才调（见 dispatchMouseClick）—— 那是罕见路径，
+// 多一次往返换「覆盖者是谁」这个**能查下去**的事实，值。
+// 取不到描述不算失败：交空串，落点身份本身已经在 MouseClickOutcome 里。
+func (c *Client) describeHit(h domHit) string {
+	var out string
+	_ = chromedp.Run(c.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		cc := chromedp.FromContext(ctx)
+		if cc == nil || cc.Target == nil {
+			return fmt.Errorf("invalid context")
+		}
+		exec := cdp.WithExecutor(ctx, cc.Target)
+		n, err := dom.DescribeNode().WithBackendNodeID(h.BackendID).Do(exec)
+		if err != nil || n == nil {
+			return err
+		}
+		var b strings.Builder
+		b.WriteString("<")
+		b.WriteString(strings.ToLower(n.NodeName))
+		for i := 0; i+1 < len(n.Attributes); i += 2 {
+			k, v := n.Attributes[i], n.Attributes[i+1]
+			if k != "id" && k != "class" && k != "role" {
+				continue
+			}
+			fmt.Fprintf(&b, " %s=%q", k, capRunes(v, 40))
+		}
+		b.WriteString(">")
+		out = b.String()
+		return nil
+	}))
+	return out
+}
+
+// MouseClickOutcome 是一次点击**后半段**的事实：这次抬起交给了谁。
+//
+// 为什么要把「扣下」这件事交出来：扣下抬起 = 页面收到的鼠标事件比从前少一个。
+// 那是有意的（见上），但**必须说出来** —— 本项目最贵的一类失败是「看起来成功了」：
+// 若回执里一个字都不提，调用方会以为这是一次普通的点击，而它其实只发出了按下的那一半。
+type MouseClickOutcome struct {
+	// ReleaseWithheld 说这次 MouseReleased **没有发**（落点换了人）。
+	ReleaseWithheld bool
+	// LandedBefore / LandedAfter 是按下前 / 按下后那个坐标上的节点。
+	LandedBefore string
+	LandedAfter  string
+}
+
+// DispatchMouseClick dispatches mouse move, press, and release at (x, y) —
+// 但**按下与抬起之间落点换了人时，抬起不发**（理由见 domHit 上面那一大段）。
+//
+// 回执（落点前后是谁、扣没扣）走 dispatchMouseClick；这个入口只报错，
+// 因为 57 个生产脚本与 form 侧的动作全都只关心「成没成」。
 func (c *Client) DispatchMouseClick(x, y float64) error {
+	_, err := c.dispatchMouseClick(x, y)
+	return err
+}
+
+// dispatchMouseClick 是 DispatchMouseClick 的实现，额外把落点判定的事实交出来。
+func (c *Client) dispatchMouseClick(x, y float64) (MouseClickOutcome, error) {
+	var out MouseClickOutcome
+
+	before, beforeOK := c.hitTestAt(x, y)
+
+	if err := c.dispatchMouseEvent(input.MouseMoved, x, y); err != nil {
+		return out, err
+	}
+	if err := c.dispatchMouseEvent(input.MousePressed, x, y); err != nil {
+		return out, err
+	}
+
+	after, afterOK := c.hitTestAt(x, y)
+	if beforeOK && afterOK && before != after {
+		out.ReleaseWithheld = true
+		out.LandedBefore = c.describeHit(before)
+		out.LandedAfter = c.describeHit(after)
+		return out, nil
+	}
+	return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
+}
+
+// dispatchMouseEvent 发一条鼠标事件（按下/抬起带左键与 clickCount=1）。
+func (c *Client) dispatchMouseEvent(typ input.MouseType, x, y float64) error {
 	return chromedp.Run(c.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		cc := chromedp.FromContext(ctx)
 		if cc == nil || cc.Target == nil {
 			return fmt.Errorf("invalid context")
 		}
 		exec := cdp.WithExecutor(ctx, cc.Target)
-		if err := input.DispatchMouseEvent(input.MouseMoved, x, y).Do(exec); err != nil {
-			return err
+		ev := input.DispatchMouseEvent(typ, x, y)
+		if typ != input.MouseMoved {
+			ev = ev.WithButton(input.Left).WithClickCount(1)
 		}
-		if err := input.DispatchMouseEvent(input.MousePressed, x, y).WithButton(input.Left).WithClickCount(1).Do(exec); err != nil {
-			return err
-		}
-		return input.DispatchMouseEvent(input.MouseReleased, x, y).WithButton(input.Left).WithClickCount(1).Do(exec)
+		return ev.Do(exec)
 	}))
 }
 
@@ -1229,8 +1369,17 @@ func (c *Client) clickAndReport(selector, frameID string, track bool, strict boo
 	// Always use mouse click - CDP dispatchTouchEvent does not synthesize
 	// click events, so touch-only dispatch breaks <a> navigation and most
 	// click handlers. Mouse events work on all device types via CDP.
-	if err := c.DispatchMouseClick(clickX, clickY); err != nil {
+	//
+	// ⚠️ 走 dispatchMouseClick（不是 DispatchMouseClick）：这里要拿到「抬起交没交给
+	// 新落点」那份事实，填进回执。少了它，「这次点击只发出了按下的那一半」在回执里
+	// 一个字都没有 —— 而那正是本项目最贵的一类失败（看起来成功了）。
+	outcome, err := c.dispatchMouseClick(clickX, clickY)
+	if err != nil {
 		return nil, fmt.Errorf("click failed: %w", err)
+	}
+	result.ReleaseWithheld = outcome.ReleaseWithheld
+	if outcome.ReleaseWithheld {
+		result.CoveredBy = outcome.LandedAfter
 	}
 
 	result.X = clickX
