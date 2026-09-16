@@ -139,6 +139,9 @@ def test_source_is_kept_when_there_is_a_plan():
     "浏览: 2",
     "成功条件URL: /news-feed,/welcome",
     "第 1 步要填邮编",
+    "评分 4.5 星",             # ← 裁定点名的反例：`.` 后面跟数字**不算**分隔符
+    "版本 1.2 的页面",
+    "见 3.4 节",
     "1) 这种是编号行",          # ← 反面：这个**该**被认出来，下面单独断言
 ])
 def test_prose_numbers_are_not_mistaken_for_steps(prose):
@@ -155,6 +158,71 @@ def test_round_count_line_is_not_step_thirty():
     assert [s.n for s in plan.steps] == [1, 2]
     assert 30 not in [s.n for s in plan.steps]
     assert "轮次: 30" in plan.raw
+
+
+# ── 行内编号：**成串（≥2 项）才认**（2026-09-17 裁定，收窄后的 (b)）────
+# 为什么：真描述里有一份是 `引导: 1.滚动到底部 2.点击Featured Titles …` ——
+# 步骤**挤在同一行**上。不认它，blinkist（多题问卷的旗舰例子）就掉进自由模式；
+# 无脑认它，`轮次: 30` / `评分 4.5 星` 这类就会被误吃。
+# 收窄的办法：**同一行至少两项**才当清单，且 `.` 后面跟着数字**不算**分隔符。
+def test_a_run_of_inline_items_on_one_line_is_split_into_steps():
+    plan = plan_mod.parse("引导: 1.滚动到底部 2.点击Featured Titles 3.等待3秒 4.点击Verity")
+    assert [(s.n, s.text) for s in plan.steps] == [
+        (1, "滚动到底部"), (2, "点击Featured Titles"),
+        (3, "等待3秒"), (4, "点击Verity")]
+
+
+def test_inline_items_keep_their_wording_verbatim():
+    text = "引导: 1.滚动到底部 2.点击Featured Titles 3.等待3秒 4.点击Verity"
+    plan = plan_mod.parse(text)
+    for s in plan.steps:
+        assert s.text in text           # 逐字 —— 不摘要、不合并、不重排
+    assert plan.raw == text             # raw 照旧是**整行原文**
+
+
+def test_a_lone_inline_item_is_not_a_step():
+    """**单独一个数字不算** —— 判据要「成串」才认（这保住了原来那个锚的作用）。"""
+    assert plan_mod.parse("引导: 1.滚动到底部").steps == []
+    assert plan_mod.parse("引导: 只有 1、这么一条").steps == []
+    assert plan_mod.parse("引导: 1.滚动到底部").source == ""
+
+
+def test_a_lone_inline_item_is_not_a_step_even_beside_other_steps():
+    """这一条**不许靠 `MIN_STEPS` 兜**。
+
+    上面那条只有一行，就算那一项被误认成步骤，总数也凑不够 `MIN_STEPS` ——
+    于是门槛会把它吞掉，测试照样绿，**判据却没被钉住**。
+    这里旁边放两个**行首**步骤，把总数顶过门槛：那一项要是被认出来，就会多出第三步。
+    """
+    plan = plan_mod.parse("1.点 A\n2.点 B\n引导: 1.只此一条")
+    assert [(s.n, s.text) for s in plan.steps] == [(1, "点 A"), (2, "点 B")]
+
+
+def test_inline_items_may_use_the_other_two_separators():
+    plan = plan_mod.parse("引导: 1、点 A 2) 点 B")
+    assert [(s.n, s.text) for s in plan.steps] == [(1, "点 A"), (2, "点 B")]
+
+
+def test_a_run_may_start_the_line_too():
+    plan = plan_mod.parse("1.点 A 2.点 B")
+    assert [(s.n, s.text) for s in plan.steps] == [(1, "点 A"), (2, "点 B")]
+
+
+def test_a_dot_followed_by_a_digit_is_not_a_separator():
+    """裁定：边界要严 —— `评分 4.5 星` 里的 `4.` **不许**被当成第 4 步。"""
+    assert plan_mod.parse("评分 4.5 星\n版本 1.2").steps == []
+
+
+def test_a_decimal_inside_a_step_text_survives():
+    """小数不许被切开：这是**行首**编号的一行，正文里的 `4.5` 是正文。"""
+    plan = plan_mod.parse("1.填 A\n2.评分 4.5 星")
+    assert [(s.n, s.text) for s in plan.steps] == [(1, "填 A"), (2, "评分 4.5 星")]
+
+
+def test_a_decimal_does_not_become_a_step_inside_a_run():
+    """成串的那一行里，小数照样不算一项。"""
+    plan = plan_mod.parse("引导: 1.点 A 2.点 B")
+    assert [s.n for s in plan.steps] == [1, 2]
 
 
 # ── 判据 6：Plan 里不许有「期望步数」（§2.2：步数不是结构）────────────
@@ -429,24 +497,37 @@ def test_blinkist_fixture_raw_keeps_every_constraint_line():
 
 
 def test_blinkist_fixture_constraints_are_not_steps():
-    """`禁止点击: …` / `轮次: 30` / `浏览: 2` 都不是步骤 —— 但它们都在 raw 里。"""
+    """`禁止点击: …` / `轮次: 30` / `浏览: 2` 都不是步骤 —— 但它们都在 raw 里。
+
+    ⚠️ 这条**不是**「这些值不许出现在步骤里」那种弱断言：
+    步骤号现在确实是 1/2/3/4，所以「`2` 不在号里」已经不成立了 ——
+    约束由**更强**的两条钉子承重：步骤正文**逐字等于那 4 条**（下面那条测试），
+    以及这里逐行断言约束正文没被读成步骤、`轮次: 30` 没变成第 30 步。
+    """
     plan = plan_mod.parse(BLINKIST.read_text(encoding="utf-8"))
     texts = [s.text for s in plan.steps]
     numbers = [s.n for s in plan.steps]
     assert not any("禁止点击" in t for t in texts)
     assert not any("轮次" in t for t in texts)
     assert not any("浏览" in t for t in texts)
-    assert 30 not in numbers and 2 not in numbers
+    assert not any("成功条件" in t for t in texts)
+    assert 30 not in numbers                    # `轮次: 30` 不是第 30 步
+    assert 2 not in texts                       # `浏览: 2` 的值没变成一步正文
+    assert numbers == [1, 2, 3, 4]
 
 
-def test_blinkist_fixture_yields_no_plan_under_the_line_anchored_rule():
-    """真数据在**行首编号**这条判据下的实际结果：0 步 → 自由模式。
+def test_blinkist_fixture_parses_4_inline_steps():
+    """裁定后（2026-09-17）：`引导:` 那一行上的 4 条**行内编号**成串 → 拆成 4 步。
 
-    这一条钉的是**真文件此刻的样子**，不是「blinkist 不该有计划」。
-    文件若换成一行一个编号（`1.滚动到底部` 各占一行），结果就该变成 4 步 ——
-    那时这条测试要跟着改，`source` 也会变成 `goal`。
+    这一条钉的是**真文件此刻的样子**：4 条挤在同一行上，所以走的是**行内**那条路；
+    `raw` 照旧是整份原文（那一行原样在里头）。
     """
-    plan = plan_mod.parse(BLINKIST.read_text(encoding="utf-8"))
-    assert plan.steps == []
-    assert plan.source == ""
-    assert plan.actionable() is False
+    raw = BLINKIST.read_text(encoding="utf-8")
+    plan = plan_mod.parse(raw)
+    assert [(s.n, s.text) for s in plan.steps] == [
+        (1, "滚动到底部"), (2, "点击Featured Titles"),
+        (3, "等待3秒"), (4, "点击Verity")]
+    assert plan.source == "goal"
+    assert plan.actionable() is True
+    assert plan.raw == raw
+    assert "引导: 1.滚动到底部 2.点击Featured Titles 3.等待3秒 4.点击Verity" in plan.raw
