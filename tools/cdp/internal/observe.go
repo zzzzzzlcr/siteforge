@@ -144,7 +144,29 @@ func observeJS() string {
     var t = stack[0];
     return t ? (t.tagName.toLowerCase() + (t.id ? '#' + t.id : '')) : 'unknown';
   }
-  var RAND = /(^|[-_])[0-9a-f]{8,}($|[-_])|^[a-z]*\d{6,}$/i;
+  // 随机 token 判据（规格 §4.3；真站校准 = R5）。三种形态，任一命中即算随机：
+  //   ① 被 -/_ 或串首尾夹住的 ≥8 位 hex 片段             a1b2c3d4e5f6 ／ id_9f8e7d6c5b4a
+  //   ② 被 -/_ 或串首尾夹住的「可选字母前缀 + ≥6 位数字」  x1234567890 ／ css-x1234567890
+  //   ③ 被 -/_ 或串首尾夹住、≥5 位、字母与数字**来回交替 ≥2 次**
+  //                                                        css-1x2y3z4 ／ 1x2y3z4
+  // ③ 是这一版补的（任务 5 修复轮 1）：brief 把 css-1x2y3z4 当随机 hash 的字面例子，
+  // 而原先两道形态都够不着它 —— ①要 hex ≥8 位（7 位且含 x/y/z 直接出局）、
+  // ②要整串无 "-"（css- 前缀挡死）。漏判的后果不是「少一条兜底」而是
+  // **hash 直接当上首选选择器**（button.css-1x2y3z4），被 agent 抄进 py，
+  // 站点下次发版 hash 重算即断 —— 规格 D3 说这正是 py 准不准的头号因素。
+  //
+  // ③ 的「交替 ≥2 次」不是为了绣花，是为了**不误伤正常类名**：正常类名的数字
+  // 只有三种落法，都不产生「字母→数字→字母」的来回 ——
+  //   无数字        btn-primary / hero-banner / form-control
+  //   数字自成一段   col-md-6 / icon-24 / p-4
+  //   数字在词尾     step1 / section1 / text-2xl（且 text-2xl 的 2xl 只有 3 位，另有长度地板）
+  // 双向都被 observe_selector_test.go 钉住（正向「该抓的抓到」+ 反向「不该抓的别抓」）。
+  //
+  // 已知遗漏（留给 R5 用真站样本校准，别当成"已完备"）：
+  //   全字母 hash（styled-components 的 sc-bdVaJa）与只翻转一次的 hash（css-abcdefg1）
+  //   仍认不出 —— 前者没有数字可认，后者要放宽「交替 ≥2 次」就会开始误伤 section1 那一家。
+  //   （注意本文件是 Go 的裸字符串字面量：注释里**不能出现反引号**。）
+  var RAND = /(^|[-_])[0-9a-f]{8,}($|[-_])|(^|[-_])[a-z]*\d{6,}($|[-_])|(^|[-_])(?=[a-z0-9]{5,}($|[-_]))[a-z0-9]*([a-z][0-9]+[a-z]|[0-9][a-z]+[0-9])[a-z0-9]*($|[-_])/i;
   function pathSel(el) {
     var parts = [], n = el, hops = 0;
     while (n && n.tagName && hops < 4 && n.parentElement) {
@@ -160,7 +182,10 @@ func observeJS() string {
   function candidates(el) {
     var out = [];
     if (el.id && !RAND.test(el.id)) out.push('#' + el.id);
-    if (el.name) out.push(el.tagName.toLowerCase() + '[name="' + el.name + '"]');
+    // name 也要过 RAND（修复轮 1）：它是四个落点里**唯一**原先没过的一道 ——
+    // 随机 name（如 sid_9f8e7d6c5b4a，RAND 形态①本来就认得）会直接当上首选、
+    // 且判据里 [name= 落进 high 分支 → 判据明写 high 须「不含随机 hash」。
+    if (el.name && !RAND.test(el.name)) out.push(el.tagName.toLowerCase() + '[name="' + el.name + '"]');
     ['data-testid', 'data-test', 'data-id', 'data-value'].forEach(function (a) {
       var v = el.getAttribute && el.getAttribute(a);
       if (v && !RAND.test(v)) out.push(el.tagName.toLowerCase() + '[' + a + '="' + v + '"]');

@@ -25,19 +25,30 @@
 | `Stable Id` / `B stable name` / `C data-testid` | 稳定 id / name / data-* | 首选即它、`high` |
 | `Full` | 五种标识俱全 | 候选顺序 id > name > data-* > class，且去重 |
 | `L pure id` | 只有 id | 首选 `#pure-id`、`high`，**alternates 空** |
-| `D hash7` (`css-1x2y3z4`) | 7 位 base36 hash（emotion 那类形态，**未在真站核实**，R5） | ⚠️ **首选就是它、medium** —— RAND 漏网，见下 |
+| `D hash7` (`css-1x2y3z4`) | 7 位 base36 hash（emotion 那类形态，**未在真站核实**，R5） | 被 RAND **形态③** 滤掉，退化成结构路径（修复轮 1 之前是「首选就是它、medium」） |
 | `E hash8` (`css-1a2b3c4d`) | 8 位纯 hex hash | 被 RAND 滤掉，退化成结构路径 |
 | `F stable class` | 稳定语义 class | `button.btn.btn-primary`、`medium` |
 | `G deep path no id` | 4 段结构路径 | `low`（pathSel 上限 4 跳） |
 | `H deep under stable id` | 4 段、表头是祖先 id | **`high`** —— 与 G 只差一个表头，见下 |
-| `I plain button` | 裸 `<button>` | `body:nth-of-type(1) > button:nth-of-type(6)`、`medium` |
+| `I plain button` | 裸 `<button>` | `body:nth-of-type(1) > button:nth-of-type(k)`、`medium` |
 | `J random id` / `K random tid` | 随机 id / 随机 data-* | 被 RAND 滤掉（`id` / `data-*` 两路都过了 RAND） |
-| `K random name` (`sid_9f8e7d6c5b4a`) | 随机 name | ⚠️ **首选就是它、`high`** —— `name` 那一路没走 RAND |
+| `K random name` (`sid_9f8e7d6c5b4a`) | 随机 name | 被 RAND 滤掉（修复轮 1 之前**没走 RAND**、直接当首选且 `high`） |
+| `M btn-primary` … `M text-2xl`（7 个） + `M name step2` | **正常类名/name**（反向边界） | 仍被采用（`button.<class>` / `input[name=]`）—— 放宽 RAND 时最容易被静默误伤的那一家 |
 
-⚠️ 上表里带 ⚠️ 的两行是 Task 5 **报出来的真发现**（不是 fixture 写错了）：
-`TestObserveSelectorRandomHashClassNotPreferred` 因此**当前是红的**，
-原委、实测输出与修法建议见 `.superpowers/sdd/2026-09-16-tool-layer-observe/task-5-report.md`。
-改 fixture 之前先读那份报告 —— 别把这两条擦掉，那正是这一轮要留住的信息。
+### 修复轮 1（RAND 放宽）：两个方向都必须钉住
+
+Task 5 首轮报出的真发现是 **RAND 够不着 `css-1x2y3z4` 这类 6~7 位 base36 hash**，
+且 `name` 是四个落点里唯一没过 RAND 的。控制器裁定「修实现，不改测试」，修法是
+给 RAND 加**形态③**（字母与数字来回交替 ≥2 次的片段）+ 给 `name` 补 `!RAND.test`。
+
+⚠️ 但放宽 RAND 有**反向**风险：开始静默拒绝正常类名（`btn-primary` / `col-md-6` /
+`step1` 这类），那会让 stability 全面变差且**不报任何错**。所以 fixture 里有上表最后
+一行的七个类名 + 一个 name，专门守这一半 —— `TestObserveSelectorLegitTokensNotRejected`。
+**改 RAND 时两条测试都要看**：一条管「该抓的抓到」，一条管「不该抓的别抓」。
+
+原委、逐条实测与变异验证见
+`.superpowers/sdd/2026-09-16-tool-layer-observe/task-5-report.md`（该目录 gitignore，
+所以关键结论都留在本文件与 `observe_selector_test.go` 的注释里）。
 
 ## ⚠️ `outer.html` 的 iframe 是硬编码端口，测试在**服务层**改写它
 

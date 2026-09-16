@@ -34,6 +34,26 @@
 <!-- ── 3. 稳定语义 class（非 hash）→ medium ──────────────────────────── -->
 <button class="btn btn-primary">F stable class</button>
 
+<!-- ── 3b. 反向边界：这些类名**不得**被判成随机 token ──────────────────
+     RAND 放宽（形态③：字母数字来回交替 ≥2 次）时最容易的翻车方式是
+     **静默开始拒绝正常类名** —— 那会让 stability 全面变差、agent 选错。
+     下面七个覆盖三个家族，每个元素**只带一个** class，好让「class 候选还在不在」
+     一眼可判（selector 是不是 `button.<class>`）：
+       无数字        btn-primary / hero-banner
+       数字自成一段   col-md-6 / icon-24
+       数字在词尾     step1 / section1 / text-2xl   ← 形态③ 的「交替 ≥2 次」专为这一家 -->
+<button class="btn-primary">M btn-primary</button>
+<button class="hero-banner">M hero-banner</button>
+<button class="col-md-6">M col-md-6</button>
+<button class="icon-24">M icon-24</button>
+<button class="step1">M step1</button>
+<button class="section1">M section1</button>
+<button class="text-2xl">M text-2xl</button>
+
+<!-- 3c. 反向边界（name 落点）：词尾带数字的 name 也不得被判随机 ——
+     修复轮 1 给 name 补了 RAND，这道防线同样要有反向的一半 -->
+<input name="step2" type="text" placeholder="M name step2">
+
 <!-- ── 4. 深层结构路径：4 段（3 个 >）→ low ──────────────────────────
      每一层都是它父节点下**唯一**的同标签子元素，所以 nth-of-type 全是 (1)，
      选择器完全确定：section(1) > article(1) > div(1) > button(1) -->

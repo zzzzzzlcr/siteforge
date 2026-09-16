@@ -352,28 +352,29 @@ func TestObserveSelectorRandomTokensNotPreferred(t *testing.T) {
 	}
 }
 
-// ⚠️ 这一条**当前是红的**，而且是有意留红 —— 它是本任务报出来的真发现，不是待修的测试。
+// 这一条在**修复轮 1 之前是红的** —— 那是本任务报出来的真发现，控制器裁定
+// 「修实现，不改测试」，于是它现在是**修好之后的那道闸**：将来谁把 RAND 或
+// candidates() 的过滤退回原样，它必须立刻再红（实测见报告「修复轮 1」）。
 //
-// 两个漏网点（都在 candidates() 里，实测输出见 task-5-report.md）：
+// 原先的两个漏网点（都在 candidates() 里）：
 //
 //  1. **7 位 base36 class 漏网**：`class="css-1x2y3z4"` 是 emotion / MUI v5 那类
 //     CSS-in-JS 的输出形态（murmur2 → toString(36)，通常 6~7 位。⚠️ 这句「6~7 位」
 //     是本仓的既有知识，**没在真站上核实过** —— 那是规格 R5 的活；能核实的是另一半：
 //     brief 把 `css-1x2y3z4` 当成随机 hash 的字面例子，而 RAND 不认它）。
-//     形态①要求 hex 片段 **≥8 位**，7 位 base36 永远够不着；形态②要求整串无 `-`，
+//     原形态①要求 hex 片段 **≥8 位**，7 位 base36 永远够不着；原形态②要求整串无 `-`，
 //     `css-` 前缀又挡一道。后果：首选变成 `button.css-1x2y3z4`、stability=**medium**
 //     （走 `/^[a-z]+\.[a-z]/` 那条分量分支），而判据说「依赖随机 class hash」该给 low。
 //     D3 写着「选择器是 py 准不准的头号因素」—— agent 会把这个 hash 抄进 py 脚本，
-//     站点下次发版就断。
+//     站点下次发版就断。**修法**：RAND 加形态③（字母与数字来回交替 ≥2 次的片段）。
 //
-//  2. **name 那一行没有过 RAND**：`if (el.name) out.push(...)`（observe.go:163）
-//     是四个落点里唯一没做 `!RAND.test(v)` 的。`name="sid_9f8e7d6c5b4a"` 这种
-//     `_` 夹住的 12 位 hex，RAND 自己是**认得**的（形态①），只是没人问它 ——
-//     首选成了 `input[name="sid_9f8e7d6c5b4a"]` 且 stability=high。
+//  2. **name 那一行没有过 RAND**：`if (el.name) out.push(...)` 是四个落点里唯一
+//     没做 `!RAND.test(v)` 的。`name="sid_9f8e7d6c5b4a"` 这种 `_` 夹住的 12 位 hex，
+//     RAND 自己是**认得**的（形态①），只是没人问它 —— 首选成了
+//     `input[name="sid_9f8e7d6c5b4a"]` 且 stability=high。**修法**：那一行补 `!RAND.test`。
 //
-// 按控制器的规矩：**不把期望改小去迁就实现**。要么修 candidates()/RAND，
-// 要么由规格侧明确裁定「7 位 base36 不算随机」—— 但那是改判据，得留痕，
-// 不该由写测试的人悄悄改。
+// ⚠️ 放宽 RAND 的另一半风险在**反向**：不能开始拒绝正常类名。那半边由
+// `TestObserveSelectorLegitTokensNotRejected` 守着 —— 两条是一对，别只留一条。
 func TestObserveSelectorRandomHashClassNotPreferred(t *testing.T) {
 	m := selectorFixture(t)
 
@@ -382,7 +383,7 @@ func TestObserveSelectorRandomHashClassNotPreferred(t *testing.T) {
 			name: "7 位 base36 class（emotion / MUI 的实际形态）", elemText: "D hash7", token: "css-1x2y3z4",
 			act: actionByText(t, m, "D hash7"),
 			whyRand: "emotion 的 `css-` + murmur2→toString(36)，通常 6~7 位；" +
-				"形态①要 hex ≥8 位、形态②要整串无 `-`，两道都够不着",
+				"形态①要 hex ≥8 位、形态②要整串无 `-`，两道都够不着 —— 靠新增的形态③认出来",
 		},
 	}
 	for _, c := range cases {
@@ -390,13 +391,61 @@ func TestObserveSelectorRandomHashClassNotPreferred(t *testing.T) {
 	}
 
 	// name 这一路：元素自身没有 id / data-* / class，首选只可能来自 name。
-	// 若实现按判据过滤，它会退化成结构路径。
+	// 过滤掉随机 name 之后必须**退化成结构路径**（不是变成别的随机串，
+	// 也不是把这条元素整个丢掉）—— 所以这里断言正面的结果，不只是「没有 token」。
 	const nameToken = "sid_9f8e7d6c5b4a"
 	requireTokenCarriedBy(t, "K random name", nameToken)
 	nf := fieldByPlaceholder(t, m, "K random name")
 	if strings.Contains(nf.Selector, nameToken) {
 		t.Errorf("name 里带随机 token 时首选仍是它（%q，stability=%q）—— candidates() 对 id/data-*/class 都过了 RAND，"+
-			"`if (el.name)` 这一行没有，是漏网点。该 token = `_` 夹住的 12 位 hex（RAND 形态①，RAND 自己是认得的）",
+			"`if (el.name)` 这一行也要过。该 token = `_` 夹住的 12 位 hex（RAND 形态①，RAND 自己是认得的）",
 			nf.Selector, nf.Stability)
 	}
+	if !strings.HasPrefix(nf.Selector, "body:nth-of-type(1) > input:nth-of-type(") {
+		t.Errorf("随机 name 被滤掉后应退化成结构路径，实际 %q —— 要么没滤干净，要么把元素丢了", nf.Selector)
+	}
+	t.Logf("K random name：selector=%q stability=%q（随机 name 被 RAND 滤掉 → 退回结构路径）",
+		nf.Selector, nf.Stability)
+}
+
+// ── 反向边界：**不该抓的别抓** ───────────────────────────────────────────
+//
+// 控制器（修复轮 1）点名要求的一半，而且**比正向那半更重要**：放宽 RAND 最容易的
+// 翻车方式是**静默开始拒绝正常类名**（`btn-primary` / `col-md-6` / `hero-banner` 这类）——
+// 那会让 stability 全面变差、直接影响 agent 的选择，而且不会有任何报错。
+//
+// 覆盖正常类名里数字的三种落法（RAND 形态③的「交替 ≥2 次」正是按这三种设计的）：
+//
+//	无数字        btn-primary / hero-banner
+//	数字自成一段   col-md-6 / icon-24
+//	数字在词尾     step1 / section1 / text-2xl
+//
+// 断言「class 候选还在」= selector 恰好是 `button.<class>`：被误判的话 class 会被
+// 丢掉，selector 会变成结构路径（`body:nth-of-type(1) > button:nth-of-type(k)`），
+// 这条断言就会红 —— 两种形态差得很远，不会看不出来。
+func TestObserveSelectorLegitTokensNotRejected(t *testing.T) {
+	m := selectorFixture(t)
+
+	classes := []string{"btn-primary", "hero-banner", "col-md-6", "icon-24", "step1", "section1", "text-2xl"}
+	for _, cls := range classes {
+		a := actionByText(t, m, "M "+cls)
+		if a.Selector != "button."+cls {
+			t.Errorf("正常类名 %q 被判成了随机 token（selector=%q，stability=%q）—— "+
+				"class 候选被丢掉、退化成结构路径。放宽 RAND 时这是最容易的翻车方式",
+				cls, a.Selector, a.Stability)
+			continue
+		}
+		if a.Stability == "low" {
+			t.Errorf("正常类名 %q 的 stability = low —— 它不该与「依赖随机 hash」同档", cls)
+		}
+	}
+
+	// name 落点同样要有反向的一半：修复轮 1 给 name 补了 RAND，
+	// 词尾带数字的 name（`step2`）不得被连带判成随机。
+	f := fieldByPlaceholder(t, m, "M name step2")
+	if f.Selector != `input[name="step2"]` {
+		t.Errorf("正常 name %q 被判成了随机 token（selector=%q）—— name 落点补 RAND 时误伤了词尾数字",
+			"step2", f.Selector)
+	}
+	t.Logf("反向边界：7 个正常类名 + 1 个正常 name 全部仍被采用（selector=button.<class> / input[name=] ）")
 }
