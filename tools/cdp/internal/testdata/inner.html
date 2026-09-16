@@ -1,0 +1,8 @@
+<!doctype html><html><head><meta charset="utf-8"><title>R3 inner</title></head>
+<body style="margin:0;padding:10px"><div id="ihost"></div>
+<script>
+var f = '<div class="card" id="lead-card">\n  <h3>Get your free quote</h3>\n  <label for="fn">First Name</label><input id="fn" name="firstName" type="text" placeholder="First Name" required>\n  <label for="ph">Phone</label><input id="ph" name="phone" type="tel" placeholder="Phone">\n  <label for="st">State</label>\n  <select id="st" name="state"><option value="">Choose</option><option value="GA">Georgia</option><option value="CA">California</option></select>\n  <div class="opts" id="shower-opts">\n    <button type="button">Tub to walk-in shower</button>\n    <button type="button">I need help deciding</button>\n  </div>\n  <button id="submit" type="submit">Get My Quote</button>\n</div>\n';
+var r = document.getElementById('ihost').attachShadow({mode:'open'});
+r.innerHTML = '<div id="wrap2"><div id="ihost2"></div></div>';
+r.getElementById('ihost2').attachShadow({mode:'open'}).innerHTML = f;
+</script></body></html>

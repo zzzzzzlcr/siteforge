@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><title>R3 shadow</title></head>
+<body style="font-family:sans-serif;padding:20px;margin:0">
+<h1>Shadow 表单页</h1>
+<div id="host1"></div>
+<script>
+var f = '<div class="card" id="lead-card">\n  <h3>Get your free quote</h3>\n  <label for="fn">First Name</label><input id="fn" name="firstName" type="text" placeholder="First Name" required>\n  <label for="ph">Phone</label><input id="ph" name="phone" type="tel" placeholder="Phone">\n  <label for="st">State</label>\n  <select id="st" name="state"><option value="">Choose</option><option value="GA">Georgia</option><option value="CA">California</option></select>\n  <div class="opts" id="shower-opts">\n    <button type="button">Tub to walk-in shower</button>\n    <button type="button">I need help deciding</button>\n  </div>\n  <button id="submit" type="submit">Get My Quote</button>\n</div>\n';
+var r1 = document.getElementById('host1').attachShadow({mode:'open'});
+r1.innerHTML = '<div id="wrap" style="padding:20px"><h2>Step 1</h2><div id="host2"></div></div>';
+var r2 = r1.getElementById('host2').attachShadow({mode:'open'});
+r2.innerHTML = f;
+</script></body></html>
