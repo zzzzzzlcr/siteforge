@@ -169,9 +169,10 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
 {
   "url": "https://...",
   "title": "...",
-  "env": { "proxy_country": "US", "dpr": 1, "ua": "...", "viewport": [1280, 800] },
-  "platform": { "guess": "salesforce-lightning", "confidence": 0.9,
-                "evidence": ["lightning-* 自定义元素", "aura 命名空间"] },
+  // ⚠️ 这里**没有** env / platform —— 终审（2026-09-16）发现规格曾写了它们：
+  //   · platform.guess + confidence 与 fields[].maps_to 是**认知**，而 D11 恰恰禁止 observe 输出认知
+  //   · env（代理国家/DPR/UA/视口）已由 §5.3 分配给 py 的 PROVENANCE 块，**在生成时**写入
+  //   所以是**改规格**，不是给 observe 加字段。
   "page_text": "归一化后的前 600 字（与 py 里 page_signature() 同口径）",
   "obstructions": [                    // 只装**页面上的**遮挡物
     { "kind": "cookie-banner", "selector": "#onetrust-banner",
@@ -204,7 +205,7 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
   "fields": [
     { "selector": "input#firstName", "alternates": ["input[name=firstName]"],
       "stability": "high", "label": "First Name", "hint": "firstName",
-      "type": "text", "required": true, "maps_to": "first_name" }
+      "type": "text", "required": true }   // 无 maps_to：字段语义映射是认知（D11）
   ],
   "option_groups": [
     { "scope": "chooseOption__list", "role": "option",
@@ -266,7 +267,7 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
 
 | 评级 | 判据 |
 |---|---|
-| `high` | 有稳定 `id` / `name` / `data-*`，且不含随机 hash；或文本全局唯一 |
+| `high` | 有稳定 `id` / `name` / `data-*`，且不含随机 hash。<br>⚠️ **「或文本全局唯一」这半条至今未实现**（终审 2026-09-16 发现；`stability()` 里没有它）。影响低 —— §5.1b 的 `near`/`text` 阶梯覆盖了这个场景 —— 但**记下来，别留一句代码不认的规格** |
 | `medium` | 文本唯一但选择器依赖结构（`nth-of-type` 链 ≤ 3 层） |
 | `low` | 依赖随机 class hash / 深结构路径 > 3 层 / 文本不唯一 |
 
