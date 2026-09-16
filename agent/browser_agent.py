@@ -67,12 +67,23 @@ Task 1 的 spike 证明了模型**肯**调工具（24 跑 0 编造、47 次真 o
 （主帧 = `""`，见那个函数的 docstring：以**模型真给的那个参数**为准，因为 cdp 就是拿它去
 那一帧里解析选择器的），产物在 click / form 时把它交给 `cdp --frame-id`。
 
-⚠️ 有三处**已知有损**，不藏着：① `scroll` 工具是「把元素滚进视口」，而骨架的 scroll 是
-像素滚动（没有「滚到某个元素」这一档），重放只能滚一屏 —— 每次都会在 `notes` 里说出来；
-② 字段的 `source`（form-file 的键）与 `fallback` 是按**标签文字猜的**，猜不准时宁可给
-保守的随机值，也不编一个假的值；③ **嵌了两层以上的子帧**表达不了（`_frame_id_of_path`
-的第三种形状）—— cdp 换坐标只补目标帧 owner 那一层的原点，中间几层没人补，所以那种
-target 会退回主帧（够不着 = 老老实实失败）而不是拿一个会**点偏**的帧号去试。
+⚠️ 有四处**已知有损**，不藏着：① 字段的 `source`（form-file 的键）与 `fallback` 是按
+**标签文字猜的**，猜不准时宁可给保守的随机值，也不编一个假的值；② **嵌了两层以上的子帧**
+表达不了（`_frame_id_of_path` 的第三种形状）—— cdp 换坐标只补目标帧 owner 那一层的原点，
+中间几层没人补，所以那种 target 会退回主帧（够不着 = 老老实实失败）而不是拿一个会**点偏**
+的帧号去试；③ **`goto` 的帧**没进账本（MCP 的 `goto` 也收 `frame_id`，但重放那条路
+只导航主帧）；④ `wait` 只有「等一会儿」这一种形状（页面上没有可判断的「加载完成」信号）。
+
+### `scroll` 这一步：两边口径已经对齐（2026-09-17 第二轮改）
+
+**原先这里写着「工具是滚到某个元素、骨架是滚多少像素，重放只能滚一屏」—— 那句话是错的**，
+而且正是它让产物发了一条**永远跑不通**的命令：产物拿 `pixels`（`"400"`）当选择器喂给
+`cdp scroll`，而 CLI 的位置参数**是选择器**（`scroll [selector]`）——
+真窗口实测 `cdp scroll 400` → `Error: scroll mouse wheel failed: element not found`。
+
+现在：账本里这一步就是**它的元素**（`target.selectors` + `target.frame_id`，与 MCP 的
+`scroll` 工具同一件事），产物把它交给 `cdp scroll <选择器> [--frame-id <帧>]` ——
+**两边说的是同一件事**，不再有「像素」这一层假映射。
 """
 
 from __future__ import annotations
@@ -95,9 +106,6 @@ DEFAULT_MAX_ROUNDS = 20
 
 #: 骨架认的五个重放动作（其余动作出现在 STATES 里会被当成「产物写错了」）。
 REPLAY_ACTIONS = ("click", "form", "scroll", "goto", "wait")
-
-#: 有损映射：scroll 工具是「滚到某个元素」，骨架是「滚这么多像素」。
-SCROLL_PIXELS = "400"
 
 #: 一个状态的 `when` 里带多少字的页面文字（够认出「是不是这一页」，又不至于一改就失配）。
 WHEN_SNIPPET_CHARS = 48
@@ -311,7 +319,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             if name == "scroll" and not any("滚进视口" in n for n in journey.notes):
                 journey.notes.append(
                     f"第 {len(journey.steps)} 步是把「{_label_of(step['target'])}」滚进视口；"
-                    "重放时只能滚一屏（骨架的 scroll 是像素滚动，没有「滚到某个元素」这一档）")
+                    "重放时会照做同一件事（把那个元素滚进视口），元素在子帧里时连帧一起带")
             _emit(on_step, step)
             return raw
 
@@ -772,7 +780,11 @@ def _replay_step(step: dict):
             return None                  # 连字段名都不知道，重放时填不了
         return {"action": "form", "fill": fill["name"], "note": note, "target": target}
     if action == "scroll":
-        return {"action": "scroll", "pixels": SCROLL_PIXELS, "note": note, "target": target}
+        # 这一步重放的是**它的元素**（「把「X」滚进视口」），与探索时那次是同一件事 ——
+        # cdp 的 `scroll [selector]` 正是这个动作。**不再编一个 `pixels`**：那是把
+        # 「滚到哪个元素」硬翻成「滚多少像素」，而产物照着它发出去的是一条永远跑不通的
+        # 命令（`cdp scroll 400` → element not found，真窗口实测）。
+        return {"action": "scroll", "note": note, "target": target}
     if action == "goto":
         url = (step.get("target") or {}).get("url") or (step.get("result") or {}).get("url") or ""
         if not url:

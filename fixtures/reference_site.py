@@ -276,6 +276,9 @@ def _frame_of_element(element, fallback=""):
     第三种为什么退回 `fallback` 而不是取最深那一段：`cdp` 换点击坐标只补**目标帧的
     owner `<iframe>` 在主帧里**那一个原点，中间几层没人补 —— 猜一个更深的帧号不是
     「够不着」，是**按错的坐标点了一下**。
+
+    ⚠️ **这一格没有测试钉它**（`tests/**` 不在这一轮能动的范围里）：`None` → 退回主帧这条
+    路上只有这份注释与报告在守，别以为它被覆盖了。
     """
     path = (element or {}).get("frame_path")
     if isinstance(path, str) or not isinstance(path, (list, tuple)):
@@ -385,7 +388,9 @@ def _say(action, label, ok, level=None, progress=None, landing=""):
     elif action == "form":
         line = "填好了「%s」" % label if ok else "没找到「%s」这个输入框，没填成" % label
     elif action == "scroll":
-        line = "往下滚了一屏" if ok else "滚不动"
+        # 「滚进视口」而不是「往下滚一屏」：cdp 的 scroll 干的是**前一件事**（它收的是
+        # 选择器），产物重放的就是账本里那一下 —— 说成像素滚动是另一件事的旧说法。
+        line = "把「%s」滚进了视口" % label if ok else "滚不动「%s」" % label
     elif action == "goto":
         line = "打开了 %s" % label if ok else "打不开 %s" % label
     elif action == "wait":
@@ -415,6 +420,8 @@ class Filler:
     #: 「这一页算不算这个状态」）也要能用 —— 那种实例没有 CDPHelper，读不了子帧，
     #: 而空元组正好等于「只读主帧」，也就是加帧之前的那个行为。
     frames = ()
+    #: 同上（活帧）：不进 `__init__` 的实例上也要有一个空表可读 —— 见 `_read_frames`。
+    live_frames = ()
 
     def __init__(self, ws_url, form_file, correlation_id, task_id="",
                  trace=None, stop_at=None, shots="failed", delay=DELAY_RANGE,
@@ -447,6 +454,9 @@ class Filler:
         #: 见 page_signature / _urls 的 docstring：动手在子帧、读页面却只看主帧，
         #: 那两件事量的根本不是同一页。
         self.frames = _frames_in_states(STATES)
+        #: **最近一次重新 observe 看见的活帧**（`_note_live_frames`）。账本里的帧号只活在
+        #: 录它的那一次会话里，重放时的 `goto` 一重建子帧它们就全死了 —— 读页面要靠这一串。
+        self.live_frames = []
 
     # ── 基础设施 ────────────────────────────────────────────
 
@@ -466,6 +476,33 @@ class Filler:
     def _url(self):
         return self._ev("return window.location.href;").strip().strip('"').strip("'")
 
+    def _read_frames(self):
+        """**读页面**时该读哪几帧：账本里那几帧 + 最近一次重新 observe 看见的活帧。
+
+        两串都要，因为**账本里的 frameID 只活在录它的那一次会话里**：重放一开始的
+        `goto` 会把页面重载、子帧重建 → 账本那一串全成了死号（真站实测：
+        `OOPIF eval: attach failed: No target with given id found`）。只读死号 = 什么都
+        读不到 + **不出声**，于是「成功文案在子帧里」这件事又变回看不见了。
+
+        活帧从哪来：回退链的最后一跳本来就要 `observe` 一次（那一跳在生产路径上也会发生），
+        顺手把模型里出现的帧记下来（`_note_live_frames`）—— **不为读页面多起进程**。
+        """
+        out = []
+        for fid in list(self.frames) + list(self.live_frames):
+            if fid and fid not in out:
+                out.append(fid)
+        return out
+
+    def _note_live_frames(self, model):
+        """把这一份观测里出现的（非主帧）帧记下来 —— 它们是**现在活着**的那几个。"""
+        for key in ("actions", "fields"):
+            for element in (model or {}).get(key) or []:
+                if not isinstance(element, dict):
+                    continue
+                fid = _frame_of_element(element, None)
+                if fid and fid not in self.live_frames:
+                    self.live_frames.append(fid)
+
     def _urls(self):
         """这一页的地址：**主帧的 + 这条流程动过手的每一帧的**（去重、保序）。
 
@@ -476,7 +513,7 @@ class Filler:
         （`_applies` 返回 False 是不出声的）：产物看着跑完了，其实一步没走。
         """
         out = []
-        for url in [self._url()] + [self._frame_url(fid) for fid in self.frames]:
+        for url in [self._url()] + [self._frame_url(fid) for fid in self._read_frames()]:
             if url and url not in out:
                 out.append(url)
         return out
@@ -500,7 +537,7 @@ class Filler:
         永远看不见 → 产物**永远不可能报成功**，而它会一路说「每一步都做成了」。
         """
         parts = [_norm(self._ev(_PAGE_TEXT_JS))]
-        parts += [_norm(self._ev(_PAGE_TEXT_JS, fid)) for fid in self.frames]
+        parts += [_norm(self._ev(_PAGE_TEXT_JS, fid)) for fid in self._read_frames()]
         return " ".join(p for p in parts if p)
 
     def _trace(self, line):
@@ -730,10 +767,21 @@ class Filler:
 
         ⚠️ **这一跳在生产路径上也会发生** —— 它不是调试功能，是产物「不因小改版就断」的
         承重结构（规格 §13 前提①）。
+
+        **帧号漂了的时候这一跳就是兜底**（CDP 的 frameID 只活在录它的那一次会话里；
+        重放一开始的 `goto` 一重建子帧，账本那一串全成死号 —— 真站实测
+        `OOPIF eval: attach failed: No target with given id found`）。**取舍写在这里**：
+        兜底的代价是「多花一次 observe + 声明那一下记**一次失败计数**」（`STUCK_LIMIT` 攒到
+        3 步就早停）；换来的是**不静默点错**。若有一天要省这一次 observe，先想清楚
+        「帧号漂了谁来救」再动。
         """
         model = self._observe()
         if not model:
             return []
+        # 这一眼看下去，**活着的帧**是哪些 —— 记下来给「读页面」用（见 _read_frames）。
+        # 账本里的 frameID 只活在录它的那一次会话里：重放一开始的 `goto` 会把页面重载，
+        # 子帧重建 → 账本那一串**全成了死号**（真站实测：`No target with given id found`）。
+        self._note_live_frames(model)
         fallback = str(target.get("frame_id") or "")
         pool = (model.get("fields") if kind == "field" else model.get("actions")) or []
         want_text = _norm(target.get("text") or "").lower()
@@ -747,7 +795,15 @@ class Filler:
                 if not self._usable(element, target):
                     continue
                 if kind == "field":
-                    key = _norm(element.get("label") or element.get("hint") or "").lower()
+                    # ⚠️ 这四个来源**必须与生成侧取名字时的来源一致**（`browser_agent._fill_info`
+                    # 的 `label or hint or placeholder`、`_fill_name` 还会用 `type`）——
+                    # 不然就会出现「账本里的名字是 placeholder 来的、这里只认 label/hint」
+                    # 的错位：字段明明在页面上，回退链一个候选都找不到
+                    # （真站实测：`Email Address:` 那一步就是这么挂的）。
+                    key = _norm(" ".join(str(x or "") for x in (
+                        element.get("label"), element.get("hint"),
+                        element.get("placeholder"), element.get("type"),
+                    ))).lower()
                     if not want_label or want_label not in key:
                         continue
                 else:
@@ -795,7 +851,10 @@ class Filler:
                 return self.cdp.form(selector, select=str(value), frame_id=frame_id or "")
             return self.cdp.form(selector, value=str(value), frame_id=frame_id or "")
         if action == "scroll":
-            return self.cdp.scroll(str(value if value is not None else "400"))
+            # ⚠️ 位置参数**是选择器**（CLI：`cdp scroll [selector]`）—— 把像素数字塞进
+            # 这里 = 拿一个不存在的选择器去滚，真窗口实测 `cdp scroll 400` →
+            # `Error: scroll mouse wheel failed: element not found`，每一步都必挂。
+            return self.cdp.scroll(selector)
         if action == "goto":
             done = self._cdp("navi", value)
             ok = done is not None and done.returncode == 0
@@ -841,6 +900,53 @@ class Filler:
             return "Test%d!" % random.randint(1000, 9999)
         raise ValueError("产物写错了：不认识这个随机值类型「%s」" % kind)
 
+    def _scroll(self, step, target, label):
+        """把这一步的元素滚进视口。返回 `(ok, selector_used, level, note, frame_used)`。
+
+        **`cdp scroll` 的位置参数是选择器，不是像素**（`scroll [selector]`）——
+        所以这一步重放的是「把**那个元素**滚进视口」，与探索时那次是同一件事。
+
+        三条路各自说清为什么：
+
+        - **主帧的元素** → `self.cdp.scroll(选择器)`：与 click / form 走同一类助手，
+          生产重跑那条路「一次 cdp CLI 都不额外起进程」的性质不受影响。
+        - **子帧的元素** → 自己起进程带 `--frame-id`。为什么不用助手：`CDPHelper.scroll`
+          收不了帧号（它的签名只有 pixels），而**跨源 iframe 里的元素在主帧里根本找不到**
+          （那正是这一整族 bug 的样子）。
+        - **连元素都没有**（老产物 / 手写产物只写了 `pixels`）→ 退回老行为并在 note 里
+          **说出来**：那是一条注定跑不通的命令（像素被当选择器），不许它静默地像「滚过了」。
+        """
+        selectors = [s for s in (target.get("selectors") or []) if s]
+        frame = str(target.get("frame_id") or "")
+        for level, selector in enumerate(selectors):
+            if frame:
+                done = self._cdp("scroll", selector, "--frame-id", frame)
+                if done is None:
+                    # 进程都没起来（或这条命令根本不存在）：**不许**当成滚过了 ——
+                    # `_ok("")` 对空输出是 True（「成功时它不一定说话」），
+                    # 这里空输出必须由我们自己说成失败。
+                    out = "Error: 没能让 cdp 滚这个元素（见上面那条日志）"
+                else:
+                    out = (done.stdout or "") + (done.stderr or "")
+                    if done.returncode != 0 and not out.strip():
+                        out = "Error: cdp 滚这个元素没成（退出码 %d，它什么都没说）" % done.returncode
+            else:
+                out = self._do("scroll", selector)
+            if _ok(out):
+                return (True, selector, level,
+                        _say("scroll", label, True, level, landing=_landing_say(out)), frame)
+            self.log.info("[%s] 第 %d 个选择器滚不动：%s", self.cid, level + 1, selector)
+
+        pixels = step.get("pixels")
+        if pixels is None:
+            return False, "", None, _say("scroll", label, False), frame
+        # 老形状：这一步只说了「滚多少像素」，而 cdp 的 scroll 要的是选择器 ——
+        # 照发（保住老产物的行为），但 note 里把它是什么说清楚。
+        out = self.cdp.scroll(str(pixels))
+        return (_ok(out), "", None,
+                _say("scroll", label, _ok(out)) + "（这一步只记了滚多少像素，"
+                "而 cdp 的 scroll 收的是选择器 —— 这一条老形状的命令多半滚不动）", "")
+
     def _perform(self, action, step, target, label):
         """做一步。返回 `(ok, selector_used, fallback_level, note, frame_used)`。
 
@@ -852,8 +958,7 @@ class Filler:
             self._dly(2, 4)
             return True, "", None, _say("wait", label, True), ""
         if action == "scroll":
-            out = self._do("scroll", "", step.get("pixels", "400"))
-            return _ok(out), "", None, _say("scroll", label, _ok(out)), ""
+            return self._scroll(step, target, label)
         if action == "goto":
             url = step.get("url") or ""
             if not url:
