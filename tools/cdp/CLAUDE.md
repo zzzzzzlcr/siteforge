@@ -21,6 +21,8 @@ go run . observe                      # 观察页面：结构化页面模型（a
 go run . observe --json=false         # 同一份模型的人话摘要（给人扫一眼，别解析）
 go run . observe > before.json        # 存一份「动作前」的快照
 go run . diff --before before.json    # 差分：刚才那一下有没有推进（py 的分支依据）
+go build -o cdp-mcp ./cmd/mcp         # 构建 MCP 门（agent 用；同样的内核）
+./cdp-mcp --ws-url "ws://10.0.0.9:4000/devtools/browser/<uuid>"  # 直接吃 bit.sh open 那串
 go run . targets                      # 列出所有页面
 go run . active <target-id>           # 切换活跃页面
 go run . close --all                  # 关闭所有非活跃页面
@@ -79,8 +81,15 @@ cdp/
 │   ├── snapshot.go # snapshot 子命令
 │   ├── targets.go / active.go / close.go  # 页面管理
 │   ├── observe.go  # observe 子命令 + renderHuman（--json=false 的人话摘要）
-│   └── diff.go     # diff 子命令 + renderDiffHuman + loadPageModel
+│   ├── diff.go     # diff 子命令 + renderDiffHuman + loadPageModel
+│   ├── mcp/main.go # **MCP 门**（cdp-mcp）：stdio 服务，与 CLI 同内核
+│   └── mcp_e2e_test.go # MCP 门的 e2e（放这儿是为了复用私有 Chrome 夹具）
 ├── internal/       # 核心库（CLI 与 MCP 两个门共用同一个内核）
+│   ├── mcp/             # MCP 的**工具表 + 参数校验 + 浏览器目标**（与传输解耦，可单测）
+│   │   ├── registry.go  # Tool/Param/Tools()/Lookup/Prepare（schema 由参数声明生成）
+│   │   ├── handlers.go  # 七个工具 → 内核调用的映射
+│   │   ├── target.go    # --ws-url/--host/--port/CDP_* 的优先级与拆分（照抄 py 的 _parse_ws_url）
+│   │   └── conn.go      # 每条工具调用现连现断；连不上点名 host:port
 │   ├── client.go        # CDP 客户端，WebSocket 连接管理、逐帧 eval（含 OOPIF 回退）
 │   ├── observe.go       # PageModel 契约 + observeJS（单帧页面模型）
 │   ├── observe_frames.go# 跨帧枚举与合并（ObserveAll）、帧覆盖守卫
@@ -102,10 +111,19 @@ cdp/
 - Go 1.26.2
 - `github.com/chromedp/chromedp` - Chrome DevTools Protocol 库
 - `github.com/chromedp/cdproto` - CDP 协议类型定义
-- `github.com/spf13/cobra` - CLI 框架
+- `github.com/spf13/cobra` - CLI 框架（**只有 CLI 用**；MCP 那个入口用标准库 `flag`）
+- `github.com/modelcontextprotocol/go-sdk` - MCP 服务端（**只有 `cmd/mcp` 用**）
 
 ## Gotchas
 
+- **`cdp-mcp` 的 stdout 是 JSON-RPC 通道**：一个 Go 日志行就能毁掉整条流（客户端报的是
+  「JSON 解析失败」，不是「你的工具打了日志」）。所以入口用标准库 `flag` 而不是 cobra
+  （cobra 出错/`--help` 时把 usage 写 stdout），日志一律走 stderr。`cmd/mcp_e2e_test.go`
+  逐行验这件事。
+- **MCP 要先握手**：直接发 `tools/list` 得到的是
+  `method "tools/list" is invalid during session initialization` —— 先 `initialize`
+  再 `notifications/initialized`。另外 stdin 一次性灌完就关（`echo ... | cdp-mcp`）时，
+  响应可能还没写出来进程就收工了 —— 用交互式的客户端（测试里的 `mcpDoor`）。
 - `defer client.Close()` 会关闭 Chrome 页面而非 WebSocket 连接（commit 18cfd23）
 - 页面导航（`Navigate`）有 30 秒超时，超时返回 error（`internal/client.go:401`）
 - 单帧 `observe` 的 `--frame-id` 收的是 **CDP frameID**，不是 `frame_path` 里那个给人读的 `"main"`

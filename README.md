@@ -26,7 +26,9 @@ docs/superpowers/specs/   设计规格（先读）
 tools/cdp/                cdp 工具层（Go，已自 /company/cdpcli 迁入）
                           main.go + cmd/  = CLI，生产 py 脚本用
                                             （入口是**模块根**的 main.go，cobra 根命令在 cmd/ 下）
-                          cmd/mcp         = MCP server，agent 用（计划二交付，尚无此目录）
+                          cmd/mcp         = MCP server（agent 用，stdio）—— 与 CLI **同内核**，
+                                            不是包一层壳去调 CLI（规格 §4.1）
+                          internal/mcp/   = 工具表 + 参数校验 + 浏览器目标（与传输解耦，可单测）
                           internal/       = 两个门共用的同一个内核
 agent/                    LangGraph 图 + agent 服务
 skills/                   bit-window / cdp-browser 两个 skill
@@ -54,8 +56,14 @@ Dockerfile                多阶段：Go 构建工具层 → Python 运行时
 
 **计划一（工具层）已交付**（2026-09-16）：cdp 已自 `/company/cdpcli` 迁入 `tools/cdp/`，
 `observe` / `diff` 两条子命令在真浏览器的四档页面（light DOM / 两层 shadow / 跨源 iframe）上
-验过，全套件 125 测试绿（含子测试；0 skip）。
+验过。
 
-镜像**可构建，但暂时不可运行** —— `ENTRYPOINT` 要的 `agent.service:app` 在计划二交付
-`agent/` 之前不存在（起来是 ModuleNotFoundError）。计划二（产出闭环：py 骨架 + lint +
-扰动自测 + LangGraph 图）与计划三（记忆层）未开工。
+**计划二 Task 2（MCP 门）已交付**（2026-09-16）：`tools/cdp/cmd/mcp` 起来了，七个工具
+（observe / diff / screenshot / click / form / scroll / goto）走同一份 `internal/`。
+浏览器目标两种给法都收（`--ws-url` 吃 `bit.sh open` 吐出来的那串，或 `--host/--port`），
+窗口没了立刻报错并点名 `host:port`。计划二其余任务（py 骨架 + lint + 扰动自测 + LangGraph 图）
+未开工。
+
+镜像**可构建，但暂时不可运行** —— 工具层这一侧两个入口（`cdp` 与 `cdp-mcp`）都已进镜像，
+但 `ENTRYPOINT` 要的 `agent.service:app` 还没人写（`agent/` 眼下只有 `llm.py` 与 `tools.py`），
+起来是 ModuleNotFoundError。计划三（Agent Debug Console + 记忆层）未开工。

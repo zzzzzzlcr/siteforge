@@ -198,8 +198,38 @@ Flags:
 
 关闭后输出剩余页面列表（JSON 格式）。
 
+## cdp-mcp —— MCP 门（同一个内核的第二个出口）
+
+```bash
+go build -o cdp-mcp ./cmd/mcp
+```
+
+给 agent 用的 **stdio MCP 服务**。它**不是**包一层壳去调上面的 CLI：两条门直接调
+同一份 `internal/`（穿透解析 / 拟人手势 / 表单 / 帧 / 截图都是同一套），所以行为一致。
+
+工具（规格 §4.2）：`observe` / `diff` / `screenshot` / `click` / `form` / `scroll` / `goto`。
+
+**连哪个浏览器** —— 生产里不是本机 9222，是一个带代理与指纹的 Bit 窗口：
+
+```bash
+cdp-mcp --ws-url "$(bit.sh open <worker_ip> <bit_id> | tail -1)"   # 原样吃 bit.sh 吐出来的那串
+cdp-mcp --host <worker_ip> --port <port>                            # 或者自己拆好
+```
+
+- `CDP_HOST` / `CDP_PORT` 是**兜底**：显式 flag 永远赢（C81 那条，CLI 上栽过一次）
+- `--ws-url` 与显式 `--host/--port` **同时给 = 当场报错**（连哪个是猜的，猜错不报错）
+- 拆 `--ws-url` 的逻辑与生产 py 库的 `CDPHelper._parse_ws_url` **逐字对齐**
+- 窗口没了会**立刻**报错并点名 `<host:port>`，不挂着 —— 调用方据此重开窗口
+
+⚠️ **stdout 是 JSON-RPC 通道，一个字都不能多说**（日志走 stderr；工具的失败走
+JSON-RPC 的 `isError`，不走协议错误）。所以入口用标准库 `flag` 而不是 cobra。
+
+⚠️ 直接发 `tools/list` 会被拒（`method "tools/list" is invalid during session
+initialization`）—— MCP 要先 `initialize` + `notifications/initialized`。
+
 ## 依赖
 
 - Go 1.26.2
 - [chromedp](https://github.com/chromedp/chromedp) - Chrome DevTools Protocol 库
 - [cobra](https://github.com/spf13/cobra) - CLI 框架
+- [go-sdk](https://github.com/modelcontextprotocol/go-sdk) - MCP 服务端（只有 `cmd/mcp` 用）
