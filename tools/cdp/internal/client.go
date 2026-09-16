@@ -1141,18 +1141,42 @@ func (c *Client) hitFactsOf(h domHit) (hitFacts, error) {
 	return f, nil
 }
 
-// hitForensics 一次往返问两件事（都在**按下前那个节点**的对象上问）：
+// hitForensics 一次往返问三件事（都在**按下前那个节点**的对象上问）：
 //
-//	connected  它还在文档里吗（isConnected）—— 「被盖住」与「被重建/摘除」的分水岭
-//	related    按下后那个节点是不是**长在它自己的子树里**（互为祖先/后代，走合成树，
-//	           所以 shadow 里的那份也算）—— 「里面长出来」与「外面盖上来」的分水岭
+//	connected   它还在文档里吗（isConnected）—— 「被盖住」与「被重建/摘除」的分水岭
+//	descendant  按下后那个节点在**它的子树里**吗（它自己是祖先）
+//	ancestor    按下后那个节点是**它的祖先**吗（它自己在子树里）
 //
-// 为什么合成树而不是 Node.contains：宿主**不包含** shadow 里的内容
+// descendant / ancestor 合起来回答「里面长出来」还是「外面盖上来」——
+// 两个方向**分开返回**，因为它们的后果不一样（见 dispatchMouseClick ⑤ 的两句话）：
+// 后代那一向事件照样从目标身上过，祖先那一向不会。
+//
+// ⚠️⚠️ 这里的「祖先/后代」**只走 parentNode 或 shadow host 那一条链**
+// （getRootNode().host 那一步是 shadow 边界），**不是完整的合成树**：
+// **`<slot>` 分发没有实现** —— 经 slot 被分发进 shadow 树的光 DOM 节点，在这条链上
+// 的祖先是它的**光 DOM 父亲**（parentNode），而不是它在 shadow 树里实际渲染的位置。
+//
+// 已知限制（复审判 Important，**不是** Critical —— 非静默、生产栈上碰不到，但必须写下来）：
+//   目标在 shadow 树里、覆盖者经 `<slot>` 被分发进它的子树 → 这一对**认不出来**
+//   （两个方向都是 false）→ 判成「外面盖上来」→ **扣下**。复审实测：
+//   裸行为里目标自己的 click 处理器跑 **1** 次，被测 **0** 次。
+//   要真修得把 slot assignment（`slot.assignedNodes()` / `element.assignedSlot`）那条链
+//   补进来 —— 那是另一件事，留给裁定；**这一版没有测试钉它**（别以为它被覆盖了）。
+//
+// ⚠️ 为什么不干脆用 Node.contains：宿主**不包含** shadow 里的内容
 // （`host.contains(shadowChild)` 是 false）—— 拿 contains 判，shadow 里的浮层
-// 会被误判成「外面盖上来」，而那正是这一轮要治的误扣。
+// 会被误判成「外面盖上来」，那正是这一轮要治的误扣。走 parentNode/host 这条链
+// 至少把 shadow 那一族认对了；缺口只剩 slot 分发这一族。
+//
+// ⚠️ 另一条已知限制（复审实测，**不是静默的**，留给裁定）：目标在子帧、覆盖者在父帧
+// （或反过来）时，`callFunctionOn` 会直接报
+// `-32000 Argument should belong to the same JavaScript world` —— 于是这一格走
+// 「取证不全 → 不扣 + 报盲区」。方向是「**保护没了**」而不是「点击被吞了」，
+// 而且它说出来了（`landing_blind`）。⚠️ 轮 1 的实现在这一格是**扣下**的（复审判定：
+// 本轮新引入的退化）。要修得把跨世界的比较换成「各自在自己那一侧取事实，Go 侧拼」。
 //
 // 问不到就返回 err —— 调用方据此**不扣**（正向取证，见 domHit 上面那段）。
-func (c *Client) hitForensics(before, after domHit) (connected, related bool, err error) {
+func (c *Client) hitForensics(before, after domHit) (connected, descendant, ancestor bool, err error) {
 	err = chromedp.Run(c.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		cc := chromedp.FromContext(ctx)
 		if cc == nil || cc.Target == nil {
@@ -1182,8 +1206,9 @@ func (c *Client) hitForensics(before, after domHit) (connected, related bool, er
 			return err
 		}
 		var got struct {
-			Connected bool `json:"connected"`
-			Related   bool `json:"related"`
+			Connected  bool `json:"connected"`
+			Descendant bool `json:"descendant"`
+			Ancestor   bool `json:"ancestor"`
 		}
 		// returnByValue 之后 res.Value 就是返回对象的 JSON 文本（直接解）。
 		// ⚠️ 别用 JSON.stringify + 手工去引号：那样拿到的是**转义过的字符串**，
@@ -1191,16 +1216,18 @@ func (c *Client) hitForensics(before, after domHit) (connected, related bool, er
 		if err := json.Unmarshal(res.Value, &got); err != nil {
 			return fmt.Errorf("取证结果解不开: %w（原始 %s）", err, res.Value)
 		}
-		connected, related = got.Connected, got.Related
+		connected, descendant, ancestor = got.Connected, got.Descendant, got.Ancestor
 		return nil
 	}))
-	return connected, related, err
+	return connected, descendant, ancestor, err
 }
 
 // hitForensicsJS 在**按下前那个节点**上跑（this = 它），参数 other = 按下后那个。
 //
-// inTree 走**合成树**（getRootNode().host 那一步是 shadow 边界）：Node.contains
-// 在 shadow 里会把「宿主包含 shadow 内容」判成 false。
+// inTree 走的是「**parentNode 或 shadow host**」那一条链（host 那一步是 shadow 边界）——
+// **不是**完整合成树：`<slot>` 分发没有实现（详见 hitForensics 的已知限制）。
+// 它比 Node.contains 强的地方只有一处，但那一处是刚需：
+// contains 在 shadow 上会把「宿主包含 shadow 内容」判成 false。
 const hitForensicsJS = `function(other){
   function inTree(root, node) {
     var n = node, r;
@@ -1213,7 +1240,8 @@ const hitForensicsJS = `function(other){
   }
   return {
     connected: !!(this && this.isConnected),
-    related: !!(other && (inTree(this, other) || inTree(other, this)))
+    descendant: !!(other && inTree(this, other)),
+    ancestor: !!(other && inTree(other, this))
   };
 }`
 
@@ -1258,10 +1286,51 @@ func (c *Client) LandingDiags() []Diagnostic {
 	return c.landingDiags
 }
 
+// LandingSummary 是落点判据对**这一次动作**的一句话总结 —— `cdp form` 的回执与
+// MCP 的 form 回执**共用同一份**（两处各拼一遍必然漂移，而「两份判据」是本仓反复
+// 踩的坑）。字段名与 MCP 那道门上的键一一对应，直接塞进回执即可。
+type LandingSummary struct {
+	Note     string       `json:"landing_note,omitempty"`
+	Blind    bool         `json:"landing_blind,omitempty"`
+	Withheld bool         `json:"landing_withheld,omitempty"`
+	Diags    []Diagnostic `json:"landing,omitempty"`
+}
+
+// SummarizeLanding 把一次动作攒下的落点诊断拼成给消费方的那一份。
+//
+// 没有任何诊断时返回零值（`Note == ""`）—— 调用方据此**一个键都不加**：
+// 常驻的提示等于没有提示（判据没话可说时回执里一个字都不该多）。
+func SummarizeLanding(diags []Diagnostic) LandingSummary {
+	if len(diags) == 0 {
+		return LandingSummary{}
+	}
+	var b strings.Builder
+	sum := LandingSummary{Diags: diags}
+	for i, d := range diags {
+		if i > 0 {
+			b.WriteString("；")
+		}
+		b.WriteString(d.Detail)
+		switch d.Kind {
+		case DiagKindLandingBlind:
+			sum.Blind = true
+		case DiagKindLandingWithheld:
+			// ⚠️ 只认这一个 kind：DiagKindLandingPassed（判据跑了但决定**不扣**）
+			// 绝不能算进来 —— 那会让 `landing_withheld` 这个字段说假话。
+			sum.Withheld = true
+		}
+	}
+	sum.Note = b.String()
+	return sum
+}
+
 // noteLanding 记一条落点判据的诊断，并把它写进回执的 Note。
 //
-// kind 取 DiagKindLandingBlind（判据没能跑）或 DiagKindLandingWithheld（扣下了）。
-// 两条都要记：`form` 那条路只有这份诊断能说话（见 LandingDiags）。
+// kind 取三选一：DiagKindLandingBlind（判据没能跑）/ DiagKindLandingWithheld（扣下了）/
+// DiagKindLandingPassed（判据跑了，但决定**不扣** —— 重建、目标自己被摘除、里面长出来）。
+// ⚠️ 「没扣」与「扣了」**必须分得开**：下游（`cdp form` 的回执、MCP 的回执）是按 kind
+// 出 `landing_withheld` 这个布尔值的 —— 把「没扣」也记成 withheld，那个字段就在说假话。
+// 三条都要记：`form` 那条路只有这份诊断能说话（见 LandingDiags）。
 //
 // frameID 是这次命中**落在哪一帧**（命中测试给的）。诊断里的 frame_path 按
 // `framePathFor` 的同一套口径写：空 → ["main"]，否则就是那一帧的 id ——
@@ -1346,7 +1415,7 @@ func (c *Client) dispatchMouseClick(x, y float64) (MouseClickOutcome, error) {
 		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
 	}
 
-	conn, related, fErr := c.hitForensics(before, after)
+	conn, isDescendant, isAncestor, fErr := c.hitForensics(before, after)
 	if fErr != nil {
 		c.noteLanding(&out, DiagKindLandingBlind, "落点判据这次没跑成：换了节点，但问不出「原目标还在不在文档里」"+
 			"（取证不全）—— 按老行为把抬起发出去，宁可不扣也不误扣", string(before.FrameID))
@@ -1359,10 +1428,20 @@ func (c *Client) dispatchMouseClick(x, y float64) (MouseClickOutcome, error) {
 	// 目标这一侧并没有被绕开 —— 扣下抬起却会把这一次点击**整根拿走**
 	// （实测：裸行为 1/1 → 被测 0/0）。所以先问 ancestry：
 	// 「覆盖者」是不是目标的祖先/后代（合成树，穿 shadow）。
-	if related {
-		c.noteLanding(&out, DiagKindLandingWithheld, fmt.Sprintf("按下之后那个点上换成了 %s —— "+
-			"它**长在原目标自己的子树里**（互为祖先/后代），不是「外面盖上来」：事件照样从目标身上过。"+
-			"照常把抬起发出去（原目标 %s）", afterFacts.Desc, beforeFacts.Desc), string(before.FrameID))
+	if isDescendant || isAncestor {
+		// ⚠️ 两个方向的话**分开写**：后代那一向事件照样从目标身上过（冒泡），
+		// 祖先那一向**不会**（目标自己在子树里，click 从祖先往上冒，目标收不到）——
+		// 上一版把两向写成同一句「事件照样从目标身上过」，祖先那一向是**假话**
+		// （复审实测 muTargetPath=0）。
+		why := fmt.Sprintf("它**长在原目标自己的子树里**（原目标是它的祖先）：事件照样从目标身上过（冒泡），"+
+			"目标那一侧没有被绕开 —— 变了的是目标自己那棵树内部，不是「外面盖上来」（原目标 %s）", beforeFacts.Desc)
+		if isAncestor {
+			why = fmt.Sprintf("它是原目标的**祖先**（原目标在它的子树里）：这是目标自己缩了/移开了，"+
+				"不是「外面盖上来」；⚠️ 这一向事件**不会**从目标身上过（click 从祖先往上冒）—— "+
+				"但变的同样是目标自己那棵树（原目标 %s）", beforeFacts.Desc)
+		}
+		c.noteLanding(&out, DiagKindLandingPassed, fmt.Sprintf("按下之后那个点上换成了 %s —— %s。"+
+			"照常把抬起发出去", afterFacts.Desc, why), string(before.FrameID))
 		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
 	}
 
@@ -1371,7 +1450,7 @@ func (c *Client) dispatchMouseClick(x, y float64) (MouseClickOutcome, error) {
 	// 实测（复审端到端复现 + 本机复验）：节点**重建**时 backendNodeId 会变，
 	// 而那一刻**没有任何东西盖上来** —— 照直扣下会把一次正常点击静静吞掉。
 	if !conn {
-		c.noteLanding(&out, DiagKindLandingWithheld, fmt.Sprintf("按下之后落点换了人，但**原目标自己"+
+		c.noteLanding(&out, DiagKindLandingPassed, fmt.Sprintf("按下之后落点换了人，但**原目标自己"+
 			"从文档里没了**（被替换/被摘除），不是有人盖上来 —— 照常把抬起发出去（%s → %s）",
 			beforeFacts.Desc, afterFacts.Desc), string(before.FrameID))
 		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)
@@ -1384,7 +1463,7 @@ func (c *Client) dispatchMouseClick(x, y float64) (MouseClickOutcome, error) {
 	// ⚠️ 话必须**这么说**（复审点名）：上一版这里写「是重建不是覆盖」——
 	// 那是**在说假话**，因为覆盖者也能长这样。如实说「分不出」。
 	if beforeFacts.Fingerprint == afterFacts.Fingerprint {
-		c.noteLanding(&out, DiagKindLandingWithheld, fmt.Sprintf("按下之后落点换成了 %s —— 它与原目标"+
+		c.noteLanding(&out, DiagKindLandingPassed, fmt.Sprintf("按下之后落点换成了 %s —— 它与原目标"+
 			"**标签与属性逐字相同**。判据**分不出**这是「同一个东西被重建」还是「一个逐字节相同的"+
 			"覆盖者」，按老行为把抬起发出去（宁可漏扣，也不误扣一次正常点击）", afterFacts.Desc), string(before.FrameID))
 		return out, c.dispatchMouseEvent(input.MouseReleased, x, y)

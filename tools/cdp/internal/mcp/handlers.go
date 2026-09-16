@@ -145,35 +145,19 @@ func handleForm(_ context.Context, b Browser, args map[string]any) (any, error) 
 	// ⚠️ 判据没话可说时这几个键**不出现**（与 CLI「正常点击一个字都不多」同口径）：
 	// 常驻的提示等于没有提示。
 	res := performed()
-	if diags := b.LandingDiags(); len(diags) > 0 {
-		res["landing_note"] = joinLandingDiags(diags)
-		res["landing_blind"] = landingBlind(diags)
-		res["landing"] = diags
+	// 拼装走内核那一份 SummarizeLanding（CLI 的 form 回执吃的是同一份）——
+	// 两处各拼一遍必然漂移，而「两份判据」正是本仓反复踩的坑。
+	// ⚠️ `landing_note` 是**给模型读的一句话**：一串 kind 让它自己去拼，它就多半不拼了
+	// （而这件事正是「不说 = 假装成功」的那一类）。
+	if sum := internal.SummarizeLanding(b.LandingDiags()); sum.Note != "" {
+		res["landing_note"] = sum.Note
+		res["landing_blind"] = sum.Blind
+		// ⚠️ `landing_withheld` 是**只看 DiagKindLandingWithheld** 出来的
+		// （判据跑了但决定不扣的那几条是 landing-passed，不算数）。
+		res["landing_withheld"] = sum.Withheld
+		res["landing"] = sum.Diags
 	}
 	return res, nil
-}
-
-// joinLandingDiags 把落点判据的诊断拼成一句给 agent 读的话。
-//
-// 为什么要一句人话而不是只给结构化列表：这条回执的读者是**模型**，它要回答的
-// 是「我这一步到底发生了什么」—— 一串 kind 让它自己去拼，它就多半不拼了
-// （而这件事正是「不说 = 假装成功」的那一类）。
-func joinLandingDiags(diags []internal.Diagnostic) string {
-	parts := make([]string, 0, len(diags))
-	for _, d := range diags {
-		parts = append(parts, d.Detail)
-	}
-	return strings.Join(parts, "；")
-}
-
-// landingBlind 说这批诊断里有没有「判据根本跑不了」那条。
-func landingBlind(diags []internal.Diagnostic) bool {
-	for _, d := range diags {
-		if d.Kind == internal.DiagKindLandingBlind {
-			return true
-		}
-	}
-	return false
 }
 
 // handleScroll 抄的是 CLI 的 runScroll：跨源 iframe 里的元素**够不着**

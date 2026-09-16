@@ -621,6 +621,27 @@ func TestDispatchMouseClick_OverlayInsideTargetSubtreeIsNotACover(t *testing.T) 
 			pos = "position:fixed;left:0;top:0;right:0;bottom:0;z-index:5"
 			parent = `document.body`
 		}
+		// ancestor 那一格不浮层：**目标自己缩没了**（display:none），那个点上站着的
+		// 就是它的父亲 —— 祖先那一向。
+		if where == "ancestor" {
+			return `(function(){
+				document.body.innerHTML =
+					'<div id="n2-wrap" style="position:fixed;left:100px;top:100px;width:300px;height:60px;background:#eee">' +
+					'<button id="n2-btn" style="position:relative;width:100%;height:100%">cover me</button></div>';
+				window.__n2 = { clicks: 0, mouseups: 0, covers: 0 };
+				var wrap = document.getElementById('n2-wrap');
+				wrap.addEventListener('click', function(){ window.__n2.clicks++; });
+				wrap.addEventListener('mousedown', function(){
+					window.__n2.covers++;
+					document.getElementById('n2-btn').style.display = 'none';
+				});
+				if (!window.__n2Hooked) {
+					window.__n2Hooked = true;
+					document.addEventListener('mouseup', function(){ if (window.__n2) window.__n2.mouseups++; }, true);
+				}
+				return 'ok';
+			})()`
+		}
 		pe := ""
 		if pointerNone {
 			pe = ";pointer-events:none"
@@ -676,6 +697,9 @@ func TestDispatchMouseClick_OverlayInsideTargetSubtreeIsNotACover(t *testing.T) 
 			"对照：同一个浮层的 markup，只是父亲换成了 body（子树外）—— 这才是「外面盖上来」"},
 		{"C 浮层在按钮里 + pointer-events:none", "inside", true, false,
 			"命中测试根本不看它（实测不扣）—— 这一格是防 ancestry 判据把「命中栈压根没变」那条路弄坏"},
+		{"D 目标自己缩没了（点上站着它的祖先）", "ancestor", false, false,
+			"祖先那一向：变了的是**目标自己那棵树**（目标 display:none 之后那个点是它的父亲）—— "+
+				"⚠️ 这一向事件**不会**从目标身上过，所以回执里那句话必须与后代那一向分开写"},
 	} {
 		// 基线：绕过我们的门的原始三连（浏览器裸行为）
 		var r string
@@ -709,6 +733,15 @@ func TestDispatchMouseClick_OverlayInsideTargetSubtreeIsNotACover(t *testing.T) 
 
 		if got.Covers == 0 {
 			t.Fatalf("%s：夹具**没有**浮出那一层（covers=0）—— 这条测试什么都没考到（%s）", c.name, c.why)
+		}
+		// 方向那一句话必须与实测一致（复审实测：祖先那一向 muTargetPath=0，
+		// 「事件照样从目标身上过」在那一向是**假话**）。
+		if c.where == "ancestor" && !strings.Contains(result.LandingNote, "祖先") {
+			t.Errorf("%s：回执里没说是**祖先**那一向（note=%q）—— 两向的话不能写成同一句",
+				c.name, result.LandingNote)
+		}
+		if c.where == "inside" && !c.pointerNone && !strings.Contains(result.LandingNote, "子树里") {
+			t.Errorf("%s：回执里没说它是**长在目标自己的子树里**（note=%q）", c.name, result.LandingNote)
 		}
 		if result.ReleaseWithheld != c.wantWithheld {
 			t.Errorf("%s：release_withheld=%v，want %v（%s）；covered_by=%q note=%q",

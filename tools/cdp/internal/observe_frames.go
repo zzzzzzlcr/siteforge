@@ -44,6 +44,14 @@ const (
 	// 一样「有保护」，其实一点都没有。取值的地方见 client.go 的 dispatchMouseClick。
 	DiagKindLandingBlind = "landing-blind"
 
+	// DiagKindLandingPassed —— 落点判据**跑了，但决定不扣**：换了节点，可是
+	// 换来的是「同一个东西的另一个节点」（重建）、或者原目标自己从文档里没了、
+	// 或者那个点上是长在目标自己子树里的东西 —— 都不是「外面盖上来」。
+	//
+	// ⚠️ 与 DiagKindLandingWithheld **必须分开**：回执里的 `landing_withheld`
+	// 是按 kind 出的布尔值，把「没扣」也记成 withheld，那个字段就在说假话。
+	DiagKindLandingPassed = "landing-passed"
+
 	// DiagKindLandingWithheld —— 落点判据**扣下了这次抬起**：按下之后有一个
 	// **不同的**东西盖到了那个坐标上，而原目标还在文档里。这次点击只发出了按下的
 	// 那一半，页面收到的鼠标事件比从前少一个 —— 必须能听见（`form` 那条路只有

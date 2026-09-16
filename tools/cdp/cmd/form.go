@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -106,8 +107,32 @@ func runForm(cmd *cobra.Command, args []string) error {
 	//
 	// ⚠️ 这些行**只在判据有话要说时才印**（扣下、判不了、判成重建）——
 	// 正常点击一个字都不多：常驻的提示等于没有提示。
-	for _, d := range client.LandingDiags() {
+	sum := internal.SummarizeLanding(client.LandingDiags())
+	for _, d := range sum.Diags {
 		fmt.Fprintf(os.Stderr, "cdp form：落点判据 —— %s\n", d.Detail)
+	}
+
+	// 回执走 **stdout**（与 `cdp click` 同一套契约：stdout 是给机器读的 JSON，
+	// 人话走 stderr）。
+	//
+	// 为什么 form 也要回执（复审 Minor）：下游（产物 py 的 `_say`）**只拿得到 stdout**
+	// —— 它把 stderr 丢了。原先 `cdp form` 的 stdout 是空的，于是「这一次点击只发出了
+	// 按下的那一半」在下游看不见：日志里那一步与一次普通填值长得一模一样，
+	// 而 `_say` 照样说「填好了「X」」。落点那几件事必须在 stdout 上。
+	//
+	// ⚠️ 失败时不印（与 click 一致）：错误交给 cobra 走 stderr + 非 0 退出，
+	// stdout 保持「成功才有回执」，免得下游把一份失败回执当成一次成功。
+	if err2 == nil {
+		receipt := map[string]any{"ok": true}
+		if sum.Note != "" {
+			receipt["landing_note"] = sum.Note
+			receipt["landing_blind"] = sum.Blind
+			receipt["landing_withheld"] = sum.Withheld
+			receipt["landing"] = sum.Diags
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(receipt); err != nil {
+			fmt.Fprintf(os.Stderr, "cdp form：回执写不出去：%v\n", err)
+		}
 	}
 	return err2
 }
