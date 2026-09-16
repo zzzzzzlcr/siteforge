@@ -262,6 +262,96 @@ def _value_of(result: dict) -> Any:
         return text
 
 
+# ─────────────────── 工具结果 → 给模型的那条消息 ───────────────────
+
+#: 截图 base64 的**字符数**上限（2 MiB）。超过它就不进上下文，只回证据 + 一句说明。
+#:
+#: 为什么是这个数：Console 的设计稿（`2026-09-17-console-minimal-design.md` §风险 C4）
+#: 记着实测「一张视口截图 ~500KB base64」—— 2 MiB 是它的 **4 倍**，也就是说正常的笔记本
+#: 视口（1280×800 @ dpr1/2 那一档）**永远撞不到**它；它挡的是病态那一档
+#: （4K 视口 × 高 dpr：8 倍像素 → PNG 两三 MB → base64 三四 MB）。
+#:
+#: ⚠️ 这条上限**不是为了省 token** —— 图是按分辨率算 token 的，base64 的长短不进 token 账。
+#: 它管的是**一次请求的字节数与内存**：工具结果原样回灌那条老路没有上限，最坏的形态是
+#: 一条几百 KB 的 tool message 反复进上下文（真跑那次 20 步调了 5 次截图）。
+SHOT_B64_MAX = 2 * 1024 * 1024
+
+
+def _shot_b64_max() -> int:
+    """上限可被 `SITEFORGE_SHOT_B64_MAX` 覆盖（4K 机器上运维改环境变量，不用改产物 ——
+    与 `SITEFORGE_CDP_BIN` / `SITEFORGE_MCP_TIMEOUT` 同一套约定）。
+
+    ⚠️ 写错（不是数字、≤0）**退回默认值**：反方向（静默把上限变成 0）会让每一张图都被丢掉，
+    而「图没进来」看起来与「这一页没什么可看的」一模一样 —— 正是这条修复要治的病。
+    """
+    raw = os.environ.get("SITEFORGE_SHOT_B64_MAX", "").strip()
+    if not raw:
+        return SHOT_B64_MAX
+    try:
+        value = int(raw)
+    except ValueError:
+        return SHOT_B64_MAX
+    return value if value > 0 else SHOT_B64_MAX
+
+
+def _shot_of(name: str, result: Any) -> dict | None:
+    """`screenshot` 的结果（内核 `Shot` 那份 JSON）—— 不是它就返回 `None`。
+
+    ⚠️ 这是**唯一**认「截图」这个名字的地方（`llm.run_tool_loop` 对工具名一无所知）。
+    """
+    if name != "screenshot" or not isinstance(result, dict):
+        return None
+    b64 = result.get("png_base64")
+    return result if isinstance(b64, str) and b64 else None
+
+
+def tool_message_content(name: str, result: Any) -> Any:
+    """工具结果 → tool message 的 `content`（OpenAI 那一侧的形状）。
+
+    **别的工具一个字都没变**：仍是 `json.dumps(result)` 那串文本，与以前逐字节相同。
+    唯一的例外是 `screenshot`：它的结果里有一张 PNG 的 base64（`png_base64`，
+    见 `tools/cdp/internal/screenshot.go` 的 `Shot`）。把那串 base64 当**文本**回灌，
+    模型**看不见图**（能力是有的：spike 实测 flash 数矩形 → 2、认颜色 → 红色），
+    却为它付出一整条巨长上下文 —— 所以那条路回的是 parts：
+
+        [{"type": "text", "text": <坐标证据 JSON>},
+         {"type": "image_url", "image_url": {"url": "data:image/png;base64,…"}}]
+
+    超过 `SHOT_B64_MAX` 时**只回证据 + 一句说明**（说清「图没进来」以及为什么）——
+    **不许静默丢**：静默丢的形态是「模型以为自己看见了」，然后照着想象点。
+
+    ⚠️ 这里**只做形状转换，不动 `result` 本身**：调用方（`llm.run_tool_loop`）记进
+    `rounds` 的还是原样那份，`browser_agent._summarize` 的 `bytes` 也照旧 ——
+    账本里永远不会有 base64。
+    """
+    shot = _shot_of(name, result)
+    if shot is None:
+        return json.dumps(result, ensure_ascii=False)
+
+    b64 = shot["png_base64"]
+    evidence = {k: v for k, v in shot.items() if k != "png_base64"}
+    evidence["png_base64_chars"] = len(b64)
+
+    cap = _shot_b64_max()
+    if len(b64) > cap:
+        evidence["image_omitted"] = (
+            f"这张截图太大（base64 {len(b64)} 字符 > 上限 {cap}），**没有**放进上下文 —— "
+            "本条结果里**没有图**，别当自己看见了。要看画面：把视口调小一点再截，"
+            "或改用 observe 的元素信息（bbox / selector / alternates）。"
+        )
+        return [{"type": "text", "text": json.dumps(evidence, ensure_ascii=False)}]
+
+    evidence["image"] = (
+        "见下图（本条结果里 image_url 那一份）。坐标契约：image_px = viewport_css_px × dpr —— "
+        "observe 给的 bbox 是**视口 CSS 像素**，乘 dpr 就叠到图上。"
+        "⚠️ 图只对当次观测有效：页面一滚，bbox 就与它对不上了。"
+    )
+    return [
+        {"type": "text", "text": json.dumps(evidence, ensure_ascii=False)},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}},
+    ]
+
+
 def tool_specs(session: McpSession) -> list[dict]:
     """把那道门的工具表翻成 OpenAI function-calling 形态（**不手写第二份**）。"""
     specs = []

@@ -17,6 +17,8 @@ import os
 import time
 from typing import Any, Callable, Protocol
 
+from . import tools
+
 DEFAULT_MODEL = os.environ.get("SPIKE_MODEL", "deepseek-v4-flash")
 DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com")
 
@@ -180,8 +182,13 @@ def run_tool_loop(
                     call["error"] = f"{type(e).__name__}: {e}"
             call["elapsed_ms"] = int((time.time() - t1) * 1000)
 
+            # 这一步的 content **不一定是字符串**：带图的工具（`screenshot`）回的是
+            # parts（证据文本 + `image_url` 的 data URL）—— 以前一律 `json.dumps`，
+            # 于是那张图以 base64 **文本**的身份进上下文，模型看不见图却付了全部代价。
+            # 形状由 `tools.tool_message_content` 定（认工具名的地方只有它一处）；
+            # 别的工具走的还是同一串 JSON 文本，逐字节不变。
             payload = (
-                json.dumps(call["result"], ensure_ascii=False)
+                tools.tool_message_content(name, call["result"])
                 if call["error"] is None
                 else json.dumps({"error": call["error"]}, ensure_ascii=False)
             )
