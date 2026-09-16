@@ -439,8 +439,12 @@ func (c *Client) fillDatePicker(selector, text, frameID string, dpResult map[str
 	}
 
 	// Click the calendar button to open the popup
-	bx := dpResult["centerX"].(float64)
-	by := dpResult["centerY"].(float64)
+	// ⚠️ 同样是**帧内坐标 → 主帧坐标**（见 frameClickCoords 的注释）。
+	bx, by, err := c.frameClickCoords(frameID,
+		dpResult["centerX"].(float64), dpResult["centerY"].(float64))
+	if err != nil {
+		return fmt.Errorf("failed to map calendar button coords to the main frame: %w", err)
+	}
 	if err := c.DispatchMouseClick(bx, by); err != nil {
 		return fmt.Errorf("failed to click calendar button: %w", err)
 	}
@@ -489,8 +493,11 @@ func (c *Client) fillDatePicker(selector, text, frameID string, dpResult map[str
 		return fmt.Errorf("day selection: %v", errMsg)
 	}
 
-	dx := dayResult["centerX"].(float64)
-	dy := dayResult["centerY"].(float64)
+	dx, dy, err := c.frameClickCoords(frameID,
+		dayResult["centerX"].(float64), dayResult["centerY"].(float64))
+	if err != nil {
+		return fmt.Errorf("failed to map day coords to the main frame: %w", err)
+	}
 	if err := c.DispatchMouseClick(dx, dy); err != nil {
 		return fmt.Errorf("failed to click day: %w", err)
 	}
@@ -644,8 +651,14 @@ func (c *Client) SelectOption(selector, option, frameID string, track bool) erro
 	}
 
 	// Click the control to open the dropdown menu
-	cx := controlResult["centerX"].(float64)
-	cy := controlResult["centerY"].(float64)
+	// ⚠️ findControlJS 是在**帧里**求值的 → 它给的坐标是**帧内坐标**；
+	// 鼠标事件收的是主帧视口坐标，跨源 iframe 里必须补上 iframe 原点，
+	// 否则点在 iframe **外面**（实测：命令成功、页面纹丝不动、菜单根本不开）。
+	cx, cy, err := c.frameClickCoords(frameID,
+		controlResult["centerX"].(float64), controlResult["centerY"].(float64))
+	if err != nil {
+		return fmt.Errorf("failed to map control coords to the main frame: %w", err)
+	}
 	if err := c.DispatchMouseClick(cx, cy); err != nil {
 		return fmt.Errorf("failed to click control: %w", err)
 	}
@@ -666,8 +679,11 @@ func (c *Client) SelectOption(selector, option, frameID string, track bool) erro
 		return fmt.Errorf("%v", errMsg)
 	}
 
-	ox := optionResult["centerX"].(float64)
-	oy := optionResult["centerY"].(float64)
+	ox, oy, err := c.frameClickCoords(frameID,
+		optionResult["centerX"].(float64), optionResult["centerY"].(float64))
+	if err != nil {
+		return fmt.Errorf("failed to map option coords to the main frame: %w", err)
+	}
 	if err := c.DispatchMouseClick(ox, oy); err != nil {
 		return fmt.Errorf("failed to click option: %w", err)
 	}

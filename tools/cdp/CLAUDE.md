@@ -98,6 +98,9 @@ cdp/
 │   │   ├── target.go    # --ws-url/--host/--port/CDP_* 的优先级与拆分（照抄 py 的 _parse_ws_url）
 │   │   └── conn.go      # 每条工具调用现连现断；连不上点名 host:port
 │   ├── client.go        # CDP 客户端，WebSocket 连接管理、逐帧 eval（含 OOPIF 回退）
+│   │                    # 帧坐标：`ResolveIframeSelector` 走 DOM.getFrameOwner（帧 id →
+│   │                    # owner 元素，与任何顺序无关）；`frameClickCoords` 把**帧内坐标
+│   │                    # 翻成主帧坐标**——鼠标事件收的永远是主帧视口坐标
 │   ├── click.go         # click 的目标解析：命中几个 / 点的是第几个 / 禁没禁用 + 严格判据
 │   │                    # （落点判据与回执字段在 client.go 的 dispatchMouseClick）
 │   ├── observe.go       # PageModel 契约 + observeJS（单帧页面模型）

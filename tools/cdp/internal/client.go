@@ -7,6 +7,7 @@ import (
 	"math"
 	mathrand "math/rand"
 	"net"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -757,35 +758,158 @@ func (c *Client) GetFrameContent(frameID cdp.FrameID) (interface{}, string, erro
 	return nil, "", fmt.Errorf("all content methods failed: isolatedWorld, axTree, domDocument")
 }
 
-// ResolveIframeSelector finds a selector for an iframe by frameID.
-// Returns "__iframe:N" where N is the index in frame tree's ChildFrames.
-// JS methods detect this prefix and use querySelectorAll('iframe')[N] for reliable selection.
+// iframeNodePrefix 是「这个选择器指的是某个帧的 owner <iframe> 元素，按 backendNodeId 认」
+// 的暗号（由 ResolveIframeSelector 产出，只在本文件里消费）。
+//
+// ⚠️ 它替代了原先的 `__iframe:<下标>`。那一版是**结构性错的**（2026-09-17 真窗口实测，
+// 跨源 iframe 里点击坐标没加偏移，点到了 iframe **上方**的主页面上）：
+//
+//	① 基线帧树**不含跨站子帧**（OOPIF 不进父页会话的帧树）—— 实测一个「0×0 about:blank
+//	   + 要点的跨站帧 + 0×0 about:blank」的页面上，`GetFrameTree` 只列出两个 about:blank，
+//	   真正要点的那个**一个都没有**；`GetFrameTreeWithEvents` 会把 DOM 里发现的帧
+//	   **追加在末尾**，于是那个下标是「合并顺序」；
+//	② 那个下标被拿去索引 **DOM 里 `querySelectorAll('iframe')` 的顺序** —— 两个顺序
+//	   根本不是一回事（DOM 里还站着 0×0 的、about:blank 的、广告的）。
+//	   实测：DOM 顺序 [0]0×0 [1]要点的(top=199) [2]0×0，帧树顺序 [0]0×0 [1]0×0 [2]要点的
+//	   → 下标 2 索引到的是**另一个 0×0**（top=14）→ 偏移算成 (0,14) 而不是 (0,199)。
+//
+// 静默性：落点在按下前后都是那个错的地方，**没有变化** → 判据无话可说 → 三个 landing_*
+// 键一个都不出现，回执一切正常。所以这一条只能靠「坐标对不对」的断言来钉。
+const iframeNodePrefix = "__iframeNode:"
+
+// iframeNodeBackendID 认这个暗号，取出 backendNodeId。
+func iframeNodeBackendID(selector string) (cdp.BackendNodeID, bool) {
+	if !strings.HasPrefix(selector, iframeNodePrefix) {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(selector, iframeNodePrefix))
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return cdp.BackendNodeID(n), true
+}
+
+// ResolveIframeSelector 给某个帧的 owner <iframe> 元素造一个「选择器」。
+//
+// 走 `DOM.getFrameOwner`：**由帧 id 直接给出 owner 元素**，与帧树顺序、DOM 顺序、
+// OOPIF 在不在帧树里**都无关**（那三条正是旧实现栽的地方，见 iframeNodePrefix 的注释）。
 func (c *Client) ResolveIframeSelector(frameID string) (string, error) {
-	ft, err := c.GetFrameTreeWithEvents(3 * time.Second)
+	if frameID == "" {
+		return "", fmt.Errorf("frameID 是空的（主帧不需要解析 iframe）")
+	}
+	bID, err := c.frameOwnerBackendID(frameID)
 	if err != nil {
-		return "", fmt.Errorf("failed to get frame tree: %w", err)
+		return "", fmt.Errorf("找不到帧 %s 的 owner 元素: %w", frameID, err)
 	}
-	for i, child := range ft.ChildFrames {
-		if child == nil {
-			continue
+	return fmt.Sprintf("%s%d", iframeNodePrefix, bID), nil
+}
+
+// frameOwnerBackendID 问 CDP：这个帧的 owner 元素（那个 <iframe>）是谁。
+func (c *Client) frameOwnerBackendID(frameID string) (cdp.BackendNodeID, error) {
+	var bID cdp.BackendNodeID
+	err := chromedp.Run(c.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		cc := chromedp.FromContext(ctx)
+		if cc == nil || cc.Target == nil {
+			return fmt.Errorf("invalid context")
 		}
-		if string(child.Frame.ID) == frameID {
-			return fmt.Sprintf("__iframe:%d", i), nil
+		got, _, err := dom.GetFrameOwner(cdp.FrameID(frameID)).Do(cdp.WithExecutor(ctx, cc.Target))
+		if err != nil {
+			return err
 		}
+		bID = got
+		return nil
+	}))
+	if err != nil {
+		return 0, err
 	}
-	return "", fmt.Errorf("failed to find iframe %s", frameID)
+	return bID, nil
+}
+
+// frameOrigin 取某个帧的 owner <iframe> 在**主帧视口**里的左上角（CSS px）。
+// 主帧（frameID 为空）就是 (0,0)。
+//
+// 它是「帧内坐标 → 主帧坐标」那一步（`主帧 = 帧内 + 这个原点`）。
+// ⚠️ 谁需要它：任何**在帧里求值拿到坐标、再拿去发鼠标事件**的地方 ——
+// 鼠标事件收的永远是**主帧视口坐标**（`Input.dispatchMouseEvent` 那一层不知道帧的存在）。
+// 2026-09-17 实测：漏了这一步的两条路是 `SelectOption` 的自定义下拉（点控件 / 点选项）
+// 与 `fillDatePicker`（点日历按钮 / 点那一天）—— 都是「命令返回成功、页面纹丝不动」。
+func (c *Client) frameOrigin(frameID string) (float64, float64, error) {
+	if frameID == "" {
+		return 0, 0, nil
+	}
+	sel, err := c.ResolveIframeSelector(frameID)
+	if err != nil {
+		return 0, 0, err
+	}
+	rect, err := c.GetElementCenter(sel, "")
+	if err != nil {
+		return 0, 0, err
+	}
+	return rect["x"], rect["y"], nil
+}
+
+// frameClickCoords 把**帧内**坐标翻成主帧视口坐标。
+func (c *Client) frameClickCoords(frameID string, x, y float64) (float64, float64, error) {
+	ox, oy, err := c.frameOrigin(frameID)
+	if err != nil {
+		return 0, 0, err
+	}
+	return x + ox, y + oy, nil
+}
+
+// elementRectByBackendID 取一个节点在**它所在文档的视口**里的矩形（CSS px）。
+//
+// 为什么不用选择器：跨站子帧的 owner 元素就在主文档里，但**没有选择器能唯一指认它**
+// （DOM 顺序与帧 id 无关）—— 只能拿 backendNodeId 名对名地取。
+//
+// ⚠️ 已知限制（与旧实现同一档，本轮不动）：帧**套帧**时这里给的是内层 iframe 在
+// **它父亲那一帧**视口里的坐标，外层偏移没有累加 —— 修它要给整条祖先链求和，
+// 是另一件事。
+func (c *Client) elementRectByBackendID(bID cdp.BackendNodeID) (map[string]float64, error) {
+	var out map[string]float64
+	err := chromedp.Run(c.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		cc := chromedp.FromContext(ctx)
+		if cc == nil || cc.Target == nil {
+			return fmt.Errorf("invalid context")
+		}
+		exec := cdp.WithExecutor(ctx, cc.Target)
+		obj, err := dom.ResolveNode().WithBackendNodeID(bID).Do(exec)
+		if err != nil {
+			return err
+		}
+		if obj == nil || obj.ObjectID == "" {
+			return fmt.Errorf("resolveNode 没给对象（backendNodeId=%d）", bID)
+		}
+		res, _, err := runtime.CallFunctionOn(`function(){
+			var r = this.getBoundingClientRect();
+			return {x: r.x, y: r.y, width: r.width, height: r.height,
+			        centerX: r.x + r.width/2, centerY: r.y + r.height/2};
+		}`).WithObjectID(obj.ObjectID).WithReturnByValue(true).Do(exec)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(res.Value, &out)
+	}))
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		return nil, fmt.Errorf("取不到矩形（backendNodeId=%d）", bID)
+	}
+	return out, nil
 }
 
 // GetElementCenter returns element center coordinates
+//
+// ⚠️ `__iframeNode:<backendNodeId>` 那一路**不走 JS**（见 iframeNodePrefix 的注释：
+// 「帧树下标 → DOM iframe 下标」是结构性错的，实测点到了 iframe 上方的主页面上）。
 func (c *Client) GetElementCenter(selector, frameId string) (map[string]float64, error) {
+	if bID, ok := iframeNodeBackendID(selector); ok {
+		return c.elementRectByBackendID(bID)
+	}
 	js := withPierce(fmt.Sprintf(`(function(){
 		var el;
-		if ('%[1]s'.startsWith('__iframe:')) {
-			var idx = parseInt('%[1]s'.split(':')[1]);
-			el = __cdpQA('iframe')[idx];
-		} else {
-			el = __cdpQ('%[1]s');
-		}
+		el = __cdpQ('%[1]s');
 		if (!el) return JSON.stringify({error: 'element not found'});
 		var rect = el.getBoundingClientRect();
 		if (!rect) return null;
@@ -820,14 +944,26 @@ func (c *Client) IsTouchDevice() (bool, error) {
 
 // IsElementVisible checks if element visible area >= 80%
 func (c *Client) IsElementVisible(selector string) (bool, error) {
+	if bID, ok := iframeNodeBackendID(selector); ok {
+		rect, err := c.elementRectByBackendID(bID)
+		if err != nil {
+			return false, err
+		}
+		vw, vh, err := c.getViewportDimensions()
+		if err != nil {
+			return false, err
+		}
+		w, h := rect["width"], rect["height"]
+		if w <= 0 || h <= 0 {
+			return false, nil // 0×0 的 iframe：不可见（也点不到）
+		}
+		visible := (math.Min(rect["x"]+w, vw) - math.Max(rect["x"], 0)) *
+			(math.Min(rect["y"]+h, vh) - math.Max(rect["y"], 0))
+		return visible/(w*h) >= 0.8, nil
+	}
 	js := withPierce(fmt.Sprintf(`(function(){
 		var el;
-		if ('%[1]s'.startsWith('__iframe:')) {
-			var idx = parseInt('%[1]s'.split(':')[1]);
-			el = __cdpQA('iframe')[idx];
-		} else {
-			el = __cdpQ('%[1]s');
-		}
+		el = __cdpQ('%[1]s');
 		if (!el) return false;
 		const rect = el.getBoundingClientRect();
 		const visibleArea = (Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0)) *
@@ -1042,6 +1178,12 @@ func (c *Client) DispatchMouseScrollEventAt(x, y, deltaX, deltaY float64) error 
 // ⚠️ 判不出来时（点不在视口里、协议报错）**按老行为走**（不扣）：扣下抬起是
 // 「不把点击交给一个可疑的新落点」的保护，判不出来时凭据不足，不额外拿走一次点击。
 // 这条路径**不静默**：返回值里带着前后两次的落点描述（见 MouseClickOutcome）。
+//
+// ⚠️ **已知后果（2026-09-17 本机复现）**：判据在跨源子帧里瞎，所以**若页面在 release 上
+// 关菜单**（有些 MUI 版本会），那一格会退化回「点开又被自己关掉」—— 夹具里复现过
+// （帧内 `mousedown:in-control` → `mouseup:in-backdrop` → 菜单关掉）。真站那一版 MUI
+// 实测**不**在 mouseup 上关菜单，所以 gowizard 这一格能跑通；换个库就不一定。
+// 要真修得在子帧**内部**自己判落点（`__cdpQA` 那一路能进子帧的 document），另裁。
 //
 // ⚠️ **跨站 iframe 是这套判据的一个已知盲区**（复审实测 + 本机复验）：
 // 跨站子帧里 `DOM.getNodeForLocation` **只返回父页的 `<iframe>` 元素**（同 site
