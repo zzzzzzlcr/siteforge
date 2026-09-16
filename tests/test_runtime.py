@@ -28,6 +28,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -179,6 +180,61 @@ def test_a_failed_screenshot_still_returns_what_production_returned(monkeypatch)
     helper = _load().CDPHelper(WS)
     assert helper.screenshot() == "garbage-out"
     assert "boom" in helper.last_screenshot_error
+
+
+# ── 上报的出口：`SCREENSHOT_API_URL` 得是真的（不是个摆设）──────────
+
+class _Response:
+    def __init__(self, body=b"{}"):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _stub_urlopen(monkeypatch):
+    """把 urlopen 截下来（**绝不真的出网**），记下每一次请求的 URL。"""
+    seen = {"urls": []}
+
+    def fake(request, **kw):
+        seen["urls"].append(getattr(request, "full_url", str(request)))
+        return _Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    return seen
+
+
+class _FakeCDP:
+    """只够 `report_url` 用：它先问当前 URL，再 POST。"""
+
+    def get_page_info(self):
+        return {"url": "https://example.test/step-1", "title": "Example"}
+
+
+def test_report_url_honours_the_screenshot_api_env(monkeypatch):
+    """`SCREENSHOT_API_URL` 在模块顶上被读，可**上报那条路原先写死了一个字面量** ——
+    一个假装存在的旋钮：设了它什么也不会变，而「以为什么都变了」比没有旋钮更坏。
+
+    现在它真的通到请求上（自测/实验才有地方可指），**默认值一个字没改**
+    （仍是生产那个 `fmr.3tkj.cn`，57 个既有脚本共用这份）。
+    """
+    for name in ENV_OVERRIDES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("SCREENSHOT_API_URL", "https://example.test/api/quest/screenshot")
+    seen = _stub_urlopen(monkeypatch)
+    _load().report_url(_FakeCDP(), "task_1", "success")
+    assert seen["urls"] == ["https://example.test/api/quest/screenshot"], seen
+
+    monkeypatch.delenv("SCREENSHOT_API_URL")
+    seen = _stub_urlopen(monkeypatch)
+    _load().report_url(_FakeCDP(), "task_1", "success")
+    assert seen["urls"] == ["https://fmr.3tkj.cn/api/quest/screenshot"], "默认值不许动"
 
 
 # ── 出身与分歧看得见 ──────────────────────────────────────────────

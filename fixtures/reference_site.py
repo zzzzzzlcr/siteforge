@@ -16,6 +16,9 @@ siteforge 从真页面探索出来的重放脚本：按 STATES 走一遍，见�
   --delay <秒>    每步之后**固定**停这么久（秒），覆盖默认的拟人随机停顿（0.4–1.6s）。
                   扰动自测的第 3 遍用它放大时序（「填完立刻点」这类竞争，慢下来才看得见）。
                   不给（或给 ≤0）= 基线那套随机停顿；生产重跑别给（白等，不是扰）
+  --no-report     这一次跑**不上报**（不往生产的 URL 记录接口写）。给自测/调试用：
+                  自测也是拿真浏览器跑真站，但它不是生产任务，不该在生产那边留下记录。
+                  生产重跑**不许**给（运维正是靠那些 URL 记录看任务走到哪了）
 
 两个调试参数都不给 = **生产重跑路径**，与 forms/sites/ 下的手写脚本行为一致：
 不截图、不 observe、不落 trace、不调任何模型（规格 §13：重跑必须便宜）。
@@ -327,7 +330,8 @@ class Filler:
     """
 
     def __init__(self, ws_url, form_file, correlation_id, task_id="",
-                 trace=None, stop_at=None, shots="failed", delay=DELAY_RANGE):
+                 trace=None, stop_at=None, shots="failed", delay=DELAY_RANGE,
+                 no_report=False):
         self.cdp = CDPHelper(ws_url)
         with open(form_file) as f:
             self.form_data = json.load(f)
@@ -338,7 +342,10 @@ class Filler:
         self.stop_at = stop_at or 0
         self.shots = shots or "failed"
         self.delay = delay
+        self.no_report = no_report    # --no-report：这次不上报（自测/调试用；生产必须上报）
         self.tracing = bool(trace)
+        if self.no_report:
+            self.log.info("[%s] 这一次不上报（--no-report）：结果不往生产接口写", self.cid)
         self.step = 0          # 当前第几步（全局编号，与 --stop-at 同一套）
         self.stuck = 0         # 连续没做成的步数（早停看它）
         self.stalled = 0       # 连续「点了但页面没动」的步数（另一种原地打转）
@@ -383,6 +390,8 @@ class Filler:
             self.log.warning("[%s] trace 写不进：%s", self.cid, exc)
 
     def _rpt(self, label):
+        if self.no_report:
+            return          # --no-report：一个字节都不往生产发（自测/调试走这一条）
         try:
             report_url(self.cdp, self.tid, label, self.log)
         except Exception as exc:                        # 上报失败不能把任务搞挂
@@ -912,6 +921,7 @@ def main():
     p.add_argument("--trace", default=""); p.add_argument("--stop-at", type=int, default=0)
     p.add_argument("--shots", choices=("failed", "all"), default="failed")
     p.add_argument("--delay", type=float, default=0.0)
+    p.add_argument("--no-report", action="store_true")
     p.add_argument("--ws-url", required=True); p.add_argument("--form-file", required=True)
     p.add_argument("--correlation-id", required=True); p.add_argument("--log-level", default="INFO")
     p.add_argument("--task-id", default=""); a = p.parse_args()
@@ -920,7 +930,8 @@ def main():
     # 所以定值要摊成 (x, x)。扰动自测的第 3 遍走这条路 —— **不改写产物源码**。
     f = Filler(a.ws_url, a.form_file, a.correlation_id, a.task_id,
                trace=a.trace or None, stop_at=a.stop_at or None, shots=a.shots,
-               delay=(a.delay, a.delay) if a.delay > 0 else DELAY_RANGE)
+               delay=(a.delay, a.delay) if a.delay > 0 else DELAY_RANGE,
+               no_report=a.no_report)
     sys.exit(0 if f.run() else 1)
 
 if __name__ == "__main__": main()

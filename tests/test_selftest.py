@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -459,6 +460,142 @@ def test_a_missing_artifact_is_refused_before_anything_runs(env):
         selftest.run(str(env["dir"] / "nope.py"), WS, env["form"], SITE, run_dir=env["dir"])
     assert "nope.py" in str(err.value)
     assert env["stub"].calls == [], "产物不在就不该起任何进程"
+
+
+# ── 自测不许往生产写：断言「有没有发请求」，不是「有没有传那个 flag」────────
+
+#: 真运行时那一份（产物 `from common import …` 解析到的就是它）
+RUNTIME_COMMON = ROOT / "forms" / "common.py"
+
+#: 假 cdp：让产物在**真 CDPHelper** 底下走通一次 —— `eval` 交回带成功文案的页面文本，
+#: 于是产物会走到「报 URL」那一步。**那一步正是要被堵住的**（走不通就什么也证明不了）。
+STUB_CDP_OK = '''#!/usr/bin/env python3
+"""假 cdp（测试用）：只够让产物在真 CDPHelper 底下走通一次。"""
+import json
+import sys
+
+cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+if cmd in ("--help", "-h", "help"):
+    print("A CLI tool to interact with Chrome DevTools Protocol")
+    print("Available Commands:")
+    for name in ("active", "click", "close", "eval", "form", "navi", "observe",
+                 "diff", "screenshot", "scroll", "snapshot", "targets"):
+        print("  %s  stub" % name)
+    sys.exit(0)
+if cmd == "eval":
+    print(json.dumps("Thank you — https://example.test/done"))
+    sys.exit(0)
+if cmd in ("click", "form", "scroll", "navi"):
+    print("done: %s" % cmd)
+    sys.exit(0)
+sys.exit(0)
+'''
+
+#: 子进程的网络守卫（`sitecustomize` 开机自动 import）：任何出网动作记一笔再抛。
+#: 为什么堵在 socket 这一层而不是堵在 `report_url`：**手段会变，网线不会** ——
+#: 谁哪天换了个 HTTP 客户端（requests / http.client / 别的），这里照样拦得住。
+NET_GUARD = '''"""自测的子进程守卫：这次跑**一个字节都不许发去生产**。"""
+import os
+import socket
+import urllib.request
+
+_LOG = os.environ.get("SITEFORGE_NETLOG")
+
+
+def _record(what):
+    if not _LOG:
+        return
+    with open(_LOG, "a", encoding="utf-8") as fp:
+        fp.write(what + "\\n")
+
+
+def _no_urlopen(*args, **kwargs):
+    target = args[0] if args else kwargs.get("url", "?")
+    _record("urlopen %s" % target)
+    raise AssertionError("自测不许往生产发请求：%s" % target)
+
+
+urllib.request.urlopen = _no_urlopen
+
+
+def _no_connect(self, address):
+    _record("connect %r" % (address,))
+    raise AssertionError("自测不许连出去：%r" % (address,))
+
+
+socket.socket.connect = _no_connect
+'''
+
+
+def _reporting_sandbox(tmp_path):
+    """真运行时 + 真产物 + 假 cdp：不起浏览器也能让产物**一路跑到「该上报」那一步**。"""
+    root = tmp_path / "prodlike"
+    (root / "forms" / "sites").mkdir(parents=True)
+    shutil.copy(RUNTIME_COMMON, root / "forms" / "common.py")
+    states = [{"name": "go", "when": None, "steps": [
+        {"action": "click", "note": "点「Go」",
+         "target": {"text": "Go", "role": "button", "near": None, "selectors": ["#go"]}}]}]
+    py = root / "forms" / "sites" / ("%s.py" % SITE)
+    py.write_text(template.render(SITE, "Thank you", states, [], {}), encoding="utf-8")
+    form = root / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    cdp = root / "cdp"
+    cdp.write_text(STUB_CDP_OK, encoding="utf-8")
+    cdp.chmod(0o755)
+    return py, form, cdp
+
+
+def _install_net_guard(tmp_path, monkeypatch):
+    """给**子进程**装上网络守卫，返回它记账的那个文件。"""
+    guard = tmp_path / "netguard"
+    guard.mkdir()
+    (guard / "sitecustomize.py").write_text(NET_GUARD, encoding="utf-8")
+    netlog = tmp_path / "net.log"
+    monkeypatch.setenv("PYTHONPATH", str(guard))
+    monkeypatch.setenv("SITEFORGE_NETLOG", str(netlog))
+    return netlog
+
+
+def test_a_self_test_run_never_touches_the_production_api(tmp_path, monkeypatch):
+    """**这一轮最承重的一条**：自测不往生产写。
+
+    为什么不满足于「断言 `--no-report` 传下去了」：flag 只是手段，证据是**网线上没有包**。
+    所以这里在子进程里装网络守卫（`sitecustomize` 把 `urllib` 与 `socket` 的出口堵上，
+    记一笔再抛），产物真去上报就会留下记录。
+
+    而且先跑**正控**：同一套环境、同一个产物，**不给** `--no-report` 时必须留下记录 ——
+    否则「没有记录」可能只是这根网线本来就没通，那这条测试就是永远绿的假钉子。
+    """
+    py, form, cdp = _reporting_sandbox(tmp_path)
+    netlog = _install_net_guard(tmp_path, monkeypatch)
+
+    # 正控：生产那条路（不给 --no-report）真的会去写生产（被守卫挡住，出不了本机）
+    done = subprocess.run(
+        ["python3", str(py), "--ws-url", WS, "--form-file", str(form),
+         "--correlation-id", "cid_1", "--log-level", "INFO"],
+        capture_output=True, text=True, timeout=120,
+        env={**os.environ, "SITEFORGE_CDP_BIN": str(cdp)})
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert netlog.exists() and netlog.read_text(encoding="utf-8").strip(), (
+        "正控失败：不给 --no-report 时没看到出网动作 —— 那这条测试什么也证明不了")
+
+    netlog.unlink()
+    report = selftest.run(str(py), WS, str(form), SITE, run_dir=tmp_path / "traces",
+                          cdp_bin=str(cdp), delay=0.01, timeout=120,
+                          allow_skips=("country", "viewport"))
+    assert report.passed is True, report.summary()   # 真跑通了（不是空转 —— 空转证明不了任何事）
+    assert not netlog.exists(), "自测往生产发了请求：\n%s" % (
+        netlog.read_text(encoding="utf-8") if netlog.exists() else "")
+
+
+def test_a_self_test_run_is_silent_in_every_run(env):
+    """五遍**每一遍**都带 `--no-report` —— 只有第一遍静下来不算静。"""
+    stub = env["install"](_scripts())
+    selftest.run(str(env["py"]), WS, env["form"], SITE, run_dir=env["dir"], cdp_bin=env["cdp"],
+                 set_viewport=lambda w, h: None, set_country=lambda c: None, country="us")
+    assert stub.artifact_calls, "一次都没跑？"
+    for cmd in stub.artifact_calls:
+        assert "--no-report" in cmd, cmd
 
 
 # ── 与模板的契约 ──────────────────────────────────────────────────

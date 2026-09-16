@@ -422,7 +422,11 @@ def report_url(cdp_helper: CDPHelper, task_id: str, step: str,
             "url": current_url
         }
 
-        api_url = "https://fmr.3tkj.cn/api/quest/screenshot"
+        # 认模块顶上那个 SCREENSHOT_API_URL（默认值仍是生产那个 URL —— 一个字没改）。
+        # 这里原先写死了一个字面量：于是那个环境变量**只在模块顶上被读、在真正发请求的
+        # 这条路上被忽略** —— 一个假装存在的旋钮。设了它什么也不会变，而「以为什么都变了」
+        # 比没有旋钮更坏：自测/实验想把它指到别处都指不动（R-2x）。
+        api_url = SCREENSHOT_API_URL
 
         for attempt in range(2):
             try:

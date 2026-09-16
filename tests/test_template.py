@@ -271,6 +271,19 @@ def test_delay_knob_is_registered_and_documented(rendered):
         assert flag in doc, "§5.1c 是读产物的人最先看的地方，%s 要写在里面" % flag
 
 
+def test_no_report_knob_is_registered_and_documented(rendered):
+    """`--no-report`：这一次跑**不往生产上报**。
+
+    为什么产物自己要有这个开关（而不是让调用方去改环境变量或改代码）：产物成功时会调
+    `report_url`，把 URL 记录写进生产的接口 —— 那是生产任务要的（运维靠它看进度），
+    但**自测/调试不是生产任务**，不该在生产那边留下记录。关掉它的唯一诚实做法是产物
+    自己有开关，而不是让外面去猜怎么让它闭嘴。
+    """
+    assert '"--no-report"' in rendered
+    doc = ast.get_docstring(ast.parse(rendered))
+    assert "--no-report" in doc, "§5.1c 里要有它，跟 --delay 挨着"
+
+
 def test_actions_go_through_cdp(rendered):
     """§5.2：动作走 `self.cdp.*`；`eval` 只准出现在读路径。"""
     assert "self.cdp.click(" in rendered
@@ -349,9 +362,10 @@ def test_delay_flag_reaches_the_filler(rendered, sandbox, monkeypatch):
 
     class _Filler:
         def __init__(self, ws_url, form_file, correlation_id, task_id="",
-                     trace=None, stop_at=None, shots="failed", delay=None):
+                     trace=None, stop_at=None, shots="failed", delay=None,
+                     no_report=None):
             seen.update(delay=delay, shots=shots, trace=trace, stop_at=stop_at,
-                        ws_url=ws_url)
+                        ws_url=ws_url, no_report=no_report)
 
         def run(self):
             return True
@@ -370,6 +384,40 @@ def test_delay_flag_reaches_the_filler(rendered, sandbox, monkeypatch):
         module.main()
     assert done.value.code == 0
     assert seen["delay"] == (2.0, 2.0), seen
+
+
+def test_no_report_flag_reaches_the_filler(rendered, sandbox, monkeypatch):
+    """`--no-report` 从命令行一路接到 `Filler` 上。
+
+    默认必须是 **False**（生产重跑照旧上报：运维靠那些 URL 记录看进度）；
+    给 `--no-report` 才闭嘴 —— 反向接错（默认闭嘴）就是悄悄改生产行为。
+    """
+    module, path = _load("rendered_noreport", rendered, sandbox)
+    seen = {}
+
+    class _Filler:
+        def __init__(self, ws_url, form_file, correlation_id, task_id="",
+                     trace=None, stop_at=None, shots="failed", delay=None,
+                     no_report=None):
+            seen["no_report"] = no_report
+
+        def run(self):
+            return True
+
+    monkeypatch.setattr(module, "Filler", _Filler)
+    base = [str(path), "--ws-url", WS, "--form-file", "form.json", "--correlation-id", "cid_1"]
+
+    monkeypatch.setattr(sys, "argv", list(base))
+    with pytest.raises(SystemExit) as done:
+        module.main()
+    assert done.value.code == 0
+    assert seen["no_report"] is False, "不给 --no-report 就得照旧上报（生产要那些记录）"
+
+    monkeypatch.setattr(sys, "argv", list(base) + ["--no-report"])
+    with pytest.raises(SystemExit) as done:
+        module.main()
+    assert done.value.code == 0
+    assert seen["no_report"] is True, seen
 
 
 #: ad-task.py 就是这么调产物的：**只有那 5 个参数**，成功判据是 returncode == 0。

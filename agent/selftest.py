@@ -32,9 +32,11 @@
 - **工具侧自测通过 ≠ 生产一定过**（规格 §10 原话）：自测跑的浏览器与生产 worker 的
   代理出口、指纹、时序都不是一套。扰动测试缩小这个差，但不消除它 —— 所以
   `CAVEAT` 跟着每一份报告走（`Report.summary()` 里永远有它）。
-- **自测是真的在跑产物**：产物成功时会调 `report_url`，那不是我们能关的（关掉就是改产物）。
-  所以默认的 `correlation_id` 起头写成 `selftest-<site>`，生产那边看到的是自测的
-  记录、不是某个真任务；要跑真任务的 id 就自己传 `correlation_id` / `task_id`。
+- **自测不往生产写**：自测是拿真浏览器跑真站，但它不是生产任务。所以每一遍都带
+  产物的 `--no-report`（`NO_REPORT_FLAG`，永远给），一个字节都不发去生产的 URL
+  记录接口。这条不许退化成「argv 里有个字符串」——`tests/test_selftest.py` 是在
+  子进程里装网络守卫、按**有没有出网动作**断言的（并且带正控：不给这个参数时必须
+  留下记录，否则「没有记录」可能只是网线本来就没通）。
 
 ## 谁消费它
 
@@ -76,7 +78,12 @@ DEFAULT_ALLOWED_SKIPS = ("country",)
 #: 自测拼给产物的参数 —— 每一个都必须是产物 CLI 上真有的（`agent/template.py` §5.1c）。
 #: `test_selftest_and_the_template_agree_on_the_artifact_cli` 拿它当闸门。
 ARTIFACT_FLAGS = ("--ws-url", "--form-file", "--correlation-id", "--task-id",
-                  "--log-level", "--trace", "--delay")
+                  "--log-level", "--trace", "--delay", "--no-report")
+
+#: 自测**永远**给产物带上这个 —— 自测不是生产任务，不该在生产那边留下记录。
+#: 断言这件事的测试走的是**网线**（子进程里装网络守卫，任何出网动作都记一笔），
+#: 不是「argv 里有没有那个字符串」：手段会变，网线不会。
+NO_REPORT_FLAG = "--no-report"
 
 #: 跑一遍产物的上限（秒）。与 `scripts/ad-task.py:1532` 的 `communicate(timeout=600)`
 #: 同一个数：自测不该比生产更宽容，也不该更苛刻。
@@ -261,6 +268,7 @@ def _artifact_cmd(py, ws_url, form_file, correlation_id, log_level, trace_path,
            "--trace", str(trace_path)]
     if task_id:
         cmd += ["--task-id", task_id]
+    cmd.append(NO_REPORT_FLAG)      # 自测**永远**不上报（见那个常量上面的注释）
     if delay is not None:
         cmd += ["--delay", ("%g" % float(delay))]
     return cmd
