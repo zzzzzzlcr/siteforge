@@ -119,4 +119,18 @@
          真站上 `address1a` / `opt2b` 这一家会同样退化 → 记进残留清单，R5 校准。 -->
 <input name="step2a" type="text" placeholder="N subfield name">
 
+<!-- ── 8. 锚点 + **4 跳**位置 —— 判据的另一侧边界（2026-09-17 加，I3）。
+     与上面 H（锚点 + 3 跳）成一对，把「跳数 ≥4 → low」这条线**两侧都钉住**：
+     边界正是差一错误住的地方，只钉一侧等于没钉。
+
+     形状复刻真站：真站那三个 combobox 拿到的是
+     `#inputAreaParentContainer > … 9 跳 …`（实测 stability=high，改后 low）。
+     这里用 4 跳（不是 9 跳）：**最小的越界形状**才是判据线本身。
+
+     ⚠️ 摆在 body 末尾是刻意的：加在中间会把 G 的 `div:nth-of-type(1)`
+     挤成 (2)，那条断言钉的是逐字的选择器串，会连带红掉。 -->
+<div id="far-wrap"><div><div><div>
+  <button>P anchor plus four hops</button>
+</div></div></div></div>
+
 </body></html>

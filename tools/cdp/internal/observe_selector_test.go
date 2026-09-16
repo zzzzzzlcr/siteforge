@@ -17,11 +17,16 @@ import (
 // 两份实现必然漂移，而「两份判据」正是本项目反复踩的坑（控制器在本任务里
 // 明确禁掉了 Go 侧 `stabilityOf`/`looksRandom` 助手）。
 //
-// 判据（规格 §4.3，见 brief「验收标准」）：
+// 判据（规格 §4.3；2026-09-17 I3 改成按**位置跳数**分档，见 observe.go 的 stability）：
 //
-//	high   = 有稳定的 id / name / data-*，且**不含随机 hash**
-//	medium = 结构路径（nth-of-type 链）≤3 层
-//	low    = 依赖随机 class hash / 深结构路径 >3 层
+//	地址 = 锚点（#id / [id=…] / [name=…] / [data-*=…]）+ 尾巴（:nth-of-type 链）
+//	high   = 有锚点且**一跳位置都没有**（整条地址都是身份）
+//	medium = 位置跳数 1–3（不管有没有锚点）；或没有锚点、只有 class
+//	low    = 位置跳数 ≥4；或没有锚点也没有 class（只剩裸标签的位置）
+//
+// 「锚点 + 长位置尾巴」原来是 high（只看首字符），现在按尾巴的跳数掉档 ——
+// 真站实测那三个 combobox 拿到锚点 + 9 跳的地址、却全是 high，
+// 而消费侧（agent/template.py 的 rank）是按 stability 排回退梯子的。
 //
 // fixture = testdata/selector.html（Task 5 新增，httptest 自带服务，C30：
 // 不依赖 localhost:8080 之类的外部 mock server）。每个元素用**唯一文本**标注，
@@ -206,18 +211,17 @@ func TestObserveSelectorDeepPathRatedLow(t *testing.T) {
 
 	// H：4 段（3 个 >），只差在**表头是祖先的稳定 id**。
 	//
-	// ⚠️ 这条是**特征化断言**（characterization），不是在认可当前判据：
-	// `stability()` 的第一条分支是 `/^#/` → 只要选择器以 `#` 开头就答 high，
-	// 于是 H 拿到 high，而它的尾巴（3 跳 nth-of-type）与 G 一样脆 —— 插一个 div 就断。
-	// 规格 §4.3 两种读法都不支持 high：按「结构路径 ≤3 层」读 → H 是 4 段；
-	// 按「nth-of-type 层数」读 → H 有 3 层。high 只在「选择器里有 #」这一读法下成立。
-	// 本任务不动实现（控制器：不做 Go 侧助手、先报发现），所以这里把**现状钉住**
-	// 并在报告里提出来 —— 钉住是为了将来改判的人一眼看到差异，不是为了背书。
+	// ⚠️ 这一格原来是**特征化断言**（钉住「以 # 开头就 high」的现状，并在报告里
+	// 提出异议）。I3（2026-09-17）把那个判据改掉了，于是这里**期望值跟着改**：
+	// H 从 high 降成 medium，理由是——
 	//
-	// ⚠️ 2026-09-17 补：地址唯一性那轮让**锚点停车**变成了常规行为，这条特征化的
-	// 影响面因此变大 —— 真站上那两个 combobox 现在拿到的正是 `#inputAreaParentContainer`
-	// 打头、尾巴有 8 跳 nth-of-type 的路径，照样是 high。同一个量级的问题，
-	// 只是从 fixture 里的 4 段变成了真站上的 9 段（见 fix-observe-addressability-report）。
+	//   判据改成「地址 = 锚点 + 尾巴，评级看**尾巴里有几跳位置**」之后，H 的锚点
+	//   是祖先的 `#deep-wrap`、尾巴是 **3 跳** nth-of-type：tail 1–3 跳 = medium。
+	//   这与规格 §4.3「结构路径 ≤3 层 → medium」是同一把尺子（纯路径的跳数 = 段数）。
+	//   为什么不是 low：3 跳的位置尾巴与 G（6 跳、无锚点）**不是一个量级**，
+	//   把它与 9 跳的真站路径一起打成 low 就等于没有分档（brief 明确禁止）。
+	//   为什么不是 high：high 的语义是「整条地址都是身份，没有一处『第几个』」——
+	//   H 的每一跳都是「第几个」，插一个同标签的 div 就断，它不配。
 	h := actionByText(t, m, "H deep under stable id")
 	if !strings.HasPrefix(h.Selector, "#deep-wrap > ") {
 		t.Fatalf("H 的 selector = %q，应形如 `#deep-wrap > …`（爬升途中撞上祖先的稳定 id 就停车）", h.Selector)
@@ -225,8 +229,7 @@ func TestObserveSelectorDeepPathRatedLow(t *testing.T) {
 	if n := strings.Count(h.Selector, ">"); n != 3 {
 		t.Errorf("H 的 selector 有 %d 个 '>'（应为 3，与 G 同形状）—— 断言的前提变了，重新判读", n)
 	}
-	// H 元素**自身**没有任何稳定标识 —— 这是「high 是否成立」的关键事实：
-	// 选择器里唯一那个 `#` 是**祖先**的，H 自己不在其中。
+	// H 元素**自身**没有任何稳定标识 —— 这是「那一个 `#` 只是祖先的」的关键事实：
 	if n := strings.Count(h.Selector, "#"); n != 1 {
 		t.Errorf("H 的选择器里 `#` 出现 %d 次（应恰好 1 次 = 祖先 #deep-wrap）—— 断言前提变了: %q", n, h.Selector)
 	}
@@ -235,11 +238,42 @@ func TestObserveSelectorDeepPathRatedLow(t *testing.T) {
 			t.Errorf("H 的选择器里出现了 %q —— H 自身不该有稳定标识，断言前提变了: %q", own, h.Selector)
 		}
 	}
-	t.Logf("H 特征化：selector=%q stability=%q（G 同形状无 id 表头 = %q）", h.Selector, h.Stability, g.Stability)
-	if h.Stability != "high" {
-		// 若这条红了，说明判据被改过（很可能就是按本条测试的顾虑修的）——
-		// 那么请把这条特征化断言改成正经判据断言，并连带更新报告。
-		t.Logf("⚠️ H 的 stability 不再是 high（现在 %q）—— 判据可能已被修改，请复核本测试的定位", h.Stability)
+	t.Logf("H：selector=%q stability=%q（G 同形状无 id 表头 = %q）；"+
+		"P = 锚点 + 4 跳（下面那条边界）", h.Selector, h.Stability, g.Stability)
+	if h.Stability != "medium" {
+		t.Errorf("H（锚点 + **3 跳**位置）的 stability = %q，应为 medium —— "+
+			"判据：锚点之后的位置跳数 1–3 跳 = medium（与「没有锚点的纯结构路径 ≤3 段」"+
+			"同一把尺子）；0 跳才是 high、≥4 跳是 low", h.Stability)
+	}
+
+	// P：锚点 + **4 跳**位置 —— 判据线的**另一侧**（与 H 的 3 跳配对）。
+	//
+	// 只钉住 H（降级了）不够：把阈值从「≥4 跳」挪到「≥3 跳」同样能让 H 变红，
+	// 而那样会把大量「锚点 + 3 跳」的地址一起打进 low（= rank 退化，brief 禁的东西）。
+	// 两侧都钉住，阈值才真的是那个数。
+	p := actionByText(t, m, "P anchor plus four hops")
+	if !strings.HasPrefix(p.Selector, "#far-wrap > ") {
+		t.Fatalf("P 的 selector = %q，应形如 `#far-wrap > …`", p.Selector)
+	}
+	if n := strings.Count(p.Selector, ":nth-of-type"); n != 4 {
+		t.Errorf("P 的 selector 里有 %d 跳 nth-of-type（应为 4）—— 断言前提变了: %q", n, p.Selector)
+	}
+	if p.Stability != "low" {
+		t.Errorf("P（锚点 + **4 跳**位置）的 stability = %q，应为 low —— "+
+			"真站实测就是这一档：三个 combobox 拿到 `#inputAreaParentContainer > … 9 跳 …`， "+
+			"改判前全是 high，会**排在真正稳定的 id 前面先试**（消费侧按 stability 排序）", p.Stability)
+	}
+
+	// 正向对照：真稳定 id（0 跳位置）必须仍然是 high —— 降级的判据不许误伤它们。
+	for _, want := range []struct{ text, sel string }{
+		{"Stable Id", "#schedule-now"},
+		{"L pure id", "#pure-id"},
+	} {
+		if a := actionByText(t, m, want.text); a.Selector != want.sel || a.Stability != "high" {
+			t.Errorf("%s：selector=%q stability=%q，want selector=%q stability=high —— "+
+				"「一个 :nth-of-type 都没有」的地址就是 high，判据改的是**带位置尾巴的锚点**，不是 id 本身",
+				want.text, a.Selector, a.Stability, want.sel)
+		}
 	}
 }
 

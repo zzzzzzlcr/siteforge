@@ -772,18 +772,50 @@ func observeJS() string {
     }
     return why;
   }
+  // stability：这条地址**抗不抗得住重渲染 / 改名**。判据一句话 ——
+  //
+  //   地址 = 锚点（身份）+ 尾巴（位置）；评级看**尾巴里有几跳位置**。
+  //
+  //     hops = 地址里 :nth-of-type 的个数。每一个都是「兄弟里的第几个」，
+  //            多一个就多一层结构依赖 —— 中间插一个同标签的 div 就断。
+  //     有锚点（#id / [id=…] / [name=…] / [data-*=…]，页面作者写的身份）：
+  //       hops 0 跳 → high     整条地址都是身份，没有一处「第几个」
+  //       hops 1–3 → medium
+  //       hops ≥4  → low
+  //     没有锚点（整条只剩位置或 class）：同一把尺子，但没有身份就没有 high ——
+  //       0 跳且是 class → medium（class 是框架生成物，抗改名不如 id）
+  //       其余 → 跳数 ≤3 是 medium、≥4 是 low
+  //
+  // ⚠️ 为什么不再「以 # 开头就 high」（2026-09-17 改的，实测驱动）：
+  //   F2 之后**锚点停车成了常规行为**（pathChain 爬到第一个稳定 id 的祖先就停），
+  //   于是「锚点 + 长位置尾巴」的地址在真站主帧上满屏都是。实测那一趟（gowizard
+  //   的 MUI 问卷，2026-09-17）三个 combobox 拿到的都是
+  //   「#inputAreaParentContainer > … 9 跳 …」，旧判据只看首字符，三条**全是 high**。
+  //   危害在消费侧：产物 py 的回退梯子按 stability 排序（agent/template.py 的
+  //   rank = {high:0, medium:1, low:2}），于是一条 9 跳位置路径**排在真正稳定的
+  //   id 前面先试**；而同一轮 alternates 又大幅变少（真站主帧 60 → 3），
+  //   回退余地同时变小 —— 两件事叠在一起才是这个缺陷的完整形状。
+  //
+  // ⚠️ 也不许反过来把长路径**一律**打成 low（那等于 rank 集体退化 = 没有排序，
+  //   而且把「锚点 + 1 跳」（几乎不会断）与 9 跳路径混成一档）。分档落在
+  //   **锚点之后的位置跳数**上，与「没有锚点的纯结构路径」**同一把尺子**：
+  //   规格 §4.3 的「结构路径 ≤3 层 → medium」就是这把尺子，而纯路径的跳数 = 段数，
+  //   与旧实现的「> 个数 ≤2」**逐字等价** —— 所以 G / I 那几格的档位一个都没动。
+  //
+  // ⚠️ 判据的**单位**从「> 的个数」换成了「:nth-of-type 的个数」：后者更准
+  //   （div:nth-of-type(1) span:nth-of-type(1) 一个 > 都没有，却同样依赖两次位置）。
+  //   pathSel 吐出来的永远是 > 连接的链，两种数法在那条路上相等。
   function stability(el, cands) {
     var c = cands[0] || '';
-    // 「[id=…]」与「#id」是**同一件事**（idSel 把不是合法 CSS ident 的 id 写成前者的
-    // 形式）—— 只认「#」会让那类元素的稳定性**凭空掉一档**：
+    var hops = (c.match(/:nth-of-type/g) || []).length;
+    // 锚点：「[id=…]」与「#id」是**同一件事**（idSel 把不是合法 CSS ident 的 id 写成
+    // 前者的形式）—— 只认「#」会让那类元素的稳定性**凭空掉一档**：
     // 一条独一无二的稳定 id 被评成 low，消费侧会以为它脆（少报也是一种不实）。
-    if (/^#/.test(c) || /^\[id=/.test(c) || /\[(name|data-)/.test(c)) return 'high';
-    if (/:nth-of-type/.test(c)) {
-      var depth = (c.match(/>/g) || []).length;
-      return depth <= 2 ? 'medium' : 'low';
-    }
-    if (/^[a-z]+\.[a-z]/.test(c)) return 'medium';
-    return 'low';
+    var anchored = /^#/.test(c) || /^\[id=/.test(c) || /\[(name|data-)/.test(c);
+    if (anchored && hops === 0) return 'high';
+    // 只有 class（框架生成物）：没有身份，但也不是位置 —— 与从前同档。
+    if (hops === 0 && /^[a-z]+\.[a-z]/.test(c)) return 'medium';
+    return hops <= 3 ? 'medium' : 'low';
   }
   function region(el) {
     // 探针发现：走 parentElement 在 shadow 里会断（到 shadow root 顶就 null），
