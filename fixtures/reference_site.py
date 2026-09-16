@@ -13,6 +13,9 @@ siteforge 从真页面探索出来的重放脚本：按 STATES 走一遍，见�
   --stop-at <N>   跑完第 N 步就停，**浏览器保持原状不关**（谁开的谁关）
   --shots all     每步都截图。默认只在**没做成**、以及**判得出没推进**的那几步落
                   （点/导航那类才有推进可判；填/选没有通用判据，不算它「没推进」）
+  --delay <秒>    每步之后**固定**停这么久（秒），覆盖默认的拟人随机停顿（0.4–1.6s）。
+                  扰动自测的第 3 遍用它放大时序（「填完立刻点」这类竞争，慢下来才看得见）。
+                  不给（或给 ≤0）= 基线那套随机停顿；生产重跑别给（白等，不是扰）
 
 两个调试参数都不给 = **生产重跑路径**，与 forms/sites/ 下的手写脚本行为一致：
 不截图、不 observe、不落 trace、不调任何模型（规格 §13：重跑必须便宜）。
@@ -908,12 +911,16 @@ def main():
     # 与 forms/sites/*.py 一字不差（包括 `a = p.parse_args()` 挤在 --task-id 那行）
     p.add_argument("--trace", default=""); p.add_argument("--stop-at", type=int, default=0)
     p.add_argument("--shots", choices=("failed", "all"), default="failed")
+    p.add_argument("--delay", type=float, default=0.0)
     p.add_argument("--ws-url", required=True); p.add_argument("--form-file", required=True)
     p.add_argument("--correlation-id", required=True); p.add_argument("--log-level", default="INFO")
     p.add_argument("--task-id", default=""); a = p.parse_args()
     log = setup_logger(SITE); log.setLevel(a.log_level)
+    # --delay 给的是**定值**（≤0 = 不给 = 基线那套随机停顿）；Filler 收的是区间，
+    # 所以定值要摊成 (x, x)。扰动自测的第 3 遍走这条路 —— **不改写产物源码**。
     f = Filler(a.ws_url, a.form_file, a.correlation_id, a.task_id,
-               trace=a.trace or None, stop_at=a.stop_at or None, shots=a.shots)
+               trace=a.trace or None, stop_at=a.stop_at or None, shots=a.shots,
+               delay=(a.delay, a.delay) if a.delay > 0 else DELAY_RANGE)
     sys.exit(0 if f.run() else 1)
 
 if __name__ == "__main__": main()

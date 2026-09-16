@@ -258,6 +258,19 @@ def test_debug_contract_args_registered(rendered):
     assert '"--shots"' in rendered and '"all"' in rendered
 
 
+def test_delay_knob_is_registered_and_documented(rendered):
+    """R-4：扰动自测的第 3 遍（注入延迟）只有一个诚实的旋钮 —— 产物自带 `--delay`。
+
+    `Filler.__init__` 早就收 `delay`，但 `main()` 从没把它接出来。接出来的理由是
+    **扰动自测不许改写产物源码**（改写过的源码测的是另一个产物）；顺带它也让
+    §5.1c 那段「调试契约」名副其实：产物自己说得出怎么让它慢下来。
+    """
+    assert '"--delay"' in rendered
+    doc = ast.get_docstring(ast.parse(rendered))
+    for flag in ("--trace", "--stop-at", "--shots", "--delay"):
+        assert flag in doc, "§5.1c 是读产物的人最先看的地方，%s 要写在里面" % flag
+
+
 def test_actions_go_through_cdp(rendered):
     """§5.2：动作走 `self.cdp.*`；`eval` 只准出现在读路径。"""
     assert "self.cdp.click(" in rendered
@@ -320,8 +333,43 @@ def test_cli_help_runs(rendered, sandbox):
         [sys.executable, str(path), "--help"], capture_output=True, text=True, timeout=60
     )
     assert out.returncode == 0, out.stderr
-    for arg in PROD_ARGS + ("--trace", "--stop-at", "--shots"):
+    for arg in PROD_ARGS + ("--trace", "--stop-at", "--shots", "--delay"):
         assert arg in out.stdout
+
+
+def test_delay_flag_reaches_the_filler(rendered, sandbox, monkeypatch):
+    """`--delay` 从命令行一路接到 `Filler` 上：不给 = 拟人的随机停顿；给了 = 每步固定这么久。
+
+    ⚠️ 这条测的是**接线**，不是「有没有那个字符串」：`main()` 里少接一根线
+    （参数解析出来了但没传给 Filler），第 3 遍扰动就会变成「什么都没扰」，
+    而那种空转看着跟「跑过了」一模一样。
+    """
+    module, path = _load("rendered_delay", rendered, sandbox)
+    seen = {}
+
+    class _Filler:
+        def __init__(self, ws_url, form_file, correlation_id, task_id="",
+                     trace=None, stop_at=None, shots="failed", delay=None):
+            seen.update(delay=delay, shots=shots, trace=trace, stop_at=stop_at,
+                        ws_url=ws_url)
+
+        def run(self):
+            return True
+
+    monkeypatch.setattr(module, "Filler", _Filler)
+    base = [str(path), "--ws-url", WS, "--form-file", "form.json", "--correlation-id", "cid_1"]
+
+    monkeypatch.setattr(sys, "argv", list(base))
+    with pytest.raises(SystemExit) as done:
+        module.main()
+    assert done.value.code == 0
+    assert seen["delay"] == module.DELAY_RANGE, "不给 --delay 就该是基线那套随机停顿"
+
+    monkeypatch.setattr(sys, "argv", list(base) + ["--delay", "2"])
+    with pytest.raises(SystemExit) as done:
+        module.main()
+    assert done.value.code == 0
+    assert seen["delay"] == (2.0, 2.0), seen
 
 
 #: ad-task.py 就是这么调产物的：**只有那 5 个参数**，成功判据是 returncode == 0。
