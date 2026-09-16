@@ -197,6 +197,47 @@ OFFSCREEN = "offscreen"
 # 见 _frame_of_element。target 里的 `frame_id`：空串 = 主帧，非空 = 那一帧的 CDP frameID。
 FRAME_MAIN = "main"
 
+#: `observe` 给 cookie 同意类遮挡物记的 kind（`internal/observe.go`：按
+#: 文字/ id / class 里有没有 cookie|consent|gdpr|privacy 判的）。**只点这一类** ——
+#: 一般的浮层（`overlay`）不去动它：那可能是页面自己要人看的东西，点掉它同样是「点到别的东西」。
+COOKIE_KIND = "cookie-banner"
+
+#: 找同意弹层那段 JS（**读**，不动页面；§5.2 允许 eval 读）。返回 `"<选择器>|<按钮文字>"`，
+#: 找不到返回空串。判据与 `cdp observe` 的 obstructions 是**同一套词汇**
+#: （文字 / id / class 里有没有 cookie|consent|gdpr|privacy），只是这里自己做一遍 ——
+#: 原因见 `_clear_obstructions` 的 docstring（生产那个 cdp 没有 observe）。
+#:
+#: 只认**有把握**的那一下：可见的同意类容器 + 带稳定 id 的按钮 + 文字属于
+#: 「接受/同意/关闭/拒绝」那一族。**找不到就什么都不做**（宁可不做，也不猜一条会点错的选择器）——
+#: 「点到弹层上」由 `_covered_by` 兜住，不会被记成做成了。
+_CONSENT_PROBE_JS = (
+    # ⚠️ 用 `getElementsByTagName('*')` + 属性自检，**不走**「按选择器一步查」的那种写法 ——
+    # 产品里凡是要按选择器找元素的地方一律避开它（`tests/test_template.py` 的
+    # 「动作全走 cdp」那条把它钉死了；而这里本来就只是**读**，`matches()` 一样能读）。
+    "var boxW=/(cookie|consent|gdpr|privacy)/i;"
+    "var btnW=/(accept|agree|allow|got it|close|reject|decline|deny|同意|接受|关闭)/i;"
+    "var vis=function(e){var r=e.getBoundingClientRect();"
+    "return r.width>0&&r.height>0&&r.bottom>0&&r.top<window.innerHeight;};"
+    "var all=document.getElementsByTagName('*');"
+    "for(var i=0;i<all.length;i++){"
+    "  var box=all[i];"
+    "  var label=String(box.id||'')+' '+String(box.className||'')"
+    "+' '+String(box.getAttribute&&box.getAttribute('aria-label')||'');"
+    "  if(!boxW.test(label)||!vis(box)) continue;"
+    "  var inner=box.getElementsByTagName('*');"
+    "  for(var j=0;j<inner.length;j++){"
+    "    var b=inner[j], tag=String(b.tagName||'').toLowerCase();"
+    "    if(tag!=='button'&&tag!=='a'&&tag!=='input') continue;"
+    "    var t=String(b.innerText||b.value||(b.getAttribute&&b.getAttribute('aria-label'))||'').trim();"
+    "    if(!btnW.test(t)) continue;"
+    # 没有稳定地址就不点（宁可不做，也不猜一条会点错的选择器）
+    "    if(!b.id) continue;"
+    "    return '#'+b.id+'|'+t.slice(0,40);"
+    "  }"
+    "}"
+    "return '';"
+)
+
 # ── 「这个 cdp 会不会做这件事」────────────────────────────
 # 生产那个 cdp 是**老版本**：`--help` 里只有 active/click/close/completion/eval/form/
 # help/navi/scroll/snapshot/targets —— **没有** observe / diff / screenshot
@@ -1008,6 +1049,68 @@ class Filler:
             return "Test%d!" % random.randint(1000, 9999)
         raise ValueError("产物写错了：不认识这个随机值类型「%s」" % kind)
 
+    def _clear_obstructions(self, why=""):
+        """开跑（以及每次导航之后）把**挡路的 cookie 同意弹层**点掉。
+
+        为什么要产物自带（2026-09-17 真站实测，链条闭合）：生产**每一单都是新窗口**、
+        每次都清 cookie —— 所以**每单都会遇到同意弹层**；而探索那一趟跑在一个「弹层已经
+        被自己点掉」的会话里，**账本学的是「没有弹层的世界」**，产物里也就没有那一步。
+        自测换到干净会话（R-F1）之后弹层盖住答题区，下一步的点击**点到弹层上**、
+        cdp 照样回 ok（`match_count: 1` 说的是「选择器命中 1 个」，不是「点到的就是它」），
+        于是「点了个寂寞」被记成做成了、后面全塌。
+        ⚠️ **不能指望账本里恰好有这一步** —— 弹层是环境带来的，不是站点流程的一部分。
+
+        判据（与 `cdp observe` 的 obstructions **同一套词汇**：文字 / id / class 里有没有
+        `cookie|consent|gdpr|privacy`）—— 为什么不用 observe：**生产那个 cdp 没有 observe**
+        （§4.6 的能力边界），而弹层恰恰在生产每单都出现。所以这里走 `eval`（**读**，§5.2 允许），
+        点还是走 cdp 的 click。
+
+        只做**有把握**的那一下：得在一个可见的同意类容器里找到带稳定 id 的按钮，
+        且它的文字是「接受/同意/关闭/拒绝」那一族；找不到就**什么都不做**（宁可不做），
+        由 `_covered_by` 保证「点到弹层上」不会被记成做成了。
+        """
+        raw = self._ev(_CONSENT_PROBE_JS)
+        if not raw or "|" not in raw:
+            return                      # 没有弹层（正常情况）—— 静默是对的，这是「无事可做」
+        selector, text = raw.split("|", 1)
+        out = self.cdp.click(selector)   # 动作一律走 cdp（§5.2）
+        self.log.info("[%s] %s把同意弹层点掉了（%s，%r）：%s", self.cid,
+                      ("%s之后 " % why) if why else "开跑前 ", selector, text[:30],
+                      "看起来成了" if _ok(out) else "**没成**")
+
+    def _covered_by(self, selector, frame_id=""):
+        """这个选择器指的元素**是不是被别的东西盖着**（读一次，不动页面）。盖着就返回盖它的东西。
+
+        为什么要它（同一条真站证据）：快路点击拿声明选择器**直接点**，不看目标上有没有盖着
+        东西 —— 点到 consent 弹层上，cdp 照样回 ok（`match_count: 1` 说的是「选择器命中 1 个」，
+        **不是**「点到的就是它」）。于是这一步被记成做成了，页面纹丝不动，后面全塌。
+        `_usable` 那条遮挡闸只在回退链上（要 observe 模型），快路没有 —— 这个函数就是补那一格。
+
+        判据与 `_usable` 同源（**盖着 = 不能动手**），只是换成在页面上直接量：
+        取元素中心点，问「那个点上站着的是谁」，接受自己 / 自己的后代 / 自己的祖先
+        （文字节点、label 包 input 这类都是「同一个东西」），别的一律算盖着。
+        量不出来（元素不在、零尺寸、点在视口外）**返回空串**（= 不加判断）——
+        那种情况由 cdp 自己的滚动与报错去说，不在这里替它下结论。
+        """
+        js = ("var all=document.getElementsByTagName('*'), el=null;"
+              "for(var i=0;i<all.length;i++){try{if(all[i].matches(%s)){el=all[i];break;}}catch(e){}}"
+              "if(!el) return '';"
+              "var r=el.getBoundingClientRect();"
+              "if(!r||r.width<=0||r.height<=0) return '';"
+              "var x=r.left+r.width/2, y=r.top+r.height/2;"
+              "if(x<0||y<0||x>window.innerWidth||y>window.innerHeight) return '';"
+              "var hit=document.elementFromPoint(x,y); if(!hit) return '';"
+              "if(hit===el||el.contains(hit)||hit.contains(el)) return '';"
+              "return 'COVER|'+(hit.tagName||'').toLowerCase()+(hit.id?('#'+hit.id):'')"
+              "+'.'+String(hit.className||'').split(' ')[0];")
+        got = self._ev(js % json.dumps(selector), frame_id).strip()
+        # ⚠️ **只认带 `COVER|` 前缀的答复**。空串 / `null` / 任何别的形状都是「量不出来」——
+        # 一律**不当成盖着**（当成盖着会让每一步都无缘无故不点；不认前缀则会在
+        # 「这条 cdp 的 eval 根本不会跑这段」时把它的乱答复读成遮挡）。
+        if not got.startswith("COVER|"):
+            return ""
+        return got[len("COVER|"):]
+
     def _scroll(self, step, target, label):
         """把这一步的元素滚进视口。返回 `(ok, selector_used, level, note, frame_used)`。
 
@@ -1093,6 +1196,14 @@ class Filler:
 
         selectors = [s for s in (target.get("selectors") or []) if s]
         for level, selector in enumerate(selectors):
+            # **快路也要接遮挡判据**（真站实测的那条链）：不看一眼就点，
+            # 点到盖着它的东西上（consent 弹层那类）cdp 照样回 ok —— 「点了个寂寞」
+            # 被记成做成了。盖着就不点它，换下一个候选；全都被盖着就是这一步没做成。
+            cover = self._covered_by(selector, frame)
+            if cover:
+                self.log.info("[%s] 第 %d 个选择器指的元素被 %s 盖着 —— 这一下不点"
+                              "（点了等于点到盖着它的东西上）", self.cid, level + 1, cover)
+                continue
             out = self._do(action, selector, value, kind, frame)
             if _ok(out):
                 return (True, selector, level,
@@ -1225,6 +1336,10 @@ class Filler:
                 # 这次调试要用到的 cdp 能力，缺了先**说清**（重跑路径上不探：§13）
                 self._check_capabilities()
 
+        # 开跑之前先看有没有**挡路的同意弹层**并点掉（见 _clear_obstructions 的 docstring：
+        # 生产每单都是新窗口 → 每单都会遇到它，而账本里通常没有这一步）。
+        self._clear_obstructions()
+
         index = 0
         try:
             for state in STATES:
@@ -1241,6 +1356,10 @@ class Filler:
                                       self.cid, index, name)
                         continue
                     self._rpt_if_moved(name)
+                    if (step.get("action") or "") == "goto":
+                        # 换页是**同意弹层会出现**的时刻（新域名/新页面重问一次）——
+                        # 每次导航之后再看一眼，别让弹层把后面那几步全盖住。
+                        self._clear_obstructions(why="这一次导航")
                     ok, progress = self._run_step(index, step)
 
                     if self._succeeded():

@@ -1116,6 +1116,12 @@ class _State:
         self.text = ""
         self.fail_actions = False
         self.fail_selectors = ()
+        #: 同意弹层的答复（`"<选择器>|<按钮文字>"`，空串 = 没有弹层）——
+        #: 产物 `_clear_obstructions` 的探针认这个形状。
+        self.consent = ""
+        #: 遮挡判据的答复（`"COVER|tag#id.class"`，空串 = 没被盖着）——
+        #: 产物 `_covered_by` **只认带 `COVER|` 前缀**的答复。
+        self.cover = ""
         #: 这些**帧号**上的命令一律报错 —— 真 cdp 对一个不存在的 frameID 就是这个行为
         #: （`OOPIF eval: attach failed: No target with given id found`）。
         #: 「帧号漂了」这条路上的钉子靠它（同一个选择器在死帧里挂、在活帧里成）。
@@ -1172,6 +1178,10 @@ class CDPHelper:
 
     def eval(self, script, frame_id=""):
         STATE.evals.append(script)
+        if "privacy" in script:              # 同意弹层那个探针（它按 cookie|consent|gdpr|privacy 判）
+            return json.dumps(STATE.consent)
+        if "elementFromPoint" in script:     # 遮挡判据那个探针
+            return json.dumps(STATE.cover)
         if "innerText" in script:
             return json.dumps(STATE.current_text())
         if "location.href" in script:
@@ -1333,3 +1343,97 @@ def test_declared_selectors_are_retried_in_the_live_frame(sandbox, form_file):
     assert line["selector_used"] == "#year", line
     assert line["frame_id"] == "LIVE1234", line          # ← **活帧**，不是账本那个死号
     assert line["ok"] is True, line
+
+
+# ─────────── 同意弹层（A）与遮挡判据（C）—— 2026-09-17 真站实测的那条链 ───────────
+#
+# 链（每一环都有现场证据，见 fix-cookie-overlay-report.md）：
+#   ① 生产**每单都是新窗口**（清 cookie）→ 每单都会遇到同意弹层；
+#   ② 探索跑在一个「弹层已经点掉」的会话里 → **账本学的是没有弹层的世界**；
+#   ③ 换到干净会话自测（R-F1）→ 弹层盖住答题区；
+#   ④ 快路点击不看遮挡 → 点到弹层上、cdp 照样回 ok → **点了个寂寞被记成做成了**。
+
+
+def test_the_product_dismisses_a_consent_overlay_before_it_starts(sandbox, form_file):
+    """A：开跑之前**自己**把同意弹层点掉 —— 不许指望账本里恰好有这一步。"""
+    module, _ = _load(
+        "run_consent",
+        template.render("example-consent", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.consent = "#onetrust-accept-btn-handler|Accept Cookies"
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert "#onetrust-accept-btn-handler" in clicks, common.STATE.actions
+    assert clicks.index("#onetrust-accept-btn-handler") == 0, (
+        "弹层要在**第一步之前**点掉（否则第一步就点到它上面）：%s" % clicks)
+
+
+def test_without_an_overlay_nothing_is_clicked_for_it(sandbox, form_file):
+    """反例（同一格）：没有弹层时**一下都不点** —— 「没有」是正常情况，不是失败。"""
+    module, _ = _load(
+        "run_noconsent",
+        template.render("example-noconsent", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.consent = ""            # 没有弹层
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert clicks == ["#go"], clicks
+
+
+def test_a_covered_element_is_not_clicked_and_does_not_report_ok(sandbox, form_file):
+    """C：目标被别的东西盖着 → **不点**，而且这一步**不算做成**（不许静默假成功）。
+
+    真站实测的形状：干净会话里同意弹层盖住答题区，`Sedan` 那一下点到弹层上、
+    cdp 回 `ok`（`match_count: 1` 说的是「选择器命中 1 个」，不是「点到的就是它」）。
+    """
+    module, _ = _load(
+        "run_covered",
+        template.render("example-covered", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.cover = "COVER|div#onetrust-banner"      # 盖着它的是同意弹层
+
+    trace = sandbox / "covered.jsonl"
+    ok = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                       trace=str(trace)).run()
+    assert ok is False, "点到被盖住的元素上不许算做成"
+    assert not [a for a in common.STATE.actions if a[1] == "#go"], (
+        "被盖着就不该点下去：%s" % common.STATE.actions)
+    line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert line["ok"] is False, line
+
+
+def test_an_uncovered_element_is_clicked_as_usual(sandbox, form_file):
+    """反例（同一格）：没被盖着就照常点（这一改不该让正常的路变慢或变怂）。"""
+    module, _ = _load(
+        "run_uncovered",
+        template.render("example-uncovered", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.cover = ""                               # 没盖着
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    assert ("click", "#go") in common.STATE.actions, common.STATE.actions

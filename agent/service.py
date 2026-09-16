@@ -805,6 +805,31 @@ class Service:
             traceback.print_exc()
         self._write_baseline(job_id, end=end)
 
+    def _clean_window_for_explore(self, brief: dict) -> None:
+        """**探路也要在干净会话里跑**（R-F1 的另一半，2026-09-17 裁定）。
+
+        为什么：生产**每一单都是新窗口**（`clearCookiesBeforeLaunch` 只在启动那一刻生效），
+        所以生产遇到的第一个东西往往是**cookie 同意弹层**。而探路要是跑在一个
+        「同意过 cookie」的会话里，它**学到的是一条没有弹层的路** —— 账本里没有那一步，
+        产物到了生产（有弹层）就会点到弹层上。这不是 cookie 一件事，是**系统性的**：
+        探索的条件必须与自测/生产一致，否则账本学的路径在生产里不成立。
+
+        做法：这个部署给得了 `fresh_open` 就换一个干净窗口（清 cookie/缓存），
+        把新 ws_url 写进 brief（探路与后面所有步骤都用它）。
+        ⚠️ 换不了（没接窗口层 / 窗口服务抖了）时**照旧用调用方给的那个**，
+        把原因记在日志里 —— 那是「条件更差」，不是「这一单不能跑」。
+        """
+        if self._window is None or not hasattr(self._window, "fresh_open"):
+            return
+        try:
+            ws = self._window.fresh_open()
+        except Exception as exc:                     # noqa: BLE001 —— 外面世界
+            print("[siteforge] 探路前换干净窗口没成（%s）—— 用调用方给的那个窗口接着跑"
+                  "（账本学的路径可能带着「弹层已经点过」的前提）" % exc)
+            return
+        if ws:
+            brief["ws_url"] = str(ws)
+
     def _fresh_session_cb(self) -> Optional[Callable]:
         """R-F1 那根线：自测之前换一个**干净会话**（关旧窗 → 开新窗，返回新的 ws_url）。
 
@@ -1091,6 +1116,7 @@ class Service:
         brief = body.model_dump(exclude_none=True)
         brief.setdefault("out_dir", self._out_dir)
         brief["success_text"] = body.success_text
+        self._clean_window_for_explore(brief)     # R-F1 的另一半：**探路也要干净会话**
         job_id = "job-%s" % uuid.uuid4().hex[:12]
         job = Job(job_id=job_id, brief=brief, status=QUEUED,
                   say="收到了，排队开跑。",

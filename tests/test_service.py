@@ -1537,3 +1537,40 @@ def test_fresh_session_cb_returns_the_new_ws_url():
 
     with pytest.raises(RuntimeError):
         service.Service(window=_Empty())._fresh_session_cb()()
+
+
+def test_the_explore_also_gets_a_clean_window():
+    """B：**探路也要在干净会话里跑**（R-F1 的另一半）。
+
+    为什么是系统性的：生产每单都是新窗口 → 每单都会遇到同意弹层；
+    而探路要是跑在「同意过 cookie」的会话里，它学到的是一条**没有弹层的路** ——
+    账本里没有那一步，产物到了生产（有弹层）就点到弹层上。
+    """
+    class _Win:
+        def __init__(self): self.opened = 0
+        def fresh_open(self):
+            self.opened += 1
+            return "ws://1.2.3.4:61129/devtools/browser/CLEAN"
+
+    win = _Win()
+    svc = service.Service(window=win)
+    brief = {"ws_url": "ws://1.2.3.4:61129/devtools/browser/DIRTY"}
+    svc._clean_window_for_explore(brief)
+    assert win.opened == 1
+    assert brief["ws_url"] == "ws://1.2.3.4:61129/devtools/browser/CLEAN"
+
+
+def test_a_window_that_cannot_be_refreshed_keeps_the_original_and_says_so(capsys):
+    """换不了就是「条件更差」，**不是**「这一单不能跑」：照旧用原来那个窗口。"""
+    class _Broken:
+        def fresh_open(self): raise RuntimeError("窗口服务连不上")
+
+    brief = {"ws_url": "ws://1.2.3.4:61129/devtools/browser/DIRTY"}
+    service.Service(window=_Broken())._clean_window_for_explore(brief)
+    assert brief["ws_url"] == "ws://1.2.3.4:61129/devtools/browser/DIRTY"
+    assert "探路前换干净窗口没成" in capsys.readouterr().out
+
+    # 没有窗口层 → 原样不动（不糊一个假动作）
+    brief2 = {"ws_url": "ws://x/y"}
+    service.Service(window=None)._clean_window_for_explore(brief2)
+    assert brief2["ws_url"] == "ws://x/y"
