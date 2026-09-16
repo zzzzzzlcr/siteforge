@@ -457,8 +457,9 @@ class Filler:
         #: **最近一次重新 observe 看见的活帧**（`_note_live_frames`）。账本里的帧号只活在
         #: 录它的那一次会话里，重放时的 `goto` 一重建子帧它们就全死了 —— 读页面要靠这一串。
         self.live_frames = []
-        #: 「为找活帧探过没有」—— `_read_frames` 里那次探测**只做一次**（见那个 docstring）。
-        self._frames_probed = False
+        #: 读不出东西的那些帧（多半已经不在了）—— `_read_frames` 靠它判断
+        #: 「声明里那几帧是不是**全死了**」，全死了才去找活帧（见那个 docstring）。
+        self._dead = set()
 
     # ── 基础设施 ────────────────────────────────────────────
 
@@ -496,8 +497,7 @@ class Filler:
         换来的是「帧里的判据与成功文案还看得见」—— 这笔账在 §13 那条「重跑要便宜」
         面前是划算的（那一条说的是不调模型、不截图、不做**调试**动作）。
         """
-        if self.frames and not self.live_frames and not self._frames_probed:
-            self._frames_probed = True
+        if self.frames and not self.live_frames and self._frames_all_dead():
             model = self._observe()
             if model:
                 self._note_live_frames(model)
@@ -533,10 +533,27 @@ class Filler:
         return out
 
     def _frame_url(self, frame_id):
-        """某一帧现在的地址（读不到就空串 —— 读不到不是「它是空的」，是没法判）。"""
+        """某一帧现在的地址（读不到就空串 —— 读不到不是「它是空的」，是没法判）。
+
+        读不到时把这一帧记进 `_dead`：`_read_frames` 用它判断「声明里那几帧是不是全死了」。
+        """
         if not frame_id:
             return ""
-        return self._ev("return window.location.href;", frame_id).strip().strip('"').strip("'")
+        url = self._ev("return window.location.href;", frame_id).strip().strip('"').strip("'")
+        if not url:
+            self._dead = set(self._dead) | {frame_id}
+        return url
+
+    def _frames_all_dead(self):
+        """声明里那几帧是不是**一个都活不了**。
+
+        ⚠️ 为什么不是「探测只做一次」（真站实测踩到的形状）：探针要是**太早**打掉
+        （第一个 `when` 判在入口页上，那会儿问卷 iframe 还没出生），后面流程进了 iframe
+        也永远不会再找活帧 —— 于是判据全落在主帧上，**整组步骤静默跳过**
+        （实测：基线只走了 5 步就「走完」，而账本里明明有几十步）。
+        改成「**看一眼就知道它们全死了**」才去找 —— 找不到就下一轮再找，直到找到为止。
+        """
+        return bool(self.frames) and all(fid in self._dead for fid in self.frames)
 
     def page_signature(self):
         """这一页长什么样：可见正文，归一化口径与 cdp observe 的 page_text 一致（§4.3）。
