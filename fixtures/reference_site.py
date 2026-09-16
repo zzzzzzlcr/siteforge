@@ -918,7 +918,7 @@ class Filler:
 
     # ── 动作 ────────────────────────────────────────────────
 
-    def _do(self, action, selector, value=None, kind="value", frame_id=""):
+    def _do(self, action, selector, value=None, kind="value", frame_id="", label=""):
         """一个动作只走这一条路：cdp 命令（规格 §5.2：动作一律走 cdp，不手拼 JS）。
 
         `frame_id` 交给 `CDPHelper.click / form` 的**同名参数**（`forms/common.py:146` /
@@ -929,12 +929,16 @@ class Filler:
         if action == "click":
             return self.cdp.click(selector, frame_id=frame_id or "")
         if action == "form":
+            # `strict` + `expect_label`：命中多个元素时**不许静默挑第一个** ——
+            # 拿这个字段自己的身份（页面上写着的那句名字）认准它，认不出就大声失败。
+            # 真站实测：一个 class 选择器被 zip / full_name / email 三个字段组共用，
+            # 第一条第选择器一挂值就进了别的框（ZIP 框里躺着手机号、页面红字拒收）。
+            extra = {"frame_id": frame_id or "", "strict": True, "expect_label": str(label or "")}
             if kind == "check":
-                return self.cdp.form(selector, check=str(value).lower(),
-                                     frame_id=frame_id or "")
+                return self.cdp.form(selector, check=str(value).lower(), **extra)
             if kind == "select":
-                return self.cdp.form(selector, select=str(value), frame_id=frame_id or "")
-            return self.cdp.form(selector, value=str(value), frame_id=frame_id or "")
+                return self.cdp.form(selector, select=str(value), **extra)
+            return self.cdp.form(selector, value=str(value), **extra)
         if action == "scroll":
             # ⚠️ 位置参数**是选择器**（CLI：`cdp scroll [selector]`）—— 把像素数字塞进
             # 这里 = 拿一个不存在的选择器去滚，真窗口实测 `cdp scroll 400` →
@@ -1065,24 +1069,37 @@ class Filler:
         """
         selectors = [s for s in (target.get("selectors") or []) if s]
         frame = str(target.get("frame_id") or "")
+
+        def attempt(selector, use_frame):
+            """滚一次，返回这条命令的输出（空 = 不判断）。**不许**把空输出当成滚过了。"""
+            if not use_frame:
+                return self._do("scroll", selector)
+            done = self._cdp("scroll", selector, "--frame-id", use_frame)
+            if done is None:
+                return "Error: 没能让 cdp 滚这个元素（见上面那条日志）"
+            out = (done.stdout or "") + (done.stderr or "")
+            if done.returncode != 0 and not out.strip():
+                return "Error: cdp 滚这个元素没成（退出码 %d，它什么都没说）" % done.returncode
+            return out
+
         for level, selector in enumerate(selectors):
-            if frame:
-                done = self._cdp("scroll", selector, "--frame-id", frame)
-                if done is None:
-                    # 进程都没起来（或这条命令根本不存在）：**不许**当成滚过了 ——
-                    # `_ok("")` 对空输出是 True（「成功时它不一定说话」），
-                    # 这里空输出必须由我们自己说成失败。
-                    out = "Error: 没能让 cdp 滚这个元素（见上面那条日志）"
-                else:
-                    out = (done.stdout or "") + (done.stderr or "")
-                    if done.returncode != 0 and not out.strip():
-                        out = "Error: cdp 滚这个元素没成（退出码 %d，它什么都没说）" % done.returncode
-            else:
-                out = self._do("scroll", selector)
+            out = attempt(selector, frame)
             if _ok(out):
                 return (True, selector, level,
                         _say("scroll", label, True, level, landing=_landing_say(out)), frame)
             self.log.info("[%s] 第 %d 个选择器滚不动：%s", self.cid, level + 1, selector)
+
+        # 帧号漂了的时候，与 click / form 走**同一条**兜底：把声明里的选择器拿到
+        # **活着的帧**里再试（帧号会漂、页面结构不会）。滚动这条原先漏了这一步 ——
+        # 真站实测就卡在这儿：`滚不动「Honda」`，而同一个选择器在活帧里是好的。
+        if frame:
+            for extra, live in enumerate([f for f in self._read_frames() if f != frame]):
+                for selector in selectors:
+                    out = attempt(selector, live)
+                    if _ok(out):
+                        return (True, selector, len(selectors) + extra,
+                                _say("scroll", label, True, len(selectors) + extra,
+                                     landing=_landing_say(out)), live)
 
         pixels = step.get("pixels")
         if pixels is None:
@@ -1140,7 +1157,7 @@ class Filler:
                 self.log.info("[%s] 第 %d 个选择器指的元素被 %s 盖着 —— 这一下不点"
                               "（点了等于点到盖着它的东西上）", self.cid, level + 1, cover)
                 continue
-            out = self._do(action, selector, value, kind, frame)
+            out = self._do(action, selector, value, kind, frame, label)
             if _ok(out):
                 return (True, selector, level,
                         _say(action, label, True, level, landing=_landing_say(out)), frame)

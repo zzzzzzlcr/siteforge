@@ -1130,6 +1130,8 @@ class _State:
         # 把 stderr 丢了（common.py:244 `return result.stdout.strip()`）—— 于是它返回空串。
         self.fail_screenshot = False
         self.actions = []        # ("click", sel) / ("form", sel, value) / ("scroll", px) / ("goto", url)
+        #: 每次 `form` 的 (选择器, strict, expect_label) —— 严格闸那两条参数的钉子
+        self.form_strict = []
         self.reports = []        # report_url 的 step 标签
         self.shots = 0
         self.evals = []
@@ -1160,10 +1162,13 @@ class CDPHelper:
         STATE.actions.append(("click", selector))
         return '{"clicked": true}'
 
-    def form(self, selector, value=None, check=None, select=None, frame_id=""):
+    def form(self, selector, value=None, check=None, select=None, frame_id="",
+             strict=False, expect_label=""):
         if self._fail(selector, frame_id):
             return '{"error": "element not found"}'
         STATE.actions.append(("form", selector, value if value is not None else (check or select)))
+        # 严格闸那两条参数**单独记**（不塞进 actions 的元组，免得动到既有断言的形状）
+        STATE.form_strict.append((selector, bool(strict), expect_label))
         return '{"filled": true}'
 
     def scroll(self, pixels="300"):
@@ -1437,3 +1442,32 @@ def test_an_uncovered_element_is_clicked_as_usual(sandbox, form_file):
     common.STATE.cover = ""                               # 没盖着
     module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
     assert ("click", "#go") in common.STATE.actions, common.STATE.actions
+
+
+def test_form_steps_carry_the_strict_gate_and_the_field_identity(sandbox, form_file):
+    """产物填值时要带上严格闸（`--strict`）与**字段自己的身份**。
+
+    为什么：宽松路径遇到「选择器命中多个」时静默取文档序第一个 —— 真站实测
+    `input.MuiInputBase-input.MuiInputBase-inputAdornedStart` 被 zip / full_name / email
+    三个字段组共用，第一条第选择器一挂，值就进了别的框（ZIP 框里躺着手机号、页面红字拒收）。
+    严格闸要**认人**，认人的依据就是这一步的字段名（`FILLS[name].label`）。
+    """
+    states = [{"name": "w", "when": None, "steps": [
+        {"action": "form", "fill": "zip", "note": "填邮编",
+         "target": {"text": None, "label": "ZIP code", "role": None, "near": None,
+                    "selectors": ["input.mui"], "above_fold_only": False, "frame_id": ""}}]}]
+    fills = {"zip": {"name": "zip", "source": "zip", "kind": "value", "label": "ZIP code",
+                     "target": states[0]["steps"][0]["target"], "fallback": [{"random": "postcode"}]}}
+    src = template.render("example-strict", "Thank you", states, fills, SAMPLE_PROVENANCE)
+    module, _ = _load("run_strict", src, sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+
+    got = common.STATE.form_strict
+    assert got, "填值必须走严格闸那条路"
+    assert all(strict for _sel, strict, _lab in got), got
+    assert any(lab == "ZIP code" for _sel, _s, lab in got), (
+        "字段身份要跟着下去（认人靠它）：%s" % (got,))

@@ -1294,3 +1294,33 @@ def test_the_source_of_a_zip_fill_matches_the_operators_form_file():
     form = _json.load(open("/tmp/gwacc4/form.json")) if __import__("pathlib").Path("/tmp/gwacc4/form.json").exists() else None
     if form is not None:
         assert info["source"] in form, (info["source"], sorted(form))
+
+
+def test_a_tel_field_with_no_words_is_decided_by_what_the_explore_typed_there():
+    """语义三档全落空时，用**探索那一趟自己写进这个框的值**当证据（量出来的那一格）。
+
+    真站实测（gowizard 邮编框）：`label` 空、`hint` 是不透明 MUI id（textField-173838）、
+    `placeholder` 只是个例子（e.g. 06801）、`nearby_text` 空、而 `type="tel"` ——
+    三档全落空 → 按 type 判成**手机号** → 复跑时手机号被打进邮编框、页面红字拒收。
+    但账本里躺着现成证据：探索那一趟模型自己往里写过 `90210`（邮编形状）。
+    """
+    bare = {"label": "", "hint": "textField-173838", "placeholder": "e.g. 06801", "type": "tel"}
+    assert browser_agent._field_kind("", bare) == "phone", "前提：这一格本来就判成 phone（歧义）"
+
+    zip_fill = browser_agent._fill_info(
+        {"value": "90210"}, {"label": "textField-173838", "selectors": ["input.mui"]},
+        bare, browser_agent.Journey())
+    assert zip_fill["name"] == "postcode" and zip_fill["fallback"] == [{"random": "postcode"}], zip_fill
+
+    # 反例（同一格）：手机形状的值不会被读成邮编
+    phone_fill = browser_agent._fill_info(
+        {"value": "(512) 494-9400"}, {"label": "Phone Number:", "selectors": ["#p"]},
+        {"label": "", "hint": "phoneNumberTextField", "placeholder": "(512) 494-9400", "type": "tel"},
+        browser_agent.Journey())
+    assert phone_fill["fallback"] == [{"random": "phone"}], phone_fill
+
+    # 反例：不是 tel 的字段不掺这一脚（语义已经判出来了就按语义）
+    text_elem = {"label": "Full Name:", "type": "text"}
+    got = browser_agent._fill_info({"value": "90210"}, {"label": "Full Name:"}, text_elem,
+                                   browser_agent.Journey())
+    assert got["fallback"] == [{"random": "full_name"}], got

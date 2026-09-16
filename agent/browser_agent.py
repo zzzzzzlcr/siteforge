@@ -636,6 +636,33 @@ def _target_of(element, action: str, selector: str, frame_id: str = "") -> dict:
     }
 
 
+#: 一个「看起来就是美国邮编」的值（5 位数字）。用在下面那种**歧义**场合。
+_US_ZIP_RE = re.compile(r"^\d{5}$")
+
+
+def _kind_from_recorded_value(kind, value, element):
+    """语义判不出来时，**看探索那一趟自己往这个框里写了什么**（证据，不是猜）。
+
+    为什么需要它（2026-09-17 真站实测，量出来的）：
+    gowizard 的邮编框身上**一个语义信号都没有** —— `label` 空、`hint` 是不透明的 MUI id
+    （`textField-173838`）、`placeholder` 只是个例子（`e.g. 06801`）、`nearby_text` 是空的，
+    而 `type="tel"`（为了弹数字键盘）。于是三档全落空、按 type 判成**手机号** →
+    复跑时手机号被打进邮编框、页面红字拒收（用户在窗口里看到的就是它）。
+    但账本里有一件**现成的证据**：探索那一趟模型自己往这个框里写过 `90210` / `75201` ——
+    **邮编形状**。所以：`type=tel`（它本身就有歧义）而记下来的值像美国邮编 → 判 postcode。
+
+    ⚠️ 只在**歧义**时用（`tel` 这一类），而且只认「5 位数字」这一种形状：
+    手机号的形状（10~11 位、带括号/横线）不会被它读成邮编。
+    """
+    if kind != "phone":
+        return kind
+    if str((element or {}).get("type") or "").strip().lower() != "tel":
+        return kind
+    if _US_ZIP_RE.match(str(value or "").strip()):
+        return "postcode"
+    return kind
+
+
 def _fill_info(args: dict, target: dict, element, journey: Journey) -> dict:
     """这一步填什么（`args` 是模型真给的），以及重放时值从哪来。"""
     if args.get("check") is not None:
@@ -645,13 +672,17 @@ def _fill_info(args: dict, target: dict, element, journey: Journey) -> dict:
     else:
         kind, value = "value", str(args.get("value") or "")
     label = target.get("label") or ""
-    name = _fill_name(label, element, journey)
+    # 名字（= source）与随机值都要按「这一步实际是什么字段」来定 ——
+    # 语义判不出来时，用**探索那一趟自己写进去的那个值**当证据（见上面那个函数）。
+    semantic = _kind_from_recorded_value(_field_kind(label, element), value, element)
+    name = _fill_name(label, element, journey, semantic=semantic)
     return {"name": name, "source": name, "kind": kind,
             "label": label or name, "value": value,
-            "fallback": _fallback(kind, value, label, element)}
+            "fallback": (_fallback(kind, value, label, element) if semantic is None
+                         else [{"random": semantic}])}
 
 
-def _fill_name(label: str, element, journey: Journey) -> str:
+def _fill_name(label: str, element, journey: Journey, semantic=None) -> str:
     """这个字段叫什么 —— 它同时是 `source`：**产物拿它去运营的 form-file 里找真数据**。
 
     ⚠️ 所以名字要**对得上运营那份资料的键**（`zip` / `postcode` / `email` / `phone` …），
@@ -663,7 +694,7 @@ def _fill_name(label: str, element, journey: Journey) -> str:
     html 的 type），认得出就用那个**语义名**（`postcode`/`email`/`phone`/…），
     认不出才退回原来的「标签 / placeholder / type」那条老路（不编名字）。
     """
-    kind = _field_kind(label, element)
+    kind = semantic if semantic is not None else _field_kind(label, element)
     base = (kind or label or (element or {}).get("placeholder")
             or (element or {}).get("type") or FALLBACK_FILL_NAME)
     stem = _snake(base) or FALLBACK_FILL_NAME

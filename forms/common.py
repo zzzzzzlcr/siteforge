@@ -200,7 +200,8 @@ class CDPHelper:
         return output
 
     def form(self, selector: str, value: str = None, check: str = None,
-             select: str = None, frame_id: str = "") -> str:
+             select: str = None, frame_id: str = "", strict: bool = False,
+             expect_label: str = "") -> str:
         """
         Fill form field with human-like behavior.
 
@@ -210,9 +211,17 @@ class CDPHelper:
             check: Checkbox state "true"/"false"
             select: Dropdown option value
             frame_id: Optional frame ID for iframe elements
+            strict: 选择器命中多个元素时**拒绝静默挑第一个**（走 cdp form --strict）。
+                    默认 False = 老行为（57 个生产脚本一字不变）
+            expect_label: 这个字段自己的身份（页面上写着的那句名字）—— strict 认它来消歧
 
         Returns:
             Execution result
+
+        ⚠️ 为什么要 strict（2026-09-17 真站实测）：宽松路径遇到「选择器命中多个」时
+        **静默取文档序第一个** —— 一个 class 选择器被 zip / full_name / email 三个字段组共用时，
+        第一条第选择器一挂，值就进了另一个框（ZIP 框里躺着手机号、页面红字拒收）。
+        `click` 那道门早就有严格版了，`form` 一直缺 —— 这个参数就是那个缺口。
         """
         cmd = [CDP_PATH, "form", selector]
         if value is not None:
@@ -223,6 +232,10 @@ class CDPHelper:
             cmd.extend(["--select", select])
         if frame_id:
             cmd.extend(["--frame-id", frame_id])
+        if strict:
+            cmd.append("--strict")
+            if expect_label:
+                cmd.extend(["--expect-label", expect_label])
         cmd.extend(["--host", self.host, "--port", self.port])
 
         result = subprocess.run(

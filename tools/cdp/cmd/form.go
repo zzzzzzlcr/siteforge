@@ -42,6 +42,12 @@ func init() {
 	formCmd.Flags().String("select", "", "Option value or text (native <select> or custom dropdown)")
 	formCmd.Flags().String("frame-id", "", "Frame ID (optional)")
 	formCmd.Flags().Bool("track", false, "Enable track visualization")
+	// 消歧闸（默认关：CLI 是 57 个生产脚本的接口，它们的行为一个字节都不能动）——
+	// 要严格的那一方是我们自己的产物（agent/template.py 的 _do 会带上这两条）。
+	formCmd.Flags().Bool("strict", false,
+		"选择器命中多个元素时**拒绝静默挑第一个**：按 --expect-label 消歧，认不出就报错不填")
+	formCmd.Flags().String("expect-label", "",
+		"这个字段自己的身份（页面上写着的那句名字）—— --strict 认它来消歧")
 }
 
 func validateFormFlags(value, check, selectOpt string) error {
@@ -88,6 +94,19 @@ func runForm(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create client: %w", err)
 	}
 	defer client.Disconnect()
+
+	// `--strict`：命中多个就想办法认准那一个，认不出就**大声失败**（一个框都不填）。
+	// 这一步在**填之前**做，而且把选择器**换成唯一的那条** —— 不是拿原来那条再赌一次。
+	if strict, _ := cmd.Flags().GetBool("strict"); strict {
+		expectLabel, _ := cmd.Flags().GetString("expect-label")
+		picked, err := client.StrictPick(selector, frameID, expectLabel)
+		if err != nil {
+			return err
+		}
+		if picked != "" {
+			selector = picked
+		}
+	}
 
 	var err2 error
 	if value != "" {

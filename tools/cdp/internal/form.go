@@ -690,3 +690,138 @@ func (c *Client) SelectOption(selector, option, frameID string, track bool) erro
 
 	return nil
 }
+
+// ─────────────────── `--strict` 的消歧闸（2026-09-17）───────────────────
+//
+// 为什么要有它（与 `cdp click` 的严格门同一套精神，也是同一个洞）：
+// 宽松路径遇到「选择器命中多个」时**静默取文档序第一个**。`click` 那道门已经修了
+// （`ClickElementStrict`：命中多个就拒绝，因为真站实测它点到过 Back、把漏斗走回去了），
+// 而 **`form` 这条路一直没修** —— 后果比点错更隐蔽：值照样填进去了、回执照样 ok，
+// **只是填进了另一个框**。
+//
+// 真站实测（gowizard）：`input.MuiInputBase-input.MuiInputBase-inputAdornedStart`
+// 这一个选择器被 **zip / full_name / email 三个字段组共用**，而第一条第选择器一挂，
+// 值就落进文档序第一个框 —— 用户在图上看出来的就是「ZIP 框里躺着手机号、页面红字拒收」。
+//
+// 判据（三句话，都能说成人话）：
+//   1. 只命中一个 → 照常（这一闸什么都不改）；
+//   2. 命中多个 → **拿字段自己的身份认它**（`--expect-label` 对着 id / name / aria-label /
+//      placeholder / 它的 <label> 文本 / type 比）；认出来**恰好一个** → 用**唯一化**的选择器
+//      去填（不是拿原来那条再去赌一次）；
+//   3. 认不出、或认出不止一个 → **大声失败**（非 0 退出、一个框都不填）。
+//      「宁可不填，绝不填错」：填错的值页面可能照收，那是最难查的一类失败。
+//
+// ⚠️ 默认**不带**这一闸（`--strict` 才开）：CLI 是 57 个生产脚本的接口，
+// 它们的行为一个字节都不能动（R-16）；要严格的那一方是**我们自己的产物**。
+//
+//: 判定用的纯函数（能脱开浏览器单测）：probe 的 JSON + expectLabel → 选中的唯一选择器。
+func pickUnique(probeJSON, expectLabel string) (string, error) {
+	var probe struct {
+		Count int `json:"count"`
+		Items []struct {
+			Sel  string `json:"sel"`
+			Blob string `json:"blob"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(probeJSON), &probe); err != nil {
+		return "", fmt.Errorf("消歧探测的结果读不懂: %w", err)
+	}
+	if probe.Count == 0 {
+		return "", nil // 一个都没命中：交给原来那条路去报「找不到」（这里不替它下结论）
+	}
+	if probe.Count == 1 {
+		return probe.Items[0].Sel, nil
+	}
+	want := normalizePickText(expectLabel)
+	if want == "" {
+		return "", fmt.Errorf("选择器命中 %d 个元素，而这一次**没给字段身份**（--expect-label）"+
+			"—— 拒绝填：不知道你要哪一个。候选：\n%s", probe.Count, describePickCandidates(probe.Items))
+	}
+	var hit []string
+	for _, it := range probe.Items {
+		if strings.Contains(normalizePickText(it.Blob), want) {
+			hit = append(hit, it.Sel)
+		}
+	}
+	switch len(hit) {
+	case 1:
+		return hit[0], nil
+	case 0:
+		return "", fmt.Errorf("选择器命中 %d 个元素，按字段身份 %q 一个都对不上 —— 拒绝填："+
+			"填进去很可能落到别的框里。候选：\n%s", probe.Count, expectLabel,
+			describePickCandidates(probe.Items))
+	default:
+		return "", fmt.Errorf("选择器命中 %d 个元素，按字段身份 %q 认出**不止一个**（%d 个）—— "+
+			"拒绝填：说不清是哪一个。候选：\n%s", probe.Count, expectLabel, len(hit),
+			describePickCandidates(probe.Items))
+	}
+}
+
+// normalizePickText 把两边的文字归一成「比得出包含」的形态：小写 + 空白压成一个空格。
+func normalizePickText(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
+}
+
+// describePickCandidates 把候选摆成人话（给人看「到底撞上了谁」）。
+func describePickCandidates(items []struct {
+	Sel  string `json:"sel"`
+	Blob string `json:"blob"`
+}) string {
+	var b strings.Builder
+	for i, it := range items {
+		if i >= 8 {
+			fmt.Fprintf(&b, "  …（还有 %d 个）\n", len(items)-i)
+			break
+		}
+		fmt.Fprintf(&b, "  %d) %s\n", i+1, capRunes(strings.TrimSpace(it.Blob), 120))
+	}
+	return b.String()
+}
+
+// strictPickJS 找**所有**命中，并给每一个算一条**唯一**的选择器 + 一段身份描述。
+//
+// 唯一选择器：有 id 用 id；否则一路 `tag:nth-of-type(k)` 拼到 html（构造上唯一，
+// 不依赖「再赌一次」）。这条选择器会被拿去做真正的填值 —— 不是把原来那条再查一遍。
+func strictPickJS(selector string) string {
+	escaped := escapeJS(selector)
+	return withPierce(fmt.Sprintf(`(function(){
+  var els = __cdpQA('%s');
+  function labelOf(el){
+    var t = '';
+    try {
+      if (el.id) { var l = document.querySelector('label[for="' + el.id + '"]'); if (l) t = l.textContent || ''; }
+      if (!t) { var p = el.closest('label'); if (p) t = p.textContent || ''; }
+    } catch (e) {}
+    return t;
+  }
+  function pathOf(el){
+    try { if (el.id) return '#' + CSS.escape(el.id); } catch (e) {}
+    var parts = [], cur = el;
+    while (cur && cur.nodeType === 1 && cur !== document.documentElement) {
+      var tag = cur.tagName.toLowerCase(), i = 1, sib = cur;
+      while ((sib = sib.previousElementSibling)) { if (sib.tagName === cur.tagName) i++; }
+      parts.unshift(tag + ':nth-of-type(' + i + ')');
+      cur = cur.parentElement;
+    }
+    return parts.length ? 'html>' + parts.join('>') : '';
+  }
+  var out = [];
+  for (var i = 0; i < els.length && i < 12; i++) {
+    var el = els[i];
+    out.push({ sel: pathOf(el), blob: [el.id || '', el.getAttribute('name') || '',
+      el.getAttribute('aria-label') || '', el.getAttribute('placeholder') || '',
+      labelOf(el), el.type || ''].join(' ') });
+  }
+  return JSON.stringify({ count: els.length, items: out });
+})()`, escaped))
+}
+
+// StrictPick 是 `cdp form --strict` 的消歧闸：返回**要动手的那条唯一选择器**。
+// 命不中时返回空串（交给原来那条路去报「找不到」），命中多个而认不出来时返回错误。
+func (c *Client) StrictPick(selector, frameID, expectLabel string) (string, error) {
+	var raw string
+	if err := c.EvalInFrame(frameID, strictPickJS(selector), &raw); err != nil {
+		return "", fmt.Errorf("消歧探测没跑成: %w", err)
+	}
+	return pickUnique(raw, expectLabel)
+}

@@ -1015,6 +1015,12 @@ func observeJS() string {
       selector: fad.sel, alternates: fad.alts,
       stability: fad.unique ? stability(el, [fad.sel]) : 'low',
       label: lab || '', hint: el.name || el.id || '', placeholder: el.placeholder || '',
+      // nearby_text：**字段这条路上原先一个词都没有**（动作那条一直有 nearbyText(el)）——
+      // 2026-09-17 真站实测的后果：一个「type=tel + 占位符是例子（e.g. 06801）+ 标签是
+      // 不透明 MUI id」的**邮编框**，agent 侧一个语义信号都拿不到，只能按 type=tel 判成
+      // **手机号** → 复跑时手机号被打进邮编框（用户在图上看出来的就是它）。
+      // 判据与动作那条**同一份实现**（nearbyText），不是另写一套。
+      nearby_text: nearbyText(el),
       aria_label: (el.getAttribute('aria-label') || '').slice(0, READ_CAP),
       value: fval === null ? null : fval.slice(0, READ_CAP),
       value_truncated: fval !== null && fval.length > READ_CAP,
