@@ -759,6 +759,9 @@ py 产出契约与 lint · 扰动自测 · LangGraph 图 · `site_memory`/`corre
 | **R14** | 扰动测试里「换代理国家」那遍要重新拉链 + 重启 gost，单遍成本高 | 已知；可在 Phase 1 先跑 Run1–4，代理扰动作为可选 |
 | **R15** | `observe` 的 `relative_size` / `contrast` / `region` 计算依赖布局，**在 shadow/iframe 里是否可靠未验** | 归入 R3 的能力探针一起验 |
 | **R18** | **跨源帧自己内部的子帧枚举不到** —— `main(127.0.0.1) → OOPIF(localhost) → 同源子帧` 时 `GetFrameTreeWithEvents` 只报 2 帧，而 **OOPIF target 自己的 `Page.getFrameTree` 里明明有那个孙子帧**（原始 JSON 在 `tools/cdp/internal/testdata/README.md`）。根因：跨进程没有 `contentDocument`，DOM 穿透进不去 OOPIF 内部 | ✅ **不再静默**（守卫兜成 `frame-blind` 诊断），但内容确实拿不到。收进来要**逐 OOPIF target 取树**，是新能力 —— 单开一轮。实际影响：支付/3DS 那类「跨源组件里再套一层」的场景，本项目目标站点（漏斗/报价表单）不常见 |
+| **R19b** | **蜜罐字段被当成正常字段** —— 首次真站跑（compareinsulation 漏斗页）发现：`input[name="company_url"]` 被摆在 `left=-9983px`（屏幕外左侧），而 `observe` 把它**同时**列进 `actions`（`stability: high`）与 `fields`（`stability: high`）。**agent 照模型办事就可能去填它 → 被站点标记为机器人。** 旧系统早有「蜜罐跳过」（`db792c1`），`observe` 没有。⚠️ **字段语义陷阱**：`occluded_by='offscreen'` 无法区分它（见 R21） | **必修，优先**。检测必须是**结构性**的（整个盒子落在**文档坐标的负区** → 滚也滚不到），**不是名字表**（名字会腐烂）。处置：从 `actions`/`fields` 里**排除**，且**记录下来**（不能静默丢 —— 否则消费者分不清「这页没字段」和「字段被当陷阱丢了」） |
+| **R20b** | **选项组探测漏掉 Tailwind 类 quiz** —— 同一页的 Yes/No 两个按钮，容器是 `<div class="grid gap-2 sm:gap-6 grid-cols-2">`，**没有 role、不是 fieldset、类名不含 option/choice** → 探测特征一个都不匹配 → `option_groups: 0`。而「选项组 → 随机挑一个」正是 §1.1/D3 的核心能力 | 未修。两个按钮仍在 `actions` 里（能点），但 agent 不知道这是「二选一」 |
+| **R21** | **`occluded_by='offscreen'` 一个值扛三种含义**：① 折线下面（`Get Started` y=592 > vh=493，滚下去就能点）② 蜜罐（x=-9983，永远别碰）③ 视口太矮。消费者**分不出「没事往下滚」和「绝对别碰」** | 未修。与 `obstructions`/`diagnostics` 同族（一个字段两种含义），但这条的代价更重 —— 它把 R19b 的陷阱伪装成普通折线下元素 |
 | **R17** | **Console 的「框选元素」交互只推演过、没实测** —— 依赖「截图 + `bbox` 列表 = 可点元素」这条路成立（`observe` 契约里每个动作都带 `bbox`） | 未验；**T7 之后拿真页面验**：截图上的框与 `bbox` 是否对得上（含 shadow/iframe 里的元素、以及页面滚动后的坐标） |
 
 ---
