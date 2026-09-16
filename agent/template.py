@@ -521,6 +521,8 @@ class Filler:
         #: **最近一次重新 observe 看见的活帧**（`_note_live_frames`）。账本里的帧号只活在
         #: 录它的那一次会话里，重放时的 `goto` 一重建子帧它们就全死了 —— 读页面要靠这一串。
         self.live_frames = []
+        #: 「为找活帧探过没有」—— `_read_frames` 里那次探测**只做一次**（见那个 docstring）。
+        self._frames_probed = False
 
     # ── 基础设施 ────────────────────────────────────────────
 
@@ -548,9 +550,21 @@ class Filler:
         `OOPIF eval: attach failed: No target with given id found`）。只读死号 = 什么都
         读不到 + **不出声**，于是「成功文案在子帧里」这件事又变回看不见了。
 
-        活帧从哪来：回退链的最后一跳本来就要 `observe` 一次（那一跳在生产路径上也会发生），
-        顺手把模型里出现的帧记下来（`_note_live_frames`）—— **不为读页面多起进程**。
+        ⚠️ **一个必须自己解的套**（真站实测踩到过）：活帧本来是回退链那一跳（`_relocate`）
+        顺手记下的 —— 可要是**判据（`when`）先要用帧**（流程活在 iframe 里时就是这样），
+        而账本那几帧已经死了，就会「读不到 → 整组步骤静默跳过 → 一次 relocate 都不发生
+        → 永远学不到活帧」。所以这里补一次**只做一次**的探测：声明里那几帧还没被证明
+        活着、手上又没有活帧时，`observe` 一次，把模型里出现的帧记下来。
+
+        代价说清楚：**带帧的产物、每跑一次多一次 observe**（不带帧的产物一次都不多）；
+        换来的是「帧里的判据与成功文案还看得见」—— 这笔账在 §13 那条「重跑要便宜」
+        面前是划算的（那一条说的是不调模型、不截图、不做**调试**动作）。
         """
+        if self.frames and not self.live_frames and not self._frames_probed:
+            self._frames_probed = True
+            model = self._observe()
+            if model:
+                self._note_live_frames(model)
         out = []
         for fid in list(self.frames) + list(self.live_frames):
             if fid and fid not in out:
@@ -888,6 +902,19 @@ class Filler:
         rank = {"high": 0, "medium": 1, "low": 2}
         hits.sort(key=lambda el: (rank.get((el.get("stability") or "").lower(), 3), _below_fold(el)))
         out = []
+        # ① **声明里的选择器 × 活着的帧**（只在这条 target 本来就带帧时）。
+        #    为什么排在最前：帧号漂了，**页面结构没变** —— 声明里那条 nth-of-type 路径
+        #    仍然是这个元素最精确的身份。丢掉它、只按语义找，会在「几个控件长得一模一样」
+        #    的地方走错门（真站实测：三个组合框的 text 都是零宽空格，语义判据分不开它们，
+        #    于是点开了**另一个**下拉的菜单，紧接着那一步的选项当然不在里面）。
+        #    实测：账本里那三条声明路径拿到活帧里各命中 **1** 个，指向的正是原来那三个控件。
+        if fallback:
+            for frame in self.live_frames:
+                if frame == fallback:
+                    continue
+                for selector in [s for s in (target.get("selectors") or []) if s]:
+                    if (selector, frame) not in out:
+                        out.append((selector, frame))
         for element in hits:
             frame = _frame_of_element(element, fallback)
             for selector in [element.get("selector")] + list(element.get("alternates") or []):

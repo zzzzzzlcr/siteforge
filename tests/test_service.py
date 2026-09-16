@@ -1397,3 +1397,143 @@ def test_the_timeline_records_the_exact_open_time_and_ignores_the_midnight_place
     # 只有一头就不算 —— 不许拿「到这一刻为止」冒充寿命
     assert measure.lifecycles_from_rows([{"oper_at": "2026-09-16 17:47:14"}]) == []
     assert measure.lifecycles_from_rows([{"close_at": "2026-09-16 17:54:56"}]) == []
+
+
+# ─────────────── R-F1：自测之前换一个**干净会话**（关旧窗 → 开新窗）───────────────
+#
+# 裁定与证据（2026-09-17，见 `.superpowers/sdd/2026-09-17-production-loop/`）：
+# 自测跑在**探路之后**的同一个会话里，探路自己已经点过 cookie 同意 ——
+# 「首次访问才有」的那一步（cookie 横幅）复跑时元素**真的不在页面上**了
+# （实测：刚开窗 `#onetrust-reject-all-handler` = 1；探路跑完 = 0，再导航回入口还是 0）。
+# 而**生产每单都是新窗口**（`clearCookiesBeforeLaunch` 只在启动那一刻生效）——
+# 在脏会话里自测，测的是生产里不会出现的场景。
+#
+# ⚠️ 这不是放宽判据：五遍的判据一个字没动，换的是**跑的条件**，而换完那个**更接近生产**。
+
+
+def test_fresh_open_sets_the_flags_closes_then_opens_and_checks_both_ends():
+    """`fresh_open()` 的四件事，顺序都不能反：
+
+    ① 先 `detail()` 读回**整条**记录再写回（只翻那两个开关）——`/browser/update` 是整条
+       更新，只发一小段会被拒（`请选择代理方式`）；
+    ② 那两个开关**只在启动时生效** → 必须关了重开；
+    ③ 关完**确认真死了**（SKILL：close 成功 ≠ 真关了）；
+    ④ 开完**确认真活着**，并把回环地址换成 worker_ip。
+    """
+    bid = "b" * 32
+    calls = []
+    state = {"alive": {bid: 111}}   # 旧窗**还活着**（正常情况：跑完探路/自测那一趟）
+
+    def reply(path, body):
+        calls.append((path, body))
+        if path == "/browser/detail":
+            return {"success": True, "data": {"id": bid, "proxyMethod": 1,
+                                              "clearCookiesBeforeLaunch": False,
+                                              "clearCacheFilesBeforeLaunch": False,
+                                              "browserFingerPrint": {"devicePixelRatio": 3}}}
+        if path == "/browser/update":
+            # 整条回写的判据：代理那几项**一个不少**
+            assert body.get("proxyMethod") == 1, body
+            assert body.get("clearCookiesBeforeLaunch") is True, body
+            assert body.get("clearCacheFilesBeforeLaunch") is True, body
+            assert (body.get("browserFingerPrint") or {}).get("devicePixelRatio") == 3, body
+            return {"success": True}
+        if path == "/browser/close":
+            state["alive"] = {}
+            return {"success": True}
+        if path == "/browser/open":
+            state["alive"] = {bid: 9876}
+            return {"success": True, "data": {"ws": "ws://127.0.0.1:61129/devtools/browser/x"}}
+        if path == "/browser/pids/alive":
+            return {"success": True, "data": dict(state["alive"])}
+        raise AssertionError(path)
+
+    ws = _bit_window(reply).fresh_open()
+    assert ws == "ws://192.168.1.197:61129/devtools/browser/x", ws   # 回环地址换成 worker_ip
+    order = [p for p, _ in calls]
+    assert order[0] == "/browser/detail" and order[1] == "/browser/update", order
+    assert order.index("/browser/close") < order.index("/browser/open"), order
+    # 关之后、开之前的那次探活必须是「死」（否则不该开下一个）
+    close_at, open_at = order.index("/browser/close"), order.index("/browser/open")
+    assert "/browser/pids/alive" in order[close_at:open_at], order
+
+
+def test_fresh_open_refuses_a_window_that_does_not_come_up_alive():
+    """开完探活不是「活着」→ **抛**（不把一个没起来的窗口交出去）。"""
+    bid = "b" * 32
+
+    def reply(path, body):
+        if path == "/browser/detail":
+            return {"success": True, "data": {"id": bid}}
+        if path == "/browser/update":
+            return {"success": True}
+        if path == "/browser/close":
+            return {"success": True}
+        if path == "/browser/open":
+            return {"success": True, "data": {"ws": "ws://127.0.0.1:1/x"}}
+        if path == "/browser/pids/alive":
+            return {"success": True, "data": {}}          # 没起来
+        raise AssertionError(path)
+
+    with pytest.raises(RuntimeError):
+        _bit_window(reply).fresh_open()
+
+
+def test_fresh_open_tolerates_an_already_dead_old_window():
+    """旧窗**已经自然死亡**时 `fresh_open` 照样成立（它只活 25~33 分钟，这是常态）。
+
+    「本来就已经死了」不是失败：没什么可关的，确认它确实不在，接着开新窗就完了。
+    不这么写的话，窗口自然死亡之后的每一次 `fresh_open` 都会以「关窗口没被确认」
+    失败 —— 把一次**已经满足**的前置说成没做到（而图那边只会记一句「不是干净会话」）。
+    """
+    bid = "b" * 32
+    calls = []
+
+    def reply(path, body):
+        calls.append(path)
+        if path == "/browser/detail":
+            return {"success": True, "data": {"id": bid}}
+        if path == "/browser/update":
+            return {"success": True}
+        if path == "/browser/open":
+            return {"success": True, "data": {"ws": "ws://127.0.0.1:61129/devtools/browser/y"}}
+        if path == "/browser/pids/alive":
+            return {"success": True, "data": {} if "/browser/open" not in calls else {bid: 5}}
+        if path == "/browser/close":
+            raise AssertionError("旧窗本来就死了，不该再去关它")
+        raise AssertionError(path)
+
+    ws = _bit_window(reply).fresh_open()
+    assert ws.endswith("/devtools/browser/y")
+
+
+def test_fresh_session_cb_is_none_when_the_window_layer_cannot_do_it():
+    """窗口层给不了这根线 → `None`（图照跑、但在 facts 里说清「不是干净会话」）。
+
+    与 `set_viewport` 同一条规矩：**不糊一个假回调**。假装换过干净会话，
+    比明说「换不了」坏得多。
+    """
+    class _NoFresh:
+        def set_viewport(self, w, h): ...
+        def alive(self): return True
+
+    svc = service.Service(window=_NoFresh())
+    assert svc._fresh_session_cb() is None
+    svc2 = service.Service(window=None)
+    assert svc2._fresh_session_cb() is None
+
+
+def test_fresh_session_cb_returns_the_new_ws_url():
+    """接上了 → 真回调：把 `fresh_open()` 的 ws_url 交出去；空串要抛。"""
+    class _Win:
+        def fresh_open(self): return "ws://1.2.3.4:61129/devtools/browser/new"
+
+    svc = service.Service(window=_Win())
+    cb = svc._fresh_session_cb()
+    assert cb is not None and cb() == "ws://1.2.3.4:61129/devtools/browser/new"
+
+    class _Empty:
+        def fresh_open(self): return ""
+
+    with pytest.raises(RuntimeError):
+        service.Service(window=_Empty())._fresh_session_cb()()

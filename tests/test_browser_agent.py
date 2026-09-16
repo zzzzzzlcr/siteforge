@@ -1178,3 +1178,75 @@ def test_live_llm_walks_a_real_dependency_chain(live_browser, capsys):
 
     # 判据在 `_judge_a_live_run` 里（它自己有一条桩测试守着）—— 这里只把原始证据留在上面
     _judge_a_live_run(journey)
+
+
+# ───────────── 字段语义的三档推断（2026-09-17 真站实测的误填）─────────────
+#
+# 用户在真窗口上直接看到的：「zipcode 填成了手机号导致过不去」。
+# 根因（账本里对得上）：ZIP 那个框是 `<input type="tel">`（弹数字键盘用），标签又是个
+# 不透明的 MUI id（`textField-173838`）—— 原先 `_fallback` 把 `type` 和标签**混在同一个
+# blob 里**按同一张表匹配，`tel` 成了唯一命中的词 → 判成 phone：
+#   账本那一步 `value='33101'`（邮编）配着 `fallback=[{"random":"phone"}]`
+# → 复跑时手机号被打进邮编框。
+# 修法：**分三档**——① 字段自己的名字（label/hint/placeholder）→ ② 页面上它周围写着的字
+# （`nearby_text`）→ ③ html 的 type（只认不歧义的；tel 留作最后一档）。
+
+
+def _field(**kw):
+    elem = {"selector": "#x", "label": "", "hint": "", "placeholder": "", "type": "",
+            "nearby_text": []}
+    elem.update(kw)
+    return elem
+
+
+def test_a_zip_field_with_type_tel_is_a_postcode_not_a_phone():
+    """**这条就是用户看见的那个 bug**：type=tel 的邮编框必须判成 postcode。
+
+    「邮编框用 type=tel」在真站上很常见（为了手机弹数字键盘）—— 拿 type 当语义判据，
+    就会把邮编框判成手机号，然后把手机号打进去。判据是**值语义**，不是「没崩」。
+    """
+    elem = _field(label="textField-173838", type="tel",
+                  nearby_text=["What's your ZIP code?", "Your ZIP code ensures we find local quotes"])
+    assert browser_agent._fallback("value", "33101", elem["label"], elem) == [{"random": "postcode"}]
+
+
+def test_the_fields_own_name_beats_the_pages_words_and_the_html_type():
+    """三档的顺序：**字段自己的名字** > 周围写着的字 > html 的 type。
+
+    反例（同级）：placeholder 写着 Phone Number: 的框，哪怕旁边那句问句里出现了
+    「ZIP code」（比如同一段文字里两种字段都提到），也必须按**它自己的名字**判。
+    """
+    elem = _field(placeholder="Phone Number:", type="tel",
+                  nearby_text=["Your ZIP code and phone number both help"])
+    assert browser_agent._fallback("value", "", elem["label"], elem) == [{"random": "phone"}]
+
+
+def test_the_html_type_is_only_the_last_resort():
+    """什么都没写时才轮到 type；而且它只认**不歧义**的那几个。"""
+    assert browser_agent._fallback("value", "", "", _field(type="tel")) == [{"random": "phone"}]
+    assert browser_agent._fallback("value", "", "", _field(type="email")) == [{"random": "email"}]
+    assert browser_agent._fallback("value", "", "", _field(type="password")) == [{"random": "password"}]
+    # 一个字都没有 → 保守的默认（不编内容）
+    assert browser_agent._fallback("value", "", "", _field()) == [{"random": "full_name"}]
+
+
+def test_nearby_text_rescues_a_field_whose_label_is_an_opaque_id():
+    """标签是不透明 id、周围写着「Postcode」→ 第二档救回来（同类字段一起受益）。
+
+    「别只修 zip 这一个」：这一档对 postcode / postal / zip 以及其它同类字段是**通用**的。
+    """
+    for words, want in ((["Enter your postcode"], "postcode"),
+                        (["What's your ZIP code?"], "postcode"),
+                        (["Your postal code"], "postcode"),
+                        (["Date of birth"], "dob"),
+                        (["First name"], "first_name")):
+        elem = _field(label="textField-0001", type="text", nearby_text=words)
+        got = browser_agent._fallback("value", "", elem["label"], elem)
+        assert got == [{"random": want}], (words, got)
+
+
+def test_check_and_select_fills_are_not_touched_by_the_semantics():
+    """`check` / `select` 那两种照旧用**账本里记的那个值**（这一改只动「猜」的那条路）。"""
+    assert browser_agent._fallback("check", "true", "x", _field(type="tel")) == ["true"]
+    assert browser_agent._fallback("select", "Florida", "x", _field(type="tel")) == ["Florida"]
+    assert browser_agent._fallback("select", "", "x", _field(type="tel")) == []

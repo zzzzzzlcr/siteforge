@@ -724,6 +724,90 @@ def test_goto_and_wait_are_supported(sandbox, form_file):
     assert ("click", "#go-a") in [(a[0], a[1]) for a in common.STATE.actions], common.STATE.actions
 
 
+def test_scroll_step_is_shaped_like_the_cli(sandbox, form_file):
+    """scroll 步必须发**选择器**（`cdp scroll [selector]`）—— 不许把像素当选择器。
+
+    为什么要有这条钉子（2026-09-17 真窗口实测）：`cdp scroll` 的位置参数**是选择器**，
+    而骨架原先发的是 `self.cdp.scroll("400")` → `cdp scroll 400` →
+    `Error: scroll mouse wheel failed: element not found`，**每一步都必挂**，而且挂得像
+    「这一步没什么可滚的」。它是从一条**错的有损声明**长出来的（「工具是滚到某个元素、
+    骨架是滚多少像素」），所以这一格必须有人守：判据是「发出去的是那个元素的选择器」。
+
+    反例（同一格）：`pixels` 那条老路**不许**再被当选择器发出去（老产物只写了像素时，
+    产物照发老调用但会在 note 里说清楚 —— 这里钉的是**别把数字当选择器**这件事）。
+    """
+    steps = [
+        {"action": "scroll", "note": "把 Year 那个组合框滚进视口",
+         "target": {"text": "Year", "role": "combobox", "near": None,
+                    "selectors": ["#q1 div[role=combobox]"], "above_fold_only": False,
+                    "frame_id": ""}},
+    ]
+    src = template.render("example-scroll-shape", "Thank you",
+                          [{"name": "w", "when": None, "steps": steps}], [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_scroll_shape", src, sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    scrolls = [a for a in common.STATE.actions if a[0] == "scroll"]
+    assert scrolls == [("scroll", "#q1 div[role=combobox]")], common.STATE.actions
+    assert not any(a[1].isdigit() for a in scrolls), "像素不许被当选择器发出去"
+
+
+def test_scroll_in_a_frame_goes_through_cdp_with_frame_id(sandbox, form_file):
+    """子帧里的 scroll：走 cdp CLI（`scroll <选择器> --frame-id <帧>`），**不是**像素。
+
+    为什么不能走助手：`CDPHelper.scroll` 收不了帧号，而跨源 iframe 里的元素在主帧里
+    根本找不到（那一整族 bug 的样子）。判据是**真发出去的那串 argv**。
+    """
+    steps = [
+        {"action": "scroll", "note": "把子帧里的元素滚进视口",
+         "target": {"text": "Fusion", "role": "option", "near": None,
+                    "selectors": ['li[data-value="Fusion"]'], "above_fold_only": False,
+                    "frame_id": "AB12CD34"}},
+    ]
+    src = template.render("example-scroll-frame", "Thank you",
+                          [{"name": "w", "when": None, "steps": steps}], [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_scroll_frame", src, sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    calls = _cdp_calls(sandbox)
+    scroll_calls = [c for c in calls if c.startswith("scroll ")]
+    assert scroll_calls, calls
+    assert scroll_calls[0].startswith('scroll li[data-value="Fusion"] --frame-id AB12CD34'), calls
+    assert not any(a[0] == "scroll" for a in common.STATE.actions), (
+        "带帧的 scroll 该走 CLI，不该再走收不了帧号的助手：%s" % common.STATE.actions)
+
+
+def test_legacy_pixel_scroll_says_it_is_legacy(sandbox, form_file):
+    """只写了 `pixels` 的老形状：照发老调用，但 note 里**说清楚**它多半滚不动。
+
+    为什么不能静默：那是一条**注定跑不通**的命令（像素被当选择器），而它失败时
+    听起来像「这一步没什么可滚的」——「判不出」被读成「没问题」是本项目最贵的失败。
+    """
+    steps = [{"action": "scroll", "pixels": "400", "note": "往下一屏"}]
+    src = template.render("example-scroll-legacy", "Thank you",
+                          [{"name": "w", "when": None, "steps": steps}], [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_scroll_legacy", src, sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+
+    trace = sandbox / "legacy.jsonl"
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                  trace=str(trace)).run()
+    assert ("scroll", "400") in common.STATE.actions, common.STATE.actions   # 老行为保住
+    line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert "只记了滚多少像素" in line["note"], line["note"]
+
+
 def test_trace_is_jsonl_with_human_notes(rendered, sandbox, form_file, tmp_path):
     """§5.1c：trace 是 JSON Lines，每步一行，`note` 是人话（不是选择器）。"""
     module, _ = _load("run_trace", rendered, sandbox)
@@ -1032,6 +1116,10 @@ class _State:
         self.text = ""
         self.fail_actions = False
         self.fail_selectors = ()
+        #: 这些**帧号**上的命令一律报错 —— 真 cdp 对一个不存在的 frameID 就是这个行为
+        #: （`OOPIF eval: attach failed: No target with given id found`）。
+        #: 「帧号漂了」这条路上的钉子靠它（同一个选择器在死帧里挂、在活帧里成）。
+        self.fail_frames = ()
         # 生产那个 cdp 没有 screenshot 命令，而真 CDPHelper.screenshot() 只交 stdout、
         # 把 stderr 丢了（common.py:244 `return result.stdout.strip()`）—— 于是它返回空串。
         self.fail_screenshot = False
@@ -1056,17 +1144,18 @@ class CDPHelper:
         head = ws_url.replace("ws://", "").replace("wss://", "").split("/")[0]
         self.host, self.port = (head.split(":") + ["9222"])[:2]
 
-    def _fail(self, selector):
-        return STATE.fail_actions or selector in STATE.fail_selectors
+    def _fail(self, selector, frame_id=""):
+        return (STATE.fail_actions or selector in STATE.fail_selectors
+                or (bool(frame_id) and frame_id in STATE.fail_frames))
 
     def click(self, selector, frame_id=""):
-        if self._fail(selector):
+        if self._fail(selector, frame_id):
             return '{"error": "element not found"}'
         STATE.actions.append(("click", selector))
         return '{"clicked": true}'
 
     def form(self, selector, value=None, check=None, select=None, frame_id=""):
-        if self._fail(selector):
+        if self._fail(selector, frame_id):
             return '{"error": "element not found"}'
         STATE.actions.append(("form", selector, value if value is not None else (check or select)))
         return '{"filled": true}'
@@ -1182,3 +1271,65 @@ if __name__ == "__main__":
     REFERENCE.parent.mkdir(parents=True, exist_ok=True)
     REFERENCE.write_text(render_sample(), encoding="utf-8")
     print(f"wrote {REFERENCE}")
+
+
+# ───────── 帧号漂了：声明里的选择器要**拿到活着的帧里再试一次**（③ 钉死）─────────
+#
+# 现场（2026-09-17 真站、真窗口）：重放一开始的 `goto` 会把页面重载 → 跨源 iframe 重建 →
+# 账本里的 frameID **全成死号**（实测 `OOPIF eval: attach failed: No target with given id
+# found`）。于是声明里的选择器一条都用不了，整条路只能靠**语义**回落 ——
+# 而那个站上三个 MUI 组合框的 `text` 都是**零宽空格**，语义判据分不开它们：
+# 实测点开了**另一个**下拉的菜单，紧接着「点它的选项」那一步当然找不到
+# （`2020` 不在品牌菜单里）—— 表现为「页面上没找到「2020」」。
+#
+# 修法：帧号漂了，**页面结构没变** —— 声明里那条 nth-of-type 路径仍然是这个元素
+# 最精确的身份，所以先把它拿到**活着的帧**里试一遍（真站实测：账本那三条路径在活帧里
+# 各命中 1 个，指向的正是原来那三个控件），再轮到语义候选。
+
+
+def _drift_sandbox(sandbox, live_frame="LIVE1234"):
+    """声明里的选择器在**死帧**里够不着、在**活帧**里能命中的那种页面模型。"""
+    return {
+        "observe": {
+            "url": "https://example.test/",
+            "actions": [
+                {"selector": "#year", "text": "\u200b", "role": "combobox", "region": "body",
+                 "visible": True, "occluded_by": None, "above_fold": True,
+                 "stability": "high", "alternates": [],
+                 "frame_path": ["main", live_frame]},
+            ],
+            "fields": [],
+        },
+        "diff": {"actionable": True},
+    }
+
+
+def test_declared_selectors_are_retried_in_the_live_frame(sandbox, form_file):
+    """帧号漂了 → **先**把声明里的选择器拿到活帧里试，别直接跳语义回落。
+
+    为什么这条重要（真站实测）：那个站上三个 MUI 组合框的 `text` **都是零宽空格**，
+    语义判据分不开它们 —— 只按语义回落就点开了**另一个**下拉的菜单，
+    紧接着「点它的选项」那一步必然找不到（表现为「页面上没找到「2020」」）。
+    声明里那条 nth-of-type 路径才是这个元素的身份，它只是**帧号过期**了。
+    """
+    module, _ = _load(
+        "run_drift",
+        template.render("example-drift", "Thank you",
+                        _one_click_states(selectors=["#year"], frame_id="DEAD0000"),
+                        [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox, **_drift_sandbox(sandbox))
+    common.STATE.texts = ["Walk"]
+    # 死帧里那条命令会报错（真 cdp 的行为：`No target with given id found`）；
+    # 同一个选择器换到活帧上就该成 —— 这正是「帧号漂了」这件事的形状。
+    common.STATE.fail_frames = ("DEAD0000",)
+
+    trace = sandbox / "drift.jsonl"
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                  trace=str(trace)).run()
+
+    line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert line["selector_used"] == "#year", line
+    assert line["frame_id"] == "LIVE1234", line          # ← **活帧**，不是账本那个死号
+    assert line["ok"] is True, line

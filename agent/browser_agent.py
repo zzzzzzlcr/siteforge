@@ -675,26 +675,67 @@ _RANDOM_HINTS = (
     (("last name", "lastname", "surname", "family name"), "last_name"),
 )
 
+#: html 的 `type` 认哪几类 —— **只在字段自己没名字、周围也没写字时才轮到它**。
+#:
+#: ⚠️ 这里**故意不是** `_RANDOM_HINTS` 那张表（2026-09-17 真站实测的教训）：
+#: `type` 是**键盘提示**，不是「这个框是什么」。真站那趟里 ZIP 那个框是
+#: `<input type="tel">`（很多站为了让手机弹数字键盘就这么写），标签又是个不透明的
+#: MUI id（`textField-173838`）—— 于是 `tel` 成了唯一能匹配上的词，判成 **phone**，
+#: **复跑时手机号被打进了邮编框**（用户在图上看出来的就是这个）。
+#: `password` / `email` 没有这个歧义（没有一个密码框叫 tel），所以它们可以认；
+#: `tel` 留在这里当**最后一档**（页面上一个字都没写时，tel 是手机的可能性仍然最大），
+#: 但只要字段旁边写着「ZIP code」，第二档就会先命中它。
+_TYPE_HINTS = {
+    "password": "password",
+    "email": "email",
+    "tel": "phone",
+}
+
 
 def _fallback(kind: str, value: str, label: str, element) -> list:
     """重放时这个字段填什么：先读 form-file 的键（`source`），没有就用这里。
 
     ⚠️ 标签猜不出语义时给 `full_name` —— 一个保守的默认值，**不编**具体内容
     （真值要么来自运营的 form-file，要么来自随机池；产物那边的随机化本身是拟人需要）。
+
+    ## 判语义的三档（**顺序是有理由的，别合回去**）
+
+    1. **这个字段自己的名字**：`label` / `hint` / `placeholder`；
+    2. **页面上它周围写着的字**：`nearby_text`（observe 一直有，这里原先没用）；
+    3. **html 的 `type`**：只在上面两档一个字都没命中时 —— 见 `_TYPE_HINTS` 的注释
+       （`type="tel"` 是键盘提示，邮编框也用它）。
+
+    为什么要有第 2 档、为什么 `type` 必须降到第 3 档（**2026-09-17 真站实测**）：
+    gowizard 的 ZIP 框是 `<input type="tel">`，标签是个不透明的 MUI id
+    （`textField-173838`）—— 原先那一版把 `type` 和标签**混在同一个 blob 里**，
+    于是 `tel` 成了唯一匹配得上的词，判成 **phone**：账本里那一步 `value='33101'`
+    （邮编）配着 `fallback=[{"random":"phone"}]`，**复跑时手机号被打进邮编框**，
+    用户在窗口里一眼看出来「zipcode 填成了手机号导致过不去」。
+    加了第 2 档之后，同一个框的 blob 里有那句「What's your ZIP code?」→ 判成 **postcode** ✓。
     """
     if kind == "check":
         return [value or "true"]
     if kind == "select":
         return [value] if value else []
-    blob = " ".join(str(x or "") for x in (
-        label, (element or {}).get("label"), (element or {}).get("hint"),
-        (element or {}).get("placeholder"), (element or {}).get("type"),
-    )).lower()
-    for words, random_kind in _RANDOM_HINTS:
-        if any(w in blob for w in words):
-            return [{"random": random_kind}]
-    if (element or {}).get("type") == "password":
-        return [{"random": "password"}]
+    element = element or {}
+    tiers = (
+        # ① 字段自己的名字
+        " ".join(str(x or "") for x in (label, element.get("label"), element.get("hint"),
+                                        element.get("placeholder"))),
+        # ② 页面上它周围写着的字（元素旁边那段说明 / 问句）
+        " ".join(str(x or "") for x in (element.get("nearby_text") or [])),
+    )
+    for blob in tiers:
+        blob = blob.lower()
+        if not blob.strip():
+            continue
+        for words, random_kind in _RANDOM_HINTS:
+            if any(w in blob for w in words):
+                return [{"random": random_kind}]
+    # ③ 只有「字段自己没名字、周围也没写字」时才轮到 html 的 type
+    by_type = _TYPE_HINTS.get(str(element.get("type") or "").strip().lower())
+    if by_type:
+        return [{"random": by_type}]
     return [{"random": "full_name"}]
 
 

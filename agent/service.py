@@ -49,6 +49,7 @@ import json
 import os
 import pathlib
 import queue
+import re
 import threading
 import time
 import traceback
@@ -149,7 +150,75 @@ class BitWindow:
                                % (self.bit_id, str(out)[:200]))
         return data
 
-    # ── 那两根线 ───────────────────────────────────────────────────
+    # ── 那三根线 ───────────────────────────────────────────────────
+    def fresh_open(self) -> str:
+        """**开一个干净的窗口**：先确保「启动时清 cookie/缓存」是开着的 → 关 → 开 → 返回新的 ws_url。
+
+        为什么需要它（R-F1，2026-09-17 裁定）：**生产每一单都是新窗口** ——
+        `clearCookiesBeforeLaunch` 只在**启动那一刻**生效，所以生产跑的一定是干净会话。
+        而自测是在探路**之后**、**同一个会话**里跑的：探路自己点过 cookie 同意，
+        「首次访问才有」的那些步骤（cookie 横幅）在复跑时**元素真的不在页面上**了
+        （实测：刚开窗 `#onetrust-reject-all-handler` = 1；探路跑完 = 0，再导航回入口还是 0）。
+        在脏会话里自测，测的是一个**生产里不会出现**的场景。
+
+        ⚠️ 三个实测出来的硬事实（都写在各自的注释里，别照直觉改）：
+        1. `/browser/update` 是**整条记录**更新（只发一小段会被拒：`请选择代理方式`）——
+           所以这里跟 `set_viewport` 一样：`detail()` 读回整条，只翻那两个开关，其余原样写回。
+        2. `clearCacheFilesBeforeLaunch` / `clearCookiesBeforeLaunch` **只在启动时生效** ——
+           所以改完必须**关掉重开**，光写配置等于没做（`set_viewport` 的注释里记着同一个坑）。
+        3. `close` 返回成功**不等于窗口真关了**（SKILL §孤儿窗口）：所以后面用 `probe()`
+           确认真死了再开；开完再确认活着、并把 `127.0.0.1`/`0.0.0.0` 换成 worker_ip
+           （Bit 回的 ws 是它自己眼里的地址，SKILL 里写着这一步）。
+        """
+        body = dict(self.detail())                  # 整条原样带回（见第 1 条）
+        body["clearCacheFilesBeforeLaunch"] = True
+        body["clearCookiesBeforeLaunch"] = True
+        body["id"] = self.bit_id
+        out = self._post("/browser/update", body)
+        if not (isinstance(out, dict) and out.get("success") is True):
+            raise RuntimeError("把「开窗时清 cookie/缓存」写进配置没被确认：%s" % str(out)[:200])
+
+        self.close()
+        ws = self.open()
+        return ws
+
+    def open(self) -> str:
+        """开窗口，返回 ws_url（`.data.ws`，并把回环地址换成 worker_ip —— SKILL 里写着这步）。"""
+        out = self._post("/browser/open", {
+            "id": self.bit_id,
+            "args": ["--remote-debugging-address=0.0.0.0", "--remote-debugging-port=61129",
+                     "--remote-allow-origins=*", "--disable-session-crashed-bubble"],
+            "queue": True,
+        })
+        data = out.get("data") if isinstance(out, dict) else None
+        ws = (data or {}).get("ws") if isinstance(data, dict) else None
+        if not (isinstance(out, dict) and out.get("success") is True and ws):
+            raise RuntimeError("开窗口没成：%s" % str(out)[:200])
+        ws = re.sub(r"(127\.0\.0\.1|0\.0\.0\.0)", self.worker_ip, str(ws))
+        probe = self.probe()
+        if probe["alive"] is not True:
+            raise RuntimeError("窗口开了但**探活说它不是活的**（%s）—— 不把这种窗口交出去"
+                               "（SKILL：alive 与 close 都可能骗人，开完必须回读）" % probe)
+        return ws
+
+    def close(self) -> None:
+        """关窗口，并且**确认真死了**（SKILL：close 返回成功 ≠ 窗口真关了）。
+
+        ⚠️ 「本来就已经死了」不算失败（`fresh_open` 的第一件事就是关掉旧窗，
+        而旧窗**经常**已经自然死亡 —— 它只活 25~33 分钟）。真死了就没什么可关的，
+        直接确认「它确实不在」就完事；否则每次窗口自然死亡之后的 `fresh_open`
+        都会以「关窗口没被确认」失败，把一次**已经满足**的前置说成没做到。
+        """
+        if self.probe()["alive"] is False:
+            return
+        out = self._post("/browser/close", {"id": self.bit_id})
+        if not (isinstance(out, dict) and out.get("success") is True):
+            raise RuntimeError("关窗口没被确认：%s" % str(out)[:200])
+        probe = self.probe()
+        if probe["alive"] is not False:
+            raise RuntimeError("关窗口的请求回了成功，但**探活说它还活着/问不出来**（%s）—— "
+                               "不确认死掉就往下走，下一个任务会拿到一个正在死掉的窗口" % probe)
+
     def set_viewport(self, width: int, height: int) -> None:
         """把窗口的尺寸**写进配置**（`width x height`）。
 
@@ -513,7 +582,8 @@ class Service:
         """
         deps = graph.Deps(explore=self._explore_for(brief, job_id),
                           set_viewport=(self._viewport_cb(brief.get("ws_url"))
-                                        if brief.get("set_viewport") else None))
+                                        if brief.get("set_viewport") else None),
+                          fresh_session=self._fresh_session_cb())
         if self._graph_factory is not None:
             return self._graph_factory(brief, deps)
         return graph.build(checkpointer=self._check.get(), deps=deps)
@@ -734,6 +804,25 @@ class Service:
         except Exception:                      # noqa: BLE001
             traceback.print_exc()
         self._write_baseline(job_id, end=end)
+
+    def _fresh_session_cb(self) -> Optional[Callable]:
+        """R-F1 那根线：自测之前换一个**干净会话**（关旧窗 → 开新窗，返回新的 ws_url）。
+
+        - 这个部署没接窗口层、或窗口层给不了 `fresh_open` → `None`：图**照跑**，
+          但在 `selftest` 的 facts 与 `diagnose` 里**说清「这一次不是干净会话」**
+          （不是跳过、不是假装干净 —— 判据一个字不改）。
+        - 接上了 → 真回调。**换失败要抛**：图接住它，把「不是干净会话」如实记下再照跑 ——
+          条件差不是产物不行，但读报告的人必须知道。
+        """
+        if self._window is None or not hasattr(self._window, "fresh_open"):
+            return None
+
+        def cb() -> str:
+            ws = self._window.fresh_open()
+            if not ws:
+                raise RuntimeError("换干净会话没给出新的 ws_url")
+            return str(ws)
+        return cb
 
     def _viewport_cb(self, ws_url: Optional[str] = None) -> Optional[Callable]:
         """窗口层那根线（第 4 遍扰动要换窗口大小）。

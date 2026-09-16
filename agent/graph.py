@@ -198,6 +198,12 @@ class Deps:
       - `set_viewport`：**窗口层**那根线（`POST /browser/update`）。扰动自测的第 4 遍
         「换个窗口大小再跑」只有调用方够得着，产物和 cdp 内核都动不了窗口（R-5）。
         没接上时的处置见 `_missing_knobs()`：**停下并点名**，不是跳过、不是假装过了。
+      - `fresh_session`：**窗口层**的另一根线（R-F1）。`fresh_session() -> ws_url`：
+        关掉旧窗口、开一个**干净**的（启动时清 cookie/缓存 —— 生产每单都是这么起的），
+        返回新的 ws_url。自测在**探路之后**跑，探路的会话里 cookie 已经同意过，
+        「首次访问才有」的步骤在那时**元素真的不在**了 —— 那测的是生产里不会出现的场景。
+        没接上（或这个部署给不了）时的处置见 `_selftest`：**照跑，但在 facts 里说清
+        「这一次不是干净会话」**，不假装干净、也不因此判不过（判据一个字不改）。
     """
 
     explore: Callable = browser_agent.explore
@@ -207,6 +213,7 @@ class Deps:
     provenance: Callable = runtime.provenance
     should_pause: Optional[Callable] = None
     set_viewport: Optional[Callable] = None
+    fresh_session: Optional[Callable] = None
 
 
 # ───────────────────────────── 人的那道闸 ─────────────────────────────
@@ -413,6 +420,37 @@ def _lint(state, deps: Deps, caps: Caps) -> dict:
     return out
 
 
+def _fresh_session(state, deps: Deps) -> tuple:
+    """自测之前换一个**干净会话**（R-F1）。返回 `(ws_url, 一句人话)`。
+
+    为什么值得为它多开一次窗（2026-09-17 裁定，证据在 `fix-frame-through-report.md` §7.2）：
+    自测跑在**探路之后**、同一个浏览器会话里，而探路自己已经点过 cookie 同意 ——
+    「首次访问才有」的那一步（cookie 横幅）复跑时**元素真的不在页面上**，
+    于是自测挂在一个**生产里不会出现**的场景上（生产每单开新窗、每次都清 cookie）。
+
+    ⚠️ **这不是放宽判据**：五遍的判据、`_judge`、`STUCK_LIMIT` 一个字没动 ——
+    换的只是**跑的条件**，而换完的那个条件**更接近生产**。这句话别被后人读反。
+
+    三态，都不静默：
+      - 没接这根线（部署给不了）→ 照旧用原来那个 ws_url，人话里说明「不是干净会话」；
+      - 接上了但换失败（窗口服务抖了）→ 同上（**不**因此判不过；条件差不等于产物不行，
+        但要说出来）；
+      - 换成了 → 用新 ws_url，人话里说明「换了干净会话」。
+    """
+    if deps.fresh_session is None:
+        return state["ws_url"], ("这一次**不是干净会话**（这个部署没接 `fresh_session`）："
+                                 "探路那一趟的 cookie 还在，"
+                                 "「首次访问才有」的步骤复跑时元素不会出现 —— 那是环境差，不是产物差。")
+    try:
+        ws_url = str(deps.fresh_session())
+    except Exception as exc:                     # noqa: BLE001 —— 外面世界，什么都可能抛
+        return state["ws_url"], ("换干净会话没成（%s）—— 这一次**不是干净会话**，照旧跑；"
+                                 "那几遍的结论要按「条件更差」读。" % exc)
+    if not ws_url:
+        return state["ws_url"], "换干净会话没给出新的 ws_url —— 这一次**不是干净会话**，照旧跑。"
+    return ws_url, "换了**干净会话**（关旧窗、开新窗；生产每单都是这么起的）。"
+
+
 def _selftest(state, deps: Deps, caps: Caps) -> dict:
     """扰动自测（Task 6）：在真浏览器上按扰动序列跑，任一遍挂就不算过（§10）。
 
@@ -425,7 +463,12 @@ def _selftest(state, deps: Deps, caps: Caps) -> dict:
                  facts={"窗口": state.get("ws_url"), "表单数据": state.get("form_file"),
                         "第 2 遍刷新回哪个 URL": state.get("entry_url"),
                         "允许跳过的扰动": list(state.get("allow_skips") or []),
-                        "窗口旋钮": "set_viewport=接上了" if deps.set_viewport else "没接上"})
+                        "窗口旋钮": "set_viewport=接上了" if deps.set_viewport else "没接上",
+                        # R-F1：自测跑在探路**之后**的会话里，而生产每单都是新窗口 ——
+                        # 接得上就换一个干净会话（cookie 已同意过的那些「首次访问才有」
+                        # 的步骤，在脏会话里元素根本不会出现）。
+                        "干净会话": ("会换（fresh_session 接上了）" if deps.fresh_session
+                                     else "换不了（没接那根线）—— 这一次的结论要按「条件更差」读")})
     if _held(out):
         return out
 
@@ -443,8 +486,14 @@ def _selftest(state, deps: Deps, caps: Caps) -> dict:
         out.update({"end_reason": END_MISSING_KNOB, "end_note": _knob_note(missing)})
         return out
 
+    # R-F1：**自测要在干净会话里跑**（生产每单都是新窗口 —— 干净会话才是生产里那个场景）。
+    # 拿一根新 ws_url；拿不到就照旧跑，但**在 facts 里说清这一次不干净**（不假装）。
+    ws_url, session_note = _fresh_session(state, deps)
+    out["ws_url"] = ws_url
+    out["session"] = session_note
+
     py = _stage_candidate(state)
-    report = deps.selftest(str(py), state["ws_url"], state["form_file"], state["site"],
+    report = deps.selftest(str(py), ws_url, state["form_file"], state["site"],
                            **_selftest_kwargs(state, deps))
     out.update({"candidate_path": str(py), "report": report})
     if not report.passed:
@@ -461,7 +510,10 @@ def _diagnose(state, deps: Deps, caps: Caps) -> dict:
     evidence = _diagnosis(state.get("report"))
     say = ("自测没过。%s 接下来要拿这份记录去定位，定位完回 draft 改一版。" % evidence["say"])
     out = _enter(state, caps, "diagnose", say, facts={"逐遍结果": evidence["per_run"],
-                                                     "证据": evidence})
+                                                     "证据": evidence,
+                                                     # 跑的条件（R-F1）：不是干净会话时，
+                                                     # 有些失败是**环境差**，别记到产物头上
+                                                     "会话": state.get("session")})
     if _held(out):
         return out
     out["diagnosis"] = evidence

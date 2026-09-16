@@ -889,3 +889,68 @@ def _without_provenance(src: str) -> str:
                 isinstance(t, ast.Name) and t.id == "PROVENANCE" for t in node.targets))]
     assert len(kept) == len(module.body) - 1, "产物里应该正好有一条 PROVENANCE 赋值"
     return "\n".join(ast.dump(node) for node in kept)
+
+
+# ─────────────── R-F1：自测之前换干净会话（关旧窗 → 开新窗 → 用新 ws_url）───────────────
+#
+# 裁定：自测跑在探路**之后**的同一个会话里，而生产每单都是新窗口（清 cookie）。
+# 在脏会话里自测＝在测一个生产里不会出现的场景（证据见报告 §7.2：横幅 1 → 0）。
+# ⚠️ 换的是**条件**，不是判据 —— `_judge` / `STUCK_LIMIT` / 五遍的判据一个字没动。
+
+
+def test_fresh_session_replaces_the_ws_url_used_by_the_selftest(tmp_path):
+    """接了这根线 → 自测**用的是新窗口**的 ws_url（不是探路那个）。"""
+    calls = []
+
+    def fresh():
+        calls.append("fresh")
+        return "ws://127.0.0.1:61129/devtools/browser/BRAND-NEW"
+
+    deps, rec = _deps(fresh_session=fresh)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert calls == ["fresh"], calls
+    assert rec.selftest[0]["ws_url"] == "ws://127.0.0.1:61129/devtools/browser/BRAND-NEW"
+    assert out["ws_url"] == "ws://127.0.0.1:61129/devtools/browser/BRAND-NEW"
+    assert "干净会话" in out["session"] and "换了" in out["session"]
+
+
+def test_without_the_fresh_session_knob_it_runs_anyway_and_says_so(tmp_path):
+    """没人接这根线 → **照跑**（不是跳过、不是判不过），但把「这一次不是干净会话」说出来。
+
+    与 `set_viewport` 的处置**故意不同**：那根线缺了，第 4 遍扰动根本没做，所以必须停；
+    这根线缺了，五遍**照跑**，只是条件比生产差 —— 条件差不是产物不行，
+    但它必须写在人能看见的地方（`session` / `diagnose` 的 facts），不许静默。
+    """
+    deps, rec = _deps(fresh_session=None)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "delivered"          # 照样跑到底
+    assert rec.selftest[0]["ws_url"] == WS_URL       # 用的还是原来那个窗口
+    assert "不是干净会话" in out["session"]
+
+
+def test_a_broken_fresh_session_does_not_kill_the_run_but_is_recorded(tmp_path):
+    """换干净会话**失败**（窗口服务抖了）→ 照旧跑 + 把原因记下来（不判不过、不静默）。"""
+    def boom():
+        raise RuntimeError("窗口服务连不上")
+
+    deps, rec = _deps(fresh_session=boom)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert rec.selftest[0]["ws_url"] == WS_URL
+    assert "不是干净会话" in out["session"]
+    assert "窗口服务连不上" in out["session"], out["session"]
+
+
+def test_fresh_session_that_returns_nothing_is_not_treated_as_a_new_window(tmp_path):
+    """回了空串 → 不许当成「换好了」（空字符串会被当成一个 ws_url 用下去，产物连不上）。"""
+    deps, rec = _deps(fresh_session=lambda: "")
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert rec.selftest[0]["ws_url"] == WS_URL, rec.selftest[0]
+    assert "不是干净会话" in out["session"]

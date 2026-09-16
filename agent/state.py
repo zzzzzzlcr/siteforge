@@ -164,6 +164,10 @@ class SiteState(TypedDict, total=False):
     #: 没给 = 用 Task 6 的默认（`DEFAULT_ALLOWED_SKIPS` = 只允许跳 country）。
     allow_skips: Optional[list]
     entry_url: Optional[str]
+    #: 自测**跑在哪个会话里**的一句人话（R-F1）：换了干净会话 / 换不了（没接那根线）/
+    #: 换失败（窗口服务抖了）。后两种意味着「这一次的条件比生产差」—— 读报告的人
+    #: 必须先看到这句话，才不会把环境差记到产物头上。
+    session: Optional[str]
 
     # ── explore ───────────────────────────────────────────────
     journey: Optional[Journey]
