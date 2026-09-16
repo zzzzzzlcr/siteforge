@@ -471,7 +471,7 @@ class Filler:
     frames = ()
     #: 同上（活帧）：不进 `__init__` 的实例上也要有一个空表可读 —— 见 `_read_frames`。
     live_frames = ()
-    #: 同上（替身）：不进 `__init__` 的实例没有 CDPHelper —— `_iframe_srcs` 靠它判「读不了」，
+    #: 同上（替身）：不进 `__init__` 的实例没有 CDPHelper —— 读帧那几条路靠它判「读不了」，
     #: 而不是抛 AttributeError（单测里那些只 stub 了 `_url`/`page_signature` 的实例）。
     cdp = None
 
@@ -559,13 +559,41 @@ class Filler:
         确认不了就去找一次（`observe`，节流见 `LIVE_PROBE_EVERY`）——
         与 `_relocate` 那条路**同一个口径**：能用的帧 = 当场活着的帧。
         """
-        if self.frames and not self._live_frames_ok():
+        # 门槛（2026-09-17 第九轮）：**「我手上这几个帧里，有没有我真正要读的那个」** ——
+        # 老门槛是「某个帧还读得到」，而**广告帧永远满足它**（R-68 量到的形状）：
+        # 于是再也不去找，读页面只剩主帧 + 广告帧，问卷正文永远读不到。
+        # 现在：帧表必须是**当场那次观测**的（`_model_is_fresh`：手上那份观测还在这一页上），
+        # 而且至少有一个帧真的答得上；答不上/不新鲜就去找一次（节流）。
+        # 「该去找一次吗」= 手上那份观测**说不清这一页现在有哪些帧**：
+        #   · 它已经过期（换过页）→ 说不清；
+        #   · 声明里有帧、可手上一个活帧都没有 → 说不清；
+        #   · 有活帧、可都答不上（死号）→ 说不清。
+        # ⚠️ 连「一个帧都没有」也算说不清：这一页可能**正要长出一个来**（问卷那类部件
+        # 是点了才出现的）—— 只在「手上这份观测还是这一页的」时候才放行（每页至多一次）。
+        # ⚠️ **只在「这条流程确实活在帧里」时去找**（`self.frames` 非空 = 账本里有帧号）：
+        # 一律去找会把 §13 那条「生产重跑不 observe」破掉（`tests/` 有钉子钉着它）。
+        # 主帧里的流程一次都不找；带帧的流程每换一页找一次（节流见 LIVE_PROBE_EVERY）。
+        if self.frames and (not self._model_is_fresh()
+                            or not self.live_frames
+                            or not self._live_frames_ok()):
             self._refresh_live_frames()
         out = []
         for fid in list(self.frames) + list(self.live_frames):
             if fid and fid not in out:
                 out.append(fid)
         return out
+
+    def _model_is_fresh(self):
+        """手上那份观测，**是不是还在这一页上**看的。
+
+        为什么用它当门槛（而不是「某个帧还能读」）：读页面这件事要的是
+        「这一页现在有哪些帧」—— 而这件事**只有当场那次观测说得清**。
+        页一换（URL 变了），那份观测就过期了：它记的帧可能已经不在了，
+        而新出现的帧（比如问卷那个部件）它根本不知道。
+        """
+        if not self._last_model:
+            return False
+        return (self._last_model.get("url") or "") == (self._url() or "")
 
     def _live_frames_ok(self):
         """手上记着的活帧**现在还活着吗**（读一眼就知道 —— 读得到就是活着）。"""
@@ -617,35 +645,16 @@ class Filler:
         `www.gowizard.com/auto/…`）。只拿主帧比 → 那 16 组步骤**静默跳过**
         （`_applies` 返回 False 是不出声的）：产物看着跑完了，其实一步没走。
         """
+        # ⚠️ **只认「帧自己的 location.href」这一路**（2026-09-17 第九轮）：
+        # 原先还并了「主帧里那些 `<iframe>` 的 `src`」——实测那条**从根上够不着**：
+        # 问卷帧根本不在主帧的 DOM 里（`getElementsByTagName('iframe')` 只拿到广告帧），
+        # 而且 `src ≠ 帧自己的 location.href`（部件是用 JS 造帧/换 src 的）。
+        # 判据要的那串**就是帧自己的 location.href** —— 它只能从帧那一侧（CDP）读。
         out = []
-        for url in ([self._url()] + self._iframe_srcs()
-                    + [self._frame_url(fid) for fid in self._read_frames()]):
+        for url in ([self._url()] + [self._frame_url(fid) for fid in self._read_frames()]):
             if url and url not in out:
                 out.append(url)
         return out
-
-    def _iframe_srcs(self):
-        """主帧里那些 `<iframe>` 的 `src`（**读得出地址，读不到内容**）。
-
-        为什么要它（2026-09-17 真站实测的那一格）：流程活在跨源 iframe 里时，账本里
-        那个状态的 `when.url_contains` **就是子帧的地址**（observe 报的 `url` 是子帧的）。
-        而子帧地址有两处能读：那一帧的 `location.href`（要帧号、帧号会漂）和**主帧里那个
-        `<iframe>` 的 `src`**（跨源也读得到 ✓，永远不用帧号 ✓）。
-        实测踩到的形状：某一步 observe 的模型里**一个子帧元素都没有**（件在换题的间隙），
-        `_read_frames()` 于是没有活帧 → 地址判据**一条都匹配不上** → 整组步骤静默跳过。
-        补上这一路之后，「要含子帧地址」这条判据不再依赖帧号能不能用。
-        """
-        if getattr(self, "cdp", None) is None:
-            return []                      # 没有助手（单测里的替身）→ 读不了，别抛
-        # ⚠️ **先读 `fs[i].src`（属性会解析成绝对地址），再退回 getAttribute('src')** ——
-        # 真站实测踩到的：页面上写的是**相对地址**（`/forms/7878/...` 或 `//host/...`），
-        # 而判据里要的是**绝对地址**（observe 报的是绝对的）→ 一条都对不上 → 整组跳过。
-        js = ("var fs=document.getElementsByTagName('iframe'),out=[];"
-              "for(var i=0;i<fs.length;i++){var s=fs[i].src||fs[i].getAttribute('src')||'';"
-              "if(s&&s.indexOf('about:')!==0)out.push(s);}"
-              "return out.join('|');")
-        raw = self._ev(js)
-        return [part.strip() for part in (raw or "").split("|") if part.strip()]
 
     def _frame_url(self, frame_id):
         """某一帧现在的地址（读不到就空串 —— 读不到不是「它是空的」，是没法判）。
@@ -1288,6 +1297,16 @@ class Filler:
             return ""
         return max(self.skipped_states.items(), key=lambda kv: kv[1])[0]
 
+    def _frames_say(self):
+        """两个帧表 + 手上观测的新鲜度 —— **两支诊断都要带上它**（地址支与正文支）。
+
+        为什么要它：第八轮那条跳过走的是**地址**那一支，而当时的诊断只把帧表放在正文支，
+        于是「手里到底有哪些帧」打不出来，只能靠人从别处推。自证就得两支都自证。
+        """
+        return ("读页面用的帧：账本 %s ／ 活帧 %s ／ 手上那份观测%s"
+                % (list(self.frames) or "（无）", list(self.live_frames) or "（无）",
+                   "还是这一页的" if self._model_is_fresh() else "已经过期（换过页）"))
+
     def _when_why(self, when):
         """这条 `when` 为什么不成立 —— **把手上实际有的东西原样摆出来**（给日志与 trace 用）。
 
@@ -1303,8 +1322,8 @@ class Filler:
         want_url = when.get("url_contains")
         if want_url and not any(want_url in url for url in self._urls()):
             have = " ｜ ".join(self._urls()) or "（一个都没读到）"
-            return ("地址对不上：要含「%s」；手里这些地址都不含它：%s"
-                    % (want_url, have))
+            return ("地址对不上：要含「%s」；手里这些地址都不含它：%s；%s"
+                    % (want_url, have, self._frames_say()))
         wants = when.get("text_contains") or []
         if wants:
             signature = self.page_signature()
@@ -1313,10 +1332,9 @@ class Filler:
                 # 「实际看到的那段」+ **读页面用的帧** + 手上那份观测的正文 ——
                 # 三样一起摆出来：下一步的人不用再猜「是帧没找着，还是页面上真没有」。
                 model_text = _norm((self._last_model or {}).get("page_text") or "")
-                return ("正文里没有「%s」；页面上**实际看到的**开头那段是：「%s」；"
-                        "读页面用的帧：账本 %s ／ 活帧 %s；手上那份观测的正文开头：「%s」"
-                        % (str(missing[0])[:60], signature[:200],
-                           list(self.frames) or "（无）", list(self.live_frames) or "（无）",
+                return ("正文里没有「%s」；页面上**实际看到的**开头那段是：「%s」；%s；"
+                        "手上那份观测的正文开头：「%s」"
+                        % (str(missing[0])[:60], signature[:200], self._frames_say(),
                            model_text[:120] or "（没有观测）"))
         return "判据说不清为什么不成立（url 与正文都对上了却判成不像）"
 

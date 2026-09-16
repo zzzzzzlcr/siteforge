@@ -1109,6 +1109,8 @@ class _State:
 
     def reset(self, **kw):
         self.url = "https://example.test/"
+        #: 帧里那份 `location.href`（判据里「要含子帧地址」那一条靠它认）
+        self.frame_url = ""
         # 假页面：动作做得越多，页面越往后走。
         # 默认给一段文字是给**子进程**那条测试用的 —— 子进程里没机会配 STATE，
         # 而「按 ad-task 的调法跑起来能拿 0」必须真跑一次才算验过。
@@ -1119,8 +1121,6 @@ class _State:
         #: 同意弹层的答复（`"<选择器>|<按钮文字>"`，空串 = 没有弹层）——
         #: 产物 `_clear_obstructions` 的探针认这个形状。
         self.consent = ""
-        #: 主帧里那些 `<iframe>` 的 src（判据里「要含子帧地址」那一条靠它认）
-        self.iframe_srcs = []
         #: 遮挡判据的答复（`"COVER|tag#id.class"`，空串 = 没被盖着）——
         #: 产物 `_covered_by` **只认带 `COVER|` 前缀**的答复。
         self.cover = ""
@@ -1189,14 +1189,14 @@ class CDPHelper:
             return json.dumps(STATE.consent)
         if "elementFromPoint" in script:     # 遮挡判据那个探针
             return json.dumps(STATE.cover)
-        if "getElementsByTagName('iframe')" in script:   # 主帧里 iframe 的 src
-            return json.dumps("|".join(STATE.iframe_srcs))
         if "document.readyState" in script:              # `goto` 之后等这一页加载
             return json.dumps("complete")
         if "innerText" in script:
             return json.dumps(STATE.current_text())
         if "location.href" in script:
-            return json.dumps(STATE.url)
+            # 帧里那一份（`frame_url`）与主帧那一份（`url`）可以不一样 ——
+            # 真站上它们本来就不一样（子帧是部件、主帧是壳）
+            return json.dumps(STATE.frame_url if frame_id else STATE.url)
         return "null"
 
     def screenshot(self):
@@ -1553,46 +1553,43 @@ def test_the_end_says_out_loud_that_it_did_not_arrive(sandbox, form_file, caplog
     assert "没有出现过成功文案" in hit[0], hit[0]
 
 
-def test_the_url_judgement_reads_iframe_srcs_from_the_main_frame(sandbox, form_file):
-    """账本里的 `when.url_contains` 是**子帧的地址**时，主意要能从主帧里那条 `src` 认出来。
+def test_the_url_judgement_reads_the_frames_own_location(sandbox, form_file):
+    """账本里的 `when.url_contains` 是**子帧自己的地址**时，要从**帧那一侧**读出来。
 
-    真站实测的那一格（2026-09-17）：某一步 observe 的模型里**一个子帧元素都没有**
-    （件在换题的间隙）→ `_read_frames()` 没有活帧 → 地址判据一条都匹配不上 →
-    **整组步骤静默跳过**（那趟 24 步里后 11 步全这么没的）。
-    跨源 iframe 的**内容**读不到，但它的**地址**在主帧里一直读得到。
+    2026-09-17 第九轮量出来的：主帧 DOM 里**根本没有那个问卷 `<iframe>`**
+    （`getElementsByTagName('iframe')` 只拿到广告帧），而且 `src ≠ 帧自己的 location.href` ——
+    所以「主帧里读 iframe 的 src」那条路**从根上够不着**，已经摘掉（`_iframe_srcs` 删了）。
+    能用的只有一条：**帧自己的 `location.href`**（`cdp eval --frame-id`）。
     """
     states = [{"name": "quiz",
                "when": {"url_contains": "chameleon.example.test/forms/7878"},
                "steps": [{"action": "click", "note": "点「Continue」",
                           "target": {"text": "Continue", "role": "button", "near": None,
-                                     "selectors": ["#continue"]}}]}]
+                                     "selectors": ["#continue"], "frame_id": "LEDGERFRAME"}}]}]
     module, _ = _load(
-        "run_iframe_src",
-        template.render("example-iframe-src", "Thank you", states, [], SAMPLE_PROVENANCE),
+        "run_frame_loc",
+        template.render("example-frame-loc", "Thank you", states, [], SAMPLE_PROVENANCE),
         sandbox)
+    # 观测里带着一个**子帧里的元素** —— 帧表就是从这儿来的（不是主帧 DOM、不是账本）
     common = _stub(sandbox,
-                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   observe={"url": "https://example.test/shell",
+                            "actions": [{"selector": "#q", "text": "x", "role": "button",
+                                         "region": "body", "visible": True, "occluded_by": None,
+                                         "above_fold": True, "stability": "high", "alternates": [],
+                                         "frame_path": ["main", "LIVEFRAME1"]}],
+                            "fields": []},
                    diff={"actionable": True})
     common.STATE.texts = ["Walk"]
-    # 主帧里挂着一个跨源 iframe（地址就是判据要的那条），而**模型里一个子帧元素都没有**
-    common.STATE.iframe_srcs = ["https://chameleon.example.test/forms/7878/default/gowizard"]
-    trace = sandbox / "iframesrc.jsonl"
+    common.STATE.url = "https://example.test/shell"
+    common.STATE.frame_url = "https://chameleon.example.test/forms/7878/default/gowizard"
+    trace = sandbox / "frameloc.jsonl"
     module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
                   trace=str(trace)).run()
 
     lines = [json.loads(l) for l in trace.read_text(encoding="utf-8").splitlines() if l.strip()]
     assert not [l for l in lines if l.get("skipped")], (
-        "地址能从主帧那条 src 认出来，就不该判成「这一页不像」：%s" % lines)
+        "帧自己的地址读得到，就不该判成「这一页不像」：%s" % lines)
     assert ("click", "#continue") in common.STATE.actions, common.STATE.actions
-
-
-# ─────── 「产物死了」不许表现成「走完了」（2026-09-17 真站踩到的）───────
-#
-# 现场：第 11 步（一个 `form` 步）在 `_perform` 里抛了 TypeError（我新加的
-# `strict=` / `expect_label=` 撞上部署的那份**还没更新**的 `common.py`），
-# 而 `run()` 的 except 当时**一个字都不写 trace** —— 自测只读 trace，
-# 于是它把「产物死了」读成「走完了 10 步、0 跳过」。
-# 与「跳过不出声」是同一族的两个变种：**跳过会出声了，异常不会。**
 
 
 def test_a_crash_inside_a_step_leaves_a_failed_line_in_the_trace(sandbox, form_file):
@@ -1692,7 +1689,7 @@ def test_the_skip_reason_carries_what_we_actually_saw(sandbox, form_file):
                    diff={"actionable": True})
     common.STATE.texts = ["Walk"]
     common.STATE.url = "https://now.example.test/entry"
-    common.STATE.iframe_srcs = ["https://frame.example.test/widget"]
+    common.STATE.frame_url = "https://frame.example.test/widget"
     trace = sandbox / "why.jsonl"
     module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
                   trace=str(trace)).run()
@@ -1702,7 +1699,7 @@ def test_the_skip_reason_carries_what_we_actually_saw(sandbox, form_file):
     why = line["why"]
     assert "wanted.example.test/quiz" in why, why            # 要的是什么
     assert "now.example.test/entry" in why, why              # 手里有的（主帧）
-    assert "frame.example.test/widget" in why, why           # 手里有的（主帧里那条 iframe 的 src）
+    assert "读页面用的帧" in why, why                          # 帧表也得自证（两支都要有）
 
 
 # ⚠️ 「`page_signature()` 并上最近一次 observe 的正文」这一格**没有钉子**：
