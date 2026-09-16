@@ -173,9 +173,13 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
   "platform": { "guess": "salesforce-lightning", "confidence": 0.9,
                 "evidence": ["lightning-* 自定义元素", "aura 命名空间"] },
   "page_text": "归一化后的前 600 字（与 py 里 page_signature() 同口径）",
-  "obstructions": [
+  "obstructions": [                    // 只装**页面上的**遮挡物
     { "kind": "cookie-banner", "selector": "#onetrust-banner",
       "dismiss_selector": "#onetrust-accept-btn-handler" }
+  ],
+  "diagnostics": [                     // 只装**观测者自己的问题** —— 与页面内容分开
+    { "kind": "frame-error",  "detail": "...", "frame_path": ["main", "<frameId>"] },
+    { "kind": "frame-blind",  "detail": "主帧有 3 个 iframe，只枚举到 1 个子帧", "frame_path": ["main"] }
   ],
   "actions": [
     { "selector": "#schedule-now",
@@ -208,6 +212,25 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
 
 **为什么必须是「一次调用」**：Bit 窗口存活只有几分钟，agent 每轮拆成七八次
 调用会把窗口耗死。所有静态信息一次取齐。
+
+#### `obstructions` 与 `diagnostics` 必须分开（2026-09-16 Task 4 审查发现）
+
+第一版把「子帧观测失败」塞进了 `obstructions` —— 那是**复用数据通道报错误**：
+`selector` 兼装「元素选择器」和「frameId」、`text` 兼装「页面文字」和「错误消息」。
+**消费者若忽略 `kind`，会拿 frameId 去点。** 而 Console 恰恰要把这些摆给运营看。
+
+所以分成两个通道：
+
+| 字段 | 装什么 | 消费者怎么用 |
+|---|---|---|
+| `obstructions` | **页面上的**东西（cookie 横幅、弹窗） | 「有东西挡着，先关掉它」 |
+| `diagnostics` | **观测者自己的**问题（子帧观测失败、枚举不到帧） | 「**这里我没看清**」—— 别把它当页面内容 |
+
+`frame-blind` 的触发：主帧的 `<iframe>` 元素数 ≥1 而枚举到的子帧数为 0
+（主帧自己的 DOM 能看见 `<iframe>` 元素，与子帧源无关）—— 那说明帧枚举退化了。
+
+**这条对 Console 是必需的**：D15 的产品目标是「运营能自助」，而
+**运营必须知道「AI 是没看清，还是看清了但做错了」** —— 那两件事的处置完全不同。
 
 #### ⚠️ R3 探针实测出的三个实现陷阱（2026-09-16，**都会静默产出错误页面模型**）
 
@@ -731,6 +754,7 @@ py 产出契约与 lint · 扰动自测 · LangGraph 图 · `site_memory`/`corre
 | **R13** | Phase 1 的 correction 记录路径 | ✅ **已定（方案 B）**：最小 CLI `siteforge correct`，触发点是 selftest 失败后工程师手工改 py 那一刻。见 §13.3 |
 | **R14** | 扰动测试里「换代理国家」那遍要重新拉链 + 重启 gost，单遍成本高 | 已知；可在 Phase 1 先跑 Run1–4，代理扰动作为可选 |
 | **R15** | `observe` 的 `relative_size` / `contrast` / `region` 计算依赖布局，**在 shadow/iframe 里是否可靠未验** | 归入 R3 的能力探针一起验 |
+| **R18** | **跨源帧自己内部的子帧枚举不到** —— `main(127.0.0.1) → OOPIF(localhost) → 同源子帧` 时 `GetFrameTreeWithEvents` 只报 2 帧，而 **OOPIF target 自己的 `Page.getFrameTree` 里明明有那个孙子帧**（原始 JSON 在 `tools/cdp/internal/testdata/README.md`）。根因：跨进程没有 `contentDocument`，DOM 穿透进不去 OOPIF 内部 | ✅ **不再静默**（守卫兜成 `frame-blind` 诊断），但内容确实拿不到。收进来要**逐 OOPIF target 取树**，是新能力 —— 单开一轮。实际影响：支付/3DS 那类「跨源组件里再套一层」的场景，本项目目标站点（漏斗/报价表单）不常见 |
 | **R17** | **Console 的「框选元素」交互只推演过、没实测** —— 依赖「截图 + `bbox` 列表 = 可点元素」这条路成立（`observe` 契约里每个动作都带 `bbox`） | 未验；**T7 之后拿真页面验**：截图上的框与 `bbox` 是否对得上（含 shadow/iframe 里的元素、以及页面滚动后的坐标） |
 
 ---
