@@ -141,14 +141,34 @@ type Diagnostic struct {
 }
 
 type Action struct {
-	Selector     string   `json:"selector"`
-	Alternates   []string `json:"alternates"`
-	Stability    string   `json:"stability"`
-	Text         string   `json:"text"`
-	Role         string   `json:"role"`
-	Tag          string   `json:"tag"`
-	Type         string   `json:"type"`
-	Visible      bool     `json:"visible"`
+	Selector   string   `json:"selector"`
+	Alternates []string `json:"alternates"`
+	Stability  string   `json:"stability"`
+	Text       string   `json:"text"`
+	Role       string   `json:"role"`
+	Tag        string   `json:"tag"`
+	Type       string   `json:"type"`
+	Visible    bool     `json:"visible"`
+	// Disabled 是这个元素**现在能不能点**（2026-09-17 真站实测补的，规格 §4.1 U3）。
+	//
+	// 为什么非有不可：同一个页面、同一个 URL，DOM 里 Continue 的 disabled 从
+	// true 翻成 false，而 observe 给它的整条 Action **逐字节相同** —— 模型里没有
+	// 任何字段能分辨这两种状态。后果链实测过：禁用的按钮被当普通候选递出来，
+	// 点了 exit 0、回一对像样的坐标、**什么都没发生** —— 一次静默的空点被报成成功，
+	// 正是本项目最贵的那类失败（它看起来跟「做成了」一模一样）。
+	//
+	// 判据两条，缺一不可（与 internal/click.go 的探测脚本同一套）：
+	//
+	//	disabled 属性  走 IDL —— button / input / select / textarea / fieldset
+	//	aria-disabled  ARIA 那一套，IDL 仍是 false，但站点的 JS 会忽略点击
+	//	               （MUI / Bootstrap 的自定义控件大量用它）
+	//
+	// ⚠️ 刻意**不**认 class（`Mui-disabled` / `is-disabled` 那一类）：class 是
+	// 站点自己起的名字，认它等于把「什么样算禁用」交给页面 —— 误判的方向是
+	// **谎报**（把能点的说成不能点），而这里宁可少报。
+	//
+	// ⚠️ additive 字段：消费侧（py / agent）不读它时行为一字不变。
+	Disabled     bool     `json:"disabled"`
 	OccludedBy   *string  `json:"occluded_by"`
 	ShadowDepth  int      `json:"shadow_depth"`
 	FramePath    []string `json:"frame_path"`
@@ -482,7 +502,12 @@ func observeJS() string {
     return {
       selector: c[0], alternates: c.slice(1), stability: stability(el, c),
       text: txt(el, 50), role: el.getAttribute('role') || tag, tag: el.tagName,
-      type: el.type || null, visible: true, occluded_by: occludedBy(el),
+      type: el.type || null, visible: true,
+      // 能不能点：两条判据（IDL disabled / aria-disabled），理由见 Go 侧 Action.Disabled。
+      // ⚠️ 与 internal/click.go 的探测必须**同判据** —— 一个说能点、一个说不能点，
+      // 消费侧就会拿模型去点一个必然空点的目标。
+      disabled: (el.disabled === true || el.getAttribute('aria-disabled') === 'true'),
+      occluded_by: occludedBy(el),
       shadow_depth: shadowDepth(el), frame_path: ['main'],
       bbox: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
       region: region(el), above_fold: r.top < innerHeight,

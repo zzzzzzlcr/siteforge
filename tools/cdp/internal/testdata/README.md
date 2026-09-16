@@ -12,6 +12,33 @@
 | `selector.html` | `observe_selector_test.go`（Task 5 新增，不来自探针） | 选择器候选与稳定性评级 |
 | `honeypot.html` | `cmd/honeypot_e2e_test.go`（R19b 新增，不来自探针） | 屏幕外陷阱（蜜罐）+ 正向对照 |
 | `viewport.html` | `cmd/observe_e2e_test.go`（Defect 1 新增，不来自探针） | 撑出**滚动条**的页面（3000×3000） |
+| `click_target.html` | `cmd/click_target_e2e_test.go` + `cmd/mcp_click_e2e_test.go`（2026-09-17 新增，不来自探针） | click 的目标解析：歧义选择器（点到了 Back）+ 两种禁用的目标 |
+
+## `click_target.html`（2026-09-17 新增，**不是探针产物**，真站形态的复刻）
+
+复刻的是 blinkist 漏斗上的两个实测缺陷（原委与原始证据：
+`docs/probes/2026-09-17-observe-blinkist/`，规格 §4.1）。三组元素各司其职：
+
+| 组 | 元素 | 复刻的是什么 | 谁在用 |
+|---|---|---|---|
+| **A** | 5 个 `<button class="choice">`：前四个只有 `aria-label`（Back / Disagree / Not sure / Agree）、**无文字**，第五个是 `Continue`、在**末位**、**disabled** | 模型给 Continue 的 selector 就命中这 5 个，而 `querySelector` 取的是文档序第一个 = **Back**。实测照这个点下去：坐标落在 Back 的 bbox 里，漏斗**倒退**一步 | `TestClickAmbiguousSelectorStillFirstMatchButNowSaysSo`（默认仍点 Back，但**说出来**）、`TestClickStrictRefusesAmbiguousSelector`（--strict 拒绝）、`TestMCPClickRefusesAmbiguousSelector` |
+| **B** | `#unique-go`（唯一、可点） | **反向对照**：strict 不许变成「一律拒绝」 | 两条 `...StillClicksAUniqueEnabledTarget` |
+| **C** | `#disabled-go`（`disabled` 属性）、`#aria-disabled-go`（`aria-disabled="true"`） | 两种禁用判据各一个 —— 只认一条的实现，另一条就是「点了没反应但报成功」 | `TestClickDisabledTargetSaysSoInsteadOfSilentlySucceeding`、`TestClickStrictRefusesDisabledTarget` 等 |
+
+**Continue 刻意不给 `id`**：真站上模型给它的就是那个**歧义的** class 选择器。
+给它一个 id 就等于把这条链修好了，测试也就测不到它了。
+「唯一抓手」那一条（`TestClickDisabledContinueThroughItsOnlyUniqueHandle`）走的是
+`observe` 自己给的 `alternates[0]`（positional 路径，实测唯一），与真站那晚
+`blinkist.py` 打 `data-bk<rand>` 标记绕开的**是同一个坑**。
+
+⚠️ **`__rec` 里那句 `aria-disabled` 检查不能删**：浏览器**不会**因为 `aria-disabled`
+就不派发点击事件（它不是 IDL 属性）—— 「忽略点击」是**站点 JS 的约定**（MUI / Radix /
+Bootstrap 的组件都在 `onClick` 里自己检查）。夹具不照这个来，「aria-disabled 的目标
+点了没反应」这条事实就复现不出来。实测过：不加那一句，aria-disabled 的按钮照样记进
+`__clicks`，而断言会以一条 Fatal 说话（不是静默变绿）。
+
+`window.__clicks` 是「**实际**点到的是哪一个」的唯一证据（用事件目标记，不是闭包变量
+—— 后者记的是「我想点的那个」）。测试用 `cdp eval 'JSON.stringify(window.__clicks)'` 读它。
 
 ## `viewport.html`（Defect 1 新增，**不是探针产物**）
 

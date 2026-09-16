@@ -332,12 +332,12 @@ func (s *stubBrowser) Screenshot() (*internal.Shot, error) {
 	return s.shot, s.err
 }
 
-func (s *stubBrowser) ClickElement(selector, frameID string, track bool) (map[string]float64, error) {
-	s.rec(callf("ClickElement", selector, frameID, track))
+func (s *stubBrowser) ClickElementStrict(selector, frameID string, track bool) (*internal.ClickResult, error) {
+	s.rec(callf("ClickElementStrict", selector, frameID, track))
 	if s.err != nil {
 		return nil, s.err
 	}
-	return map[string]float64{"x": 1, "y": 2}, nil
+	return &internal.ClickResult{X: 1, Y: 2, MatchCount: 1, TargetDisabled: false}, nil
 }
 
 func (s *stubBrowser) FillText(selector, text, frameID string, track bool) error {

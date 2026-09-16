@@ -99,9 +99,15 @@ func handleScreenshot(_ context.Context, b Browser, _ map[string]any) (any, erro
 	return b.Screenshot()
 }
 
+// handleClick 走的是**严格**那一版内核调用（ClickElementStrict）。
+//
+// 门与 CLI 的默认在这里**故意不一样**：CLI 的默认必须宽松（57 个生产脚本的
+// 行为不能动），而 agent 是那个必须被逼着说准的调用方 —— 它的歧义选择器会静默
+// 点到 Back（实测：漏斗倒退），它的禁用目标会静默空点（实测：exit 0 + 像样的坐标，
+// 页面纹丝不动）。两种失败都长得像成功，所以这道门选择当场报错。
 func handleClick(_ context.Context, b Browser, args map[string]any) (any, error) {
 	selector := strArg(args, "selector")
-	result, err := b.ClickElement(selector, strArg(args, "frame_id"), boolArg(args, "track"))
+	result, err := b.ClickElementStrict(selector, strArg(args, "frame_id"), boolArg(args, "track"))
 	if err != nil {
 		return nil, err
 	}

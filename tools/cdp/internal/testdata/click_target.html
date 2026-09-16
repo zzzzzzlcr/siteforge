@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>click 目标解析 fixture</title>
+<style>
+  html, body { margin: 0; padding: 0; font: 14px/1.4 sans-serif; }
+  h1 { font-size: 15px; margin: 4px; }
+  h2 { font-size: 13px; margin: 6px 4px 2px; font-weight: normal; color: #555; }
+  .row { margin: 2px 4px; }
+  .choice { width: 96px; height: 26px; margin: 2px; display: inline-block; vertical-align: top; }
+</style></head>
+<body>
+<h1>click 目标解析 fixture</h1>
+
+<script>
+// 记录「**实际**点到的是哪一个」。用事件目标记，不是用闭包变量 ——
+// 后者记的是「我想点的那个」，而本 fixture 要证的是前者（实测里那一下点到了 Back）。
+window.__clicks = [];
+function __rec(el, name) {
+  // ⚠️ aria-disabled 的那一条**必须自己实现**：浏览器不会因为 aria-disabled
+  // 就不派发点击事件（它不是 IDL 属性），忽略点击是**站点 JS 的约定** ——
+  // MUI / Radix / Bootstrap 的组件都在 onClick 里自己检查。
+  // 夹具不照这个来，「点了没反应」这条事实就复现不出来（实测过：
+  // 不加这一句，aria-disabled 的按钮照样记进 __clicks，而真站上什么都不会发生）。
+  if (el && el.getAttribute('aria-disabled') === 'true') return;
+  window.__clicks.push(name);
+}
+</script>
+
+<!-- ── A 组：复刻 blinkist /onboarding/matrix/certain 的实测形态（2026-09-17 探针） ──
+
+     5 个按钮**共享一个 class**，文档序里 **Back 排第一**（探针 DOM 真值：
+     `button.cursor-pointer.items-center` 匹配 5 个 = [Back, Disagree, Not sure, Agree,
+     Continue]，`querySelector` 取到的是 [0] = Back）。
+
+     前四个是**图标型**（无文字，只有 aria-label）—— 与真站一致：模型里它们是三行
+     `text: ""`，彼此同形。Continue 有文字、在**末位**，且 **disabled**。
+
+     ⚠️ 为什么 Continue 刻意**不给 id**：真站上模型给它的 selector 就是这个 class
+     选择器（`button.cursor-pointer.items-center`），而那个选择器**不唯一** ——
+     「select 不唯一 → 静默点到 Back」这条链要能在 fixture 上原样复现。
+     给它一个 id 就等于把这条链修好了，测试也就测不到它了。 -->
+<h2>A 组：共享 class 的 5 个按钮（Back 在最前，Continue 在最后且 disabled）</h2>
+<div class="row" id="group-a">
+  <button class="choice" aria-label="Back" onclick="__rec(this,'Back')"></button>
+  <button class="choice" aria-label="Disagree" onclick="__rec(this,'Disagree')"></button>
+  <button class="choice" aria-label="Not sure" onclick="__rec(this,'Not sure')"></button>
+  <button class="choice" aria-label="Agree" onclick="__rec(this,'Agree')"></button>
+  <button class="choice" disabled onclick="__rec(this,'Continue')">Continue</button>
+</div>
+
+<!-- ── B 组：唯一且可点（反向对照：strict 不许**过度**拒绝） ── -->
+<h2>B 组：唯一且可点（strict 必须照点不误）</h2>
+<div class="row" id="group-b">
+  <button id="unique-go" onclick="__rec(this,'UniqueGo')">UniqueGo</button>
+</div>
+
+<!-- ── C 组：唯一但禁用 —— 两条判据各一个（IDL disabled / aria-disabled） ──
+
+     `disabled` 属性走的是 IDL（`el.disabled === true`）；`aria-disabled="true"` 是
+     ARIA 那一套，元素的 IDL disabled **仍然是 false**，但站点的 JS 会忽略点击
+     （真站上 MUI/Bootstrap 的自定义控件大量用这一套）。两种都必须认出来，
+     否则漏掉的那一种就是「点了没反应但报成功」。 -->
+<h2>C 组：唯一但禁用（两种判据各一个）</h2>
+<div class="row" id="group-c">
+  <button id="disabled-go" disabled onclick="__rec(this,'DisabledGo')">DisabledGo</button>
+  <button id="aria-disabled-go" aria-disabled="true" onclick="__rec(this,'AriaDisabledGo')">AriaDisabledGo</button>
+</div>
+
+</body></html>

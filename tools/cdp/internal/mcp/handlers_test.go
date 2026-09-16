@@ -122,6 +122,12 @@ func TestDiffHandlerRejectsBeforeThatIsNotASnapshot(t *testing.T) {
 	}
 }
 
+// TestClickHandlerPassesSelectorFrameAndTrack 钉两件事：参数映射，
+// 以及**这道门走的是严格那一版**（ClickElementStrict）。
+//
+// 后者为什么值得单独钉：宽松/严格两个入口都在内核里，把这里接回宽松那一版，
+// 「歧义选择器静默点到 Back」会**悄无声息地**回到 agent 手上，而 CLI 那边的
+// 测试一条都不会红（两边的默认故意不一样）。
 func TestClickHandlerPassesSelectorFrameAndTrack(t *testing.T) {
 	b := &stubBrowser{}
 
@@ -129,11 +135,16 @@ func TestClickHandlerPassesSelectorFrameAndTrack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("click 失败: %v", err)
 	}
-	if got := b.lastCall(); got != "ClickElement(#go,F1,true)" {
-		t.Errorf("click 调的是 %s", got)
+	if got := b.lastCall(); got != "ClickElementStrict(#go,F1,true)" {
+		t.Errorf("click 调的是 %s —— 这道门必须是**严格**那一版"+
+			"（宽松那版会对歧义选择器静默取第一个）", got)
 	}
-	if _, ok := out.(map[string]float64); !ok {
-		t.Errorf("click 返回了 %T —— 落点坐标是「到底点在哪」的唯一证据", out)
+	res, ok := out.(*internal.ClickResult)
+	if !ok {
+		t.Fatalf("click 返回了 %T —— 落点坐标与「实际点到谁」都在这份回执里", out)
+	}
+	if res.X != 1 || res.Y != 2 {
+		t.Errorf("落点坐标被换掉了: %+v —— 它是「到底点在哪」的唯一证据", res)
 	}
 }
 

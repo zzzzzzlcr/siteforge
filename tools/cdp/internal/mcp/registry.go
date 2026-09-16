@@ -32,7 +32,13 @@ type Browser interface {
 	ObserveAll() (*internal.PageModel, error)
 	Observe(frameID string) (*internal.PageModel, error)
 	Screenshot() (*internal.Shot, error)
-	ClickElement(selector, frameID string, track bool) (map[string]float64, error)
+	// ClickElementStrict 而不是 ClickElement：这道门要的是**严格**那一版。
+	//
+	// 为什么在这道门上换成严格（2026-09-17 真站实测，规格 §4.1）：
+	// agent 是那个**必须被逼着说准**的调用方 —— 它的宽松选择器会静默点到 Back
+	// （漏斗倒退）、它的禁用目标会静默空点（回 exit 0 + 像样的坐标）。
+	// 生产脚本继续走 CLI 的宽松默认路径，两边各要各的，互不影响。
+	ClickElementStrict(selector, frameID string, track bool) (*internal.ClickResult, error)
 	FillText(selector, text, frameID string, track bool) error
 	CheckElement(selector string, checked bool, frameID string, track bool) error
 	SelectOption(selector, option, frameID string, track bool) error
@@ -362,11 +368,16 @@ var toolTable = []Tool{
 		nil, nil, handleScreenshot),
 
 	newTool("click",
-		"拟人点击一个元素（穿透 shadow DOM 与跨源 iframe）。返回点击**落点**的视口 CSS 坐标。\n"+
+		"拟人点击一个元素（穿透 shadow DOM 与跨源 iframe）。返回点击**落点**的视口 CSS 坐标、"+
+			"以及这一下**实际点到的是谁**（match_count / match_index / target / target_disabled）。\n"+
 			"⚠️ 落点坐标是「到底点在哪」的唯一证据：元素在屏幕外或被子元素盖住时，"+
-			"点击会被浏览器丢在别处，而这里返回的坐标就是那个「别处」。",
+			"点击会被浏览器丢在别处，而这里返回的坐标就是那个「别处」。\n"+
+			"⚠️ **这道门是严格的**：选择器命中多个元素（歧义）或目标被禁用（disabled / "+
+			"aria-disabled），一律**报错并拒绝点击**，不会静默点第一个、也不会静默空点。"+
+			"报错里会列出命中的候选，照它把选择器收窄到只命中一个再点（observe 给的 "+
+			"alternates 里那条 nth-of-type 路径是唯一的）。",
 		[]Param{
-			{Name: "selector", Type: "string", Required: true, Description: "CSS 选择器（用 observe 给的候选，优先 stability=high 的）。"},
+			{Name: "selector", Type: "string", Required: true, Description: "CSS 选择器（用 observe 给的候选，优先 stability=high 的）。⚠️ 必须**唯一**命中目标：命中多个会被拒绝。"},
 			{Name: "frame_id", Type: "string", Description: "元素所在帧的 CDP frameID。跨源 iframe 里的元素必须给，否则够不着。"},
 			{Name: "track", Type: "boolean", Description: "在页面上画出鼠标/滚动轨迹（调试用，默认 false）。"},
 		}, nil, handleClick),

@@ -142,7 +142,15 @@ func renderHuman(w io.Writer, m *internal.PageModel) error {
 		fmt.Fprintf(tw, "可动作元素（前 %d / 共 %d）：\n", shown, len(m.Actions))
 		for i := 0; i < shown; i++ {
 			a := m.Actions[i]
-			fmt.Fprintf(tw, "  %d.\t[%s]\t%s\t%s\n", i+1, a.Stability, truncRunes(a.Text, 40), a.Selector)
+			// 禁用写在**状态那一格**（与 stability 同一栏）—— 它和评级回答的是
+			// 同一个问题「这个元素现在能不能用」。空着不写是最坏的一种：
+			// 「能点」与「点了没反应」在摘要里长得一模一样（蜜罐那次就是栽在
+			// 「JSON 里有、人话里只字未提」）。
+			state := a.Stability
+			if a.Disabled {
+				state += " 禁用"
+			}
+			fmt.Fprintf(tw, "  %d.\t[%s]\t%s\t%s\n", i+1, state, truncRunes(a.Text, 40), a.Selector)
 		}
 		if len(m.Actions) > shown {
 			fmt.Fprintf(tw, "  …\t\t\t还剩 %d 个（用 --json 看全量）\n", len(m.Actions)-shown)

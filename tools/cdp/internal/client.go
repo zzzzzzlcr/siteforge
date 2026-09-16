@@ -1086,12 +1086,30 @@ func (c *Client) ScrollToElement(selector string, track bool) error {
 	return nil
 }
 
-// ClickElement performs a human-like click on the element.
+// ClickElement 拟人点击一个元素（**宽松**：老行为，一个字节都不改）。
+//
 // 1. Scrolls element into viewport
 // 2. Calculates center coordinates (with iframe offset if needed)
 // 3. Applies Gaussian offset for natural click position
 // 4. Dispatches touch or mouse click event
-func (c *Client) ClickElement(selector, frameID string, track bool) (map[string]float64, error) {
+//
+// 仍然取文档序第一个匹配、仍然不因为目标禁用而硬失败 —— 57 个生产脚本靠这条。
+// 它**不再静默**：回执里带上「命中几个 / 点的是第几个 / 它禁没禁用」（见 ClickResult）。
+func (c *Client) ClickElement(selector, frameID string, track bool) (*ClickResult, error) {
+	return c.clickAndReport(selector, frameID, track, false)
+}
+
+// ClickElementStrict 是**严格**那一版：歧义选择器与禁用的目标一律当场失败，
+// 且拒绝发生在动作**之前**（页面上不会留下任何点击痕迹）。
+//
+// MCP 那道门默认走它（agent 是必须被逼着说准的调用方；生产脚本不走这条路）。
+// 判据与文案见 internal/click.go 的 strictClickRefusal。
+func (c *Client) ClickElementStrict(selector, frameID string, track bool) (*ClickResult, error) {
+	return c.clickAndReport(selector, frameID, track, true)
+}
+
+// clickAndReport 是两条门共用的那一份实现（strict 只改**判据**，不改流程）。
+func (c *Client) clickAndReport(selector, frameID string, track bool, strict bool) (*ClickResult, error) {
 	// Determine scroll target
 	scrollSelector := selector
 	if frameID != "" {
@@ -1113,6 +1131,38 @@ func (c *Client) ClickElement(selector, frameID string, track bool) (map[string]
 	// Wait for scrollSelector position to stabilize
 	if err := c.WaitForPositionStable(scrollSelector, ""); err != nil {
 		return nil, fmt.Errorf("position not stable: %w", err)
+	}
+
+	// 目标探测：这一刻会点到谁（命中几个 / 第几个 / 禁没禁用）。
+	//
+	// ⚠️ 位置是刻意的（滚动之后、算坐标之前，见 internal/click.go 文件头）：
+	// 报出来的数必须与**马上要发出去的那一下**对得上。
+	result := &ClickResult{}
+	probe, probeErr := c.probeClickTarget(selector, frameID)
+	switch {
+	case probeErr != nil:
+		// 探测没跑成时**不拦**宽松路径：能走到这里说明同一套求值刚刚还工作
+		// （WaitForPositionStable 一路都在用），真正没探到的后果是回执里少几个
+		// 字段 —— 而探测的失败原因会照实记进 ProbeError（不许看起来像「命中 0 个」）。
+		// 严格路径则必须拦：这道门的意义就是「看不清就别点」。
+		result.ProbeError = probeErr.Error()
+		if strict {
+			return nil, fmt.Errorf("无法确认选择器 %q 会点到哪个元素（%v）—— 这道门要求先看清目标再动手",
+				selector, probeErr)
+		}
+	default:
+		result.Probe = probe
+		if chosen, ok := probe.Chosen(); ok {
+			result.MatchCount = probe.MatchCount
+			result.MatchIndex = probe.MatchIndex
+			result.Target = chosen.Describe()
+			result.TargetDisabled = chosen.Disabled
+		}
+		if strict {
+			if err := strictClickRefusal(selector, probe); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	// Calculate click coordinates
@@ -1183,7 +1233,9 @@ func (c *Client) ClickElement(selector, frameID string, track bool) (map[string]
 		return nil, fmt.Errorf("click failed: %w", err)
 	}
 
-	return map[string]float64{"x": clickX, "y": clickY}, nil
+	result.X = clickX
+	result.Y = clickY
+	return result, nil
 }
 
 // GaussianOffset returns random (dx, dy) offsets using Box-Muller transform.

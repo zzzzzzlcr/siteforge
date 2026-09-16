@@ -33,7 +33,7 @@ go mod tidy                           # 整理依赖
 **子命令 Flags:**
 - `eval`: `--frame-id` (目标 frame)、`--file` (JS 文件路径)
 - `snapshot`: 无额外 flags
-- `click`: `[selector]` (位置参数) 或 `--selector`、`--frame-id`、`--track` (显示鼠标轨迹)
+- `click`: `[selector]` (位置参数) 或 `--selector`、`--frame-id`、`--track` (显示鼠标轨迹)、`--strict` (歧义选择器 / 禁用目标**当场失败**；默认 **false**，MCP 门默认走严格那一版)。每次点击在 **stderr** 上留一行「命中几个 / 点的第几个 / 禁没禁用」，stdout 仍是纯 JSON（回执多了 `match_count` / `match_index` / `target` / `target_disabled`）
 - `scroll`: `[selector]` (位置参数) 或 `--selector`、`--frame-id`、`--track` (显示鼠标轨迹)
 - `navi`: `[url]` (必填位置参数)、`--frame-id` (目标 frame，默认主 frame)
 - `form`: `[selector]` (位置参数) 或 `--selector`、`--value` / `--check` / `--select` (三选一)、`--frame-id`、`--track`
@@ -91,6 +91,7 @@ cdp/
 │   │   ├── target.go    # --ws-url/--host/--port/CDP_* 的优先级与拆分（照抄 py 的 _parse_ws_url）
 │   │   └── conn.go      # 每条工具调用现连现断；连不上点名 host:port
 │   ├── client.go        # CDP 客户端，WebSocket 连接管理、逐帧 eval（含 OOPIF 回退）
+│   ├── click.go         # click 的目标解析：命中几个 / 点的是第几个 / 禁没禁用 + 严格判据
 │   ├── observe.go       # PageModel 契约 + observeJS（单帧页面模型）
 │   ├── observe_frames.go# 跨帧枚举与合并（ObserveAll）、帧覆盖守卫
 │   ├── diff.go          # DiffModels：前进判据（对选择器改名免疫）+ 人话渲染用的数据

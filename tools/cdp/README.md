@@ -57,12 +57,24 @@ cdp click '#btn'
 cdp click --selector '#btn'
 cdp click '#btn' --frame-id <frameId>
 cdp click '#btn' --track
+cdp click '#ambiguous' --strict      # 歧义/禁用 → 当场失败（agent 那道门默认开）
 ```
+
+每一次点击都会在 **stderr** 上留一行：命中几个元素、点的是第几个、它禁没禁用
+（stdout 保持是纯 JSON）。回执里的机器可读字段是 `match_count` / `match_index` /
+`target` / `target_disabled`。
+
+**默认路径的行为没有变**（仍然是文档序第一个匹配、仍然不因为禁用而硬失败）——
+57 个生产脚本靠这条。变的是它**不再静默**：选择器命中 5 个、或者点到的是个
+禁用控件，原来是完全看不出来的（实测：前者静默点到 Back 把漏斗走回去，后者
+exit 0 + 一对像样的坐标而页面纹丝不动）。
 
 Flags:
 - `[selector]` - CSS 选择器（位置参数，或 `--selector`）
 - `--frame-id` - 目标 frame
 - `--track` - 可视化操作轨迹
+- `--strict` - 歧义选择器（命中多个）或禁用目标**当场失败**，且拒绝发生在动作
+  **之前**。默认 **false**（生产脚本的默认路径）；MCP 门默认走严格那一版
 
 ### scroll - 模拟人类滚动
 
@@ -208,6 +220,13 @@ go build -o cdp-mcp ./cmd/mcp
 同一份 `internal/`（穿透解析 / 拟人手势 / 表单 / 帧 / 截图都是同一套），所以行为一致。
 
 工具（规格 §4.2）：`observe` / `diff` / `screenshot` / `click` / `form` / `scroll` / `goto`。
+
+⚠️ **两处「默认」是刻意不同的**（2026-09-17 实测裁定，规格 §4.1）：
+`click` 在这道门上是**严格**的 —— 选择器命中多个元素、或目标被禁用
+（`disabled` / `aria-disabled`）都**报错并拒绝点击**，报错里列出候选与位置。
+CLI 那边默认宽松（57 个生产脚本的行为不能动）。agent 是必须被逼着说准的调用方：
+它的歧义选择器实测会静默点到 Back（漏斗倒退），禁用目标实测会静默空点
+（exit 0 + 像样的坐标，页面纹丝不动）—— 两种都长得像成功。
 
 **连哪个浏览器** —— 生产里不是本机 9222，是一个带代理与指纹的 Bit 窗口：
 
