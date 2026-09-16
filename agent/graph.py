@@ -2,9 +2,10 @@
 
 ```
 START → intake → explore → draft → lint → selftest → deliver → END
-                     ↑                  │       │
-                     │  带违规行回灌 ←───┘       │
-                     └────── 带证据回灌 ←─ diagnose ←┘
+                     ↑          │       │        │  ↑
+                     │          │       │        └──┘  人否了这一版（带他的话）
+                     │  带违规行 ←┘       │
+                     └────── 带证据 ←─ diagnose ←┘
 ```
 
 ## 三处必须写对的（brief 点名的）
@@ -28,7 +29,33 @@ START → intake → explore → draft → lint → selftest → deliver → END
 - `selftest` 挂了 → `diagnose`（说清哪一遍、卡在第几步）→ 回 `draft`，**带着证据**
 - 两条各自的上限在 `state.Caps`。到顶就**停**，并把「为什么停」说成人话
 
+**还有第三条回灌：人自己**（§6 里 `review` 那一行的正身「人否 → 回 `draft` 带人的纠正」）。
+人在 `REVISABLE`（lint / selftest / deliver）那几道闸上说「这版不行」→ 那一步**不做**，
+回 `draft` 按他的话重写。这条与「喊停」分得开：打回进 `state["revisions"]`（谁、在哪、说了什么），
+喊停进 `end_reason == "human_stop"`。它也有上限（`Caps.max_revisions`）：
+每转一圈都要有人回话，所以它跑不飞；上限防的是**自动化调用方**一直回「重来」把真浏览器
+拖进无尽的自测，同时把 §6.3 的信号摆明（同一处反复打回 = 问题不在这一版稿上）。
+
 上限要防的是**「跑不完也不会停」的图**，不是省钱（P5）—— 所以别拿砍轮数当优化。
+
+### 2.5 图**跑之前**要的输入（Task 8 请照这张表给）
+
+这张图**不自己发明**任何「没验到也算过」的默认值，所以有几件事只有调用方给得了。
+缺了它们图会**停**并**点名**（`missing_knob` / `no_success_text`），**不会**写出一份假通过：
+
+| 输入 | 谁给 | 不给会怎样 |
+|---|---|---|
+| `success_text`（什么算成功） | 人（`POST /run` 的载荷） | 在 `intake` 就停 —— 不猜。成功判据只有人知道（§6.1） |
+| `ws_url` / `form_file` | §4.6 前提层（Task 8：拉链 → 下发指纹 → `bit.sh open`） | `selftest` 停（`no_window`），**不许跳过自测当通过** |
+| `Deps.set_viewport`（**窗口层**那根线） | Task 8 的服务（换窗口大小 = `POST /browser/update`） | 停（`missing_knob`）并点名 —— 因为第 4 遍扰动跳过了就**不算过**（R-5），而图不许自己放过它 |
+| `allow_skips`（点名放弃哪几遍） | 人（载荷） | 不给 = 用 Task 6 的默认（只允许跳 country） |
+| `entry_url`（第 2 遍刷新回哪） | 人 / 前提层 | 不给 = 第 2 遍就「接着再跑一遍」（R-6 的字面读法要它） |
+| `env` / `platform`（指纹 / 平台） | 前提层 / 平台分类 | 不带（`PROVENANCE` 里留 `None`，不编内容） |
+
+**窗口层那根线在不在，是「自测的结论完不完整」的分水岭**：不给它，第 4 遍必然记成
+「这一类没验到」，`_judge` 必然判不过 —— 那不是产物不行，是**少给了一个输入**。
+所以「缺旋钮」这件事在 `intake`（免费）与 `selftest`（跑到那儿时手上这根线还在不在）各查一次，
+两次都是**停下点名**，不是转到自测上限。
 
 ### 3. `deliver` 写出的 py 带 `PROVENANCE`（§5.3）
 
@@ -78,8 +105,9 @@ from agent import selftest as selftest_mod
 from agent import template
 from agent.state import (
     END_DELIVERED, END_DELIVER_LINT, END_DRAFT_FAILED, END_EXPLORE_UNFINISHED,
-    END_HUMAN_STOP, END_LINT_CAP, END_NO_BRIEF, END_NO_WINDOW, END_PAUSED, END_SELFTEST_CAP,
-    FINISHED_EXPLORATION, GENERATOR, MODE_BUILD, STOP, Caps, SiteState, human_reply,
+    END_HUMAN_STOP, END_LINT_CAP, END_MISSING_KNOB, END_NO_BRIEF, END_NO_SUCCESS_TEXT,
+    END_NO_WINDOW, END_PAUSED, END_REVISION_CAP, END_SELFTEST_CAP,
+    FINISHED_EXPLORATION, GENERATOR, MODE_BUILD, REVISE, STOP, Caps, SiteState, human_reply,
 )
 
 __all__ = ["Deps", "build", "Caps", "MSGPACK_ALLOWLIST", "allowlisted", "NODES",
@@ -107,7 +135,30 @@ STEP_SAY = {
 #: 闸口上人**能做什么**（每次都说清楚，免得人以为自己只能点「继续」）。
 HUMAN_CAN = ("让它继续（回 continue / 空 / 不回话）",
              "喊停（回 stop）—— 停在这一步之前，这一步不会做",
-             "说一句纠正（回一句话或 {action: revise, note: …}）—— 接着走，这句话带进 draft")
+             "说一句纠正（回一句话或 {action: revise, note: …}）—— 接着走，这句话带进 draft",
+             "在 lint / selftest / deliver 门口说「这版不行」（同上，带 note）—— "
+             "这一版不要了，回 draft 按你说的重写")
+
+#: 哪几道闸上「打回」= **这一版不要了，回 draft**（§6 里 `review` 那一行的正身：
+#: 「人否 → 回 `draft` 带人的纠正」）。intake / explore / draft 那三道闸不是这个意思：
+#: 那儿的纠正只是「接着说一句」，本来就要往下写。
+REVISABLE = ("lint", "selftest", "deliver")
+
+#: 五遍扰动里，**哪几遍需要调用方在窗口层/代理层那根线**（Task 6 的 `run()` 的旋钮）。
+#: 这张表就是「缺旋钮」检查的判据：一遍扰动要么**跑得了**（旋钮在），要么**被人明确允许不跑**
+#: （写进 `allow_skips`），两者都不成立时图**停**并把旋钮点出来（R-31）——
+#: 不许自己发明一个默认让它跳过去（R-5：跳过不算过），也不许转到自测上限假装是产物不行。
+#:
+#: `(旋钮名, 这一遍在打什么, 谁给得了)`。⚠️ 第 5 遍（换代理国家）这张图**故意没接**
+#: （计划里它是可选的，要重拉 gost 链）—— 所以它必须留在 `allow_skips` 里（Task 6 的默认
+#: 正是如此）。要真跑第 5 遍，加 `Deps.set_country` + `Deps.country` 两处即可。
+ROUND_NEEDS = {
+    "viewport": ("set_viewport", "换个窗口大小再跑一遍（打折叠 / 遮挡 / 坐标假设）",
+                 "调用方在**窗口层**动手（换窗口大小就是 `POST /browser/update`）——"
+                 "Task 8 的服务给得了"),
+    "country": ("set_country", "换个代理国家再跑一遍（打地区内容差异）",
+                "要重拉 gost 链；这张图**没有接**这根线（计划里这一遍是可选的）"),
+}
 
 #: 存进 checkpoint 的那几个 dataclass。langgraph 的 serde 要**点名允许**它们
 #: （不然新版本会拒收：`Deserializing unregistered type … will be blocked in a future version`）。
@@ -141,8 +192,12 @@ def _writer_from_journey(spec: dict, feedback: dict) -> dict:
 class Deps:
     """这张图跟外面世界的每一个接触面（**全部**可注入，测试里全是桩）。
 
-    `should_pause` 为什么在这里而不是在 state 里：状态要进 checkpoint，
-    **可调用的东西进不去**。它是 Console 那只「停」按钮伸进浏览器的那根线（§6.2）。
+    两个可调用的旋钮为什么在这里而不是在 state 里：状态要进 checkpoint，
+    **可调用的东西进不去**。
+      - `should_pause`：Console 那只「停」按钮伸进浏览器的那根线（§6.2）
+      - `set_viewport`：**窗口层**那根线（`POST /browser/update`）。扰动自测的第 4 遍
+        「换个窗口大小再跑」只有调用方够得着，产物和 cdp 内核都动不了窗口（R-5）。
+        没接上时的处置见 `_missing_knobs()`：**停下并点名**，不是跳过、不是假装过了。
     """
 
     explore: Callable = browser_agent.explore
@@ -151,6 +206,7 @@ class Deps:
     selftest: Callable = selftest_mod.run
     provenance: Callable = runtime.provenance
     should_pause: Optional[Callable] = None
+    set_viewport: Optional[Callable] = None
 
 
 # ───────────────────────────── 人的那道闸 ─────────────────────────────
@@ -160,12 +216,23 @@ def _visited(state, step: str) -> list:
     return list(state.get("visits") or []) + [step]
 
 
-def _enter(state, step: str, say: str, facts: Optional[dict] = None) -> dict:
+def _held(out: dict) -> bool:
+    """该收住了吗：人**喊停**（`end_reason`）或人**否了这一版**（`revised_at`）。
+
+    两种都不是「这一步失败了」，两件事也分得开（状态里一个进 `end_reason`、一个进
+    `revisions`）—— 后面读这份记录的人要能说出「他杀了这次运行」还是「他让这一版重写」。
+    """
+    return bool(out.get("end_reason") or out.get("revised_at"))
+
+
+def _enter(state, caps: Caps, step: str, say: str, facts: Optional[dict] = None) -> dict:
     """**每个节点开工之前**过这道闸（§6.2）。返回该写回状态的那部分。
 
     - `interrupt()` 在这里抛出去：图就停在**这一步之前**，这一步**没有做**
-    - 人回来说的话：纠正 → 收进 `hints`（一路带着，进 draft）；喊停 → 只写 `end_reason`
-      /`end_note` 回去，调用方那个节点会看到它、直接收摊
+    - 人回来说的话：纠正 → 收进 `hints`（一路带着，进 draft）；喊停 → 写 `end_reason`
+      /`end_note`；在 `REVISABLE` 那几道闸上说「这版不行」→ 写 `revised_at`（路由据此回
+      `draft`，那一步的工作就不做了）
+    - 调用方那个节点看到 `_held(out)` 为真就**直接收摊**，别再往下做
 
     `say` 是给人看的人话，`facts` 是原始事实（D11：给感知不给判断 —— 人要看得到原料）。
     """
@@ -180,6 +247,20 @@ def _enter(state, step: str, say: str, facts: Optional[dict] = None) -> dict:
                            "接着走就再发起一次 —— 已经探到的账本还在（checkpoint 里）。"
                            % STEP_SAY.get(step, step))
         _drop_candidate(state)          # 停下来的这次运行，交付目录里不留东西
+    elif action == REVISE and step in REVISABLE:
+        revisions = list(state.get("revisions") or []) + [{"at": step, "note": note}]
+        out["revisions"] = revisions
+        if len(revisions) > caps.max_revisions:
+            # 同一处反复被打回，本身就是「问题不在这一版稿上」的信号（§6.3）。
+            # 停，并且说清是人打回的 —— 别让它看起来像产物自己挂了。
+            out["end_reason"] = END_REVISION_CAP
+            out["end_note"] = ("停：这一版被人打回了 %d 次（最后一句话：「%s」）。"
+                               "同一条路上反复被打回，多半说明问题不在这版稿怎么写上 —— "
+                               "人接手看一眼路线，或者直接说清要什么（§6.3）。"
+                               % (len(revisions), note or "（只说了重来）"))
+            _drop_candidate(state)
+        else:
+            out["revised_at"] = step
     return out
 
 
@@ -187,24 +268,46 @@ def _enter(state, step: str, say: str, facts: Optional[dict] = None) -> dict:
 
 
 def _intake(state, deps: Deps, caps: Caps) -> dict:
-    """收开场白：哪个站、要做什么、成功长什么样。
+    """收开场白：哪个站、要做什么、成功长什么样。**开场白缺东西在这儿就拦下**。
+
+    为什么这几项检查全在 intake：后面每一步都**贵**（开一个真窗口、跑一次模型探路、
+    在真站上填一遍表单）。缺一个输入却拖到 draft 才发现，回报的是「写不出来」——
+    那个失败看上去像模型/产物的问题，其实是**少给了一个输入**（评审 Important 1b）。
+    在这儿拦下是免费的。
 
     §4.6 的前提层（拉链 → 下发指纹 → 开窗口）**不在这里**：那是接线（Task 8），
     产物（`ws_url` / `env`）由调用方放进来。图只负责把它带上。
     """
     url = str(state.get("url") or "").strip()
     goal = str(state.get("goal") or state.get("evidence") or "").strip()
-    say = ("准备开工：站点是「%s」，这次要做的是「%s」。" % (url or "（还没说）", goal or "（还没说）")
-           + "开工之后每一步之前都会再问你一次，随时可以喊停或纠正。")
-    out = _enter(state, "intake", say, facts={"url": url, "goal": goal,
-                                              "mode": state.get("mode") or MODE_BUILD,
-                                              "要用的窗口": state.get("ws_url")})
-    if out.get("end_reason"):
+    say = ("准备开工：站点是「%s」，这次要做的是「%s」。成功判据是「%s」。" % (
+        url or "（还没说）", goal or "（还没说）", state.get("success_text") or "（还没说）")
+        + "开工之后每一步之前都会再问你一次，随时可以喊停或纠正。")
+    missing = _missing_knobs(state, deps)
+    out = _enter(state, caps, "intake", say,
+                 facts={"url": url, "goal": goal, "成功判据": state.get("success_text"),
+                        "mode": state.get("mode") or MODE_BUILD,
+                        "要用的窗口": state.get("ws_url"),
+                        "允许跳过的扰动": list(state.get("allow_skips") or []),
+                        "还缺的窗口旋钮": [k["knob"] for k in missing]})
+    if _held(out):
         return out
     if not url or not goal:
         out.update({"end_reason": END_NO_BRIEF,
                     "end_note": ("开不了工：得先说清**哪个站点**（url）和**要做什么**（goal 或失败证据）。"
                                  "没有这两样，探路会去开一个浏览器、然后在空页面上乱走。")})
+        return out
+    if not state.get("success_text"):
+        # 成功判据只有人知道（§6.1：页面能告诉 agent **机制**，只有人能告诉它**意图**）。
+        # 猜一个 = 产出「跑到底再谎报成功」的东西 —— 本计划最忌讳的那类谎。
+        out.update({"end_reason": END_NO_SUCCESS_TEXT,
+                    "end_note": ("开不了工：还没说**什么算成功**（`success_text`：走通之后页面上会出现"
+                                 "哪段文字）。这一条只有人知道，猜不得 —— 猜出来的成功判据会让产物"
+                                 "「跑到底再报成功」。\n"
+                                 "补上它再发起：它就在开场白里，不用等探完路。")})
+        return out
+    if missing:
+        out.update({"end_reason": END_MISSING_KNOB, "end_note": _knob_note(missing)})
         return out
     out.update({
         "url": url,
@@ -215,6 +318,7 @@ def _intake(state, deps: Deps, caps: Caps) -> dict:
         "hints": list(out.get("hints") or state.get("hints") or []),
         "lint_bounces": int(state.get("lint_bounces") or 0),
         "diagnoses": int(state.get("diagnoses") or 0),
+        "revisions": list(state.get("revisions") or []),
         "out_dir": str(state.get("out_dir") or DEFAULT_OUT_DIR),
         "end_reason": "",
         "end_note": "",
@@ -227,11 +331,11 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
     budget = browser_agent.Budget(max_steps=caps.explore_steps, max_rounds=caps.explore_rounds)
     say = ("接下来要打开真浏览器，把「%s」按这个目标走一遍：「%s」。"
            "这一步会动到真页面（点、填、滚），探完把「怎么走」记下来。" % (state["url"], state["goal"]))
-    out = _enter(state, "explore", say,
+    out = _enter(state, caps, "explore", say,
                  facts={"url": state["url"], "goal": state["goal"],
                         "预算": "最多 %d 步 / %d 轮（防跑飞，不是省钱）"
                                 % (budget.max_steps, budget.max_rounds)})
-    if out.get("end_reason"):
+    if _held(out):
         return out
 
     # ⚠️ 这里**不接** `_Stop`（它继承 BaseException，就是为了不被吞成工具失败 ——
@@ -254,7 +358,7 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     （哪一遍、卡在第几步）、以及人在闸口说过的话。
     """
     was = _feedback(state)
-    out = _enter(state, "draft", _draft_say(state, was),
+    out = _enter(state, caps, "draft", _draft_say(state, was),
                  facts={"violations": was["violations"], "diagnosis": was["diagnosis"],
                         "第几版": list(state.get("visits") or []).count("draft") + 1})
     if out.get("end_reason"):
@@ -283,15 +387,18 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
         return out
 
     out.update({"states": spec["states"], "fills": spec["fills"],
-                "success_text": spec["success_text"], "src": src, "violations": []})
+                "success_text": spec["success_text"], "src": src, "violations": [],
+                # 这一版就是为那次打回写的 → 把路上的那个标记收掉（`revisions` 留着当记录）。
+                # 不清的话路由会一直把它往回送（`_after_lint` 会以为「刚被人否过」）。
+                "revised_at": "", "diagnosis": None})
     return out
 
 
 def _lint(state, deps: Deps, caps: Caps) -> dict:
     """契约检查（Task 4）：产出的 py 里有没有手拼 JS 这类写模式。"""
-    out = _enter(state, "lint", "接下来要把刚写好的这一版逐行过一遍契约检查（重点是手拼 JS）。",
+    out = _enter(state, caps, "lint", "接下来要把刚写好的这一版逐行过一遍契约检查（重点是手拼 JS）。",
                  facts={"检查的是": "刚写好的那一版（%d 行）" % len((state.get("src") or "").splitlines())})
-    if out.get("end_reason"):
+    if _held(out):
         return out
 
     violations = [_violation_dict(v) for v in (deps.lint(state["src"]) or [])]
@@ -311,12 +418,15 @@ def _selftest(state, deps: Deps, caps: Caps) -> dict:
 
     没有窗口就**停**，不许「跳过自测当通过」—— 那是把「没验到」说成「过了」。
     """
-    out = _enter(state, "selftest",
+    out = _enter(state, caps, "selftest",
                  ("接下来要在真浏览器上按扰动序列跑几遍：正常跑一遍、接着再跑一遍、放慢跑一遍、"
                   "再换个窗口大小跑一遍。**自测通过 ≠ 生产一定过** —— 工具侧跑的浏览器与生产 "
                   "worker 的代理出口/指纹/时序不是一套（规格 §10）。"),
-                 facts={"窗口": state.get("ws_url"), "表单数据": state.get("form_file")})
-    if out.get("end_reason"):
+                 facts={"窗口": state.get("ws_url"), "表单数据": state.get("form_file"),
+                        "第 2 遍刷新回哪个 URL": state.get("entry_url"),
+                        "允许跳过的扰动": list(state.get("allow_skips") or []),
+                        "窗口旋钮": "set_viewport=接上了" if deps.set_viewport else "没接上"})
+    if _held(out):
         return out
 
     if not state.get("ws_url") or not state.get("form_file"):
@@ -326,8 +436,16 @@ def _selftest(state, deps: Deps, caps: Caps) -> dict:
                                  "先把窗口开起来（§4.6 的前提层；窗口本身只活几分钟，P6）再接着走。")})
         return out
 
+    # 跑到这儿时手上这根线可能没了（恢复同一个 run 的另一个进程没接上）——
+    # 那几遍扰动跑不了、又没人允许跳过，就停在这儿点名，别让报告把它记成「产物不行」。
+    missing = _missing_knobs(state, deps)
+    if missing:
+        out.update({"end_reason": END_MISSING_KNOB, "end_note": _knob_note(missing)})
+        return out
+
     py = _stage_candidate(state)
-    report = deps.selftest(str(py), state["ws_url"], state["form_file"], state["site"])
+    report = deps.selftest(str(py), state["ws_url"], state["form_file"], state["site"],
+                           **_selftest_kwargs(state, deps))
     out.update({"candidate_path": str(py), "report": report})
     if not report.passed:
         out["diagnoses"] = int(state.get("diagnoses") or 0) + 1
@@ -342,9 +460,9 @@ def _diagnose(state, deps: Deps, caps: Caps) -> dict:
     """从自测报告里定位「哪一遍、卡在第几步、什么错」——**只说报告里真有的东西**。"""
     evidence = _diagnosis(state.get("report"))
     say = ("自测没过。%s 接下来要拿这份记录去定位，定位完回 draft 改一版。" % evidence["say"])
-    out = _enter(state, "diagnose", say, facts={"逐遍结果": evidence["per_run"],
-                                                "证据": evidence})
-    if out.get("end_reason"):
+    out = _enter(state, caps, "diagnose", say, facts={"逐遍结果": evidence["per_run"],
+                                                     "证据": evidence})
+    if _held(out):
         return out
     out["diagnosis"] = evidence
     return out
@@ -357,12 +475,12 @@ def _deliver(state, deps: Deps, caps: Caps) -> dict:
     才写进去的 ——「查过的那份」与「交出去的那份」天生不是同一串字节。脏了就不落盘，
     也不许悄悄改一改糊过去。
     """
-    out = _enter(state, "deliver", _deliver_say(state),
+    out = _enter(state, caps, "deliver", _deliver_say(state),
                  facts={"自测": _selftest_block(state.get("report"),
                                                 datetime.datetime.now().astimezone()
                                                 .isoformat(timespec="seconds")),
                         "要写进哪": str(_delivery_path(state))})
-    if out.get("end_reason"):
+    if _held(out):
         return out
 
     # 闸之后**重算一次**：人在闸上可能待了很久，`generated_at` 该是**落盘那一刻**，
@@ -408,14 +526,24 @@ def _next(node: str) -> Callable:
 def _after_lint(state) -> str:
     if state.get("end_reason"):
         return END
+    if state.get("revised_at"):            # 人否了这一版 → 回 draft 带他的话（§6「review」那一行）
+        return "draft"
     return "draft" if state.get("violations") else "selftest"
 
 
 def _after_selftest(state) -> str:
     if state.get("end_reason"):
         return END
+    if state.get("revised_at"):
+        return "draft"
     report = state.get("report")
     return "deliver" if (report is not None and report.passed) else "diagnose"
+
+
+def _after_deliver(state) -> str:
+    if state.get("revised_at"):
+        return "draft"                     # 人在这儿把这一版否了：别写，回去重写
+    return END
 
 
 # ─────────────────────────────── 拼图 ───────────────────────────────
@@ -429,8 +557,13 @@ def build(*, checkpointer, deps: Optional[Deps] = None, caps: Optional[Caps] = N
                       图会安静地停在那儿，而谁也没法让它再动一下。存哪儿是接线的事
                       （Task 8：Postgres；本地跑用 `InMemorySaver`），但必须有。
                       存 dataclass 的 saver 记得 `allowlisted(...)`。
-        deps          跟外面世界的接触面（全部可注入；测试里全是桩）
+        deps          跟外面世界的接触面（全部可注入；测试里全是桩）。
+                      **窗口层那根线（`set_viewport`）就在这里** —— 不给它，自测的第 4 遍
+                      没法真跑，图会在 `intake`/`selftest` 停下点名（见模块 docstring §2.5）
         caps          硬上限（`state.Caps`）
+
+    开场白里那几项**必需**的输入（`success_text` / `ws_url` / `form_file`）见 §2.5：
+    缺了它们，图停在那儿点名，不会写出一份「没验到也算过」的产物。
 
     用法：
 
@@ -465,9 +598,9 @@ def build(*, checkpointer, deps: Optional[Deps] = None, caps: Optional[Caps] = N
     graph.add_conditional_edges("explore", _next("draft"), ["draft", END])
     graph.add_conditional_edges("draft", _next("lint"), ["lint", END])
     graph.add_conditional_edges("lint", _after_lint, ["draft", "selftest", END])
-    graph.add_conditional_edges("selftest", _after_selftest, ["deliver", "diagnose", END])
+    graph.add_conditional_edges("selftest", _after_selftest, ["deliver", "diagnose", "draft", END])
     graph.add_conditional_edges("diagnose", _next("draft"), ["draft", END])
-    graph.add_edge("deliver", END)
+    graph.add_conditional_edges("deliver", _after_deliver, ["draft", END])
     return graph.compile(checkpointer=checkpointer)
 
 
@@ -516,6 +649,62 @@ def _unfinished_note(stop: str, journey) -> str:
                "；".join(str(n) for n in (getattr(journey, "notes", None) or [])[-2:]) or "没有别的记录"))
 
 
+def _missing_knobs(state, deps: Deps) -> list:
+    """哪几遍扰动**既跑不了、又没人允许跳过** —— 报出缺的那根线（R-31）。
+
+    一条扰动只有两种活法：**跑得了**（那根线在 `Deps` 上）或者**被人明确允许不跑**
+    （写进 `allow_skips`）。两样都不成立时图**停**并把旋钮名字点出来 ——
+    不许自己发明一个默认让它跳过去（R-5：跳过的遍不算过），也不许带着它往下走、
+    让报告把这件接线的事记成「产物不行」。
+    """
+    allowed = tuple(state.get("allow_skips") or selftest_mod.DEFAULT_ALLOWED_SKIPS)
+    out = []
+    for name, (knob, what, who) in ROUND_NEEDS.items():
+        if name in allowed:
+            continue
+        if getattr(deps, knob, None) is None:
+            out.append({"round": name, "knob": knob, "what": what, "who": who,
+                        "nth": list(selftest_mod.RUN_NAMES).index(name) + 1})
+    out.sort(key=lambda item: item["nth"])
+    return out
+
+
+def _knob_note(missing: list) -> str:
+    """缺旋钮时那段**人话**：缺的是哪一根、谁该给、以及另一条明摆着的路（§10 的诚实条款）。"""
+    lines = ["跑不了：自测里有几遍扰动**既没有那根线、又没人允许跳过**，所以这次自测的结论"
+             "会是残缺的 —— 而「没验到」不许说成「验过了」（R-5 / §10）。缺的是："]
+    for item in missing:
+        lines.append("  · 第 %s 遍「%s」需要 `%s=…`；这根线在 %s。"
+                     % (item["nth"], item["what"], item["knob"], item["who"]))
+    lines.append("两条路，都摆在明面上：")
+    lines.append("  ① 把线接上（推荐）：那几遍就真跑，「没验到」的窟窿才算补上；")
+    lines.append("  ② 明确放弃它：把 %s 放进开场白的 `allow_skips` —— "
+                 "交出来的产物会带着「这一类失败这次**没验到**」。"
+                 % "、".join('"%s"' % item["round"] for item in missing))
+    lines.append("**不许**默认放过它：没验到的说成验过了，是这套系统最贵的谎。")
+    return "\n".join(lines)
+
+
+def _selftest_kwargs(state, deps: Deps) -> dict:
+    """传给 `selftest.run` 的那几个旋钮 —— **只给调用方真给了的**。
+
+    ⚠️ 没给的一律**不传**（不是传 `None`）：Task 6 的默认值自己说了算
+    （`allow_skips` 默认只允许跳 country，`entry_url` 没给就只是「接着再跑一遍」）。
+    图替它填默认 = 图替它决定「哪些没验到也算过」，那是 R-5 明令不许的事。
+
+    评审 Important 1：原先这里一个旋钮都不传 → 真 `run()` 走 `set_viewport=None` 那一支 →
+    第 4 遍记 `skipped` → `_judge` 判不过 → **真跑一次永远到不了 deliver**。
+    """
+    kw = {}
+    if deps.set_viewport is not None:
+        kw["set_viewport"] = deps.set_viewport
+    if state.get("allow_skips"):
+        kw["allow_skips"] = tuple(state["allow_skips"])
+    if state.get("entry_url"):
+        kw["entry_url"] = state["entry_url"]
+    return kw
+
+
 def _feedback(state, hints=None) -> dict:
     """回灌给 draft 的东西（违规行 / 诊断证据 / 人说的话）——一处组装，两处消费。
 
@@ -531,7 +720,14 @@ def _draft_say(state, feedback: dict) -> str:
     """draft 那道闸上问的话：**先把它为什么被叫回来**说清楚（人话，不是 code）。"""
     version = list(state.get("visits") or []).count("draft") + 1
     head = "接下来写第 %d 版 py（按账本里的「怎么走」填骨架）。" % version
-    if feedback["violations"]:
+    if state.get("revised_at"):
+        # 人否掉了上一版（§6「人否 → 回 draft 带人的纠正」）——闸口上得把他的话摆出来，
+        # 不然这一版看上去像是自己决定重写的
+        where = STEP_SAY.get(state["revised_at"], state["revised_at"])
+        note = (state.get("hints") or [""])[-1]
+        head = ("你在「%s」那儿说这一版不行，所以回来重写一版（这一版按你说的改）：%s"
+                % (where, note or "（只说重来，没留下话）"))
+    elif feedback["violations"]:
         lines = "；".join("第 %s 行 —— %s" % (v.get("line"), v.get("message"))
                           for v in feedback["violations"])
         head = ("上一版没过契约检查，要重写一版：%s\n（这些是**写动作**上的问题："

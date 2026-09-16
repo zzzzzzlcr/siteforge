@@ -26,7 +26,8 @@ from agent.selftest import Report
 
 __all__ = ["SiteState", "Caps", "GENERATOR", "MODE_BUILD", "MODE_FIX",
            "CONTINUE", "STOP", "REVISE", "human_reply",
-           "END_DELIVERED", "END_HUMAN_STOP", "END_NO_BRIEF", "END_EXPLORE_UNFINISHED",
+           "END_DELIVERED", "END_HUMAN_STOP", "END_NO_BRIEF", "END_NO_SUCCESS_TEXT",
+           "END_MISSING_KNOB", "END_REVISION_CAP", "END_EXPLORE_UNFINISHED",
            "END_PAUSED", "END_DRAFT_FAILED", "END_LINT_CAP", "END_SELFTEST_CAP",
            "END_NO_WINDOW", "END_DELIVER_LINT", "FINISHED_EXPLORATION"]
 
@@ -87,6 +88,12 @@ END_DELIVERED = "delivered"
 END_HUMAN_STOP = "human_stop"
 #: 开场白里连站点/目标都没有 —— 不开浏览器
 END_NO_BRIEF = "no_brief"
+#: 没人说「什么算成功」（`success_text`）—— 在 intake 就停，**不许猜**（§6.1）
+END_NO_SUCCESS_TEXT = "no_success_text"
+#: 窗口层缺一根线（`set_viewport` 之类）—— 那几遍扰动跑不了，而没人允许跳过它（R-31）
+END_MISSING_KNOB = "missing_knob"
+#: 人反复打回同一版到达上限（§6.3：反复打回同一处本身就是信号）
+END_REVISION_CAP = "revision_cap"
 #: 探路没走完（预算到顶 / 模型没给出结论）—— 不许拿半份账本去写 py（R0）
 END_EXPLORE_UNFINISHED = "explore_unfinished"
 #: 人在浏览器里喊的停（§6.2 的 `should_pause`）—— **不是失败**
@@ -123,6 +130,11 @@ class Caps:
     max_lint_bounces: int = 2
     #: `selftest` 挂了之后「诊断 + 重写」最多几轮。
     max_diagnoses: int = 2
+    #: 人在门口打回最多几次（§6.2：人否 → 回 draft 带纠正）。
+    #: 人驱动的循环**跑不飞**（每转一圈都得有人回话），所以这个上限不是防跑飞 ——
+    #: 它防的是**自动化调用方**（Console / 脚本）一直回「重来」把真浏览器拖进无尽的
+    #: 自测里；同时它把 §6.3 的信号摆到明面上（同一处反复打回 = 问题不在这一版稿上）。
+    max_revisions: int = 5
     explore_steps: int = DEFAULT_MAX_STEPS
     explore_rounds: int = DEFAULT_MAX_ROUNDS
 
@@ -147,6 +159,11 @@ class SiteState(TypedDict, total=False):
     env: Optional[dict]           # {"proxy_country","dpr","ua","viewport"}；没人给就 None
     platform: Optional[dict]      # {"guess","confidence"}；平台分类不在这张图里
     out_dir: Optional[str]        # 产物落在哪个目录（默认 `forms/sites/`）
+    #: 扰动自测的两件**数据**旋钮（窗口层那根**回调**在 `graph.Deps.set_viewport` 上，
+    #: 因为可调用的东西进不了 checkpoint）：点名允许跳过哪几遍、以及第 2 遍刷新回哪个 URL。
+    #: 没给 = 用 Task 6 的默认（`DEFAULT_ALLOWED_SKIPS` = 只允许跳 country）。
+    allow_skips: Optional[list]
+    entry_url: Optional[str]
 
     # ── explore ───────────────────────────────────────────────
     journey: Optional[Journey]
@@ -164,6 +181,11 @@ class SiteState(TypedDict, total=False):
 
     # ── 人的话与两次回灌的计数 ───────────────────────────────────
     hints: list                   # 人在闸口说过的话（§6.2「直接说该点哪」）
+    #: 人**打回**过几次、在哪道闸、说了什么 —— 一路留着（区别于 `end_reason ==
+    #: "human_stop"` 那种「人把这次运行杀了」）。`revised_at` 是它在路上的临时形态：
+    #: 路由靠它回 draft，`draft` 收下之后清掉（`revisions` 是那份记录的正身）。
+    revisions: list
+    revised_at: str
     lint_bounces: int
     diagnoses: int
     diagnosis: Optional[dict]     # 回灌给 draft 的证据：{run, failed_step, say, note}

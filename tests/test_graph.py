@@ -131,11 +131,51 @@ def _dirty(spec):
     return dirty
 
 
-def _deps(*, journey=None, reports=None, write=None, rec=None):
-    """**全部**外部依赖的桩。返回 `(Deps, Rec)`。"""
+def _viewport_cb(width, height):
+    """窗口层那根线（`POST /browser/update` 的替身）—— Task 8 的服务该给的就是它。"""
+    return None
+
+
+def _faithful_selftest(rec):
+    """一个**照着 Task 6 的判据**做的自测桩（不是「一律返回 passed」）。
+
+    ⚠️ 这个桩的形状是有来历的（评审 Important 1）：图原先一个窗口旋钮都不往
+    `selftest.run` 传 → 真的 `run()` 走 `set_viewport=None` 那一支（`selftest.py:469`）→
+    第 4 遍记成 `skipped` → `_judge`（`selftest.py:370`）不认「跳过」为「过了」
+    （默认只允许跳 country，`selftest.py:76`）→ `Report.passed` **恒为 False** →
+    图在 selftest↔diagnose 之间转到上限，**看上去像产物不行**。
+    桩要是「一律 passed」，这个接线 bug 在测试里**永远不会现形**。
+    所以这里用**真的** `Run` / `Report` / `_judge`，跳过哪遍就照 Task 6 的规矩记 `skipped`。
+    """
+    def run(py_path, ws_url, form_file, site, **kw):
+        rec.tested_src = pathlib.Path(py_path).read_text(encoding="utf-8")
+        rec.selftest.append({"py_path": str(py_path), "ws_url": ws_url,
+                             "form_file": form_file, "site": site, **kw})
+        allowed = tuple(kw.get("allow_skips") or selftest.DEFAULT_ALLOWED_SKIPS)
+        unnerved = [name for name, knob in (("viewport", "set_viewport"),
+                                           ("country", "set_country"))
+                    if kw.get(knob) is None]
+        runs = tuple(_run(name, "skipped" if name in unnerved else "passed",
+                          ok=None if name in unnerved else True,
+                          note="这一遍没跑：没人给那根线（%s）" % name
+                          if name in unnerved else "跑通了")
+                     for name in selftest.RUN_NAMES)
+        return selftest.Report(runs=runs, passed=selftest._judge(runs, allowed),
+                               allowed_skips=allowed, cdp_bin=None, site=site,
+                               py_path=str(py_path))
+    return run
+
+
+def _deps(*, journey=None, reports=None, write=None, rec=None, **over):
+    """**全部**外部依赖的桩。返回 `(Deps, Rec)`。
+
+    `over` 直接盖到 `Deps` 上（例如 `set_viewport=None` = 「这根线没人接」）。
+    默认接线给的是**该给的都给上**的样子（窗口层那根线接好 + 照着 Task 6 判据的自测桩）——
+    这样「图少传一个旋钮」才会在测试里现形，而不是被一个过于宽容的桩盖住。
+    """
     rec = rec if rec is not None else Rec()
     book = journey if journey is not None else _journey()
-    queue = list(reports) if reports else [_pass_report()]
+    queue = list(reports) if reports else None
 
     def explore(url, goal, budget=None, **kw):
         rec.explore.append({"url": url, "goal": goal, "budget": budget, "kw": kw})
@@ -154,11 +194,14 @@ def _deps(*, journey=None, reports=None, write=None, rec=None):
     def selftest_stub(py_path, ws_url, form_file, site, **kw):
         rec.tested_src = pathlib.Path(py_path).read_text(encoding="utf-8")
         rec.selftest.append({"py_path": str(py_path), "ws_url": ws_url,
-                             "form_file": form_file, "site": site, "kw": kw})
+                             "form_file": form_file, "site": site, **kw})
         return queue[min(len(rec.selftest) - 1, len(queue) - 1)]
 
+    chosen = selftest_stub if queue is not None else _faithful_selftest(rec)
+    knobs = {"set_viewport": _viewport_cb}
+    knobs.update(over)
     return graph.Deps(explore=explore, write=write_stub, lint=lint_stub,
-                      selftest=selftest_stub), rec
+                      selftest=chosen, **knobs), rec
 
 
 def _brief(tmp_path, **over):
@@ -197,10 +240,18 @@ def _drive(app, cfg, initial, reply=None, limit=40):
 
 
 def test_happy_path_walks_every_step_in_order_and_writes_a_py(tmp_path):
-    """六个节点按序走完，最后**真**落一条 py 下来。"""
+    """六个节点按序走完，最后**真**落一条 py 下来。
+
+    ⚠️ 这条用的是**照着 Task 6 判据**的自测桩（`_faithful_selftest`）+ 接好的窗口旋钮 ——
+    它就是评审 Important 1 的回归钉子：图若少传 `set_viewport`，桩会把第 4 遍记成 `skipped`、
+    真 `_judge` 判 `passed=False`，这条路就红（而不是像原先那样被一个「一律 passed」的桩
+    盖过去，等到 Task 8 真跑才发现自测**永远**过不了）。
+    """
     deps, rec = _deps()
     app, cfg, _ = _build(deps=deps)
     payloads, out = _drive(app, cfg, _brief(tmp_path))
+    assert out["report"].passed is True, out.get("end_note")
+    assert rec.selftest[0]["set_viewport"] is _viewport_cb
 
     assert [p["step"] for p in payloads] == ["intake", "explore", "draft", "lint",
                                              "selftest", "deliver"], payloads
@@ -506,6 +557,71 @@ def test_the_human_can_stop_the_run_at_any_gate(tmp_path, gate):
     assert not (tmp_path / "forms" / "sites" / ("%s.candidate.py" % SITE)).exists()
 
 
+@pytest.mark.parametrize("gate", ["lint", "selftest", "deliver"])
+def test_a_revision_at_a_late_gate_goes_back_to_draft_and_that_step_does_not_run(tmp_path, gate):
+    """人在 `lint` / `selftest` / `deliver` 门口说「这版不行，重来」→ **回 draft 带那句话**。
+
+    这是规格 §6 里 `review` 那一行的正身（「人否 → 回 `draft` 带人的纠正」）：
+    原先这三道闸上「否」只被记进 `hints`，然后**照写不误** —— 人说了不行，产物还是出去了。
+    """
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_revisions=2))
+    payloads, out = _drive(app, cfg, _brief(tmp_path),
+                           reply=lambda p: ({"action": "revise", "note": "这一步不对，重来"}
+                                            if p["step"] == gate else "continue"))
+
+    # 一直打回 → 到上限就停（人驱动的循环也不许没有尽头：§6.5「别写出跑不完也不会停的图」）
+    assert out["end_reason"] == "revision_cap", out.get("end_note")
+    assert [r["at"] for r in out["revisions"]] == [gate] * 3
+    assert all(r["note"] == "这一步不对，重来" for r in out["revisions"])
+    assert [p["step"] for p in payloads].count("draft") == 3, payloads
+    assert len(rec.write) == 3, "首版 + 三次打回里前两次各重写一版"
+    # 每一次都是**在门口**被拦下的：那一步的工作一次都没做
+    if gate == "lint":
+        assert rec.lint == []
+    if gate in ("lint", "selftest"):
+        assert rec.selftest == []
+    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists(), \
+        "被人否掉的版本一个字节都不许出去"
+    assert not (tmp_path / "forms" / "sites" / ("%s.candidate.py" % SITE)).exists(), \
+        "到上限停下来时，自测用的候选产物也不留"
+
+
+def test_a_revision_is_recorded_so_a_reader_can_tell_it_from_a_kill(tmp_path):
+    """「人打回」与「人喊停」在状态里分得开（评审 Important 2）。
+
+    `revisions`（谁、在哪道闸、说了什么 —— 一路留着）≠ `end_reason == "human_stop"`。
+    只留一句 `hints` 是不够的：后面读这份记录的人分不出「他改过，产物按他说的重写了」
+    与「他没让这份东西出去」。
+    """
+    deps, rec = _deps(write=lambda spec, fb, n: ({**spec, "states": [
+        {**spec["states"][0], "steps": [{**spec["states"][0]["steps"][0],
+                                         "note": "第二版：按人说的改了"}]}]} if n == 2 else spec))
+    app, cfg, _ = _build(deps=deps)
+    state = {"asked": False}
+
+    def reply(p):
+        if p["step"] == "deliver" and not state["asked"]:
+            state["asked"] = True
+            return {"action": "revise", "note": "提交按钮那一下多余，去掉"}
+        return "continue"
+
+    payloads, out = _drive(app, cfg, _brief(tmp_path), reply=reply)
+
+    assert out["end_reason"] == "delivered"
+    assert out["revisions"] == [{"at": "deliver", "note": "提交按钮那一下多余，去掉"}]
+    steps = [p["step"] for p in payloads]
+    at = steps.index("deliver")
+    assert steps[at + 1] == "draft", "否掉之后要回 draft，而不是照写"
+    assert len(rec.write) == 2
+    assert "提交按钮那一下多余，去掉" in rec.write[1]["feedback"]["hints"]
+    # 回 draft 的那道闸上，人说的话要**摆出来**（不然这一版看上去像是自己决定重写的）
+    assert "提交按钮那一下多余，去掉" in [p for p in payloads if p["step"] == "draft"][1]["say"]
+    # 交出去的是**第二版**（人打回的那一版没有出去）
+    src = pathlib.Path(out["py_path"]).read_text(encoding="utf-8")
+    assert "第二版：按人说的改了" in src
+
+
 @pytest.mark.parametrize("gate", ["intake", "explore", "draft"])
 def test_the_human_can_say_something_and_it_reaches_the_draft(tmp_path, gate):
     """§6.2：「直接说该点哪」—— 人在闸口留下的那句话，要能跟着进 **draft**。
@@ -525,18 +641,106 @@ def test_the_human_can_say_something_and_it_reaches_the_draft(tmp_path, gate):
         "人在「%s」那道闸说的话没进 draft —— 收了不带等于没听" % gate
 
 
-def test_no_success_condition_means_stop_not_guess(tmp_path):
-    """没有成功判据就**停**：没有成功判据的产物会跑到底再谎报成功（template 也拒它）。"""
+def test_no_success_condition_is_refused_at_intake_before_anything_expensive(tmp_path):
+    """没给成功判据 → **在 intake 就停**（评审 Important 1b）。
+
+    为什么必须在 intake：成功判据只有人知道（§6.1），而「缺了它」这件事在开场白里就看得见。
+    放到 draft 才发现，意味着**先烧掉一个 Bit 窗口 + 一次模型探路**，然后回报一个
+    「写不出来」—— 那个失败看上去像模型的问题，其实是缺一个输入。
+    """
     deps, rec = _deps()
     app, cfg, _ = _build(deps=deps)
     brief = _brief(tmp_path)
     brief.pop("success_text")
-    _, out = _drive(app, cfg, brief)
+    payloads, out = _drive(app, cfg, brief)
+
+    assert out["end_reason"] == "no_success_text", out.get("end_note")
+    assert out["visits"] == ["intake"], out["visits"]
+    assert rec.explore == [], "没给成功判据就不该去开浏览器"
+    assert rec.selftest == []
+    assert "成功" in out["end_note"] and "success_text" in out["end_note"]
+    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+
+
+def test_a_draft_that_loses_the_success_condition_still_stops_loudly(tmp_path):
+    """intake 查过之后 draft 那道闸还得留着：判据可能在**写的过程中**丢（回调换掉了 spec）。
+
+    「没有成功判据的产物会跑到底再谎报成功」是本项目最忌讳的那类谎 —— 这一层不许只靠
+    intake 一次检查兜着。
+    """
+    deps, rec = _deps(write=lambda spec, fb, n: {**spec, "success_text": None})
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
 
     assert out["end_reason"] == "draft_failed", out.get("end_note")
     assert "成功" in out["end_note"]
+    assert rec.selftest == []
     assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
-    assert len(rec.selftest) == 0
+
+
+# ───────────── 窗口层那三个旋钮（评审 Important 1 / R-31）─────────────
+
+
+def test_the_window_knobs_reach_the_selftest(tmp_path):
+    """`set_viewport` / `allow_skips` / `entry_url` 必须**真的传进** `selftest.run`。
+
+    原先图一个都没传（`grep` 零命中）—— 真跑一次时第 4 遍必然记成 `skipped`，判据必然
+    `passed=False`，而报告里说不出为什么（看上去像产物挂了）。
+    """
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path, allow_skips=["country", "viewport"],
+                                     entry_url="https://example-funnel.test/quiz?fresh=1"))
+
+    assert out["end_reason"] == "delivered"
+    got = rec.selftest[0]
+    assert got["set_viewport"] is _viewport_cb, "窗口层那根线没传下去"
+    assert tuple(got["allow_skips"]) == ("country", "viewport")
+    assert got["entry_url"] == "https://example-funnel.test/quiz?fresh=1"
+
+
+def test_without_the_viewport_knob_the_run_stops_by_name_not_by_cap(tmp_path):
+    """没人接那根线时：**报出缺的是哪个旋钮**，不许假装通过，也不许转到上限怪产物（R-31）。
+
+    「跳过」在 Task 6 的判据里**不算过**（R-5），所以图不能自己发明一个默认让它跳过去；
+    可它也不能因此永远卡在那儿 —— 停在原地、把人话和该给的东西说清楚，才是诚实的出口。
+    """
+    deps, rec = _deps(set_viewport=None)
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "missing_knob", out.get("end_note")
+    assert rec.selftest == [], "旋钮没接就别去动浏览器（那一遍必然记成没验到）"
+    assert rec.explore == [], "这件事在 intake 就该拦下 —— 别先烧一个窗口再回报"
+    assert "set_viewport" in out["end_note"]        # 缺的是哪个旋钮，点名
+    assert "窗口" in out["end_note"]                # 那一遍在打什么（人话）
+    assert "allow_skips" in out["end_note"]         # 另一条路：明确放弃它（§10 的诚实条款）
+    # 说的是「没验到」，**不是**「产物挂了」—— 这条停不是产物的问题（那正是要避免的误读）
+    for junk in ("挂了", "没通过", "自测没过"):
+        assert junk not in out["end_note"], out["end_note"]
+    assert "没验到" in out["end_note"], out["end_note"]
+    assert [p["step"] for p in payloads] == ["intake"], payloads
+
+
+def test_a_knob_that_disappears_before_the_selftest_is_caught_at_the_selftest(tmp_path):
+    """窗口层那根线在**跑到一半**没了（进程重启后没接上）：self-test 那一步也要拦。
+
+    两处检查各有各的场景：intake 那处管「开场白就缺」（早停，不烧窗口）；
+    这处管「跑到这儿时手上这根线没了」（Task 8 恢复同一个 run 时换了 Deps）。
+    """
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    out = app.invoke(_brief(tmp_path), cfg)
+    for _ in range(4):                      # intake 前 → explore → draft → lint → selftest 前
+        out = app.invoke(Command(resume="continue"), cfg)
+    assert out["__interrupt__"][0].value["step"] == "selftest", out["__interrupt__"]
+
+    deps.set_viewport = None                # ← 恢复这个 run 的「另一个进程」没接这根线
+    out = app.invoke(Command(resume="continue"), cfg)
+
+    assert out["end_reason"] == "missing_knob", out.get("end_note")
+    assert "set_viewport" in out["end_note"]
+    assert rec.selftest == [], "那根线没了就别去跑（跑了必然记成「这一类没验到」）"
 
 
 def test_a_brief_with_nothing_in_it_does_not_open_a_browser(tmp_path):
@@ -655,6 +859,9 @@ def test_the_real_wiring_is_what_compiles(tmp_path):
     assert real.selftest is selftest.run
     assert real.lint is lint.check
     assert real.write is not None and real.should_pause is None
+    # 默认**没有**窗口层那根线：图不许自己发明一个（发明出来的那个会让第 4 遍扰动静默跳过，
+    # 而「跳过」不算过 —— R-5/R-31）。缺了它，图在 intake 停下点名。
+    assert real.set_viewport is None
     # 默认那双手**改不了**自己的产物（它没有判断力）—— 这条是**说明**，不是缺陷：
     # 能改产物的角色从 `Deps.write` 注入（模型 / Console 里的人）
     spec = {"site": SITE, "success_text": SUCCESS, "states": [{"name": "s"}], "fills": {}}
