@@ -1,0 +1,75 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>选择器候选与稳定性 fixture</title></head>
+<body>
+<h1>selector candidates fixture</h1>
+
+<!-- ── 1. 稳定标识：首选必须是它，评级 high ────────────────────────────── -->
+
+<!-- 1a. 稳定 id（同时带 data-testid → alternates 里应有它，用来验顺序） -->
+<button id="schedule-now" data-testid="schedule">Stable Id</button>
+
+<!-- 1b. 五种标识俱全：验候选的**优先级顺序**（id > name > data-* > class > 结构路径）
+         以及去重（pathSel 会再吐一个 `#full`，必须被滤掉） -->
+<input id="full" name="full-name" data-testid="full-tid" class="form-control" type="text" placeholder="Full">
+
+<!-- 1c. 只有 name（无 id）→ 首选必须是 [name=] -->
+<input name="email-addr" type="text" placeholder="B stable name">
+
+<!-- 1d. 只有 data-testid（无 id / name）→ 首选必须是 [data-testid=] -->
+<button data-testid="go-btn">C data-testid</button>
+
+<!-- ── 2. 随机 class hash：首选不得是它 ──────────────────────────────── -->
+
+<!-- 2a. 7 位 base36 hash —— emotion / MUI v5 那类 CSS-in-JS 的形态
+         （emotion 的 hash 是 murmur2 → toString(36)，通常 6~7 位。
+          ⚠️ 这句「6~7 位」是本仓的既有知识，**没有在真站上核实过** ——
+          核实它就是规格 R5 的活；能核实的是另一半：brief 把 `css-1x2y3z4`
+         当成随机 hash 的字面例子，而 RAND 不认它）
+         brief 的字面例子，实测**没被 RAND 滤掉** → 见 README 的 ⚠️ 与 task-5-report.md -->
+<button class="css-1x2y3z4">D hash7</button>
+
+<!-- 2b. 8 位纯 hex hash —— RAND 的 `[0-9a-f]{8,}` 正好咬得住的那一档 -->
+<button class="css-1a2b3c4d">E hash8</button>
+
+<!-- ── 3. 稳定语义 class（非 hash）→ medium ──────────────────────────── -->
+<button class="btn btn-primary">F stable class</button>
+
+<!-- ── 4. 深层结构路径：4 段（3 个 >）→ low ──────────────────────────
+     每一层都是它父节点下**唯一**的同标签子元素，所以 nth-of-type 全是 (1)，
+     选择器完全确定：section(1) > article(1) > div(1) > button(1) -->
+<div><section><article><div>
+  <button>G deep path no id</button>
+</div></article></section></div>
+
+<!-- ── 5. 以祖先稳定 id 开头的深路径（4 段）──────────────────────────
+     pathSel 只爬 4 跳，第 4 跳撞上 #deep-wrap 就改吐 '#'+id 并停：
+       #deep-wrap > div(1) > div(1) > button(1) -->
+<div id="deep-wrap">
+  <div><div>
+    <button>H deep under stable id</button>
+  </div></div>
+</div>
+
+<!-- ── 6. 真站上最常见：裸 <button>，没有任何标识 ────────────────────── -->
+<button>I plain button</button>
+
+<!-- ── 6b. 只有 id（没有 name / data-* / class）──────────────────────
+     pathSel 第一跳就撞上它自己的 id → 吐 `#pure-id`；与首选逐字相同 →
+     被去重滤掉 → **alternates 恒为空**。见报告「alternates 的结构性空洞」一节 -->
+<button id="pure-id">L pure id</button>
+
+<!-- ── 7. 随机 token 的三个落点（id / data-* / name）────────────────────
+     RAND = /(^|[-_])[0-9a-f]{8,}($|[-_])|^[a-z]*\d{6,}$/i ，即
+       形态① 被 -/_ 或串首尾夹住的 8 位以上 hex 片段
+       形态② 整个串 = 字母 + 6 位以上数字 -->
+
+<!-- 7a. 随机 id（形态①：串首尾夹住的 12 位 hex）—— id 这一路 RAND 是过的 -->
+<button id="a1b2c3d4e5f6">J random id</button>
+
+<!-- 7b. 随机 data-testid（形态②：字母 + 10 位数字）—— data-* 这一路 RAND 也是过的 -->
+<button data-testid="x1234567890">K random tid</button>
+
+<!-- 7c. 随机 name（形态①：`_` 夹住的 12 位 hex）—— name 这一路**没有** RAND -->
+<input name="sid_9f8e7d6c5b4a" type="text" placeholder="K random name">
+
+</body></html>

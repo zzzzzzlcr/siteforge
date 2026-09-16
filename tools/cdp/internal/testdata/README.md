@@ -9,6 +9,35 @@
 | `shadow.html` | 三条 shadow 测试（陷阱 ①②③） | 两层嵌套 open shadow root |
 | `outer.html` / `outer_same.html` / `inner.html` | `TestObserveCrossOriginFrameMerge`（Task 4，已启用） | 跨源 / 同源 iframe |
 | `form.html` | 表单片段（备用） | — |
+| `selector.html` | `observe_selector_test.go`（Task 5 新增，不来自探针） | 选择器候选与稳定性评级 |
+
+## `selector.html`（Task 5 新增，**不是探针产物**）
+
+前 6 个是「难页面」探针的产物；`selector.html` 不一样 —— 它是一张**判据表**：
+每个元素钉住 `candidates()` / `stability()` 的一条判据，用 `<button>文本</button>`
+里那段**唯一文本**标注身份（测试按文本取元素 —— 按 selector 取会自我指涉，
+而 selector 正是被测对象）。
+
+元素与判据的对应（详见 `observe_selector_test.go` 顶部注释）：
+
+| 元素文本 | 形态 | 实测结果 |
+|---|---|---|
+| `Stable Id` / `B stable name` / `C data-testid` | 稳定 id / name / data-* | 首选即它、`high` |
+| `Full` | 五种标识俱全 | 候选顺序 id > name > data-* > class，且去重 |
+| `L pure id` | 只有 id | 首选 `#pure-id`、`high`，**alternates 空** |
+| `D hash7` (`css-1x2y3z4`) | 7 位 base36 hash（emotion 那类形态，**未在真站核实**，R5） | ⚠️ **首选就是它、medium** —— RAND 漏网，见下 |
+| `E hash8` (`css-1a2b3c4d`) | 8 位纯 hex hash | 被 RAND 滤掉，退化成结构路径 |
+| `F stable class` | 稳定语义 class | `button.btn.btn-primary`、`medium` |
+| `G deep path no id` | 4 段结构路径 | `low`（pathSel 上限 4 跳） |
+| `H deep under stable id` | 4 段、表头是祖先 id | **`high`** —— 与 G 只差一个表头，见下 |
+| `I plain button` | 裸 `<button>` | `body:nth-of-type(1) > button:nth-of-type(6)`、`medium` |
+| `J random id` / `K random tid` | 随机 id / 随机 data-* | 被 RAND 滤掉（`id` / `data-*` 两路都过了 RAND） |
+| `K random name` (`sid_9f8e7d6c5b4a`) | 随机 name | ⚠️ **首选就是它、`high`** —— `name` 那一路没走 RAND |
+
+⚠️ 上表里带 ⚠️ 的两行是 Task 5 **报出来的真发现**（不是 fixture 写错了）：
+`TestObserveSelectorRandomHashClassNotPreferred` 因此**当前是红的**，
+原委、实测输出与修法建议见 `.superpowers/sdd/2026-09-16-tool-layer-observe/task-5-report.md`。
+改 fixture 之前先读那份报告 —— 别把这两条擦掉，那正是这一轮要留住的信息。
 
 ## ⚠️ `outer.html` 的 iframe 是硬编码端口，测试在**服务层**改写它
 
