@@ -2,11 +2,12 @@ package cmd
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 )
 
 // Resolution of --host/--port against CDP_HOST/CDP_PORT happens in
-// rootCmd.PersistentPreRun, i.e. only when a subcommand actually executes, and
+// rootCmd.PersistentPreRunE, i.e. only when a subcommand actually executes, and
 // it writes the package-level host/port vars that GetHost/GetPort report. So
 // these tests drive the real root command with a real subcommand ("targets")
 // and read the resolution that survived Execute().
@@ -42,10 +43,12 @@ func resetRootFlags(t *testing.T) {
 	rootCmd.SetArgs(nil)
 }
 
-// executeRoot runs the root command with args. The returned error is logged,
-// not asserted on: the command is expected to fail to reach a browser, which
+// executeRoot runs the root command with args and returns the error Execute()
+// reported, which the caller decides whether to assert on: resolution failures
+// (see TestInvalidEnvPortIsRejected) are the command's own verdict and must be
+// asserted on, whereas the connection error the command ends with either way
 // says nothing about whether flag/env resolution was correct.
-func executeRoot(t *testing.T, args []string) {
+func executeRoot(t *testing.T, args []string) error {
 	t.Helper()
 	rootCmd.SetArgs(args)
 
@@ -58,11 +61,13 @@ func executeRoot(t *testing.T, args []string) {
 		rootCmd.SilenceErrors, rootCmd.SilenceUsage = silenceErrors, silenceUsage
 	}()
 
-	if err := rootCmd.Execute(); err != nil {
+	err := rootCmd.Execute()
+	if err != nil {
 		t.Logf("cdp %v -> %v (expected: nothing listens on the test ports)", args, err)
 	} else {
 		t.Logf("cdp %v -> success (a browser answered on the resolved address)", args)
 	}
+	return err
 }
 
 func TestPortFlagNotClobberedByEnv(t *testing.T) {
@@ -111,6 +116,101 @@ func TestPortFlagNotClobberedByEnv(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestInvalidEnvPortIsRejected pins the ruling that the two doors of this
+// kernel must not disagree about a CDP_PORT they cannot parse. cmd/mcp refuses
+// one (internal/mcp/target.go, ResolveTarget: "CDP_PORT=%q 不是端口号..."); the
+// CLI used to ignore it and quietly use the default 9222 instead -- i.e. talk to
+// a different browser than the operator asked for, with no error anywhere. The
+// CLI now refuses it too, with the same sentence.
+//
+// The flag/env precedence is a separate rule and stays what ffac82b made it
+// (explicit flag > env > default): an explicit --port wins outright, so a
+// broken value in the environment is never even read. The two rules meet in the
+// third case below, which is the one that matters most.
+func TestInvalidEnvPortIsRejected(t *testing.T) {
+	// Unparseable by any reading: not a number, and nothing TrimSpace can save.
+	const badPort = "abc"
+
+	resetRootFlags(t)
+	t.Cleanup(func() { resetRootFlags(t) })
+
+	t.Run("CDP_PORT=abc errors and names the offending value", func(t *testing.T) {
+		resetRootFlags(t)
+		t.Setenv("CDP_PORT", badPort)
+
+		err := executeRoot(t, []string{"targets"})
+
+		if err == nil {
+			t.Fatalf("CDP_PORT=%q 被静默忽略了 —— 命令于是连默认的 %d，不是操作者点名的那个端口",
+				badPort, portDefault)
+		}
+		if !strings.Contains(err.Error(), "CDP_PORT") {
+			t.Errorf("报错没有点名 CDP_PORT: %v", err)
+		}
+		if !strings.Contains(err.Error(), badPort) {
+			t.Errorf("报错没有点名那个值 %q: %v", badPort, err)
+		}
+	})
+
+	t.Run("a valid CDP_PORT still applies", func(t *testing.T) {
+		resetRootFlags(t)
+		t.Setenv("CDP_PORT", strconv.Itoa(portFromEnv))
+
+		executeRoot(t, []string{"targets"})
+
+		if got := GetPort(); got != portFromEnv {
+			t.Errorf("GetPort() = %d, want %d", got, portFromEnv)
+		}
+	})
+
+	// Whitespace around a number is how a value usually arrives by accident
+	// (a stray space in a script, a trailing newline from a file): the door
+	// that already existed reads it through TrimSpace, so this one must too.
+	// Refusing it here would be this same defect mirrored onto the other door.
+	t.Run("a padded CDP_PORT applies as the number it wraps", func(t *testing.T) {
+		resetRootFlags(t)
+		t.Setenv("CDP_PORT", " "+strconv.Itoa(portFromEnv)+" ")
+
+		executeRoot(t, []string{"targets"})
+
+		if got := GetPort(); got != portFromEnv {
+			t.Errorf("GetPort() = %d, want %d", got, portFromEnv)
+		}
+	})
+
+	t.Run("CDP_PORT=\"\" is still not set", func(t *testing.T) {
+		resetRootFlags(t)
+		t.Setenv("CDP_PORT", "")
+
+		err := executeRoot(t, []string{"targets"})
+
+		if err != nil && strings.Contains(err.Error(), "CDP_PORT") {
+			t.Errorf("空的 CDP_PORT 应当等于没设（既有行为），却被当成非法值: %v", err)
+		}
+		if got := GetPort(); got != portDefault {
+			t.Errorf("GetPort() = %d, want %d", got, portDefault)
+		}
+	})
+
+	// The interaction of the two rules: the flag wins, so the invalid env value
+	// must not be consulted at all -- not to override the flag, and not to fail
+	// the command either. Nothing listens on portFromFlag, so Execute() still
+	// ends in a connection error; what must not show up is the env error.
+	t.Run("explicit --port wins and the bad env value is never read", func(t *testing.T) {
+		resetRootFlags(t)
+		t.Setenv("CDP_PORT", badPort)
+
+		err := executeRoot(t, []string{"--port", strconv.Itoa(portFromFlag), "targets"})
+
+		if got := GetPort(); got != portFromFlag {
+			t.Errorf("GetPort() = %d, want %d (显式 flag 应当赢过环境变量)", got, portFromFlag)
+		}
+		if err != nil && strings.Contains(err.Error(), "CDP_PORT") {
+			t.Errorf("显式给了 --port，环境里那个坏的 CDP_PORT 就与本次运行无关，不该把命令拦下来: %v", err)
+		}
+	})
 }
 
 // TestHostFlagNotClobberedByEnv pins the same guard for --host/CDP_HOST, which
