@@ -1,6 +1,6 @@
 # cdp CLI
 
-Chrome DevTools Protocol CLI 工具，用于与 Chrome 浏览器交互，支持页面快照、执行 JavaScript、模拟人类手势操作和页面管理。
+Chrome DevTools Protocol CLI 工具，用于与 Chrome 浏览器交互，支持页面快照、执行 JavaScript、模拟人类手势操作、页面管理，以及**页面模型观测（observe）与差分（diff）**。
 
 ## 安装
 
@@ -92,6 +92,51 @@ cdp navi https://example.com --frame-id <frameId>
 Flags:
 - `[url]` - 目标 URL（必填位置参数）
 - `--frame-id` - 目标 frame（默认主 frame）
+
+### observe - 观察页面（结构化页面模型）
+
+观察当前页面（默认整页，跨源 iframe 自动逐帧取再合并），输出 PageModel JSON：
+可动作元素（选择器候选与稳定性、区域、遮挡、bbox）、表单字段、选项组、遮挡物、诊断。
+它是 agent 的主视角，也是**运行阶段唯一的回退接口** —— 选择器全挂时 py 靠它重新看清页面。
+
+```bash
+cdp observe
+cdp observe --json=false
+cdp observe --frame-id <frameId>
+```
+
+Flags:
+- `--json` - 默认 true 输出 JSON（py 侧只该用这一种）；`--json=false` 输出人话摘要（给人看，别解析）
+- `--frame-id` - 只观察指定帧（默认整页含子帧）。传的必须是 **CDP frameID**，不是 `frame_path` 里那个给人读的 `"main"`
+
+⚠️ `diagnostics` 是**观测者自己的问题**（某帧没取到 / 帧枚举可能退化），`obstructions` 是
+**页面上的遮挡物**（cookie 横幅，带 `dismiss_selector`）—— 两者语义不同，别混用。
+
+### diff - 差分：刚才那一下有没有推进
+
+把「动作前的快照」与「现在的页面」比一遍，回答一个问题：刚才那一下有没有推进。
+判据三条：URL 变了（SPA 的 pushState 也算）/ 可见正文变了 / 身份上真有元素出现或消失
+—— 都不长在选择器上，所以框架生成的 hash class 一刷新不会把重渲染谎报成「有进展」。
+
+```bash
+cdp observe > before.json
+# …做动作…
+cdp diff --before before.json
+cdp diff --before before.json --json=false
+```
+
+Flags:
+- `--before` - 动作前的 PageModel JSON 文件（**必填**，先用 `cdp observe` 输出一份）
+- `--json` - 默认 true 输出 JSON（py 侧只该用这一种）；`--json=false` 输出人话摘要
+- `--frame-id` - 只观察「动作后」那一帧（⚠️ 拿**整页**快照配它，其它帧的元素会整批报成
+  disappeared → 假的 `actionable=true`；非调试别传）
+
+退出码：0 = 算出了差分（★ `actionable=false` **也是 0** —— 那是正常答案，请读 JSON 里的
+`actionable`，别拿退出码当判据）；1 = 算不出来（快照读不到 / 不是合法 PageModel / 观测失败）。
+
+⚠️ 能力边界：它判**导航与组成变化**，**不判填写与选择** —— PageModel 里没有字段值，
+所以「值填进去了没有 / 勾上了没有」这类步骤要用 `cdp form` 自己的退出码（选项不存在会报错）
+或 `cdp eval` 读回来判，别拿 diff 的 `actionable` 当这一步成没成的判据。
 
 ### form - 表单填充
 

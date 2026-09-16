@@ -67,7 +67,11 @@ func parseDiff(t *testing.T, out string) internal.Diff {
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		t.Fatalf("解析成 map 失败: %v", err)
 	}
-	for _, k := range []string{"url_changed", "text_changed", "appeared", "disappeared", "actionable"} {
+	// diagnostics_before / diagnostics_after 也必须在这里：它们的**存在**正是
+	// I3（观测不全被读成「有进展」）那一轮的交付物 —— 只靠 struct tag 钉不住
+	// 「这个键在 stdout 上真出现了」（tag 写错、字段被挪走都不会有人说话）。
+	for _, k := range []string{"url_changed", "text_changed", "appeared", "disappeared", "actionable",
+		"diagnostics_before", "diagnostics_after"} {
 		if _, ok := raw[k]; !ok {
 			t.Errorf("diff 输出缺契约字段 %q", k)
 		}

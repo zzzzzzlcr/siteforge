@@ -508,3 +508,33 @@ func TestObserveSelectorNameLandingBothWays(t *testing.T) {
 	t.Logf("name 双向：随机 %q → %q ；子字段 %q → %q（③ 的已知代价，控制器裁定接受）",
 		randName, rf.Selector, subName, sf.Selector)
 }
+
+// ── Field 的感知字段也要有断言（终审 C77）──────────────────────────────
+//
+// 为什么要落在这一套里：这一套就是拿 selector.html 的**已知 input** 当真值表，
+// 而 `Field` 的字段与选择器一样是**按字符串键**绑上来的（observe.go 的
+// fields.map 返回对象 ↔ Field 的 json tag）—— 键写错就是静默零值，
+// 而在此之前 type/required/hint 三个键在整套里的断言数是 **0**。
+//
+// ⚠️ 只钉得住**一半**：selector.html 里没有任何 required 的 input，所以这里
+// 只能断言「不该 required 的没被多报」；**正例**（required=true）在
+// observe_integration_test.go 的 TestObserveShadowPageTextIsNotEmpty 里
+// ——那里的 #fn 模板上真的带 required。零值也是 false，只断言 false 是空转。
+func TestObserveSelectorFieldAttributesBind(t *testing.T) {
+	m := selectorFixture(t)
+
+	// `type=text`（fixture 里写死的那个属性）—— 零值是空串，两者可区分。
+	f := fieldByPlaceholder(t, m, "Full")
+	if f.Type != "text" {
+		t.Errorf("placeholder=Full 的 input 的 type = %q，应为 text（空串 = 那个键没绑上）", f.Type)
+	}
+	// 这一半是「别多报」：fixture 这个 input 没有 required 属性。
+	if f.Required {
+		t.Error("placeholder=Full 的 input 没有 required 属性，却被报成 required（那是反方向的多报）")
+	}
+	// hint 取 name||id：这个 input 两者都有，空串只可能是键没绑上。
+	if f.Hint == "" {
+		t.Error("placeholder=Full 的 input 的 hint 为空 —— 它有 name 也有 id，空串=那个键没绑上")
+	}
+	t.Logf("Field 绑定性：type=%q required=%t hint=%q", f.Type, f.Required, f.Hint)
+}

@@ -189,7 +189,10 @@ func TestObserveJSMustUsePierceHelper(t *testing.T) {
 	// 拆成两条互不替代的证据：
 	//   注入证据：前导段有没有、是不是恰好一份
 	//   正文证据：正文用的是内核助手，且没有自实现 walk 的特征
-	if n := strings.Count(js, "__cdpRoots = function"); n != 1 {
+	// ⚠️ 计数前**必须**先剥注释（与两行之下的 observeBody() 同一口径）：
+	// 原先数的是未剥注释的 js，于是正文里一句提到该字面量的注释就能把计数抬到 2
+	// —— 把**正确的**树弄红（2026-09-16 终审抓到）。剥了之后计数只认代码。
+	if n := strings.Count(stripJSComments(js), "__cdpRoots = function"); n != 1 {
 		t.Errorf("`__cdpRoots = function` 出现 %d 次，应为 1：0 = withPierce 没注入（运行时 ReferenceError），2 = 重复注入", n)
 	}
 	body := observeBody(t)

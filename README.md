@@ -23,10 +23,11 @@
 
 ```
 docs/superpowers/specs/   设计规格（先读）
-tools/cdp/                cdp 工具层（Go，自 /company/cdpcli 迁入）
-                          cmd/cdp  = CLI，生产 py 脚本用
-                          cmd/mcp  = MCP server，agent 用
-                          internal/ = 两者共用的同一个内核
+tools/cdp/                cdp 工具层（Go，已自 /company/cdpcli 迁入）
+                          main.go + cmd/  = CLI，生产 py 脚本用
+                                            （入口是**模块根**的 main.go，cobra 根命令在 cmd/ 下）
+                          cmd/mcp         = MCP server，agent 用（计划二交付，尚无此目录）
+                          internal/       = 两个门共用的同一个内核
 agent/                    LangGraph 图 + agent 服务
 skills/                   bit-window / cdp-browser 两个 skill
 tests/                    测试（**必须进 git**）
@@ -51,4 +52,10 @@ Dockerfile                多阶段：Go 构建工具层 → Python 运行时
 
 ## 状态
 
-设计中（2026-09-16）。工具层尚未迁入，`Dockerfile` 依赖 `tools/cdp/` 就位后才能构建。
+**计划一（工具层）已交付**（2026-09-16）：cdp 已自 `/company/cdpcli` 迁入 `tools/cdp/`，
+`observe` / `diff` 两条子命令在真浏览器的四档页面（light DOM / 两层 shadow / 跨源 iframe）上
+验过，全套件 125 测试绿（含子测试；0 skip）。
+
+镜像**可构建，但暂时不可运行** —— `ENTRYPOINT` 要的 `agent.service:app` 在计划二交付
+`agent/` 之前不存在（起来是 ModuleNotFoundError）。计划二（产出闭环：py 骨架 + lint +
+扰动自测 + LangGraph 图）与计划三（记忆层）未开工。

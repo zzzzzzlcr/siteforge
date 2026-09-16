@@ -63,10 +63,17 @@ COPY --from=tools /out/cdp     /usr/local/bin/cdp
 
 COPY . /opt/siteforge/
 
-# Task 8: cdp-mcp 尚未构建 —— 此处的 /usr/local/bin/cdp-mcp 要到 Task 8 才存在
-#         (缺文件不影响 build: 末尾有 || true 兜住)
-RUN chmod +x /usr/local/bin/cdp /usr/local/bin/cdp-mcp \
-    && chmod +x /opt/siteforge/entrypoint.sh 2>/dev/null || true
+# ⚠️ chmod 必须**分条**写。原先是一条
+#     chmod +x /usr/local/bin/cdp /usr/local/bin/cdp-mcp && chmod +x /opt/siteforge/entrypoint.sh 2>/dev/null || true
+# 而 `A && B || C` 在 A 失败时**短路** —— B **永远不执行**，末尾的 `|| true` 只救退出码、
+# 不救 B（2026-09-16 终审在 /tmp 复现了这条 shell 语义）。真实后果：cdp-mcp 要到 Task 8 才存在
+# → 第一段必然失败 → entrypoint.sh 的 chmod 从不执行 → 它在 git 里是 100644（不可执行）
+# → 容器起不来：ENTRYPOINT 直接 Permission denied(126)。
+RUN chmod +x /usr/local/bin/cdp \
+    && chmod +x /opt/siteforge/entrypoint.sh
+# Task 8: cdp-mcp 尚未构建 —— 这个路径眼下**不存在**，所以它单独一条、且允许失败。
+# 失败只影响它自己；**不许**再把它和别的 chmod 串进同一条链（那正是上面那个坑）。
+RUN chmod +x /usr/local/bin/cdp-mcp 2>/dev/null || true
 RUN chown -R appuser:appuser /opt/siteforge/tmp /opt/siteforge/runtime /opt/siteforge/config \
     && chmod -R 777 /opt/siteforge/logs
 
@@ -83,6 +90,10 @@ ENV BIT_ID=""
 
 EXPOSE 8080
 
+# ⚠️ 现状（计划一收尾，2026-09-16）：**镜像可构建，但暂时不可运行** ——
+# ENTRYPOINT 要的 agent.service:app 在计划二交付 agent/ 之前不存在，
+# 起来就是 ModuleNotFoundError。构建成功 ≠ 能起容器，别把它读成「已经能跑」。
+#
 # 用法:
 #   docker build -t siteforge:latest .
 #   docker run -d --name siteforge --restart unless-stopped \

@@ -48,7 +48,13 @@ var diffCmd = &cobra.Command{
   PageModel 里没有字段值（Field 只有 label/type/placeholder），所以
   「值填进去了没有 / 勾上了没有 / 只是高亮了一下」这些步骤，
   diff 原理上答不了 —— 页面组成没变，actionable 就是 false，别把它读成「没成功」。
-  （给模型加字段值 = 契约变更，记为 R20，归计划二。）
+
+  填/选类步骤该怎么办（**不要**拿 diff 当这一步的判据）：
+    · 首选**动作命令自己的退出码**：cdp form --select 在选项不存在时当场报错
+      （option not found），--value / --check 在元素找不到时报错 —— 非 0 就是没做成；
+    · 要真断言「值写进去了」，只能另用 cdp eval 读回 el.value
+      （⚠️ eval 那条路**不注入**穿透助手 —— shadow DOM 里的 input 它够不着）；
+    · 实在要拿页面模型判，就等计划二把字段值加进契约（R20），那时这一步才有通用判据。
 
 用法：
   cdp observe > before.json && <做动作> && cdp diff --before before.json
@@ -72,7 +78,11 @@ func init() {
 	// 人类可读格式」，可人话格式早就有了（renderDiffHuman）—— 那正是「看起来能切的
 	// 开关、实际不说清楚」那一类。
 	diffCmd.Flags().Bool("json", true, "默认输出 JSON（py 侧只该用这一种）；--json=false 输出人话摘要（给人看，别解析）")
-	diffCmd.Flags().String("frame-id", "", "只观测指定帧（默认整页含子帧）—— 调试用，一般不用传")
+	// ⚠️ 它**只影响「动作后」那一次观测**（--before 永远是一份完整快照文件）。
+	// 拿整页的 --before 配它去比，其它帧的元素会在差分里**整批变成「消失」**
+	// → actionable=true —— 一次静默的假进展（页面其实一动没动）。所以它只适合
+	// 「--before 也是同一帧的单帧快照」那种调试场景，不是给人日常用的开关。
+	diffCmd.Flags().String("frame-id", "", "只观测「动作后」那一帧（--before 不受它影响）；配整页快照用会把其它帧的元素全报成 disappeared 并给出**假** actionable=true —— 非调试别传")
 }
 
 func runDiff(cmd *cobra.Command, args []string) error {

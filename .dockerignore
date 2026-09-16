@@ -1,4 +1,8 @@
 .git
+# .superpowers/ 是 SDD 过程目录（ledger + 十几份 review diff，约 2MB），
+# 刻意不进 git（.superpowers/sdd/.gitignore = *）—— 但它**在构建上下文里**，
+# COPY . /opt/siteforge/ 会把整份打进镜像。它没有一行是运行期需要的。
+.superpowers/
 logs/
 tmp/
 runtime/
