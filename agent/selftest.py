@@ -341,6 +341,11 @@ def _execute(name: str, py, ws_url, form_file, correlation_id, log_level, env,
              run_dir: pathlib.Path, site: str, timeout: float, task_id=None,
              delay=None) -> Run:
     """跑一遍产物，按 trace + 退出码下结论。"""
+    # ⚠️ **每一遍一个子目录**：三遍共用一个目录时截图会撞名（`11-before.png` 只有一份，
+    # 分不清是哪一遍的 —— 2026-09-17 真站排查时正是被这个绊了一下）。
+    # trace 落进子目录，截图跟着它走（`Filler._shot` 用的是 trace 那一层）。
+    run_dir = pathlib.Path(run_dir) / name
+    run_dir.mkdir(parents=True, exist_ok=True)
     trace = run_dir / ("%s.%s.trace.jsonl" % (site, name))
     cmd = _artifact_cmd(py, ws_url, form_file, correlation_id, log_level, trace,
                         task_id, delay)

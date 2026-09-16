@@ -60,6 +60,10 @@ OFFSCREEN = "offscreen"
 # 见 _frame_of_element。target 里的 `frame_id`：空串 = 主帧，非空 = 那一帧的 CDP frameID。
 FRAME_MAIN = "main"
 
+#: `goto` 之后最多等多久（秒）让这一页加载到 `readyState=complete`。
+#: 等不到也照旧往下走（一句人话说明），**不许**把它当成失败。
+WAIT_READY_SECONDS = 10.0
+
 #: `observe` 给 cookie 同意类遮挡物记的 kind（`internal/observe.go`：按
 #: 文字/ id / class 里有没有 cookie|consent|gdpr|privacy 判的）。**只点这一类** ——
 #: 一般的浮层（`overlay`）不去动它：那可能是页面自己要人看的东西，点掉它同样是「点到别的东西」。
@@ -525,7 +529,12 @@ class Filler:
         return _clean_eval(self.cdp.eval("(function(){%s})()" % js, frame_id or ""))
 
     def _url(self):
-        return self._ev("return window.location.href;").strip().strip('"').strip("'")
+        """当前地址 —— **只取第一行**：`CDPHelper.eval` 交出来的是 stdout+stderr 串在一起，
+        而 chrome 的日志噪声（`ERROR: could not unmarshal event: … IPAddressSpace`）也在里面，
+        不切出来就会灌进 trace 的 `url` 字段（真站实测见过）。地址本来就是一行。
+        """
+        raw = self._ev("return window.location.href;").strip()
+        return raw.splitlines()[0].strip().strip('"').strip("'") if raw else ""
 
     def _read_frames(self):
         """**读页面**时该读哪几帧：账本里那几帧 + 最近一次重新 observe 看见的活帧。
@@ -974,11 +983,21 @@ class Filler:
             # 真站实测：一个 class 选择器被 zip / full_name / email 三个字段组共用，
             # 第一条第选择器一挂值就进了别的框（ZIP 框里躺着手机号、页面红字拒收）。
             extra = {"frame_id": frame_id or "", "strict": True, "expect_label": str(label or "")}
-            if kind == "check":
-                return self.cdp.form(selector, check=str(value).lower(), **extra)
-            if kind == "select":
-                return self.cdp.form(selector, select=str(value), **extra)
-            return self.cdp.form(selector, value=str(value), **extra)
+            base = ({"check": str(value).lower()} if kind == "check" else
+                    {"select": str(value)} if kind == "select" else {"value": str(value)})
+            try:
+                return self.cdp.form(selector, **base, **extra)
+            except TypeError as exc:
+                # 部署的那份 `common.py` 还不认识严格闸那两个参数（2026-09-17 真站实测：
+                # 这一下会把**整个产物**炸掉 —— 而 `run()` 的 except 当时不落 trace，
+                # 于是「产物死了」在自测那边被读成「走完了 10 步、0 跳过」）。
+                # 处置：**退回老路**（不消歧也照填），并把缺什么**大声**说出来 ——
+                # 一次版本不齐不该让整趟跑死，但也不许静默降级。
+                self.log.warning(
+                    "[%s] 部署的那份 common.py 不认识 --strict / --expect-label（%s）；"
+                    "这一步退回**不做消歧**的老路 —— 值可能落进别的框。"
+                    "把本仓库的 common.py 同版本铺过去就好了。", self.cid, exc)
+                return self.cdp.form(selector, **base, **{"frame_id": frame_id or ""})
         if action == "scroll":
             # ⚠️ 位置参数**是选择器**（CLI：`cdp scroll [selector]`）—— 把像素数字塞进
             # 这里 = 拿一个不存在的选择器去滚，真窗口实测 `cdp scroll 400` →
@@ -1028,6 +1047,29 @@ class Filler:
         if kind == "password":
             return "Test%d!" % random.randint(1000, 9999)
         raise ValueError("产物写错了：不认识这个随机值类型「%s」" % kind)
+
+    def _wait_ready(self, timeout=None):
+        """等这一页**加载完**（`document.readyState === 'complete'`），最多等 `timeout` 秒。
+
+        为什么要有它（2026-09-17 真站实测，`when` 出声之后一眼看出来的）：
+        某趟 baseline 33 步里**只有 goto 那一步真做了、其余 32 步全被跳过**，
+        第一条跳过的原话是「正文里没有「___ The listings featured…」」——
+        而那一页**马上就要有**那句话：`cdp navi` 只负责**发起**导航，
+        页面还在下载/执行，紧接着判 `when` 就把「还没加载完」读成了
+        「这一页不像那个状态」，整组步骤静默跳过。
+        """
+        if getattr(self, "cdp", None) is None:
+            return False                   # 没有助手（单测里的替身）→ 等不了，别抛
+        limit = WAIT_READY_SECONDS if timeout is None else float(timeout)
+        deadline = time.time() + limit
+        while time.time() < deadline:
+            state = (self._ev("return document.readyState;") or "").strip().strip('"').strip("'")
+            if state == "complete":
+                return True
+            time.sleep(0.3)
+        self.log.info("[%s] 等了 %.0f 秒这一页还没到 readyState=complete（照旧往下走）",
+                      self.cid, limit)
+        return False
 
     def _clear_obstructions(self, why=""):
         """开跑（以及每次导航之后）把**挡路的 cookie 同意弹层**点掉。
@@ -1244,13 +1286,8 @@ class Filler:
                 return "正文里没有「%s」" % str(missing[0])[:60]
         return "判据说不清为什么不成立（url 与正文都对上了却判成不像）"
 
-    def _applies(self, when):
-        """这一页看着像不像这个状态（防 A/B 变体、防步骤增减）。
-
-        URL 与正文都按**这一页的每一帧**判（`_urls` / `page_signature`）：判据是从
-        `observe` 那份**跨帧合并**的模型里来的，只在主帧里比 = 拿两把不同的尺子量同一
-        件事 —— 而它失配的方向是**整组步骤被静默跳过**，本项目最贵的那类失败。
-        """
+    def _matches(self, when):
+        """这条 `when` 现在成不成立（**只看判据**，不做等待）。"""
         if not when:
             return True
         if when.get("url_contains") and not any(when["url_contains"] in url
@@ -1262,6 +1299,24 @@ class Filler:
             if not any(_norm(str(w)).lower() in signature for w in wants):
                 return False
         return True
+
+    def _applies(self, when):
+        """这一页看着像不像这个状态（防 A/B 变体、防步骤增减）。
+
+        URL 与正文都按**这一页的每一帧**判（`_urls` / `page_signature`）：判据是从
+        `observe` 那份**跨帧合并**的模型里来的，只在主帧里比 = 拿两把不同的尺子量同一
+        件事 —— 而它失配的方向是**整组步骤被静默跳过**，本项目最贵的那类失败。
+
+        ⚠️ 判成「不像」时**再看一眼**（2026-09-17 真站实测）：上一步是点击/导航时，
+        这一页**可能还在加载** —— 不等它，「还没加载完」就被读成「不像」，
+        整组步骤静默跳过（某趟 34 步里 31 步这么没的，出声之后一眼看出来：
+        「正文里没有「The listings featured…」」而那一页马上就有那句话）。
+        """
+        if self._matches(when):
+            return True
+        if self._wait_ready(timeout=WAIT_READY_SECONDS):
+            return self._matches(when)
+        return False
 
     def _succeeded(self):
         signature = self.page_signature().lower()
@@ -1287,6 +1342,24 @@ class Filler:
 
         try:
             ok, selector, level, note, frame = self._perform(action, step, target, label)
+        except Exception as exc:                       # noqa: BLE001
+            # **产物自己在这一步炸了** —— 必须落 trace（自测只读 trace：不落它，
+            # 「产物死了」会被读成「走完了 N 步、0 跳过」。2026-09-17 真站实测踩到过：
+            # 第 11 步抛 TypeError，trace 里连 `"step": 11` 那行都没有，
+            # 而 `11-before.png` 明明在）。
+            self._trace({
+                "step": index, "action": action, "target": label,
+                "selector_used": "", "fallback_level": None, "frame_id": "",
+                "ok": False, "error": "%s: %s" % (type(exc).__name__, exc),
+                "url": self._url(),
+                "page_sig": (signature or "")[:PAGE_TEXT_CHARS],
+                "note": "产物自己在第 %d 步出错了（%s: %s）—— 这一步没做成，后面也不做了"
+                        % (index, type(exc).__name__, exc),
+            })
+            self.log.error("[%s] 产物自己在第 %d 步出错了：%s: %s",
+                           self.cid, index, type(exc).__name__, exc)
+            raise
+        try:
             self._dly()
             progress = self._diff(before_path) if before_path else None
         finally:
@@ -1391,8 +1464,11 @@ class Filler:
                         continue
                     self._rpt_if_moved(name)
                     if (step.get("action") or "") == "goto":
-                        # 换页是**同意弹层会出现**的时刻（新域名/新页面重问一次）——
-                        # 每次导航之后再看一眼，别让弹层把后面那几步全盖住。
+                        # ① 先**等这一页加载完**再判 `when` —— 不等的话，紧接着的判据会把
+                        #    「还没加载完」读成「这一页不像那个状态」，整组步骤静默跳过
+                        #    （真站实测：33 步里 32 步这么没的）。
+                        # ② 换页也是**同意弹层会出现**的时刻，再看一眼弹层。
+                        self._wait_ready()
                         self._clear_obstructions(why="这一次导航")
                     ok, progress = self._run_step(index, step)
 
@@ -1443,6 +1519,12 @@ class Filler:
             self._rpt("no_success")
             return False
         except Exception as exc:
+            # 这一路也要留痕：抛在 `_run_step` 之外时（例如准备阶段），
+            # 光靠日志同样会被读成「跑完了」。
+            self._trace({"step": self.step, "action": "", "ok": False,
+                         "error": "%s: %s" % (type(exc).__name__, exc),
+                         "note": "产物自己出错了（%s: %s）—— 这一趟**没跑完**"
+                                 % (type(exc).__name__, exc)})
             self.log.error("[%s] 出错：%s", self.cid, exc)
             return False
 

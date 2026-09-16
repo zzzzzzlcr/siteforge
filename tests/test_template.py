@@ -1191,6 +1191,8 @@ class CDPHelper:
             return json.dumps(STATE.cover)
         if "getElementsByTagName('iframe')" in script:   # 主帧里 iframe 的 src
             return json.dumps("|".join(STATE.iframe_srcs))
+        if "document.readyState" in script:              # `goto` 之后等这一页加载
+            return json.dumps("complete")
         if "innerText" in script:
             return json.dumps(STATE.current_text())
         if "location.href" in script:
@@ -1582,3 +1584,87 @@ def test_the_url_judgement_reads_iframe_srcs_from_the_main_frame(sandbox, form_f
     assert not [l for l in lines if l.get("skipped")], (
         "地址能从主帧那条 src 认出来，就不该判成「这一页不像」：%s" % lines)
     assert ("click", "#continue") in common.STATE.actions, common.STATE.actions
+
+
+# ─────── 「产物死了」不许表现成「走完了」（2026-09-17 真站踩到的）───────
+#
+# 现场：第 11 步（一个 `form` 步）在 `_perform` 里抛了 TypeError（我新加的
+# `strict=` / `expect_label=` 撞上部署的那份**还没更新**的 `common.py`），
+# 而 `run()` 的 except 当时**一个字都不写 trace** —— 自测只读 trace，
+# 于是它把「产物死了」读成「走完了 10 步、0 跳过」。
+# 与「跳过不出声」是同一族的两个变种：**跳过会出声了，异常不会。**
+
+
+def test_a_crash_inside_a_step_leaves_a_failed_line_in_the_trace(sandbox, form_file):
+    """步骤里抛异常 → trace 里**必须**有一行 `ok: false`（自测读的就是它）。"""
+    states = [{"name": "boom", "when": None, "steps": [
+        {"action": "click", "note": "点「Go」",
+         "target": {"text": "Go", "role": "button", "near": None, "selectors": ["#go"]}}]}]
+    module, _ = _load(
+        "run_crash",
+        template.render("example-crash", "Thank you", states, [], SAMPLE_PROVENANCE),
+        sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+
+    def _boom(*a, **kw):
+        raise TypeError("form() got an unexpected keyword argument 'expect_label'")
+    common.CDPHelper.click = _boom          # 让这一步抛
+
+    trace = sandbox / "crash.jsonl"
+    f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace))
+    assert f.run() is False
+    lines = [json.loads(l) for l in trace.read_text(encoding="utf-8").splitlines() if l.strip()]
+    bad = [l for l in lines if l.get("ok") is False]
+    assert bad, "产物死了必须留痕（不然自测会把它读成「走完了」）：%s" % lines
+    assert bad[0]["step"] == 1 and "TypeError" in bad[0]["error"], bad[0]
+    assert "产物自己" in bad[0]["note"], bad[0]
+
+
+def test_the_artifact_survives_a_stale_common_py_but_says_so(sandbox, form_file, caplog):
+    """部署的 `common.py` 不认识严格闸那两个参数时：**退回老路照填 + 大声说**。
+
+    为什么不能让它抛：那一下会把**整趟**炸掉（自测把它读成「跑完了」）。
+    为什么不能静默退回：静默降级 = 值可能落进别的框而没人知道（正是这轮要治的东西）。
+    """
+    import logging as _logging
+    states = [{"name": "w", "when": None, "steps": [
+        {"action": "form", "fill": "zip", "note": "填邮编",
+         "target": {"text": None, "label": "ZIP code", "role": None, "near": None,
+                    "selectors": ["input.mui"], "above_fold_only": False, "frame_id": ""}}]}]
+    fills = {"zip": {"name": "zip", "source": "zip", "kind": "value", "label": "ZIP code",
+                     "target": states[0]["steps"][0]["target"], "fallback": [{"random": "postcode"}]}}
+    module, _ = _load(
+        "run_stale_common",
+        template.render("example-stale", "Thank you", states, fills, SAMPLE_PROVENANCE),
+        sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    # 老签名：不收 strict / expect_label
+    def old_form(self, selector, value=None, check=None, select=None, frame_id=""):
+        common.STATE.actions.append(("form", selector, value))
+        return '{"filled": true}'
+    common.CDPHelper.form = old_form
+
+    logger = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).log
+    records = []
+    handler = _logging.Handler()
+    handler.emit = lambda rec: records.append(rec.getMessage())
+    logger.addHandler(handler)
+    try:
+        module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    finally:
+        logger.removeHandler(handler)
+    assert ("form", "input.mui", "SW1A 1AA") in common.STATE.actions or \
+           [a for a in common.STATE.actions if a[0] == "form"], common.STATE.actions
+    assert [m for m in records if "不认识 --strict" in m], records
+
+
+# ⚠️ 「`goto` 之后等这一页加载完再判 when」这一格**没有钉子**：
+# 试过两版（替身的 readyState 与正文耦合起来），都不够干净、会随调用次序翻面，
+# 与其留一条会骗人的绿，不如明说没有。改法是 `agent/template.py` 的 `_wait_ready`
+# （`goto` 之后、判 `when` 之前调），真站上验过（那一趟 33 步里 32 步被跳过 → 修完不再跳）。
