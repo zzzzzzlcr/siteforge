@@ -171,7 +171,7 @@ func (c *Client) observeInto(merged *PageModel, ft *page.FrameTree, path []strin
 			FramePath: path,
 		})
 	} else {
-		mergeFrameModel(merged, m, path)
+		mergeFrameModel(merged, m, path, isMain)
 		// 这一帧的 DOM 我看得见了，顺手对一次账：它里面有几个 iframe 元素，
 		// 就该有几个子帧（见 checkFrameCoverage）。
 		c.checkFrameCoverage(merged, frameID, ft, path)
@@ -237,7 +237,21 @@ func (c *Client) checkFrameCoverage(merged *PageModel, frameID string, ft *page.
 //
 // URL / Title 取**第一个**取到的帧（帧树先序遍历里就是主帧）：agent 要的是
 // 「这个 tab 现在停在哪」。
-func mergeFrameModel(merged *PageModel, m *PageModel, path []string) {
+//
+// isMain 是**主帧**那条腿（observeInto 逐帧调，只有根帧为 true）。它现在的唯一用处是
+// 视口：见下面那段注释。
+func mergeFrameModel(merged *PageModel, m *PageModel, path []string, isMain bool) {
+	// 视口**只认主帧**：不求和（子帧的 520×520 不是主帧视口的一部分 —— 加起来会
+	// 得到「视口 1300×957」这种页面上不存在的尺寸，而它看起来完全正常），
+	// 也不让后到的子帧盖掉（帧树是先序遍历，主帧排在最前，但那是遍历顺序的实现细节，
+	// 不该被依赖）。与 URL / Title 同一条理由：消费者要的是「这个 tab 现在多大」。
+	//
+	// ⚠️ 子帧自己的视口**不是**丢了：单帧 Observe（--frame-id）报的就是那一帧的。
+	// 合并模型里子帧元素的 bbox 仍是相对**它自己**那一帧的视口（这是既有的口径，
+	// 与 above_fold 同族）—— 主帧视口是给「整页」那个问题用的。
+	if isMain {
+		merged.ViewportCssPx = m.ViewportCssPx
+	}
 	if merged.URL == "" {
 		merged.URL, merged.Title = m.URL, m.Title
 	}

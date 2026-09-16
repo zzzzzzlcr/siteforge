@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>R3 viewport</title></head>
+<body style="margin:0;font-family:sans-serif">
+<h1>viewport fixture</h1>
+
+<!-- ── 这张页面的**唯一**用途：让视口出现**滚动条**（两条轴各一条）──────────────
+     为什么非要它：`observe` 报的视口是 window.innerWidth / innerHeight ——
+     **含**滚动条（与 cmd/screenshot.go 那条契约同一套坐标）。而 document.documentElement
+     的 clientWidth / clientHeight **不含**滚动条。页面不溢出时两个值**恒等**，
+     用哪一个都测不出来 ——「拿错没拿错」这件事只有在滚动条真的存在时才分得开。
+     所以下面的 3000×3000 块是**前置条件**，不是装饰。 -->
+<div style="width:3000px;height:3000px;background:repeating-linear-gradient(#eef 0 40px,#fff 40px 80px)"></div>
+
+<!-- 页面上放一个正常按钮：这张夹具也走 observe，模型不该是空的（与几何无关）。 -->
+<button id="tall-page-btn" style="width:160px">Tall Page Button</button>
+</body></html>

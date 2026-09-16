@@ -165,6 +165,30 @@ func renderHuman(w io.Writer, m *internal.PageModel) error {
 		fmt.Fprintln(tw)
 	}
 
+	// 蜜罐陷阱：**只在有陷阱时印**。
+	//
+	// 为什么这一段是人话里最该有、却原来完全没有的（Task 1 spike 实测，2026-09-17
+	// 计划 §4.2）：同一次观测，JSON 里有 honeypots，人话摘要（可动作元素 N 个 …）
+	// **只字未提** —— 给运营看的那一路把「有一个字段是陷阱，AI 没碰它」静默吞了。
+	// 规格 D16 要的恰恰是**非技术**的人能看见这件事；而 honeypots 的注释自己写着
+	// 「丢干净之后消费者分不清『本来就没有』和『被判成陷阱丢了』」。
+	//
+	// ⚠️ 与前面几段不同：没有陷阱时**整段不印**（不印「蜜罐陷阱：无」）。
+	// 「这一页没有陷阱」是绝大多数页面的常态，常驻一行「无」就是噪音，还会让人以为
+	// 这是个要盯着的常态栏目 —— 而这一段的存在意义只是「AI 识别出了陷阱、并且没碰它」
+	// 那句安心话。
+	if len(m.Honeypots) > 0 {
+		fmt.Fprintf(tw, "蜜罐陷阱（页面里藏着的、人看不见的字段 —— 专门等机器人去填；"+
+			"AI 已识别，没有把它们当成可填字段）：共 %d 个\n", len(m.Honeypots))
+		for _, h := range m.Honeypots {
+			// 三列：**认得出来**的名字 / 为什么是陷阱（人话）/ 技术抓手（选择器）。
+			// 名字放最前是刻意的 —— 运营靠 name / id / placeholder 才认得出「是哪个框」，
+			// 只给选择器等于什么都没说（规格 D16）。
+			fmt.Fprintf(tw, "  %s\t%s\t%s\n", honeypotName(h.Hint), honeypotWhyHuman(h.Why), h.Selector)
+		}
+		fmt.Fprintln(tw)
+	}
+
 	// 诊断：和遮挡物**分开**摆（前者是「我没看清」，后者是「页面上有东西」）。
 	//
 	// ⚠️ detail 截到 160 而不是别处的 40/80：诊断的详情就是**这一行的全部价值**
@@ -180,6 +204,32 @@ func renderHuman(w io.Writer, m *internal.PageModel) error {
 		}
 	}
 	return tw.Flush()
+}
+
+// honeypotName 是蜜罐那一行**第一列**（人认字段靠的那一格）。
+//
+// Hint 本身就是元素自报的 name / id / placeholder（判据里**不**用它，见 Honeypot），
+// 所以这里只是给它一个「空的时候说人话」的兜底：空着的一格在 tabwriter 里会塌成
+// 空白，运营看到的就是一行**没有名字**的东西 —— 那正是这一节要避免的。
+func honeypotName(hint string) string {
+	if hint == "" {
+		return "（这个字段没有 name / id / placeholder）"
+	}
+	return hint
+}
+
+// honeypotWhyHuman 把判据名翻成人话。`why` 是**契约值**（消费者按它分支，
+// 见 Honeypot.Why），所以这里只翻译、不改写：认不出来的取值原样带出来，
+// 不许静默吞掉（新加一条判据时，人话里至少能看到它的名字）。
+func honeypotWhyHuman(why string) string {
+	switch why {
+	case "off-document-left":
+		return "被摆在了页面左边之外（滚也滚不到）"
+	case "off-document-top":
+		return "被摆到了页面顶部之外（滚也滚不到）"
+	default:
+		return "被放到了人碰不到的地方（判据 " + why + "）"
+	}
 }
 
 // truncRunes 把一段文本压成单行并截断 —— 摘要是给人扫一眼的，

@@ -635,7 +635,7 @@ func TestObserveCommandEndToEnd(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		t.Fatalf("解析成 map 失败: %v", err)
 	}
-	for _, k := range []string{"url", "title", "page_text", "actions", "fields", "option_groups", "obstructions", "honeypots", "diagnostics"} {
+	for _, k := range []string{"url", "title", "page_text", "viewport_css_px", "actions", "fields", "option_groups", "obstructions", "honeypots", "diagnostics"} {
 		if _, ok := raw[k]; !ok {
 			t.Errorf("输出缺契约字段 %q", k)
 		}
@@ -975,7 +975,194 @@ func TestObserveCommandHumanFormat(t *testing.T) {
 			t.Errorf("人话输出里没有 %q：\n%s", want, out)
 		}
 	}
+	// 反向：这一页**没有**陷阱（base.html 是 light DOM 那页，没有 off-document 元素），
+	// 所以人话里不该出现蜜罐那一节 —— 「没有陷阱」是绝大多数页面的常态，常驻一行
+	// 「蜜罐陷阱：无」是噪音，还会让运营以为这是个要盯的栏目。
+	// （另一方向——**有**陷阱时必须说出来——在 TestObserveCommandHumanFormatShowsHoneypots。）
+	for _, banned := range []string{"蜜罐", "陷阱"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("这一页没有陷阱，人话输出里却出现了 %q：\n%s", banned, out)
+		}
+	}
 	t.Logf("退出码=0；--json=false 输出：\n%s", out)
+}
+
+// TestObserveCommandHumanFormatShowsHoneypots —— `--json=false` 的人话摘要**必须**
+// 说出「有一个字段是陷阱，AI 没碰它」（Task 1 spike 实测，2026-09-17 计划 §4.2）。
+//
+// 缺陷是什么：同一次观测，JSON 里有 `honeypots`，而人话摘要（`可动作元素 N 个 …`）
+// **只字未提**。那一节恰恰是规格 D16 要给**非技术**的人看的东西 —— 给人看的那一路
+// 反而把它吞了。
+//
+// ⚠️ 前置对照不能省：先跑一遍 JSON 那一路，确认这一页**真有**陷阱。少了它，这条
+// 断言在「蜜罐判据整个失效（honeypots 恒空）」的世界里会**一声不响地**退化成
+// 「人话里没有陷阱也是对的」—— 那正是本项目最忌的「跳过与通过长得一样」。
+func TestObserveCommandHumanFormatShowsHoneypots(t *testing.T) {
+	e := env(t)
+	fixtureURL := e.fixture + "/honeypot.html"
+	e.navigate(t, fixtureURL)
+
+	// ── 前置：JSON 那一路证明这一页真有陷阱（honeypot.html 里有两条：left / top 各一条）──
+	jsonOut, errOut, code := e.observe(t)
+	if code != 0 {
+		t.Fatalf("observe 退出码 = %d, want 0\nstderr: %s", code, errOut)
+	}
+	m := decodeModel(t, jsonOut)
+	if len(m.Honeypots) == 0 {
+		t.Fatalf("JSON 那一路的 honeypots 是空的 —— 这一页（honeypot.html）明明埋了两条陷阱；"+
+			"下面「人话里没有它」的断言会因此**空转**（缺的是判据，不是打印）:\n%.300s", jsonOut)
+	}
+
+	// ── 人话那一路 ──
+	out, errOut, code := e.observe(t, "--json=false")
+	if code != 0 {
+		t.Fatalf("--json=false 退出码 = %d, want 0\nstderr: %s", code, errOut)
+	}
+	if json.Valid([]byte(out)) {
+		t.Fatalf("--json=false 还是吐了 JSON（flag 静默不做事）:\n%.300s", out)
+	}
+	// 运营要看到的三件事：**有这么回事** / **是哪个字段**（hint，不是选择器）/ **人话**。
+	for _, want := range []string{
+		"蜜罐陷阱",
+		"company_url",               // 陷阱字段自报的名字（hint）—— 运营靠它认出是哪个框
+		"页面左边之外",                    // off-document-left 翻成人话
+		"没有把它们当成可填字段",               // 「AI 没碰它」这句安心话
+		`input[name="company_url"]`, // 技术抓手：排查时对得回 JSON
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("人话输出里没有 %q —— 运营看不到「有个字段是陷阱、AI 没碰它」:\n%s", want, out)
+		}
+	}
+	t.Logf("JSON 那一路 honeypots=%d；--json=false 输出：\n%s", len(m.Honeypots), out)
+}
+
+// TestObserveCommandViewportIsInnerWidthNotClientWidth —— 视口报的必须是
+// `window.innerWidth / innerHeight`（**含**滚动条），不是 documentElement 的
+// clientWidth / clientHeight（不含）。
+//
+// 为什么必须在一张**真的有滚动条**的页面上验（Defect 1 的测试要求）：页面不溢出时
+// 两个值**恒等**，用哪一个都测不出来。而页面一溢出（真实站点几乎都溢出），差的就是
+// 一个滚动条宽 —— 那会让 observe 的视口与 cmd/screenshot.go 的 viewport_css_px
+// 静默错开，症状是「叠 bbox 叠不准」，不是报错。
+//
+// ⚠️ 所以下面第一条断言是**前置对照**：夹具若没造出滚动条（比如浏览器换成了 overlay
+// 滚动条），这条测试必须**当场说话**，而不是退化成一条恒绿的断言。
+func TestObserveCommandViewportIsInnerWidthNotClientWidth(t *testing.T) {
+	e := env(t)
+	fixtureURL := e.fixture + "/viewport.html"
+	e.navigate(t, fixtureURL)
+
+	// 两套坐标各从浏览器自己嘴里问一遍（夹具里那个 3000×3000 的块负责让它们不相等）。
+	innerW := e.evalFloat(t, "window.innerWidth")
+	innerH := e.evalFloat(t, "window.innerHeight")
+	clientW := e.evalFloat(t, "document.documentElement.clientWidth")
+	clientH := e.evalFloat(t, "document.documentElement.clientHeight")
+
+	if innerW <= clientW || innerH <= clientH {
+		t.Fatalf("夹具没造出滚动条（inner %g×%g vs client %g×%g）—— 两个候选值相等时，"+
+			"下面「报的是哪一个」的断言**分辨不出来**（对照失效）。检查 testdata/viewport.html "+
+			"里那个 3000×3000 的块还在不在，以及这个浏览器是不是用了 overlay 滚动条",
+			innerW, innerH, clientW, clientH)
+	}
+
+	out, errOut, code := e.observe(t)
+	if code != 0 {
+		t.Fatalf("observe 退出码 = %d, want 0\nstderr: %s", code, errOut)
+	}
+
+	// 键在不在先查**原始 JSON**：解进 struct 时缺字段是零值，会静默通过。
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &raw); err != nil {
+		t.Fatalf("解析成 map 失败: %v\n%.300s", err, out)
+	}
+	if _, ok := raw["viewport_css_px"]; !ok {
+		t.Fatalf("输出缺契约字段 viewport_css_px（与 cmd/screenshot.go 的 --json 同一个名字）: %.300s", out)
+	}
+
+	m := decodeModel(t, out)
+	gotW, gotH := float64(m.ViewportCssPx.Width), float64(m.ViewportCssPx.Height)
+
+	// ① 必须**等于**浏览器自己报的 innerWidth/innerHeight
+	//    （独立求值一次，不拿实现的口径自证 —— 与页面里那些 bbox 同一条理由）
+	if gotW != innerW || gotH != innerH {
+		t.Errorf("viewport_css_px = %g×%g，而浏览器报的 innerWidth/innerHeight 是 %g×%g —— "+
+			"视口是**感知**，它说错就等于消费者按错的折叠线推理",
+			gotW, gotH, innerW, innerH)
+	}
+	// ② 必须**不等于** clientWidth/clientHeight（这条把「用错哪一个」钉死）
+	if gotW == clientW {
+		t.Errorf("viewport_css_px 的宽是 %g = documentElement.clientWidth —— 那**不含滚动条**："+
+			"cmd/screenshot.go 的 viewport_css_px 含（Chrome 把滚动条画进了图里），"+
+			"两边会静默错开一个滚动条宽，叠 bbox 时症状是「叠不准」而不是报错", gotW)
+	}
+	if gotH == clientH {
+		t.Errorf("viewport_css_px 的高是 %g = documentElement.clientHeight —— 同上，不含滚动条", gotH)
+	}
+	t.Logf("浏览器: inner %g×%g / client %g×%g；模型: %d×%d",
+		innerW, innerH, clientW, clientH, m.ViewportCssPx.Width, m.ViewportCssPx.Height)
+}
+
+// TestObserveCommandViewportComesFromMainFrame —— 两条产出路径各钉一次：
+//
+//	① ObserveAll（整页合并）→ **主帧**的视口：不求和、不让子帧盖掉
+//	② Observe（--frame-id，单帧）→ **那一帧自己**的视口（它的 bbox / above_fold
+//	   就是拿那一帧的 window 算的）
+//
+// 为什么求和这一条要专门钉：子帧的尺寸是**页面上另一个盒子**的大小，加起来得到的
+// 「视口 1300×957」在页面上根本不存在，而它看起来完全正常 —— 消费者会拿它去判折叠。
+//
+// ⚠️ 前置：主帧与子帧的视口必须**不同**，否则「报的是谁的」分辨不出来（对照失效）。
+// 夹具 outer_same.html 的主帧是全窗口、子帧是 520×520 的 iframe，天然不同。
+func TestObserveCommandViewportComesFromMainFrame(t *testing.T) {
+	e := env(t)
+	fixtureURL := e.fixture + "/outer_same.html"
+	e.navigate(t, fixtureURL)
+
+	mainW := e.evalFloat(t, "window.innerWidth")
+	mainH := e.evalFloat(t, "window.innerHeight")
+	// 子帧同源（outer_same 的 iframe 指向同一个 httptest 服务的 inner.html），
+	// 所以能从主帧里读到它的 window。
+	childW := e.evalFloat(t, "document.getElementById('ci').contentWindow.innerWidth")
+	childH := e.evalFloat(t, "document.getElementById('ci').contentWindow.innerHeight")
+	if mainW == childW || mainH == childH {
+		t.Fatalf("主帧与子帧的视口一样大（主 %g×%g，子 %g×%g）—— 「报的是谁的」分辨不出来，"+
+			"这条测试会退化成恒绿；检查 outer_same.html 的 iframe 尺寸",
+			mainW, mainH, childW, childH)
+	}
+
+	// ── ① 整页模式：主帧的 ──
+	out, errOut, code := e.observe(t)
+	if code != 0 {
+		t.Fatalf("整页 observe 退出码 = %d, want 0\nstderr: %s", code, errOut)
+	}
+	merged := decodeModel(t, out)
+	if gotW, gotH := float64(merged.ViewportCssPx.Width), float64(merged.ViewportCssPx.Height); gotW != mainW || gotH != mainH {
+		t.Errorf("合并后的 viewport_css_px = %g×%g，want 主帧的 %g×%g（子帧是 %g×%g）—— "+
+			"求和会得到 %g×%g 这种页面上不存在的尺寸，却被子帧盖掉则问错了对象："+
+			"「这个 tab 现在多大」问的不是里面的 iframe",
+			gotW, gotH, mainW, mainH, childW, childH, mainW+childW, mainH+childH)
+	}
+
+	// ── ② 单帧模式：那一帧自己的（拿合并结果里的 frame_path 取真 frameID）──
+	if len(merged.Actions) == 0 || len(merged.Actions[0].FramePath) != 2 {
+		t.Fatalf("合并结果里没有带子帧 frame_path 的动作（actions=%d）—— 取不到子帧 ID，② 无从落地",
+			len(merged.Actions))
+	}
+	childFrameID := merged.Actions[0].FramePath[1]
+	singleOut, errOut, code := e.observe(t, "--frame-id", childFrameID)
+	if code != 0 {
+		t.Fatalf("单帧 observe 退出码 = %d\nstderr: %s", code, errOut)
+	}
+	single := decodeModel(t, singleOut)
+	if gotW, gotH := float64(single.ViewportCssPx.Width), float64(single.ViewportCssPx.Height); gotW != childW || gotH != childH {
+		t.Errorf("单帧（子帧 %s）的 viewport_css_px = %g×%g，want 那一帧自己的 %g×%g —— "+
+			"单帧模式下 bbox / above_fold 就是拿**那一帧**的 window 算的，视口必须同一个口径",
+			childFrameID, gotW, gotH, childW, childH)
+	}
+	t.Logf("主帧 %g×%g；子帧 %g×%g；整页模型 %d×%d；单帧模型 %d×%d",
+		mainW, mainH, childW, childH,
+		merged.ViewportCssPx.Width, merged.ViewportCssPx.Height,
+		single.ViewportCssPx.Width, single.ViewportCssPx.Height)
 }
 
 // TestObserveCommandExitCodeOnBadFrame 钉住失败约定：拿不到模型 → 非 0 退出码，

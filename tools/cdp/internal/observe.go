@@ -8,14 +8,37 @@ import (
 // PageModel 是规格 §4.3 的 observe 契约。
 // 只装**感知**：原始事实。语义判断（intent / importance）由 agent 做（规格 D11）。
 type PageModel struct {
-	URL          string        `json:"url"`
-	Title        string        `json:"title"`
-	PageText     string        `json:"page_text"`
-	ShadowRoots  int           `json:"shadow_roots"`
-	Actions      []Action      `json:"actions"`
-	Fields       []Field       `json:"fields"`
-	OptionGroups []OptionGroup `json:"option_groups"`
-	Obstructions []Obstruction `json:"obstructions"`
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	PageText    string `json:"page_text"`
+	ShadowRoots int    `json:"shadow_roots"`
+	// ViewportCssPx 是**观测那一刻的视口**，CSS 像素 —— `bbox` 就在这个空间里。
+	//
+	// 为什么要有它（Task 1 spike 实测，2026-09-17 计划 §4.1）：模型问「那个折叠线
+	// 下面的元素」时**需要视口高**，模型里没有 → **白烧一轮**去找（又一次 observe，
+	// 打的是真浏览器真页面），没找到，只能用 `above_fold` 反推出 `528 < vh < 592`
+	// 的区间并把「这是推的」说出来。视口尺寸本身就是**感知**（规格 D11），却被漏了。
+	//
+	// ⚠️ 名字与坐标**必须**与 cmd/screenshot.go 的 `--json` 一致：那边报
+	// `viewport_css_px`（CSS 像素）+ `image_px`（设备像素）+ `dpr`，关系是
+	// `image_px = viewport_css_px × dpr`。同一个量在一个工具里有两个名字，正是本项目
+	// 反复栽的那一类（DPR 那次就是字段名写错被静默忽略）。
+	//
+	// ⚠️ 取值**必须**是 `window.innerWidth / innerHeight`，**不是** `documentElement`
+	// 的 clientWidth / clientHeight —— 后者不含滚动条。screenshot.go 文件头实测过：
+	// Chrome 把滚动条画进截图，而 innerWidth 含滚动条。用 clientWidth 会让 observe
+	// 比 screenshot 少一个滚动条宽，**静默错开**（症状是「叠不准」，不是报错）。
+	//
+	// ⚠️ 合并模式（ObserveAll）报的是**主帧**的视口（见 mergeFrameModel）——「这个 tab
+	// 现在多大」与 URL / Title 同一个道理，既不求和也不让子帧盖掉；单帧 Observe 报的是
+	// **那一帧**的视口，因为它的 bbox / above_fold 就是拿那一帧的 window 算的。
+	//
+	// 0×0 是**如实的感知**（隐藏/未渲染的帧就是这样），不当错误处理：D11 只给原始事实。
+	ViewportCssPx PixelSize     `json:"viewport_css_px"`
+	Actions       []Action      `json:"actions"`
+	Fields        []Field       `json:"fields"`
+	OptionGroups  []OptionGroup `json:"option_groups"`
+	Obstructions  []Obstruction `json:"obstructions"`
 	// Honeypots 是**已被排除**的元素：它们**不在** actions / fields 里，
 	// 单列在这里（规格 R19b，判据见 Honeypot）。
 	//
@@ -537,6 +560,11 @@ func observeJS() string {
     url: location.href, title: document.title,
     page_text: pageText.slice(0, 600),
     shadow_roots: RS.length - 1,
+    // 视口（CSS 像素）。**必须**是 innerWidth/innerHeight：它们**含**滚动条，
+    // 与 screenshot 那条契约（image_px = viewport_css_px × dpr，滚动条画进图里）
+    // 对齐；clientWidth/clientHeight 不含滚动条，用了就会与截图静默错开一个滚动条宽。
+    // Math.round：契约是整数（PixelSize），小数（页面缩放时）会让 Go 侧解不动 int。
+    viewport_css_px: { width: Math.round(window.innerWidth), height: Math.round(window.innerHeight) },
     actions: actions, fields: fields, option_groups: groups, obstructions: obs,
     honeypots: traps
   });

@@ -11,6 +11,28 @@
 | `form.html` | 表单片段（备用） | — |
 | `selector.html` | `observe_selector_test.go`（Task 5 新增，不来自探针） | 选择器候选与稳定性评级 |
 | `honeypot.html` | `cmd/honeypot_e2e_test.go`（R19b 新增，不来自探针） | 屏幕外陷阱（蜜罐）+ 正向对照 |
+| `viewport.html` | `cmd/observe_e2e_test.go`（Defect 1 新增，不来自探针） | 撑出**滚动条**的页面（3000×3000） |
+
+## `viewport.html`（Defect 1 新增，**不是探针产物**）
+
+页面上只有一个 3000×3000 的块和一个按钮 —— 它存在的**唯一**理由是让视口里出现
+**滚动条**。
+
+为什么非要有它：`observe` 报的 `viewport_css_px` 是 `window.innerWidth / innerHeight`
+（**含**滚动条，与 `cmd/screenshot.go` 那条 `image_px = viewport_css_px × dpr` 同源）。
+而 `document.documentElement` 的 `clientWidth / clientHeight` **不含**滚动条。页面不溢出
+时这两个候选值**恒等**，用哪一个都测不出来 ——「报的是哪一个」这件事只有在滚动条真的
+存在时才分得开。所以这个 3000×3000 的块是**前置条件**，不是装饰；
+`TestObserveCommandViewportIsInnerWidthNotClientWidth` 里那条
+`innerW <= clientW → Fatal` 就是它的守卫（夹具被改小、或浏览器换成 overlay 滚动条时，
+那条断言会当场说话，而不是退化成恒绿）。
+
+本机实测（Chrome 150.0.7871.124 headless，默认窗口）：inner 780×437 / client 765×422
+（两条轴各 15px 滚动条）。
+
+> ⚠️ 别把它合并进 `honeypot.html`（那张也是 4000×4000、也有滚动条）：两边的**用途**
+> 不同，混在一起会让「蜜罐判据变了」把视口那条测试一起带红（反之亦然），
+> 而那时报告里只会看到一条看不懂的红。
 
 ## `selector.html`（Task 5 新增，**不是探针产物**）
 

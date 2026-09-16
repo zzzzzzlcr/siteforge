@@ -260,6 +260,7 @@ func TestObserveJSMustNotEmitSemanticJudgements(t *testing.T) {
 
 func TestPageModelJSONShape(t *testing.T) {
 	raw := `{"url":"u","title":"t","page_text":"p","shadow_roots":2,
+	         "viewport_css_px":{"width":780,"height":437},
 	         "actions":[{"selector":"#a","alternates":[],"stability":"high","text":"Go",
 	                     "role":"button","tag":"BUTTON","type":null,"visible":true,
 	                     "occluded_by":null,"shadow_depth":2,"frame_path":["main"],
@@ -275,6 +276,13 @@ func TestPageModelJSONShape(t *testing.T) {
 	}
 	if len(m.Actions) != 1 || m.Actions[0].Selector != "#a" || m.Actions[0].ShadowDepth != 2 {
 		t.Fatalf("字段没对上: %+v", m.Actions)
+	}
+	// viewport_css_px 的**键名与形状**（Defect 1）。为什么要在这一条固定字符串上再钉一次：
+	// 键名与 cmd/screenshot.go 的 `--json` 是**同一个名字**（viewport_css_px，同一个
+	// PixelSize 形状）—— 名字漂了，两边就再也叠不到一起，而两边各自看都正常。
+	if want := (PixelSize{Width: 780, Height: 437}); m.ViewportCssPx != want {
+		t.Errorf("viewport_css_px 没解出来: %+v，want %+v（键名或形状与 screenshot 那份契约不一致？）",
+			m.ViewportCssPx, want)
 	}
 	// honeypots 的三个键都要对上（形状取自真站实测的那一条：input[name=company_url]）。
 	// 理由与上面那些字段同一个：键写错 = 静默零值，而零值在消费者眼里正好读成
