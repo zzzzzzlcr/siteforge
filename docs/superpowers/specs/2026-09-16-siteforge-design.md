@@ -62,6 +62,7 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
 | **D8** | **两个 skill 给 agent 用** | `bit-window`（窗口生命周期 + 指纹/代理下发）+ `cdp-browser`（页面操作）。**skill 里编码「坑」比编码「用法」值钱** —— 尤其 §4.6 那三个陷阱 |
 | **D9** | **agent 用自己的 gost 出口端口** | 与 D6 同构的硬约束。宿主 :1081 归**实验容器**（`gost-watch.sh` 维护）、:1080 归**生产**（单例热换）。agent 若共用，换链会互相踩 —— 实测过：换掉生产正在用的链、或用别的站的链 → 页面打不开只有 3 个元素。agent 单开一个端口 + 独立 gost 实例 |
 | **D13** | **两个入口，人的位置不同（修 / 新）** | 「修」的**意图已知**（以前能跑，证据写着卡在哪）→ 人只在**输出闸门**；「新」的**意图只有人知道**（哪条路是业务要的、什么算成功）→ 人还必须在**输入闸门教意图**。**页面能告诉 agent 机制，只有人能告诉 agent 意图** —— 两者缺一不可（§6.1）。Phase 1 用两个 CLI（`siteforge new` / `siteforge fix`），不做 UI |
+| **D14** | **运营入口归 siteforge 自己**（用户 2026-09-16 定） | 不长在 `newTaskTest` 的 `/sites` 页上 —— 那页在 `auto-llm-script` 容器里，而 §8.2 已把它标为「后续单独决定是否退役」，往待退役的东西上加功能是往错的基线上改。**也不长在 farmer 后台**（正式后台，改动面大）。siteforge 自己出页面：骨架已预留（`Dockerfile` 装 `fastapi/uvicorn`，`entrypoint.sh` 起 `uvicorn agent.service:app`）。**但取数层不重写** —— `/sites` 的 triage 本就是 import `fail-script` 的（`from diagnosis.datasource import HttpSource`），siteforge 照样 import |
 
 ---
 
@@ -436,7 +437,7 @@ LLM/agent 产出 JSON → auto_fixer（纯规则清洗）→ 【siteforge 补的
 修这个 JSON 若需要**加一个 JSON 表达不了的原语**（分支 / 跨轮状态 / 换策略），
 就放弃 JSON、升级成 py。
 
-**Phase 1 的最小形态**：不做 UI，两个 CLI
+**Phase 1 的最小形态**：**siteforge 侧一个最小页面（D14）+ 两个 CLI 作为底层**
 
 ```
 siteforge new --url <站点URL> --goal "<成功条件>" \
@@ -669,7 +670,7 @@ py 产出契约与 lint · 扰动自测 · LangGraph 图 · `site_memory`/`corre
 
 | 期 | 做什么 | 交付判据 |
 |---|---|---|
-| **Phase 1（MVP）** | **两个入口 CLI（新站教意图 / 修站带证据）** · `observe`（CLI+MCP）· `draft` · `lint` · **扰动自测** · **`review` 人审闸门** · LangGraph 图 · **Correction 采集（一等公民）** · site_memory 埋点 | homebuddy 出一条**经人审通过**的 py |
+| **Phase 1（MVP）** | **运营入口页面（D14：列挂着 → 修/提新 → 审 → 纠错）** · **两个入口 CLI（新站教意图 / 修站带证据）** · `observe`（CLI+MCP）· `draft` · `lint` · **扰动自测** · **`review` 人审闸门** · LangGraph 图 · **Correction 采集（一等公民）** · site_memory 埋点 | homebuddy 出一条**经人审通过**的 py |
 | **Phase 2** | HITL UI（人工选正确元素，把 §6.4 的三样做成界面）· Site Memory 消费（平台经验复用）· **JSON 修复入口（§6.1 第三入口）** | 人工修正进得去、**同类站复用得上**、**JSON 挂掉的站也能修** |
 | **Phase 3** | OpenClaw 入口（运营自然语言提单）· 自动运营交互 · 呈现接已有界面（§6 呈现缺口，见 R16） | 运营自助 |
 
