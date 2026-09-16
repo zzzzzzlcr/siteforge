@@ -858,6 +858,7 @@ py 产出契约与 lint · 扰动自测 · LangGraph 图 · `site_memory`/`corre
 | **R21** | **`occluded_by='offscreen'` 一个值扛三种含义**：① 折线下面（`Get Started` y=592 > vh=493，滚下去就能点）② 蜜罐（x=-9983，永远别碰）③ 视口太矮。消费者**分不出「没事往下滚」和「绝对别碰」** | 未修。与 `obstructions`/`diagnostics` 同族（一个字段两种含义），但这条的代价更重 —— 它把 R19b 的陷阱伪装成普通折线下元素 |
 | **R22** | **工具层没有截图能力**（2026-09-16 查证） | 新旧 cdp 二进制**都没有** `screenshot` 子命令，cdpcli 仓库与 git 历史里也从来没有过 —— **不是迁移丢的**。而 `forms/common.py:246` 的 `screenshot()` 是**死代码**：它 shell 出去调 `cdp screenshot`（不存在的命令），真调用必失败；**0 个生产站点脚本调用它**，所以从没人发现。<br>⚠️ **D16 让它变成必须解决的**：Console 主视图是「一对截图」（D16）、`vision.inspect` 是「按需截图」（D12）、R17 是「截图上的框和 bbox 对不对得上」—— **三条都建在一个不存在的能力上**。 |
 | **R22b** | 截图与 `bbox` 的**坐标空间对齐** | `bbox` 来自 `getBoundingClientRect()`，是**视口相对的 CSS 像素**；CDP 的 `Page.captureScreenshot` 默认给**设备像素**。要叠框就必须处理 **DPR**。<br>⚠️ 这个项目**已经被 DPR 坑过一次**（`dpr` vs `devicePixelRatio` 字段名 → 点击落点偏移 3 倍，见 §4.6）。**框选上线前必须先在真站上验 R17。** |
+| **R23** | **子帧元素的 `bbox` 与模型报的 `viewport_css_px` 不是一个坐标系**（2026-09-16 加视口时发现） | `bbox` 来自 `getBoundingClientRect()`，是**该元素所在帧**的视口坐标；而 `ObserveAll` 只带**主帧的一个** `viewport_css_px`。**对 D16 的框选是直接影响**：目标元素在 iframe 里时，叠框会错位。<br>修法：按元素带各自帧的视口（或带 `frame_path` 对应的视口表）。**不在当前范围**，但框选上线前必须解决 —— 与 R22b（DPR）是同一类「坐标空间没对齐」 |
 | **R17** | **Console 的「框选元素」交互只推演过、没实测** —— 依赖「截图 + `bbox` 列表 = 可点元素」这条路成立（`observe` 契约里每个动作都带 `bbox`） | 未验；**T7 之后拿真页面验**：截图上的框与 `bbox` 是否对得上（含 shadow/iframe 里的元素、以及页面滚动后的坐标） |
 
 ---
