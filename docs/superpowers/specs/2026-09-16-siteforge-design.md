@@ -386,6 +386,15 @@ PROVENANCE = {
 - 人知道但页面看不出来的坑（例：「这站的 cookie 横幅会盖住按钮」）
 
 **agent 摸的是机制**：页面上有哪些可动作元素、选择器稳不稳、点了有没有推进。
+**「修」还有一个新站没有的优势：旧 py 在手。** 所以修站的 `explore` 应当
+**以旧 py 的行走路线为起点** —— 拿旧路线在当前页面上跑一遍，看**哪一步开始对不上**
+（选择器失效？页面多了一步？按钮改名了？），而不是白纸探索。这比从零摸准得多，
+也便宜得多。
+
+**取证链已就绪**（2026-09-16 核实，见 §11）：
+`① GET /api/quest/formLog?site=&status=failed` → 挑站拿 `task_id`
+→ `formStep`/`formLog` 拉证据 → 进 `explore`。客户端现成，在
+`fail-script/src/diagnosis/datasource.py`。
 
 ⚠️ **这不是「加需求」，是现有验收标准跑不通**：MVP 的验收案例 **homebuddy 本身
 就是新站**（`/tmp/desc_hb.txt`）。不含输入闸门，§10 那条端到端验收根本走不完。
@@ -582,7 +591,12 @@ py 产出契约与 lint · 扰动自测 · LangGraph 图 · `site_memory`/`corre
 - **不引入 OpenClaw**（D10，Phase 3 再说）
 - 不改 `auto-farm-skill` 的生产 py 执行路径
 - 不做自动上线（py 进 worker 仍是人工 `docker cp`/`scp`）
-- 不做 farmer 的 failures 接口本身（是前置依赖，另立项）
+- ~~不做 farmer 的 failures 接口本身（是前置依赖，另立项）~~ → **该结论已过时**：
+  `GET /api/quest/formLog?site=&status=failed&since=&limit=` **2026-09-10 已建**
+  （farmer 侧还做了「失败 >10 次/日 → 停用 + 钉钉告警」），
+  `fail-script/src/diagnosis/datasource.py` 已有带 `X-Api-Token` 的客户端。
+  2026-09-16 实测 `formStep`/`formLog` 返回 401（接口活着、要鉴权）而非 404。
+  **「修」入口的取证能力已就绪，不要重复建**
 - 不重写 `clickthrough` / `json_executor` / `py_emitter`（它们留在原处，
   新项目不依赖它们；是否退役后续单独决定）
 - 不做完整知识图谱（§13.2 只埋点）
