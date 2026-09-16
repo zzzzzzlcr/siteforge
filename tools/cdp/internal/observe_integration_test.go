@@ -43,11 +43,14 @@ func navigateAndObserve(t *testing.T, url string) *PageModel {
 	host, port := shadowTestEndpoint()
 	c, err := NewClient(host, port)
 	if err != nil {
-		t.Skipf("Chrome 不可用: %v", err)
+		t.Skipf("Chrome 不可用: %v", err) // 环境缺失 —— 全文件**只有这一处**允许 skip
 	}
 	t.Cleanup(c.Disconnect)
+	// 导航失败**不能** skip：url 是本测试**自己刚起**的 fixture server（httptest），
+	// 连不上它不是环境缺失，是缺陷。而 skip 会把整个闸门悄悄变成四条绿 skip ——
+	// 跳过和通过长得一样，这条我们已经栽过。
 	if _, err := c.Navigate(url, ""); err != nil {
-		t.Skipf("导航失败: %v", err)
+		t.Fatalf("导航到自带 fixture server 失败（不是环境缺失，server 是本测试刚起的）: %v", err)
 	}
 	time.Sleep(1500 * time.Millisecond)
 	m, err := c.Observe("")
@@ -55,6 +58,27 @@ func navigateAndObserve(t *testing.T, url string) *PageModel {
 		t.Fatalf("observe 失败: %v", err)
 	}
 	return m
+}
+
+// requireShadowActions 是「不该出现某种东西」那两条断言的前置守卫。
+//
+// 它们天生可以**空转通过**：actions 取到 0 个 → bad 为空、regions 为空 → 绿。
+// 所以每条都得自证有效性：动作数够，且确实来自**两层 shadow 里**（shadow_depth >= 2）。
+func requireShadowActions(t *testing.T, m *PageModel) {
+	t.Helper()
+	if len(m.Actions) < 5 {
+		t.Fatalf("shadow 页只取到 %d 个可动作元素 —— 后面的断言会空转通过", len(m.Actions))
+	}
+	deep := 0
+	for _, a := range m.Actions {
+		if a.ShadowDepth >= 2 {
+			deep++
+		}
+	}
+	if deep < 5 {
+		t.Fatalf("只有 %d/%d 个动作来自两层 shadow 里（shadow_depth>=2）—— 断言的不是 shadow 元素，空转",
+			deep, len(m.Actions))
+	}
 }
 
 func TestObserveLightDOM(t *testing.T) {
@@ -94,7 +118,12 @@ func TestObserveShadowPageTextIsNotEmpty(t *testing.T) {
 		t.Fatalf("fixture 应有两层嵌套 shadow root，实际 %d", m.ShadowRoots)
 	}
 	// 踩坑时的实测值：10 个字符（只有 shadow 外面的标题）。
-	// 修好后是 141。阈值取 60 足以区分两种实现。
+	// 修好后本文件量到 **142**（量的是 Observe 返回的 page_text，按 runes 数）。
+	// 探针 README 记的 141 是**另一个口径**：它的 page_text_len_raw 把各 root 的
+	// 原文长度直接相加 —— 本机实测 [10, 6, 125] = 141（没 join 分隔空格、也没归一化）；
+	// join(' ') 后在 root 之间多出 2 个分隔空格、又折叠掉各段内部空白，净 +1 → 142。
+	// 两个数都对，量的是不同的东西（2026-09-16 实测，见 task-3-report.md 修复轮 1）。
+	// 阈值取 60 足以区分两种实现（10 vs 142）。
 	if len([]rune(m.PageText)) < 60 {
 		t.Errorf("page_text 只有 %d 字 —— shadow 里的正文没收到: %q",
 			len([]rune(m.PageText)), m.PageText)
@@ -114,15 +143,19 @@ func TestObserveShadowElementsNotFalselyOccluded(t *testing.T) {
 	srv := serveFixtures(t)
 	m := navigateAndObserve(t, srv.URL+"/shadow.html")
 
+	requireShadowActions(t, m) // 动作列表一空，下面这条就**空转通过**
+
 	var bad []string
 	for _, a := range m.Actions {
 		if a.OccludedBy != nil {
 			bad = append(bad, a.Text+"←"+*a.OccludedBy)
 		}
 	}
-	// 踩坑时这里是 5/5 全假阳性
+	// 踩坑时这里是**全假阳性**：探针 README 记 5/5；本机在 shadow.html 上实测 **6/6**
+	// （该页 action 就是 6 条 = 3 字段 + 3 按钮），签名清一色 ←div#host1。
+	// 断言只看「有没有」，数量口径变了也不影响。
 	if len(bad) > 0 {
-		t.Errorf("shadow 元素被误判为被遮挡（踩坑时实测 5/5 假阳性）: %v", bad)
+		t.Errorf("shadow 元素被误判为被遮挡（踩坑时全假阳性，本机实测 6/6）: %v", bad)
 	}
 }
 
@@ -131,10 +164,15 @@ func TestObserveShadowRegionNotAllBody(t *testing.T) {
 	srv := serveFixtures(t)
 	m := navigateAndObserve(t, srv.URL+"/shadow.html")
 
+	requireShadowActions(t, m) // 动作列表一空，regions 也空 → 下面这条**空转通过**
+
 	regions := map[string]bool{}
 	for _, a := range m.Actions {
 		regions[a.Region] = true
 	}
+	// 这条依赖 fixture 里 shadow **外面**有 landmark（testdata/shadow.html 的 <main>）：
+	// 没有它的话，走合成树的正确实现与只走 parentElement 的错误实现**都**答 body，
+	// 断言对两种实现一样红 = 空转。原委见 testdata/README.md。
 	if len(regions) == 1 && regions["body"] {
 		t.Error("region 全部退化成 body —— parentElement 出不了 shadow 边界（陷阱 ③）")
 	}
