@@ -1221,8 +1221,18 @@ def test_reads_of_a_shared_in_memory_saver_stay_under_the_write_lock():
     上一条（Postgres 那条）验的才是「另一条连接上的读不排队」。
     """
     svc = service.Service(checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
-    done = threading.Event()
-    threading.Thread(target=lambda: (svc._snapshot("job-nobody"), done.set()), daemon=True).start()
+    started, done = threading.Event(), threading.Event()
+
+    def read():
+        started.set()                            # 「我这就去读」——此刻写锁**已经**在别人手里
+        svc._snapshot("job-nobody")
+        done.set()
+
+    # ⚠️ **先拿住锁，再放线程出去**。反过来的话，读线程可能在我们拿到锁之前就把活干完了，
+    # 于是这条测试会说「读绕过了写锁」—— 那是它自己抢跑了，不是代码的问题。
+    # （这条最初就是那么写的，跑第二遍才红：一条会看运气的测试等于没有测试。）
     with svc._check.lock:                        # 写锁按着（模拟一次 invoke）
+        threading.Thread(target=read, daemon=True).start()
+        assert started.wait(5), "读线程没起来"
         assert not done.wait(0.5), "读绕过了写锁 —— 同一条内存 saver 上并发读会炸"
     assert done.wait(5), "松开写锁之后读还是没回来"
