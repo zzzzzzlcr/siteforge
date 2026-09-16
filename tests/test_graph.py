@@ -1,0 +1,684 @@
+"""Task 7：LangGraph 图（`agent/graph.py`）—— intake → explore → draft → lint → selftest → deliver。
+
+## 这份测试要钉住的三件事（brief 说的「三处必须写对」）
+
+1. **人不是最后一道关**（§6.2）：**每一个节点之前**都停一次等人 —— 包括第一个节点之前、
+   也包括 `deliver` 之前。中断之后**真能恢复**（R-19：saver 是必需的参数，不是可选项）。
+2. **两条回灌都有硬上限**：`lint` 挂了回 `draft` **带违规行**；`selftest` 挂了走 `diagnose`
+   回 `draft` **带证据（failed_step）**。两条都不许转不完（测试的 `_drive` 自带急停：
+   图要是停不下来，它会**红**，而不是把 pytest 挂死）。
+3. **`deliver` 写出的 py 带 `PROVENANCE`**（§5.3），而且**交付的字节与自测的字节只差那一块**
+   （拿 `ast` 比出来，不靠眼看）。
+
+## 这里全是桩
+
+没有浏览器、没有模型、没有 cdp 二进制、没有网。唯一的「真」是：真 `Journey` → 真
+`states()` / `fills()` → 真 `template.render()` → 真 `lint.check()`。**产物那一段必须真跑**，
+否则「图会把脏产物交出去」这种事测试自己也看不见。
+
+（Task 6 的 `agent/selftest.py` 在并发改动中 —— 这里只用它的公开形状 `Report` / `Run` /
+`run`，不碰它的内部实现。）
+"""
+
+from __future__ import annotations
+
+import ast
+import copy
+import importlib.util
+import pathlib
+import sys
+
+import pytest
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from agent import browser_agent, graph, lint, selftest, template  # noqa: E402
+
+SITE = "example-funnel"
+URL = "https://example-funnel.test/quiz"
+GOAL = "走到「Thank you」那一页，把报价拿到"
+SUCCESS = "Thank you"
+WS_URL = "ws://127.0.0.1:9222/devtools/page/ABC"
+
+#: 产物 import 的那一行要的东西（只在本文件内用；用完进出一趟都摘干净，
+#: 免得把别的测试文件的同名替身留在 `sys.modules` 里 —— test_browser_agent 同款处理）
+STUB_COMMON = '''
+class CDPHelper:
+    def __init__(self, *a, **kw): pass
+def setup_logger(*a, **kw): return None
+def report_url(*a, **kw): return True
+'''
+
+
+# ─────────────────────────── 桩与夹具 ───────────────────────────
+
+
+class Rec:
+    """桩把「谁被调了、拿到了什么」记在这里 —— 断言看它，不看实现。"""
+
+    def __init__(self):
+        self.explore: list = []
+        self.write: list = []
+        self.lint: list = []
+        self.selftest: list = []
+        self.tested_src = None      # 自测那一遍，产物文件里是什么（真的是什么）
+
+
+def _journey(*, stop_reason="model_done"):
+    """一份**真** Journey（手写的账本，不是跑模型跑出来的）。
+
+    `states()` / `fills()` 走真代码 —— 图里 draft 那一步渲染出来的才是真产物。
+    """
+    steps = [
+        {"state": "landing", "action": "click", "note": "点了「Get Started」",
+         "target": {"text": "Get Started", "role": "button", "near": "hero",
+                    "selectors": ["#get-started"], "above_fold_only": False},
+         "result": {"ok": True, "selector": "#get-started"}},
+        {"state": "landing", "action": "form", "note": "填好了「Postcode」",
+         "target": {"text": None, "label": "Postcode", "role": None, "near": None,
+                    "selectors": ["input#postcode"], "above_fold_only": False},
+         "result": {"ok": True, "selector": "input#postcode",
+                    "fill": {"name": "postcode", "source": "postcode", "kind": "value",
+                             "label": "Postcode", "value": "SW1A 1AA",
+                             "fallback": [{"random": "postcode"}]}}},
+    ]
+    return browser_agent.Journey(
+        steps=steps,
+        notes=["页面变了：现在是「Get Started」那一页", "走完了：点一次、填一个邮编"],
+        stop_reason=stop_reason,
+        final_answer="成功时页面上会出现「Thank you」",
+        pages=[{"name": "landing",
+                "when": {"url_contains": "example.test", "text_contains": ["Get Started"]},
+                "url": URL, "title": "Get Started"}],
+    )
+
+
+def _run(name, status, *, ok, failed_step=None, note="跑通了"):
+    return selftest.Run(name=name, label="第 %d 遍" % (("baseline", "rerun", "delay",
+                                                        "viewport", "country").index(name) + 1),
+                        status=status, ok=ok, failed_step=failed_step,
+                        trace_path="/tmp/%s.trace.jsonl" % name, note=note)
+
+
+def _pass_report():
+    return selftest.Report(
+        runs=tuple(_run(n, "passed", ok=True) for n in ("baseline", "rerun", "delay", "viewport")),
+        passed=True, allowed_skips=("country",), cdp_bin="/usr/local/bin/cdp",
+        site=SITE, py_path="/tmp/%s.py" % SITE)
+
+
+def _fail_report(*, run_name="delay", failed_step=6, note=None):
+    """一遍挂掉的报告：第 3 遍（延迟扰动）卡在第 6 步。"""
+    note = note or "卡在第 %d 步：点了「Get My Quote」之后页面没动" % failed_step
+    runs = [_run("baseline", "passed", ok=True), _run("rerun", "passed", ok=True),
+            _run(run_name, "failed", ok=False, failed_step=failed_step, note=note)]
+    return selftest.Report(runs=tuple(runs), passed=False, allowed_skips=("country",),
+                           cdp_bin="/usr/local/bin/cdp", site=SITE,
+                           py_path="/tmp/%s.py" % SITE)
+
+
+def _dirty(spec):
+    """把一份 spec 弄脏：states 里某一步的 note 里塞一句手拼 JS。
+
+    产物是 python，note 会**逐字**进文件（pprint 的字面量）—— 所以 `lint.check`
+    能在那一行上抓到 `js-click`。这是「违规行」最真实的来源：不是编出来的字符串。
+    """
+    dirty = copy.deepcopy(spec)
+    dirty["states"][0]["steps"][0]["note"] = "顺手用 el.click() 补了一下"
+    return dirty
+
+
+def _deps(*, journey=None, reports=None, write=None, rec=None):
+    """**全部**外部依赖的桩。返回 `(Deps, Rec)`。"""
+    rec = rec if rec is not None else Rec()
+    book = journey if journey is not None else _journey()
+    queue = list(reports) if reports else [_pass_report()]
+
+    def explore(url, goal, budget=None, **kw):
+        rec.explore.append({"url": url, "goal": goal, "budget": budget, "kw": kw})
+        return copy.deepcopy(book)
+
+    def write_stub(spec, feedback):
+        rec.write.append({"spec": copy.deepcopy(spec), "feedback": copy.deepcopy(feedback)})
+        if write is not None:
+            return write(copy.deepcopy(spec), copy.deepcopy(feedback), len(rec.write))
+        return spec
+
+    def lint_stub(src):
+        rec.lint.append(src)
+        return lint.check(src)
+
+    def selftest_stub(py_path, ws_url, form_file, site, **kw):
+        rec.tested_src = pathlib.Path(py_path).read_text(encoding="utf-8")
+        rec.selftest.append({"py_path": str(py_path), "ws_url": ws_url,
+                             "form_file": form_file, "site": site, "kw": kw})
+        return queue[min(len(rec.selftest) - 1, len(queue) - 1)]
+
+    return graph.Deps(explore=explore, write=write_stub, lint=lint_stub,
+                      selftest=selftest_stub), rec
+
+
+def _brief(tmp_path, **over):
+    """一次运行的开场白（等于 CLI/HTTP 那边收上来的东西）。"""
+    brief = {"url": URL, "goal": GOAL, "success_text": SUCCESS,
+             "ws_url": WS_URL, "form_file": str(tmp_path / "form.json"),
+             "out_dir": str(tmp_path / "forms" / "sites")}
+    brief.update(over)
+    return brief
+
+
+def _build(*, deps, caps=None, thread="t1"):
+    saver = InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)
+    app = graph.build(checkpointer=saver, deps=deps, caps=caps)
+    return app, {"configurable": {"thread_id": thread}}, saver
+
+
+def _drive(app, cfg, initial, reply=None, limit=40):
+    """一路把人该说的都说了，直到图**自己**停下。
+
+    `limit` 是急停：图要是停不下来（比如上限被摘掉了），它在这里**红** ——
+    而不是把整个 pytest 挂死（挂在 40 次之后才叫「没人看得出发生了什么」）。
+    """
+    payloads, out = [], app.invoke(initial, cfg)
+    while out.get("__interrupt__"):
+        payloads.append(out["__interrupt__"][0].value)
+        if len(payloads) > limit:
+            raise AssertionError(
+                "图没有自己停下来：连着 %d 次都停在「等人」这儿（上限没起作用？）" % limit)
+        value = reply(payloads[-1]) if reply else "continue"
+        out = app.invoke(Command(resume=value), cfg)
+    return payloads, out
+
+
+# ───────────────────────── happy path ─────────────────────────
+
+
+def test_happy_path_walks_every_step_in_order_and_writes_a_py(tmp_path):
+    """六个节点按序走完，最后**真**落一条 py 下来。"""
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert [p["step"] for p in payloads] == ["intake", "explore", "draft", "lint",
+                                             "selftest", "deliver"], payloads
+    assert out["end_reason"] == "delivered", out.get("end_note")
+    assert out["visits"] == ["intake", "explore", "draft", "lint", "selftest", "deliver"]
+
+    py = tmp_path / "forms" / "sites" / ("%s.py" % SITE)
+    assert py.is_file(), out.get("end_note")
+    assert out["py_path"] == str(py)
+    # 自测跑过的那份候选不留（交付点旁边只该有那一份产物）
+    assert not (tmp_path / "forms" / "sites" / ("%s.candidate.py" % SITE)).exists()
+
+    # 产物里那几样必须是**从账本里真翻译过来**的（不是占位符）
+    src = py.read_text(encoding="utf-8")
+    assert 'SITE = "example-funnel"' in src
+    assert "Thank you" in src
+    assert "input#postcode" in src          # 账本里填成功的那个字段
+    assert "#get-started" in src            # 账本里点成功的那一步
+    assert lint.check(src) == []
+
+    # explore 只跑了一次，draft 也只写了一次（没人打回）
+    assert len(rec.explore) == 1
+    assert len(rec.write) == 1
+    assert len(rec.selftest) == 1
+    # 自测跑的就是**摆出来准备交付的那份源码**（文件在，且内容一致）
+    assert rec.tested_src and "SITE = \"example-funnel\"" in rec.tested_src
+
+
+def test_every_node_is_preceded_by_a_pause_that_speaks_human(tmp_path):
+    """**人不是最后一道关**：每个节点之前都停一次，而且问的话是人话（D16）。
+
+    这是 §6.2 的机器化：`deliver` 之前那次停顿与 `explore` 之前那次**同等重要** ——
+    人可以在第 2 步就拦住它，而不是等它带着错走完 6 步。
+    """
+    deps, _ = _deps()
+    app, cfg, _ = _build(deps=deps)
+    payloads, _ = _drive(app, cfg, _brief(tmp_path))
+
+    assert len(payloads) == 6, "六个节点 = 六次停顿（少一次就是「跑完才汇报」）"
+    for payload in payloads:
+        assert payload["say"].strip(), payload
+        assert payload["can"], payload                       # 人能做什么，得写出来
+        assert isinstance(payload["facts"], dict), payload
+        # 不是错误码、不是选择器：说人话那一段里不许出现 traceback / 异常类名
+        for junk in ("Traceback", "Exception", "<class", "selector:"):
+            assert junk not in payload["say"], payload["say"]
+
+
+def test_the_delivered_py_carries_provenance(tmp_path):
+    """§5.3：环境指纹随产物落盘 —— 同一 URL 在不同代理国家是**不同的页面**。"""
+    deps, _ = _deps()
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path, env={"proxy_country": "US", "dpr": 1,
+                                                     "ua": "Mozilla/5.0 (stub)",
+                                                     "viewport": [1280, 800]}))
+
+    src = pathlib.Path(out["py_path"]).read_text(encoding="utf-8")
+    prov = _constant(src, "PROVENANCE")
+    assert set(template.PROVENANCE_KEYS) <= set(prov), prov
+    assert prov["generator"] == "siteforge/v0.1"
+    assert prov["env"]["proxy_country"] == "US"              # 前提层给的，原样带上
+    assert prov["source"]["kind"] == "build"
+    assert prov["source"]["evidence"] == GOAL                # 人给的意图，原样带上
+    # 自测那块：跑了 4 遍、4 遍都过，而且**判据**（allow_skips 那套）也跟着走
+    assert prov["selftest"]["runs"] == 4
+    assert prov["selftest"]["passed"] == 4
+    assert prov["selftest"]["verdict"] is True
+    assert prov["selftest"]["at"]
+    # 运行时出身（R-15：这份 py 跑起来用的是哪一份 common.py）也在里面
+    assert prov["source"]["runtime"]["source_md5"]
+    assert prov["source"]["runtime"]["copied_from"]
+
+
+def test_what_nobody_told_the_graph_stays_none_instead_of_being_invented(tmp_path):
+    """没人告诉图的事（代理指纹 / 平台猜测）**留 None** —— 缺的键补 None，不编内容。"""
+    deps, _ = _deps()
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))               # 没给 env
+
+    prov = _constant(pathlib.Path(out["py_path"]).read_text(encoding="utf-8"), "PROVENANCE")
+    assert prov["env"] is None
+    assert prov["platform"] is None
+
+
+def test_the_delivered_bytes_differ_from_the_tested_bytes_only_in_provenance(tmp_path):
+    """自测过的字节 vs 交付的字节：**只差 PROVENANCE 那一块**（拿 ast 比，不靠眼看）。
+
+    为什么天生会差：产物要把**自己的自测结果**写进 `PROVENANCE`（§5.3），
+    而自测结果只有跑完才知道 —— 所以「同一份源码自测完再落盘」在物理上不可能，
+    只能「同 spec 再渲一次」。这条测试保证第二次渲染没有顺手改别的东西。
+    """
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    delivered = pathlib.Path(out["py_path"]).read_text(encoding="utf-8")
+    tested = rec.tested_src
+    assert tested != delivered, "自测那份没带自测结果，两份不可能一字节不差"
+    assert _without_provenance(tested) == _without_provenance(delivered)
+    # 差的那一块**正是**自测结果：自测时还是 None，交付时填上了
+    assert _constant(tested, "PROVENANCE")["selftest"] is None
+    assert _constant(delivered, "PROVENANCE")["selftest"]["runs"] == 4
+
+
+def test_the_delivered_py_is_a_real_importable_production_script(tmp_path):
+    """交付物得能**真 import**（不是只过 `ast.parse`）—— 它要扔进 `forms/sites/` 被生产调。"""
+    deps, _ = _deps()
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+    py = pathlib.Path(out["py_path"])
+
+    (tmp_path / "forms" / "common.py").write_text(STUB_COMMON, encoding="utf-8")
+    saved = sys.modules.pop("common", None)
+    try:
+        spec = importlib.util.spec_from_file_location("graph_delivered_site", py)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop("common", None)
+        if saved is not None:
+            sys.modules["common"] = saved
+    assert module.SITE == SITE
+    assert module.SUCCESS_TEXTS == [SUCCESS]
+    assert [s["name"] for s in module.STATES] == ["landing"]
+    assert module.FILLS["postcode"]["kind"] == "value"
+
+
+# ─────────────────── 回灌一：lint 挂了 → draft 带违规行 ───────────────────
+
+
+def test_a_lint_violation_is_handed_back_to_draft_with_its_lines(tmp_path):
+    """lint 打回时，**违规行本身**要跟着回到 draft（只说「你手拼 JS 了」它找不到地方）。"""
+    deps, rec = _deps(write=lambda spec, fb, n: _dirty(spec) if n == 1 else spec)
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert len(rec.write) == 2, "第一版脏、第二版干净 —— draft 应该被叫了两次"
+    assert out["end_reason"] == "delivered"
+
+    fb = rec.write[1]["feedback"]
+    assert fb["violations"], fb
+    v = fb["violations"][0]
+    assert v["code"] == "js-click"
+    assert isinstance(v["line"], int) and v["line"] > 0
+    assert ".click()" in v["snippet"]
+    # 行号**指着那一行**（拿真 lint 跑过的源码核对，不是自说自话）
+    row = rec.lint[0].splitlines()[v["line"] - 1]
+    assert v["snippet"] in row, row
+    assert v["message"].strip() and "cdp" in v["message"]      # 人话，且说了该怎么办
+
+    # 人在闸口也看得到：第 N 行 + 人话（**不是** hunk、不是 code）
+    draft_rounds = [p for p in payloads if p["step"] == "draft"]
+    assert len(draft_rounds) == 2
+    say = draft_rounds[1]["say"]
+    assert "第 %d 行" % v["line"] in say
+    assert v["message"] in say
+    assert ".click()" not in say, "给人看的那段不该塞代码片段"
+    assert draft_rounds[1]["facts"]["violations"][0]["code"] == "js-click"
+
+
+def test_lint_that_never_passes_stops_at_the_cap_instead_of_spinning(tmp_path):
+    """一条永远过不了 lint 的产物：走到上限就**停**，不许无限循环（§6.5）。"""
+    deps, rec = _deps(write=lambda spec, fb, n: _dirty(spec))
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_lint_bounces=2))
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "lint_cap", out.get("end_note")
+    assert len(rec.write) == 3, "首版 + 两次打回 = 三次；多一次就是上限失效"
+    assert len(rec.selftest) == 0, "连 lint 都没过，不该去跑自测"
+    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists(), \
+        "没通过的东西一个字节都不许落到交付路径上"
+    assert "第" in out["end_note"] or "次" in out["end_note"]        # 人话说得清为什么停
+    assert [p["step"] for p in payloads].count("draft") == 3
+
+
+# ──────────────── 回灌二：selftest 挂了 → diagnose → draft 带证据 ────────────────
+
+
+def test_a_selftest_failure_goes_through_diagnose_and_carries_the_failed_step(tmp_path):
+    """自测挂了：先 `diagnose` 定位，再回 `draft` —— 回去的时候**带着 failed_step**。"""
+    deps, rec = _deps(reports=[_fail_report(failed_step=6), _pass_report()])
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    steps = [p["step"] for p in payloads]
+    # 挂掉的那一遍之后**紧接着**是 diagnose，diagnose 之后**紧接着**回 draft
+    i = steps.index("diagnose")
+    assert steps[i - 1] == "selftest" and steps[i + 1] == "draft", steps
+    assert steps.count("selftest") == 2 and steps.count("draft") == 2, steps
+    assert out["end_reason"] == "delivered"
+    assert len(rec.write) == 2
+    assert len(rec.selftest) == 2
+
+    fb = rec.write[1]["feedback"]
+    assert fb["diagnosis"]["failed_step"] == 6
+    assert fb["diagnosis"]["run"] == "delay"
+    assert "第 6 步" in fb["diagnosis"]["say"]
+    assert fb["diagnosis"]["say"].strip()
+
+    # 人在 diagnose 那道闸上看到的是**哪遍挂、挂在哪**（§6.4 清单里的第三样）
+    diag = [p for p in payloads if p["step"] == "diagnose"][0]
+    assert "第 6 步" in diag["say"]
+    assert "delay" not in diag["say"] and "failed_step" not in diag["say"], diag["say"]
+
+
+def test_a_run_nobody_allowed_to_skip_is_handed_over_as_not_run(tmp_path):
+    """「跳过」不许冒充「过了」（Task 6 的判据）：图也得按 `report.passed` 走，
+    而且回灌的话必须说「这一遍没跑」，**不许**编一个 failed_step 出来。"""
+    unresolved = selftest.Report(
+        runs=(_run("baseline", "passed", ok=True),
+              _run("viewport", "skipped", ok=None, note="没人给换窗口大小的回调，这一遍没验到")),
+        passed=False, allowed_skips=("country",), cdp_bin=None, site=SITE, py_path="x.py")
+    deps, rec = _deps(reports=[unresolved, _pass_report()])
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    steps = [p["step"] for p in payloads]
+    i = steps.index("diagnose")
+    assert steps[i - 1] == "selftest" and steps[i + 1] == "draft", steps
+    assert out["end_reason"] == "delivered"
+    diag = rec.write[1]["feedback"]["diagnosis"]
+    assert diag["failed_step"] is None
+    assert "没跑" in diag["say"] and "没验到" in diag["say"], diag["say"]
+
+
+def test_selftest_that_never_passes_stops_at_the_cap_instead_of_spinning(tmp_path):
+    """自测永远不过：diagnose 也有上限，到顶就停（不是无限修下去）。"""
+    deps, rec = _deps(reports=[_fail_report()])         # 每一遍都挂同一处
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_diagnoses=2))
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "selftest_cap", out.get("end_note")
+    assert [p["step"] for p in payloads].count("diagnose") == 2
+    assert len(rec.selftest) == 3, "首版 + 两次修 = 三次自测；多一次就是上限失效"
+    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+    assert "自测" in out["end_note"] or "扰动" in out["end_note"]
+
+
+# ─────────────────────────── 停：不是无限转下去 ───────────────────────────
+
+
+def test_the_graph_stops_when_exploration_did_not_finish(tmp_path):
+    """预算到顶的探路（`budget_steps`）：**停**，并且说清楚「没走完」——
+    拿半份账本去写 py 正是「自信地错」的入口（R0）。"""
+    deps, rec = _deps(journey=_journey(stop_reason="budget_steps"))
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "explore_unfinished", out.get("end_note")
+    assert out["visits"] == ["intake", "explore"]
+    assert rec.explore and len(rec.explore) == 1, "探路不许自动重来（重开窗口是人的事）"
+    assert len(rec.write) == 0, "没探完就不许写 py"
+    assert "预算" in out["end_note"]
+    # 上面那次停顿是 explore 那道闸；**没有**第二道闸（它没往下走）
+    assert [p["step"] for p in payloads] == ["intake", "explore"]
+
+
+def test_a_human_pause_inside_explore_is_a_pause_not_a_failure(tmp_path):
+    """人在浏览器里喊停（§6.2 的 `should_pause`）**不是失败** —— 别把「人喊停」写成红的。"""
+    deps, _ = _deps(journey=_journey(stop_reason="paused"))
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "paused", out.get("end_note")
+    assert "人" in out["end_note"] and "停" in out["end_note"]
+    assert "失败" not in out["end_note"] and "挂" not in out["end_note"]
+
+
+def test_a_pause_signal_from_the_browser_agent_is_never_swallowed(tmp_path):
+    """`_Stop` 继承 `BaseException`（browser_agent:206）就是**为了不被吞成工具失败**——
+    图这边不许用 `except Exception` 把它接住再降级成「探路失败」。"""
+    def exploded(url, goal, budget=None, **kw):
+        raise browser_agent._Stop("paused")
+
+    deps, rec = _deps()
+    deps.explore = exploded
+    app, cfg, _ = _build(deps=deps)
+    app.invoke(_brief(tmp_path), cfg)
+    app.invoke(Command(resume="continue"), cfg)          # intake 做完，停在 explore 前
+    with pytest.raises(browser_agent._Stop):
+        app.invoke(Command(resume="continue"), cfg)      # ← explore 那一步喊停
+    assert rec.write == [] and rec.selftest == [], "喊停之后一步都不许再做"
+
+
+@pytest.mark.parametrize("gate", ["intake", "explore", "draft", "lint", "selftest", "deliver"])
+def test_the_human_can_stop_the_run_at_any_gate(tmp_path, gate):
+    """人在**任意一道闸**上说「停」：图就停在**那一步之前**，那一步没做。
+
+    六个闸挨个停一遍 —— 「每一步都可以被拦住」不是一句设计口号，
+    是六个位置各自都验过。
+    """
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path),
+                           reply=lambda p: "stop" if p["step"] == gate else "continue")
+
+    assert out["end_reason"] == "human_stop", out.get("end_note")
+    assert [p["step"] for p in payloads][-1] == gate, payloads
+    assert "人" in out["end_note"]
+    # 停的那一步**没做**：deliver 之后没有别的步骤，所以只有它之前那一步（自测）已经发生
+    assert len(rec.selftest) == (1 if gate == "deliver" else 0), "喊停之后一步都不许再做"
+    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+    assert not (tmp_path / "forms" / "sites" / ("%s.candidate.py" % SITE)).exists()
+
+
+@pytest.mark.parametrize("gate", ["intake", "explore", "draft"])
+def test_the_human_can_say_something_and_it_reaches_the_draft(tmp_path, gate):
+    """§6.2：「直接说该点哪」—— 人在闸口留下的那句话，要能跟着进 **draft**。
+
+    三道闸都试：人可能在任何一步之前开口，包括**开工前**那一道 —— 收了却不往下带，
+    等于没听他说话。
+    """
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path),
+                    reply=lambda p: ({"action": "revise", "note": "登录弹窗要先点掉"}
+                                     if p["step"] == gate else "continue"))
+
+    assert out["end_reason"] == "delivered"
+    assert out["hints"] == ["登录弹窗要先点掉"]
+    assert "登录弹窗要先点掉" in rec.write[0]["feedback"]["hints"], \
+        "人在「%s」那道闸说的话没进 draft —— 收了不带等于没听" % gate
+
+
+def test_no_success_condition_means_stop_not_guess(tmp_path):
+    """没有成功判据就**停**：没有成功判据的产物会跑到底再谎报成功（template 也拒它）。"""
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    brief = _brief(tmp_path)
+    brief.pop("success_text")
+    _, out = _drive(app, cfg, brief)
+
+    assert out["end_reason"] == "draft_failed", out.get("end_note")
+    assert "成功" in out["end_note"]
+    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+    assert len(rec.selftest) == 0
+
+
+def test_a_brief_with_nothing_in_it_does_not_open_a_browser(tmp_path):
+    """开场白里连站点都没有：intake 就停下 —— 不开浏览器（§4.6 的前提层是有成本的）。"""
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path, url="", goal=""))
+
+    assert out["end_reason"] == "no_brief", out.get("end_note")
+    assert rec.explore == []
+    assert out["visits"] == ["intake"]
+
+
+def test_without_a_window_selftest_stops_instead_of_faking_a_pass(tmp_path):
+    """没有可用的窗口（前提层没起来 / 窗口死了 —— P6）：不许**跳过自测**当通过。"""
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path, ws_url=None))
+
+    assert out["end_reason"] == "no_window", out.get("end_note")
+    assert rec.selftest == []
+    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+    assert "窗口" in out["end_note"]
+
+
+def test_the_final_bytes_are_lint_checked_before_they_are_written(tmp_path):
+    """交付前最后一道自检：要落盘的**那串字节**得自己再过一次 lint。
+
+    为什么需要：`PROVENANCE` 里有自由文本（人给的证据/意图），而它是 lint 之后才写进去的
+    —— 也就是说「lint 过的那份」与「交出去的那份」不是同一串字节（上面那条测试钉着
+    「只差 PROVENANCE 那一块」）。脏了就不许落盘，也不许悄悄改一改糊过去。
+    """
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+
+    def lint_stub(src):
+        rec.lint.append(src)
+        if len(rec.lint) == 2:                  # 第 1 次 = lint 节点；第 2 次 = 交付前
+            return [{"line": 1, "code": "js-click", "message": "这段用 JavaScript 直接点了一下",
+                     "snippet": "el.click()"}]
+        return lint.check(src)
+
+    deps.lint = lint_stub
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "deliver_lint", out.get("end_note")
+    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+    assert "第 1 行" in out["end_note"]
+
+
+# ───────────────────── 中断之后**真能恢复**（R-19）─────────────────────
+
+
+def test_the_run_resumes_from_the_checkpointer_instead_of_starting_over(tmp_path):
+    """停在 draft 之前 → 恢复 → **explore 不许再跑一遍**。
+
+    这才是「中断后能恢复」的实证：状态是从 checkpoint 里回来的，
+    而不是「从头再跑一遍、跑到同一个地方又停下」（后者在带副作用的世界里是灾难：
+    再开一个 Bit 窗口、再跑一遍真站）。
+    """
+    deps, rec = _deps()
+    app, cfg, saver = _build(deps=deps)
+    out = app.invoke(_brief(tmp_path), cfg)
+
+    for _ in range(2):                     # 开局停在 intake 前 → intake → explore → draft 前
+        out = app.invoke(Command(resume="continue"), cfg)
+    assert out["__interrupt__"][0].value["step"] == "draft", out["__interrupt__"]
+    assert len(rec.explore) == 1
+
+    out = app.invoke(Command(resume="continue"), cfg)
+    assert out["__interrupt__"][0].value["step"] == "lint"
+    assert len(rec.explore) == 1, "恢复之后 explore 又跑了一遍 —— 那不是恢复，是重来"
+    assert out["journey"].states()[0]["name"] == "landing", "账本是**从 checkpoint 回来**的"
+
+
+def test_another_graph_object_can_pick_up_the_same_run(tmp_path):
+    """同一个 saver、**另一个**编译出来的图也能接着跑 —— 状态在 saver 里，不在图对象里。
+
+    这条直接对应 R-19 的裁定：checkpointer 是**接线**（Task 8 换成 Postgres 就是这里换），
+    所以「谁拿着状态」必须是 saver，不能是某个进程里的对象。
+    """
+    deps, rec = _deps()
+    app, cfg, saver = _build(deps=deps)
+    app.invoke(_brief(tmp_path), cfg)
+    app.invoke(Command(resume="continue"), cfg)              # 跑完 intake，停在 explore 前
+
+    other = graph.build(checkpointer=saver, deps=deps)
+    out = other.invoke(Command(resume="continue"), cfg)      # 换一个图对象接着跑
+    assert out["__interrupt__"][0].value["step"] == "draft", out["__interrupt__"]
+    assert out["visits"] == ["intake", "explore"]
+    assert len(rec.explore) == 1
+
+
+def test_the_graph_refuses_to_run_without_a_checkpointer(tmp_path):
+    """R-19：saver 是**必需**参数。没有它，中断之后恢复不了 —— 那正是这套图最坏的形状。"""
+    deps, _ = _deps()
+    with pytest.raises(ValueError) as exc:
+        graph.build(checkpointer=None, deps=deps)
+    assert "恢复" in str(exc.value)
+    with pytest.raises(TypeError):
+        graph.build(deps=deps)                                # 不许有默认值
+
+
+def test_the_real_wiring_is_what_compiles(tmp_path):
+    """不注桩的那条路（真 explore / 真自测 / 真 lint / 真 provenance）也得拼得起来。
+
+    上面每条测试都注了桩 —— 桩太多的时候，「默认接线接错了」会被整片绿盖住
+    （接错一个名字，谁都看不出来，直到真跑一次）。
+    """
+    app = graph.build(checkpointer=graph.allowlisted(InMemorySaver()))
+    nodes = set(app.get_graph().nodes) - {"__start__", "__end__"}
+    assert nodes == set(graph.NODES), nodes
+
+    real = graph.Deps()
+    assert real.explore is browser_agent.explore
+    assert real.selftest is selftest.run
+    assert real.lint is lint.check
+    assert real.write is not None and real.should_pause is None
+    # 默认那双手**改不了**自己的产物（它没有判断力）—— 这条是**说明**，不是缺陷：
+    # 能改产物的角色从 `Deps.write` 注入（模型 / Console 里的人）
+    spec = {"site": SITE, "success_text": SUCCESS, "states": [{"name": "s"}], "fills": {}}
+    assert real.write(spec, {"violations": [{"line": 1}]}) == spec
+
+
+# ─────────────────────────── 小工具 ───────────────────────────
+
+
+def _constant(src: str, name: str):
+    """把产物里某个常量**真解出来**（不是 grep）—— 产物是 python，就按 python 读。"""
+    module = ast.parse(src)
+    for node in module.body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError("产物里没有 %s" % name)
+
+
+def _without_provenance(src: str) -> str:
+    """源码去掉 `PROVENANCE = {...}` 那一条赋值（其余逐字保留，用 dump 比）。"""
+    module = ast.parse(src)
+    kept = [node for node in module.body
+            if not (isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "PROVENANCE" for t in node.targets))]
+    assert len(kept) == len(module.body) - 1, "产物里应该正好有一条 PROVENANCE 赋值"
+    return "\n".join(ast.dump(node) for node in kept)
