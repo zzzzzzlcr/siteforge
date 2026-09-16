@@ -192,6 +192,29 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
 **为什么必须是「一次调用」**：Bit 窗口存活只有几分钟，agent 每轮拆成七八次
 调用会把窗口耗死。所有静态信息一次取齐。
 
+#### ⚠️ R3 探针实测出的三个实现陷阱（2026-09-16，**都会静默产出错误页面模型**）
+
+探针在 light / 两层嵌套 shadow / 跨源 iframe / 跨源 iframe 套两层 shadow 四档
+上验过（结论：**可行**，见 §12 R3）。但第一版实现踩了三个不报错的坑：
+
+| # | 坑 | 症状（实测） | 正确做法 |
+|---|---|---|---|
+| 1 | **`ShadowRoot` 没有 `innerText`** —— 那是 `HTMLElement` 的属性 | 逐 root 收文本时 shadow root 拿到 `undefined` → shadow 页 `page_text` 只剩 **10 个字符**（修好后 141） | shadow root 要取它**子元素**的 `innerText`/`textContent` |
+| 2 | **`document.elementsFromPoint` 不穿透 shadow**（返回的是 host） | 用它判遮挡 → **所有 shadow 元素全被误判为被遮挡**（实测 5/5 假阳性） | 命中的元素若在 el 的**合成树祖先链**上，就不算遮挡 |
+| 3 | **`parentElement` 出不了 shadow 边界** | `region` 全部退化成 `body`（分不出 hero/footer） | 走 `getRootNode().host` 的**合成树祖先链** |
+
+这三条与「`success_steps` 15/15」「`_smart_form` 说填好了」是同一类病：
+**不报错，只是悄悄错**。实现时必须钉测试。
+
+#### 跨帧：必须逐帧 observe 再合并
+
+同源策略决定**单次 eval 看不见跨源帧的内容**。所以 `observe` 的实现是
+「枚举帧 → 逐帧取 → 合并」，每条动作带上 `frame_path`（如 `["main","child"]`）。
+
+> 探针中一度误判「`cdp eval --frame-id` 对跨源帧静默返回主帧」——
+> 实际是我 runner 解析帧 id 的 bug。**`cdp eval --frame-id` 对跨源帧正常**。
+> 记下来是因为：误判一次就会写出错误的规避代码。
+
 ### 4.4 选择器稳定性评级（D3）
 
 | 评级 | 判据 |
@@ -469,7 +492,7 @@ py 产出契约与 lint · 扰动自测 · LangGraph 图 · `site_memory`/`corre
 |---|---|---|
 | **R1** | 工具侧自测通过 ≠ 生产通过（环境不同） | 已知；界面如实标注，不假装 |
 | **R2** | `cdp eval` 不注入穿透助手 `__cdpQ`（`cmd/eval.go`）→ agent 若用 eval 看页面在 shadow 站上会瞎 | 已定位到行；**要么修，要么 agent 的看只走 `observe`**（后者更符合 D2） |
-| **R3** | `observe` 在 shadow 站 / 跨源 iframe 上的覆盖率**尚未验证** —— 需要先做能力探针 | **开工第一件事** |
+| **R3** | `observe` 在 shadow 站 / 跨源 iframe 上的覆盖率 | ✅ **2026-09-16 探针通过**：light / 两层嵌套 shadow / 跨源 iframe / 跨源 iframe 套两层 shadow **四档全部取齐**（actions / fields / option_groups / region / occluded_by / shadow_depth 全可用）。同时挖出三个会静默出错的实现陷阱，见 §4.3。探针原型存 `docs/probes/2026-09-16-observe-r3/`（**探针产物，非生产代码**） |
 | **R4** | OpenClaw 的版本/接口细节（skill 格式、MCP host 能力）需在动手前核实 | 未核 |
 | **R5** | 选择器稳定性评级的「随机 hash」判据可能误判（有些 hash 其实是稳定的） | 需真站校准 |
 | **R6** | agent 成本：比规则折叠贵 1~2 个数量级 | 用预算上限 + 「py 沉淀后走便宜重放」摊薄 |
@@ -479,7 +502,7 @@ py 产出契约与 lint · 扰动自测 · LangGraph 图 · `site_memory`/`corre
 | **R10** | agent 的 gost 端口未定（见 D9）；`config/gost*.chain` + `gost-watch.sh` 现在只维护 :1080/:1081 | 未定，需指定端口 |
 | **R11** | `PROXY_API`（`https://tmk.3tkj.cn/api/get_proxies`）的可用性与配额 | 未核；拉链失败时 agent 必须有降级路径（否则 explore 直接卡死） |
 | **R12** | 视觉能力 | ✅ **2026-09-16 已实测**：`deepseek-v4-flash` 看图准确（数矩形→`2`、认颜色→`红色`）。`pro` 在 800 token 预算下看图返回空（reasoning 1432 字符吃满），纯文本正常 —— 视觉走 flash，pro 要调预算或不用 |
-| **R13** | **Phase 1 的 correction 事件从哪来**（无 HITL UI） | **未决，需你定**。目前唯一渠道是「selftest 失败后工程师手工改 py 的 diff」。不定这条最小记录路径，§13.3 的 schema 就是空表 |
+| **R13** | Phase 1 的 correction 记录路径 | ✅ **已定（方案 B）**：最小 CLI `siteforge correct`，触发点是 selftest 失败后工程师手工改 py 那一刻。见 §13.3 |
 | **R14** | 扰动测试里「换代理国家」那遍要重新拉链 + 重启 gost，单遍成本高 | 已知；可在 Phase 1 先跑 Run1–4，代理扰动作为可选 |
 | **R15** | `observe` 的 `relative_size` / `contrast` / `region` 计算依赖布局，**在 shadow/iframe 里是否可靠未验** | 归入 R3 的能力探针一起验 |
 
@@ -528,9 +551,18 @@ py 产出契约与 lint · 扰动自测 · LangGraph 图 · `site_memory`/`corre
 Browser Agent），**「运营教 AI」才是这套系统的护城河**。所以修正数据要从第一版
 就结构化落库。
 
-⚠️ **Phase 1 有个前提没解决（需你定）**：Phase 1 **没有 HITL UI**，那 correction
-事件从哪来？目前只有一条渠道 —— **selftest 失败后由工程师手工改 py 时的 diff**。
-若不定这条最小记录路径，14.3 的 schema 就是一张空表（就是前面说的「埋点变摆设」）。
+**Phase 1 的记录路径（已定，方案 B）**：Phase 1 没有 HITL UI，所以不做页面，
+只加一条**最小 CLI**：
+
+```
+siteforge correct --site <site> --from-observe <ref> \
+                  --ai-action '{"click":"#submit"}' \
+                  --human-action '{"click":"#continue"}'
+```
+
+触发点是 **selftest 失败后工程师手工改 py** 的那一刻 —— 把
+`(observe 快照, ai_action, 人工改法)` 落库。**从第一天就有真数据**，
+而不是等 Phase 2 的 UI（那样 schema 会空转一整期，就是「埋点变摆设」）。
 
 ## 十四、与既有资产的关系
 
