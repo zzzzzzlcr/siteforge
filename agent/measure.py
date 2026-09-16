@@ -330,6 +330,70 @@ def _m(value: Any, why: str = "", **extra: Any) -> dict:
     return {"value": value, "why": why, **extra}
 
 
+def lifecycles_from_rows(rows: list) -> list:
+    """**精确**的窗口寿命（秒）—— 从 `/browser/detail` 的 `operTime → closeTime` 算。
+
+    这是 M1/M6 想要的那个数（§3.1）：探针给的寿命带着一个探测间隔的误差，
+    而这一对是两个**真时刻**。缺一头（还没关 / detail 读不到）就**不算**那个窗口 ——
+    不许拿「到这一刻为止」冒充寿命。
+    """
+    out: list = []
+    for row in rows or []:
+        if not isinstance(row, dict) or not row.get("close_at"):
+            continue
+        secs, _why = _seconds(_oper_iso(row.get("oper_at")), _close_iso(row.get("close_at")))
+        if secs is not None and secs > 0:
+            out.append(secs)
+    return out
+
+
+def _oper_iso(value: Any) -> str:
+    return _naive_iso(value)
+
+
+def _close_iso(value: Any) -> str:
+    return _naive_iso(value)
+
+
+def _naive_iso(value: Any) -> str:
+    """Bit 给的时刻是**朴素本地时间**（`2026-09-16 17:47:14`）→ ISO（空格换成 `T`）。
+
+    ⚠️ 不带时区（Bit 没给），所以两个时刻相减是安全的（同一个钟）。
+    与 `at` 那串（带 `+08:00`）**不能混着比** —— 这里只跟这里比。
+    """
+    text = str(value or "").strip().replace(" ", "T", 1)
+    return text
+
+
+def m6_reading(rows: list) -> dict:
+    """死因：**固定租约**还是**空闲回收**（§3.1 的人给的那条判据）。
+
+    判据只有一半是自动的：`operTime → closeTime` 的差**恒不恒定**。
+    另一半（「死亡前有没有一段空闲」）要活动时间线 —— 本任务没采（探针只采活/死与 PID），
+    所以只在**两个以上**精确寿命且彼此接近时才敢说「像租约」，否则一律 `undecided` + 为什么。
+    """
+    exact = lifecycles_from_rows(rows)
+    if not exact:
+        return {"value": None, "samples": 0,
+                "why": ("这一趟没有一条 `/browser/detail` 的 `operTime→closeTime`"
+                        "（窗口还没关，或者读不到）—— 死因**没量到**。"
+                        "⚠️ 不许拿「探测间隔」冒充「寿命差」。")}
+    if len(exact) < 2:
+        return {"value": None, "samples": len(exact), "lifetimes": exact,
+                "why": ("只有 1 个精确寿命（%.0f 秒）—— 「差恒不恒定」**要 ≥2 次死亡**才判得了。"
+                        "一个样本判不了租约，也判不了空闲回收。" % exact[0])}
+    spread = max(exact) - min(exact)
+    if spread <= 30:
+        return {"value": "lease", "samples": len(exact), "lifetimes": exact, "spread": spread,
+                "why": ("%d 次死亡的寿命差 ≤30 秒（%s）→ **像固定租约**（浏览器侧的一个时限）。"
+                        "⚠️「空闲回收」那一半仍没有证据：本任务没采「死亡前有没有一段空闲」。"
+                        % (len(exact), [round(x) for x in exact]))}
+    return {"value": "undecided", "samples": len(exact), "lifetimes": exact, "spread": spread,
+            "why": ("%d 次死亡的寿命彼此差 %.0f 秒（%s）—— **不是**固定租约；"
+                    "但「是不是空闲回收」要活动时间线，本任务没采，所以不判。"
+                    % (len(exact), spread, [round(x) for x in exact]))}
+
+
 def _spread(values: list, what: str) -> dict:
     """一串样本 → `{min, median, max, n}`（**判 A 做不做看的是 max**，见设计注 §3.3）。"""
     return {"value": statistics.median(values), "min": min(values),
@@ -464,11 +528,11 @@ def baseline(path: Any, *, window_lifetimes: list, attempts: list, end: dict,
                            "（本片之后这个数应该是 0：重放不花模型轮数）")
 
     # ── M6 死因：固定租约 vs 空闲回收 ────────────────────────────
-    out["M6"] = _m(None, "本任务只采了「活/死 + PID」，而判死因要两样没采的东西："
-                         "每次 open→close 的时长（`/browser/detail` 的 `operTime`/`closeTime`，"
-                         "看那个差恒不恒定）与死亡前有没有一段空闲。**只能人看**："
-                         "window.jsonl 的原始行 + 事后读一次 `/browser/detail`。"
-                         "⚠️ 不许拿「探测间隔」冒充「寿命差」。")
+    # 判据的一半（差恒不恒定）从 `/browser/detail` 的两个真时刻算；另一半（死前有没有空闲）
+    # 本任务没采 → `m6_reading()` 只在 ≥2 个精确寿命且彼此接近时才说「像租约」。
+    out["M6"] = m6_reading(rows)
+    out["M6"]["how"] = ("精确寿命来自 `/browser/detail` 的 `operTime → closeTime`"
+                        "（探针那份带一个探测间隔的误差）。")
 
     # ── M7 计划标记合规率（B 侧）────────────────────────────────
     out["M7"] = _m(None, "计划模式（每轮开头标 `【第 k 步】`）是 Task 3 才有的 —— "

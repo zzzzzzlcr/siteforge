@@ -387,3 +387,46 @@ def test_baseline_refuses_to_count_rounds_it_did_not_measure(tmp_path):
     assert b["M3"]["value"] != 0
     assert b["M2"]["value"] is None, "有一次的墙钟没量到 → 样本序列不完整 → min/中位/max 都不给"
     assert "第 2" in b["M3"]["why"], "要说清是哪一次没记到"
+
+
+# ──────────────── M6：死因（精确寿命来自 /browser/detail）────────────────
+
+
+def test_exact_lifetimes_come_from_the_detail_timestamps_only():
+    """`operTime → closeTime` 是**精确**的两个时刻；探针那份带一个探测间隔的误差。
+
+    ⚠️ 没关的窗口（`closeTime` 是**当天零点**那个占位）**不算** —— 不许拿
+    「到这一刻为止」冒充寿命。
+    """
+    rows = [
+        {"at": "t", "alive": "alive", "pid": 1, "window": 1, "new_window": True,
+         "oper_at": "2026-09-16 17:47:14"},
+        {"at": "t", "alive": "dead", "pid": None, "window": 1, "new_window": False,
+         "oper_at": "2026-09-16 17:47:14", "close_at": "2026-09-16 17:54:56"},
+        {"at": "t", "alive": "alive", "pid": 2, "window": 2, "new_window": True,
+         "oper_at": "2026-09-16 17:55:00"},          # 还活着：没有 close_at
+    ]
+    assert measure.lifecycles_from_rows(rows) == [462.0], "7m42s"
+    assert measure.lifecycles_from_rows([]) == []
+
+
+def test_m6_refuses_to_call_a_lease_from_one_death():
+    """判据是「差**恒不恒定**」—— 分母是**死亡次数**，一次死亡给不出这个判据。
+
+    这一条是防「拿一个数下结论」的钉子（同 §3.3 那条：分支站的单次样本判不了边界）。
+    """
+    one = [{"oper_at": "2026-09-16 17:47:14", "close_at": "2026-09-16 17:54:56"}]
+    r1 = measure.m6_reading(one)
+    assert r1["value"] is None and r1["samples"] == 1
+    assert "≥2" in r1["why"] or "2 次" in r1["why"]
+
+    two = one + [{"oper_at": "2026-09-16 17:55:00", "close_at": "2026-09-16 18:02:36"}]
+    r2 = measure.m6_reading(two)
+    assert r2["value"] == "lease", r2
+
+    spread = one + [{"oper_at": "2026-09-16 17:55:00", "close_at": "2026-09-16 18:20:00"}]
+    r3 = measure.m6_reading(spread)
+    assert r3["value"] == "undecided", r3
+
+    r4 = measure.m6_reading([])
+    assert r4["value"] is None and r4["why"]

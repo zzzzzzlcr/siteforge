@@ -631,6 +631,32 @@ class Service:
             return None
         return rows[-1] if rows else None
 
+    def _window_lifecycle(self) -> dict:
+        """`/browser/detail` 的 `operTime` / `closeTime` —— 窗口**开于/关在**哪一刻（§3.1）。
+
+        为什么要它（M6）：探针每 15 秒才看一眼，它给的寿命**带着一个探测间隔的误差**；
+        而 `operTime → closeTime` 是**精确的**那一对 —— 判「固定租约 vs 空闲回收」
+        看的正是这个差**恒不恒定**（§3.1 的人给的判据）。
+
+        ⚠️ 只在窗口状态**变了**的那一刻读（开/死各一次），不进常规轮询：
+        常规探活用 `pids/alive` 就够了，每 15 秒多打一个接口是白花的。
+        `closeTime` 没关时是**当天零点**（实测 `2026-09-16 00:00:00`）—— 认它 = 认「还没关」。
+        """
+        if self._window is None or not hasattr(self._window, "detail"):
+            return {}
+        try:
+            data = dict(self._window.detail() or {})
+        except Exception:                      # noqa: BLE001 —— 读不到就是读不到，不许编
+            return {}
+        out: dict = {}
+        oper = str(data.get("operTime") or "").strip()
+        if oper and not oper.endswith("00:00:00"):
+            out["oper_at"] = oper
+        close = str(data.get("closeTime") or "").strip()
+        if close and not close.endswith("00:00:00"):
+            out["close_at"] = close
+        return out
+
     def _probe_window_row(self, job_id: str, *, at: Optional[str] = None,
                           note: str = "") -> dict:
         """一次探活 → 时间线一行（落 `window.jsonl`）。
@@ -647,6 +673,8 @@ class Service:
             probe = {"alive": None, "pid": None}
         row = measure.window_row(probe, at=at or measure._now(), note=note,
                                  prev=self._last_window_row(job_id))
+        if row["new_window"] or row["alive"] == "dead":
+            row.update(self._window_lifecycle())   # 开/死各读一次（§3.1 的 operTime/closeTime）
         measure.append_row(self._explore_dir(job_id) / "window.jsonl", row)
         return row
 

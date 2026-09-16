@@ -35,7 +35,7 @@ from langgraph.types import Interrupt
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import browser_agent, graph, selftest, service  # noqa: E402
+from agent import browser_agent, graph, measure, selftest, service  # noqa: E402
 
 SITE = "example-funnel"
 URL = "https://example-funnel.test/quiz"
@@ -1360,3 +1360,40 @@ def test_reads_of_a_shared_in_memory_saver_stay_under_the_write_lock():
         assert started.wait(5), "读线程没起来"
         assert not done.wait(0.5), "读绕过了写锁 —— 同一条内存 saver 上并发读会炸"
     assert done.wait(5), "松开写锁之后读还是没回来"
+
+
+class DetailWindow(ProbeWindow):
+    """会答 `detail()` 的窗口层桩（真 `BitWindow` 有这个方法，`StubWindow` 没有）。"""
+
+    def __init__(self, answers, detail=None):
+        super().__init__(answers)
+        self._detail = dict(detail or {})
+
+    def detail(self):
+        return dict(self._detail)
+
+
+def test_the_timeline_records_the_exact_open_time_and_ignores_the_midnight_placeholder(tmp_path):
+    """窗口**开于哪一刻**要记精确的（`/browser/detail` 的 `operTime`）—— M6 靠它。
+
+    `closeTime` 在没关的时候是**当天零点**（实测 `2026-09-16 00:00:00`）：
+    认它 = 把「还没关」读成一个真实时刻，于是寿命算出来是个负数或者一整天的怪数。
+    """
+    win = DetailWindow([{"alive": True, "pid": 4772}],
+                       detail={"operTime": "2026-09-16 17:47:14",
+                               "closeTime": "2026-09-16 00:00:00"})   # 还没关
+    svc = service.Service(window=win, explore_dir=str(tmp_path / "explore"))
+    row = svc._probe_window_row("job-abc", at="2026-09-16T17:47:16+08:00")
+    assert row["oper_at"] == "2026-09-16 17:47:14"
+    assert "close_at" not in row, "还没关的窗口不许给一个 close 时刻"
+
+    win2 = DetailWindow([{"alive": False, "pid": None}],
+                        detail={"operTime": "2026-09-16 17:47:14",
+                                "closeTime": "2026-09-16 17:54:56"})
+    svc2 = service.Service(window=win2, explore_dir=str(tmp_path / "explore2"))
+    dead = svc2._probe_window_row("job-abc", at="2026-09-16T17:55:01+08:00")
+    assert dead["close_at"] == "2026-09-16 17:54:56"
+    assert measure.lifecycles_from_rows([dead]) == [462.0], "7m42s（精确的那一对）"
+    # 只有一头就不算 —— 不许拿「到这一刻为止」冒充寿命
+    assert measure.lifecycles_from_rows([{"oper_at": "2026-09-16 17:47:14"}]) == []
+    assert measure.lifecycles_from_rows([{"close_at": "2026-09-16 17:54:56"}]) == []
