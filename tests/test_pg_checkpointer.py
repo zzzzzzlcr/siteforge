@@ -213,3 +213,22 @@ def test_reads_go_through_a_second_connection_so_progress_does_not_wait_for_a_ru
     # 而 /health 那边也得接着说「postgres」（重要 1：建完之后不许翻脸）
     body = TestClient(app).get("/health").json()
     assert body["checkpointer"] == "postgres", body
+
+
+def test_a_fresh_database_whose_first_request_is_a_read_answers_404_not_500():
+    """Minor 3：读连接原先**不 `setup()`** —— 于是一个刚建好的库，如果第一次请求就是读
+    （服务起来之后先被人 `GET` 了一下），表还没建 → psycopg 报「relation does not exist」
+    → **500**。「读不到」和「坏了」是两件事，500 会把前一句说成后一句。
+
+    这条用一个**全新的库**验：建库 → 只读一次 → 必须是 404。
+    """
+    import uuid as _uuid
+    import psycopg
+    from fastapi.testclient import TestClient
+    name = "sf_fresh_%s" % _uuid.uuid4().hex[:8]
+    with psycopg.connect(PG_URL, autocommit=True) as conn:
+        conn.execute('create database "%s"' % name)
+    url = PG_URL.rsplit("/", 1)[0] + "/" + name
+
+    r = TestClient(service.create_app(checkpointer_url=url)).get("/job/nonexistent")
+    assert r.status_code == 404, "新库第一次请求就是读 → %s：%s" % (r.status_code, r.text[:200])

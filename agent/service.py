@@ -284,6 +284,9 @@ class Checkpointer:
         #: 那样 `/health` 会在一个**状态明明在 Postgres 里**的部署上说「重启就没了」
         #: —— 而那句话恰好是这套系统最不该说错的一句（R-19）。
         self._kind = "memory" if saver is not None else ("postgres" if self._url else "memory")
+        #: 读是不是走**另一条连接**（只有那种情况才该绕开写锁）。
+        #: ⚠️ 与 `kind` 同一个坑：必须**在构造时**定下来，不能等 `get()` 建完再判。
+        self._separate_reader = saver is None and bool(self._url)
 
     @property
     def kind(self) -> str:
@@ -331,10 +334,25 @@ class Checkpointer:
             if not self._url:
                 self._reader = self.get()           # 内存 saver：同一条（没有连接可抢）
                 return self._reader
-            conn = self._connect_conn(self._url)    # 另一条连接（表已经建过）
+            conn = self._connect_conn(self._url)
             from langgraph.checkpoint.postgres import PostgresSaver
-            self._reader = graph.allowlisted(PostgresSaver(conn))
+            reader = graph.allowlisted(PostgresSaver(conn))
+            # 表没建过就建（幂等）。不建的话，「**新库第一次请求就是读**」会在
+            # psycopg 那边报「relation \"checkpoints\" does not exist」→ **500**，
+            # 而那时候该说的其实是「没这个任务」（404）—— 把「没有」说成「坏了」。
+            reader.setup()
+            self._reader = reader
             return self._reader
+
+    @property
+    def separate_reader(self) -> bool:
+        """读连接**真的是另一条连接**吗。
+
+        只有在这种情况下才该绕开写锁：`InMemorySaver` **没有内部锁**，
+        读绕过写锁撞上一次 `invoke` 就可能「dictionary changed size during iteration」→ 500。
+        同一条 saver 上，读**该**排队（排队是对的，不是 bug）。
+        """
+        return self._separate_reader
 
     @property
     def reader_lock(self) -> threading.RLock:
@@ -541,7 +559,7 @@ class Service:
         - **调用方自己拼的图** → 读也问它那张图（它接在哪份 saver 上，它最清楚）。
         """
         job = self._jobs.get(job_id)
-        if self._graph_factory is None:
+        if self._graph_factory is None and self._check.separate_reader:
             with self._check.reader_lock:
                 return self._probe_graph().get_state(self._cfg(job_id))
         g = job.graph if (job is not None and job.graph is not None) else self._probe_graph()
@@ -842,12 +860,19 @@ class Service:
             job.brief.pop("_failed_at", None)
             if body.entry_url:
                 job.brief["entry_url"] = body.entry_url
-            if body.set_viewport and not job.brief.get("set_viewport"):
-                # 那张图的 `Deps` 是拼图时烤进去的 —— 现在要多一根线，就得重拼一张
-                # （状态在 checkpoint 里，换一张图接着跑是安全的：Test Graph 那条
-                #  「另一个图对象接着跑」的用例钉的就是这件事）。
-                job.brief["set_viewport"] = True
-                job.graph = self._build_graph(job.brief)
+            # ⚠️ **窗口一换就必须重拼那张图** —— 不是「只有新打开 set_viewport 时才要」。
+            #
+            # `Deps.explore`（`_explore_for`）与窗口层那根线（`_viewport_cb`）都是**拼图时**
+            # 对 `brief["ws_url"]` 闭包出来的。只把新 url 写进 brief / checkpoint 而不重拼，
+            # 得到的是：`reopen` 回 200、状态里写着新窗口，而探路手里那根线**还指着旧窗口** ——
+            # 续跑会又一次死在旧窗口上，出路只剩「重新开一个任务」= 整轮重来（P6 明令不许）。
+            # 探针那根线同理：不重拼它就一直量**旧**窗口（要么以莫名其妙的理由判没做成，
+            # 要么旧窗口刚好是那个尺寸时**判成做成了**）。
+            #
+            # 换一张图接着跑是安全的：状态在 checkpoint 里（Test Graph 那条
+            # 「另一个图对象接着跑」的用例钉的就是这件事）。
+            job.brief["set_viewport"] = bool(job.brief.get("set_viewport") or body.set_viewport)
+            job.graph = self._build_graph(job.brief)
             job.status = RUNNING
             job.error = None                    # 上一次那个失败不再是这个 job 的现状
             job.say = ("窗口重开了，探路要从头再走一遍（页面状态没了，账本得重新收）——"
@@ -904,7 +929,11 @@ class Service:
         if reason == END_DELIVERED:
             return ("不用重开：这一趟**已经交付**了（产物在 %s）。要再走一遍就另起一个任务。%s"
                     % (result.get("py_path"), can))
-        where = str(result.get("visits", [""])[-1] if result.get("visits") else "") or ""
+        # ⚠️ 不能从 `view["result"]` 里读 `visits` —— `FAILED` 的 job 那个字段是 `None`
+        # （**那是对的**：跑挂的没有结果），于是这句会永远渲染成「不知道哪一步」。
+        # 走到哪儿了这件事只在 checkpoint 里。
+        visits = list((self._snapshot(job_id).values or {}).get("visits") or [])
+        where = str(visits[-1]) if visits else ""
         if view["status"] == FAILED:
             return ("不用重开：这一趟是**炸**在「%s」那一步的（不是窗口没了）：\n%s\n%s\n"
                     "重开一个窗口解决不了它 —— 按上面那句话说的办。"

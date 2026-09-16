@@ -882,28 +882,6 @@ def test_a_reply_moves_the_job_out_of_waiting_and_a_second_reply_is_refused(tmp_
     assert view["gate"]["step"] == "explore", view["gate"]     # 下一道闸是人回完第一句之后才到的
 
 
-def test_reading_a_job_does_not_queue_behind_another_jobs_run():
-    """生产的形状（服务自己拼图）：**读走读连接**，不跟正在跑的 invoke 抢那把写锁。
-
-    一个 explore 的 invoke 可能跑几分钟，而 Console 的 `GET /job/{id}` 会排在它后面 ——
-    「进展」读几分钟才回来，人以为卡死了。这条把写锁按住，再去读一次：
-    读**必须**还能立刻回来。
-    """
-    svc = service.Service(checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
-    done = threading.Event()
-
-    def read():
-        svc._snapshot("job-nobody")
-        done.set()
-
-    with svc._check.lock:                       # 模拟「正跑着一次 invoke」
-        threading.Thread(target=read, daemon=True).start()
-        assert done.wait(5), "读被写锁挡住了 —— 它会一直排到那次 invoke 跑完（几分钟）"
-
-
-# ── Important 3：探针量不出来时，那一遍**不许**被记成「跑过了」──
-
-
 def test_a_viewport_round_that_could_not_be_measured_is_not_a_pass():
     """**量不出来 ≠ 做成了。**
 
@@ -1100,3 +1078,151 @@ def test_reopen_still_refuses_a_job_that_died_somewhere_else(tmp_path):
     r = client.post("/job/%s/reopen" % job_id, json={"ws_url": NEW_WS_URL})
     assert r.status_code == 409, r.text
     assert "探路" in r.json()["detail"], r.json()["detail"]
+
+
+# ═══════════ 修复轮 2（Important 5 的**接线**那一半 + 三条 Minor）═══════════
+
+
+def _selftest_stub(rec: Rec, tmp_path=None, *, call_viewport=False):
+    """自测桩。`call_viewport=True` 时**照 `selftest.run` 的样子真去调那个回调** ——
+    桩不调它，「闭包里是哪个窗口」这件事就永远看不见（上一轮就是这么漏掉的）。"""
+    def stub(py_path, ws_url, form_file, site, **kw):
+        rec.selftest.append({"py_path": str(py_path), "ws_url": ws_url, "site": site, **kw})
+        cb = kw.get("set_viewport")
+        if call_viewport and cb is not None:
+            try:
+                cb(*selftest.DEFAULT_VIEWPORT)
+            except Exception:
+                pass          # 真 `run()` 把回调抛错记成「这一遍没跑」，不往外抛
+        return _pass_report(site)
+    return stub
+
+
+def test_reopen_hands_the_resumed_explore_the_new_window(tmp_path, monkeypatch):
+    """`reopen` 换了窗口之后，**探路那一步真的拿到新窗口了吗**。
+
+    `Deps.explore` 是拼图时对 `brief["ws_url"]` **闭包**出来的（`_explore_for`），
+    而 `reopen` 原先只在 `set_viewport` 新打开时才重拼那张图 —— 于是
+    `POST /reopen {"ws_url": NEW}` 回 200、checkpoint 里也写着 NEW，
+    而探路手里那根线**还指着旧窗口**：续跑会又一次死在旧窗口上，
+    出路只剩「重新开一个任务」= **整轮重来**，正是 P6 明令不许的那件事。
+
+    ⚠️ 这条断言的是**探路实际被交到哪个 ws_url**，不是「reopen 回了 200」——
+    上一轮那几条断言（回 200、explore 跑了两次、自测拿到新窗口）对**出厂那版**也是绿的，
+    这正是它没被抓到的原因。
+    """
+    seen: list = []
+
+    def fake_explore(url, goal, budget=None, should_pause=None, **kw):
+        seen.append(kw.get("ws_url"))
+        if len(seen) == 1:
+            raise RuntimeError("窗口连不上了：connect to 192.168.1.197:61129 failed")
+        return _journey(url)
+
+    monkeypatch.setattr(browser_agent, "explore", fake_explore)
+    rec, saver = Rec(), InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)
+
+    def factory(brief, deps):
+        # ⚠️ 用**服务拼的那份** `deps.explore`（它包着 ws_url），只把贵的自测换成桩。
+        # 上一轮那个工厂把服务拼的 deps **整个丢掉**、自己造了一个不认 ws_url 的探路桩 ——
+        # 所以它对「闭包里是哪个窗口」这件事**结构上就是瞎的**。
+        return graph.build(checkpointer=saver, deps=graph.Deps(
+            explore=deps.explore, selftest=_selftest_stub(rec), set_viewport=deps.set_viewport))
+
+    client = _client(graph_factory=factory, window=StubWindow(), checkpointer=saver,
+                     viewport_probe=lambda _ws: None)
+    job_id = client.post("/run", json=_brief(
+        tmp_path, allow_skips=["country", "viewport"])).json()["job_id"]
+    _wait(client, job_id)
+    view = _reply_until_done(client, job_id)              # 回一句 → 探路抛 → failed
+    assert view["status"] == "failed", view
+    assert seen == [WS_URL], seen
+
+    assert client.post("/job/%s/reopen" % job_id,
+                       json={"ws_url": NEW_WS_URL}).status_code == 200
+    _reply_until_done(client, job_id)
+
+    assert seen[-1] == NEW_WS_URL, (
+        "续跑的探路还朝**旧窗口**去（reopen 给的是 %s，探路拿到的是 %s）—— "
+        "它会再死一次，而出路只剩整轮重来（P6 不许）" % (NEW_WS_URL, seen[-1]))
+
+
+def test_reopen_rebuilds_the_viewport_probe_onto_the_new_window(tmp_path):
+    """同一个闭包的另一半：`_viewport_cb` 也把 ws_url 闭在里头了。
+
+    换窗口之后它还在量**旧窗口** —— 于是第 4 遍要么以一个莫名其妙的理由被判没做成，
+    要么（旧窗口刚好是那个尺寸时）**被判成做成了**。两个方向都不能接受。
+    """
+    probes: list = []
+    win = StubWindow()
+    rec = Rec()
+
+    def probe(ws_url):
+        probes.append(ws_url)
+        return win.calls[-1] if win.calls else None
+
+    saver = InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)
+    selftest_stub = _selftest_stub(rec, call_viewport=True)
+    explore_stub = _deps(Rec(), tmp_path).explore      # 这条测的是**窗口那根线**，不是探路
+    client = _client(graph_factory=lambda brief, deps: graph.build(
+        checkpointer=saver, deps=graph.Deps(explore=explore_stub, selftest=selftest_stub,
+                                            set_viewport=deps.set_viewport)),
+        window=win, checkpointer=saver, viewport_probe=probe)
+    job_id = client.post("/run", json=_brief(
+        tmp_path, ws_url=None, set_viewport=True)).json()["job_id"]
+    stopped = _reply_until_done(client, job_id)
+    assert stopped["result"]["end_reason"] == "no_window", stopped["result"]
+    assert probes == [], "没窗口可量的时候根本到不了那根线：%r" % probes
+
+    assert client.post("/job/%s/reopen" % job_id,
+                       json={"ws_url": NEW_WS_URL, "set_viewport": True}).status_code == 200
+    _reply_until_done(client, job_id)
+
+    with_size = [p for p in probes if p]
+    assert with_size and with_size[-1] == NEW_WS_URL, (
+        "换窗口之后那根线还在量旧窗口（量过：%r）" % with_size)
+
+
+# ── 同一轮评审的三条 Minor ──
+
+
+def test_the_refusal_message_names_the_step_a_failed_job_died_on(tmp_path):
+    """Minor 1：`FAILED` 的 job，`_view` 给的 `result` 是 `None`（**那是对的** ——
+    跑挂的没有结果），所以拒绝的话里想「点名是哪一步」就不能从那儿读：
+    它永远渲染成「炸在『不知道哪一步』那一步」—— 一句读了等于没读的话。
+    （覆盖那条测试只断言了 `"探路"`，而那三个字来自另一句 `can` 文案，与这里无关。）
+    """
+    fg = FakeGraph(steps=[_Snap(values={"visits": ["intake", "explore", "draft"]},
+                                next=("draft",), interrupts=(_gate("draft"),))],
+                   raise_on=[2])
+    client = _client(graph_factory=lambda brief, deps: fg)
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, job_id)
+    client.post("/job/%s/reply" % job_id, json={"action": "continue"})
+    view = _wait(client, job_id, until=("failed", "done"))
+    assert view["status"] == "failed", view
+
+    detail = client.post("/job/%s/reopen" % job_id, json={"ws_url": NEW_WS_URL}).json()["detail"]
+    assert "不知道哪一步" not in detail, detail
+    assert graph.STEP_SAY["draft"] in detail, "得点名它炸在哪一步：%s" % detail
+
+
+def test_reads_of_a_shared_in_memory_saver_stay_under_the_write_lock():
+    """Minor 2：「读不排队」只对**另一条连接**成立。
+
+    （这条是替换掉旧那条 `test_reading_a_job_does_not_queue_behind_another_jobs_run` 的 ——
+    旧那条拿**内存** saver 断言「读不排队」，而内存 saver 没有内部锁，那个断言是**错的**。
+    「不排队」那一半现在由 `tests/test_pg_checkpointer.py` 里
+    `test_reads_go_through_a_second_connection_so_progress_does_not_wait_for_a_run`
+    在真 Postgres 上钉着 —— 那才是这条性质成立的场合。）
+
+    `InMemorySaver` **没有内部锁** —— 读绕过写锁就可能撞上
+    「dictionary changed size during iteration」→ 500。所以同一条 saver 上，读**该**排队；
+    上一条（Postgres 那条）验的才是「另一条连接上的读不排队」。
+    """
+    svc = service.Service(checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
+    done = threading.Event()
+    threading.Thread(target=lambda: (svc._snapshot("job-nobody"), done.set()), daemon=True).start()
+    with svc._check.lock:                        # 写锁按着（模拟一次 invoke）
+        assert not done.wait(0.5), "读绕过了写锁 —— 同一条内存 saver 上并发读会炸"
+    assert done.wait(5), "松开写锁之后读还是没回来"
