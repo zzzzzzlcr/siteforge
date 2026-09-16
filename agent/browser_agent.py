@@ -652,7 +652,20 @@ def _fill_info(args: dict, target: dict, element, journey: Journey) -> dict:
 
 
 def _fill_name(label: str, element, journey: Journey) -> str:
-    base = label or (element or {}).get("placeholder") or (element or {}).get("type") or FALLBACK_FILL_NAME
+    """这个字段叫什么 —— 它同时是 `source`：**产物拿它去运营的 form-file 里找真数据**。
+
+    ⚠️ 所以名字要**对得上运营那份资料的键**（`zip` / `postcode` / `email` / `phone` …），
+    否则产物每次都只能退回随机池 —— 用户 2026-09-17 在真窗口上问的正是这件事
+    （「是不是资料没对齐」）：那个 ZIP 框的标签是个不透明的 MUI id（`textField-173838`），
+    名字就成了 `textfield_173838`，运营的 `zip`/`postcode` 键**一个都对不上**。
+
+    现在：**先看这个字段在页面上说的是什么**（`_field_kind`：自己的名字 → 周围写着的字 →
+    html 的 type），认得出就用那个**语义名**（`postcode`/`email`/`phone`/…），
+    认不出才退回原来的「标签 / placeholder / type」那条老路（不编名字）。
+    """
+    kind = _field_kind(label, element)
+    base = (kind or label or (element or {}).get("placeholder")
+            or (element or {}).get("type") or FALLBACK_FILL_NAME)
     stem = _snake(base) or FALLBACK_FILL_NAME
     used = {(s.get("result") or {}).get("fill", {}).get("name")
             for s in journey.steps if (s.get("result") or {}).get("fill")}
@@ -692,6 +705,31 @@ _TYPE_HINTS = {
 }
 
 
+def _field_kind(label: str, element):
+    """这个字段**是什么**（`postcode` / `email` / `phone` / `full_name` …）—— 认不出给 `None`。
+
+    三档，顺序就是判据的一部分（别合回去，理由见 `_fallback` 的 docstring）：
+    ① 字段自己的名字（`label` / `hint` / `placeholder`）→ ② 页面上它周围写着的字
+    （`nearby_text`）→ ③ html 的 `type`（只认不歧义的）。
+
+    ⚠️ 这个「是什么」有两个用处，**必须是同一个答案**：
+      - `_fallback`：form-file 里没有这个键时，填什么随机值；
+      - `_fill_name`：这个字段叫什么（= `source`，产物拿它去 form-file 里找运营的真数据）。
+    两处各判一次必然漂（一处改了另一处没改），所以只有这一个函数说这件事。
+    """
+    element = element or {}
+    for blob in (" ".join(str(x or "") for x in (label, element.get("label"), element.get("hint"),
+                                                 element.get("placeholder"))),
+                 " ".join(str(x or "") for x in (element.get("nearby_text") or []))):
+        blob = blob.lower()
+        if not blob.strip():
+            continue
+        for words, random_kind in _RANDOM_HINTS:
+            if any(w in blob for w in words):
+                return random_kind
+    return _TYPE_HINTS.get(str(element.get("type") or "").strip().lower())
+
+
 def _fallback(kind: str, value: str, label: str, element) -> list:
     """重放时这个字段填什么：先读 form-file 的键（`source`），没有就用这里。
 
@@ -717,25 +755,9 @@ def _fallback(kind: str, value: str, label: str, element) -> list:
         return [value or "true"]
     if kind == "select":
         return [value] if value else []
-    element = element or {}
-    tiers = (
-        # ① 字段自己的名字
-        " ".join(str(x or "") for x in (label, element.get("label"), element.get("hint"),
-                                        element.get("placeholder"))),
-        # ② 页面上它周围写着的字（元素旁边那段说明 / 问句）
-        " ".join(str(x or "") for x in (element.get("nearby_text") or [])),
-    )
-    for blob in tiers:
-        blob = blob.lower()
-        if not blob.strip():
-            continue
-        for words, random_kind in _RANDOM_HINTS:
-            if any(w in blob for w in words):
-                return [{"random": random_kind}]
-    # ③ 只有「字段自己没名字、周围也没写字」时才轮到 html 的 type
-    by_type = _TYPE_HINTS.get(str(element.get("type") or "").strip().lower())
-    if by_type:
-        return [{"random": by_type}]
+    guessed = _field_kind(label, element)
+    if guessed:
+        return [{"random": guessed}]
     return [{"random": "full_name"}]
 
 

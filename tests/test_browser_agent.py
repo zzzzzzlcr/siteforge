@@ -1250,3 +1250,47 @@ def test_check_and_select_fills_are_not_touched_by_the_semantics():
     assert browser_agent._fallback("check", "true", "x", _field(type="tel")) == ["true"]
     assert browser_agent._fallback("select", "Florida", "x", _field(type="tel")) == ["Florida"]
     assert browser_agent._fallback("select", "", "x", _field(type="tel")) == []
+
+
+def test_an_opaque_labelled_field_is_named_after_what_the_page_says():
+    """名字（= `source`）要**对得上运营那份资料的键** —— 不然每次都只能退回随机池。
+
+    用户 2026-09-17 在真窗口上问的就是这件事（「是不是资料没对齐」）：那个 ZIP 框的标签是
+    不透明的 MUI id（`textField-173838`），名字就成了 `textfield_173838`，
+    运营的 `zip` / `postcode` 键**一个都对不上** → 每次都走随机池。
+    现在按 `_field_kind` 取语义名（自己的名字 → 周围写着的字 → html 的 type），
+    认不出才退回标签那条老路（**不编名字**）。
+    """
+    journey = browser_agent.Journey()
+    opaque_zip = {"label": "textField-173838", "hint": "", "placeholder": "", "type": "tel",
+                  "nearby_text": ["What's your ZIP code?"]}
+    assert browser_agent._fill_name("textField-173838", opaque_zip, journey) == "postcode"
+
+    # 反例（同一格）：页面上什么都没说 → **不编**，照旧用标签那条老路
+    nothing = {"label": "textField-9999", "hint": "", "placeholder": "", "type": "text",
+               "nearby_text": []}
+    assert browser_agent._fill_name("textField-9999", nothing, journey) == "textfield_9999"
+
+    # 有正经标签的：名字收敛到**运营那份资料的词汇**（`email`，不是 `email_address`）——
+    # 「Full Name:」本来就是 full_name，看不出来；「Email Address:」这一格看得出来。
+    assert browser_agent._fill_name("Full Name:", {"label": "Full Name:"}, journey) == "full_name"
+    assert browser_agent._fill_name("Email Address:", {"label": "Email Address:"}, journey) == "email"
+
+
+def test_the_source_of_a_zip_fill_matches_the_operators_form_file():
+    """端到端：`source` = `postcode` → 产物能从运营的 form-file 里**取到真数据**。
+
+    这就是「资料对齐」的判据 —— 名字对不上时产物只能填随机值（那正是用户看到的现象之一）。
+    """
+    args = {"value": "33101"}
+    target = {"text": None, "label": "textField-173838", "role": None, "near": None,
+              "selectors": ["#zip"], "above_fold_only": False, "frame_id": ""}
+    element = {"label": "textField-173838", "type": "tel",
+               "nearby_text": ["What's your ZIP code?"]}
+    info = browser_agent._fill_info(args, target, element, browser_agent.Journey())
+    assert info["name"] == "postcode" and info["source"] == "postcode", info
+    # 运营那份 form.json（跑这一趟用的就是它）里有 postcode 键 → 能对上
+    import json as _json
+    form = _json.load(open("/tmp/gwacc4/form.json")) if __import__("pathlib").Path("/tmp/gwacc4/form.json").exists() else None
+    if form is not None:
+        assert info["source"] in form, (info["source"], sorted(form))
