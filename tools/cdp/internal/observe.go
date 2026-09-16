@@ -59,6 +59,43 @@ func normalizeNilLists(m *PageModel) *PageModel {
 	return m
 }
 
+// framePathFor 是**单帧**观测的 frame_path 取值（规格 §4.3，2026-09-16 修复轮 2 定的契约）：
+//
+//	Observe(frameID)  →  [frameID]        （frameID 为空 → ["main"]）
+//	ObserveAll()      →  ["main", <childId>, …]   从根到叶（由 mergeFrameModel 写）
+//
+// 为什么单帧给的不是完整路径：**单帧不知道祖先链** —— 它手上只有一个 frameID。
+// 而消费者要的恰恰是「这条动作该发给哪一帧」，`[frameID]` 就是那个答案。
+// 需要完整路径的人用 ObserveAll。两种模式语义不同，但都自洽、都够消费者用。
+//
+// ⚠️ 不要去改 observeJS 里那个写死的 `frame_path: ['main']`：那是 **JS 侧的默认值**，
+// 合并那条路（mergeFrameModel 会覆盖 FramePath）依赖它保持现状；动 JS 会连带改合并的行为。
+// 这里在 Go 侧覆盖它，影响面只有「单帧」这一条路。
+func framePathFor(frameID string) []string {
+	if frameID == "" {
+		return []string{mainFramePath}
+	}
+	return []string{frameID}
+}
+
+// normalizeFramePaths 把单帧模型的每条动作/字段盖成 framePathFor(frameID)。
+//
+// 覆盖的是 observeJS 写死的 `['main']` —— 不覆盖的话，**子帧**里观测出来的元素
+// 会被标成主帧（py 照 frame_path 选帧就会把点击发到主帧：静默点错，比报错更难查）。
+func normalizeFramePaths(m *PageModel, frameID string) *PageModel {
+	if m == nil {
+		return nil
+	}
+	path := framePathFor(frameID)
+	for i := range m.Actions {
+		m.Actions[i].FramePath = path
+	}
+	for i := range m.Fields {
+		m.Fields[i].FramePath = path
+	}
+	return m
+}
+
 // Diagnostic 是一条「这里我没看清」的记录。
 //
 // FramePath 指向出问题的那一帧（主帧是 ["main"]），agent/Console 顺着能查是哪一帧。
@@ -402,7 +439,8 @@ func (c *Client) Observe(frameID string) (*PageModel, error) {
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		return nil, fmt.Errorf("observe 契约解析失败: %w\n原始: %.300s", err, raw)
 	}
-	// 空列表一律编成 []（见 normalizeNilLists）。单帧这条路必须自己走一遍：
-	// JS 不产出 diagnostics，不归一化的话它编出来就是 null。
-	return normalizeNilLists(&m), nil
+	// 单帧这条路的两处归一化都在这里（合并那条路走 mergeFrameModel + normalizeNilLists）：
+	//   - 空列表一律编成 []（JS 不产出 diagnostics，不归一化它编出来就是 null）
+	//   - frame_path 按单帧契约盖成 [frameID]（JS 写死的 ['main'] 在子帧上是错的）
+	return normalizeFramePaths(normalizeNilLists(&m), frameID), nil
 }

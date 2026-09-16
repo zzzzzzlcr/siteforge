@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -589,13 +590,12 @@ func TestObserveCommandMergesChildFrames(t *testing.T) {
 	}
 
 	// 单帧模式（--frame-id）走的是**另一条路** —— `Observe` 而不是 `ObserveAll`。
-	// 空列表归一化两条路都要覆盖（单帧那条约 `diagnostics` 曾经恒为 null），
-	// 所以这里拿刚取到的子帧 ID 再观测一次。
+	// 空列表归一化与 frame_path 契约两条都要在这条路上覆盖，所以拿刚取到的子帧 ID 再观测一次。
 	//
-	// ⚠️ 这里**刻意不断言** frame_path：单帧输出里每条动作的 frame_path 是
-	// observeJS **写死的** `['main']`（internal/observe.go:282），而这一帧其实是子帧 ——
-	// 那是本任务报出去的**另一条**契约问题（报告 7-③），本轮不修。
-	// 断言它等于把错的行为钉死，所以只断言"总量对得上 + 五个列表都是数组"。
+	// frame_path 契约（规格 §4.3，修复轮 2 定）：单帧 → `[frameID]`，主帧 → `["main"]`。
+	// 修之前这里写死的是 `['main']`（observeJS 的默认值，Go 侧没覆盖）——
+	// 子帧的元素被标成主帧，py 照它选帧就会**静默把点击发到主帧**。
+	// 主帧那条腿在 TestObserveSingleFrameMainFrameFramePath（CLI 上不可达，只能在这一层验）。
 	outSingle, errOutSingle, codeSingle := e.observe(t, "--frame-id", childFrameID)
 	if codeSingle != 0 {
 		t.Fatalf("单帧 observe 退出码 = %d\nstderr: %s", codeSingle, errOutSingle)
@@ -623,10 +623,68 @@ func TestObserveCommandMergesChildFrames(t *testing.T) {
 	if len(single.Diagnostics) != 0 {
 		t.Errorf("单帧 diagnostics 应为空（这一帧取得到），实际 %d 条", len(single.Diagnostics))
 	}
+	// frame_path：[<子帧ID>]，**不是** ["main"]（后者是修之前 JS 写死的错值）。
+	wantSinglePath := []string{childFrameID}
+	for i, a := range single.Actions {
+		if !slices.Equal(a.FramePath, wantSinglePath) {
+			t.Errorf("单帧 actions[%d] (%s) 的 frame_path = %q, want %q —— "+
+				"单帧只报「这条动作属于哪一帧」，要完整祖先链用整页模式",
+				i, a.Selector, a.FramePath, wantSinglePath)
+		}
+	}
+	for i, f := range single.Fields {
+		if !slices.Equal(f.FramePath, wantSinglePath) {
+			t.Errorf("单帧 fields[%d] (%s) 的 frame_path = %q, want %q", i, f.Selector, f.FramePath, wantSinglePath)
+		}
+	}
 
 	t.Logf("退出码=0；actions=%d fields=%d shadow_roots=%d 子帧=%s\n单帧：actions=%d fields=%d url=%s\n前 3 行输出:\n%s",
 		len(m.Actions), len(m.Fields), m.ShadowRoots, childFrameID,
 		len(single.Actions), len(single.Fields), single.URL, firstLines(out, 3))
+}
+
+// TestObserveSingleFrameMainFrameFramePath 补 `Observe` frame_path 契约的**另一条腿**：
+// frameID 为空（主帧）→ `frame_path == ["main"]`（规格 §4.3）。
+//
+// ⚠️ 这条**走不了二进制**：CLI 把 `--frame-id ""` 当成「没传」→ 整页模式（见 observe.go
+// 顶部注释），所以「单帧观测主帧」在 CLI 上根本不可达 —— 只能在 Go API 这一层验。
+// 子帧那条腿（那条**能**走二进制）在 TestObserveCommandMergesChildFrames 里。
+//
+// 这条也是唯一能证明「主帧不会被盖成空路径/子帧 ID」的地方：单帧归一化用的是同一个
+// framePathFor，主帧走的是它的另一个分支。
+func TestObserveSingleFrameMainFrameFramePath(t *testing.T) {
+	e := env(t)
+	fixtureURL := e.fixture + "/base.html"
+	e.navigate(t, fixtureURL) // 用二进制导航，确保打的是这一页
+
+	c, err := internal.NewClient("127.0.0.1", e.chromePort)
+	if err != nil {
+		t.Fatalf("连私有浏览器失败: %v", err)
+	}
+	defer c.Disconnect()
+
+	m, err := c.Observe("") // 空 frameID = 主帧
+	if err != nil {
+		t.Fatalf("Observe(\"\") 失败: %v", err)
+	}
+	if m.URL != fixtureURL {
+		t.Errorf("url = %q, want %q", m.URL, fixtureURL)
+	}
+	if len(m.Actions) == 0 || len(m.Fields) == 0 {
+		t.Fatalf("主帧上 actions/fields = %d/%d —— 断言会空转通过", len(m.Actions), len(m.Fields))
+	}
+	want := []string{"main"}
+	for i, a := range m.Actions {
+		if !slices.Equal(a.FramePath, want) {
+			t.Errorf("主帧 actions[%d] (%s) 的 frame_path = %q, want %q", i, a.Selector, a.FramePath, want)
+		}
+	}
+	for i, f := range m.Fields {
+		if !slices.Equal(f.FramePath, want) {
+			t.Errorf("主帧 fields[%d] (%s) 的 frame_path = %q, want %q", i, f.Selector, f.FramePath, want)
+		}
+	}
+	t.Logf("Observe(\"\")：actions=%d fields=%d，frame_path 全为 [\"main\"]", len(m.Actions), len(m.Fields))
 }
 
 // TestObserveCommandEmptyListsAreArrays 是「空列表必须是 `[]`、不许是 `null`」的守门测试
