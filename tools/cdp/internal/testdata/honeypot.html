@@ -1,0 +1,33 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>R3 honeypot</title></head>
+<body>
+<h1>honeypot fixture</h1>
+
+<!-- ── 蜜罐①：真站形态（2026-09-16 实测 check.compareinsulation.io 的漏斗页）──────
+     input[name="company_url"] 被摆在 left:-9983px —— 屏幕外左侧 9983px。
+     人永远看不见它，bot 填了就被站点标记成机器人。
+     它的**文档坐标**同样是负的（-9999 + 宽 200 <= 0）→ 滚也滚不到。 -->
+<input name="company_url" type="text" placeholder="Company Website"
+       style="position:absolute;left:-9999px;top:60px;width:200px;height:20px">
+
+<!-- ── 蜜罐②：同一条判据的**另一条轴**（文档坐标的负 Y）────────────────────────
+     只钉左侧那一轴的话，「只判 rect.left」的实现照样能过 —— 两条轴都要有。 -->
+<input name="fax_number" type="text" placeholder="Fax"
+       style="position:absolute;left:60px;top:-9999px;width:200px;height:20px">
+
+<!-- ── 正常字段（字段那条路的正向对照）── 必须仍在 fields 里 -->
+<input name="email" type="email" placeholder="Real Email" style="display:block;width:200px">
+
+<!-- ── 正向对照：**滚出视口、但滚得到**的正常元素 ──────────────────────────────
+     这是整张 fixture 里最要紧的一条：没有它，测试就证明不了「判据用的是**文档**坐标」。
+     它在正常流里（文档坐标 left≈8、top≈90 上下），下面那个 4000×4000 的块把文档撑开，
+     观测之前测试会先 window.scrollTo(600, 600) —— 此刻它的
+       **视口**坐标是负的（rect.left = 8-600 = -592，宽 120 ⇒ rect.left+width <= 0），
+       拿视口坐标当判据的实现会把它**误判成蜜罐**；
+       **文档**坐标一个字没变（8 ⇒ 8+120 > 0），拿文档坐标判的实现必须留住它。
+     宽写死 120 是为了让上面那个算式与视口宽度无关（headless 默认 800×600 也好、
+     别处 780×437 也好，滚动量 600 都远大于元素自身 120 的宽度）。 -->
+<button id="reachable" style="display:block;width:120px">Reachable After Scroll</button>
+
+<div style="width:4000px;height:4000px"></div>
+</body></html>

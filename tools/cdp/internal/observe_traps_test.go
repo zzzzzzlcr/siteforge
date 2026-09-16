@@ -207,6 +207,47 @@ func TestObserveJSMustUsePierceHelper(t *testing.T) {
 	}
 }
 
+// 蜜罐判据必须是**文档坐标**，不是视口坐标（规格 R19b）。
+//
+// 这条为什么值得单独钉：两种实现**在没滚动过的页面上给出完全一样的答案** ——
+// 陷阱（left:-9999px）在两边都是负的，正常元素在两边都是正的。只有页面滚过之后
+// 才分得开：视口坐标下，一个文档坐标 120 的正常按钮 rect.left = -480（滚到 600 时），
+// 于是**正常内容被整片丢掉**，而且不报任何错。
+// 行为那一半在 cmd/honeypot_e2e_test.go（真浏览器、先滚动再观测，正向对照就是
+// 那个正常按钮）；这里钉的是**实现特征**，便宜且不依赖浏览器：
+// 判据里没有 scrollX/scrollY 就一定是视口判据。
+//
+// 断言落在 trapWhy 的**函数体内**（不是全脚本）：全脚本里 scrollX 到处都是，
+// 查全脚本等于恒真（observe_traps_test.go 顶部记的那类空转）。
+func TestObserveJSMustUseDocumentCoordinatesForHoneypots(t *testing.T) {
+	body := jsFuncBody(t, observeJS(), "trapWhy")
+	for _, want := range []string{"scrollX", "scrollY"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("trapWhy 里没有 %s —— 只拿 getBoundingClientRect() 判的话判的是**视口**坐标："+
+				"页面滚过之后普通元素也会给出负的 rect，滚上去的正常内容会被静默丢掉"+
+				"（实测：滚到 (600,600) 时文档坐标 120 的按钮 rect.left = -480）", want)
+		}
+	}
+	// 判据的两条轴都要在：只判 left 的话，top:-9999px 那一类陷阱漏网。
+	for _, want := range []string{"width", "height"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("trapWhy 里没有 %s —— 盒子落在文档坐标负区要按**整个盒子**判（另一条轴会漏）", want)
+		}
+	}
+}
+
+// honeypots 这个键必须真的出现在 JS 返回的对象里。
+//
+// 为什么单独一条：JS→Go 的绑定是**按字符串键**的（observeJS 末尾那个对象字面量 ↔
+// PageModel 的 json tag），键名写错就是**静默零值** —— 而零值恰好也是一个合法的
+// 「这一页没有陷阱」。于是「判据失效」与「这一页真没陷阱」在 Go 侧长得一模一样。
+func TestObserveJSMustEmitHoneypotsKey(t *testing.T) {
+	if body := observeBody(t); !strings.Contains(body, "honeypots: traps") {
+		t.Error("observeJS 返回的对象里没有 `honeypots: traps` —— Go 侧那个键会静默拿到零值" +
+			"（而零值 = 「这一页没有陷阱」，与判据整个失效长得一样）")
+	}
+}
+
 func TestObserveJSMustNotEmitSemanticJudgements(t *testing.T) {
 	js := observeJS()
 	// 规格 D11：observe 给感知不给判断
@@ -225,12 +266,23 @@ func TestPageModelJSONShape(t *testing.T) {
 	                     "bbox":[1,2,3,4],"region":"hero","above_fold":true,
 	                     "relative_size":1.8,"peer_count":3,"z_index":"auto",
 	                     "contrast":"high","nearby_text":["x"]}],
-	         "fields":[],"option_groups":[],"obstructions":[]}`
+	         "fields":[],"option_groups":[],"obstructions":[],
+	         "honeypots":[{"selector":"input[name=\"company_url\"]","hint":"company_url",
+	                       "why":"off-document-left"}]}`
 	var m PageModel
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		t.Fatalf("契约 JSON 解析失败: %v", err)
 	}
 	if len(m.Actions) != 1 || m.Actions[0].Selector != "#a" || m.Actions[0].ShadowDepth != 2 {
 		t.Fatalf("字段没对上: %+v", m.Actions)
+	}
+	// honeypots 的三个键都要对上（形状取自真站实测的那一条：input[name=company_url]）。
+	// 理由与上面那些字段同一个：键写错 = 静默零值，而零值在消费者眼里正好读成
+	// 「这一页没有陷阱」—— 判据整个失效与「页面真没陷阱」长得一模一样。
+	if len(m.Honeypots) != 1 {
+		t.Fatalf("honeypots 没解出来（want 1 条）: %+v", m.Honeypots)
+	}
+	if h := m.Honeypots[0]; h.Selector != `input[name="company_url"]` || h.Hint != "company_url" || h.Why != "off-document-left" {
+		t.Errorf("honeypots[0] = %+v，三个键应分别是 input[name=\"company_url\"] / company_url / off-document-left", h)
 	}
 }

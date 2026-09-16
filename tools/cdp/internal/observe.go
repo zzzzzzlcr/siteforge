@@ -16,6 +16,15 @@ type PageModel struct {
 	Fields       []Field       `json:"fields"`
 	OptionGroups []OptionGroup `json:"option_groups"`
 	Obstructions []Obstruction `json:"obstructions"`
+	// Honeypots 是**已被排除**的元素：它们**不在** actions / fields 里，
+	// 单列在这里（规格 R19b，判据见 Honeypot）。
+	//
+	// ⚠️ 为什么要单独记一笔，而不是静静地丢掉：丢干净之后，消费者**分不清**
+	// 「这一页本来就没有这些字段」和「有字段，但被判成陷阱丢掉了」——
+	// 而这两件事的下一步动作完全相反（前者要换策略，后者照常往下走）。
+	// 本项目对「静默丢东西」有成套的先例（帧取不到记 diagnostic、空列表一律编 `[]`
+	// 而不是 `null`），这条是同一族。
+	Honeypots []Honeypot `json:"honeypots"`
 	// Diagnostics 是**观测者自己的问题**，与「页面上的东西」分开：
 	//   - Obstructions = 页面上真有个 cookie 横幅挡着（有 selector / dismiss_selector 语义）
 	//   - Diagnostics  = 这一次观测本身不完整（某帧没取到、帧枚举可能退化了）
@@ -52,6 +61,9 @@ func normalizeNilLists(m *PageModel) *PageModel {
 	}
 	if m.Obstructions == nil {
 		m.Obstructions = []Obstruction{}
+	}
+	if m.Honeypots == nil {
+		m.Honeypots = []Honeypot{}
 	}
 	if m.Diagnostics == nil {
 		m.Diagnostics = []Diagnostic{}
@@ -154,6 +166,42 @@ type Obstruction struct {
 	Text            string `json:"text"`
 }
 
+// Honeypot 是一条**被判为陷阱、已从 actions / fields 里排除**的元素。
+//
+// 真站实测（2026-09-16，check.compareinsulation.io 的漏斗页）：注册表单里埋着
+//
+//	<input name="company_url" type="text" style="…left:-9983px…">
+//
+// 人看不见它；bot 填了就被站点标记成机器人。而 `observe` 当时把它**同时**列进
+// actions 与 fields，两边都评 `stability: high` —— 等于把陷阱当成高置信度的
+// 主路径递给 agent。旧系统早有「蜜罐跳过」（auto-farm-skill `db792c1`），
+// 这条按**位置**判据把它恢复过来。
+//
+// 判据（唯一的一条，在 observeJS 的 trapWhy 里）：
+//
+//	docLeft = rect.left + scrollX ;  docTop = rect.top + scrollY
+//	unreachable = (docLeft + rect.width <= 0) || (docTop + rect.height <= 0)
+//
+// 整个盒子落在**文档坐标的负区** —— 滚也滚不到，人永远碰不着。
+// ⚠️ 必须是**文档**坐标而不是视口坐标：rect 是视口相对的，普通元素只要页面滚过
+// 就会出现负的 rect.left（实测：滚到 (600,600) 时，文档坐标 120 的按钮给出
+// rect.left = -480）。拿视口坐标判 = 把所有「滚上去看不见」的正常内容一起丢掉。
+//
+// ⚠️ 名字（company_url / website / fax …）**不是**判据：名字会腐烂，而它腐烂的方向
+// 是**放行**（陷阱又回到 actions 里，没人会说话）。名字只作为线索记进 Hint。
+type Honeypot struct {
+	Selector string `json:"selector"`
+	// Hint 是元素自报的 name / id / placeholder —— **只是线索，不是判据**。
+	// 给人和 agent 一眼看出「站点觉得这是个什么字段」，别拿它做分支。
+	Hint string `json:"hint"`
+	// Why 是判据名：`off-document-left` / `off-document-top`（哪条轴）。
+	//
+	// 用**判据名**而不是自由文本，理由与 Obstruction.Kind 同族：消费者要能按它分支。
+	// ⚠️ 刻意**不**复用 `occluded_by` 的 `"offscreen"` —— 规格 R21 已经裁定那个值
+	// 「一个值扛三种含义」（折线下 / 蜜罐 / 视口太矮），别再往那个方向加。
+	Why string `json:"why"`
+}
+
 // observeJS 返回单帧页面模型的求值脚本。
 //
 // 穿透走内核助手 __cdpQA / __cdpRoots（由 withPierce 注入），不自实现遍历 ——
@@ -183,6 +231,29 @@ func observeJS() string {
     if (r.width <= 0 || r.height <= 0) return false;
     var s = getComputedStyle(el);
     return s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
+  }
+  // ── 蜜罐：整个盒子落在**文档坐标的负区** ──
+  // 真站实测（2026-09-16，check.compareinsulation.io 的漏斗页）：input[name="company_url"]
+  // 被摆在 left:-9983px —— 人看不见，bot 填了就被站点标记。旧系统早有「蜜罐跳过」
+  // （auto-farm-skill db792c1），这里按**位置**判据把它恢复。
+  //
+  // ⚠️ 判据必须是**文档**坐标，不是视口坐标：
+  //     docLeft = rect.left + scrollX ;  docTop = rect.top + scrollY
+  //   rect 是**视口相对**的 —— 页面只要滚过，一个完全正常的元素也会给出负的 rect.left
+  //   （实测：滚到 (600,600) 时，文档坐标 120 的按钮给出 rect.left = -480）。
+  //   拿视口坐标判，等于把所有「滚上去看不见」的正常内容一起丢掉，而且是**静默**丢
+  //   —— 正是这个缺陷本来的样子，只是受害者换成了正常元素。文档坐标下那个按钮恒为
+  //   120、滚不掉；而真陷阱在文档坐标里就是 ≤0，滚也滚不到：判据分得开两者。
+  //
+  // ⚠️ 名字（company_url / website / fax …）**不是**判据：名字会腐烂，而它腐烂的方向
+  //   是**放行**（陷阱又回到 actions 里）。名字只当线索记进 honeypots[].hint。
+  function trapWhy(el) {
+    var r = el.getBoundingClientRect();
+    var docLeft = r.left + (window.scrollX || window.pageXOffset || 0);
+    var docTop = r.top + (window.scrollY || window.pageYOffset || 0);
+    if (docLeft + r.width <= 0) return 'off-document-left';
+    if (docTop + r.height <= 0) return 'off-document-top';
+    return null;
   }
   function shadowDepth(el) {
     var d = 0, n = el;
@@ -286,6 +357,26 @@ func observeJS() string {
     out.push(pathSel(el));
     return out.filter(function (s, i, a) { return s && a.indexOf(s) === i; });
   }
+  // traps：被排除的蜜罐，**记一笔**再丢（见 Go 侧 Honeypot 的注释）。
+  //
+  // 为什么要去重：同一个元素会被**两条路**各查一次 —— 可动作元素的选择器里含
+  // input/select/textarea，表单字段收集器**也**收这一批。不设防的话同一个陷阱会记
+  // 两条；而「同一条陷阱被报两次」正是这个缺陷原来的样子（当时是同时列进
+  // actions 与 fields 各一次），别让它换个通道复活。
+  var traps = [], trapEls = [];
+  function trap(el) {
+    var why = trapWhy(el);
+    if (!why) return null;
+    if (trapEls.indexOf(el) === -1) {
+      trapEls.push(el);
+      traps.push({
+        selector: candidates(el)[0],
+        hint: el.name || el.id || el.placeholder || '',
+        why: why
+      });
+    }
+    return why;
+  }
   function stability(el, cands) {
     var c = cands[0] || '';
     if (/^#/.test(c) || /\[(name|data-)/.test(c)) return 'high';
@@ -353,8 +444,10 @@ func observeJS() string {
   }
 
   // ── 可动作元素 ──
+  // ⚠️ 蜜罐在**切片之前**滤掉：切片（slice(0,200)）是截断，让陷阱占着名额等于
+  // 把页面末尾的真元素挤出去 —— 一个观察者自己制造出来的盲区。
   var SEL = 'a[href],button,input,select,textarea,[role=button],[role=link],[role=option],[role=tab],[role=checkbox],[role=radio],[onclick]';
-  var cands = qsa(SEL).filter(vis);
+  var cands = qsa(SEL).filter(vis).filter(function (el) { return !trap(el); });
   var areas = cands.map(function (e) { var r = e.getBoundingClientRect(); return r.width * r.height; })
     .sort(function (a, b) { return a - b; });
   var med = areas.length ? areas[Math.floor(areas.length / 2)] : 1;
@@ -377,7 +470,9 @@ func observeJS() string {
   });
 
   // ── 表单字段 ──
-  var fields = qsa('input,select,textarea').filter(vis).slice(0, 100).map(function (el) {
+  // 这条**也要**过 trap()：input[name=company_url] 原来正是从**这一条**路又漏了
+  // 一遍（它在 actions 里被滤掉不等于在 fields 里也被滤掉 —— 两条独立的收集路）。
+  var fields = qsa('input,select,textarea').filter(vis).filter(function (el) { return !trap(el); }).slice(0, 100).map(function (el) {
     // 标签取法按**抗改名的程度**排序（2026-09-16 Task 7 修复轮 1）：
     //   1. aria-label —— 元素自己的属性，重渲染不换
     //   2. closest('label') —— **结构**关系，与 id 无关
@@ -442,7 +537,8 @@ func observeJS() string {
     url: location.href, title: document.title,
     page_text: pageText.slice(0, 600),
     shadow_roots: RS.length - 1,
-    actions: actions, fields: fields, option_groups: groups, obstructions: obs
+    actions: actions, fields: fields, option_groups: groups, obstructions: obs,
+    honeypots: traps
   });
 })()`)
 }

@@ -10,6 +10,7 @@
 | `outer.html` / `outer_same.html` / `inner.html` | `TestObserveCrossOriginFrameMerge`（Task 4，已启用） | 跨源 / 同源 iframe |
 | `form.html` | 表单片段（备用） | — |
 | `selector.html` | `observe_selector_test.go`（Task 5 新增，不来自探针） | 选择器候选与稳定性评级 |
+| `honeypot.html` | `cmd/honeypot_e2e_test.go`（R19b 新增，不来自探针） | 屏幕外陷阱（蜜罐）+ 正向对照 |
 
 ## `selector.html`（Task 5 新增，**不是探针产物**）
 
@@ -65,6 +66,38 @@ RAND 的波及面**超出**这两个已测落点：`pathSel` 的祖先 id 检查
 原委、逐条实测与变异验证见
 `.superpowers/sdd/2026-09-16-tool-layer-observe/task-5-report.md`（该目录 gitignore，
 所以关键结论都留在本文件与 `observe_selector_test.go` 的注释里）。
+
+## `honeypot.html`（R19b 新增，**不是探针产物**，真站复现）
+
+复现的是首次真站跑（2026-09-16，`check.compareinsulation.io` 的漏斗页）里的蜜罐：
+
+```html
+<input name="company_url" type="text" style="position:absolute;left:-9999px;…">
+```
+
+真站那条是 `left:-9983px`。人看不见它；bot 填了就被站点标记成机器人 —— 而 `observe`
+当时把它**同时**列进 `actions` 与 `fields`，两边都评 `stability: high`。fixture 里有
+**两条**陷阱，两条轴各一（`off-document-left` / `off-document-top`）：只钉左侧的话，
+「只判 `rect.left`」的实现照样能过。
+
+**这张 fixture 真正的设计点是对照组，不是陷阱。** 页面被下面那个 `4000×4000` 的块撑开，
+测试（`cmd/honeypot_e2e_test.go`）会先 `window.scrollTo(600, 600)` 再观测，于是：
+
+| 元素 | 文档坐标 | 滚动后的视口坐标 | 该不该被当陷阱 |
+|---|---|---|---|
+| `input[name=company_url]` | 负（-9999） | 负 | **是** |
+| `input[name=fax_number]` | 负（-9999） | 负 | **是** |
+| `#reachable`（宽写死 120） | 正（≈8） | **负**（`left = 8-600 = -592`） | 否 |
+| `input[name=email]` | 正 | **负** | 否 |
+
+后两行就是判据的**分水岭**：判据若用视口坐标，它们连同一切「滚上去看不见」的正常内容
+会被**静默**丢掉（实测变异：`actions` 直接变 `[]`）。所以「先滚动」是这条测试的
+前置条件 —— 不滚的话两种实现给出同样的答案，对照就是白给的。测试里那两个元素各自
+**自证**「此刻视口坐标下长得就像陷阱」（`requireViewportTrapLike`），不满足就当场 Fatal：
+对照失效与测试通过不能长得一样。
+
+⚠️ 别把 `#reachable` 的宽度改小到「滚 600 之后 `left+width > 0`」—— 那样对照会失效，
+而它会以一条 Fatal 明说，不是静默变绿。
 
 ## ⚠️ `outer.html` 的 iframe 是硬编码端口，测试在**服务层**改写它
 

@@ -128,6 +128,10 @@ type identity struct {
 //     （内容与角色都没变）算作没变化 —— 窄，且不改变「页面内容变没变」这个答案。
 //   - Obstructions 不在多重集里：遮挡物的身份只能靠 Kind+Text，而它被点掉这件事
 //     会改正文（横幅文字从 page_text 里消失）→ 由 TextChanged 兜住。
+//   - Honeypots 也不在多重集里，而且**有意**如此：它们是已被排除的陷阱
+//     （见 Honeypot），站点往页面里加一条、去掉一条蜜罐都不是「推进」——
+//     把它们算进 appeared/disappeared 只会让 Actionable 谎报。⚠️ 别为了
+//     「对称」加回来。
 //   - **字段没有 Label**：两个「Label/Placeholder 都为空、Type 相同」的输入框
 //     （裸 `<input type=text>` 那种）在身份上会**塌成一个** —— 加一个/减一个
 //     仍然看得出来（多重集计数变了），但它们之间互换看不出来。

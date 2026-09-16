@@ -635,7 +635,7 @@ func TestObserveCommandEndToEnd(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		t.Fatalf("解析成 map 失败: %v", err)
 	}
-	for _, k := range []string{"url", "title", "page_text", "actions", "fields", "option_groups", "obstructions", "diagnostics"} {
+	for _, k := range []string{"url", "title", "page_text", "actions", "fields", "option_groups", "obstructions", "honeypots", "diagnostics"} {
 		if _, ok := raw[k]; !ok {
 			t.Errorf("输出缺契约字段 %q", k)
 		}
@@ -643,10 +643,10 @@ func TestObserveCommandEndToEnd(t *testing.T) {
 	if s := string(raw["actions"]); len(s) == 0 || s[0] != '[' {
 		t.Errorf("actions 不是 JSON 数组: %.80s", s)
 	}
-	// ③ 类型正确：五个列表**一律**是 JSON 数组。空列表必须是 `[]`，
+	// ③ 类型正确：六个列表**一律**是 JSON 数组。空列表必须是 `[]`，
 	// **不许**是 `null`（Task 6 修复轮 1 收紧的：py 侧 `for d in model["diagnostics"]`
 	// 撞上 null 就 TypeError，而这是运行阶段唯一的接口）。
-	for _, k := range []string{"actions", "fields", "option_groups", "obstructions", "diagnostics"} {
+	for _, k := range []string{"actions", "fields", "option_groups", "obstructions", "honeypots", "diagnostics"} {
 		s := string(raw[k])
 		if len(s) == 0 || s[0] != '[' {
 			t.Errorf("%s 不是 JSON 数组（空列表必须是 []，不是 null）: %.80s", k, s)
@@ -805,7 +805,7 @@ func TestObserveCommandMergesChildFrames(t *testing.T) {
 	if err := json.Unmarshal([]byte(outSingle), &rawSingle); err != nil {
 		t.Fatalf("单帧输出不是合法 JSON: %v\n%.300s", err, outSingle)
 	}
-	for _, k := range []string{"actions", "fields", "option_groups", "obstructions", "diagnostics"} {
+	for _, k := range []string{"actions", "fields", "option_groups", "obstructions", "honeypots", "diagnostics"} {
 		if s := string(rawSingle[k]); len(s) == 0 || s[0] != '[' {
 			t.Errorf("单帧输出 %s 不是 JSON 数组（空列表必须是 []）: %.80s", k, s)
 		}
@@ -913,7 +913,9 @@ func TestObserveCommandEmptyListsAreArrays(t *testing.T) {
 		t.Fatalf("解析成 map 失败: %v", err)
 	}
 	// 字面量断言：**必须是 `[]`**。退回 `null` 这条立刻红 —— 这正是它该守的东西。
-	for _, k := range []string{"actions", "fields", "option_groups", "obstructions", "diagnostics"} {
+	// honeypots 在这一格里的地位与其他五个一样：空页上它必须编成 `[]`，
+	// 而不是 nil → `null`（这一条就是 normalizeNilLists 对新字段的守卫）。
+	for _, k := range []string{"actions", "fields", "option_groups", "obstructions", "honeypots", "diagnostics"} {
 		if got := string(raw[k]); got != "[]" {
 			t.Errorf("%s = %s，want []（空列表不许是 null —— py 侧 for x in model[%q] 会 TypeError）", k, got, k)
 		}
@@ -924,19 +926,21 @@ func TestObserveCommandEmptyListsAreArrays(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &m); err != nil {
 		t.Fatalf("按 internal.PageModel 解不动: %v", err)
 	}
-	if m.Actions == nil || m.Fields == nil || m.OptionGroups == nil || m.Obstructions == nil || m.Diagnostics == nil {
-		t.Errorf("解出来有 nil 切片（= 编码时是 null）: %s %s %s %s %s",
+	if m.Actions == nil || m.Fields == nil || m.OptionGroups == nil || m.Obstructions == nil ||
+		m.Honeypots == nil || m.Diagnostics == nil {
+		t.Errorf("解出来有 nil 切片（= 编码时是 null）: %s %s %s %s %s %s",
 			describeSlice("actions", m.Actions == nil, len(m.Actions)),
 			describeSlice("fields", m.Fields == nil, len(m.Fields)),
 			describeSlice("option_groups", m.OptionGroups == nil, len(m.OptionGroups)),
 			describeSlice("obstructions", m.Obstructions == nil, len(m.Obstructions)),
+			describeSlice("honeypots", m.Honeypots == nil, len(m.Honeypots)),
 			describeSlice("diagnostics", m.Diagnostics == nil, len(m.Diagnostics)))
 	}
-	if len(m.Actions)+len(m.Fields)+len(m.OptionGroups)+len(m.Obstructions)+len(m.Diagnostics) != 0 {
-		t.Errorf("空页上不该有内容: %d/%d/%d/%d/%d",
-			len(m.Actions), len(m.Fields), len(m.OptionGroups), len(m.Obstructions), len(m.Diagnostics))
+	if len(m.Actions)+len(m.Fields)+len(m.OptionGroups)+len(m.Obstructions)+len(m.Honeypots)+len(m.Diagnostics) != 0 {
+		t.Errorf("空页上不该有内容: %d/%d/%d/%d/%d/%d",
+			len(m.Actions), len(m.Fields), len(m.OptionGroups), len(m.Obstructions), len(m.Honeypots), len(m.Diagnostics))
 	}
-	t.Logf("退出码=0；五个列表都是 []：%s", firstLines(out, 8))
+	t.Logf("退出码=0；六个列表都是 []：%s", firstLines(out, 8))
 }
 
 // TestObserveCommandHumanFormat 钉住 `--json=false` —— 它必须**真的**给人话

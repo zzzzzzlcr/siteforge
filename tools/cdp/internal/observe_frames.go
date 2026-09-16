@@ -260,10 +260,15 @@ func mergeFrameModel(merged *PageModel, m *PageModel, path []string) {
 	}
 	// 单帧自己的 diagnostics 也并进来（目前单帧 Observe 不产出，留着是契约上的并集语义）
 	merged.Diagnostics = append(merged.Diagnostics, m.Diagnostics...)
-	// OptionGroup / Obstruction 的契约里没有 FramePath（Task 2 定的 PageModel），
-	// 只能原样并进来 —— 跨帧时它们的归属是**丢失**的（报告顾虑 2）。
+	// OptionGroup / Obstruction / Honeypot 的契约里没有 FramePath（Task 2 定的
+	// PageModel；Honeypot 沿用它），只能原样并进来 —— 跨帧时它们的归属是**丢失**的
+	// （报告顾虑 2）。
 	merged.OptionGroups = append(merged.OptionGroups, m.OptionGroups...)
 	merged.Obstructions = append(merged.Obstructions, m.Obstructions...)
+	// 蜜罐**照原样并**：排除发生在**单帧那一层**（observeJS 里就不进 actions/fields），
+	// 这里只是把「被排除了哪些」也汇总上去。消费者因此看得出「这一页有陷阱」，
+	// 而不是看到一份「干净得像本来就没这些东西」的模型。
+	merged.Honeypots = append(merged.Honeypots, m.Honeypots...)
 }
 
 // firstRunes 截前 n 个字符（按 rune 截，不切碎 UTF-8）。
