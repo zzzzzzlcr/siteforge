@@ -63,6 +63,8 @@ COPY --from=tools /out/cdp     /usr/local/bin/cdp
 
 COPY . /opt/siteforge/
 
+# Task 8: cdp-mcp 尚未构建 —— 此处的 /usr/local/bin/cdp-mcp 要到 Task 8 才存在
+#         (缺文件不影响 build: 末尾有 || true 兜住)
 RUN chmod +x /usr/local/bin/cdp /usr/local/bin/cdp-mcp \
     && chmod +x /opt/siteforge/entrypoint.sh 2>/dev/null || true
 RUN chown -R appuser:appuser /opt/siteforge/tmp /opt/siteforge/runtime /opt/siteforge/config \
@@ -73,6 +75,7 @@ WORKDIR /opt/siteforge
 # 生产 py 脚本靠这个找 cdp(规格 §9: 原先硬编码 /company/cdpcli/cdp)
 ENV CDP_PATH=/usr/local/bin/cdp
 # agent 的 MCP 门
+# Task 8: cdp-mcp 尚未构建 —— 该路径指向的二进制要到 Task 8 才存在
 ENV CDP_MCP_BIN=/usr/local/bin/cdp-mcp
 # Bit 窗口 worker(运营指定, 规格 R8)
 ENV BIT_WORKER_IP=""

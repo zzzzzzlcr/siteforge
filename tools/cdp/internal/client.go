@@ -322,10 +322,10 @@ func collectFramesFromDOM(node *cdp.Node, ownerFrameID cdp.FrameID) []domFrame {
 		frames = append(frames, domFrame{
 			parentID: ownerFrameID,
 			frame: &cdp.Frame{
-					ID:   node.FrameID,
-					URL:  nodeGetAttr(node.Attributes, "src"),
-					Name: nodeGetAttr(node.Attributes, "name"),
-				},
+				ID:   node.FrameID,
+				URL:  nodeGetAttr(node.Attributes, "src"),
+				Name: nodeGetAttr(node.Attributes, "name"),
+			},
 		})
 		// Walk into the iframe's content document to find nested iframes
 		if node.ContentDocument != nil {
