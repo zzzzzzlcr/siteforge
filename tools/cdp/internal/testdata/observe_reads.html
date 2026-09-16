@@ -16,6 +16,13 @@
   .sel { display: block; width: 220px; height: 28px; margin: 4px 0; }
   .sel-multi { display: block; width: 220px; height: 40px; margin: 4px 0; }
   .box { width: 18px; height: 18px; }
+  /* MUI 那几个控件在真站上是有尺寸的（319×60，opacity 1）—— 没尺寸就会被 vis() 滤掉，
+     那样夹具就测不到「看得见但进不了模型」这一格了。 */
+  .MuiSelect-select { display: block; width: 319px; height: 60px; line-height: 60px;
+                      padding: 0 8px; margin: 4px 0; border: 1px solid #999; background: #fff; }
+  .MuiSelect-nativeInput { width: 319px; height: 57px; }
+  .MuiFormLabel-root { display: block; }
+  .twin { display: block; margin: 4px 0; }
 </style>
 </head>
 <body>
@@ -93,6 +100,136 @@
 <h2>Navigation</h2>
 <button class="icon-btn" type="button" id="read-back" aria-label="Back"></button>
 <button class="icon-btn" type="button" id="read-continue">Continue</button>
+
+<!--
+  ④ 「点开再选」的 MUI 控件（真站形态：gowizard 的问卷，2026-09-17 真窗口实测）。
+     三个缺陷各由这一块承重：
+
+       F1 控件进不了模型：`<div role="combobox">` **可见**（319×60、opacity 1），
+          但可动作元素的选择器串里没有这个角色 → 一个都取不到（真站 `fields: 0`、
+          actions 里也没有它们）。
+       F2 地址不唯一：三个控件同形 —— 只按 class 取是 **3 命中**；真站上兜底路径
+          （写死 4 跳）是 **11 命中**。能唯一指到它们的那条路要在 **hop9** 的
+          `#inputAreaParentContainer` 上停车，4 跳根本够不着。
+       F3 没有标签：三个控件的文本是 `2025` / 空 / 空 —— 没有标签就分不出哪个是 Make。
+          名字在 `label[for]` 里，而它指的那个 id 是控件的**第 6 层祖先**（hop6）。
+
+     结构逐层复刻真站 DOM（hop 编号见 F3 的注释），包括两个「不做的事」：
+       · wrapper 的 id 是**纯数字**（173850/173851/173852，真站就长这样）
+       · 每格带一个 opacity:0 的 `input.MuiSelect-nativeInput` —— 它必须**继续**
+         被 vis() 滤掉（它的值在 combobox 的 text 里有一份，收进来只会多三个
+         看不见、点不到的重复项）。
+-->
+<h2>What is the year, make &amp; model of your vehicle?</h2>
+
+<!-- 「远处的 label」：它与 #inputAreaParentContainer 是**兄弟子树** —— 不在任何一层
+     祖先的 previousElementSibling 上。于是「Make」这个名字只有一条路取得到：
+     逐层往上找到「id 被 label[for] 指着」的那个祖先（真站上在 hop6）。
+     把它摆在控件旁边就等于把这条路上的断言放空（那条路由 Model 那一格守）。 -->
+<div id="mui-form-head">
+  <label for="173851">Make</label>
+</div>
+
+<div id="inputAreaParentContainer">
+  <div class="transitionContainer">
+
+    <!-- 年：**没有** label 指着它 → label 必须如实为 null（不许猜、不许编） -->
+    <div id="173850">
+      <div class="css-13o7eu2">
+        <div class="css-j9ffew">
+          <div class="MuiBox-root">
+            <div class="MuiFormControl-root">
+              <div class="MuiInputBase-root">
+                <div role="combobox" class="MuiSelect-select MuiSelect-standard MuiInputBase-input"
+                     aria-expanded="false" tabindex="0">2025</div>
+                <input class="MuiSelect-nativeInput" name="mui-native-year"
+                       aria-hidden="true" tabindex="-1" value="2025" style="opacity:0">
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Make：报错态（真站形态）。label[for="173851"] 指着 hop6 那一格 -->
+    <div id="173851">
+      <div class="css-13o7eu2">
+        <div class="css-j9ffew">
+          <div class="MuiBox-root">
+            <div class="MuiFormControl-root Mui-error">
+              <div class="MuiInputBase-root Mui-error">
+                <div role="combobox" class="MuiSelect-select MuiSelect-standard MuiInputBase-input Mui-error"
+                     aria-expanded="false" tabindex="0"></div>
+                <input class="MuiSelect-nativeInput" name="mui-native-make"
+                       aria-hidden="true" tabindex="-1" value="" style="opacity:0">
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Model：禁用，且名字走**另一条**取法 —— 相邻的 LABEL 兄弟（MUI 的 InputLabel
+         就是 `MuiInputBase-root` 那一层的 previousElementSibling，不是控件自己的兄弟）。
+         这一格刻意**不给** label[for]：真站上两种取法都指向它，那样 ② 会先命中，
+         ③ 就没人守了。 -->
+    <div id="173852">
+      <div class="css-13o7eu2">
+        <div class="css-j9ffew">
+          <div class="MuiBox-root">
+            <div class="MuiFormControl-root">
+              <label class="MuiFormLabel-root MuiInputLabel-root">Model</label>
+              <div class="MuiInputBase-root">
+                <div role="combobox" class="MuiSelect-select MuiSelect-standard MuiInputBase-input Mui-disabled"
+                     aria-disabled="true" aria-expanded="false" tabindex="-1"></div>
+                <input class="MuiSelect-nativeInput" name="mui-native-model"
+                       aria-hidden="true" tabindex="-1" value="" style="opacity:0">
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!--
+  ⑤ 数字开头的 id：`#12` 是**非法的 CSS 选择器**（ident 不能以数字开头），
+     querySelector 会抛 SyntaxError。而 __cdpQA 用 try/catch 吞掉它 —— 于是它的表现
+     不是报错，是**元素凭空消失**（点击报 element not found，页面明明有那个元素）。
+     交出去的地址必须**跑得通**：这一格的 id 不是合法 ident，就必须改写成
+     [id="12"] 那种永远合法的形式。RAND 只挡 ≥6 位数字（形态②），这一格它挡不住。
+-->
+<h2>数字开头的 id</h2>
+<button id="12">Numeric id button</button>
+
+<!--
+  ⑥ 负例：**交不出唯一选择器**时要如实说（不是静默降级，也不是硬凑一条）。
+
+     两个按钮逐字节同形，一个在光 DOM、一个在 shadow root 里。CSS 选择器**跨不过
+     shadow 边界**（__cdpQA 是逐个 root 查的），所以 shadow 里那个的路径
+     `div:nth-of-type(1) > button:nth-of-type(1)` **必然**同时命中光 DOM 里的孪生兄弟
+     —— 爬到头也唯一不了。这正是真站上会遇到的形状，不是造出来的边角。
+
+     判据：它的 stability 必须降成 low（那是「这条地址我没能验证」的落点），
+     而光 DOM 那个孪生兄弟（有 #dup-host 可以停车）必须**照常**拿到唯一地址 ——
+     负例旁边没有正例的话，「一律降级」这种坏实现也是绿的。
+-->
+<h2>交不出唯一选择器的元素</h2>
+<div id="dup-light"><div><button class="twin">Light twin</button></div></div>
+<div id="dup-host"></div>
+<script>
+  // 同形的那一份放进 shadow root（open 模式，穿透助手看得见它，
+  // 但**选择器**仍然跨不过边界）。
+  //
+  // ⚠️ 宿主里**不放**光 DOM 的子节点：shadow root 里没有 slot 的话，光 DOM 的
+  // 子节点**根本不渲染**（rect 0×0）—— 那样孪生兄弟会被 vis() 滤掉，
+  // 「同形」这个前提就不成立了（实测踩过：光 DOM 那份 rect=0,0,0,0，
+  // 于是负例变成了「页面上只有它一个」，断言在证明一件不存在的事）。
+  document.getElementById('dup-host').attachShadow({ mode: 'open' }).innerHTML =
+    '<div><button class="twin">Shadow twin</button></div>';
+</script>
 
 </body>
 </html>

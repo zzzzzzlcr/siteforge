@@ -274,15 +274,21 @@ func TestClickStrictStillClicksAUniqueEnabledTarget(t *testing.T) {
 	}
 }
 
-// TestClickDisabledContinueThroughItsOnlyUniqueHandle 是**实测那条链的完整复刻**。
+// TestClickDisabledContinueThroughObservesOwnAddress 是**实测那条链的完整复刻**。
 //
-// 真站上禁用的是 Continue，而模型给它的 selector 是**歧义的**那个（命中 5 个）。
-// 模型里唯一能寻到 Continue 的抓手是 `alternates[0]`（positional 路径，实测唯一）——
-// 本测试就顺着 observe 自己给的那条路走：拿 `alternates[0]` 去点。
+// 真站上禁用的是 Continue，而模型当时给它的 selector 是**歧义的**那个（命中 5 个），
+// 唯一能寻到 Continue 的抓手只藏在 `alternates[0]` 里。本测试顺着 observe 自己给的
+// **首选地址**走（`selector`）—— 而那一条在地址唯一性那轮之后**已经是唯一的**了
+// （3 命中/11 命中的选择器不再交给模型，见 internal/observe_address_test.go 与
+// fix-observe-addressability-report.md）。
 //
-// 它证明的是：**就算调用方规规矩矩用了 observe 给的唯一抓手**，禁用的目标也必须被
+// 它证明的是：**就算调用方规规矩矩用了 observe 给的首选地址**，禁用的目标也必须被
 // 拦下（而不是回一对坐标、然后什么都没发生）。
-func TestClickDisabledContinueThroughItsOnlyUniqueHandle(t *testing.T) {
+//
+// ⚠️ 这条测试的判据顺带把「地址唯一」也钉住了：`click --strict` **先判歧义**，
+// 所以「拒绝的理由是禁用而不是歧义」本身就说明这个选择器命中恰好 1 个 ——
+// 歧义的地址根本走不到「禁用」那一条（那正是 F2 修好的事）。
+func TestClickDisabledContinueThroughObservesOwnAddress(t *testing.T) {
 	e := env(t)
 	e.clickFixture(t)
 
@@ -315,21 +321,32 @@ func TestClickDisabledContinueThroughItsOnlyUniqueHandle(t *testing.T) {
 	if continueAction == nil {
 		t.Fatalf("observe 的模型里没有 text=\"Continue\" 的动作（夹具坏了？共 %d 个动作）", len(m.Actions))
 	}
-	if len(continueAction.Alternates) == 0 {
-		t.Fatalf("Continue 的 alternates 是空的 —— 模型里就没有唯一的抓手了: %+v", continueAction)
+	// 首选必须**不是**那个 5 个按钮共用的 class（夹具 A 组的存在意义就是它）：
+	// 地址唯一性那轮之后，非唯一的候选**不进模型**（连 alternates 都不进 ——
+	// 退路踩不准就不是退路，是第二个坑：文档序第一个是 Back，顺着它走会把漏斗倒着走）。
+	const sharedClass = "button.choice"
+	if continueAction.Selector == sharedClass {
+		t.Fatalf("Continue 的首选地址仍是那个 5 命中的 class %q —— 模型又交出了歧义地址: %+v",
+			sharedClass, continueAction)
 	}
-	unique := continueAction.Alternates[0]
+	for _, alt := range continueAction.Alternates {
+		if strings.Contains(alt, sharedClass) {
+			t.Errorf("Continue 的 alternates 里还有歧义候选 %q —— 退路必须是能踩准的地址", alt)
+		}
+	}
+	unique := continueAction.Selector
+	t.Logf("Continue：selector=%q alternates=%v", unique, continueAction.Alternates)
 
-	// 用 click --strict 自己来验：它若报「歧义」就说明这个选择器不唯一，
-	// 那「唯一抓手」这个前提就不成立（不是本测试要证的事）。
+	// 用 click --strict 自己来验：它若报「歧义」就说明这个地址不唯一 —— 那正是 F2 要治的。
 	stdout, stderr, code := e.run(t, "click", "--selector", unique, "--strict")
 	if code == 0 {
-		// 点成功了 = 唯一 + 可点 —— 那这个夹具就没复现出「唯一的抓手指向禁用目标」。
-		t.Fatalf("observe 给的唯一抓手 %q 被点成功了（%s）—— 夹具里 Continue 必须是 disabled 的",
+		// 点成功了 = 唯一 + 可点 —— 那这个夹具就没复现出「唯一地址指向禁用目标」。
+		t.Fatalf("observe 给的首选地址 %q 被点成功了（%s）—— 夹具里 Continue 必须是 disabled 的",
 			unique, stdout)
 	}
-	if strings.Contains(stderr, "匹配") && strings.Contains(stderr, "5") {
-		t.Fatalf("observe 给的 alternates[0] = %q 居然是歧义的 —— 「唯一抓手」这个前提不成立", unique)
+	if strings.Contains(stderr, "匹配") {
+		t.Fatalf("observe 给的首选地址 %q 居然是**歧义的** —— 那它就不该当上 c[0]"+
+			"（模型的地址必须验证过唯一）:\n%s", unique, stderr)
 	}
 	if !strings.Contains(stderr, "禁用") {
 		t.Errorf("拒绝的理由不是「目标被禁用」而是别的（%q）:\n%s", unique, stderr)

@@ -160,10 +160,38 @@ type Action struct {
 	// 与 text / nearby_text 的历史口径一致（那两个也是静默截断）；值那边有
 	// ValueTruncated，是因为「值是不是完整的」影响消费侧判断，名字长度不影响。
 	AriaLabel string `json:"aria_label"`
-	Role      string `json:"role"`
-	Tag       string `json:"tag"`
-	Type      string `json:"type"`
-	Visible   bool   `json:"visible"`
+	// Label 是这个控件的**人话名字** —— 页面上某个 `<label>` 元素给它的名字。
+	//
+	// 为什么非有不可（2026-09-17 真站实测，gowizard 的 MUI 问卷）：三个「点开再选」的
+	// combobox 显示文本分别是 `2025` / 空 / 空 —— **没有标签就没有语义**，模型分不出
+	// 哪个是 Make。而名字就在页面上：`label[for="173851"]` 的文本是 `Make`，它的
+	// `for` 指着的那个 id 是那个 combobox 的**第 6 层祖先**（hop6）。旧实现只找
+	// 「自己的 id / closest(label) / label[for=自己的 id]」—— 三条路一条都够不着，
+	// 于是三个控件在模型里长得一模一样，agent 只能靠猜。
+	//
+	// 取法（observeJS 的 labelOf，按优先级）：
+	//   ① 自己的 id 被某个 label[for] 指着     → 用那个 label 的文本
+	//   ② 向上找祖先（**没有跳数上限**，爬到「有 id 且被 label[for] 指着」的第一个，
+	//      或者爬到 frame 根）                 → 用它
+	//   ③ 都没有 → 前一个 LABEL 兄弟（也逐层往上找：MUI 的 InputLabel 是
+	//      `MuiInputBase-root` 那一层的 previousElementSibling，不是控件自己的兄弟）
+	//   ④ 都没有 → **null**
+	//
+	// ⚠️ **null 与空串**：只会是 null 或一个非空的名字，**不会**是空串 ——
+	// 文本为空的 label 不算名字（那与「这个控件有标签」是两件事），一律归 null。
+	// 与 Field.Label（string，空串 = 没有）不同口径是有意的：Field 那个是历史契约
+	// （diff.go 的身份键、既有测试都吃着它），这里按本文件的三态规矩来 ——
+	// 「找不到」要能被机器分辨，而不是给一个看起来像答案的空串。
+	//
+	// ⚠️ 与 AriaLabel 的关系：两个都给，**不许**拿一个顶替另一个 ——
+	// Label 是**页面上印着的**名字（label 元素），AriaLabel 是元素自己声明的
+	// 无障碍名（aria-label 属性）。真站上 Back 那类控件只有后者；MUI 那类控件
+	// 只有前者。哪个可信、先用哪个，是消费侧的事（D11：这里只给感知）。
+	Label   *string `json:"label"`
+	Role    string  `json:"role"`
+	Tag     string  `json:"tag"`
+	Type    string  `json:"type"`
+	Visible bool    `json:"visible"`
 	// Value 是这个元素**现在装着的值**（input / textarea / select 的 IDL value）。
 	//
 	// 为什么非有不可：实测过——同一个页面，把值填进去**前**与**后**两份模型
@@ -441,21 +469,121 @@ func observeJS() string {
   //      （fixture 的 N hex10 form1-only = css-abcdef1234 专门守①这一条）。
   //   （注意本文件是 Go 的裸字符串字面量：注释里**不能出现反引号**。）
   var RAND = /(^|[-_])[0-9a-f]{8,}($|[-_])|(^|[-_])[a-z]*\d{6,}($|[-_])|(^|[-_])(?=[a-z0-9]{5,}($|[-_]))[a-z0-9]*([a-z][0-9]+[a-z]|[0-9][a-z]+[0-9])[a-z0-9]*($|[-_])/i;
-  function pathSel(el) {
-    var parts = [], n = el, hops = 0;
-    while (n && n.tagName && hops < 4 && n.parentElement) {
-      var tag = n.tagName.toLowerCase();
-      if (n.id && !RAND.test(n.id)) { parts.unshift('#' + n.id); break; }
+  // ⚠️ RAND 的**已知误伤**（2026-09-17 真站实测，gowizard）：纯数字 id 「173851」
+  // 被形态② 判成了随机 token（「[a-z]*\d{6,}」，6 位以上数字）。它不是随机的 ——
+  // 它是页面自己编的**稳定**字段号，正是下面要拿来当锚点的那种东西。
+  // **仍然不动它**：收窄这一条的波及面是全部站点（step2a / address1a 那一家的取舍
+  // 刚在两轮修复里量过），而地址唯一性（下面的 address）已经从**另一头**把问题
+  // 解决了 —— 一条被 RAND 拒掉、退化成结构路径的选择器，照样是**验证过的**唯一
+  // 地址，只是没能停在那个锚点上、多爬几跳而已。风险不对称，留着。
+
+  // ── 地址（addressability）：交出去的每一条选择器都必须**真的指到它、而且只指到它** ──
+  //
+  // 为什么要有这一节（2026-09-17 真站实测，gowizard 的 MUI 问卷）：observe 交给
+  // agent 的地址本来就有一半是坏的 ——
+  //
+  //   三个 combobox 都只有一个 「div.MuiSelect-select.MuiSelect-standard」 → **3 命中**
+  //   它的兜底路径（写死 4 跳）→ **11 命中**
+  //   「a.decision-link」 同样是 6 个元素共用一个选择器
+  //
+  // agent 拿这些去点，只能靠猜；那一趟它在一个下拉框上猜了 25 步。地址不唯一
+  // **不是**推理问题，是观察者交出去的东西本身立不住。
+  //
+  // ⚠️ 唯一性在**帧内**判（选择器按帧施用）。observe 会合并多个 frame，但这段脚本
+  // 每次只在一帧里求值 —— 所以这里的查询天然就是「该帧内」，不许拿合并后的全局模型去判。
+
+  // rootsQSA 用**已经取好的** root 列表查（与 __cdpQA 同一份 __cdpRoots(document)
+  // 快照、同一套顺序），只是省掉「每次重新遍历全页找 shadow root」的开销 ——
+  // 地址验证是逐候选跑的热路径（一个元素最多 5 条候选 × 200 动作 + 100 字段），
+  // 每次重算 root 列表会把一次观测拖成几十秒。
+  //
+  // ⚠️ 语法不合法的选择器**会抛**，这里吞掉它是有意的（与内核助手同一个口径）：
+  // 命中 0 → 下面的 uniq() 判它不合格 → 改用下一条候选。
+  // **绝不能**让一条非法选择器当上首选 —— cdp 那边（__cdpQA）同样吞异常，
+  // 于是它的表现不是报错，而是**元素凭空消失**（真站实测见 idSel 的注释）。
+  function rootsQSA(sel) {
+    var out = [];
+    for (var i = 0; i < RS.length; i++) {
+      var f;
+      try { f = RS[i].querySelectorAll(sel); } catch (e) { continue; }
+      for (var j = 0; j < f.length; j++) out.push(f[j]);
+    }
+    return out;
+  }
+  // uniq：这条选择器在这一帧里**恰好命中它自己**一个。
+  //
+  // ⚠️ 两条都要，缺一不可：
+  //   length === 1    唯一 —— 3 命中的地址点下去是抽签
+  //   hits[0] === el  而且**就是它** —— 只判「唯一」会交出一条「唯一命中的是**别人**」
+  //                   的选择器。实测过：只判长度的版本把 G 的路径交给了 H
+  //                   （两条链在上一层就撞上了），而那条选择器看起来完全正常。
+  function uniq(sel, el) {
+    var hits = rootsQSA(sel);
+    return hits.length === 1 && hits[0] === el;
+  }
+  // idSel 把 id 变成一个**语法合法**的选择器。
+  //
+  // ⚠️ 血泪（2026-09-17 真窗口实测）：「#173851」 是**非法的 CSS 选择器**（ident 不能
+  // 以数字开头）—— document.querySelector('#173851') 抛 SyntaxError。而 __cdpQA
+  // 与 rootsQSA 都用 try/catch 吞掉这个异常，所以它的表现不是报错，是**元素凭空消失**：
+  // 「cdp click --selector '#173851 …'」 报 element not found，而页面上明明有那个元素；
+  // 同一件事写成 「[id="173851"]」 命中 1 个、点击成功。
+  // 所以：**只要 id 不是合法的 CSS ident，就改用 [id="…"] 形式**，不许把 #id 直接拼出去。
+  // （RAND 此刻恰好把纯数字 id 拒掉了，等于误打误撞挡住了这个坑 —— 但那是运气，
+  //   而且它只挡 ≥6 位数字那一档：「id="12"」 / 「id="3d-btn"」 照样漏得过来。）
+  // 判据取**保守**的一侧：认不出来的一律退回 [id="…"]（那种形式永远合法）。
+  function idSel(id) {
+    return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(id) ? '#' + id
+      : '[id="' + id.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]';
+  }
+  // pathChain 从元素往上爬，返回结构路径。**没有跳数上限** —— 停止条件只有两个：
+  //
+  //   stopAtId=true  爬到「有稳定 id 的祖先」就在它上面停车（「#inputAreaParentContainer」
+  //                  那类锚点是页面自己的骨架，抗得住重渲染），或者爬到 frame 根
+  //   stopAtId=false 忽略 id，一路爬到 frame 根（= 走到 html 为止；html 之上没有可选的层了）
+  //
+  // ⚠️ 原先这里写死 4 跳（「爬 4 跳就交差」）—— 目标页面上那个 id 锚点在 **hop9**，
+  // 4 跳连影子都摸不到，于是交出去的是一条 11 命中的路径。这次修的就是它：
+  // 不是把 4 换成 8，是**换成停止条件**。
+  function pathChain(el, stopAtId) {
+    var parts = [], n = el;
+    // 停止条件：爬到 html（frame 的根，它自己不做路径的一段 —— 加进去只是噪音），
+    // 或者爬到一个没有 parentElement 的节点（shadow root 里的顶层元素就是这种）。
+    // ⚠️ 判据写在**循环条件**上而不是「加之前先看有没有爹」：后者会把 shadow root 里
+    // 顶层那一格整个丢掉 —— 元素的 parentElement 是 null（它的爹是 ShadowRoot，
+    // 不是元素），于是路径只剩它自己那一跳，比实际能写出来的**更弱**。
+    while (n && n.tagName && n.tagName.toLowerCase() !== 'html') {
+      if (stopAtId && n.id && !RAND.test(n.id)) { parts.unshift(idSel(n.id)); break; }
       var idx = 1, sib = n;
       while ((sib = sib.previousElementSibling)) if (sib.tagName === n.tagName) idx++;
-      parts.unshift(tag + ':nth-of-type(' + idx + ')');
-      n = n.parentElement; hops++;
+      parts.unshift(n.tagName.toLowerCase() + ':nth-of-type(' + idx + ')');
+      n = n.parentElement;
     }
     return parts.join(' > ');
   }
+  // pathSel：给候选链用的结构路径 —— **爬到唯一为止**。
+  //
+  // 两趟，都是「爬到某个条件」而不是「爬几跳」：
+  //   ① 先爬到稳定 id 的祖先（能停就停：锚点比长路径抗改名）
+  //   ② ①不合格（不唯一 / 命中的不是它）就再爬一趟，这回不在 id 上停、一路到 frame 根
+  //      —— 「唯一性验证失败就继续加长路径」就是这一步。全爬到底仍不唯一的情况真实存在：
+  //      元素在 shadow root 里、而光 DOM 里有同形的孪生结构 —— **CSS 选择器跨不过
+  //      shadow 边界**（observe_reads.html 里有这个负例）。
+  // 两趟都不合格 → 把 ① 交出去；「它不唯一」这件事由调用方按 stability 说出去
+  // （见下面 address 与 Go 侧 Action.Stability 的注释）。
+  function pathSel(el) {
+    var p = pathChain(el, true);
+    if (uniq(p, el)) return p;
+    var q = pathChain(el, false);
+    if (q !== p && uniq(q, el)) return q;
+    return p || q;
+  }
   function candidates(el) {
     var out = [];
-    if (el.id && !RAND.test(el.id)) out.push('#' + el.id);
+    // ⚠️ 这里吐的是**原始候选**（没验过唯一），交出去之前一律过 address()。
+    // id 那一行走 idSel：「#173851」 那种 id 直接拼出去是一条**语法非法**的选择器
+    // （见 idSel 的注释），而它的失败是静默的。
+    if (el.id && !RAND.test(el.id)) out.push(idSel(el.id));
     // name 也要过 RAND（修复轮 1）：它是四个落点里**唯一**原先没过的一道 ——
     // 随机 name（如 sid_9f8e7d6c5b4a，RAND 形态①本来就认得）会直接当上首选、
     // 且判据里 [name= 落进 high 分支 → 判据明写 high 须「不含随机 hash」。
@@ -481,6 +609,94 @@ func observeJS() string {
     out.push(pathSel(el));
     return out.filter(function (s, i, a) { return s && a.indexOf(s) === i; });
   }
+  // address 是**真正交给模型的那条地址**。与 candidates 的分工：
+  // candidates 只管「这个元素能用哪些办法找到」（原始候选，可能会重复命中别人），
+  // address 负责**验证**，并决定哪一条当首选（c[0]）、哪些当退路（alternates）。
+  //
+  // 规矩（c[0] 与 alternates 是**同一条**规矩，不是两条）：
+  // 交出去的每一条都必须 uniq —— 命中恰好 1 个、且就是它。
+  //   一条 3 命中的选择器当「退路」用，不是退路，是**第二个坑**：真站上那 5 个
+  //   共享 class 的按钮，退路正好是文档序第一个 = Back —— 顺着它走会把漏斗**倒着**走。
+  //   所以不合格的候选**不进模型**（不是降级排在后面），宁可少给一条。
+  //
+  // 一条都验不出来时（真站形态：元素在 shadow root 里、而光 DOM 里有同形的孪生结构；
+  // CSS 选择器跨不过 shadow 边界）：
+  //   交「尽力而为」的那条（先试爬到 frame 根的全程路径，再退而求其次找一条至少
+  //   **指向它**的候选），并置 unique=false —— 调用方据此把 stability 降成 low。
+  //   **那一步就是「交不出唯一选择器时如实说」的落点**（Go 侧 Action.Stability 里
+  //   写着这条契约）。绝不静默：宁可交一条被明确标记为不可信的地址，
+  //   也不假装它是好的。
+  function address(el) {
+    var raw = candidates(el), i, hits, sel = null, alts = [];
+    for (i = 0; i < raw.length; i++) {
+      if (uniq(raw[i], el)) {
+        if (sel === null) sel = raw[i]; else alts.push(raw[i]);
+      }
+    }
+    if (sel !== null) return { sel: sel, alts: alts, unique: true };
+    var best = pathChain(el, false);
+    hits = rootsQSA(best);
+    if (!(hits.length && hits[0] === el)) {
+      best = '';
+      for (i = 0; i < raw.length; i++) {
+        hits = rootsQSA(raw[i]);
+        if (hits.length && hits[0] === el) { best = raw[i]; break; }
+      }
+      if (!best && raw.length) best = raw[raw.length - 1];
+    }
+    return { sel: best, alts: [], unique: false };
+  }
+  // ── 人话名字（label）：这个控件在页面上**叫什么** ──
+  //
+  // 为什么非有不可（2026-09-17 真站实测，gowizard 的 MUI 问卷）：三个「点开再选」的
+  // combobox 显示文本分别是 「2025」 / 空 / 空 —— **没有标签就没有语义**，模型分不出
+  // 哪个是 Make。而名字就在页面上：label[for="173851"] 的文本是 「Make」，它指的那个
+  // id 是那个 combobox 的**第 6 层祖先**（hop6）。旧实现的三条取法
+  // （自己的 id / closest(label) / label[for=自己的 id]）一条都够不着 hop6。
+  //
+  // for→文本 表**只建一次**（qsa('label[for]') 一趟）：逐个元素去查
+  // label[for="…"] 是 O(元素数 × 全页)，而且 id 里的引号会把选择器拼坏。
+  // 表按 for 的**字面值**键（不经过 getElementById）—— shadow root 里的 id 在
+  // 文档级 getElementById 是查不到的，而「祖先的 id 等于这个 for」这件事
+  // 在任何一个 root 里都成立。同一个 id 挂多个 label 时**第一个说了算**（文档序）。
+  var LABELS = (function () {
+    var m = {}, ls = qsa('label[for]');
+    for (var i = 0; i < ls.length; i++) {
+      var f = ls[i].getAttribute('for'), t = txt(ls[i], 40);
+      if (f && t && !m[f]) m[f] = t;
+    }
+    return m;
+  })();
+  // labelOf：按优先级取人话名字（与 Go 侧 Action.Label 的注释同一套）。
+  //   ①② 用 label[for] 指过来的名字（自己 → 逐层祖先）；③ 前一个 LABEL 兄弟；④ null
+  //
+  // ⚠️ ①②的爬升**没有跳数上限**：爬到「有 id 且被 label[for] 指着」的第一个祖先，
+  // 或者爬到 frame 根。真站上那一格在 hop6 —— 任何「找 4 跳就交差」的写法都够不着它。
+  // （走合成树 composedAncestors：shadow 里的 parentElement 会断在边界上。）
+  // ⚠️ ③ 也**逐层往上**找（不是只看元素自己的兄弟）：MUI 的 InputLabel 是
+  // 「MuiInputBase-root」 那一层的 previousElementSibling。就近优先 —— 一找到就返回，
+  // 所以更靠上的、理它更远的 label 不会抢在近处的前面。
+  // ⚠️ 都找不到就交 null：编一个名字出来比空着更坏（消费侧会把编的当页面事实用）。
+  function labelOf(el) {
+    if (el.id && LABELS[el.id]) return LABELS[el.id];
+    var chain = composedAncestors(el), i, n, p, t;
+    for (i = 1; i < chain.length; i++) {
+      n = chain[i];
+      if (n.id && LABELS[n.id]) return LABELS[n.id];
+    }
+    for (i = 0; i < chain.length; i++) {
+      p = chain[i].previousElementSibling;
+      // ⚠️ **只认紧挨着的那一个**，不再往前翻着找。翻着找实测出过一次**谎报**：
+      // 一路往回扫到 body 的兄弟位置时，会捞到页面上**别处**某个 label（夹具上
+      // 那一格是「Street」—— 一个跟控件毫无关系的单选标签），而名字这种东西
+      // 报错的后果是消费侧把它当成页面事实用。宁可少报（→ null），不许猜。
+      if (p && p.tagName && p.tagName.toLowerCase() === 'label') {
+        t = txt(p, 40);
+        if (t) return t;
+      }
+    }
+    return null;
+  }
   // traps：被排除的蜜罐，**记一笔**再丢（见 Go 侧 Honeypot 的注释）。
   //
   // 为什么要去重：同一个元素会被**两条路**各查一次 —— 可动作元素的选择器里含
@@ -494,7 +710,7 @@ func observeJS() string {
     if (trapEls.indexOf(el) === -1) {
       trapEls.push(el);
       traps.push({
-        selector: candidates(el)[0],
+        selector: address(el).sel,
         hint: el.name || el.id || el.placeholder || '',
         why: why
       });
@@ -503,7 +719,10 @@ func observeJS() string {
   }
   function stability(el, cands) {
     var c = cands[0] || '';
-    if (/^#/.test(c) || /\[(name|data-)/.test(c)) return 'high';
+    // 「[id=…]」与「#id」是**同一件事**（idSel 把不是合法 CSS ident 的 id 写成前者的
+    // 形式）—— 只认「#」会让那类元素的稳定性**凭空掉一档**：
+    // 一条独一无二的稳定 id 被评成 low，消费侧会以为它脆（少报也是一种不实）。
+    if (/^#/.test(c) || /^\[id=/.test(c) || /\[(name|data-)/.test(c)) return 'high';
     if (/:nth-of-type/.test(c)) {
       var depth = (c.match(/>/g) || []).length;
       return depth <= 2 ? 'medium' : 'low';
@@ -631,21 +850,33 @@ func observeJS() string {
   // ── 可动作元素 ──
   // ⚠️ 蜜罐在**切片之前**滤掉：切片（slice(0,200)）是截断，让陷阱占着名额等于
   // 把页面末尾的真元素挤出去 —— 一个观察者自己制造出来的盲区。
-  var SEL = 'a[href],button,input,select,textarea,[role=button],[role=link],[role=option],[role=tab],[role=checkbox],[role=radio],[onclick]';
+  // ⚠️ 「[role=combobox]」 是 2026-09-17 真站实测补的（gowizard 的 MUI 问卷）：目标页面上
+  // 那三个「点开再选」的控件是 「<div role="combobox" class="MuiSelect-select …">」，
+  // **全部可见**（opacity 1、319×60），本可以通过 vis()，但这一串里没有这个角色 ——
+  // 于是 qsa(SEL) 一个都取不到，模型里 fields: 0、actions 里没有它们。
+  // 那是「控件进不了模型」的直接原因：agent 看不见的东西，它当然点不到。
+  var SEL = 'a[href],button,input,select,textarea,[role=button],[role=link],[role=option],[role=tab],[role=checkbox],[role=radio],[role=combobox],[onclick]';
   var cands = qsa(SEL).filter(vis).filter(function (el) { return !trap(el); });
   var areas = cands.map(function (e) { var r = e.getBoundingClientRect(); return r.width * r.height; })
     .sort(function (a, b) { return a - b; });
   var med = areas.length ? areas[Math.floor(areas.length / 2)] : 1;
 
   var actions = cands.slice(0, 200).map(function (el) {
-    var r = el.getBoundingClientRect(), c = candidates(el);
+    var r = el.getBoundingClientRect(), ad = address(el);
     var tag = el.tagName.toLowerCase();
     var peers = cands.filter(function (o) { return o.tagName === el.tagName && region(o) === region(el); }).length;
     var val = valOf(el);
     return {
-      selector: c[0], alternates: c.slice(1), stability: stability(el, c),
+      // selector / alternates：**每一条都验证过唯一**（见 address）。
+      // stability：唯一不了就**如实降成 low** —— 那是「这条地址我没能验证」的落点。
+      // 不唯一还报 high/medium，正是「猜 25 步」的来源。
+      selector: ad.sel, alternates: ad.alts,
+      stability: ad.unique ? stability(el, [ad.sel]) : 'low',
       text: txt(el, 50), role: el.getAttribute('role') || tag, tag: el.tagName,
       type: el.type || null, visible: true,
+      // 页面上印着的名字（label 元素给的那个）。null = 找不到，**不是**空串 ——
+      // 三态与取法见 Go 侧 Action.Label。
+      label: labelOf(el),
       // 三样读法（见上面 READ_CAP / valOf / selState 的注释）。
       // ⚠️ value 的 null 与 "" 是两件事：null = 不是值控件，"" = 是值控件但现在是空的。
       // ⚠️ value_truncated 只在**真的截了**的时候是 true（截断要说出来，
@@ -685,10 +916,13 @@ func observeJS() string {
     // 三样读法与 actions 那条**同一套判据**（valOf / selState / READ_CAP）——
     // 表单字段这一路是「值填进去了没有」的主战场，两条路各写一遍就意味着
     // 其中一条哪天会静默地什么都没有（蜜罐那次就是两条路各漏一次）。
-    var fval = valOf(el);
+    var fval = valOf(el), fad = address(el);
     return {
-      selector: candidates(el)[0], alternates: candidates(el).slice(1),
-      stability: stability(el, candidates(el)),
+      // 与 actions 那条**同一套地址规矩**（address：每条都验证过唯一；唯一不了就降 low）。
+      // 顺带：这里原先一共同 candidates() 调了**三次**（首选一次、alternates 一次、
+      // stability 一次）—— 地址验证是热路径，现在只算一次（parse 地址那点开销就从这儿省回来）。
+      selector: fad.sel, alternates: fad.alts,
+      stability: fad.unique ? stability(el, [fad.sel]) : 'low',
       label: lab || '', hint: el.name || el.id || '', placeholder: el.placeholder || '',
       aria_label: (el.getAttribute('aria-label') || '').slice(0, READ_CAP),
       value: fval === null ? null : fval.slice(0, READ_CAP),
@@ -705,7 +939,7 @@ func observeJS() string {
     var opts = Array.prototype.slice.call(g.querySelectorAll('button,[role=radio],[role=option],label,input[type=radio],input[type=checkbox]'))
       .filter(vis).map(function (o) { return txt(o, 40); }).filter(Boolean);
     if (opts.length >= 2) {
-      groups.push({ scope: candidates(g)[0], role: 'option', options: opts.slice(0, 12), shadow_depth: shadowDepth(g) });
+      groups.push({ scope: address(g).sel, role: 'option', options: opts.slice(0, 12), shadow_depth: shadowDepth(g) });
     }
   });
 
@@ -721,7 +955,7 @@ func observeJS() string {
   }).slice(0, 6).forEach(function (el) {
     var btn = Array.prototype.slice.call(el.querySelectorAll('button,a')).filter(vis)[0];
     obs.push({ kind: /cookie|consent|gdpr|privacy/i.test(txt(el, 120) + el.id + el.className) ? 'cookie-banner' : 'overlay',
-      selector: candidates(el)[0], dismiss_selector: btn ? candidates(btn)[0] : null, text: txt(el, 60) });
+      selector: address(el).sel, dismiss_selector: btn ? address(btn).sel : null, text: txt(el, 60) });
   });
 
   // ── 正文：探针发现两个坑 ──

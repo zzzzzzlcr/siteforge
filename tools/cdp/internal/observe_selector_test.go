@@ -183,30 +183,44 @@ func TestObserveSelectorCandidatesOrderedAndDeduped(t *testing.T) {
 func TestObserveSelectorDeepPathRatedLow(t *testing.T) {
 	m := selectorFixture(t)
 
-	// G：4 段结构路径（3 个 >），每一层的 nth-of-type 下标都是 1 —— 选择器完全确定。
+	// G：**爬到 frame 根**的结构路径 —— 6 段（5 个 >），每一层的 nth-of-type 下标都是 1。
+	//
+	// ⚠️ 这里原来是「4 段」，而那 4 段是 pathSel **写死 4 跳**的特征化（「爬 4 跳就交差」）。
+	// 2026-09-17 那轮把它换成了**停止条件**（爬到稳定 id 的祖先、或 frame 根），
+	// 于是 G（一路没有 id 可停）自然爬到 body 为止 —— 跳数不再有上限，
+	// 「多长算完」由一个能说清的条件决定。判据本身没变：越深的纯结构路径越脆。
 	g := actionByText(t, m, "G deep path no id")
-	const wantG = "section:nth-of-type(1) > article:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)"
+	const wantG = "body:nth-of-type(1) > div:nth-of-type(1) > section:nth-of-type(1) > " +
+		"article:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)"
 	if g.Selector != wantG {
-		t.Fatalf("G 的 selector = %q，应为 %q（pathSel 上限 4 跳）", g.Selector, wantG)
+		t.Fatalf("G 的 selector = %q，应为 %q（无稳定 id 的祖先可停车 → 一路爬到 frame 根；"+
+			"路径不再有跳数上限，但每一层都必须是确定的 nth-of-type）", g.Selector, wantG)
 	}
-	// 判据：深结构路径 >3 层（= 4 段 = 3 个 >）→ low。代码里的口径是 depth(> 的个数) <= 2 才 medium。
+	if n := strings.Count(g.Selector, ">"); n != 5 {
+		t.Errorf("G 的路径有 %d 个 '>'，应为 5（= 6 段）—— 停止条件变了，重新判读: %q", n, g.Selector)
+	}
+	// 判据：深结构路径 >3 层 → low。代码里的口径是 depth(> 的个数) <= 2 才 medium。
 	if g.Stability != "low" {
-		t.Errorf("4 段结构路径的 stability = %q，应为 low（判据：深结构路径 >3 层）", g.Stability)
+		t.Errorf("6 段结构路径的 stability = %q，应为 low（判据：深结构路径 >3 层）", g.Stability)
 	}
 
-	// H：同样 4 段，只差在**表头是祖先的稳定 id**。
+	// H：4 段（3 个 >），只差在**表头是祖先的稳定 id**。
 	//
 	// ⚠️ 这条是**特征化断言**（characterization），不是在认可当前判据：
 	// `stability()` 的第一条分支是 `/^#/` → 只要选择器以 `#` 开头就答 high，
-	// 于是 H 拿到 high —— 与同形状、无 id 表头的 G（low）只差一个表头，
-	// 而两者尾巴一样脆（3 跳 nth-of-type，插一个 div 就断）。
+	// 于是 H 拿到 high，而它的尾巴（3 跳 nth-of-type）与 G 一样脆 —— 插一个 div 就断。
 	// 规格 §4.3 两种读法都不支持 high：按「结构路径 ≤3 层」读 → H 是 4 段；
 	// 按「nth-of-type 层数」读 → H 有 3 层。high 只在「选择器里有 #」这一读法下成立。
 	// 本任务不动实现（控制器：不做 Go 侧助手、先报发现），所以这里把**现状钉住**
 	// 并在报告里提出来 —— 钉住是为了将来改判的人一眼看到差异，不是为了背书。
+	//
+	// ⚠️ 2026-09-17 补：地址唯一性那轮让**锚点停车**变成了常规行为，这条特征化的
+	// 影响面因此变大 —— 真站上那两个 combobox 现在拿到的正是 `#inputAreaParentContainer`
+	// 打头、尾巴有 8 跳 nth-of-type 的路径，照样是 high。同一个量级的问题，
+	// 只是从 fixture 里的 4 段变成了真站上的 9 段（见 fix-observe-addressability-report）。
 	h := actionByText(t, m, "H deep under stable id")
 	if !strings.HasPrefix(h.Selector, "#deep-wrap > ") {
-		t.Fatalf("H 的 selector = %q，应形如 `#deep-wrap > …`（pathSel 第 4 跳撞上祖先 id 就停）", h.Selector)
+		t.Fatalf("H 的 selector = %q，应形如 `#deep-wrap > …`（爬升途中撞上祖先的稳定 id 就停车）", h.Selector)
 	}
 	if n := strings.Count(h.Selector, ">"); n != 3 {
 		t.Errorf("H 的 selector 有 %d 个 '>'（应为 3，与 G 同形状）—— 断言的前提变了，重新判读", n)
@@ -251,7 +265,7 @@ func TestObserveSelectorPlainButtonRating(t *testing.T) {
 	}
 	// 实际取值留档（判据允许 medium：结构路径 ≤3 层）。报告里对这一点有专门一节：
 	// `body:nth-of-type(1) > button:nth-of-type(3)` 这种纯位置路径拿 medium，
-	// 与 `button.btn.btn-primary`（同一档）混在一起，agent 区分不出谁更可靠。
+	// 与 `button.btn.btn-secondary`（同一档）混在一起，agent 区分不出谁更可靠。
 	t.Logf("裸 button：selector=%q stability=%q（判据下 medium 是允许的，但它无任何稳定锚点）",
 		a.Selector, a.Stability)
 }

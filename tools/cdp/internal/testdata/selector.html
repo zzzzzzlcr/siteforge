@@ -32,8 +32,14 @@
 <!-- 2b. 8 位纯 hex hash —— RAND 的 `[0-9a-f]{8,}` 正好咬得住的那一档 -->
 <button class="css-1a2b3c4d">E hash8</button>
 
-<!-- ── 3. 稳定语义 class（非 hash）→ medium ──────────────────────────── -->
-<button class="btn btn-primary">F stable class</button>
+<!-- ── 3. 稳定语义 class（非 hash）→ medium ────────────────────────────
+     ⚠️ 第二个 class 是 `btn-secondary` 而不是 `btn-primary`：下面 M 组要验的是
+     「正常类名**仍然被采用**」（selector 恰好是 `button.<class>`），而那要求那个
+     class 在这个页面里**唯一**。原先 F 用的是 `btn btn-primary`，与 M 组共用了
+     `btn-primary` → `button.btn-primary` 命中 **2 个**，M 组那条断言其实一直在
+     盯着一条歧义选择器（当时的实现不验唯一性，所以它照样绿）。
+     F 自己的判据（有语义的 class → medium）与第二个 class 叫什么无关。 -->
+<button class="btn btn-secondary">F stable class</button>
 
 <!-- ── 3b. 反向边界：这些类名**不得**被判成随机 token ──────────────────
      RAND 放宽（形态③：字母数字来回交替 ≥2 次）时最容易的翻车方式是
