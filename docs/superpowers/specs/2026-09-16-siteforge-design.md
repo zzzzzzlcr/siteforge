@@ -399,6 +399,29 @@ PROVENANCE = {
 ⚠️ **这不是「加需求」，是现有验收标准跑不通**：MVP 的验收案例 **homebuddy 本身
 就是新站**（`/tmp/desc_hb.txt`）。不含输入闸门，§10 那条端到端验收根本走不完。
 
+**第三个入口（Phase 2，用户 2026-09-16 提出）：JSON 修复。**
+
+产线里 py 与 JSON 并存（`forms/sites/*.py` 63 个 + `json-configs/*.json` **69 个**），
+两类都会挂。JSON 修复分三层，**第一层已经存在**：
+
+| 层 | 谁做 | 现状 |
+|---|---|---|
+| 1. 结构/类型/格式 | `form_executor/auto_fixer.py` 约 10 条确定性规则（`_fix_field_types` / `_fix_field_placeholder` / `_fix_button_eval` / `_remove_form_id` / `_fix_success` / `_fix_loop_until` / `_fix_missing_wait`…），0 LLM | ✅ **已有** |
+| 2. **选择器失效**（页面改版） | 重跑 → 看哪步开始对不上 → 找新选择器 → 改 JSON | ❌ 没有 ← **siteforge 该补这层** |
+| 3. 表达力不够（分支 / 跨轮状态 / 换策略） | 升级成 py | 见 §1.1 |
+
+**第 2 层恰好不需要 agent 写代码** —— 只要 `observe`/`diff` 找新选择器、改 JSON 的
+一个字段、跑一遍验证。所以它**比产 py 便宜**：
+
+- 产物是**数据**不是代码 → 契约检查就是 schema 校验，不需要 §5.2 那套 lint
+- 改动**局部**（一个选择器字段）→ 人审比审 py 容易得多
+- **旧 JSON 在手** —— 同「修站有旧 py」那个优势
+- `auto_fixer` 已把机械的那一半做掉
+
+**升级判据**（不要重新发明，用 §1.1 已有的边界）：
+修这个 JSON 若需要**加一个 JSON 表达不了的原语**（分支 / 跨轮状态 / 换策略），
+就放弃 JSON、升级成 py。
+
 **Phase 1 的最小形态**：不做 UI，两个 CLI
 
 ```
@@ -633,7 +656,7 @@ py 产出契约与 lint · 扰动自测 · LangGraph 图 · `site_memory`/`corre
 | 期 | 做什么 | 交付判据 |
 |---|---|---|
 | **Phase 1（MVP）** | **两个入口 CLI（新站教意图 / 修站带证据）** · `observe`（CLI+MCP）· `draft` · `lint` · **扰动自测** · **`review` 人审闸门** · LangGraph 图 · **Correction 采集（一等公民）** · site_memory 埋点 | homebuddy 出一条**经人审通过**的 py |
-| **Phase 2** | HITL UI（人工选正确元素，把 §6.4 的三样做成界面）· Site Memory 消费（平台经验复用） | 人工修正进得去、**同类站复用得上** |
+| **Phase 2** | HITL UI（人工选正确元素，把 §6.4 的三样做成界面）· Site Memory 消费（平台经验复用）· **JSON 修复入口（§6.1 第三入口）** | 人工修正进得去、**同类站复用得上**、**JSON 挂掉的站也能修** |
 | **Phase 3** | OpenClaw 入口（运营自然语言提单）· 自动运营交互 · 呈现接已有界面（§6 呈现缺口，见 R16） | 运营自助 |
 
 **Phase 1 的「人审」不是 UI，是流程**：产物 + observe 快照 + 扰动结果落到一个
