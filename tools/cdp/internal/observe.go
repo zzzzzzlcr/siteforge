@@ -145,10 +145,78 @@ type Action struct {
 	Alternates []string `json:"alternates"`
 	Stability  string   `json:"stability"`
 	Text       string   `json:"text"`
-	Role       string   `json:"role"`
-	Tag        string   `json:"tag"`
-	Type       string   `json:"type"`
-	Visible    bool     `json:"visible"`
+	// AriaLabel 是这个控件的**无障碍名**（元素的 aria-label 属性）。
+	//
+	// 为什么非有不可（2026-09-17 真站实测，gowizard 验收）：漏斗上那几个真按钮的
+	// `text` **全是空串** —— Back / Disagree / Not sure / Agree 只有 aria-label 分得开。
+	// 只给 text 的模型里，它们是几行**彼此完全同形**的匿名元素（连 Back 也一样），
+	// 而认清「哪个是 Back」正是「别把漏斗走回去」的那条判据。
+	//
+	// ⚠️ 与 `text` 的关系：两个都要给，**不许**拿一个顶替另一个 ——
+	// `text` 是页面上印着的字，`aria-label` 是给读屏软件念的名；有文字的按钮照样
+	// 可以有 aria-label（那时两者说的往往不是同一句话）。
+	//
+	// ⚠️ 长度：与 Value 同一个上限（见 observeJS 的 READ_CAP）。上限**不单独报**，
+	// 与 text / nearby_text 的历史口径一致（那两个也是静默截断）；值那边有
+	// ValueTruncated，是因为「值是不是完整的」影响消费侧判断，名字长度不影响。
+	AriaLabel string `json:"aria_label"`
+	Role      string `json:"role"`
+	Tag       string `json:"tag"`
+	Type      string `json:"type"`
+	Visible   bool   `json:"visible"`
+	// Value 是这个元素**现在装着的值**（input / textarea / select 的 IDL value）。
+	//
+	// 为什么非有不可：实测过——同一个页面，把值填进去**前**与**后**两份模型
+	// **逐字节相同**。于是 agent 无法确认自己的写入生效，只能再填一遍；
+	// 与「看不见选中态」是同一类病（2026-09-17 gowizard 验收，用户的原话是「呆呆的」）。
+	//
+	// ⚠️ 三态，别把它读成「有没有值」：
+	//
+	//	null   这个元素**不是值控件**（按钮 / 链接 / 自定义控件）—— 它没有值这回事
+	//	""     是值控件，而它**现在是空的**（这是一句关于页面的断言：写入没落地）
+	//
+	// 编一个 "" 给按钮，等于替页面断言「这里是空的」；而消费侧真去读它时，
+	// 得到的是一句**看起来像答案的假话**。反过来，把 "" 说成 null 会让
+	// 「填了但没进去」与「这根本不是个框」混掉 —— 两边都不能省。
+	//
+	// ⚠️ 值来自页面作者：可能极长（textarea 几十 KB）。JS 侧封顶（见 ValueTruncated），
+	// 不封顶的话一次观测（最多 200 动作 + 100 字段）能被撑成几兆。
+	Value *string `json:"value"`
+	// ValueTruncated 说 Value 被上限截过（截断**必须**说出来，见 READ_CAP 的注释）。
+	//
+	// ⚠️ 只是「被截过」这一个事实，不报「截到哪」：上限是观察者的口径，
+	// 不是页面的属性 —— 消费者要的是「我看到的不是全部」，不是那个数。
+	ValueTruncated bool `json:"value_truncated"`
+	// Selected 是这个控件**现在是不是选中/勾起/按下**。
+	//
+	// 为什么非有不可（2026-09-17 真站实测）：agent 答了「Sedan」（页面上确实选上了，
+	// 连 URL 里都带着），而模型里**没有一个字**说这件事 —— 于是它无法确认自己的答案
+	// 生效，反复重答。人在旁边一眼就能看见，它看不见。
+	//
+	// ⚠️ **三态，缺一不可**：
+	//
+	//	true   选着
+	//	false  没选（有明确的「没选」证据）
+	//	null   **看不出** —— 这个控件没有暴露任何状态，观察者无从判断
+	//
+	// false 与 null 必须分得开：把「看不出」编成 false，消费侧就会读成「还没选」，
+	// 然后**再答一遍** —— 那正是这个缺陷本来的样子换了个位置。
+	//
+	// 判据（缺一不可，顺序固定）：
+	//
+	//	① aria-selected / aria-checked / aria-pressed 取值为 true/false —— 自定义
+	//	   控件的状态就写在这儿（`mixed` 这类非布尔取值**不算**答案，继续往下问）
+	//	② 原生状态走 IDL —— select 看 selectedIndex >= 0、radio/checkbox 看 checked
+	//	③ 都没有 → null
+	//
+	// ⚠️ 刻意**不**认 class（`Mui-selected` / `is-active` 那一类）：与 Disabled 同一条
+	// 裁定 —— class 是站点自己起的名字，认它等于把「什么样算选中」交给页面，
+	// 而误判方向是**谎报**（把没选的说成选上了）。宁可给 null。
+	//
+	// ⚠️ 已知的粗一格：`<select>` 的判据是「有选中的选项」（selectedIndex >= 0），
+	// 而占位项（`<option value="">Choose…</option>`）也算「选中」—— 所以「答过了没」
+	// 要看 Value（它对占位项是 ""），别只看 Selected。
+	Selected *bool `json:"selected"`
 	// Disabled 是这个元素**现在能不能点**（2026-09-17 真站实测补的，规格 §4.1 U3）。
 	//
 	// 为什么非有不可：同一个页面、同一个 URL，DOM 里 Continue 的 disabled 从
@@ -183,16 +251,29 @@ type Action struct {
 }
 
 type Field struct {
-	Selector    string   `json:"selector"`
-	Alternates  []string `json:"alternates"`
-	Stability   string   `json:"stability"`
-	Label       string   `json:"label"`
-	Hint        string   `json:"hint"`
-	Placeholder string   `json:"placeholder"`
-	Type        string   `json:"type"`
-	Required    bool     `json:"required"`
-	ShadowDepth int      `json:"shadow_depth"`
-	FramePath   []string `json:"frame_path"`
+	Selector   string   `json:"selector"`
+	Alternates []string `json:"alternates"`
+	Stability  string   `json:"stability"`
+	Label      string   `json:"label"`
+	// AriaLabel 与 Action 的同名字段**同义同判据**（元素的 aria-label 属性，见那边）。
+	//
+	// ⚠️ 它与 Label 不是一回事，两个都给：Label 是**标签取法的结果**（aria-label
+	// → closest('label') → label[for=id] 三级回落，见 observeJS），可能是包着它的
+	// label 文字；AriaLabel 只报元素自己那个属性。要判断「这个框叫什么」用 Label，
+	// 要拿无障碍名本身（比如与 click 那行描述对齐）用 AriaLabel。
+	AriaLabel string `json:"aria_label"`
+	// Value / Selected 与 Action 的同名字段**同义同判据**（三态、上限、为什么
+	// 不能猜 class 全写在那边）：字段这一路也要回读，因为「值填进去了没有」
+	// 这个问题的**主战场就是表单字段**。
+	Value          *string  `json:"value"`
+	ValueTruncated bool     `json:"value_truncated"`
+	Selected       *bool    `json:"selected"`
+	Hint           string   `json:"hint"`
+	Placeholder    string   `json:"placeholder"`
+	Type           string   `json:"type"`
+	Required       bool     `json:"required"`
+	ShadowDepth    int      `json:"shadow_depth"`
+	FramePath      []string `json:"frame_path"`
 }
 
 type OptionGroup struct {
@@ -486,6 +567,67 @@ func observeJS() string {
     return out;
   }
 
+  // ── 三样读法：值 / 选中态 / 无障碍名（2026-09-17 真站实测补的，规格 §4.1 U2）──
+  //
+  // 它们回答的是**同一类问题**：agent 自己刚才那一下，到底生效了没有。
+  // 真站上它答了「Sedan」却无法确认（模型里没有一个字说这件事）→ 反复重答；
+  // 填了值也一样（填前填后两份模型逐字节相同）。三条缺口的原委与证据：
+  // docs/probes/2026-09-17-observe-blinkist/。
+
+  // READ_CAP 是**回读**字段的上限（value 与 aria_label 共用这一份）。
+  //
+  // 为什么是 80：
+  //   - 够用：一个真实的值/名字都在这以内（邮箱、地址、车型、选中的年份、
+  //     「VIN (17 characters)」这类无障碍名），确认「我写进去的就是这个」只要前
+  //     几十个字符就够
+  //   - 封得住：元素上限是 200 动作 + 100 字段，每个都带一个值 —— 不封顶时
+  //     一个几十 KB 的 textarea 就能把一次观测撑成几兆
+  //   - 与 text（50）/ nearby_text（40）同量级，不是新开一档口径；
+  //     与 click 的描述（32）不同档是有意的：那一行进 stderr 与报错，必须短
+  //   **只此一份**：Go 侧不另写一个常量（同一件事两个真相，改一处漏一处是静默的）。
+  //   有测试从这段脚本里读它（internal/observe_reads_test.go）。
+  var READ_CAP = 80;
+
+  // valOf：这个元素**现在装着什么**。
+  //
+  // 只有 input / textarea / select 有「值」这回事；别的元素一律 null ——
+  // **不是**空串。空串是一句关于页面的断言（「这个框现在是空的」—— 也就是
+  // 「写入没落地」），按钮上编一个空串等于替页面说了一句假话。
+  function valOf(el) {
+    var t = el.tagName.toLowerCase();
+    if (t !== 'input' && t !== 'textarea' && t !== 'select') return null;
+    return typeof el.value === 'string' ? el.value : '';
+  }
+
+  // selState：这个控件**现在是不是选中/勾起/按下**。三态：true / false / null（看不出）。
+  //
+  // null 与 false 必须分得开。把「看不出」编成 false，消费侧会读成「还没选」，
+  // 然后**再答一遍** —— 那正是这个缺陷本来的样子换了个位置（真站上「呆呆的」就是它）。
+  //
+  // 判据顺序（缺一不可）：
+  //   ① ARIA 那一套：自定义控件的状态就写在这里，且它是**作者显式声明**的
+  //      （真站上那三个图标选项只有一个带 aria-checked —— 另外两个就是看不出）
+  //   ② 原生状态走 IDL：select 看 selectedIndex、radio/checkbox 看 checked
+  //   ③ 都没有 → null
+  //
+  // ⚠️ 刻意**不**认 class（Mui-selected / is-active 那一类）：class 是站点自己起的
+  // 名字，认它等于把「什么样算选中」交给页面 —— 与本文件 Disabled 的那条裁定同一套
+  // （Mui-disabled 不算禁用证据）。误判方向是**谎报**，而这里宁可少报。
+  function selState(el) {
+    var attrs = ['aria-selected', 'aria-checked', 'aria-pressed'];
+    for (var i = 0; i < attrs.length; i++) {
+      var v = el.getAttribute(attrs[i]);
+      if (v === 'true') return true;
+      if (v === 'false') return false;
+      // "mixed" / 空串 / 别的取值**都不是答案**：它不是 true 也不是 false，
+      // 继续往下问原生状态；原生也没有 → null（看不出），而不是编一个 false。
+    }
+    var tag = el.tagName.toLowerCase(), ty = (el.type || '').toLowerCase();
+    if (tag === 'select') return el.selectedIndex >= 0;
+    if (tag === 'input' && (ty === 'checkbox' || ty === 'radio')) return !!el.checked;
+    return null;
+  }
+
   // ── 可动作元素 ──
   // ⚠️ 蜜罐在**切片之前**滤掉：切片（slice(0,200)）是截断，让陷阱占着名额等于
   // 把页面末尾的真元素挤出去 —— 一个观察者自己制造出来的盲区。
@@ -499,10 +641,19 @@ func observeJS() string {
     var r = el.getBoundingClientRect(), c = candidates(el);
     var tag = el.tagName.toLowerCase();
     var peers = cands.filter(function (o) { return o.tagName === el.tagName && region(o) === region(el); }).length;
+    var val = valOf(el);
     return {
       selector: c[0], alternates: c.slice(1), stability: stability(el, c),
       text: txt(el, 50), role: el.getAttribute('role') || tag, tag: el.tagName,
       type: el.type || null, visible: true,
+      // 三样读法（见上面 READ_CAP / valOf / selState 的注释）。
+      // ⚠️ value 的 null 与 "" 是两件事：null = 不是值控件，"" = 是值控件但现在是空的。
+      // ⚠️ value_truncated 只在**真的截了**的时候是 true（截断要说出来，
+      //    否则消费侧把半个值当成全部）。
+      aria_label: (el.getAttribute('aria-label') || '').slice(0, READ_CAP),
+      value: val === null ? null : val.slice(0, READ_CAP),
+      value_truncated: val !== null && val.length > READ_CAP,
+      selected: selState(el),
       // 能不能点：两条判据（IDL disabled / aria-disabled），理由见 Go 侧 Action.Disabled。
       // ⚠️ 与 internal/click.go 的探测必须**同判据** —— 一个说能点、一个说不能点，
       // 消费侧就会拿模型去点一个必然空点的目标。
@@ -531,10 +682,18 @@ func observeJS() string {
     var lab = el.getAttribute('aria-label') || '';
     if (!lab) { var pl = el.closest ? el.closest('label') : null; if (pl) lab = txt(pl, 40); }
     if (!lab && el.id) { var l = qsa('label[for="' + el.id + '"]')[0]; if (l) lab = txt(l, 40); }
+    // 三样读法与 actions 那条**同一套判据**（valOf / selState / READ_CAP）——
+    // 表单字段这一路是「值填进去了没有」的主战场，两条路各写一遍就意味着
+    // 其中一条哪天会静默地什么都没有（蜜罐那次就是两条路各漏一次）。
+    var fval = valOf(el);
     return {
       selector: candidates(el)[0], alternates: candidates(el).slice(1),
       stability: stability(el, candidates(el)),
       label: lab || '', hint: el.name || el.id || '', placeholder: el.placeholder || '',
+      aria_label: (el.getAttribute('aria-label') || '').slice(0, READ_CAP),
+      value: fval === null ? null : fval.slice(0, READ_CAP),
+      value_truncated: fval !== null && fval.length > READ_CAP,
+      selected: selState(el),
       type: el.type || el.tagName.toLowerCase(), required: !!el.required,
       shadow_depth: shadowDepth(el), frame_path: ['main']
     };

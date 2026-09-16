@@ -47,6 +47,13 @@ var observeCmd = &cobra.Command{
 
 跨源 iframe 会自动逐帧取再合并，每条动作带 frame_path。
 
+每条动作/字段还**回读**三样东西：value（这个框现在装着什么）、selected
+（这个控件选着没有）、aria_label（没有文字的控件叫什么）。
+前两个都是三态的，读法别弄错：
+  value     null = 不是值控件（按钮）   "" = 是值控件但现在是空的
+  selected  null = **看不出**（控件没暴露状态）—— 不等于 false（没选）
+想把「我刚填/选的那一下生效了没有」问清楚，就看它们。
+
 输出是 PageModel 的 JSON（默认即 JSON）。diagnostics 是观测者自己的问题，
 obstructions 是页面上的遮挡物，两者语义不同。`,
 	RunE: runObserve,
@@ -150,7 +157,13 @@ func renderHuman(w io.Writer, m *internal.PageModel) error {
 			if a.Disabled {
 				state += " 禁用"
 			}
-			fmt.Fprintf(tw, "  %d.\t[%s]\t%s\t%s\n", i+1, state, truncRunes(a.Text, 40), a.Selector)
+			// 「已选」同样写进状态那一格（同一个问题：「这个控件现在是什么状态」）。
+			// ⚠️ **只在确实选着时**印：false 与 null（看不出）都不印 ——
+			// 印「未选」等于替页面断言，「看不出」印成任何说法都是在猜。
+			if a.Selected != nil && *a.Selected {
+				state += " 已选"
+			}
+			fmt.Fprintf(tw, "  %d.\t[%s]\t%s\t%s\n", i+1, state, actionNameCell(a), a.Selector)
 		}
 		if len(m.Actions) > shown {
 			fmt.Fprintf(tw, "  …\t\t\t还剩 %d 个（用 --json 看全量）\n", len(m.Actions)-shown)
@@ -212,6 +225,37 @@ func renderHuman(w io.Writer, m *internal.PageModel) error {
 		}
 	}
 	return tw.Flush()
+}
+
+// actionNameCell 是动作那一行的**名字那一格**：它叫什么 + 它现在装着什么。
+//
+// 三条规矩，都是「有话说才说」（摘要不是把 JSON 倒出来）：
+//
+//	① 名字：先用页面上的文字；**没有文字**才回落到无障碍名（aria-label）。
+//	   真站上 Back 与三个图标选项的 text 全是空串 —— 不回落到那儿，这一列就是
+//	   几行彼此一模一样的空白，人认不出哪个是 Back（而「别点 Back」正是要走对的关键）。
+//	② 值：只在**是值控件**时印（Value != nil）。按钮 / 链接没有值这回事，
+//	   给它们编一个空值等于替页面断言「这里是空的」。
+//	③ 空值要有说法：是值控件而值为空 → 印「（空）」。它是**一句关于页面的断言**
+//	   （「这个框现在是空的」＝ 刚那次写入没落地），而它与「这不是个框」在摘要里
+//	   长得一样的话，读的人就分不出「没填进去」和「这元素不用填」。
+//
+// 值截到 40（与名字同口径，截了带省略号）：摘要要能扫，一个长 textarea 会把它撑散。
+func actionNameCell(a internal.Action) string {
+	parts := []string{}
+	if name := truncRunes(a.Text, 40); name != "" {
+		parts = append(parts, name)
+	} else if name := truncRunes(a.AriaLabel, 40); name != "" {
+		parts = append(parts, name)
+	}
+	if a.Value != nil {
+		v := strings.Join(strings.Fields(*a.Value), " ")
+		if v == "" {
+			v = "（空）"
+		}
+		parts = append(parts, "= "+truncRunes(v, 40))
+	}
+	return strings.Join(parts, " ")
 }
 
 // honeypotName 是蜜罐那一行**第一列**（人认字段靠的那一格）。

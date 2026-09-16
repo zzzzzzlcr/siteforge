@@ -199,3 +199,109 @@ func TestRenderHumanOmitsHoneypotSectionWhenNone(t *testing.T) {
 	}
 	t.Logf("人话输出:\n%s", out)
 }
+
+// TestRenderHumanSurfacesTheThreeReads —— 人话摘要也要看得见这三样。
+//
+// 为什么（与 TestRenderHumanSurfacesHoneypots 同一条理由）：`--json=false` 是给
+// **非技术**的人看的那一路（D14/D15：运营要能自助看懂「AI 看清了什么」）。
+// 三个新字段只在 JSON 里、人话里一个字不提的话，坐在旁边的人依然回答不了
+// 「它答的是哪个」「这框填进去没有」—— 而那正是它卡住时人唯一想知道的。
+//
+// 但**不许变成噪音**：这三样只在**有话说**的时候印。
+//
+//	名字：有文字用文字，**没有文字**才回落到无障碍名（真站上 Back 与三个图标选项
+//	      text 全是空串 —— 不回落到那儿这一列就是四个一模一样的空白行）
+//	已选：**只在真的选着时**印。false 与 null（看不出）都不印 ——
+//	      印「未选」等于替页面断言，「看不出」印成任何东西都是在猜
+//	值：  只在**是值控件**时印（按钮没有值这回事）
+func TestRenderHumanSurfacesTheThreeReads(t *testing.T) {
+	yes, no := true, false
+	chosen := "2020"
+	m := &internal.PageModel{
+		URL:   "https://quote.example/step-2",
+		Title: "问答页",
+		Actions: []internal.Action{
+			{Selector: "#opt-sedan", Stability: "low", Text: "Sedan", Selected: &yes},
+			{Selector: "#opt-suv", Stability: "low", Text: "SUV", Selected: &no},
+			// 没有状态标记的自定义控件：selected 是 null（看不出）——
+			// 人话里**不许**因此印「未选」之类的东西
+			{Selector: "#opt-nostate", Stability: "low", Text: "Truck"},
+			// 没有文字、只有无障碍名的那一个（真站上的 Back）
+			{Selector: "button.choice", Stability: "medium", AriaLabel: "Back"},
+			// 值控件：值要印出来（这一个同时是「已选」—— <select> 选中了 2020）
+			{Selector: "#year", Stability: "high", Text: "Year Choose… 2019 2020", Value: &chosen, Selected: &yes},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := renderHuman(&buf, m); err != nil {
+		t.Fatalf("renderHuman 失败: %v", err)
+	}
+	out := buf.String()
+
+	for _, want := range []string{
+		"已选",   // 选着的那个说出来了（不然「答的是哪个」还是没人知道）
+		"Back", // 没有文字的控件靠无障碍名认得出来
+		"2020", // 值控件里装着的值
+		"Sedan",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("人话输出里没有 %q —— 运营看不到这一页选了什么、那个无名按钮叫什么、框里装着什么:\n%s", want, out)
+		}
+	}
+	// 「已选」只该出现**一次**（#opt-sedan 与 #year 都是 true —— 两个都选着，
+	// 所以两次；这里数的是不能多到把 false / null 也标上）
+	if n := strings.Count(out, "已选"); n != 2 {
+		t.Errorf("「已选」印了 %d 次，want 2（只有 selected=true 的两个）—— "+
+			"多印出来的那些里必然混着 false 或 null，而那是**猜**:\n%s", n, out)
+	}
+	// false 与 null 都不许被印成任何东西（这一列只有 true 才说话）
+	for _, banned := range []string{"未选", "没选", "看不出", "未知"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("人话输出里出现了 %q —— false 与 null 都不该被翻译成一个说法"+
+				"（「看不出」印成「没选」正是这个缺陷本来的样子）:\n%s", banned, out)
+		}
+	}
+	t.Logf("人话输出:\n%s", out)
+}
+
+// TestRenderHumanValueShowsEmptyAndTruncated —— 值的两个边界：**空的**要说出来、
+// **截过的**不能看起来像完整的。
+//
+// 为什么「空」必须有个说法：`value` 是空串时它是**一句关于页面的断言**
+// （「这个框现在是空的」= 我刚那次写入没落地）。而它不是值控件时（Value 为 nil）
+// 什么也不该印 —— 两件事在输出里长得一样的话，读的人分不出「没填进去」与「这不是个框」。
+func TestRenderHumanValueShowsEmptyAndTruncated(t *testing.T) {
+	blank := ""
+	long := strings.Repeat("1HGCM82633A", 12) // 144 字符，肯定超过回读上限（80）
+	m := &internal.PageModel{
+		URL: "https://quote.example/form",
+		Actions: []internal.Action{
+			{Selector: "#email", Stability: "high", Text: "Email", Value: &blank},
+			{Selector: "#long", Stability: "high", Text: "VIN", Value: &long, ValueTruncated: true},
+			{Selector: "#submit", Stability: "high", Text: "Continue"}, // 不是值控件
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := renderHuman(&buf, m); err != nil {
+		t.Fatalf("renderHuman 失败: %v", err)
+	}
+	out := buf.String()
+
+	if !strings.Contains(out, "（空）") {
+		t.Errorf("空的输入框在人话里什么都没说 —— 读的人分不出「没填进去」与「这不是个框」:\n%s", out)
+	}
+	if !strings.Contains(out, "#long") || strings.Contains(out, long) {
+		t.Errorf("超长的值被原样印出来了（%d 个字符）—— 摘要会被一个 textarea 撑散:\n%s", len(long), out)
+	}
+	// 截过的值必须看得出被截过（尾部那个省略号）
+	if !strings.Contains(out, "…") {
+		t.Errorf("被截断的值在人话里没有任何「不全」的标记:\n%s", out)
+	}
+	// 反向对照：不是值控件的元素（按钮）不许被印上一个空值
+	if strings.Contains(out, "Continue = ") || strings.Contains(out, "Continue=（空）") {
+		t.Errorf("按钮被印上了「值」—— 它没有值这回事，编一个空值等于替页面断言:\n%s", out)
+	}
+	t.Logf("人话输出:\n%s", out)
+}

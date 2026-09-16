@@ -45,16 +45,18 @@ var diffCmd = &cobra.Command{
   · 身份上真有元素出现/消失（正文 + 角色 + 区域的多重集，不是选择器集合）
 
 ⚠️ 能力边界 —— 它判的是**导航与组成变化**，**不判填写与选择**：
-  PageModel 里没有字段值（Field 只有 label/type/placeholder），所以
-  「值填进去了没有 / 勾上了没有 / 只是高亮了一下」这些步骤，
-  diff 原理上答不了 —— 页面组成没变，actionable 就是 false，别把它读成「没成功」。
+  它的判据里没有**字段值**这一项（比的是 URL / 可见正文 / 元素身份）——
+  所以「值填进去了没有 / 勾上了没有 / 只是高亮了一下」这些步骤，
+  diff 原理上答不了：值变了而页面组成没变，actionable 照样是 false。
+  ⚠️ 别把 actionable=false 读成「这一步没成功」（那是这条边界最容易读错的方向）。
 
   填/选类步骤该怎么办（**不要**拿 diff 当这一步的判据）：
     · 首选**动作命令自己的退出码**：cdp form --select 在选项不存在时当场报错
       （option not found），--value / --check 在元素找不到时报错 —— 非 0 就是没做成；
-    · 要真断言「值写进去了」，只能另用 cdp eval 读回 el.value
-      （⚠️ eval 那条路**不注入**穿透助手 —— shadow DOM 里的 input 它够不着）；
-    · 实在要拿页面模型判，就等计划二把字段值加进契约（R20），那时这一步才有通用判据。
+    · 要断言「值真写进去了」：observe 现在**回读**它 —— 看字段/动作的 value
+      （R20 已落地。⚠️ 三态：null = 不是值控件，"" = 是值控件但现在是空的）；
+    · 要断言「这个选项选上了」：看 selected（true / false / **null = 看不出**，
+      别把 null 读成没选 —— 那正是「答过了还反复重答」的成因）。
 
 用法：
   cdp observe > before.json && <做动作> && cdp diff --before before.json

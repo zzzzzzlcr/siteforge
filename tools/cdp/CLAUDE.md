@@ -62,6 +62,9 @@ chrome --remote-debugging-port=9222
 **功能说明:** snapshot 命令获取当前打开页面的所有 frame 信息（frameId、title、url、readyState）；
 observe 命令给出页面模型（规格 §4.3 契约：actions / fields / option_groups / obstructions /
 diagnostics，跨源 iframe 自动逐帧合并、每条带 `frame_path`），是 py 与 agent 的主视角；
+每条动作/字段还回读 `value`（框里装着什么）/ `selected`（选着没有）/ `aria_label`（没文字的
+控件叫什么）—— 前两个是三态（`value` 的 null = 不是值控件、`selected` 的 null = **看不出**，
+≠ false），2026-09-17 真站验收补的；
 ⚠️ 没有页面目标报 visible 时，挑「活动页」会**退回第一个**（`internal/targets.go` 的
 `pickActivePage`）—— 那是个猜测，所以模型里会带一条 `target-ambiguous` 诊断（整个 tab
 可能选错了，不是某一帧没取到；真站实测过：返回一份完全合法、说的是**另一个页**的模型）；

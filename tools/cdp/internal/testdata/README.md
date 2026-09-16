@@ -12,6 +12,7 @@
 | `selector.html` | `observe_selector_test.go`（Task 5 新增，不来自探针） | 选择器候选与稳定性评级 |
 | `honeypot.html` | `cmd/honeypot_e2e_test.go`（R19b 新增，不来自探针） | 屏幕外陷阱（蜜罐）+ 正向对照 |
 | `viewport.html` | `cmd/observe_e2e_test.go`（Defect 1 新增，不来自探针） | 撑出**滚动条**的页面（3000×3000） |
+| `observe_reads.html` | `cmd/observe_reads_e2e_test.go`（2026-09-17 新增，不来自探针） | 三样回读（value / selected / aria_label）的各态 |
 | `click_target.html` | `cmd/click_target_e2e_test.go` + `cmd/mcp_click_e2e_test.go`（2026-09-17 新增，不来自探针） | click 的目标解析：歧义选择器（点到了 Back）+ 两种禁用的目标 |
 
 ## `click_target.html`（2026-09-17 新增，**不是探针产物**，真站形态的复刻）
@@ -244,6 +245,27 @@ aside/main/hero`）对**两种**实现给同一个答案 ——
 注意：landmark 加在 shadow **里面**是没用的 —— 错误实现的 `parentElement` 遍历照样
 找得到它，仍然分辨不出来。必须在 shadow 外面（真实站点就是这个形态：Salesforce
 Lightning 那种把表单塞进 shadow 的页，外面有 header/nav/main）。
+
+## `observe_reads.html`（2026-09-17 新增，**不是探针产物**）
+
+复刻的是 gowizard 验收里「agent 看得见页面、但看不见这三样」的三条缺口
+（原委：`.superpowers/sdd/2026-09-17-production-loop/progress.md` 的 R-54，
+真站 DOM 真值：`docs/probes/2026-09-17-observe-blinkist/dom-ground-truth.txt`）。
+
+| 格 | 元素 | 钉住的是 |
+|---|---|---|
+| 自定义控件的问答题 | `#opt-sedan` / `#opt-suv` / `#opt-nostate`（`div[role=radio]`，页面上**没有** native `<select>`） | `aria-checked` 的 true / false，以及**一个标记都没有** → `selected: null`。三格缺一，`false` 与 `null` 就又混在一起了 |
+| `aria-pressed` 那一套 | `#press-full` / `#press-min` | 同一个问题的另一种 ARIA 标记（blinkist 的按钮式选项用它） |
+| native `<select>` | `#read-year`（选好 2020）、`#read-none`（`multiple` 且无选项） | `selectedIndex >= 0` / `=== -1`；`value` 给的是**选中那个**（2020），不是第一个占位项 |
+| 已填的框 | `#read-email` / `#read-notes` | `value` 回读（「填进去了没有」的那个答案） |
+| 原生勾选态 | `#read-check-on/off`、`#read-radio-on/off` | checkbox / radio 走 IDL 的 `checked` |
+| 超长值 | `#read-long`（125 字符，带 `aria-label`） | 截断 + `value_truncated`；顺带钉住 **fields 那条路**也有 `aria_label` |
+| 没有文字的按钮 | `#read-back`（`text` 为空、只有 `aria-label="Back"`） | 无文字的控件靠无障碍名认得出来（真站上的 Back 与三个图标选项） |
+
+⚠️ `#opt-nostate` **故意不给状态标记**：那不是夹具写漏了，它复刻的正是真站上
+「选完了而模型说不出来」的那一格（自定义控件的状态由站点 JS 管，ARIA 标记只是
+**有时**才加）。给所有选项都补上 `aria-checked` 就等于把这个缺陷修掉了，
+测试也就再也测不到它 —— 与 `click_target.html` 里 Continue 刻意不给 id 是同一条理由。
 
 ## 🚫 不要用探针目录覆盖这里的 fixture
 

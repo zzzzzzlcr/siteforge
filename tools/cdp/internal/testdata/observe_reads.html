@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>observe reads</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 12px; }
+  h1 { font-size: 18px; }
+  h2 { font-size: 14px; margin: 14px 0 4px; }
+  .opt { display: block; width: 240px; height: 32px; line-height: 32px; padding: 0 8px; margin: 4px 0;
+         border: 1px solid #999; background: #f6f6f6; }
+  .opt[aria-checked="true"], .opt[aria-pressed="true"] { background: #cfe8cf; }
+  .icon-btn { width: 96px; height: 26px; display: block; margin: 4px 0; }
+  .txt { display: block; width: 320px; height: 24px; margin: 4px 0; }
+  .txt-wide { display: block; width: 460px; height: 24px; margin: 4px 0; }
+  .sel { display: block; width: 220px; height: 28px; margin: 4px 0; }
+  .sel-multi { display: block; width: 220px; height: 40px; margin: 4px 0; }
+  .box { width: 18px; height: 18px; }
+</style>
+</head>
+<body>
+
+<h1>observe 的三样读法</h1>
+
+<!--
+  ① 自定义控件的问答题（真站形态：选项是 div[role=radio] / button，页面上**没有**
+     native <select>）。三格的差别是这张夹具的全部意义：
+
+       #opt-sedan     aria-checked="true"   → selected 必须是 true（这一题答的是它）
+       #opt-suv       aria-checked="false"  → selected 必须是 false
+       #opt-nostate   **没有任何状态标记**   → selected 必须是 null（「看不出」）
+
+     最后一格是真站上「选完了但模型说不出来」的来源，也是本项目最怕的形状：
+     false 与 null 在消费侧一旦分不开，agent 就会把「看不出」读成「没选」，
+     然后**再答一遍** —— 正是 gowizard 那次「呆呆的」。
+     它在真站上合法（自定义控件的可选态由站点的 JS 管，ARIA 标记只是**有时**才加）。
+-->
+<h2>Which car do you drive?</h2>
+<div id="q-widget" role="radiogroup" aria-label="Which car do you drive?">
+  <div class="opt" role="radio" id="opt-sedan" aria-checked="true">Sedan</div>
+  <div class="opt" role="radio" id="opt-suv" aria-checked="false">SUV</div>
+  <div class="opt" role="radio" id="opt-nostate">Truck</div>
+</div>
+
+<!-- aria-pressed：同一个问题的另一套 ARIA 标记（blinkist 那类按钮式选项用它） -->
+<h2>Coverage level</h2>
+<div id="q-pressed">
+  <button class="opt" type="button" id="press-full" aria-pressed="true">Full coverage</button>
+  <button class="opt" type="button" id="press-min" aria-pressed="false">Minimum coverage</button>
+</div>
+
+<!--
+  ② 原生 <select> 已经选好了一个。value 要给的是**选中的那一个**（2020），
+     不是第一个（Choose…）—— 这就是「我答过了吗」的那个答案。
+     #read-none 是 selectedIndex === -1 的唯一真实形态（multiple 且无选项）：
+     它给 false，与「看不出」的 null 不是一回事。
+-->
+<h2>Vehicle</h2>
+<label for="read-year">Year</label>
+<select class="sel" id="read-year" name="year">
+  <option value="">Choose…</option>
+  <option value="2019">2019</option>
+  <option value="2020" selected>2020</option>
+</select>
+<select class="sel-multi" id="read-none" name="none" multiple></select>
+
+<!-- ③ 填好值的输入框（「值填进去了没有」那个问题） -->
+<h2>Contact</h2>
+<label for="read-email">Email</label>
+<input class="txt" id="read-email" name="email" type="email" value="driver@example.com">
+<label for="read-notes">Notes</label>
+<textarea class="txt" id="read-notes" name="notes">换车，工作日白天在家</textarea>
+
+<!-- 原生勾选态：checkbox / radio 的 selected 走 IDL 的 checked -->
+<label for="read-check-on">Send me quotes</label>
+<input class="box" type="checkbox" id="read-check-on" name="quotes" checked>
+<label for="read-check-off">Call me</label>
+<input class="box" type="checkbox" id="read-check-off" name="call">
+<label for="read-radio-on">Garaged</label>
+<input class="box" type="radio" name="parking" id="read-radio-on" checked>
+<label for="read-radio-off">Street</label>
+<input class="box" type="radio" name="parking" id="read-radio-off">
+
+<!--
+  超过上限的值：value 必须被截断，且**说出来**它被截了。
+  这个框同时带 aria-label（没有可显示的 <label> 文字用它）—— 它是「字段这条路上
+  aria_label 也得在」的那一格，光靠 actions 断言会漏掉 fields 那条路。
+-->
+<input class="txt-wide" id="read-long" name="vin" aria-label="VIN (17 characters)"
+       value="1HGCM82633A004352-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789-abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOPQRSTUVWXYZ-0123456789-tail">
+
+<!-- 没有任何文字、只有一个 aria-label 的按钮（真站上 Back / 三个图标选项就是这样） -->
+<h2>Navigation</h2>
+<button class="icon-btn" type="button" id="read-back" aria-label="Back"></button>
+<button class="icon-btn" type="button" id="read-continue">Continue</button>
+
+</body>
+</html>

@@ -33,12 +33,17 @@ type Diff struct {
 	Disappeared []string `json:"disappeared"`
 	// Actionable = 刚才那一下有没有推进。
 	//
-	// ⚠️ **能力边界（别拿它判「填/选/勾」）**：PageModel 里**没有字段值**
-	// （Field 只有 Label/Type/Placeholder），所以「值填进去了没有 / 勾上了没有 /
-	// 只是高亮了一下」这类步骤，diff 原理上判不了 —— 它判的是**导航与组成变化**
-	// （URL、可见正文、元素集合），不是**控件状态**。
+	// ⚠️ **能力边界（别拿它判「填/选/勾」）**：这里的判据里**没有字段值**这一项
+	// （比的是 URL / 可见正文 / 元素身份），所以「值填进去了没有 / 勾上了没有 /
+	// 只是高亮了一下」这类步骤，diff 原理上判不了 —— 它判的是**导航与组成变化**，
+	// 不是**控件状态**。
 	// 在那类步骤上 Actionable 会是 false（页面组成没变）→ py 会重试。
-	// 真正的修法是给模型加字段值（契约变更，记为 R20，归计划二）。
+	//
+	// ⚠️ 2026-09-17：模型里**已经有**字段值了（Field/Action 的 Value / Selected /
+	// AriaLabel，R20 落地）—— 但**不是给 diff 用的**：值变了而组成没变，
+	// 这条判据仍然答不了。要断言填/选用 observe 那三个字段（见 observe.go），
+	// 别指望 Diff.Actionable。这一段刻意写在这儿，免得下一个人照着它去加
+	// 「值变了也算推进」——那会把一次重渲染/自动回填也算成「agent 做了事」。
 	Actionable bool `json:"actionable"`
 	// DiagnosticsBefore / DiagnosticsAfter 是两次观测各自的诊断条数
 	// （「这一次观测本身不完整」—— 某帧没取到、帧枚举可能退化，见 Diagnostic）。
@@ -279,7 +284,8 @@ func dedupeKeepOrder(sels []string) []string {
 //     看起来和「那一帧的内容消失了」一模一样。**所以要报 diagnostics 的条数**
 //     （DiagnosticsBefore/After，修复轮 1 的 I3）：这条边界没法在 diff 里消掉，
 //     但至少能让调用方看见「这次的 after 观测是不全的」。
-//  3. **判不了「填/选/勾」**：模型里没有字段值（见 Diff.Actionable 的说明）。
+//  3. **判不了「填/选/勾」**：这里的判据里没有字段值这一项（模型里有 Value/Selected
+//     了，但那是给 observe 的消费者用的，diff 不看它 —— 见 Diff.Actionable 的说明）。
 func DiffModels(before, after *PageModel) Diff {
 	appeared, disappeared := multisetDiff(identities(before), identities(after))
 
