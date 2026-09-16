@@ -27,12 +27,17 @@ func init() {
 	rootCmd.PersistentFlags().IntVar(&port, "port", 9222, "Chrome port")
 
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
-		if !cmd.PersistentFlags().Changed("host") {
+		// cmd here is the *subcommand* being executed, never rootCmd. Its
+		// PersistentFlags() flagset is empty, so Changed() would always report
+		// false and the env var would clobber an explicit flag. The inherited
+		// (root) persistent flags are merged into cmd.Flags() during
+		// ParseFlags, so that is the set to query.
+		if !cmd.Flags().Changed("host") {
 			if v := os.Getenv("CDP_HOST"); v != "" {
 				host = v
 			}
 		}
-		if !cmd.PersistentFlags().Changed("port") {
+		if !cmd.Flags().Changed("port") {
 			if v := os.Getenv("CDP_PORT"); v != "" {
 				if n, err := strconv.Atoi(v); err == nil {
 					port = n
