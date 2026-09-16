@@ -406,7 +406,7 @@ PROVENANCE = {
 
 | 层 | 谁做 | 现状 |
 |---|---|---|
-| 1. 结构/类型/格式 | `form_executor/auto_fixer.py` 约 10 条确定性规则（`_fix_field_types` / `_fix_field_placeholder` / `_fix_button_eval` / `_remove_form_id` / `_fix_success` / `_fix_loop_until` / `_fix_missing_wait`…），0 LLM | ✅ **已有** |
+| 1. 结构/类型/格式 | `form_executor/auto_fixer.py` 约 10 条确定性规则（`_fix_field_types` / `_fix_field_placeholder` / `_fix_button_eval` / `_remove_form_id` / `_fix_success` / `_fix_loop_until` / `_fix_missing_wait`…），0 LLM。**它跑在产出期** —— `json_pipeline.py:286` 在 LLM 生成完、浏览器验证前立刻过一遍，是**生成物的清洗器**，不是运行时修复器 | ✅ **已有，但只覆盖纯规则能判的那层** |
 | 2. **选择器失效**（页面改版） | 重跑 → 看哪步开始对不上 → 找新选择器 → 改 JSON | ❌ 没有 ← **siteforge 该补这层** |
 | 3. 表达力不够（分支 / 跨轮状态 / 换策略） | 升级成 py | 见 §1.1 |
 
@@ -417,6 +417,20 @@ PROVENANCE = {
 - 改动**局部**（一个选择器字段）→ 人审比审 py 容易得多
 - **旧 JSON 在手** —— 同「修站有旧 py」那个优势
 - `auto_fixer` 已把机械的那一半做掉
+
+**与 `auto_fixer` 的关系（两者是串行，不是替代）：**
+
+```
+LLM/agent 产出 JSON → auto_fixer（纯规则清洗）→ 【siteforge 补的那层】→ 验证 → 人审 → 上线
+```
+
+`auto_fixer` 覆盖的规则，siteforge **不要重写**；siteforge 补的是**规则判不了、
+必须看着页面才知道**的那层（选择器失效、页面多了一步、按钮改名）。
+
+**而且闭环在这里合上**：siteforge 每次人审通过的修法，**反复出现若干次后就该
+沉淀成 `auto_fixer` 的一条新规则**。这是 §6.5「让人的投入累积」的具体形态 ——
+人工纠正不该永远停在 agent 那里，**确定性规则才是它的终点**：规则跑起来不要钱、
+不会「自信地错」（R0）。
 
 **升级判据**（不要重新发明，用 §1.1 已有的边界）：
 修这个 JSON 若需要**加一个 JSON 表达不了的原语**（分支 / 跨轮状态 / 换策略），
