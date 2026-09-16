@@ -123,6 +123,31 @@ RUN_LLM=1 python3 -m pytest tests/test_tool_loop.py -v
 
 **关键**：**直接调 `internal` 包**，不 subprocess 调 CLI（§4.1）。工具清单见规格 §4.2。
 
+### ⚠️ 它连**哪个**浏览器 —— 这条不能漏（用户 2026-09-16 指出）
+
+**实战上浏览器不是本机 9222，是 Bit 窗口**（带代理与指纹的那套）。链路：
+
+```
+bit.sh open <worker_ip> <bit_id>  →  ws://<worker_ip>:<port>/devtools/browser/<uuid>
+        ↓ 取 scheme 后、第一个 "/" 之前那段（生产 py 库 CDPHelper._parse_ws_url 就是这么做的）
+   host=<worker_ip>  port=<port>
+        ↓
+   internal.NewClient(host, port)  →  http://host:port/json/version → webSocketDebuggerUrl
+```
+
+**所以 `cdp-mcp` 必须接受浏览器目标，两个参数都要收**：
+
+- `--host` / `--port`（与 CLI 同一套 flag，含 `CDP_HOST`/`CDP_PORT` 环境变量回退）
+- **`--ws-url <url>`** —— 直接吃 `bit.sh open` 吐出来的那个串，**省掉调用方自己拆 host/port 这一步**
+  （少一步转换 = 少一个搞错的机会；拆分逻辑照 `CDPHelper._parse_ws_url`，逐字对齐）
+
+**并且**：窗口存活只有几分钟（§4.6）。窗口没了的时候要**明确报错**（「连不上 <host:port>」），
+**不许挂着** —— agent 拿到明确错误才能重开窗口。
+
+**这一条的测试要有反向钉子**：起两个浏览器（或两个端口），传非默认的那个，
+断言它连的**确实是那个** —— 因为本项目刚在 `--host/--port` 上栽过：
+env 会静默盖掉显式 flag（C81），而「连错了浏览器」正是那类**不报错的错**。
+
 - [ ] **Step 1: 写失败测试（工具表与参数校验）**
 
 覆盖：七个工具都在（`observe`/`diff`/`screenshot`/`click`/`form`/`scroll`/`goto`）；
@@ -351,3 +376,5 @@ selftest 挂 → 走 diagnose 且**带上了 failed_step**；预算耗尽 → �
 | P3 | 工具层还有两个已知缺口：Tailwind 类 quiz 认不出选项组（R20b）、`occluded_by='offscreen'` 一值三义（R21）| 它们的**消费者是 agent**，会在 explore 阶段现形 —— 遇到就回来补，别绕 |
 | P4 | 蜜罐修复 / 截图能力**正在单独落地**，不是本计划的任务 | 开工前确认它们已合并（`git log --oneline \| grep -E "蜜罐\|screenshot"`）|
 | P5 | 成本：agent 比规则折叠贵 1~2 个数量级 | 图里每一环都要硬上限；`explore` 的轮数尤其 |
+| **P6** | **Bit 窗口存活只有几分钟**（§4.6），而一次 explore 可能跑很久 | 图要把「窗口还活着吗」当成**可失败的前置**；窗口没了要能**重开并从断点继续**，而不是整轮重来 |
+| **P7** | agent 用的 Bit 窗口 / gost 端口**都还没指定**（R8/R10） | Task 1 之前必须拿到 —— 没有它，Task 1 的 spike 只能用本机 9222，测不到真实链路 |
