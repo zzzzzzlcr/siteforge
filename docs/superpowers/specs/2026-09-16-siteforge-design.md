@@ -203,10 +203,14 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
 |---|---|---|---|
 | 1 | **`ShadowRoot` 没有 `innerText`** —— 那是 `HTMLElement` 的属性 | 逐 root 收文本时 shadow root 拿到 `undefined` → shadow 页 `page_text` 只剩 **10 个字符**（修好后 141） | shadow root 要取它**子元素**的 `innerText`/`textContent` |
 | 2 | **`document.elementsFromPoint` 不穿透 shadow**（返回的是 host） | 用它判遮挡 → **所有 shadow 元素全被误判为被遮挡**（实测 5/5 假阳性） | 命中的元素若在 el 的**合成树祖先链**上，就不算遮挡 |
-| 3 | **`parentElement` 出不了 shadow 边界** | `region` 全部退化成 `body`（分不出 hero/footer） | 走 `getRootNode().host` 的**合成树祖先链** |
+| 3 | **`parentElement` 出不了 shadow 边界** | ⚠️ **此症状是读代码推断的，R3 探针从未实测到** —— 探针的 `shadow.html` 整页 **landmark 数为 0**，于是「走合成树爬出 shadow」的正确实现与「只走 `parentElement`」的错误实现**都返回 `body`**，分辨不出。**2026-09-16 由 Task 3 首次真正测到**（给 fixture 的 host 外包一层 `<main>` 后：正确=`main`、错误=`body`，且变异验证确认可失败） | 走 `getRootNode().host` 的**合成树祖先链** |
 
 这三条与「`success_steps` 15/15」「`_smart_form` 说填好了」是同一类病：
 **不报错，只是悄悄错**。实现时必须钉测试。
+
+⚠️ **但 ① ② 与 ③ 的证据强度不同**：① ② 在 R3 探针里有实测数值（10→141 字符、5/5 假阳性）；
+**③ 的症状当时只是读代码推断的**，探针 fixture 分辨不出正确与错误实现。
+教训与 R0 同族：**不要把推断当作实测写进文档** —— 症状栏里没有数值，就说明它没被测过。
 
 #### 跨帧：必须逐帧 observe 再合并
 

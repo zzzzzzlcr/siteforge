@@ -18,7 +18,11 @@
    拿到 `undefined`，shadow 页 `page_text` 只剩 **10 字符**（修好后 141）
 2. **`document.elementsFromPoint` 不穿透 shadow**（返回 host）→ 判遮挡时
    **所有 shadow 元素全被误判为被遮挡**（实测 5/5 假阳性）
-3. **`parentElement` 出不了 shadow 边界** → `region` 全部退化成 `body`
+3. **`parentElement` 出不了 shadow 边界** → `region` 退化成 `body`
+   ⚠️ **本条是读代码推断的，探针没实测到** —— 本 fixture 的 `shadow.html` 整页 landmark 数为 0，
+   正确实现（走 `getRootNode().host` 爬出 shadow）与错误实现（只走 `parentElement`）**都答 `body`**，
+   分辨不出。2026-09-16 由 Task 3 给 host 外包一层 `<main>` 后首次真正测到（正确=`main`／错误=`body`）。
+   **症状栏没有数值 = 没被测过** —— 另两条都有（10→141、5/5）。
 
 ## 怎么重跑
 
