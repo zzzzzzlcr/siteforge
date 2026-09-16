@@ -1191,13 +1191,37 @@ git commit -m "chore: 收掉 cdp 路径硬编码 + 容器构建验证"
 
 ---
 
+## 执行顺序调整（用户 2026-09-16 定）
+
+**本计划做到 Task 7 停，不接着做 Task 8/Task 9。**
+
+- **Task 1–7 完成** → `cdp observe` / `cdp diff` 成为**能用的 CLI**，这是本计划的实际交付点
+- **Task 8（`cmd/mcp`）** → 挪到计划二。它是给 LangGraph agent 用的门，agent 没接进来之前没有消费者
+- **Task 9（债务清理）** → 挪到计划二。它收的是「集成测试依赖 mock-server:8080」与「R3 fixture 落进 testdata/」这类债，等真正的使用者出现再收
+
+**T7 之后先做一件事：验最短路径**（不是继续做工具）
+
+```
+拿一个真挂的站
+  ① 从 fail-script 取失败证据（哪个站、卡在哪一步）
+  ② cdp observe 那个站的页面 → 人工判断页面模型对不对
+  ③ 据 observe 产出 py
+  ④ 跑那 py
+  ⑤ 给人看：页面模型 + 产出的 py + 跑的结果
+```
+
+**为什么**：要验的是「运营能不能用」，不是「工具全不全」。而这一步会暴露
+本计划所有「纸上成立」的假设 —— 包括 observe 契约在真站上够不够用。
+
+---
+
 ## 后续计划（不在本计划内）
 
 本计划只覆盖**工具层**。后续各自单独成计划：
 
 | 计划 | 范围 | 独立验收 |
 |---|---|---|
-| 计划二：产出闭环 | py 模板骨架 · 契约检查器(lint) · 扰动自测 runner · LangGraph 图 | homebuddy 出一条真能跑的 py |
+| 计划二：产出闭环 | py 模板骨架 · 契约检查器(lint) · 扰动自测 runner · LangGraph 图 · **运营入口页面（D14）** · **`cmd/mcp`（原 T8）** · **债务清理（原 T9）** | homebuddy 出一条真能跑的 py |
 | 计划三：记忆层 | `site_memory` 表 · `correction` 事件 · `siteforge correct` CLI · DB schema | 数据进得去、同类站复用得上 |
 
 **依赖关系**：计划二依赖本计划的 `observe`/`diff` CLI；计划三依赖计划二的 selftest 失败路径。
