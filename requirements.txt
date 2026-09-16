@@ -10,3 +10,7 @@ pydantic
 httpx
 openai
 pytest
+# R-19 的生产保存点：状态存 Postgres，中断之后才恢复得了（Task 8 接线 + 验过）。
+# 宿主上跑 `tests/test_pg_checkpointer.py` 要它；没给 SITEFORGE_PG_URL 时那条是 skip。
+langgraph-checkpoint-postgres
+"psycopg[binary]"

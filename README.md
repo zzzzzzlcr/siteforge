@@ -63,6 +63,53 @@ python3 -m venv .venv
 .venv/bin/python -m pytest tests/ -q
 ```
 
+### 在镜像里跑同一套测试（R-29）
+
+宿主的 python 与**镜像里的**不是一套（宿主 venv 有、镜像没有的包；浏览器路径；Go 工具链的有无），
+所以验收要在**镜像里**过一遍，不能只在宿主 venv 里过。镜像里跑**不需要 Go**：
+两条真浏览器 e2e 用的 `cdp` / `cdp-mcp` 就是 stage 1 构建进镜像的那两个
+（`SITEFORGE_CDP_BIN` / `CDP_MCP_BIN` 指过去），浏览器是 apt 装的 `chromium`。
+
+```bash
+docker build -t siteforge:acc .
+docker run --rm --entrypoint /bin/bash siteforge:acc \
+  -lc 'cd /opt/siteforge && python3 -m pytest tests/ -q'
+
+# 真 Postgres 那条（R-19 的保存点）另给一个库；不给就是 skip（套件默认不依赖外部服务）
+docker network create siteforge-acc
+docker run -d --name sf-pg --network siteforge-acc \
+  -e POSTGRES_PASSWORD=sfacc -e POSTGRES_DB=siteforge postgres:16-alpine
+docker run --rm --network siteforge-acc --entrypoint /bin/bash siteforge:acc -lc \
+  'cd /opt/siteforge && SITEFORGE_PG_URL=postgresql://postgres:sfacc@sf-pg:5432/siteforge \
+     python3 -m pytest tests/ -q'
+```
+
+## agent 服务（计划二 Task 8）
+
+```bash
+docker run -d --name siteforge -p 8080:8080 \
+  -e BIT_WORKER_IP=<agent 自己的窗口 worker> -e BIT_ID=<agent 自己的 bit_id> \
+  -e OPENAI_API_KEY=... -e DATABASE_URL=postgresql://... siteforge:latest
+```
+
+| 路由 | 干什么 |
+|---|---|
+| `GET /health` | 活着吗、**状态存哪儿**（内存还是 Postgres；内存的「能恢复」只活在进程里）、cdp 在哪 |
+| `POST /run` | 收开场白 → `{job_id}`（立刻返回，活在一个工作线程上排队跑）。载荷要带 `success_text`（什么算成功，只有人知道）与窗口层的旋钮（`set_viewport` / `allow_skips` / `entry_url`） |
+| `GET /job/{id}` | 走到哪了、在问你什么、结果是什么 —— **人话**，不是错误码 |
+| `POST /job/{id}/reply` | 回答图停下来的那个问题（继续 / 喊停 / 一句纠正 / 这版不行） |
+| `POST /job/{id}/reopen` | 窗口没了（P6：Bit 窗口只活几分钟）→ 重开一个，**从断点接着跑** |
+
+三条设计上的硬规矩（都有测试与变异钉着，见 `tests/test_service.py`）：
+
+1. **提交那一刻就把缺的输入拦下**：缺 `success_text`、`allow_skips` 里有不认识的遍、
+   显式空 `allow_skips=[]`、要了 `set_viewport` 但没接窗口层 —— 全部 400。
+   图的 `intake` 闸是兜底，不是唯一防线（那些输入**免费**，而一次探路很贵）。
+2. **`status` 与 `delivered` 是两回事**：跑挂的 job 是 `failed`、`result` 为 `None` ——
+   **绝不许**被读成跑成了。
+3. **服务不替图发明默认值**（R-31）：没人给窗口层那根线、也没人点名允许跳过 →
+   **照收**，让图在 `intake` 停下并说清缺哪根线。「没验到」不许读成「验过了」（R-5）。
+
 Go 侧（工具层）两个环境事实，踩过：
 
 ```bash
@@ -75,21 +122,16 @@ cd tools/cdp && go test ./... -count=1
 
 ## 状态
 
-**计划二 Task 1–5 已交付并过审查**（2026-09-16）：spike（LLM 工具循环，结论「有条件能」）、
-MCP 门、py 产物骨架、契约检查器（lint）、浏览器 Agent 的工具循环（ReAct over MCP，
-含真依赖链 e2e）。Task 6（扰动自测）进行中；Task 7（LangGraph 图）/ Task 8（服务 + 真站端到端）
-未开工。
+**计划二 Task 1–8 已交付**（2026-09-16/17）：spike（LLM 工具循环，结论「有条件能」）、
+MCP 门、py 产物骨架、契约检查器（lint）、浏览器 Agent 的工具循环（ReAct over MCP）、
+扰动自测、LangGraph 图（每个节点之前都能被人拦下）、agent 服务（`agent/service.py`）。
+
+**镜像现在真的能起来了**（Task 8）：`ENTRYPOINT` 要的 `agent.service:app` 已就位。
 
 **计划一（工具层）已交付**（2026-09-16）：cdp 已自 `/company/cdpcli` 迁入 `tools/cdp/`，
 `observe` / `diff` 两条子命令在真浏览器的四档页面（light DOM / 两层 shadow / 跨源 iframe）上
-验过。
+验过。`tools/cdp/cmd/mcp` 起来了，七个工具（observe / diff / screenshot / click / form /
+scroll / goto）走同一份 `internal/`；浏览器目标两种给法都收（`--ws-url` 吃 `bit.sh open`
+吐出来的那串，或 `--host/--port`），窗口没了立刻报错并点名 `host:port`。
 
-**计划二 Task 2（MCP 门）已交付**（2026-09-16）：`tools/cdp/cmd/mcp` 起来了，七个工具
-（observe / diff / screenshot / click / form / scroll / goto）走同一份 `internal/`。
-浏览器目标两种给法都收（`--ws-url` 吃 `bit.sh open` 吐出来的那串，或 `--host/--port`），
-窗口没了立刻报错并点名 `host:port`。计划二其余任务（py 骨架 + lint + 扰动自测 + LangGraph 图）
-未开工。
-
-镜像**可构建，但暂时不可运行** —— 工具层这一侧两个入口（`cdp` 与 `cdp-mcp`）都已进镜像，
-但 `ENTRYPOINT` 要的 `agent.service:app` 还没人写（`agent/` 眼下只有 `llm.py` 与 `tools.py`），
-起来是 ModuleNotFoundError。计划三（Agent Debug Console + 记忆层）未开工。
+计划三（Agent Debug Console + 记忆层）未开工。

@@ -36,19 +36,25 @@ RUN go build -ldflags="-s -w" -o /out/cdp main.go \
 # ─────────────────────────── stage 2: 运行时 ──────────────────────────────
 FROM debian:bookworm-slim
 
+# chromium 是**跑测试**要的(不是服务本身要的, 见下面「在镜像里跑测试」那一节):
+# 套件里有两条真浏览器 e2e(Task 5 的 MCP 链路 / Task 6 的扰动自测), 它们按
+# `_chrome_binary()` 的顺序找浏览器(PATH 里认 chromium), 找不到就**红** —— 不 skip。
 RUN apt-get update && apt-get install -y ca-certificates && \
     sed -i 's#http://.*.debian.org#http://mirrors.cloud.tencent.com#g' /etc/apt/sources.list.d/debian.sources && \
     apt-get update && apt-get install -y \
-    python3 python3-pip curl jq procps dumb-init postgresql-client \
+    python3 python3-pip curl jq procps dumb-init postgresql-client chromium \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # agent 侧依赖。刻意与 worker 的依赖不重叠(规格 §8.1):
 # 混装会重演「两套执行器」那种边界不清。
+#   langgraph-checkpoint-postgres + psycopg  —— R-19 的生产保存点(状态存容器外的那个库)
+#   pytest                                    —— 在镜像里跑套件(R-29), 见「在镜像里跑测试」
 RUN pip3 install -i https://mirrors.aliyun.com/pypi/simple/ --break-system-packages \
     langgraph langchain-core langchain-openai \
     fastapi uvicorn pydantic httpx \
-    "psycopg[binary]" pyyaml
+    "psycopg[binary]" langgraph-checkpoint-postgres pyyaml \
+    pytest
 
 RUN useradd -m -s /bin/bash appuser
 
@@ -63,6 +69,11 @@ COPY --from=tools /out/cdp     /usr/local/bin/cdp
 COPY --from=tools /out/cdp-mcp /usr/local/bin/cdp-mcp
 
 COPY . /opt/siteforge/
+
+# 套件里那两个 e2e 找二进制的那套规则（`tools/cdp/cdp`、`CDP_MCP_BIN`）在容器里也要能用。
+# 直接把 stage 1 构建好的产物摆到**它们本来就会去翻的位置** —— 于是运行阶段**不需要 Go**
+# （Go 只活在 stage 1；.dockerignore 会把仓库里那份构建产物挡在上下文外，所以必须显式拷）。
+COPY --from=tools /out/cdp      /opt/siteforge/tools/cdp/cdp
 
 # ⚠️ chmod 必须**分条**写。原先是一条
 #     chmod +x /usr/local/bin/cdp /usr/local/bin/cdp-mcp && chmod +x /opt/siteforge/entrypoint.sh 2>/dev/null || true
@@ -86,19 +97,25 @@ ENV CDP_PATH=/usr/local/bin/cdp
 # agent 的 MCP 门(stdio)。agent 侧按这个路径起 cdp-mcp, 并给它 --ws-url/--host/--port
 # —— 连的是 agent **自己的** Bit 窗口(D6/D9), 不是 worker 那个。
 ENV CDP_MCP_BIN=/usr/local/bin/cdp-mcp
+# ⚠️ 这里**不设** SITEFORGE_CDP_BIN —— 它会把产物的「默认路径」整个盖掉。
+# 实测（Task 8 首次容器内验收）：设了它之后 tests/test_template.py 有 9 条红，
+# 领头那条正是 `assert module.CDP_BIN == str(sandbox / "cdp"), "默认路径一个字都不许变"` ——
+# 那几条测试钉的是**产物自带的那条默认路径**（生产：`forms/` 上一层就是 `cdp`）。
+# 一个全局环境变量把生产语义改掉，是这套系统最不该有的那种「悄悄换了行为」。
+#
+# 该给的是**默认路径本身**：
+#   ① 产物按自己的默认找 cdp → `/opt/siteforge/cdp`（`forms/` 的上一层）→ 软链到真二进制
+#   ② 套件里那两条 e2e 按自己的规则找（`SITEFORGE_CDP_BIN` → `tools/cdp/cdp` → 现构建）
+#      → 把 stage 1 构建的二进制放到**它本来就会去翻的那个位置**，于是容器里不需要 Go
+RUN ln -s /usr/local/bin/cdp /opt/siteforge/cdp \
+ && mkdir -p /opt/siteforge/tools/cdp
 # Bit 窗口 worker(运营指定, 规格 R8)
 ENV BIT_WORKER_IP=""
 ENV BIT_ID=""
 
 EXPOSE 8080
 
-# ⚠️ 现状（计划二 Task 2 收尾，2026-09-16）：**镜像可构建，但暂时不可运行** ——
-# 工具层这一侧两个入口都齐了（/usr/local/bin/cdp 与 cdp-mcp 都在镜像里，stage 1 各自
-# 跑过一次 --help 冒烟），但 ENTRYPOINT 要的 agent.service:app 还没人写
-# （agent/ 眼下只有 llm.py 与 tools.py），起来就是 ModuleNotFoundError。
-# 构建成功 ≠ 能起容器，别把它读成「已经能跑」。
-#
-# 用法:
+# 用法（Task 8 起**真的能起来了**：`agent/service.py` 已就位）:
 #   docker build -t siteforge:latest .
 #   docker run -d --name siteforge --restart unless-stopped \
 #     -p 8080:8080 \
@@ -107,4 +124,21 @@ EXPOSE 8080
 #     -e OPENAI_API_KEY=... -e OPENAI_BASE_URL=... \
 #     -e DATABASE_URL=postgresql://... \
 #     siteforge:latest
+#
+# ── 在镜像里跑测试（R-29：验收要在镜像里过一遍，不能只在宿主 venv 里过）──────
+#   宿主的 python 与镜像里的**不是一套**（宿主 venv 有、镜像没有的包，浏览器路径，
+#   等等）—— 这一跑就是来收那个口的。容器里跑不需要 Go：
+#   两条 e2e 用的 cdp / cdp-mcp 是 stage 1 构建进镜像的那两个（见上面的 ENV）。
+#
+#   docker build -t siteforge:acc .
+#   docker run --rm --entrypoint /bin/bash siteforge:acc \
+#     -lc 'cd /opt/siteforge && python3 -m pytest tests/ -q'
+#
+#   # 连真 Postgres 的那条（R-19）另给一个库；没有它就是 skip（套件默认不依赖外部服务）
+#   docker network create siteforge-acc
+#   docker run -d --name sf-pg --network siteforge-acc \
+#     -e POSTGRES_PASSWORD=sfacc -e POSTGRES_DB=siteforge postgres:16-alpine
+#   docker run --rm --network siteforge-acc --entrypoint /bin/bash siteforge:acc -lc \
+#     'cd /opt/siteforge && SITEFORGE_PG_URL=postgresql://postgres:sfacc@sf-pg:5432/siteforge \
+#        python3 -m pytest tests/ -q'
 ENTRYPOINT ["/usr/bin/dumb-init", "--", "/opt/siteforge/entrypoint.sh"]
