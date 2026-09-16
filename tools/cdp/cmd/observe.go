@@ -53,7 +53,10 @@ obstructions 是页面上的遮挡物，两者语义不同。`,
 
 func init() {
 	rootCmd.AddCommand(observeCmd)
-	observeCmd.Flags().Bool("json", true, "输出 JSON（默认；保留开关便于以后加人类可读格式）")
+	// ⚠️ 帮助文字说**现在**的真话（Task 7 修复轮 1 的 M1 同一类问题）：人话格式
+	// 早就有了（renderHuman，Task 6 修复轮 1），原先那句「便于以后加」是句空头支票，
+	// 也正是「看起来能切格式、实际不说清楚」那一类。
+	observeCmd.Flags().Bool("json", true, "默认输出 JSON（py 侧只该用这一种）；--json=false 输出人话摘要（给人看，别解析）")
 	observeCmd.Flags().String("frame-id", "", "只观察指定帧（默认整页含子帧）")
 }
 

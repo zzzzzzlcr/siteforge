@@ -32,7 +32,28 @@ type Diff struct {
 	Appeared    []string `json:"appeared"`
 	Disappeared []string `json:"disappeared"`
 	// Actionable = 刚才那一下有没有推进。
+	//
+	// ⚠️ **能力边界（别拿它判「填/选/勾」）**：PageModel 里**没有字段值**
+	// （Field 只有 Label/Type/Placeholder），所以「值填进去了没有 / 勾上了没有 /
+	// 只是高亮了一下」这类步骤，diff 原理上判不了 —— 它判的是**导航与组成变化**
+	// （URL、可见正文、元素集合），不是**控件状态**。
+	// 在那类步骤上 Actionable 会是 false（页面组成没变）→ py 会重试。
+	// 真正的修法是给模型加字段值（契约变更，记为 R20，归计划二）。
 	Actionable bool `json:"actionable"`
+	// DiagnosticsBefore / DiagnosticsAfter 是两次观测各自的诊断条数
+	// （「这一次观测本身不完整」—— 某帧没取到、帧枚举可能退化，见 Diagnostic）。
+	//
+	// ⚠️ 为什么要有这两个数：**观测不全与页面变空在模型里长得一模一样**。
+	// 某一帧加载失败 → 那一帧的元素从模型里消失 → appeared/disappeared 非空
+	// → Actionable=true —— 一次「我没看清」被读成一次「有进展」，正是本文件
+	// 最忌讳的那类错。数字在这儿，调用方才能自己判断要不要信这一次差分。
+	//
+	// ⚠️ 它们**不参与** Actionable 的计算，这是有意的（与 observe 那条
+	// 「diagnostics 非空仍然是退出码 0」同一个道理：别让工具替调用方下结论）：
+	// 广告/追踪帧失败在真站上是**常态**，把它算成「没推进」会让那些页面
+	// **永远**报不出进展 —— 那是另一个方向的坑，而且更常见。
+	DiagnosticsBefore int `json:"diagnostics_before"`
+	DiagnosticsAfter  int `json:"diagnostics_after"`
 }
 
 // normText 把一段文本归一成「看内容」的形态：Unicode 空白（含 NBSP）压成单空格、两端剪掉。
@@ -77,13 +98,22 @@ type identity struct {
 //
 // 所以身份取的是**内容与角色**（控制器裁定 ② 点名的三个稳定信号）：
 //
-//	动作   → 正文 Text + Role + Region
-//	字段   → Label + Type + Placeholder（⚠️ **不含** Hint）
+//	动作   → 正文 Text + Role + regionIdentity(Region)
+//	字段   → Type + Placeholder（⚠️ **不含** Label，也**不含** Hint）
 //	选项组 → Role + 选项文本（排序后）（⚠️ **不含** Scope）
 //
-// 三处 ⚠️ 都是同一个理由：那些字段装的是**选择器级**的东西。
-//   - Field.Hint      = observeJS 填的 `el.name || el.id` —— 改名就变
+// 四处 ⚠️ 都是同一个理由：那些字段里有一部分是**派生**出来的，会随重渲染变。
+//   - Field.Hint        = observeJS 填的 `el.name || el.id` —— 改名就变
 //   - OptionGroup.Scope = `candidates(g)[0]` —— 就是选择器
+//   - Field.Label       —— **可能**由 `label[for=id]` 取来（observeJS 的三级取法
+//     里它排最后，但仍是其一）：重渲染把 input 重新挂载成新 id，这条关联就断，
+//     标签凭空变成空串 → 身份翻转 → 内容没变却报「有进展」。修复轮 1 的 e2e
+//     在真浏览器上就是这么红的（打断 for/id 配对，见 TestDiffCommandImmuneToSelectorRename）。
+//   - Action.Region     —— 'hero' 是**按祖先 className 判的**（/hero|banner|jumbotron/）。
+//     修复轮 1 已让 observeJS 的 region() **优先扫 landmark 标签名**
+//     （header/nav/footer/aside/main 与 role=dialog），class 派生只作兜底；
+//     但「无 landmark 祖先」的页面上那条兜底仍会命中，所以身份键只取**抗改名的那一半**
+//     （见 regionIdentity）。
 //
 // 把它们放进身份键，等于把「改名敏感」从后门放回来。
 //
@@ -98,6 +128,11 @@ type identity struct {
 //     （内容与角色都没变）算作没变化 —— 窄，且不改变「页面内容变没变」这个答案。
 //   - Obstructions 不在多重集里：遮挡物的身份只能靠 Kind+Text，而它被点掉这件事
 //     会改正文（横幅文字从 page_text 里消失）→ 由 TextChanged 兜住。
+//   - **字段没有 Label**：两个「Label/Placeholder 都为空、Type 相同」的输入框
+//     （裸 `<input type=text>` 那种）在身份上会**塌成一个** —— 加一个/减一个
+//     仍然看得出来（多重集计数变了），但它们之间互换看不出来。
+//     这是为抗改名付的代价，且与下面 regionIdentity 是同一笔账：
+//     一个**派生**字段宁可不要，也不能让它谎报「有进展」。
 func identities(m *PageModel) []identity {
 	if m == nil {
 		return nil
@@ -107,13 +142,13 @@ func identities(m *PageModel) []identity {
 
 	for _, a := range m.Actions {
 		out = append(out, identity{
-			key:      key("action", normText(a.Text), a.Role, a.Region),
+			key:      key("action", normText(a.Text), a.Role, regionIdentity(a.Region)),
 			selector: a.Selector,
 		})
 	}
 	for _, f := range m.Fields {
 		out = append(out, identity{
-			key:      key("field", normText(f.Label), f.Type, normText(f.Placeholder)),
+			key:      key("field", f.Type, normText(f.Placeholder)),
 			selector: f.Selector,
 		})
 	}
@@ -124,12 +159,42 @@ func identities(m *PageModel) []identity {
 			opts = append(opts, normText(o))
 		}
 		sort.Strings(opts)
+		// ⚠️ 选项作为**独立的键段**拼进去，不用任何可打印分隔符：
+		// 早先用 `strings.Join(opts, "|")`，于是 `["a|b"]`（一个选项，文本里带竖线）
+		// 与 `["a","b"]`（两个选项）会**塌成同一个键** → 静默漏报（修复轮 1 的 M2）。
+		parts := append([]string{"group", g.Role}, opts...)
 		out = append(out, identity{
-			key:      key("group", g.Role, strings.Join(opts, "|")),
+			key:      key(parts...),
 			selector: g.Scope,
 		})
 	}
 	return out
+}
+
+// regionIdentity 把 Action.Region 压成「抗改名的那一半」。
+//
+// 为什么不能直接用 Region：observeJS 的 region() 有两个来源（修复轮 1 后的顺序）：
+//
+//	① landmark 标签名 header/nav/footer/aside/main + role=dialog  —— **结构**，重渲染不会换
+//	② class 派生 /hero|banner|jumbotron/ 的 'hero'                   —— **生成物**，一刷就变
+//	（都没有 → 'body'）
+//
+// ②在「没有 landmark 祖先」的页面上会命中（fixture base.html 的 section.hero 就是），
+// 而它一改名就翻 → 内容没变却报「有进展」。所以身份键**只认①**：
+// 取不到①时一律归成一个空桶（'hero' 与 'body' 与任何新出现的派生值同桶）。
+//
+// 代价（有意接受）：同一个元素在 landmark 与 hero/body 之间搬家看不见。
+// 收益：**唯一**冒充得了「有进展」的那条路被掐掉了 —— 两边不对称，取收益那边。
+//
+// 这张名单必须与 observeJS 的 region() 保持同步：那里新增「派生来源」时，
+// 这里要一起收（否则新值会被当成①、静默变回改名敏感）。
+func regionIdentity(region string) string {
+	switch region {
+	case "header", "nav", "footer", "aside", "main", "dialog":
+		return region
+	default:
+		return ""
+	}
 }
 
 // multisetDiff 按身份做**多重集**差：after 里多出来的选择器、before 里少掉的选择器。
@@ -203,29 +268,33 @@ func dedupeKeepOrder(sels []string) []string {
 // 三者取或：任何一条成立就算推进。三条都是内容/位置级的信号，所以
 // **重渲染（选择器全改名、内容没变）在三条上全都不成立** → Actionable=false。
 //
-// ⚠️ 两条已知边界，写在代码里免得被当成「已完备」：
+// ⚠️ 三条已知边界，写在代码里免得被当成「已完备」：
 //  1. PageText 在 observeJS 里被截到 600 字符（`page_text: pageText.slice(0, 600)`），
 //     所以正文的变化只在前 600 字符内可见。600 字符之后的变化要靠多重集那条腿。
 //  2. 观测本身不完整（某帧没取到）时，diff 只能照模型说话 —— 一个「取不到的帧」
-//     看起来和「那一帧的内容消失了」一模一样。要看观测是否完整，读模型里的
-//     diagnostics（那是**观测者自己的问题**，与页面内容分开，规格 §4.3）。
+//     看起来和「那一帧的内容消失了」一模一样。**所以要报 diagnostics 的条数**
+//     （DiagnosticsBefore/After，修复轮 1 的 I3）：这条边界没法在 diff 里消掉，
+//     但至少能让调用方看见「这次的 after 观测是不全的」。
+//  3. **判不了「填/选/勾」**：模型里没有字段值（见 Diff.Actionable 的说明）。
 func DiffModels(before, after *PageModel) Diff {
 	appeared, disappeared := multisetDiff(identities(before), identities(after))
 
 	var bURL, aURL, bText, aText string
-	if before != nil {
-		bURL, bText = before.URL, before.PageText
-	}
-	if after != nil {
-		aURL, aText = after.URL, after.PageText
-	}
-
 	d := Diff{
-		URLChanged:  strings.TrimSpace(bURL) != strings.TrimSpace(aURL),
-		TextChanged: normText(bText) != normText(aText),
 		Appeared:    appeared,
 		Disappeared: disappeared,
 	}
+	if before != nil {
+		bURL, bText = before.URL, before.PageText
+		d.DiagnosticsBefore = len(before.Diagnostics)
+	}
+	if after != nil {
+		aURL, aText = after.URL, after.PageText
+		d.DiagnosticsAfter = len(after.Diagnostics)
+	}
+
+	d.URLChanged = strings.TrimSpace(bURL) != strings.TrimSpace(aURL)
+	d.TextChanged = normText(bText) != normText(aText)
 	d.Actionable = d.URLChanged || d.TextChanged || len(appeared) > 0 || len(disappeared) > 0
 	return d
 }

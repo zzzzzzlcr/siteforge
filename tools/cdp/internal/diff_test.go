@@ -276,6 +276,119 @@ func TestDiffSameElementOnTwoChannelsReportedOnce(t *testing.T) {
 	}
 }
 
+// TestDiffRegionClassDerivedValuesAreOneBucket：区域**只取抗改名的那一半**。
+//
+// 由来（修复轮 1 的 C1）：observeJS 的 region() 有两个来源 —— landmark 标签名
+// （header/nav/footer/aside/main，结构，抗改名）与**按祖先 className 判的** 'hero'
+// （生成物，一刷就变）。身份键若直接用 Region，则「祖先 class 全换」会把这一个元素
+// 判成「消失 + 出现」→ 内容没变却报「有进展」。
+//
+// 所以：landmark 保留（真结构），'hero'/'body'/未知值一律归成同一个空桶。
+// ⚠️ 这条测试的「未知值」那一格是有意的：观察者以后新增任何**派生**区域值，
+// 都会落进空桶而不是悄悄变成改名敏感。
+func TestDiffRegionClassDerivedValuesAreOneBucket(t *testing.T) {
+	same := func(r1, r2 string) bool {
+		before := &PageModel{URL: "u", PageText: "p",
+			Actions: []Action{mkAction("#a", "Schedule Now", "button", r1)}}
+		after := &PageModel{URL: "u", PageText: "p",
+			Actions: []Action{mkAction("button.css-9x8y7z6", "Schedule Now", "button", r2)}}
+		return DiffModels(before, after).Actionable
+	}
+	// 桶内互换（含以后可能新增的派生值）→ 不算变化
+	for _, pair := range [][2]string{{"hero", "body"}, {"body", "hero"}, {"hero", "cta"}, {"", "hero"}} {
+		if same(pair[0], pair[1]) {
+			t.Errorf("region %q → %q 被判成了变化 —— 派生出来的区域值不该进身份键"+
+				"（祖先 class 一换就翻，内容没变却报有进展）", pair[0], pair[1])
+		}
+	}
+	// landmark 之间是真结构，仍然要区分
+	for _, pair := range [][2]string{{"header", "footer"}, {"main", "body"}, {"dialog", "body"}} {
+		if !same(pair[0], pair[1]) {
+			t.Errorf("region %q → %q 没被判成变化 —— landmark 是抗改名的结构信号，不该被一起抹掉",
+				pair[0], pair[1])
+		}
+	}
+}
+
+// TestDiffFieldLabelIsNotIdentity：字段的 Label **不在**身份键里。
+//
+// 由来（修复轮 1 的 C1）：observeJS 取标签有三级 —— aria-label → closest('label')
+// → **label[for=id]**，最后那条与 id 耦合：重渲染把 input 重新挂载成新 id，这条
+// 关联就断，Label 凭空变成空串 → 身份翻转 → 内容没变却报「有进展」。
+// 观察者侧的修法是把它降到最低优先级（保留感知价值），**消费者侧**则干脆不用它。
+//
+// 代价（有意接受）：两个 Label/Placeholder 都空、Type 相同的输入框会塌成一个身份
+// —— 增删仍看得见（多重集计数），互换看不见。为一个**派生**字段付这个价是划算的。
+func TestDiffFieldLabelIsNotIdentity(t *testing.T) {
+	before := &PageModel{URL: "u", PageText: "ZIP Code",
+		Fields: []Field{mkField("#zip", "ZIP Code", "text", "ZIP Code")}}
+	// 同一个字段：for=/id 断了 → Label 变空，其余不变。
+	after := &PageModel{URL: "u", PageText: "ZIP Code",
+		Fields: []Field{mkField("input.css-a1b2c3d4", "", "text", "ZIP Code")}}
+
+	d := DiffModels(before, after)
+	if d.Actionable {
+		t.Errorf("只断了 label[for=id] 的配对（重渲染换 id 的必然结果）就报「有进展」。"+
+			"\nappeared=%q\ndisappeared=%q", d.Appeared, d.Disappeared)
+	}
+	// 反向：Placeholder/Type 是内容，变了必须报出来（别把整个字段身份键掏空）。
+	other := &PageModel{URL: "u", PageText: "ZIP Code",
+		Fields: []Field{mkField("#zip", "ZIP Code", "text", "Postal Code")}}
+	if !DiffModels(before, other).Actionable {
+		t.Error("placeholder 变了却判成没变化 —— 字段身份键被掏空了")
+	}
+}
+
+// TestDiffOptionGroupsDoNotCollapseOnSeparator 是修复轮 1 的 M2：
+// 选项原先用可打印的 `|` 拼成一个字符串，于是
+//
+//	["a|b"]（一个选项，文本里带竖线）  vs  ["a","b"]（两个选项）
+//
+// **塌成同一个键** → 静默漏报。改成用身份键分隔符（NUL）分段拼。
+func TestDiffOptionGroupsDoNotCollapseOnSeparator(t *testing.T) {
+	before := &PageModel{URL: "u", PageText: "plans",
+		OptionGroups: []OptionGroup{mkGroup("#opts", "a|b")}}
+	after := &PageModel{URL: "u", PageText: "plans",
+		OptionGroups: []OptionGroup{mkGroup("#opts", "a", "b")}}
+
+	d := DiffModels(before, after)
+	if !d.Actionable {
+		t.Error("「一个选项文本为 a|b」与「两个选项 a、b」被当成同一件事 —— 选项键塌了（M2）")
+	}
+	if len(d.Appeared) != 1 || len(d.Disappeared) != 1 {
+		t.Errorf("appeared=%q disappeared=%q, want 各 1 个", d.Appeared, d.Disappeared)
+	}
+}
+
+// TestDiffCarriesDiagnosticsCounts 是修复轮 1 的 I3：把「观测本身不全」的**条数**
+// 带进 Diff，让调用方自己判断要不要信这次差分。
+//
+// ⚠️ 为什么是「带条数」而不是「让 diagnostics 影响 Actionable」：
+// 观测不全与页面变空在模型里长得一样（某帧没取到 → 它的元素「消失」→ 报有进展），
+// 但把 diagnostics 折进 Actionable 会更糟 —— 广告/追踪帧失败在真站上是**常态**，
+// 那样这些页面会**永远**报不出进展（另一个方向的坑，而且更常见）。
+// 所以：事实报出来，结论留给调用方（与 observe「diagnostics 非空仍是退出码 0」同一条原则）。
+func TestDiffCarriesDiagnosticsCounts(t *testing.T) {
+	before := &PageModel{URL: "u", PageText: "Step 1", Diagnostics: []Diagnostic{{Kind: DiagKindFrameError}}}
+	after := &PageModel{URL: "u", PageText: "Step 2",
+		Diagnostics: []Diagnostic{{Kind: DiagKindFrameError}, {Kind: DiagKindFrameBlind}}}
+
+	d := DiffModels(before, after)
+	if d.DiagnosticsBefore != 1 || d.DiagnosticsAfter != 2 {
+		t.Errorf("diagnostics_before/after = %d/%d, want 1/2 —— 观测不全这件事必须能被调用方看见",
+			d.DiagnosticsBefore, d.DiagnosticsAfter)
+	}
+	if !d.Actionable {
+		t.Error("正文真的变了，diagnostics 不该把它压成「没推进」")
+	}
+	// 反向钉住：diagnostics **不参与**判据（一份干净观测 + 一份有诊断的观测，
+	// 只要内容一样，判据就该一样）。
+	clean := &PageModel{URL: "u", PageText: "Step 2"}
+	if d2 := DiffModels(before, clean); d2.Actionable != d.Actionable || d2.TextChanged != d.TextChanged {
+		t.Errorf("diagnostics 影响了判据: %+v vs %+v", d2, d)
+	}
+}
+
 // TestDiffEmptyListsMarshalAsArrays：与 PageModel 同一条约定 ——
 // 空列表编成 `[]` 不是 `null`（py 侧 `for s in diff["appeared"]` 撞上 null 就 TypeError）。
 func TestDiffEmptyListsMarshalAsArrays(t *testing.T) {

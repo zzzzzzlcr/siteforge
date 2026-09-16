@@ -179,11 +179,13 @@ func TestDiffCommandEndToEndNoProgress(t *testing.T) {
 //
 // 这条对计划里的实现（选择器集合差）**必红** —— 它会把整页元素报成「全消失 + 全出现」。
 //
-// 改名覆盖**两条通道**（都用真浏览器验，不是构造的模型）：
+// 改名覆盖**三条通道**（都用真浏览器验，不是构造的模型）：
 //   - 动作：按钮/链接的 id + data-testid 抹掉、换上 hash class
-//   - 字段：#zip 的 id/name 抹掉、换 hash class、改用 aria-label 保留同一个 Label
-//     （⚠️ Field.Hint 是 `el.name || el.id`，改名就变 —— 它**不在**身份键里，
-//     这条同时守着这一点：真改了 name 也不该算内容变化）
+//   - 字段：#zip 的 **id/name 抹掉且不给 aria-label**（修复轮 1 的扩展：早先注入
+//     aria-label 当拐杖，等于**刻意保住**了真实重渲染会断掉的那个关联）
+//   - **祖先 class 一起改**（修复轮 1 的扩展）：真实重渲染会把整棵子树的生成 class
+//     都换掉 —— 而 region 的 'hero' 正是按**祖先 className** 判的。
+//     只改元素自己、不动祖先，就永远测不到 region 那条路（C1 就是这样溜过去的）。
 func TestDiffCommandImmuneToSelectorRename(t *testing.T) {
 	e := env(t)
 	e.navigate(t, e.fixture+"/base.html")
@@ -194,15 +196,19 @@ func TestDiffCommandImmuneToSelectorRename(t *testing.T) {
 		t.Fatalf("快照解不动: %v", err)
 	}
 
-	// 重渲染：内容不动，只把「怎么找到它」换掉。
+	// 重渲染：内容一字不动，只把「怎么找到它」与「它长在哪个 class 里」换掉。
 	e.eval(t, `(function(){`+
 		`var i=0;`+
+		// ① 整棵树的 class 全换（含 section.hero、div.card 这些**祖先**）
+		`Array.prototype.slice.call(document.querySelectorAll('*')).forEach(function(el){`+
+		` if(typeof el.className==='string'&&el.className){el.className='css-9f8e7d6c'+(i++);}});`+
+		// ② 可动作元素：id 与 data-testid 抹掉
 		`Array.prototype.slice.call(document.querySelectorAll('button,a[href]')).forEach(function(el){`+
-		` el.removeAttribute('id'); el.removeAttribute('data-testid');`+
-		` el.className='css-1a2b3c4d'+(i++);});`+
+		` el.removeAttribute('id'); el.removeAttribute('data-testid');});`+
+		// ③ 打断 for=/id 配对：抹掉 input 的 id 与 name，**不**补 aria-label
+		//    （label[for=zip] 从此指向不存在的 id —— 这正是重渲染换 id 的后果）
 		`var z=document.getElementById('zip');`+
-		` if(z){z.removeAttribute('id');z.removeAttribute('name');`+
-		` z.setAttribute('aria-label','ZIP Code');z.className='css-9f8e7d6c';}`+
+		` if(z){z.removeAttribute('id');z.removeAttribute('name');}`+
 		`return 'renamed';})()`)
 
 	// 正控：选择器**必须真的全变了**。否则后面那条「判没进展」是空转通过
@@ -228,6 +234,28 @@ func TestDiffCommandImmuneToSelectorRename(t *testing.T) {
 	if before.PageText != after.PageText {
 		t.Fatalf("改名把正文也改了（夹具问题，不是被测代码问题）:\n前: %.200s\n后: %.200s",
 			before.PageText, after.PageText)
+	}
+
+	// 正控②：**那两个「派生字段」必须真的变了** —— 否则这条测试是空转通过，
+	// 而 C1 恰恰就是「夹具刻意保住了真实重渲染会断的关联」溜过去的。
+	// 这两条断言把「夹具确实打到了 region / label 那两条路」变成可观测事实：
+	// 哪天夹具改了、或者 observeJS 的取法改了，这里先红，而不是静默变成空转。
+	heroBefore, heroAfter := actionByText(t, before.Actions, "Schedule Now"), actionByText(t, after.Actions, "Schedule Now")
+	if heroBefore.Region == heroAfter.Region {
+		t.Fatalf("祖先 class 全换之后 region 没变（两边都是 %q）—— 夹具没打到 region 那条路，"+
+			"下面「判没进展」是空转通过的", heroBefore.Region)
+	}
+	if isLandmarkRegion(heroBefore.Region) || isLandmarkRegion(heroAfter.Region) {
+		t.Fatalf("region 是 landmark 派生的（%q → %q）—— 那本来就抗改名，"+
+			"这条夹具证明不了「class 派生的 region 不再进身份键」", heroBefore.Region, heroAfter.Region)
+	}
+	zipBefore, zipAfter := fieldByPlaceholder(t, before.Fields, "ZIP Code"), fieldByPlaceholder(t, after.Fields, "ZIP Code")
+	if zipBefore.Label == zipAfter.Label {
+		t.Fatalf("打断 for=/id 配对之后 Field.Label 没变（两边都是 %q）—— "+
+			"夹具没打到 label 那条路，下面「判没进展」是空转通过的", zipBefore.Label)
+	}
+	if zipBefore.Label == "" {
+		t.Fatalf("动作前的 Field.Label 就是空的 —— 这条夹具证明不了「靠 id 找来的标签会断」")
 	}
 
 	out, errOut, code := e.diffRun(t, beforePath)
@@ -324,6 +352,16 @@ func TestDiffCommandExitCodeOnBadBeforeFile(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("这不是 JSON\n"), 0o644); err != nil {
 		t.Fatalf("写坏文件失败: %v", err)
 	}
+	// 修复轮 1 的 I1：**解析得动 ≠ 是快照**。`{}` 与 `cdp navi` 的输出都能解析成
+	// 一份全零 PageModel → 活页面上每个元素都「新出现」→ actionables=true、退出 0。
+	empty := filepath.Join(t.TempDir(), "empty.json")
+	if err := os.WriteFile(empty, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("写空对象失败: %v", err)
+	}
+	navi := filepath.Join(t.TempDir(), "navi.json")
+	if err := os.WriteFile(navi, []byte(`{"frame":{"frameId":"ABC","url":"http://x/"}}`), 0o644); err != nil {
+		t.Fatalf("写 navi 输出失败: %v", err)
+	}
 
 	cases := []struct {
 		name string
@@ -331,6 +369,8 @@ func TestDiffCommandExitCodeOnBadBeforeFile(t *testing.T) {
 	}{
 		{"文件不存在", filepath.Join(t.TempDir(), "missing.json")},
 		{"文件不是 PageModel JSON", bad},
+		{"空对象 {}（全零模型）", empty},
+		{"navi 的输出（不是快照）", navi},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -371,6 +411,37 @@ func slicesContains(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// actionByText 按正文取动作 —— 改名夹具不动正文，所以文本是这条测试里**唯一**
+// 稳定的身份（按选择器取会自我指涉：选择器正是被改掉的那个东西）。
+func actionByText(t *testing.T, actions []internal.Action, text string) internal.Action {
+	t.Helper()
+	for _, a := range actions {
+		if a.Text == text {
+			return a
+		}
+	}
+	t.Fatalf("动作列表里没有正文为 %q 的元素: %q", text, selectors(actions))
+	return internal.Action{}
+}
+
+// fieldByPlaceholder 按 placeholder 取字段（同上：placeholder 是内容，改名不动）。
+func fieldByPlaceholder(t *testing.T, fields []internal.Field, ph string) internal.Field {
+	t.Helper()
+	for _, f := range fields {
+		if f.Placeholder == ph {
+			return f
+		}
+	}
+	t.Fatalf("字段列表里没有 placeholder 为 %q 的字段: %+v", ph, fields)
+	return internal.Field{}
+}
+
+// isLandmarkRegion 判断区域是不是 landmark 派生的（= 抗改名的那一半，见
+// internal/diff.go 的 regionIdentity —— 这张名单必须与它一致）。
+func isLandmarkRegion(region string) bool {
+	return slicesContains([]string{"header", "nav", "footer", "aside", "main", "dialog"}, region)
 }
 
 // sharedSelectors 返回两个动作列表里**同名**的选择器（改名检测用正控）。

@@ -299,15 +299,30 @@ func observeJS() string {
   function region(el) {
     // 探针发现：走 parentElement 在 shadow 里会断（到 shadow root 顶就 null），
     // 于是所有 shadow 元素都退化成 'body'。必须走合成树。
-    var chain = composedAncestors(el);
-    for (var i = 0; i < chain.length; i++) {
+    //
+    // ⚠️ **两趟扫：landmark 优先，class 派生兜底**（2026-09-16 Task 7 修复轮 1）。
+    // 原先是「一趟走到底、谁先命中算谁」—— 于是「某个祖先的 className 里带 hero」
+    // 与 landmark 平起平坐。而 className 是**框架生成物**（hash 一刷就变），
+    // 让区域退化成改名敏感的字段 —— 而 diff 的身份键正要靠 region 抗改名
+    // （见 internal/diff.go 的 regionIdentity：它只认下面这趟 landmark 扫出来的值）。
+    // 现在：先扫完整条链找 header/nav/footer/aside/main（**标签名**，重渲染不会换）
+    // 与 role=dialog（ARIA 属性，也不是生成物）；都没有，才回落到 class 派的 hero。
+    var chain = composedAncestors(el), i;
+    for (i = 0; i < chain.length; i++) {
       var n = chain[i];
       if (!n.tagName) continue;
       var t = n.tagName.toLowerCase();
       if (t === 'header' || t === 'nav' || t === 'footer' || t === 'aside' || t === 'main') return t;
-      var cn = (typeof n.className === 'string' ? n.className : '').toLowerCase();
-      if (/hero|banner|jumbotron/.test(cn)) return 'hero';
       if (n.getAttribute && n.getAttribute('role') === 'dialog') return 'dialog';
+    }
+    // ⚠️ 残留：**没有 landmark 祖先**的页面上，区域仍可能由 className 派生
+    // （fixture base.html 的 section.hero 就是这一格）。消费者要按「这条可能是
+    // 生成的 class」来对待它 —— diff 侧就是这么做的。
+    for (i = 0; i < chain.length; i++) {
+      var m = chain[i];
+      if (!m.tagName) continue;
+      var cn = (typeof m.className === 'string' ? m.className : '').toLowerCase();
+      if (/hero|banner|jumbotron/.test(cn)) return 'hero';
     }
     return 'body';
   }
@@ -363,9 +378,16 @@ func observeJS() string {
 
   // ── 表单字段 ──
   var fields = qsa('input,select,textarea').filter(vis).slice(0, 100).map(function (el) {
+    // 标签取法按**抗改名的程度**排序（2026-09-16 Task 7 修复轮 1）：
+    //   1. aria-label —— 元素自己的属性，重渲染不换
+    //   2. closest('label') —— **结构**关系，与 id 无关
+    //   3. label[for=id] —— 与 **id 耦合**：重渲染把 input 重新挂载一次
+    //      （React 的 :r1: 那类新 id）这条关联就断，标签凭空消失。
+    // 原先 order 是 1 → 3 → 2，于是「结构上包着它的 label」还排在「靠 id 找的」后面。
+    // diff 的身份键因此不敢用 Label（见 internal/diff.go 的字段身份键）。
     var lab = el.getAttribute('aria-label') || '';
-    if (!lab && el.id) { var l = qsa('label[for="' + el.id + '"]')[0]; if (l) lab = txt(l, 40); }
     if (!lab) { var pl = el.closest ? el.closest('label') : null; if (pl) lab = txt(pl, 40); }
+    if (!lab && el.id) { var l = qsa('label[for="' + el.id + '"]')[0]; if (l) lab = txt(l, 40); }
     return {
       selector: candidates(el)[0], alternates: candidates(el).slice(1),
       stability: stability(el, candidates(el)),

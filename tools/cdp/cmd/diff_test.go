@@ -1,8 +1,12 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"cdp/internal"
 
 	"github.com/spf13/cobra"
 )
@@ -98,6 +102,104 @@ func TestPadAlignsByDisplayWidth(t *testing.T) {
 	}
 	if got := pad("超长了不用补", 6); got != "超长了不用补" {
 		t.Errorf("pad 不该动已经够宽的标签，实际 %q", got)
+	}
+}
+
+// TestLoadPageModelRejectsJSONThatIsNotASnapshot 是修复轮 1 的 I1：
+// **解析得动 ≠ 是一份快照**。
+//
+// `{}`、`cdp navi` 自己的输出 `{"frame":{...}}`、任何别的 JSON，都能解析成一份
+// **全零** PageModel。拿它对着一页活页面比 → 每个元素都「新出现」→
+// `actionable=true`、退出码 0：一次「文件给错了」被读成一次**有进展**，完全不报错。
+func TestLoadPageModelRejectsJSONThatIsNotASnapshot(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatalf("写 %s 失败: %v", name, err)
+		}
+		return p
+	}
+
+	reject := map[string]string{
+		"空对象":         `{}`,
+		"navi 的输出":    `{"frame":{"frameId":"ABC","url":"https://x.example/"}}`,
+		"只有别的字段":      `{"hello":"world"}`,
+		"五类列表都是 null": `{"url":"","actions":null,"fields":null,"option_groups":null}`,
+	}
+	for name, body := range reject {
+		if _, err := loadPageModel(write(name+".json", body)); err == nil {
+			t.Errorf("%s（%s）被当成了一份合法快照 —— 它会让整页元素被误报成「新出现」", name, body)
+		}
+	}
+
+	accept := map[string]string{
+		// 真快照一定带 URL，**哪怕页面是空的**（about:blank 也报 "about:blank"）。
+		"空白页快照":  `{"url":"about:blank","actions":[],"fields":[],"option_groups":[]}`,
+		"有动作的快照": `{"url":"https://x.example/","actions":[{"selector":"#go","text":"Continue"}]}`,
+	}
+	for name, body := range accept {
+		m, err := loadPageModel(write(name+".json", body))
+		if err != nil {
+			t.Errorf("%s 被拒了（不该）: %v", name, err)
+			continue
+		}
+		if m == nil {
+			t.Errorf("%s 解出 nil", name)
+		}
+	}
+}
+
+// TestDiffHumanShowsDiagnostics 是修复轮 1 的 I3（人话那一侧）：
+// 观测不全必须在人话里**显眼**，因为一次帧没取全与「那些元素真的没了」在模型里
+// 长得一模一样，而 Actionable 会照样说「有推进」。
+func TestDiffHumanShowsDiagnostics(t *testing.T) {
+	before := &internal.PageModel{URL: "u", PageText: "Step 1"}
+	after := &internal.PageModel{URL: "u", PageText: "Step 2",
+		Diagnostics: []internal.Diagnostic{{Kind: internal.DiagKindFrameError, Detail: "iframe 没取到"}}}
+	d := internal.DiffModels(before, after)
+
+	var buf strings.Builder
+	if err := renderDiffHuman(&buf, d, before, after); err != nil {
+		t.Fatalf("renderDiffHuman 出错: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "观测不全") || !strings.Contains(out, "diagnostics_after=1") {
+		t.Errorf("观测不全没在人话输出里显示出来:\n%s", out)
+	}
+
+	// 反向：观测完整时不许出现那条警告（否则警告会变成天天都在的背景噪声）。
+	clean := &internal.PageModel{URL: "u", PageText: "Step 2"}
+	var buf2 strings.Builder
+	if err := renderDiffHuman(&buf2, internal.DiffModels(before, clean), before, clean); err != nil {
+		t.Fatalf("renderDiffHuman 出错: %v", err)
+	}
+	if strings.Contains(buf2.String(), "观测不全") {
+		t.Errorf("观测完整却报了「观测不全」:\n%s", buf2.String())
+	}
+}
+
+// TestDiffCommandHelpTellsTheTruth 是修复轮 1 的 M1 + I2：
+// 帮助文字与实现**不许**矛盾。
+//   - M1：`--json` 写着「保留开关便于以后加人类可读格式」，而人话格式早有了
+//     —— 那正是「看起来能切格式、实际不说清楚」那类
+//   - I2：`diff` 判不了「填/选/勾」（模型里没有字段值），Long 必须说清能力边界，
+//     否则 py 侧会把它当成「这一步成没成功」的判据
+func TestDiffCommandHelpTellsTheTruth(t *testing.T) {
+	f := diffCmd.Flags().Lookup("json")
+	if f == nil {
+		t.Fatal("缺 --json")
+	}
+	if !strings.Contains(f.Usage, "人话") {
+		t.Errorf("--json 的帮助文字没说 --json=false 是人话摘要（现在实际有这条路）: %q", f.Usage)
+	}
+	if strings.Contains(f.Usage, "便于以后") {
+		t.Errorf("--json 的帮助文字还是「便于以后加人类可读格式」—— 它早就加了: %q", f.Usage)
+	}
+	for _, want := range []string{"不判填写", "字段值"} {
+		if !strings.Contains(diffCmd.Long, want) {
+			t.Errorf("Long 里没说清能力边界（缺 %q）—— py 会拿它判「填写成功没有」:\n%s", want, diffCmd.Long)
+		}
 	}
 }
 

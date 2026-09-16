@@ -44,6 +44,12 @@ var diffCmd = &cobra.Command{
   · 可见正文变了（归一空白后）
   · 身份上真有元素出现/消失（正文 + 角色 + 区域的多重集，不是选择器集合）
 
+⚠️ 能力边界 —— 它判的是**导航与组成变化**，**不判填写与选择**：
+  PageModel 里没有字段值（Field 只有 label/type/placeholder），所以
+  「值填进去了没有 / 勾上了没有 / 只是高亮了一下」这些步骤，
+  diff 原理上答不了 —— 页面组成没变，actionable 就是 false，别把它读成「没成功」。
+  （给模型加字段值 = 契约变更，记为 R20，归计划二。）
+
 用法：
   cdp observe > before.json && <做动作> && cdp diff --before before.json
 
@@ -62,7 +68,10 @@ func init() {
 	// 原本想说的那个命令整个消失（2026-09-16 手工跑时看到的就是这个）。
 	diffCmd.Flags().String("before", "", "动作前的 PageModel JSON 文件（先用 cdp observe 输出一份，见 Long）")
 	_ = diffCmd.MarkFlagRequired("before")
-	diffCmd.Flags().Bool("json", true, "输出 JSON（默认；保留开关便于以后加人类可读格式）")
+	// ⚠️ 帮助文字要说**现在**的真话（修复轮 1 的 M1）：原先写「保留开关便于以后加
+	// 人类可读格式」，可人话格式早就有了（renderDiffHuman）—— 那正是「看起来能切的
+	// 开关、实际不说清楚」那一类。
+	diffCmd.Flags().Bool("json", true, "默认输出 JSON（py 侧只该用这一种）；--json=false 输出人话摘要（给人看，别解析）")
 	diffCmd.Flags().String("frame-id", "", "只观测指定帧（默认整页含子帧）—— 调试用，一般不用传")
 }
 
@@ -115,6 +124,19 @@ func loadPageModel(path string) (*internal.PageModel, error) {
 		return nil, fmt.Errorf("%q 不是一份 PageModel JSON: %w"+
 			"（它得是 `cdp observe` 的默认输出；`--json=false` 的人话摘要不能拿来当快照）", path, err)
 	}
+	// ⚠️ **解析得动 ≠ 是快照**（修复轮 1 的 I1）：`{}`、或者 `cdp navi` 自己的输出
+	// （{"frame":{...}}）、或者任何别的 JSON，都能解析成一份**全零**的 PageModel。
+	// 拿它对着一页活页面比 —— 每个元素都「新出现」→ Actionable=true、退出码 0
+	// —— 一次「文件给错了」被读成一次**有进展**，而且完全不报错。
+	//
+	// 判据取「URL 为空 且 五类列表都空」：真快照**一定有 URL**（哪怕 about:blank
+	// 也报 "about:blank"），有内容的页面至少有一类非空。两者同时成立只可能是
+	// 「这压根不是一份 observe 模型」。
+	if m.URL == "" && len(m.Actions)+len(m.Fields)+len(m.OptionGroups) == 0 {
+		return nil, fmt.Errorf("%q 里没有 URL 也没有任何元素 —— 这不是一份 observe 快照"+
+			"（{} / navi 的输出 / 别的 JSON 都能解析成功，但拿来比会把整页元素误报成「新出现」）。"+
+			"先用 `cdp observe > %s` 存一份", path, path)
+	}
 	return &m, nil
 }
 
@@ -165,9 +187,19 @@ func renderDiffHuman(w io.Writer, d internal.Diff, before, after *internal.PageM
 	writeSelList(w, "新出现", d.Appeared, maxListed, lblWidth)
 	writeSelList(w, "消失", d.Disappeared, maxListed, lblWidth)
 
+	// 诊断：**观测者自己的问题**，与页面内容分开摆（规格 §4.3）。
+	// ⚠️ 它必须显眼：一次帧没取全，在模型里与「那些元素真的没了」长得一模一样 ——
+	// 而 Actionable 会照样说「有推进」。人看得见这行，才知道这次的差分要不要信。
+	if d.DiagnosticsAfter > 0 || d.DiagnosticsBefore > 0 {
+		fmt.Fprintf(w, "\n⚠ 观测不全：动作后 %d 条诊断、动作前 %d 条（某帧没取到 / 帧枚举可能退化）。\n"+
+			"  上面的「新出现/消失」里可能有**只是没看见**的元素 —— 别当成页面真的变了。\n",
+			d.DiagnosticsAfter, d.DiagnosticsBefore)
+	}
+
 	// 末尾把这几个数摆出来，便于人工核对判据（三条都摆，包括没触发的那些）。
 	fmt.Fprintf(w, "\nurl_changed=%t  text_changed=%t  appeared=%d  disappeared=%d  actionable=%t\n",
 		d.URLChanged, d.TextChanged, len(d.Appeared), len(d.Disappeared), d.Actionable)
+	fmt.Fprintf(w, "diagnostics_before=%d  diagnostics_after=%d\n", d.DiagnosticsBefore, d.DiagnosticsAfter)
 	return nil
 }
 
