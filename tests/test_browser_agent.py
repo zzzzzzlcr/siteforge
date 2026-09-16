@@ -625,6 +625,142 @@ def test_states_when_holds_on_the_page_it_came_from(tmp_path):
     assert not browser_agent.when_holds(landing_state["when"], PAGE_QUIZ)
 
 
+# ─────── 判据的 URL 侧：钉**稳定前缀**，不钉整条 path（R-35 真站实测 → R-37）───────
+#
+# 真站（homebuddy）量出来的形状：产物里 `url_contains` 钉的是**整条 path**
+# （`…/walk-in-showers/cr640`），重放时站点给的是**同一个页面的轮换变体**
+# （`…/gt1791-1`）→ 每条 `when` 都不成立 → 7 步**全被跳过**，扰动自测永远过不了。
+# 计划里写 `when` 的理由正是「防 A/B 变体、防步骤增减」—— 钉整条 URL 恰好把这件事做反。
+#
+# 放松 URL 之所以安全：`when_holds` / 产物的 `_applies` 要求 **URL 与文本两条都命中**，
+# 鉴别力在文本那一侧。但「应该没事」正是这个项目被烧过的地方 —— 所以三个方向都钉死：
+# ① 轮换用例（回归钉子，先写先红）② 路径前缀真不同的页面**仍然不匹配**
+# ③ 没有轮换末段时保持整条 path，绝不退化成主机名。
+
+
+#: 真站那次的两个地址：同一页，**末段轮换**（`cr640` → `gt1791-1`），前缀一样。
+#: `ROTATED_B` 连 query 一起照抄真站（16:34 那次 frame dump 里重放实际落地的窗口地址）
+#: ——「query 要剥」与「末段要剥」是同一条判据上必须一起成立的两件事。
+ROTATED_A = "https://homebuddy.test/walk-in-showers/cr640"
+ROTATED_B = "https://homebuddy.test/walk-in-showers/gt1791-1?_stsgnoredir=1&_configname=landing_page_wis"
+#: 另一页：路径前缀**真不同**，而它的末段也长得像 id —— 判别用例里正文故意用同一段。
+OTHER_PREFIX = "https://homebuddy.test/bath-fitters/zz991"
+#: 这三页的正文（判别用例靠「正文一样」把鉴别力逼到 URL 一条上）
+PAGE_TEXT_ONE = "Walk-in showers 五分钟算出报价 免费 不查信用"
+
+
+def _page(url: str, text: str) -> dict:
+    """一份页面模型（借 PAGE_LANDING 的元素，只换地址与正文）。"""
+    return dict(PAGE_LANDING, url=url, page_text=text)
+
+
+def _walk(tmp_path, *pages):
+    """一次探路：依次路过这几页，每页点一下。
+
+    每页**必须**有一步可重放动作 —— 没有可重放步骤的状态在 `states()` 里会被整组丢掉。
+    """
+    turns = []
+    for page in pages:
+        turns.append({"calls": [("observe", {})]})
+        turns.append({"calls": [("click", {"selector": page["actions"][0]["selector"]})]})
+    turns.append({"content": "走完了"})
+    journey, _, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": p} for p in pages],
+         "click": [{"structured": {"ok": True}} for _ in pages]},
+        turns,
+    )
+    return journey
+
+
+def _rendered(tmp_path, journey, site="when_url_site") -> str:
+    return template.render(site, ["Thank you"], journey.states(), journey.fills(),
+                           provenance=None)
+
+
+def _artifact_says(tmp_path, src, when, url, text, site="when_url_site") -> bool:
+    """让**产物自己**回答「这一页算不算这个状态」。
+
+    跑的就是产物里的 `_applies`（真站那次跳掉 7 步的正是它）—— 只把 `_url()` /
+    `page_signature()` 换成这两页，别的一个字不改。
+    """
+    module = _import_source(tmp_path, src, site=site)
+    script = object.__new__(module.Filler)
+    script._url = lambda: url
+    script.page_signature = lambda: text
+    return script._applies(when)
+
+
+def test_when_url_survives_a_rotated_trailing_id(tmp_path):
+    """**回归钉子**：末段轮换（`cr640` → `gt1791-1`）不能把整组步骤判掉。
+
+    真站实测的病就是这一条：钉整条 path → 7 步全跳过 → 自测永远过不了。
+    """
+    journey = _walk(tmp_path, _page(ROTATED_A, PAGE_TEXT_ONE))
+    (state,) = journey.states()
+    assert state["when"]["url_contains"] == "https://homebuddy.test/walk-in-showers/", \
+        state["when"]
+    # 重放时站点给的是**同一个页面的轮换变体**：正文一样，只有末段不同
+    assert browser_agent.when_holds(state["when"], _page(ROTATED_B, PAGE_TEXT_ONE))
+    # 产物自己的判据也得说成立（生成侧与重放侧逐条对齐，评审验过的那条）
+    assert _artifact_says(tmp_path, _rendered(tmp_path, journey), state["when"],
+                          ROTATED_B, PAGE_TEXT_ONE)
+
+
+def test_when_url_still_discriminates_a_different_path_prefix(tmp_path):
+    """放松 URL **不会**让一个状态匹配到无关页面 —— 这条得证明，不能靠「应该没事」。
+
+    两页的正文**故意一模一样**：这样鉴别力只剩 URL 一条，放松过头会立刻在这里红。
+    """
+    journey = _walk(tmp_path, _page(ROTATED_A, PAGE_TEXT_ONE), _page(OTHER_PREFIX, PAGE_TEXT_ONE))
+    shower, other = journey.states()
+    src = _rendered(tmp_path, journey)
+    # ① 先钉**鉴别力**（正文一样、末段都像 id，串不串门只看 URL 那一段到底放松到了哪）
+    assert not browser_agent.when_holds(shower["when"], _page(OTHER_PREFIX, PAGE_TEXT_ONE))
+    assert not browser_agent.when_holds(other["when"], _page(ROTATED_A, PAGE_TEXT_ONE))
+    assert not _artifact_says(tmp_path, src, shower["when"], OTHER_PREFIX, PAGE_TEXT_ONE)
+    assert not _artifact_says(tmp_path, src, other["when"], ROTATED_A, PAGE_TEXT_ONE)
+    # ② 再钉「放松到了哪一段」写死 —— 免得「缩过头」（比如缩到主机名）从别处溜回来
+    assert shower["when"]["url_contains"] == "https://homebuddy.test/walk-in-showers/"
+    assert other["when"]["url_contains"] == "https://homebuddy.test/bath-fitters/"
+
+
+def test_same_path_states_are_still_told_apart_by_text(tmp_path):
+    """真产物的形状：两个 state **同一个 path**（SPA 每步换正文）—— 真站那次产物里就是
+    `cr640` / `cr640-2` 这样两段。放松之后它们的 URL 判据**一模一样**，分开全靠文本 ——
+    这条钉的就是「文本那一侧真的扛得住」。
+    """
+    journey = _walk(tmp_path, _page(ROTATED_A, PAGE_TEXT_ONE),
+                    _page(ROTATED_A, "Describe your project: Tub to walk-in shower"))
+    first, second = journey.states()
+    assert [p["name"] for p in journey.pages][:2] == ["cr640", "cr640-2"]
+    assert first["when"]["url_contains"] == second["when"]["url_contains"] == \
+        "https://homebuddy.test/walk-in-showers/"
+    src = _rendered(tmp_path, journey)
+    assert _artifact_says(tmp_path, src, first["when"], ROTATED_B, PAGE_TEXT_ONE)
+    assert _artifact_says(tmp_path, src, second["when"], ROTATED_B, second["when"]["text_contains"][0])
+    # 换一页：同一个 URL，但正文对不上 —— 各自都不认
+    assert not _artifact_says(tmp_path, src, first["when"], ROTATED_B,
+                              second["when"]["text_contains"][0])
+    assert not _artifact_says(tmp_path, src, second["when"], ROTATED_B, PAGE_TEXT_ONE)
+
+
+def test_when_url_keeps_the_whole_path_when_nothing_rotates(tmp_path):
+    """没有轮换末段时保持**整条 path**（`/checkout`、`/shop/checkout`），也不许缩到只剩主机名。"""
+    journey = _walk(tmp_path, _page("https://example.test/checkout", PAGE_TEXT_ONE),
+                    _page("https://example.test/cr640", PAGE_TEXT_ONE),
+                    _page("https://example.test/shop/checkout", PAGE_TEXT_ONE))
+    checkout, single_segment, deep = journey.states()
+    assert checkout["when"]["url_contains"] == "https://example.test/checkout"
+    # 末段确实是轮换码，但 path 只有这一段 —— 切了就等于拿主机名当判据，绝不
+    assert single_segment["when"]["url_contains"] == "https://example.test/cr640"
+    # 多段 path、末段不是轮换码：整条留着（这条正是「无脑砍末段」那个变体会踩的地方）
+    assert deep["when"]["url_contains"] == "https://example.test/shop/checkout"
+    # 地址本来就没有 path 时，判据就是它当时的样子（不是被我们缩出来的）
+    assert browser_agent._stable_url("https://example.test/") == "https://example.test/"
+    assert browser_agent._stable_url("https://example.test") == "https://example.test"
+
+
 # ─────────────────────────── 小工具 ───────────────────────────
 
 

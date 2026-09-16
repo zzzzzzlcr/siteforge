@@ -90,6 +90,10 @@ SCROLL_PIXELS = "400"
 #: 一个状态的 `when` 里带多少字的页面文字（够认出「是不是这一页」，又不至于一改就失配）。
 WHEN_SNIPPET_CHARS = 48
 
+#: 看着像轮换码的 path 末段长什么样（字母数字，可带 `-_.` 分隔；**还要含数字**才算，
+#: 见 `_id_like`）。`cr640` / `gt1791-1` / `a3f9c2` / `12345` 都算，`checkout` 不算。
+_ID_LIKE_RE = re.compile(r"[0-9a-z]+(?:[-_.][0-9a-z]+)*")
+
 #: `result["page_text_head"]` 留多少字（给人核对「模型那一眼看到了什么」）。
 PAGE_HEAD_CHARS = 200
 
@@ -731,13 +735,16 @@ class _Pages:
 def _when_for(model: dict) -> dict | None:
     """一个状态的 `when`：**进这个状态时**那一页的判据。
 
-    `url_contains` 用**去掉 query 与 fragment** 的地址：重放时 query 常常不一样
-    （utm、step 号、A/B 参数），而 `when` 判太严的后果是**整组步骤被跳过**。
+    `url_contains` 用**稳定前缀**（`_stable_url`）：先去掉 query 与 fragment —— 重放时 query
+    常常不一样（utm、step 号、A/B 参数）；再把**看着像轮换码的末段**丢掉 —— 真站实测
+    （homebuddy）`…/walk-in-showers/cr640` 重放时是**同一个页面的轮换变体** `…/gt1791-1`，
+    钉整条 path 的 `when` 一条都不成立、7 步**全被跳过**，而 `when` 存在的理由正是
+    「防 A/B 变体、防步骤增减」。`when` 判太严的后果**永远是**整组步骤被静默跳过。
     正文那一段是从这一页的 `page_text` 里**取的原文** —— 它是当时那一页的**子串**，
     所以必然成立（`when_holds` 在生成时就会验一遍）。
     """
     when: dict = {}
-    url = (model.get("url") or "").split("#")[0].split("?")[0]
+    url = _stable_url(model.get("url") or "")
     if url:
         when["url_contains"] = url
     text = _norm(model.get("page_text") or "")
@@ -747,6 +754,43 @@ def _when_for(model: dict) -> dict | None:
     if not when:
         return None
     return when if when_holds(when, model) else ({"url_contains": url} if url else None)
+
+
+def _stable_url(url: str) -> str:
+    """判据里用哪一段地址：**稳定前缀**。
+
+    去掉 query 与 fragment，再把**看着像轮换码的末段丢掉**（`…/walk-in-showers/cr640` →
+    `…/walk-in-showers/`）。两条底线，都是为了别把判据弄成「谁都能命中」：
+
+    - **path 只有一段时绝不动它**（`…/cr640` 保持原样）—— 切了就等于拿主机名当判据
+    - 末段**不像**轮换码时原样留着（`/checkout`、`/walk-in-showers`、`/funnel` 是全路径）
+
+    ⚠️ 为什么放松 URL 不会让状态匹配到无关页面：`when_holds` / 产物的 `_applies` 要求
+    **URL 与文本两条都命中** —— 鉴别力在文本那一侧，URL 这一侧只需要挡住「另一条路」。
+    放宽只影响同一页的**变体**（真站实测的那件事），而这正是 `when` 存在的理由。
+    """
+    bare = (url or "").split("#")[0].split("?")[0]
+    scheme, sep, rest = bare.partition("://")
+    if not sep:
+        return bare                       # 不是 http(s)://host/… 的形状：原样返回，不猜
+    authority, slash, path = rest.partition("/")
+    if not slash:
+        return bare                       # 连 path 都没有（`https://host`）
+    segments = [s for s in path.split("/") if s]
+    if len(segments) < 2 or not _id_like(segments[-1]):
+        return bare
+    return f"{scheme}://{authority}/" + "/".join(segments[:-1]) + "/"
+
+
+def _id_like(segment: str) -> bool:
+    """这一段像不像**轮换的 id / 短码**（同一页每个变体换一个：`cr640` / `gt1791-1` / `12345`）。
+
+    判据：整段是字母数字（允许 `-_.` 分隔）**且至少含一个数字**。
+    只有字母的那种（`checkout`、`walk-in-showers`、`index.html`）是**真 slug**，
+    不是轮换码 —— 切掉它们等于把判据退化成主机名，那比钉太死还糟。
+    """
+    seg = str(segment or "").lower()
+    return bool(_ID_LIKE_RE.fullmatch(seg)) and any(c.isdigit() for c in seg)
 
 
 def _snippet(text: str) -> str:
