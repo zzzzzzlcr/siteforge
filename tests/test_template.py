@@ -1738,3 +1738,9 @@ def test_live_frames_are_the_ones_in_the_latest_observation(sandbox, form_file):
     f._note_live_frames({"actions": [{"selector": "#q", "frame_path": ["main", "QUIZFRAME"]}]})
     assert f.live_frames == ["QUIZFRAME"], (
         "活帧表要跟着最近一次观测走（累加会让广告帧把真正的问卷帧挡在外面）：%s" % f.live_frames)
+
+
+# ⚠️ 「trace 留尾 + 成功布尔」这一格**没有钉子**：单跑绿、进全量套件红
+# （替身是模块级的、`success_in_page` 取的是**这一步之前**的页面文字，调用次序一变就翻）。
+# 与其留一条会骗人的绿，不如明说没有。实现是 `agent/template.py` 的 trace 那三行
+# （`page_sig_tail` / `success_in_page`，**加法**：老键一个字没动）。

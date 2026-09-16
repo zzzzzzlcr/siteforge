@@ -178,6 +178,9 @@ SUCCESS_TEXTS = $success_texts
 STUCK_LIMIT = $stuck_limit
 # trace 里落的页面签名长度：与 cdp observe 的 page_text 同口径（§4.3「归一化后前 600 字」）。
 PAGE_TEXT_CHARS = 600
+#: trace 里**另外**留的尾部长度（`page_sig_tail`）—— 子帧的正文常常落在前 600 字之后，
+#: 不留尾就「搜不到 ≠ 没读到」分不开（2026-09-17 第十轮补的，**加法**）。
+PAGE_TAIL_CHARS = 240
 
 # 动作命令自己报错时的字样：cdp click / form 找不到元素就直接报这些。
 # 「这一步成没成」在**填/选**类步骤上只能看它 —— diff 判不了控件状态（§4.6 的能力边界）。
@@ -1513,6 +1516,12 @@ class Filler:
                 "progress_why": self.progress_why if progress is None else None,
                 "url": self._url(),
                 "page_sig": (signature or self.page_signature())[:PAGE_TEXT_CHARS],
+                # **尾部也留一段**（2026-09-17 第十轮）：`page_sig` 只留前 600 字，
+                # 而拼起来的正文里**主帧那段在前** —— 子帧（问卷）那几句常常落在 600 之后，
+                # 于是「trace 里搜不到问卷正文」会被误读成「判据没读到它」。
+                # ⚠️ **加法**：老键一个字没动，只是多了这两个（读 trace 的下游不受影响）。
+                "page_sig_tail": self.page_signature()[-PAGE_TAIL_CHARS:],
+                "success_in_page": self._succeeded(),
                 "shot_before": shot_before,
                 "shot_after": shot_after,
                 "shots_why": self.shots_why,     # 没落成图时说明原因
