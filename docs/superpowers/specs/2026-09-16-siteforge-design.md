@@ -56,7 +56,8 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
 | **D5** | **自测 3 遍** | 在真浏览器上连跑 3 遍全过才算「自测通过」；任一遍挂 = 自测未过 + 卡在哪 |
 | **D6** | **agent 用自己的 Bit 窗口** | **硬约束**。worker 的 `/task` 自己会 `bit.sh open`；agent 若用同一个 `bit_id`，必然复现「两任务抢同一窗口 → 窗口进程僵死」事故 |
 | **D7** | **cdp 出 MCP 门（同内核双出口）** | 不绕：不是包一层壳去 subprocess CLI，而是 Go 内核直接多一个 MCP 入口。传输先 **stdio**，YAGNI |
-| **D8** | **两个 skill 给 agent 用** | `bit-window`（窗口生命周期）+ `cdp-browser`（页面操作）。**skill 里编码「坑」比编码「用法」值钱** |
+| **D8** | **两个 skill 给 agent 用** | `bit-window`（窗口生命周期 + 指纹/代理下发）+ `cdp-browser`（页面操作）。**skill 里编码「坑」比编码「用法」值钱** —— 尤其 §4.6 那三个陷阱 |
+| **D9** | **agent 用自己的 gost 出口端口** | 与 D6 同构的硬约束。宿主 :1081 归**实验容器**（`gost-watch.sh` 维护）、:1080 归**生产**（单例热换）。agent 若共用，换链会互相踩 —— 实测过：换掉生产正在用的链、或用别的站的链 → 页面打不开只有 3 个元素。agent 单开一个端口 + 独立 gost 实例 |
 
 ---
 
@@ -188,6 +189,61 @@ py 是生产已验证的产物形式，cdp 是生产已验证的动作层。
 - `eval` **不能**穿透 shadow DOM —— 用 eval 找元素在 Salesforce 类站点上必瞎
 - `--host/--port` 必须放位置参数**前面**（CLI 的坑；MCP 门没有这个问题）
 
+### 4.6 窗口与代理 —— 开工前提层（**最容易做错的一层**）
+
+agent 在能看页面之前，必须先把这个窗口**配对**。顺序不能反。
+
+#### 正确的调用序列
+
+```
+① 拉代理链（要换出口国家时）
+   GET  {PROXY_API}?url={target}&country=US
+        → {code:0, proxies:[{server,user,passwd,jumper,proxy_id}]}
+   ProxyManager().restart_gost(info)      # 写链
+   pkill -x gost                          # 强制重拉（不 kill 不生效）
+   国家从 proxy_id 解析：B_78982_CA___ → CA
+
+② 下发窗口配置（**直接 POST /browser/update，不走 `bit.sh update`**）
+   见下方 JSON。必须在 `open` **之前** —— 里面是
+   clearCacheFilesBeforeLaunch / clearCookiesBeforeLaunch，启动时才生效。
+
+③ 开窗口
+   bit.sh open <worker_ip> <bit_id>       # → ws_url（127.0.0.1 已改写成 worker_ip）
+
+④ 干活（observe / click / form / …）
+
+⑤ 关窗口 + **验死**
+   bit.sh close <worker_ip> <bit_id>
+   POST /browser/pids/alive {"ids":[bit_id]}   # rc=0 ≠ 真关了
+```
+
+#### ② 的权威 JSON
+
+```jsonc
+{ "id": "<bit_id>", "proxyMethod": 1, "proxyType": "socks5",
+  "host": "<宿主IP>", "port": <agent 自己的 gost 端口，见 D9>,
+  "syncTabs": false,
+  "clearCacheFilesBeforeLaunch": true, "clearCookiesBeforeLaunch": true,
+  "browserFingerPrint": {
+    "coreVersion": "<random 130|132|134|136|138|140|142>",
+    "ostype": "PC", "os": "Win32", "osVersion": "11,10",
+    "devicePixelRatio": 1
+  } }
+```
+
+#### ⚠️ 三个必须写进 skill 的陷阱
+
+| 陷阱 | 后果 |
+|---|---|
+| **`bit.sh update` 是残缺包装，不能用它下发指纹/代理** | 它收了 `UA/SW/SH/DPR/PROXY_USER/PROXY_PASS` 这些参数，但真正 POST 的 JSON 里**只有** `id/proxyMethod/proxyType/host/port` + `browserFingerPrint{coreVersion,ostype,os,osVersion,webGL*}` —— **UA 字符串不下发**（只拿来推 OS 类型）、**`sw`/`sh`/`dpr` 收了完全没用**（JSON 里连键都没有）、**代理用户名密码不下发** |
+| **DPR 字段名必须是 `devicePixelRatio`** | 写 `dpr` 被 BitBrowser **静默忽略**，回读仍是 3。Bit 默认 DPR=3 → cdp 手势按 CSS 像素发坐标、底层按设备像素落 → **点击偏移 3 倍点空气**。实测对照：写 `dpr` 回读 3；写 `devicePixelRatio` 回读 1。DPR=3 时同一个 `target=_blank` 链接点 25 秒开不出新 tab，DPR=1 后 **2 秒**开出 |
+| **「换出口国家」= 换宿主 gost 的链，不是改窗口配置** | 窗口连的是宿主 gost（`host=宿主IP`），出网走 gost 的链。改窗口配置改不了国家 |
+
+#### 另外两条（时效/归属）
+
+- **窗口存活只有几分钟** —— 探针要合并成尽量少的调用（这也是 `observe` 必须一次取齐的原因，§4.3）
+- **`close` 返回 `rc=0` ≠ 窗口真关了** —— 必须查 `/browser/pids/alive`；不查就复用，下次任务会拿到正在死掉的窗口
+
 ---
 
 ## 五、py 产出契约
@@ -242,7 +298,7 @@ intake → explore → draft → lint → selftest → deliver
 
 | 节点 | 做什么 | 失败去向 |
 |---|---|---|
-| `intake` | 收站点 URL + 失败证据（FMR `formLog`/`formStep`）或运营描述；分配**独立 Bit 窗口**（D6） | 窗口不可用 → HITL |
+| `intake` | 收站点 URL + 失败证据（FMR `formLog`/`formStep`）或运营描述。**开工前提层（§4.6）在这里做**：拉对应国家的链（D9 的独立 gost 端口）→ POST `/browser/update` 下发指纹 → `bit.sh open` 拿 ws_url | 链拉不到 / 窗口不可用 → HITL（R11） |
 | `explore` | Browser Agent 用 `observe`/`diff` 摸真实页面，产出结构笔记 | 页面打不开 → HITL |
 | `draft` | 按模板骨架写 py，填「怎么走」 | — |
 | `lint` | 契约检查（§5.2） | 不通过 → **回 `draft`**（带违规行） |
@@ -356,6 +412,9 @@ LangGraph 图 · 两个 skill · 容器化 · 债务清理。
 | **R6** | agent 成本：比规则折叠贵 1~2 个数量级 | 用预算上限 + 「py 沉淀后走便宜重放」摊薄 |
 | **R7** | cdpcli 工作树的未提交 WIP(OOPIF) 归属 | **迁移前必须处理**，见 §9 |
 | **R8** | agent 独立窗口用哪个 `bit_id` / `worker_ip` | 未定，需运营/开发指定 |
+| **R9** | **`bit.sh update` 是残缺包装**（收 10 个参数只下发 4 个，见 §4.6）—— 拿它下发指纹/代理会静默失效 | 已定位；skill 里必须写明「直接 POST `/browser/update`」，并且 **agent 侧不要调用 `bit.sh update`** |
+| **R10** | agent 的 gost 端口未定（见 D9）；`config/gost*.chain` + `gost-watch.sh` 现在只维护 :1080/:1081 | 未定，需指定端口 |
+| **R11** | `PROXY_API`（`https://tmk.3tkj.cn/api/get_proxies`）的可用性与配额 | 未核；拉链失败时 agent 必须有降级路径（否则 explore 直接卡死） |
 
 ---
 
