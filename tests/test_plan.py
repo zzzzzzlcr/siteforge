@@ -71,11 +71,14 @@ def test_step_text_is_the_original_wording_verbatim():
 
 
 def test_text_of_a_step_is_never_summarized_or_reordered():
-    text = "操作:\n1.点 Get estimate，等页面刷出来\n2.选 Yes 之后再点 Next\n"
-    plan = plan_mod.parse(text)
-    # 原话逐字在 text 里（逐字断言，不是「长得像」）
-    assert plan.steps[0].text in text
-    assert plan.steps[1].text in text
+    """正文是**原话**：逐字相等。
+
+    ⚠️ 修复轮 3：这条原先断言的是 `step.text in text`（子串）—— 那是**弱的**：
+    正文被换成整行（`1.点 Get estimate…`）时它**照样成立**（整行当然是原串的子串），
+    于是「不许摘要」这条判据根本没被钉住。改成逐字相等。
+    """
+    plan = plan_mod.parse("操作:\n1.点 Get estimate，等页面刷出来\n2.选 Yes 之后再点 Next\n")
+    assert [s.text for s in plan.steps] == ["点 Get estimate，等页面刷出来", "选 Yes 之后再点 Next"]
 
 
 def test_numbers_are_kept_as_written_and_never_renumbered():
@@ -135,24 +138,32 @@ def test_source_is_kept_when_there_is_a_plan():
 @pytest.mark.parametrize("prose", [
     "2026 年这个站改过版，注意一下。",
     "页面上有 3 个选项，随便选。",
+    "第 1 步要填邮编",
+])
+def test_prose_numbers_are_not_mistaken_for_steps(prose):
+    """散文里的数字**不许**被当成步骤。
+
+    ⚠️ 两条补课（修复轮 2 / 3）：**每条前面都垫两个真步骤** ——
+    原先每条都是单独一行送进去的，就算被误认成步骤也凑不够 `MIN_STEPS`，
+    **门槛替你兜住，测试恒绿而判据根本没被钉住**。
+    """
+    plan = plan_mod.parse("1.点 A\n2.点 B\n" + prose)
+    assert [(s.n, s.text) for s in plan.steps] == [(1, "点 A"), (2, "点 B")]
+
+
+@pytest.mark.parametrize("line", [
     "轮次: 30",
     "浏览: 2",
     "成功条件URL: /news-feed,/welcome",
-    "第 1 步要填邮编",
-    "评分 4.5 星",             # ← 裁定点名的反例：`.` 后面跟数字**不算**分隔符
-    "版本 1.2 的页面",
-    "见 3.4 节",
-    "引导: 1.只此一条",         # ← 行内**单独一项**不算（要成串才认）
 ])
-def test_prose_numbers_are_not_mistaken_for_steps(prose):
-    """⚠️ **每条反例前面都垫两个真步骤**（修复轮 2 补的）。
+def test_constraint_lines_are_not_steps(line):
+    """**约束行的值是值，不是步号** —— 简报点名的反例就是 `轮次: 30`。
 
-    原先每条都是**单独一行**送进去的 —— 那样就算它被误认成步骤，
-    总数也凑不够 `MIN_STEPS`，**门槛替你兜住，测试恒绿而判据根本没被钉住**
-    （复审点名的「装饰性用例」，就是这一类）。垫两个之后，
-    那一行只要多吐一个步骤，下面的断言立刻红。
+    修复轮 3 从上面那条批测里拆出来单独一条：它们的判据是
+    「键值行不许被读成一步」（与「散文里的数字」不是同一条），
+    混在一个参数化里会让这一组**没有对准自己的变异**。
     """
-    plan = plan_mod.parse("1.点 A\n2.点 B\n" + prose)
+    plan = plan_mod.parse("1.点 A\n2.点 B\n" + line)
     assert [(s.n, s.text) for s in plan.steps] == [(1, "点 A"), (2, "点 B")]
 
 
@@ -183,18 +194,17 @@ def test_a_run_of_inline_items_on_one_line_is_split_into_steps():
 
 
 def test_inline_items_keep_their_wording_verbatim():
+    """正文是**原话**：逐字相等。
+
+    ⚠️ 修复轮 3：这条原先断言的是 `step.text in text`（子串）—— **弱的**：
+    正文被换成整行时它**照样成立**（整行当然是原串的子串），
+    于是「不许摘要」这条判据根本没被钉住（扫描器把这条记为「只有 raw 那条变异能打红它」）。
+    """
     text = "引导: 1.滚动到底部 2.点击Featured Titles 3.等待3秒 4.点击Verity"
     plan = plan_mod.parse(text)
-    for s in plan.steps:
-        assert s.text in text           # 逐字 —— 不摘要、不合并、不重排
+    assert [s.text for s in plan.steps] == [
+        "滚动到底部", "点击Featured Titles", "等待3秒", "点击Verity"]
     assert plan.raw == text             # raw 照旧是**整行原文**
-
-
-def test_a_lone_inline_item_is_not_a_step():
-    """**单独一个数字不算** —— 判据要「成串」才认（这保住了原来那个锚的作用）。"""
-    assert plan_mod.parse("引导: 1.滚动到底部").steps == []
-    assert plan_mod.parse("引导: 只有 1、这么一条").steps == []
-    assert plan_mod.parse("引导: 1.滚动到底部").source == ""
 
 
 def test_a_lone_inline_item_is_not_a_step_even_beside_other_steps():
@@ -218,15 +228,20 @@ def test_a_run_may_start_the_line_too():
     assert [(s.n, s.text) for s in plan.steps] == [(1, "点 A"), (2, "点 B")]
 
 
-def test_a_dot_followed_by_a_digit_is_not_a_separator():
+@pytest.mark.parametrize("line", [
+    "评分 4.5 星，版本 1.2 页",     # ← 裁定点名的反例：`.` 后面跟数字**不算**分隔符
+    "见 3.4 节，另见 1.2 节",
+    "版本 1.2 与 2.5 的页面",
+])
+def test_a_dot_followed_by_a_digit_is_not_a_separator(line):
     """裁定：边界要严 —— `评分 4.5 星` 里的 `4.` **不许**被当成第 4 步。
 
     ⚠️ **一行里必须放两个小数**（修复轮 2 补的）：只放一个的话它永远凑不成
-    「成串」，成串规则替你兜住 —— 那条测试是装饰性的，恒绿而判据没被钉住。
+    「成串」，成串规则替你兜住 —— 那种测试是装饰性的，恒绿而判据没被钉住。
     两个小数同处一行就够成串了，这才试得出小数点守卫真的在挡。
     （旁边再垫两个真步骤，免得又被 `MIN_STEPS` 兜住。）
     """
-    plan = plan_mod.parse("1.点 A\n2.点 B\n评分 4.5 星，版本 1.2 页")
+    plan = plan_mod.parse("1.点 A\n2.点 B\n" + line)
     assert [(s.n, s.text) for s in plan.steps] == [(1, "点 A"), (2, "点 B")]
 
 
@@ -236,10 +251,14 @@ def test_inline_items_keep_their_numbers_as_written():
     assert [(s.n, s.text) for s in plan.steps] == [(3, "点 A"), (5, "点 B"), (8, "点 C")]
 
 
-def test_a_step_with_no_text_is_not_a_step():
-    """光一个 `1.` 后面什么都没有，不是一步（空正文不进清单）—— 两条路都一样。"""
-    assert plan_mod.parse("1. 2.点 B").steps == []      # 行内：那一项是空的
-    assert plan_mod.parse("1.\n2.\n").steps == []       # 行首：两项都是空的
+def test_an_inline_item_with_no_text_is_not_a_step():
+    """光一个 `1.` 后面什么都没有，不是一步（空正文不进行内清单）。"""
+    assert plan_mod.parse("1. 2.点 B").steps == []
+
+
+def test_a_line_start_item_with_no_text_is_not_a_step():
+    """行首那条路也一样：`1.` 后面空着不算一步。"""
+    assert plan_mod.parse("1.\n2.\n").steps == []
 
 
 def test_parenthesised_inline_items_leave_the_bracket_out_of_the_text():
@@ -252,12 +271,6 @@ def test_a_decimal_inside_a_step_text_survives():
     """小数不许被切开：这是**行首**编号的一行，正文里的 `4.5` 是正文。"""
     plan = plan_mod.parse("1.填 A\n2.评分 4.5 星")
     assert [(s.n, s.text) for s in plan.steps] == [(1, "填 A"), (2, "评分 4.5 星")]
-
-
-def test_a_decimal_does_not_become_a_step_inside_a_run():
-    """成串的那一行里，小数照样不算一项。"""
-    plan = plan_mod.parse("引导: 1.点 A 2.点 B")
-    assert [s.n for s in plan.steps] == [1, 2]
 
 
 # ── 判据 6：Plan 里不许有「期望步数」（§2.2：步数不是结构）────────────
@@ -338,19 +351,30 @@ def test_mark_takes_the_first_marker_when_a_round_mentions_two():
 
 
 # ── ledger()：每一步一个终态 ─────────────────────────────────────────
-@pytest.mark.parametrize("n", [0, 2, 5])
-def test_ledger_has_one_entry_per_step_in_plan_order(n):
+@pytest.mark.parametrize("src,expected", [
+    ("", []),
+    (_numbered(2), [1, 2]),
+    (_numbered(5), [1, 2, 3, 4, 5]),
+    ("0.零\n3.三\n7.七", [0, 3, 7]),      # ← 号**不连续**：自指期望在这里会露馅
+])
+def test_ledger_has_one_entry_per_step_in_plan_order(src, expected):
     """B2 的契约：`len(ledger) == len(plan.steps)`，**一条不多一条不少**。
 
-    `n=0` 是这条契约的边界（0 == 0）—— 原先它是单独一条测试，
-    但它钉的是**同一件事**，合并到这里以后它才跟着这个契约一起承重。
-    （没有 `n=1`：一个步骤的输入被 `MIN_STEPS` 判成「没有计划」，
-    `parse` 到不了那个形状 —— 不测走不到的态。）
+    ⚠️ 期望值写**字面**（修复轮 3，复审的 Minor）：原先写的是
+    `[e["n"] for e in led] == [s.n for s in plan.steps]` —— **自指的**。
+    在「号刚好是 1..N」的输入上，账本把号**原地重编**也照样通过，
+    那条盲区是实测出来的（「ledger 原地重编」当时 0 条红）。
+    换成字面期望 + 一条**号不连续**的输入（`0/3/7`）之后它才真的钉得住。
+
+    `len == 0` 是这条契约的边界 ——
+    ⚠️ **已知的判别力边界**：空清单那一格**结构上红不了**（没有条目可少、可多），
+    留着它是因为契约必须在边界上成立，而且它是唯一会逮住「空计划上崩掉」的那一格。
+    （没有「一步」那种输入：一个步骤被 `MIN_STEPS` 判成「没有计划」，`parse` 到不了那形状。）
     """
-    plan = _plan(n)
+    plan = plan_mod.parse(src)
     led = plan_mod.ledger(plan, [])
-    assert len(led) == len(plan.steps) == n
-    assert [e["n"] for e in led] == [s.n for s in plan.steps]
+    assert len(led) == len(plan.steps) == len(expected)
+    assert [e["n"] for e in led] == expected                          # 字面期望，不自指
     assert [e["text"] for e in led] == [s.text for s in plan.steps]   # 原话照搬
 
 
@@ -440,6 +464,22 @@ def test_backward_jump_is_recorded_as_a_fact_not_as_a_skip():
         "not_reached", "done", "done", "jumped_over", "done"]
 
 
+def test_a_duplicated_number_binds_to_the_first_step_with_that_number():
+    """描述里出现**重号**时，`【第 N 步】` 记到**第一个**同号的步骤上。
+
+    修复轮 3 补的（复审指出：这一处「决定了 `【第 1 步】` 记到 `点 A` 还是 `有`」，
+    而它**一条用例都没有** —— 变异扫描**扫不出这类洞**，因为
+    扫描器只能发现「用例被改坏」，发现不了「某条行为根本没有变异对准它」）。
+
+    为什么取第一个：清单**不重编**（原话原号），重号是描述的毛病，
+    系统不替它挑；「从清单头读下来，先撞上谁就是谁」是唯一不猜的读法。
+    """
+    plan = plan_mod.parse("1.点 A\n1.有\n2.点 B")
+    assert [s.n for s in plan.steps] == [1, 1, 2]          # 重号原样留着，不去重
+    led = plan_mod.ledger(plan, [{"mark": 1}])
+    assert [e["state"] for e in led] == ["done", "not_reached", "not_reached"]
+
+
 def test_a_contradiction_on_the_way_back_is_recorded_too():
     """往回跳那一轮报了矛盾，照样记 `contradicted`（那条路也得有交代）。"""
     led = plan_mod.ledger(_plan(4), [{"mark": 3}, {"mark": 2, "contradiction": "对不上"}])
@@ -503,15 +543,21 @@ def test_from_states_falls_back_to_the_action_when_a_step_has_no_note():
 
 
 @pytest.mark.parametrize("bad", [
-    "def broken(:\n  STATES = [",          # 语法就坏
-    "$states",                              # 模板占位符没渲染
-    "STATES = [{'steps': [",                # 截断的
-    "",                                     # 空的
-    "STATES = build_states()\n",            # 字面量里算不出来（不 exec）
-    "STATES = ",                            # 赋值不完整
+    "def broken(:\n  STATES = [",              # 语法就坏
+    "$states",                                  # 模板占位符没渲染
+    "STATES = [{'steps': [",                    # 截断的
+    "STATES = ",                                # 赋值不完整
+    "STATES = [{'steps': [{'note': 'A'}]}] * 2",  # 算得出来，但**不是字面量** → 不 eval
 ])
 def test_from_states_parses_bad_py_into_no_plan_not_an_exception(bad):
-    """修站那条路可能给的是**坏 py** —— 抛异常是不行的。"""
+    """修站那条路可能给的是**坏 py** —— 抛异常是不行的，一律空计划。
+
+    修复轮 3 换掉了两条**结构上红不了**的输入（它们恒绿，钉不住判据）：
+    `""`（空输入不是「坏 py」，缺 `STATES` 那条已经覆盖）与
+    `STATES = build_states()`（任何实现都算不出它 —— 连错的实现也只会 NameError）。
+    换上的 `[...] * 2` 是**算得出来、但不是字面量**的形状：
+    「用 exec 求值」那种错实现会把它跑成 2 步，于是这条能被打红。
+    """
     plan = plan_mod.from_states(bad)
     assert plan.steps == []
     assert plan.source == ""
@@ -565,6 +611,15 @@ def test_homebuddy_keeps_the_random_choice_lines_verbatim():
 
 
 def test_homebuddy_success_condition_is_not_a_step():
+    """`成功条件: Thank you` **不在**步骤里（简报 Step 5 点名的），而且留在 `raw` 里。
+
+    ⚠️ **已知的判别力边界（修复轮 3 记录，不是漏修）**：
+    「不在步骤里」这半句，唯一能打红它的变异是那条**很宽**的
+    「非编号行一律读成一步」—— 按收紧后的判据，宽变异**不算「对准该判据的」**，
+    所以这条用例在扫描器里挂在「只有 raw 变异打红」那一档。
+    它**留着**是因为「不在步骤里」是**简报明写的判据**（不能为了好看删掉），
+    而 `raw` 那半句是真承重的（`吞掉 raw`/`去空白` 都会打红它）。
+    """
     plan = plan_mod.parse(HOMEBUDDY.read_text(encoding="utf-8"))
     assert not any("成功条件" in s.text for s in plan.steps)
     assert "成功条件: Thank you" in plan.raw        # 约束行在原文里，没被吞
@@ -577,14 +632,11 @@ def test_homebuddy_raw_is_the_file_untouched():
 
 
 def test_blinkist_fixture_raw_keeps_every_constraint_line():
-    """⚠️ 简报 Step 5 说这份文件「解析出 4 步（`引导:` 那 4 条）」——
-    但**文件里那 4 条不是编号行**，它们挤在 `引导:` 这一行上
-    （`引导: 1.滚动到底部 2.点击Featured Titles …`，设计注 §2.2 引的就是这个形状）。
+    """**非编号行一个字都不许吞**：约束行必须原样留在 `raw` 里。
 
-    简报那条「只认编号行」的判据锚在**行首**，这一行以 `引导:` 开头，
-    所以按判据它**解析不出步骤**。两条要求互相打架，
-    这里**照判据**（可单测的那条）实现，并如实钉住真数据的结果。
-    「非编号行一个字都不许吞」这一半照样成立 —— 见下面两条断言。
+    ⚠️ 修复轮 3：这条的 docstring 在**裁定之前**写的是「这份文件解析不出步骤」——
+    裁定（行内成串 ≥2 项）落地后它**解析出 4 步**，那句话就**说反了**。
+    这一条本身钉的是 `raw` 的保真（与步骤数无关），正文一个字没动。
     """
     raw = BLINKIST.read_text(encoding="utf-8")
     plan = plan_mod.parse(raw)
