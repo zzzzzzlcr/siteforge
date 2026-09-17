@@ -2988,3 +2988,61 @@ def test_a_zero_budget_never_even_asks_the_model(tmp_path):
     assert calls == [], calls
     assert fake.calls == [], fake.calls
     assert journey.steps == [], journey.steps
+
+
+def test_a_success_text_that_rendered_late_is_still_stopped():
+    """R3 的另一形（复审裁定②的那条）：那句话**在第二眼才渲染出来** —— 照样停。
+
+    形状：点了到新页 → 第一眼那一页上**还没有**那句话 → 又看一眼，它出来了。
+    与「撞了」那一形**行为相同、诊断不同**，而且**系统分不出这两件事**：
+    「页面上本来就有的一句普通话」与「刚换的页这一刻才渲染完」在账上长得一模一样。
+
+    ⚠️ 人话**不许**说成「不是哪一步把它带过来的」（复审在真形状上实测过：那一形里
+    **正是**某一步把它带过来的，只是那句话当时还没渲染）—— 那句话会把人往错处引。
+    这里同时钉住正反两面：出现「没有动作的那一眼」（事实），且**不出现**那句错的断言。
+    """
+    rows = [_goto(ENTRY, state="start"),
+            _look(ENTRY, TEXT_A, state="start"),
+            _click("提交申请", state="funnel"),
+            _look(QUOTE, TEXT_B, state="funnel"),                  # 新页，那句话还没渲染出来
+            _look(QUOTE, f"{TEXT_B} {SUCCESS}", state="quote")]    # 又看一眼：它出来了
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    # ⚠️ 停在第 5 行**之前** —— 于是**那次「提交」留在了前缀里**（它落到的那一页当时还没有
+    # 那句话，按 R3 的字面它过）。这是**在议**的一处，见报告「修复轮 2 · 顾虑」；本轮不改行为。
+    assert prefix == rows[:4], f"该停在第二眼之前，实际剩 {len(prefix)} 行"
+    assert "撞" in why and "没有动作的那一眼" in why, why
+    assert "不是哪一步把它带过来" not in why, why
+    assert "落到的那一页" not in why, why
+
+
+def test_the_product_replays_a_goto_to_the_address_we_asked_for(tmp_path):
+    """**R-E8 的哨兵**：产物侧重放 goto 发的是**请求地址**（不是落地地址）。
+
+    为什么这条非有不可：复审实测过 —— 把 `_replay_step` 的优先序**翻过来**
+    （改成 `result.url first`），**整套用例全绿**。也就是说那条裁定
+    （产物侧重放「当初要开的那串」、不翻）在测试里**根本不可见**：
+    谁哪天翻过来，一条都不会响。**裁定的内容必须有哨兵跟着落地。**
+
+    新账本为什么该拿请求地址：落地地址常常带着**会话参数**（`?ref=`、`?sess=`），
+    而重放跑在一个**干净身份**的浏览器上（§1.5）—— 那串地址在那边**不可复现**。
+    """
+    journey, _, _ = _run(
+        tmp_path,
+        {"goto": [{"structured": {"url": "https://example.test/funnel"}}],   # 落地
+         "observe": [{"structured": PAGE_LANDING}],
+         "click": [{"structured": {"ok": True}}]},
+        [{"calls": [("goto", {"url": "https://example.test/go?src=hero"})]},  # 要去
+         {"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"content": "走完了"}],
+    )
+    assert journey.steps[0]["target"]["url"] == "https://example.test/go?src=hero"
+    assert (journey.steps[0]["result"] or {}).get("url") == "https://example.test/funnel"
+
+    src = template.render("example-funnel", ["Thank you"], journey.states(),
+                          journey.fills(), provenance=None)
+    steps = [s for state in _literal(src, "STATES") for s in state["steps"]]
+    gotos = [s for s in steps if s["action"] == "goto"]
+    assert gotos, f"goto 没进重放规格：{[s['action'] for s in steps]}"
+    assert gotos[0]["url"] == "https://example.test/go?src=hero", \
+        "产物重放 goto 发的是落地地址 —— 那串常常带会话参数，在干净身份的浏览器上不可复现"
