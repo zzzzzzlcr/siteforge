@@ -35,7 +35,7 @@ from langgraph.types import Interrupt
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import browser_agent, graph, measure, selftest, service  # noqa: E402
+from agent import browser_agent, graph, journal, measure, selftest, service  # noqa: E402
 
 SITE = "example-funnel"
 URL = "https://example-funnel.test/quiz"
@@ -54,14 +54,15 @@ def _journey(url=URL, *, stop_reason="model_done"):
         {"state": "landing", "action": "click", "note": "点了「Get Started」",
          "target": {"text": "Get Started", "role": "button", "near": None,
                     "selectors": ["#get-started"], "above_fold_only": False},
-         "result": {"ok": True, "selector": "#get-started"}},
+         "result": {"ok": True, "selector": "#get-started"}, "origin": "model"},
         {"state": "landing", "action": "form", "note": "填好了「Postcode」",
          "target": {"text": None, "label": "Postcode", "role": None, "near": None,
                     "selectors": ["input#postcode"], "above_fold_only": False},
          "result": {"ok": True, "selector": "input#postcode",
                     "fill": {"name": "postcode", "source": "postcode", "kind": "value",
                              "label": "Postcode", "value": "SW1A 1AA",
-                             "fallback": [{"random": "postcode"}]}}},
+                             "fallback": [{"random": "postcode"}]}},
+         "origin": "model"},
     ]
     return browser_agent.Journey(
         steps=steps, notes=["页面变了：现在是「Get Started」那一页", "走完了：点一次、填一个邮编"],
@@ -879,6 +880,110 @@ def test_every_step_lands_on_disk_the_moment_it_happens(tmp_path):
     rows = [json.loads(x) for x in p.read_text(encoding="utf-8").strip().splitlines()]
     assert [r["note"] for r in rows] == ["点了「Yes」", "看了一眼页面"]
     assert rows[0]["action"] == "click", "journal 的一行就是 Journey 的那一步（同一个 dict）"
+
+
+def _factory_with_the_services_own_explore(rec, tmp_path):
+    """真图 + 真**探路接线**（journal 就在服务那根 `_explore_for` 里）+ 桩自测。
+
+    为什么不能直接用 `_real_factory`：它把 `explore` 也换成桩了 ——
+    于是「服务那根线通不通」永远测不到（这正是 R-19 那条判据要看的）。
+    这里把 `deps.explore` 换成**服务拼好的那一根**，其余（自测 / 窗口层）照旧用桩。
+    """
+    saver = InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)
+
+    def factory(brief, deps):
+        stubbed = _deps(rec, tmp_path, inherit=deps)
+        stubbed.explore = deps.explore
+        return graph.build(checkpointer=saver, deps=stubbed)
+    return factory
+
+
+def _fake_explore(boom=None):
+    """一个**不打浏览器**的探路：走上两步、每步叫一次 `on_step`，然后收场。"""
+    def explore(url, goal, budget=None, *, on_step=None, **kw):
+        journey = _journey(url)
+        for step in journey.steps:
+            if on_step is not None:
+                on_step(step)
+        return journey
+    return explore
+
+
+def test_a_journal_that_cannot_be_written_does_not_break_the_run(tmp_path, monkeypatch):
+    """**R-19 的判据**：账本落不了盘时，**图照常跑完**（旁路坏掉不许带塌主路）。
+
+    这条与 Console 那片对 `shooter` 的规矩同一条。造法是**每一步都写不进去**
+    （`journal.append` 抛 `OSError`，盘满 / 没权限就是长这样），而且走**服务那根真接线**
+    （不是桩）—— 否则测的只是桩。
+
+    但**不许静默**：事故要进 `journey.notes`，这里从 `attempts.jsonl` 读回来
+    （那是 notes 落盘的地方）：要看得见「旁路没记成」+ 那句异常。
+    """
+    def full(path, step):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(service.journal, "append", full)
+    monkeypatch.setattr(browser_agent, "explore", _fake_explore())
+    rec = Rec()
+    client = _client(graph_factory=_factory_with_the_services_own_explore(rec, tmp_path),
+                     window=ProbeWindow([]), explore_dir=str(tmp_path / "explore"))
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    view = _reply_until_done(client, job_id)
+
+    assert view["status"] == "done", view
+    assert view["delivered"] is True, view["result"]      # 主路一步都没少
+    # 账本没了（写不进去），但**这一趟的账还是记着的**（attempts.jsonl 是另一条路）
+    assert not (tmp_path / "explore" / job_id / "attempt-1.jsonl").exists()
+    rows = [json.loads(x) for x in (tmp_path / "explore" / job_id / "attempts.jsonl")
+            .read_text(encoding="utf-8").strip().splitlines()]
+    assert rows[-1]["steps"], rows[-1]
+    said = " ".join(rows[-1]["notes"])
+    assert "旁路" in said and "No space left on device" in said, said
+
+
+def test_a_journal_root_that_cannot_even_be_created_does_not_break_the_run(tmp_path, monkeypatch):
+    """**同一条规矩的另一半**：连**建目录**都失败时，也不许把探路拦在门外。
+
+    造法：`explore_dir` 指到一个**普通文件**上 —— `<root>/<job_id>/` 永远建不出来。
+    这一路本来会在 `_journal_for` 的 setup 阶段就炸（那时还够不着 `journey`，没地方记 note），
+    处置是返回一个「每步都失败」的 `on_step`，让 `explore` 的 `emit()` 去归一 ——
+    于是它和「写到一半失败」走**同一条**出口。
+
+    ⚠️ 这一条只断言**主路**（跑完 + 交付）：同一个根坏了，`attempts.jsonl` 也写不进去，
+    那句 note 在盘上没有落脚点（它只在 `journey.notes` 里，随 checkpoint 走）。
+    """
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("我是个文件，不是目录\n", encoding="utf-8")
+    monkeypatch.setattr(browser_agent, "explore", _fake_explore())
+    rec = Rec()
+    client = _client(graph_factory=_factory_with_the_services_own_explore(rec, tmp_path),
+                     window=ProbeWindow([]), explore_dir=str(blocker))
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    view = _reply_until_done(client, job_id)
+
+    assert view["status"] == "done", view
+    assert view["delivered"] is True, view["result"]
+
+
+def test_the_journal_lands_the_real_steps_the_service_explored(tmp_path, monkeypatch):
+    """走**服务那根真接线**时，账本里落的**就是** `Journey.steps` 的每一步（逐字同一个 dict）。
+
+    这是「journal 的一行 = `Journey.steps` 的那一步」（跨任务接口 §2）在**端到端**上的钉子：
+    桩探路 → 服务那根 `on_step` → `journal.append` → 盘上。
+    """
+    monkeypatch.setattr(browser_agent, "explore", _fake_explore())
+    rec = Rec()
+    client = _client(graph_factory=_factory_with_the_services_own_explore(rec, tmp_path),
+                     window=ProbeWindow([]), explore_dir=str(tmp_path / "explore"))
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    view = _reply_until_done(client, job_id)
+    assert view["delivered"] is True, view["result"]
+
+    rows, skipped = journal.read(tmp_path / "explore" / job_id / "attempt-1.jsonl")
+    assert skipped == []
+    expected = [s for s in _journey(URL).steps]
+    assert rows == expected, rows
+    assert all(r["origin"] == "model" for r in rows), rows
 
 
 def test_job_ids_with_a_path_separator_cannot_escape_the_runtime_dir(tmp_path):

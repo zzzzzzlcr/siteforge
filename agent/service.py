@@ -62,7 +62,7 @@ from fastapi import FastAPI, HTTPException
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from agent import browser_agent, graph, measure, selftest
+from agent import browser_agent, graph, journal, measure, selftest
 from agent.graph import NODES, STEP_SAY
 from agent.state import END_DELIVERED, END_EXPLORE_UNFINISHED, END_NO_WINDOW
 
@@ -602,7 +602,11 @@ class Service:
         ws_url = str(brief.get("ws_url") or "").strip()
         if not ws_url:
             return None                       # 没人给窗口 → 用默认（图会在自测那步停下点名）
-        on_step = self._journal_for(job_id, self._next_attempt_no(job_id)) if job_id else None
+        #: 账本第一个**没记成**的原因。`on_step` 吞掉异常，但要留下它 —— 由 `run()` 写进
+        #: `journey.notes`（那一层才有 journey）。见 `_journal_for` 的注释。
+        journal_broken: list = []
+        on_step = (self._journal_for(job_id, self._next_attempt_no(job_id), journal_broken)
+                   if job_id else None)
 
         def run(url, goal, budget=None, should_pause=None):
             started = measure._now()
@@ -615,6 +619,10 @@ class Service:
                 # 而消失的那一次恰恰是最该被看见的那一次。记完**原样再抛**。
                 self._note_attempt(job_id, started=started, journey=None, boom=exc)
                 raise
+            if journal_broken:
+                journey.notes.append(
+                    "⚠️ 这一步之后的账本没记全：%s —— 探路照常走完（旁路坏掉不许带塌主路），"
+                    "但这一趟的 journal 是残的（`attempt-*.jsonl` 里缺步）。" % journal_broken[0])
             self._note_attempt(job_id, started=started, journey=journey)
             return journey
 
@@ -643,22 +651,44 @@ class Service:
             return 1
         return (max(done) + 1) if done else 1
 
-    def _journal_for(self, job_id: str, n: int) -> Callable:
+    def _journal_for(self, job_id: str, n: int, broken: list = None) -> Callable:
         """`on_step`：每一步**发生的那一刻**追加一行（G1：今天一个字节都不落）。
 
         为什么必须是**当场**而不是跑完再写：窗口就在这一步到下一步之间死掉
         （`operTime`→`closeTime` 那一段）—— 跑完再写的话，死的正是**没写下来的那一段**。
+
+        ⚠️ **旁路坏掉不许带塌主路**（R-19 / 与 Console 那片对 `shooter` 的规矩同一条）：
+        账本写不进去**不许**变成「这一步的工具失败了」——那等于把旁路的故障记到产物头上，
+        模型还会照着这条假错换一条路走。所以这里**吞掉**异常；但**不许静默**：
+        第一个原因记进 `broken` 这个列表，由 `run()` 写进 `journey.notes`
+        （这一层够不着 journey，`run()` 那个闭包够得着 —— **两半合起来才成立**）。
+
+        `broken` 由调用方给（同一个 job 的所有步骤共用一份）；不给就自己造一份
+        （直接调这个方法的人只需要「写下去」这件事）。
         """
+        broken = broken if broken is not None else []
+
+        def _remember(exc: BaseException) -> None:
+            if not broken:
+                broken.append("%s: %s" % (type(exc).__name__, exc))
+
         try:
-            path = self._explore_dir(job_id) / ("attempt-%d.jsonl" % n)
+            path = journal.attempt_path(self._explore_root, job_id, n)
         except ValueError:
-            return lambda step: None
+            return lambda step: None          # job_id 不像话：这一趟不记（另有人管 id 的合法性）
+        except OSError as exc:
+            # **连目录都建不出来**（盘满了 / 没权限 / 路径上有个文件）：每步都记一次
+            # 「没记成」（只留第一条）—— 返回 no-op 就等于**静默**：这一趟没有账本，
+            # 而没有任何人看得出来。
+            def _broken(step: dict, _exc: Exception = exc) -> None:
+                _remember(_exc)
+            return _broken
 
         def on_step(step: dict) -> None:
             try:
-                measure.append_step(path, step)
-            except Exception:                  # noqa: BLE001 —— 旁路坏掉不许带塌探路
-                traceback.print_exc()
+                journal.append(path, step)
+            except Exception as exc:                  # noqa: BLE001
+                _remember(exc)
         return on_step
 
     def _note_attempt(self, job_id: str, *, started: str, journey, boom: BaseException = None) -> None:

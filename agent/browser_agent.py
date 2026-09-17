@@ -384,6 +384,32 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         gate = _Gate(inner, lambda: _stop_or_raise(paused, journey, taken, limits),
                      journey, watch)
 
+        #: 旁路的故障**只记一次**（别每步刷一条）—— 见 `emit` 的 docstring。
+        side_broken: list = []
+
+        def emit(step: dict) -> None:
+            """把这一步交给**旁路**（Console 的实时视图 / journal 的账本）。
+
+            ⚠️ **旁路坏掉不许带塌主路**（与 Console 那片对 `shooter` 的规矩同一条）：
+            回调抛异常时**吞掉**，但**不是静默**——往 `journey.notes` 记一句，
+            人看得出来「这一趟的实时视图 / 账本没记上」。
+
+            不吞会怎样：它会以**一次工具失败**的身份回到模型面前
+            （`llm.run_tool_loop` 的 `except Exception` 把 dispatch 抛的都记成工具错）——
+            那等于把旁路的故障记到产物头上，而模型还会照着这条假错换路走。
+            **只记一次**：账本坏了通常每一步都坏，30 步刷 30 条会把别的 note 淹掉。
+            """
+            try:
+                _emit(on_step, step)
+            except Exception as exc:                       # noqa: BLE001
+                if side_broken:
+                    return
+                side_broken.append(True)
+                journey.notes.append(
+                    "⚠️ 旁路（实时视图 / 账本）在这一步上没记成：%s: %s —— "
+                    "探路照常往下走（旁路坏掉不许带塌主路），但这一趟的账本可能是残的。"
+                    % (type(exc).__name__, exc))
+
         def dispatch(name: str, args: dict) -> Any:
             nonlocal taken
             _stop_or_raise(paused, journey, taken, limits)   # ← 每一步之前（§6.2）
@@ -397,7 +423,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                                   "error": f"{type(exc).__name__}: {exc}"}
                 step["note"] = _say(name, step["target"], False)
                 journey.steps.append(step)
-                _emit(on_step, step)
+                emit(step)
                 raise        # 还给 run_tool_loop：模型也必须看见这条错（不吞）
             step["result"] = _summarize(name, args, raw, _ms(t0), fill)
             if name == "goto" and isinstance(raw, dict) and raw.get("url"):
@@ -413,7 +439,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                 journey.notes.append(
                     f"第 {len(journey.steps)} 步是把「{_label_of(step['target'])}」滚进视口；"
                     "重放时会照做同一件事（把那个元素滚进视口），元素在子帧里时连帧一起带")
-            _emit(on_step, step)
+            emit(step)
             return raw
 
         rounds = llm.run_tool_loop(
@@ -783,10 +809,17 @@ def _describe(name: str, args: dict, pages: "_Pages", journey: Journey) -> tuple
     """开一个「步」的骨架：状态归属 + target（**声明式多元描述**）+ 这一步填什么。
 
     返回 `(step, fill)`。⚠️ fill 是**跟着 step 一起算出来的，但不塞进 step 里** ——
-    step 的形状（`{state, action, target, result, note}`）是要给外面看的，
+    step 的形状（`{state, action, target, result, note, origin}`）是要给外面看的，
     多塞一个键就会在「报错那一步」上现形（报错也要能看出「本来想填哪个字段」）。
+
+    `origin`：这一步是**怎么来的**（跨任务接口 §1，Task 4 起）。走 `dispatch` 的每一步
+    都是**模型自己走出来的**（`"model"`）；Task 5 的重放那一路才是 `"replay"`——
+    两者混不起来，`Journey.steps` 与账本（`journal` 的一行就是这一步）因此能回答
+    「这一步是它自己做的，还是我们照着账本重放的」。**默认值不给**：它必须被显式写下来
+    （默认值会让「忘了写」的那条路悄悄变回 model）。
     """
-    step = {"state": pages.current_name, "action": name, "target": None, "result": None, "note": ""}
+    step = {"state": pages.current_name, "action": name, "target": None, "result": None,
+            "note": "", "origin": "model"}
     fill = None
     selector = str(args.get("selector") or "")
     if name == "goto":

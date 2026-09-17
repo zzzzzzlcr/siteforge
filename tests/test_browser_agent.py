@@ -346,6 +346,43 @@ def test_paused_journey_still_carries_what_the_model_said(tmp_path):
     assert journey.final_answer == ""
 
 
+def test_a_broken_on_step_hook_does_not_break_the_walk_but_says_so(tmp_path):
+    """**Task 4（R-19 的那条规矩）**：旁路（实时视图 / 账本）坏掉**不许带塌主路**。
+
+    为什么必须挡住：`on_step` 是在 `dispatch` 里调的，而 `dispatch` 抛出去的任何东西
+    都会被 `llm.run_tool_loop` 记成**一次工具失败** —— 于是账本写不进去这件事，
+    会以「这一步的工具失败了」的身份回到模型面前，模型还可能照着这条假错换一条路走。
+    那是把**旁路的故障记到产物头上**（本项目最忌讳的形状）。
+
+    但**不是静默**：事故要进 `journey.notes`（人看得出来这一趟的账本是残的），
+    而且**只记一次**（账本坏了通常每步都坏，30 步刷 30 条会把别的 note 淹掉）。
+    """
+    boom = {"n": 0}
+
+    def broken(step):
+        boom["n"] += 1
+        raise OSError("No space left on device")
+
+    journey, fake, calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}], "click": [{"structured": {"ok": True}}]},
+        [{"calls": [("observe", {}), ("click", {"selector": "#get-started"})]},
+         {"content": "看完了"}],
+        on_step=broken,
+    )
+    assert boom["n"] == 2, "旁路每一步都该被叫到（吞的是它的异常，不是不叫它）"
+    # 主路照走：两步都做成了、模型照常收到结果、循环自己收尾
+    assert [s["action"] for s in journey.steps] == ["observe", "click"]
+    assert [c["name"] for c in calls] == ["observe", "click"]
+    assert journey.stop_reason == "model_done"
+    tool_msgs = [m for m in fake.calls[1]["messages"] if m["role"] == "tool"]
+    assert len(tool_msgs) == 2 and "No space left" not in tool_msgs[0]["content"], tool_msgs
+    # 但要说出来，而且只说一次
+    said = [n for n in journey.notes if "旁路" in n]
+    assert len(said) == 1, journey.notes
+    assert "No space left on device" in said[0] and "OSError" in said[0], said[0]
+
+
 def test_on_step_hook_sees_every_step_as_it_happens(tmp_path):
     """上层（计划三的 Console）要在**每一步发生的当下**拿到它，不是跑完再拿。"""
     seen: list = []
@@ -421,7 +458,9 @@ def test_every_step_lands_in_the_journey(tmp_path):
     assert [s["action"] for s in journey.steps] == ["observe", "click", "scroll"]
     assert [c["name"] for c in calls] == ["observe", "click", "scroll"]
     for step in journey.steps:
-        assert set(step) == {"state", "action", "target", "result", "note"}, step
+        # ⚠️ `origin` 是 Task 4 加的（跨任务接口 §1）：走 dispatch 的每一步都是模型走出来的
+        assert set(step) == {"state", "action", "target", "result", "note", "origin"}, step
+        assert step["origin"] == "model", step
 
     click = journey.steps[1]
     assert click["target"]["text"] == "Get Started"
@@ -472,7 +511,9 @@ def test_tool_error_is_recorded_in_that_step(tmp_path):
     assert "没填成" in filled["note"], f"报错那一步的人话不对：{filled['note']!r}"
     assert filled["target"]["selectors"] == ["#missing"]
     for step in journey.steps:
-        assert set(step) == {"state", "action", "target", "result", "note"}, step
+        # ⚠️ `origin` 是 Task 4 加的（跨任务接口 §1）：走 dispatch 的每一步都是模型走出来的
+        assert set(step) == {"state", "action", "target", "result", "note", "origin"}, step
+        assert step["origin"] == "model", step
 
     # 不吞：下轮模型看到的那条 tool message 里必须带这条错
     tool_msgs = [m for m in fake.calls[1]["messages"] if m["role"] == "tool"]
