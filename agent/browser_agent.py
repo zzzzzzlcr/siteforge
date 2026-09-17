@@ -466,8 +466,14 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                 raise        # 还给 run_tool_loop：模型也必须看见这条错（不吞）
             fails = 0
             step["result"] = _summarize(name, args, raw, _ms(t0), fill)
-            if name == "goto" and isinstance(raw, dict) and raw.get("url"):
-                step["target"] = {"url": raw["url"]}    # 落到哪了（可能与给的不一样）
+            # ⚠️ 这里原先有一行 `step["target"] = {"url": raw["url"]}`（把 target 盖成**落地地址**）。
+            # **它被删掉了**（R-E7 ①）—— 那两行把「要打开哪」就地销毁，而账上**再无别处**存它
+            # （`_summarize` 那次赋值写到的是 `result.url`，两份名字不同、用途也不同）。
+            # 后果：R4 拿 `target.url` 比「见过的地址」，而它手上那个是**落地地址** ——
+            # 而那条落地 URL 的 observe 正是 R2 已经要求必须存在的那一条 ⇒ **R4 恒真**
+            # （设计注承诺的「一次性深链不会重放」实际没人执行，拦住它的是「账本把请求地址丢了」
+            # 这个副作用 —— 运气对，不是判据对）。
+            # 落地地址没有丢：它一直在 `result.url` 上（`_summarize`），这里只是**不再复制一份**。
             step["note"] = _say(name, step["target"], True)
             journey.steps.append(step)
             if name == "observe":
@@ -1011,8 +1017,11 @@ def _describe(name: str, args: dict, pages: "_Pages", journey: Journey) -> tuple
     fill = None
     selector = str(args.get("selector") or "")
     if name == "goto":
-        # goto 的 target 就是那个地址。**先记「要打开哪个」**，真打开了之后再盖成
-        # 「落到哪了」（很多站会重定向）—— 失败时也还有话说（「打不开 <url>」）。
+        # goto 的 target 就是**要去**的那个地址（很多站会重定向，落到哪儿是另一件事 ——
+        # 那个记在 `result.url` 上，由 `_summarize` 写）。
+        # ⚠️ 它**不再**被落地地址盖掉（R-E7 ①）：盖掉之后账上就没有「要打开哪」了，
+        # 而 R4 的判据正是拿它比「这一趟见过的地址」。失败时这句话也还成立
+        # （`_say` 报的是「打不开 <url>」—— 打不开的是**要去**的那个）。
         step["target"] = {"url": str(args.get("url") or "")}
     if name in ("click", "scroll", "form"):
         frame_id = _frame_of(args)
@@ -1607,11 +1616,16 @@ def replayable_prefix(steps: list, success_text: str, *,
                     % (i + 1, _step_label(row)))
             if action == "goto":
                 target_url = _goto_url(row)
-                if not target_url or _url_key(target_url) not in seen_urls:
+                if not target_url:
+                    return prefix, (
+                        "第 %d 步是「打开某个地址」，可账上**没记下要去的是哪** —— "
+                        "拿不到那串地址就不重放它（R4：不拿一个别处的地址去导航，也不猜），"
+                        "前缀停在它前面。" % (i + 1))
+                if _url_key(target_url) not in seen_urls:
                     return prefix, (
                         "第 %d 步要打开的地址（%s）这一趟**没见过** —— 深链可能是一次性的"
                         "（确认链接、令牌链接），只重放亲眼见过是普通页面的地址（R4），"
-                        "前缀停在它前面。" % (i + 1, target_url or "（账上没记下地址）"))
+                        "前缀停在它前面。" % (i + 1, target_url))
         prefix.append(row)
 
     why = "这一段没有碰到边界：账上这几行都满足重放的判据（R1–R4）—— 可以照着重走。"
@@ -1676,16 +1690,26 @@ def _landing_index(rows: list, i: int) -> int:
 
 
 def _crossed_line_why(i: int, row: dict, success_text: str, hit: int) -> str:
-    """R3 那句人话。**分开两种形状**（它们的处置相同，但读账的人要能看出是哪一种）：
+    """R3 那句人话。**两种形状分开说**（处置相同，但读账的人要能看出是哪一种）。
 
-    - 撞在**更早**的页面上（成功文案与页面上的一句普通话撞了）→ 说清「那多半是撞了」；
-    - 过了线才看见 → 说清「它落到的那一页上就有」。
+    ⚠️ **只有两种真会出现**：记下那句话的那一行**自己**也会被拦下（它是 observe ⇒ 落点就是它自己），
+    所以「拦下某一行」的那次判断里 `hit` 只可能**等于或大于**它 —— `hit < i` 到不了。
+    （前提说清楚：那句话只出现在 **observe 行的正文**里。账上真会这样 —— `page_text_head`
+    只有 `_summarize("observe", …)` 写；别的工具的结果里没有那一段。哪天有工具也写了，
+    这个分支就重新可达，**不用改代码、只要重新想一遍这句话对不对**。）
+
+    - `hit == i`：拦下的**就是记下那句话的那次观察** —— 没有哪一步动作把我们带到这一页
+      （它是**早先**就在的），所以那句话多半是与页面上的一句普通话**撞**了；
+    - `hit > i`：拦下的是一步**动作**，而它**落到的那一页**上带着那句话 —— 提交就是这么过线的。
+
+    （这两种形状在**返回的前缀**上总是分得开的：前者停下时最后一行是 observe，
+    后者是一步动作。复审裁定②要的正是夹具能把这俩摆出来。）
     """
     if hit <= i:
-        return ("第 %d 步「%s」不能重放：成功文案「%s」**更早**就在页面上出现过"
-                "（第 %d 行那次观察里）—— 它多半只是与页面上的一句普通话撞了，"
-                "但撞了说明**这条判据在这一站上不可靠**，所以保守到底：这一步之前的前缀"
-                "照重放，这里之后一步都不走（R3）。"
+        return ("第 %d 步「%s」不能重放：成功文案「%s」**早先就在这一页上**"
+                "（第 %d 行那次观察记下的，不是哪一步把它带过来的）—— 它多半只是与页面上"
+                "的一句普通话**撞**了；撞了就说明**这条判据在这一站上不可靠**，"
+                "所以保守到底：这一步之前的前缀照重放，这里之后一步都不走（R3）。"
                 % (i + 1, _step_label(row), success_text, hit + 1))
     return ("第 %d 步「%s」不能重放：它**落到的那一页**（第 %d 行那次观察）上已经出现了"
             "成功文案「%s」—— 过了那条线之后的每一个动作都可能是**重复的真实请求**（R3），"
@@ -1705,9 +1729,14 @@ def _step_label(row: dict) -> str:
 
 
 def _goto_url(row: dict) -> str:
-    """这一行 `goto` **要去**的那个地址（不是它落在了哪儿）。"""
+    """这一行 `goto` **要去**的那个地址（不是它落在了哪儿）。
+
+    ⚠️ **不许回退到 `result.url`**（R-E7 ②）：那是个**侧门** —— `target.url` 一空就静默返回
+    落地地址，同一个谎换个地方又说一遍（判据看起来在读「要去的地址」，实际读的是别的东西）。
+    取不到就返回 `""`，让调用方去处理「账上没记下地址」那一支（R4 与 `_fire` 都接得住）。
+    """
     target = (row or {}).get("target") or {}
-    return str(target.get("url") or ((row or {}).get("result") or {}).get("url") or "").strip()
+    return str(target.get("url") or "").strip()
 
 
 def _url_key(url) -> str:
@@ -1827,7 +1856,9 @@ def _replay_once(session, rows: list, *, on_step, alive) -> dict:
             continue
         if action == "observe" and _is_checkpoint(rows, i):
             t0 = time.time()
-            raw = _call(session, "observe", {}, alive, state)
+            raw, why = _look(session, row, i, alive, state)
+            if why:
+                return finish(why)
             _absorb(state, raw)
             live = raw if isinstance(raw, dict) else {}
             record(_replayed_step(row, "observe", {}, raw, _ms(t0)))
@@ -1842,10 +1873,33 @@ def _replay_once(session, rows: list, *, on_step, alive) -> dict:
         # 最后那一步的落点账上没记（它后面那条观察在**边界之外**）—— 如实看一眼落在哪，
         # **不判对错**（没有可比的判据）。`landed` 靠这一眼才对得上「现在在哪儿」。
         t0 = time.time()
-        raw = _call(session, "observe", {}, alive, state)
+        raw, why = _look(session, rows[-1], len(rows) - 1, alive, state)
+        if why:
+            return finish(why)
         _absorb(state, raw)
         record(_replayed_step(rows[-1], "observe", {}, raw, _ms(t0)))
     return finish("这一段都重放了：账上那 %d 个动作照本走成了。" % state["done"])
+
+
+def _look(session, row: dict, i: int, alive, state: dict) -> tuple:
+    """核验点 / 末尾那一瞥用的**一次 observe** → `(raw, why)`。
+
+    `why` 非空 = 这一眼**没看成**（调用方拿它走 `finish`）。为什么要专门一个出口：
+    这两处原先直接调 `_call` —— 工具报错而**窗口还活着**时，`_ToolFailed` 会**穿过 `replay`
+    抛出去**（复审实测）。那同时违反两件事：返回值的契约（`{done, landed, why}`）与 §1.6
+    「一律停下说话」—— 这里是**崩掉而不是说话**，而且这一步之前**已经重放掉的步**
+    （`done` / `landed`）随异常一起丢，读账的人连「走到哪儿了」都看不到。
+
+    为什么它当时没被任何用例打红：那批用例的失败桩**全打在 `click` / `goto` 上**，
+    没有一条 observe 报错的桩 —— 接口的尾部没人看着。现在两处各有哨兵。
+    """
+    try:
+        return _call(session, "observe", {}, alive, state), ""
+    except _ToolFailed as exc:
+        return None, (
+            "第 %d 行那一眼没看成：%s —— 重放停在这里说话（§1.6：看不到这一页就确认不了"
+            "自己走对了；不跳过、也不猜。这一步之前已经重放掉的那几步照实记在 `done` 里）。"
+            % (i + 1, exc))
 
 
 def _fire(session, row: dict, alive, state: dict) -> tuple:
