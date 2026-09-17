@@ -253,10 +253,15 @@ class Journey:
     #: 加上切前缀那侧给的 `boundary_reason`。没重放 = 空 dict（**不假装重放过**）。
     #: 为什么要有它：重放不经过 `dispatch`，它的结果（走成几步、落在哪、为什么停）
     #: 除了这里没有第二个落脚点。
-    #: 读者**就两处**（复审 Q2：原先这句写成「闸口那份摘要也要读它」，是错的 ——
-    #: 那份摘要在**节点开工之前**就算，那时这个 journey 还不存在，它读的是状态里的
-    #: `resume_note`）：`graph._resume_say`（人读的那句话）与 `_replay_cut_short`
-    #: （「重放走完没有」—— 它决定「就地停」还是「接着去问模型一轮」）。
+    #: 读者**四处**（Task 6 修复轮 3 就地改正：原先这里写「就两处」，与报告 §七.8 的
+    #: 撤回框**互相矛盾** —— 那里把四处列全了，代码这边漏了两处）：
+    #:   1. `explore` → `_with_resume(opening, resume_from, journey.replay)`（说给模型听）；
+    #:   2. `graph._resume_say`（人读的那句话）；
+    #:   3. `replay_cut_short`（读 `done`：「重放走完没有」—— 决定「就地停」还是接着问模型）；
+    #:   4. `replay_went_clean`（读 `attempts`：「一次过吗」—— 决定这一趟**值不值得重探**）。
+    #: ⚠️ 别再写成「就两处」：复审 Q2 撤回过一次（原先这句写成「闸口那份摘要也要读它」，
+    #: 那是错的 —— 那份摘要在**节点开工之前**就算，那时这个 journey 还不存在，
+    #: 它读的是状态里的 `resume_note`），修复轮 2 的 ② 又**新加**了第 4 个读者。
     replay: dict = field(default_factory=dict)
 
     #: 那一趟的轮数**量到了没有**（P5：`0` 有两种意思）。**只有 `_wrap_up` 会把它置 True**
@@ -642,9 +647,16 @@ def replay_cut_short(journey, rows: list) -> bool:
 
     数的是**动作**（`replay_actions`）：账上那些「看一眼」不算动作，`replay` 也不会去动它们。
 
-    ⚠️ **两个读者**：`explore`（重放没走完 + 窗口说死了 → 就地停）与
-    `graph._worth_retrying`（重放被打断过的那一趟**不再重探** —— 「不许内外两层 3 次叠加」
-    靠的就是这一条：被打断 = 窗口抖了，而重探只会把同一段在真页面上再撞一遍）。
+    ⚠️ **两个直接读者**：`explore`（重放没走完 + 窗口说死了 → 就地停）与 `replay_went_clean`
+    （把这一条并进「一次过吗」）；后者又喂 `graph._worth_retrying` —— 重放走得不干净的那一趟
+    **不再重探**（「不许内外两层 3 次叠加」靠的就是这一条：重探只会把同一段在真页面上再撞一遍）。
+
+    ⚠️ **「为什么走得不干净」这件事，判据看不出来**（Task 6 修复轮 3 就地改正：原先这里写着
+    「被打断 = 窗口抖了」—— 那是**被复审证伪的那个等价**）：判据**只看数**
+    （`done < 该做的动作数`），而走到这个数的路有**两条**：① 窗口在重放途中抖了
+    （`_WindowGone`）；② 工具报了错**而窗口全程活着**（页面上找不到那一步的元素）。
+    所以下游那句人话不许一口咬定是哪一种 —— 见 `_worth_retrying` 与
+    `_rounds_lost_note` 旁边那条同一族的改正，以及钉住它的变异 `R2-note-blames-the-window`。
     """
     want = len(replay_actions(rows))
     return int((getattr(journey, "replay", None) or {}).get("done") or 0) < want
