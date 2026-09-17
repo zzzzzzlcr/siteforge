@@ -1930,3 +1930,577 @@ def test_after_a_contradiction_the_position_is_not_frozen_forever(tmp_path):
     # 矛盾那件事照旧记着（「报过的矛盾不许被降级」——`plan.ledger` 的守则）
     assert journey.deviations == [said], journey.deviations
     assert journey.plan_ledger[2]["state"] == "contradicted", journey.plan_ledger
+
+
+# ═════════════════════ Task 5：重放前缀（R1–R4）与重放 ═════════════════════
+#
+# 窗口死了之后，系统要能照着账本把**安全的那一段**自己走回去（MCP 调用，**0 模型**）。
+# 判据全部出自设计注 §1.4.3（四条边界规则）与 §1.6（失败一律停下说话）。
+#
+# 账本里的每一行**就是** `Journey.steps` 的那一步（`agent/journal.py` 的契约），
+# 所以下面造的 `_row` 是**真形状**：`target` 里带 `selectors` 与 `frame_id`，
+# `result` 里带 `ok` / `url` / `page_text_head` / `fill`。形状对不上的话，
+# 这里钉住的东西在生产里一条都对不上（那正是「用假形状测出假绿」的来路）。
+
+ENTRY = "https://site.test/funnel"
+QUOTE = "https://site.test/quote"
+TEXT_A = "先看看你能省多少"
+TEXT_B = "填一下你的房子信息"
+SUCCESS = "你的报价已经准备好了"
+
+
+def _row(action, state="funnel", *, ok=True, target=None, result=None, note="做了一下"):
+    res = {"ok": ok, "elapsed_ms": 1}
+    res.update(result or {})
+    res["ok"] = ok
+    return {"state": state, "action": action, "target": target or {},
+            "result": res, "note": note, "origin": "model"}
+
+
+def _goto(url, *, state="start", ok=True, landing=""):
+    """一条 `goto` 行。⚠️ 真实现里 `state` 是**发起那一刻**的状态（goto 不记页）。"""
+    return _row("goto", state, ok=ok, target={"url": url},
+                result={"url": landing or url}, note=f"打开了 {url}")
+
+
+def _look(url, text, *, state="start", ok=True):
+    """一条 `observe` 行（`_summarize` 给的那几样）。"""
+    return _row("observe", state, ok=ok,
+                result={"url": url, "title": "页面", "page_text_head": text},
+                note="看了一眼页面")
+
+
+def _click(label, selectors=("#cta",), *, state="funnel", ok=True, frame_id=""):
+    """一条 `click` 行。`frame_id=""` 是主帧 —— `_target_of` **总会**写这个键。"""
+    return _row("click", state, ok=ok,
+                target={"text": label, "role": "button", "near": None,
+                        "selectors": list(selectors), "above_fold_only": False,
+                        "frame_id": frame_id},
+                result={"selector": selectors[0]},
+                note=f"点了「{label}」" if ok else f"页面上没找到「{label}」，这一步没做成")
+
+
+def _fill(label, value, selector="#zip", *, kind="value", state="quote"):
+    """一条 `form` 行（`result.fill` 是 `_fill_info` 的产物，**值就在里面**）。"""
+    return _row("form", state, target={"label": label, "text": None, "role": None,
+                                       "near": None, "selectors": [selector],
+                                       "above_fold_only": False, "frame_id": ""},
+                result={"selector": selector,
+                        "fill": {"name": "postcode", "source": "postcode", "kind": kind,
+                                 "label": label, "value": value, "fallback": []}},
+                note=f"填好了「{label}」")
+
+
+def _walk_rows():
+    """一趟真形状的走法（状态名是**观测那一刻**的，与 `_describe` 同规矩）。
+
+    两条 `observe` **各自让状态名变了一次**（start→funnel、funnel→quote）——
+    这正是 `replay` 认「这一步改了页」的判据，也是它要核验的那两个点。
+    """
+    return [
+        _goto(ENTRY, state="start"),
+        _look(ENTRY, TEXT_A, state="start"),
+        _click("开始申请", state="funnel"),
+        _look(QUOTE, TEXT_B, state="funnel"),
+    ]
+
+
+# ─────────────────────── R1：没做成的动作不重放 ───────────────────────
+
+
+def test_a_walk_that_was_seen_and_never_crossed_the_line_replays_whole():
+    """正例（R1–R4 全过的基线）：走过的、被看过的、没过成功线的，整段都能重放。
+
+    这一条同时是后面每一条反例的**对照**：反例里只改一处，前缀就必须短一截。
+    """
+    rows = _walk_rows()
+    prefix, why = browser_agent.replayable_prefix(
+        rows, SUCCESS, entry_url=ENTRY)
+    assert prefix == rows, f"这一段本该整段可重放，结果只剩 {len(prefix)} 行"
+    assert "没有碰到边界" in why, why
+
+
+def test_a_step_that_did_not_work_stops_the_prefix_before_it():
+    """R1 反例：`result.ok is False` 的步**不重放**（它当年就没做成，重放它干嘛）。"""
+    rows = _walk_rows() + [_click("提交申请", ok=False, state="quote"),
+                           _look("https://site.test/thanks", "谢谢", state="quote")]
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert prefix == rows[:4], f"没做成的那一步不该进前缀：{[r['action'] for r in prefix]}"
+    assert "R1" in why and "提交申请" in why, why
+
+
+# ─────────────────────── R2：没被看见的动作不重放 ───────────────────────
+
+
+def test_an_action_nobody_looked_at_afterwards_is_never_replayed():
+    """R2 反例：**提交就藏在尾部那一段没被观测的动作里** —— 一律不重放。
+
+    这是四条判据里最要命的一条：模型走完就说完了，最后一个动作（常常就是提交）
+    后面通常**没有** observe。
+    """
+    rows = _walk_rows() + [_click("提交申请", state="quote")]     # 后面再没有任何观察
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert prefix == rows[:4], f"尾部那一段没被观测的动作进了前缀：{[r['action'] for r in prefix]}"
+    assert "R2" in why and "没被看见" in why, why
+
+
+def test_a_failed_look_is_not_having_been_seen():
+    """R2 的**第二半**：观察本身也要**做成**了才算「被看见」。
+
+    只在账上「有一条 observe」就放行的话，一次失败的 observe（工具报错、窗口开始不对劲）
+    会把整个尾部重新放回可重放集合 —— 而那正是 R2 存在的理由。
+    """
+    rows = _walk_rows() + [_click("提交申请", state="quote"),
+                           _look("https://site.test/thanks", "谢谢", state="quote", ok=False)]
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert prefix == rows[:4], f"一条失败的 observe 被当成了「被看见」：{why}"
+    assert "R2" in why, why
+
+
+# ─────────────────────── R3：过了成功线就不许再过 ───────────────────────
+
+
+def test_the_page_the_step_landed_on_carries_the_success_text():
+    """R3 反例（主形态）：**这一步落到的那一页上已经出现成功文案** → 停在它前面。
+
+    ⚠️ 判据必须看**它落到的那一页**（那一步之后那条 observe 记下的），
+    只看「走这一步之前看到过什么」是**看不见**的 —— 而提交正是这么过线的。
+    """
+    rows = [_goto(ENTRY, state="start"),
+            _look(ENTRY, TEXT_A, state="start"),
+            _click("提交申请", state="funnel"),
+            _look(QUOTE, f"已经收到你的申请。{SUCCESS}", state="funnel")]
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert prefix == rows[:2], f"过线的那一步进了前缀：{[r['action'] for r in prefix]}"
+    assert "R3" in why and SUCCESS in why, why
+
+
+def test_a_success_text_that_collided_with_an_earlier_page_also_stops_everything():
+    """R3 反例（**更早的页面**）：成功文案与页面上的一句普通话撞了 → **也不许过**。
+
+    保守到底的理由：撞了说明**这条判据在这一站上不可靠**，而不可靠的判据在重放里
+    的代价是「真页面上多按几下」—— 那时没有模型在场、也未必有人在看。
+    所以宁可一步都不重放（前缀空），也不赌这次撞的是巧合。
+    """
+    rows = [_goto(ENTRY, state="start"),
+            _look(ENTRY, f"这是一句普通话，里面有 {SUCCESS} 这几个字", state="start"),
+            _click("开始申请", state="funnel"),
+            _look(QUOTE, TEXT_B, state="funnel")]
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert prefix == [], f"成功文案撞在更早的页面上，却还有 {len(prefix)} 行进前缀"
+    assert "R3" in why and SUCCESS in why, why
+
+
+# ─────────────────────── R4：goto 只回自己去过的地方 ───────────────────────
+
+
+def test_a_goto_into_a_place_we_never_saw_stops_the_prefix_before_it():
+    """R4 反例：**带一次性 query 的深链**（确认链接 / 令牌链接）不许重放。
+
+    ⚠️ 判据落在**要去的那串地址**（`target.url`）上，**不是**它落在了哪儿 ——
+    见 `test_the_landing_url_does_not_get_a_one_time_link_through`。
+    """
+    rows = [_goto(ENTRY, state="start"),
+            _look(ENTRY, TEXT_A, state="start"),
+            _goto("https://site.test/claim?token=9f3a", state="funnel",
+                  landing="https://site.test/claim"),
+            _look("https://site.test/claim", "确认你的邮箱", state="funnel")]
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert prefix == rows[:2], f"没见过的深链进了前缀：{[r['action'] for r in prefix]}"
+    assert "R4" in why and "token=9f3a" in why, why
+
+
+def test_the_landing_url_does_not_get_a_one_time_link_through():
+    """R4 的**哨兵**：判据不许被「它落在了哪儿」满足。
+
+    设计注 R4 那行括号里写着「（或其落地 URL）」—— 本实现**不采纳**，理由是硬的：
+    一条 goto 的落地 URL **按定义**就写在它后面那条 observe 上（`pages` 就是这么攒出来的），
+    拿它当判据等于**让那条 goto 自己给自己发通行证** → R4 恒真 → 等于没有这条判据
+    （本项目一整天在治的正是「恒真的钉子」）。所以：只看**要去的那串地址**。
+    """
+    rows = [_goto(ENTRY, state="start"),
+            _look(ENTRY, TEXT_A, state="start"),
+            # 落地页**是**见过的地址（就在下面那条 observe 里），但要去的那串不是
+            _goto("https://site.test/claim?token=9f3a", state="funnel",
+                  landing="https://site.test/funnel"),
+            _look(ENTRY, TEXT_A, state="funnel")]
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert prefix == rows[:2], "落地 URL 给一次性深链发了通行证（R4 成了恒真判据）"
+    assert "R4" in why, why
+
+
+def test_a_goto_back_to_the_entry_or_to_a_page_we_saw_passes():
+    """R4 正例：**回入口**与**回见过的页面**都过（这正是重放要用的那两下）。
+
+    ⚠️ 「见过的页面」有两个来源：账上那些 `observe` 行自己的地址，以及 `pages`
+    （`journey.pages` 攒出来的那份）。这条用例里的深链**只**出现在 `pages` 里 ——
+    这样它才真的钉住「两个来源都算」（只认其中一个的实现会在这里红）。
+    """
+    deep = "https://site.test/deep-page"
+    rows = [_goto(ENTRY, state="start"),                       # 回入口
+            _look(ENTRY, TEXT_A, state="start"),
+            _goto(deep, state="funnel", landing=ENTRY),        # 回见过的页面（只在 pages 里）
+            _look(ENTRY, TEXT_A, state="funnel")]
+    pages = [{"name": "deep", "when": None, "url": deep, "title": "深一点的页"},
+             {"name": "funnel", "when": {"url_contains": ENTRY}, "url": ENTRY, "title": "页面"}]
+    prefix, why = browser_agent.replayable_prefix(
+        rows, SUCCESS, entry_url=ENTRY, pages=pages)
+    assert prefix == rows, f"回入口 / 回见过的页面被拦下了：{why}"
+    assert "没有碰到边界" in why, why
+
+
+# ─────────────────────── 前缀的形状 ───────────────────────
+
+
+def test_a_bad_step_in_the_middle_does_not_let_later_good_steps_through():
+    """前缀是**吃到第一个不满足就停**，不是「跳过它接着吃」。
+
+    跳过会得到一条**中间少了一节**的路径 —— 重放它会走到别的页面上去，
+    而那时候没有任何人看得出来「少了一节」。
+    """
+    rows = [_goto(ENTRY, state="start"),
+            _look(ENTRY, TEXT_A, state="start"),
+            _click("坏掉的那一下", ok=False, state="funnel"),      # ← 就坏在这儿
+            _look(QUOTE, TEXT_B, state="funnel"),
+            _click("开始申请", state="quote"),
+            _look("https://site.test/step3", "第三页", state="quote")]
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert prefix == rows[:2], f"坏步后面的好步被放进了前缀：{[r['action'] for r in prefix]}"
+    assert "R1" in why, why
+
+
+def test_the_walk_starts_by_opening_the_entry_when_the_ledger_never_did():
+    """§1.5：新窗口是一个**干净身份**的浏览器 —— 重放只能是「从入口重走一遍」。
+
+    账本头上没有 `goto` 时（模型一上来就看见了页面），由入场合成了**一条** ——
+    合成的那条排在最前面，重放的第一件事就是它。
+    反例（同一条判据）：不给入口地址 → **不合成**（那是「少给了一个输入」，
+    系统不猜一个 URL 出来）。
+    """
+    rows = [_look(ENTRY, TEXT_A, state="start"),
+            _click("开始申请", state="funnel"),
+            _look(QUOTE, TEXT_B, state="funnel")]
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert [r["action"] for r in prefix] == ["goto", "observe", "click", "observe"], \
+        [r["action"] for r in prefix]
+    assert prefix[0]["target"]["url"] == ENTRY, prefix[0]
+    plain, _ = browser_agent.replayable_prefix(rows, SUCCESS)
+    assert plain == rows, "没给入口地址却凭空合成了一条 goto"
+
+
+def test_an_empty_success_text_is_a_missing_input_not_a_free_pass():
+    """`success_text` 为空**抛** —— 它不是「没有约束」，是**少给了一个输入**。
+
+    这是 R3 唯一的输入，而 R3 管的是「过了成功线之后不许再动真页面」。
+    缺了它，「没有约束」与「约束不成立」在代码里长得一模一样 ——
+    `intake` 本来就该拦住这种载荷，所以这里也不替它兜。
+    """
+    rows = _walk_rows()
+    for bad in ("", None, "   "):
+        with pytest.raises(ValueError):
+            browser_agent.replayable_prefix(rows, bad, entry_url=ENTRY)
+
+
+# ─────────────────────── 重放：走这段前缀（0 模型）───────────────────────
+
+
+def _replay(tmp_path, rows, responses, **kwargs):
+    """桩 MCP 上走一段前缀 —— **不开浏览器、不问模型**。返回 (结果, 调用流水线)。"""
+    session, log = _stub(tmp_path, responses)
+    try:
+        out = browser_agent.replay(session, rows, **kwargs)
+    finally:
+        session.close()
+    return out, _calls(log)
+
+
+def _pages_for(rows):
+    """桩要回的页面模型：按账上那两页的（url + 正文）造的（核验就是比这两样）。"""
+    return [{"structured": _live_page(ENTRY, TEXT_A)},
+            {"structured": _live_page(QUOTE, TEXT_B)}]
+
+
+def _live_page(url, text, title="页面"):
+    """**重放途中** `observe` 回来的那一份（与上面那个 `_page` 无关 —— 那个是产物侧的）。"""
+    return {"url": url, "title": title, "page_text": text, "shadow_roots": 0,
+            "viewport_css_px": {"width": 1280, "height": 800},
+            "actions": [], "fields": [], "option_groups": [], "obstructions": [],
+            "honeypots": [], "diagnostics": []}
+
+
+def test_replay_never_asks_the_model_anything(tmp_path, monkeypatch):
+    """**0 模型调用** —— 判据只能用桩来表达：把模型那条路整个换成会炸的东西。
+
+    在「重放自己的账」里断言「没问模型」是自证；只有**替掉模型那一层**
+    （`llm.client` 与 `llm.run_tool_loop`），才谈得上「这条路够不着模型」。
+    """
+    def boom(*_a, **_k):
+        raise AssertionError("重放这条路不许问模型")
+
+    monkeypatch.setattr(browser_agent.llm, "client", boom)
+    monkeypatch.setattr(browser_agent.llm, "run_tool_loop", boom)
+    out, calls = _replay(tmp_path, _walk_rows(), {"observe": _pages_for(None)})
+    assert out["done"] == 2, out
+    assert [c["name"] for c in calls] == ["goto", "observe", "click", "observe"], calls
+
+
+def test_every_replayed_step_is_written_down_as_a_replay_step(tmp_path):
+    """账要对：每一步都带 `origin="replay"` 进账，而且**产物侧照样能用**（`states()`）。"""
+    rows = _walk_rows()
+    steps = []
+    out, _ = _replay(tmp_path, rows, {"observe": _pages_for(rows)},
+                     on_step=steps.append)
+    assert [s["action"] for s in steps] == ["goto", "observe", "click", "observe"], steps
+    assert all(s["origin"] == "replay" for s in steps), steps
+    # 账本里的行**就是** `Journey.steps` 的那一步 —— 所以产物那侧一个字的改动都不需要
+    journey = browser_agent.Journey()
+    journey.steps = list(steps)
+    assert [g["name"] for g in journey.states()] == ["start", "funnel"], journey.states()
+    assert journey.fills() == {}, journey.fills()
+
+
+def test_one_observe_per_page_the_ledger_says_changed(tmp_path):
+    """**逐页核验**，不是每一步都核：4 行里只有那两条「让状态名变了」的 observe 要核。
+
+    判据落在**真发出去几次 observe**（桩的流水线）上 —— 在重放自己的账本里数
+    是自证（它想让它是几次就记几次）。
+    """
+    rows = _walk_rows()
+    out, calls = _replay(tmp_path, rows, {"observe": _pages_for(rows)})
+    assert [c["name"] for c in calls].count("observe") == 2, calls
+    assert out["done"] == 2, out
+    assert out["landed"] == QUOTE, out
+    assert "都重放了" in out["why"] or "都走完了" in out["why"], out["why"]
+
+
+def test_a_page_that_is_not_where_the_ledger_said_stops_the_replay(tmp_path):
+    """负例：走出这一步之后那一页**不是账上那一页** → 停，并说清「我以为会到 X，实际是 Y」。
+
+    ⚠️ 分支站上「落到另一条分支」与「选错了元素」**系统分不出** —— 两条都停（§1.6）。
+    停 = 叫一次人；不停 = 在一次没人看着的重放里继续点真页面。**选停。**
+    """
+    rows = _walk_rows()
+    responses = {"observe": [{"structured": _live_page("https://site.test/other", "别的东西")},
+                             {"structured": _live_page(QUOTE, TEXT_B)}]}
+    out, calls = _replay(tmp_path, rows, responses)
+    assert out["done"] == 1, out          # 只有 goto 走成了（好：停在第 2 行那个核验点上）
+    assert "我以为会到" in out["why"] and "实际是" in out["why"], out["why"]
+    assert ENTRY in out["why"], out["why"]
+    assert "other" in out["why"], out["why"]
+    assert [c["name"] for c in calls] == ["goto", "observe"], calls
+
+
+def test_the_verification_uses_the_relaxed_when_not_a_byte_comparison(tmp_path):
+    """核验用的是**产物那套放宽后的 `when`**（稳定前缀 + 正文），不是逐字节比对。
+
+    判据：重放时那一页与账上那一页**只在轮换码 / query 上不同** → **照过**
+    （逐字节比对的实现会在这里红，而它红的代价是「同一页的变体被读成失败」）。
+    """
+    recorded = "https://site.test/funnel/cr640"
+    live_url = "https://site.test/funnel/gt1791-1"       # 同一页的轮换变体（真站实测那种）
+    rows = [_goto(recorded, state="start"),
+            _look(recorded, TEXT_A, state="start"),
+            _click("开始申请", state="funnel"),
+            _look(QUOTE, TEXT_B, state="funnel")]
+    responses = {"observe": [{"structured": _live_page(live_url, TEXT_A)},
+                             {"structured": _live_page(QUOTE, TEXT_B)}]}
+    out, _ = _replay(tmp_path, rows, responses)
+    assert out["done"] == 2, out
+    assert "我以为会到" not in out["why"], out["why"]
+
+
+def test_a_selector_that_resolves_nowhere_stops_before_that_step(tmp_path):
+    """负例：`target.selectors` 全试完都没找到 → **停在那一步之前** + 人话。
+
+    「跳过这一步接着走」在这套系统里是被明令禁止的（§1.6）：跳过之后剩下的动作
+    会落在一页**它们从没在上面做过**的页面上 —— 而那时没有模型在场。
+    """
+    rows = _walk_rows()
+    rows[2] = _click("开始申请", selectors=("#old", "#older"), state="funnel")
+    out, calls = _replay(tmp_path, rows,
+                         {"observe": _pages_for(rows),
+                          "click": [{"error": "没有找到选择器 #old"},
+                                    {"error": "没有找到选择器 #older"}]})
+    assert out["done"] == 1, out                     # 只有 goto 走成了
+    assert [c["args"]["selector"] for c in calls if c["name"] == "click"] == ["#old", "#older"]
+    assert "开始申请" in out["why"], out["why"]
+    assert "第 3 行" in out["why"] or "第 3 步" in out["why"], out["why"]
+
+
+def test_the_first_selector_that_works_wins(tmp_path):
+    """选择器**按账上那份顺序**一个个试，**第一个能用的胜**（§1.4.4）。"""
+    rows = _walk_rows()
+    rows[2] = _click("开始申请", selectors=("#old", "#new"), state="funnel")
+    out, calls = _replay(tmp_path, rows,
+                         {"observe": _pages_for(rows),
+                          "click": [{"error": "没有找到选择器 #old"},
+                                    {"structured": {"ok": True}}]})
+    assert out["done"] == 2, out
+    assert [c["args"]["selector"] for c in calls if c["name"] == "click"] == ["#old", "#new"]
+
+
+def test_the_frame_rides_along_only_when_the_ledger_wrote_one_down(tmp_path):
+    """`frame_id`：账上**有**就带上；**没有就不带** —— 不许编一个 `"main"`（G4）。
+
+    ⚠️ `_target_of` **总会**写这个键，主帧那一支的值是 `""` —— 所以判据是
+    「值非空才传」，不是「键在不在」。`"main"` 只是个显示用的名字，
+    传进 `--frame-id` 会被当成一个不存在的帧（真站实测过这一类错）。
+    """
+    rows = _walk_rows()
+    rows[2] = _click("子帧里的按钮", state="funnel", frame_id="F1")
+    out, calls = _replay(tmp_path, rows, {"observe": _pages_for(rows)})
+    assert out["done"] == 2, out
+    got = [c["args"].get("frame_id") for c in calls if c["name"] == "click"]
+    assert got == ["F1"], got
+
+    plain = _walk_rows()
+    main_dir = tmp_path / "main"
+    main_dir.mkdir()
+    out2, calls2 = _replay(main_dir, plain, {"observe": _pages_for(plain)})
+    assert out2["done"] == 2, out2
+    assert all("frame_id" not in c["args"] for c in calls2 if c["name"] == "click"), calls2
+    assert all(c["args"].get("frame_id") != "main" for c in calls2), calls2
+
+
+def test_a_fill_replays_the_value_the_ledger_recorded(tmp_path):
+    """填表重放的是**账上记的那个值**，不是重新随机一个（§1.4.1 的由头）。
+
+    三种形态（`value` / `check` / `select`）各自要发成对的参数 ——
+    `form` 那个工具**恰好收一个**，给错了就是静默没发生（registry 的 `formMode`）。
+    """
+    rows = [_goto(QUOTE, state="start"),
+            _look(QUOTE, TEXT_B, state="start"),
+            _fill("ZIP code", "90001", selector="#zip", state="quote"),
+            _look("https://site.test/step2", "第二页", state="quote"),
+            _fill("屋顶类型", "平顶", selector="#roof", kind="select", state="step2"),
+            _look("https://site.test/step3", "第三页", state="step2"),
+            _fill("有浴缸吗", "true", selector="#tub", kind="check", state="step3"),
+            _look("https://site.test/step4", "第四页", state="step3")]
+    out, calls = _replay(tmp_path, rows, {"observe": [
+        {"structured": _live_page(QUOTE, TEXT_B)},
+        {"structured": _live_page("https://site.test/step2", "第二页")},
+        {"structured": _live_page("https://site.test/step3", "第三页")},
+        {"structured": _live_page("https://site.test/step4", "第四页")},
+    ]})
+    assert out["done"] == 4, out
+    fills = [c["args"] for c in calls if c["name"] == "form"]
+    assert fills[0].get("value") == "90001", fills
+    assert fills[1].get("select") == "平顶" and "value" not in fills[1], fills
+    assert fills[2].get("check") is True, fills
+
+
+def test_a_window_that_died_again_makes_the_replay_start_over(tmp_path):
+    """§1.6：重放途中窗口又死了 → **整段重来**（它里面没有不可逆动作，重来是安全的）。"""
+    rows = _walk_rows()
+    # ⚠️ 桩的答复是**按顺序消费**的：每一遍都在第 3 行那次点击上死掉，
+    # 所以每一遍只会看一眼（第 2 行那个核验点）—— 给的答复也得是那一页。
+    out, calls = _replay(tmp_path, rows,
+                         {"observe": [{"structured": _live_page(ENTRY, TEXT_A)}],
+                          "click": [{"error": "连不上 127.0.0.1:9222"}]},
+                         alive=lambda: False)
+    assert out["done"] == 1, out
+    assert "窗口又死了" in out["why"], out["why"]
+    # **整段**重来：死在中间那一步，第二遍照样从**头**开始走（goto 再发一次）——
+    # 不是「从断点接着走」（那会落在一页状态不明的页面上）
+    assert [c["name"] for c in calls] == ["goto", "observe", "click"] * 3, calls
+
+
+def test_a_window_that_stays_dead_gives_up_after_three_whole_attempts(tmp_path):
+    """负例：窗口一直起不来 → **最多 3 遍**，到顶停下说人话（不许无限重来）。"""
+    rows = _walk_rows()
+    out, calls = _replay(tmp_path, rows,
+                         {"goto": [{"error": "连不上 127.0.0.1:9222"}]},
+                         alive=lambda: False)
+    assert [c["name"] for c in calls].count("goto") == 3, calls
+    assert out["done"] == 0, out
+    assert "3" in out["why"] and "窗口" in out["why"], out["why"]
+
+
+def test_a_broken_window_probe_is_treated_as_dead_not_as_alive(tmp_path):
+    """那道「窗口还活着吗」的探针**自己坏掉**时，按**死了**处理（与闸坏掉那条同一条规矩）。
+
+    反过来（坏掉 = 活着）会是什么样：窗口真死了、探针读不出来 → 重放记成
+    「页面上找不到那个按钮」—— 一句**指错方向**的话，读账的人会去查选择器。
+    """
+    def broken():
+        raise RuntimeError("问不出来")
+
+    rows = _walk_rows()
+    out, calls = _replay(tmp_path, rows,
+                         {"goto": [{"error": "连不上"}]}, alive=broken)
+    assert [c["name"] for c in calls].count("goto") == 3, calls
+    assert "窗口" in out["why"], out["why"]
+
+
+def test_a_tool_failure_with_a_live_window_is_a_step_failure_not_a_restart(tmp_path):
+    """反例（同一颗钉子）：`alive()` 说**活着** → 这不是窗口的事，是这一步没做成 → 停。
+
+    两条路必须分得开：一条是「窗口没了，整段重来」，另一条是「这一页上找不到它了，
+    停下来叫人」。混在一起的话，一个坏掉的选择器会换来三遍真页面的重走。
+    """
+    rows = _walk_rows()
+    responses = {"observe": _pages_for(rows),
+                 "click": [{"error": "没有找到选择器 #cta"}]}
+    out, calls = _replay(tmp_path, rows, responses, alive=lambda: True)
+    assert out["done"] == 1, out
+    assert [c["name"] for c in calls].count("goto") == 1, calls
+    assert "窗口又死了" not in out["why"], out["why"]
+    assert "开始申请" in out["why"], out["why"]
+
+
+def test_a_broken_on_step_hook_does_not_break_the_replay(tmp_path):
+    """旁路坏掉不许带塌主路（与 `explore` 的 `emit()` 同一条规矩）—— 但要**说出来**。"""
+    def boom(_step):
+        raise RuntimeError("盘满了")
+
+    rows = _walk_rows()
+    out, _ = _replay(tmp_path, rows, {"observe": _pages_for(rows)}, on_step=boom)
+    assert out["done"] == 2, out
+    assert "旁路" in out["why"], out["why"]
+
+
+def test_replaying_an_empty_prefix_is_not_an_error(tmp_path):
+    """空前缀不是异常：没得重放就如实说「没得重放」（读账的人要能分清这个与「坏了」）。"""
+    out, calls = _replay(tmp_path, [], {})
+    assert out["done"] == 0 and out["landed"] == "", out
+    assert calls == [], calls
+    assert out["why"], "空前缀也要有一句人话（沉默与「没得重放」在账上分不开）"
+
+
+def test_a_look_that_did_not_change_the_page_is_not_a_verification_point(tmp_path):
+    """§1.6：**一页一次 observe**，不是每一步都核 —— 看一眼没换页的地方**不核**。
+
+    判据落在**真发出去几次 observe**上：三条 observe 行里只有两条让状态名变了
+    （第一条把 start 变成 funnel；中间那条看的是同一页）。
+    「每条 observe 都核一遍」的实现会发 3 次 —— 它不贵，但**它不是这条判据**，
+    而这条判据的意义是「核验点由账本说了算」。
+    """
+    rows = [_goto(ENTRY, state="start"),
+            _look(ENTRY, TEXT_A, state="start"),       # ← 这一眼把状态带到了 funnel
+            _look(ENTRY, TEXT_A, state="funnel"),      # ← 又看了一眼，页面没变
+            _click("开始申请", state="funnel"),
+            _look(QUOTE, TEXT_B, state="funnel")]
+    out, calls = _replay(tmp_path, rows, {"observe": _pages_for(rows)})
+    assert [c["name"] for c in calls].count("observe") == 2, calls
+    assert out["done"] == 2, out
+
+
+def test_the_landing_page_is_looked_at_when_the_ledger_never_wrote_it_down(tmp_path):
+    """前缀**最后一行是动作**时，也得看一眼它落在哪儿（§1.4.5 第 2 步）。
+
+    这种形状是真会出现的：中间有个做不成的步（R1 把前缀截在那儿），
+    于是最后那个好动作的落点**在边界之外** —— 账上没记。
+    那一页没有可比的判据（账上没写），所以**只如实看一眼**、不判对错；
+    但 `landed` 必须靠这一眼才不是一句过时的话。
+    """
+    rows = [_goto(ENTRY, state="start"),
+            _look(ENTRY, TEXT_A, state="start"),
+            _click("开始申请", state="funnel"),
+            _click("做不成的那一下", state="funnel", ok=False),
+            _look(QUOTE, TEXT_B, state="funnel")]
+    prefix, _ = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert prefix == rows[:3], [r["action"] for r in prefix]
+    out, calls = _replay(tmp_path, prefix,
+                         {"observe": _pages_for(rows)})
+    assert [c["name"] for c in calls] == ["goto", "observe", "click", "observe"], calls
+    assert out["done"] == 2 and out["landed"] == QUOTE, out

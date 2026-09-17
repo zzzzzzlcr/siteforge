@@ -1311,6 +1311,478 @@ def _replay_step(step: dict):
     return {"action": action, "note": note}
 
 
+# ═══════════════ 重放：照账本走回去（Task 5；设计注 §1.4 / §1.6）═══════════════
+#
+# 窗口死了之后，新窗口是一个**干净身份**的浏览器（§1.5：cookie / localStorage / 指纹
+# 全换了）—— 所以重放**不能**理解为「在那一页接着做」，它只能是「**从入口重走一遍**」。
+#
+# 这条路上最要紧的一件事是：**重放出来的动作，没有任何人要求过**。第一遍是人让它做的
+# （描述里写着），第二遍是系统自己做的 —— 一件真实世界里有效果的动作，第二遍就是
+# 一次没人要的重复。所以这里不是一个「怎么走回去」的问题，是**一条边界线**的问题：
+# 走到哪儿为止是安全的（`replayable_prefix`），以及走偏了怎么办（`replay`）。
+
+#: 重放整段最多来几遍（§1.6：窗口又死了 → 整段重来；到顶就停并说明）。
+REPLAY_ATTEMPTS = 3
+
+#: 账上「这一步**被看见了**」认哪两个动作（R2）。设计注 §1.4.3 那行写的是 `observe`／`diff`。
+#: ⚠️ §1.4.2 那段散文里还列了 `screenshot`，本实现**不认它**：账上那张图只留下一个字节数
+#: （`_summarize`），**没有地址也没有正文** —— 它证明不了「页面被带到哪儿了」，
+#: 而 R2 的全部力量就在这句话上。见 `replayable_prefix` 的 docstring。
+_SEEN_ACTIONS = ("observe", "diff")
+
+
+def replayable_prefix(steps: list, success_text: str, *,
+                      entry_url: str = "", pages: list | None = None) -> tuple:
+    """账本里**能照着重放**的那一段，以及「为什么停在这」（人话）。设计注 §1.4.3。
+
+    一步可重放 ⇔ 下面四条全真（**从头往后吃，遇到第一个不满足的就停在那儿**）：
+
+    | 条 | 判据 | 为什么 |
+    |---|---|---|
+    | **R1 做成了** | `result.ok is True` | 没做成的动作重放它干嘛 |
+    | **R2 被看见了** | 它**之后**还有一条**做成**的 `observe`／`diff` | 尾部那段没被观测的动作里藏着**提交** —— 「没被看见的动作一律不重放」是这条规则的全部力量 |
+    | **R3 没跨过成功线** | 到这一步为止（**含它所到的那一页**）观测到的文字里没有 `success_text` | 成功文案出现 = 这一趟已经成了；过了那条线之后每一个动作都可能是**重复的真实请求**。用的是**人给的判据**，不是我们猜的 |
+    | **R4 goto 只回自己去过的地方** | `goto` 要去的那串地址 ∈ 走过的页面地址 或 入口地址 | 深链可能是**一次性**的（确认链接、令牌链接） |
+
+    返回的**是账本里那一段**（动作行 + 它那几条「被看见了」的感知行——**同一批 dict，
+    不改一个字**）。为什么连感知行一起带：`replay` 要知道「这一步本该落在哪一页」
+    才能逐页核验（§1.6），而那份信息只存在于那些 observe 行里
+    （`journal` 一个文件只落 step，没有别的地方能还原页面）。`replay` 只对
+    `_ACTIONS` 那几行动手，感知行是**证据**，不是要重演的动作。
+
+    几处**读法**（都是判断，摆在这里，不当默认）：
+
+    - **R2 认不认 `screenshot`**：不认。见 `_SEEN_ACTIONS`。
+    - **R3 读哪份文字**：账上**按顺序**记下的 `observe` 的正文（`page_text_head`，头 200 字）。
+      两个刻意的选择：① 用**有序**的步骤，不用 `pages[]`（那份没有位置 —— 拿它判
+      「这条线是什么时候过的」只能得到「一过就整段作废」，而设计只要「过线之后的动作不许重放」）；
+      ② 只看得见**头 200 字**（`_summarize` 的截断）—— 比这更长的成功文案 R3 看不见。
+    - **R4 看不看落地 URL**：不看。设计注那行括号里写着「（或其落地 URL）」，本实现
+      **不采纳**：一条 goto 的落地 URL **按定义**就写在它后面那条 observe 上（`pages` 就是
+      这么攒出来的）⇒ 拿它当判据的话，**只要这条 goto 后面有过观察，R4 就恒真** ——
+      一条恒真的判据等于没有判据（本项目一整天在治的正是这个形状）。
+      所以只看**要去的那串地址**；`test_the_landing_url_does_not_get_a_one_time_link_through`
+      就是这条读法的哨兵。
+    - **`entry_url` 给了、账本头上又不是 `goto`**：最前面**合成**一条 `goto`（§1.5：
+      重放只能是「从入口重走一遍」）。不给入口地址**不合成** —— 不猜一个 URL 出来。
+    - **`wait` 之类账上不该有的动作**：MCP 那道门上没有 `wait` 这个工具（模型从没调过它），
+      所以账上不会有真的；真有的话 R1–R4 一条都不判它、`replay` 也不会去动它
+      （它不在 `_ACTIONS` 里）—— 这里**不为不存在的形态发明规则**，只记下这个口子在哪。
+
+    `success_text` 为空**抛**：它不是「没有约束」，是**少给了一个输入**
+    （R3 唯一的输入就是它；`intake` 本来就该拦住这种载荷）。
+    """
+    want = _norm(str(success_text or ""))
+    if not want:
+        raise ValueError(
+            "重放前缀要一个成功判据（`success_text`）—— 空的不算「没有约束」，是**少给了一个输入**"
+            "（R3 唯一的输入就是它，而 R3 管的是「过了成功线之后不许再动真页面」）")
+
+    rows = list(steps or [])
+    #: 走到每一行时「观测到的页面文字」累计到哪儿了（**按顺序**累，R3 要的就是这个顺序）。
+    seen_text: list = []
+    blob = ""
+    for row in rows:
+        blob = (blob + " " + _norm((row.get("result") or {}).get("page_text_head") or "")).strip()
+        seen_text.append(blob)
+    #: 成功文案**最早**在第几行那次观察里出现（None = 这一趟压根没出现过）。
+    first_hit = next((j for j, text in enumerate(seen_text) if want in text), None)
+
+    seen_urls = set()
+    for page in (pages or []):
+        if isinstance(page, dict) and _url_key(page.get("url")):
+            seen_urls.add(_url_key(page.get("url")))
+    for row in rows:
+        if str(row.get("action") or "") == "observe" and _url_key((row.get("result") or {}).get("url")):
+            seen_urls.add(_url_key((row.get("result") or {}).get("url")))
+    if _url_key(entry_url):
+        seen_urls.add(_url_key(entry_url))
+
+    prefix: list = []
+    for i, row in enumerate(rows):
+        action = str((row or {}).get("action") or "")
+        # ── R3：它**所到的那一页**上有没有那条成功文案 ─────────────────────────
+        landing = _landing_index(rows, i)
+        if first_hit is not None and first_hit <= landing:
+            return prefix, _crossed_line_why(i, row, success_text, first_hit)
+        # ── R1 / R2 / R4：只对**会改页面**的那几个动作判 ──────────────────────
+        if action in _ACTIONS:
+            if not _did_work(row):
+                return prefix, (
+                    "第 %d 步「%s」当年就**没做成**（%s）—— 没做成的动作不重放（R1），"
+                    "前缀停在它前面。" % (i + 1, _step_label(row), _why_not_ok(row)))
+            if not _was_seen(rows, i):
+                return prefix, (
+                    "第 %d 步「%s」之后**没有任何一次做成的观察**（observe／diff）—— "
+                    "没被看见的动作一律不重放（R2）：**提交几乎总是最后一个动作**，"
+                    "它就藏在这一段里。前缀停在它前面。"
+                    % (i + 1, _step_label(row)))
+            if action == "goto":
+                target_url = _goto_url(row)
+                if not target_url or _url_key(target_url) not in seen_urls:
+                    return prefix, (
+                        "第 %d 步要打开的地址（%s）这一趟**没见过** —— 深链可能是一次性的"
+                        "（确认链接、令牌链接），只重放亲眼见过是普通页面的地址（R4），"
+                        "前缀停在它前面。" % (i + 1, target_url or "（账上没记下地址）"))
+        prefix.append(row)
+
+    why = "这一段没有碰到边界：账上这几行都满足重放的判据（R1–R4）—— 可以照着重走。"
+    if _url_key(entry_url) and prefix and str(prefix[0].get("action") or "") != "goto":
+        prefix.insert(0, _synthetic_entry_goto(entry_url))
+        why += (" 另外：账本头上没有「打开入口」那一步 —— 新窗口是干净身份的浏览器（§1.5），"
+                "所以最前面**合成**了一条「打开入口」，重放从入口重走一遍。")
+    return prefix, why
+
+
+def _synthetic_entry_goto(entry_url: str) -> dict:
+    """合成的那条「打开入口」（§1.5）。形状与真账本里的 `goto` 行**一模一样** ——
+    它在 `replay` 眼里不该是个特例。`result` 留空：**它还没发生**，记成做成了就是编。
+    """
+    return {"state": START_STATE, "action": "goto", "target": {"url": str(entry_url)},
+            "result": None, "note": f"打开了 {entry_url}", "origin": "replay"}
+
+
+def _did_work(row) -> bool:
+    """R1：`result.ok is True`（**严格**——不是真值判断。设计注 §1.4.3 写的就是这一条）。"""
+    return ((row or {}).get("result") or {}).get("ok") is True
+
+
+def _why_not_ok(row) -> str:
+    err = ((row or {}).get("result") or {}).get("error") or "工具报了错"
+    return str(err)[:120]
+
+
+def _was_seen(rows: list, i: int) -> bool:
+    """R2：第 i 行**之后**还有没有一条**做成**的观察（`observe`／`diff`）。
+
+    ⚠️ 两条都要：① 在那之后（在它之前看过的不算 —— 那看的是**别的页面**）；
+    ② 那条观察自己也做成了（一次失败的 observe 说明**没看见**，不能顶数）。
+    """
+    return any(str((row or {}).get("action") or "") in _SEEN_ACTIONS and _did_work(row)
+               for row in rows[i + 1:])
+
+
+def _landing_index(rows: list, i: int) -> int:
+    """第 i 行「**所到的那一页**」是哪一行记下来的。
+
+    - 感知行 → 它自己（`observe` 记页；`diff`／`screenshot` 不记，但它们也不改页面，
+      所以「到的那一页」就是当下这一页）；
+    - 动作行 → 它**后面**第一条 `observe`（改了页面之后，是那条观察说的）。
+      后面没有观察时退回它自己 —— 那种行会被 R2 挡下，R3 的答案此时无关紧要。
+    """
+    if str(rows[i].get("action") or "") == "observe":
+        return i
+    for j in range(i + 1, len(rows)):
+        if str((rows[j] or {}).get("action") or "") == "observe":
+            return j
+    return i
+
+
+def _crossed_line_why(i: int, row: dict, success_text: str, hit: int) -> str:
+    """R3 那句人话。**分开两种形状**（它们的处置相同，但读账的人要能看出是哪一种）：
+
+    - 撞在**更早**的页面上（成功文案与页面上的一句普通话撞了）→ 说清「那多半是撞了」；
+    - 过了线才看见 → 说清「它落到的那一页上就有」。
+    """
+    if hit <= i:
+        return ("第 %d 步「%s」不能重放：成功文案「%s」**更早**就在页面上出现过"
+                "（第 %d 行那次观察里）—— 它多半只是与页面上的一句普通话撞了，"
+                "但撞了说明**这条判据在这一站上不可靠**，所以保守到底：这一步之前的前缀"
+                "照重放，这里之后一步都不走（R3）。"
+                % (i + 1, _step_label(row), success_text, hit + 1))
+    return ("第 %d 步「%s」不能重放：它**落到的那一页**（第 %d 行那次观察）上已经出现了"
+            "成功文案「%s」—— 过了那条线之后的每一个动作都可能是**重复的真实请求**（R3），"
+            "前缀停在它前面。"
+            % (i + 1, _step_label(row), hit + 1, success_text))
+
+
+def _step_label(row: dict) -> str:
+    """一行在**人话**里叫什么（D16：读账的人不读选择器）。"""
+    action = str((row or {}).get("action") or "")
+    if action == "goto":
+        return "打开 %s" % (_goto_url(row) or "某个地址")
+    if action in ("click", "form", "scroll"):
+        return "%s「%s」" % ({"click": "点", "form": "填", "scroll": "滚到"}[action],
+                            _label_of((row or {}).get("target")))
+    return action or "这一步"
+
+
+def _goto_url(row: dict) -> str:
+    """这一行 `goto` **要去**的那个地址（不是它落在了哪儿）。"""
+    target = (row or {}).get("target") or {}
+    return str(target.get("url") or ((row or {}).get("result") or {}).get("url") or "").strip()
+
+
+def _url_key(url) -> str:
+    """判「是不是同一个地址」时拿哪一串比：**去掉 fragment，query 一个字都不动**。
+
+    fragment 不进服务器（`#step-2` 换不换都不产生一次真实请求）；query **会** ——
+    而一次性令牌正好就在 query 里（`?token=…`），那正是 R4 要挡的东西。
+    所以只削 fragment：削 query 等于把 R4 的牙拔掉。
+    """
+    return str(url or "").strip().split("#")[0]
+
+
+# ─────────────────────────── 重放（0 模型）───────────────────────────
+
+
+class _WindowGone(Exception):
+    """重放途中窗口又死了（§1.6 第三行）—— 整段重来，不当事故事故记在某一歩头上。"""
+
+    def __init__(self, done: int, landed: str, cause: str = ""):
+        super().__init__(cause)
+        self.done, self.landed, self.cause = done, landed, cause
+
+
+class _ToolFailed(Exception):
+    """**工具**说这一步没成（选择器找不到那类）—— 与「窗口死了」是两件事，分开处置。"""
+
+
+def replay(session, steps, *, on_step=None, alive=None) -> dict:
+    """照着 `steps`（`replayable_prefix` 给的那一段）走回去。**一次模型都不问。**
+
+    返回 `{done, landed, why}`：走成了几步（**动作**步）／最后落在哪个地址／为什么停
+    （人话，**整段走完时也是完整的一句**——空字符串那种「沉默」在这本账里读不出意思）。
+
+    `alive`：问一句「窗口还活着吗」。工具调用失败时用它分辨两件事：
+    **窗口死了**（→ 整段重来，最多 `REPLAY_ATTEMPTS` 遍）与**这一步没做成**（→ 停下来叫人）。
+    ⚠️ 它自己坏掉时按**死了**处理 —— 反过来（坏掉 = 活着）会把「窗口没了」记成
+    「页面上找不到那个按钮」，那是一句**指错方向**的话。
+
+    这个函数**只做账上写着的事**：不判断、不绕开、不「看着不对就换成别的选择器」。
+    走不通就停在原地说话（§1.6）—— 「静默跳过」正是 R-35 那次失败的形状。
+    """
+    rows = list(steps or [])
+    done, landed = 0, ""
+    for attempt in range(1, REPLAY_ATTEMPTS + 1):
+        try:
+            return _replay_once(session, rows, on_step=on_step, alive=alive)
+        except _WindowGone as gone:
+            done, landed = gone.done, gone.landed
+            if attempt >= REPLAY_ATTEMPTS:
+                return {"done": done, "landed": landed,
+                        "why": ("窗口又死了：整段重来 %d 遍都没走完（%s）。停下来叫人 —— "
+                                "重放里没有不可逆的动作，重来本身是安全的，"
+                                "但窗口一直起不来就只能停在这儿。"
+                                % (REPLAY_ATTEMPTS, gone.cause))}
+    return {"done": done, "landed": landed, "why": "窗口一直没起来。"}   # 走不到（保险）
+
+
+def _replay_once(session, rows: list, *, on_step, alive) -> dict:
+    """走一遍。返回结果 dict；窗口死了抛 `_WindowGone`（由 `replay` 决定重来）。"""
+    state = {"done": 0, "landed": ""}
+    side = {"broken": False, "why": ""}
+
+    def record(step: dict) -> None:
+        """旁路（实时视图 / 账本）—— 坏掉不许带塌主路，但要**说出来**（与 `emit` 同规矩）。"""
+        try:
+            _emit(on_step, step)
+        except Exception as exc:                       # noqa: BLE001
+            if side["broken"]:
+                return
+            side["broken"] = True
+            side["why"] = ("⚠️ 旁路（实时视图 / 账本）在重放这一步上没记成：%s: %s —— "
+                           "重放照常往下走（旁路坏掉不许带塌主路），但这一趟的账可能是残的。"
+                           % (type(exc).__name__, exc))
+
+    def finish(why: str) -> dict:
+        return {"done": state["done"], "landed": state["landed"],
+                "why": (why + " " + side["why"]).strip() if side["why"] else why}
+
+    if not rows:
+        return finish("账上这一段是空的：没有可重放的步，一步都没走。")
+
+    for i, row in enumerate(rows):
+        action = str((row or {}).get("action") or "")
+        if action in _ACTIONS:
+            t0 = time.time()
+            try:
+                args, raw = _fire(session, row, alive, state)
+            except _ToolFailed as exc:
+                return finish(
+                    "第 %d 行那一步「%s」停住了：%s —— 重放停在这一步**之前**"
+                    "（不跳过、不换一条路：跳过之后剩下的动作会落在一页它们从没在上面做过"
+                    "的页面上）。" % (i + 1, _step_label(row), exc))
+            _absorb(state, raw)
+            state["done"] += 1
+            record(_replayed_step(row, action, args, raw, _ms(t0)))
+            continue
+        if action == "observe" and _is_checkpoint(rows, i):
+            t0 = time.time()
+            raw = _call(session, "observe", {}, alive, state)
+            _absorb(state, raw)
+            live = raw if isinstance(raw, dict) else {}
+            record(_replayed_step(row, "observe", {}, raw, _ms(t0)))
+            if not when_holds(_when_from_row(row), live):
+                return finish(
+                    "第 %d 行那个核验点没对上：我以为会到「%s」，实际是「%s」—— 停在这里，"
+                    "别接着往下点（分不清「落到另一条分支」还是「选错了元素」，两条都停）。"
+                    % (i + 1, _expect_say(row), _live_say(live)))
+            continue
+
+    if str((rows[-1] or {}).get("action") or "") in _ACTIONS:
+        # 最后那一步的落点账上没记（它后面那条观察在**边界之外**）—— 如实看一眼落在哪，
+        # **不判对错**（没有可比的判据）。`landed` 靠这一眼才对得上「现在在哪儿」。
+        t0 = time.time()
+        raw = _call(session, "observe", {}, alive, state)
+        _absorb(state, raw)
+        record(_replayed_step(rows[-1], "observe", {}, raw, _ms(t0)))
+    return finish("这一段都重放了：账上那 %d 个动作照本走成了。" % state["done"])
+
+
+def _fire(session, row: dict, alive, state: dict) -> tuple:
+    """把一行动作发出去 → `(args, raw)`。
+
+    `goto`：账上那串地址直接发（R4 已经保证它是见过的）。
+    click / form / scroll：`target.selectors` **一个个试，第一个能用的胜**（§1.4.4）——
+    重放的分辨力比产物弱是**已知且接受**的（产物有「重新 observe 按 text+role+near
+    重定位」那三跳，agent 侧没有）。
+    """
+    action = str(row.get("action") or "")
+    if action == "goto":
+        url = _goto_url(row)
+        if not url:
+            raise _ToolFailed("账上这一步只写了「打开某个地址」，地址没记下来")
+        return {"url": url}, _call(session, "goto", {"url": url}, alive, state)
+
+    target = row.get("target") or {}
+    selectors = [str(s).strip() for s in (target.get("selectors") or []) if str(s or "").strip()]
+    if not selectors:
+        raise _ToolFailed("账上这一步**一条选择器都没留下**（`target.selectors` 是空的）")
+    frame = str(target.get("frame_id") or "").strip()
+    last = "工具说没找到"
+    for selector in selectors:
+        args = _action_args(action, row, selector, frame)
+        try:
+            return args, _call(session, action, args, alive, state)
+        except _ToolFailed as exc:
+            last = str(exc)                    # 这个选择器在这页上找不到 → 试下一个
+    raise _ToolFailed("这几条选择器在页面上**一条都解析不出来**：%s（%s）"
+                      % ("、".join(selectors), last))
+
+
+def _action_args(action: str, row: dict, selector: str, frame_id: str) -> dict:
+    """这一步发给工具的参数。**只发账上有的东西**。
+
+    - `frame_id`：账上**有**（非空）才带。`_target_of` 总写这个键，主帧那一支是 `""` ——
+      所以判据是「值非空」。**不许编一个 `"main"`**：那只是个显示用的名字，
+      传给 `--frame-id` 会被当成一个不存在的帧（G4）。
+    - 填表的值：**账上记的那个**（`result.fill.value`）—— 重放用的是**同一份数据**，
+      不是重新随机一个（§1.4.1）。`check` / `select` / `value` **恰好给一个**（registry 的
+      `formMode`：多给的那几个会被静默忽略）。
+    - `track`：账上没记 → **不传**（不编）。
+    """
+    args: dict = {"selector": selector}
+    if action == "form":
+        fill = (row.get("result") or {}).get("fill") or {}
+        kind = str(fill.get("kind") or "value")
+        value = fill.get("value")
+        if kind == "check":
+            args["check"] = str(value).strip().lower() in ("true", "1", "yes")
+        elif kind == "select":
+            args["select"] = str(value or "")
+        else:
+            args["value"] = str(value or "")
+    if frame_id:
+        args["frame_id"] = frame_id
+    return args
+
+
+def _call(session, name: str, args: dict, alive, state: dict):
+    """发一次工具调用。失败时分辨「窗口死了」与「这一步没做成」（§1.6 的两行）。"""
+    try:
+        return session.call_tool(name, args)
+    except Exception as exc:                           # noqa: BLE001
+        if _probe_dead(alive):
+            raise _WindowGone(state["done"], state["landed"],
+                              "%s: %s" % (type(exc).__name__, exc)) from exc
+        raise _ToolFailed(str(exc)) from exc
+
+
+def _probe_dead(alive) -> bool:
+    """问一句「窗口还活着吗」。**探针自己坏掉 → 按死了处理**（与「闸坏掉当暂停」同规矩）。
+
+    反过来（坏掉 = 活着）会把「窗口没了」说成「页面上找不到那个按钮」——
+    一句指错方向的话，读账的人会去查选择器。而按死了处理最多多走两遍重放，
+    重放里**没有不可逆的动作**，重来是安全的（§1.6）。
+    """
+    if alive is None:
+        return False
+    try:
+        return not alive()
+    except Exception:                                  # noqa: BLE001
+        return True
+
+
+def _absorb(state: dict, raw) -> None:
+    """把这次工具调用回来的**地址**记下来（`landed` 就是「现在在哪儿」）。"""
+    if isinstance(raw, dict) and str(raw.get("url") or "").strip():
+        state["landed"] = str(raw["url"]).strip()
+
+
+def _is_checkpoint(rows: list, i: int) -> bool:
+    """第 i 行是不是「这一步**改了页**」那个核验点（§1.6：一页一次 observe，0 模型调用）。
+
+    判据是**状态名变了**：`_describe` 把状态名记在**发起那一刻**（`pages.current_name`），
+    而换页是 `observe` 干的、记在**下一行**头上 —— 所以「这一步改了页」看的是下一行的状态名。
+
+    前缀**最后一行**也核：那是「落点对不对」那一问（§1.4.5 第 2 步）。
+    """
+    if str((rows[i] or {}).get("action") or "") != "observe":
+        return False
+    if i == len(rows) - 1:
+        return True
+    return _state_of(rows[i + 1]) != _state_of(rows[i])
+
+
+def _state_of(row) -> str:
+    return str((row or {}).get("state") or START_STATE)
+
+
+def _when_from_row(row: dict):
+    """那一页的判据 —— **用账上那行自己的 url 与正文重算一条**，与 `_when_for` 同一套。
+
+    为什么不是逐字节比对：重放的判据必须是**产物那套放宽后的 `when`**（§1.6）——
+    URL 取稳定前缀（`_stable_url`）、正文取一段（`_snippet`）。
+    逐字节比对会把「同一页的轮换变体」读成失败，而那个失败会停掉整段重放。
+
+    ⚠️ 这里**重算**而不是抄 `journey.pages`：`replay` 手里只有这些行（账本一个文件
+    只落 step），而 `_when_for` 也就是这两样东西算出来的。
+    """
+    result = (row or {}).get("result") or {}
+    when: dict = {}
+    url = _stable_url(str(result.get("url") or ""))
+    if url:
+        when["url_contains"] = url
+    snippet = _snippet(_norm(result.get("page_text_head") or ""))
+    if snippet:
+        when["text_contains"] = [snippet]
+    return when or None
+
+
+def _expect_say(row: dict) -> str:
+    """「我以为会到」的那个 X（人话：地址，没有地址就给页面标题）。"""
+    result = (row or {}).get("result") or {}
+    return str(result.get("url") or result.get("title") or "账上那一页")
+
+
+def _live_say(live: dict) -> str:
+    """「实际是」的那个 Y。"""
+    return str((live or {}).get("url") or (live or {}).get("title") or "一个地址都没报回来的页面")
+
+
+def _replayed_step(row: dict, action: str, args: dict, raw, elapsed_ms: int) -> dict:
+    """重放出来的一步 —— **与探索时那一步同形**（`origin` 是唯一的区别）。
+
+    形状必须一样：账本里的一行就是 `Journey.steps` 的那一步，产物那侧（`states()` /
+    `fills()` / 重放机）因此一个字的改动都不需要。
+    """
+    target = None if action == "observe" else dict((row or {}).get("target") or {})
+    return {"state": _state_of(row), "action": action, "target": target,
+            "result": _summarize(action, args, raw, elapsed_ms, None),
+            "note": _say(action, target, True), "origin": "replay"}
+
+
 # ─────────────────────── 页面状态（换页 = 换状态）───────────────────────
 
 
