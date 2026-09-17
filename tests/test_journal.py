@@ -196,22 +196,64 @@ def test_a_half_line_cut_inside_a_chinese_character_is_still_not_fatal(tmp_path)
     assert len(skipped) == 1 and skipped[0]["line"] == 3, skipped
 
 
-def test_a_bad_line_in_the_middle_does_not_take_the_good_ones_with_it(tmp_path):
-    """**C-1 的更坏形状**：坏行在**中间**，后面还有好行 —— 好行必须照样读得出来。
+def _cut_inside_a_multibyte(text: str, cut: int) -> bytes:
+    """把 `text` 编码后的**第 cut 个字节往后挪到第一个续字节之前**再切 —— 切出来必非法。
 
-    这一形状是把「整份文件一次解码」的写法打红的地方：那样一处坏就全盘皆输。
+    ⚠️ 这条小工具是**新-1** 的产物：第一版用的 `len(…)-1` 看着像「切在最后一字中间」，
+    实际上那段以 `…「Ye` 结尾 —— `-1` 切掉的是 **ASCII 的 `e`**，
+    于是那条用例钉的是 **ASCII 切口**，多字节那个实例**一条哨兵都没有**（复审实测）。
+    """
+    raw = text.encode("utf-8")
+    while cut < len(raw) and (raw[cut] & 0xC0) != 0x80:
+        cut += 1
+    return raw[:cut]
+
+
+def test_a_bad_line_in_the_middle_does_not_take_the_good_ones_with_it(tmp_path):
+    """**C-1 的「更坏形状」**：坏行在**中间**（而且切口真的落在**一个字中间**），
+    后面还有好行 —— **后面的好行必须照样读得出来**。
+
+    这一条同时打红两种半吊子修法（复审都造过）：
+      ·「整份文件一次严格解码」→ 一处坏，**全盘皆输**；
+      ·「逐行解，遇坏行**就停止往后读**」→ **坏行之后的好行全丢了**，而 21/21 用例 + 全量都会绿。
+    所以它必须是**中间**那一条坏、而且**后面还有好行** —— 只有末尾坏的话两种写法都看不出来。
     """
     path = tmp_path / "attempt-1.jsonl"
     good = '{"step": %d, "note": "第 %d 步：点了「Go」"}\n'
-    half = '{"step": 2, "note": "第二步：点了「Ye'
-    cut = len(half.encode("utf-8")) - 1      # 少一个字节 = 切在最后一字的中间
-    path.write_bytes((good % (1, 1)).encode("utf-8")
-                     + half.encode("utf-8")[:cut] + "\n".encode()
+    # ⚠️ 换行要补上：这一行是**中间那一行**（不是文件尾的残行）——
+    #    少了换行，它就与下一行粘成一行，那测的是另一件事。
+    broken = _cut_inside_a_multibyte('{"step": 2, "note": "第二步：点了「Yes」"}', 20) + b"\n"
+    path.write_bytes((good % (1, 1)).encode("utf-8") + broken
                      + (good % (3, 3)).encode("utf-8"))
     rows, skipped = journal.read(path)
-    assert [r["step"] for r in rows] == [1, 3], rows
+    assert [r["step"] for r in rows] == [1, 3], f"坏行之后的好行被吞了：{rows}"
     assert [s["line"] for s in skipped] == [2], skipped
-    assert journal.attempts(tmp_path, "job-1") == [] or True     # （本文件不在 attempt 名下）
+    assert "UTF-8" in skipped[0]["why"], skipped[0]
+
+
+def test_corrupt_bytes_inside_a_json_string_are_not_silently_accepted(tmp_path):
+    """**新-2**：坏字节落在 JSON **字符串内部**时，**不许**当正常一步收下。
+
+    这一条钉的是 `errors="replace"` 那条静默路：替换字符让整行**仍然是合法 JSON**，
+    于是它被当成正常一步、`skipped` 是空的 —— 账本里凭空多一步**看不出坏**的账
+    （而这个文件自己的原则是「不静默」）。
+    判据落在**两边**：那一行**不在** `rows` 里，**在** `skipped` 里，且**前后的好行都在**。
+    """
+    path = tmp_path / "attempt-1.jsonl"
+    good = '{"step": %d, "note": "第 %d 步：点了「Go」"}\n'
+    line = '{"step": 2, "note": "第二步：点了「结算」"}\n'
+    raw = line.encode("utf-8")
+    victim = next(i for i, b in enumerate(raw) if b & 0x80)
+    corrupted = raw[:victim] + raw[victim + 1:]        # 删掉一个字节（一个字少一截）
+    assert json.loads(corrupted.decode("utf-8", "replace"))["step"] == 2, \
+        "前提：这一行坏成这样之后**仍然是合法 JSON**（否则这条用例钉的不是静默路）"
+
+    path.write_bytes((good % (1, 1)).encode("utf-8") + corrupted
+                     + (good % (3, 3)).encode("utf-8"))
+    rows, skipped = journal.read(path)
+    assert [r["step"] for r in rows] == [1, 3], f"坏行被当正常一步收下了：{rows}"
+    assert [s["line"] for s in skipped] == [2], skipped
+    assert "UTF-8" in skipped[0]["why"], skipped[0]
 
 
 def test_a_line_that_is_not_an_object_is_reported_too(tmp_path):

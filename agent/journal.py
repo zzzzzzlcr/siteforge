@@ -114,12 +114,17 @@ def read(path: Any) -> Tuple[List[dict], List[dict]]:
     - `skipped`：跳过的行的**行号与原因**：`[{"line": 7, "why": "这一行读不出来", "raw": …}]`。
       最常见的形状是**最后半行**（进程被杀留下的）；也收「不是对象」的行。
 
-    ⚠️ **解码那一步必须兜住**（C-1）：`ensure_ascii=False` 让**每一行都含中文**，
-    而写一半被杀 / 盘满短写时，切口落在**一个字的中间**是正常形状 ——
-    严格解码会抛 `UnicodeDecodeError`，于是**连前面那些好行一起读不出来**
-    （而那正是这个模块存在的理由：窗口死在一半时，得知道走到哪儿了）。
-    所以这里按 `errors="replace"` 解 —— 坏的那一行带着替换字符落进 `skipped`，
-    好行一行不少。
+    ⚠️ **按字节读、逐行严格解**（C-1 + 新-2）。为什么非得是这个形状：
+
+    - `ensure_ascii=False` 让**每一行都含中文**，而写一半被杀 / 盘满短写时，
+      切口落在**一个字的中间**是正常形状 —— **整份文件一次严格解码**会因为一行而全盘皆输
+      （连前面那些好行一起读不出来），而那正是这个模块存在的理由：
+      窗口死在一半时，得知道走到哪儿了；
+    - 但**整份文件一次 `errors="replace"` 也不行**：坏字节落在 JSON **字符串内部**时，
+      替换字符让整行**仍然是合法 JSON** ⇒ 它会被**当正常一步收下**、`skipped` 空 ——
+      那是**静默**（与这个文件自己的原则相反），而账本里因此多一步**没人看得出是坏的**；
+    - 所以：**逐行**严格解，坏的那一行落进 `skipped`（带行号、原因、能显示多少显示多少），
+      **后面的行照读不误**。
 
     文件不在 → `([], [])`：**没跑过 = 空账**，不是异常（与 `measure.read_rows` 同一条）。
     ⚠️ 但**指到一个目录**上是会抛 `OSError`（`IsADirectoryError`）的 —— 那是调用方把路径写错了，
@@ -129,11 +134,19 @@ def read(path: Any) -> Tuple[List[dict], List[dict]]:
     rows: List[dict] = []
     skipped: List[dict] = []
     try:
-        text = target.read_text(encoding="utf-8", errors="replace")
+        raw = target.read_bytes()
     except FileNotFoundError:
         return rows, skipped
-    for i, line in enumerate(text.splitlines(), 1):
-        if not line.strip():
+    for i, chunk in enumerate(raw.splitlines(), 1):
+        if not chunk.strip():
+            continue
+        try:
+            line = chunk.decode("utf-8")
+        except UnicodeDecodeError:
+            skipped.append({"line": i,
+                            "why": "这一行的字节不是完整的 UTF-8（多半是被杀在写一半的地方："
+                                   "切口落在了一个字的中间）",
+                            "raw": chunk.decode("utf-8", "replace")[:160]})
             continue
         try:
             loaded = json.loads(line)

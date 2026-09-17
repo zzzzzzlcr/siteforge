@@ -35,7 +35,7 @@ max(M2) > M1              → 照做 A（存在**一条**路径装不进一个�
 runtime/explore/<job_id>/
   window.jsonl        窗口时间线：一次探活一行（`window_row`）
   attempts.jsonl      一次探路一行：墙钟 / 轮数 / 步数 / 停因（`record_attempt`）
-  attempt-<n>.jsonl   探路途中**每一步**一行（`append_step`，Task 4 会把它长成 journal.py）
+  attempt-<n>.jsonl   探路途中**每一步**一行 —— 落盘与读回都归 `agent/journal.py`
   baseline.json       汇总：M1~M8（`baseline`）
 ```
 
@@ -107,15 +107,25 @@ def _append_line(path: pathlib.Path, row: dict) -> None:
 def read_rows(path: Any) -> list:
     """把一份 jsonl 读回来。**坏行不吞**：读不出来的那行原样留一条 `_corrupt` 记录。
 
-    （「跳过的行数与原因一起返回」那一条是 Task 4 的 `journal.read()`；这里做同一件事的
-    最小版本：坏行不许**静默**消失。）
+    （「跳过的行数与原因一起返回」那一条是 `journal.read()`；这里做同一件事的最小版本：
+    坏行不许**静默**消失。）
+
+    ⚠️ **按字节读、逐行严格解**（与 `journal.read` 同一个病、同一个修法）：
+    这些行也含中文（`note` 就是人话），而「写一半被杀」的切口可能落在**一个字的中间** ——
+    整份一次严格解码会因为一行而**全盘皆输**。调用点都在 `except Exception` 里，
+    所以它不会把主路带塌，但**会把证据整份丢掉**（而这一条线存在的理由就是留证据）。
     """
     p = pathlib.Path(path)
     if not p.exists():
         return []                        # 没跑过 = 空账，不是异常
     out: list = []
-    for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
-        if not line.strip():
+    for i, chunk in enumerate(p.read_bytes().splitlines(), 1):
+        if not chunk.strip():
+            continue
+        try:
+            line = chunk.decode("utf-8")
+        except UnicodeDecodeError:
+            out.append({"_corrupt": chunk.decode("utf-8", "replace")[:160], "_line": i})
             continue
         try:
             row = json.loads(line)
@@ -132,15 +142,6 @@ def read_rows(path: Any) -> list:
 def append_row(path: Any, row: dict) -> None:
     """往一份 jsonl 追加一行（窗口时间线 / journal 都走这儿）。"""
     _append_line(pathlib.Path(path), dict(row))
-
-
-def append_step(path: Any, step: dict) -> None:
-    """探路途中**每一步**一行 —— 落盘的就是 `Journey.steps` 的那一步，**逐字同一个 dict**。
-
-    （跨任务接口 §2：journal 的一行不许再包一层、不许改键名 —— 否则「账本」与「重放」
-    会各有一套字段名，那正是漂。Task 4 会把它长成 `agent/journal.py`。）
-    """
-    append_row(path, step)
 
 
 # ─────────────────────────── 窗口时间线 ───────────────────────────

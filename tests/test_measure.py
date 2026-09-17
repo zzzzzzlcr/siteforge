@@ -430,3 +430,30 @@ def test_m6_refuses_to_call_a_lease_from_one_death():
 
     r4 = measure.m6_reading([])
     assert r4["value"] is None and r4["why"]
+
+
+# ── 读账那一层：坏行不许把整份读废（与 journal.read 同一个病，修复轮 2 一起治）─────
+
+
+def test_read_rows_survives_a_multibyte_half_line(tmp_path):
+    """`read_rows` 与 `journal.read` **同一个病、同一个修法**：一行坏掉不许把整份读废。
+
+    这些账行也含中文（`note` 就是人话），而「写一半被杀」的切口可能落在**一个字的中间**；
+    整份一次严格解码会因为一行而**全盘皆输**。调用点都在 `except Exception` 里，
+    所以它不会把主路带塌 —— 但**会把证据整份丢掉**，而这条线存在的理由就是留证据。
+
+    判据落在**两边**：坏行之后的**好行照样读得出来**，坏的那行留一条 `_corrupt`（带行号）。
+    """
+    path = tmp_path / "window.jsonl"
+    good = '{"at": "2026-09-17 10:0%d", "note": "第 %d 次探活"}\n'
+    broken = '{"at": "2026-09-17 10:02", "note": "第二次探活：窗口还在"}'.encode("utf-8")
+    cut = next(i for i, b in enumerate(broken) if b & 0x80)
+    path.write_bytes((good % (1, 1)).encode("utf-8")
+                     + broken[:cut] + b"\n"          # ← 切口落在一个字的中间
+                     + (good % (3, 3)).encode("utf-8"))
+
+    rows = measure.read_rows(path)
+    assert [r.get("at") for r in rows if "_corrupt" not in r] == \
+        ["2026-09-17 10:01", "2026-09-17 10:03"], rows
+    corrupt = [r for r in rows if "_corrupt" in r]
+    assert len(corrupt) == 1 and corrupt[0]["_line"] == 2, rows
