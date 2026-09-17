@@ -1856,7 +1856,7 @@ def _explore_spy(script, seen, *, journal=True):
     calls = {"n": 0}
 
     def explore(url, goal, budget=None, should_pause=None, on_step=None, **kw):
-        seen.append({"url": url, "on_step": on_step is not None, **kw})
+        seen.append({"url": url, "on_step": on_step is not None, "budget": budget, **kw})
         journey = script[min(calls["n"], len(script) - 1)]
         calls["n"] += 1
         if journal:
@@ -2072,3 +2072,40 @@ def test_a_prefix_from_an_earlier_reopen_is_not_reused(tmp_path, monkeypatch):
     assert seen[1]["resume_from"] is None, "旧前缀被复用了：%r" % (seen[1]["resume_from"],)
     values = dict(svc._snapshot(job_id).values or {})
     assert values.get("resume_from") in (None, [], ()), values.get("resume_from")
+
+
+def test_a_pass_that_crashed_does_not_hand_the_next_one_a_full_budget(tmp_path, monkeypatch):
+    """探路**抛异常**时节点不返回 ⇒ `explore_spent`（连那一次执行里**跑完的那几趟**）
+    不会进 checkpoint —— 而**盘上记着**（`attempts.jsonl`）。`reopen` 要把那笔账读回来。
+
+    触发条件正是这条机制要管的场景（复审 ⑥）：窗口在这趟**开始之前**就死
+    （`McpSession.open` 在 `try` 之外 → 直接抛，走不到「一等停因」那条路），
+    而 `reopen`（**没有次数上限**）恰好是下一步。
+    """
+    seen: list = []
+    #: 第 1 趟要**值得重探**（`model_done` + 没见到成功文案）—— 不然走不到第 2 趟那个坑
+    script = [_resumable_journey(stop_reason="model_done"),
+              RuntimeError("窗口在这趟开始前就死了")]
+    monkeypatch.setattr(browser_agent, "explore", _explore_spy(script, seen))
+    rec = Rec()
+    client = _client_with_the_services_explore(rec, tmp_path)
+
+    job_id = client.post("/run", json=_brief(
+        tmp_path, allow_skips=["country", "viewport"])).json()["job_id"]
+    view = _reply_until_done(client, job_id)
+    assert view["status"] == "failed", view          # 第 2 趟抛了 ⇒ 这一步没落下来
+    assert len(seen) == 2, seen
+    assert seen[0]["budget"].max_steps == 30, seen[0]["budget"]     # 第 1 趟拿的是满预算
+
+    # 盘上：第 1 趟记着 4 步，第 2 趟「连账本都没生成」
+    rows = [json.loads(x) for x in (tmp_path / "explore" / job_id / "attempts.jsonl")
+            .read_text(encoding="utf-8").strip().splitlines()]
+    assert [r["steps"] for r in rows] == [4, None], rows
+
+    r = client.post("/job/%s/reopen" % job_id, json={"ws_url": NEW_WS_URL})
+    assert r.status_code == 200, r.text
+    _reply_until_done(client, job_id)
+    assert len(seen) == 3, seen
+    # **那 4 步要算进这个 job 的账**（不读回来就是 30 —— 白送一趟）
+    assert seen[2]["budget"].max_steps == 26, \
+        "上一趟那 4 步没算进去（拿回了满预算）：%r" % (seen[2]["budget"],)

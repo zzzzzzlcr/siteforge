@@ -1267,12 +1267,20 @@ def test_the_explore_budget_is_the_whole_job_not_each_attempt(tmp_path):
 
 
 def test_the_first_pass_adds_its_spend_to_the_job_total(tmp_path):
-    """跑完把**这一趟的消耗加回去**（`explore_spent`），下一趟才有得减。"""
-    deps, rec = _deps()                            # 默认那本账：2 步、rounds=0
+    """跑完把**这一趟的消耗加回去**（`explore_spent`），下一趟才有得减。
+
+    ⚠️ **三个键都要断言**（复审 ③.1）：原先只断言了 `steps` 与 `attempts` ——
+    于是「`rounds` 那一项写得对不对」**零覆盖**（改坏了没人红）。轮数这一项是
+    **轮预算**唯一的输入（`_budget_left` 拿它减），漏了它就等于那根线没人看着。
+    """
+    book = _journey()
+    book.rounds = 7                                # 这一趟真问了 7 轮
+    deps, rec = _deps(journey=book)
     app, cfg, _ = _build(deps=deps)
     _, out = _drive(app, cfg, _brief(tmp_path))
 
     assert out["explore_spent"]["steps"] == 2, out["explore_spent"]
+    assert out["explore_spent"]["rounds"] == 7, out["explore_spent"]
     assert out["explore_spent"]["attempts"] == 1, out["explore_spent"]
 
 
@@ -1397,3 +1405,24 @@ def test_a_budget_that_is_already_overspent_gives_zero_not_a_negative(tmp_path):
     # （`test_a_zero_budget_never_even_asks_the_model`）—— 这里的桩不认预算，
     # 在这儿断那件事只是自证。这一条管的是**图交出去的那个数**：夹到 0，不是负数。
     assert len(rec.explore) == 1, rec.explore
+
+
+def test_a_pass_whose_replay_needed_a_second_try_is_not_retried(tmp_path):
+    """**「用满 3 次尝试」≠「被打断」**（复审 ②）：第 3 遍**可以走通** ——
+    那种趟 `done` 是齐的（走完了），却抖过两下。
+
+    只判「没走完」的话，这一形整个漏掉：重探仍然能叠成 **3 趟 × 3 遍 = 9**。
+    判据看的是 `replay` 自己报出来的 **`attempts`**（试了几遍）。
+    """
+    rows = _resume_rows()
+    shaky = _books(stop_reason="model_done")
+    shaky.replay = {"done": 1, "landed": URL, "attempts": 3,
+                    "why": "这一段都重放了：账上那 1 个动作照本走成了。"}
+    deps, rec = _deps(journey=shaky)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, {**_brief(tmp_path), "resume_from": rows})
+
+    assert len(rec.explore) == 1, "重放抖过两下还去重探：%d 趟" % len(rec.explore)
+    note = out.get("end_note") or ""
+    assert "没有重探" in note, note
+    assert "系统分不出" in note, "那句人话把原因说死了（复审 ②：判据看不出是窗口还是选择器）：%s" % note

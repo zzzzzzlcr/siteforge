@@ -506,7 +506,10 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
                     % retries)
         else:
             note = ("⚠️ **这一趟没在页面上见到成功文案**，而且**没有重探** ——"
-                    "重放被打断过（窗口在重放途中抖了）：这一趟不是对这条路的一次完整观察，"
+                    "这一趟的重放**走得不干净**（没走完，或者抖过一遍）。"
+                    "**为什么走不干净，系统分不出**：可能是窗口在重放途中抖了，"
+                    "也可能是页面上找不到那一步的元素 —— 两条都会走到这儿（判据只看数）。"
+                    "所以不重探：这一趟不算对这条路的一次干净观察，"
                     "重探只会把同一段在真页面上再撞一遍。停下，如实报，"
                     "**不进入定稿 + 自测**（拿一条走不通的账本去定稿+自测是必然白跑）。")
         journey.notes.append(note)
@@ -522,22 +525,27 @@ def _worth_retrying(reached, journey, resume_from) -> bool:
     **计数**，而**一次干净走完的探路也常是 1**（`_PlanWatch.finish()` 补结算最后一轮）——
     拿它当布尔量用，正常走完的探路会全被判成停滞。停滞只有 `plan_stalled` 这一个写法。
 
-    不重探的四种停法 + 一条完整性判据：
+    不重探的四种停法 + 一条**干净度**判据：
 
     - `window_gone`：窗口没了 —— 重探只会再去开一次会话（多半直接炸）；该走 `reopen`；
     - `budget_steps` / `budget_rounds`：预算已经花掉了（job 级累计之后起点只会更低）；
     - `paused`：人喊了停 —— 重探是**无视人的话**；
-    - **重放被打断过**（`browser_agent.replay_cut_short`）：这一趟不是对这条路的一次
-      **完整观察** —— 窗口在重放途中抖了，重探只会把同一段在真页面上再撞一遍。
+    - **重放走得不干净**（`browser_agent.replay_went_clean` 为假）：要么**没走完**，
+      要么**重来过第二遍**（窗口抖过）—— 两条都说明「这一趟不是对这条路的一次干净观察」，
+      重探只会把同一段在真页面上再撞一遍。
 
-    **留着**的（`model_done` / `ended` / `plan_stalled`）都是「这一趟对这条路做了一次完整的
+    **留着**的（`model_done` / `ended` / `plan_stalled`）都是「这一趟对这条路做了一次干净的
     观察、只是没走到成功」—— 换个随机答案可能走通，那正是重探的立意。
 
-    ⚠️ **它同时是「不许内外两层 3 次叠加」的那根结构线**（复审 Q3）：`replay` 内部最多
-    `REPLAY_ATTEMPTS=3` 遍，而这一趟要是被**打断过**就不再重探 ⇒ 外层拿不到第二段前缀
-    去重放 ⇒ **乘数上不去**（最坏是「一趟 × 它自己的 3 遍」，不是 3×3=9 遍）。
-    复审点出的旧形状里，「不叠加」有一半是靠 Q1 那个缺陷兜住的（换了会话却没人换
-    `explore` 手里那个，于是根本走不到重探）—— **那是巧合，不是设计**；现在由这一句保证。
+    ⚠️ **它同时是「不许内外两层 3 次叠加」的那根结构线**（复审 Q3 / 修复轮 2 的 ②）：
+    `replay` 内部最多 `REPLAY_ATTEMPTS=3` 遍；而**烧了不止一遍的那一趟一定是最后一趟**
+    ⇒ 全场重放遍数 **≤ 1 + 1 + 3 = 5**（不是 9），换会话 **≤ 2 次**（不是 6）。
+
+    ⚠️ **「≤5」原先写错过一次**（修复轮 1）：那时只判「没走完」，而**第 3 遍可以走通** ——
+    「用满 3 次尝试」并不等于「被打断」，于是 3 趟 × 3 遍 = 9 仍然够得着（复审构造出来了）。
+    现在 `attempts` 由 `replay` 自己报出来，判据看的是「**试了几遍**」，那一形才被挡住。
+    兜底的那条边界仍然如实写着：**趟数**由 Task 3 的 `EXPLORE_ATTEMPTS=3` 管着，
+    而那 3 趟是**真探路**（窗口活着、每趟在真页面上走一段、会真提交动作）。
 
     ⚠️ **已知代价（Task 3 遗留 2，没量过）**：`plan_stalled` 也会再探 2 趟 ≈ 2 个真窗口。
     留着它的理由：停滞与「这一趟的随机答案」有关，而重探正是为那个加的。
@@ -548,8 +556,8 @@ def _worth_retrying(reached, journey, resume_from) -> bool:
     """
     if reached is not False:
         return False
-    if browser_agent.replay_cut_short(journey, resume_from or []):
-        return False                      # 这一趟没走完整 —— 重探只会再来一遍（见 docstring）
+    if not browser_agent.replay_went_clean(journey, resume_from or []):
+        return False                      # 这一趟的重放不干净（详见 docstring）
     stop = str(getattr(journey, "stop_reason", "") or "")
     return stop not in ("window_gone", "budget_steps", "budget_rounds", "paused")
 

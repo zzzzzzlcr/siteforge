@@ -264,13 +264,13 @@ class Journey:
     #: 于是天然是 False。⚠️ 别按停因去猜（那要维护一张会漏的名单，Task 4 的 `GROUPS` 栽过）。
     rounds_measured: bool = False
     #: 这一趟**问了几轮模型**（G2：`_wrap_up` 原先用完 `rounds` 就丢，于是基线 M3 量不到）。
-    #: ⚠️ `0` 有四种来源，读的时候要连 `stop_reason` 一起看：
-    #:   - `no_rounds`     → 真的 0 轮（模型一次都没回话）；
-    #:   - `paused` / `budget_steps` / `plan_stalled` → **没量到**（`_Stop` 一穿出
-    #:     `run_tool_loop`，`rounds` 那个局部变量就没了 —— 与是哪一条停因无关）。
-    #:     ⚠️ `measure.baseline()` 今天**只按 `paused`** 把它记成 `None`，其余几条会被记成
-    #:     真 0（M3 于是偏低，而偏低看起来像好消息）—— 那是**假数**，修点在
-    #:     `service._note_attempt`（不在本文件，复审 I-5）：接计划模式消费者的那一轮必须先收掉。
+    #: ⚠️ `0` 有两种来源（**别按它自己判**，一律看 `rounds_measured`）：
+    #:   - **真的 0 轮**（模型一次都没回话）；
+    #:   - **没量到**：`_Stop` 一穿出 `run_tool_loop`，`rounds` 那个局部变量就没了
+    #:     （与是哪一条停因无关）。
+    #: 复审 I-5 点的那处**已经收掉**（Task 6 修复轮 1）：读账的人一律走
+    #: `rounds_measured(journey)` → 标记落在 `_wrap_up` 写下 `rounds` 的同一句旁边，
+    #: `_Stop` 那一支天然走不到 ⇒ 不再有一张按停因手写的名单要维护，也不会把 0 当真数读。
     rounds: int = 0
     #: `llm.summarize(rounds)` 的产物（几轮 / 几次工具调用 / token / 耗时）。
     #: 被人打断那条路是空的 `{}` —— 与 `rounds == 0` 同一个道理。
@@ -619,6 +619,22 @@ def _walk_back(journey: Journey, rows: list, session, emit, alive, boundary: str
         "这一趟开头**照账本重放**了 %d 个动作（0 模型调用）：%s%s"
         % (int(out.get("done") or 0), out.get("why") or "",
            (" 边界（它为什么停在这儿）：" + str(boundary)) if str(boundary or "").strip() else ""))
+
+
+def replay_went_clean(journey, rows: list) -> bool:
+    """这一趟的重放**一次过吗**（没被打断、也没因为窗口抖动重来第二遍）。
+
+    ⚠️ **两个条件都要**（复审 ②）：只判「没走完」（`replay_cut_short`）是不够的 ——
+    第 3 遍**可以走通**，于是「用满 3 次尝试」并不等于「被打断」，那一形会整个漏掉。
+    合起来才等于「这一趟对这条路做了一次**干净**的观察」——`graph._worth_retrying`
+    拿它决定要不要再烧一趟（这就是「不许内外两层 3 次叠加」那根结构线的全部）。
+    """
+    info = dict(getattr(journey, "replay", None) or {})
+    if not info:
+        return True                                # 压根没重放（不是续跑）—— 没有干不干净这回事
+    if int(info.get("attempts") or 1) > 1:
+        return False                               # 抖过：重来过第二遍
+    return not replay_cut_short(journey, rows)     # 没被打断
 
 
 def replay_cut_short(journey, rows: list) -> bool:
@@ -1823,8 +1839,14 @@ class _ToolFailed(Exception):
 def replay(session, steps, *, on_step=None, alive=None, fresh=None) -> dict:
     """照着 `steps`（`replayable_prefix` 给的那一段）走回去。**一次模型都不问。**
 
-    返回 `{done, landed, why}`：走成了几步（**动作**步）／最后落在哪个地址／为什么停
-    （人话，**整段走完时也是完整的一句**——空字符串那种「沉默」在这本账里读不出意思）。
+    返回 `{done, landed, why, attempts}`：走成了几步（**动作**步）／最后落在哪个地址／
+    为什么停（人话，**整段走完时也是完整的一句**——空字符串那种「沉默」在这本账里读不出意思）／
+    这一趟**试了几遍**。
+
+    ⚠️ `attempts` 是给「这一趟算不算一次**干净**的观察」用的（复审 ②）：**走完了**不等于
+    没抖过 —— 第 3 遍**可以走通**，于是「用满 3 次尝试」与「被打断」是**两件事**。
+    只判「没走完」的话，一个「每趟都抖两下、第三遍刚好走通」的探路会被当成三趟干净观察，
+    重探的乘数就上去了（3 趟 × 3 遍）。
 
     `alive`：问一句「窗口还活着吗」。工具调用失败时用它分辨两件事：
     **窗口死了**（→ 整段重来，最多 `REPLAY_ATTEMPTS` 遍）与**这一步没做成**（→ 停下来叫人）。
@@ -1858,11 +1880,12 @@ def replay(session, steps, *, on_step=None, alive=None, fresh=None) -> dict:
     swap = ""
     for attempt in range(1, REPLAY_ATTEMPTS + 1):
         try:
-            return _replay_once(session, rows, on_step=on_step, alive=alive)
+            out = _replay_once(session, rows, on_step=on_step, alive=alive)
+            return dict(out, attempts=attempt)          # ← 试了几遍（见 docstring）
         except _WindowGone as gone:
             done, landed = gone.done, gone.landed
             if attempt >= REPLAY_ATTEMPTS:
-                return {"done": done, "landed": landed,
+                return {"done": done, "landed": landed, "attempts": REPLAY_ATTEMPTS,
                         "why": ("窗口又死了：整段重来 %d 遍都没走完（%s）。停下来叫人 —— "
                                 "重放里没有不可逆的动作，重来本身是安全的，"
                                 "但窗口一直起不来就只能停在这儿。%s"
@@ -1873,7 +1896,8 @@ def replay(session, steps, *, on_step=None, alive=None, fresh=None) -> dict:
                 except Exception as exc:           # noqa: BLE001 —— 换不到**不是**致命错
                     swap = ("另外：换会话也没换成（%s: %s）—— 后面这几遍还是在同一个会话上"
                             "撞同一堵墙。" % (type(exc).__name__, exc))
-    return {"done": done, "landed": landed, "why": "窗口一直没起来。"}   # 走不到（保险）
+    return {"done": done, "landed": landed, "attempts": REPLAY_ATTEMPTS,
+            "why": "窗口一直没起来。"}   # 走不到（保险）
 
 
 def _replay_once(session, rows: list, *, on_step, alive) -> dict:

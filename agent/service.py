@@ -545,6 +545,19 @@ class Job:
 # ─────────────────────────────── 服务本体 ───────────────────────────────
 
 
+def _tighter(recorded, on_disk) -> dict:
+    """两份「这个 job 花了多少」取**更紧的**（逐键 max）。
+
+    为什么不是相加、也不是取其中一份：两份都是**下界**（状态里那份可能因为节点抛异常而
+    缺了后面几趟；盘上那份的 `rounds` 对「没量到」的趟记 0）—— 取 max 是**保守**的那一侧
+    （预算只会更小、不会凭空变大），与 `graph._round_spends` 那条「不知道的一律按花算」同族。
+    """
+    out = {}
+    for key in ("steps", "rounds", "attempts"):
+        out[key] = max(int((recorded or {}).get(key) or 0), int((on_disk or {}).get(key) or 0))
+    return out
+
+
 class Service:
     """登记表 + 一个工作线程 + 一组投影。
 
@@ -1310,6 +1323,12 @@ class Service:
             prefix, note = self._resume_for(job_id, job.brief)
             patch["resume_from"] = list(prefix) or None
             patch["resume_note"] = note
+            # **把它前面那几趟的账读回来**（复审 ⑥）：探路抛异常时节点不返回，
+            # `explore_spent` 那一整份都不会进 checkpoint —— 而盘上记着。
+            # 与状态里那份**逐键取更紧的**（两边都是「花了多少」的下界）。
+            patch["explore_spent"] = _tighter(
+                dict(getattr(self._snapshot(job_id), "values", None) or {}).get("explore_spent"),
+                self._spent_from_attempts(job_id))
             say = self._reopen_explore_say(prefix, note)
         with job.lock:
             job.brief.update({"ws_url": body.ws_url})
@@ -1371,6 +1390,34 @@ class Service:
         except Exception as exc:                        # noqa: BLE001 —— 旁路，见 docstring
             return [], ("账本读不出来（%s: %s）—— 这一次没有前缀可重放，探路从入口重新开始。"
                         % (type(exc).__name__, exc))
+
+    def _spent_from_attempts(self, job_id: str) -> dict:
+        """从 `attempts.jsonl` 把**已经记下来的**消耗读回来（`{steps, rounds, attempts}`）。
+
+        为什么要有它（复审 ⑥ / 修复轮 2）：探路**抛异常**时节点不返回 ⇒ `explore_spent`
+        （含那一次节点执行里**前面已经跑完的那几趟**）**不会进 checkpoint** ——
+        而 `reopen`（**没有次数上限**）正是下一步，它按一份**满预算**再探一遍。
+        那些账**就在盘上**：`attempts.jsonl` 一次尝试一行，`steps` / `rounds` 都在
+        （正常收场那几趟一定记着；「连账本都没生成」的那种本来就 0 步）。
+
+        ⚠️ **口径差异如实写着**：账上的 `steps` 把**重放的步**也算进去了
+        （`_note_attempt` 记的是账本长度）⇒ 它只会**偏大** ⇒ 预算更**紧**
+        （方向是对的：与 `_round_spends` 那条「不知道的一律按花算」同族）；
+        而 `rounds` 里 `None`（没量到）在这里按 0 算 ⇒ 那一项偏松。取**逐键 max**
+        （与状态里那份比），所以两边都不会被对方放松。
+        """
+        out = {"steps": 0, "rounds": 0, "attempts": 0}
+        try:
+            rows = measure.read_rows(self._explore_dir(job_id) / "attempts.jsonl")
+        except Exception:                                   # noqa: BLE001 —— 旁路
+            return out
+        for row in rows:
+            if not isinstance(row, dict) or row.get("_corrupt"):
+                continue
+            out["steps"] += int(row.get("steps") or 0)
+            out["rounds"] += int(row.get("rounds") or 0)
+            out["attempts"] += 1
+        return out
 
     @staticmethod
     def _reopen_explore_say(prefix: list, note: str) -> str:

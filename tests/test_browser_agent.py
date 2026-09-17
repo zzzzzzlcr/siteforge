@@ -2750,6 +2750,9 @@ def test_a_replay_that_can_swap_its_session_gets_a_new_one(tmp_path):
 
     assert asked == [dead], "换会话只该在**两次尝试之间**发生一次：%r" % asked
     assert out["done"] == 2, out
+    # `replay` 要把「试了几遍」报出来（复审 ②：它是「这一趟干不干净」唯一的输入）——
+    # 这里走了两遍（第一遍死在窗口、换了会话之后第二遍走通）
+    assert out["attempts"] == 2, out
     assert [c["name"] for c in calls_dead] == ["goto"], calls_dead
     assert [c["name"] for c in calls_live] == ["goto", "observe", "click", "observe"], \
         calls_live
