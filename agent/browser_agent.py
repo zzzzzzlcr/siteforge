@@ -1496,6 +1496,18 @@ def _summarize(name: str, args: dict, raw: Any, elapsed_ms: int, fill: dict | No
         out.setdefault("selector", args.get("selector"))
     if fill:
         out["fill"] = fill
+    # ── R3 的**前提**：这一键只有 `observe` 写（破了就抛，见 `_only_looks_carry_the_text`）──
+    # 判的是**键在不在**，不是值真不真：一串空正文照样说明「有别的工具也在写它」，
+    # 而 R3 的整套推导（「窗口里任何一眼看见 ⇔ 最后一眼看见」）正是从「只有 observe 写」来的。
+    # 放在这里而不是只放在读的那一侧：**前提是在这儿产生的**，破了要当场知道是哪个工具。
+    if name != "observe" and "page_text_head" in out:
+        raise _TextPremiseBroken(
+            "工具「%s」的结果里冒出了 `page_text_head` —— R3 的**前提破了**"
+            "（前提：这一键只有 `observe` 写；本函数是唯一的写点）。"
+            "R3 判「过没过成功线」时只认 `observe` 行当落点，别的行带正文会让"
+            "「窗口里看见过」漏判 ⇒ **提交会留在前缀里**，重放它 = **往真实站点"
+            "再交一次真实表单**。要么把这个键从这个工具的结果里去掉，要么先改 R3 的落点"
+            "（`_landing_index`）让它也认这一类行 —— 别让它就这么过去。" % name)
     return out
 
 
@@ -1582,6 +1594,53 @@ REPLAY_ATTEMPTS = 3
 _SEEN_ACTIONS = ("observe", "diff")
 
 
+class _TextPremiseBroken(RuntimeError):
+    """**R3 的前提破了**：账本里有一行**不是 `observe`** 却带着 `page_text_head`。
+
+    为什么这件事值得一个自己的异常类型（而不是一句 `RuntimeError`）：它是**前提**、
+    不是「这一趟数据脏了」—— 破了之后 R3 的判据**不再成立**，而它唯一的职责是
+    「别让提交留在前缀里」。见 `_only_looks_carry_the_text`。
+    """
+
+
+def _only_looks_carry_the_text(rows: list) -> None:
+    """**R3 的前提**：正文（`page_text_head`）只有「看一眼」（`observe`）那些行才写 —— 破了就**抛**。
+
+    为什么这是前提、为什么破了必须响（复审：**这条前提一破，性质本身就破**）：
+
+    R3 的判据是「**最早**看见成功文案的那一行 ≤ 这一步的**落点**」，而落点**只认 `observe` 行**
+    （`_landing_index` 返回的是 observe 的下标）。文案是**逐行累加**成一个 blob 的
+    （下面那段循环对每一行都读一次 `page_text_head`）。「窗口里**任何一眼**看见了」
+    ⇔「窗口里**最后一眼**看见了」这条等价 —— 以及 `_crossed_line_why` 那两种形状的推导 ——
+    **全都要求「带正文的行 == 落点认的那些行」**。
+
+    哪天有别的工具也写这一键（`_summarize` 的兜底那一支 `out.update(raw)` 就够，它不设防），
+    等价就不成立：文案可以落在两个 `observe` 之间的某一行上，而落点**看不见它** ⇒
+    **提交留在前缀里** ⇒ 重放它 = **往真实站点再交一次真实表单**。那是 R3 唯一要防的事。
+
+    所以这里**不猜也不静默**：宁可当场停下说话，也不放一个可能重复提交的前缀出去。
+
+    今天成立（三层核过，复审 2026-09-17）：`_summarize` 只在 `observe` 那一支写这一键；
+    MCP 工具表是固定的 7 个（`tools/cdp/internal/mcp/registry_test.go`），其余工具的结果里
+    没有那一段（`diff` 只回 `actionable`，`PageText` 只长在 observe 的 `PageModel` 上）；
+    盘上真账本 342 行里，非 `observe` 行带这一键的 **0 行**。
+    """
+    for i, row in enumerate(rows or []):
+        res = (row or {}).get("result")
+        if not isinstance(res, dict) or not res.get("page_text_head"):
+            continue
+        action = str((row or {}).get("action") or "")
+        if action != "observe":
+            raise _TextPremiseBroken(
+                "第 %d 行是「%s」，可它的结果里带着 `page_text_head` —— R3 的**前提破了**"
+                "（前提：正文只有 `observe` 那些行才写）。R3 判「过没过成功线」时**只认 `observe` "
+                "当落点**，别的行带正文会让「窗口里看见过」漏判 ⇒ **这一步（常常就是提交）"
+                "会留在前缀里**，重放它 = **往真实站点再交一次真实表单**。"
+                "这里不猜：先把前提收回来（该写这一键的只有 `_summarize` 的 `observe` 那一支），"
+                "再决定 R3 的落点要不要跟着改大。"
+                % (i + 1, action or "（这一行没写动作名）"))
+
+
 def replayable_prefix(steps: list, success_text: str, *,
                       entry_url: str = "", pages: list | None = None) -> tuple:
     """账本里**能照着重放**的那一段，以及「为什么停在这」（人话）。设计注 §1.4.3。
@@ -1630,6 +1689,8 @@ def replayable_prefix(steps: list, success_text: str, *,
             "（R3 唯一的输入就是它，而 R3 管的是「过了成功线之后不许再动真页面」）")
 
     rows = list(steps or [])
+    #: R3 的**前提**先验（破了就抛，不静默）—— 下面每一行的推导都压在它上面。
+    _only_looks_carry_the_text(rows)
     #: 走到每一行时「观测到的页面文字」累计到哪儿了（**按顺序**累，R3 要的就是这个顺序）。
     seen_text: list = []
     blob = ""
@@ -1734,6 +1795,12 @@ def _landing_index(rows: list, i: int) -> int:
     - **其余行**（动作行、`diff`／`screenshot`）→ 它之后、**下一次动作之前**的**最后一眼**
       `observe`；但**不比旧口径更少**（旧口径 = 往后第一条 `observe`，可能跨过后面的动作）。
 
+    ⚠️ **这里有一条前提**：右端**只认 `observe`**，而 R3 比的是「最早看见成功文案的那一行」——
+    两者能对上，靠的是「**带正文的行 == 落点认的那些行**」（正文只有 `observe` 写）。
+    这条前提**破了，R-E9 的性质本身就破**（提交会留在前缀里）⇒ 它由一个哨兵把着门：
+    `_only_looks_carry_the_text`（`replayable_prefix` 一进来就验，破了**抛**
+    `_TextPremiseBroken`）。改这里之前先读它。
+
     为什么要吃满「下一次动作之前」这一整段（**R-E9**）：只看到**第一眼**会漏掉
     「点了到新页、第二眼才渲染出来」那一形 —— 那时**那一步（常常就是提交）会留在前缀里**，
     而重放它 = **往真实站点再交一次真实表单**（用户原话：「刷太多不太好」）。
@@ -1765,7 +1832,9 @@ def _crossed_line_why(i: int, row: dict, success_text: str, hit: int) -> str:
     所以「拦下某一行」的那次判断里 `hit` 只可能**等于或大于**它 —— `hit < i` 到不了。
     （前提说清楚：那句话只出现在 **observe 行的正文**里。账上真会这样 —— `page_text_head`
     只有 `_summarize("observe", …)` 写；别的工具的结果里没有那一段。哪天有工具也写了，
-    这个分支就重新可达，**不用改代码、只要重新想一遍这句话对不对**。）
+    这个分支就重新可达 —— 但**不会静默地走到这儿**：`_only_looks_carry_the_text`
+    在 `replayable_prefix` 一进来就把这种账**抛**出来（`_TextPremiseBroken`），
+    所以真要改的是**那条前提**，不是这句话。）
 
     - `hit == i`：拦下的**就是记下那句话的那次观察** —— 那句话是在**没有动作的那一眼**上
       才第一次看到的（上一条账也是观察）。**这一形有两种可能，而系统分不出**：

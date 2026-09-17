@@ -3042,6 +3042,76 @@ def test_an_action_with_no_look_before_the_next_one_keeps_the_old_reading():
     assert "落到的那一页" in why, why
 
 
+def test_a_non_observe_row_carrying_the_success_text_trips_the_premise():
+    """**R3 的前提哨兵**：正文（`page_text_head`）只有 `observe` 行写 —— 破了要**当场响**。
+
+    为什么这条不是洁癖（复审原话：**这条前提一破，性质本身就破**）：R3 的两端一边是
+    「**最早**看见成功文案的那一行」（逐行累加的 blob），另一边是「这一步的**落点**」——
+    而落点**只认 `observe`**。两者能对上，靠的正是「带正文的行 == 落点认的那些行」。
+    这条一破，「窗口里看见过」会漏判 ⇒ **提交留在前缀里** ⇒ 重放它 = 往真实站点
+    再交一次真实表单（R3 存在的唯一理由就是防这个）。
+
+    形状：把成功文案挂在一条 **`diff`** 行上 —— 它是「看一眼」（R2 认它），但**不是** `observe`
+    （R3 的落点不认它）。这正是「哪天有别的工具也写这一键」那一形
+    （`_summarize` 的兜底那支 `out.update(raw)` 不设防，一条新工具的结果里带上它就成）。
+
+    判据两半：① **抛**（不是照旧返回一个可能重复提交的前缀）；② 那句话**点出前提与后果**，
+    让读账的人知道该去改哪儿 —— 一条「不知道哪儿错了」的异常等于没响。
+    """
+    rows = [_goto(ENTRY, state="start"),
+            _look(ENTRY, TEXT_A, state="start"),
+            _click("提交申请", state="funnel"),
+            _row("diff", "quote", result={"actionable": True,
+                                          "page_text_head": f"{TEXT_B} {SUCCESS}"})]
+    # 正对照（先证明**这个形状本身**是危险的）：把它当成 observe，前缀就停在它前面 ——
+    # 也就是说，这一行只要被落点认，提交就进不去前缀。差别全在「落点认不认这一行」上。
+    same_shape = list(rows[:3]) + [_look(QUOTE, f"{TEXT_B} {SUCCESS}", state="quote")]
+    prefix, _why = browser_agent.replayable_prefix(same_shape, SUCCESS, entry_url=ENTRY)
+    assert prefix == same_shape[:2], f"正对照就不成立：{[r['action'] for r in prefix]}"
+
+    with pytest.raises(browser_agent._TextPremiseBroken) as exc:
+        browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    msg = str(exc.value)
+    assert "第 4 行" in msg and "diff" in msg, msg
+    assert "前提" in msg and "真实表单" in msg, msg
+
+
+def test_a_non_observe_tool_writing_the_page_text_key_trips_the_premise_at_the_source():
+    """**同一条前提的写入侧哨兵**：`_summarize` 里这一键**只有 `observe` 那一支**写。
+
+    读取侧那一条见 `test_a_non_observe_row_carrying_the_success_text_trips_the_premise`。
+    两侧都要，管的不是一件事：
+    - **写入侧**管**前提的产地** —— 哪天的工具结果里带上这一键（兜底那支 `out.update(raw)`
+      不设防，一条新工具带上它就成），当场响，**并且报得出是哪个工具**；
+    - **读取侧**管**性质的使用地** —— 账本从别的路进来（旧文件、手改、别处导入）时照样拦得住。
+
+    判据是**键在不在**，不是值真不真：一串**空正文**也说明「有别的工具在写它」——
+    R3 的整套推导（「窗口里任何一眼看见 ⇔ 最后一眼看见」）是从「只有 observe 写」来的，
+    与那一串是不是空的无关。
+
+    ⚠️ **哪几条路真能把这一键带进来**（实测，不是推的）：`goto` / `diff` / `screenshot`
+    各有自己的分支、**只挑自己那几个键**，raw 里多出来的一律不进 `out`；真正的口子是
+    **兜底那一支**（`out.update(raw)`）—— `click` / `form` / `scroll` 都走它，
+    **以及任何一条新工具**（名字不在上面那几个分支里 ⇒ 也走兜底）。
+    所以下面两条各自钉一条路。
+    """
+    # ① **新工具**（名字不在那几个分支里 ⇒ 走兜底）：这一形就是「哪天有别的工具也写它」。
+    with pytest.raises(browser_agent._TextPremiseBroken) as exc:
+        browser_agent._summarize("read", {}, {"page_text_head": f"… {SUCCESS} …"}, 1, None)
+    assert "read" in str(exc.value), str(exc.value)          # 报得出是哪个工具
+    # ② 已有的兜底那几条路：**键在、值是空的**照样算破（判的是键在不在）。
+    with pytest.raises(browser_agent._TextPremiseBroken):
+        browser_agent._summarize("click", {}, {"x": 1, "page_text_head": ""}, 1, None)
+
+    # 正对照两半：①同一串正文走 `observe` 那一支 —— 它**本来就该**由这一支写（不抛）；
+    # ②`diff` 的分支**只挑自己那几个键** —— raw 里塞进来的这一键进不去（不是口子）。
+    got = browser_agent._summarize("observe", {}, {"page_text": SUCCESS}, 1, None)
+    assert got["page_text_head"] == SUCCESS, got
+    dropped = browser_agent._summarize("diff", {}, {"actionable": True,
+                                                    "page_text_head": SUCCESS}, 1, None)
+    assert "page_text_head" not in dropped, dropped
+
+
 def test_the_product_replays_a_goto_to_the_address_we_asked_for(tmp_path):
     """**R-E8 的哨兵**：产物侧重放 goto 发的是**请求地址**（不是落地地址）。
 
