@@ -729,12 +729,37 @@ def test_the_window_knobs_reach_the_selftest(tmp_path):
     assert got["entry_url"] == "https://example-funnel.test/quiz?fresh=1"
 
 
-def test_without_the_viewport_knob_the_run_stops_by_name_not_by_cap(tmp_path):
-    """没人接那根线时：**报出缺的是哪个旋钮**，不许假装通过，也不许转到上限怪产物（R-31）。
+def test_a_knob_for_a_round_this_run_never_reaches_does_not_stop_the_run(tmp_path):
+    """**R-84（用户裁定）**：跑不到的那一遍**不配一根闸** —— 缺 `set_viewport` 也不许拦。
 
-    「跳过」在 Task 6 的判据里**不算过**（R-5），所以图不能自己发明一个默认让它跳过去；
-    可它也不能因此永远卡在那儿 —— 停在原地、把人话和该给的东西说清楚，才是诚实的出口。
+    为什么（裁定原话的意思）：阶梯**一过就停、到顶也停**，默认硬顶 3 次提交，
+    第 4 遍（viewport）**这一轮根本轮不到**。给一个跑不到的扰动配一根闸，
+    就是「**接上了但不响**」（本项目的头号忌讳）：图会为一根**用不上的线**停下，
+    人还得去查一个跟这次结论无关的旋钮。
+
+    判据落在三处：不停（照跑）、**自测真跑了**、而且**照常交付**。
     """
+    deps, rec = _deps(set_viewport=None)
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "delivered", out.get("end_note")
+    assert len(rec.selftest) == 1, "自测该照跑（不拦就得真跑，不是绕过它）"
+    assert [p["step"] for p in payloads][:2] == ["intake", "explore"], payloads
+    # 那一遍既然这一轮轮不到，它的旋钮**连提都不提**（不是「列出来但不拦」）——
+    # 提它等于让人去查一根跟这次结论无关的线
+    intake = [p for p in payloads if p["step"] == "intake"][0]
+    assert intake["facts"]["还缺的窗口旋钮"] == [], intake["facts"]
+
+
+def test_when_the_cap_reaches_viewport_a_missing_knob_still_stops_by_name(tmp_path, monkeypatch):
+    """硬顶抬到**轮得到 viewport**时（这里抬到 5）：缺那根线**必须拦**，而且点名（R-31）。
+
+    两条路都摆在明面上：接上线，或者明确写进 `allow_skips` —— 不许默认放过
+    （R-5：跳过的遍不算过）。**这条是上面那条的反例**：闸没有整个失效，
+    它只是**只在真轮得到的时候**才拦。
+    """
+    monkeypatch.setattr(selftest, "MAX_SUBMISSIONS", 5)
     deps, rec = _deps(set_viewport=None)
     app, cfg, _ = _build(deps=deps)
     payloads, out = _drive(app, cfg, _brief(tmp_path))
@@ -752,12 +777,17 @@ def test_without_the_viewport_knob_the_run_stops_by_name_not_by_cap(tmp_path):
     assert [p["step"] for p in payloads] == ["intake"], payloads
 
 
-def test_a_knob_that_disappears_before_the_selftest_is_caught_at_the_selftest(tmp_path):
+def test_a_knob_that_disappears_before_the_selftest_is_caught_at_the_selftest(tmp_path,
+                                                                            monkeypatch):
     """窗口层那根线在**跑到一半**没了（进程重启后没接上）：self-test 那一步也要拦。
 
     两处检查各有各的场景：intake 那处管「开场白就缺」（早停，不烧窗口）；
     这处管「跑到这儿时手上这根线没了」（Task 8 恢复同一个 run 时换了 Deps）。
+
+    ⚠️ 硬顶抬到 5（R-84：默认 3 次提交时第 4 遍**轮不到**，那根闸按裁定就不该拦）——
+    这条测的是**两处检查点**，不是「哪一轮跑得到」。
     """
+    monkeypatch.setattr(selftest, "MAX_SUBMISSIONS", 5)
     deps, rec = _deps()
     app, cfg, _ = _build(deps=deps)
     out = app.invoke(_brief(tmp_path), cfg)

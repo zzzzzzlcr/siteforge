@@ -881,6 +881,17 @@ def _unfinished_note(stop: str, journey) -> str:
                "；".join(str(n) for n in (getattr(journey, "notes", None) or [])[-2:]) or "没有别的记录"))
 
 
+def _submission_cap(state, deps: Deps) -> int:
+    """这一轮的自测**最多提交几次**（R-84 的硬顶）。
+
+    ⚠️ 取的是**真正会传给 `selftest.run` 的那个数**（`_selftest_kwargs` 里的
+    `max_submissions`，没有就用 `selftest.MAX_SUBMISSIONS`）—— 两处各写一个数就会漂，
+    而漂的后果是「闸拦的轮数」与「真跑的轮数」对不上。
+    """
+    kw = _selftest_kwargs(state, deps)
+    return int(kw.get("max_submissions", selftest_mod.MAX_SUBMISSIONS))
+
+
 def _missing_knobs(state, deps: Deps) -> list:
     """哪几遍扰动**既跑不了、又没人允许跳过** —— 报出缺的那根线（R-31）。
 
@@ -888,15 +899,24 @@ def _missing_knobs(state, deps: Deps) -> list:
     （写进 `allow_skips`）。两样都不成立时图**停**并把旋钮名字点出来 ——
     不许自己发明一个默认让它跳过去（R-5：跳过的遍不算过），也不许带着它往下走、
     让报告把这件接线的事记成「产物不行」。
+
+    ⚠️ **R-84（用户裁定）**：只拦**这一轮真的轮得到**的那几遍。
+    阶梯按 `RUN_NAMES` 走，**一过就停、到顶也停** —— 默认硬顶 3 次提交，
+    第 4/5 遍（viewport / country）**这一轮根本轮不到**。
+    给一个跑不到的扰动配一根闸，就是「**接上了但不响**」（本项目的头号忌讳）：
+    图会为一根**用不上的线**停下，而人还得去查一个跟这次结论无关的旋钮。
     """
     allowed = tuple(state.get("allow_skips") or selftest_mod.DEFAULT_ALLOWED_SKIPS)
+    cap = _submission_cap(state, deps)
     out = []
     for name, (knob, what, who) in ROUND_NEEDS.items():
         if name in allowed:
             continue
+        nth = list(selftest_mod.RUN_NAMES).index(name) + 1
+        if nth > cap:                    # 这一轮轮不到它 —— 不拦（R-84）
+            continue
         if getattr(deps, knob, None) is None:
-            out.append({"round": name, "knob": knob, "what": what, "who": who,
-                        "nth": list(selftest_mod.RUN_NAMES).index(name) + 1})
+            out.append({"round": name, "knob": knob, "what": what, "who": who, "nth": nth})
     out.sort(key=lambda item: item["nth"])
     return out
 

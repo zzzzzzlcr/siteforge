@@ -353,13 +353,18 @@ def test_a_viewport_we_cannot_honour_is_refused_not_dropped(tmp_path):
     assert fg.invokes == []
 
 
-def test_no_knob_and_no_skips_is_accepted_and_the_graph_names_what_is_missing(tmp_path):
+def test_no_knob_and_no_skips_is_accepted_and_the_graph_names_what_is_missing(tmp_path,
+                                                                            monkeypatch):
     """没人给窗口旋钮、也没人点名允许跳过 —— **照收**，让图自己停住点名（R-31）。
 
     这是**对的**行为，不是要在服务里糊掉的东西：图会在 intake 停下并说清
     「缺的是 `set_viewport`，谁给得了」。服务要是这时候替它塞一个默认，
     等于替人**预授权跳过**（R-5 明令不许）。
+
+    ⚠️ 硬顶抬到 5（R-84 用户裁定）：默认 3 次提交时第 4 遍（viewport）**这一轮轮不到**，
+    按裁定那根闸就不该拦 —— 这条测的是**服务不预授权 + 图点名**，不是「哪一轮跑得到」。
     """
+    monkeypatch.setattr(selftest, "MAX_SUBMISSIONS", 5)
     rec = Rec()
     deps = _deps(rec, tmp_path)                               # 真图，但**没人要那根线**
     client = _client(graph_factory=lambda brief, d: graph.build(
