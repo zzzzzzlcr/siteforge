@@ -35,6 +35,8 @@ import json
 import pathlib
 import sys
 
+import pytest
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -443,11 +445,18 @@ def test_read_rows_survives_a_multibyte_half_line(tmp_path):
     所以它不会把主路带塌 —— 但**会把证据整份丢掉**，而这条线存在的理由就是留证据。
 
     判据落在**两边**：坏行之后的**好行照样读得出来**，坏的那行留一条 `_corrupt`（带行号）。
+
+    ⚠️ **切在续字节前面**（`(b & 0xC0) == 0x80`）：切**前导**字节（`b & 0x80`）会把那个字**整个切掉**，
+    剩下的是**合法 UTF-8** —— 那样这条用例**钉不住任何东西**（修复轮 3 复审实测：
+    拿一条忠实的「整份一次严格解码」变异去打，**全量 468 条 0 红**）。
+    下面那句 `decode` 断言就是这个前提的哨兵：**不抛就不算切在字中间**。
     """
     path = tmp_path / "window.jsonl"
     good = '{"at": "2026-09-17 10:0%d", "note": "第 %d 次探活"}\n'
     broken = '{"at": "2026-09-17 10:02", "note": "第二次探活：窗口还在"}'.encode("utf-8")
-    cut = next(i for i, b in enumerate(broken) if b & 0x80)
+    cut = next(i for i, b in enumerate(broken) if (b & 0xC0) == 0x80)   # ← 续字节
+    with pytest.raises(UnicodeDecodeError):
+        broken[:cut].decode("utf-8")            # 前提：切出来**必非法**（否则这条用例是虚的）
     path.write_bytes((good % (1, 1)).encode("utf-8")
                      + broken[:cut] + b"\n"          # ← 切口落在一个字的中间
                      + (good % (3, 3)).encode("utf-8"))
