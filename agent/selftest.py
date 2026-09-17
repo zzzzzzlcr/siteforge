@@ -13,6 +13,33 @@
 | 4 | 换 viewport | 折叠 / 遮挡 / 坐标假设 | 注入式回调 `set_viewport`（R-5）：viewport 是**窗口层**的事（`POST /browser/update`），产物和 cdp 内核都够不着 |
 | 5 | 换代理国家 | 地区内容差异（规格 §10 说这是 R1 的主要来源） | 注入式回调 `set_country`；不给就跳过（这条要重拉 gost 链，单遍成本高，计划里就标了**可选**）|
 
+## R-84（2026-09-17，**用户裁定**）：不再固定跑三遍 —— **每一遍都是一次真实提交**
+
+**用户原话：「不需要 3 遍。刷太多不太好」**（现场佐证：他为此**亲手关掉了 Bit 窗口**才止住它）。
+每跑一遍 = 产物把整个漏斗从头走一遍 = **一次真实提交到站方**；而流水线还会循环
+（定稿→自检→自测→诊断→再定稿），**每循环又是一遍三趟** —— 73 趟自测 ≈ **上百次提交**
+到同一个 lead 表单。**对 lead-gen 类站点，这不是效率问题，是会伤到站方的。**
+
+新判据（**这一节是承重的，别把它做软**）：
+
+| | |
+|---|---|
+| **默认** | 只跑 **1 遍**（`baseline`）。**过了就算过。** |
+| **补跑** | **只在没过的时**才往下跑（`rerun` → `delay`）—— 用来分辨「产物不行」还是「这一趟环境抖了」 |
+| **上界** | 仍然按 `RUN_NAMES` 那一串往下走，但**只在需要时才用到** |
+| **硬顶** | **每轮验收最多 `MAX_SUBMISSIONS`（3）次提交**，到顶就停、**如实报**，不许悄悄超 |
+
+⚠️ **「没过必须补跑」是承重的一半**：少跑的那几遍本来是打「状态残留 / 时序竞争 /
+折叠遮挡」这三类的 —— 默认只跑一遍会把它们**全漏掉**。所以新判据的核心不是「少跑」，
+是「**成功才少跑，失败必须补**」。把这条做丢，验收就变成走过场。
+
+两条随之而来的性质（都落在报告里，别让读者自己猜）：
+
+- **没跑的那几遍照样列出来**（状态 `not_needed`，`ok=None`），并写清它打的那一类
+  **这一次没验到** —— 「少跑」不许读成「验过了」；
+- **提交次数**（`Report.submissions`）跟着报告走，闸口的 facts 里也报 ——
+  **这次出事就是因为看不见**；看不见的话，下次还会有人悄悄刷起来。
+
 ## 一条不能破的性质：诚实
 
 **任一遍挂 → `passed=False`，并且说得清是哪一遍、卡在第几步**（计划 Task 6 的 ⚠️：
@@ -70,6 +97,27 @@ RUN_LABELS = {
     "country": "第 5 遍：换个代理国家再跑（打地区内容差异）",
 }
 
+#: 这一遍**打的是哪一类失败**（R-84：没跑的那几遍要能一句说清「哪一类这次没验到」）。
+RUN_BLASTS = {
+    "baseline": "基线（正常一遍走不走得通）",
+    "rerun": "状态残留 / 首次加载假设",
+    "delay": "时序竞争 / 没等就点",
+    "viewport": "折叠 / 遮挡 / 坐标假设",
+    "country": "地区内容差异",
+}
+
+#: **一次提交** = 产物把整个漏斗走一遍 = 一次真实的 lead 提交（R-84）。
+#: `MAX_SUBMISSIONS` 是**硬顶**：一轮验收最多提交几次，到顶就停、如实报，不许悄悄超。
+#: 那个「3」是用户裁定的上界（原来固定跑三遍 = 每轮 3 次；现在只在需要时才用到）。
+MAX_SUBMISSIONS = 3
+
+#: R-84 加的那一种状态：**这一轮用不着跑它**（前一遍就过了 / 已经用满提交次数）。
+#: ⚠️ 与 `skipped` 是**两件事**，别混：
+#:   - `skipped`      = 该跑而没跑成（没旋钮 / 回调炸了）→ **默认拦** `passed`（R-5）；
+#:   - `not_needed`   = 按 R-84 的判据**本来就不该跑** → 不拦，但**报告里照样列出来**，
+#:                      并写清它打的那一类这次没验到。
+STATUS_NOT_NEEDED = "not_needed"
+
 #: 默认**允许**跳过的那几遍。只有第 5 遍：规格 §10 与计划都把「换代理国家」标成可选
 #: （要重拉 gost 链，单遍成本高）。第 4 遍**不在**里面 —— 跳了就得让报告说没过，
 #: 除非调用方**明确**把它加进来（R-5）。
@@ -111,7 +159,7 @@ class Run:
 
     name: str                    # 稳定键：baseline / rerun / delay / viewport / country
     label: str                   # 人话：这一遍在打什么
-    status: str                  # "passed" | "failed" | "skipped"
+    status: str                  # "passed" | "failed" | "skipped" | "not_needed"（R-84）
     ok: Optional[bool]
     failed_step: Optional[int]   # 卡在第几步（trace 里第一条 ok=false 的 step）
     trace_path: Optional[str]    # 这一遍自己的 trace（没跑就没有）
@@ -150,8 +198,30 @@ class Report:
         return tuple(r for r in self.runs if r.status == "skipped")
 
     @property
+    def not_needed_runs(self) -> tuple:
+        """R-84：**这一轮用不着跑**的那几遍（过了就不跑 / 到顶了）。"""
+        return tuple(r for r in self.runs if r.status == STATUS_NOT_NEEDED)
+
+    @property
+    def submissions(self) -> int:
+        """这一轮**真提交了几次**（R-84）—— 一次提交 = 产物把整个漏斗走一遍。
+
+        ⚠️ 判据是「**产物真起来了没有**」，不是「这一遍的结论是什么」：
+        `trace_path` 是 `_execute` 记的，非空 ⟺ 这一遍真的起过产物。
+        别只看 `status` —— `rerun` 那一步可能**记挂但没跑**（`cdp navi` 没成，
+        产物一次都没起来），那**不算一次提交**：算进去这个数就虚高，
+        而虚高正是这次要治的病（「上百次提交」就是没人看得见才发生的）。
+        """
+        return sum(1 for r in self.runs
+                   if r.status in ("passed", "failed") and r.trace_path)
+
+    @property
     def blocking(self) -> tuple:
-        """让 `passed` 变成 False 的那几遍：挂掉的 + 没跑又没人允许不跑的。"""
+        """让 `passed` 变成 False 的那几遍：挂掉的 + 没跑又没人允许不跑的。
+
+        ⚠️ `not_needed` **不在里面**（R-84：那是「这一轮用不着跑」，不是「少给了一个输入」）——
+        它们照旧出现在 `summary()` 里，只是不拦判据。
+        """
         return tuple(r for r in self.runs
                      if r.status == "failed"
                      or (r.status == "skipped" and r.name not in self.allowed_skips))
@@ -162,20 +232,25 @@ class Report:
             "site": self.site,
             "py_path": self.py_path,
             "passed": self.passed,
+            # R-84：**这一轮提交了几次** —— 产物里也留着，光看报告的人也能看见
+            "submissions": self.submissions,
             "allowed_skips": list(self.allowed_skips),
             "cdp_bin": self.cdp_bin,
             "runs": [r.as_dict() for r in self.runs],
         }
 
     def summary(self) -> str:
-        """给非技术人员看的一段话（D16）：过没过、哪遍挂、卡在第几步、哪遍没验到。"""
+        """给非技术人员看的一段话（D16）：过没过、**提交了几次**、哪遍挂、卡在第几步、哪遍没验到。"""
         lines = []
         if self.passed:
-            ran = [r for r in self.runs if r.status != "skipped"]
-            head = "扰动自测过了：%d 遍都跑通了。" % len(ran)
-            lines.append(head)
+            lines.append("扰动自测过了：这一轮往站方提交了 %d 次。" % self.submissions)
+            # R-84：判过也可能是**挂了一遍、补跑过的** —— 那件事必须说出来
+            # （不然「过了」这两个字会把那一次失败吞掉）。
+            for run in self.failed_runs:
+                lines.append("· %s —— 挂过一遍，补跑过了：按判据读作**这一趟环境抖了**，"
+                             "不是产物的问题（%s）" % (run.label, run.note))
         else:
-            lines.append("扰动自测没过，先别交付。")
+            lines.append("扰动自测没过，先别交付。这一轮提交了 %d 次。" % self.submissions)
         for run in self.blocking:
             if run.status == "failed":
                 lines.append("· %s —— %s" % (run.label, run.note))
@@ -185,6 +260,8 @@ class Report:
         for run in self.skipped_runs:
             if run not in self.blocking:
                 lines.append("· %s —— %s" % (run.label, run.note))
+        for run in self.not_needed_runs:
+            lines.append("· %s —— %s" % (run.label, run.note))
         lines.append(CAVEAT)
         return "\n".join(lines)
 
@@ -316,6 +393,19 @@ def _skipped(name: str, note: str) -> Run:
                failed_step=None, trace_path=None, note=note)
 
 
+def _not_needed(name: str, why: str) -> Run:
+    """R-84：**这一轮用不着跑**的那一遍（前一遍就过了 / 到顶了）。
+
+    与 `_skipped` 一样 `ok=None`、没有 trace、没有步号；**不一样的是判据**：
+    跳过要拦 `passed`（R-5），这个不拦。⚠️ 但**不许因此静悄悄**：note 里要写清
+    它打的那一类失败这次**没验到**，`summary()` 里也照样列出来。
+    """
+    return Run(name=name, label=RUN_LABELS[name], status=STATUS_NOT_NEEDED, ok=None,
+               failed_step=None, trace_path=None,
+               note="这一遍没跑：%s。它打的那一类失败（%s）这一次**没验到**。"
+                    % (why, RUN_BLASTS[name]))
+
+
 def _default_run_dir(site: str) -> pathlib.Path:
     """默认把每一遍的 trace 放在 `runtime/selftest/<site>-<时刻>/`（`runtime/` 不进 git）。"""
     return _REPO / "runtime" / "selftest" / ("%s-%s" % (site, time.strftime("%Y%m%d-%H%M%S")))
@@ -373,14 +463,27 @@ def _execute(name: str, py, ws_url, form_file, correlation_id, log_level, env,
 
 
 def _judge(runs: Sequence[Run], allowed_skips: Sequence[str]) -> bool:
-    """`passed` 的判据：**挂任何一遍就是没过**；跳过的那遍只有被点名允许才不拦。
+    """`passed` 的判据。这是本模块最承重的一个函数 —— 改动前先看 `tests/test_selftest.py`。
 
-    这是本模块最承重的一个函数（计划 Task 6 的 ⚠️：「不许把『某遍挂』吞成
-    『部分通过』」）。改动这里之前先看 `tests/test_selftest.py` 的变异验证。
+    三条（R-84 起）：
+
+    1. **至少一遍真的过了**。以前「任一遍挂就是没过」，现在补跑过了可以判过 ——
+       但**一遍都没过就是没过**：那一次失败没有反面证据，不许被读成「差不多」。
+    2. **最多挂一遍**。一遍挂、补跑过 = 「这一趟环境抖了」（这正是 `rerun` 存在的理由，
+       brief 明写的行为）；**连着两遍挂 = 产物不行**，不是环境抖。
+       ⚠️ 这一条是 R-84 之后**判据的边界**：它决定了「挂几次算不行」。
+    3. **跳过那几条照旧**（R-5）：没被点名允许的跳过仍然拦。
+
+    `not_needed`（R-84：这一轮用不着跑）**不参与判据** —— 它既不是挂，也不是「没验到的输入」。
+    「不许把『某遍挂』吞成『部分通过』」这条老规矩仍在：吞它的路只有一条，
+    就是第 1、2 条合起来说的「**挂了一遍、但补跑真过了**」。
     """
+    failed = [r for r in runs if r.status == "failed"]
+    if not any(r.status == "passed" for r in runs):
+        return False
+    if len(failed) > 1:
+        return False
     for run in runs:
-        if run.status == "failed":
-            return False
         if run.status == "skipped" and run.name not in allowed_skips:
             return False
     return True
@@ -399,8 +502,16 @@ def run(py_path, ws_url, form_file, site, *,
         correlation_id: Optional[str] = None,
         task_id: Optional[str] = None,
         log_level: str = "INFO",
-        allow_skips: Sequence[str] = DEFAULT_ALLOWED_SKIPS) -> Report:
-    """在真浏览器上把 `py_path` 按扰动序列跑 5 遍，返回一份**说得清**的结论。
+        allow_skips: Sequence[str] = DEFAULT_ALLOWED_SKIPS,
+        max_submissions: int = MAX_SUBMISSIONS) -> Report:
+    """在真浏览器上按 `RUN_NAMES` 的序列跑，返回一份**说得清**的结论。
+
+    ## 跑几遍（R-84，**用户裁定**）：按需，不再固定
+
+    一遍**过了就停**（默认只跑 `baseline`）；没过才往下补跑（`rerun` → `delay` → …），
+    用来分辨「产物不行」还是「这一趟环境抖了」。**硬顶 `max_submissions` 次提交**，
+    到顶就停、如实报（没跑到的那几遍记 `not_needed`，note 里写清哪一类没验到）。
+    ⚠️ 「不过必须补跑」是承重的一半 —— 少了它，验收就变成走过场（见模块 docstring）。
 
     参数（四个位置参数是 brief 的接口，其余全是可选）：
         py_path / ws_url / form_file / site   产物、窗口、表单数据、站点短名
@@ -411,6 +522,10 @@ def run(py_path, ws_url, form_file, site, *,
         cdp_bin        产物与 cdp 命令都用哪一个 cdp（默认见 `_default_cdp_bin`）
         delay          第 3 遍的固定每步延迟（秒）
         allow_skips    明确允许不跑的那几遍（默认只有 `country`）
+        max_submissions **硬顶**（默认 3，R-84 的裁定）：一轮最多提交几次。
+            ⚠️ 调大它 = 把「刷太多」那条裁定改掉 —— 要有人裁，不许顺手调。
+            （它是参数、不是写死的常量：那套「没旋钮就跳过」的机制要靠它才验得到 ——
+            默认 3 次之下，第 4/5 遍**到不了**。）
     """
     py = pathlib.Path(py_path)
     if not py.is_file():
@@ -439,66 +554,97 @@ def run(py_path, ws_url, form_file, site, *,
         return _execute(name, py, ws_url, form_file, correlation_id, log_level, env,
                         run_dir, site, timeout, task_id=task_id, **kw)
 
-    runs = [_once("baseline")]
+    runs: list = []
+    submissions = 0
 
-    # 第 2 遍（R-6）：同一个 ws_url、同一个已经走到的页面，**接着**再跑一遍 ——
-    # 这才是「状态残留 / 首次加载假设」真正要打的东西。给了 entry_url 就先导航过去，
-    # 覆盖「刷新后重跑」的字面读法；导航本身也是一次动作，所以走 cdp 命令（不手拼 JS）。
-    if entry_url:
-        navi_failed = None
-        if not cdp_bin:
-            navi_failed = "没有可用的 cdp 二进制，刷新这一步做不了"
-        else:
-            host, port = _host_port(ws_url)
-            try:
-                done = subprocess.run([str(cdp_bin), "navi", entry_url,
-                                       "--host", host, "--port", port],
-                                      capture_output=True, text=True, timeout=60, env=env)
-                if done.returncode != 0:
-                    navi_failed = "cdp navi 没成（退出码 %d，它说：%s）" % (
-                        done.returncode, _tail(done.stderr or done.stdout) or "什么都没说")
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                navi_failed = "cdp navi 没成（%s）" % exc
-        if navi_failed:
-            runs.append(Run(name="rerun", label=RUN_LABELS["rerun"], status="failed",
-                            ok=False, failed_step=None, trace_path=None,
-                            note="这一遍的刷新没做成，所以它没验到状态残留：%s" % navi_failed))
-        else:
-            runs.append(_once("rerun"))
-    else:
-        runs.append(_once("rerun"))
+    def _spend(name, **kw) -> Run:
+        """跑一遍 = 一次**提交**（产物会把整个漏斗走一遍）。**计数只在这里加**。
 
-    runs.append(_once("delay", delay=delay))
+        ⚠️ 计数加在**真起产物**这一处，不是加在「轮到这个名字」那一处：
+        `rerun` 那一步的 `cdp navi` 失败时，产物一次都没起来 —— 那不算一次提交。
+        """
+        nonlocal submissions
+        submissions += 1
+        return _once(name, **kw)
 
-    # 第 4 遍（R-5）：viewport 是窗口层的事，只有调用方能动。没给回调 = 跳过 + 吵。
-    if set_viewport is None:
-        runs.append(_skipped("viewport", (
-            "这一遍没跑：换窗口大小要调用方在窗口层动手（POST /browser/update），"
-            "产物和 cdp 内核都够不着。所以「折叠 / 遮挡 / 坐标假设」这一类失败这次**没验到**；"
-            "要跑就传 set_viewport=回调，要放弃就把它写进 allow_skips（默认不算过）。")))
-    else:
-        try:
-            set_viewport(*viewport)
-        except Exception as exc:                       # 回调是外部世界，什么都可能抛
-            runs.append(_skipped("viewport", (
-                "这一遍没跑成：换窗口大小的时候出错了（%s）。这一类失败这次**没验到** —— "
-                "不算过。" % exc)))
-        else:
-            runs.append(_once("viewport"))
+    for name in RUN_NAMES:
+        # R-84 的两条闸：**到顶就停**、**过了就不再跑**。两条都要如实说为什么。
+        if submissions >= max_submissions:
+            runs.append(_not_needed(name, "这一轮已经用满 %d 次提交（硬顶）" % max_submissions))
+            continue
+        if any(r.status == "passed" for r in runs):
+            runs.append(_not_needed(name, "前一遍就过了（R-84：**过了就算过**，不再往下跑）"))
+            continue
 
-    # 第 5 遍：换代理国家（重拉 gost 链，成本高）。不给回调就跳过 —— 这条默认允许。
-    if set_country is None:
-        runs.append(_skipped("country", (
-            "这一遍没跑：换代理国家要重拉 gost 链（单遍成本高，规格 §10 就把它标成可选）。"
-            "所以「地区内容差异」这次**没验到**；要跑就传 set_country=回调 + country=…。")))
-    else:
-        try:
-            set_country(country)
-        except Exception as exc:
+        if name == "baseline":
+            runs.append(_spend("baseline"))
+            continue
+
+        if name == "rerun":
+            # 第 2 遍（R-6）：同一个 ws_url、同一个已经走到的页面，**接着**再跑一遍 ——
+            # 这才是「状态残留 / 首次加载假设」真正要打的东西。给了 entry_url 就先导航过去，
+            # 覆盖「刷新后重跑」的字面读法；导航本身也是一次动作，所以走 cdp 命令（不手拼 JS）。
+            navi_failed = None
+            if entry_url:
+                if not cdp_bin:
+                    navi_failed = "没有可用的 cdp 二进制，刷新这一步做不了"
+                else:
+                    host, port = _host_port(ws_url)
+                    try:
+                        done = subprocess.run([str(cdp_bin), "navi", entry_url,
+                                               "--host", host, "--port", port],
+                                              capture_output=True, text=True, timeout=60, env=env)
+                        if done.returncode != 0:
+                            navi_failed = "cdp navi 没成（退出码 %d，它说：%s）" % (
+                                done.returncode,
+                                _tail(done.stderr or done.stdout) or "什么都没说")
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        navi_failed = "cdp navi 没成（%s）" % exc
+            if navi_failed:
+                runs.append(Run(name="rerun", label=RUN_LABELS["rerun"], status="failed",
+                                ok=False, failed_step=None, trace_path=None,
+                                note="这一遍的刷新没做成，所以它没验到状态残留：%s" % navi_failed))
+            else:
+                runs.append(_spend("rerun"))
+            continue
+
+        if name == "delay":
+            runs.append(_spend("delay", delay=delay))
+            continue
+
+        if name == "viewport":
+            # 第 4 遍（R-5）：viewport 是窗口层的事，只有调用方能动。没给回调 = 跳过 + 吵。
+            if set_viewport is None:
+                runs.append(_skipped("viewport", (
+                    "这一遍没跑：换窗口大小要调用方在窗口层动手（POST /browser/update），"
+                    "产物和 cdp 内核都够不着。所以「折叠 / 遮挡 / 坐标假设」这一类失败这次"
+                    "**没验到**；要跑就传 set_viewport=回调，要放弃就把它写进 allow_skips"
+                    "（默认不算过）。")))
+            else:
+                try:
+                    set_viewport(*viewport)
+                except Exception as exc:                       # 回调是外部世界，什么都可能抛
+                    runs.append(_skipped("viewport", (
+                        "这一遍没跑成：换窗口大小的时候出错了（%s）。这一类失败这次**没验到** —— "
+                        "不算过。" % exc)))
+                else:
+                    runs.append(_spend("viewport"))
+            continue
+
+        # country（第 5 遍）：换代理国家（重拉 gost 链，成本高）。不给回调就跳过 —— 默认允许。
+        if set_country is None:
             runs.append(_skipped("country", (
-                "这一遍没跑成：换代理国家的时候出错了（%s）。地区内容差异这次**没验到**。" % exc)))
+                "这一遍没跑：换代理国家要重拉 gost 链（单遍成本高，规格 §10 就把它标成可选）。"
+                "所以「地区内容差异」这次**没验到**；要跑就传 set_country=回调 + country=…。")))
         else:
-            runs.append(_once("country"))
+            try:
+                set_country(country)
+            except Exception as exc:
+                runs.append(_skipped("country", (
+                    "这一遍没跑成：换代理国家的时候出错了（%s）。地区内容差异这次**没验到**。"
+                    % exc)))
+            else:
+                runs.append(_spend("country"))
 
     runs = tuple(runs)
     return Report(runs=runs, passed=_judge(runs, allowed), allowed_skips=allowed,

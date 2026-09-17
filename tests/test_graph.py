@@ -137,29 +137,29 @@ def _viewport_cb(width, height):
 
 
 def _faithful_selftest(rec):
-    """一个**照着 Task 6 的判据**做的自测桩（不是「一律返回 passed」）。
+    """一个**照着自测的判据**做的自测桩（不是「一律返回 passed」）。
 
     ⚠️ 这个桩的形状是有来历的（评审 Important 1）：图原先一个窗口旋钮都不往
-    `selftest.run` 传 → 真的 `run()` 走 `set_viewport=None` 那一支（`selftest.py:469`）→
-    第 4 遍记成 `skipped` → `_judge`（`selftest.py:370`）不认「跳过」为「过了」
-    （默认只允许跳 country，`selftest.py:76`）→ `Report.passed` **恒为 False** →
-    图在 selftest↔diagnose 之间转到上限，**看上去像产物不行**。
-    桩要是「一律 passed」，这个接线 bug 在测试里**永远不会现形**。
-    所以这里用**真的** `Run` / `Report` / `_judge`，跳过哪遍就照 Task 6 的规矩记 `skipped`。
+    `selftest.run` 传 → 真的 `run()` 走 `set_viewport=None` 那一支 → 第 4 遍记成
+    `skipped` → `_judge` 不认「跳过」为「过了」（默认只允许跳 country）→
+    `Report.passed` **恒为 False** → 图在 selftest↔diagnose 之间转到上限，
+    **看上去像产物不行**。桩要是「一律 passed」，这个接线 bug 在测试里**永远不会现形**。
+    所以这里用**真的** `Run` / `Report` / `_judge`。
+
+    ⚠️ R-84 起形状跟着变：真的 `run()` 现在是**按需跑**（过了就不往下跑），
+    所以桩也照那样返回 —— 基线过了 + 后面几遍 `not_needed`。桩要是还停在
+    「五遍都跑」，那它描述的是一份**真跑产不出来**的报告（桩与现实漂了，
+    后面接消费者的人会被它带偏）。要「挂掉的报告」的用例**显式**传 `reports=[…]`。
     """
     def run(py_path, ws_url, form_file, site, **kw):
         rec.tested_src = pathlib.Path(py_path).read_text(encoding="utf-8")
         rec.selftest.append({"py_path": str(py_path), "ws_url": ws_url,
                              "form_file": form_file, "site": site, **kw})
         allowed = tuple(kw.get("allow_skips") or selftest.DEFAULT_ALLOWED_SKIPS)
-        unnerved = [name for name, knob in (("viewport", "set_viewport"),
-                                           ("country", "set_country"))
-                    if kw.get(knob) is None]
-        runs = tuple(_run(name, "skipped" if name in unnerved else "passed",
-                          ok=None if name in unnerved else True,
-                          note="这一遍没跑：没人给那根线（%s）" % name
-                          if name in unnerved else "跑通了")
-                     for name in selftest.RUN_NAMES)
+        runs = tuple([_run("baseline", "passed", ok=True, note="跑通了")]
+                     + [_run(name, selftest.STATUS_NOT_NEEDED, ok=None,
+                             note="这一遍没跑：前一遍就过了（R-84：过了就算过）")
+                        for name in selftest.RUN_NAMES[1:]])
         return selftest.Report(runs=runs, passed=selftest._judge(runs, allowed),
                                allowed_skips=allowed, cdp_bin=None, site=site,
                                py_path=str(py_path))
@@ -320,10 +320,13 @@ def test_the_delivered_py_carries_provenance(tmp_path):
     assert prov["env"]["proxy_country"] == "US"              # 前提层给的，原样带上
     assert prov["source"]["kind"] == "build"
     assert prov["source"]["evidence"] == GOAL                # 人给的意图，原样带上
-    # 自测那块：跑了 4 遍、4 遍都过，而且**判据**（allow_skips 那套）也跟着走
-    assert prov["selftest"]["runs"] == 4
-    assert prov["selftest"]["passed"] == 4
+    # 自测那块：按 R-84 的形状（默认只跑 1 遍、过了就算过），而且**判据**（allow_skips 那套）跟着走
+    # ⚠️ 期望值从 4/4 改成 1/1：口径变了（`selftest.run` 不再固定跑几遍），不是为了让测试过
+    assert prov["selftest"]["runs"] == 1
+    assert prov["selftest"]["passed"] == 1
     assert prov["selftest"]["verdict"] is True
+    # ★ R-84：**这一轮提交了几次**必须跟着产物走（看不见的东西会再犯一次）
+    assert prov["selftest"]["submissions"] == 1, prov["selftest"]
     assert prov["selftest"]["at"]
     # 运行时出身（R-15：这份 py 跑起来用的是哪一份 common.py）也在里面
     assert prov["source"]["runtime"]["source_md5"]
@@ -358,7 +361,7 @@ def test_the_delivered_bytes_differ_from_the_tested_bytes_only_in_provenance(tmp
     assert _without_provenance(tested) == _without_provenance(delivered)
     # 差的那一块**正是**自测结果：自测时还是 None，交付时填上了
     assert _constant(tested, "PROVENANCE")["selftest"] is None
-    assert _constant(delivered, "PROVENANCE")["selftest"]["runs"] == 4
+    assert _constant(delivered, "PROVENANCE")["selftest"]["runs"] == 1   # R-84：默认只跑 1 遍
 
 
 def test_the_delivered_py_is_a_real_importable_production_script(tmp_path):
@@ -460,6 +463,28 @@ def test_a_selftest_failure_goes_through_diagnose_and_carries_the_failed_step(tm
     diag = [p for p in payloads if p["step"] == "diagnose"][0]
     assert "第 6 步" in diag["say"]
     assert "delay" not in diag["say"] and "failed_step" not in diag["say"], diag["say"]
+
+
+def test_the_gate_facts_report_how_many_times_this_round_submitted(tmp_path):
+    """**R-84：闸口的 facts 必须报出「这一轮往站方提交了几次」。**
+
+    这次出事就是因为**看不见**：固定三遍 × 73 轮 ≈ 上百次提交到同一个 lead 表单，
+    而当时没有任何一处把这个数摆到人眼前（用户是**亲手关掉 Bit 窗口**才止住的）。
+    看不见的东西会再犯一次 —— 所以它要出现在两处人看得到的地方：
+
+      - `diagnose` 那道闸（自测没过时人落在那儿）的 `facts["证据"]` **与人话**里；
+      - `deliver` 那道闸的 `facts["自测"]` 里（同一份还跟着产物进 PROVENANCE）。
+    """
+    deps, rec = _deps(reports=[_fail_report(failed_step=6), _pass_report()])
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    diag = [p for p in payloads if p["step"] == "diagnose"][0]
+    assert diag["facts"]["证据"]["submissions"] == 3, diag["facts"]["证据"]
+    assert "提交了 3 次" in diag["say"], diag["say"]
+
+    deliver = [p for p in payloads if p["step"] == "deliver"][0]
+    assert deliver["facts"]["自测"]["submissions"] == 4, deliver["facts"]["自测"]
 
 
 def test_a_run_nobody_allowed_to_skip_is_handed_over_as_not_run(tmp_path):

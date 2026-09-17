@@ -630,7 +630,10 @@ def _selftest(state, deps: Deps, caps: Caps) -> dict:
 def _diagnose(state, deps: Deps, caps: Caps) -> dict:
     """从自测报告里定位「哪一遍、卡在第几步、什么错」——**只说报告里真有的东西**。"""
     evidence = _diagnosis(state.get("report"))
-    say = ("自测没过。%s 接下来要拿这份记录去定位，定位完回 draft 改一版。" % evidence["say"])
+    # R-84：**这一轮往站方提交了几次**要摆在人眼前。一次提交 = 产物把整个漏斗走一遍
+    # = 一次真实的 lead 提交；裁定之前它固定是 3 次/轮，而**没有人看得见这个数**。
+    say = ("自测没过：这一轮往站方提交了 %d 次。%s 接下来要拿这份记录去定位，"
+           "定位完回 draft 改一版。" % (evidence["submissions"], evidence["say"]))
     out = _enter(state, caps, "diagnose", say, facts={"逐遍结果": evidence["per_run"],
                                                      "证据": evidence,
                                                      # 跑的条件（R-F1）：不是干净会话时，
@@ -997,21 +1000,26 @@ def _report_say(report) -> str:
 
 
 def _diagnosis(report) -> dict:
-    """报告 → 证据。**只说报告里真有的东西**：没说「卡在第几步」就不许编一个出来。"""
+    """报告 → 证据。**只说报告里真有的东西**：没说「卡在第几步」就不许编一个出来。
+
+    R-84：证据里带一个 **`submissions`**（这一轮往站方真提交了几次）—— 它跟着
+    diagnose 那道闸的 facts 一起给人看（**这次出事就是因为这个数没人看得见**）。
+    """
     per_run = [{"name": getattr(r, "name", None), "status": getattr(r, "status", None),
                 "ok": getattr(r, "ok", None), "failed_step": getattr(r, "failed_step", None),
                 "note": getattr(r, "note", "")}
                for r in (getattr(report, "runs", None) or ())]
+    submissions = int(getattr(report, "submissions", 0) or 0)
     if report is None:
         return {"run": None, "failed_step": None, "say": "没有自测报告可看。",
-                "note": "", "per_run": per_run}
+                "note": "", "per_run": per_run, "submissions": 0}
 
     blocking = list(getattr(report, "blocking", None) or ())
     first = blocking[0] if blocking else None
     if first is None:
         return {"run": None, "failed_step": None,
                 "say": "自测没过，但报告里没有哪一遍说清是为什么（这份报告不完整）。",
-                "note": "", "per_run": per_run}
+                "note": "", "per_run": per_run, "submissions": submissions}
 
     name, label, note = getattr(first, "name", None), getattr(first, "label", "") or "", \
         getattr(first, "note", "") or ""
@@ -1019,13 +1027,15 @@ def _diagnosis(report) -> dict:
         # 「跳过」不许被读成「卡在哪一步」—— 这一遍压根没跑，没有步号可指（Task 6 的诚实条款）
         return {"run": name, "failed_step": None,
                 "say": "%s 这一遍**没跑**（%s）—— 这一类失败这次没验到，不是「卡在哪一步」。"
-                       % (label or name, note), "note": note, "per_run": per_run}
+                       % (label or name, note), "note": note, "per_run": per_run,
+                "submissions": submissions}
     step = getattr(first, "failed_step", None)
     if step is None:
         say = "%s 这一遍挂了：%s" % (label or name, note)
     else:
         say = "%s 这一遍挂了：卡在第 %s 步 —— %s" % (label or name, step, note)
-    return {"run": name, "failed_step": step, "say": say, "note": note, "per_run": per_run}
+    return {"run": name, "failed_step": step, "say": say, "note": note, "per_run": per_run,
+            "submissions": submissions}
 
 
 def _delivery_path(state) -> pathlib.Path:
@@ -1087,18 +1097,29 @@ def _provenance(state, deps: Deps, *, report) -> dict:
 
 
 def _selftest_block(report, now: Optional[str]) -> Optional[dict]:
-    """`PROVENANCE["selftest"]`（§5.3 的形状：runs / passed / at）。
+    """`PROVENANCE["selftest"]`（§5.3 的形状：runs / passed / submissions / at）。
 
     `verdict` 是加出来的**判据**：`runs=5 passed=4` 读不出「那是允许跳过的第 5 遍」
     还是「挂了」，而图是**按 `report.passed` 走的** —— 它得跟着产物走，
-    不然下一个人只看产物就以为「4/5 差不多过了」。跑过的才算 `runs`（跳过的不是「跑了」）。
+    不然下一个人只看产物就以为「4/5 差不多过了」。跑过的才算 `runs`
+    （`skipped`（没旋钮）与 `not_needed`（R-84：这一轮用不着跑）都不是「跑了」）。
+
+    ⚠️ **`submissions` 是 R-84 那条裁定的可见性**：一次提交 = 产物把整个漏斗走一遍
+    = 一次真实的 lead 提交。裁定之前是**固定 3 次/轮**，而流水线每循环又是一轮 ——
+    「上百次提交」就是这么来的，且**当时没有人看得见这个数**（用户是亲手关掉 Bit 窗口才止住的）。
+    这个键必须跟着产物走：**看不见的东西会再犯一次**。
+
+    `runs` 与 `submissions` 几乎总是同一个数，**故意留两个**：
+    `rerun` 那一步可能记挂但**没跑**（`cdp navi` 没成）—— 那一遍算 `runs` 不算 `submissions`
+    （「这一遍有结论」与「往站方真提交了一次」是两件事）。
     """
     if report is None:
         return None
     runs = list(getattr(report, "runs", None) or ())
-    ran = [r for r in runs if getattr(r, "status", None) != "skipped"]
+    ran = [r for r in runs if getattr(r, "status", None) in ("passed", "failed")]
     return {"runs": len(ran),
             "passed": len([r for r in ran if getattr(r, "ok", None) is True]),
+            "submissions": int(getattr(report, "submissions", len(ran))),
             "at": now,
             "verdict": bool(getattr(report, "passed", False))}
 

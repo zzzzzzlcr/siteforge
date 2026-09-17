@@ -187,49 +187,142 @@ def _run(env, scripts, **kw):
     return selftest.run(str(env["py"]), WS, env["form"], SITE, **kw)
 
 
-# ── 一遍都不能挂：passed 的判据 ────────────────────────────────────
+# ── 跑几遍（R-84：按需 + 提交硬顶）──────────────────────────────────
 
-def test_all_five_runs_pass_only_when_both_callbacks_are_given(env):
-    """五遍都过 → `passed=True`；五遍的名字、顺序、trace 都落在报告里。
+def test_the_default_is_one_submission_and_a_pass(env):
+    """**R-84 的默认路径**：baseline 过了 → **只提交 1 次**，判过，后面那几遍**不再跑**。
 
-    第 4/5 遍要调用方在窗口/代理那一层动手（R-5），所以「五遍都过」这个前提
-    只有在两个回调都给了的时候才成立 —— 这也是下面几条测试的对照面。
+    这是用户裁定的正身（「不需要 3 遍。刷太多不太好」）：每跑一遍 = 产物把整个漏斗
+    从头走一遍 = **一次真实提交到站方**。⚠️ 但「少跑」不许读成「验过了」——
+    没跑到的那几遍照样在报告里（`not_needed`、`ok=None`），而且写清它们打的那一类
+    **这一次没验到**（少跑丢掉的正是「状态残留 / 时序 / 折叠遮挡」这三类）。
+    """
+    report = _run(env, _scripts())          # 一个回调都不给
+    assert report.passed is True, report.summary()
+    assert report.submissions == 1, report.runs
+    assert [r.status for r in report.runs] == ["passed"] + ["not_needed"] * 4, report.runs
+    # 硬证据：产物**只起来了一次**（不是报告自己说「就跑了 1 遍」）
+    assert len(env["stub"].artifact_calls) == 1, env["stub"].artifact_calls
+    assert len(env["stub"].scripts) == 4, "后面那几遍的剧本一个都不该被领走"
+    # 没跑的那几遍：ok 不许是 True、没有 trace、note 里说清哪一类没验到
+    for run in report.runs[1:]:
+        assert run.ok is None and run.trace_path is None and run.failed_step is None, run
+        assert "前一遍就过了" in run.note and "没验到" in run.note, run.note
+    assert "状态残留" in report.runs[1].note
+    assert "折叠" in report.runs[3].note and "地区内容差异" in report.runs[4].note
+    said = report.summary()
+    assert "提交了 1 次" in said, said
+    assert "没验到" in said, "没跑到的那几类要在人话里说清：\n%s" % said
+
+
+def test_a_failed_baseline_gets_one_retry_and_a_pass_counts(env):
+    """**R-84 的补跑路径**：baseline 挂 → 跑第 2 遍；第 2 遍过 → **判过**。
+
+    判过的理由是裁定里那句：`rerun` 就是为了分辨「产物不行」还是「这一趟环境抖了」——
+    一遍挂、补跑过 = 环境抖。⚠️ 但那一次失败**不许被吞掉**，人话里要说出来。
+    """
+    report = _run(env, _scripts(baseline=_Script(rc=1, oks=(True, False))))
+    assert report.passed is True, report.summary()
+    assert report.submissions == 2, report.runs
+    assert [r.status for r in report.runs[:3]] == ["failed", "passed", "not_needed"], report.runs
+    assert report.runs[0].failed_step == 2
+    assert len(env["stub"].artifact_calls) == 2, env["stub"].artifact_calls
+    said = report.summary()
+    assert "提交了 2 次" in said, said
+    assert "环境抖了" in said and "第 2 步" in said, "挂过那一遍要说出来：\n%s" % said
+
+
+def test_two_failures_is_the_artifact_not_a_flake(env):
+    """**判据的边界**（R-84 之后最要紧的一条）：挂**一遍**可以是环境抖，挂**两遍**就是产物不行。
+
+    凭什么是这条边界：`rerun` 存在的唯一理由就是分辨这两件事（裁定原话）。
+    所以第 3 遍即使过了，也**救不回**一条挂了两遍的阶梯 —— 那正是「不许把『某遍挂』
+    吞成『部分通过』」这条老规矩在 R-84 之后的形状。
+    """
+    bad = _Script(rc=1, oks=(True, False))
+    report = _run(env, _scripts(baseline=bad, rerun=bad))
+    assert report.passed is False, report.summary()
+    assert [r.status for r in report.runs[:3]] == ["failed", "failed", "passed"], report.runs
+    assert report.submissions == 3
+    assert "提交了 3 次" in report.summary()
+
+
+def test_the_submission_cap_stops_at_three_and_never_four(env):
+    """**R-84 的硬顶**：连着失败的场景 → 提交到 **3** 就停，**绝不到 4**。
+
+    「到顶就停、如实报」：到顶之后那几遍记 `not_needed`，写清是用满提交次数到顶的
+    —— 而**回调一次都不许被调用**（那是「它真的没跑」的硬证据，报告自己说不算）。
     """
     seen = {"viewport": [], "country": []}
+    bad = _Script(rc=1, oks=(True, False))
     report = _run(
-        env, _scripts(),
+        env, _scripts(baseline=bad, rerun=bad, delay=bad, viewport=bad, country=bad),
         set_viewport=lambda w, h: seen["viewport"].append((w, h)),
         set_country=lambda c: seen["country"].append(c), country="us",
     )
-    assert report.passed is True
+    assert report.submissions == 3, report.runs
+    assert len(env["stub"].artifact_calls) == 3, env["stub"].artifact_calls
+    assert seen == {"viewport": [], "country": []}, "到顶之后还去动窗口/代理了"
+    assert [r.status for r in report.runs] == ["failed"] * 3 + ["not_needed"] * 2, report.runs
+    assert "用满 3 次提交" in report.runs[3].note, report.runs[3].note
+    assert report.passed is False
+    assert report.submissions < 4
+    # 到顶那两遍**不是**「跳过没人允许」（那是 R-5 的形状），人话里不许把它们说成那样
+    said = report.summary()
+    assert "用满 3 次提交" in said and "没人明确允许不跑" not in said, said
+
+
+# ── 一遍都不能挂：passed 的判据 ────────────────────────────────────
+
+def _run_obj(name, status, ok=None, note="", failed_step=None):
+    """造一个 `Run`（给**直接测判据**的用例用 —— 有些场景 R-84 之后构造不出来了）。"""
+    return selftest.Run(name=name, label=selftest.RUN_LABELS[name], status=status, ok=ok,
+                        failed_step=failed_step, trace_path=None, note=note)
+
+
+def test_all_five_rounds_run_in_order_each_with_its_own_trace_and_callback(env):
+    """五遍的**名字、顺序、各自的 trace、两根回调**都落在报告里（这一条管的是那套机制）。
+
+    ⚠️ 场景变了（R-84 的口径变了，**不是放宽断言**）：以前「五遍都过」跑得出来，
+    现在一遍过了就不往下跑 —— 要让五遍都跑起来，只能让前面几遍都挂、
+    并把硬顶抬到 5（`max_submissions=5`，那是**显式**抬的，默认还是 3）。
+    这一条仍然值得留：第 4/5 遍在默认硬顶下**到不了**，它们那套机制就靠这里验。
+    """
+    seen = {"viewport": [], "country": []}
+    bad = _Script(rc=1, oks=(True, False))
+    report = _run(
+        env, _scripts(baseline=bad, rerun=bad, delay=bad, viewport=bad),
+        set_viewport=lambda w, h: seen["viewport"].append((w, h)),
+        set_country=lambda c: seen["country"].append(c), country="us",
+        max_submissions=5,
+    )
     assert [r.name for r in report.runs] == list(RUN_NAMES)
-    assert all(r.status == "passed" and r.ok is True for r in report.runs), report
-    assert all(r.failed_step is None for r in report.runs)
+    assert all(r.trace_path and os.path.exists(r.trace_path) for r in report.runs), report
+    assert report.submissions == 5 and env["stub"].scripts == [], "五遍都要跑到"
+    assert report.passed is False, "挂了四遍还判过 = 判据坏了"
     # 换 viewport / 换国家真的发生了（否则「第 4/5 遍」是空转的）
     assert seen["viewport"] == [(1024, 768)], seen
     assert seen["country"] == ["us"], seen
     # 每遍一份自己的 trace（同一份会被下一遍冲掉，「卡在第几步」就读不出来了）
     traces = [r.trace_path for r in report.runs]
     assert len(set(traces)) == 5 and all(os.path.exists(p) for p in traces), traces
-    assert env["stub"].scripts == [], "还有剧本没领 = 有一遍没跑"
 
 
-def test_a_failing_run_is_not_swallowed_into_a_partial_pass(env):
-    """**本任务最承重的一条**：第 2 遍挂 → 整体没过，且说清是哪一遍、卡在第几步。
+def test_failures_are_never_swallowed_into_a_partial_pass(env):
+    """**本任务最承重的一条**：挂过的每一遍都要在报告里说清是哪一遍、卡在第几步。
 
     计划 Task 6 的 ⚠️：「不许把『某遍挂』吞成『部分通过』—— 那是本项目最忌讳的那类谎」。
+    ⚠️ R-84 之后「吞」的边界变了（**一遍挂 + 补跑过 = 判过**，那是裁定明写的行为），
+    所以这条用例的场景改成**挂两遍**（判据已定：两遍挂 = 产物不行）——
+    每一遍的失败都还记在它自己那一格上，一个字都没被吞。
     """
-    report = _run(
-        env,
-        _scripts(rerun=_Script(rc=1, oks=(True, True, True, False, False),
-                               notes={4: "第 4 步：点「Get Started」没点到"})),
-        set_viewport=lambda w, h: None, set_country=lambda c: None, country="us",
-    )
+    bad = _Script(rc=1, oks=(True, True, True, False, False),
+                  notes={4: "第 4 步：点「Get Started」没点到"})
+    report = _run(env, _scripts(baseline=bad, rerun=bad))
     assert report.passed is False
-    assert [r.name for r in report.runs if r.status == "failed"] == ["rerun"]
-    bad = report.runs[1]
-    assert bad.ok is False
-    assert bad.failed_step == 4
+    assert [r.name for r in report.runs if r.status == "failed"] == ["baseline", "rerun"]
+    for run in report.runs[:2]:
+        assert run.ok is False and run.failed_step == 4, run
     # 人话里也要指出「哪一遍 + 第几步」（D16：不是错误码、不是选择器）
     said = report.summary()
     assert "第 2 遍" in said, said
@@ -237,24 +330,37 @@ def test_a_failing_run_is_not_swallowed_into_a_partial_pass(env):
     assert "点「Get Started」没点到" in said, "trace 里那句人话要带上来"
 
 
-@pytest.mark.parametrize("broken", RUN_NAMES)
-def test_any_single_failing_run_fails_the_whole_selftest(env, broken):
-    """任一遍挂都一样：`passed=False`，且只有那遍被记成挂。"""
-    report = _run(
-        env,
-        _scripts(**{broken: _Script(rc=1, oks=(True, False))}),
-        set_viewport=lambda w, h: None, set_country=lambda c: None, country="us",
-    )
+@pytest.mark.parametrize("broken", ("rerun", "delay"))
+def test_a_failure_on_any_reached_round_is_recorded_on_its_own_row(env, broken):
+    """挂在哪一遍都记在**它自己那一格**上，而且 `passed=False`（两遍挂 = 产物不行）。
+
+    为什么只剩 `rerun` / `delay`：R-84 之后 `baseline` 之外的每一遍**只有前面挂了才会跑**
+    （阶梯是「一步一步往下补」），所以「某一遍挂」这个场景只对第 2/3 遍构造得出来
+    —— 而要让第 3 遍轮得到，前两遍必须都挂（`baseline` 那一档见上面那条用例）。
+    """
+    bad = _Script(rc=1, oks=(True, False))
+    scripts = {"baseline": bad, "rerun": bad}
+    if broken == "delay":
+        scripts["delay"] = bad
+    report = _run(env, _scripts(**scripts))
     assert report.passed is False
-    assert [r.name for r in report.runs if r.status == "failed"] == [broken]
+    assert [r.name for r in report.runs if r.status == "failed"] == \
+        ["baseline", "rerun"] + (["delay"] if broken == "delay" else [])
+    assert report.runs[RUN_NAMES.index(broken)].status == "failed"
     assert report.runs[RUN_NAMES.index(broken)].failed_step == 2
 
 
 # ── 「跳过」不许长得像「过了」─────────────────────────────────────
 
 def test_a_skipped_run_never_counts_as_passed(env):
-    """没给 `set_viewport` → 第 4 遍跳过，**默认不算通过**（R-5：不给它算证据）。"""
-    report = _run(env, _scripts())          # 一个回调都不给
+    """没给 `set_viewport` → 第 4 遍跳过，**默认不算通过**（R-5：不给它算证据）。
+
+    ⚠️ 场景要抬硬顶（R-84：默认最多 3 次提交，第 4 遍默认**到不了**）：
+    前三遍都挂 + `max_submissions=4` → 第 4 遍才轮得到。**断言一个字没改。**
+    """
+    bad = _Script(rc=1, oks=(True, False))
+    report = _run(env, _scripts(baseline=bad, rerun=bad, delay=bad),   # 一个回调都不给
+                  max_submissions=4)
     assert report.passed is False
     viewport = report.runs[3]
     assert viewport.status == "skipped"
@@ -265,22 +371,56 @@ def test_a_skipped_run_never_counts_as_passed(env):
     assert "折叠" in viewport.note or "遮挡" in viewport.note, viewport.note
 
 
-def test_the_country_run_is_the_one_skip_we_allow_by_default(env):
-    """第 5 遍（换代理国家，成本高）是计划里唯一**默认允许跳过**的那遍。"""
-    report = _run(env, _scripts(), set_viewport=lambda w, h: None)
-    assert report.allowed_skips == ("country",)
-    assert report.passed is True, report
-    country = report.runs[4]
-    assert country.status == "skipped" and country.ok is None
-    assert "没跑" in country.note, country.note
+def test_the_country_run_is_the_one_skip_we_allow_by_default():
+    """第 5 遍（换代理国家，成本高）是计划里唯一**默认允许跳过**的那遍。
+
+    ⚠️ 改成**直接测判据**：R-84 之后「第 5 遍跳过、而整体还算过」这个场景
+    在编排上构造不出来（走得到第 5 遍就意味着前面已经挂了，判据不会判过）。
+    判据本身是纯函数，直接喂构造好的 `Run` 更准。
+    """
+    assert selftest.DEFAULT_ALLOWED_SKIPS == ("country",)
+    runs = (_run_obj("baseline", "passed", ok=True, note="跑通了"),
+            _run_obj("country", "skipped", ok=None, note="这一遍没跑：没给代理层那根线"))
+    assert selftest._judge(runs, ("country",)) is True
+    assert selftest._judge(runs, ()) is False, "没点名允许的跳过必须拦（R-5）"
+    # ★ 判据的第一条：**一遍都没过就不算过**（哪怕剩下的全是「允许的跳过」）——
+    #   「没验到」不许被读成「过了」（这一条也是 R-84 之后唯一能挡住「只跑一遍、挂了」的路）
+    only_skips = (_run_obj("country", "skipped", ok=None, note="这一遍没跑"),)
+    assert selftest._judge(only_skips, ("country",)) is False
+
+
+def test_a_cap_of_one_with_a_failing_baseline_is_still_a_failure(env):
+    """硬顶 = 1（有人就是想要「一遍不过就算了」）时，**挂了就是挂了**：一遍都没过 → 没过。
+
+    这条钉的是判据的第一条（至少一遍真的过了）。少了它，「只跑一遍、挂了」会被判成过 ——
+    因为那时报告里**连一遍通过的都没有**，而「没有反面证据」正是最容易被读成
+    「差不多行了」的形状。
+    """
+    report = _run(env, _scripts(baseline=_Script(rc=1, oks=(True, False))), max_submissions=1)
+    assert report.submissions == 1, report.runs
+    assert report.passed is False, report.summary()
+    assert [r.status for r in report.runs] == ["failed"] + ["not_needed"] * 4, report.runs
 
 
 def test_allowing_the_viewport_skip_is_explicit_and_still_loud(env):
-    """明确放弃第 4 遍 → 可以算过，但报告里**照样吵**（`passed` 变了，字不许变软）。"""
-    quiet = _run(env, _scripts())                       # 没给回调 → 第 4 遍跳过 → 没过
-    assert quiet.passed is False
-    loud = _run(env, _scripts(), allow_skips=("country", "viewport"))
-    assert loud.passed is True
+    """明确放弃第 4 遍 → 判据放行，但报告里**照样吵**（`passed` 变了，字不许变软）。
+
+    两半分开验（R-84：「第 4 遍跳过 + 整体算过」在编排上到不了了，理由同上条）：
+      ① 判据那一半：`allow_skips` 点名了才不拦；
+      ② 措辞那一半：同一场景下允许与不允许**那句话逐字节相同**。
+    """
+    # ① 判据（纯函数，直接喂 Run）
+    runs = (_run_obj("baseline", "passed", ok=True, note="跑通了"),
+            _run_obj("viewport", "skipped", ok=None, note="这一遍没跑：没人给换窗口大小的回调"))
+    assert selftest._judge(runs, ("country",)) is False
+    assert selftest._judge(runs, ("country", "viewport")) is True
+
+    # ② 措辞：同一个场景跑两次（抬硬顶让第 4 遍轮得到），那句话不许因为判据放行而变软
+    bad = _Script(rc=1, oks=(True, False))
+    scripts = dict(baseline=bad, rerun=bad, delay=bad)
+    quiet = _run(env, _scripts(**scripts), max_submissions=4)
+    loud = _run(env, _scripts(**scripts), allow_skips=("country", "viewport"),
+                max_submissions=4)
     assert loud.runs[3].status == "skipped" and loud.runs[3].ok is None
     assert "没验到" in loud.runs[3].note, loud.runs[3].note
     assert loud.runs[3].note == quiet.runs[3].note, "允许跳过只改判据，不改这句话"
@@ -294,17 +434,25 @@ def test_an_unknown_allow_skip_is_refused(env):
 
 
 def test_a_viewport_callback_that_blows_up_is_a_loud_skip_not_a_pass(env):
-    """回调自己炸了 = 这一遍没跑成 = 跳过 + 吵，**不是**通过。"""
+    """回调自己炸了 = 这一遍没跑成 = 跳过 + 吵，**不是**通过。
+
+    ⚠️ 场景抬硬顶（同上：第 4 遍默认到不了）。**断言一个字没改** ——
+    「第 4 遍没跑成就不该起产物」那条尤其要留住：回调炸了也算一次提交的话，
+    这条数就虚了。
+    """
     def boom(w, h):
         raise RuntimeError("窗口没打开")
 
-    report = _run(env, _scripts(), set_viewport=boom)
+    bad = _Script(rc=1, oks=(True, False))
+    report = _run(env, _scripts(baseline=bad, rerun=bad, delay=bad),
+                  set_viewport=boom, max_submissions=4)
     assert report.passed is False
     viewport = report.runs[3]
     assert viewport.status == "skipped" and viewport.ok is None
     assert "窗口没打开" in viewport.note, viewport.note
     # 只起了 3 遍（基线 / 第 2 遍 / 第 3 遍）—— 第 4 遍没跑成就不该起产物
     assert len(env["stub"].artifact_calls) == 3, env["stub"].artifact_calls
+    assert report.submissions == 3, "回调炸了那一次**不算提交**（产物一次都没起来）"
 
 
 # ── 第 2/3 遍的扰动怎么做（R-4 / R-6）────────────────────────────
@@ -314,32 +462,62 @@ def test_run_two_reruns_the_same_page_and_only_navigates_when_asked(env):
 
     给了 `entry_url` 就先 `cdp navi` 过去（字面意义上的「刷新」），
     两种都给覆盖：不给时一次 navi 都不许有。
+    ⚠️ 场景要 baseline 挂（R-84：过了就不往下跑，第 2 遍根本轮不到）——
+    这条测的是第 2 遍**怎么做**，不是「什么时候做」。算力账也随之变：
+    跑起来的是 3 遍（基线 / 第 2 遍 / 第 3 遍），不是以前那 5 遍。
     """
-    stub = env["install"](_scripts())
+    bad = _Script(rc=1, oks=(True, False))
+    stub = env["install"](_scripts(baseline=bad))
     selftest.run(str(env["py"]), WS, env["form"], SITE, run_dir=env["dir"], cdp_bin=env["cdp"],
                  set_viewport=lambda w, h: None)
     assert stub.cdp_calls == [], "没给 entry_url 就不该动页面（R-6：不重置）"
     ws_urls = [_flag(cmd, "--ws-url") for cmd in stub.artifact_calls]
     assert ws_urls[0] == ws_urls[1] == WS, ws_urls
 
-    stub = env["install"](_scripts())
+    stub = env["install"](_scripts(baseline=bad))
     selftest.run(str(env["py"]), WS, env["form"], SITE, run_dir=env["dir"], cdp_bin=env["cdp"],
                  entry_url=ENTRY, set_viewport=lambda w, h: None)
     assert len(stub.cdp_calls) == 1, stub.cdp_calls
     navi = stub.cdp_calls[0]
     assert navi[1] == "navi" and navi[2] == ENTRY, navi
     assert "--host" in navi and "--port" in navi, navi
-    # 顺序：第 1 遍跑完 → navi 回到入口 → 第 2 遍（「刷新后重跑」的字面意思）
+    # 顺序：第 1 遍跑完 → navi 回到入口 → 第 2 遍（「刷新后重跑」的字面意思）。
+    # ⚠️ 到此为止（R-84：第 2 遍过了就**不再往下跑**，所以没有第 3 遍那次 artifact）
     order = [kind for kind, _, _ in stub.calls]
-    assert order == ["artifact", "cdp", "artifact", "artifact", "artifact"], order
+    assert order == ["artifact", "cdp", "artifact"], order
+
+
+def test_a_navi_that_fails_does_not_eat_a_submission(env):
+    """`cdp navi` 没成 → 第 2 遍**没跑**（记挂、说清没验到状态残留），**也不算一次提交**。
+
+    为什么这条要紧（R-84）：`submissions` 是「往站方**真提交**了几次」——
+    产物一次都没起来的那一路不许算进去，不然这个数会虚高，而虚高正是这次要治的病。
+    判据落在**不变量**上：`submissions == 产物真起来的次数`（两边都是硬证据，不是自述）。
+    """
+    bad = _Script(rc=1, oks=(True, False))
+    report = _run(env, _scripts(baseline=bad), entry_url=ENTRY, navi_fails=True,
+                  set_viewport=lambda w, h: None)
+    assert report.runs[1].status == "failed" and report.runs[1].trace_path is None, report.runs[1]
+    assert "刷新没做成" in report.runs[1].note, report.runs[1].note
+    # 真起来的只有两次：基线（挂）+ 第 3 遍（`delay`，它过了 → 阶梯到此为止）。
+    # **第 2 遍没有算进去** —— 产物一次都没起来（这一条就是把「虚高」堵住的地方）。
+    assert report.submissions == len(env["stub"].artifact_calls) == 2, (
+        report.submissions, env["stub"].artifact_calls)
+    assert [r.name for r in report.runs[:3]] == ["baseline", "rerun", "delay"]
 
 
 def test_run_three_turns_the_delay_knob_through_the_cli(env):
-    """R-4：延迟走**产物自带的 `--delay`**，不去改写产物源码（那测的是另一个产物）。"""
+    """R-4：延迟走**产物自带的 `--delay`**，不去改写产物源码（那测的是另一个产物）。
+
+    ⚠️ 场景：前三遍挂 + 硬顶抬到 4 → 第 4 遍（viewport）也跑得到，
+    于是「只有延迟那一遍带 `--delay`」这条断言（含第 4 遍那条）照旧完整。
+    """
     before = env["py"].read_text(encoding="utf-8")
-    report = _run(env, _scripts(), delay=2.5, set_viewport=lambda w, h: None)
+    bad = _Script(rc=1, oks=(True, False))
+    report = _run(env, _scripts(baseline=bad, rerun=bad, delay=bad), delay=2.5,
+                  set_viewport=lambda w, h: None, max_submissions=4)
     assert env["py"].read_text(encoding="utf-8") == before, "产物源码被改写了"
-    assert report.passed is True
+    assert report.passed is False, "挂了三遍还判过 = 判据坏了"
 
     delays = [_flag(cmd, "--delay") for cmd in env["stub"].artifact_calls]
     assert delays[0] is None and delays[1] is None, delays       # 基线与第 2 遍不加延迟
@@ -350,12 +528,13 @@ def test_run_three_turns_the_delay_knob_through_the_cli(env):
 # ── 判据只认证据：退出码与 trace ───────────────────────────────────
 
 def test_the_trace_outranks_a_success_exit_code(env):
-    """退出码说成功、trace 里却有没做成的步 → **按没做成算**（产物不许谎报，我们也不）。"""
-    report = _run(
-        env,
-        _scripts(baseline=_Script(rc=0, oks=(True, True, False))),
-        set_viewport=lambda w, h: None,
-    )
+    """退出码说成功、trace 里却有没做成的步 → **按没做成算**（产物不许谎报，我们也不）。
+
+    ⚠️ 两遍都挂（R-84：一遍挂 + 补跑过 = 判过，那会把这几个用例的意思盖掉）——
+    这一条测的是**一遍怎么判**，不是阶梯判据。
+    """
+    bad = _Script(rc=0, oks=(True, True, False))
+    report = _run(env, _scripts(baseline=bad, rerun=bad), set_viewport=lambda w, h: None)
     assert report.passed is False
     first = report.runs[0]
     assert first.status == "failed" and first.failed_step == 3
@@ -365,28 +544,22 @@ def test_the_trace_outranks_a_success_exit_code(env):
 def test_a_run_that_walked_everything_but_never_saw_success_is_a_failure(env):
     """每一步都做成了、退出码 1、trace 里没有 `ok=false` 的行 —— 是「没见到成功文案」，
     不是「卡在第几步」。两种说法要分开，别拿 None 冒充一个步号。"""
-    report = _run(
-        env,
-        _scripts(rerun=_Script(rc=1, oks=(True, True, True))),
-        set_viewport=lambda w, h: None,
-    )
+    bad = _Script(rc=1, oks=(True, True, True))
+    report = _run(env, _scripts(baseline=bad, rerun=bad), set_viewport=lambda w, h: None)
     assert report.passed is False
-    bad = report.runs[1]
-    assert bad.status == "failed" and bad.failed_step is None
-    assert "成功" in bad.note, bad.note
+    for run in report.runs[:2]:
+        assert run.status == "failed" and run.failed_step is None, run
+        assert "成功" in run.note, run.note
 
 
 def test_a_run_that_never_wrote_a_trace_is_still_a_failure(env):
     """产物起来就崩（退出码非 0、trace 都没有）→ 挂，并带上它最后说了什么。"""
-    report = _run(
-        env,
-        _scripts(baseline=_Script(rc=1, trace=False, stderr="ModuleNotFoundError: common")),
-        set_viewport=lambda w, h: None,
-    )
+    bad = _Script(rc=1, trace=False, stderr="ModuleNotFoundError: common")
+    report = _run(env, _scripts(baseline=bad, rerun=bad), set_viewport=lambda w, h: None)
     assert report.passed is False
-    bad = report.runs[0]
-    assert bad.status == "failed" and bad.failed_step is None
-    assert "退出码" in bad.note and "ModuleNotFoundError" in bad.note, bad.note
+    first = report.runs[0]
+    assert first.status == "failed" and first.failed_step is None
+    assert "退出码" in first.note and "ModuleNotFoundError" in first.note, first.note
 
 
 def test_exit_zero_with_no_trace_at_all_is_not_a_pass(env):
@@ -397,27 +570,31 @@ def test_exit_zero_with_no_trace_at_all_is_not_a_pass(env):
     读不动」交的是空列表。于是「trace 里没有没做成的步」这句话在**一行都没有**时也成立 ——
     而这个模块存在的唯一理由就是当**证据**的闸门（Task 8 要拿它跑真站）。
     """
-    report = _run(env, _scripts(baseline=_Script(rc=0, trace=False)),
-                  set_viewport=lambda w, h: None)
+    bad = _Script(rc=0, trace=False)
+    report = _run(env, _scripts(baseline=bad, rerun=bad), set_viewport=lambda w, h: None)
     assert report.passed is False
     first = report.runs[0]
     assert first.status == "failed" and first.ok is False
     assert first.failed_step is None, "「没有证据」不是「卡在第 N 步」"
     assert "trace" in first.note and "证据" in first.note, first.note
-    assert "跑通了" not in report.summary(), report.summary()
+    assert "扰动自测过了" not in report.summary(), report.summary()
 
 
 def test_a_hung_run_is_a_failure(env):
-    """跑不完（超时）也是挂 —— 不能挂在那儿等它。"""
+    """跑不完（超时）也是挂 —— 不能挂在那儿等它。
+
+    ⚠️ 场景：前两遍挂（阶梯才走到第 3 遍）——**断言仍落在 `runs[2]` 那一格上**，没改。
+    """
+    bad = _Script(rc=1, oks=(True, False))
     report = _run(
         env,
-        _scripts(delay=_Script(timeout=True, oks=(True,))),
+        _scripts(baseline=bad, rerun=bad, delay=_Script(timeout=True, oks=(True,))),
         set_viewport=lambda w, h: None,
     )
     assert report.passed is False
-    bad = report.runs[2]
-    assert bad.status == "failed"
-    assert "超时" in bad.note or "没跑完" in bad.note, bad.note
+    hung = report.runs[2]
+    assert hung.status == "failed"
+    assert "超时" in hung.note or "没跑完" in hung.note, hung.note
 
 
 # ── 环境：cdp 二进制 ───────────────────────────────────────────────
@@ -456,16 +633,21 @@ def test_the_reported_task_id_is_ours_to_choose(env):
 
 def test_the_report_carries_the_brief_shape_plus_a_status(env):
     """brief 的形状（name/ok/failed_step/trace_path）一个不少，另加 status ——
-    「跳过」与「过了」必须分得开，而 `ok` 单独一个布尔分不开。"""
+    「跳过」/「这一轮用不着跑」与「过了」必须分得开，而 `ok` 单独一个布尔分不开。
+
+    R-84 加了两样：第四种状态 `not_needed`，以及 **`submissions`（这一轮提交了几次）** ——
+    后者是那条裁定的可见性（出事就是因为看不见它）。
+    """
     report = _run(env, _scripts(), set_viewport=lambda w, h: None)
     data = report.as_dict()
     assert json.loads(json.dumps(data, ensure_ascii=False)) == data, "要能进 PROVENANCE"
-    assert len(data["runs"]) == 5
+    assert len(data["runs"]) == 5, "五遍都要在报告里（没跑的也要列出来，不许消失）"
     for run in data["runs"]:
         for key in ("name", "ok", "failed_step", "trace_path", "status", "note"):
             assert key in run, run
-        assert run["status"] in ("passed", "failed", "skipped"), run
+        assert run["status"] in ("passed", "failed", "skipped", "not_needed"), run
     assert data["passed"] is True
+    assert data["submissions"] == 1, data["submissions"]
 
 
 def test_the_summary_always_says_tool_side_passing_is_not_production_passing(env):
@@ -748,7 +930,13 @@ def _live_artifact(root, success_text):
 
 
 def test_a_real_run_passes_and_stays_off_production(live_site, tmp_path, monkeypatch):
-    """真 Chrome + 真 cdp + 真运行时 + 真产物：跑通了，并且**一个字节都没发去生产**。"""
+    """真 Chrome + 真 cdp + 真运行时 + 真产物：跑通了，并且**一个字节都没发去生产**。
+
+    ⚠️ R-84：**一次成功的验收现在只提交 1 次**（这是这条用例最要紧的数字 ——
+    它是真的跑出来的，不是桩说的）。跑起来的只有基线那一遍；
+    「第 2 遍的 trace 与第 1 遍不同」那条断言随之作废（第 2 遍默认轮不到）——
+    第 2 遍那套行为由桩用例 `test_run_two_reruns_the_same_page_and_only_navigates_when_asked` 守着。
+    """
     py, form = _live_artifact(tmp_path / "good", "Thank you")
     netlog = _install_net_guard(tmp_path, monkeypatch)
 
@@ -758,21 +946,25 @@ def test_a_real_run_passes_and_stays_off_production(live_site, tmp_path, monkeyp
                           allow_skips=("country", "viewport"))
 
     assert report.passed is True, report.summary()
-    assert [r.status for r in report.runs[:3]] == ["passed"] * 3, report.summary()
-    for run in report.runs[:3]:
+    assert report.submissions == 1, "一次成功的验收只该提交 1 次（R-84）"
+    assert report.runs[0].status == "passed", report.summary()
+    assert [r.status for r in report.runs[1:]] == ["not_needed"] * 4, report.summary()
+    for run in report.runs[:1]:
         assert run.trace_path and os.path.exists(run.trace_path), run
         rows = [json.loads(ln) for ln in pathlib.Path(run.trace_path).read_text(
             encoding="utf-8").splitlines() if ln.strip()]
         assert rows and all(ln.get("ok") is True for ln in rows), rows
         assert rows[0]["step"] == 1 and "note" in rows[0]
-    # 第 2 遍真的「刷新后重跑」过（entry_url → cdp navi），所以它的 trace 也是新的
-    assert report.runs[1].trace_path != report.runs[0].trace_path
     assert not netlog.exists(), "真跑这一遍往生产发了请求：\n%s" % (
         netlog.read_text(encoding="utf-8") if netlog.exists() else "")
 
 
 def test_a_real_run_that_never_succeeds_is_not_a_pass(live_site, tmp_path, monkeypatch):
-    """成功文案永远等不到时：三遍都挂、都指得出「没走到成功」，而且**不是**「卡在第几步」。"""
+    """成功文案永远等不到时：三遍都挂、都指得出「没走到成功」，而且**不是**「卡在第几步」。
+
+    R-84：这条也顺手把**硬顶**在真跑里量了一遍 —— 连着失败时**正好提交 3 次**
+    （基线 / 第 2 遍 / 第 3 遍），第 4/5 遍到不了。
+    """
     py, form = _live_artifact(tmp_path / "bad", "NEVER-APPEARS")
     _install_net_guard(tmp_path, monkeypatch)
 
@@ -781,6 +973,7 @@ def test_a_real_run_that_never_succeeds_is_not_a_pass(live_site, tmp_path, monke
                           delay=0.05, timeout=180, allow_skips=("country", "viewport"))
 
     assert report.passed is False
+    assert report.submissions == 3, "连着失败时正好提交 3 次（硬顶），一次都不许多"
     assert [r.name for r in report.failed_runs] == ["baseline", "rerun", "delay"]
     for run in report.failed_runs:
         assert run.failed_step is None, run
