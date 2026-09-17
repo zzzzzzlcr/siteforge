@@ -198,8 +198,12 @@ class Budget:
     max_steps: int = DEFAULT_MAX_STEPS
     max_rounds: int = DEFAULT_MAX_ROUNDS
     #: 计划模式下「连着几轮没有推进就停」（设计注 §2.5 的 `STALL_LIMIT`）。
-    #: **这是初值**（由 Task 1 的轮数分布校准）：产物那边确定性重放的 `STUCK_LIMIT = 3`，
-    #: 而探路有正常的「看几眼才动手」，所以给两倍。⚠️ 只有计划模式读它。
+    #: ⚠️ **6 这个数是设计注自己给的猜测，不是量出来的**：它是产物那边确定性重放的
+    #: `STUCK_LIMIT = 3` 的两倍（探路有正常的「看几眼才动手」）。
+    #: **Task 1 校准不了它** —— M3 实测是 20/20/20，而那个 20 被**预算钉死**
+    #: （设计注原话：「这个数被预算钉死 —— 它是『预算允许多少』，不是『模型自然要用多少』」）。
+    #: 要校准得先把预算放开再量，那是另一件事。
+    #: ⚠️ 只有计划模式读它；**`<= 0` 一律当 1**（见 `_PlanWatch` 的注释，复审 I-3）。
     stall_limit: int = 6
 
 
@@ -233,13 +237,17 @@ class Journey:
     deviations: list = field(default_factory=list)
     #: 计划模式里**已经连着几轮没有推进**（§2.5 的停滞判据；推进一步就清零）。
     #: 没计划时恒为 0（那套判据不参与）。它同时也是「位置到底有没有动」的直接体现。
+    #: 每一轮都算数：最后一轮由 `_PlanWatch.finish()` 补结算（它没有下一次边界）。
     stall_rounds: int = 0
 
     #: 这一趟**问了几轮模型**（G2：`_wrap_up` 原先用完 `rounds` 就丢，于是基线 M3 量不到）。
-    #: ⚠️ `0` 有两种意思，读的时候要连 `stop_reason` 一起看：
-    #:   - `no_rounds` → 真的 0 轮（模型一次都没回话）；
-    #:   - `paused`    → **没量到**（被人打断时 `rounds` 是工具循环的局部变量，拿不到）。
-    #:     `measure.baseline()` 按 `stop_reason` 把后者记成 `None`，不记成 0。
+    #: ⚠️ `0` 有四种来源，读的时候要连 `stop_reason` 一起看：
+    #:   - `no_rounds`     → 真的 0 轮（模型一次都没回话）；
+    #:   - `paused` / `budget_steps` / `plan_stalled` → **没量到**（`_Stop` 一穿出
+    #:     `run_tool_loop`，`rounds` 那个局部变量就没了 —— 与是哪一条停因无关）。
+    #:     ⚠️ `measure.baseline()` 今天**只按 `paused`** 把它记成 `None`，其余几条会被记成
+    #:     真 0（M3 于是偏低，而偏低看起来像好消息）—— 那是**假数**，修点在
+    #:     `service._note_attempt`（不在本文件，复审 I-5）：接计划模式消费者的那一轮必须先收掉。
     rounds: int = 0
     #: `llm.summarize(rounds)` 的产物（几轮 / 几次工具调用 / token / 耗时）。
     #: 被人打断那条路是空的 `{}` —— 与 `rounds == 0` 同一个道理。
@@ -415,20 +423,24 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         _wrap_up(journey, rounds, limits)
     except _Stop as stop:
         journey.stop_reason = stop.reason
-        journey.notes.append(_stop_note(stop.reason, len(journey.steps), stop.detail))
         # 被停下来这一路**拿不到轮数**：`rounds` 是 `run_tool_loop` 的局部变量，
         # `_Stop`（BaseException）一穿出去就没了。所以只能是 0 + 一句人话 ——
         # **不许编一个数**（P5）。那个 0 的意思是「没量到」，读账的人（`measure.baseline`）
         # 按 `stop_reason == "paused"` 把它记成 `None`，不记成「这一趟没花轮数」。
         journey.rounds = 0
         journey.usage = {}
+        # ⚠️ **顺序有讲究**（复审 I-4）：`graph._journey_say` 的尾巴取的是 `notes[-1]`,
+        # 而**有信息的是停因那句**（带「卡在第几步、卡在哪一句描述上」）。轮数那句是
+        # bookkeeping，先记 —— 反过来写，人最终看到的就是那句 bookkeeping。
         journey.notes.append(_rounds_lost_note(stop.reason))
+        journey.notes.append(_stop_note(stop.reason, len(journey.steps), stop.detail))
     finally:
         # 计划模式的账**在 `finally` 里收**：被打断 / 停滞 / 预算到顶那几条路上 `rounds`
         # 一样拿不到，但 `_PlanWatch` **每轮都在场** —— 「怎么停的」不该决定「账还在不在」。
         # （`plan.ledger()` 只读那几轮记录，一步没走到也照样「每一项都有交代」。）
         if watch is not None:
             journey.plan_ledger = plan_module.ledger(plan, watch.rounds)
+            watch.finish()              # 最后一轮也要结算（它没有下一次边界）—— **不抛停**
         # 起点那一页**与后面所有页都不同源**时，撤掉它的 `when`（见 `_drop_incidental_start_when`）。
         _drop_incidental_start_when(pages.pages, journey)
         journey.pages = [{"name": p["name"], "when": p["when"], "url": p["url"],
@@ -492,14 +504,19 @@ def _stop_note(reason: str, steps: int, detail: str = "") -> str:
 def _rounds_lost_note(reason: str) -> str:
     """「这一趟的轮数没记到」那句话（P5：`0` 的意思必须说清，**不许编一个数**）。
 
-    ⚠️ 措辞按**停因**分开：原先只有「被人打断」一种说法，可停滞（`plan_stalled`）与
-    预算到顶都不是人喊的停 —— 拿那句话去说它们，读账的人会以为是人停的。
+    两条纪律（都是复审指出的，必须同时成立）：
+
+    1. **按停因分开**：原先只有「被人打断」一种说法，可停滞与预算到顶都不是人喊的停 ——
+       拿那句话去说它们，读账的人会以为是人停的；
+    2. **内部停因的 token 不许进人话**（M-5）：`plan_stalled` 这种是给代码看的，
+       这份账的读者是非技术的人（D16）—— 停因本身在 `journey.stop_reason` 里，账上不缺它。
     """
     if reason == "paused":
         return ("这一趟被人打断了，**没记到轮数**（打断的信号一穿出工具循环，"
                 "那个数就没了）—— 这里的 0 是「没量到」，不是「一轮都没花」。")
-    return (f"这一趟是「{reason}」停的，同样**没记到轮数**（停止的信号一穿出工具循环，"
-            "那个数就没了）—— 这里的 0 是「没量到」，不是「一轮都没花」。")
+    return ("这一趟没走完就停下了（**不是人打断的** —— 为什么停，紧挨着的那一条记着），"
+            "同样**没记到轮数**（停止的信号一穿出工具循环，那个数就没了）—— "
+            "这里的 0 是「没量到」，不是「一轮都没花」。")
 
 
 def _wrap_up(journey: Journey, rounds: list, budget: Budget) -> None:
@@ -538,8 +555,17 @@ def _as_budget(budget) -> Budget:
     if isinstance(budget, int):
         return Budget(max_steps=int(budget))
     if isinstance(budget, dict):
-        return Budget(**{k: v for k, v in budget.items()
-                         if k in ("max_steps", "max_rounds", "stall_limit")})
+        picked = {k: v for k, v in budget.items()
+                  if k in ("max_steps", "max_rounds", "stall_limit")}
+        # 字符串是**配置里最容易写错**的形状（`"6"` 看着就像个数），而它今天会炸在很远的地方
+        # （`taken >= "6"` → 一句看不出是配置问题的 TypeError，复审 M-6 的探针 P-B）。
+        # 在**边界上**说清楚：哪个键、给了什么。别的类型照旧（不新增门槛 —— 它们今天能用）。
+        for key, value in picked.items():
+            if isinstance(value, str):
+                raise TypeError(
+                    f"budget 里的 {key} 是字符串 {value!r} —— 要的是数字"
+                    "（写错这一处，会炸到一半才在比较那一行现形，看不出是配置问题）")
+        return Budget(**picked)
     raise TypeError(f"不认识这种 budget: {budget!r}（给 Budget / 步数 int / dict）")
 
 
@@ -583,7 +609,16 @@ class _PlanWatch:
                  page_state: Callable[[], str], steps_taken: Callable[[], int]):
         self.plan = plan
         self.journey = journey
-        self.stall_limit = stall_limit
+        #: ⚠️ `stall_limit <= 0` 一律**当 1**（夹住），不是「关掉判据」。理由：阈值判在
+        #: 「刚刚清零」的那个值上也会成立（`0 >= 0`）→ 正常推进的探路会被掐死，
+        #: 而人话会写着「连着 **0** 轮没有推进」—— 一个**自己说自己没在停滞**的停因。
+        #: 不给「关掉」那个选项：它是条安全机制（卡住的探路会把预算全烧在真页面上），
+        #: 夹到最小的有意义的值比静默关掉更稳。夹了会**说出来**（不静悄悄）。
+        self.stall_limit = stall_limit if stall_limit > 0 else 1
+        if stall_limit <= 0:
+            journey.notes.append(
+                f"停滞判据的上限给成了 {stall_limit}（不是个能成立的阈值）——这一趟按 1 算；"
+                "夹住而不是关掉：关掉之后卡住的探路会把预算全烧在真页面上。")
         #: `() -> str`：当前那一页在 `_Pages` 里的名字（换页 = 换状态）。
         self._page_state = page_state
         #: `() -> int`：已经走了几步（用来切出「这一轮新增的那几步」）。
@@ -594,6 +629,9 @@ class _PlanWatch:
         self.position = None
         self._baseline = None               # 这一轮开头：（页面名, 已经走了几步）
         self._moved = False                 # 这一轮里位置动过没有
+        #: 这一轮**还没被结算**（`note_round` 置起、`_settle` 落下）——
+        #: 它是「要不要结算」的判据，也是「最后一轮有没有被漏掉」的判据（`finish`）。
+        self._open = False
 
     # ── 每轮两次：边界（＝上一轮做完了）与模型回话之后 ───────────────────
 
@@ -603,18 +641,30 @@ class _PlanWatch:
         ⚠️ 「连着 N 轮」这个数只能在这里读 —— 这一刻上一轮的工具**全都做完了**。
         到顶就抛 `_Stop`：于是**下一轮的模型调用和工具调用一次都不会发出去**（§2.5）。
         """
-        self._settle()
+        self._settle(raise_on_stall=True)
         self._baseline = (self._page_state(), self._steps_taken())
         self._moved = False
 
+    def finish(self) -> None:
+        """收尾：把**最后一轮**也结算掉 —— 它没有下一次边界（复审 M-4：不结算就少算一轮）。
+
+        ⚠️ 这里**不抛停**：循环已经因为别的原因结束了（模型讲完了 / 人喊停 / 预算到顶），
+        事后把 `stop_reason` 改成 `plan_stalled` 是**假话**。这一步只把那本数**算准**。
+        （停的那条路不受影响：停永远发生在边界上，那一轮在抛之前就结算过了 ——
+        此时 `_open` 已经是 `False`，这里是个空操作。）
+        """
+        self._settle(raise_on_stall=False)
+
     def note_round(self, content: str) -> None:
         """模型这一轮的话 → 位置标记 / 矛盾声明（都是**声明**，不是判断）。"""
+        self._open = True
         k = plan_module.mark(content, plan=self.plan)
         contradiction = _contradiction_in(content)
         self.rounds.append({"mark": k, "contradiction": contradiction})
         if contradiction is not None:
             # §2.3(b)：模型**必须说出来**，说了就记进 `deviations`（**原话**，不改写 ——
             # 改写就不是事实了）。而且**位置停在这一步不前进**（这一轮不算推进）。
+            # ⚠️ 只是**这一轮**不算推进：下一轮再报到哪儿都照记（§2.4：不判它该不该）。
             self.journey.deviations.append(contradiction)
             return
         if k is None:
@@ -627,17 +677,20 @@ class _PlanWatch:
 
     # ── 停滞判据（§2.5）───────────────────────────────────────────────
 
-    def _settle(self) -> None:
-        """结算**上一轮**：推进了就清零，没有就加一；到顶抛 `_Stop`。"""
-        if self._baseline is None:              # 还没跑过任何一轮
+    def _settle(self, *, raise_on_stall: bool) -> None:
+        """结算**上一轮**：推进了就清零，没有就加一；到顶（且调用方要求抛）抛 `_Stop`。"""
+        if not self._open:                  # 还没有轮 / 这一轮已经结算过了
             return
+        self._open = False
         page_changed = self._page_state() != self._baseline[0]
         if self._moved or page_changed or self._acted():
             self.journey.stall_rounds = 0
         else:
+            # 阈值**只在这一支里判**（复审 I-3）：原先判在公共的那一层上，于是「刚刚清零」
+            # 也参与比较 —— `stall_limit=0` 时 `0 >= 0` 成立，正常推进的探路照样被判成停滞。
             self.journey.stall_rounds += 1
-        if self.journey.stall_rounds >= self.stall_limit:
-            raise _Stop("plan_stalled", detail=self._where_it_stuck())
+            if raise_on_stall and self.journey.stall_rounds >= self.stall_limit:
+                raise _Stop("plan_stalled", detail=self._where_it_stuck())
 
     def _acted(self) -> bool:
         """上一轮里有没有**做成了一个会改页面的动作**（看一眼不算 —— 见类 docstring）。"""
@@ -1441,10 +1494,10 @@ def _brief(url: str, goal: str, budget: Budget, plan: "plan_module.Plan | None" 
             f"那一次你的结论一个字都留不下来。）")
     if plan is None or not plan.actionable():
         return free
-    return _planned_brief(url, plan)
+    return _planned_brief(url, goal, plan, budget)
 
 
-def _planned_brief(url: str, plan) -> str:
+def _planned_brief(url: str, goal: str, plan, budget: Budget) -> str:
     """有计划那一版：**清单（原话）+ 原文（一字不删）+ 三条走法**（§2.2）。
 
     三样缺一不可：
@@ -1455,10 +1508,23 @@ def _planned_brief(url: str, plan) -> str:
       只给清单等于把运营明写的禁区吞掉，模型就会去点它；
     - **走法**是这套系统与模型的**约定**：位置标记长什么样（系统**只读那个**）、
       矛盾要怎么说（系统**只认那个说法**）—— 约定不写清楚，`plan_ledger` 就只能是空的。
+
+    ## 相对自由版，哪些东西**带着**、哪些**有意不带**（不许静悄悄，逐条写在这）
+
+    - **带**：预算与「窗口可能停在别的页上」（那是自由版第二行的括号）。计划版**没有任何
+      别的地方**覆盖它 —— 模型不知道自己的上限，而「停得早」这条收益论证正建立在预算上。
+    - **带**：`goal`（换一个标签）。标签「要做的事：」不能用，因为它与自由版那版**长得一样
+      就等于说要走自由那条路**；但意图本身一个字都不能掉：**修站那条路的 `raw` 是失败证据、
+      `goal` 才是意图**，掉了它模型就不知道这一趟要摸清什么。
+    - **有意不带**：自由版收尾那句（「能回答了就直接停下来说」）—— `_SYSTEM` 规矩 6
+      逐字覆盖了它（「别再调工具，用一段话说明……没有 done 这个工具」）。
     """
     checklist = "\n".join(f"【第 {s.n} 步】{s.text}" for s in plan.steps)
     return (
         f"目标站点：{url}\n"
+        f"这一趟要摸清的是：{goal}\n"
+        f"（你最多走 {budget.max_steps} 步、{budget.max_rounds} 轮。"
+        "现在这个浏览器窗口可能停在别的页上，先确认自己在哪。）\n\n"
         "人给了**一份检查点清单**（下面两段都是运营的原文，一个字没改）。\n\n"
         "清单 —— **这是一条走法的样子，不是站点的结构**：分支站上走到哪儿算哪儿，"
         "**少走几步、多走几步都是正常的**，别为了凑步数去点清单和原文里都没有的东西。\n"
