@@ -1712,19 +1712,34 @@ def _was_seen(rows: list, i: int) -> bool:
 
 
 def _landing_index(rows: list, i: int) -> int:
-    """第 i 行「**所到的那一页**」是哪一行记下来的。
+    """第 i 行「**所到的那一页**」看到**哪儿为止**（R3 判据的右端）= **能归到它头上的最后一眼**。
 
-    - 感知行 → 它自己（`observe` 记页；`diff`／`screenshot` 不记，但它们也不改页面，
-      所以「到的那一页」就是当下这一页）；
-    - 动作行 → 它**后面**第一条 `observe`（改了页面之后，是那条观察说的）。
-      后面没有观察时退回它自己 —— 那种行会被 R2 挡下，R3 的答案此时无关紧要。
+    - **`observe` 行** → 它自己（那一页的正文就是它记下的）；
+    - **其余行**（动作行、`diff`／`screenshot`）→ 它之后、**下一次动作之前**的**最后一眼**
+      `observe`；但**不比旧口径更少**（旧口径 = 往后第一条 `observe`，可能跨过后面的动作）。
+
+    为什么要吃满「下一次动作之前」这一整段（**R-E9**）：只看到**第一眼**会漏掉
+    「点了到新页、第二眼才渲染出来」那一形 —— 那时**那一步（常常就是提交）会留在前缀里**，
+    而重放它 = **往真实站点再交一次真实表单**（用户原话：「刷太多不太好」）。
+    裁定用的性质是：**只要某次动作之后的任何一眼（在下一次动作之前）看见了成功文案，
+    那一步就不许进前缀。**
+
+    为什么还要保留旧口径那一侧：这次改动只许**收紧** ——
+    「这一步之后一眼都没有」（下一个就是动作）时，不能反而把原来拦下的行放行。
+    取 `max` 把两条一起满足：**归得出**就用归得出的最后一眼，**归不出**就退回第一条 `observe`。
     """
     if str(rows[i].get("action") or "") == "observe":
         return i
+    last = i
     for j in range(i + 1, len(rows)):
-        if str((rows[j] or {}).get("action") or "") == "observe":
-            return j
-    return i
+        action = str((rows[j] or {}).get("action") or "")
+        if action in _ACTIONS:
+            break                       # 下一次动作 = 这几眼到此为止
+        if action == "observe":
+            last = j
+    first = next((j for j in range(i + 1, len(rows))
+                  if str((rows[j] or {}).get("action") or "") == "observe"), i)
+    return max(last, first)
 
 
 def _crossed_line_why(i: int, row: dict, success_text: str, hit: int) -> str:

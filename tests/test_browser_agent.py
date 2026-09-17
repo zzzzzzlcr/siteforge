@@ -2084,24 +2084,25 @@ def test_a_success_text_that_collided_with_an_earlier_page_also_stops_everything
     保守到底的理由：撞了说明**这条判据在这一站上不可靠**，而不可靠的判据在重放里的
     代价是「真页面上多按几下」—— 那时没有模型在场、也未必有人在看。
 
-    ⚠️ 夹具**必须**摆成「没有哪一步动作把它带过来」的形状（复审裁定②）：
-    同一页**连看两眼**，那句话在第二眼里才出现 —— 于是被拦下的是**那次观察自己**，
-    而不是「某一步落到的那一页」。原先的夹具把这句话放在 `goto` 后面那条 observe 上，
-    而那条 observe **正是 `goto` 的落点** ⇒ 两种形状在那里是同一件事，
-    断言被「落点」读法原样满足（拿到的人话也是「落点」那句）——**这条用例当时钉不住它名字上的性质**。
-    现在断言同时下到**理由那句人话**上：要出现「撞」，且**不许**是「落到的那一页」那句。
+    ⚠️ 夹具**必须**摆成「**没有动作把页面带到这儿**」的形状（复审裁定② + R-E9 之后收紧）：
+    同一页**连看两眼**，那句话在第二眼里才出现 —— 于是被拦下的是**那次观察自己**。
+    ⚠️ 这一形**不能有前置动作**：`goto` 之类的动作，它的窗口（R-E9 之后）会一直吃到
+    「下一次动作之前」，于是那句话落进它的窗口、它先停下 —— 那是**另一形**（「落点」那句）。
+    两种形状的**人话**因此各自准确：窗口盖住的那一形说「它落到的那一页」，
+    没有动作盖住的那一形说「撞」。
+    （不给 `entry_url`：免得合成那条 goto 又变成「有前置动作」。）
     """
-    rows = [_goto(ENTRY, state="start"),
-            _look(ENTRY, TEXT_A, state="start"),                     # 先看一眼：没有那句话
+    rows = [_look(ENTRY, TEXT_A, state="start"),                     # 先看一眼：没有那句话
             _look(ENTRY, f"这一页上有一句普通话，里面写着 {SUCCESS}",   # 又看一眼：有了
                   state="funnel"),
             _click("开始申请", state="quote"),
             _look(QUOTE, TEXT_B, state="quote")]
-    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
-    assert prefix == rows[:2], f"撞了那句话之后还有 {len(prefix)} 行进前缀"
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS)
+    assert prefix == rows[:1], f"撞了那句话之后还有 {len(prefix)} 行进前缀"
     assert "R3" in why and SUCCESS in why, why
     assert "撞" in why, why
     assert "落到的那一页" not in why, why
+    assert "不是哪一步把它带过来" not in why, why     # 修复轮 2 那条错的措辞不许回来
 
 
 # ─────────────────────── R4：goto 只回自己去过的地方 ───────────────────────
@@ -2991,28 +2992,51 @@ def test_a_zero_budget_never_even_asks_the_model(tmp_path):
 
 
 def test_a_success_text_that_rendered_late_is_still_stopped():
-    """R3 的另一形（复审裁定②的那条）：那句话**在第二眼才渲染出来** —— 照样停。
+    """**R-E9 的判据**：那句话**在第二眼才渲染出来**时，**那一步（提交）不许进前缀**。
 
-    形状：点了到新页 → 第一眼那一页上**还没有**那句话 → 又看一眼，它出来了。
-    与「撞了」那一形**行为相同、诊断不同**，而且**系统分不出这两件事**：
-    「页面上本来就有的一句普通话」与「刚换的页这一刻才渲染完」在账上长得一模一样。
+    形状：点了到新页 → 第一眼那一页上**还没有**那句话 → 又看一眼，它出来了 → 再确认一眼。
+    （最后那一眼是**故意**加的：它让「这一步的窗口吃到哪儿为止」这件事**可判别** ——
+    只吃第一眼的实现会把提交放行，而窗口吃到「下一次动作之前」的实现把它拦下。）
 
-    ⚠️ 人话**不许**说成「不是哪一步把它带过来的」（复审在真形状上实测过：那一形里
-    **正是**某一步把它带过来的，只是那句话当时还没渲染）—— 那句话会把人往错处引。
-    这里同时钉住正反两面：出现「没有动作的那一眼」（事实），且**不出现**那句错的断言。
+    裁定用的性质：**只要某次动作之后的任何一眼（在下一次动作之前）看见了成功文案，
+    那一步就不许进前缀。** 为什么这条是承重的：那一步常常就是**提交** ——
+    放行它 = 重放时**往真实站点再交一次真实表单**（用户原话：「刷太多不太好」）。
+
+    ⚠️ 人话**不许**说成「不是哪一步把它带过来的」（修复轮 2 那条错的措辞）：
+    这一形里**正是**某一步把它带过来的，只是那句话当时还没渲染 ——
+    它的窗口现在盖住了那一眼，所以人话走的是「**落到的那一页**上已经出现」那一支（准确）。
     """
     rows = [_goto(ENTRY, state="start"),
             _look(ENTRY, TEXT_A, state="start"),
             _click("提交申请", state="funnel"),
-            _look(QUOTE, TEXT_B, state="funnel"),                  # 新页，那句话还没渲染出来
-            _look(QUOTE, f"{TEXT_B} {SUCCESS}", state="quote")]    # 又看一眼：它出来了
+            _look(QUOTE, TEXT_B, state="funnel"),                    # 新页，那句话还没渲染出来
+            _look(QUOTE, f"{TEXT_B} {SUCCESS}", state="quote"),       # 第二眼：它出来了
+            _look(QUOTE, f"{TEXT_B} {SUCCESS} 再确认一眼", state="quote")]
     prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
-    # ⚠️ 停在第 5 行**之前** —— 于是**那次「提交」留在了前缀里**（它落到的那一页当时还没有
-    # 那句话，按 R3 的字面它过）。这是**在议**的一处，见报告「修复轮 2 · 顾虑」；本轮不改行为。
-    assert prefix == rows[:4], f"该停在第二眼之前，实际剩 {len(prefix)} 行"
-    assert "撞" in why and "没有动作的那一眼" in why, why
+    assert prefix == rows[:2], \
+        f"那次「提交」留在前缀里了（剩 {len(prefix)} 行）—— 重放它会再交一次真实表单"
+    assert "提交申请" in why, why                 # 人话要点名拦下的是**哪一步**
+    assert "落到的那一页" in why and "撞" not in why, why
     assert "不是哪一步把它带过来" not in why, why
-    assert "落到的那一页" not in why, why
+
+
+def test_an_action_with_no_look_before_the_next_one_keeps_the_old_reading():
+    """**R-E9 的「不越界」那一半**：这一步之后**一眼都没有**（下一个就是动作）时，
+    照旧按「后面第一条 observe」算 —— **原来拦下的不许因为这次改动被放行**。
+
+    形状：连着两个动作，成功文案在第二个动作之后才被看见。第一个动作**归不出**任何一眼
+    （它的窗口里没有观察），于是退回旧口径（往后找第一条 `observe`，哪怕它跨过了第二个动作）
+    → 它照样不许进前缀。没有这一条，「窗口吃到下一次动作之前」很容易被顺手实现成
+    「窗口就是那一段」——而那会把这一类**从原来拦着的变成放行**。
+    """
+    rows = [_goto(ENTRY, state="start"),
+            _look(ENTRY, TEXT_A, state="start"),
+            _click("第一下", state="funnel"),
+            _click("第二下", state="funnel"),
+            _look(QUOTE, f"已经收到你的申请。{SUCCESS}", state="funnel")]
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert prefix == rows[:2], f"第一下被放行了：{[r['action'] for r in prefix]}"
+    assert "落到的那一页" in why, why
 
 
 def test_the_product_replays_a_goto_to_the_address_we_asked_for(tmp_path):
