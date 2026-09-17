@@ -1608,11 +1608,18 @@ def test_a_crash_inside_a_step_leaves_a_failed_line_in_the_trace(sandbox, form_f
 
     def _boom(*a, **kw):
         raise TypeError("form() got an unexpected keyword argument 'expect_label'")
+    # ⚠️ 替身是**模块级**的（`_stub` 取的是 `sys.modules["common"]`）：打上去必须还原，
+    # 否则**后面跑的每一条**都拿到这个 `_boom`。2026-09-17 实测：不还原时，
+    # 追加在文件末尾的那几条测试单跑绿、进全量套件红（`click` 被换成了抛异常的函数）。
+    original_click = common.CDPHelper.click
     common.CDPHelper.click = _boom          # 让这一步抛
 
-    trace = sandbox / "crash.jsonl"
-    f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace))
-    assert f.run() is False
+    try:
+        trace = sandbox / "crash.jsonl"
+        f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace))
+        assert f.run() is False
+    finally:
+        common.CDPHelper.click = original_click
     lines = [json.loads(l) for l in trace.read_text(encoding="utf-8").splitlines() if l.strip()]
     bad = [l for l in lines if l.get("ok") is False]
     assert bad, "产物死了必须留痕（不然自测会把它读成「走完了」）：%s" % lines
@@ -1645,6 +1652,8 @@ def test_the_artifact_survives_a_stale_common_py_but_says_so(sandbox, form_file,
     def old_form(self, selector, value=None, check=None, select=None, frame_id=""):
         common.STATE.actions.append(("form", selector, value))
         return '{"filled": true}'
+    # 同上：替身是模块级的，打完必须还原（不然后面每一条都拿到老签名）
+    original_form = common.CDPHelper.form
     common.CDPHelper.form = old_form
 
     logger = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).log
@@ -1656,6 +1665,7 @@ def test_the_artifact_survives_a_stale_common_py_but_says_so(sandbox, form_file,
         module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
     finally:
         logger.removeHandler(handler)
+        common.CDPHelper.form = original_form
     assert ("form", "input.mui", "SW1A 1AA") in common.STATE.actions or \
            [a for a in common.STATE.actions if a[0] == "form"], common.STATE.actions
     assert [m for m in records if "不认识 --strict" in m], records
@@ -1744,3 +1754,85 @@ def test_live_frames_are_the_ones_in_the_latest_observation(sandbox, form_file):
 # （替身是模块级的、`success_in_page` 取的是**这一步之前**的页面文字，调用次序一变就翻）。
 # 与其留一条会骗人的绿，不如明说没有。实现是 `agent/template.py` 的 trace 那三行
 # （`page_sig_tail` / `success_in_page`，**加法**：老键一个字没动）。
+
+
+# ── 同意弹层那一步：**弹层已经不在了 = 软跳过**（2026-09-17 真站实测）──────────
+#
+# 现场：扰动自测第 2 遍（定义就是「同一个会话里接着再跑一遍」）挂在**第 2 步**：
+#   `页面上没找到「Reject All」`
+# 而第 1 遍是过的。同一条产物、同一个站点，两遍表现相反 —— 差别只在**环境的残留**：
+# 账本是在一个「弹层已经点掉过」的会话里录的，所以它记了一条**硬**步骤
+# `click「Reject All」`；第 2 遍时弹层根本不在页面上，那一步「找不到」→ 记一次失败
+# → `_judge` 要求全过 → 整遍挂、产物交不出去。
+#
+# 判据（两道都要）：① 这一步的名字属于「对同意做个决定」那一族；
+#                   ② 此刻页面上**看不到**同意类容器。
+# 弹层要真还在，② 不成立 → 照旧算失败（下面那条反例钉住它）。
+
+def _trace_of(sandbox, form_file, name, states, fail_selectors, consent):
+    """跑一遍产物，落一份 trace，返回 (最后一行的 trace 字典按步号索引, STATE)。
+
+    ⚠️ 这里**不看 `run()` 的返回值**：产物的 `run()` 只要见到成功文案就收手，
+    而这两条要问的是**那一步本身算不算做成**。trace 每步一行 `ok`，那才是这一格的判据。
+    """
+    module, _ = _load(name, template.render(name, "Thank you", states, [], SAMPLE_PROVENANCE), sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]                      # 成功文案**不在**场上：让它走完每一步
+    common.STATE.consent = consent
+    common.STATE.fail_selectors = fail_selectors
+    trace = str(sandbox / (name + ".trace.jsonl"))
+    module.Filler(WS, form_file, "cid_1", "task_1", trace=trace,
+                  delay=(0, 0)).run()
+    rows = {}
+    for line in open(trace, encoding="utf-8"):
+        if line.strip():
+            r = json.loads(line)
+            rows[r.get("step")] = r
+    return rows, common
+
+
+def test_a_consent_step_whose_banner_is_gone_is_a_soft_skip(sandbox, form_file):
+    """弹层不在页面上 → 「点掉弹层」这一步**算做成了**（软跳过），不是失败。
+
+    现场（2026-09-17 真站实测）：扰动自测第 2 遍（同一个会话里接着再跑一遍）挂在第 2 步
+    `页面上没找到「Reject All」`，而第 1 遍是过的 —— 差别只在环境的残留：账本录在一个
+    「弹层已经点掉过」的会话里，那一步是**硬**的；第 2 遍弹层根本不在，于是记一次失败，
+    `_judge` 要求全过 → 整遍挂、产物交不出去。
+    """
+    rows, common = _trace_of(
+        sandbox, form_file, "example-consent-gone",
+        [{"name": "walk", "when": None, "steps": [
+            {"action": "click", "note": "点「Reject All」",
+             "target": {"text": "Reject All", "role": "button", "near": None,
+                        "selectors": ["#onetrust-reject-all-handler"]}},
+            {"action": "click", "note": "点「Get Started」",
+             "target": {"text": "Get Started", "role": "button", "near": None,
+                        "selectors": ["#go"]}}]}],
+        ("#onetrust-reject-all-handler",), "")
+    assert rows[1]["ok"] is True, (
+        "弹层不在页面上时，「点掉弹层」这一步找不到元素**不算失败** —— "
+        "它要办的事（弹层没了）已经成立了；产物开跑前本来就会自己清一次。trace: %s" % rows.get(1))
+    assert "跳过" in (rows[1].get("note") or ""), (
+        "软跳过要**说出来**（人话里带「跳过」）—— 不许静默把一次找不到记成做成了: %s" % rows.get(1))
+    # 软跳过只作用于这一步：**后面那一步照做**
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert "#go" in clicks, clicks
+
+
+def test_a_consent_step_whose_banner_is_still_there_is_still_a_failure(sandbox, form_file):
+    """反例（同一格）：弹层**还在**页面上却找不到那个按钮 → 照旧算失败。
+
+    这是软跳过最危险的翻车方向（把真失败读成跳过）。判据的第二道就是为它设的。
+    """
+    rows, _ = _trace_of(
+        sandbox, form_file, "example-consent-still",
+        [{"name": "walk", "when": None, "steps": [
+            {"action": "click", "note": "点「Reject All」",
+             "target": {"text": "Reject All", "role": "button", "near": None,
+                        "selectors": ["#onetrust-reject-all-handler"]}}]}],
+        ("#onetrust-reject-all-handler",),
+        "#onetrust-accept-btn-handler|Accept Cookies")     # 弹层还在
+    assert rows[1]["ok"] is False, (
+        "弹层还在页面上时，那一步找不到元素**就是失败**，不许软跳过: %s" % rows.get(1))

@@ -1,0 +1,24 @@
+# DOM ground truth — measured with 'cdp eval', NOT read out of observe
+
+Chrome: private headed instance (Xvfb :97), own profile, NOT the production
+fingerprint and NOT behind the US proxy. Same origin as observe-*.json in this dir.
+
+## /onboarding/matrix/certain — first visit, no answer selected
+
+$ cdp eval "[...document.querySelectorAll(chr(39)button(chr(39)))].map(b=>({text,aria-label,disabled}))"
+
+"[\n {\n  \"text\": \"\",\n  \"aria\": \"Back\",\n  \"disabled\": false\n },\n {\n  \"text\": \"\",\n  \"aria\": \"Disagree\",\n  \"disabled\": false\n },\n {\n  \"text\": \"\",\n  \"aria\": \"Not sure\",\n  \"disabled\": false\n },\n {\n  \"text\": \"\",\n  \"aria\": \"Agree\",\n  \"disabled\": false\n },\n {\n  \"text\": \"Continue\",\n  \"aria\": null,\n  \"disabled\": true\n }\n]"
+
+## Selector uniqueness (does observe's 'selector' field point at one element?)
+
+  button._option_1cgnd_66.focus-ring   -> matches 7 on /matrix/growth-areas, 3 on /matrix/certain
+  button.cursor-pointer.items-center   -> matches 5; document order is:
+        [0] Back  [1] Disagree  [2] Not sure  [3] Agree  [4] Continue
+  => querySelector('button.cursor-pointer.items-center') == the BACK button
+
+## Clicking the disabled Continue (unique positional selector), exit code and result
+
+  $ cdp click --selector "div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > button:nth-of-type(1)"
+  {"x":642.878739450628,"y":682.3810508759587}      <- plausible coords, exit 0
+  URL before: /onboarding/matrix/certain
+  URL after:  /onboarding/matrix/certain            <- nothing happened, no error

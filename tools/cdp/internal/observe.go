@@ -293,15 +293,31 @@ type Field struct {
 	// Value / Selected 与 Action 的同名字段**同义同判据**（三态、上限、为什么
 	// 不能猜 class 全写在那边）：字段这一路也要回读，因为「值填进去了没有」
 	// 这个问题的**主战场就是表单字段**。
-	Value          *string  `json:"value"`
-	ValueTruncated bool     `json:"value_truncated"`
-	Selected       *bool    `json:"selected"`
-	Hint           string   `json:"hint"`
-	Placeholder    string   `json:"placeholder"`
-	Type           string   `json:"type"`
-	Required       bool     `json:"required"`
-	ShadowDepth    int      `json:"shadow_depth"`
-	FramePath      []string `json:"frame_path"`
+	Value          *string `json:"value"`
+	ValueTruncated bool    `json:"value_truncated"`
+	Selected       *bool   `json:"selected"`
+	Hint           string  `json:"hint"`
+	Placeholder    string  `json:"placeholder"`
+	// NearbyText 与 Action 的同名字段**同义同判据**（`nearbyText(el)`，见那边的注释）。
+	//
+	// ⚠️⚠️ **这个字段原先不存在，而 JS 一直在算它** —— 2026-09-17 真站实测查出来的。
+	// `observeJS` 的 fields.map 里写着 `nearby_text: nearbyText(el)`（与 actions 那条
+	// 同一个实现），可 Go 侧 `Field` 没有这个字段 → **json.Unmarshal 静静地把它丢掉**。
+	// 症状不是报错，是「页面上明明写着的字，消费侧一个都拿不到」：
+	//   agent 的 `_field_kind` 第二档就是读 `element["nearby_text"]`，
+	//   它**从来没有**在字段这一路生效过（一直收空列表）。
+	// 于是「题目正文」这条本可以认字段的路**一直是断的**，而断点在观察者交出去的路上，
+	// 不在判断那一侧 —— 与「observe 收了 placeholder、摘 target 时丢掉」是同一族，
+	// 只是这一处的丢得更早（连模型里都没有）。
+	//
+	// ⚠️ 为什么单独有这条注释：Action 有、Field 没有，是**不对称**的。这种不对称
+	// 在本仓是有先例的坑（两条路各写一遍、其中一条漏一格）—— 写在这里，下一个人
+	// 加字段级的感知时看得见「两边的键要一起加」。
+	NearbyText  []string `json:"nearby_text"`
+	Type        string   `json:"type"`
+	Required    bool     `json:"required"`
+	ShadowDepth int      `json:"shadow_depth"`
+	FramePath   []string `json:"frame_path"`
 }
 
 type OptionGroup struct {
@@ -333,7 +349,7 @@ type Obstruction struct {
 	Selector string `json:"selector"`
 	// SelectorUnique 与 OptionGroup.ScopeUnique **同义同判据**（见那边的长注释：
 	// 为什么这三个列表用布尔、而 actions/fields 用 stability；false 为什么照样要交）。
-	SelectorUnique  bool `json:"selector_unique"`
+	SelectorUnique  bool   `json:"selector_unique"`
 	DismissSelector string `json:"dismiss_selector"`
 	// DismissSelectorUnique 说 DismissSelector 那条地址验证过唯一没有。
 	//
@@ -503,10 +519,41 @@ func observeJS() string {
   // ⚠️ RAND 的**已知误伤**（2026-09-17 真站实测，gowizard）：纯数字 id 「173851」
   // 被形态② 判成了随机 token（「[a-z]*\d{6,}」，6 位以上数字）。它不是随机的 ——
   // 它是页面自己编的**稳定**字段号，正是下面要拿来当锚点的那种东西。
-  // **仍然不动它**：收窄这一条的波及面是全部站点（step2a / address1a 那一家的取舍
-  // 刚在两轮修复里量过），而地址唯一性（下面的 address）已经从**另一头**把问题
-  // 解决了 —— 一条被 RAND 拒掉、退化成结构路径的选择器，照样是**验证过的**唯一
-  // 地址，只是没能停在那个锚点上、多爬几跳而已。风险不对称，留着。
+  //
+  // **2026-09-17 结掉它（原来是「留着不动」）** —— 收窄办法是给 RAND 加一道豁免，
+  // 不动那三条形态本身：
+  //
+  //   形态② 的 [a-z]* 允许**空前缀**，于是「整串就是数字」也落进它，
+  //   而「整串都是十进制数字」与「随机 hash」是**两种东西**：
+  //     随机 token 是 hex / base36（a1b2c3d4e5f6、css-1x2y3z4）—— **含字母**；
+  //     纯数字是人编的**序号**（组件号 / 步骤号 / 字段号），站点自己发号，跨趟不变。
+  //   ⇒ 豁免只豁免「整串十进制且长度有限」这一种，其余照旧过 RAND。
+  //
+  // 为什么现在敢动（上一轮不敢）：上一轮的理由是「波及面是全部站点，而地址唯一性
+  // 已经从另一头解决了」。**那一半仍然成立**（address() 照样验证唯一性，这条豁免
+  // 只是让它能停在锚点上）；**另一半没了**：真站实测那三个下拉的 id 就是裸数字
+  // （id="173851"），被误伤之后首选退化成 10 跳的 nth-of-type 位置路径 ——
+  // 而「位置路径会烂」正是这十二轮反复付代价的那一件事。
+  //
+  // 误伤的反向风险（会不会开始接受真随机的数字 id）：接受的是**候选**，不是
+  // 「一定用它」—— 它仍要过 address() 的唯一性验证，且排在同一个候选序列里。
+  // 真随机的数字 id 会随发版变，但那种 id 本来就极少（随机 id 几乎都带字母）。
+  // 反向那一半由 TestObserveSelectorLegitTokensNotRejected 守着（不许开始拒绝正常类名）。
+  // 豁免的形状（判据一句话）：**把 -/_ 切开之后，每一段要么全是字母、要么全是数字**
+  //   ⇒ 那是人/站点编的名字，不是生成的 hash。
+  //   173851 ✓ ／ textField-173862 ✓ ／ col-md-6 ✓ ／ email-addr ✓
+  //   a1b2c3d4e5f6 ✗ ／ sid_9f8e7d6c5b4a ✗ ／ css-1x2y3z4 ✗ ／ x1234567890 ✗
+  //   （含字母数字**混在同一个段里**的段 = 机器生成的 hash —— 正是 RAND 要抓的那些）
+  // 为什么不是「整串纯数字」那种更窄的写法：真站实测的号是 textField-173862
+  // （字母前缀 + 纯数字尾巴），窄的那版漏掉它，那一格照样退化成位置路径。
+  const SEGMENT = /^[A-Za-z]+$|^[0-9]+$/;
+  function looksRandom(v) {
+    if (!v) return false;
+    var s = String(v);
+    var segs = s.split(/[-_]/).filter(function (x) { return x !== ''; });
+    if (segs.length && segs.every(function (x) { return SEGMENT.test(x); })) return false;
+    return RAND.test(v);
+  }
 
   // ── 地址（addressability）：交出去的每一条选择器都必须**真的指到它、而且只指到它** ──
   //
@@ -584,7 +631,7 @@ func observeJS() string {
     // 顶层那一格整个丢掉 —— 元素的 parentElement 是 null（它的爹是 ShadowRoot，
     // 不是元素），于是路径只剩它自己那一跳，比实际能写出来的**更弱**。
     while (n && n.tagName && n.tagName.toLowerCase() !== 'html') {
-      if (stopAtId && n.id && !RAND.test(n.id)) { parts.unshift(idSel(n.id)); break; }
+      if (stopAtId && n.id && !looksRandom(n.id)) { parts.unshift(idSel(n.id)); break; }
       var idx = 1, sib = n;
       while ((sib = sib.previousElementSibling)) if (sib.tagName === n.tagName) idx++;
       parts.unshift(n.tagName.toLowerCase() + ':nth-of-type(' + idx + ')');
@@ -614,7 +661,7 @@ func observeJS() string {
     // ⚠️ 这里吐的是**原始候选**（没验过唯一），交出去之前一律过 address()。
     // id 那一行走 idSel：「#173851」 那种 id 直接拼出去是一条**语法非法**的选择器
     // （见 idSel 的注释），而它的失败是静默的。
-    if (el.id && !RAND.test(el.id)) out.push(idSel(el.id));
+    if (el.id && !looksRandom(el.id)) out.push(idSel(el.id));
     // name 也要过 RAND（修复轮 1）：它是四个落点里**唯一**原先没过的一道 ——
     // 随机 name（如 sid_9f8e7d6c5b4a，RAND 形态①本来就认得）会直接当上首选、
     // 且判据里 [name= 落进 high 分支 → 判据明写 high 须「不含随机 hash」。
@@ -629,13 +676,33 @@ func observeJS() string {
     //   正是本仓反复踩的坑；而且退化的代价是**轻微**的（回退到结构路径，仍能选中元素，
     //   只是不再抗结构变化）。控制器（Task 5 审查）裁定：接受 name 也适用 ③。
     //   代价已量化留档：fixture 的 "N subfield name"(name=step2a) 就是断言它确实退化了。
-    if (el.name && !RAND.test(el.name)) out.push(el.tagName.toLowerCase() + '[name="' + el.name + '"]');
+    if (el.name && !looksRandom(el.name)) out.push(el.tagName.toLowerCase() + '[name="' + el.name + '"]');
     ['data-testid', 'data-test', 'data-id', 'data-value'].forEach(function (a) {
       var v = el.getAttribute && el.getAttribute(a);
-      if (v && !RAND.test(v)) out.push(el.tagName.toLowerCase() + '[' + a + '="' + v + '"]');
+      if (v && !looksRandom(v)) out.push(el.tagName.toLowerCase() + '[' + a + '="' + v + '"]');
     });
+    // placeholder：**肉眼可见、字面量、跨会话不变**的那一条地址。
+    //
+    // 为什么它该在候选里（2026-09-17 真站实测）：那一格的身份信号里，
+    // 站方的语义名字**一个都没落到 DOM 上**（name 属性是空的、<label> 没有、
+    // id 只是个不透明的 textField-173862），唯一稳定且人眼一眼看得见的就是
+    // placeholder="e.g. California or Texas"。而它原先**根本不在候选里** ——
+    // 交出去的地址是 input.MuiInputBase-input.css-mnn31（三个字段共用同一个 class）
+    // 加一条 10 跳的 nth-of-type 位置路径。
+    //
+    // 位置：排在 id / name / data-* **之后**、class 与位置路径**之前** ——
+    // 与规格 §5.1b 的「优先用代码里固定的选择器，位置路径降为最后手段」同一条顺序，
+    // 也和生产 JSON 那条线一致（json_pipeline.py：「运营写了 placeholder 必须原样保留」）。
+    //
+    // 两个闸（都不是新口径）：
+    //   - 长度上限：placeholder 是**字面量**，但也可能是整句话/广告词，长的不适合当选择器；
+    //   - looksRandom：与上面三个落点同一道闸（框架生成的占位符也可能是 hash）。
+    var ph = el.getAttribute && el.getAttribute('placeholder');
+    if (ph && ph.length <= 60 && !looksRandom(ph)) {
+      out.push(el.tagName.toLowerCase() + '[placeholder="' + ph.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]');
+    }
     var cls = (el.className && typeof el.className === 'string' ? el.className : '')
-      .split(/\s+/).filter(function (c) { return c && !RAND.test(c); }).slice(0, 2);
+      .split(/\s+/).filter(function (c) { return c && !looksRandom(c); }).slice(0, 2);
     if (cls.length) out.push(el.tagName.toLowerCase() + '.' + cls.join('.'));
     out.push(pathSel(el));
     return out.filter(function (s, i, a) { return s && a.indexOf(s) === i; });
@@ -869,11 +936,36 @@ func observeJS() string {
     var ratio = (hi + 0.05) / (lo + 0.05);
     return ratio >= 4.5 ? 'high' : ratio >= 3 ? 'medium' : 'low';
   }
+  // nearbyText：这个控件**周围写着的字**。
+  //
+  // 两段，判据不同、都要：
+  //   ① 它**自己的**兄弟（上 2 个 / 下 1 个）—— 老行为，不动。
+  //   ② 往上爬 ≤3 层，看每一层的**前一个兄弟** —— 2026-09-17 真站实测补的。
+  //
+  // 为什么非有 ② 不可（gowizard 的 MUI 问卷，在活页面上量的）：
+  // 「What state do you live in?」这句题目正文**就在页面上**，而输入框自己的兄弟
+  // 全是 MUI 的装饰容器（文本为空）—— ① 一个字都取不到，nearby_text 交出 []。
+  // 实测的层距：正文挂在 input 往上第 3 层（div.MuiBox-root）的 previousElementSibling 上：
+  //
+  //	input(MuiInputBase-input) → div(MuiInputBase-root) → div(MuiFormControl-root)
+  //	→ div(MuiBox-root css-pkwmz2) ← 它的 previousElementSibling 就是题目正文
+  //
+  // 后果（修之前）：三档语义全落空 → 那一格判成不透明 id → 兜底填 full_name，
+  // 于是「州」那个框里被填进一个人名。**这不是推理问题，是观察者没把页面上写着的字收上来。**
+  //
+  // 有界（≤3 层 + 每层只取第一个有字的），且**取到就停** —— 再往上就是整页的容器，
+  // 收上来的是别的题目的字，那种「多收」会直接把语义判错（比不收更坏）。
   function nearbyText(el) {
     var out = [], n = el.previousElementSibling, k = 0;
     while (n && k < 2) { var t = txt(n, 40); if (t) { out.push(t); k++; } n = n.previousElementSibling; }
     n = el.nextElementSibling; k = 0;
     while (n && k < 1) { var t2 = txt(n, 40); if (t2) { out.push(t2); k++; } n = n.nextElementSibling; }
+    var up = el.parentElement, lvl = 0;
+    while (up && lvl < 3) {
+      var p = up.previousElementSibling;
+      if (p) { var t3 = txt(p, 80); if (t3) { out.push(t3); break; } }
+      up = up.parentElement; lvl++;
+    }
     return out;
   }
 

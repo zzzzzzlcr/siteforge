@@ -124,8 +124,12 @@ func TestObserveSelectorStableIdentifiersPreferred(t *testing.T) {
 // ── 判据 4：alternates 有序、不冗余 ───────────────────────────────────────
 
 // 五种标识俱全的元素上，候选必须按「稳定度」排出来
-// （id > name > data-* > class > 结构路径），且去重 ——
+// （id > name > data-* > placeholder > class > 结构路径），且去重 ——
 // pathSel 对同一个元素会再吐一次 `#full`，那一份必须被滤掉。
+//
+// ⚠️ placeholder 是 **2026-09-17 新加进来的一档**（原来没有），位置在 data-* 之后、
+// class 与位置路径之前 —— 理由（真站实测 + 规格 §5.1b「位置路径是最后手段」）
+// 写在 observe.go 的 candidates() 那一段。它在这里被钉住顺序。
 func TestObserveSelectorCandidatesOrderedAndDeduped(t *testing.T) {
 	m := selectorFixture(t)
 
@@ -134,6 +138,7 @@ func TestObserveSelectorCandidatesOrderedAndDeduped(t *testing.T) {
 		"#full",
 		`input[name="full-name"]`,
 		`input[data-testid="full-tid"]`,
+		`input[placeholder="Full"]`,
 		"input.form-control",
 	}
 	if f.Selector != want[0] {
@@ -448,9 +453,14 @@ func TestObserveSelectorRandomHashClassNotPreferred(t *testing.T) {
 		assertNoRandomToken(t, c)
 	}
 
-	// name 这一路：元素自身没有 id / data-* / class，首选只可能来自 name。
-	// 过滤掉随机 name 之后必须**退化成结构路径**（不是变成别的随机串，
+	// name 这一路：元素自身没有 id / data-* / class，首选只可能来自 name 或 placeholder。
+	// 过滤掉随机 name 之后必须**改用别的候选**（不是变成别的随机串，
 	// 也不是把这条元素整个丢掉）—— 所以这里断言正面的结果，不只是「没有 token」。
+	//
+	// ⚠️ 2026-09-17：期望从「结构路径」改成「placeholder 候选」—— candidates() 新加了
+	// placeholder 落点（排在 name 之后、class 与位置路径之前）。原始意图（随机 token
+	// 不得进首选）一字未动；退化目标从 10 跳的位置路径换成了页面上的字面量，是变好不是放宽。
+	// 位置路径仍在 alternates（下面钉住它）。
 	const nameToken = "sid_9f8e7d6c5b4a"
 	requireTokenCarriedBy(t, "K random name", nameToken)
 	nf := fieldByPlaceholder(t, m, "K random name")
@@ -459,10 +469,20 @@ func TestObserveSelectorRandomHashClassNotPreferred(t *testing.T) {
 			"`if (el.name)` 这一行也要过。该 token = `_` 夹住的 12 位 hex（RAND 形态①，RAND 自己是认得的）",
 			nf.Selector, nf.Stability)
 	}
-	if !strings.HasPrefix(nf.Selector, "body:nth-of-type(1) > input:nth-of-type(") {
-		t.Errorf("随机 name 被滤掉后应退化成结构路径，实际 %q —— 要么没滤干净，要么把元素丢了", nf.Selector)
+	if nf.Selector != `input[placeholder="K random name"]` {
+		t.Errorf("随机 name 被滤掉后应改用 placeholder 候选，实际 %q —— 要么没滤干净，要么把元素丢了", nf.Selector)
 	}
-	t.Logf("K random name：selector=%q stability=%q（随机 name 被 RAND 滤掉 → 退回结构路径）",
+	hasPath := false
+	for _, a := range nf.Alternates {
+		if strings.HasPrefix(a, "body:nth-of-type(1) > input:nth-of-type(") {
+			hasPath = true
+		}
+	}
+	if !hasPath {
+		t.Errorf("alternates 里没有结构路径退路（alternates=%q）—— 「首选字面量、退路结构路径」两档都要在",
+			nf.Alternates)
+	}
+	t.Logf("K random name：selector=%q stability=%q（随机 name 被 RAND 滤掉 → 改用 placeholder 候选）",
 		nf.Selector, nf.Stability)
 }
 
@@ -515,19 +535,26 @@ func TestObserveSelectorLegitTokensNotRejected(t *testing.T) {
 // `step2a` / `address1a` / `opt2b` 这类「步骤+序号+子项」的人写惯例，
 // 那一家被误抓时套件里**原本没有任何东西会说话**。两个方向都钉住（7e-1 / 7e-2）：
 //
-//	7e-1 `name="a1b2c3"`（随机，③ 形态）→ **必须丢**，且退化成结构路径
-//	7e-2 `name="step2a"`（人写的子字段名）→ **接受被丢**，但必须**确实退化成结构路径**
+//	7e-1 `name="a1b2c3"`（随机，③ 形态）→ **必须丢**，改用别的候选
+//	7e-2 `name="step2a"`（人写的子字段名）→ **接受被丢**，改用别的候选
 //
 // 7e-2 不是「红断言」，也不是「假装没事」：控制器裁定**接受 name 也适用 ③**
 // （一条规则、一个偏置，不给 name 开特例 —— 按落点分叉会让同一个 token 有不同命运，
-// 那正是本仓反复踩的「两份判据」），理由是退化的代价**轻微**（仍能选中元素，
-// 只是不再抗结构变化）。取舍写在 observe.go 的 name 那一行旁边，这里把**代价**
-// 钉成可观测的事实。若将来有人收窄了 ③ 让 `step2a` 不再被丢，这条会红，
-// 而它的错误信息会告诉那个人：**连带改掉那处注释**，别让代码注释与本测试各说一套。
+// 那正是本仓反复踩的「两份判据」）。取舍写在 observe.go 的 name 那一行旁边。
+//
+// ⚠️ **2026-09-17 改过期望：从「必须退化成结构路径」改成「必须退化成 placeholder 候选，
+// 且结构路径留在 alternates 里」** —— 因为 candidates() 新加了 placeholder 落点
+// （排位在 name 之后、class 与位置路径之前，理由见 observe.go 那一段）。
+// 这一改是**变好**，不是放宽：
+//   - 两个方向的原始意图（**随机 token 不得进首选**）一字未动，断言照旧；
+//   - 退化目标从「10 跳的 nth-of-type 位置路径」换成了「页面上的字面量」——
+//     真站实测正是这一条把三个共用 class 的字段分开的（`e.g. 06801` / `e.g. California or Texas`）；
+//   - 位置路径**没有消失**，它是 alternates —— 所以「一个候选挂了还有退路」这条也还在。
+// 谁要是把 placeholder 落点删掉，这条会红，并告诉那个人期望的形状是什么。
 func TestObserveSelectorNameLandingBothWays(t *testing.T) {
 	m := selectorFixture(t)
 
-	// 方向一：随机 name 必须丢，且退化成结构路径（不是变成别的随机串、也不是把元素丢了）
+	// 方向一：随机 name 必须丢（不是变成别的随机串、也不是把元素丢了）
 	const randName = "a1b2c3"
 	requireTokenCarriedBy(t, "N random name 3", randName)
 	rf := fieldByPlaceholder(t, m, "N random name 3")
@@ -535,8 +562,9 @@ func TestObserveSelectorNameLandingBothWays(t *testing.T) {
 		t.Errorf("随机 name %q 仍在首选里（selector=%q，stability=%q）—— name 落点的 RAND 过滤没生效",
 			randName, rf.Selector, rf.Stability)
 	}
-	if !strings.HasPrefix(rf.Selector, "body:nth-of-type(1) > input:nth-of-type(") {
-		t.Errorf("随机 name %q 被滤掉后应退化成结构路径，实际 %q", randName, rf.Selector)
+	if rf.Selector != `input[placeholder="N random name 3"]` {
+		t.Errorf("随机 name %q 被滤掉后应改用 placeholder 候选（字面量，排在 class 与位置路径之前），实际 %q",
+			randName, rf.Selector)
 	}
 
 	// 方向二：人写的子字段名 —— ③ 会抓走它。断言「确实被抓走而且退化得干净」，
@@ -549,11 +577,26 @@ func TestObserveSelectorNameLandingBothWays(t *testing.T) {
 			"请同步改掉 observe.go 里 name 那一行的取舍注释（「接受 ③ 也适用于 name」），"+
 			"并连带更新本测试的期望：别让注释和测试各说一套", subName, sf.Selector)
 	}
-	if !strings.HasPrefix(sf.Selector, "body:nth-of-type(1) > input:nth-of-type(") {
-		t.Errorf("子字段名 %q 被 ③ 抓走后应退化成结构路径（退化本身是良性代价），实际 %q",
-			subName, sf.Selector)
+	if sf.Selector != `input[placeholder="N subfield name"]` {
+		t.Errorf("子字段名 %q 被 ③ 抓走后应改用 placeholder 候选，实际 %q", subName, sf.Selector)
 	}
-	t.Logf("name 双向：随机 %q → %q ；子字段 %q → %q（③ 的已知代价，控制器裁定接受）",
+	// 位置路径没丢 —— 它是退路。这一条是「退化得干净」的新读法。
+	for _, f := range []struct{ name, sel string; alts []string }{
+		{randName, rf.Selector, rf.Alternates},
+		{subName, sf.Selector, sf.Alternates},
+	} {
+		hasPath := false
+		for _, a := range f.alts {
+			if strings.HasPrefix(a, "body:nth-of-type(1) > input:nth-of-type(") {
+				hasPath = true
+			}
+		}
+		if !hasPath {
+			t.Errorf("%s：alternates 里没有结构路径退路（alternates=%q）—— "+
+				"「首选是字面量、退路是结构路径」两档都要在，别把退路一起丢了", f.name, f.alts)
+		}
+	}
+	t.Logf("name 双向：随机 %q → %q ；子字段 %q → %q（首选换成了字面量，结构路径在 alternates）",
 		randName, rf.Selector, subName, sf.Selector)
 }
 
@@ -585,4 +628,79 @@ func TestObserveSelectorFieldAttributesBind(t *testing.T) {
 		t.Error("placeholder=Full 的 input 的 hint 为空 —— 它有 name 也有 id，空串=那个键没绑上")
 	}
 	t.Logf("Field 绑定性：type=%q required=%t hint=%q", f.Type, f.Required, f.Hint)
+}
+
+// ── 站方自己的**纯数字**组件号：必须能当首选地址（2026-09-17 真站实测）──────
+//
+// 真站形状（gowizard，在活页面上逐字量的）：
+//
+//	id="173851"          三个「点开再选」的下拉
+//	id="textField-173862" 三个文本框（州 / 邮编）
+//	**name 属性是空的** —— `form_components[173838]` 只活在站方配置里，不在 DOM 上
+//
+// 这些号是站点自己发的**整数**组件号，跨趟稳定，还是后端字段名（`urlMapping`）。
+// 而 RAND 形态②（可选字母前缀 + ≥6 位数字）把「整串就是数字」也当成了随机 hash →
+// 首选退化成 10 跳的 nth-of-type 位置路径 —— 而「位置路径会烂」正是这十二轮反复
+// 付代价的那一件事。
+//
+// 反向那一半同样钉住：**12 位 hex 的真随机 id 照旧必须被拒**（形态①），
+// 这条豁免只放行「整串十进制」，不许顺手把随机 id 也放进来。
+func TestObserveSelectorPlainNumericIdIsStable(t *testing.T) {
+	m := selectorFixture(t)
+
+	// 正向：纯数字 id → 首选就是它，且评级 high（有稳定 id）
+	for _, c := range []struct{ ph, want string }{
+		// ⚠️ 期望是 `[id="173851"]` 而不是 `#173851`：`#` 后面跟数字是**语法非法**的
+		// CSS（idSel 的注释写着这条），交出去会是一条静默失败的地址。
+		// `[id="..."]` 是它的合法写法，同样是「指着那个稳定号」，不是退让。
+		{"e.g. 2020", `[id="173851"]`},
+		// textField-173838 = 真站上的邮编框（页面上那三个文本框之一）
+		{"e.g. 06801", "#textField-173838"},
+	} {
+		f := fieldByPlaceholder(t, m, c.ph)
+		if f.Selector != c.want {
+			t.Errorf("站方组件号 %s 应当首选（纯十进制是人编的序号，不是随机 hash），实际 %q",
+				c.want, f.Selector)
+		}
+		if f.Stability != "high" {
+			t.Errorf("站方组件号 %s 的 stability = %q，应为 high（判据：有稳定的 id）", c.want, f.Stability)
+		}
+	}
+
+	// 反向：12 位 hex 的真随机 id 照旧被 RAND 形态① 拒掉 → 退化成别的候选
+	f := fieldByPlaceholder(t, m, "e.g. random id")
+	if strings.Contains(f.Selector, "a1b2c3d4e5f6") {
+		t.Errorf("12 位 hex 的随机 id 不该当首选（selector=%q）—— "+
+			"「纯十进制」这条豁免不许把随机 id 一起放进来", f.Selector)
+	}
+	t.Logf("站方组件号：173851 / textField-173838 当了首选；hex 随机 id 仍被拒（→ %q）", f.Selector)
+}
+
+// ── 题目正文在**上面第 3 层**的兄弟里：nearbyText 必须爬上去（2026-09-17 真站实测）──
+//
+// 真站实测（gowizard 的州那一格）：题目正文「What state do you live in?」**就在页面上**，
+// 却挂在输入框往上第 3 层的 previousElementSibling 上，而输入框自己的兄弟全是空的
+// 装饰容器 —— 旧 nearbyText 只看自己的兄弟，于是 `nearby_text` 是 `[]`，
+// 三档语义全落空，那一格被填进一个人名（兜底 `full_name`）。
+//
+// 这条钉两件：① 爬得到（正文进了 nearby_text）；② 有界且**取到就停**（不会把整页
+// 容器的字都收上来 —— 那种「多收」会直接把语义判错，比不收更坏）。
+func TestObserveSelectorNearbyTextClimbsToQuestionText(t *testing.T) {
+	m := selectorFixture(t)
+
+	f := fieldByPlaceholder(t, m, "e.g. California or Texas")
+	if f.Hint != "deepq" {
+		t.Fatalf("取到的不是 fixture 里那个深层的 input（hint=%q）—— 用例与 fixture 脱节了", f.Hint)
+	}
+	joined := strings.Join(f.NearbyText, " | ")
+	if !strings.Contains(joined, "What state do you live in?") {
+		t.Errorf("题目正文没被收进 nearby_text（nearby_text=%q）—— "+
+			"正文在往上第 3 层的 previousElementSibling 上，nearbyText 要爬上去", f.NearbyText)
+	}
+	// 有界：收上来的条数不许随着「往上爬」无限增长（每层最多收一条，且取到就停）
+	if len(f.NearbyText) > 4 {
+		t.Errorf("nearby_text 收了 %d 条（%q）—— 爬祖先那段应当「每层最多一条、取到就停」，"+
+			"多收会把别的题目的字也带进来，语义直接判错", len(f.NearbyText), f.NearbyText)
+	}
+	t.Logf("深层 input：nearby_text=%q（正文在第 3 层祖先的前一个兄弟上）", f.NearbyText)
 }

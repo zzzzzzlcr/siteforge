@@ -1,0 +1,343 @@
+{
+  "url": "https://www.blinkist.com/onboarding/matrix/growth-areas",
+  "title": "Your personal growth plan | Blinkist",
+  "page_text": "Profile Personality Patterns In which areas do you want to grow? Be more productive Improve my wellbeing Build lasting habits Improve my relationships Boost my finances Grow in my career I’m just browsing Continue We use Cookies 🍪",
+  "shadow_roots": 0,
+  "viewport_css_px": {
+    "width": 1279,
+    "height": 812
+  },
+  "actions": [
+    {
+      "selector": "button.focus-ring.hover:text-content-accent",
+      "alternates": [
+        "div:nth-of-type(1) \u003e header:nth-of-type(1) \u003e div:nth-of-type(2) \u003e button:nth-of-type(1)"
+      ],
+      "stability": "medium",
+      "text": "",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        160,
+        78,
+        24,
+        24
+      ],
+      "region": "header",
+      "above_fold": true,
+      "relative_size": 0.1,
+      "peer_count": 1,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "ProfilePersonalityPatterns"
+      ]
+    },
+    {
+      "selector": "button._option_1cgnd_66.focus-ring",
+      "alternates": [
+        "section:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(2) \u003e button:nth-of-type(1)"
+      ],
+      "stability": "low",
+      "text": "Be more productive",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        442,
+        383,
+        181,
+        48
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 1,
+      "peer_count": 8,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Improve my wellbeing"
+      ]
+    },
+    {
+      "selector": "button._option_1cgnd_66.focus-ring",
+      "alternates": [
+        "section:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(2) \u003e button:nth-of-type(2)"
+      ],
+      "stability": "low",
+      "text": "Improve my wellbeing",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        639,
+        383,
+        198,
+        48
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 1.1,
+      "peer_count": 8,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Be more productive",
+        "Build lasting habits"
+      ]
+    },
+    {
+      "selector": "button._option_1cgnd_66.focus-ring",
+      "alternates": [
+        "section:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(2) \u003e button:nth-of-type(3)"
+      ],
+      "stability": "low",
+      "text": "Build lasting habits",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        435,
+        447,
+        174,
+        48
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 1,
+      "peer_count": 8,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Improve my wellbeing",
+        "Be more productive",
+        "Improve my relationships"
+      ]
+    },
+    {
+      "selector": "button._option_1cgnd_66.focus-ring",
+      "alternates": [
+        "section:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(2) \u003e button:nth-of-type(4)"
+      ],
+      "stability": "low",
+      "text": "Improve my relationships",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        624,
+        447,
+        220,
+        48
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 1.2,
+      "peer_count": 8,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Build lasting habits",
+        "Improve my wellbeing",
+        "Boost my finances"
+      ]
+    },
+    {
+      "selector": "button._option_1cgnd_66.focus-ring",
+      "alternates": [
+        "section:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(2) \u003e button:nth-of-type(5)"
+      ],
+      "stability": "low",
+      "text": "Boost my finances",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        374,
+        511,
+        168,
+        48
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 0.9,
+      "peer_count": 8,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Improve my relationships",
+        "Build lasting habits",
+        "Grow in my career"
+      ]
+    },
+    {
+      "selector": "button._option_1cgnd_66.focus-ring",
+      "alternates": [
+        "section:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(2) \u003e button:nth-of-type(6)"
+      ],
+      "stability": "low",
+      "text": "Grow in my career",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        558,
+        511,
+        170,
+        48
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 0.9,
+      "peer_count": 8,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Boost my finances",
+        "Improve my relationships",
+        "I’m just browsing"
+      ]
+    },
+    {
+      "selector": "button._option_1cgnd_66.focus-ring",
+      "alternates": [
+        "section:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(2) \u003e button:nth-of-type(7)"
+      ],
+      "stability": "low",
+      "text": "I’m just browsing",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        744,
+        511,
+        160,
+        48
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 0.9,
+      "peer_count": 8,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Grow in my career",
+        "Boost my finances"
+      ]
+    },
+    {
+      "selector": "button.cursor-pointer.items-center",
+      "alternates": [
+        "div:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(2) \u003e button:nth-of-type(1)"
+      ],
+      "stability": "medium",
+      "text": "Continue",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        448,
+        671,
+        384,
+        44
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 1.9,
+      "peer_count": 8,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": []
+    },
+    {
+      "selector": "div.bg-pale-mint-grey.m:px-8",
+      "alternates": [
+        "body:nth-of-type(1) \u003e astro-island:nth-of-type(3) \u003e div:nth-of-type(1) \u003e div:nth-of-type(1)"
+      ],
+      "stability": "medium",
+      "text": "We use Cookies 🍪",
+      "role": "button",
+      "tag": "DIV",
+      "type": "",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        0,
+        764,
+        1279,
+        48
+      ],
+      "region": "body",
+      "above_fold": true,
+      "relative_size": 7.1,
+      "peer_count": 1,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": []
+    }
+  ],
+  "fields": [],
+  "option_groups": [],
+  "obstructions": [],
+  "honeypots": [],
+  "diagnostics": []
+}

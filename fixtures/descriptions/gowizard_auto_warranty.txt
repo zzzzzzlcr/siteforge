@@ -1,0 +1,13 @@
+页面URL: https://www.gowizard.com/auto-warranty/
+
+成功条件: Good news -We've matched you! Yourquote is on the way!
+
+操作:
+1. 点 Get Free Quote
+2. 进入问答页后，随机选择答案（问题随机选，不用挑）
+3. 一路走到成功条件那句出现为止
+
+备注（人给的）:
+- 成功条件那句是**用户给的原文**；跑之前先核对页面上的实际写法（空格/连字符可能不同）——
+  以页面真实渲染为准，并把实际匹配到的那串记下来。
+- 这个站没有手机验证码墙（不同于 homebuddy），所以成功条件可达。

@@ -622,10 +622,31 @@ def _target_of(element, action: str, selector: str, frame_id: str = "") -> dict:
     产物在 click / form 时把它交给 `cdp --frame-id`。
     """
     if action == "form":
-        label = ""
-        if element:
-            label = element.get("label") or element.get("hint") or element.get("placeholder") or ""
+        element = element or {}
+        label = element.get("label") or element.get("hint") or element.get("placeholder") or ""
+        # ── 这一格的**身份证据**，逐条留着（别只留一个 label 就完事）──────────────
+        #
+        # 为什么（2026-09-17 真站实测，简报里那条「观察者收了、摘 target 时丢掉」）：
+        # 原先这里只摘出一个 `label`（三选一的结果），而**三样是三个不同的证据**：
+        #   label       页面上印着的名字（`<label>` / aria-label）
+        #   hint        元素自报的 name / id（gowizard 上是 `textField-173862`）
+        #   placeholder 人眼能直接看见的那行例子（`e.g. California or Texas`）
+        #   nearby_text 它周围写着的字（题目正文；2026-09-17 起 observe 还爬 3 层祖先）
+        # 三选一之后，**落选的那些就永远回不来了** —— 账本里那条 target 只剩一个
+        # 不透明的 id，而且「复跑时按什么找回这一格」也只剩这一条。
+        # 实测后果：那一格（「What state do you live in?」）判不出种类 → 兜底填了人名。
+        #
+        # 现在四个都给，各有各的用处：
+        #   - `_fill_name` / `_field_kind`：在**探索那一刻**判这一格是什么（它们拿的是
+        #     活的 element，不是这份 target —— 这份是给复跑用的）；
+        #   - 产物 `_relocate`：复跑时声明里的选择器全挂了，靠这几条语义把这一格找回来
+        #     （见 template.py `_relocate`：**两边用同一组来源**才配得上，不然就是
+        #      「账本里的名字是 placeholder 来的、那边只认 label」那类错位）。
+        near = list(element.get("nearby_text") or [])
         return {"text": None, "label": label or None, "role": None, "near": None,
+                "hint": element.get("hint") or None,
+                "placeholder": element.get("placeholder") or None,
+                "nearby_text": near or None,
                 "selectors": _selectors_of(element, selector), "above_fold_only": False,
                 "frame_id": frame_id}
     return {
@@ -640,6 +661,28 @@ def _target_of(element, action: str, selector: str, frame_id: str = "") -> dict:
 
 #: 一个「看起来就是美国邮编」的值（5 位数字）。用在下面那种**歧义**场合。
 _US_ZIP_RE = re.compile(r"^\d{5}$")
+
+
+#: 认「这个值是个美国州名」用的小池子 —— **与生产脚本同一套**
+#: （`forms/sites/lifynest.py:16` 的 STATES）。它只用来**认**（认不出就照旧保守兜底）。
+#:
+#: ⚠️⚠️ **2026-09-17：这一条不再当判据用了**（保留常量与这条注释，是为了让下一个人
+#: 看见「它存在过、以及为什么撤了」）。撤它的理由：
+#:
+#:   它把「美国州名表」当成了**识别字段种类的判据** —— 而那正是控制器在 R-75/R-76
+#:   点过名的「规则折叠回潮」（判据要一个站一个站地维护，换个国家整个失效）。
+#:   当时只能这么办，是因为**没有别的路**：`nearby_text` 在字段这一路一直是空的
+#:   （observe 算了、Go 侧 `Field` 没这个字段、被静默丢掉 —— 见 observe.go 的注释），
+#:   而 placeholder 那一档根本不存在。
+#:
+#:   现在两条通用路都通了，实测都能认对（2026-09-17 活页面上量的）：
+#:     placeholder 形状：`e.g. 06801`         → `postcode`（`_SHAPE_RULES`）
+#:     题目正文：       `What state do you live in?` → `state`（`nearby_text` 第三档）
+#:   ⇒ 判据不再依赖任何词表。**硬编码池子留着当兜底值池是对的**（生产一直这么干，
+#:     R-76），但**不当判据** —— 这两件事 R-76 分得很清楚，这里按那条办。
+_RECOGNIZABLE_STATES = ("California", "Texas", "Arizona", "Florida", "New York", "Illinois",
+                        "Ohio", "Georgia", "Virginia", "Washington", "Pennsylvania",
+                        "Michigan", "Colorado", "Tennessee", "Missouri", "Maryland")
 
 
 def _kind_from_recorded_value(kind, value, element):
@@ -716,6 +759,11 @@ _RANDOM_HINTS = (
     (("email", "e-mail"), "email"),
     (("phone", "tel", "mobile"), "phone"),
     (("zip", "postcode", "postal"), "postcode"),
+    # 「州」：**生产脚本本来就是小池子 + 随机选**（`forms/sites/lifynest.py:16` 的 STATES）——
+    # 真站实测：某个站的「州」框 label / hint / placeholder / nearby_text **一个语义信号都没有**
+    # （placeholder 只是两个地名例子 `e.g. California or Texas`），于是名字落在不透明的 MUI id 上，
+    # 运营 form-file 的 `state` 对不上 → 随机兜底给了 `full_name` → **往「州」里填人名**。
+    (("state", "province"), "state"),
     (("birth", "dob"), "dob"),
     (("first name", "firstname", "given name"), "first_name"),
     (("last name", "lastname", "surname", "family name"), "last_name"),
@@ -738,12 +786,67 @@ _TYPE_HINTS = {
 }
 
 
+def _kind_by_words(blob: str):
+    """这段字里有没有认得出种类的关键词（`_RANDOM_HINTS` 那三张词表）。"""
+    text = str(blob or "").lower()
+    if not text.strip():
+        return None
+    for words, random_kind in _RANDOM_HINTS:
+        if any(w in text for w in words):
+            return random_kind
+    return None
+
+
+#: placeholder 的**例子值**长什么样 —— 人眼一眼看得出，而机器只认形状、不认词。
+#:
+#: 为什么需要这一档（2026-09-17 真站实测，简报 §3 的第 2 层）：
+#: 那一格的 placeholder 是 `e.g. 06801` —— **5 位数字**。它不是「只是个例子」，
+#: **它就是证据**：运营/站点写这个例子，就是说「这里填美国邮编」。
+#: 原先这一档不存在，于是 `e.g. 06801` 被当成噪音丢掉（关键词表里没有 `06801`）。
+#:
+#: 为什么是**形状**不是词表：形状跨站点成立（`e.g. 06801` 在任何美国邮编站都一样），
+#: 而词表要一个站一个站地维护 —— 用户 2026-09-16 明确要求过别走回「规则折叠」那条路。
+#: 这一档只认**几种世界通用的形状**（邮编 / 邮箱 / 电话），认不出就交回后面的档，
+#: **绝不猜**（`_fallback` 认不出时那条「不填」的规矩原样保留）。
+_SHAPE_RULES = (
+    # 美国邮编：`e.g. 06801`。`\b` 夹住，免得把 `e.g. 1234567890`（10 位电话）读成邮编。
+    (re.compile(r"(?<![\d-])\d{5}(?![\d-])"), "postcode"),
+    # 英国邮编：`e.g. RG24 8PE`（生产 JSON 那条线真正在用的形状 —— 见
+    # `form_executor/auto_fixer.py:86 _fix_field_placeholder` 的原文例子）。
+    (re.compile(r"\b[A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2}\b", re.I), "postcode"),
+    # 邮箱：`e.g. example@email.com`（有 `@` 且 `@` 后面有点号就算）
+    (re.compile(r"[^\s@]+@[^\s@.]+\.\S"), "email"),
+    # 电话：`e.g. (512) 494-9400` / `555-123-4567` / `+1 512 555 0142`
+    (re.compile(r"\(\d{3}\)\s*\d{3}[-.\s]?\d{4}"), "phone"),
+    (re.compile(r"(?<!\d)\d{3}[-.\s]\d{3}[-.\s]\d{4}(?!\d)"), "phone"),
+)
+
+
+def _kind_by_placeholder(placeholder):
+    """placeholder 的**例子值**能不能说明这一格是什么（只认形状，认不出给 `None`）。"""
+    text = str(placeholder or "").strip()
+    if not text:
+        return None
+    for pattern, kind in _SHAPE_RULES:
+        if pattern.search(text):
+            return kind
+    return None
+
+
 def _field_kind(label: str, element):
     """这个字段**是什么**（`postcode` / `email` / `phone` / `full_name` …）—— 认不出给 `None`。
 
-    三档，顺序就是判据的一部分（别合回去，理由见 `_fallback` 的 docstring）：
-    ① 字段自己的名字（`label` / `hint` / `placeholder`）→ ② 页面上它周围写着的字
-    （`nearby_text`）→ ③ html 的 `type`（只认不歧义的）。
+    四档，顺序就是判据的一部分（别合回去，理由见 `_fallback` 的 docstring）：
+    ① 字段自己的名字（`label` / `hint` / `placeholder`）→ 关键词
+    ② **placeholder 的例子值**的形状（`e.g. 06801` 是 5 位数字 → 邮编）—— 2026-09-17 新加
+    ③ 页面上它周围写着的字（`nearby_text`）→ 关键词
+    ④ html 的 `type`（只认不歧义的）
+
+    ⚠️ ② 为什么夹在 ① 和 ③ 中间：① 是「这一格自己怎么说」，② 是「这一格自己举的例子」，
+    ③ 是「它旁边写着什么」—— 离这一格越近的证据越可信。实测那两格：
+      州：placeholder `e.g. California or Texas`（②认不出形状）→ ③ 拿到题目正文
+          `What state do you live in?` → `state` ✓
+      邮编：placeholder `e.g. 06801` → ② 当场判 `postcode` ✓（不必等 ③）
 
     ⚠️ 这个「是什么」有两个用处，**必须是同一个答案**：
       - `_fallback`：form-file 里没有这个键时，填什么随机值；
@@ -751,15 +854,17 @@ def _field_kind(label: str, element):
     两处各判一次必然漂（一处改了另一处没改），所以只有这一个函数说这件事。
     """
     element = element or {}
-    for blob in (" ".join(str(x or "") for x in (label, element.get("label"), element.get("hint"),
-                                                 element.get("placeholder"))),
-                 " ".join(str(x or "") for x in (element.get("nearby_text") or []))):
-        blob = blob.lower()
-        if not blob.strip():
-            continue
-        for words, random_kind in _RANDOM_HINTS:
-            if any(w in blob for w in words):
-                return random_kind
+    own = " ".join(str(x or "") for x in (label, element.get("label"), element.get("hint"),
+                                          element.get("placeholder")))
+    kind = _kind_by_words(own)
+    if kind:
+        return kind
+    kind = _kind_by_placeholder(element.get("placeholder"))
+    if kind:
+        return kind
+    kind = _kind_by_words(" ".join(str(x or "") for x in (element.get("nearby_text") or [])))
+    if kind:
+        return kind
     return _TYPE_HINTS.get(str(element.get("type") or "").strip().lower())
 
 

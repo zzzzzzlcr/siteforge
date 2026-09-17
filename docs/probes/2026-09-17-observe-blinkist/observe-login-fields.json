@@ -1,0 +1,622 @@
+{
+  "url": "https://www.blinkist.com/en/account/login",
+  "title": "Log in to Blinkist",
+  "page_text": "Log in to Blinkist Log in Sign up Log in Sign in Continue with Apple Log in with SSO or Show Login with email Reset password We use Cookies 🍪 By clicking \"Allow all cookies\", you confirm your consent to the storing of cookies on your device to enhance site navigation, analyze site usage, and assist in our marketing efforts. See our Cookie Policy and Privacy Policy (and, for the USA, our US Supplement) to learn more. Cookie settings Reject non-essential Allow all cookies",
+  "shadow_roots": 0,
+  "viewport_css_px": {
+    "width": 1279,
+    "height": 812
+  },
+  "actions": [
+    {
+      "selector": "a.text-content-primary",
+      "alternates": [
+        "main:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(1) \u003e a:nth-of-type(1)"
+      ],
+      "stability": "medium",
+      "text": "",
+      "role": "a",
+      "tag": "A",
+      "type": "",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        567,
+        96,
+        144,
+        28
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 0.5,
+      "peer_count": 4,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": []
+    },
+    {
+      "selector": "#radix-_r5R_2_-trigger-login",
+      "alternates": [
+        "button[data-testid=\"auth-tab-login\"]",
+        "button.inline-flex.items-center"
+      ],
+      "stability": "high",
+      "text": "Log in",
+      "role": "tab",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        484,
+        240,
+        156,
+        36
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 0.7,
+      "peer_count": 5,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Sign up"
+      ]
+    },
+    {
+      "selector": "#radix-_r5R_2_-trigger-signup",
+      "alternates": [
+        "button[data-testid=\"auth-tab-signup\"]",
+        "button.inline-flex.items-center"
+      ],
+      "stability": "high",
+      "text": "Sign up",
+      "role": "tab",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        640,
+        240,
+        156,
+        36
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 0.7,
+      "peer_count": 5,
+      "z_index": "auto",
+      "contrast": "",
+      "nearby_text": [
+        "Log in"
+      ]
+    },
+    {
+      "selector": "button[data-testid=\"facebook-auth-button\"]",
+      "alternates": [
+        "button.cursor-pointer.items-center",
+        "fieldset:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(1) \u003e button:nth-of-type(1)"
+      ],
+      "stability": "high",
+      "text": "Log in",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "submit",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        480,
+        304,
+        152,
+        40
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 0.7,
+      "peer_count": 5,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": []
+    },
+    {
+      "selector": "a.cursor-pointer.inline-flex",
+      "alternates": [
+        "div:nth-of-type(1) \u003e form:nth-of-type(1) \u003e fieldset:nth-of-type(1) \u003e a:nth-of-type(1)"
+      ],
+      "stability": "medium",
+      "text": "Continue with Apple",
+      "role": "a",
+      "tag": "A",
+      "type": "",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        480,
+        348,
+        320,
+        40
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 1.6,
+      "peer_count": 4,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Log inSign in",
+        "Log in with SSO"
+      ]
+    },
+    {
+      "selector": "a.cursor-pointer.inline-flex",
+      "alternates": [
+        "div:nth-of-type(1) \u003e form:nth-of-type(1) \u003e fieldset:nth-of-type(1) \u003e a:nth-of-type(2)"
+      ],
+      "stability": "medium",
+      "text": "Log in with SSO",
+      "role": "a",
+      "tag": "A",
+      "type": "",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        480,
+        392,
+        320,
+        40
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 1.6,
+      "peer_count": 4,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Continue with Apple",
+        "Log inSign in"
+      ]
+    },
+    {
+      "selector": "#email",
+      "alternates": [
+        "input[name=\"email\"]",
+        "input[data-testid=\"auth-email-input\"]",
+        "input.bg-pale-mint-grey.placeholder:text-s"
+      ],
+      "stability": "high",
+      "text": "",
+      "role": "input",
+      "tag": "INPUT",
+      "type": "email",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        480,
+        512,
+        320,
+        40
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 1.6,
+      "peer_count": 2,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": []
+    },
+    {
+      "selector": "#password",
+      "alternates": [
+        "input[name=\"password\"]",
+        "input[data-testid=\"auth-password-input\"]",
+        "input.bg-pale-mint-grey.placeholder:text-s"
+      ],
+      "stability": "high",
+      "text": "",
+      "role": "input",
+      "tag": "INPUT",
+      "type": "password",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        480,
+        556,
+        320,
+        40
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 1.6,
+      "peer_count": 2,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Show"
+      ]
+    },
+    {
+      "selector": "button.text-mid-grey.absolute",
+      "alternates": [
+        "fieldset:nth-of-type(1) \u003e div:nth-of-type(2) \u003e div:nth-of-type(1) \u003e button:nth-of-type(1)"
+      ],
+      "stability": "medium",
+      "text": "Show",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        752,
+        566,
+        36,
+        20
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 0.1,
+      "peer_count": 5,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": []
+    },
+    {
+      "selector": "button[data-testid=\"auth-submit-button\"]",
+      "alternates": [
+        "button.cursor-pointer.inline-flex",
+        "#signup-form \u003e fieldset:nth-of-type(1) \u003e button:nth-of-type(1)"
+      ],
+      "stability": "high",
+      "text": "Login with email",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "submit",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        480,
+        600,
+        320,
+        40
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 1.6,
+      "peer_count": 5,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Show"
+      ]
+    },
+    {
+      "selector": "a.cursor-pointer.items-center",
+      "alternates": [
+        "div:nth-of-type(2) \u003e astro-island:nth-of-type(1) \u003e div:nth-of-type(2) \u003e a:nth-of-type(1)"
+      ],
+      "stability": "medium",
+      "text": "Reset password",
+      "role": "a",
+      "tag": "A",
+      "type": "",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        480,
+        644,
+        320,
+        40
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 1.6,
+      "peer_count": 4,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Log inSign inContinue with AppleLog in w"
+      ]
+    },
+    {
+      "selector": "a.underline",
+      "alternates": [
+        "div:nth-of-type(1) \u003e div:nth-of-type(1) \u003e span:nth-of-type(1) \u003e a:nth-of-type(1)"
+      ],
+      "stability": "medium",
+      "text": "Cookie Policy",
+      "role": "a",
+      "tag": "A",
+      "type": "",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        677,
+        750,
+        100,
+        20
+      ],
+      "region": "body",
+      "above_fold": true,
+      "relative_size": 0.2,
+      "peer_count": 3,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Privacy Policy"
+      ]
+    },
+    {
+      "selector": "a.underline",
+      "alternates": [
+        "div:nth-of-type(1) \u003e div:nth-of-type(1) \u003e span:nth-of-type(1) \u003e a:nth-of-type(2)"
+      ],
+      "stability": "medium",
+      "text": "Privacy Policy",
+      "role": "a",
+      "tag": "A",
+      "type": "",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        64,
+        774,
+        101,
+        20
+      ],
+      "region": "body",
+      "above_fold": true,
+      "relative_size": 0.2,
+      "peer_count": 3,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Cookie Policy",
+        "US Supplement"
+      ]
+    },
+    {
+      "selector": "a.underline",
+      "alternates": [
+        "div:nth-of-type(1) \u003e div:nth-of-type(1) \u003e span:nth-of-type(1) \u003e a:nth-of-type(3)"
+      ],
+      "stability": "medium",
+      "text": "US Supplement",
+      "role": "a",
+      "tag": "A",
+      "type": "",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        334,
+        774,
+        114,
+        20
+      ],
+      "region": "body",
+      "above_fold": true,
+      "relative_size": 0.3,
+      "peer_count": 3,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Privacy Policy",
+        "Cookie Policy"
+      ]
+    },
+    {
+      "selector": "button.cursor-pointer.inline-flex",
+      "alternates": [
+        "div:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(2) \u003e button:nth-of-type(1)"
+      ],
+      "stability": "medium",
+      "text": "Cookie settings",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "submit",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        831,
+        742,
+        204,
+        40
+      ],
+      "region": "body",
+      "above_fold": true,
+      "relative_size": 1,
+      "peer_count": 3,
+      "z_index": "auto",
+      "contrast": "medium",
+      "nearby_text": [
+        "Reject non-essential"
+      ]
+    },
+    {
+      "selector": "button.cursor-pointer.inline-flex",
+      "alternates": [
+        "div:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(2) \u003e button:nth-of-type(2)"
+      ],
+      "stability": "medium",
+      "text": "Reject non-essential",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "submit",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        1043,
+        742,
+        204,
+        40
+      ],
+      "region": "body",
+      "above_fold": true,
+      "relative_size": 1,
+      "peer_count": 3,
+      "z_index": "auto",
+      "contrast": "medium",
+      "nearby_text": [
+        "Cookie settings",
+        "Allow all cookies"
+      ]
+    },
+    {
+      "selector": "button[data-testid=\"allow-all-button\"]",
+      "alternates": [
+        "button.cursor-pointer.inline-flex",
+        "div:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(2) \u003e button:nth-of-type(3)"
+      ],
+      "stability": "high",
+      "text": "Allow all cookies",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "submit",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        831,
+        690,
+        416,
+        44
+      ],
+      "region": "body",
+      "above_fold": true,
+      "relative_size": 2.2,
+      "peer_count": 3,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "Reject non-essential",
+        "Cookie settings"
+      ]
+    }
+  ],
+  "fields": [
+    {
+      "selector": "#email",
+      "alternates": [
+        "input[name=\"email\"]",
+        "input[data-testid=\"auth-email-input\"]",
+        "input.bg-pale-mint-grey.placeholder:text-s"
+      ],
+      "stability": "high",
+      "label": "",
+      "hint": "email",
+      "placeholder": "Email",
+      "type": "email",
+      "required": false,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ]
+    },
+    {
+      "selector": "#password",
+      "alternates": [
+        "input[name=\"password\"]",
+        "input[data-testid=\"auth-password-input\"]",
+        "input.bg-pale-mint-grey.placeholder:text-s"
+      ],
+      "stability": "high",
+      "label": "",
+      "hint": "password",
+      "placeholder": "Password",
+      "type": "password",
+      "required": false,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ]
+    }
+  ],
+  "option_groups": [
+    {
+      "scope": "fieldset.space-y-4",
+      "role": "option",
+      "options": [
+        "Show",
+        "Login with email"
+      ],
+      "shadow_depth": 0
+    }
+  ],
+  "obstructions": [
+    {
+      "kind": "cookie-banner",
+      "selector": "div[data-testid=\"cookieConsentFooter\"]",
+      "dismiss_selector": "a.underline",
+      "text": "We use Cookies 🍪By clicking \"Allow all cookies\", you confir"
+    }
+  ],
+  "honeypots": [],
+  "diagnostics": []
+}

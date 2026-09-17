@@ -133,4 +133,38 @@
   <button>P anchor plus four hops</button>
 </div></div></div></div>
 
+<!-- ── 9. 站方自己发的**纯数字**组件号（2026-09-17 真站实测，gowizard）。
+     形状逐字复刻：真站上是 `id="173851"`（三个下拉）与 `id="textField-173862"`
+     （三个文本框）。这些号是站点自己的整数组件号，**跨趟稳定**（留档的 73 趟自测里
+     `textField-173838` 出现 26 次、始终同一个号），后端字段名也是它
+     （配置里的 `urlMapping: form_components[173838]`）。
+
+     ⚠️ 真站实测的那一条**很要紧**：DOM 上那个 `<input>` **没有** name 属性
+     （`name` 只活在配置里），所以「`input[name=form_components[N]]` 当身份证」
+     那条路在真页面上**不存在** —— id 是页面上唯一那个稳定锚点。
+
+     原先 RAND 形态②（可选字母前缀 + ≥6 位数字）把它当随机 hash 拒掉 →
+     首选退化成 10 跳的 nth-of-type 位置路径。这条钉住「现在不会了」。
+
+     ⚠️ 摆在 body 末尾：加在中间会挤掉 G/J/K 那几条逐字选择器断言。 -->
+<div id="gwbox">
+  <input id="173851" type="text" placeholder="e.g. 2020">
+  <input id="textField-173838" type="text" placeholder="e.g. 06801">
+  <!-- 反向那一半：12 位 hex 的**真随机** id 照旧必须被拒（形态①） -->
+  <input id="a1b2c3d4e5f6" type="text" placeholder="e.g. random id">
+</div>
+
+<!-- ── 10. 题目正文在**上面第 3 层**的兄弟里（2026-09-17 真站实测的形状）。
+     真站（MUI 问卷）实测的层距逐字复刻：
+       input(MuiInputBase-input) → div(MuiInputBase-root) → div(MuiFormControl-root)
+       → div(MuiBox-root)  ← **它的** previousElementSibling 就是题目正文
+     输入框自己的兄弟全是空的装饰容器 —— 所以旧 nearbyText（只看自己兄弟）一个字
+     都取不到，`nearby_text` 交出 []。修法见 observe.go 的 nearbyText。 -->
+<div id="qwrap">
+  <div class="q-text">What state do you live in?</div>
+  <div><div><div>
+    <input id="deepq" type="text" placeholder="e.g. California or Texas">
+  </div></div></div>
+</div>
+
 </body></html>

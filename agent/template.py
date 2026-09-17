@@ -221,6 +221,46 @@ COOKIE_KIND = "cookie-banner"
 #: 只认**有把握**的那一下：可见的同意类容器 + 带稳定 id 的按钮 + 文字属于
 #: 「接受/同意/关闭/拒绝」那一族。**找不到就什么都不做**（宁可不做，也不猜一条会点错的选择器）——
 #: 「点到弹层上」由 `_covered_by` 兜住，不会被记成做成了。
+#:
+#: ── 「页面上现在还有没有同意弹层」────────────────────────────
+#:
+#: 与上面那段是**两个问题**，所以是两段 JS（不是把上面那段改一改）：
+#:   上面那段问「我该点哪个按钮」—— 要点得着才算数，所以它要求**按钮带稳定 id**；
+#:   这一段问「弹层还在不在」—— 只是**判据**，所以它连按钮都不用找。
+#: 用上面那段来回答下面这个问题是**错的**：弹层在、而按钮没 id 时它会返回空串，
+#: 于是「弹层还在」被读成「弹层不在」。
+_CONSENT_BOX_JS = (
+    "var boxW=/(cookie|consent|gdpr|privacy)/i;"
+    "var vis=function(e){var r=e.getBoundingClientRect();"
+    "return r.width>0&&r.height>0&&r.bottom>0&&r.top<window.innerHeight;};"
+    "var all=document.getElementsByTagName('*');"
+    "for(var i=0;i<all.length;i++){"
+    "  var b=all[i];"
+    "  var label=String(b.id||'')+' '+String(b.className||'')"
+    "+' '+String(b.getAttribute&&b.getAttribute('aria-label')||'');"
+    "  if(boxW.test(label)&&vis(b)) return '1';"
+    "}"
+    "return '';"
+)
+
+#: 「这一段是同意弹层那一步」认哪几个词（**只认动作词**，不认 `close`）。
+#:
+#: 为什么另有一套词、而不复用上面那两段 JS 的 `btnW`：这里的用途完全不同 ——
+#: 上面是**去找一个按钮**（宁可漏，不可错点），这里是**给一个已经找不到的元素定性**
+#: （宁可不算，不可把真失败读成跳过）。`close` 在上面那套里是对的（弹层里的关闭按钮
+#: 常常就叫 Close），在这里是**最危险的一个**：普通弹窗、抽屉、提示条上的关闭按钮
+#: 也叫 Close —— 把「没找到 Close」读成「跳过不算失败」会把真失败抹掉。
+#: 所以这里只留**语义上就是「对同意做个决定」**的那几个词。
+_CONSENT_STEP_WORDS = ("reject", "accept", "agree", "allow", "deny", "decline",
+                       "got it", "cookie", "consent", "gdpr", "privacy")
+
+
+def _is_consent_step(label: str) -> bool:
+    """这一步是不是「点掉同意弹层」（只按**步骤自己的名字**判，不猜）。"""
+    text = str(label or "").lower()
+    return bool(text) and any(w in text for w in _CONSENT_STEP_WORDS)
+
+
 _CONSENT_PROBE_JS = (
     # ⚠️ 用 `getElementsByTagName('*')` + 属性自检，**不走**「按选择器一步查」的那种写法 ——
     # 产品里凡是要按选择器找元素的地方一律避开它（`tests/test_template.py` 的
@@ -285,6 +325,9 @@ FIRST_NAMES = ["James", "John", "Robert", "Michael", "David", "Alex", "Chris", "
 LAST_NAMES = ["Smith", "Jones", "Williams", "Taylor", "Brown", "Johnson", "Davies", "Wilson"]
 EMAIL_DOMAINS = ["outlook.com", "gmail.com", "yahoo.com", "hotmail.com"]
 POSTCODES = ["SW1A 1AA", "NN3 3AQ", "M1 1AA", "B1 1AA", "LS1 1AA", "G1 1AA"]
+# 「州」这一类**生产脚本本来就是一个小池子 + 随机选**（不是从 form-file 取）——
+# 照抄 `forms/sites/lifynest.py:16` 的 STATES（同一套「资料逻辑」，站点在美国时适用）。
+US_STATES = ["California", "Texas", "Arizona", "Florida", "New York", "Illinois", "Ohio"]
 PHONES = ["07936567874", "07700900123", "07400123456", "07911123456"]
 
 # ── 产出元数据（siteforge 自动写入，勿手工编辑）────────────
@@ -1023,7 +1066,16 @@ class Filler:
                         element.get("label"), element.get("hint"),
                         element.get("placeholder"), element.get("type"),
                     ))).lower()
-                    if not want_label or want_label not in key:
+                    # ⚠️ 2026-09-17：账本里那几条身份**任意一条**对得上就算这一格 ——
+                    # 原先只认 `label` 一条。为什么要放宽：`label` 是「三选一」的结果，
+                    # 站点哪天把 `name` 属性补上，observe 的 `hint` 就从 `textField-173862`
+                    # 变成 `form_components[173862]`，而账本里存的还是旧的那个 ——
+                    # 于是「字段明明在页面上，回退链一个候选都找不到」（上面那条实测的形状）。
+                    # 三条都是**这一格自己的**身份（名字 / 自报的 name 或 id / 例子值），
+                    # 任一条命中就足以认出它；认错了还有 `_usable` 与排序挡着。
+                    wants = [w for w in (_norm(str(target.get(k) or "")).lower()
+                                         for k in ("label", "hint", "placeholder")) if w]
+                    if wants and not any(w in key for w in wants):
                         continue
                 else:
                     text = _norm(element.get("text") or "").lower()
@@ -1139,6 +1191,8 @@ class Filler:
             return random.choice(PHONES)
         if kind == "postcode":
             return random.choice(POSTCODES)
+        if kind == "state":
+            return random.choice(US_STATES)
         if kind == "dob":
             return "%02d/%02d/%d" % (random.randint(1, 12), random.randint(1, 28),
                                      random.randint(1970, 1995))
@@ -1198,6 +1252,33 @@ class Filler:
                       ("%s之后 " % why) if why else "开跑前 ", selector, text[:30],
                       "看起来成了" if _ok(out) else "**没成**")
 
+    def _consent_step_handled(self, label, frame=""):
+        """「点掉同意弹层」这一步**找不到元素**时：它是软跳过，不是失败。
+
+        为什么（2026-09-17 真站实测，自测第 2 遍挂在这上面）：
+        账本是在一个「弹层已经点掉过」的会话里录的，所以它记了一条硬步骤
+        `click「Reject All」`；而**同一会话**再跑一遍（扰动自测第 2 遍的定义就是
+        「接着再跑一遍」）时弹层**根本不在页面上** → 找不到 → 记一次失败 → 整遍挂。
+        第 1 遍却过（那一遍弹层在）。同一条产物在两遍里表现相反，差别只在环境的残留。
+
+        判据（两道，都要）：
+          ① 这一步的名字属于「对同意做个决定」那一族（`_is_consent_step`）；
+          ② 此刻页面上**看不到**同意类容器（`_CONSENT_BOX_JS`）。
+        ②量不出来（eval 不可用）时**照软跳过**，但把这件事写进 note —— 因为真正的
+        兜底不在这一格：弹层要真还在，**下一步**会被 `_covered_by` 挡住并失败，
+        整遍照样挂。所以这里放宽读不出「这一次」的风险，换不到「把真失败抹掉」的后果。
+
+        返回 `(算做成了吗, 一句人话)`；不是同意步骤 → `(False, "")`（交回原判据）。
+        """
+        if not _is_consent_step(label):
+            return False, ""
+        raw = self._ev(_CONSENT_BOX_JS, frame)
+        still = str(raw or "").strip().strip('"').strip("'").strip()
+        if still:
+            return False, ""            # 弹层还在页面上 —— 那这是**真找不到**，照旧算失败
+        return True, ("「%s」这一步：页面上已经没有同意弹层了（前面那次会话把它点掉过，"
+                      "或者这一单本来就是干净会话没有弹层）—— 跳过，不算没做成。"
+                      "产物开跑前本来就会自己清一次弹层（`_clear_obstructions`）。" % label)
     def _covered_by(self, selector, frame_id=""):
         """这个选择器指的元素**是不是被别的东西盖着**（读一次，不动页面）。盖着就返回盖它的东西。
 
@@ -1354,6 +1435,13 @@ class Filler:
                 return (True, selector, level,
                         _say(action, label, True, level, landing=_landing_say(out)),
                         cand_frame)
+        # 都试完了还是没找到 —— 「点掉同意弹层」这一步是**软**的（见那个 docstring）：
+        # 弹层已经不在了就等于这件事已经办完了，不该记成没做成。
+        if action == "click":
+            handled, why = self._consent_step_handled(label, frame)
+            if handled:
+                self.log.info("[%s] %s", self.cid, why)
+                return True, "", None, why, frame
         return False, "", None, _say(action, label, False), frame
 
     # ── 一步的执行 ──────────────────────────────────────────

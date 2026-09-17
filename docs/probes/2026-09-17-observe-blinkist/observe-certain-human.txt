@@ -1,0 +1,16 @@
+Your personal growth plan | Blinkist
+https://www.blinkist.com/onboarding/matrix/certain
+
+可动作元素 6 个  表单字段 0 个  选项组 0 组  遮挡物 0 个  诊断 0 条
+
+可动作元素（前 5 / 共 6）：
+  1.  [medium]            button.focus-ring.hover:text-content-accent
+  2.  [low]               button._option_1cgnd_66.focus-ring
+  3.  [low]               button._option_1cgnd_66.focus-ring
+  4.  [low]               button._option_1cgnd_66.focus-ring
+  5.  [medium]  Continue  button.cursor-pointer.items-center
+  …                       还剩 1 个（用 --json 看全量）
+
+遮挡物：无
+
+诊断：无

@@ -1,0 +1,199 @@
+{
+  "url": "https://www.blinkist.com/onboarding/matrix/certain",
+  "title": "Your personal growth plan | Blinkist",
+  "page_text": "Profile Personality Patterns You always know what you want, agree? Continue We use Cookies 🍪",
+  "shadow_roots": 0,
+  "viewport_css_px": {
+    "width": 1279,
+    "height": 812
+  },
+  "actions": [
+    {
+      "selector": "button.focus-ring.hover:text-content-accent",
+      "alternates": [
+        "div:nth-of-type(1) \u003e header:nth-of-type(1) \u003e div:nth-of-type(2) \u003e button:nth-of-type(1)"
+      ],
+      "stability": "medium",
+      "text": "",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        160,
+        78,
+        24,
+        24
+      ],
+      "region": "header",
+      "above_fold": true,
+      "relative_size": 0.1,
+      "peer_count": 1,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "ProfilePersonalityPatterns"
+      ]
+    },
+    {
+      "selector": "button._option_1cgnd_66.focus-ring",
+      "alternates": [
+        "section:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(3) \u003e button:nth-of-type(1)"
+      ],
+      "stability": "low",
+      "text": "",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        500,
+        483,
+        72,
+        76
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 1,
+      "peer_count": 4,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": []
+    },
+    {
+      "selector": "button._option_1cgnd_66.focus-ring",
+      "alternates": [
+        "section:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(3) \u003e button:nth-of-type(2)"
+      ],
+      "stability": "low",
+      "text": "",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        604,
+        483,
+        72,
+        76
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 1,
+      "peer_count": 4,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": []
+    },
+    {
+      "selector": "button._option_1cgnd_66.focus-ring",
+      "alternates": [
+        "section:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(3) \u003e button:nth-of-type(3)"
+      ],
+      "stability": "low",
+      "text": "",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        708,
+        483,
+        72,
+        76
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 1,
+      "peer_count": 4,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": []
+    },
+    {
+      "selector": "button.cursor-pointer.items-center",
+      "alternates": [
+        "div:nth-of-type(1) \u003e div:nth-of-type(1) \u003e div:nth-of-type(2) \u003e button:nth-of-type(1)"
+      ],
+      "stability": "medium",
+      "text": "Continue",
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        448,
+        671,
+        384,
+        44
+      ],
+      "region": "main",
+      "above_fold": true,
+      "relative_size": 3.1,
+      "peer_count": 4,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": []
+    },
+    {
+      "selector": "div.bg-pale-mint-grey.m:px-8",
+      "alternates": [
+        "body:nth-of-type(1) \u003e astro-island:nth-of-type(3) \u003e div:nth-of-type(1) \u003e div:nth-of-type(1)"
+      ],
+      "stability": "medium",
+      "text": "We use Cookies 🍪",
+      "role": "button",
+      "tag": "DIV",
+      "type": "",
+      "visible": true,
+      "occluded_by": null,
+      "shadow_depth": 0,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        0,
+        764,
+        1279,
+        48
+      ],
+      "region": "body",
+      "above_fold": true,
+      "relative_size": 11.2,
+      "peer_count": 1,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": []
+    }
+  ],
+  "fields": [],
+  "option_groups": [],
+  "obstructions": [],
+  "honeypots": [],
+  "diagnostics": []
+}

@@ -1296,20 +1296,47 @@ def test_the_source_of_a_zip_fill_matches_the_operators_form_file():
         assert info["source"] in form, (info["source"], sorted(form))
 
 
-def test_a_tel_field_with_no_words_is_decided_by_what_the_explore_typed_there():
-    """语义三档全落空时，用**探索那一趟自己写进这个框的值**当证据（量出来的那一格）。
+def test_the_zip_field_is_now_read_from_its_placeholder_alone():
+    """真站那一格（gowizard 邮编框）**现在靠 placeholder 自己就认得出来**。
 
-    真站实测（gowizard 邮编框）：`label` 空、`hint` 是不透明 MUI id（textField-173838）、
-    `placeholder` 只是个例子（e.g. 06801）、`nearby_text` 空、而 `type="tel"` ——
-    三档全落空 → 按 type 判成**手机号** → 复跑时手机号被打进邮编框、页面红字拒收。
-    但账本里躺着现成证据：探索那一趟模型自己往里写过 `90210`（邮编形状）。
+    这是简报里的第 2 层，2026-09-17 在活页面上量过的那一格：
+        id="textField-173838" · name 属性**空** · placeholder="e.g. 06801" · type="tel"
+        label 空 · nearby_text 空（当时 —— 见 `_field_kind` 那条 nearby_text 的修复）
+    修之前：`e.g. 06801` 被当成「只是个例子」丢掉 → 三档全落空 → 按 `type=tel` 判成手机号
+    → 复跑时手机号被打进邮编框。修之后：**那个例子值本身就是证据**（5 位数字 = 美国邮编）。
+
+    ⚠️ 这条**原先断言的是相反的事**（`_field_kind` 该判成 phone，然后靠「探索时写进去的值」
+    兜回来）。现在它直接判对 —— 兜底那一路仍然在（见下面那条），但**不再需要它来救这一格**。
     """
     bare = {"label": "", "hint": "textField-173838", "placeholder": "e.g. 06801", "type": "tel"}
-    assert browser_agent._field_kind("", bare) == "phone", "前提：这一格本来就判成 phone（歧义）"
+    assert browser_agent._field_kind("", bare) == "postcode", \
+        "placeholder 的例子值（5 位数字）就是邮编的证据 —— 不该再落到 type=tel 那一档"
 
-    zip_fill = browser_agent._fill_info(
+    fill = browser_agent._fill_info(
         {"value": "90210"}, {"label": "textField-173838", "selectors": ["input.mui"]},
         bare, browser_agent.Journey())
+    assert fill["name"] == "postcode" and fill["fallback"] == [{"random": "postcode"}], fill
+
+    # 同一个 placeholder 上，关键词那一档（更靠前）仍然优先：写着 ZIP 就按 ZIP
+    worded = {"label": "", "hint": "x", "placeholder": "e.g. 06801", "nearby_text": ["What's your ZIP code?"],
+              "type": "tel"}
+    assert browser_agent._field_kind("", worded) == "postcode"
+
+
+def test_a_tel_field_with_no_words_or_shapes_is_decided_by_what_the_explore_typed_there():
+    """四档全落空时，用**探索那一趟自己写进这个框的值**当证据（保留的兜底路）。
+
+    真站上确实存在这种格：`label` 空、`hint` 是个不透明 id、placeholder 举的例子
+    **没有可认的形状**、`nearby_text` 空、而 `type="tel"`（很多站为了弹数字键盘就这么写）。
+    这时按 type 会判成手机号，而账本里躺着现成证据：探索那一趟模型自己往里写过一个
+    邮编形状的值（`90210`）—— 那条证据仍然要算数。
+    """
+    shapeless = {"label": "", "hint": "textField-999999", "placeholder": "Type here", "type": "tel"}
+    assert browser_agent._field_kind("", shapeless) == "phone", "前提：这一格本来就判成 phone（歧义）"
+
+    zip_fill = browser_agent._fill_info(
+        {"value": "90210"}, {"label": "textField-999999", "selectors": ["input.mui"]},
+        shapeless, browser_agent.Journey())
     assert zip_fill["name"] == "postcode" and zip_fill["fallback"] == [{"random": "postcode"}], zip_fill
 
     # 反例（同一格）：手机形状的值不会被读成邮编
@@ -1324,6 +1351,32 @@ def test_a_tel_field_with_no_words_is_decided_by_what_the_explore_typed_there():
     got = browser_agent._fill_info({"value": "90210"}, {"label": "Full Name:"}, text_elem,
                                    browser_agent.Journey())
     assert got["fallback"] == [{"random": "full_name"}], got
+
+
+def test_the_state_field_is_read_from_the_question_text_the_page_shows():
+    """「州」那一格：题目正文就写在页面上，靠它判（简报第 3 层，真站量过）。
+
+    2026-09-17 活页面上量的那一格：
+        id="textField-173862" · name 空 · placeholder="e.g. California or Texas" · type="text"
+        label 空 · **题目正文「What state do you live in?」挂在输入框往上第 3 层的前一个兄弟上**
+    修之前：那一格判不出种类 → `_fallback` 给了 `full_name` → **往「州」里填一个人名**。
+    修之后：`nearby_text` 把正文收上来（observe 爬祖先），第三档命中 `state`。
+    """
+    state_elem = {"label": "", "hint": "textField-173862", "placeholder": "e.g. California or Texas",
+                  "nearby_text": ["What state do you live in?"], "type": "text"}
+    assert browser_agent._field_kind("", state_elem) == "state", \
+        "题目正文里写着 state —— 这一格必须判成 state（不是靠州名表，是靠页面上写着的字）"
+    fill = browser_agent._fill_info(
+        {"value": "Texas"}, {"label": "textField-173862", "selectors": ["input.mui"]},
+        state_elem, browser_agent.Journey())
+    assert fill["name"] == "state" and fill["fallback"] == [{"random": "state"}], fill
+
+    # 认不出的那一格：**不许**再落到 full_name（往州里填人名那件事）
+    unknown = {"label": "", "hint": "textField-000000", "placeholder": "Type here", "type": "text"}
+    assert browser_agent._field_kind("", unknown) is None
+    assert browser_agent._fallback("value", "", "", unknown) == [{"random": "full_name"}], \
+        "认不出时的兜底仍然是 full_name —— 这条**没改**，它背后的规矩见 `_fallback`"
+
 
 
 def test_the_when_snippet_does_not_lead_with_decoration():
