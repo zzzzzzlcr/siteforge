@@ -1076,7 +1076,10 @@ def test_an_explore_that_never_sees_the_success_text_stops_after_the_bounded_ret
     assert len(rec.explore) == 3, "第一次 + 最多 2 次重探：%d" % len(rec.explore)
     assert out.get("explore_reached_success") is False, out.get("explore_reached_success")
     assert out.get("end_reason") == "explore_unfinished", out.get("end_reason")
-    assert "重探了 3 趟" in (out.get("end_note") or ""), out.get("end_note")
+    # ⚠️ 这个数在 Task 6 修复轮 1 改了**口径**：原先的 `len(attempts)` 把**第一趟**也算进
+    # 「重探」里（3）—— 那是一句人话里的假数（与本片收过的「假 0」同族）。现在写的是
+    # **真的重探次数**（3 趟 = 1 + 2）。这条用例钉的仍是同一件事（到上限就停、如实报）。
+    assert "重探了 2 趟" in (out.get("end_note") or ""), out.get("end_note")
     assert len(out.get("explore_attempts") or []) == 3, out.get("explore_attempts")
     assert not rec.selftest, "没走到成功文案就不该进入定稿+自测"
 
@@ -1346,3 +1349,51 @@ def test_the_graph_shape_did_not_move_in_this_round():
         "diagnose": "从自测记录里定位卡在哪",
     }
     assert graph.REVISABLE == ("lint", "selftest", "deliver")
+
+
+def test_a_pass_whose_replay_was_cut_short_is_not_retried(tmp_path):
+    """**不许内外两层 3 次叠加**（复审 Q3）：重放被打断过的那一趟**不重探**。
+
+    复审点出：旧形状里「不叠加」有一半是靠 Q1 那个缺陷兜住的（换了会话却没人换 `explore`
+    手里那个，于是根本走不到重探）—— **那是巧合，不是设计**。现在由这一句保证：
+    重放没走完 ⇒ 这一趟不是对这条路的一次完整观察 ⇒ 重探只会把同一段再撞一遍。
+    """
+    rows = _resume_rows()
+    cut = _books(stop_reason="model_done")
+    cut.replay = {"done": 0, "landed": "", "why": "窗口又死了：整段重来 3 遍都没走完"}
+    deps, rec = _deps(journey=cut)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, {**_brief(tmp_path), "resume_from": rows})
+
+    assert len(rec.explore) == 1, "重放被打断过还去重探：%d 趟" % len(rec.explore)
+    note = out.get("end_note") or ""
+    assert "没有重探" in note, note
+    assert "重探了" not in note, "没重探却写「重探了 N 趟」——人话里的假数：%s" % note
+
+    # 反例（同一颗钉子）：重放**走完了** → 照旧重探（它是这一趟对这条路的完整观察）
+    whole = _books(stop_reason="model_done")
+    whole.replay = {"done": 1, "landed": URL, "why": "这一段都重放了"}
+    deps2, rec2 = _deps(journey=whole)
+    app2, cfg2, _ = _build(deps=deps2)
+    _drive(app2, cfg2, {**_brief(tmp_path), "resume_from": rows})
+    assert len(rec2.explore) == 3, "重放走完了却不重探：%d 趟" % len(rec2.explore)
+
+
+def test_a_budget_that_is_already_overspent_gives_zero_not_a_negative(tmp_path):
+    """已经花超了 → 这一次的预算是 **0**（一步都不许走），**不是负数**。
+
+    负数会让「这一趟到底还能不能动」这件事从一个配置问题变成一句看不懂的报错
+    （`taken >= -3` 恒真、可读起来像是别的东西坏了）。0 是**如实**的：花超了就是花超了，
+    这一趟会以 `budget_steps` 停住（`END_EXPLORE_UNFINISHED`，该人看）。
+    """
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(explore_steps=30, explore_rounds=20))
+    _, out = _drive(app, cfg, {**_brief(tmp_path),
+                               "explore_spent": {"steps": 99, "rounds": 99, "attempts": 9}})
+
+    budget = rec.explore[0]["budget"]
+    assert budget.max_steps == 0 and budget.max_rounds == 0, budget
+    # 「0 预算 = 一步都不许走、如实以 `budget_steps` 收场」由**真的探路**钉
+    # （`test_a_zero_budget_never_even_asks_the_model`）—— 这里的桩不认预算，
+    # 在这儿断那件事只是自证。这一条管的是**图交出去的那个数**：夹到 0，不是负数。
+    assert len(rec.explore) == 1, rec.explore

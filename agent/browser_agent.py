@@ -249,12 +249,20 @@ class Journey:
     stall_rounds: int = 0
 
     #: 这一趟开头**照账本重放**了的那一段（`explore(resume_from=…)`）——
-    #: 记的是**当时真发生的那件事**：`{done, landed, why}`（`replay` 的原样产物）。
-    #: 没重放 = 空 dict（**不假装重放过**）。
+    #: 记的是**当时真发生的那件事**：`{done, landed, why}`（`replay` 的原样产物），
+    #: 加上切前缀那侧给的 `boundary_reason`。没重放 = 空 dict（**不假装重放过**）。
     #: 为什么要有它：重放不经过 `dispatch`，它的结果（走成几步、落在哪、为什么停）
-    #: 除了这里没有第二个落脚点，而 `explore_say` / 闸口那份摘要都要读它。
+    #: 除了这里没有第二个落脚点。
+    #: 读者**就两处**（复审 Q2：原先这句写成「闸口那份摘要也要读它」，是错的 ——
+    #: 那份摘要在**节点开工之前**就算，那时这个 journey 还不存在，它读的是状态里的
+    #: `resume_note`）：`graph._resume_say`（人读的那句话）与 `_replay_cut_short`
+    #: （「重放走完没有」—— 它决定「就地停」还是「接着去问模型一轮」）。
     replay: dict = field(default_factory=dict)
 
+    #: 那一趟的轮数**量到了没有**（P5：`0` 有两种意思）。**只有 `_wrap_up` 会把它置 True**
+    #: —— 就是它写下 `rounds` 的那一句旁边；`_Stop` 那一支走不到那儿（`rounds` 随异常丢掉），
+    #: 于是天然是 False。⚠️ 别按停因去猜（那要维护一张会漏的名单，Task 4 的 `GROUPS` 栽过）。
+    rounds_measured: bool = False
     #: 这一趟**问了几轮模型**（G2：`_wrap_up` 原先用完 `rounds` 就丢，于是基线 M3 量不到）。
     #: ⚠️ `0` 有四种来源，读的时候要连 `stop_reason` 一起看：
     #:   - `no_rounds`     → 真的 0 轮（模型一次都没回话）；
@@ -378,8 +386,11 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         只管**说给人听**（账上那句 + 给模型的边界信息），**不参与判断** ——
         它是切前缀的那个人（服务侧）现成就算出来的，不是这里再猜一遍
       - `window_alive`：问一句「窗口还活着吗」（零参数，回三态 True / False / **None＝不知道**）。
-        工具**连着失败 `FAILURES_BEFORE_DEAD` 次**时问它：说死了 → `_Stop("window_gone")`。
-        ⚠️ **不许**拿工具那句错误文字去猜（§1.8）；没接这根线 = 不知道 = 不停
+        问两处：① 工具**连着失败 `FAILURES_BEFORE_DEAD` 次**时；② 续跑把账本重放完之后
+        （重放**没走完**、而它说死了 → 就地停，不去白问模型一轮）。
+        **只有「明确说死了」才停** —— 没接这根线（`None`）、探针自己抛异常、
+        或探针答「不知道」（`None`）一律**不编**一个停因出来（`_window_is_dead` 的 docstring）。
+        ⚠️ **不许**拿工具那句错误文字去猜（§1.8）
 
     出错怎么办：
       - **工具自己报的错**（找不到元素 / 连不上窗口）→ 记进**那一步**，也回给模型，
@@ -495,16 +506,40 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         fresh = None
         if own_session and (ws_url or host or port):
             def respawn(old):
-                """起一个新会话（同一串 ws_url）：**先起新的、成了再关旧的** ——
-                起不来时旧的那个还能用（换不到就照旧重来）。"""
+                """换一个新会话（同一串 ws_url）—— **换完这一步手里那个也跟着换**。
+
+                ⚠️ 三条一起才成立（少一条就是**半截事**，复审 Q1）：
+
+                ① **所有权只有一个地方说了算**：`session` 是 `explore` 的局部变量，这里用
+                   `nonlocal` 把它换掉。只换 `replay` 内部那个名字的话，**工具循环会继续
+                   拿着已经关掉的会话跑完整趟** —— 每一步都是 `McpError: cdp-mcp 已经不在了`，
+                   一趟真探路当场变成废账（白烧一个真窗口 + 一整趟模型钱，账上留下满篇
+                   假的「工具失败」）。
+                ② **换来的那个必须有人关**：关它的就是下面 `finally` 里那句
+                   `session.close()`（它关的正是换过之后的这个）—— 不换的话漏一个
+                   `cdp-mcp` 子进程。
+                ③ **先起新的、成了再关旧的**：起不来时旧的那个还能用（换不到就照旧重来）。
+                """
+                nonlocal session
                 new = tools.McpSession.open(ws_url=ws_url, host=host, port=port,
                                             binary=binary)
                 try:
                     old.close()
                 except Exception:                  # noqa: BLE001 —— 关不掉不是错
                     pass
+                session = new
                 return new
             fresh = respawn
+
+        #: 预算**一开始就花光了**（job 级累计已经超：图那边把 `max_*=0` 交了下来）——
+        #: 一步都不走，连模型都不问（问一轮也是白花：这一趟没有任何步数可走）。
+        #: 放在重放之前：重放是为「接着往下探」准备的，而这一趟探不了。
+        if limits.max_steps <= 0 or limits.max_rounds <= 0:
+            journey.notes.append(
+                "这一趟的预算**一开始就是 0**（这个 job 前面几趟已经花掉：给了 %d 步 / %d 轮）"
+                "—— 一步都不走，如实停下（`reopen` 也救不了它：那只是再烧一次，该人看一眼）。"
+                % (limits.max_steps, limits.max_rounds))
+            raise _Stop("budget_steps")
 
         #: 续跑的开头（§1.7）：先把账本里那一段走回去。**必须在工具循环之前** ——
         #: 模型看到的第一眼就该是「上一趟走到哪儿了」，而不是一个停在入口的空窗口。
@@ -514,7 +549,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             # ⚠️ **重放没走完、而窗口服务说它已经死了** → 就地停下，**不去问模型那一轮**：
             # 它看到的是一个死窗口，工具连着失败两次之后我们还是会停在同一处（白问一轮）。
             # 判据两条都要：**没走完**（数出来的，不是读 `why` 那句话）+ **问接口**说死了。
-            if _replay_cut_short(journey, resume_from) and _window_is_dead(window_alive):
+            if replay_cut_short(journey, resume_from) and _window_is_dead(window_alive):
                 raise _Stop("window_gone", detail="账本还没重放完，窗口就没了")
 
         opening = _brief(url, goal, limits, plan)
@@ -586,10 +621,14 @@ def _walk_back(journey: Journey, rows: list, session, emit, alive, boundary: str
            (" 边界（它为什么停在这儿）：" + str(boundary)) if str(boundary or "").strip() else ""))
 
 
-def _replay_cut_short(journey, rows: list) -> bool:
+def replay_cut_short(journey, rows: list) -> bool:
     """重放**没走完**（该做的动作没做齐）—— 判据是**数出来的**，不是读 `why` 那句话。
 
     数的是**动作**（`replay_actions`）：账上那些「看一眼」不算动作，`replay` 也不会去动它们。
+
+    ⚠️ **两个读者**：`explore`（重放没走完 + 窗口说死了 → 就地停）与
+    `graph._worth_retrying`（重放被打断过的那一趟**不再重探** —— 「不许内外两层 3 次叠加」
+    靠的就是这一条：被打断 = 窗口抖了，而重探只会把同一段在真页面上再撞一遍）。
     """
     want = len(replay_actions(rows))
     return int((getattr(journey, "replay", None) or {}).get("done") or 0) < want
@@ -654,15 +693,13 @@ def _stop_or_raise(paused, journey, taken: int, budget: Budget) -> None:
 def _window_is_dead(alive) -> bool:
     """问一句「窗口还死了没」。**只有明确说死了才算**（三态：True / False / None）。
 
-    ⚠️ 与 `replay` 那边的 `_probe_dead` **取向故意相反**，因为两处问的不是同一件事：
+    ⚠️ **三态里只有「明确说死了」（`False`）算死**：`True` 是活，而「问不出来」（`None`）
+    是**不知道** —— 不知道**不是**死。
 
-    - `_probe_dead` 问的是「这次失败该不该**归到窗口头上**」——答错的代价是多走两遍重放，
-      而重放里**没有不可逆的动作**，重来是安全的 ⇒ 问不出来按死了算（保守那一侧）。
-    - 这里问的是「**这个 job 的结局叫什么**」。答错的代价是把停因说错：
-      「选择器没找到」被记成「窗口死了」—— 而重开窗口恰恰解决不了它，
-      读账的人会照着那句话去重开窗口白跑一趟。那正是这条判据
-      （**问接口，别猜工具的错误文字**）要躲开的形状。
-      ⇒ 问不出来就是「不知道」，**不是**「死」。
+    这一条与 `replay` 那边的 `_probe_dead` **是同一个取向**（复审 Q1 ③ 要求一致）：
+    两处问的虽然是两件事（那边「这次失败该不该归到窗口头上」，这边「这个 job 的结局叫什么」），
+    但**面对同一个 `None` 必须给同一个答案**。一个当死一个当活的后果是实打实的：
+    重放会去关掉一个还活着的会话，而这边不认「窗口没了」⇒ 整趟烧到预算停因才停。
 
     `alive=None`（这个部署没有窗口层）同样按「不知道」算：**不编**一个停因出来。
     探针自己抛异常也一样（与「人的那道闸坏掉归一成暂停」那条规矩的取向一致：
@@ -720,23 +757,21 @@ def _rounds_lost_note(reason: str) -> str:
             "这里的 0 是「没量到」，不是「一轮都没花」。")
 
 
-#: 「这一趟的轮数**量到了**」的那几种停因 —— **只有循环自己走完**的那几种（`_wrap_up` 定的：
-#: 走完时 `rounds` 就在手边）。其余（`_Stop` 那一支：人喊停 / 预算到顶 / 计划停滞 /
-#: 窗口没了）一律**没量到** —— `_Stop` 一穿出 `run_tool_loop`，那个局部变量就没了。
-#:
-#: ⚠️ 判据写成**白名单**（认「量到了」）而不是「没量到的」名单，方向是**故意**的：
-#: 新增一条停因时，默认落到「没量到」那一侧 —— 那一侧错了只是少一个真数；
-#: 反着写（默认当成真 0）会多一个**假数**，而假 0 读起来像好消息（M3 偏低，越低越像好消息）。
-ROUNDS_MEASURED_REASONS = ("no_rounds", "model_done", "budget_rounds", "ended")
-
-
 def rounds_measured(journey) -> bool:
     """这一趟的轮数**量到了没有**（P5：`0` 的两种意思必须分得开）。
 
-    读账的人一律走这一个出口（`service._note_attempt` / `graph._spend_of`）——
-    各写一个 `stop_reason == "paused"` 就是同一份判据写两遍，收紧一处另一处会漏。
+    判据是 `Journey.rounds_measured` 那个**标记**（复审裁定：换掉原先那张按停因列的
+    白名单）—— 名单要人维护、会漏；标记**落在事情发生的那一句旁边**：
+    `_wrap_up` 写下 `rounds` 的同时把它置 True，而 `_Stop` 那一支**天然**走不到那里
+    （它一穿出 `run_tool_loop`，`rounds` 那个局部变量就没了），标记保持 False。
+    **没有表要维护，方向也是安全的那一侧**（新停因默认落到「没量到」）。
+
+    ⚠️ 今天的读者只有 `service._note_attempt`（写 `attempts.jsonl` 那一行）。
+    `graph._spend_of` **不走它**：那边记的是 `journey.rounds` 那个数本身，
+    没量到的趟本来就是 0（加 0 等于没加）—— 这一条写清楚，免得下一个人以为
+    「两处都读它」（那句话曾经是错的，复审 Q2）。
     """
-    return str(getattr(journey, "stop_reason", "") or "") in ROUNDS_MEASURED_REASONS
+    return bool(getattr(journey, "rounds_measured", False))
 
 
 def _wrap_up(journey: Journey, rounds: list, budget: Budget) -> None:
@@ -750,6 +785,9 @@ def _wrap_up(journey: Journey, rounds: list, budget: Budget) -> None:
     **工具调用**（含 observe），与「模型想了几轮」不是一回事（实测 60 步 ≠ 60 轮）。
     """
     journey.rounds = len(rounds)
+    #: ⚠️ **就在这一句旁边**（复审裁定）：这个标记就是「轮数量到了」的判据本身 ——
+    #: 它跟 `rounds` 同生共死，所以没有第二张名单要维护，也不会漂。
+    journey.rounds_measured = True
     journey.usage = llm.summarize(rounds)
     last = rounds[-1] if rounds else None
     if last is None:
@@ -1788,6 +1826,11 @@ def replay(session, steps, *, on_step=None, alive=None, fresh=None) -> dict:
     **给了但换不到**：沿用旧会话接着重来，并且**在 `why` 里写明**（不静默 ——
     不然读账的人会以为「3 遍都没走完」是窗口的问题，其实是没人能给它一个新会话）。
 
+    ⚠️ **会话的所有权归调用方**（复审 Q1 ①）：这里换来的那个只是**本函数后面几遍**用；
+    谁拥有它、谁来关它、`explore` 手里那个要不要跟着换，**一律由 `fresh` 那边说了算**
+    （`explore` 的 `respawn` 就是用 `nonlocal` 把**它自己那个** `session` 换掉）。
+    本函数**从头到尾不关任何会话**。
+
     这个函数**只做账上写着的事**：不判断、不绕开、不「看着不对就换成别的选择器」。
     走不通就停在原地说话（§1.6）—— 「静默跳过」正是 R-35 那次失败的形状。
     """
@@ -1977,11 +2020,18 @@ def _probe_dead(alive) -> bool:
     反过来（坏掉 = 活着）会把「窗口没了」说成「页面上找不到那个按钮」——
     一句指错方向的话，读账的人会去查选择器。而按死了处理最多多走两遍重放，
     重放里**没有不可逆的动作**，重来是安全的（§1.6）。
+
+    ⚠️ 但「**问出来了，答案是「不知道」（`None`）**」是另一件事 —— 它**不当死**
+    （复审 Q1 ③）：这一条与 `_window_is_dead` **必须是同一个取向**。两边一个当死、
+    一个当活的最坏组合是真出现过的：重放这边**主动关掉一个还活着的会话**，
+    而模型那边不认「窗口没了」⇒ 整趟在一堆假的「工具失败」里烧到预算类停因。
+    `BitWindow.probe()` 自己的 docstring 就写着「`None` **问不出来**（别拿它当死）」——
+    这里是照它说的做：**问不出来 = 不知道 = 不当作死**（工具这次失败就如实记成失败）。
     """
     if alive is None:
         return False
     try:
-        return not alive()
+        return alive() is False
     except Exception:                                  # noqa: BLE001
         return True
 

@@ -2026,8 +2026,12 @@ def test_a_stop_that_lost_the_round_count_is_not_written_down_as_a_zero(tmp_path
     for stop in ("paused", "budget_steps", "plan_stalled", "window_gone"):
         svc._note_attempt("job-lost", started=measure._now(),
                           journey=browser_agent.Journey(stop_reason=stop, rounds=0))
-    svc._note_attempt("job-real", started=measure._now(),
-                      journey=browser_agent.Journey(stop_reason="model_done", rounds=7))
+    # 「量到了」那一路要用**真生产者**：`_wrap_up` 在写下 `rounds` 的**同一句旁边**落标记 ——
+    # 手搓一个 `Journey(rounds=7)` 造不出那个标记（那正是这次把「按停因列名单」换掉的效果）
+    real = browser_agent.Journey()
+    browser_agent._wrap_up(real, [{"content": "讲完了", "tool_calls": [], "usage": None,
+                                   "elapsed_ms": 1}] * 7, browser_agent.Budget())
+    svc._note_attempt("job-real", started=measure._now(), journey=real)
 
     def rows(job):
         p = tmp_path / "explore" / job / "attempts.jsonl"
@@ -2036,3 +2040,35 @@ def test_a_stop_that_lost_the_round_count_is_not_written_down_as_a_zero(tmp_path
     lost = rows("job-lost")
     assert [r["rounds"] for r in lost] == [None] * 4, lost
     assert rows("job-real")[-1]["rounds"] == 7, rows("job-real")
+
+
+def test_a_prefix_from_an_earlier_reopen_is_not_reused(tmp_path, monkeypatch):
+    """上一趟 `reopen` 留下的前缀**不许**被这一次复用（那是**别的窗口**上的账）。
+
+    这就是 `reopen` 里那两个键**无条件写**（切不出来就写 `None`）的守卫：
+    不写的话，状态里那个旧前缀会留在那儿，这一次的探路会照着**上一次**的账本
+    （在另一个窗口、另一条 session 上走出来的）去重放真页面。
+    """
+    seen: list = []
+    monkeypatch.setattr(browser_agent, "explore",
+                        _explore_spy([_resumable_journey(), _journey()], seen, journal=False))
+    rec = Rec()
+    client = _client_with_the_services_explore(rec, tmp_path)
+    job_id = client.post("/run", json=_brief(
+        tmp_path, allow_skips=["country", "viewport"])).json()["job_id"]
+    _reply_until_done(client, job_id)
+
+    # 造出「上一次 reopen 已经把一段前缀打进状态」的样子
+    stale = [{"action": "goto", "target": {"url": "https://老窗口.test/"}}]
+    svc = client.app.state.service
+    with svc._check.lock:
+        svc._jobs[job_id].graph.update_state(svc._cfg(job_id),
+                                             {"resume_from": stale, "resume_note": "旧前缀"})
+    r = client.post("/job/%s/reopen" % job_id, json={"ws_url": NEW_WS_URL})
+    assert r.status_code == 200, r.text
+    _reply_until_done(client, job_id)
+
+    assert len(seen) == 2, seen
+    assert seen[1]["resume_from"] is None, "旧前缀被复用了：%r" % (seen[1]["resume_from"],)
+    values = dict(svc._snapshot(job_id).values or {})
+    assert values.get("resume_from") in (None, [], ()), values.get("resume_from")

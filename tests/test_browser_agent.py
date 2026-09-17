@@ -2584,7 +2584,13 @@ def test_the_model_is_told_what_was_replayed_and_why_the_ledger_stopped_there(tm
 
 
 def test_without_a_resume_the_opening_message_is_the_same_bytes_as_before(tmp_path):
-    """没给前缀 → 开场白**逐字节**与今天一样（B4：自由模式那版是硬编码钉住的）。"""
+    """没给前缀 → 发出去的**就是 `_brief()` 的产物本身**（续跑那一段不许漏进这条路）。
+
+    ⚠️ 口径说清楚（修复轮 1 自查）：它钉的是「**续跑机制没有污染自由模式那条路**」——
+    不是「`_brief()` 今天长什么样」。后者由 `test_without_a_plan_the_brief_is_byte_for_byte_
+    what_it_was_today`（Task 3）拿**硬编码的字节**钉着：两条各管一头，那一条管「文案没漂」，
+    这一条管「**没多出东西**」（少了它，一个「无条件追加续跑段」的实现两条都躲得过）。
+    """
     _, fake, _ = _run(tmp_path, {"observe": [{"structured": PAGE_LANDING}]},
                       [{"content": "讲完了", "calls": []}])
     asked = _asked(fake)
@@ -2868,3 +2874,117 @@ def test_a_failed_last_look_still_returns_a_result_not_an_exception(tmp_path):
     assert out["done"] == 2, out              # 两个动作都走成了，只是末尾那一眼没看成
     assert "超时" in out["why"] and "第 3 行" in out["why"], out["why"]
     assert [c["name"] for c in calls] == ["goto", "observe", "click", "observe"], calls
+
+
+# ── 修复轮 1（复审 Q1）：会话所有权 / `None` 的取向 ────────────────────
+
+
+def test_a_swapped_session_is_the_one_the_model_loop_uses(tmp_path, monkeypatch):
+    """**`own_session=True` 那条路**（复审 Q1：这条路原先**一条用例都没有**）。
+
+    会话是 `explore` 自己起的 ⇒ 换会话之后**它自己手里那个也必须跟着换**。
+    只换 `replay` 内部那个名字的话，工具循环会拿着**已经关掉**的会话跑完整趟 ——
+    每一步都是 `McpError: cdp-mcp 已经不在了`，一趟真探路当场变成废账
+    （白烧一个真窗口 + 一整趟模型钱，账上留下满篇假的「工具失败」）。
+
+    三件事一起验：①**模型那一步落在新会话上**（判据是两条流水线，不是内部变量）；
+    ②旧会话**关了**；③新会话**也关了**（不漏 `cdp-mcp` 子进程）。
+    """
+    rows = _walk_rows()
+    for sub in ("dead", "live"):
+        (tmp_path / sub).mkdir(exist_ok=True)
+    dead, dead_log = _stub(tmp_path / "dead",
+                           {"goto": [{"error": "连不上 127.0.0.1:9222"}]})
+    live, live_log = _stub(tmp_path / "live", {"observe": _pages_for(rows)})
+    opened = [dead, live]
+    monkeypatch.setattr(browser_agent.tools.McpSession, "open",
+                        staticmethod(lambda **kw: opened.pop(0)))
+
+    #: 探针**抖一下**：重放那一下说死了，之后都说活着（复审描述的正是这个形状）。
+    answers = [False]
+
+    def alive():
+        return answers.pop(0) if answers else True
+
+    fake = FakeLLM([{"calls": [("observe", {})]}, {"content": "讲完了"}])
+    journey = browser_agent.explore(
+        "https://example.test/funnel", "看看这一页怎么走到报价",
+        session=None, ws_url="ws://127.0.0.1:9222/devtools/page/ABC",
+        client=fake, resume_from=rows, window_alive=alive)
+
+    assert [c["name"] for c in _calls(dead_log)] == ["goto"], _calls(dead_log)
+    assert [c["name"] for c in _calls(live_log)] == ["goto", "observe", "click", "observe",
+                                                     "observe"], _calls(live_log)
+    assert journey.replay["done"] == 2, journey.replay
+    assert journey.stop_reason == "model_done", journey.stop_reason
+    assert dead._proc is not None and dead._proc.poll() is not None, \
+        "旧会话没关（换了之后它就该退休）"
+    assert live._proc is not None and live._proc.poll() is not None, \
+        "换来的那个会话没人关 —— 漏了一个 cdp-mcp 子进程"
+
+
+def test_a_window_probe_that_does_not_know_is_not_treated_as_dead(tmp_path):
+    """探针答「**不知道**」（`None`）≠ 死 —— 两侧（重放 / 模型那侧）取向必须一致（Q1 ③）。
+
+    一个当死、一个当活的最坏组合是真会发生的：重放这边**主动关掉一个还活着的会话**，
+    而模型那边不认「窗口没了」⇒ 整趟在一堆假的「工具失败」里烧到预算类停因，
+    白烧一个真窗口 + 一整趟模型钱。
+    """
+    journey, _, _ = _run(tmp_path, {"click": [{"error": "没有找到选择器 #ghost"}]},
+                         _dead_click_turns(2), window_alive=lambda: None)
+    assert journey.stop_reason == "model_done", journey.stop_reason
+
+
+def test_a_replay_whose_probe_does_not_know_stops_instead_of_restarting(tmp_path):
+    """同一颗钉子的重放那一侧：探针答「不知道」→ **不整段重来**（那会关掉一个活会话）。"""
+    rows = _walk_rows()
+    out, calls = _replay(tmp_path, rows, {"goto": [{"error": "连不上 127.0.0.1:9222"}]},
+                         alive=lambda: None)
+    assert [c["name"] for c in calls] == ["goto"], calls
+    assert "停住" in out["why"], out["why"]
+
+
+def test_a_session_the_caller_gave_is_neither_swapped_nor_closed(tmp_path, monkeypatch):
+    """**别人给的会话**：`explore` 既不换它、也不关它（所有权不是它的）。
+
+    换的代价：会凭空起一个会话 —— 而它只能按**默认**去连，也就是**别的**窗口
+    （`_explore_for` 那条注释早就立过这条规矩）。关的代价：调用方手里那个当场报废
+    （测试里它还要接着用，生产里那是上层的东西）。
+    """
+    opened = []
+
+    def boom(**kw):
+        opened.append(kw)
+        raise RuntimeError("不该去换会话")
+
+    monkeypatch.setattr(browser_agent.tools.McpSession, "open", staticmethod(boom))
+    rows = _walk_rows()
+    session, log = _stub(tmp_path, {"goto": [{"error": "连不上 127.0.0.1:9222"}]})
+    fake = FakeLLM([{"content": "接着探"}])
+    try:
+        journey = browser_agent.explore(
+            "https://example.test/funnel", "看看这一页怎么走到报价",
+            session=session, ws_url="ws://127.0.0.1:9222/devtools/page/ABC",
+            client=fake, resume_from=rows, window_alive=lambda: False)
+        assert opened == [], "别人给的会话也去换了一个新的：%r" % opened
+        assert [c["name"] for c in _calls(log)] == ["goto"] * 3, _calls(log)
+        assert session._proc is not None and session._proc.poll() is None, \
+            "调用方给的会话被 explore 关了（它不是它的）"
+        assert journey.stop_reason == "window_gone", journey.stop_reason
+    finally:
+        session.close()
+
+
+def test_a_zero_budget_never_even_asks_the_model(tmp_path):
+    """预算被夹到 0（job 级累计已经花超）→ **一步都不走**，如实以 `budget_steps` 收场。
+
+    这是「预算不许重置」那条链的最后一环：图算出 0 之后，探路这一侧得**真的**一步不动
+    （而不是「反正第一轮先问一下模型再说」）。
+    """
+    journey, fake, calls = _run(tmp_path, {"observe": [{"structured": PAGE_LANDING}]},
+                                [{"calls": [("observe", {})]}],
+                                budget=browser_agent.Budget(max_steps=0, max_rounds=0))
+    assert journey.stop_reason == "budget_steps", journey.stop_reason
+    assert calls == [], calls
+    assert fake.calls == [], fake.calls
+    assert journey.steps == [], journey.steps

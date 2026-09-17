@@ -465,7 +465,7 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
 
     journey = pass_once(1)
     for n in range(2, EXPLORE_ATTEMPTS + 1):
-        if not _worth_retrying(attempts[-1]["reached"], journey):
+        if not _worth_retrying(attempts[-1]["reached"], journey, resume_from):
             break
         note = ("⚠️ 第 %d 趟探路**没有在页面上见到成功文案** —— 账本里很可能没有那条通向"
                 "成功的路（拿它去定稿+自测会白跑，第九轮实测过）。**自动重探一趟**"
@@ -497,39 +497,59 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
         out["end_note"] = _unfinished_note(stop, journey)
         return out
     if reached is False:
-        note = ("⚠️ **重探了 %d 趟都没在页面上见到成功文案** —— 停下，如实报，"
-                "**不进入定稿 + 自测**（拿一条走不通的账本去定稿+自测是必然白跑）。"
-                "两次账本的差异见上。判据一个字没放宽：要不要改判据得人或控制器点头。"
-                % len(attempts))
+        # ⚠️ 人话要说**真发生的事**：没重探就别写「重探了 N 趟」（那种假话本片已经收过一次）。
+        retries = len(attempts) - 1
+        if retries:
+            note = ("⚠️ **重探了 %d 趟都没在页面上见到成功文案** —— 停下，如实报，"
+                    "**不进入定稿 + 自测**（拿一条走不通的账本去定稿+自测是必然白跑）。"
+                    "两次账本的差异见上。判据一个字没放宽：要不要改判据得人或控制器点头。"
+                    % retries)
+        else:
+            note = ("⚠️ **这一趟没在页面上见到成功文案**，而且**没有重探** ——"
+                    "重放被打断过（窗口在重放途中抖了）：这一趟不是对这条路的一次完整观察，"
+                    "重探只会把同一段在真页面上再撞一遍。停下，如实报，"
+                    "**不进入定稿 + 自测**（拿一条走不通的账本去定稿+自测是必然白跑）。")
         journey.notes.append(note)
         out["end_reason"] = END_EXPLORE_UNFINISHED
         out["end_note"] = note
     return out
 
 
-def _worth_retrying(reached, journey) -> bool:
+def _worth_retrying(reached, journey, resume_from) -> bool:
     """这一趟没见到成功文案 —— **还值不值得再探一趟**（重探真窗口要花钱）。
 
     ⚠️ 判据是 `stop_reason`（R-E6），**不是 `stall_rounds`**：那个数是「连着几轮没推进」的
     **计数**，而**一次干净走完的探路也常是 1**（`_PlanWatch.finish()` 补结算最后一轮）——
     拿它当布尔量用，正常走完的探路会全被判成停滞。停滞只有 `plan_stalled` 这一个写法。
 
-    四种停法**不重探**（重探对它们什么也做不到，而每一趟都要花一个真窗口）：
+    不重探的四种停法 + 一条完整性判据：
 
     - `window_gone`：窗口没了 —— 重探只会再去开一次会话（多半直接炸）；该走 `reopen`；
     - `budget_steps` / `budget_rounds`：预算已经花掉了（job 级累计之后起点只会更低）；
-    - `paused`：人喊了停 —— 重探是**无视人的话**。
+    - `paused`：人喊了停 —— 重探是**无视人的话**；
+    - **重放被打断过**（`browser_agent.replay_cut_short`）：这一趟不是对这条路的一次
+      **完整观察** —— 窗口在重放途中抖了，重探只会把同一段在真页面上再撞一遍。
 
     **留着**的（`model_done` / `ended` / `plan_stalled`）都是「这一趟对这条路做了一次完整的
     观察、只是没走到成功」—— 换个随机答案可能走通，那正是重探的立意。
 
+    ⚠️ **它同时是「不许内外两层 3 次叠加」的那根结构线**（复审 Q3）：`replay` 内部最多
+    `REPLAY_ATTEMPTS=3` 遍，而这一趟要是被**打断过**就不再重探 ⇒ 外层拿不到第二段前缀
+    去重放 ⇒ **乘数上不去**（最坏是「一趟 × 它自己的 3 遍」，不是 3×3=9 遍）。
+    复审点出的旧形状里，「不叠加」有一半是靠 Q1 那个缺陷兜住的（换了会话却没人换
+    `explore` 手里那个，于是根本走不到重探）—— **那是巧合，不是设计**；现在由这一句保证。
+
     ⚠️ **已知代价（Task 3 遗留 2，没量过）**：`plan_stalled` 也会再探 2 趟 ≈ 2 个真窗口。
-    留着它的理由：停滞与「这一趟的随机答案」有关，而重探正是为那个加的；代价是**有界的**
-    （job 级预算封顶 + `explore_spent.attempts` 把它记在明面上）而且**看得见**。
+    留着它的理由：停滞与「这一趟的随机答案」有关，而重探正是为那个加的。
+    **真实的界是「3 趟 × 各自一份满预算 + 3 个真窗口」**（复审实测：三趟拿到的预算是
+    同一个 —— 节点入口算一次，不是每趟递减；`explore_spent` 只在**跨节点**（`reopen`）时才减），
+    而且每一趟都会**把同一段前缀在真页面上再做一遍**（这笔代价没进 `explore_spent` 的账）。
     要不要收掉它，等 Task 7 的真站验收量出「停滞重探到底有没有用」再说。
     """
     if reached is not False:
         return False
+    if browser_agent.replay_cut_short(journey, resume_from or []):
+        return False                      # 这一趟没走完整 —— 重探只会再来一遍（见 docstring）
     stop = str(getattr(journey, "stop_reason", "") or "")
     return stop not in ("window_gone", "budget_steps", "budget_rounds", "paused")
 
