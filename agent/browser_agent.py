@@ -84,6 +84,36 @@ Task 1 的 spike 证明了模型**肯**调工具（24 跑 0 编造、47 次真 o
 现在：账本里这一步就是**它的元素**（`target.selectors` + `target.frame_id`，与 MCP 的
 `scroll` 工具同一件事），产物把它交给 `cdp scroll <选择器> [--frame-id <帧>]` ——
 **两边说的是同一件事**，不再有「像素」这一层假映射。
+
+## 计划模式：描述当**检查点清单**（2026-09-17，Task 3）
+
+人给的描述里如果有一串编号步骤，这趟就进**计划模式**（`explore(..., plan=Plan)`）：
+
+- **简报分两版**（`_brief`）。有计划 → **清单（原话）+ 原文（`Plan.raw`，一字不删）**
+  + 三条走法；没计划 → **与今天逐字节相同**（B4，那颗回归钉子在
+  `tests/test_browser_agent.py` 里把今天那串字节**硬编码**着，改措辞会当场红）。
+  ⚠️ 「原文」不是陪衬：真描述的键值头里夹着**约束**（`禁止点击: Cookie Policy,…`），
+  只给清单等于把它吞掉 —— 吞了模型就会去点**运营明写的禁区**。
+- **规矩进 `_SYSTEM`**（那是稳定层），计划本身是**每轮的事**，走简报那一版。
+
+位置 / 偏离 / 停滞由 `_PlanWatch` 记账，它挂在 `_Gate` 上 —— 那是**唯一每轮都在场**的
+东西（连被人打断的那条路也在场；与「叙述归 `_Gate`」是同一个道理）。三条硬规矩：
+
+1. **不判「这一步做完没有」**（D11：observe 只给感知）。位置**只由模型报的** `【第 k 步】`
+   推进；没报 / 报了个不存在的号 → 位置**不动** + 一句人话（§2.4：说不出就是不猜）。
+2. **绕开（分支）不是偏离**：往前跳号 → 中间那几个记 `jumped_over`，**不进 `deviations`**，
+   而且**照样算前进**（停滞计数清零）。`deviations` 只装**模型声明**的
+   「描述说…页面上是…」（§2.3.1：两者混在一起，这条账会被日常噪音灌满，信号就废了）。
+3. **唯一的自动干预是「停」**：连着 `Budget.stall_limit` 轮「位置没动 + 页面没变 +
+   没有一步做成了」→ `_Stop("plan_stalled")`。判据全是感知 / 声明，**没有一条语义判断**。
+
+⚠️ **两处已知读法**（复审要看的，照 Task 2 的规矩摆在这里，行为不改）：
+
+- **「位置前进」= 位置动了**，不判方向。往回跳（第 5 步 → 第 3 步）在 §2.4 里明写
+  「照记、不判它该不该」，所以这里也只算「动了」；要改成「只有往前才算」，那是在替人判。
+- **矛盾那一轮位置不前进**（§2.3(b)「位置标记停在这一步不前进」）。这里取的是
+  「**这一轮不算推进**」，**不是**「位置从此钉死在第 k 步、后面永远不许再往前提」——
+  后者会让一次矛盾把整趟都判成停滞，而设计注只说过「停在这一步」。
 """
 
 from __future__ import annotations
@@ -94,7 +124,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import llm, tools
+from . import llm, plan as plan_module, tools
 
 #: **C1**：`deepseek-v4-*` 把思考 token 算进 `max_tokens`。给 4000 时最终答案会**静默变空**
 #: （spike 实测 1/8，提到 12000 后 5/5 正常）。别往下调 —— 那不是省钱，是把能力削掉。
@@ -106,6 +136,26 @@ DEFAULT_MAX_ROUNDS = 20
 
 #: 骨架认的五个重放动作（其余动作出现在 STATES 里会被当成「产物写错了」）。
 REPLAY_ACTIONS = ("click", "form", "scroll", "goto", "wait")
+
+#: 停滞判据（§2.5）里的「**动作**」= `_SYSTEM` 规矩 2 里那几个**会改页面**的工具。
+#: `observe` / `diff` / `screenshot` 是**感知**，不在里面 —— 一个只在那儿看来看去的模型
+#: 本来就不算「在推进」（不然停滞判据永远响不了：看一眼也是成功的）。
+#: ⚠️ 与 `REPLAY_ACTIONS` 现在几乎重合，但**不是同一件事**：那个是「产物能重放什么」，
+#: 这个是「这一轮算不算做了事」。哪天要分家，改的应当是那一个。
+_ACTIONS = ("click", "form", "scroll", "goto")
+
+#: 计划模式里「这一轮没说清自己在第几步」那句人话（§2.4：**如实记「不知道」，不猜**）。
+#: 两种情形**同一句**：压根没报、报了个清单上没有的号 —— 系统不去分辨这两件事，
+#: 它们都只说明「这一轮它没说清自己在哪儿」。
+_NO_MARK_NOTE = "这一轮没说自己在第几步（也可能是报了个清单上没有的号）—— 位置不动，不猜"
+
+#: 模型报「描述与页面**矛盾**」的**说法**（§2.3(b)）：`描述说 … 页面上 …` 两半**同句**出现。
+#: 这是**约定**（简报里写死了这个说法）—— 系统**不判**「这算不算矛盾」，
+#: 它判不了也不该判（定性归账本和人），只判「它有没有按约定说出来」。
+_CONTRA_RE = re.compile(r"描述.{0,80}?(?:说|写).{0,120}?页面上")
+
+#: 一句话的边界（用来把报矛盾的那**一整句原话**摘下来）。
+_SENTENCE_RE = re.compile(r"[。！？\n]+")
 
 #: 一个状态的 `when` 里带多少字的页面文字（够认出「是不是这一页」，又不至于一改就失配）。
 WHEN_SNIPPET_CHARS = 48
@@ -135,7 +185,10 @@ _SYSTEM = """你是 siteforge 的探路 agent：在一个**真的浏览器**里�
    对看不见的元素动手不是「没点到」，是**点到了别的东西**。
 5. 页面里 honeypots 列出的元素是**陷阱**（人看不见、bot 填了会被标记），别碰。
 6. 走通了（或确定走不通）就**别再调工具**，用一段话说明：这条路怎么走、每一步为什么这么做、
-   以及**成功时页面上会出现什么文字**。注意：**没有 done 这个工具** —— 你不调工具就是结束。"""
+   以及**成功时页面上会出现什么文字**。注意：**没有 done 这个工具** —— 你不调工具就是结束。
+7. **人给了步骤清单就照着走**（没给就按目标自由探）。清单是**一条走法的样子**，不是站点的
+   结构：**这一趟少走几步、多走几步都是正常的**，别为了凑步数去点清单和原文里都没有的东西。
+   **与页面矛盾时说出来再决定**，不要闷头按清单点下去。"""
 
 
 @dataclass
@@ -144,6 +197,10 @@ class Budget:
 
     max_steps: int = DEFAULT_MAX_STEPS
     max_rounds: int = DEFAULT_MAX_ROUNDS
+    #: 计划模式下「连着几轮没有推进就停」（设计注 §2.5 的 `STALL_LIMIT`）。
+    #: **这是初值**（由 Task 1 的轮数分布校准）：产物那边确定性重放的 `STUCK_LIMIT = 3`，
+    #: 而探路有正常的「看几眼才动手」，所以给两倍。⚠️ 只有计划模式读它。
+    stall_limit: int = 6
 
 
 @dataclass
@@ -162,6 +219,21 @@ class Journey:
     stop_reason: str = "running"
     final_answer: str = ""
     pages: list = field(default_factory=list)
+
+    # ── 计划模式的账（Task 3 起；没计划时全空 —— **不加计划就不假装有计划**）──
+
+    #: 清单上每一步一个终态，**一步一条**、顺序就是清单顺序（`plan.ledger` 的产物）：
+    #: `[{n, text, state, why}]`，`state` 是 `done / jumped_over / contradicted / not_reached`。
+    #: ⚠️ 它是**给人看的账**，不是产物的原料 —— 「第 k 步」这个东西**一个字节都不许**
+    #: 进到生成出来的 py 里（那等于把分支站钉死在一条路上，§2.3.2）。
+    plan_ledger: list = field(default_factory=list)
+    #: **模型声明**的「描述说…页面上是…」（**原话**，不改写）。⚠️ 只有**矛盾**进这里：
+    #: 绕开 / 分支（这一趟没走到某一步）**不进** —— 那是站点本来的形状，混进来这条账
+    #: 会被日常噪音灌满，「同一处反复偏离」那条信号就废了（§2.3.1）。
+    deviations: list = field(default_factory=list)
+    #: 计划模式里**已经连着几轮没有推进**（§2.5 的停滞判据；推进一步就清零）。
+    #: 没计划时恒为 0（那套判据不参与）。它同时也是「位置到底有没有动」的直接体现。
+    stall_rounds: int = 0
 
     #: 这一趟**问了几轮模型**（G2：`_wrap_up` 原先用完 `rounds` 就丢，于是基线 M3 量不到）。
     #: ⚠️ `0` 有两种意思，读的时候要连 `stop_reason` 一起看：
@@ -253,6 +325,7 @@ class _Stop(BaseException):
 
 
 def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
+            plan: "plan_module.Plan | None" = None,
             should_pause: Callable | None = None,
             client=None, session: "tools.McpSession | None" = None,
             ws_url: str | None = None, host: str | None = None, port: int | None = None,
@@ -263,6 +336,10 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
     参数：
       - `url` / `goal`：探哪一页、要摸清什么
       - `budget`：`Budget` / 步数（int）/ dict；不给就用默认上限（防跑飞）
+      - `plan`：人给的**检查点清单**（`agent/plan.py` 的 `Plan`）。给了、且里面够
+        `MIN_STEPS` 步 → 走**计划模式**（简报换成清单那一版，位置 / 偏离 / 停滞开始记账）；
+        不给、或一段话里解析不出步骤（`not plan.actionable()`）→ **走今天那条路**
+        （自由模式，简报逐字节不变 —— B4）
       - `should_pause`：**人的注入点**。`should_pause(journey)` 或 `should_pause()`，
         真 → 在**下一步之前**退出。每一步之前都会被问一次（见模块 docstring 的两道闸）
       - `session`：MCP 会话（测试用桩；不给就按 `ws_url`/`host`/`port` 起一个真的）
@@ -276,7 +353,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         空的 Journey 与「探完了，什么都没发现」长得一模一样，而这两件事的下一步
         完全相反（一个要去重开窗口，一个要继续往下写 py）
     """
-    plan = _as_budget(budget)
+    limits = _as_budget(budget)
     paused = _as_predicate(should_pause)
     journey = Journey()
     pages = _Pages()
@@ -284,16 +361,24 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
     if session is None:
         session = tools.McpSession.open(ws_url=ws_url, host=host, port=port, binary=binary)
     taken = 0
+    #: 只有**真的有计划**才建这一份：`plan=None` / 解析不出步骤 → `None`，
+    #: 位置 / 停滞那套判据一次都不参与（自由模式与今天逐字节相同）。
+    watch = None
+    if plan is not None and plan.actionable():
+        watch = _PlanWatch(plan, journey, limits.stall_limit,
+                           page_state=lambda: pages.current_name,
+                           steps_taken=lambda: len(journey.steps))
     try:
         specs = tools.tool_specs(session)
         if not specs:
             raise RuntimeError("MCP 门上一个工具都没有 —— 工具循环没法开始")
         inner = client if client is not None else llm.client()
-        gate = _Gate(inner, lambda: _stop_or_raise(paused, journey, taken, plan), journey)
+        gate = _Gate(inner, lambda: _stop_or_raise(paused, journey, taken, limits),
+                     journey, watch)
 
         def dispatch(name: str, args: dict) -> Any:
             nonlocal taken
-            _stop_or_raise(paused, journey, taken, plan)   # ← 每一步之前（§6.2）
+            _stop_or_raise(paused, journey, taken, limits)   # ← 每一步之前（§6.2）
             taken += 1
             step, fill = _describe(name, args, pages, journey)
             t0 = time.time()
@@ -324,22 +409,26 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             return raw
 
         rounds = llm.run_tool_loop(
-            _SYSTEM, _brief(url, goal, plan), specs, dispatch,
-            max_rounds=plan.max_rounds, max_tokens=MAX_TOKENS, _client=gate,
+            _SYSTEM, _brief(url, goal, limits, plan), specs, dispatch,
+            max_rounds=limits.max_rounds, max_tokens=MAX_TOKENS, _client=gate,
         )
-        _wrap_up(journey, rounds, plan)
+        _wrap_up(journey, rounds, limits)
     except _Stop as stop:
         journey.stop_reason = stop.reason
         journey.notes.append(_stop_note(stop.reason, len(journey.steps), stop.detail))
-        # 被打断这一路**拿不到轮数**：`rounds` 是 `run_tool_loop` 的局部变量，
+        # 被停下来这一路**拿不到轮数**：`rounds` 是 `run_tool_loop` 的局部变量，
         # `_Stop`（BaseException）一穿出去就没了。所以只能是 0 + 一句人话 ——
         # **不许编一个数**（P5）。那个 0 的意思是「没量到」，读账的人（`measure.baseline`）
         # 按 `stop_reason == "paused"` 把它记成 `None`，不记成「这一趟没花轮数」。
         journey.rounds = 0
         journey.usage = {}
-        journey.notes.append("这一趟被人打断了，**没记到轮数**（打断的信号一穿出工具循环，"
-                             "那个数就没了）—— 这里的 0 是「没量到」，不是「一轮都没花」。")
+        journey.notes.append(_rounds_lost_note(stop.reason))
     finally:
+        # 计划模式的账**在 `finally` 里收**：被打断 / 停滞 / 预算到顶那几条路上 `rounds`
+        # 一样拿不到，但 `_PlanWatch` **每轮都在场** —— 「怎么停的」不该决定「账还在不在」。
+        # （`plan.ledger()` 只读那几轮记录，一步没走到也照样「每一项都有交代」。）
+        if watch is not None:
+            journey.plan_ledger = plan_module.ledger(plan, watch.rounds)
         # 起点那一页**与后面所有页都不同源**时，撤掉它的 `when`（见 `_drop_incidental_start_when`）。
         _drop_incidental_start_when(pages.pages, journey)
         journey.pages = [{"name": p["name"], "when": p["when"], "url": p["url"],
@@ -352,16 +441,16 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
 # ─────────────────────── 停止条件（人 / 预算）───────────────────────
 
 
-def _stop_reason(paused, journey, taken: int, plan: Budget) -> str | None:
+def _stop_reason(paused, journey, taken: int, budget: Budget) -> str | None:
     """该不该停下？返回理由或 None。**只看，不做**（做由调用方决定）。"""
     if paused is not None and paused(journey):
         return "paused"
-    if taken >= plan.max_steps:
+    if taken >= budget.max_steps:
         return "budget_steps"
     return None
 
 
-def _stop_or_raise(paused, journey, taken: int, plan: Budget) -> None:
+def _stop_or_raise(paused, journey, taken: int, budget: Budget) -> None:
     """该停就抛 `_Stop` —— **两道闸共用这一个出口**（每步之前 / 每轮之前）。
 
     ⚠️ 人那道闸**自己抛异常**时，这里把它**归一成「暂停」**。不这么做的话，闸的错误
@@ -371,7 +460,7 @@ def _stop_or_raise(paused, journey, taken: int, plan: Budget) -> None:
     闸坏了要**停下来**（带上它坏在哪），不能带着一个坏掉的闸往下跑。
     """
     try:
-        reason = _stop_reason(paused, journey, taken, plan)
+        reason = _stop_reason(paused, journey, taken, budget)
     except _Stop:
         raise
     except Exception as exc:                           # noqa: BLE001
@@ -393,10 +482,27 @@ def _stop_note(reason: str, steps: int, detail: str = "") -> str:
     if reason == "budget_rounds":
         return (f"预算到顶：问满 {steps} 轮就停下 —— 模型一直在调工具、没有自己收尾"
                 "（预算是防跑飞，不是省钱）")
+    if reason == "plan_stalled":
+        # §2.5：人话里要带上**它卡在第几步、卡在哪一句描述上**（`detail` 就是那个）。
+        return (f"计划停滞：{detail or '连着几轮没有推进'} —— 在这里停下说话，"
+                "别接着在真页面上试（继续试只会多点几下真页面，那正是这条计划要少做的事）")
     return f"停下（{reason}）"
 
 
-def _wrap_up(journey: Journey, rounds: list, plan: Budget) -> None:
+def _rounds_lost_note(reason: str) -> str:
+    """「这一趟的轮数没记到」那句话（P5：`0` 的意思必须说清，**不许编一个数**）。
+
+    ⚠️ 措辞按**停因**分开：原先只有「被人打断」一种说法，可停滞（`plan_stalled`）与
+    预算到顶都不是人喊的停 —— 拿那句话去说它们，读账的人会以为是人停的。
+    """
+    if reason == "paused":
+        return ("这一趟被人打断了，**没记到轮数**（打断的信号一穿出工具循环，"
+                "那个数就没了）—— 这里的 0 是「没量到」，不是「一轮都没花」。")
+    return (f"这一趟是「{reason}」停的，同样**没记到轮数**（停止的信号一穿出工具循环，"
+            "那个数就没了）—— 这里的 0 是「没量到」，不是「一轮都没花」。")
+
+
+def _wrap_up(journey: Journey, rounds: list, budget: Budget) -> None:
     """判定它**是怎么结束的**。
 
     ⚠️ 模型每一轮说的话**不在这里记** —— 归 `_Gate`（它每轮都在场，包括被人打断的
@@ -416,7 +522,7 @@ def _wrap_up(journey: Journey, rounds: list, plan: Budget) -> None:
         # **C3**：没有 tool_calls = 它讲完了（那道门上没有 done()）
         journey.stop_reason = "model_done"
         journey.final_answer = (last.get("content") or "").strip()
-    elif len(rounds) >= plan.max_rounds:
+    elif len(rounds) >= budget.max_rounds:
         journey.stop_reason = "budget_rounds"
         journey.notes.append(_stop_note("budget_rounds", len(rounds)))
     else:
@@ -432,7 +538,8 @@ def _as_budget(budget) -> Budget:
     if isinstance(budget, int):
         return Budget(max_steps=int(budget))
     if isinstance(budget, dict):
-        return Budget(**{k: v for k, v in budget.items() if k in ("max_steps", "max_rounds")})
+        return Budget(**{k: v for k, v in budget.items()
+                         if k in ("max_steps", "max_rounds", "stall_limit")})
     raise TypeError(f"不认识这种 budget: {budget!r}（给 Budget / 步数 int / dict）")
 
 
@@ -456,6 +563,111 @@ def _as_predicate(callback) -> Callable[[Journey], bool] | None:
     return lambda journey: bool(callback())
 
 
+class _PlanWatch:
+    """计划模式的**位置 / 偏离 / 停滞**（设计注 §2.3–§2.5）。
+
+    它挂在 `_Gate` 上 —— 那是**唯一每轮都在场**的东西（连被人打断的那条路也在场）。
+    三样东西全是**感知或声明**，没有一条语义判断：
+
+    - **位置**：模型那一轮的话里报的 `【第 k 步】`（**声明**）——
+      系统**不判**「这一步做完没有」（D11：observe 只给感知不给判断）；
+    - **页面状态**：`_Pages` 的换页（**感知**，现成的）；
+    - **有没有做成动作**：那一步的 `result.ok`（**感知**），只认会改页面的那几种
+      （`_ACTIONS`；看一眼不算，不然停滞判据永远响不了）。
+
+    ⚠️ 别拿 `plan.ledger()` 当位置源（复审点名的那条）：账本是**收尾时**按终态算的，
+    这里要的是**每一轮当场**的位置 —— 而且它只认「模型报的号」，与终态不是一回事。
+    """
+
+    def __init__(self, plan: plan_module.Plan, journey: Journey, stall_limit: int,
+                 page_state: Callable[[], str], steps_taken: Callable[[], int]):
+        self.plan = plan
+        self.journey = journey
+        self.stall_limit = stall_limit
+        #: `() -> str`：当前那一页在 `_Pages` 里的名字（换页 = 换状态）。
+        self._page_state = page_state
+        #: `() -> int`：已经走了几步（用来切出「这一轮新增的那几步」）。
+        self._steps_taken = steps_taken
+        #: 给 `plan.ledger()` 的每轮记录，**一轮一条**：`{"mark": int|None, "contradiction": str|None}`。
+        self.rounds: list = []
+        #: 上一个**确认过的**位置（清单上的号）。一次都没报过 = `None`。
+        self.position = None
+        self._baseline = None               # 这一轮开头：（页面名, 已经走了几步）
+        self._moved = False                 # 这一轮里位置动过没有
+
+    # ── 每轮两次：边界（＝上一轮做完了）与模型回话之后 ───────────────────
+
+    def round_boundary(self) -> None:
+        """一轮的**边界**：先结算上一轮（停滞判据），再给这一轮记基线。
+
+        ⚠️ 「连着 N 轮」这个数只能在这里读 —— 这一刻上一轮的工具**全都做完了**。
+        到顶就抛 `_Stop`：于是**下一轮的模型调用和工具调用一次都不会发出去**（§2.5）。
+        """
+        self._settle()
+        self._baseline = (self._page_state(), self._steps_taken())
+        self._moved = False
+
+    def note_round(self, content: str) -> None:
+        """模型这一轮的话 → 位置标记 / 矛盾声明（都是**声明**，不是判断）。"""
+        k = plan_module.mark(content, plan=self.plan)
+        contradiction = _contradiction_in(content)
+        self.rounds.append({"mark": k, "contradiction": contradiction})
+        if contradiction is not None:
+            # §2.3(b)：模型**必须说出来**，说了就记进 `deviations`（**原话**，不改写 ——
+            # 改写就不是事实了）。而且**位置停在这一步不前进**（这一轮不算推进）。
+            self.journey.deviations.append(contradiction)
+            return
+        if k is None:
+            # §2.4：没报 / 报了个清单上没有的号 → 位置**不动**，如实记一句「不知道」。
+            self.journey.notes.append(_NO_MARK_NOTE)
+            return
+        if k != self.position:
+            self.position = k
+            self._moved = True
+
+    # ── 停滞判据（§2.5）───────────────────────────────────────────────
+
+    def _settle(self) -> None:
+        """结算**上一轮**：推进了就清零，没有就加一；到顶抛 `_Stop`。"""
+        if self._baseline is None:              # 还没跑过任何一轮
+            return
+        page_changed = self._page_state() != self._baseline[0]
+        if self._moved or page_changed or self._acted():
+            self.journey.stall_rounds = 0
+        else:
+            self.journey.stall_rounds += 1
+        if self.journey.stall_rounds >= self.stall_limit:
+            raise _Stop("plan_stalled", detail=self._where_it_stuck())
+
+    def _acted(self) -> bool:
+        """上一轮里有没有**做成了一个会改页面的动作**（看一眼不算 —— 见类 docstring）。"""
+        fresh = self.journey.steps[self._baseline[1]:]
+        return any(step.get("action") in _ACTIONS and (step.get("result") or {}).get("ok")
+                   for step in fresh)
+
+    def _where_it_stuck(self) -> str:
+        """停滞那句人话的细节：**卡在第几步、卡在哪一句描述上**（§2.5）。"""
+        if self.position is None:
+            return f"连着 {self.journey.stall_rounds} 轮没有推进（它一次都没报自己在第几步）"
+        # 位置只可能是 `plan.mark()` 认下来的号（它保证那个号在清单上），所以这里必然找得到
+        text = next(s.text for s in self.plan.steps if s.n == self.position)
+        return (f"连着 {self.journey.stall_rounds} 轮没有推进，"
+                f"位置停在第 {self.position} 步「{text}」上")
+
+
+def _contradiction_in(content: str) -> str | None:
+    """这一轮的话里有没有「描述说…页面上是…」这种**事实报告**；只判有没有，**不判性质**。
+
+    摘下来的是**那一句原话**（改了就不是事实了）。模型**不许**去判「这是分支还是描述写错了」
+    —— 它报告「描述这句话 vs 页面这句话」，定性归账本和人（§2.3）。
+    """
+    for chunk in _SENTENCE_RE.split(str(content or "")):
+        sentence = chunk.strip()
+        if sentence and _CONTRA_RE.search(sentence):
+            return sentence
+    return None
+
+
 class _Gate:
     """在两个工具轮之间也问一次「该停了吗」——否则模型一轮丢来五个动作时，
     停只能发生在那一轮**做完之后**。
@@ -465,30 +677,43 @@ class _Gate:
     它**穿过** `run_tool_loop` 直接落到 `explore` 的 `except` 里，那些 `rounds`
     记录就此丢掉 —— 于是「被人打断」的那份 Journey 会比没被打断的那份**少掉模型的
     全部叙述**，恰恰在人最需要它的时候（正要靠那几句话决定「要不要接着跑」）。
-    这道闸是唯一每轮都在场的东西，所以叙述归它。
+    这道闸是唯一每轮都在场的东西，所以叙述归它 —— 计划模式的**位置与停滞也归它**
+    （`watch`，同一个道理：只有每轮都在场，才记得住「连着几轮没推进」）。
     """
 
-    def __init__(self, inner, check: Callable[[], None], journey: Journey):
+    def __init__(self, inner, check: Callable[[], None], journey: Journey, watch=None):
         self._inner = inner
         self._check = check
         self._journey = journey
+        self._watch = watch
         self.chat = _Namespace(completions=_Namespace(create=self._create))
 
     def _create(self, **kwargs):
+        # 顺序：人 / 预算在前，结算上一轮在后（两条都抛 `_Stop`，但**理由要报对**：
+        # 人喊停优先于「它自己卡住了」）。
         self._check()
+        if self._watch is not None:
+            self._watch.round_boundary()
         resp = self._inner.chat.completions.create(**kwargs)
-        self._note(resp)
+        content = _content_of(resp)
+        self._note(content)
+        if self._watch is not None:
+            self._watch.note_round(content)
         return resp
 
-    def _note(self, resp) -> None:
-        try:
-            content = (resp.choices[0].message.content or "").strip()
-        except (AttributeError, IndexError, TypeError, KeyError):
-            # 形状不对不该在这里把循环带塌（真形状由 llm.py 保证，它就在下一步读同一片）。
-            # 吞的只是「记不上人话」这件事，不是任何一条错误。
-            return
+    def _note(self, content: str) -> None:
         if content:
             self._journey.notes.append(f"AI 说：{content}")
+
+
+def _content_of(resp) -> str:
+    """模型这一轮说的话（**形状不对就给空串**，不在这一步把循环带塌）。"""
+    try:
+        return (resp.choices[0].message.content or "").strip()
+    except (AttributeError, IndexError, TypeError, KeyError):
+        # 真形状由 llm.py 保证，它就在下一步读同一片。这里吞的只是「记不上人话」这件事，
+        # 不是任何一条错误。
+        return ""
 
 
 class _Namespace:
@@ -1202,12 +1427,52 @@ def _title_of(model: dict) -> str:
     return (model or {}).get("title") or (model or {}).get("url") or "没标题的页面"
 
 
-def _brief(url: str, goal: str, plan: Budget) -> str:
-    return (f"目标站点：{url}\n要做的事：{goal}\n"
-            f"（你最多走 {plan.max_steps} 步、{plan.max_rounds} 轮。"
+def _brief(url: str, goal: str, budget: Budget, plan: "plan_module.Plan | None" = None) -> str:
+    """开场白（模型的 user 消息）。**有计划 / 没计划是两版**（§2.2）。
+
+    ⚠️ 没计划那一版**与今天逐字节相同** —— 它是 B4 那条判据钉的东西，
+    `tests/test_browser_agent.py` 把**今天那串字节硬编码**在断言里。
+    所以这一支**不许**顺手改措辞：想改就先去改那颗钉子（偷偷漂 = 自由模式的行为悄悄变了）。
+    """
+    free = (f"目标站点：{url}\n要做的事：{goal}\n"
+            f"（你最多走 {budget.max_steps} 步、{budget.max_rounds} 轮。"
             f"现在这个浏览器窗口可能停在别的页上，先确认自己在哪。\n"
             f"⚠️ **能回答了就直接停下来说**（不调工具就是结束）—— 一直调工具会把预算耗光，"
             f"那一次你的结论一个字都留不下来。）")
+    if plan is None or not plan.actionable():
+        return free
+    return _planned_brief(url, plan)
+
+
+def _planned_brief(url: str, plan) -> str:
+    """有计划那一版：**清单（原话）+ 原文（一字不删）+ 三条走法**（§2.2）。
+
+    三样缺一不可：
+
+    - **清单**是「应该到这儿」的检查点（不是「第 3 步点 X」那样的脚本）。号**原样**搬
+      （描述可能从 0 开始、可能跳号，重编就与人的话对不上了）；
+    - **原文**里夹着**约束**（`禁止点击: Cookie Policy,Privacy Policy,Terms`）——
+      只给清单等于把运营明写的禁区吞掉，模型就会去点它；
+    - **走法**是这套系统与模型的**约定**：位置标记长什么样（系统**只读那个**）、
+      矛盾要怎么说（系统**只认那个说法**）—— 约定不写清楚，`plan_ledger` 就只能是空的。
+    """
+    checklist = "\n".join(f"【第 {s.n} 步】{s.text}" for s in plan.steps)
+    return (
+        f"目标站点：{url}\n"
+        "人给了**一份检查点清单**（下面两段都是运营的原文，一个字没改）。\n\n"
+        "清单 —— **这是一条走法的样子，不是站点的结构**：分支站上走到哪儿算哪儿，"
+        "**少走几步、多走几步都是正常的**，别为了凑步数去点清单和原文里都没有的东西。\n"
+        f"{checklist}\n\n"
+        "原文（一字未删；里面的**约束**同样算数，尤其是「禁止点击」那种）：\n"
+        f"{plan.raw}\n\n"
+        "怎么走（三条）：\n"
+        "1. **一步一确认**：做一个动作就看一眼页面（observe / diff），确认自己到了清单上的第几步，"
+        "再决定下一步 —— 别一口气点完。\n"
+        "2. **每轮开头用 `【第 k 步】` 说自己在哪一步**（k = 清单上的号）。位置**只认这个标记**："
+        "没报，系统就当你没说、位置停在原地；跳着报也照实报（这一趟少走几步是正常的）。\n"
+        "3. **与页面不符就当场说出来**，照这个说法：`【第 k 步】描述说 …，页面上是 …` —— "
+        "只说看见什么，**不判**是什么原因（定性归人）。\n"
+        "⚠️ **描述没说的别点** —— 清单和原文里都没提到的元素，别顺手去动它。")
 
 
 def _emit(on_step, step: dict) -> None:

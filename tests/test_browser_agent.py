@@ -50,7 +50,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import browser_agent, lint, llm, template, tools  # noqa: E402
+from agent import browser_agent, lint, llm, plan, template, tools  # noqa: E402
 
 STUB_SERVER = ROOT / "tests" / "stub_mcp_server.py"
 
@@ -1424,3 +1424,351 @@ def test_an_incidental_start_page_gets_no_when():
     ]
     browser_agent._drop_incidental_start_when(pages2, j2)
     assert pages2[0]["when"] is not None, pages2[0]
+
+
+# ═══════════ 计划模式：描述当**检查点清单**（Task 3，2026-09-17）═══════════
+#
+# 设计注 §2.2–§2.5。三条硬规矩在这一节里各是一条断言：
+#
+# ① **一个字都不改写**：简报里给的是运营的**原话**（清单 + 原文两样），
+#    而且**非编号行一个字都不许吞**（`禁止点击: …` 那种约束吞了，模型就会去点禁区）。
+# ② **位置只由模型报的标记推进**（`observe` 只给感知，系统**不判**「这一步做完没有」）：
+#    没报 / 报了个不存在的号 → 位置**不动**，只如实记一句人话（§2.4：不猜）。
+# ③ **绕开（分支）不是偏离**：`【第 2 步】`→`【第 5 步】`，中间那几个记 `jumped_over`，
+#    **不进 `deviations`**（§2.3.1：混在一起这条账会被日常噪音灌满，信号就废了）。
+#
+# ⚠️ 这一节**全部用桩**（桩 MCP + 桩模型）—— **不开浏览器**，也不打真模型。
+#    判据全是机制（预算 / 位置 / 停滞 / 记账），与是哪个站点无关。
+
+DESCRIPTIONS = ROOT / "fixtures" / "descriptions"
+#: 真描述：多题问卷那类（`引导:` 那四项**挤在一行**上 —— R-E1 裁定认的形状）。
+BLINKIST_DESC = (DESCRIPTIONS / "blinkist.txt").read_text(encoding="utf-8")
+#: 真描述：编号清单那类（一行一步）。
+GW_DESC = (DESCRIPTIONS / "gowizard_auto_warranty.txt").read_text(encoding="utf-8")
+#: 造出来的 5 步描述 —— 分支用例要 5 个号才跳得起来（真描述里没有这么短的）。
+BRANCH_DESC = "操作:\n1. 点 A\n2. 点 B\n3. 点 C\n4. 点 D\n5. 点 E\n"
+
+#: **B4 的回归钉子**：Task 3 开工前那一刻 `_brief()` 的**真实输出**（跑出来的，不是手打的）。
+#: 没计划时必须与它**逐字节相同** —— 所以它写死在下面那条用例里，
+#: **不许**改成「拿今天这段代码再算一遍」：那样它跟着代码一起变，就什么都没钉住。
+TODAY_BRIEF = (
+    "目标站点：https://example.test/funnel\n"
+    "要做的事：看看这一页怎么走到报价\n"
+    "（你最多走 30 步、20 轮。现在这个浏览器窗口可能停在别的页上，先确认自己在哪。\n"
+    "⚠️ **能回答了就直接停下来说**（不调工具就是结束）—— 一直调工具会把预算耗光，"
+    "那一次你的结论一个字都留不下来。）"
+)
+
+
+def test_a_plan_reaches_the_model_as_the_operators_own_words_not_a_rewrite():
+    """**有计划** → 简报里是**原话清单 + 一字不删的原文**（§2.2 的硬规矩）。
+
+    ⚠️ 「原文」那一半不是摆设：真描述是**键值头 + 编号清单**，头里夹着**约束** ——
+    `禁止点击: Cookie Policy,Privacy Policy,Terms`、`轮次: 30`、`成功条件URL: …`。
+    只给清单等于把这些吞掉，模型就会去点**运营明写的禁区**。
+    """
+    p = plan.parse(BLINKIST_DESC)
+    # 前提（**解析**的事，Task 2 的判据）：那四项挤在一行上，逐字是这四条
+    assert [s.text for s in p.steps] == ["滚动到底部", "点击Featured Titles", "等待3秒", "点击Verity"], p.steps
+
+    text = browser_agent._brief("https://www.blinkist.com/magazine/posts/the-5-hour-rule",
+                                "浏览网页并完成表单注册", browser_agent.Budget(), p)
+    # ① 清单：每一步的**原话**逐字都在
+    for step in p.steps:
+        assert f"【第 {step.n} 步】" in text, (step, text)
+        assert step.text in text, (step, text)
+    # ② 原文**一字不删**：约束那几行也在
+    assert "禁止点击: Cookie Policy,Privacy Policy,Terms" in text, text
+    assert "轮次: 30" in text and "成功条件URL: /news-feed,/welcome" in text, text
+    assert p.raw in text, "`Plan.raw` 是**整份原文**，简报里要一字不删地带着"
+    # ③ 这一版**不是**自由模式那一版
+    assert "要做的事：" not in text, text
+    # ④ 三条走法：一步一确认 / 用标记报位置 / 与页面不符就说出来（说法的原文要写死，
+    #    因为系统读的就是那句说法 —— 见 `browser_agent._contradiction_in`）
+    assert "【第" in text and "步】" in text
+    assert "描述说" in text and "页面上是" in text
+    # ⑤ 描述没说的别点 + 「这份清单是一条走法的样子，不是站点的结构」（§2.2：步数不是结构）
+    assert "没说的别点" in text, text
+    assert "不是站点的结构" in text, text
+
+
+def test_the_walk_the_checklist_rule_lives_in_the_stable_layer():
+    """那条规矩进的是 `_SYSTEM`（**稳定层**）—— 计划本身才是每轮的事（走简报那一版）。
+
+    分成两层是有理由的：规矩**不随这一趟有没有计划变**（没计划那趟也带着它，只是无步骤可照），
+    而**这一趟的清单**只在简报里。反过来说：谁要是把这条规矩挪进简报，
+    没计划那条路就少了一条规矩 —— 而那条路必须是**与今天逐字节相同**的（B4）。
+    """
+    assert "人给了步骤清单就照着走" in browser_agent._SYSTEM
+    assert "少走几步、多走几步都是正常的" in browser_agent._SYSTEM
+    assert "与页面矛盾时说出来再决定" in browser_agent._SYSTEM
+
+
+def test_without_a_plan_the_brief_is_byte_for_byte_what_it_was_today():
+    """**B4 回归钉子**：没有步骤清单 → 简报与今天**逐字节相同**。
+
+    三种「没有计划」都要走这条路：`plan=None`、压根没给、给了但一段话里解析不出步骤
+    （`plan.parse("把这一页走通")` → `steps == []`）—— §2.3 的「没有」那一行：
+    **不许假装有计划**，也不许退化成「空计划」。
+    """
+    free = plan.parse("把这一页走通")
+    assert free.steps == [] and not free.actionable(), free
+    for given in (None, free):
+        got = browser_agent._brief("https://example.test/funnel", "看看这一页怎么走到报价",
+                                   browser_agent.Budget(), given)
+        assert got == TODAY_BRIEF, (given, got)
+
+
+def test_a_goal_without_steps_runs_the_free_path_untouched(tmp_path):
+    """自由模式的**整条路**照旧：简报是今天那版，计划的账一格都不记（**不假装有计划**）。"""
+    journey, fake, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]}, {"content": "看完了"}],
+        plan=plan.parse("把这一页走通"),
+    )
+    assert journey.stop_reason == "model_done"
+    assert journey.plan_ledger == [] and journey.deviations == []
+    assert journey.stall_rounds == 0
+    assert not any("第几步" in n for n in journey.notes), journey.notes
+    # 模型**真收到的那份**就是今天那版（不是只在 `_brief` 那一层对）
+    assert fake.calls[0]["messages"][1]["content"] == TODAY_BRIEF
+
+
+def test_the_model_reporting_a_step_lands_in_the_plan_ledger(tmp_path):
+    """§2.4：位置**只由模型报的**标记推进 —— `【第 3 步】` 就记到清单上第 3 步。
+
+    反例（同一条账）：它没报到的那两步照实记「这一趟没报到这一步」——
+    **不是**「跳过去了」：前面没有报过的位置可比（§2.4：说不出就是不知道，**不猜**）。
+    """
+    p = plan.parse(GW_DESC)
+    assert [s.n for s in p.steps] == [1, 2, 3], p.steps      # 前提：解析的事（Task 2 的判据）
+    journey, _, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}]},
+        [{"content": "【第 3 步】先看一眼这一页", "calls": [("observe", {})]},
+         {"content": "走完了"}],
+        plan=p,
+    )
+    assert len(journey.plan_ledger) == len(p.steps), "清单上每一项都要有交代（B2）"
+    assert journey.plan_ledger[2]["state"] == "done", journey.plan_ledger
+    assert journey.plan_ledger[2]["text"] == p.steps[2].text, journey.plan_ledger
+    assert [e["state"] for e in journey.plan_ledger[:2]] == ["not_reached", "not_reached"], \
+        journey.plan_ledger
+
+
+def test_an_unknown_or_missing_mark_leaves_the_position_where_it_was(tmp_path):
+    """§2.4：**没报** / 报了个**清单上没有的号** → 位置**不动**，只如实记一句人话。
+
+    判据读 `stall_rounds`（「位置有没有动」的直接体现：动了就清零）。
+    两种情形在这一条上**处置相同** —— 系统不去分辨「它忘了报」还是「它报了个不存在的号」：
+    两种都只说明「这一轮它没说清自己在哪儿」。
+    """
+    p = plan.parse(GW_DESC)                     # 清单上只有 1/2/3，**没有**第 99 步
+    journey, _, _ = _run(
+        tmp_path,
+        {"click": [{"error": "没有找到选择器 #ghost（这个页面上没有它）"}]},
+        [{"content": "【第 99 步】我看看", "calls": [("click", {"selector": "#ghost"})]},
+         {"content": "先看看再动", "calls": [("click", {"selector": "#ghost"})]},
+         {"content": "走完了"}],
+        plan=p, budget=browser_agent.Budget(max_steps=50, max_rounds=50, stall_limit=99),
+    )
+    assert all(e["state"] == "not_reached" for e in journey.plan_ledger), journey.plan_ledger
+    assert journey.stall_rounds == 2, journey.stall_rounds      # 两轮都没推进
+    assert sum(1 for n in journey.notes if "这一轮没说自己在第几步" in n) == 3, journey.notes
+
+
+def test_jumping_forward_is_a_branch_not_a_deviation(tmp_path):
+    """**B7**：`【第 2 步】` → `【第 5 步】` —— 中间那两个记 `jumped_over`，`deviations` **为空**。
+
+    §2.3.1 的硬规矩：分支站上「没走到某个检查点」**几乎每一趟**都会发生，它是站点本来的形状、
+    **不用人看**。跟「矛盾」混在一起，`deviations` 会被日常噪音灌满 ——
+    「同一处反复偏离」那条信号彻底失效（信号被噪声淹没，比没有信号更坏）。
+    而且**跳号照样算「前进了」**：停滞计数清零（§2.4）。
+    """
+    p = plan.parse(BRANCH_DESC)
+    journey, fake, _ = _run(
+        tmp_path,
+        {"click": [{"error": "没有找到选择器 #ghost"}]},
+        [{"content": "【第 2 步】走第二步", "calls": [("click", {"selector": "#ghost"})]},
+         {"content": "【第 2 步】还在这儿", "calls": [("click", {"selector": "#ghost"})]},
+         {"content": "【第 5 步】这条分支直接到第五步", "calls": [("click", {"selector": "#ghost"})]},
+         {"content": "走完了"}],
+        plan=p, budget=browser_agent.Budget(max_steps=50, max_rounds=50, stall_limit=2),
+    )
+    assert [e["state"] for e in journey.plan_ledger] == [
+        "not_reached", "done", "jumped_over", "jumped_over", "done"], journey.plan_ledger
+    assert journey.deviations == [], journey.deviations      # ★ 负例：绕开**不是**偏离
+    # 跳号**照样算前进了**：不然后面那条停滞判据会在这里响（stall_limit=2）
+    assert journey.stall_rounds == 0, journey.stall_rounds
+    assert journey.stop_reason == "model_done", journey.stop_reason
+    assert len(fake.calls) == 4, "第 4 轮（收尾那句）没跑起来 = 中间被判成停滞了"
+
+
+def test_walking_more_or_fewer_steps_is_not_an_anomaly(tmp_path):
+    """**B8**：同一条描述跑两次（一次 20 轮、一次 34 轮）—— 两次都**不是异常**。
+
+    §2.2：问卷 / 评测这类漏斗是**分支**的（选了 A 多出三道题，选了 B 直接跳过它们）。
+    **步数变长变短本身不构成偏离**，也不许有任何以「期望几步」为前提的判据 ——
+    所以这条用例里**一个期望步数都没有**（写成「多少步才对」就是把分支站钉死）。
+    """
+    p = plan.parse(GW_DESC)
+
+    def _walk(rounds: int) -> list:
+        turns = []
+        for i in range(rounds):
+            # 位置爬到清单末尾就**停在那儿**（真实形状：最后几个检查点在一条分支上反复走）
+            turns.append({"content": f"【第 {min(i + 1, len(p.steps))} 步】接着走",
+                          "calls": [("click", {"selector": "#get-started"})]})
+        turns.append({"content": "走完了"})
+        return turns
+
+    for rounds, sub in ((20, "short"), (34, "long")):
+        where = tmp_path / sub
+        where.mkdir()
+        journey, _, _ = _run(
+            where, {"click": [{"structured": {"ok": True}}]}, _walk(rounds),
+            plan=p, budget=browser_agent.Budget(max_steps=99, max_rounds=99),
+        )
+        assert len(journey.steps) == rounds, f"{rounds} 轮那一趟走了 {len(journey.steps)} 步"
+        assert journey.stop_reason == "model_done", (rounds, journey.stop_reason)
+        assert journey.deviations == [], (rounds, journey.deviations)
+        assert journey.stall_rounds == 0, (rounds, journey.stall_rounds)
+        assert len(journey.plan_ledger) == len(p.steps), (rounds, journey.plan_ledger)
+
+
+def test_a_walk_that_stops_moving_stops_the_run(tmp_path):
+    """§2.5：连着 `stall_limit` 轮**位置没前进 + 页面没变 + 没有一步做成** → 停。
+
+    凭什么停：实测里模型「不卡住的错」是靠**乱点**表现的（点出站方弹窗就是一次）。
+    **停得早 = 少点几下真页面**，这在真站上是实打实的收益。
+    ⚠️ 判据全是**感知 / 声明**（标记、页面状态、`result.ok`），没有一条是语义判断。
+    """
+    p = plan.parse(GW_DESC)
+    journey, fake, _ = _run(
+        tmp_path,
+        {"click": [{"error": "没有找到选择器 #ghost"}]},
+        [{"content": "【第 1 步】点它", "calls": [("click", {"selector": "#ghost"})]}] * 6,
+        plan=p, budget=browser_agent.Budget(max_steps=50, max_rounds=50, stall_limit=2),
+    )
+    assert browser_agent.Budget().stall_limit == 6, "初值 6（Task 1 的轮数分布校准前先用它）"
+    assert browser_agent._as_budget({"stall_limit": 2}).stall_limit == 2, \
+        "dict 那条路也要接上 —— 不然给的值被**静默丢掉**，跑起来才发现没生效"
+    assert journey.stop_reason == "plan_stalled", journey.stop_reason
+    assert journey.stall_rounds == 2, journey.stall_rounds
+    assert len(fake.calls) == 3, f"判成停滞之后还在问模型（问了 {len(fake.calls)} 轮）"
+    # 人话里带上**它卡在第几步、卡在哪一句描述上**（§2.5）
+    assert any("计划停滞" in n and "第 1 步" in n and p.steps[0].text in n
+               for n in journey.notes), journey.notes
+    # 账本照旧齐全：停下也要「清单上每一项都有交代」（B2）
+    assert len(journey.plan_ledger) == len(p.steps), journey.plan_ledger
+    # 轮数没记到那句**不许说成「被人打断」**（这一趟不是人停的）——
+    # 读账的人会拿它判断「要不要接着跑」，说错停因比不写还坏。
+    assert any("没记到轮数" in n for n in journey.notes), journey.notes
+    assert not any("被人打断" in n for n in journey.notes), journey.notes
+
+
+def test_just_looking_at_the_same_page_is_not_progress(tmp_path):
+    """§2.5 的第三个信号只认**会改页面的动作**：只看一眼**不算**推进（反例）。
+
+    一个反复看同一页的模型：位置没动、页面没变、没有一步做成 —— 那是**停滞**。
+    要是不这么写（看一眼也算「成功动作」），停滞判据就**永远响不了**：
+    模型只要一直 observe 就永远不会被判成卡住。
+    """
+    p = plan.parse(GW_DESC)
+    journey, fake, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}]},
+        [{"content": "【第 1 步】看一眼", "calls": [("observe", {})]}] * 6,
+        plan=p, budget=browser_agent.Budget(max_steps=50, max_rounds=50, stall_limit=2),
+    )
+    assert journey.stop_reason == "plan_stalled", journey.stop_reason
+    assert len(fake.calls) == 3, f"判成停滞之后还在问模型（问了 {len(fake.calls)} 轮）"
+
+
+def test_going_back_to_an_earlier_step_still_counts_as_moving(tmp_path):
+    """**一处已知读法**（模块 docstring 里记着）：位置**动了**就算前进，**不判方向**。
+
+    §2.4 明写往回跳「照记、**不判它该不该**」—— 停滞判据这边照同一条办：
+    只有「位置一动不动」才算没前进。要改成「只有往前才算前进」，
+    那是在替人判它该不该退 —— **改这一条要连这里一起改**（不是悄悄改）。
+    """
+    p = plan.parse(BRANCH_DESC)
+    journey, fake, _ = _run(
+        tmp_path,
+        {"click": [{"error": "没有找到选择器 #ghost"}]},
+        [{"content": "【第 3 步】走第三步", "calls": [("click", {"selector": "#ghost"})]},
+         {"content": "【第 3 步】还在这儿", "calls": [("click", {"selector": "#ghost"})]},
+         {"content": "【第 1 步】退回去看第一步", "calls": [("click", {"selector": "#ghost"})]},
+         {"content": "走完了"}],
+        plan=p, budget=browser_agent.Budget(max_steps=50, max_rounds=50, stall_limit=2),
+    )
+    assert journey.stall_rounds == 0, journey.stall_rounds
+    assert journey.stop_reason == "model_done", journey.stop_reason
+    assert len(fake.calls) == 4, "第 4 轮没跑起来 = 往回跳被判成停滞了"
+
+
+def test_one_page_change_resets_the_stall_count(tmp_path):
+    """反例（**同一条判据**）：中间只要有一轮**页面真的变了**，计数就**清零** —— 不许停。
+
+    与上面那条只差一处：第 3 轮看了一眼，而**看到的确实是另一页**。
+    → 「动不了」才叫停滞；「动着但没走到清单上」不是（那正是分支，§2.3.1）。
+    """
+    p = plan.parse(GW_DESC)
+    journey, fake, _ = _run(
+        tmp_path,
+        {"click": [{"error": "没有找到选择器 #ghost"}],
+         "observe": [{"structured": PAGE_QUIZ}]},
+        [{"content": "【第 1 步】点它", "calls": [("click", {"selector": "#ghost"})]},
+         {"content": "【第 1 步】点它", "calls": [("click", {"selector": "#ghost"})]},
+         {"content": "【第 1 步】看一眼", "calls": [("observe", {})]},
+         {"content": "【第 1 步】点它", "calls": [("click", {"selector": "#ghost"})]},
+         {"content": "走完了"}],
+        plan=p, budget=browser_agent.Budget(max_steps=50, max_rounds=50, stall_limit=2),
+    )
+    assert journey.stop_reason == "model_done", journey.stop_reason
+    assert journey.stall_rounds == 1, journey.stall_rounds
+    assert len(fake.calls) == 5, f"页面变了却还是停了（问了 {len(fake.calls)} 轮）"
+
+
+def test_a_contradiction_is_recorded_verbatim_and_does_not_advance_the_position(tmp_path):
+    """**B6 的一半**：模型报「描述说…页面上是…」→ `deviations` 里有一条（**原话**），
+    而且**位置停在这一步不前进**（§2.3(b)）。
+
+    矛盾是**模型声明的事实报告**，不是分类：系统**不判**「这是分支还是描述写错了」
+    （它判不了，也不该判）—— 定性归账本和人。所以 `deviations` 里存的就是**那句话**。
+    """
+    p = plan.parse(GW_DESC)
+    said = "【第 3 步】描述说点「有没有浴缸」，这一页上没有这句话，页面上是「屋顶类型」"
+    journey, _, _ = _run(
+        tmp_path,
+        {"click": [{"structured": {"ok": True}},
+                   {"error": "没有找到选择器 #ghost"}]},
+        [{"content": "【第 2 步】点了第一个选项", "calls": [("click", {"selector": "#get-started"})]},
+         {"content": said, "calls": [("click", {"selector": "#ghost"})]},
+         {"content": "先停一下，问问人"}],
+        plan=p, budget=browser_agent.Budget(max_steps=50, max_rounds=50, stall_limit=99),
+    )
+    assert journey.deviations == [said], journey.deviations
+    # 账本那一格也看得出来（模型的话原样记着）
+    assert journey.plan_ledger[2]["state"] == "contradicted", journey.plan_ledger
+    assert journey.plan_ledger[2]["why"] == said, journey.plan_ledger
+    # ★ 位置**不前进**：第 3 步报的是矛盾，位置就停在**第 2 步**
+    assert journey.stall_rounds == 1, journey.stall_rounds
+
+    # 反例（同一格）：同样的话，**去掉那句矛盾声明** → 位置照常前进（计数清零）
+    control_dir = tmp_path / "control"
+    control_dir.mkdir()
+    control, _, _ = _run(
+        control_dir,
+        {"click": [{"structured": {"ok": True}}, {"error": "没有找到选择器 #ghost"}]},
+        [{"content": "【第 2 步】点了第一个选项", "calls": [("click", {"selector": "#get-started"})]},
+         # 近身反例：话里**「描述」和「页面上」都出现了**，但没有那句**约定的说法**
+         # （判据是约定好的说法，不是「出现过某两个词就算矛盾」）
+         {"content": "【第 3 步】按描述走下去，这一页上没有那一项",
+          "calls": [("click", {"selector": "#ghost"})]},
+         {"content": "先停一下，问问人"}],
+        plan=p, budget=browser_agent.Budget(max_steps=50, max_rounds=50, stall_limit=99),
+    )
+    assert control.deviations == [], control.deviations
+    assert control.stall_rounds == 0, control.stall_rounds
