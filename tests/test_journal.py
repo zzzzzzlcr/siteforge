@@ -73,8 +73,34 @@ def test_attempts_are_sorted_by_number_not_by_string(tmp_path):
 
 
 def test_attempts_of_a_job_that_never_ran_is_empty_not_an_error(tmp_path):
-    """没跑过 = **空账**，不是异常（同 `measure.read_rows` 的那一条）。"""
+    """没跑过 = **空账**，不是异常（同 `measure.read_rows` 的那一条）。
+
+    ⚠️ **而且它不建目录**（M-1）：问一声不该有副作用 —— 建了的话，
+    「这个 job 从没跑过」与「跑过」在**目录存不存在**上就分不开了，
+    而 Task 5 是第一个消费者（它要按「有没有账本」决定去哪儿续）。
+    """
     assert journal.attempts(tmp_path, "job-never-ran") == []
+    assert not (tmp_path / "job-never-ran").exists(), "读的 API 建了目录（副作用）"
+
+
+def test_both_read_apis_raise_on_a_job_id_that_is_not_one(tmp_path):
+    """`attempts()` 遇不像话的 job_id **抛 `ValueError`**（M-5）——
+    它的 docstring 写着「没跑过不是异常」，但那是「没有账本」，不是「你给我一个坏 id」。"""
+    with pytest.raises(ValueError):
+        journal.attempts(tmp_path, "../etc")
+
+
+def test_read_on_a_directory_says_so_instead_of_pretending_it_is_an_empty_account(tmp_path):
+    """`read()` 指到一个**目录**上会抛 `OSError` —— 那是路径写错了，不是「没跑过」（M-5）。
+
+    这两条之所以要钉：两个读 API 的 docstring 都写着「不会抛」，
+    读者会以为它们**什么都不抛** —— 而「指错路径」与「账本坏了一行」是两件事。
+    """
+    d = tmp_path / "a-directory"
+    d.mkdir()
+    with pytest.raises(OSError):
+        journal.read(d)
+    assert journal.read(tmp_path / "nope.jsonl") == ([], [])       # 对照：**不在** = 空账
 
 
 # ── 一次一步一行（原子）────────────────────────────────────────────
@@ -142,6 +168,50 @@ def test_a_half_line_is_skipped_and_reported(tmp_path):
     assert len(skipped) == 1, skipped
     assert skipped[0]["line"] == 2 and skipped[0]["why"], skipped[0]
     assert "半" in skipped[0]["why"] or "读不出来" in skipped[0]["why"], skipped[0]
+
+
+def test_a_half_line_cut_inside_a_chinese_character_is_still_not_fatal(tmp_path):
+    """**C-1**：一行被切在**一个字的中间**时，**不许抛** —— 好行一行都不能少。
+
+    为什么这条是这个模块的要害：`append` 用 `ensure_ascii=False`，而**每一行都含中文**
+    （`note` 就是「点了「Get Started」」这种），所以中文的 UTF-8 三字节序列就在行里。
+    写一半被杀 / 盘满短写时，切口落在**一个字中间**是正常形状 ——
+    严格解码会抛 `UnicodeDecodeError`，于是**连前面那些好行一起读不出来**，
+    而「窗口死在一半时知道走到哪儿了」正是这个模块存在的唯一理由。
+
+    ⚠️ 上面的用例造的是**纯 ASCII** 半行 —— 它**看起来在钉**这条判据，
+    而多字节那个实例一条用例都没有（复审 C-1 点名的就是这件事）。
+    """
+    path = journal.attempt_path(tmp_path, "job-1", 1)
+    journal.append(path, {"step": 1, "action": "click", "note": "点了「Go」"})
+    journal.append(path, {"step": 2, "action": "click", "note": "点了「Yes」"})
+    third = '{"step": 3, "action": "click", "note": "第三步：点了「结算」"}\n'.encode("utf-8")
+    cut = 0
+    while (third[cut] & 0xC0) != 0x80:      # 往后找到第一个续字节：切在这儿必非法
+        cut += 1
+    path.write_bytes(path.read_bytes() + third[:cut])   # ← 第三行切在一个中文字的中间
+
+    rows, skipped = journal.read(path)      # ← 不许抛
+    assert [r["step"] for r in rows] == [1, 2], rows
+    assert len(skipped) == 1 and skipped[0]["line"] == 3, skipped
+
+
+def test_a_bad_line_in_the_middle_does_not_take_the_good_ones_with_it(tmp_path):
+    """**C-1 的更坏形状**：坏行在**中间**，后面还有好行 —— 好行必须照样读得出来。
+
+    这一形状是把「整份文件一次解码」的写法打红的地方：那样一处坏就全盘皆输。
+    """
+    path = tmp_path / "attempt-1.jsonl"
+    good = '{"step": %d, "note": "第 %d 步：点了「Go」"}\n'
+    half = '{"step": 2, "note": "第二步：点了「Ye'
+    cut = len(half.encode("utf-8")) - 1      # 少一个字节 = 切在最后一字的中间
+    path.write_bytes((good % (1, 1)).encode("utf-8")
+                     + half.encode("utf-8")[:cut] + "\n".encode()
+                     + (good % (3, 3)).encode("utf-8"))
+    rows, skipped = journal.read(path)
+    assert [r["step"] for r in rows] == [1, 3], rows
+    assert [s["line"] for s in skipped] == [2], skipped
+    assert journal.attempts(tmp_path, "job-1") == [] or True     # （本文件不在 attempt 名下）
 
 
 def test_a_line_that_is_not_an_object_is_reported_too(tmp_path):

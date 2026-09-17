@@ -487,6 +487,34 @@ def test_run_two_reruns_the_same_page_and_only_navigates_when_asked(env):
     assert order == ["artifact", "cdp", "artifact"], order
 
 
+def test_a_round_that_costs_nothing_shifts_the_whole_ladder_up(env):
+    """**I-2 的事实**：不花提交次数的那一遍，会把后面**整个阶梯前移一位**。
+
+    默认硬顶 3、`entry_url` 给了而 `cdp navi` 挂着时：
+    `baseline`(1) → `rerun`（**不花**：产物一次都没起来）→ `delay`(2) → **`viewport` 真的跑**
+    （第 3 次提交）→ `country` 到不了。
+
+    ⚠️ 这条钉的是一个**被证伪过的前提**：`b571ee5`（撤闸那一版）按「第 4/5 遍这一轮根本轮不到」
+    写了静态判据 `nth > cap` —— **在可达路径下它是假的**（复审实测）。
+    图那根闸（`graph._round_reachable`）现在按这条事实问问题：**轮得到才拦**。
+    """
+    seen = {"viewport": []}
+    bad = _Script(rc=1, oks=(True, False))
+    # ⚠️ 剧本是**按「产物真起来」的顺序**领的，而 `rerun` 那趟 navi 挂了、产物一次都没起来
+    #    ⇒ 它那份不会被领走，后面整体挪一位。所以要的就是这份顺序：
+    #    第 1 份 = baseline（挂）· 第 2 份 = delay（挂）· 第 3 份 = **viewport（过）**
+    scripts = [bad, bad, _Script(), _Script(), _Script()]
+    report = _run(
+        env, scripts,
+        entry_url=ENTRY, navi_fails=True,
+        set_viewport=lambda w, h: seen["viewport"].append((w, h)),
+    )
+    assert report.submissions == 3, [r.status for r in report.runs]
+    assert seen["viewport"] == [(1024, 768)], "第 4 遍真的跑了（阶梯前移了一位）"
+    assert [r.status for r in report.runs[:5]] == [
+        "failed", "failed", "failed", "passed", "not_needed"], report.runs
+
+
 def test_a_navi_that_fails_does_not_eat_a_submission(env):
     """`cdp navi` 没成 → 第 2 遍**没跑**（记挂、说清没验到状态残留），**也不算一次提交**。
 

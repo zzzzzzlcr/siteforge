@@ -729,40 +729,22 @@ def test_the_window_knobs_reach_the_selftest(tmp_path):
     assert got["entry_url"] == "https://example-funnel.test/quiz?fresh=1"
 
 
-def test_a_knob_for_a_round_this_run_never_reaches_does_not_stop_the_run(tmp_path):
-    """**R-84（用户裁定）**：跑不到的那一遍**不配一根闸** —— 缺 `set_viewport` 也不许拦。
+def test_a_missing_viewport_knob_still_stops_under_the_default_cap(tmp_path):
+    """**I-2 的哨兵①（默认硬顶，不抬）**：缺 `set_viewport` 而那一遍**真轮得到** → 必须拦。
 
-    为什么（裁定原话的意思）：阶梯**一过就停、到顶也停**，默认硬顶 3 次提交，
-    第 4 遍（viewport）**这一轮根本轮不到**。给一个跑不到的扰动配一根闸，
-    就是「**接上了但不响**」（本项目的头号忌讳）：图会为一根**用不上的线**停下，
-    人还得去查一个跟这次结论无关的旋钮。
+    ⚠️ 为什么「真轮得到」这句话要写清楚：撤闸（`b571ee5`）的前提是
+    「第 4/5 遍这一轮根本轮不到」，**那句话在可达路径下是假的**（复审实测）。
+    阶梯里**有的遍不花提交次数**：`rerun` 的 `cdp navi` 没成时产物一次都没起来 ⇒ 不花，
+    于是后面**整体前移一位** —— 默认硬顶 3、`entry_url` 给了时，第 4 遍（viewport）
+    到得了（`baseline` + `delay` 花掉 2 次，viewport 花第 3 次）。
 
-    判据落在三处：不停（照跑）、**自测真跑了**、而且**照常交付**。
+    所以这条哨兵**给 `entry_url`**（那是载荷里人给的正常字段，R-6 的「刷新后重跑」）——
+    闸对着一个真会响的轮次关掉，后果是：缺线时不点名，一路跑到第 4 遍才记 `skipped`，
+    **烧掉真窗口 + 最多 3 次提交之后 `passed=False`**，而真正的原因（缺一根线）埋在报告里。
     """
-    deps, rec = _deps(set_viewport=None)
+    deps, rec = _deps(set_viewport=None)            # ← 那根线没接
     app, cfg, _ = _build(deps=deps)
-    payloads, out = _drive(app, cfg, _brief(tmp_path))
-
-    assert out["end_reason"] == "delivered", out.get("end_note")
-    assert len(rec.selftest) == 1, "自测该照跑（不拦就得真跑，不是绕过它）"
-    assert [p["step"] for p in payloads][:2] == ["intake", "explore"], payloads
-    # 那一遍既然这一轮轮不到，它的旋钮**连提都不提**（不是「列出来但不拦」）——
-    # 提它等于让人去查一根跟这次结论无关的线
-    intake = [p for p in payloads if p["step"] == "intake"][0]
-    assert intake["facts"]["还缺的窗口旋钮"] == [], intake["facts"]
-
-
-def test_when_the_cap_reaches_viewport_a_missing_knob_still_stops_by_name(tmp_path, monkeypatch):
-    """硬顶抬到**轮得到 viewport**时（这里抬到 5）：缺那根线**必须拦**，而且点名（R-31）。
-
-    两条路都摆在明面上：接上线，或者明确写进 `allow_skips` —— 不许默认放过
-    （R-5：跳过的遍不算过）。**这条是上面那条的反例**：闸没有整个失效，
-    它只是**只在真轮得到的时候**才拦。
-    """
-    monkeypatch.setattr(selftest, "MAX_SUBMISSIONS", 5)
-    deps, rec = _deps(set_viewport=None)
-    app, cfg, _ = _build(deps=deps)
-    payloads, out = _drive(app, cfg, _brief(tmp_path))
+    payloads, out = _drive(app, cfg, _brief(tmp_path, entry_url="https://example.test/start"))
 
     assert out["end_reason"] == "missing_knob", out.get("end_note")
     assert rec.selftest == [], "旋钮没接就别去动浏览器（那一遍必然记成没验到）"
@@ -775,6 +757,46 @@ def test_when_the_cap_reaches_viewport_a_missing_knob_still_stops_by_name(tmp_pa
         assert junk not in out["end_note"], out["end_note"]
     assert "没验到" in out["end_note"], out["end_note"]
     assert [p["step"] for p in payloads] == ["intake"], payloads
+
+
+def test_a_round_that_really_cannot_be_reached_does_not_stop_the_run(tmp_path):
+    """**I-2 的哨兵②（默认硬顶，不抬）**：**真轮不到**的那一遍不许拦 —— 照跑、照交付。
+
+    与上一条只差一处：**没给 `entry_url`** ⇒ `rerun` 一定花一次提交 ⇒
+    `baseline` + `rerun` + `delay` 正好用满硬顶 3 ⇒ **viewport 这一轮到不了**。
+    到不了的扰动配一根闸，就是「接上了但不响」：图会为一根**用不上的线**停下。
+
+    判据落在三处：不停、**自测真跑了**（不拦就得真跑，不是绕过它）、facts 里连提都不提它。
+    """
+    deps, rec = _deps(set_viewport=None)
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path))     # ← 没给 entry_url
+
+    assert out["end_reason"] == "delivered", out.get("end_note")
+    assert len(rec.selftest) == 1, "自测该照跑"
+    intake = [p for p in payloads if p["step"] == "intake"][0]
+    assert intake["facts"]["还缺的窗口旋钮"] == [], intake["facts"]
+
+
+def test_the_reachability_question_reads_the_ladder_not_the_position():
+    """`_round_reachable` 问的是**阶梯真的走不走得到**，不是「排第几」。
+
+    这一条把那条判据**直接钉住**（上面两条是它的两个方向）：
+    `entry_url` 一给，`rerun` 就可能不花次数 ⇒ 第 4 遍进射程；不给就只有前 3 遍。
+    """
+    deps, _ = _deps()                                      # 两个回调都不接
+    brief = _brief(pathlib.Path("/tmp"))                   # 不带 entry_url
+    assert [graph._round_reachable(n, brief, deps)
+            for n in ("baseline", "rerun", "delay", "viewport")] == \
+        [True, True, True, False], "没 entry_url：第 4 遍到不了"
+    assert not graph._round_reachable("country", brief, deps)
+    brief["entry_url"] = "https://example.test/start"
+    assert [graph._round_reachable(n, brief, deps)
+            for n in ("baseline", "rerun", "delay", "viewport", "country")] == \
+        [True, True, True, True, False], "给了 entry_url：第 4 遍进射程（第 5 遍仍然到不了）"
+    # 反向：默认硬顶（3）下，第 5 遍**永远**到不了（前 4 遍至少花 3 次）——
+    # 它是默认允许跳过的那一遍，所以这不构成「接上了但不响」
+    assert graph._round_reachable("country", dict(brief, allow_skips=[]), deps) is False
 
 
 def test_a_knob_that_disappears_before_the_selftest_is_caught_at_the_selftest(tmp_path,

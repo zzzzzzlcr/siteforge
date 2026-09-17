@@ -932,11 +932,13 @@ def test_a_journal_that_cannot_be_written_does_not_break_the_run(tmp_path, monke
 
     assert view["status"] == "done", view
     assert view["delivered"] is True, view["result"]      # 主路一步都没少
-    # 账本没了（写不进去），但**这一趟的账还是记着的**（attempts.jsonl 是另一条路）
-    assert not (tmp_path / "explore" / job_id / "attempt-1.jsonl").exists()
+    # 账本写不进去（**文件在、一行都没有** —— 这一趟占了号，但一步都没落成），
+    # 而**这一趟的账还是记着的**（attempts.jsonl 是另一条路，它归 measure）
+    book = tmp_path / "explore" / job_id / "attempt-1.jsonl"
+    assert book.exists() and journal.read(book) == ([], [])
     rows = [json.loads(x) for x in (tmp_path / "explore" / job_id / "attempts.jsonl")
             .read_text(encoding="utf-8").strip().splitlines()]
-    assert rows[-1]["steps"], rows[-1]
+    assert rows[-1]["steps"], rows[-1]        # 走的那几步在**这一本**上记着
     said = " ".join(rows[-1]["notes"])
     assert "旁路" in said and "No space left on device" in said, said
 
@@ -963,6 +965,130 @@ def test_a_journal_root_that_cannot_even_be_created_does_not_break_the_run(tmp_p
 
     assert view["status"] == "done", view
     assert view["delivered"] is True, view["result"]
+
+
+def test_each_attempt_gets_its_own_file_even_when_the_graph_retries(tmp_path, monkeypatch):
+    """**I-1**：一次节点执行里图可能调 `explore` **三趟**（重探）—— **一趟一个文件**。
+
+    `deps.explore` 在 `graph._explore` 里最多被调 `EXPLORE_ATTEMPTS`(=3) 次，而
+    `on_step` 的 attempt 路径原先**建图时只算一次** ⇒ 三趟 6 步挤进 `attempt-1.jsonl`、
+    没有边界标记，而 `attempts.jsonl`（一趟一行）记 3 次 —— **两本账对不上**。
+
+    这条把三件事一起钉住：
+      ① 三趟 → **三个文件**（`attempt-1/2/3.jsonl`）；
+      ② **每一本**里的步 == 那一趟的 `journey.steps`（不是三趟混起来）；
+      ③ 两本账对得上：文件数（3）== `attempts.jsonl` 的行数（3）。
+    """
+    def one_attempt(url=URL):
+        """一趟账本：**看过页面但没见到成功文案**（`reached=False`）—— 图据此重探。"""
+        journey = _journey(url)
+        journey.steps.append({"state": "landing", "action": "observe",
+                              "note": "看了一眼页面", "target": {},
+                              "result": {"ok": True, "page_text_head": "另一个页面，没有成功文案"},
+                              "origin": "model"})
+        return journey
+
+    def three_times(url, goal, budget=None, *, on_step=None, **kw):
+        journey = one_attempt(url)
+        for step in journey.steps:
+            if on_step is not None:
+                on_step(step)
+        return journey
+
+    monkeypatch.setattr(browser_agent, "explore", three_times)
+    rec = Rec()
+    client = _client(graph_factory=_factory_with_the_services_own_explore(rec, tmp_path),
+                     window=ProbeWindow([]), explore_dir=str(tmp_path / "explore"))
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _reply_until_done(client, job_id)
+
+    books = journal.attempts(tmp_path / "explore", job_id)
+    assert [p.name for p in books] == ["attempt-1.jsonl", "attempt-2.jsonl", "attempt-3.jsonl"], books
+    for path in books:
+        rows, skipped = journal.read(path)
+        assert skipped == [] and rows == one_attempt(URL).steps, (path.name, rows)
+    rows = [json.loads(x) for x in (tmp_path / "explore" / job_id / "attempts.jsonl")
+            .read_text(encoding="utf-8").strip().splitlines()]
+    assert len(rows) == len(books), "两本账对不上：步账本 %d 本 vs 收场账 %d 行" % (
+        len(books), len(rows))
+
+
+def test_an_attempt_that_leaves_no_steps_still_takes_its_number(tmp_path, monkeypatch):
+    """**占号**：一趟**一步都没走成**也要留下自己的文件（空的）—— 否则下一趟会**复用同一个号**。
+
+    `_next_attempt_no` 是**数文件**的（重启 / 重探都靠它接着编号）。
+    一趟什么都没写就结束（探路第一步就挂了那种）时，不占号的话下一趟会拿同一个号 ⇒
+    **两趟挤进同一个文件**、两本账再次对不上 —— 与 I-1 是同一个病，只是路径不同。
+
+    判据：两趟 = 两个文件，第 1 本**空**（0 行）、第 2 本**有那两步**。
+    """
+    calls: list = []
+
+    def per_call(url, goal, budget=None, *, on_step=None, **kw):
+        calls.append(1)
+        journey = _journey(url)
+        if len(calls) > 1 and on_step is not None:      # 第 1 趟：一步都不写
+            for step in journey.steps:
+                on_step(step)
+        return journey
+
+    monkeypatch.setattr(browser_agent, "explore", per_call)
+    svc = service.Service(window=ProbeWindow([]), explore_dir=str(tmp_path / "explore"))
+    run = svc._explore_for({"ws_url": WS_URL}, "job-two")
+    run(URL, GOAL)
+    run(URL, GOAL)
+
+    one = tmp_path / "explore" / "job-two" / "attempt-1.jsonl"
+    two = tmp_path / "explore" / "job-two" / "attempt-2.jsonl"
+    assert one.exists() and journal.read(one) == ([], []), "第 1 趟该占个号（空文件）"
+    rows, skipped = journal.read(two)
+    assert skipped == [] and [r["action"] for r in rows] == ["click", "form"], rows
+
+
+def test_a_broken_journal_in_one_attempt_does_not_taint_the_next(tmp_path, monkeypatch):
+    """**M-6**：账本只在**第 1 趟**坏，第 2 趟自己是好的 —— 第 2 趟**不许**背那句假 note。
+
+    `journal_broken` 是建图时造、`run()` 每趟调一次的东西；不在每趟开头清空的话，
+    上一趟的故障会跟着后面那一趟记下去，而那一趟的账其实一个字节都没缺。
+    """
+    calls: list = []
+
+    def per_call(url, goal, budget=None, *, on_step=None, **kw):
+        calls.append(1)
+        journey = _journey(url)
+        for step in journey.steps:
+            if on_step is not None:
+                on_step(step)
+        return journey
+
+    def append_that_breaks_once(path, step):
+        if len(calls) <= 1:                    # 只让**第 1 趟**每次都写不进去
+            raise OSError("No space left on device")
+
+    monkeypatch.setattr(service.journal, "append", append_that_breaks_once)
+    monkeypatch.setattr(browser_agent, "explore", per_call)
+    svc = service.Service(window=ProbeWindow([]), explore_dir=str(tmp_path / "explore"))
+    run = svc._explore_for({"ws_url": WS_URL}, "job-taint")
+    first = run(URL, GOAL)
+    second = run(URL, GOAL)
+
+    assert any("旁路" in n for n in first.notes), first.notes
+    assert not any("旁路" in n for n in second.notes), (
+        "第 2 趟自己一步都没缺，却背着第 1 趟的事故：%s" % second.notes)
+
+
+def test_a_bad_job_id_is_not_silent_either(tmp_path):
+    """**M-3**：`job_id` 不像话时**也不许当没事发生** —— 跟建目录失败、写失败走同一个出口。
+
+    生产上这条不可达（job_id 是服务端生成的 `job-<12 位 hex>`），但这个文件自己刚立过
+    「返回 no-op 就等于静默」的规矩 —— 规矩不该有例外。
+    """
+    svc = service.Service(window=ProbeWindow([]), explore_dir=str(tmp_path / "explore"))
+    broken: list = []
+    on_step = svc._journal_for("../etc", 1, broken)
+    on_step({"action": "click"})
+    assert broken and "ValueError" in broken[0], broken
+    assert journal.attempts(tmp_path / "explore", "job-ok") == []      # 对照：好 id 照常
 
 
 def test_the_journal_lands_the_real_steps_the_service_explored(tmp_path, monkeypatch):

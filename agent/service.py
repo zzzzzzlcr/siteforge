@@ -604,19 +604,28 @@ class Service:
             return None                       # 没人给窗口 → 用默认（图会在自测那步停下点名）
         #: 账本第一个**没记成**的原因。`on_step` 吞掉异常，但要留下它 —— 由 `run()` 写进
         #: `journey.notes`（那一层才有 journey）。见 `_journal_for` 的注释。
+        #: ⚠️ **每一趟清空一次**（M-6）：不在 `run()` 开头清的话，上一趟的故障会跟着
+        #: 后面那一趟（它自己每步都写成功了）一路记下去 —— 那是**假 note**。
         journal_broken: list = []
-        on_step = (self._journal_for(job_id, self._next_attempt_no(job_id), journal_broken)
-                   if job_id else None)
 
         def run(url, goal, budget=None, should_pause=None):
             started = measure._now()
+            # ⚠️ **每一趟取一次号**（I-1）：`deps.explore` 在一次节点执行里最多被调
+            # `graph.EXPLORE_ATTEMPTS`(=3) 趟（重探），而「一趟 = 一个 `attempt-<n>.jsonl`」。
+            # 号要是**建图时**算一次，三趟就全挤进同一个文件、也没有任何边界标记 ——
+            # 而 `attempts.jsonl` 那边是**一趟一行**，两本账当场对不上（`rows != journey.steps`）。
+            journal_broken.clear()
+            on_step = (self._journal_for(job_id, self._next_attempt_no(job_id), journal_broken)
+                       if job_id else None)
             try:
                 journey = browser_agent.explore(url, goal, budget=budget,
                                                 should_pause=should_pause, ws_url=ws_url,
                                                 on_step=on_step)
             except BaseException as exc:       # noqa: BLE001 —— `_Stop` 也是 BaseException
-                # 探路自己炸了（或是人喊停穿透）—— 也得留一行，不然「这一次尝试」凭空消失，
+                # 探路自己炸了 —— 也得留一行，不然「这一次尝试」凭空消失，
                 # 而消失的那一次恰恰是最该被看见的那一次。记完**原样再抛**。
+                # ⚠️ 这一条**到不了下面那句 note**（没有 journey）—— 账本没记成这件事
+                # 只能落在 `attempts.jsonl` 的「这一趟连账本都没生成」那一行上（I-3）。
                 self._note_attempt(job_id, started=started, journey=None, boom=exc)
                 raise
             if journal_broken:
@@ -634,12 +643,12 @@ class Service:
 
     def _explore_dir(self, job_id: str) -> pathlib.Path:
         """`runtime/explore/<job_id>/`。⚠️ `job_id` 是从 HTTP 进来的字符串 —— 必须挡住 `../`，
-        否则一个能爬出去的 id 就等于**任意写**。"""
-        jid = str(job_id or "")
-        if (not jid or jid in (".", "..") or "/" in jid or "\\" in jid
-                or jid.startswith(".") or pathlib.PurePosixPath(jid).name != jid):
-            raise ValueError("不像个 job_id：%r（它要拿来拼目录，不许带路径分隔符）" % jid)
-        return pathlib.Path(self._explore_root) / jid
+        否则一个能爬出去的 id 就等于**任意写**。
+
+        ⚠️ 这道守卫**只写在一处**（`journal.dir_for`）—— 同一份**安全判据**写两遍，
+        收紧一处、另一处不动就是一个洞（M-2）。这里只把根换成本服务的。
+        """
+        return journal.dir_for(self._explore_root, job_id)
 
     def _next_attempt_no(self, job_id: str) -> int:
         """这是第几次尝试。从**盘上已有的** `attempt-*.jsonl` 数出来 —— 于是服务重启过、
@@ -651,7 +660,7 @@ class Service:
             return 1
         return (max(done) + 1) if done else 1
 
-    def _journal_for(self, job_id: str, n: int, broken: list = None) -> Callable:
+    def _journal_for(self, job_id: str, n: int, broken: Optional[list] = None) -> Callable:
         """`on_step`：每一步**发生的那一刻**追加一行（G1：今天一个字节都不落）。
 
         为什么必须是**当场**而不是跑完再写：窗口就在这一步到下一步之间死掉
@@ -663,8 +672,13 @@ class Service:
         第一个原因记进 `broken` 这个列表，由 `run()` 写进 `journey.notes`
         （这一层够不着 journey，`run()` 那个闭包够得着 —— **两半合起来才成立**）。
 
-        `broken` 由调用方给（同一个 job 的所有步骤共用一份）；不给就自己造一份
-        （直接调这个方法的人只需要「写下去」这件事）。
+        `broken` 由调用方给（**每一趟一份**：`run()` 开头会清空它，见那里的注释）；
+        不给就自己造一份（直接调这个方法的人只需要「写下去」这件事）。
+
+        ⚠️ 三种坏法走**同一个出口**（`_remember`）：建路径失败 / 建目录失败 / 写失败 ——
+        `ValueError` 那条**也走它**（M-3）：job_id 不像话时返回 no-op 就是**静默**，
+        而这个文件自己刚立过「no-op 等于静默」的规矩。生产上那条不可达
+        （job_id 是服务端生成的 `job-<12 位 hex>`），但规矩不该有例外。
         """
         broken = broken if broken is not None else []
 
@@ -672,17 +686,30 @@ class Service:
             if not broken:
                 broken.append("%s: %s" % (type(exc).__name__, exc))
 
+        def _broken(exc: BaseException) -> Callable:
+            """每步都记一次「没记成」（只留第一条），而不是当没事发生。"""
+            def on_step(step: dict, _exc: BaseException = exc) -> None:
+                _remember(_exc)
+            return on_step
+
         try:
             path = journal.attempt_path(self._explore_root, job_id, n)
-        except ValueError:
-            return lambda step: None          # job_id 不像话：这一趟不记（另有人管 id 的合法性）
+        except ValueError as exc:
+            return _broken(exc)
         except OSError as exc:
-            # **连目录都建不出来**（盘满了 / 没权限 / 路径上有个文件）：每步都记一次
-            # 「没记成」（只留第一条）—— 返回 no-op 就等于**静默**：这一趟没有账本，
-            # 而没有任何人看得出来。
-            def _broken(step: dict, _exc: Exception = exc) -> None:
-                _remember(_exc)
-            return _broken
+            # **连目录都建不出来**（盘满了 / 没权限 / 路径上有个文件）——
+            # 返回 no-op 就等于**静默**：这一趟没有账本，而没有任何人看得出来。
+            return _broken(exc)
+
+        # ⚠️ **占号**（I-1）：这一趟**跑过**就得留下一个文件 —— 哪怕一步都没走成
+        # （空文件），或者整趟都写不进去。理由：`_next_attempt_no` 是**数文件**的
+        # （重启/重探都靠它接着编号），不占号的话下一趟会复用同一个号 ⇒
+        # 「一趟一个文件」当场失效、两本账（`attempt-*.jsonl` 与 `attempts.jsonl`）对不上。
+        try:
+            if not path.exists():
+                path.touch()
+        except OSError as exc:
+            return _broken(exc)
 
         def on_step(step: dict) -> None:
             try:

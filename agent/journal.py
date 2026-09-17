@@ -64,14 +64,27 @@ def dir_for(root: Any, job_id: Any) -> pathlib.Path:
 
     `job_id` 要拿来拼目录，所以**不许带路径分隔符**（`../` 那种能写到别人家去）；
     不像个 job_id 就**报错**，不猜、不 sanitize（sanitize 会让两个 job 撞进同一个目录）。
+
+    ⚠️ **读的那两个 API 不走这里**（`read` / `attempts` 不建目录）：
+    「问一声」不该有副作用 —— 否则「这个 job 从没跑过」与「跑过」在**目录存不存在**上
+    就分不开了（M-1）。
+    """
+    path = _dir_path(root, job_id)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _dir_path(root: Any, job_id: Any) -> pathlib.Path:
+    """`<root>/<job_id>/` —— **只算路径、不建目录**（读的那一侧用这个）。
+
+    job_id 的守卫只写在这一处（`dir_for` 与 `attempts` 都走它）——
+    同一份**安全判据**写两遍，收紧一处、另一处不动就会有洞（M-2）。
     """
     jid = str(job_id or "")
     if (not jid or jid in (".", "..") or "/" in jid or "\\" in jid
             or jid.startswith(".") or pathlib.PurePosixPath(jid).name != jid):
         raise ValueError("不像个 job_id：%r（它要拿来拼目录，不许带路径分隔符）" % jid)
-    path = pathlib.Path(root) / jid
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return pathlib.Path(root) / jid
 
 
 def attempt_path(root: Any, job_id: Any, n: Any) -> pathlib.Path:
@@ -101,13 +114,22 @@ def read(path: Any) -> Tuple[List[dict], List[dict]]:
     - `skipped`：跳过的行的**行号与原因**：`[{"line": 7, "why": "这一行读不出来", "raw": …}]`。
       最常见的形状是**最后半行**（进程被杀留下的）；也收「不是对象」的行。
 
+    ⚠️ **解码那一步必须兜住**（C-1）：`ensure_ascii=False` 让**每一行都含中文**，
+    而写一半被杀 / 盘满短写时，切口落在**一个字的中间**是正常形状 ——
+    严格解码会抛 `UnicodeDecodeError`，于是**连前面那些好行一起读不出来**
+    （而那正是这个模块存在的理由：窗口死在一半时，得知道走到哪儿了）。
+    所以这里按 `errors="replace"` 解 —— 坏的那一行带着替换字符落进 `skipped`，
+    好行一行不少。
+
     文件不在 → `([], [])`：**没跑过 = 空账**，不是异常（与 `measure.read_rows` 同一条）。
+    ⚠️ 但**指到一个目录**上是会抛 `OSError`（`IsADirectoryError`）的 —— 那是调用方把路径写错了，
+    不是「账本坏了」；这一条**故意不兜**（兜了就等于把「你给错路径」说成「没跑过」）。
     """
     target = pathlib.Path(path)
     rows: List[dict] = []
     skipped: List[dict] = []
     try:
-        text = target.read_text(encoding="utf-8")
+        text = target.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return rows, skipped
     for i, line in enumerate(text.splitlines(), 1):
@@ -132,11 +154,14 @@ def attempts(root: Any, job_id: Any) -> List[pathlib.Path]:
 
     为什么不按字符串排：`attempt-10` 会排到 `attempt-2` 前面 —— 两次尝试的步会被接反，
     而读账的人是**按顺序**读「这一趟怎么走的」。认不出编号的一律排到最后（**不猜**）。
+
+    ⚠️ 它**不建目录**（M-1）：问一声不该有副作用 —— 否则「从没跑过」与「跑过」
+    在目录存不存在上就分不开了。也因此 `job_id` 不像话时会抛 `ValueError`（那是调用方写错了）。
     """
     try:
-        found = list(dir_for(root, job_id).glob("%s*%s" % (_PREFIX, _SUFFIX)))
+        found = list(_dir_path(root, job_id).glob("%s*%s" % (_PREFIX, _SUFFIX)))
     except OSError:
-        return []
+        return []           # 目录不在 / 读不动 = 没有账本（job_id 不像话那一支**照抛**）
     return sorted(found, key=_attempt_no)
 
 

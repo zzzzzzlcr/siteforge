@@ -884,12 +884,54 @@ def _unfinished_note(stop: str, journey) -> str:
 def _submission_cap(state, deps: Deps) -> int:
     """这一轮的自测**最多提交几次**（R-84 的硬顶）。
 
-    ⚠️ 取的是**真正会传给 `selftest.run` 的那个数**（`_selftest_kwargs` 里的
-    `max_submissions`，没有就用 `selftest.MAX_SUBMISSIONS`）—— 两处各写一个数就会漂，
-    而漂的后果是「闸拦的轮数」与「真跑的轮数」对不上。
+    ⚠️ **图从不下发这个数**（`_selftest_kwargs` 只有 `set_viewport` / `allow_skips` /
+    `entry_url` 三个键），所以下面那句 `kw.get(...)` 今天**永远走 fallback** ——
+    两边都是 `selftest.MAX_SUBMISSIONS`，判据成立。留着这次查找是为了**将来接线时两边不漂**
+    （谁往 `_selftest_kwargs` 里加 `max_submissions`，这里立刻跟着走）。
+    别把它读成「有一条现行接线」（`b571ee5` 那一版 docstring 就是这么写的，是错的）。
     """
     kw = _selftest_kwargs(state, deps)
     return int(kw.get("max_submissions", selftest_mod.MAX_SUBMISSIONS))
+
+
+def _round_spends(name: str, state, deps: Deps) -> bool:
+    """这一遍**会不会花掉一次提交**（R-84：一次提交 = 产物把整个漏斗走一遍）。
+
+    有两条**不花次数**的路（`selftest.run` 的阶梯里）：
+
+    - **`rerun` 的 `cdp navi` 没成**时：记 `failed`，但产物**一次都没起来** ⇒ 不花。
+      这一条是 I-2 的要害 —— 它会把后面**整个阶梯前移一位**。
+    - **`viewport` / `country` 没回调**时：记 `skipped` ⇒ 也不花。
+
+    ⚠️ 不知道的一律按**花**算（比如「回调给了，但它会不会自己炸」）——
+    那样闸更不容易误报，而误报正是裁定的另一半要防的。
+    """
+    if name == "rerun":
+        # 给了 `entry_url` 才可能去导航；没给 = 接着再跑一遍 = 一定花
+        return not str(state.get("entry_url") or "").strip()
+    knob = (ROUND_NEEDS.get(name) or (None,))[0]
+    if knob and getattr(deps, knob, None) is None:
+        return False
+    return True
+
+
+def _round_reachable(name: str, state, deps: Deps) -> bool:
+    """这一遍**这一轮到底轮不轮得到** —— 从第一遍往下数，前面花掉的次数还没到硬顶就轮得到。
+
+    ⚠️ 为什么不能只看「在 `RUN_NAMES` 里排第几」（`b571ee5` 就是这么写的，**已被证伪**）：
+    阶梯里**有的遍不花提交次数**（见 `_round_spends`），不花的那一遍会把后面**整体前移一位**。
+    复审实测：默认硬顶 3、`entry_url` 给了而 `cdp navi` 挂了时，**第 4 遍（viewport）真的会跑**
+    （它还花掉了第 3 次提交）。所以「第 4/5 遍这一轮根本轮不到」在**可达路径**下是假的。
+    """
+    cap = _submission_cap(state, deps)
+    spent = 0
+    for each in selftest_mod.RUN_NAMES:
+        if each == name:
+            return spent < cap
+        if spent >= cap:                 # 到顶了：后面全轮不到
+            return False
+        spent += 1 if _round_spends(each, state, deps) else 0
+    return False
 
 
 def _missing_knobs(state, deps: Deps) -> list:
@@ -900,21 +942,21 @@ def _missing_knobs(state, deps: Deps) -> list:
     不许自己发明一个默认让它跳过去（R-5：跳过的遍不算过），也不许带着它往下走、
     让报告把这件接线的事记成「产物不行」。
 
-    ⚠️ **R-84（用户裁定）**：只拦**这一轮真的轮得到**的那几遍。
-    阶梯按 `RUN_NAMES` 走，**一过就停、到顶也停** —— 默认硬顶 3 次提交，
-    第 4/5 遍（viewport / country）**这一轮根本轮不到**。
-    给一个跑不到的扰动配一根闸，就是「**接上了但不响**」（本项目的头号忌讳）：
-    图会为一根**用不上的线**停下，而人还得去查一个跟这次结论无关的旋钮。
+    ⚠️ **只拦这一轮真的轮得到的那几遍**（`_round_reachable`）。两个方向都是裁定要的：
+
+    - 轮不到的不拦 —— 给一个跑不到的扰动配一根闸就是「**接上了但不响**」；
+    - **轮得到的必须拦** —— 撤掉它更糟（复审实测）：缺 `set_viewport` 时图不点名，
+      一路跑到第 4 遍才记 `skipped`，**烧掉真窗口 + 最多 3 次提交之后 `passed=False`**，
+      而真正的原因（缺一根线）埋在报告里 —— 那不是「产物不行」。
     """
     allowed = tuple(state.get("allow_skips") or selftest_mod.DEFAULT_ALLOWED_SKIPS)
-    cap = _submission_cap(state, deps)
     out = []
     for name, (knob, what, who) in ROUND_NEEDS.items():
         if name in allowed:
             continue
         nth = list(selftest_mod.RUN_NAMES).index(name) + 1
-        if nth > cap:                    # 这一轮轮不到它 —— 不拦（R-84）
-            continue
+        if not _round_reachable(name, state, deps):
+            continue                     # 这一轮轮不到它 —— 不拦（R-84）
         if getattr(deps, knob, None) is None:
             out.append({"round": name, "knob": knob, "what": what, "who": who, "nth": nth})
     out.sort(key=lambda item: item["nth"])
