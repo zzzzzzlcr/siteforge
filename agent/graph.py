@@ -100,14 +100,16 @@ from typing import Callable, Optional
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from agent import browser_agent, lint as lint_mod, runtime
+from agent import browser_agent
+from agent import fix as fix_mod, lint as lint_mod, runtime
 from agent import selftest as selftest_mod
 from agent import template
 from agent.state import (
     END_DELIVERED, END_DELIVER_LINT, END_DRAFT_FAILED, END_EXPLORE_UNFINISHED,
     END_HUMAN_STOP, END_LINT_CAP, END_MISSING_KNOB, END_NO_BRIEF, END_NO_SUCCESS_TEXT,
     END_NO_WINDOW, END_PAUSED, END_REVISION_CAP, END_SELFTEST_CAP,
-    FINISHED_EXPLORATION, GENERATOR, MODE_BUILD, REVISE, STOP, Caps, SiteState, human_reply,
+    FINISHED_EXPLORATION, GENERATOR, MODE_BUILD, MODE_FIX, REVISE, STOP, Caps, SiteState,
+    human_reply,
 )
 
 __all__ = ["Deps", "build", "Caps", "MSGPACK_ALLOWLIST", "allowlisted", "NODES",
@@ -291,12 +293,41 @@ def _intake(state, deps: Deps, caps: Caps) -> dict:
         url or "（还没说）", goal or "（还没说）", state.get("success_text") or "（还没说）")
         + "开工之后每一步之前都会再问你一次，随时可以喊停或纠正。")
     missing = _missing_knobs(state, deps)
-    out = _enter(state, caps, "intake", say,
-                 facts={"url": url, "goal": goal, "成功判据": state.get("success_text"),
-                        "mode": state.get("mode") or MODE_BUILD,
-                        "要用的窗口": state.get("ws_url"),
-                        "允许跳过的扰动": list(state.get("allow_skips") or []),
-                        "还缺的窗口旋钮": [k["knob"] for k in missing]})
+    # ⚠️ 读底稿**排在 _enter 之前**：这样「这是修站、读到了什么、改了哪些格」能进
+    # **第一道闸**的 facts —— 人在这儿就能看见它要拿哪份稿去改。放到闸后面的话，
+    # 这一趟最重要的事实要等过了闸才出现（而人正是在闸上做决定的）。
+    fix_py = str(state.get("fix_py") or "").strip()
+    fix_read: dict = {}
+    fix_failed = ""
+    if fix_py:
+        try:
+            src_before = pathlib.Path(fix_py).read_text(encoding="utf-8")
+        except OSError as exc:
+            fix_failed = "修不了：读不到那份 py（%s）。给一个能读的路径再发起。" % exc
+        else:
+            plan, fix_states, fix_fills, fix_notes = fix_mod.from_py(src_before)
+            if not fix_states:
+                fix_failed = ("修不了：%s\n（修站这条路要的是**读得出 STATES/FILLS** 的旧 py；"
+                              "读不出来就只能当新站从零探索 —— 那是另一条路。）"
+                              % (fix_notes[0] if fix_notes else "那份 py 读不出来"))
+            else:
+                fix_read = {"mode": MODE_FIX, "fix_py": fix_py, "fix_src": src_before,
+                            "fix_states": fix_states, "fix_fills": fix_fills,
+                            "fix_notes": fix_notes, "fix_plan_steps": len(plan.steps)}
+    facts = {"url": url, "goal": goal, "成功判据": state.get("success_text"),
+             "mode": fix_read.get("mode") or state.get("mode") or MODE_BUILD,
+             "要用的窗口": state.get("ws_url"),
+             "允许跳过的扰动": list(state.get("allow_skips") or []),
+             "还缺的窗口旋钮": [k["knob"] for k in missing]}
+    if fix_py:
+        facts["模式"] = "修站（MODE_FIX）" if fix_read else "修站（读不出底稿）"
+        facts["底稿"] = fix_py
+        if fix_read:
+            facts["底稿步数"] = fix_read["fix_plan_steps"]
+            facts["改了哪些格"] = fix_read["fix_notes"] or ["（一处都没改）"]
+        else:
+            facts["读不出来的原因"] = fix_failed
+    out = _enter(state, caps, "intake", say, facts=facts)
     if _held(out):
         return out
     if not url or not goal:
@@ -316,10 +347,16 @@ def _intake(state, deps: Deps, caps: Caps) -> dict:
     if missing:
         out.update({"end_reason": END_MISSING_KNOB, "end_note": _knob_note(missing)})
         return out
+    if fix_failed:
+        out.update({"end_reason": END_DRAFT_FAILED, "end_note": fix_failed})
+        return out
+    if fix_read:
+        out.update(fix_read)
+
     out.update({
         "url": url,
         "goal": goal,
-        "mode": state.get("mode") or MODE_BUILD,
+        "mode": fix_read.get("mode") or state.get("mode") or MODE_BUILD,
         "site": state.get("site") or site_name(url),
         # 人在**开工前**那道闸上说的话也要留着（`_enter` 刚记进 out，不能在这儿盖掉）
         "hints": list(out.get("hints") or state.get("hints") or []),
@@ -334,7 +371,36 @@ def _intake(state, deps: Deps, caps: Caps) -> dict:
 
 
 def _explore(state, deps: Deps, caps: Caps) -> dict:
-    """在真浏览器里走一遍，拿回账本（Task 5）。"""
+    """在真浏览器里走一遍，拿回账本（Task 5）。
+
+    ⚠️ **修站那条路在这道闸之前就分叉**（`state["fix_states"]` 在 ⇒ 不探索）。
+    为什么分叉要排在 `_enter` **之前**：闸口上那句人话得说**这一步真要做什么** ——
+    修站这一步根本不打开浏览器，闸上就不该写着「接下来要打开真浏览器」。
+    顺序反了的话，人是在一句假话上点「继续」的（2026-09-17 实测就是这么错的）。
+    """
+    # ── 「修站」这条路**不探索**（判据就这一条：不重新探索）──────────────────
+    #
+    # 手上已经有一份读得出的旧 py（intake 那一步读进来的），它的每一步、每一格
+    # 都录在那份产物里。再开一个浏览器重走一遍 = 把已有的证据丢掉重买一次。
+    # 所以这一步**原样跳过**，并把「跳过了什么、凭什么是它」写进 facts 让人看得见。
+    if state.get("fix_states"):
+        notes = list(state.get("fix_notes") or [])
+        say = ("这次是**修站**，不重新探索：拿的是现成的那份 py（%s，%d 步），"
+               "按当前的识别代码把每一格的身份重判了一遍。" % (
+                   state.get("fix_py"), int(state.get("fix_plan_steps") or 0)))
+        if notes:
+            say += " 改动：" + "；".join(notes)
+        out = _enter(state, caps, "explore", say,
+                     facts={"模式": "修站（MODE_FIX）", "底稿": state.get("fix_py"),
+                            "底稿步数": int(state.get("fix_plan_steps") or 0),
+                            "改了哪些格": notes,
+                            "探路": "**没有探路**（修站这条路不探索：账本/产物已经有了）"})
+        if _held(out):
+            return out
+        out["explore_say"] = say
+        out["explore_reached_success"] = None      # 没探路 ⇒ **量不到**，不是「没走到」
+        return out
+
     budget = browser_agent.Budget(max_steps=caps.explore_steps, max_rounds=caps.explore_rounds)
     say = ("接下来要打开真浏览器，把「%s」按这个目标走一遍：「%s」。"
            "这一步会动到真页面（点、填、滚），探完把「怎么走」记下来。" % (state["url"], state["goal"]))
@@ -420,14 +486,23 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     # 人在**这一道闸**上说的话，属于**这一版**稿（所以 feedback 在闸之后组装）
     feedback = _feedback(state, hints=out.get("hints"))
 
-    journey = state.get("journey")
-    if journey is None:
-        out.update({"end_reason": END_DRAFT_FAILED,
-                    "end_note": "写不了：这次没有探路账本（没有账本就没有「怎么走」）。"})
-        return out
-
-    spec = {"site": state["site"], "success_text": state.get("success_text"),
-            "states": journey.states(), "fills": journey.fills()}
+    # ── 底稿从哪来：探索的账本，**或者**修站那条路读进来的旧 py ────────────────
+    #
+    # 两条路的形状是**同一个**（`states` / `fills`）—— 这正是「修」能复用整条下游
+    # （lint / 自测 / 交付）的原因：产物怎么写、怎么自测、往哪落，修与建**一模一样**，
+    # 差别只在「那份 states/fills 是从哪来的」。
+    if state.get("fix_states"):
+        spec = {"site": state["site"], "success_text": state.get("success_text"),
+                "states": state.get("fix_states"), "fills": state.get("fix_fills") or {}}
+        journey = None
+    else:
+        journey = state.get("journey")
+        if journey is None:
+            out.update({"end_reason": END_DRAFT_FAILED,
+                        "end_note": "写不了：这次没有探路账本（没有账本就没有「怎么走」）。"})
+            return out
+        spec = {"site": state["site"], "success_text": state.get("success_text"),
+                "states": journey.states(), "fills": journey.fills()}
     spec = deps.write(spec, feedback)
     try:
         src = template.render(spec["site"], spec["success_text"], spec["states"], spec["fills"],

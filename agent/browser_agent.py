@@ -765,6 +765,12 @@ _RANDOM_HINTS = (
     # 运营 form-file 的 `state` 对不上 → 随机兜底给了 `full_name` → **往「州」里填人名**。
     (("state", "province"), "state"),
     (("birth", "dob"), "dob"),
+    # 「整名」这一族。原先**没有这一条** —— 于是 `Full Name:` 判不出种类，
+    # 靠 `_fallback` 的兜底默认值**碰巧**也给了 `full_name`（真站实测：
+    # 那一格的名字对得上运营的键，但那是巧合，不是判据）。
+    # ⚠️ 只认「整名」的写法，**不许**收宽成 `name`：`username` / `nickname` /
+    # `company_name` 都会被它误伤（那种框填一个人名是错的）。
+    (("full name", "fullname", "your name"), "full_name"),
     (("first name", "firstname", "given name"), "first_name"),
     (("last name", "lastname", "surname", "family name"), "last_name"),
 )

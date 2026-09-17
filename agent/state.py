@@ -150,6 +150,21 @@ class SiteState(TypedDict, total=False):
     url: str                      # 站点 URL
     goal: str                     # 人给的意图：要摸清什么 / 什么算完成
     mode: str                     # MODE_BUILD / MODE_FIX
+    #: **修站那条路**的入口：现成那份 py 的路径（`MODE_FIX`）。
+    #:
+    #: 为什么它必须在**这个 schema 里**（2026-09-17 实测踩过）：langgraph 按
+    #: `SiteState` 的字段名**过滤**开场白 —— 没声明的键**进不了状态**，
+    #: 而且**不报错**。当时 `fix_py` 就是这么消失的：`invoke({..., "fix_py": …})`
+    #: 一路无声，`intake` 那边读到的永远是空串，于是整条修站路「接上了但不响」。
+    #: （与 bit-window SKILL 里那条「验死恒返回不知道」是同一族：接上了不响比没接更坏。）
+    fix_py: Optional[str]
+    #: 修站读进来的东西，全是**从那份 py 里读出来的事实**（不是猜的）：
+    #: 原文、修好的 states/fills、以及「改了哪些格 / 哪些认不出」的人话清单。
+    fix_src: Optional[str]
+    fix_states: Optional[list]
+    fix_fills: Optional[dict]
+    fix_notes: Optional[list]
+    fix_plan_steps: Optional[int]
     site: str                     # 站点短名（不给就从 URL 推）
     success_text: Any             # **成功判据**（页面上出现哪段文字）—— 只有人知道（§6.1）
     evidence: str                 # fix 模式：失败证据的引用（FMR formLog / formStep）
