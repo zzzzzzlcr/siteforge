@@ -2504,3 +2504,276 @@ def test_the_landing_page_is_looked_at_when_the_ledger_never_wrote_it_down(tmp_p
                          {"observe": _pages_for(rows)})
     assert [c["name"] for c in calls] == ["goto", "observe", "click", "observe"], calls
     assert out["done"] == 2 and out["landed"] == QUOTE, out
+
+
+# ═══════════ Task 6：接续跑（`explore(resume_from=…)`）+ 窗口死是一等停因 ═══════════
+#
+# 两件事（设计注 §1.7 / §1.8），**全用桩**（桩 MCP + 假模型）——这一轮不许开真窗口：
+#
+#   ① **续跑**：开头先照账本走回去（0 模型调用），走完才轮到模型接着探；
+#      并且把「重放了什么、边界在哪、为什么停在那儿」告诉模型（不给它原始工具返回）。
+#   ② **窗口死掉是一个可判的停因**：工具连着失败 2 次 → **问**窗口服务 → 它说死了才是死。
+#      ⚠️ **不许**去匹配工具的错误文字（「连不上 host:port」那种）——「猜文本」与
+#      「问接口」的可靠性差一个量级。
+
+
+def _asked(fake):
+    """这一趟模型收到的**开场白**（user 那条）。
+
+    ⚠️ 不能取 `messages[-1]`：`run_tool_loop` 把**同一个 list** 一路传下去，
+    循环跑完之后它已经被追加到尾部了（`calls[0]["messages"]` 是个活引用）——
+    取尾巴拿到的是最后那条 assistant 消息，而不是开场白。
+    """
+    msgs = fake.calls[0]["messages"]
+    return next(m["content"] for m in msgs if m["role"] == "user")
+
+
+def test_a_resume_walks_the_ledger_back_before_the_model_gets_a_turn(tmp_path):
+    """续跑的第一件事是**照账本走回去**（0 模型），走完才轮到模型接着探。
+
+    判据落在**真发出去的工具调用**上（桩的流水线）：重放那几下必须在模型那一下之前，
+    而且账上那两步（goto + click）一个都不许少。
+    """
+    rows = _walk_rows()
+    journey, fake, calls = _run(
+        tmp_path,
+        {"observe": _pages_for(rows)},
+        [{"content": "我看到了报价页，接着往下走", "calls": []}],
+        resume_from=rows,
+    )
+    assert [c["name"] for c in calls] == ["goto", "observe", "click", "observe"], calls
+    assert [s["origin"] for s in journey.steps] == ["replay"] * 4, journey.steps
+    assert journey.replay["done"] == 2, journey.replay
+    assert journey.replay["landed"] == QUOTE, journey.replay
+
+
+def test_the_model_is_told_what_was_replayed_and_why_the_ledger_stopped_there(tmp_path):
+    """§1.7：**给**已重放的步（一句话一步）+ 边界那一步为什么没重放；**不给**原始工具返回。
+
+    不给的后果很具体：把账上的原始返回整份塞回上下文，等于把省下来的那些轮数
+    又用 token 付了一遍；而且模型会把「重放」当成「我做过」——明说是重放，它才会在
+    需要时重新确认（`_SYSTEM` 规矩 3：click 返回 ok 只代表命令下发了）。
+    """
+    rows = _walk_rows() + [_click("提交申请", state="quote", ok=False),
+                           _look("https://site.test/thanks", "谢谢", state="quote")]
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert prefix == rows[:4], [r["action"] for r in prefix]      # 前提：前缀就是那前四行
+    assert "R1" in why, why
+
+    journey, fake, _ = _run(tmp_path, {"observe": _pages_for(rows)},
+                            [{"content": "接着探", "calls": []}],
+                            resume_from=prefix, resume_note=why)
+    asked = _asked(fake)
+    assert "点了「开始申请」" in asked, asked                 # 重放过的步：一句话一步
+    assert "接着" in asked or "重放" in asked, asked          # 明说是「接着上一趟」
+    assert "R1" in asked and "提交申请" in asked, asked       # 边界 + 为什么
+    assert '"selectors"' not in asked, "把账上的原始结构整份塞回上下文了：%s" % asked
+
+
+def test_without_a_resume_the_opening_message_is_the_same_bytes_as_before(tmp_path):
+    """没给前缀 → 开场白**逐字节**与今天一样（B4：自由模式那版是硬编码钉住的）。"""
+    _, fake, _ = _run(tmp_path, {"observe": [{"structured": PAGE_LANDING}]},
+                      [{"content": "讲完了", "calls": []}])
+    asked = _asked(fake)
+    assert asked == browser_agent._brief("https://example.test/funnel",
+                                         "看看这一页怎么走到报价", browser_agent.Budget())
+
+
+# ─────────────── 窗口死掉：连着失败两次 → 问接口（不是猜错误文字）───────────────
+
+
+def _dead_click_turns(n=2):
+    """模型连着发 n 次**注定失败**的 click（桩回的是一句错误文字）。"""
+    turns = [{"calls": [("click", {"selector": "#ghost"})]} for _ in range(n)]
+    turns.append({"content": "这条点不通，我把话说清楚"})
+    return turns
+
+
+def test_two_failed_tool_calls_in_a_row_ask_the_window_and_stop(tmp_path):
+    """连着两次失败 → 问窗口 → **它说死了** → `window_gone` 收场（一等停因）。
+
+    为什么要「连着」：一次失败在活窗口上再正常不过（选择器不对、元素还没渲染出来）。
+    为什么要问：`alive()` 是**接口**给的答案，工具那句错误文字是**猜**的。
+    """
+    probes = []
+
+    def alive():
+        probes.append(1)
+        return False
+
+    journey, _, _ = _run(tmp_path, {"click": [{"error": "连不上 127.0.0.1:9222"}]},
+                         _dead_click_turns(2), window_alive=alive)
+    assert journey.stop_reason == "window_gone", journey.stop_reason
+    assert probes == [1], "连着失败两次之后**问一次**（多问是白花，少问是漏判）：%r" % probes
+    assert len(journey.steps) == 2, journey.steps
+    assert any("窗口" in n for n in journey.notes), journey.notes
+
+
+def test_a_window_that_is_still_there_is_not_blamed_for_a_selector(tmp_path):
+    """反例（同一条判据的另一半）：窗口**活着** → 同样的两次失败**不算**窗口死。
+
+    这一条同时钉住「判据是问出来的结果」：探针被问了（`probes == [1]`），
+    所以实现**不是**在匹配那句错误文字（匹配的话，同样两句错误文字会得到同样的停因）。
+    """
+    probes = []
+
+    def alive():
+        probes.append(1)
+        return True
+
+    journey, _, _ = _run(tmp_path, {"click": [{"error": "没有找到选择器 #ghost"}]},
+                         _dead_click_turns(2), window_alive=alive)
+    assert journey.stop_reason == "model_done", journey.stop_reason
+    assert probes == [1], "问还是要问的 —— 判据是**问出来的那个答案**：%r" % probes
+
+
+def test_one_failure_is_not_enough_to_ask_the_window(tmp_path):
+    """**一次**失败不问（失败之间夹着一次成功就重新计数）—— 否则活窗口上照样会误判。"""
+    probes = []
+
+    def alive():
+        probes.append(1)
+        return False
+
+    turns = [{"calls": [("click", {"selector": "#ghost"})]},      # 失败 ①
+             {"calls": [("observe", {})]},                        # 成功 → 计数清零
+             {"calls": [("click", {"selector": "#ghost"})]},      # 失败 ①（重新数）
+             {"content": "讲完了"}]
+    journey, _, _ = _run(tmp_path, {"observe": [{"structured": PAGE_LANDING}],
+                                    "click": [{"error": "没有找到选择器 #ghost"}]},
+                         turns, window_alive=alive)
+    assert journey.stop_reason == "model_done", journey.stop_reason
+    assert probes == [], "连着失败才问 —— 中间成功过就不算连着：%r" % probes
+
+
+def test_a_window_probe_that_breaks_does_not_invent_a_stop_reason(tmp_path):
+    """探针**自己坏掉** → 当作「不知道」，**不**编一个 `window_gone` 出来。
+
+    ⚠️ 与 `replay` 里的 `_probe_dead` 取向**故意相反**（那儿坏掉按死了算）：
+    那边问的是「这次失败该不该归到窗口头上」（判错的代价是多走两遍重放，重放里没有
+    不可逆动作）；这边问的是「这个 job 的结局叫什么」（判错就是把「选择器没找到」
+    记成「窗口死了」——一句指错方向的话，而重开窗口解决不了它）。
+    两边都问不出来时，可判的那个答案不是「死」，是「不知道」。
+    """
+    def broken():
+        raise RuntimeError("窗口服务连不上")
+
+    journey, _, _ = _run(tmp_path, {"click": [{"error": "没有找到选择器 #ghost"}]},
+                         _dead_click_turns(2), window_alive=broken)
+    assert journey.stop_reason == "model_done", journey.stop_reason
+
+
+def test_the_replayed_steps_do_not_eat_the_step_budget(tmp_path):
+    """重放的步**不花预算**（它不花模型的钱）：预算 1 步时，那 4 行照样先走完。"""
+    rows = _walk_rows()
+    journey, _, calls = _run(
+        tmp_path, {"observe": _pages_for(rows)},
+        [{"calls": [("observe", {})]}, {"calls": [("observe", {})]}],
+        budget=browser_agent.Budget(max_steps=1, max_rounds=10),
+        resume_from=rows)
+    origins = [s["origin"] for s in journey.steps]
+    assert origins.count("replay") == 4, origins
+    assert origins.count("model") == 1, origins
+    assert journey.stop_reason == "budget_steps", journey.stop_reason
+
+
+def test_a_resume_that_cannot_walk_the_ledger_still_lets_the_model_continue(tmp_path):
+    """前缀走不通（选择器一条都解析不出来）→ 停在那儿说话，**然后照样往下探**。
+
+    重放不是主路：它是**开头**。走不通要说清（人话在账上），但模型还有一整趟可以走。
+    """
+    rows = _walk_rows()
+    journey, _, calls = _run(
+        tmp_path, {"observe": _pages_for(rows), "click": [{"error": "没有找到选择器 #cta"}]},
+        [{"content": "重放没走通，我自己看一眼", "calls": []}],
+        resume_from=rows)
+    assert [c["name"] for c in calls] == ["goto", "observe", "click"], calls
+    assert any("重放" in n and "#cta" in n for n in journey.notes), journey.notes
+    assert journey.stop_reason == "model_done", journey.stop_reason
+
+
+# ── 裁定 ③：两次重试之间**换会话**（§1.6 的「整段重来」要真有意义）───────────────
+#
+# 事实先摆出来：`_WindowGone` 的定义就是「探针说窗口死了」，而手里那个会话绑的**正是
+# 那串已经没了的 ws_url** ⇒ 在同一个会话上「整段重来 3 遍」是**结构性无用**的。
+# 而新窗口只有 `reopen` 给得了（那是人/服务的一步，`replay` 不该自己去开窗）。
+
+
+def _two_stubs(tmp_path, dead_responses, live_responses):
+    """两个桩 MCP（各有自己的流水线）—— 「换了会话」这件事必须落在**两条流水线**上才看得见。"""
+    (tmp_path / "dead").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "live").mkdir(parents=True, exist_ok=True)
+    dead, dead_log = _stub(tmp_path / "dead", dead_responses)
+    live, live_log = _stub(tmp_path / "live", live_responses)
+    return dead, dead_log, live, live_log
+
+
+def test_a_replay_that_can_swap_its_session_gets_a_new_one(tmp_path):
+    """给了 `fresh` → 第二遍**在新会话上**跑（判据落在两个桩各自的流水线上）。"""
+    rows = _walk_rows()
+    dead, dead_log, live, live_log = _two_stubs(
+        tmp_path,
+        {"goto": [{"error": "连不上 127.0.0.1:9222"}]},
+        {"observe": _pages_for(rows)})
+    asked = []
+
+    def fresh(old):
+        asked.append(old)
+        return live
+
+    try:
+        out = browser_agent.replay(dead, rows, alive=lambda: False, fresh=fresh)
+        calls_dead, calls_live = _calls(dead_log), _calls(live_log)
+    finally:
+        dead.close()
+        live.close()
+
+    assert asked == [dead], "换会话只该在**两次尝试之间**发生一次：%r" % asked
+    assert out["done"] == 2, out
+    assert [c["name"] for c in calls_dead] == ["goto"], calls_dead
+    assert [c["name"] for c in calls_live] == ["goto", "observe", "click", "observe"], \
+        calls_live
+
+
+def test_a_session_that_cannot_be_swapped_is_not_fatal(tmp_path):
+    """换不到（抛）**不是致命错**：沿用旧会话接着重来（老样子 3 遍），但**要说出来**。
+
+    不说出来的后果很具体：读账的人看到「重来 3 遍都没走完」，会以为是窗口的问题 ——
+    其实是**没人能给它一个新会话**（那两件事的下一步完全不同）。
+    """
+    def broken(_old):
+        raise RuntimeError("起不了新会话")
+
+    rows = _walk_rows()
+    out, calls = _replay(tmp_path, rows,
+                         {"goto": [{"error": "连不上 127.0.0.1:9222"}]},
+                         alive=lambda: False, fresh=broken)
+    assert [c["name"] for c in calls].count("goto") == 3, calls
+    assert "换会话" in out["why"] and "起不了新会话" in out["why"], out["why"]
+
+
+def test_a_resume_whose_window_died_stops_before_asking_the_model(tmp_path):
+    """重放中途窗口没了 → **就地停**（`window_gone`），**不去问模型那一轮**。
+
+    模型看到的是一个死窗口；再问它一轮，工具接着失败两次之后我们还是停在同一处 ——
+    那一轮是白花的（而这是个真窗口 + 真模型的钱）。
+    判据：`fake.calls == []`（**一次模型调用都没发生**）。
+    """
+    rows = _walk_rows()
+    journey, fake, calls = _run(tmp_path, {"goto": [{"error": "连不上 127.0.0.1:9222"}]},
+                                [{"content": "接着探", "calls": []}],
+                                resume_from=rows, window_alive=lambda: False)
+    assert journey.stop_reason == "window_gone", journey.stop_reason
+    assert fake.calls == [], "窗口都死了还去问模型：%d 轮" % len(fake.calls)
+    assert [c["name"] for c in calls] == ["goto"] * 3, calls
+
+
+def test_without_a_window_probe_two_failures_do_not_invent_a_stop(tmp_path):
+    """没接「窗口还活着吗」那根线 → **不知道**（不是「死了」）：两次失败只是两次失败。
+
+    不接那根线时**不许**编一个停因出来：「没接线」被读成「窗口死了」，
+    会让人去重开一个本来好好的窗口（G5 的负例）。
+    """
+    journey, _, _ = _run(tmp_path, {"click": [{"error": "没有找到选择器 #ghost"}]},
+                         _dead_click_turns(2))          # window_alive 不给 = None
+    assert journey.stop_reason == "model_done", journey.stop_reason

@@ -1101,3 +1101,248 @@ def test_a_retry_that_sees_the_success_text_wins(tmp_path):
     note = out.get("explore_attempts_note") or ""
     assert "第 1 趟" in note and "第 2 趟" in note, note
     assert "没见到成功文案" in note and "见到了成功文案" in note, note
+
+
+# ═══════════ Task 6：接续跑接进图里（job 级预算 / 重放前缀 / 窗口死）═══════════
+#
+# 图这一层管三件（设计注 §1.7 / §1.8）：
+#   ① **预算改 job 级累计** —— 窗口反复死时，「防跑飞」那根线不许每次都从零开始；
+#   ② **重放前缀**（`reopen` 从账本切出来的那段）要真的交到探路手里，并**先**摆到闸口上；
+#   ③ **窗口死是一等停因** —— `window_gone` 与「预算走完」的处置**相反**，不许混成一个。
+
+
+def _resume_rows():
+    """一段**能切出前缀**的账（形状照 `browser_agent.replayable_prefix` 要的那样）。"""
+    return [
+        {"state": "landing", "action": "goto", "target": {"url": URL},
+         "result": {"ok": True, "url": URL}, "note": "打开了 %s" % URL, "origin": "model"},
+        {"state": "landing", "action": "observe", "target": {},
+         "result": {"ok": True, "url": URL, "page_text_head": "Get Started 先看看"},
+         "note": "看了一眼页面", "origin": "model"},
+    ]
+
+
+def _books(*, stop_reason, saw_success=False, extra=()):
+    """一本账：停因给了，另外至少有一条 observe（否则「见到成功文案没有」判不出来）。"""
+    book = _journey(stop_reason=stop_reason)
+    book.steps.append({"state": "landing", "action": "observe", "target": None,
+                       "result": {"ok": True,
+                                  "page_text_head": ("… " + SUCCESS + " …") if saw_success
+                                  else "Get Started … 别的什么也没有"},
+                       "note": "看了一眼页面"})
+    book.steps.extend(extra)
+    return book
+
+
+def test_a_window_that_died_is_its_own_end_reason_not_a_plain_unfinished_explore(tmp_path):
+    """`window_gone` → `END_WINDOW_GONE`（**不是** `explore_unfinished`）。
+
+    这两件事的处置**相反**：窗口死了该续跑（账本还在，重开一个窗口就能接着走）；
+    预算走完了续跑只是再烧一次（该人看）。今天两者都落在 `explore_unfinished` 里 ——
+    `reopen` 于是分不出「值得接」与「接了也白接」。
+    """
+    deps, rec = _deps(journey=_books(stop_reason="window_gone"))
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "window_gone", out.get("end_note")
+    assert out["end_reason"] != "explore_unfinished"
+    assert list(out["visits"])[-1] == "explore", out["visits"]
+
+
+def test_a_budget_that_ran_out_is_still_a_plain_unfinished_explore(tmp_path):
+    """反例（互斥的那一半）：预算走完**照旧**是 `explore_unfinished`，而且**不再重探**。
+
+    预算已经花掉了，重探只会拿一个更小的预算再试一遍（job 级累计之后尤其如此）。
+    """
+    deps, rec = _deps(journey=_books(stop_reason="budget_steps"))
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "explore_unfinished", out.get("end_note")
+    assert len(rec.explore) == 1, "预算走完了还去重探：%d 趟" % len(rec.explore)
+
+
+def test_a_window_that_died_does_not_launch_more_browser_passes(tmp_path):
+    """**裁定**（Task 3 遗留 2）：窗口死了**不再重探**。
+
+    原先的重探只认「这一趟没见到成功文案」，而窗口死掉的那一趟当然也没见到 ——
+    于是它会**再开 2 趟**，每趟都要起一个会话，而窗口已经不在了。
+    重探对「窗口没了」这件事什么也做不到：那是 `reopen` 的事。
+    """
+    deps, rec = _deps(journey=_books(stop_reason="window_gone"))
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert len(rec.explore) == 1, "窗口死了还去重探：%d 趟" % len(rec.explore)
+    assert out["end_reason"] == "window_gone", out.get("end_note")
+
+
+def test_a_plan_that_stalled_still_gets_its_bounded_retries(tmp_path):
+    """**裁定**（同一件遗留的另一半）：计划停滞**照旧重探**。
+
+    为什么留着：停滞是「这一趟在这条路上没走通」的一种，换个随机答案有可能走通
+    （重探当初就是为这个加的）。为什么它不失控：job 级预算（§1.8）封住总消耗，
+    `explore_spent.attempts` 把「探了几趟」记在明面上 —— 代价是**记着的**，不是隐形的。
+    """
+    deps, rec = _deps(journey=_books(stop_reason="plan_stalled"))
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert len(rec.explore) == 3, "第一次 + 最多 2 次重探：%d" % len(rec.explore)
+    assert out["end_reason"] == "explore_unfinished", out.get("end_note")
+    assert out["explore_spent"]["attempts"] == 3, out["explore_spent"]
+
+
+def test_the_explore_gets_the_prefix_that_the_service_put_in_the_state(tmp_path):
+    """`reopen` 之后第二次进 `explore`：那段前缀**真的交到了探路手里**。
+
+    前缀是 `reopen` 从账本切出来打进状态的（`update_state`）—— 这里照同一条路走一遍。
+    ⚠️ 没接那根线时 `window_alive` 是 `None`（**不编**一个「窗口活着」的假回调）。
+    """
+    rows = _resume_rows()
+
+    def alive():
+        return True
+
+    deps, rec = _deps(window_alive=alive)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, {**_brief(tmp_path), "resume_from": rows,
+                               "resume_note": "账本上这 2 行都满足重放的判据（R1–R4）"})
+
+    assert rec.explore[0]["kw"].get("resume_from") == rows, rec.explore[0]["kw"]
+    assert rec.explore[0]["kw"].get("window_alive") is alive, "窗口层那根线没转交给探路"
+
+
+def test_the_gate_shows_what_is_about_to_be_replayed_before_the_node_starts(tmp_path):
+    """重放摘要挂在**闸口**上，而且**节点开工前**就有（A3）。
+
+    为什么必须提前：人是在这一步之前点「继续」的 —— 他得先知道「系统打算照账本
+    重走哪几步、走到哪儿停下、为什么停下」，而不是等它走完再听汇报。
+    """
+    # 那几行**真的**切一遍（边界理由用 `replayable_prefix` 自己产的那句 ——
+    # 手写一句「像边界理由的话」测的是我的措辞，不是这条接线）。
+    rows = _resume_rows() + [{"state": "landing", "action": "click",
+                              "target": {"selectors": ["#submit"], "text": "提交"},
+                              "result": {"ok": True}, "note": "点了「提交」", "origin": "model"}]
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=URL)
+    assert prefix == rows[:2] and "R2" in why, (prefix, why)     # 前提：边界就切在 R2 上
+
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    payloads, _ = _drive(app, cfg, {**_brief(tmp_path), "resume_from": prefix,
+                                    "resume_note": why})
+
+    gate = payloads[1]
+    assert gate["step"] == "explore", gate
+    assert "重放" in gate["facts"], gate["facts"]
+    # 没接那根线时 `window_alive` 是 `None`（**不编**一个「窗口活着」的假回调 —— R-31 同款）
+    assert rec.explore[0]["kw"].get("window_alive") is None, rec.explore[0]["kw"]
+    said = str(gate["facts"]["重放"])
+    # 条数**从切出来的那段现算**（不去手抄一个数）：R4 的修复轮会改 `goto` 的判定，
+    # 手抄的条数会在那之后变成一颗**跟这件事无关的**钉子。
+    assert "%d 行" % len(prefix) in said, said
+    assert "%d 个动作" % len(browser_agent.replay_actions(prefix)) in said, said
+    assert "R2" in said and "提交" in said, said          # 边界**及为什么**都在
+
+
+def test_the_explore_budget_is_the_whole_job_not_each_attempt(tmp_path):
+    """预算改 **job 级累计**：这个 job 前几趟花掉的，要**从这一次里减掉**（不许重置）。
+
+    重置的代价：窗口每死一次就给一份新预算 → 「防跑飞」那根线在窗口反复死的时候
+    **根本不响**（而窗口反复死正是这条线要管的那种情形）。
+    """
+    deps, rec = _deps()
+    caps = graph.Caps(explore_steps=30, explore_rounds=20)
+    app, cfg, _ = _build(deps=deps, caps=caps)
+    _drive(app, cfg, {**_brief(tmp_path),
+                      "explore_spent": {"steps": 20, "rounds": 3, "attempts": 2}})
+
+    budget = rec.explore[0]["budget"]
+    assert budget.max_steps == 10, budget          # 30 − 20
+    assert budget.max_rounds == 17, budget         # 20 − 3
+
+
+def test_the_first_pass_adds_its_spend_to_the_job_total(tmp_path):
+    """跑完把**这一趟的消耗加回去**（`explore_spent`），下一趟才有得减。"""
+    deps, rec = _deps()                            # 默认那本账：2 步、rounds=0
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["explore_spent"]["steps"] == 2, out["explore_spent"]
+    assert out["explore_spent"]["attempts"] == 1, out["explore_spent"]
+
+
+def test_replayed_steps_are_not_counted_as_steps_but_do_count_as_attempts(tmp_path):
+    """§1.8 的那条口径：重放的步**不计 `steps`**（不花模型的钱），**计 `attempts`**（有真动作）。"""
+    book = _journey()
+    book.steps.append({"state": "landing", "action": "click", "note": "点了「Get Started」",
+                       "target": {"selectors": ["#get-started"]},
+                       "result": {"ok": True}, "origin": "replay"})
+    deps, rec = _deps(journey=book)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["explore_spent"]["steps"] == 2, out["explore_spent"]      # 模型走的那两步
+    assert out["explore_spent"]["attempts"] == 2, out["explore_spent"]   # 一趟 + 一个重放的步
+
+
+# ── 人话（Task 3 遗留 1：抬头那半句）────────────────────────────────
+
+
+def test_a_stalled_plan_is_not_described_as_a_stop_nobody_can_explain():
+    """`plan_stalled` 是**说得出理由**的停 —— 抬头不许再写「停得不明不白」。
+
+    人话本来就没丢（在 `notes` 里，带「卡在第几步、卡在哪一句描述上」）；
+    错的是抬头那半句：它让读账的人以为系统不知道发生了什么。
+    ⚠️ 内部停因的 token（`plan_stalled`）也不许进人话（M-5）。
+    """
+    book = _journey(stop_reason="plan_stalled")
+    book.notes.append("计划停滞：连着 6 轮没有推进，位置停在第 2 步「填邮编」上")
+    say = graph._journey_say(book)
+
+    assert "不明不白" not in say, say
+    assert "计划停滞" in say, say
+    assert "填邮编" in say, say                 # 人话一条都没丢
+    assert "plan_stalled" not in say, say       # 内部 token 不进人话
+
+
+def test_a_window_that_died_says_so_in_the_human_sentence():
+    """同一个抬头的另一支：窗口没了也是说得出理由的停。"""
+    book = _journey(stop_reason="window_gone")
+    book.notes.append("窗口没了：连着 2 次工具调用都没成 —— 账本还留着，重开一个窗口就能接着走")
+    say = graph._journey_say(book)
+
+    assert "窗口" in say and "不明不白" not in say, say
+    assert "window_gone" not in say, say
+
+
+def test_the_human_sentence_says_how_much_was_replayed():
+    """A3：边界那句**必须出现在 `explore_say` 里**（人读的那句话），不只是 facts 里。"""
+    book = _journey()
+    book.replay = {"done": 4, "landed": URL,
+                   "why": "第 5 步「点『提交』」之后没有任何一次做成的观察（R2）"}
+    say = graph._journey_say(book)
+
+    assert "重放" in say, say
+    assert "4" in say, say
+    assert "R2" in say, say
+
+
+# ── 防漂：图的形状一个字都没动 ───────────────────────────────────────
+
+
+def test_the_graph_shape_did_not_move_in_this_round():
+    """本片往图里加东西，**形状**一个字节都不许动（Task 7 的预检 P 表点名了这三样）。"""
+    assert graph.NODES == ("intake", "explore", "draft", "lint", "selftest", "deliver",
+                           "diagnose")
+    assert graph.STEP_SAY == {
+        "intake": "开工前的确认",
+        "explore": "打开浏览器探路",
+        "draft": "写这一版 py",
+        "lint": "检查这一版有没有手拼 JS",
+        "selftest": "在真浏览器上按扰动序列自测",
+        "deliver": "把它写进站点目录",
+        "diagnose": "从自测记录里定位卡在哪",
+    }
+    assert graph.REVISABLE == ("lint", "selftest", "deliver")

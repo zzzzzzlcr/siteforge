@@ -64,7 +64,8 @@ from pydantic import BaseModel, Field
 
 from agent import browser_agent, graph, journal, measure, selftest
 from agent.graph import NODES, STEP_SAY
-from agent.state import END_DELIVERED, END_EXPLORE_UNFINISHED, END_NO_WINDOW
+from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_NO_WINDOW,
+                         END_PAUSED, END_WINDOW_GONE)
 
 __all__ = ["create_app", "app", "BitWindow", "Service", "Checkpointer",
            "QUEUED", "RUNNING", "WAITING", "DONE", "FAILED"]
@@ -93,8 +94,15 @@ BIT_API_PORT = 54345
 WINDOW_STEPS = {"explore": "intake", "selftest": "lint"}
 #: 反查：某个「上一步」下面接着的是哪一步（给 `failed` 那一支用）
 _AFTER = {prev: step for step, prev in WINDOW_STEPS.items()}
-#: 「停在那一步」的哪几种结局算**窗口**造成的（只有 DONE 的 job 需要看这个）
-WINDOW_END_REASONS = {"explore": (END_EXPLORE_UNFINISHED,), "selftest": (END_NO_WINDOW,)}
+#: 「停在那一步」的哪几种结局算**窗口**造成的（只有 DONE 的 job 需要看这个）。
+#:
+#: 探路那一支 Task 6 起收了三种（它们的**处置相同**：账本都还在盘上，重开一个窗口
+#: 就能接着走，不用从头再探）：
+#:   - `explore_unfinished`：没走完（预算到顶 / 模型没给出结论）；
+#:   - `paused`：**人喊停** —— 原先接不住，出路只剩「重新开一个任务」= 整轮重来；
+#:   - `window_gone`：窗口没了（§1.8 的**一等停因**，与「预算走完」分开报）。
+WINDOW_END_REASONS = {"explore": (END_EXPLORE_UNFINISHED, END_PAUSED, END_WINDOW_GONE),
+                      "selftest": (END_NO_WINDOW,)}
 
 
 # ─────────────────────────────── 窗口层（§4.6）───────────────────────────────
@@ -583,7 +591,8 @@ class Service:
         deps = graph.Deps(explore=self._explore_for(brief, job_id),
                           set_viewport=(self._viewport_cb(brief.get("ws_url"))
                                         if brief.get("set_viewport") else None),
-                          fresh_session=self._fresh_session_cb())
+                          fresh_session=self._fresh_session_cb(),
+                          window_alive=self._window_alive_cb())
         if self._graph_factory is not None:
             return self._graph_factory(brief, deps)
         return graph.build(checkpointer=self._check.get(), deps=deps)
@@ -608,7 +617,8 @@ class Service:
         #: 后面那一趟（它自己每步都写成功了）一路记下去 —— 那是**假 note**。
         journal_broken: list = []
 
-        def run(url, goal, budget=None, should_pause=None):
+        def run(url, goal, budget=None, should_pause=None, resume_from=None,
+                resume_note="", window_alive=None):
             started = measure._now()
             # ⚠️ **每一趟取一次号**（I-1）：`deps.explore` 在一次节点执行里最多被调
             # `graph.EXPLORE_ATTEMPTS`(=3) 趟（重探），而「一趟 = 一个 `attempt-<n>.jsonl`」。
@@ -620,7 +630,10 @@ class Service:
             try:
                 journey = browser_agent.explore(url, goal, budget=budget,
                                                 should_pause=should_pause, ws_url=ws_url,
-                                                on_step=on_step)
+                                                on_step=on_step,
+                                                resume_from=resume_from or None,
+                                                resume_note=resume_note or "",
+                                                window_alive=window_alive)
             except BaseException as exc:       # noqa: BLE001 —— `_Stop` 也是 BaseException
                 # 探路自己炸了 —— 也得留一行，不然「这一次尝试」凭空消失，
                 # 而消失的那一次恰恰是最该被看见的那一次。记完**原样再抛**。
@@ -640,6 +653,19 @@ class Service:
     # ── 旁路：运行产物（计划四 Task 1）──────────────────────────────
     # ⚠️ 这一整节都是**旁路**：它坏掉不许把主路带塌（同 Console 那片对 shooter 的规矩）。
     #    「记不上账」是可惜，「跑挂了」是另一件事 —— 两件事不能混成同一件。
+
+    def _window_alive_cb(self) -> Optional[Callable]:
+        """`Deps.window_alive`：问一句「窗口还活着吗」（§1.8）。零参数、**三态**。
+
+        ⚠️ **问接口，不猜文本**：探路那侧只在「工具连着失败几次」之后调它一次，
+        拿回来的 `False` 才是 `window_gone` 的证据（工具那句错误文字不作数）。
+        没接窗口层的部署返回 `None` = 这**不是一根线**，探路于是不会编一个停因出来
+        （与 `set_viewport` 那条同一条规矩：给不了就说给不了，不许塞一个假回调顶上）。
+        """
+        window = self._window
+        if window is None or not hasattr(window, "alive"):
+            return None
+        return window.alive
 
     def _explore_dir(self, job_id: str) -> pathlib.Path:
         """`runtime/explore/<job_id>/`。⚠️ `job_id` 是从 HTTP 进来的字符串 —— 必须挡住 `../`，
@@ -721,9 +747,14 @@ class Service:
     def _note_attempt(self, job_id: str, *, started: str, journey, boom: BaseException = None) -> None:
         """一次尝试收场 → `attempts.jsonl` 一行（墙钟 / 轮数 / 步数 / 停因）。
 
-        ⚠️ 被人打断那一路 `rounds` 是**拿不到**的（`_Stop` 穿过 `run_tool_loop`）——
-        记 `None`（= 没量到），**不记 0**：0 会被读成「这一趟没花轮数」，于是 M3 偏低，
+        ⚠️ **`rounds` 没量到的那些路一律记 `None`，不许记 0**（Task 3 遗留 3）。
+        `_Stop`（人喊停 / 预算到顶 / 计划停滞 / **窗口没了**）一穿出 `run_tool_loop`，
+        `rounds` 那个局部变量就没了 —— 记 0 会被读成「这一趟没花轮数」，于是 M3 偏低，
         而偏低看起来像好消息（`measure.record_attempt` 的 docstring）。
+
+        ⚠️ 判据走 `browser_agent.rounds_measured(journey)`，**不在这里再比一次
+        `stop_reason == "paused"`**：那个写法在本片新增 `window_gone` 之后就已经漏了
+        （复审 I-5 点名的正是这条遗留）。两处各写一份 = 早晚分家。
         """
         if not job_id:
             return
@@ -735,11 +766,11 @@ class Service:
                                        rounds=None, steps=None, path_shape=None,
                                        stop_reason="failed", notes=["这一趟连账本都没生成：" + why])
                 return
-            paused = str(getattr(journey, "stop_reason", "")) == "paused"
+            measured = browser_agent.rounds_measured(journey)
             steps = list(getattr(journey, "steps", []) or [])
             measure.record_attempt(
                 path, started_at=started, ended_at=measure._now(),
-                rounds=None if paused else int(getattr(journey, "rounds", 0) or 0),
+                rounds=int(getattr(journey, "rounds", 0) or 0) if measured else None,
                 steps=len(steps),
                 stop_reason=str(getattr(journey, "stop_reason", "") or ""),
                 # M9 的载体（**一次样本一存**）：分支站的两次跑长度不同，只有存下每趟的形状，
@@ -1239,9 +1270,12 @@ class Service:
 
         接得住的是**窗口那一支**，两步：
         - **自测**（`no_window`）：探路那一段**不重来**（账本在 checkpoint 里）；
-        - **探路**（`explore_unfinished`，或者探路里**炸了**的那个 `failed`）：
-          探路**要从头再走一遍** —— 页面状态没了，账本必须重新收。这一句必须用**人话**
-          说给调用方听（它意味着又一次真窗口 + 模型的钱），不许含糊过去。
+        - **探路**（`explore_unfinished` / `paused` / `window_gone`，或者探路里**炸了**
+          的那个 `failed`）：探路重跑，但**不是从头再探**（Task 6 / §1.9）——
+          `reopen` 从**最新那本账**切出可重放的前缀（`replayable_prefix`，R1–R4），
+          第二次进 `explore` 时先照它走回去（**0 模型调用**），再从断点接着探。
+          那句人话必须说清这件事（重放了几步、停在哪、接着探）—— 它意味着又一次真窗口，
+          不许含糊过去。
         """
         job = self._jobs.get(job_id) or self._recover(job_id)
         if job is None:
@@ -1266,9 +1300,17 @@ class Service:
         patch = {"ws_url": body.ws_url, "end_reason": "", "end_note": ""}
         if body.entry_url:
             patch["entry_url"] = body.entry_url
+        say = "窗口重开了，从上次停下的地方接着跑（探路那一段不重来）。"
         if step == "explore":
             patch["explore_say"] = ""          # 上一趟探路的说法收掉（新的探路会写新的）
             patch["end_note"] = ""
+            # **接着走，不是从头再探**（§1.9）：从最新那本账切出可重放的前缀。
+            # ⚠️ 这两样**无条件写**（切不出来就是 `None`）：上一趟 `reopen` 留下的前缀
+            # 不许留在状态里被这一次复用 —— 那是**别的窗口**上的账。
+            prefix, note = self._resume_for(job_id, job.brief)
+            patch["resume_from"] = list(prefix) or None
+            patch["resume_note"] = note
+            say = self._reopen_explore_say(prefix, note)
         with job.lock:
             job.brief.update({"ws_url": body.ws_url})
             job.brief.pop("_failed_at", None)
@@ -1289,13 +1331,63 @@ class Service:
             job.graph = self._build_graph(job.brief, job_id)
             job.status = RUNNING
             job.error = None                    # 上一次那个失败不再是这个 job 的现状
-            job.say = ("窗口重开了，探路要从头再走一遍（页面状态没了，账本得重新收）——"
-                       "你之前说的话和开场白都还在。" if step == "explore" else
-                       "窗口重开了，从上次停下的地方接着跑（探路那一段不重来）。")
+            job.say = say
         with self._check.lock:
             job.graph.update_state(self._cfg(job_id), patch, as_node=resume_from)
         self._submit(job, None)                      # None = 「接着跑」，不是新的输入
         return self._view(job_id)
+
+    def _resume_for(self, job_id: str, brief: dict) -> tuple:
+        """能不能**接着走**：从**最新那本账**切出可重放的前缀（§1.9；切法归 Task 5 的 R1–R4）。
+
+        返回 `(前缀, 人话)`。前缀为空时，人话**说清为什么** —— 不静默。
+
+        ⚠️ **读不出来 = 没得重放，不是异常**（R-19 的判据）：账本不在、那是本空账、
+        缺 `success_text`（`replayable_prefix` 会抛）、盘读不动 —— 一律回到「从入口重探」
+        （也就是**今天那条路**，一个字节不差），只是**说出来**。账本在这条链上是**旁路**：
+        它坏掉不许把续跑带塌（与 `_journal_for` 那条规矩同源）。
+
+        ⚠️ 那些**读不出来的行**（被杀在写一半留下的半行）不算致命：`read` 把好行照读，
+        而重放自己那四条判据（尤其 R2「这一步之后得有做成的观察」）本来就会把
+        「尾巴上少了观察的动作」挡在边界之外 —— 所以照切，只在人话里说一句。
+        """
+        try:
+            books = journal.attempts(self._explore_root, job_id)
+            if not books:
+                return [], "这个 job 还没有账本（一趟都没记上）"
+            rows, skipped = journal.read(books[-1])
+            if not rows:
+                return [], "最新那本账是空的（%s）" % books[-1].name
+            # R4 要「走过的页面地址」：最后一趟的 `pages` 在 checkpoint 里（探路炸掉那一支没有）。
+            journey = dict(getattr(self._snapshot(job_id), "values", None) or {}).get("journey")
+            prefix, why = browser_agent.replayable_prefix(
+                rows, brief.get("success_text") or "",
+                entry_url=str(brief.get("url") or ""),
+                pages=list(getattr(journey, "pages", None) or []))
+            if skipped:
+                why += (" 另外：这本账里有 %d 行读不出来（多半是被杀在写一半的地方），"
+                        "能重放的是**读得出来的那一段**。" % len(skipped))
+            return list(prefix), why
+        except Exception as exc:                        # noqa: BLE001 —— 旁路，见 docstring
+            return [], ("账本读不出来（%s: %s）—— 这一次没有前缀可重放，探路从入口重新开始。"
+                        % (type(exc).__name__, exc))
+
+    @staticmethod
+    def _reopen_explore_say(prefix: list, note: str) -> str:
+        """`reopen` 之后那句人话（§1.9）：**说清重放了几步、停在哪、接着探**。
+
+        ⚠️ 原先那句是「探路要从头再走一遍」—— 在新形状下它是**假话**（账本还在，
+        能接着走），而且它把代价说大了（人以为要再花一整趟）。
+        """
+        if prefix:
+            return ("窗口重开了，探路**接着上一趟走**：先照账本重放 %d 行"
+                    "（其中 %d 个动作，0 模型调用），再从断点接着探 —— 不用从头再探一遍。"
+                    "停在这儿：%s" % (len(prefix),
+                                      len(browser_agent.replay_actions(prefix)),
+                                      note or "（没说明为什么停在这儿）"))
+        return ("窗口重开了，探路从入口重新开始（**这一次没有可重放的前缀**：%s）—— "
+                "你之前说的话和开场白都还在，图接着往下跑。"
+                % (note or "账本里没有读得出的段"))
 
     def _resume_point(self, job_id: str, view: dict) -> Optional[tuple]:
         """这个 job 能不能用「重开窗口 + 接着跑」接住？能就回 `(接在哪一步, 要重跑哪一步)`。
@@ -1334,7 +1426,8 @@ class Service:
     def _cannot_reopen_say(self, job_id: str, view: dict) -> str:
         """接不住时说的**人话**：这个任务现在什么形状、以及「重开窗口」接得住的是哪两种。"""
         can = ("能接住的是**窗口那一支**两种：①自测那一步发现窗口没了（探路不重来）；"
-               "②探路没走完、或者探路里炸了（探路要从头再走一遍）。")
+               "②探路没走完 / 人喊停 / 窗口没了、或者探路里炸了"
+               "（探路重跑，但**按账本接着走**，不是从头再探）。")
         if view["status"] in (QUEUED, RUNNING):
             return ("重开窗口要等这个任务停下来 —— 它现在是「%s」。%s"
                     % (self._status_say(view["status"]), can))

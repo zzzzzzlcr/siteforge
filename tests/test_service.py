@@ -96,8 +96,8 @@ def _deps(rec: Rec, tmp_path, *, inherit=None):
     为什么要接：载荷里的 `set_viewport` 是**服务**该给的东西（R-31）。桩要是自己造一根
     假的，这条测试就只证明了「桩给自己接了一根线」，证明不了服务那根线通到了窗口层。
     """
-    def explore(url, goal, budget=None, should_pause=None):
-        rec.explore.append({"url": url, "goal": goal})
+    def explore(url, goal, budget=None, should_pause=None, **kw):
+        rec.explore.append({"url": url, "goal": goal, "kw": kw})
         return _journey(url)
 
     def selftest_stub(py_path, ws_url, form_file, site, **kw):
@@ -1324,8 +1324,8 @@ def _scripted_deps(rec: Rec, tmp_path, script):
     """`explore` 按 `script` 依次来：返回一个 Journey，或者抛一个异常。"""
     calls = {"n": 0}
 
-    def explore(url, goal, budget=None, should_pause=None):
-        rec.explore.append({"url": url})
+    def explore(url, goal, budget=None, should_pause=None, **kw):
+        rec.explore.append({"url": url, "kw": kw})
         item = script[min(calls["n"], len(script) - 1)]
         calls["n"] += 1
         if isinstance(item, Exception):
@@ -1375,8 +1375,14 @@ def test_reopen_picks_up_a_run_whose_window_died_during_the_explore(tmp_path):
 
     r = client.post("/job/%s/reopen" % job_id, json={"ws_url": NEW_WS_URL})
     assert r.status_code == 200, r.text
-    assert "探路" in r.json()["say"] and ("重" in r.json()["say"] or "再走" in r.json()["say"]), \
-        "得用**人话**说清「探路要从头再走一遍」：%s" % r.json()["say"]
+    # Task 6 起：这句人话**不再**是「从头再走一遍」（账本在，能接着走）——
+    # 对着那句旧话反向断言，免得它哪天又漂回来（它对这一支是**假话**）。
+    say = r.json()["say"]
+    assert "探路" in say, say
+    assert "从头再走一遍" not in say, "那句旧话在新形状下是错的：%s" % say
+    assert "重放" in say and "接着" in say, say
+    # 这一次**没有**账本（这个桩不写 journal）→ 前缀为空，但整条路与今天一样
+    assert rec.explore[-1]["kw"].get("resume_from") is None, rec.explore[-1]["kw"]
 
     view = _reply_until_done(client, job_id)
     assert view["status"] == "done", view
@@ -1810,3 +1816,223 @@ def test_a_window_that_cannot_be_refreshed_keeps_the_original_and_says_so(capsys
     brief2 = {"ws_url": "ws://x/y"}
     service.Service(window=None)._clean_window_for_explore(brief2)
     assert brief2["ws_url"] == "ws://x/y"
+
+
+# ═══════════ Task 6：接续跑（`reopen` 读账本 → 重放前缀）+ 窗口死的一等停因 ═══════════
+#
+# 三条（设计注 §1.8 / §1.9），全用桩（**不开浏览器**）：
+#   ① `reopen` 从**最新那本账**切出可重放的前缀，交给探路 —— 而且要说得出「重放了几步、
+#      停在哪、接着探」；
+#   ② `END_PAUSED` / `END_WINDOW_GONE` 都接得住（账本还在，重开窗口就能接着走）；
+#   ③ 那次尝试的账（`attempts.jsonl`）里，**没量到的轮数不许写成 0**。
+
+
+def _resumable_journey(*, stop_reason="window_gone"):
+    """一本**切得出前缀**的账（goto → observe → click → observe），形状照真账本。"""
+    steps = [
+        {"state": "start", "action": "goto", "target": {"url": URL},
+         "result": {"ok": True, "url": URL}, "note": "打开了 %s" % URL, "origin": "model"},
+        {"state": "start", "action": "observe", "target": {},
+         "result": {"ok": True, "url": URL, "page_text_head": "Get Started 先看看你能省多少"},
+         "note": "看了一眼页面", "origin": "model"},
+        {"state": "start", "action": "click",
+         "target": {"text": "Get Started", "role": "button", "near": None,
+                    "selectors": ["#get-started"], "above_fold_only": False, "frame_id": ""},
+         "result": {"ok": True, "selector": "#get-started"},
+         "note": "点了「Get Started」", "origin": "model"},
+        {"state": "funnel", "action": "observe", "target": {},
+         "result": {"ok": True, "url": URL, "page_text_head": "填一下你的邮编"},
+         "note": "看了一眼页面", "origin": "model"},
+    ]
+    return browser_agent.Journey(steps=steps, notes=["页面变了：现在是「Get Started」那一页"],
+                                 stop_reason=stop_reason)
+
+
+def _explore_spy(script, seen, *, journal=True):
+    """`browser_agent.explore` 的替身：记下收到的旋钮，并（照真线）把每一步交给 `on_step`。
+
+    `journal=False` 造的是**另一种形状**：那一趟一步都没记上（`attempt-*.jsonl` 在、空）。
+    """
+    calls = {"n": 0}
+
+    def explore(url, goal, budget=None, should_pause=None, on_step=None, **kw):
+        seen.append({"url": url, "on_step": on_step is not None, **kw})
+        journey = script[min(calls["n"], len(script) - 1)]
+        calls["n"] += 1
+        if journal:
+            for step in journey.steps:
+                if on_step is not None:
+                    on_step(step)
+        return journey
+
+    return explore
+
+
+def _client_with_the_services_explore(rec, tmp_path, *, window=None, saver=None):
+    """真图 + **服务自己那根探路线**（journal 就写在 `_explore_for` 里）+ 桩自测。
+
+    ⚠️ 不能用自造一个探路桩的工厂：那样「服务那条线通不通」永远测不到，
+    而这一节要验的正是**服务**从账本里切前缀这件事（R-19 那条判据的另一半）。
+    """
+    saver = saver or InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)
+
+    def factory(brief, deps):
+        return graph.build(checkpointer=saver, deps=graph.Deps(
+            explore=deps.explore, selftest=_selftest_stub(rec),
+            set_viewport=deps.set_viewport, window_alive=deps.window_alive))
+    return _client(graph_factory=factory, window=window if window is not None else StubWindow(),
+                   checkpointer=saver, explore_dir=str(tmp_path / "explore"))
+
+
+def test_reopen_replays_the_prefix_the_journal_already_has(tmp_path, monkeypatch):
+    """**接续跑的正身**：`reopen` 从账本切出前缀 → 交给探路 → 人话里说清。
+
+    三处一起看才有意义：①账本真被读了（前缀就是账上那 4 行）；②它**真的到了**
+    `browser_agent.explore` 手里（不是只在服务里算了一下）；③回的那句话**不再是**
+    「探路要从头再走一遍」。
+    """
+    seen: list = []
+    monkeypatch.setattr(browser_agent, "explore",
+                        _explore_spy([_resumable_journey(), _journey()], seen))
+    rec = Rec()
+    client = _client_with_the_services_explore(rec, tmp_path)
+
+    job_id = client.post("/run", json=_brief(
+        tmp_path, allow_skips=["country", "viewport"])).json()["job_id"]
+    view = _reply_until_done(client, job_id)
+    assert view["result"]["end_reason"] == "window_gone", view["result"]
+    assert len(seen) == 1, seen
+
+    r = client.post("/job/%s/reopen" % job_id, json={"ws_url": NEW_WS_URL})
+    assert r.status_code == 200, r.text
+    say = r.json()["say"]
+    assert "探路" in say, say
+    assert "从头再走一遍" not in say, "那句旧话在新形状下是错的：%s" % say
+    assert "重放" in say and "接着" in say, say
+
+    view = _reply_until_done(client, job_id)
+    assert view["status"] == "done", view
+    assert len(seen) == 2, seen
+    assert seen[1]["resume_from"] == _resumable_journey().steps, seen[1].get("resume_from")
+    assert seen[1]["window_alive"] is not None, "这个部署接了窗口层，就该把那根线接上"
+
+
+def test_a_job_without_a_usable_journal_resumes_without_a_prefix(tmp_path, monkeypatch):
+    """**负例**（R-19 的判据）：账本读不出东西 → `resume_from is None`，整条路与今天一样。
+
+    两种形状各来一次：①账本在、**一行都没有**（那一趟一步都没记上）；
+    ②账本**读不动**（`journal.read` 抛）—— 旁路坏掉不许把续跑带塌，而且**不许静默**。
+    """
+    for label in ("空账本", "读不动"):
+        seen: list = []
+        monkeypatch.setattr(browser_agent, "explore",
+                            _explore_spy([_resumable_journey(), _journey()], seen,
+                                         journal=(label == "读不动")))
+        if label == "读不动":
+            def broken(path):
+                raise OSError("账本读不动了")
+            monkeypatch.setattr(service.journal, "read", broken)
+        rec = Rec()
+        client = _client_with_the_services_explore(rec, tmp_path)
+
+        job_id = client.post("/run", json=_brief(
+            tmp_path, allow_skips=["country", "viewport"])).json()["job_id"]
+        view = _reply_until_done(client, job_id)
+        assert view["result"]["end_reason"] == "window_gone", (label, view["result"])
+
+        r = client.post("/job/%s/reopen" % job_id, json={"ws_url": NEW_WS_URL})
+        assert r.status_code == 200, (label, r.text)
+        _reply_until_done(client, job_id)              # 服务是异步的：等这一趟真的跑完
+        assert len(seen) == 2, (label, seen)
+        assert seen[1]["resume_from"] is None, (label, seen[1].get("resume_from"))
+
+
+def test_the_reopen_note_says_why_there_is_nothing_to_replay(tmp_path, monkeypatch):
+    """账本读不动时**不许静默**：那一次的前缀是空的，这件事要写在 `resume_note` 里。"""
+    seen: list = []
+    monkeypatch.setattr(browser_agent, "explore",
+                        _explore_spy([_resumable_journey(), _journey()], seen))
+
+    def broken(path):
+        raise OSError("盘满了")
+
+    monkeypatch.setattr(service.journal, "read", broken)
+    rec = Rec()
+    client = _client_with_the_services_explore(rec, tmp_path)
+    job_id = client.post("/run", json=_brief(
+        tmp_path, allow_skips=["country", "viewport"])).json()["job_id"]
+    _reply_until_done(client, job_id)
+    client.post("/job/%s/reopen" % job_id, json={"ws_url": NEW_WS_URL})
+
+    values = dict(client.app.state.service._snapshot(job_id).values or {})
+    assert values.get("resume_from") in (None, [], ()), values.get("resume_from")
+    note = str(values.get("resume_note") or "")
+    assert "账本" in note and "盘满了" in note, note
+
+
+def test_a_paused_explore_is_resumable_now(tmp_path, monkeypatch):
+    """**今天这条是红的**：`END_PAUSED` 不在 `WINDOW_END_REASONS["explore"]` 里 → 409。
+
+    人喊停之后**账本没丢** —— 重开一个窗口就能接着走（Console 那边抱怨的正是这条）。
+    """
+    seen: list = []
+    monkeypatch.setattr(browser_agent, "explore",
+                        _explore_spy([_resumable_journey(stop_reason="paused"), _journey()],
+                                     seen))
+    rec = Rec()
+    client = _client_with_the_services_explore(rec, tmp_path)
+
+    job_id = client.post("/run", json=_brief(
+        tmp_path, allow_skips=["country", "viewport"])).json()["job_id"]
+    view = _reply_until_done(client, job_id)
+    assert view["result"]["end_reason"] == "paused", view["result"]
+
+    r = client.post("/job/%s/reopen" % job_id, json={"ws_url": NEW_WS_URL})
+    assert r.status_code == 200, "人喊停之后接不下去：%s" % r.text
+    view = _reply_until_done(client, job_id)
+    assert view["delivered"] is True, view
+
+
+def test_the_explore_gets_a_way_to_ask_whether_the_window_is_still_there(tmp_path, monkeypatch):
+    """`Deps.window_alive`（§1.8）：服务侧现成的那根线（`BitWindow.alive()`）接到探路上。
+
+    判据是**真去问了窗口层**（`StubWindow.probes` 涨了），不是「有个可调用的东西」。
+    """
+    seen: list = []
+    monkeypatch.setattr(browser_agent, "explore",
+                        _explore_spy([_resumable_journey(), _journey()], seen))
+    win = StubWindow(alive=True)
+    rec = Rec()
+    client = _client_with_the_services_explore(rec, tmp_path, window=win)
+
+    job_id = client.post("/run", json=_brief(
+        tmp_path, allow_skips=["country", "viewport"])).json()["job_id"]
+    _reply_until_done(client, job_id)
+
+    probe = seen[0].get("window_alive")
+    assert callable(probe), seen[0]
+    before = win.probes
+    assert probe() is True
+    assert win.probes == before + 1, "没问窗口层 —— 那是自己编了一个答案"
+
+
+def test_a_stop_that_lost_the_round_count_is_not_written_down_as_a_zero(tmp_path):
+    """Task 3 遗留 3：`rounds` 的 `0` 有两种意思 —— **真的 0 轮** 与 **没量到**。
+
+    `_Stop` 一穿出工具循环，`rounds` 那个局部变量就没了（与是哪一条停因无关）——
+    写成真 0 会被读成「这一趟没花轮数」：M3 于是偏低，而**偏低看起来像好消息**。
+    """
+    svc = service.Service(explore_dir=str(tmp_path / "explore"))
+    for stop in ("paused", "budget_steps", "plan_stalled", "window_gone"):
+        svc._note_attempt("job-lost", started=measure._now(),
+                          journey=browser_agent.Journey(stop_reason=stop, rounds=0))
+    svc._note_attempt("job-real", started=measure._now(),
+                      journey=browser_agent.Journey(stop_reason="model_done", rounds=7))
+
+    def rows(job):
+        p = tmp_path / "explore" / job / "attempts.jsonl"
+        return [json.loads(x) for x in p.read_text(encoding="utf-8").strip().splitlines()]
+
+    lost = rows("job-lost")
+    assert [r["rounds"] for r in lost] == [None] * 4, lost
+    assert rows("job-real")[-1]["rounds"] == 7, rows("job-real")

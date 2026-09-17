@@ -28,7 +28,8 @@ __all__ = ["SiteState", "Caps", "GENERATOR", "MODE_BUILD", "MODE_FIX",
            "CONTINUE", "STOP", "REVISE", "human_reply",
            "END_DELIVERED", "END_HUMAN_STOP", "END_NO_BRIEF", "END_NO_SUCCESS_TEXT",
            "END_MISSING_KNOB", "END_REVISION_CAP", "END_EXPLORE_UNFINISHED",
-           "END_PAUSED", "END_DRAFT_FAILED", "END_LINT_CAP", "END_SELFTEST_CAP",
+           "END_WINDOW_GONE", "END_PAUSED", "END_DRAFT_FAILED", "END_LINT_CAP",
+           "END_SELFTEST_CAP",
            "END_NO_WINDOW", "END_DELIVER_LINT", "FINISHED_EXPLORATION"]
 
 #: §5.3 的 `generator`。与 `fixtures/reference_site.py` 里那份参考产物同一个值。
@@ -96,6 +97,11 @@ END_MISSING_KNOB = "missing_knob"
 END_REVISION_CAP = "revision_cap"
 #: 探路没走完（预算到顶 / 模型没给出结论）—— 不许拿半份账本去写 py（R0）
 END_EXPLORE_UNFINISHED = "explore_unfinished"
+#: **窗口没了**（工具连着失败几次 + 窗口服务说它不在了）—— 与上面那条**分开**（§1.8）。
+#: 为什么必须分开：两条的处置**相反**。窗口没了 → 该续跑（账本还在盘上，重开一个窗口
+#: 就能从断点接着走）；预算走完了 → 续跑只是再烧一次，该人看。混成一个的话，
+#: `reopen` 分不出「值得接」与「接了也白接」。
+END_WINDOW_GONE = "window_gone"
 #: 人在浏览器里喊的停（§6.2 的 `should_pause`）—— **不是失败**
 END_PAUSED = "paused"
 #: 写不出 py（最常见的一种：没人说「什么算成功」—— 成功判据只有人知道，§6.1）
@@ -124,6 +130,11 @@ class Caps:
     「自信地错」的信号）。真到那一步，图停，把人和证据留在原地。
 
     `explore_steps` / `explore_rounds` 是 Task 5 那两道上限，图**照传**（不砍能力，P5）。
+
+    ⚠️ **它们是 job 级累计的上限，不是「每次尝试」的上限**（§1.8）。今天按「每次」算，
+    窗口反复死的时候**每次重试都给一份新预算** ⇒ 「防跑飞」那根线根本不响 ——
+    而窗口反复死正是这条线唯一要管的那种情形。所以 `_explore` 每次都把
+    `state["explore_spent"]` 里累计的那部分**减掉**再用。
     """
 
     #: lint 打回最多几次（首版不算）。第 N+1 次不过就停。
@@ -186,6 +197,18 @@ class SiteState(TypedDict, total=False):
 
     # ── explore ───────────────────────────────────────────────
     journey: Optional[Journey]
+    #: **这个 job 在探路上已经花掉多少**（`{steps, rounds, attempts}`）—— job 级累计（§1.8），
+    #: 由 `_explore` 每跑完一趟加回去，下一次从这里减。重放的步不计 `steps`（不花模型的钱）、
+    #: 计 `attempts`（有真动作、有代价）。
+    explore_spent: Optional[dict]
+    #: **续跑**（§1.9）：`reopen` 从**最新那本账**切出来的可重放前缀（`Journey.steps` 那样的行），
+    #: 以及「为什么停在这儿」那句人话（`replayable_prefix` 的第二返回值）。
+    #:
+    #: 为什么这两样进状态而不是进 `Deps`：它们是**数据**（可 checkpointer 序列化），
+    #: 而且「这一次跑的是哪一段前缀」本来就该跟着这次运行走（可读、可回放、可审计）。
+    #: 账本读不出来时**留 None**：那一次就与今天一样从头探，**不猜**一段前缀出来（R-19）。
+    resume_from: Optional[list]
+    resume_note: Optional[str]
     explore_say: str              # 人话：探路是怎么结束的
     #: 这一趟探路**在页面上见到过成功文案吗**（三态：True / False / None=判不了）。
     #: ⚠️ 原先**没有任何一处问过这件事** —— 于是拿一条死胡同的账本去定稿+自测必然白跑

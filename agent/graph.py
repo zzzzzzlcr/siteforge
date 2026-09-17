@@ -107,7 +107,7 @@ from agent import template
 from agent.state import (
     END_DELIVERED, END_DELIVER_LINT, END_DRAFT_FAILED, END_EXPLORE_UNFINISHED,
     END_HUMAN_STOP, END_LINT_CAP, END_MISSING_KNOB, END_NO_BRIEF, END_NO_SUCCESS_TEXT,
-    END_NO_WINDOW, END_PAUSED, END_REVISION_CAP, END_SELFTEST_CAP,
+    END_NO_WINDOW, END_PAUSED, END_REVISION_CAP, END_SELFTEST_CAP, END_WINDOW_GONE,
     FINISHED_EXPLORATION, GENERATOR, MODE_BUILD, MODE_FIX, REVISE, STOP, Caps, SiteState,
     human_reply,
 )
@@ -200,6 +200,11 @@ class Deps:
       - `set_viewport`：**窗口层**那根线（`POST /browser/update`）。扰动自测的第 4 遍
         「换个窗口大小再跑」只有调用方够得着，产物和 cdp 内核都动不了窗口（R-5）。
         没接上时的处置见 `_missing_knobs()`：**停下并点名**，不是跳过、不是假装过了。
+      - `window_alive`：**窗口层**那根「窗口还活着吗」的线（§1.8）——
+        `window_alive() -> True / False / None`（三态：`None` = 问不出来）。
+        探路**连着几次工具失败**时问它一次：说死了 → `_Stop("window_gone")`。没接上
+        （或问不出来）时的处置是**不停**：不编一个停因出来（那会把「选择器没找到」
+        记成「窗口死了」，而重开窗口恰恰解决不了它）。
       - `fresh_session`：**窗口层**的另一根线（R-F1）。`fresh_session() -> ws_url`：
         关掉旧窗口、开一个**干净**的（启动时清 cookie/缓存 —— 生产每单都是这么起的），
         返回新的 ws_url。自测在**探路之后**跑，探路的会话里 cookie 已经同意过，
@@ -216,6 +221,9 @@ class Deps:
     should_pause: Optional[Callable] = None
     set_viewport: Optional[Callable] = None
     fresh_session: Optional[Callable] = None
+    #: 「窗口还活着吗」（§1.8）。⚠️ **可调用的东西不进 checkpoint** —— 与 `should_pause`
+    #: 同一条规矩（状态里只放数据，回调一律挂在 `Deps` 上）。
+    window_alive: Optional[Callable] = None
 
 
 # ───────────────────────────── 人的那道闸 ─────────────────────────────
@@ -401,13 +409,20 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
         out["explore_reached_success"] = None      # 没探路 ⇒ **量不到**，不是「没走到」
         return out
 
-    budget = browser_agent.Budget(max_steps=caps.explore_steps, max_rounds=caps.explore_rounds)
+    spent = _explore_spent(state)
+    budget = _budget_left(caps, spent)
+    resume_from = list(state.get("resume_from") or [])
+    resume_note = str(state.get("resume_note") or "")
     say = ("接下来要打开真浏览器，把「%s」按这个目标走一遍：「%s」。"
            "这一步会动到真页面（点、填、滚），探完把「怎么走」记下来。" % (state["url"], state["goal"]))
-    out = _enter(state, caps, "explore", say,
-                 facts={"url": state["url"], "goal": state["goal"],
-                        "预算": "最多 %d 步 / %d 轮（防跑飞，不是省钱）"
-                                % (budget.max_steps, budget.max_rounds)})
+    if resume_from:
+        say += ("这一趟**接着上一趟走**：开头先照账本重放 %d 行（0 模型调用），再从断点接着探。"
+                % len(resume_from))
+    facts = {"url": state["url"], "goal": state["goal"],
+             "预算": _budget_say(budget, spent)}
+    if resume_from:
+        facts["重放"] = _resume_facts(resume_from, resume_note)
+    out = _enter(state, caps, "explore", say, facts=facts)
     if _held(out):
         return out
 
@@ -427,34 +442,60 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
     # 于是**不必先知道「哪个答案触发它」**。
     # 代价（控制器认了）：若那条路是地区/邮编决定的、重探永远走不通，
     # 最多白花 2 趟探索然后**停下如实报** —— 不会产出假成功，也不会无限重试。
+    #
+    # ⚠️ **Task 6 起多了一道闸**（`_worth_retrying`）：重探只对「这一趟是对这条路的一次
+    #    完整观察」有意义。窗口没了 / 预算花光了 / 人喊了停 —— 重探什么也做不到，
+    #    而每一趟都**要花一个真窗口**（一趟 ~150 秒，而窗口只活 25–33 分钟）。
     attempts = []
-    journey = deps.explore(state["url"], state["goal"], budget=budget,
-                           should_pause=deps.should_pause)
-    reached = _explore_reached_success(journey, state.get("success_text"))
-    attempts.append({"n": 1, "reached": reached, "steps": len(journey.steps),
-                     "stop": getattr(journey, "stop_reason", ""),
-                     "answers": _explore_answers(journey)})
+    journeys = []
+
+    def pass_once(n: int):
+        """探一趟，并把这一趟记进 `attempts`（重探那几趟与第一趟走的是同一条路）。"""
+        book = deps.explore(state["url"], state["goal"], budget=budget,
+                            should_pause=deps.should_pause,
+                            resume_from=resume_from or None,
+                            resume_note=resume_note,
+                            window_alive=deps.window_alive)
+        journeys.append(book)
+        attempts.append({"n": n,
+                         "reached": _explore_reached_success(book, state.get("success_text")),
+                         "steps": len(book.steps), "stop": getattr(book, "stop_reason", ""),
+                         "answers": _explore_answers(book)})
+        return book
+
+    journey = pass_once(1)
     for n in range(2, EXPLORE_ATTEMPTS + 1):
-        if reached is not False:
+        if not _worth_retrying(attempts[-1]["reached"], journey):
             break
         note = ("⚠️ 第 %d 趟探路**没有在页面上见到成功文案** —— 账本里很可能没有那条通向"
                 "成功的路（拿它去定稿+自测会白跑，第九轮实测过）。**自动重探一趟**"
                 "（换一组随机答案；最多重探 %d 次）。" % (n - 1, EXPLORE_ATTEMPTS - 1))
         journey.notes.append(note)
-        journey = deps.explore(state["url"], state["goal"], budget=budget,
-                               should_pause=deps.should_pause)
-        reached = _explore_reached_success(journey, state.get("success_text"))
-        attempts.append({"n": n, "reached": reached, "steps": len(journey.steps),
-                         "stop": getattr(journey, "stop_reason", ""),
-                         "answers": _explore_answers(journey)})
+        journey = pass_once(n)
+    reached = attempts[-1]["reached"]
     out["journey"] = journey
     out["explore_say"] = _journey_say(journey)
     out["explore_reached_success"] = reached
     out["explore_attempts"] = attempts
+    # **这一趟的消耗加回 job 级累计**（§1.8）—— 下一趟（或下一次 `reopen`）从这里减。
+    # ⚠️ 它必须在**每一条出口**上都加（包括下面那几条提前 return 的），
+    #    否则「没走完就停」的那几次的花费会凭空消失（而它们恰恰是最贵的几次）。
+    out["explore_spent"] = _spent_after(spent, journeys)
     if len(attempts) > 1:
         # **两次账本的差异**（问题 2/3 的答案顺手就有）：各自填了什么、哪一趟没走通
         out["explore_attempts_note"] = _attempts_note(attempts)
         journey.notes.append(out["explore_attempts_note"])
+    stop = str(getattr(journey, "stop_reason", "") or "")
+    if stop not in FINISHED_EXPLORATION:
+        # **停因排在「没见到成功文案」前面**（顺序有讲究）：这一趟**根本没走完**的时候，
+        # 「没见到成功文案」是必然的、也是没有信息的 —— 拿它当结论会写出**假话**：
+        # 窗口死掉那一趟会报「重探了 1 趟都没在页面上见到成功文案」（而一趟都没重探）。
+        # **窗口没了**在这里是单独一种结局（§1.8）：它说得出理由，而且账本还在 ——
+        # 处置与「预算走完」相反（一个该续跑，一个该人看），不许混成一个。
+        out["end_reason"] = {"paused": END_PAUSED,
+                             "window_gone": END_WINDOW_GONE}.get(stop, END_EXPLORE_UNFINISHED)
+        out["end_note"] = _unfinished_note(stop, journey)
+        return out
     if reached is False:
         note = ("⚠️ **重探了 %d 趟都没在页面上见到成功文案** —— 停下，如实报，"
                 "**不进入定稿 + 自测**（拿一条走不通的账本去定稿+自测是必然白跑）。"
@@ -463,11 +504,105 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
         journey.notes.append(note)
         out["end_reason"] = END_EXPLORE_UNFINISHED
         out["end_note"] = note
-        return out
+    return out
+
+
+def _worth_retrying(reached, journey) -> bool:
+    """这一趟没见到成功文案 —— **还值不值得再探一趟**（重探真窗口要花钱）。
+
+    ⚠️ 判据是 `stop_reason`（R-E6），**不是 `stall_rounds`**：那个数是「连着几轮没推进」的
+    **计数**，而**一次干净走完的探路也常是 1**（`_PlanWatch.finish()` 补结算最后一轮）——
+    拿它当布尔量用，正常走完的探路会全被判成停滞。停滞只有 `plan_stalled` 这一个写法。
+
+    四种停法**不重探**（重探对它们什么也做不到，而每一趟都要花一个真窗口）：
+
+    - `window_gone`：窗口没了 —— 重探只会再去开一次会话（多半直接炸）；该走 `reopen`；
+    - `budget_steps` / `budget_rounds`：预算已经花掉了（job 级累计之后起点只会更低）；
+    - `paused`：人喊了停 —— 重探是**无视人的话**。
+
+    **留着**的（`model_done` / `ended` / `plan_stalled`）都是「这一趟对这条路做了一次完整的
+    观察、只是没走到成功」—— 换个随机答案可能走通，那正是重探的立意。
+
+    ⚠️ **已知代价（Task 3 遗留 2，没量过）**：`plan_stalled` 也会再探 2 趟 ≈ 2 个真窗口。
+    留着它的理由：停滞与「这一趟的随机答案」有关，而重探正是为那个加的；代价是**有界的**
+    （job 级预算封顶 + `explore_spent.attempts` 把它记在明面上）而且**看得见**。
+    要不要收掉它，等 Task 7 的真站验收量出「停滞重探到底有没有用」再说。
+    """
+    if reached is not False:
+        return False
     stop = str(getattr(journey, "stop_reason", "") or "")
-    if stop not in FINISHED_EXPLORATION:
-        out["end_reason"] = END_PAUSED if stop == "paused" else END_EXPLORE_UNFINISHED
-        out["end_note"] = _unfinished_note(stop, journey)
+    return stop not in ("window_gone", "budget_steps", "budget_rounds", "paused")
+
+
+def _explore_spent(state) -> dict:
+    """这个 job 在探路上**已经花掉多少**（键缺了就当 0 —— **不猜**一个数出来）。"""
+    spent = state.get("explore_spent") or {}
+    return {key: int(spent.get(key) or 0) for key in ("steps", "rounds", "attempts")}
+
+
+def _budget_left(caps: Caps, spent: dict) -> browser_agent.Budget:
+    """**这一次**能花多少 = `Caps` 的上限 − 这个 job 已经花掉的（§1.8）。
+
+    ⚠️ 夹到 0（不给负数）：花超了就是花超了，**如实**变成「一步都不许走」——
+    这一趟会以 `budget_steps` 停住（`END_EXPLORE_UNFINISHED`，该人看），
+    而不是一个看不出是配置问题的负数。
+    """
+    return browser_agent.Budget(
+        max_steps=max(0, int(caps.explore_steps) - spent["steps"]),
+        max_rounds=max(0, int(caps.explore_rounds) - spent["rounds"]))
+
+
+def _budget_say(budget: browser_agent.Budget, spent: dict) -> str:
+    """闸口上那句预算（人话）。job 级累计之后必须说清**这一次还剩多少** ——
+    只说上限的话，人看到的是个**已经不对的**数（前面那几趟已经花掉了）。"""
+    said = "最多 %d 步 / %d 轮（防跑飞，不是省钱）" % (budget.max_steps, budget.max_rounds)
+    if spent["steps"] or spent["rounds"]:
+        said += ("—— 这是**这个 job 还剩的**：前面几趟已经花掉 %d 步 / %d 轮。"
+                 % (spent["steps"], spent["rounds"]))
+    return said
+
+
+def _resume_facts(rows: list, note: str) -> str:
+    """闸口 facts 上的**重放摘要**（A3）：重放几行、其中几个动作、**为什么停在这儿**。
+
+    ⚠️ 它在**节点开工之前**就能算 —— 只依赖账本（`rows` 是 `reopen` 从 journal 切出来的，
+    `note` 是同一处算出来的边界理由）。人是在这一步**之前**点「继续」的：他得先知道
+    系统打算照账本重走哪几步、走到哪儿停、为什么停在那儿。
+    """
+    actions = len(browser_agent.replay_actions(rows))
+    return ("照账本走回去：%d 行（其中 %d 个动作，0 模型调用）。停在这儿：%s"
+            % (len(rows or []), actions, str(note or "（没说明为什么停在这儿）")))
+
+
+def _spend_of(journey) -> dict:
+    """一趟探路花了多少（§1.8 的口径）：
+
+    - `steps`：**模型驱动的那几步** —— 重放的步**不计**（它不花模型的钱）；
+    - `rounds`：`journey.rounds`。⚠️ 被 `_Stop` 打断的那几趟它是 0，而那个 0 的意思是
+      **没量到**（`browser_agent.rounds_measured`）—— 于是 job 级轮数是个**偏小**的数，
+      它只会让下一趟的轮预算**更松**，不会造成假成功。步数那一项是精确的，硬线在它上面；
+    - `attempts`：**这算一趟**（+1），**再加上重放的那些动作** —— 设计注 §1.8 的原话是
+      「重放的步不计入 `steps`，但要计入 `attempts`（它有真动作、有代价）」。
+      所以这个数**比「探了几趟」大**：名字容易读错，口径在这里写死。
+    """
+    steps = list(getattr(journey, "steps", None) or [])
+    replayed = [s for s in steps if str((s or {}).get("origin") or "") == "replay"]
+    return {"steps": len(steps) - len(replayed),
+            "rounds": int(getattr(journey, "rounds", 0) or 0),
+            "attempts": 1 + len(replayed)}
+
+
+def _spent_after(spent: dict, journeys: list) -> dict:
+    """`spent` + 这几趟的消耗。
+
+    ⚠️ **每一趟都要算**（重探的那几趟也花掉了真窗口与模型轮数），而且这个值要在
+    `_explore` 的**每一条出口**上写回去 —— 否则「没走完就停」的那几次的花费会凭空消失，
+    而它们恰恰是最贵的几次。
+    """
+    out = dict(spent)
+    for journey in journeys:
+        for key, value in _spend_of(journey).items():
+            out[key] = out.get(key, 0) + value
     return out
 
 
@@ -798,7 +933,13 @@ def site_name(url: str) -> str:
 
 
 def _journey_say(journey) -> str:
-    """人话：探路是怎么结束的（`Journey.notes` 里本来就有这句话）。"""
+    """人话：探路是怎么结束的（`Journey.notes` 里本来就有这句话）。
+
+    ⚠️ **抬头那一句必须与真实的停因对得上**（Task 3 遗留 1）：`plan_stalled` 与
+    `window_gone` 都是**说得出理由**的停 —— 抬头写「停得不明不白」是**假话**，
+    而人话就在 `notes` 里（尾巴那句），一句话都没丢。内部停因的 token
+    （`plan_stalled` 这种）也不许进人话（M-5）：读这份账的人是非技术的人。
+    """
     stop = str(getattr(journey, "stop_reason", "") or "")
     notes = [str(n) for n in (getattr(journey, "notes", None) or [])]
     tail = notes[-1] if notes else ""
@@ -808,10 +949,28 @@ def _journey_say(journey) -> str:
         head = "探路被人喊停了。"
     elif stop.startswith("budget"):
         head = "探路没走完：预算到顶了。"
+    elif stop == "window_gone":
+        head = "探路停下了：窗口没了（工具连着失败，窗口服务说它已经不在了）。"
+    elif stop == "plan_stalled":
+        head = "探路停下了：计划停滞（模型连着几轮没有推进）。"
     else:
         head = "探路停得不明不白（%s）。" % (stop or "没说为什么")
     steps = len(getattr(journey, "steps", None) or [])
-    return "%s走了 %d 步。%s" % (head, steps, tail)
+    return "%s%s走了 %d 步。%s" % (head, _resume_say(journey), steps, tail)
+
+
+def _resume_say(journey) -> str:
+    """这一趟开头**重放了什么**（`Journey.replay`）—— 没重放就是空串（**不假装**）。
+
+    A3：边界那句**必须出现在 `explore_say` 里**（人读的那句话），不只是闸口 facts 里 ——
+    边界理由说的是「为什么就走到这儿为止」，那是读这份账的人最先要问的事。
+    """
+    info = dict(getattr(journey, "replay", None) or {})
+    if not info:
+        return ""
+    why = str(info.get("boundary_reason") or info.get("why") or "")
+    return "（这一趟开头照账本重放了 %d 个动作，0 模型调用%s）" % (
+        int(info.get("done") or 0), "；停在这儿：%s" % why if why else "")
 
 
 #: 探路最多几趟（第一次 + 重探）。控制器的裁定：**最多重探 2 次**。
