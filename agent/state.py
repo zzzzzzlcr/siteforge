@@ -172,6 +172,11 @@ class SiteState(TypedDict, total=False):
     # ── explore ───────────────────────────────────────────────
     journey: Optional[Journey]
     explore_say: str              # 人话：探路是怎么结束的
+    #: 这一趟探路**在页面上见到过成功文案吗**（三态：True / False / None=判不了）。
+    #: ⚠️ 原先**没有任何一处问过这件事** —— 于是拿一条死胡同的账本去定稿+自测必然白跑
+    #: （2026-09-17 第十一轮核出来的）。它只**如实记**，不拦（要不要重探是人定的）。
+    explore_reached_success: Optional[bool]
+    explore_success_note: Optional[str]
 
     # ── draft ─────────────────────────────────────────────────
     states: list                  # 「怎么走」（`journey.states()` 的产物）

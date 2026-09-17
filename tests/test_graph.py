@@ -954,3 +954,38 @@ def test_fresh_session_that_returns_nothing_is_not_treated_as_a_new_window(tmp_p
 
     assert rec.selftest[0]["ws_url"] == WS_URL, rec.selftest[0]
     assert "不是干净会话" in out["session"]
+
+
+# ── 「这一趟到底走到成功文案没有」——原先没有任何一处问过（2026-09-17 第十一轮）──
+#
+# `success_text` 只在三处被用：intake（必须给人）/ draft（进产物）/ selftest（产物自己判）。
+# **探索那一趟有没有见到它，没人问过** —— 于是拿一条死胡同的账本去定稿+自测必然白跑
+# （真站实测：有一趟就是这么白跑的，探索走到了「Sorry we are unable to match you」）。
+
+
+def test_the_explore_records_whether_it_ever_saw_the_success_text(tmp_path):
+    """探索见过成功文案 → 记 True，且**不加**那句提醒。"""
+    book = _journey()
+    book.steps.append({"state": "s", "action": "observe", "target": None,
+                       "result": {"ok": True, "page_text_head": "… " + SUCCESS + " …"},
+                       "note": "看了一眼页面"})
+    deps, rec = _deps(journey=book)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+    assert out.get("explore_reached_success") is True, out.get("explore_reached_success")
+    assert not out.get("explore_success_note"), out.get("explore_success_note")
+
+
+def test_an_explore_that_never_saw_the_success_text_says_so(tmp_path):
+    """看过页面、可一次都没见着 → 记 False 并**大声说**（但不拦：要不要重探是人定的）。"""
+    book = _journey()
+    # ⚠️ 得**有** observe 步才判得了（一次都没看过页面 = 判不了 = None，不是 False）
+    book.steps.append({"state": "landing", "action": "observe", "target": None,
+                       "result": {"ok": True, "page_text_head": "Get Started … 别的什么也没有"},
+                       "note": "看了一眼页面"})
+    deps, rec = _deps(journey=book)
+    app, cfg, _build_ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+    assert out.get("explore_reached_success") is False, out.get("explore_reached_success")
+    assert "没有在页面上见到成功文案" in (out.get("explore_success_note") or ""), out
+    assert any("没有在页面上见到成功文案" in str(n) for n in out["journey"].notes), "要进 notes"

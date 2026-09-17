@@ -1339,3 +1339,35 @@ def test_the_when_snippet_does_not_lead_with_decoration():
     # 反例（同一格）：正文里本来就有意义的字一个都不许动
     assert browser_agent._snippet("Progress: 30% What state do you live in?") == \
         "Progress: 30% What state do you live in?"
+
+
+def test_an_incidental_start_page_gets_no_when():
+    """起点那一页与**后面每一页**都不同源 → 它是旁枝，**不设判据**。
+
+    真站实测（2026-09-17 第十一轮）：探索时浏览器停在 Bit 的**工作台页**
+    （`console.bitbrowser.net/…?id=…&port=…`），账本第一个状态的 `when` 于是要的是那一串 ——
+    而 `?id=…&port=…` **每开一次窗口都不一样**；自测换的是干净窗口（R-F1）→ 判据不成立 →
+    起点那组的 `goto` **一步都没轮到** → 后面全部静默跳过（实测 0 执行 / 29 跳过）。
+    """
+    j = browser_agent.Journey()
+    pages = [
+        {"name": "console_bitbrowser", "when": {"url_contains": "https://console.bitbrowser.net/"},
+         "url": "https://console.bitbrowser.net/?id=abc&port=54345", "title": "workbench"},
+        {"name": "auto_warranty", "when": {"url_contains": "https://www.gowizard.com/auto-warranty/"},
+         "url": "https://www.gowizard.com/auto-warranty/", "title": "t"},
+    ]
+    browser_agent._drop_incidental_start_when(pages, j)
+    assert pages[0]["when"] is None, pages[0]
+    assert pages[1]["when"] is not None, pages[1]          # 站点自己的页照旧有判据
+    assert any("旁枝" in n for n in j.notes), j.notes       # 而且要**说给人听**
+
+    # 反例（同一格）：起点就是站点自己的页（从入口开跑的探索）→ 判据必须留着
+    j2 = browser_agent.Journey()
+    pages2 = [
+        {"name": "landing", "when": {"url_contains": "https://example.test/"},
+         "url": "https://example.test/", "title": "t"},
+        {"name": "quiz", "when": {"url_contains": "https://example.test/quiz"},
+         "url": "https://example.test/quiz", "title": "t"},
+    ]
+    browser_agent._drop_incidental_start_when(pages2, j2)
+    assert pages2[0]["when"] is not None, pages2[0]

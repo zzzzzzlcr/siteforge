@@ -340,6 +340,8 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         journey.notes.append("这一趟被人打断了，**没记到轮数**（打断的信号一穿出工具循环，"
                              "那个数就没了）—— 这里的 0 是「没量到」，不是「一轮都没花」。")
     finally:
+        # 起点那一页**与后面所有页都不同源**时，撤掉它的 `when`（见 `_drop_incidental_start_when`）。
+        _drop_incidental_start_when(pages.pages, journey)
         journey.pages = [{"name": p["name"], "when": p["when"], "url": p["url"],
                           "title": p["title"]} for p in pages.pages]
         if own_session:
@@ -898,10 +900,14 @@ class _Pages:
     而 `when` 是在**进这个状态时**判的（`_applies`），判错了整组步骤被静默跳过。
     """
 
-    def __init__(self):
+    def __init__(self, site_url: str = ""):
         self.pages: list = []
         self._used = {START_STATE}
         self._current: dict | None = None
+        #: 这次要探的那个站点的主机名（判「第一页是不是站点自己的页」用）
+        self._site_host = _host_of(site_url)
+
+
 
     @property
     def current_name(self) -> str:
@@ -1024,6 +1030,41 @@ def _snippet(text: str) -> str:
     if len(text) > WHEN_SNIPPET_CHARS and " " in head:
         head = head.rsplit(" ", 1)[0]           # 别把一个词从中间切断（读起来是半截话）
     return head.strip()
+
+
+def _drop_incidental_start_when(pages: list, journey: Journey) -> None:
+    """起点那一页是**旁枝**时，撤掉它的 `when`。
+
+    判据：它的主机名与**后面每一页**都不同 → 它不是站点自己的页，而是「我们碰巧从那儿开始」
+    （真站实测：Bit 的**工作台页** `console.bitbrowser.net/…?id=…&port=…`）。
+    那种页的 `when` 会钉住「那一刻那个窗口的首页」，而里面的 `?id=…&port=…`
+    **每开一次窗口都不一样** —— 自测换的是**干净窗口**（R-F1）→ 判据不成立 →
+    起点那组的 `goto` **一步都没轮到** → 后面全部静默跳过（实测 0 执行 / 29 跳过）。
+
+    为什么要等到整趟走完才判：**要在那一刻知道「后面那些页长什么样」**。
+    从入口开跑的探索（第一页就是站点自己的页）不受影响 —— 它的主机名与后面一致，判据照旧。
+    """
+    if len(pages) < 2:
+        return
+    first_host = _host_of(pages[0].get("url") or "")
+    if not first_host:
+        return
+    if any(_host_of(pg.get("url") or "") == first_host for pg in pages[1:]):
+        return
+    pages[0]["when"] = None
+    journey.notes.append(
+        "起点那一页（%s）与后面**每一页**都不同源 —— 它是「我们碰巧从那儿开始」的旁枝，"
+        "不是站点自己的页。所以它的状态**不设判据**（那种页的地址每开一次窗口都不一样，"
+        "设了判据会在换窗之后把起点那组步骤整组跳过）。" % first_host)
+
+
+def _host_of(url: str) -> str:
+    """地址里的主机名（小写）；取不出来给空串。**不猜**：不是 http(s) 就返回空串。"""
+    text = str(url or "").strip()
+    scheme, sep, rest = text.partition("://")
+    if not sep or scheme.lower() not in ("http", "https"):
+        return ""
+    return rest.split("/")[0].split("?")[0].split("#")[0].lower()
 
 
 def _slug(model: dict) -> str:

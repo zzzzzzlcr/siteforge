@@ -351,6 +351,21 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
                            should_pause=deps.should_pause)
     out["journey"] = journey
     out["explore_say"] = _journey_say(journey)
+    # ⚠️ **「这一趟到底有没有走到成功文案」——原先没有任何一处检查**（2026-09-17 第十一轮核的）：
+    #    `success_text` 只在三处被用到：intake（必须给人）、draft（进产物的 SUCCESS_TEXTS）、
+    #    self test（产物自己判）。**探索那一趟有没有见到它，没人问过** ——
+    #    于是拿一条**死胡同的账本**（探索走到「Sorry we are unable to match you」那种分支）
+    #    去定稿 + 自测，**必然白跑**（真站实测：有一趟就是这么白跑的）。
+    #    这里**只如实记一句**（进 notes 与闸口 facts），**不拦**：拦下去会改掉既有的图行为，
+    #    而「要不要因为没走到成功就重探」是**策略**，得由人或控制器点头（不许自己放宽/收紧）。
+    reached = _explore_reached_success(journey, state.get("success_text"))
+    out["explore_reached_success"] = reached
+    if reached is False:
+        note = ("⚠️ 这一趟探路**没有在页面上见到成功文案**（探索的每一步都看过了）—— "
+                "账本里很可能**没有那条通向成功的路**，拿它去定稿 + 自测会白跑。"
+                "要不要重探一趟，请人或控制器定。")
+        journey.notes.append(note)
+        out["explore_success_note"] = note
     stop = str(getattr(journey, "stop_reason", "") or "")
     if stop not in FINISHED_EXPLORATION:
         out["end_reason"] = END_PAUSED if stop == "paused" else END_EXPLORE_UNFINISHED
@@ -687,6 +702,33 @@ def _journey_say(journey) -> str:
         head = "探路停得不明不白（%s）。" % (stop or "没说为什么")
     steps = len(getattr(journey, "steps", None) or [])
     return "%s走了 %d 步。%s" % (head, steps, tail)
+
+
+def _explore_reached_success(journey, success_text) -> Optional[bool]:
+    """这一趟探路**在页面上见到过成功文案吗**。三态：True / False / **None = 判不了**。
+
+    - `True`：某一步 observe 的正文里含成功文案（与产物的判据**同一口径**：归一化后子串）；
+    - `False`：每一步都看过了，一次都没见着 → 账本里很可能没有那条路（见调用处的注释）；
+    - `None`：没给成功判据、或这一趟一次 observe 都没有（判不了就**不猜**）。
+    """
+    wants = [success_text] if isinstance(success_text, str) else list(success_text or [])
+    wants = [_norm_text(w) for w in wants if str(w or "").strip()]
+    if not wants:
+        return None
+    seen_any = False
+    for step in getattr(journey, "steps", None) or []:
+        if (step or {}).get("action") != "observe":
+            continue
+        seen_any = True
+        head = _norm_text((step.get("result") or {}).get("page_text_head") or "")
+        if head and any(w in head for w in wants):
+            return True
+    return False if seen_any else None
+
+
+def _norm_text(text) -> str:
+    """与 `cdp observe` 的 page_text / 产物 `page_signature()` 同口径（空白压成一个空格）。"""
+    return " ".join(str(text or "").split())
 
 
 def _unfinished_note(stop: str, journey) -> str:
