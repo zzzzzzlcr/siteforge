@@ -347,25 +347,57 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
 
     # ⚠️ 这里**不接** `_Stop`（它继承 BaseException，就是为了不被吞成工具失败 ——
     #    browser_agent:206）。人喊停的信号必须原样穿出去，不许被降级成「探路失败」。
+    #
+    # ── 「走到成功文案没有」＋**有界重探**（2026-09-17 第十二轮，控制器裁定）──
+    #
+    # 原先没有任何一处检查过「这一趟有没有见到成功文案」（`success_text` 只在
+    # intake / draft / selftest 三处被用）→ 拿一条**死胡同账本**去定稿+自测**必然白跑**
+    # （第九轮实测：30 分钟全废）。
+    #
+    # 裁定：**为 False → 自动重探，最多 2 次；仍为 False → 停，如实报，不进入定稿+自测。**
+    # 为什么敢重探：它是**便宜、有界、非破坏**的（一趟 ~150 秒；最多 2 趟），
+    # 而且**它本身就是「能不能避开那条死路」的解法** —— 实测「匹配不上」与答案相关
+    # 而非必然（一支成功、一支失败），换一组随机答案就可能走通，
+    # 于是**不必先知道「哪个答案触发它」**。
+    # 代价（控制器认了）：若那条路是地区/邮编决定的、重探永远走不通，
+    # 最多白花 2 趟探索然后**停下如实报** —— 不会产出假成功，也不会无限重试。
+    attempts = []
     journey = deps.explore(state["url"], state["goal"], budget=budget,
                            should_pause=deps.should_pause)
+    reached = _explore_reached_success(journey, state.get("success_text"))
+    attempts.append({"n": 1, "reached": reached, "steps": len(journey.steps),
+                     "stop": getattr(journey, "stop_reason", ""),
+                     "answers": _explore_answers(journey)})
+    for n in range(2, EXPLORE_ATTEMPTS + 1):
+        if reached is not False:
+            break
+        note = ("⚠️ 第 %d 趟探路**没有在页面上见到成功文案** —— 账本里很可能没有那条通向"
+                "成功的路（拿它去定稿+自测会白跑，第九轮实测过）。**自动重探一趟**"
+                "（换一组随机答案；最多重探 %d 次）。" % (n - 1, EXPLORE_ATTEMPTS - 1))
+        journey.notes.append(note)
+        journey = deps.explore(state["url"], state["goal"], budget=budget,
+                               should_pause=deps.should_pause)
+        reached = _explore_reached_success(journey, state.get("success_text"))
+        attempts.append({"n": n, "reached": reached, "steps": len(journey.steps),
+                         "stop": getattr(journey, "stop_reason", ""),
+                         "answers": _explore_answers(journey)})
     out["journey"] = journey
     out["explore_say"] = _journey_say(journey)
-    # ⚠️ **「这一趟到底有没有走到成功文案」——原先没有任何一处检查**（2026-09-17 第十一轮核的）：
-    #    `success_text` 只在三处被用到：intake（必须给人）、draft（进产物的 SUCCESS_TEXTS）、
-    #    self test（产物自己判）。**探索那一趟有没有见到它，没人问过** ——
-    #    于是拿一条**死胡同的账本**（探索走到「Sorry we are unable to match you」那种分支）
-    #    去定稿 + 自测，**必然白跑**（真站实测：有一趟就是这么白跑的）。
-    #    这里**只如实记一句**（进 notes 与闸口 facts），**不拦**：拦下去会改掉既有的图行为，
-    #    而「要不要因为没走到成功就重探」是**策略**，得由人或控制器点头（不许自己放宽/收紧）。
-    reached = _explore_reached_success(journey, state.get("success_text"))
     out["explore_reached_success"] = reached
+    out["explore_attempts"] = attempts
+    if len(attempts) > 1:
+        # **两次账本的差异**（问题 2/3 的答案顺手就有）：各自填了什么、哪一趟没走通
+        out["explore_attempts_note"] = _attempts_note(attempts)
+        journey.notes.append(out["explore_attempts_note"])
     if reached is False:
-        note = ("⚠️ 这一趟探路**没有在页面上见到成功文案**（探索的每一步都看过了）—— "
-                "账本里很可能**没有那条通向成功的路**，拿它去定稿 + 自测会白跑。"
-                "要不要重探一趟，请人或控制器定。")
+        note = ("⚠️ **重探了 %d 趟都没在页面上见到成功文案** —— 停下，如实报，"
+                "**不进入定稿 + 自测**（拿一条走不通的账本去定稿+自测是必然白跑）。"
+                "两次账本的差异见上。判据一个字没放宽：要不要改判据得人或控制器点头。"
+                % len(attempts))
         journey.notes.append(note)
-        out["explore_success_note"] = note
+        out["end_reason"] = END_EXPLORE_UNFINISHED
+        out["end_note"] = note
+        return out
     stop = str(getattr(journey, "stop_reason", "") or "")
     if stop not in FINISHED_EXPLORATION:
         out["end_reason"] = END_PAUSED if stop == "paused" else END_EXPLORE_UNFINISHED
@@ -702,6 +734,34 @@ def _journey_say(journey) -> str:
         head = "探路停得不明不白（%s）。" % (stop or "没说为什么")
     steps = len(getattr(journey, "steps", None) or [])
     return "%s走了 %d 步。%s" % (head, steps, tail)
+
+
+#: 探路最多几趟（第一次 + 重探）。控制器的裁定：**最多重探 2 次**。
+#: 为什么是 2：一趟 ~150 秒，两趟仍是分钟级；而「重探本身」就是「能不能避开那条死路」的解法。
+EXPLORE_ATTEMPTS = 3
+
+
+def _explore_answers(journey) -> list:
+    """这一趟探路往表单里**真填/真选过什么**（`标签=值`）—— 两次账本差异的原料。"""
+    out = []
+    for step in getattr(journey, "steps", None) or []:
+        info = ((step or {}).get("result") or {}).get("fill")
+        if not info:
+            continue
+        out.append("%s=%s" % ((info.get("label") or "?")[:18], str(info.get("value"))[:14]))
+    return out
+
+
+def _attempts_note(attempts: list) -> str:
+    """把几趟探路的差异说成人话（哪一趟走到成功、答案哪里不一样）。"""
+    lines = ["这一次探路跑了 %d 趟（走到成功文案就停）：" % len(attempts)]
+    for a in attempts:
+        lines.append("  · 第 %d 趟：%s，%d 步，停止原因「%s」；填过：%s"
+                     % (a["n"],
+                        {True: "**见到了成功文案**", False: "没见到成功文案",
+                         None: "判不了（没给判据/没观测）"}[a["reached"]],
+                        a["steps"], a["stop"] or "?", "、".join(a["answers"][:6]) or "（没填过）"))
+    return "\n".join(lines)
 
 
 def _explore_reached_success(journey, success_text) -> Optional[bool]:

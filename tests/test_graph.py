@@ -166,7 +166,7 @@ def _faithful_selftest(rec):
     return run
 
 
-def _deps(*, journey=None, reports=None, write=None, rec=None, **over):
+def _deps(*, journey=None, explores=None, reports=None, write=None, rec=None, **over):
     """**全部**外部依赖的桩。返回 `(Deps, Rec)`。
 
     `over` 直接盖到 `Deps` 上（例如 `set_viewport=None` = 「这根线没人接」）。
@@ -177,8 +177,13 @@ def _deps(*, journey=None, reports=None, write=None, rec=None, **over):
     book = journey if journey is not None else _journey()
     queue = list(reports) if reports else None
 
+    # `explores` 给的是**一串** journey（重探那几趟各一份）；不给就每次都返回 `journey`
+    queue_j = list(explores) if explores else None
+
     def explore(url, goal, budget=None, **kw):
         rec.explore.append({"url": url, "goal": goal, "budget": budget, "kw": kw})
+        if queue_j:
+            return copy.deepcopy(queue_j[min(len(rec.explore) - 1, len(queue_j) - 1)])
         return copy.deepcopy(book)
 
     def write_stub(spec, feedback):
@@ -976,16 +981,46 @@ def test_the_explore_records_whether_it_ever_saw_the_success_text(tmp_path):
     assert not out.get("explore_success_note"), out.get("explore_success_note")
 
 
-def test_an_explore_that_never_saw_the_success_text_says_so(tmp_path):
-    """看过页面、可一次都没见着 → 记 False 并**大声说**（但不拦：要不要重探是人定的）。"""
+def test_an_explore_that_never_sees_the_success_text_stops_after_the_bounded_retries(tmp_path):
+    """看过页面、可一次都没见着 → **有界重探**（最多 2 次）→ 仍不见 → **停**、如实报。
+
+    控制器 2026-09-17 的裁定：为 False → 自动重探最多 2 次；仍 False → 停，
+    **不进入定稿+自测**（拿一条走不通的账本去定稿+自测是必然白跑，第九轮实测 30 分钟全废）。
+    为什么敢重探：便宜、有界、非破坏；而且**重探本身就是「能不能避开那条死路」的解法**。
+    """
     book = _journey()
-    # ⚠️ 得**有** observe 步才判得了（一次都没看过页面 = 判不了 = None，不是 False）
     book.steps.append({"state": "landing", "action": "observe", "target": None,
                        "result": {"ok": True, "page_text_head": "Get Started … 别的什么也没有"},
                        "note": "看了一眼页面"})
     deps, rec = _deps(journey=book)
-    app, cfg, _build_ = _build(deps=deps)
+    app, cfg, _ = _build(deps=deps)
     _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert len(rec.explore) == 3, "第一次 + 最多 2 次重探：%d" % len(rec.explore)
     assert out.get("explore_reached_success") is False, out.get("explore_reached_success")
-    assert "没有在页面上见到成功文案" in (out.get("explore_success_note") or ""), out
-    assert any("没有在页面上见到成功文案" in str(n) for n in out["journey"].notes), "要进 notes"
+    assert out.get("end_reason") == "explore_unfinished", out.get("end_reason")
+    assert "重探了 3 趟" in (out.get("end_note") or ""), out.get("end_note")
+    assert len(out.get("explore_attempts") or []) == 3, out.get("explore_attempts")
+    assert not rec.selftest, "没走到成功文案就不该进入定稿+自测"
+
+
+def test_a_retry_that_sees_the_success_text_wins(tmp_path):
+    """第 1 趟没走到、第 2 趟走到了 → 用**第 2 趟**的账本往下走，并把差异记下来。"""
+    bad = _journey()
+    bad.steps.append({"state": "landing", "action": "observe", "target": None,
+                      "result": {"ok": True, "page_text_head": "Get Started … 没有成功文案"},
+                      "note": "看了一眼页面"})
+    good = _journey()
+    good.steps.append({"state": "landing", "action": "observe", "target": None,
+                       "result": {"ok": True, "page_text_head": "… " + SUCCESS + " …"},
+                       "note": "看了一眼页面"})
+    deps, rec = _deps(explores=[bad, good])
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert len(rec.explore) == 2, "第 2 趟就见到了，不该再探：%d" % len(rec.explore)
+    assert out.get("explore_reached_success") is True, out.get("explore_reached_success")
+    assert rec.selftest, "走到了成功文案，就该照旧往下走（定稿+自测）"
+    note = out.get("explore_attempts_note") or ""
+    assert "第 1 趟" in note and "第 2 趟" in note, note
+    assert "没见到成功文案" in note and "见到了成功文案" in note, note

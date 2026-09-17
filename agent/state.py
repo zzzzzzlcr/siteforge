@@ -177,6 +177,10 @@ class SiteState(TypedDict, total=False):
     #: （2026-09-17 第十一轮核出来的）。它只**如实记**，不拦（要不要重探是人定的）。
     explore_reached_success: Optional[bool]
     explore_success_note: Optional[str]
+    #: 这一趟探路跑了**几趟**、每趟什么结果（`[{n, reached, steps, stop, answers}]`）——
+    #: 控制器裁定的「有界重探」留下的差异，就是「那条死路怎么触发」的答案（第十二轮）。
+    explore_attempts: Optional[list]
+    explore_attempts_note: Optional[str]
 
     # ── draft ─────────────────────────────────────────────────
     states: list                  # 「怎么走」（`journey.states()` 的产物）
