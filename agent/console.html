@@ -572,9 +572,12 @@
   function paintRuns(data) {
     // 还没拿到 `/runs` 的时候**不画** —— 画出来的会是「还没有任何运行」，
     // 而那正是「不编话」要治的形状：那一刻我们并不知道有没有运行。
-    if (!data || typeof data !== "object") { return; }
+    // ⚠️ 同理：**这一栏现在坏着**（`runsProblem` 说过话了）也不画 —— 拿旧列表盖上屏，
+    //    等于把刚刚那句真话擦掉（修复轮 3；与 `errBox` 同一条规矩）。
+    if (state.runsBroken) { return; }
+    var rows = runsRows(data);
+    if (rows === null) { return; }
     var box = document.getElementById("runs");
-    var rows = at(data, "runs", []) || [];
     var html = "", i;
     for (i = 0; i < rows.length; i++) {
       var row = rows[i];
@@ -813,23 +816,43 @@
   //: 原来这条路是空的（`!res.ok` 直接 return、catch 是空的）：那一栏于是停在一个空 div 上，
   //: 而**空 div 读起来就是「还没有任何运行」** —— 两件事完全不一样，而「没有静默的路径」
   //: 是这一页的全局纪律。左边这一栏挂了不影响主视图，所以只说这一栏自己。
+  //:
+  //: ⚠️ **修复轮 3：写字不等于留得住。** `state.runs` 里还留着上一次成功那份，
+  //:    下一次 `/live` 一变（在跑的任务每 3 秒就变）→ `paint()` → `paintRuns(state.runs)`
+  //:    **照画** ⇒ 这句真话被**一份没有任何过期标记的旧列表**盖回去。
+  //:    复审实测（`/runs` 第一次好、之后 500、`/live` 每次变）：**每 15 秒只有约 1 秒看得到真话**。
+  //:    ⇒ 和 `errBox` 那条规矩是**同一个形状**（重画不许把话擦掉），所以用同一个办法：
+  //:    **记下「这一栏现在是坏的」，让 `paintRuns` 让位**（旧列表留着给顶栏用，但不上屏）。
   function runsProblem(why) {
+    state.runsBroken = true;
     var box = document.getElementById("runs");
     if (!box) { return; }
     box.innerHTML = '<p class="hintline">左边这一栏现在取不到：' + esc(why) + "</p>" +
       '<p class="hintline">这不代表「没有运行」—— 只代表这一栏没读到（主视图自己有话说）。</p>';
   }
 
+  //: 这一份 `/runs` 的正文里，**能当列表画的那些行**；读不到就是 `null`。
+  //: ⚠️ 三种「读不到」都要算读不到（复审点名的两个角）：
+  //:   `{}`（没有 `runs` 那一格）、`[]`（`typeof [] === "object"` —— 从「是不是对象」那道闸下过）、
+  //:   以及压根不是对象。**画成「还没有任何运行」正是这一条要治的那句假话。**
+  function runsRows(data) {
+    if (!data || typeof data !== "object") { return null; }
+    var rows = at(data, "runs", null);
+    return Array.isArray(rows) ? rows : null;
+  }
+
   function fetchRuns() {
     return fetch("/runs").then(readJSON).then(function (res) {
       if (!res.ok) { runsProblem(sayOf(res)); return; }
-      if (!res.obj || typeof res.obj !== "object") {
-        // 200 但正文不是 JSON —— 同样是「这一栏读不到」，**不许**当成空列表
-        runsProblem("服务回了 200，但正文读不出来（不是 JSON）。");
+      var rows = runsRows(res.obj);
+      if (rows === null) {
+        // 200 但**不是一份能画的列表**（不是 JSON / `{}` / `[]` / 缺 `runs` 那一格）——
+        // 与「非 2xx」一样是**读不到**，**不许**当成空列表（修复轮 3 把这一角盖上了）
+        runsProblem("服务回了 200，但正文不是一份运行列表（读不出「哪些运行」）。");
         return;
       }
+      state.runsBroken = false;      // 这一栏好了：让旧列表重新上屏（下一次画的时候）
       state.runs = res.obj;
-      var rows = at(res.obj, "runs", []) || [];
       if (!jobId && rows.length) {
         // 没点名看哪一趟：先看**最新提交的那一趟**，并**说出来**（不悄悄替你挑）
         pickJob(at(rows[0], "job_id", ""),
@@ -927,7 +950,7 @@
   //: 页面上**唯一**的第二样东西（除了 `jobId`）：左边那一栏最近一次拿到的正文，
   //: 加上「开跑时刻」与「页面自己要说的一句话」。它不是状态机 ——
   //: 里面没有一个是页面**算**出来的事实，全是「上一次取回来的 JSON」里抄下来的。
-  var state = { runs: null, startedAt: "", pickNote: "" };
+  var state = { runs: null, startedAt: "", pickNote: "", runsBroken: false };
 
   // ══════════════════ 一个定时器 ══════════════════
   function tickOnce() {

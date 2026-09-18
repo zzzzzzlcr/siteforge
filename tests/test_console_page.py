@@ -418,12 +418,12 @@ def test_a_detail_that_is_not_a_sentence_is_turned_into_human_words():
     #:    复审的两个变异正是从这儿溜过去的（都绿）：
     #:      ① 分支留着、只把拼装换成 `out.push(item)` ⇒ `[object Object]` 原样回来；
     #:      ② `loc` / `msg` 只用来拼一句**固定话**（不看真错）。
-    push = re.search(r"out\.push\((.*?)\);", body, re.S)
-    assert push, "`errorText` 里没有把每一项拼出来（`out.push(...)` 不在）"
-    expr = push.group(1)
-    assert "path.join(" in expr, "推进去的那句话没有用上 `loc` 的真值（那就成了一句静态话术）"
-    assert "msg" in expr, "推进去的那句话没有用上 `msg` 的真值"
-    assert "+" in expr, "它没有把这两样**拼起来**（拼一句固定的话不算）"
+    #: ⚠️ 修复轮 3 改了两处（复审实测的**误报**）：**在整页里找**、而且**不钉它是不是 `out.push(` 的形状**。
+    #:    把这段拼装**原地搬进一个助手**（语义逐字节不变、只是改成 `return …`）时，
+    #:    「只在 `errorText` 体内找 `out.push(`」那版会**判红** —— 那是误报，不是发现。
+    #:    钉的仍是那件事（**那句话由 loc（path）与 msg 拼出来**），只是不钉它住在哪个函数里、怎么被收走的。
+    assembled = re.search(r"path\.length \? path\.join\([^;]*?msg", page, re.S)
+    assert assembled, "没有找到「由 loc（path）与 msg 拼出来的那句话」（拼一句固定话不算）"
 
 
 def test_a_stop_that_did_not_land_does_not_claim_it_did():
@@ -498,6 +498,15 @@ def test_the_left_column_says_so_when_it_cannot_be_read():
     assert "runsProblem(sayOf(res))" in body, "非 2xx 那条路没说话（空转 / 只喊个名字都不算）"
     assert "runsProblem(" in body.split(".catch(")[-1], "`catch` 那一支还是空的（异常那条路依旧静默）"
 
+    #: ★ 修复轮 3：**200 也要看清楚正文**（复审点名的两个角）——
+    #: `/runs` 回 `{}`（没有 `runs` 那一格）或 `[]`（`typeof [] === "object"` 从「是不是对象」
+    #: 那道闸下过）时，原先照画「还没有任何运行。」——而那正是这一条要治的那句假话。
+    guard = re.search(r"function runsRows\(.*?\n  \}", page, re.S)
+    assert guard, "没有那个「这份正文能不能当列表画」的判据"
+    gbody = guard.group(0)
+    assert "Array.isArray(rows)" in gbody, "守卫没要求「`runs` 那一格是个数组」—— `{}` / `[]` 会漏过去"
+    assert "runsRows(res.obj)" in body, "`fetchRuns` 没用那个判据（200 那条路照样会画假话）"
+
     #: ★★ 修复轮 2（复审最重要的一条）：**那句话得留在屏幕上**。
     #: 复审拿真页面 + 桩台（`/runs` 返 500）装了 `MutationObserver`，看到的是：
     #:   `[24ms 那句话] → [25ms「还没有任何运行。」] → [1s/4s 都还是那句假话]` —— **只活了 1 毫秒**。
@@ -523,14 +532,48 @@ def test_the_elapsed_seconds_say_what_they_actually_measured():
 
 
 def _strip_js_comments(text: str) -> str:
-    """把 JS 注释抠掉 —— 判据只看**真写进 DOM 的表达式**。
+    """把 JS 注释抠掉 —— 判据只看**真写进 DOM 的表达式**。**只抠字符串外面的**。
 
-    ⚠️ 不抠的话，赋值语句里一句合法的 `// …**着重**…` 注释会被判成违规
-    —— 复审点名的**误杀**：这个文件到处是 `**着重**` 的注释写法，将来写进去就红。
-    `(?<!:)//` 是为了不把字符串里的 `http://` 当成行注释。
+    这条路我走了两版，两版各栽一次（复审各点名一次，都得记着）：
+
+    - 不抠：赋值语句里一句合法的 `// …**着重**…` 注释会被判成违规（**误杀**）——
+      而这个文件到处是 `**着重**` 的注释写法，将来写进去就红；
+    - 用 `(?<!:)//` 撇：**字符串里的 `//`** 也照抠
+      （`el.innerHTML = "服务说 // 这一句 **对不上**";` 连字符串一起被抠掉 ⇒ **漏报**）。
+      `(?<!:)` 只护住了 `://`，护不住别的写法。
+
+    ⇒ 按引号走一遍：字符串里一个字不动，字符串外面才当注释。
+    ⚠️ 边界：JS **正则字面量**里的 `//` 会被当注释（这一页里没有正则字面量）。
     """
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    return re.sub(r"(?<!:)//[^\n]*", "", text)
+    out, i, n, quote = [], 0, len(text), ""
+    while i < n:
+        ch = text[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in "\"'`":
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            end = text.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _raw_markdown_hits(html_text: str) -> list:
@@ -563,6 +606,11 @@ def test_no_raw_markdown_reaches_the_html():
     assert not _raw_markdown_hits('el.innerHTML = rich("服务这两格**对不上**");'), "误杀"
     assert not _raw_markdown_hits('el.innerHTML = (\n  // 这里说的是**着重**，不是要写进 DOM 的字\n  "文案");'), \
         "注释里的 `**` 被当成违规了（这个文件到处是这种注释写法）"
+    #: ★ 修复轮 3：**字符串里的 `//` 不是注释** —— 抠掉它就成了**漏报**（复审点名的第二个洞，
+    #: 我上一轮用 `(?<!:)//` 换来的正是这个）。这一条必须**响**。
+    assert _raw_markdown_hits('el.innerHTML = "服务说 // 这一句 **对不上**";'), \
+        "字符串里的 `//` 被当成注释抠掉了 —— 那一刻它看不见裸 `**`（漏报）"
+    assert _raw_markdown_hits('el.innerHTML = "http://x/**着重**";'), "`://` 那一路也不许被抠掉"
 
 
 def test_the_html_helpers_go_through_rich():
@@ -576,3 +624,30 @@ def test_the_html_helpers_go_through_rich():
         body = re.search(re.escape(helper) + r"[^{]*\{([^}]*)\}", page, re.S)
         assert body, "找不到这个助手：%s" % helper
         assert "rich(" in body.group(1), "%s 内部没过 `rich()`（运营会看到 `**`）" % helper
+
+
+def test_the_left_column_warning_cannot_be_wiped_by_a_repaint():
+    """★ 修复轮 3：左边那一栏上的警告**不许被重画擦掉** —— 与 `errBox` 那条**同一个形状**。
+
+    复审实测的场景（`/runs` 第一次好、之后 500、而 `/live` 每次都在变 —— **在跑的任务就是这样**）：
+
+       172ms   「job-… 停在闸上，等你回话 · 3 轮（闸拍）」      ← 旧列表
+       15031ms 「左边这一栏现在取不到：Internal Server Error…」  ← 这句真话
+       16032ms 「job-… 停在闸上，等你回话 · 3 轮（闸拍）」      ← ★ 被**过期列表**盖掉
+       30030ms 「左边这一栏现在取不到：…」                       ← 15 秒后又响一次
+       31033ms 「job-… 停在闸上，等你回话 · 3 轮（闸拍）」      ← 又盖掉
+
+    ⇒ 运营每 15 秒只有约 1 秒看得到真话，其余 14 秒看到的是一份**没有任何过期标记的旧列表**。
+    机制：`fetchRuns` 失败时只是**写了字**，`state.runs` 里还是上一次成功那份；
+    下一次 `/live` 一变 → `paint()` → `paintRuns(state.runs)` 非 null ⇒ 照画 ⇒ 把话擦掉。
+    ⚠️ 这条规矩我在修复轮 1 就给 `errBox` 写下了（`test_the_error_line_cannot_be_wiped_by_a_repaint`
+    「重画告示的函数不许碰它」）—— **`#runs` 漏了**。这里用**同一个形状**补上：坏着就别画。
+    """
+    page = _page()
+    problem = re.search(r"function runsProblem\(.*?\n  \}", page, re.S).group(0)
+    assert "state.runsBroken = true" in problem, "说话的时候没记下「这一栏现在是坏的」"
+    painter = re.search(r"function paintRuns\(.*?\n  \}", page, re.S).group(0)
+    assert re.search(r"if \(state\.runsBroken\) \{ return; \}", painter), \
+        "`paintRuns` 不知道这一栏坏着 —— 旧列表会照画，把那句话盖掉"
+    runs = re.search(r"function fetchRuns\(.*?\n  \}", page, re.S).group(0)
+    assert "state.runsBroken = false" in runs, "拿到新列表时没把标记清掉（好了也一直不上屏）"
