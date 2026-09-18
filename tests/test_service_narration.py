@@ -514,16 +514,63 @@ def test_a_journey_without_a_missing_shot_says_nothing(tmp_path):
     assert _events(client, job_id, "shot_missing") == []
 
 
-def test_the_three_missing_shot_sentences_are_told_apart(tmp_path):
-    """闸拍 / 步拍·某一步 / 步拍·整条路 —— **三句人话必须分得开**（修复轮 1 的 Important-2）。
+def _writes_to_shots_why(src: str) -> list:
+    """扫一份源码：**哪些地方在写 `.shots_why`**（Task 5 修复轮 3 的量具）。
 
-    为什么（复审原话）：「**一致不该靠抹平两个事实来达成**」。三件事的来源不同、
-    下一步也不同（闸上那张是给人看现场的那张；探路里那些是留着当证据的那批），
-    三句话一字不差的话，读的人分不出缺的是哪一种。
+    返回 `[(函数链, 值节点, 行号)]`。认三种写法：`x.shots_why = …`、`x.shots_why += …`、
+    `setattr(x, "shots_why", …)`（最后那种**没法静态判断值**，所以它永远算「非空」）。
+    """
+    tree = ast.parse(src)
+    out: list = []
 
-    ⚠️ 而**整条路**那一支**说得出的是整条路**（`journey.shots_why` 不带「哪一步」）——
-    所以它既不许跟着步拍那句说「这一步」，也不许跟着闸拍那句说「这一轮」：
-    **说得出多少说多少，别编。**
+    def walk(node, where):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                walk(child, where + (child.name,))     # 类名也要进函数链（`_StepShots._fail`）
+                continue
+            values = []
+            if isinstance(child, ast.Assign):
+                hit = any(isinstance(t, ast.Attribute) and t.attr == "shots_why"
+                          for t in child.targets)
+                if hit:
+                    values.append((child.value, child.lineno))
+            elif isinstance(child, ast.AugAssign):
+                if isinstance(child.target, ast.Attribute) and child.target.attr == "shots_why":
+                    values.append((child.value, child.lineno))
+            elif isinstance(child, ast.Call) and getattr(child.func, "id", "") == "setattr":
+                args = child.args
+                if (len(args) >= 3 and isinstance(args[1], ast.Constant)
+                        and args[1].value == "shots_why"):
+                    values.append((args[2], child.lineno))
+            out.extend((where, value, lineno) for value, lineno in values)
+            walk(child, where)
+
+    walk(tree, ())
+    return out
+
+
+def _unaccounted_shots_why_writes(src: str) -> list:
+    """`(函数链, 行号)`：**把 `.shots_why` 赋成非空值、却不在对账的地方**。
+
+    判据（修复轮 3 的 ①）：**非空 = 出过事 ⇒ 必须有对账** —— 那本只增的账
+    （`journey.shot_failures`）是这条事实**唯一**的时间线出口，所以非空赋值只许待在
+    **同时写账**的那个方法里（`_StepShots._fail`）。**唯一例外是赋成 `""`**
+    （「现在不坏了」，不是新事实）。
+    """
+    return [(where, lineno) for where, value, lineno in _writes_to_shots_why(src)
+            if where != ("_StepShots", "_fail")
+            and not (isinstance(value, ast.Constant) and value.value == "")]
+
+
+def test_the_four_missing_shot_sentences_are_told_apart(tmp_path, monkeypatch):
+    """闸拍 / 步拍·某一步 / 步拍·整条路 / **到顶不再拍** —— **四句人话必须分得开**。
+
+    为什么（修复轮 1 的 Important-2 原话）：「**一致不该靠抹平两个事实来达成**」。
+    四件事的来源不同、下一步也不同（闸上那张是给人看现场的那张；探路里那些是留着当
+    证据的那批；到顶那一条是**知道的、不再拍**），句子一字不差的话，读的人分不出是哪一种。
+
+    ⚠️ 而**整条路**那一支**说得出的是整条路**（它不带「哪一步」）—— 所以既不许跟着步拍
+    那句说「这一步」，也不许跟着闸拍那句说「这一轮」：**说得出多少说多少，别编**。
     """
     # ① 步拍·某一步（说得出是哪一步的那种形状）
     c1, j1 = _one_job(tmp_path, _narrating(
@@ -537,8 +584,18 @@ def test_the_three_missing_shot_sentences_are_told_apart(tmp_path):
     # ③ 闸拍（这一轮停下来的那张没拍成）
     c3, j3 = _one_job(tmp_path, _narrating(call="none"), capture=_shot_boom)
     pause_say = _says(c3, j3, "shot_missing")[0]
+    # ④ 到顶（真的走到 `MAX_KEPT_SHOTS` 那一步上）
+    monkeypatch.setattr(browser_agent, "MAX_KEPT_SHOTS", 1, raising=True)
+    capped_journey = browser_agent.Journey()
+    capped_shots = _shots(capped_journey, tmp_path / "cap-shots", _shooter())
+    for _ in range(2):                       # 第一张拍成 → 到顶；第二张不再拍
+        capped_shots._take(None, {"action": "click"}, "before")
+    c4, j4 = _one_job(tmp_path, _narrating(call="none",
+                                           values={"journey": capped_journey}))
+    capped_say = _says(c4, j4, "shot_missing")[0]
 
-    assert len({step_say, channel_say, pause_say}) == 3, (step_say, channel_say, pause_say)
+    says = [step_say, channel_say, pause_say, capped_say]
+    assert len(set(says)) == 4, says
     assert "这一步" in step_say and SHOT_WHY in step_say, step_say
     # ② 不许说「这一步」（那是编的），也不许说「这一轮」（那是闸拍的事实）
     assert CHANNEL_WHY in channel_say, channel_say
@@ -546,6 +603,69 @@ def test_the_three_missing_shot_sentences_are_told_apart(tmp_path):
     assert "探路" in channel_say, channel_say
     # ③ 闸拍那句说的是「这一轮」，不是探路里的那批
     assert "这一轮" in pause_say and "探路" not in pause_say, pause_say
+    # ④ 到顶那句说的是「不再拍」，而且必须点明**这是知道的，不是漏了**
+    assert "不再拍" in capped_say and "不是漏了" in capped_say, capped_say
+
+
+def test_the_shot_cap_says_so_on_the_timeline(tmp_path, monkeypatch):
+    """**上限第一次生效的那一刻**，时间线上必须有一条事件（修复轮 3 的 ②）。
+
+    ⚠️ 上限本身是对的（**别抬它、别改数**）：缺的只是「它生效了」这件事没人说 ——
+    原先那句解释只进 `journey.notes`，而 `notes` **不上时间线**（服务侧只把它写进
+    `attempts.jsonl`）。于是从这一步起**既没有图、也没有账、也没有事件**，页面上就是
+    一个没人解释的空图框 —— 那正是设计注 §3.2 第 6 行（本片的行）要治的形状。
+    """
+    monkeypatch.setattr(browser_agent, "MAX_KEPT_SHOTS", 2, raising=True)
+    journey = browser_agent.Journey()
+    shots = _shots(journey, tmp_path / "shots", _shooter())
+    for _ in range(4):                       # 前两张拍成 → 到顶；后两次不再拍
+        shots._take(None, {"action": "click"}, "before")
+    assert any("不再拍" in n for n in journey.notes), journey.notes
+    capped = [row for row in journey.shot_failures if row.get("capped")]
+    assert len(capped) == 1, journey.shot_failures   # 到顶那一刻记一条（不是每步一条）
+
+    client, job_id = _one_job(tmp_path, _narrating(call="none",
+                                                   values={"journey": journey}))
+    told = _events(client, job_id, "shot_missing")
+    assert len(told) == 1, [e["say"] for e in told]
+    assert "不再拍" in told[0]["say"] and "不是漏了" in told[0]["say"], told[0]["say"]
+
+
+def test_a_broken_channel_is_only_written_where_it_is_accounted_for():
+    """**非空 = 出过事 ⇒ 必须有对账**：`.shots_why` 的非空赋值只许待在 `_StepShots._fail`。
+
+    为什么要有这条（修复轮 3 的 ①）：那本只增的账是这条事实**唯一**的时间线出口，
+    而「出口与写入点在同一个方法里」原来只是一句**注释** —— 今天成立只因为恰好没有
+    第三方写。全局约束是「**没有静默的路径**」，不是「**有注释的静默路**」；
+    这条判据把「恰好」变成「有东西挡着」（同形状的先例：扫 `service.py` 的 narrate 那条）。
+
+    ⚠️ **不许**用改名 / 删字段 / 改成 property 去堵：msgpack 还原走 `cls(**kwargs)`，
+    构造函数一抛就被 ext hook 吞掉、返回 `None` —— 老代码收到不认识的字段，
+    那个 job 的 `journey` 会**静默变成 `None`**。只能靠测试钉，不能动字段形状。
+    ⚠️ 撞上限那一条**不经 `_fail`**（账里那条是 `capped`）—— 它由
+    `test_the_shot_cap_says_so_on_the_timeline` 钉。
+    """
+    src = pathlib.Path(browser_agent.__file__).read_text(encoding="utf-8")
+    writes = _writes_to_shots_why(src)
+    assert writes, "一处都没扫到 = 量具坏了（字段改名了？）"
+    bad = _unaccounted_shots_why_writes(src)
+    assert not bad, (
+        "这些地方把 `.shots_why` 写成了非空值，却没同时写那本只增的账 —— "
+        "非空 = 出过事 ⇒ 必须有对账（否则时间线上是静默的）：%r" % (bad,))
+
+    # 量具**自己有牙**：喂它一段带违规写法的源码，它得当场逮住那一行
+    # （不靠外部变异也能证明这条判据会响）。
+    trap = (
+        "class _StepShots:\n"
+        "    def _fail(self, why):\n"
+        "        self.journey.shots_why = why\n"
+        "    def somewhere_else(self):\n"
+        "        self.journey.shots_why = '窗口没了'\n"
+        "        self.journey.shots_why = ''\n"
+        "        setattr(self.journey, 'shots_why', why)\n")
+    assert _unaccounted_shots_why_writes(trap) == [
+        (("_StepShots", "somewhere_else"), 5), (("_StepShots", "somewhere_else"), 7)], \
+        _writes_to_shots_why(trap)
 
 
 # ═══════════════ 5. 旁路坏掉要**响**（回调和它自己的那本账）═══════════════

@@ -174,6 +174,12 @@ STEP_SHOT_MISSING_SAY = "这一步没留下图：%s"
 STEP_SHOT_CHANNEL_SAY = ("探路里的步拍图这一次没留下：%s"
                          "（说的是探路途中每一步的那些图，不是闸上停下来那一轮的那张 —— "
                          "闸上那张没留成会另说。）")
+#: 目录表第 6 行的**第四支**（Task 5 修复轮 3）：步拍撞上上限，**从这一步起不再拍**。
+#: 与上面三句都不同：这不是「拍不成」，是**知道的、不再拍**（上限本身是对的）——
+#: 缺的只是「它生效了」这件事没人说。人话里必须写清**这是知道的，不是漏了**，
+#: 否则读的人看到的就是一个没人解释的空图框（那正是 §3.2 第 6 行要治的形状）。
+STEP_SHOT_CAPPED_SAY = ("逐步留在盘上的图到顶了，**从这一步起不再拍**：%s"
+                        " —— 这是**知道的**，不是漏了（后面的步要是不对劲，账上不会再有图）。")
 #: Task 5 修复轮 1（Important-1）：**自测的播报没送到时间线**。
 #: `%s` = 原因原文。这条是给读时间线的人看的 ——「这一趟你看到的自测结果可能不全」。
 NARRATION_BROKEN_SAY = ("自测的播报没送到时间线上：%s —— 自测**照常跑完**了"
@@ -1942,13 +1948,20 @@ class Service:
         与「这一步没有图是因为窗口连不上」在页面上长得一模一样，而设计注
         §3.2 第 6 行明令不许让空图框冒充页面。
 
-        两个来源都认（都是「图没留下」这件事的载体），**两句话不一样**
+        两种来源都认（都是「图没留下」这件事的载体）—— 而**每一支的句子都不一样**
         （修复轮 1 的 Important-2：一致不该靠抹平两个事实来达成）：
           - `step["shots_why"]`：**那一步**的图没成（`.get` 读 —— 没这个字段的
             journey 一个字节都不受影响）→「这一步没留下图」；
-          - `journey.shot_failures`：步拍**当场**记的那本只增的账（修复轮 2）——
-            带 `when` 的 = 某一步的（同上那句），不带的（`_safe`，步拍自己的代码抛了）
-            = 够不着哪一步 ⇒ 只说这一路，**不编「哪一步」**（`STEP_SHOT_CHANNEL_SAY`）。
+          - `journey.shot_failures`：步拍**当场**记的那本只增的账（修复轮 2/3）——
+            带 `when` 的 = 某一步的（同上那句）；不带 `when` 的（`_safe`，步拍自己的
+            代码抛了）= 够不着哪一步 ⇒ 只说这一路，**不编「哪一步」**；
+            `capped` 的 = 撞上 `MAX_KEPT_SHOTS`、**从这一步起不再拍**
+            （修复轮 3：那不是「拍不成」，是**知道的**）⇒ 单独一句，话说清「不是漏了」。
+
+        ⚠️ **四支一支都不能省**（修复轮 3 的正身）：`capped` 那一支原先只有
+        `journey.notes` 一句话，而 `notes` **不上时间线** —— 于是上限一生效，
+        从那一步起**既没有图、也没有账、也没有事件**，页面上就是一个没人解释的空图框。
+        那正是设计注 §3.2 第 6 行（本片的行）要治的形状。
 
         ⚠️ **为什么扫的是那本只增的账，而不是 `journey.shots_why`**（修复轮 2 的正身）：
         那一格状态说的是「这条**路现在**坏着吗」（拍成了就清，Minor-5 要的就是它），
@@ -1972,23 +1985,26 @@ class Service:
         journey = values.get("journey")
         if journey is None:
             return
-        whys = []                                 # [(why, step_no|None, 是「哪一步」那条吗)]
+        whys = []                                 # [(why, step_no|None, 哪一支)]
         for step in list(getattr(journey, "steps", None) or []):
             try:
                 why = str(step.get("shots_why") or "").strip()
             except AttributeError:                # 不是字典的步（不该有）—— 跳过它，不抛
                 continue
             if why:
-                whys.append((why, step.get("step_no"), True))
+                whys.append((why, step.get("step_no"), "step"))
         for row in list(getattr(journey, "shot_failures", None) or []):
             try:
                 why = str(row.get("why") or "").strip()
-                per_step = bool(row.get("when"))  # 带 `when` = 那一刻知道是哪一步
+                # 哪一支（修复轮 3 起有三种）：知道是哪一步的 / 撞上上限不再拍的 /
+                # 够不着哪一步的（`_safe`）。
+                which = ("capped" if row.get("capped")
+                         else ("step" if row.get("when") else "channel"))
             except AttributeError:                # 同上：不是字典的记录，跳过
                 continue
             if why:
-                whys.append((why, None, per_step))
-        for why, step_no, per_step in whys:
+                whys.append((why, None, which))
+        for why, step_no, which in whys:
             with job.lock:
                 if why in job.shots_reported:
                     continue
@@ -1996,10 +2012,13 @@ class Service:
             data = {"why": why}
             if isinstance(step_no, int):
                 data["step_no"] = step_no
-            # 三句话三个事实（修复轮 1 的 Important-2）：**这一步**没了 /
-            # 探路里**整条步拍路**坏了（说不出哪一步）/ 闸上**那一轮**那张没了
-            # —— 最后那一句在 `_capture_pause` 里。三句必须读得出来是哪一件。
-            say = (STEP_SHOT_MISSING_SAY if per_step else STEP_SHOT_CHANNEL_SAY) % why
+            # **四句话四个事实**（修复轮 1 的 Important-2 + 修复轮 3）：**这一步**没了 /
+            # 探路里**整条步拍路**坏了（说不出哪一步）/ **到顶了不再拍**（知道的）/
+            # 闸上**那一轮**那张没了（最后那一句在 `_capture_pause` 里）。
+            # 四句必须读得出来是哪一件 —— 而**每一件都要说出来**（一句都不许省）。
+            say = {"step": STEP_SHOT_MISSING_SAY,
+                   "channel": STEP_SHOT_CHANNEL_SAY,
+                   "capped": STEP_SHOT_CAPPED_SAY}[which] % why
             self.narrate(job, "shot_missing", say, **data)
 
     def _note_narration_broken(self, job: Job, values: dict) -> None:
