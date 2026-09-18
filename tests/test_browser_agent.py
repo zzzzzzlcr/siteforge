@@ -459,7 +459,12 @@ def test_every_step_lands_in_the_journey(tmp_path):
     assert [c["name"] for c in calls] == ["observe", "click", "scroll"]
     for step in journey.steps:
         # ⚠️ `origin` 是 Task 4 加的（跨任务接口 §1）：走 dispatch 的每一步都是模型走出来的
-        assert set(step) == {"state", "action", "target", "result", "note", "origin"}, step
+        # ⚠️ 后五个键是 **2026-09-18 契约**加的（`docs/执行事实契约-2026-09-18.md` §二
+        #    那七格的**前五格**，脚本填的那五格）：`dispatch` 在**回执到手那一刻**填它们。
+        #    这条断言今天仍然管着老那件事：**报错那一步与做成了那一步同形**
+        #    （见 `test_tool_error_is_recorded_in_that_step`）。
+        assert set(step) == {"state", "action", "target", "result", "note", "origin",
+                             "step_no", "receipt", "sig_before", "sig_after", "why"}, step
         assert step["origin"] == "model", step
 
     click = journey.steps[1]
@@ -510,10 +515,14 @@ def test_tool_error_is_recorded_in_that_step(tmp_path):
     assert "填不进去" in filled["result"]["error"], filled["result"]
     assert "没填成" in filled["note"], f"报错那一步的人话不对：{filled['note']!r}"
     assert filled["target"]["selectors"] == ["#missing"]
-    for step in journey.steps:
+    for i, step in enumerate(journey.steps):
         # ⚠️ `origin` 是 Task 4 加的（跨任务接口 §1）：走 dispatch 的每一步都是模型走出来的
-        assert set(step) == {"state", "action", "target", "result", "note", "origin"}, step
+        # ⚠️ 后五个键是 2026-09-18 契约加的（七格里的前五格）—— 这条断言的**要害**
+        #    仍然没变：**报错那一步与做成了那一步的键集合一模一样**。
+        assert set(step) == {"state", "action", "target", "result", "note", "origin",
+                             "step_no", "receipt", "sig_before", "sig_after", "why"}, step
         assert step["origin"] == "model", step
+        assert step["step_no"] == i + 1, step
 
     # 不吞：下轮模型看到的那条 tool message 里必须带这条错
     tool_msgs = [m for m in fake.calls[1]["messages"] if m["role"] == "tool"]

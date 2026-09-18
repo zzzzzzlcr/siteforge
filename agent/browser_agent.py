@@ -118,7 +118,9 @@ Task 1 的 spike 证明了模型**肯**调工具（24 跑 0 编造、47 次真 o
 
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 import pathlib
 import re
 import time
@@ -126,7 +128,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import llm, plan as plan_module, shots, tools
+from . import events, llm, plan as plan_module, shots, tools
 
 #: **C1**：`deepseek-v4-*` 把思考 token 算进 `max_tokens`。给 4000 时最终答案会**静默变空**
 #: （spike 实测 1/8，提到 12000 后 5/5 正常）。别往下调 —— 那不是省钱，是把能力削掉。
@@ -202,6 +204,24 @@ _ID_LIKE_RE = re.compile(r"[0-9a-z]+(?:[-_.][0-9a-z]+)*")
 
 #: `result["page_text_head"]` 留多少字（给人核对「模型那一眼看到了什么」）。
 PAGE_HEAD_CHARS = 200
+
+#: `receipt`（契约 §二第 3 格）**逐字转抄的上限**：超过它就不抄了，只记下它有多大。
+#:
+#: ⚠️ 为什么是「不抄」而不是「截断」：`Journey.steps` 会进 checkpoint，而**已有两条判据**
+#: 钉着账本一步的大小（`test_a_diagnostic_row_does_not_drag_the_rest_of_the_tool_return_in`、
+#: `test_screenshot_vision.py::test_explore_hands_the_screenshot_to_the_model_and_keeps_the_journal_small`
+#: —— 后者直接断言 base64 **不许进账本**）。截一段 base64 进去，两条都会红，而且那段
+#: 前缀对读的人**一个字的用都没有**。所以超了就是一句「有多大、没抄」——**有损，但说出来**。
+#:
+#: ⚠️ 咬得到的只有**感知类**（`observe` / `screenshot` 的返回可以几十上百 KB）；
+#: 动作类（click / form / scroll / goto）的回执就是 `{"ok": true, "note": …}` 或那句报错，
+#: **远在闸下、永远逐字** —— 而契约 §六 那条验收要的正是动作类的回执。
+RECEIPT_MAX_CHARS = 800
+
+#: **单格**里一个字符串超过多少字符就不抄了（换成「有多大、没抄」）。
+#: 200 与 `PAGE_HEAD_CHARS` 同一个量级：一个值超过两百字，它就不是「回执」而是「内容」了
+#: —— 而内容有它自己的去处（`_summarize` 的摘要、`_raw_sig` 的指纹）。
+RECEIPT_STR_CHARS = 200
 
 #: 状态名/字段名的兜底（页面 slug 取不出来时）
 FALLBACK_STATE_NAME = "page"
@@ -490,7 +510,14 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             （`llm.run_tool_loop` 的 `except Exception` 把 dispatch 抛的都记成工具错）——
             那等于把旁路的故障记到产物头上，而模型还会照着这条假错换路走。
             **只记一次**：账本坏了通常每一步都坏，30 步刷 30 条会把别的 note 淹掉。
+
+            ⚠️ **交出去之前先过一次 `_utf8_safe`**（2026-09-18）：这一步里混着**外面来的
+            字节**（CDP 回执的原文、页面上的 url 与元素文字），而两个读者都是 UTF-8 的
+            文本产物（JSONL 账本 + `/live` 的 JSON）—— 一个孤立代理对过得了 `json.dumps`、
+            过不了最后那次 `.encode("utf-8")`，后果是**整条时间线一条都读不出来**
+            （不是这一步坏掉）。所以**转抄的那一刻**就换掉，并把「换了几个」写进 `why`。
             """
+            step = _utf8_safe(step)
             try:
                 _emit(on_step, step)
             except Exception as exc:                       # noqa: BLE001
@@ -516,6 +543,20 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             _stop_or_raise(paused, journey, taken, limits)   # ← 每一步之前（§6.2）
             taken += 1
             step, fill = _describe(name, args, pages, journey)
+            # ── 契约七格里的**前五格**：脚本只填这五格（契约 §二①）──────────────
+            #
+            # 第 1 格 `step_no`：第几步（模型这一步是它自己走的，编号按**发出去的顺序**）。
+            step["step_no"] = taken
+            # 第 4 格 `sig_before`：**动手之前**那一页的原始签 —— 最近一眼算出来的那个。
+            # 一眼都还没看过（模型第一手就是 click）时是 `None` + 一句 why：
+            # 「看不见」是一等值，不许折算成「没变化」（契约 §二②）。
+            # ⚠️ 它取的是 `pages.sig`（**原始观测**算的），不是 `pages.current_key` /
+            # `step["state"]` —— 后两个是我们自己写的摘要，不是签（见 `_raw_sig`）。
+            step["sig_before"] = pages.sig
+            if pages.sig is None:
+                step["why"]["sig_before"] = (
+                    "动手之前还没看过一眼页面（`observe` 一步都还没跑过）"
+                    "—— 这一页长什么样**量不到**。")
             # ── 步拍：**动手之前**那一张（§5.4）────────────────────────────
             # 它是**下限、省不掉** —— 动手之前不可能知道这一步会不会出问题。
             # 能省的只有「点后」那张：只在**已经知道不对劲**时才补拍。
@@ -525,9 +566,23 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             try:
                 raw = session.call_tool(name, args)
             except Exception as exc:                       # noqa: BLE001
+                # 第 3 格 `receipt`：**CDP 回执的原文** —— 这一条是工具**没成**那一侧。
+                # 为什么带一个 `isError`：那是 **MCP 协议自己**的字段（`tools.call_tool`
+                # 就是拿它分支的），不是我们下的判 —— 转抄它 = 把协议的原话留给裁判，
+                # 而不是替他先说一句「这一步失败了」。
+                # ⚠️ `text` 里那个类名（`McpToolError` / `McpError`）也是**转抄的一部分**，
+                # 不是我们加的话：它分得开「工具说它没做成」与「传输断了」—— 而这两件事
+                # 的下一步完全相反（换选择器 / 重开窗口）。本文件里工具出错一律这么记。
+                step["receipt"] = {"isError": True, "text": "%s: %s" % (type(exc).__name__, exc)}
                 step["result"] = {"ok": False, "elapsed_ms": _ms(t0),
                                   "error": f"{type(exc).__name__}: {exc}"}
                 step["note"] = _say(name, step["target"], False)
+                # 第 5 格 `sig_after`：动作**没发出去**，页面当然也没再看过 ——
+                # 这一格是 `None` + 一句 why，**不是**「和 before 一样」（那会是
+                # 「页面没变」这个假话：页面没变是因为**这一步没发生**）。
+                step["sig_after"] = None
+                step["why"]["sig_after"] = ("这一步的工具调用没成，之后也没有再看一眼页面 —— "
+                                            "页面变没变**量不到**。")
                 if step_shots is not None:
                     # 失败那条路：动页面动作 ⇒ 当场补拍点后那张（两张都留，§5.4 的 a 支）；
                     # **报错的 `observe`**（唯一「本该结算而没结算成」的那个）⇒ 那链作废。
@@ -547,6 +602,17 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                                        % (fails, step["note"]))
                 raise        # 还给 run_tool_loop：模型也必须看见这条错（不吞）
             fails = 0
+            # 第 3 格 `receipt`：工具**回来了** —— 转抄它的原文（超长只标注、不过滤）。
+            step["receipt"] = _receipt_of(name, raw)
+            # 第 5 格 `sig_after`：只有 `observe` 这一步**当场**量得出来 —— 那一眼就是
+            # 量它的动作（`_raw_sig(raw)`）。别的动作（click / form / scroll / goto）
+            # 动手那一下**手上没有新的一页**：页面变没变要等下一次观测，
+            # 所以是 `None` + 一句 why。**不许**拿 `sig_before` 顶上（那是「没变化」的假话）。
+            step["sig_after"] = None
+            if name != "observe":
+                step["why"]["sig_after"] = (
+                    "这一步之后还没有再看过一眼页面 —— 页面变没变要等下一次 `observe`"
+                    "才知道，**量不到**（不拿动手前那一份顶上）。")
             step["result"] = _summarize(name, args, raw, _ms(t0), fill)
             if step_shots is not None:
                 # 做成了 ⇒ 这一步**先挂着**，留不留由**紧接着那次观测**说了算（§5.4 b 支）。
@@ -563,6 +629,14 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             journey.steps.append(step)
             if name == "observe":
                 moved = pages.note_page(raw)
+                # 第 5 格 `sig_after`：**这一眼看到的**那一页（`note_page` 刚把它算进
+                # `pages.sig`）。读不出正文时它是 `None` —— 那就补一句 why，
+                # 仍然是「看不见」，不是「没变化」。
+                step["sig_after"] = pages.sig
+                if pages.sig is None:
+                    step["why"]["sig_after"] = (
+                        "这一眼没读到正文（回执里没有 `page_text`）"
+                        "—— 这一页的签**量不到**。")
                 if step_shots is not None:
                     # 结算手上那一步 —— **只有「紧接着」的这次观测才算**（§5.4 判据 2）。
                     # 放在 `note_page` **之后**：要比的是「这一眼看过之后」的签。
@@ -1156,8 +1230,19 @@ def _describe(name: str, args: dict, pages: "_Pages", journey: Journey) -> tuple
     「这一步是它自己做的，还是我们照着账本重放的」。**默认值不给**：它必须被显式写下来
     （默认值会让「忘了写」的那条路悄悄变回 model）。
     """
+    # ⚠️ **形状在**这一处**定死**（`_replay_step` 造的是同一套键）：报错那一步与做成了
+    # 那一步的键集合必须**一模一样** —— 下游（Console / `states()` / 账本）是按形状读的，
+    # 「失败的那步长得与成功的不一样」是这套系统里最贵的一种便宜。
+    #
+    # 后五个键是**契约七格里的前五格**（`docs/执行事实契约-2026-09-18.md` §二）：脚本
+    # **只填这五格**，第六格是运营写的、第七格**永远不是脚本的**（那两格在服务那一侧，
+    # 见 `agent/service.py` 的 `_judge_step`）。它们在这里只是**占位**，值由 `dispatch`
+    # 在**回执到手的那一刻**填（`step_no` / `receipt` / `sig_before` / `sig_after`），
+    # `why` 是「哪一格看不见、为什么」——契约 §二②：「看不见」是一等值，**必须**配一句话。
     step = {"state": pages.current_name, "action": name, "target": None, "result": None,
-            "note": "", "origin": "model"}
+            "note": "", "origin": "model",
+            "step_no": None, "receipt": None, "sig_before": None, "sig_after": None,
+            "why": {}}
     fill = None
     selector = str(args.get("selector") or "")
     if name == "goto":
@@ -2334,11 +2419,29 @@ def _replayed_step(row: dict, action: str, args: dict, raw, elapsed_ms: int) -> 
 
     形状必须一样：账本里的一行就是 `Journey.steps` 的那一步，产物那侧（`states()` /
     `fills()` / 重放机）因此一个字的改动都不需要。
+
+    ⚠️ **契约那五格在这儿只填得出一格**（2026-09-18，明知而留的口子，不是漏）：
+    `receipt` 填得出来（这一步真发出去了、真回来了，原文就在手上），
+    而 `step_no` / `sig_before` / `sig_after` **填不出来** —— 重放这条路手上没有
+    「上一眼/这一眼」那套观测（`_look` 只在核验点上看，且不经过 `_Pages`）。
+    所以那三格是 `None` + 一句 why（**「看不见」是一等值**，不许编）。
+    这一轮只接了 `dispatch` 那条路（契约 §六 的验收走的就是它）；重放那条路
+    **欠着**，账上看得出来。
     """
     target = None if action == "observe" else dict((row or {}).get("target") or {})
+    why = {
+        "sig_before": "重放这条路今天还没有把签接上（只有 `dispatch` 那条路接了）—— 量不到。",
+        "sig_after": ("重放这条路今天还没有把签接上（只有 `dispatch` 那条路接了）—— 量不到。"),
+    }
+    sig_after = _raw_sig(raw) if action == "observe" else None
+    if sig_after is not None:
+        del why["sig_after"]
     return {"state": _state_of(row), "action": action, "target": target,
             "result": _summarize(action, args, raw, elapsed_ms, None),
-            "note": _say(action, target, True), "origin": "replay"}
+            "note": _say(action, target, True), "origin": "replay",
+            #: 契约那五格（脚本填的）—— 见上面那句「只填得出一格」。
+            "step_no": (row or {}).get("step_no"), "receipt": _receipt_of(action, raw),
+            "sig_before": None, "sig_after": sig_after, "why": why}
 
 
 # ─────────────────────── 页面状态（换页 = 换状态）───────────────────────
@@ -2695,6 +2798,119 @@ class _StepShots:
         self._on_disk.discard(str(name))    # 真没了才减
 
 
+def _utf8_safe(step: dict) -> dict:
+    """把这一步里**线上写不出去的码位**换掉（`events.safe_value`），并把个数记在 `why` 里。
+
+    为什么在这条路上必须做（2026-09-18，Task 4 收口复审点名的洞）：一个孤立代理对
+    （`"\\ud800"`）**过得了 `json.dumps`，过不了最后那次 `.encode("utf-8")`** ——
+    而这一步要去两个地方：账本那一行（JSONL）与 `/live` 的 JSON。撞上的后果不是「这一步
+    没记上」，是**整条时间线一条都读不出来**（`/live` 500）。
+    字节来自**外面**（CDP 的回执、页面上的 url 与元素文字），所以不能靠「写的人小心」——
+    在**转抄那一刻**处理掉，而且**数出来**（替换 = 有损，有损必须说）。
+    """
+    safe, replaced = events.safe_value(step)
+    if not replaced:
+        return step
+    why = dict(safe.get("why") or {})
+    why["unwritable_bytes"] = (
+        "这一步里有 %d 个字节**线上写不出来**（孤立代理对，来自工具回执/页面上的字）—— "
+        "已按 `�` 记。**不是它本来长这样**（不换掉的话 `/live` 会 500，整条时间线一条都读不出来）。"
+        % replaced)
+    safe["why"] = why
+    return safe
+
+
+def _raw_sig(raw) -> dict | None:
+    """那一页的**原始签** —— 契约 §二 `sig_before` / `sig_after` 那两格的内容。
+
+    三样，全部从**这一次观测的原始返回**（`observe` 的 `PageModel`）算出来：
+
+    - `url`     —— 页面地址，原样；
+    - `text`    —— **正文指纹**：归一化之后的 `page_text` 取 sha1 的前 12 位十六进制。
+                   存指纹不存正文：签是要**比**的，正文会长到没法放进账本；
+    - `visible` —— **可见元素计数**：`actions + fields + option_groups` 的条数
+                   （陷阱元素 cdp 已经排掉了 —— 它不在 actions/fields 里，
+                   单列在 `honeypots`，见 `observe.go` 那段「为什么单列」）。
+
+    ⚠️ **为什么不是 `Journey.steps[].state` 或 `pages[].url/title`**（复审 2026-09-18 点名）：
+    那两样是**我们自己写的摘要** —— 状态名是我们起的 slug，`title` 是页面自报的一句话。
+    拿它们当签，等于让裁判去读**被测量者自己写的报告**，而「判断和执行是同一方」
+    正是这份契约 §一要换掉的那个东西。签必须是原始观测算的，一个字段都不许借道摘要。
+
+    ⚠️ **读不出来就是 `None`**（回执里没有 `page_text` 这一键、或者根本不是字典）：
+    「看不见」是一等值（契约 §二②），**不许**折算成「没变化」，也不许编一个空签。
+    调用方拿到 `None` 要给一句 `why`（`Timeline` 会把没解释的 `None` 挡在门外）。
+    """
+    if not isinstance(raw, dict):
+        return None
+    if "page_text" not in raw:
+        return None                       # 这一眼没读到正文 = **看不见**，不是「正文是空的」
+    text = _norm(raw.get("page_text") or "")
+    visible = (len(raw.get("actions") or []) + len(raw.get("fields") or [])
+               + len(raw.get("option_groups") or []))
+    return {"url": str(raw.get("url") or ""),
+            "text": hashlib.sha1(text.encode("utf-8")).hexdigest()[:12],
+            "visible": visible}
+
+
+def _receipt_of(name: str, raw) -> Any:
+    """**CDP 回执的原文** —— 契约 §二第 3 格，脚本在这里只做一件事：**转抄**。
+
+    为什么要专门一个函数（而不是 `step["receipt"] = raw`）：转抄要**逐字**，但账本与
+    checkpoint 都装不下**长字符串**（`observe` 的整段正文、`screenshot` 的 base64）——
+    两条判据钉着这件事（`test_a_diagnostic_row_…` 的 2000 字符、`test_screenshot_vision::
+    test_explore_hands_the_screenshot…` 的「base64 不许进账本」）。所以：
+
+    - **短的那份逐字照抄**（动作类的回执 —— `{"ok": true, "note": …}` / `{"url": …}` /
+      那句报错 —— **永远**走这一条，契约 §六 要的就是它们）；
+    - **单个字符串超过 `RECEIPT_STR_CHARS`** 的，那一格换成一句「有多大、没抄」；
+    - **整份序列化之后超过 `RECEIPT_MAX_CHARS`** 的，整个换成一句「有多大、没抄」。
+
+    ⚠️ 三种都是有损，而且都**说出来**（不留假的原文片段：截一段 base64 进账本，
+    读的人只会以为 CDP 就回了这么一串乱码）。**损的是长度与图，不是判断词** ——
+    契约 §二③ 的边界说 `receipt` 里**可以**有 `ok` / `success` 这种词（CDP 自己的原话，
+    替它删 = 伪造笔录），所以这里**一个词都不动**。
+
+    ⚠️ `screenshot` 那条**单独判**（与 `_summarize` 对它是同一个理由）：它的回执**就是一张图**
+    —— 而「图不进账本」是这一片的**既有规矩**（`test_screenshot_vision.py::
+    test_explore_hands_the_screenshot_to_the_model_and_keeps_the_journal_small` 逐字节钉着，
+    理由见 `journal.py` 的模块 docstring）。所以那一格只记「有一张图、多大」。
+    ⚠️ 尺寸闸拦不住它（测试里那张 1×1 的 PNG 只有一百来个字符）—— 所以判的是**工具名**，
+    不是长度；这与 `_summarize` 的分支是同一条口径。
+    """
+    if name == "screenshot":
+        try:
+            size = len(json.dumps(raw, ensure_ascii=False))
+        except (TypeError, ValueError):
+            size = len(str(raw))
+        return {"transcribed": False, "chars": size,
+                "note": "这一次的回执**就是一张图**（%d 字符）—— 图不进账本（既有判据），"
+                        "只记它有多大；要看图走 `/job/{id}/shot/…` 或 `result.bytes`。" % size}
+
+    def bound(value):
+        if isinstance(value, str):
+            if len(value) <= RECEIPT_STR_CHARS:
+                return value
+            return {"transcribed": False, "chars": len(value),
+                    "note": "这一格太长（%d 字符，逐字转抄的上限 %d）—— 没抄下来，"
+                            "只记了它有多大。" % (len(value), RECEIPT_STR_CHARS)}
+        if isinstance(value, dict):
+            return {k: bound(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [bound(v) for v in value]
+        return value
+
+    try:
+        size = len(json.dumps(raw, ensure_ascii=False))
+    except (TypeError, ValueError):       # 实在转不了（不该发生：MCP 回的是 JSON）
+        return {"isError": False, "text": bound(str(raw))}
+    if size > RECEIPT_MAX_CHARS:
+        return {"transcribed": False, "chars": size, "limit": RECEIPT_MAX_CHARS,
+                "note": "这份回执比逐字转抄的上限长 —— **没有抄下来**：账本与 checkpoint "
+                        "都装不下整份原始返回（已有一条判据钉着）。原文在工具返回里。"}
+    return bound(raw)
+
+
 class _Pages:
     """把观察到的页面归成状态。
 
@@ -2709,6 +2925,12 @@ class _Pages:
         self._current: dict | None = None
         #: 这次要探的那个站点的主机名（判「第一页是不是站点自己的页」用）
         self._site_host = _host_of(site_url)
+        #: **最近一眼那页的原始签**（契约 §二 `sig_before` 就是它）。
+        #: 它比 `current_key` 细：`key` 只比 url / title / 正文前 400 字（判「换没换页」），
+        #: 而签是**全正文指纹 + 可见元素计数** —— 同一页上多出一个按钮、正文改一个字，
+        #: `key` 说「没换页」，签说「变了」。这是有意的：换页与**变化**是两件事。
+        #: 一眼都还没看过时是 `None`（=「看不见」，不是「空签」）。
+        self.sig: dict | None = None
 
 
 
@@ -2733,6 +2955,10 @@ class _Pages:
         """记一页。返回**上一个状态名**（说明换页了），第一页返回 None。"""
         if not isinstance(model, dict):
             return None
+        # ⚠️ **签在早退之前更新**：下面第一个 `return None` 是「没换页」，可**没换页不等于
+        # 没变**（同一页上多一个按钮、正文改一个字）。签是比 `key` 细的那把尺子，
+        # 它必须**每一眼**都换新，否则「页面变没变」这个问题会被拿旧尺子量。
+        self.sig = _raw_sig(model)
         key = ((model.get("url") or "").split("#")[0],
                _norm(model.get("title") or ""),
                _norm(model.get("page_text") or "")[:400])

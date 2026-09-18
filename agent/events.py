@@ -74,7 +74,66 @@ import re
 import threading
 
 __all__ = ["WHO", "KINDS", "MAX_EVENTS", "CELLS", "UNDECLARED", "JUDGMENT_WORDS",
-           "Timeline"]
+           "safe_value", "Timeline"]
+
+
+#: 线上装不下的那些码位（**孤立代理对**）换成什么。U+FFFD 是「这里有一个字节读不出来」
+#: 的通用写法 —— 换成 `?` 会让人以为页面本来就写着一个问号。
+_UNWRITABLE = "�"
+
+
+def safe_value(value) -> tuple:
+    """把一个值里**写不出去**的码位换成 `\\ufffd`，返回 `(换过的值, 换了几个)`。
+
+    ⚠️ **它为什么必须存在**（2026-09-18，Task 4 收口复审实测出来的洞，就在这个模块里）：
+    闸（`_facts`）的刻度管的是 **`data`**，而**事件外壳**（`kind` / `say`）没有用同一把尺子
+    —— `Timeline.add("step", "\\ud800")` **从正门收下**，随后 `/live` 直接 500：
+    **整条时间线一条都读不出来**（不是那一条事件坏掉）。一个孤立代理对过得了
+    `json.dumps`，却过不了最后那次 `.encode("utf-8")` —— 把它变成 500 的是**这一层**。
+
+    ⚠️ 为什么是「换掉 + 数出来」而不是「抛」：这些字节**来自外面**
+    （CDP 的回执、页面上的一段字、运营写的期望）——抛掉整条事件等于**把这一步的记录丢了**，
+    而丢记录正是这份契约要治的病。换掉之后**读得到那条事件**，而且知道「有几个字节没能原样留下」。
+
+    ⚠️ 它**不替 `_facts` 那道闸干活**：`data` 里出现这种值仍然由那道闸**当场拒**
+    （那是写的人的编程错误）。这里的用途只有两个：**转抄外面来的东西**时（回执 / 页面上的字）
+    与**事件外壳**（`Service.narrate` 的 `say`）。
+    """
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            pass
+        else:
+            return value, 0
+        chars, replaced = [], 0
+        for char in value:
+            try:
+                char.encode("utf-8")
+            except UnicodeEncodeError:
+                chars.append(_UNWRITABLE)
+                replaced += 1
+            else:
+                chars.append(char)
+        return "".join(chars), replaced
+    if isinstance(value, dict):
+        total = 0
+        out = {}
+        for key, item in value.items():
+            fixed_key, key_count = safe_value(key)          # 键也要换（它同样是「外面来的」）
+            fixed, count = safe_value(item)
+            total += count + key_count
+            out[fixed_key] = fixed
+        return out, total
+    if isinstance(value, (list, tuple)):
+        total = 0
+        out = []
+        for item in value:
+            fixed, count = safe_value(item)
+            total += count
+            out.append(fixed)
+        return out, total
+    return value, 0
 
 #: 时间线上说话的**三方**（页面靠它决定气泡长相：它就是「聊天」那一半）。
 #: `agent` = 它自己（探路的步、模型的话）；`system` = 服务/系统；`you` = 人。

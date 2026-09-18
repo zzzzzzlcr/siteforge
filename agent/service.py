@@ -581,6 +581,15 @@ class RunRequest(BaseModel):
         None, description="**点名**允许不跑的那几遍扰动（认的是那五个名字）。"
                           "不给 = 用默认（只允许跳 country）；给空列表没有意义，会被拒")
     entry_url: Optional[str] = Field(None, description="第 2 遍刷新回哪个 URL（R-6）")
+    expects: Optional[list] = Field(
+        None, description="**运营逐步写的期望**（契约 §四）：第 i 项就是第 i 步该以什么结束。"
+                          "每一项要么是从菜单里选的一项 —— `{\"url_contains\": \"/wizard\"}` / "
+                          "`{\"text_appears\": \"Thank you\"}` / "
+                          "`{\"button_clickable\": \"下一步\"}` / `{\"screen_changed\": true}` —— "
+                          "要么是 `\"未声明\"`（这一步他说不好，**不许逼他编一个**）。"
+                          "比步数短的那几项 = 运营**没写**（与「未声明」**不是**一回事）。"
+                          "⚠️ 它只给**服务**（判那一步的是服务），不往下发给脚本："
+                          "期望必须来自业务，不能来自执行者（契约 §四）")
     set_viewport: bool = Field(
         False, description="把**窗口层那根线**接上（第 4 遍扰动要换窗口大小，`POST /browser/update`）。"
                            "尺寸由自测那一步定（`selftest.DEFAULT_VIEWPORT`）；这个部署没接窗口层时"
@@ -600,6 +609,209 @@ class ReopenRequest(BaseModel):
     ws_url: str = Field(..., description="新开出来的窗口（bit.sh open 吐的那串）")
     entry_url: Optional[str] = Field(None, description="顺便更新第 2 遍刷新回哪个 URL")
     set_viewport: bool = Field(False, description="顺便把窗口层那根线接上（第 4 遍扰动要用）")
+
+
+# ───────── 执行事实：运营写的期望、服务算的判（契约 §二 / §四 / §六）─────────
+#
+# 这一节是**换裁判**那件事在代码里的样子。契约 §一：病根不是「字段不够」，是
+# **判断和执行是同一方**（`datewhirl.py:175` 把「什么都没看见」判成「做完了」）。
+# 所以七格里有两格**永远不归脚本**：
+#
+#   - `expect`（第 6 格）——**运营**写，从 §四那张菜单里选（本文件只负责**收**：形状不对
+#     当场拒，见 `expect_problem`）。⚠️ 它**从载荷进来**，脚本一个字节都碰不到它
+#     （`_payload` 不往下发；`events.SCRIPT_MAY_NOT_FILL` 再从词表那一侧挡一道）；
+#   - `verdict`（第 7 格）——**收到上面那些的那一方**算，也就是**这里**（`judge_step`）。
+#
+# ⚠️ 这两件事**必须都在服务侧**。放在脚本里（哪怕只是「顺手算一下」），就是
+# `datewhirl` 那个病换了个地方长出来 —— 契约 §四 的原话：「模型提议的期望，仍然是
+# **执行的那一方在当裁判**，只是换了个更聪明的裁判」。
+
+#: 契约 §四 那张菜单的**机器那一列**（运营在页面上看到的是左边那句人话）。
+#: 菜单是**封闭**的：不在这四个里的形状一律拒收（`expect_problem` 会说清该选哪个）。
+EXPECT_MENU = {
+    "url_contains": "「网址变成…」→ 填一段网址片段",
+    "text_appears": "「页面上出现…」→ 填一段文字",
+    "button_clickable": "「写着…的按钮变成可点」→ 填按钮上的字",
+    "screen_changed": "「换了一屏」→ 不用填（**弱判据**，判的时候会标出来）",
+}
+
+
+def expect_problem(item) -> str:
+    """一条期望**不成形状**就说清该怎么改；空串 = 这一条没问题。
+
+    为什么要在**载荷进来的那一刻**拒（免费的那一道闸，与 `_intake_problems` 同一条规矩）：
+    `expect` 是整个契约的**诚实阀门**（§四），而一个「随便什么 JSON 都收」的阀门
+    等于没有阀门 —— 复审 2026-09-18 实测过：`{"随便什么": 1}` / `"Thank you"` / `["/wizard"]`
+    三种**显然不对**的值与四种对的值**一模一样地收下**，于是「机器怎么判」那一列
+    在代码里一行都没有。这一版把它补上：**形状是封闭的**，错的那种当场响。
+    """
+    if item == events.UNDECLARED:
+        return ""                                   # 「这一步我说不好」是**一等值**，能选
+    if not isinstance(item, dict):
+        return ("期望只有两种写法：`%s`（运营说这一步他说不好），或者从菜单里选一项 "
+                "%s —— 拿到的是 %r。**不许**填选择器、也不许留空。"
+                % (events.UNDECLARED, "、".join("`%s`" % k for k in EXPECT_MENU), item))
+    keys = [k for k in item if k not in ("why",)]
+    if len(keys) != 1 or keys[0] not in EXPECT_MENU:
+        return ("期望要从菜单里选**一项**：%s —— 拿到的是 %r。"
+                "（选一项就够：一步该以什么结束只有一件事说得清，两件凑一起是两条期望。）"
+                % ("、".join("`%s`（%s）" % (k, v) for k, v in EXPECT_MENU.items()), item))
+    key, value = keys[0], item[keys[0]]
+    if key == "screen_changed":
+        if not isinstance(value, bool):
+            return ("`screen_changed` 要的是 `true`（「这一步该换一屏」）—— 拿到的是 %r。"
+                    "它是**弱判据**（正文指纹变了就算），算出来的 `met` 会被标出来。" % (value,))
+        return ""
+    if not isinstance(value, str) or not value.strip():
+        return ("`%s` 要的是一段**人写的文字**（%s），拿到的是 %r —— "
+                "**不许填选择器**（那是脚本的事，运营的文字要能直接与页面对上）。"
+                % (key, EXPECT_MENU[key], value))
+    return ""
+
+
+def _expect_at(expects: list, step_no) -> tuple:
+    """第 `step_no` 步的期望 → `(键在不在, 值)`。
+
+    ⚠️ **三种「不知道」在纸上必须分得开**（契约 §四 + §二②），这一版把它们分成了三格：
+      - 运营**没写**到这一步（列表比步数短）→ **键不在**（「这一格没人碰过」）；
+      - 运营写了 `未声明` → 值是 `events.UNDECLARED`（「他说不好」）；
+      - 运营真声明了 → 值是菜单里那一项。
+    合成一个（比如把「没写」也算成 `未声明`）就是在替运营说「他说不好」—— 那句话他没说。
+    """
+    if not isinstance(step_no, int) or step_no < 1:
+        return False, None                          # 步号都不知道，谈不上「第几步的期望」
+    if step_no > len(expects):
+        return False, None
+    return True, expects[step_no - 1]
+
+
+def _receipt_says_sent(receipt) -> Optional[bool]:
+    """**动作发出去没有** —— 从 CDP 回执的原文里读（契约 §一那一层：Action Truth）。
+
+    判据只有一条，而且是**协议自己**给的：`{"isError": true, ...}` = 那次工具调用**没成**
+    （`tools.call_tool` 就是拿这个字段分支的，脚本在 `browser_agent` 里**逐字转抄**了它）；
+    工具回来了（别的任何形状）= 命令**下发了**。
+
+    ⚠️ 为什么读的是回执而不是脚本那句 `result.ok`：**回执是别人的原话**，`result` 是脚本
+    自己写的摘要 —— 契约 §六 那条验收要的正是「脚本说成了、回执说没成，系统看得出不一样」。
+    读 `result.ok` 就等于**又把裁判还给了脚本**。
+
+    `None` = **说不准**（回执根本没在手上 / 形状不认识）：那是一等值，不许折算成「发出去过」
+    也不许折算成「没发出去」。
+    """
+    if receipt is None:
+        return None
+    if isinstance(receipt, dict):
+        if "isError" in receipt:
+            return not bool(receipt["isError"])
+        return True                     # 工具回来了（没有 isError 那一层）⇒ 命令下发了
+    return None                         # 认不出的形状：不猜
+
+
+def _meets(expect, present: bool, sig_before, sig_after, changed, step_no=None) -> tuple:
+    """运营那条期望**成立没有** → `(值, 一句为什么)`。契约 §四那张菜单的**机器怎么判**。
+
+    三值：`True` / `False` / **`None`（「这一条没被验到」）**。第三种不是含糊其辞 ——
+    「量不到」与「不成立」是两件事，而把它们合成一件正是这份契约要治的病。
+    """
+    if not present:
+        if not isinstance(step_no, int):
+            # ⚠️ 不许把「不知道问的是第几步」说成「运营没写」—— 那是两句不同的话，
+            # 而前者的下一步是**去把步号补上**，后者才是去问运营。
+            return None, ("这一步**没有步号**在手上（旧账 / 别的来源），对不上运营那张表 —— "
+                          "有没有写期望**不知道**，不是「没写」。")
+        return None, ("这一步运营**没写**期望（那不是「他说不好」—— 那是另一件事："
+                      "他没说。）")
+    if expect == events.UNDECLARED:
+        return None, ("运营说这一步**他说不好**（`%s`）—— Business Truth 就是「不知道」，"
+                      "**不拿动作的回执冒充**。" % events.UNDECLARED)
+    kind = list(expect)[0] if isinstance(expect, dict) and expect else ""
+    if kind == "url_contains":
+        if not isinstance(sig_after, dict) or not sig_after.get("url"):
+            return None, "这一条要拿**动作之后那一页的地址**比，而那份签没量到。"
+        hit = str(expect["url_contains"]) in str(sig_after["url"])
+        return hit, ("运营说「网址应该变成含 `%s`」，实际是 `%s`。"
+                     % (expect["url_contains"], sig_after["url"]))
+    if kind == "text_appears":
+        return None, ("这一条要拿**正文**比，而原始签里只有正文的**指纹**（存正文的话"
+                      "账本就装不下了）—— 今天判不了，**不猜**。")
+    if kind == "button_clickable":
+        return None, ("这一条要按文字找到那个按钮、还要问它可不可点，而原始签里只有"
+                      "**可见元素计数** —— 今天判不了，**不猜**。")
+    if kind == "screen_changed":
+        if changed is None:
+            return None, "这一条要拿两份签比，而其中一份没量到。"
+        return bool(changed), ("**弱判据**（契约 §四自己标的）：判的是正文指纹变没变，"
+                               "变了不代表变对了地方。")
+    return None, ("这条期望的形状我不认识（%r）—— 载荷那道闸本该在提交那一刻挡住它。"
+                  % (expect,))
+
+
+def judge_step(*, step_no, receipt, sig_before, sig_after, expect, expect_present) -> tuple:
+    """**契约 §二第 7 格**：从两份原始签 + 回执算出「变没变、成没成」→ `(verdict, say)`。
+
+    这是**裁判**，所以它只吃**别人写下来的东西**（CDP 的回执、脚本量的签、运营写的期望），
+    一个字节都不来自「它自己觉得」：
+
+    - **① Action Truth**（动作发出去没有）← 回执原文；
+    - **② State Truth**（页面变没变）← 两份原始签；
+    - **③ Business Truth**（运营那条期望成立没有）← 期望 + 上面两样。
+
+    三层**分开报**，`verdict` 里三个值各自独立（`sent` / `changed` / `met`）——
+    合并成一个 `success` 正是 `datewhirl` 那个病的形状。
+
+    ⚠️ **这两条要分开报，是因为同一句「页面没变」在两处的意思完全相反**：
+    动作**发出去了**而页面没变 = 「这一步没生效」；动作**没发出去**而页面没变 = 「这一步
+    压根没发生」。前者要看选择器，后者要看**为什么工具会报错**。把两句合成一句，
+    读的人就永远分不出来 —— 契约 §六 那条验收问的正是这个。
+    """
+    sent = _receipt_says_sent(receipt)
+    if sig_before is None or sig_after is None:
+        changed = None
+    else:
+        changed = dict(sig_before) != dict(sig_after)
+    met, met_why = _meets(expect, expect_present, sig_before, sig_after, changed,
+                          step_no=step_no)
+
+    # ── 人话：三层各说一句，最后给一句结论 ─────────────────────────────
+    if sent is True:
+        action_say = "回执说动作**已经下发**"
+    elif sent is False:
+        action_say = "回执说**动作根本没发出去**"
+    else:
+        action_say = "回执没在手上（看不见），动作发没发**说不准**"
+    if changed is True:
+        state_say = "页面**变了**"
+    elif changed is False:
+        state_say = "页面**没变**"
+    else:
+        state_say = "页面变没变**量不到**"
+
+    if sent is False:
+        verdict_say = ("%s —— 这一步**没有发生**：%s 不是它的结果，**别当成功**。"
+                       % (action_say, state_say))
+        if changed is True:
+            verdict_say = ("%s，可%s —— 两句话对不上：那一下**不是这一步干的**，"
+                           "查别处（谁改的页面）。" % (action_say, state_say))
+    elif sent is True and changed is False:
+        verdict_say = "%s，而%s —— 动作真送出去了、页面纹丝不动：这一步**没生效**。" % (
+            action_say, state_say)
+    elif sent is True and changed is True:
+        verdict_say = "%s，而且%s。" % (action_say, state_say)
+    else:
+        verdict_say = "%s，%s —— 这一步成没成**判不了**（缺的那一层就是缺的那一层）。" % (
+            action_say, state_say)
+
+    if met is True:
+        verdict_say += "（运营那条期望：对上了。）"
+    elif met is False:
+        verdict_say += "（运营那条期望：**没对上**。）"
+    if met_why:
+        verdict_say += "（%s）" % met_why
+
+    where = ("第 %s 步" % step_no) if isinstance(step_no, int) else "这一步"
+    return ({"sent": sent, "changed": changed, "met": met},
+            "%s：%s" % (where, verdict_say))
 
 
 # ─────────────────────────────── job ───────────────────────────────
@@ -638,6 +850,26 @@ class Job:
 
 
 # ─────────────────────────────── 服务本体 ───────────────────────────────
+
+
+def _two_readers(*writers) -> Optional[Callable]:
+    """把几个 `on_step` 读者串成一个；全是 `None` 就返回 `None`（=不接这条线）。
+
+    为什么要串（2026-09-18）：探路的**一步**从这一天起有**两个**读者 —— 账本
+    （落盘，给重放和事后查）与时间线（契约七格，给人读）。两个都是旁路：
+    `browser_agent.explore` 的 `emit()` 统一兜异常，坏掉的那个只留一句 note，
+    **不许带塌主路**。所以顺序只影响「谁先坏」，不影响主路 —— 账本放前面，
+    因为它是**能重放**的那一份。
+    """
+    live = [w for w in writers if w is not None]
+    if not live:
+        return None
+
+    def on_step(step: dict) -> None:
+        for write in live:
+            write(step)
+
+    return on_step
 
 
 def _tighter(recorded, on_disk) -> dict:
@@ -807,6 +1039,10 @@ class Service:
         #: ⚠️ **每一趟清空一次**（M-6）：不在 `run()` 开头清的话，上一趟的故障会跟着
         #: 后面那一趟（它自己每步都写成功了）一路记下去 —— 那是**假 note**。
         journal_broken: list = []
+        #: 时间线那一本的「第一个没记成的原因」。⚠️ **与账本那本分开**（2026-09-18）：
+        #: 两个旁路的坏法不一样，合成一本之后那句 note 会说成「账本缺步」——
+        #: 而账本一个字节都没缺。同上，**每一趟清空一次**。
+        timeline_broken: list = []
 
         def run(url, goal, budget=None, should_pause=None, resume_from=None,
                 resume_note="", window_alive=None):
@@ -816,8 +1052,17 @@ class Service:
             # 号要是**建图时**算一次，三趟就全挤进同一个文件、也没有任何边界标记 ——
             # 而 `attempts.jsonl` 那边是**一趟一行**，两本账当场对不上（`rows != journey.steps`）。
             journal_broken.clear()
-            on_step = (self._journal_for(job_id, self._next_attempt_no(job_id), journal_broken)
-                       if job_id else None)
+            timeline_broken.clear()
+            # 一步有**两个读者**（都是旁路，坏掉都不许带塌主路 —— `explore.emit` 统一兜底）：
+            #   ① 账本（`_journal_for`，落盘的那一份，Task 4 就在）；
+            #   ② 时间线（`_step_teller`，契约七格 —— 2026-09-18 接上）。
+            # ⚠️ 分成两个而不是合成一个：账本是**一步一行**的 JSONL（给重放和事后查），
+            #    时间线是**给人读**的事件流（契约那七格）。两者的坏法不一样，
+            #    `_journal_for` 自己吞异常并记一句，时间线那条**要响**（形状错 = 编程错误）。
+            tell = self._step_teller(brief, job_id, timeline_broken) if job_id else None
+            on_step = _two_readers(
+                (self._journal_for(job_id, self._next_attempt_no(job_id), journal_broken)
+                 if job_id else None), tell)
             try:
                 journey = browser_agent.explore(url, goal, budget=budget,
                                                 should_pause=should_pause, ws_url=ws_url,
@@ -838,6 +1083,11 @@ class Service:
                 journey.notes.append(
                     "⚠️ 这一步之后的账本没记全：%s —— 探路照常走完（旁路坏掉不许带塌主路），"
                     "但这一趟的 journal 是残的（`attempt-*.jsonl` 里缺步）。" % journal_broken[0])
+            if timeline_broken:
+                # 时间线那一本**单独说**（两个旁路的坏法不一样，合并会把话说过头）。
+                journey.notes.append(
+                    "⚠️ 这一步之后的时间线没记全：%s —— 探路照常走完（旁路坏掉不许带塌主路），"
+                    "但这一趟的 `/live` 上会缺事件。" % timeline_broken[0])
             self._note_attempt(job_id, started=started, journey=journey)
             return journey
 
@@ -1390,9 +1640,109 @@ class Service:
         append（微秒级）：绝不在这里读快照、起进程、发请求。
         形状不对（`events.Timeline.add` 那几条：空 `say`、第四个 `who`、判断词当字段名…）**抛** ——
         那是编程错误，不是运行时状况（人话写不出来就说明还没想清）。
+
+        ⚠️ **人话里写不出去的字节在这儿换掉，并当场说出来**（2026-09-18，Task 4 收口复审
+        点名的那个洞）：`/live` 的返回值最后要过一遍 `.encode("utf-8")`，而**一个孤立代理对
+        过得了 `json.dumps`、过不了那一次编码** —— 结果是 `/live` **500、整条时间线一条都
+        读不出来**（不是那一条坏掉）。那几句人话里混着**外面来的字**（页面上的 url、
+        运营写的期望），所以这条缝正好在这条路上。
+        换掉而不是抛：抛掉整条事件 = **这一步的记录没了**，而那正是这份契约要治的病
+        （契约 §二②：「看不见」是一等值）。换完在人话尾巴上报个数，读的人知道少了什么。
+
+        ⚠️ 它**只管外壳那一层**（`say`）：`data` 里出现这种值仍然由 `events._facts` 当场拒
+        —— 那是写的人的编程错误，不是外面来的东西（外面来的那些在转抄时就已经换过了，
+        见 `browser_agent._utf8_safe`）。
         """
+        safe_say, replaced = events.safe_value(say)
+        if replaced:
+            safe_say += ("（这条人话里有 %d 个字节线上写不出来（孤立代理对），"
+                         "已按 `�` 记 —— 不是它本来长这样。）" % replaced)
         with job.lock:
-            return job.timeline.add(kind, say, who=who, data=data or None)
+            return job.timeline.add(kind, safe_say, who=who, data=data or None)
+
+    def _step_teller(self, brief: dict, job_id: str, broken: Optional[list] = None) -> Callable:
+        """`on_step` 的**第二个读者**：探路的一步 → 时间线上**两条**事件。
+
+        为什么是**两条**而不是一条七格齐全的（契约 §二那张表是一行七格）：
+        这个 schema 的**每一条事件只有一张嘴**（`who`），而七格是**两方填的** ——
+        脚本填前五格、服务填 `verdict`、运营填 `expect`。合成一条，那条事件就得用
+        **一个** `who` 说出两方的话，而 `SCRIPT_MAY_NOT_FILL` 那条闸（脚本不许填
+        `verdict` / `expect`）正是靠「谁在说」执行的 —— 合成一条要么得关掉那道闸，
+        要么得让服务替脚本签名。两种都是「承重的不是有哪几格，是**谁填**」被折掉。
+
+        所以照着**人**来分（契约 §二 的原话）：
+
+        | 事件 | `who` | `say` | `data` |
+        |---|---|---|---|
+        | 脚本报了这一步 | `agent` | 脚本自己的人话（「点了「下一步」」） | 前五格 |
+        | 服务核了这一步 | `system` | **裁判那句话** | `verdict` + `expect` |
+
+        两格口径不同，正是因为它们是**两个人在说话** —— 而那正是契约 §一 要的东西
+        （今天病根是「判断和执行是同一方」）。
+        """
+        expects = list(brief.get("expects") or [])
+        broken = broken if broken is not None else []
+
+        def tell(step: dict) -> None:
+            job = self._jobs.get(job_id)
+            if job is None:
+                # **不许静默**：探路在报步，可这个 job 不在登记表里 —— 时间线没地方记。
+                # 但不抛：`_explore_for(...)` 返回的那个 `run` 是可以**直接调**的
+                # （测试与将来的调用方都这么用，它们的 job_id 本来就不在登记表里），
+                # 抛出去会把「这一趟探路」整个带塌 —— 而旁路坏掉**不许带塌主路**
+                # （与 `_journal_for` 那条一模一样的规矩）。
+                # ⚠️ 进的是**时间线自己那一本**账（`timeline_broken`），不是账本那本 ——
+                # 两件事各有各的说法：混成一条，读的人会以为是 journal 缺了步。
+                if not broken:
+                    broken.append("第 %s 步没记上（job %s 不在登记表里）"
+                                  % (step.get("step_no"), job_id))
+                return
+            self._note_step(job, step, expects)
+
+        return tell
+
+    def _note_step(self, job: Job, step: dict, expects: list) -> None:
+        """一条探路的步 → 时间线那两条事件（见 `_step_teller` 的表）。
+
+        **前五格一个字都不动**（脚本写什么就是什么，这一层只转抄）—— 除了一件事：
+        缺席与 `None` 是两件事，而 `Timeline` 要求「写了 `None` 就得配一句 `why`」。
+        脚本没解释的那些格，这里如实补一句「**脚本没说为什么**，但这一格确实是
+        「看不见」而不是「没变化」」—— 补的是**这件事本身**，不是替它编一个原因。
+        """
+        step_no = step.get("step_no")
+        cells = {"action": {"what": str(step.get("action") or ""),
+                            "target": step.get("target")},
+                 "receipt": step.get("receipt"),
+                 "sig_before": step.get("sig_before"),
+                 "sig_after": step.get("sig_after")}
+        if isinstance(step_no, int):
+            cells["step_no"] = step_no
+        why = dict(step.get("why") or {})
+        for cell, value in cells.items():
+            if value is None and not str(why.get(cell) or "").strip():
+                why[cell] = ("脚本把这一格写成了空的，而 `why` 里没有它的解释 —— "
+                             "照契约 §二②，空 = 「**看不见**」这个一等值，**不是**「没变化」；"
+                             "原因没人说，这里也不替它编。")
+        if why:
+            cells["why"] = why
+        script_say = str(step.get("note") or "").strip() or (
+            "第 %s 步（`%s`）：脚本这一步没留下人话。" % (step_no, cells["action"]["what"]))
+        self.narrate(job, "step", script_say, who="agent", **cells)
+
+        # ── 第 6、7 格：期望是运营的（从载荷来），判是**这里**算的 ──────────────
+        present, expect = _expect_at(expects, step_no)
+        verdict, verdict_say = judge_step(
+            step_no=step_no, receipt=step.get("receipt"),
+            sig_before=step.get("sig_before"), sig_after=step.get("sig_after"),
+            expect=expect, expect_present=present)
+        judged = {"verdict": verdict}
+        if present:
+            # 运营写的字也是**外面来的**：写不出去的码位在这儿换掉（不换的话 `_facts`
+            # 那道闸会**整条拒掉**这一条事件 —— 而丢记录比换一个字节坏得多）。
+            judged["expect"] = events.safe_value(expect)[0]
+        if isinstance(step_no, int):
+            judged["step_no"] = step_no
+        self.narrate(job, "step", verdict_say, **judged)
 
     def _where_it_stopped(self, job_id: str) -> tuple:
         """它停/走在**哪一步**：`(节点名, 人话)` —— 「窗口没了」那句话的 `%s` 与 `/live` 的 `stage`。
@@ -1815,6 +2165,13 @@ class Service:
                                     "（写错的名字如果拖到自测那一步才炸，会先白烧掉一次探路 —— "
                                     "真窗口 + 一次模型跑。）"
                                     % ("、".join(unknown), "、".join(selftest.RUN_NAMES)))
+        if body.expects is not None:
+            # 契约 §四：`expect` 由运营写、**形状是封闭的**。免费的那一道闸 —— 形状错了
+            # 在这儿响，而不是等到某一步判不出来时才发现「那格当初填的是什么鬼」。
+            for i, item in enumerate(body.expects):
+                bad = expect_problem(item)
+                if bad:
+                    problems.append("`expects` 第 %d 项不合形状：%s" % (i + 1, bad))
         if body.set_viewport:
             can_do = (self._window is not None and hasattr(self._window, "set_viewport"))
             allowed = list(body.allow_skips or ())

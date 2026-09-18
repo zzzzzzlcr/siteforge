@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import pathlib
 import re
 import sys
@@ -45,7 +46,7 @@ from langgraph.types import Interrupt
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import events, graph, service  # noqa: E402
+from agent import events, graph, llm, service  # noqa: E402
 
 SITE = "example-funnel"
 URL = "https://example-funnel.test/quiz"
@@ -209,6 +210,31 @@ def _kinds_the_service_narrates() -> set:
         out.add(kind.value)
     assert out, "一个调用点都没扫到 = 量具坏了"
     return out
+
+
+class _ExploreGraph:
+    """`invoke` 里**真跑一趟探路**的假图（图不是被测对象，探路那一跳是真的）。
+
+    为什么要有它：`step` 这个 kind 是从 `explore` 的 `on_step` 回调里长出来的 ——
+    桩图一步都不走，并集里就永远看不见它。`deps.explore` 是服务自己拼好的那根线
+    （`_explore_for`：窗口、账本、时间线、二进制全在里面），这里只管调它。
+    """
+
+    def __init__(self, deps):
+        self.deps = deps
+        self.invokes: list = []
+
+    def invoke(self, payload, config):
+        self.invokes.append(payload)
+        self.deps.explore(payload.get("url") or URL, payload.get("goal") or GOAL)
+        return {"site": SITE, "visits": ["intake"], "end_reason": "explore_unfinished",
+                "end_note": "探了一趟就收工（这一条只关心时间线上有没有那两条事件）。"}
+
+    def get_state(self, config):
+        return _Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"],
+                             "end_reason": "explore_unfinished",
+                             "end_note": "探了一趟就收工。"},
+                     next=(), interrupts=())
 
 
 def _factory(g: FakeGraph):
@@ -539,7 +565,7 @@ def test_a_job_that_runs_to_delivery_has_its_whole_life_on_the_timeline(tmp_path
     assert _live(client, job_id)["status"] == "done"
 
 
-def test_no_catalog_row_is_silent(tmp_path):
+def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
     """**目录表九行、每行都有一个真实场景把它逼出来** —— 少接一处 narrate，这条就红。
 
     复审 2026-09-18 点名的正是这个洞：单 job 那一条只能替 4 行半作证，
@@ -621,10 +647,32 @@ def test_no_catalog_row_is_silent(tmp_path):
     c7.app.state.service._queue.join()
     seen |= {e["kind"] for e in c7.app.state.service._jobs[j7].timeline.all()}
 
+    # ⑧ 探路走了一步 —— 契约那两条 `step` 事件（脚本报的 + 服务判的）。
+    #     ⚠️ 这一条**必须真跑 `explore`**：`step` 是从探路的 `on_step` 回调里长出来的，
+    #     桩图（上面那七条的场景）里一步都不会走。走的是**真**那条链：
+    #     服务闭包 → 真 `explore` → 真 `McpSession` → 真 `Popen` → 桩 MCP 服务（**不开浏览器**）。
+    #     `step` 这个词 2026-09-18 之前一直挂在「预留」名单里 —— 从这一天起它有主了，
+    #     所以与别的词一样**要有场景把它逼出来**（不然并集判据就替不了它的证）。
+    from test_browser_agent import PAGE_LANDING, FakeLLM
+    prog = tmp_path / "step-program.json"
+    prog.write_text(json.dumps({"responses": {"observe": [{"structured": PAGE_LANDING}]}}),
+                    encoding="utf-8")
+    wrapper = tmp_path / "step-mcp-wrapper"
+    wrapper.write_text('#!/bin/sh\nexec %s %s "%s"\n'
+                       % (sys.executable, ROOT / "tests" / "stub_mcp_server.py", prog),
+                       encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(llm, "client",
+                        lambda: FakeLLM([{"calls": [("observe", {})]}, {"content": "看完了"}]))
+    c8 = _client(graph_factory=lambda brief, deps: _ExploreGraph(deps),
+                 window=StubWindow(alive=True), mcp_bin=str(wrapper))
+    j8 = c8.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    c8.app.state.service._queue.join()
+    seen |= {e["kind"] for e in c8.app.state.service._jobs[j8].timeline.all()}
+
     # ── 机械断言（三条，名字都从调用点推出来）──────────────────────
     derived = _kinds_the_service_narrates()
-    reserved = {"step"}          # 给 Task 5 预留的词：今天**没有任何生产调用点**记它
-    assert set(events.KINDS) - derived == reserved, (
+    assert set(events.KINDS) - derived == set(), (
         "词表与「真的有人在说」对不上 —— 多出来的词没人记（或少了人有词）：%r"
         % sorted(set(events.KINDS) - derived))
     missing = derived - seen

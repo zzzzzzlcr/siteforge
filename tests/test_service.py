@@ -1133,9 +1133,14 @@ def test_a_broken_journal_in_one_attempt_does_not_taint_the_next(tmp_path, monke
     first = run(URL, GOAL)
     second = run(URL, GOAL)
 
-    assert any("旁路" in n for n in first.notes), first.notes
-    assert not any("旁路" in n for n in second.notes), (
+    assert any("账本没记全" in n for n in first.notes), first.notes
+    assert not any("账本没记全" in n for n in second.notes), (
         "第 2 趟自己一步都没缺，却背着第 1 趟的事故：%s" % second.notes)
+    # ⚠️ **时间线那一本另有话说**（2026-09-18）：这个用例是**直接调** `_explore_for(...)` 的，
+    # `job-taint` 从来不在登记表里 —— 所以时间线**每一趟**都没地方记，那是**这一趟**的事实，
+    # 不是第 1 趟传下来的。两个旁路各有各的账（`journal_broken` / `timeline_broken`），
+    # 合成一条的话那句 note 会说成「账本缺步」，而账本一个字节都没缺。
+    assert any("时间线没记全" in n for n in second.notes), second.notes
 
 
 def test_a_bad_job_id_is_not_silent_either(tmp_path):

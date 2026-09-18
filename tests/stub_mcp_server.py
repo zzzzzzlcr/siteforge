@@ -119,18 +119,29 @@ PROTOCOL_VERSION = "2025-06-18"
 
 
 def _send(obj) -> None:
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    # ⚠️ `ensure_ascii=True`：JSON 的转义序列（`"\ud800"`）是**纯 ASCII**，
+    # 所以「线上写不出去的码位」在这个管道上**过得去**（不转义的话这一句自己就会
+    # `UnicodeEncodeError`，桩当场死掉 —— 那测到的就不是被测物了）。见 `_to_result` 的注释。
+    sys.stdout.write(json.dumps(obj, ensure_ascii=True) + "\n")
     sys.stdout.flush()
 
 
 def _to_result(item: dict) -> dict:
-    """program 里一条回答 → MCP 的 CallToolResult。"""
+    """program 里一条回答 → MCP 的 CallToolResult。
+
+    ⚠️ `ensure_ascii=True`（2026-09-18）：**故意**的，而且只有这一处与真 server 不同。
+    JSON 的转义序列（`"\\ud800"`）是一串**纯 ASCII** —— 于是「孤立代理对」这种
+    线上写不出去的形状**能过这条管道**，Python 侧 `json.loads` 解出来就是那个代理对。
+    真 cdp-mcp（Go）吐不出这个形状（`encoding/json` 会把非 UTF-8 写成 `�`），
+    所以它是**桩才有**的一条路 —— 而缺了它，「回执是任意字节」那条判据就永远测不到
+    （线上一撞就是 `/live` 500、整条时间线一条都读不出来）。
+    """
     if item.get("error"):
         # isError 那一路：与真 server 的 toolError 同形（文本 + IsError）。
         return {"isError": True, "content": [{"type": "text", "text": str(item["error"])}]}
     payload = item.get("structured")
     return {
-        "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
+        "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=True)}],
         "structuredContent": payload,
     }
 
