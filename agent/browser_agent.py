@@ -119,12 +119,14 @@ Task 1 的 spike 证明了模型**肯**调工具（24 跑 0 编造、47 次真 o
 from __future__ import annotations
 
 import inspect
+import os
+import pathlib
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import llm, plan as plan_module, tools
+from . import llm, plan as plan_module, shots, tools
 
 #: **C1**：`deepseek-v4-*` 把思考 token 算进 `max_tokens`。给 4000 时最终答案会**静默变空**
 #: （spike 实测 1/8，提到 12000 后 5/5 正常）。别往下调 —— 那不是省钱，是把能力削掉。
@@ -143,6 +145,18 @@ REPLAY_ACTIONS = ("click", "form", "scroll", "goto", "wait")
 #: ⚠️ 与 `REPLAY_ACTIONS` 现在几乎重合，但**不是同一件事**：那个是「产物能重放什么」，
 #: 这个是「这一轮算不算做了事」。哪天要分家，改的应当是那一个。
 _ACTIONS = ("click", "form", "scroll", "goto")
+
+#: 「**动页面**」的动作 —— 步拍只对它们拍（设计注 §5.4）。
+#: ⚠️ 从 `REPLAY_ACTIONS` **推出来**，不是手抄的第二张表：哪天它加了动作，这里跟着变
+#: （手抄的表不会 —— 那个形状这个仓库栽过，叫「第二张手写名单」）。
+#: `wait` 不在里面：它不动页面，拍它等于给每一步都留一张。
+#: 与 `_ACTIONS` **今天同值，但不是同一件事**（那个问「这一轮算不算做了事」）—— 别合并。
+MUTATING = tuple(a for a in REPLAY_ACTIONS if a != "wait")
+
+#: 步拍**留在盘上**的上限（张）。到顶就不再拍，并往 `journey.notes` 写一句人话。
+#: 为什么是 40：一张约 110 KB（17 次真跑实测的中位）⇒ 到顶约 4.4 MB，可以接受；
+#: 而「不对劲的步」在一次典型探路里是**个位数**，40 是给异常情况留的余量。
+MAX_KEPT_SHOTS = 40
 
 #: 连着几次工具调用没成才去问一次「窗口还活着吗」（§1.8）。
 #: 为什么不是 1：一次失败在活窗口上再正常不过（选择器不对、元素还没渲染出来）。
@@ -227,6 +241,10 @@ class Journey:
     notes: list = field(default_factory=list)
     stop_reason: str = "running"
     final_answer: str = ""
+    #: 最近一次**没拍成**的原因（人话）。空串 = 没出过问题。
+    #: ⚠️ 与 `notes` **分开**：`notes` 是「这一趟发生了什么」，这个是「拍照那条旁路现在的状态」——
+    #: 混进去会让「它为什么没有图」被别的 note 淹掉（旁路坏掉要能单独被看见）。
+    shots_why: str = ""
     pages: list = field(default_factory=list)
 
     # ── 计划模式的账（Task 3 起；没计划时全空 —— **不加计划就不假装有计划**）──
@@ -369,7 +387,8 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             on_step: Callable[[dict], None] | None = None,
             resume_from: list | None = None,
             resume_note: str = "",
-            window_alive: Callable | None = None) -> Journey:
+            window_alive: Callable | None = None,
+            shots_dir=None, shooter: Callable | None = None) -> Journey:
     """在真浏览器里为 `goal` 探 `url` 这条路，返回 `Journey`。
 
     参数：
@@ -408,6 +427,16 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
     paused = _as_predicate(should_pause)
     journey = Journey()
     pages = _Pages()
+    #: 步拍（§5.4）。**只有调用方给了目录才建** —— 不给 = 今天的行为，一个字节不变
+    #: （连 `shooter` 都不看一眼）。`shooter` 不给就用 `shots.capture_via_session`。
+    #:
+    #: **降级 B 的开关**（设计注 §5.5）：`SITEFORGE_STEP_SHOTS=0` ⇒ 关掉每步抓拍，只留闸拍。
+    #: 为什么默认**开**：真窗口上量过 —— 一张 **中位 193ms / 110 KB**（17 次真跑实测），
+    #: 远在 1.5s 那道门槛之下。这个开关是留给「哪天它变贵了」的退路，不是现在的默认。
+    if str(os.environ.get("SITEFORGE_STEP_SHOTS", "")).strip() == "0":
+        shots_dir = None
+    step_shots = (_StepShots(journey, shots_dir, shooter or shots.capture_via_session)
+                  if shots_dir else None)
     own_session = session is None
     if session is None:
         session = tools.McpSession.open(ws_url=ws_url, host=host, port=port, binary=binary)
@@ -460,6 +489,11 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             _stop_or_raise(paused, journey, taken, limits)   # ← 每一步之前（§6.2）
             taken += 1
             step, fill = _describe(name, args, pages, journey)
+            # ── 步拍：**动手之前**那一张（§5.4）────────────────────────────
+            # 它是**下限、省不掉** —— 动手之前不可能知道这一步会不会出问题。
+            # 能省的只有「点后」那张：只在**已经知道不对劲**时才补拍。
+            if step_shots is not None and name in MUTATING:
+                step_shots.before_mutation(step, session, pages.current_key)
             t0 = time.time()
             try:
                 raw = session.call_tool(name, args)
@@ -467,6 +501,10 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                 step["result"] = {"ok": False, "elapsed_ms": _ms(t0),
                                   "error": f"{type(exc).__name__}: {exc}"}
                 step["note"] = _say(name, step["target"], False)
+                if step_shots is not None:
+                    # **没做成** ⇒ 当场补拍点后那张，两张都留（§5.4 的 a 支）。
+                    # 放在 `emit` **之前**：账本是 emit 那一刻落的，晚一步这一步就没有图了。
+                    step_shots.after_mutation(step, session, False)
                 journey.steps.append(step)
                 emit(step)
                 # ── 窗口死掉是一等停因（§1.8）──────────────────────────────
@@ -482,6 +520,9 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                 raise        # 还给 run_tool_loop：模型也必须看见这条错（不吞）
             fails = 0
             step["result"] = _summarize(name, args, raw, _ms(t0), fill)
+            if step_shots is not None:
+                # 做成了 ⇒ 这一步**先挂着**，留不留由**紧接着那次观测**说了算（§5.4 b 支）。
+                step_shots.after_mutation(step, session, True)
             # ⚠️ 这里原先有一行 `step["target"] = {"url": raw["url"]}`（把 target 盖成**落地地址**）。
             # **它被删掉了**（R-E7 ①）—— 那两行把「要打开哪」就地销毁，而账上**再无别处**存它
             # （`_summarize` 那次赋值写到的是 `result.url`，两份名字不同、用途也不同）。
@@ -494,9 +535,18 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             journey.steps.append(step)
             if name == "observe":
                 moved = pages.note_page(raw)
+                if step_shots is not None:
+                    # 结算手上那一步 —— **只有「紧接着」的这次观测才算**（§5.4 判据 2）。
+                    # 放在 `note_page` **之后**：要比的是「这一眼看过之后」的签。
+                    step_shots.on_observation(session, pages.current_key)
                 if moved:
                     journey.notes.append(
                         f"页面变了：现在是「{_title_of(raw)}」（{raw.get('url') or '?'}）")
+            if (step_shots is not None and name not in _SEEN_ACTIONS
+                    and name not in MUTATING):
+                # `screenshot` / `wait` 这类：不改页面、也不观测页面，
+                # 但它让**下一次观测不再「紧接着」**那次动页面动作 ⇒ 链断了（§5.4 判据 2）。
+                step_shots.on_other_action()
             if name == "scroll" and not any("滚进视口" in n for n in journey.notes):
                 journey.notes.append(
                     f"第 {len(journey.steps)} 步是把「{_label_of(step['target'])}」滚进视口；"
@@ -2266,6 +2316,147 @@ def _replayed_step(row: dict, action: str, args: dict, raw, elapsed_ms: int) -> 
 # ─────────────────────── 页面状态（换页 = 换状态）───────────────────────
 
 
+class _StepShots:
+    """探路时的**步拍策略**（设计注 §5.4）：只留「不对劲」的那些步。
+
+    **留的集合 = {没做成} ∪ {做成了但页面没变}**；其余情况**一张不留** ——
+    一次跑顺的探路可以一张都没有。
+
+    三条纪律（写在这里，因为它们决定了下面每一行的形状）：
+
+    1. **点前那条命令是下限、省不掉** —— 动手**之前**不可能知道这一步会不会出问题。
+       所以「只对可疑的步拍」落在**留**上，落不到**拍**上；能省的只有**点后**。
+    2. **「页面签没变」是免费信息** —— 键就是 `_Pages.note_page` 早就在算的
+       `(url, title, page_text[:400])`，下一张 `observe` 一到就能比，**不额外发命令**。
+    3. **判据只在「紧接着」的那次观测上生效** —— `click A → click B → observe` **不认**
+       （那时「没变」说不清是谁造成的）。**认不出来就按「不留」办**（§5.4 判据 2）。
+
+    **旁路纪律**：拍照永远不许把探路搞挂（与 `emit` 那条「旁路坏掉不许带塌主路」同源）——
+    shooter **抛异常**或者**回一句「拍不成」**，都只记 `journey.shots_why`，然后照常往下走。
+    两条路都要堵：`shots.capture_via_session` 是**不抛**的那种，它把失败说在返回值里。
+
+    **上限管的是盘**：`kept` 数的是**真正留在盘上**的张数（丢掉的不算）——
+    上限要防的是磁盘，不是命令数。
+    """
+
+    def __init__(self, journey, where, shooter):
+        self.journey = journey
+        self.where = pathlib.Path(where)
+        self.shooter = shooter
+        self.kept = 0
+        #: 待结算的那一步：`{"step", "before", "key", "tainted"}`。`None` = 手上没有。
+        self._pending: dict | None = None
+        #: 建了 pending 之后出现过**不是观测**的动作？（出现了 ⇒ 那次观测「不紧接着」）
+        self._dirty = False
+        self._said_cap = False
+
+    # ── 对外的三个口 ────────────────────────────────────────────
+
+    def before_mutation(self, step: dict, session, key) -> None:
+        """**动页面之前**拍一张，并把这步挂成待结算。
+
+        `key` 是**动手那一刻**的页面签（`_Pages.current_key`）—— 后面拿它判「变了没有」。
+        """
+        # 「认不出来」的两种来源：手上还有一个没结算的，或者上一次动作之后夹了别的东西。
+        tainted = self._pending is not None or self._dirty
+        self._discard_pending()
+        self._dirty = False
+        name = self._take(session, step, "before")
+        self._pending = ({"step": step, "before": name, "key": key, "tainted": tainted}
+                         if name else None)
+
+    def after_mutation(self, step: dict, session, ok: bool) -> None:
+        """动作回来之后：**没做成**（`ok` 为假）→ 当场补拍点后那张，两张都留。
+
+        ⚠️ **做成了就什么都不做，而且 pending 要留着** —— 留不留由**紧接着那次观测**说了算。
+        在这里清掉 pending 的话，那次观测就没有东西可结算，点前那张会**永远留在盘上**
+        （实测栽过：跑顺的步也留了一张，整个策略的主要收益当场归零）。
+        """
+        if ok:
+            return
+        pending = self._pending
+        self._pending = None
+        step["shot_after"] = self._take(session, step, "after")
+        step["shot_after_deferred"] = False       # 当场拍的 —— 不许标成「随后补拍」
+        if pending is not None and pending["step"] is step:
+            self._keep(pending, step)
+        elif step.get("shot_after"):
+            # 点前那张没拍成，但点后这张拍成了 —— 它是「哪一步不对」的证据，不该整条丢掉。
+            self.kept += 1
+
+    def on_observation(self, session, key) -> None:
+        """一张 `observe` 到了：结算手上那一步（**只有「紧接着」才算**）。"""
+        pending = self._pending
+        self._pending = None
+        dirty, self._dirty = self._dirty, False
+        if pending is None or dirty or pending["tainted"]:
+            self._discard(pending)        # 认不出来 → 按「不留」
+            return
+        if key is not None and key == pending["key"]:
+            step = pending["step"]
+            step["shot_after"] = self._take(session, step, "after")
+            step["shot_after_deferred"] = True    # **随后**补拍的 —— 必须标出来
+            self._keep(pending, step)
+        else:
+            self._discard(pending)        # 页面变了 = 这一步跑顺了 → 一张不留
+
+    def on_other_action(self) -> None:
+        """夹了一个既不是观测、也不动页面的动作（`screenshot` / `wait` / …）。
+
+        它让**下一次观测不再「紧接着」**那次动页面动作 —— 链断了，按「认不出来」办。
+        ⚠️ 只在**手上有待结算的步**时才记：`screenshot → click → observe` 里那张截图
+        不影响 `click` 自己的观测（那一次仍然是紧接着的）。
+        """
+        if self._pending is not None:
+            self._dirty = True
+
+    # ── 里面的 ──────────────────────────────────────────────────
+
+    def _take(self, session, step: dict, when: str) -> str | None:
+        """拍一张落到 `where`。**不抛**：两条失败路（抛了 / 回了句拍不成）都只记账。"""
+        if self.kept >= MAX_KEPT_SHOTS:
+            if not self._said_cap:
+                self._said_cap = True
+                self.journey.notes.append(
+                    "步拍已经留了 %d 张（上限 %d）—— **从这一步起不再拍**。"
+                    "后面的步要是不对劲，账上不会再有图：这是**知道的**，不是漏了。"
+                    % (self.kept, MAX_KEPT_SHOTS))
+            return None
+        dest = self.where / ("step-%d-%s.png" % (len(self.journey.steps), when))
+        try:
+            name, why = self.shooter(session, dest)
+        except Exception as exc:                   # noqa: BLE001 —— 外部世界，什么都可能抛
+            self.journey.shots_why = ("拍照时它抛了：%s：%s"
+                                      % (type(exc).__name__, exc))
+            return None
+        if not name:
+            self.journey.shots_why = str(why or "拍不成，而且没说为什么")
+            return None
+        return str(name)
+
+    def _keep(self, pending: dict, step: dict) -> None:
+        if pending.get("before"):
+            step["shot_before"] = pending["before"]
+            self.kept += 1
+        if step.get("shot_after"):
+            self.kept += 1
+
+    def _discard(self, pending) -> None:
+        """不留：把点前那张从盘上删掉（点后那张**从没拍过**，所以没什么可删的）。"""
+        if pending and pending.get("before"):
+            self._drop(pending["before"])
+
+    def _discard_pending(self) -> None:
+        self._discard(self._pending)
+        self._pending = None
+
+    def _drop(self, name) -> None:
+        try:
+            (self.where / str(name)).unlink()
+        except (OSError, ValueError):       # 删不掉不是错 —— 收尾失败不许盖掉别的人话
+            pass
+
+
 class _Pages:
     """把观察到的页面归成状态。
 
@@ -2286,6 +2477,15 @@ class _Pages:
     @property
     def current_name(self) -> str:
         return self._current["name"] if self._current else START_STATE
+
+    @property
+    def current_key(self):
+        """当下这一页的**签**（`note_page` 用的那把键）；还没记过任何一页时是 `None`。
+
+        步拍拿它判「这一步之后页面有没有变」（§5.4 判据 2）—— **免费信息**：
+        键是 `note_page` 早就在算的东西，比一下不额外发命令。
+        """
+        return self._current["key"] if self._current else None
 
     @property
     def current_model(self):
