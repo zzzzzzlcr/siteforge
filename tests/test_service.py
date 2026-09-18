@@ -799,6 +799,67 @@ def test_alive_reads_the_shape_the_real_worker_actually_returns():
     assert _bit_window(lambda p, b: (_ for _ in ()).throw(RuntimeError("连不上"))).alive() is None
 
 
+# ──────── D-2 那条前提的另一半：**只有一个消费线程**在推 job（Task 2 收口轮）────────
+
+
+def test_only_one_thread_advances_jobs_at_a_time(tmp_path):
+    """**一个 job 不会被两个线程同时往前推** —— `_StepShots` 的 `exists()` 踩在这一点上。
+
+    Task 2 的 `_StepShots._name_for` 把「写之前先看盘上这个名字有没有人占」
+    （`(self.where / name).exists()`）当**结构保证**用（名字岔开 ⇒ 没人被顶掉）。
+    那道保证的**前提**是「一个 job 的几趟是顺序跑的」，而它由两条一起兜住：
+    节点内的同步循环（`tests/test_graph.py::test_the_retry_attempts_never_overlap_in_time`）
+    **加上**这里这条 —— 服务侧只有一个消费线程（`Service._ensure_worker` 起的
+    `siteforge-worker`，`_work` 从队列里一次取一个，`_advance` 是唯一会动图的地方）。
+    **拆掉任一半，各有一条判据红。**
+
+    两条断言，各钉一样：
+    ① **消费线程只有一个** —— 这条是「单飞」的机制本身（把 worker 换成池子 ⇒ 当场红）；
+    ② **没有两个 job 的 `invoke` 在时间上重叠** —— 这条是**性质**。
+    ⚠️ ② 的射程（**实测**，别读宽）：今天它由**两道**一起兜住 —— 除了单 worker，
+    `_advance` 里还有 `with self._check.lock`（一个 saver 连接不被两个线程同时用）。
+    所以「只把 worker 改成池子」**不会**让它红；要两道一起拆才红。留着它是因为它量的
+    是那件**事**，而①量的只是**机制**：机制换了、事没坏（锁还在），②照样绿 ——
+    那时候该改的是前提的措辞，不是把这条判据删掉（删掉就没人看着那件事了）。
+    """
+    spans: list = []
+
+    class _SlowGraph(FakeGraph):
+        """每次 `invoke` 占住一点时间 —— 不睡的话「同时跑」也量不出重叠。"""
+
+        def invoke(self, payload, config):
+            start = time.monotonic()
+            try:
+                time.sleep(0.05)
+                return super().invoke(payload, config)
+            finally:
+                spans.append((start, time.monotonic()))
+
+    # ⚠️ 工作线程**不随 job 结束而死**（它阻塞在 `queue.get()` 上），而同一个进程里跑过
+    # 几十个 `Service` ⇒ 抠「进程里有几条叫 siteforge-worker 的线程」是**假的**（全量套件
+    # 里当场红：18 条，全是前面用例留下的）。判据要的是**这个 app 起了几条** ⇒ 量差集。
+    before = {t.ident for t in threading.enumerate()}
+    client = _client(graph_factory=lambda brief, deps: _SlowGraph(steps=[{}]))
+    for _ in range(3):
+        client.post("/run", json=_brief(tmp_path))
+
+    deadline = time.time() + 15
+    while len(spans) < 3 and time.time() < deadline:
+        time.sleep(0.01)
+    assert len(spans) == 3, f"三个 job 该各被推一次（不推就是在量空气）：{len(spans)}"
+
+    workers = [t for t in threading.enumerate()
+               if t.name == "siteforge-worker" and t.ident not in before]
+    assert len(workers) == 1, (
+        "推 job 的线程不止一个（%d 个）—— 「单飞」没了：同一个 job 可以被两个线程同时往前推，"
+        "而 `_StepShots` 的 `exists()` 那道保证正是踩在「不会同时」上的" % len(workers))
+
+    overlaps = [(i, j) for i in range(len(spans)) for j in range(i + 1, len(spans))
+                if spans[i][0] < spans[j][1] and spans[j][0] < spans[i][1]]
+    assert not overlaps, (
+        "两个 job 的 `invoke` 在时间上重叠了（第 %s 对）：区间 %s" % (overlaps, spans))
+
+
 # ═══════════ Task 1（计划四）：基线的三样东西 —— 都只是**加**，不改语义 ═══════════
 #
 # 计划四整片建在「一次探路装不进一个窗口」上，而支撑它的只有**一次**观察（7m42s）。

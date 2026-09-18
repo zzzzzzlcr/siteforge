@@ -23,7 +23,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from agent import browser_agent, shots  # noqa: E402
-from test_browser_agent import PAGE_LANDING, PAGE_QUIZ, _run  # noqa: E402
+from test_browser_agent import (  # noqa: E402
+    PAGE_LANDING, PAGE_QUIZ, FakeLLM, _run, _stub,
+)
 
 #: 一张**真** PNG 的头几个字节。内容不重要 —— 这几条用例断的是**文件在不在盘上**。
 PNG_HEAD = b"\x89PNG\r\n\x1a\n"
@@ -481,36 +483,52 @@ def test_the_cap_is_hard_at_the_moment_of_the_write_not_only_at_finish(tmp_path,
 
 
 class _Notes(list):
-    """人话账本 —— **每句话写下去的那一刻，`where` 底下真有几张图**。
+    """人话账本 —— **每句话写下去的那一刻，盘上是什么样**。
 
     `journey.notes` 只是个 list，所以换成本类就能在**说话的那一刻**把盘拍下来。
-    为什么要它：上限那句人话报了一个数（「已经有 N 张了」），而它报得对不对看的是
-    **说那句话的当时**盘上有几张 —— 跑完之后再量是另一回事（后面还会落盘、还会删）。
+    为什么要它：上限那句人话报了一个数，而它报得对不对看的是**说那句话的当时**盘上
+    有几张 —— 跑完之后再量是另一回事（后面还会落盘、还会删）。
+
+    它同时记**两个**数，因为那句话有两个可能的**口径**，而它们在生产形状里**不相等**：
+
+    - `state_at_say` = `where` 底下**所有** png（含服务侧的闸拍 `pause-<n>.png`）；
+    - `own_at_say` = **本趟自己写的、此刻还在盘上的**那些（桩 shooter 记下的落点里还
+      存在的）。它与 `_StepShots._on_disk` 是**两个独立的来源** —— 判据拿它对账，
+      不是把 `_on_disk` 再读一遍。
     """
 
-    def __init__(self, where):
+    def __init__(self, where, shooter=None):
         super().__init__()
         self.where = pathlib.Path(where)
+        self.shooter = shooter
         #: 与 `self` **一一对应**：第 i 句话写下去那一刻，`where` 里的 png 名字（排序）。
         self.state_at_say: list = []
+        #: 同上那一刻的**本趟自己那些**（没给 shooter 时恒为空 —— 那种用例比不了这个口径）。
+        self.own_at_say: list = []
 
     def append(self, text) -> None:
         super().append(text)
         self.state_at_say.append(sorted(p.name for p in self.where.glob("*.png")))
+        own = (sorted(p.name for p in self.shooter.dests if p.exists())
+               if self.shooter is not None else [])
+        self.own_at_say.append(own)
 
     def extend(self, items) -> None:
         for item in items:                 # 逐条走 `append` —— 搬家也一样记盘（口径只有一份）
             self.append(item)
 
 
-def _notes_spy(monkeypatch, where):
+def _notes_spy(monkeypatch, where, shooter=None):
     """把 `journey.notes` 换成会记账的那本（见 `_Notes`），返回它。
 
     换在 `_StepShots` **出生那一刻**：`explore()` 里它是跟着 `journey` 一起建的，
     所以从它一存在起，后面每一句话都在账上。之前已经写下的话一并搬过去（逐条 `append`）。
+
+    给了 `shooter` 就一并记「本趟自己的那些」—— 只有两个口径**分得开**的用例才需要它
+    （目录里躺着一张闸拍时）。
     """
     real_init = browser_agent._StepShots.__init__
-    notes = _Notes(where)
+    notes = _Notes(where, shooter)
 
     def spy_init(self, journey, shots_where, shooter):
         real_init(self, journey, shots_where, shooter)
@@ -563,22 +581,35 @@ def test_the_gate_follows_the_disk_not_how_many_were_written(tmp_path, monkeypat
     assert not lied, f"盘上任何一刻都不超过 1 张，却报了「撞上限」：{lied}"
 
 
-def test_the_cap_note_reports_a_number_that_is_really_on_disk(tmp_path, monkeypatch):
-    """**那句人话报的数必须是真的** —— 说「已经有 N 张」时，`where` 底下真要有 N 张。
+def _cap_notes(notes):
+    """账上那几句「撞上限」的人话（附上它们被说出来的**那一刻**盘上的样子）。
 
-    形状（上限 2）：第 1 步**跑顺**（点前那张丢掉 ⇒ 盘上回到空），第 2 步**点了没变**
-    （两张都留 ⇒ 盘上 2 张），第 3 步动手前撞上限。
-
-    判据落在**说那句话的那一刻**（`_Notes` 把盘拍在 append 里），不是收工之后 ——
-    收工那个数由收口收拾过，与「当时句话说得对不对」是两件事。
-    「已经有 N 张」里的 N 是**盘上此刻的实况**：报大了会让人以为图还在（幽灵计数），
-    报小了会让运维按错的数去翻目录。
+    认句子的锚点是「**不再拍**」—— 那句人话的**功能**（到了顶就不再拍），不是它的措辞：
+    别的 note 也带「上限」两个字（预算到顶那类），拿它筛会把不相干的句子量进来；
+    而拿这一轮的**新措辞**去筛，等于把「句子认不出来」伪装成「没撞上限」（实测栽过：
+    把话说回旧版时，红出来的理由是「不撞就是在量空气」—— 一个**指错方向**的红）。
     """
-    monkeypatch.setattr(browser_agent, "MAX_KEPT_SHOTS", 2, raising=True)
+    return [(text, state, own)
+            for text, state, own in zip(notes, notes.state_at_say, notes.own_at_say)
+            if "不再拍" in text]
 
-    where = tmp_path / "shots"
-    notes = _notes_spy(monkeypatch, where)
 
+def _cap_number(text) -> int:
+    r"""那句人话里报的那个数。**取不出来就别放过**（判不了 ≠ 没问题）。
+
+    ⚠️ 故意**不**跟着文案写死（`(\d+) 张` 就够了）：这条判据量的是**语义**
+    （那个数是不是本趟的张数），措辞另有一条断言管 —— 写死成一个短语的话，
+    改一个字的文案也会「红」，而红出来的东西与「数对不对」是两件事。
+    """
+    m = re.search(r"(\d+) 张", text)
+    assert m, f"这句人话里没有那个数，判不出来就别放过：{text!r}"
+    return int(m.group(1))
+
+
+def _cap_shape(tmp_path, notes, shooter):
+    """撞上限那条形状（上限 2）：第 1 步跑顺（点前那张丢掉），第 2 步点了没变（留两张），
+    第 3 步动手前撞上限。三个用例共用它 —— 口径不一样，形状必须是**同一个**。
+    """
     turns = [{"calls": [("observe", {})]},                            # 第 1 屏
              {"calls": [("click", {"selector": "#get-started"})]},    # 跑顺：点前那张会丢
              {"calls": [("observe", {})]},                            # 第 2 屏 ≠ 第 1 屏
@@ -587,25 +618,256 @@ def test_the_cap_note_reports_a_number_that_is_really_on_disk(tmp_path, monkeypa
              {"calls": [("click", {"selector": "#get-started"})]},    # 动手前：撞上限
              {"calls": [("observe", {})]},
              {"content": "看看它报几张"}]
-    s = _Shooter(where)
-    journey, _, _ = _go(
+    return _go(
         tmp_path,
         {"observe": [{"structured": PAGE_LANDING},
                      {"structured": PAGE_QUIZ},
                      {"structured": PAGE_QUIZ},
                      {"structured": PAGE_QUIZ}]},
+        turns, shooter, budget=browser_agent.Budget(max_steps=20, max_rounds=20),
+    )
+
+
+def test_the_cap_note_reports_a_number_that_is_really_on_disk(tmp_path, monkeypatch):
+    """**那句人话报的数必须是真的** —— 报大了会让人以为图还在（幽灵计数）。
+
+    形状（上限 2）：第 1 步**跑顺**（点前那张丢掉 ⇒ 盘上回到空），第 2 步**点了没变**
+    （两张都留 ⇒ 盘上 2 张），第 3 步动手前撞上限。
+
+    判据落在**说那句话的那一刻**（`_Notes` 把盘拍在 append 里），不是收工之后 ——
+    收工那个数由收口收拾过，与「当时那句话说得对不对」是两件事。
+    这个形状里**目录张数 == 本趟张数**（没有别人往这个目录写东西）⇒ 它钉的是
+    「数与实况一致」，钉不出**口径**；口径那一半在下面 `…counts_this_attempt…` 里。
+    """
+    monkeypatch.setattr(browser_agent, "MAX_KEPT_SHOTS", 2, raising=True)
+
+    where = tmp_path / "shots"
+    s = _Shooter(where)
+    notes = _notes_spy(monkeypatch, where, s)
+    journey, _, _ = _cap_shape(tmp_path, notes, s)
+
+    cap = _cap_notes(notes)
+    assert cap, f"这条形状该撞上限（不撞就是在量空气）：{list(notes)}"
+    for text, state, own in cap:
+        n = _cap_number(text)
+        assert n == len(state), (
+            "这句人话报的数与它说话那一刻盘上的实况对不上：说 %d 张，"
+            "而那一刻 %s 底下是 %d 张（%s）—— 报大 = 让人以为图还在，报小 = 按错的数去翻目录"
+            % (n, where, len(state), state))
+
+
+def test_the_cap_note_counts_this_attempt_not_the_directory(tmp_path, monkeypatch):
+    """**那句话报的必须是它说的那个东西** —— 它说的是「本趟的步拍图」，就得报**本趟**的张数。
+
+    复审（`task-2-rereview5.md` 口子 A）量到的：原来那句写的是「步拍**在这个目录里**已经有
+    N 张了」，报的却是本趟的数 —— 而服务侧的闸拍 `pause-<n>.png` **就写在同一个目录里**
+    （`agent/service.py:925` 与 `agent/service.py:753` 解析出的是同一个
+    `runtime/shots/<job_id>/`）。于是**第 2 轮起**它天天在说一件不成立的事：句子说 2、
+    目录里 3 张。而把数换成目录张数时**没有任何用例会红** ⇒ 没有判据在替它作证。
+
+    裁定（本轮）：**把话说准，不把数改成目录张数** —— 上限是**每趟**的
+    （设计注 §5.5 / `agent/service.py:744-751`：一个 job 目录最多 3×40 = 120 张步拍图，
+    再加每轮一张闸拍）。数目录就得把**别人的**图算进本趟的上限里，而本趟既删不了它们、
+    也不该被它们顶掉名额。所以：**数不变，主语与说明改成「本趟」**，
+    并且这条用例把「数与目录张数**分得开**」的那个形状钉死。
+
+    形状 = 上面那条 + **目录里预先躺着服务侧真会写的一张 `pause-1.png`** ⇒ 说这句话时
+    目录里 3 张、本趟 2 张。判据两条：
+    ① 报的数 == **本趟自己那些**（桩 shooter 记的落点里还在盘上的 —— 与 `_on_disk`
+       是两个来源）；② 这个形状下它与目录张数**必须不相等**（相等就说明这条用例在量空气）。
+    """
+    monkeypatch.setattr(browser_agent, "MAX_KEPT_SHOTS", 2, raising=True)
+
+    where = tmp_path / "shots"
+    where.mkdir(parents=True, exist_ok=True)
+    # 服务侧的闸拍：真站上它由 `_shoot_pause` 写进**同一个** job 目录（`pause-<n>.png`）。
+    (where / "pause-1.png").write_bytes(PNG_HEAD)
+
+    s = _Shooter(where)
+    notes = _notes_spy(monkeypatch, where, s)
+    journey, _, _ = _cap_shape(tmp_path, notes, s)
+
+    cap = _cap_notes(notes)
+    assert cap, f"这条形状该撞上限（不撞就是在量空气）：{list(notes)}"
+    for text, state, own in cap:
+        assert len(state) == len(own) + 1, (
+            "这条用例的形状要求「目录里比本趟多一张（那张闸拍）」—— "
+            "先确认形状成立，再谈那句话对不对：目录 %s，本趟 %s" % (state, own))
+        n = _cap_number(text)
+        assert n == len(own), (
+            "那句话报的数不是**本趟**的张数：说 %d，而这一刻本趟自己在盘上的是 %d 张（%s）；"
+            "目录里是 %d 张（%s，多出来的那张是服务侧的闸拍）"
+            % (n, len(own), own, len(state), state))
+        assert n != len(state), (
+            "报成了**目录**张数（%d）—— 那不是这句话的主语：上限是每趟的，"
+            "把别人的闸拍算进来会让闸提前关死" % len(state))
+        assert "本趟" in text and "这个目录里的图数" in text, (
+            "这句话得让人看得出它说的是哪个口径（本趟，不是目录）：%r" % text)
+
+
+def test_a_gate_shot_in_the_dir_does_not_eat_this_attempts_cap(tmp_path, monkeypatch):
+    """**别人的图不吃本趟的名额** —— 上限是「每趟」的，闸只数本趟自己的那些。
+
+    与 `test_the_cap_note_counts_this_attempt_not_the_directory` 同一个形状、同一张闸拍，
+    但量的是**闸**那一半：目录里躺着一张服务侧的 `pause-<n>.png` 时，本趟照样该拿到它的
+    **三条命令**（两个跑顺的 click 各一张点前图 + 一次点后补拍），闸只在**本趟自己**到 2 张
+    时才 engage。`MAX_KEPT_SHOTS` 那段注释里「为什么不做成每个目录：数目录就得 glob，
+    会把闸拍算进来、把别人的趟算进来」这句话，之前**一条判据都没有**（把闸改成数目录 ⇒ 红 0）。
+
+    数目录的实现会在这里**提前关死**（`pause-1.png` 白吃一个名额）—— 第 2 步那张点后补拍
+    根本发不出去。那就是这句话的反面：**别人的图不该管本趟的预算**。
+    """
+    monkeypatch.setattr(browser_agent, "MAX_KEPT_SHOTS", 2, raising=True)
+
+    where = tmp_path / "shots"
+    where.mkdir(parents=True, exist_ok=True)
+    (where / "pause-1.png").write_bytes(PNG_HEAD)      # 服务侧的闸拍，落在同一个目录
+
+    s = _Shooter(where)
+    notes = _notes_spy(monkeypatch, where, s)
+    journey, _, _ = _cap_shape(tmp_path, notes, s)
+
+    assert len(s.dests) == 3, (
+        "两个跑顺的 click（各一张点前图）+ 一次点后补拍 = 3 条命令，实际 %d 条 —— "
+        "闸把**目录里那张闸拍**算进本趟的名额了（别人的图不该管本趟的预算）。"
+        "每次动手前盘上：%s" % (len(s.dests), s.state_at_call))
+    assert len(_cap_notes(notes)) == 1, (
+        "闸最终该在**本趟自己**到 2 张时 engage（一次），实际：%r" % (_cap_notes(notes),))
+
+
+def test_a_shot_that_cannot_be_deleted_still_occupies_the_cap(tmp_path, monkeypatch):
+    """**删不掉的那张仍然要占上限** —— C-2b 的**另一半**（方向相反，别改坏）。
+
+    `_drop` 现在把两条出口分开了：`FileNotFoundError`（已经不在盘上）⇒ 释放名额；
+    **别的 `OSError`**（权限、只读……）⇒ **不释放** —— 那张图还在盘上占地方，
+    上限就该照数它。把它也一起放行的后果不是「悄悄少一张」，是**盘上会越堆越多**
+    （闸永远到不了顶），而收口也删不掉它们。
+
+    形状：上限 2 + `unlink` 一律抛 `PermissionError`（模拟「这台机器上删不动」）+
+    四个**跑顺**的 click（每一步都想把点前那张丢掉，但丢不掉）。
+
+    判据三条，缺一不可：
+    ① 只发了 **2** 条命令 —— 第 3、4 下被闸挡下（**盘上真的还占着 2 张**）；
+    ② 那两张**真的还在盘上**（这个形状的前提，不是结论）；
+    ③ 那一刻那句话报的数**仍然是真的**（说 2、盘上 2）—— 与
+       `test_a_shot_that_is_already_gone_stops_occupying_the_cap` 是同一个形状的**反面**：
+       那边盘上是空的、这边盘上是满的，而两边的闸都必须跟着**盘**走。
+    """
+    monkeypatch.setattr(browser_agent, "MAX_KEPT_SHOTS", 2, raising=True)
+
+    def undeletable(self, *a, **kw):
+        raise PermissionError("这台机器上删不动（桩）")
+
+    monkeypatch.setattr(pathlib.Path, "unlink", undeletable)
+
+    where = tmp_path / "shots"
+    s = _Shooter(where)
+    notes = _notes_spy(monkeypatch, where, s)
+
+    pages = [dict(PAGE_LANDING, title="Example 第 %d 屏" % i, page_text="第 %d 屏" % i)
+             for i in range(5)]
+    turns = [{"calls": [("observe", {})]}]
+    for _ in range(4):
+        turns.append({"calls": [("click", {"selector": "#get-started"})]})
+        turns.append({"calls": [("observe", {})]})        # 页面变了 ⇒ 这一步跑顺
+    turns.append({"content": "四步都想丢，可一张都删不掉"})
+    journey, _, _ = _go(
+        tmp_path,
+        {"observe": [{"structured": p} for p in pages]},
         turns, s, budget=browser_agent.Budget(max_steps=20, max_rounds=20),
     )
-    cap = [(text, state) for text, state in zip(notes, notes.state_at_say)
-           if "已经有" in text]
-    assert cap, f"这条形状该撞上限（不撞就是在量空气）：{list(notes)}"
-    for text, state in cap:
-        m = re.search(r"已经有 (\d+) 张", text)
-        assert m, f"这句人话里没有那个数，判不出来就别放过：{text!r}"
-        assert int(m.group(1)) == len(state), (
-            "这句人话报的数与它说话那一刻盘上的实况对不上：说「已经有 %d 张」，"
-            "而那一刻 %s 底下是 %d 张（%s）—— 报大 = 让人以为图还在，报小 = 按错的数去翻目录"
-            % (int(m.group(1)), where, len(state), state))
+
+    assert len(s.left) == 2, (
+        "这个形状要求那两张**真的还在盘上**（删不掉）：%s" % s.left)
+    assert len(s.dests) == 2, (
+        "只该发 2 条命令（盘上那 2 张删不掉 ⇒ 第 3、4 下就该被闸挡下），实际发了 %d 条 —— "
+        "「删不掉」被当成「已经不在盘上」放行了，闸于是永远到不了顶、盘上会越堆越多"
+        % len(s.dests))
+    cap = _cap_notes(notes)
+    assert cap, f"这条形状该撞上限（盘上真的占着 2 张）：{list(notes)}"
+    for text, state, own in cap:
+        assert _cap_number(text) == len(state) == len(own) == 2, (
+            "那一刻盘上是 %s（本趟 %s），那句话却说 %r —— 数与实况必须一致"
+            % (state, own, text))
+
+
+class _Outsider:
+    """**本趟之外的一只手**：每次工具调用之后，把 `where` 底下的 png 抹掉。
+
+    它模拟的是 D-2 那条前提被破的样子（运维清 `runtime/`、第二个实例指着同一个
+    shots 根、一次没杀干净的重启）。为什么非得是**外面**的手：本趟自己删图只走
+    `_drop`，而 `_drop` 只碰**本趟写过**的名字 —— 别人删的那些，它只能在下一次
+    被叫到同一个名字时才看得见。
+
+    它包在桩会话外面（`call_tool` 转一手，别的口 `__getattr__` 原样透过去）——
+    于是「抹掉」发生在**动手之后、下一次动手之前**，正是 C-2b 那一格要的形状：
+    本趟要丢的那张，已经被别人先拿走了。
+    """
+
+    def __init__(self, inner, where):
+        self._inner = inner
+        self.where = pathlib.Path(where)
+        #: 抹掉过几张 —— 用例拿它确认「这个形状真的发生了」（不然就是在量空气）。
+        self.wiped = 0
+
+    def call_tool(self, name, args):
+        out = self._inner.call_tool(name, args)
+        for p in self.where.glob("*.png"):
+            p.unlink()
+            self.wiped += 1
+        return out
+
+    def __getattr__(self, item):
+        return getattr(self._inner, item)
+
+
+def test_a_shot_that_is_already_gone_stops_occupying_the_cap(tmp_path, monkeypatch):
+    """**已经不在盘上的，不许继续占上限** —— 闸必须跟着**盘**放松，不是跟着「我叫过 unlink 没有」。
+
+    复审（`task-2-rereview5.md` 口子 B）量到的：`_drop` 原来把 `FileNotFoundError`
+    与「删不掉」共用一个 `except OSError`，而这两件事**含义正相反**（一个「已经不在」、
+    一个「还在但删不掉」）。于是文件本来就不在时，那个名字**永远**留在 `_on_disk` 里：
+    闸比盘紧（C-2 明写不许的方向），而且那句人话会**报大**。
+
+    形状（上限 2）：**本趟之外的一只手**在每一次动手之后把目录抹掉 ⇒ 五下 click，
+    每一张点前图都在下一次动手之前被拿走（`_discard_pending` 因此次次撞上
+    `FileNotFoundError`）。盘上**任何一刻**都不超过 1 张 ⇒ 闸**一次都不该 engage**。
+
+    判据两条：
+    ① **五下 click，五条命令**（点前那张是简报写死的下限、省不掉）；
+    ② 账上**不许**出现「撞上限」那句人话（那一刻目录里是空的，报出来就是假话）。
+    """
+    monkeypatch.setattr(browser_agent, "MAX_KEPT_SHOTS", 2, raising=True)
+
+    where = tmp_path / "shots"
+    s = _Shooter(where)
+    notes = _notes_spy(monkeypatch, where, s)
+    session, _log = _stub(tmp_path, {"observe": [{"structured": PAGE_LANDING}]})
+    outsider = _Outsider(session, where)
+
+    turns = [{"calls": [("observe", {})]}]
+    for _ in range(5):
+        turns.append({"calls": [("click", {"selector": "#get-started"})]})
+    turns.append({"content": "连点五下"})
+    journey = browser_agent.explore(
+        "https://example.test/funnel", "看看这一页怎么走到报价",
+        session=outsider, client=FakeLLM(turns),
+        shots_dir=where, shooter=s,
+        budget=browser_agent.Budget(max_steps=20, max_rounds=20),
+    )
+
+    clicks = [x for x in journey.steps if x["action"] == "click"]
+    assert len(clicks) == 5, f"这条形状该是五下 click：{[x['action'] for x in journey.steps]}"
+    assert outsider.wiped >= 1 and s.left == [], (
+        "这条用例要求「本趟之外的手」真的在动这个目录（抹掉过 %d 张），"
+        "并且收工时盘上不留东西：%s" % (outsider.wiped, s.left))
+    assert len(s.dests) == 5, (
+        "每一下的点前图都该发出去（那是下限），实际只发了 %d 条 —— "
+        "闸被**早就不在盘上**的那些名字关死了。每次动手前盘上：%s"
+        % (len(s.dests), s.state_at_call))
+    lied = [n for n in notes if "步拍图有" in n]
+    assert not lied, (
+        "那一刻目录里一张步拍图都没有，却报了「撞上限」（报的数还是假的）：%s" % lied)
 
 
 # ────────────────── 拍照永远不许把探路搞挂 ──────────────────

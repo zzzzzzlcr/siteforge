@@ -27,6 +27,7 @@ import copy
 import importlib.util
 import pathlib
 import sys
+import time
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
@@ -1104,6 +1105,50 @@ def test_a_retry_that_sees_the_success_text_wins(tmp_path):
     note = out.get("explore_attempts_note") or ""
     assert "第 1 趟" in note and "第 2 趟" in note, note
     assert "没见到成功文案" in note and "见到了成功文案" in note, note
+
+
+def test_the_retry_attempts_never_overlap_in_time(tmp_path):
+    """**一个 job 的几趟是顺序跑的** —— 这条前提是 `_StepShots` 那道「名字唯一」的底座。
+
+    `agent/browser_agent.py` 的 `_StepShots._name_for` 把「写之前先看盘上这个名字有没有
+    人占」（`(self.where / name).exists()`）当**结构保证**用，而那道 `exists()` 到「写下去」
+    之间还剩一个窗口 —— 真·**同时**写同一个目录的两趟可以都查到「没人占」。
+    它成立靠的是**这条前提**：一个 job 的几趟在**一次节点执行**里同步跑完
+    （`_explore` 的 `for n in range(2, EXPLORE_ATTEMPTS + 1)`，一趟跑完才起下一趟）。
+
+    **判据**：桩 `explore` 记下每一趟的（进, 出）时刻，断言**没有一个区间与另一个相交**。
+    `sleep` 是必需的：一趟探路要花真时间（~150 秒），不睡的话「同时跑」也量不出重叠 ——
+    那就成了一条永远够不着的钉子。谁哪天把那一圈改成并发（`ThreadPoolExecutor` /
+    起线程），这条当场红（副本里实测过：红在下面的断言上）。
+    """
+    book = _journey()
+    book.steps.append({"state": "landing", "action": "observe", "target": None,
+                       "result": {"ok": True, "page_text_head": "Get Started … 没有成功文案"},
+                       "note": "看了一眼页面"})
+    deps, rec = _deps(journey=book)
+    inner = deps.explore
+    spans: list = []
+
+    def timed(url, goal, **kw):
+        start = time.monotonic()
+        try:
+            time.sleep(0.02)          # 一趟真探路要花时间 —— 见 docstring
+            return inner(url, goal, **kw)
+        finally:
+            spans.append((start, time.monotonic()))
+
+    deps.explore = timed
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert len(spans) == 3, f"这条形状该探三趟（不探三趟就是在量空气）：{len(spans)}"
+    assert out.get("explore_reached_success") is False, out.get("explore_reached_success")
+    overlaps = [(i, j) for i in range(len(spans)) for j in range(i + 1, len(spans))
+                if spans[i][0] < spans[j][1] and spans[j][0] < spans[i][1]]
+    assert not overlaps, (
+        "一个 job 的几趟**在时间上重叠**了（第 %s 对）—— `_StepShots` 的 `exists()` 那道"
+        "「写之前先看盘上有没有人占」当场失去保证：两趟可以都查到「没人占」，"
+        "第 1 趟特意留下的证据会被第 2 趟顶掉。区间：%s" % (overlaps, spans))
 
 
 # ═══════════ Task 6：接续跑接进图里（job 级预算 / 重放前缀 / 窗口死）═══════════

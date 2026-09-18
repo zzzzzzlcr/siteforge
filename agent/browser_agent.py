@@ -2383,9 +2383,22 @@ class _StepShots:
       `step-3-after.png`，而盘上那串字节是后一条的 ⇒ 前一条的「点后」证据当场变成**假证据**；
       ② 两趟撞上同一个标记（见上一条）。
       **射程**（别读宽了）：那道 `exists()` 到「写下去」之间还留着一个窗口 —— 真·同时写同一个
-      目录的两趟可以都查到「没人占」。而那是**不存在的形状**：一个 job 的几趟是**顺序**跑的
-      （`agent/graph.py` 的 `for n in range(2, EXPLORE_ATTEMPTS + 1)`，一趟跑完才起下一趟），
-      不同 job 各有各的目录。留着这段话是因为哪天并行了，它就是那个前提。
+      目录的两趟可以都查到「没人占」。**进程内这个形状不成立，而且那是结构、不是运气**：
+      一个 job 的几趟在**一次节点执行**里**同步**跑完（`agent/graph.py:449-474` 的
+      `pass_once` 循环，一趟跑完才起下一趟），而这次节点执行由**唯一**一个消费线程驱动
+      （`agent/service.py:1326-1342`：`_ensure_worker` 只起一条 `siteforge-worker`，
+      `_work` 从队列里一次取一个，`_advance` 是唯一会动图的地方）。两条都各有一条判据钉着
+      （`tests/test_graph.py::test_the_retry_attempts_never_overlap_in_time`、
+      `tests/test_service.py::test_only_one_thread_advances_jobs_at_a_time`）——
+      谁把那两半拆了，它们当场红。
+
+      ⚠️ **但它是「当前部署形状」这条前提，不是不变量**（别读成「不可能发生」）：
+      **跨进程没有任何机制挡着** —— checkpointer 是 Postgres（状态层本来就多实例可共享）、
+      shots 根可被 `SITEFORGE_SHOTS_DIR` 指到同一个目录，而这一层**没有文件锁、没有租约、
+      没有 job 级所有权**。第二个实例、一次没杀干净的重启、或者运维伸手清 `runtime/`，
+      都能让这个窗口当场变成真的（同一份前提也在咬 `_on_disk`：本趟之外的人删图，
+      上限与那句话就跟着偏）。**要把它变成不变量是「加锁 / 租约」那一层的事**
+      （Execution Truth），不在这一段里。
 
     **`kept` 的口径**（别读成「这个目录里有几张图」）：它数是**本趟步拍留在盘上的张数**
     —— `finish()` 按 `journey.steps` 引用到的名字重算。**别处**写进同一个目录的图
@@ -2418,7 +2431,12 @@ class _StepShots:
         #: 就是盘上该删的 —— 见 `finish()` 的 docstring：**账的真相在盘上，不在手上**。
         self._written: set = set()
         #: **本趟此刻还在盘上的那些** —— 上限判它，不判 `kept`（见类注释最后一段）。
-        #: 落盘时加、`_drop` 真删掉了才减（删不掉的不减：那张图还在盘上占地方）。
+        #: 落盘时加；`_drop` 减，判据是**盘上还有没有**、不是「我叫过 unlink 没有」：
+        #: 删掉了减、**本来就已经不在盘上**（`FileNotFoundError`）也减，
+        #: 只有**删不掉**（别的 `OSError`：它还在盘上占地方）才不减 —— 见 `_drop` 的 docstring。
+        #: ⚠️ 射程：它跟得上的是**本趟自己动过手**的那些名字。本趟之外的人删了图、
+        #: 而本趟后来**没再碰过那个名字**（那张图被留住了）时，它仍然把那张算在账上 ——
+        #: 那是 D-2 那条前提（没有别人动这个目录）在咬它，不是这一行能修的。
         self._on_disk: set = set()
         #: 待结算的那一步：`{"step", "before", "key", "tainted"}`。`None` = 手上没有。
         self._pending: dict | None = None
@@ -2587,6 +2605,15 @@ class _StepShots:
           （`…-before-2.png`），**第 1 趟那张一个字节都不会被顶掉**。
           没有它的话，「一个名字 = 一次落盘」就只是**概率**（3 趟 ≈ 1.8e-7），
           而它现在**是结构**：写之前先看盘上有没有人占。
+          ⚠️ 这道 `exists()` 的**前提**（一个 job 的几趟是顺序跑的）写在类注释那段
+          「射程」里 —— 它是**当前部署形状**（单进程单 worker），由两条判据钉着，
+          跨进程没有任何机制挡着。**别把这两句读成同一句。**
+        ⚠️ 还有一句**我证不出来的**：「两道，缺一不可」——本轮实测只证得出一半。
+        把上面那道 `name in self._written` 去掉、只留 `exists()` ⇒ **红 0**：
+        我构造不出让两道分开的形状（要它分开，得让「本趟写过、后来被删掉的」名字
+        再出现一次，而那个名字里的步号 `len(journey.steps)` 是单调的）。
+        留着它是因为它挡的正是那个形状（**只靠 `exists()` 拦不住「删掉之后再复用」**），
+        但**别把这句读成「有判据钉着」**。
         """
         base = "%s-step-%d-%s" % (self.tag, len(self.journey.steps), when)
         name, n = base + ".png", 1
@@ -2605,7 +2632,9 @@ class _StepShots:
             if not self._said_cap:
                 self._said_cap = True
                 self.journey.notes.append(
-                    "步拍在这个目录里已经有 %d 张了（上限 %d）—— **从这一步起不再拍**。"
+                    "本趟的步拍图有 %d 张还在盘上（上限 %d）—— **从这一步起不再拍**。"
+                    "（这个数是**本趟**的，**不是**这个目录里的图数：服务侧的闸拍 "
+                    "`pause-<n>.png` 就跟步拍落在同一个目录里，它不计入、也不受这道上限管。）"
                     "后面的步要是不对劲，账上不会再有图：这是**知道的**，不是漏了。"
                     % (len(self._on_disk), MAX_KEPT_SHOTS))
             return None
@@ -2640,8 +2669,27 @@ class _StepShots:
         self._pending = None
 
     def _drop(self, name) -> None:
+        """把一张从盘上删掉，并让上限**跟着盘上的实况**走。
+
+        `_on_disk` 是「本趟此刻还在盘上的那些」，所以它的增减必须以**盘**为准，
+        不是以「我叫过 unlink 没有」为准。两条出口**含义正相反**，不许合并：
+
+        - **`FileNotFoundError` = 它已经不在盘上了** ⇒ 照样 `discard`。
+          复审点名的那一格（「文件本来就**不在**，`_on_disk` 却永远留着它」）：原来它与
+          「删不掉」共用一个 `except OSError`，于是**本来就不在**的名字永远占着上限 ——
+          闸比盘紧（正是 C-2 说不许的**越收越紧**那个方向），而且那句话会**报大**
+          （说 2、盘上 1）。它什么时候会发生：这一趟写过的图被
+          **本趟之外的手**拿走了（运维清 `runtime/`、第二个实例指着同一个 shots 根 ——
+          正是 D-2 那条前提被破的样子），之后本趟照常把它当作「要丢的那张」来处理。
+        - **别的 `OSError` / `ValueError`（权限、只读、名字非法……）= 它还在那儿，
+          只是我删不掉** ⇒ 不吃 `discard`。那条是对的：那张图还在盘上占地方，
+          上限就该照数它（**别越收越紧**是这一格，不是上面那一格）。
+        """
         try:
             (self.where / str(name)).unlink()
+        except FileNotFoundError:           # 已经不在盘上了 ⇒ 不许继续占上限
+            self._on_disk.discard(str(name))
+            return
         except (OSError, ValueError):       # 删不掉不是错 —— 收尾失败不许盖掉别的人话
             return                          # ⚠️ 但它**还在盘上** ⇒ 上限那张照数（别越收越紧）
         self._on_disk.discard(str(name))    # 真没了才减
