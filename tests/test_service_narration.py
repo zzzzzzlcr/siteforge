@@ -131,6 +131,11 @@ def _shot_ok(ws_url, dest, *, timeout=None):
     return pathlib.Path(str(dest)).name, ""
 
 
+def _shot_boom(ws_url, dest, *, timeout=None):
+    """闸拍那条路**拍不成**（要点出「这一轮没留下图」那一条）。"""
+    raise RuntimeError("cdp 子进程没了")
+
+
 def _brief(tmp_path, **over):
     brief = {"url": URL, "goal": GOAL, "success_text": SUCCESS, "site": SITE,
              "ws_url": WS_URL, "form_file": str(tmp_path / "form.json"),
@@ -197,19 +202,25 @@ class _ExploreStub:
     """`browser_agent.explore` 的替身：**只做一件真事 —— 叫回调**。
 
     叫法照真 `explore` 的接口（关键字参数），于是「服务有没有把它们传下来」当场现形。
+
+    `note_only=True`：**只叫 `on_note`**（不叫 `on_step`）。用在「note 那根线自己
+    有没有说」这类用例上 —— 两根线共用 `timeline_broken` 那一本，两根都叫的话
+    先叫的那根会把消息占住，后叫的那根就看不见了（修复轮 1 的 Important-3
+    正的正是这个：那样写出来的断言**两根线随便哪根活下来都绿**）。
     """
 
-    def __init__(self, *, note=MODEL_SAID, step_note=STEP_NOTE, journey=None):
+    def __init__(self, *, note=MODEL_SAID, step_note=STEP_NOTE, journey=None, note_only=False):
         self.note = note
         self.step_note = step_note
         self.journey = journey
+        self.note_only = note_only
         self.kw: dict = {}
 
     def __call__(self, url, goal, **kw):
         self.kw = dict(kw)
         if kw.get("on_note") is not None:
             kw["on_note"](self.note)
-        if kw.get("on_step") is not None:
+        if not self.note_only and kw.get("on_step") is not None:
             kw["on_step"]({"note": self.step_note, "action": "click", "step_no": 2})
         return self.journey if self.journey is not None else browser_agent.Journey()
 
@@ -408,17 +419,90 @@ def test_a_journey_without_a_missing_shot_says_nothing(tmp_path):
     assert _events(client, job_id, "shot_missing") == []
 
 
+def test_the_three_missing_shot_sentences_are_told_apart(tmp_path):
+    """闸拍 / 步拍·某一步 / 步拍·整条路 —— **三句人话必须分得开**（修复轮 1 的 Important-2）。
+
+    为什么（复审原话）：「**一致不该靠抹平两个事实来达成**」。三件事的来源不同、
+    下一步也不同（闸上那张是给人看现场的那张；探路里那些是留着当证据的那批），
+    三句话一字不差的话，读的人分不出缺的是哪一种。
+
+    ⚠️ 而**整条路**那一支**说得出的是整条路**（`journey.shots_why` 不带「哪一步」）——
+    所以它既不许跟着步拍那句说「这一步」，也不许跟着闸拍那句说「这一轮」：
+    **说得出多少说多少，别编。**
+    """
+    # ① 步拍·某一步（说得出是哪一步的那种形状）
+    c1, j1 = _one_job(tmp_path, _narrating(
+        call="none", values={"journey": _journey(steps=[{"action": "click",
+                                                          "shots_why": SHOT_WHY}])}))
+    step_say = _says(c1, j1, "shot_missing")[0]
+    # ② 步拍·整条路（那条路的 why —— 没有「哪一步」）
+    c2, j2 = _one_job(tmp_path, _narrating(
+        call="none", values={"journey": _journey(shots_why=CHANNEL_WHY)}))
+    channel_say = _says(c2, j2, "shot_missing")[0]
+    # ③ 闸拍（这一轮停下来的那张没拍成）
+    c3, j3 = _one_job(tmp_path, _narrating(call="none"), capture=_shot_boom)
+    pause_say = _says(c3, j3, "shot_missing")[0]
+
+    assert len({step_say, channel_say, pause_say}) == 3, (step_say, channel_say, pause_say)
+    assert "这一步" in step_say and SHOT_WHY in step_say, step_say
+    # ② 不许说「这一步」（那是编的），也不许说「这一轮」（那是闸拍的事实）
+    assert CHANNEL_WHY in channel_say, channel_say
+    assert "这一步" not in channel_say and "这一轮" not in channel_say, channel_say
+    assert "探路" in channel_say, channel_say
+    # ③ 闸拍那句说的是「这一轮」，不是探路里的那批
+    assert "这一轮" in pause_say and "探路" not in pause_say, pause_say
+
+
 # ═══════════════ 5. 旁路坏掉要**响**（回调和它自己的那本账）═══════════════
+
+
+def _report(*, broken=(), runs=None):
+    return selftest.Report(runs=tuple(runs or (_skipped_viewport(),)), passed=False,
+                           allowed_skips=("country",), cdp_bin=None, site=SITE,
+                           py_path="candidate.py", narrate_broken=tuple(broken))
+
+
+def test_a_broken_broadcast_lands_on_the_timeline(tmp_path):
+    """**没有静默的路径**：报告里那个 `except` 必须有一条时间线事件（Important-1）。
+
+    ⚠️ 这不是「时间线自己坏了所以记不上」那一类 —— 抛的是回调（job 不在登记表 =
+    服务的编程错误），时间线好得很。`selftest.run` 的护栏把原因记进
+    `Report.narrate_broken`（那是「旁路坏掉不许带塌自测」那一半），而「**没有静默的
+    路径**」那一半要等到报告随 state 回来、服务读得着的时候才算兑现 —— 就是这里。
+    """
+    why = "RuntimeError: 播报线断了"
+    values = {"report": _report(broken=(why,))}
+    client, job_id = _one_job(tmp_path, _narrating(call="none", values=values, waits=1))
+
+    told = _events(client, job_id, "narration_broken")
+    assert len(told) == 1, [e["kind"] for e in _live(client, job_id)["events"]]
+    assert told[0]["who"] == "system", told[0]
+    assert why in told[0]["say"], told[0]["say"]
+    assert "自测" in told[0]["say"] and "时间线" in told[0]["say"], told[0]["say"]
+
+    # 报告会一直躺在 state 里 —— 再推一步**不许**再报一遍
+    assert client.post("/job/%s/reply" % job_id, json={"action": "continue"}).status_code == 200
+    _wait(client, job_id)
+    assert len(_events(client, job_id, "narration_broken")) == 1, "同一句话报了第二遍"
+
+
+def test_a_report_that_says_nothing_broken_is_not_narrated(tmp_path):
+    """反面：报告里没有那个原因 → **没有** `narration_broken`（不许把「没事」说成「坏了」）。"""
+    client, job_id = _one_job(tmp_path, _narrating(call="none", values={"report": _report()}))
+    assert _events(client, job_id, "narration_broken") == []
 
 
 def test_a_note_with_no_job_to_land_on_is_not_swallowed(tmp_path, explore_stub):
     """时间线没地方记的时候**也要说**（`_step_teller` 那条规矩，新线照做）。
 
-    直接调服务拼的那根线（`job_id` 不在登记表里 —— 测试与将来的调用方都这么用），
-    旁路**不许抛**（那会把这一趟探路整个带塌），但**也不许就当没发生**：
-    原因落进 `journey.notes`，人看得出来这一趟的时间线是残的。
+    ⚠️ **桩只叫 `on_note`**（`note_only=True`）—— 这是修复轮 1 的 Important-3 要求的那一修：
+    `on_step` 与 `on_note` 共用 `timeline_broken` 那一本，两根都叫的话**先叫的那根**
+    占住消息，于是断言里那两个子串**哪根线活着都成立**（复审实测：把 note 那根线
+    整个弄成静默，这条用例**照样绿**）。
+    所以这里：① 只让 note 那根线说话；② 断言的**是那句点名它的话**
+    （「模型这一轮的话没记上」）—— 弄静默它就红。
     """
-    explore_stub(_ExploreStub())
+    explore_stub(_ExploreStub(note_only=True))
     client = _client(_narrating())
     svc = client.app.state.service
     run = svc._explore_for(_brief(tmp_path), "job-nope")
@@ -426,6 +510,7 @@ def test_a_note_with_no_job_to_land_on_is_not_swallowed(tmp_path, explore_stub):
     journey = run(URL, GOAL)
 
     said = "\n".join(str(n) for n in journey.notes)
+    assert "模型这一轮的话没记上" in said, journey.notes
     assert "不在登记表里" in said, journey.notes
     assert "时间线没记全" in said, journey.notes
 
@@ -593,10 +678,11 @@ def test_every_run_is_broadcast_in_order_including_the_ones_that_did_not_run(
 
 
 def test_nothing_is_wired_when_no_reader_is_given():
-    """没有读者 = **这条线压根不接**（`_two_readers` 全 `None` 就返回 `None`）。
+    """**Task 4 那条 `on_step` 线的形状**：没有读者 = 这条线压根不接（不是接个空钩子）。
 
-    ⚠️ 这一条是 `on_step=None`（默认）的机械正身：探路那边 `emit` 看到 `None`
-    一个字节都不写，于是今天的行为逐字不变。
+    ⚠️ **射程**（修复轮 1 的 Minor-1 改准了）：这一条测的是 `_two_readers` ——
+    Task 4 的接线工具，**与新加的两根线无关**。新线的「不给 = 今天那条路」由下面
+    两条钉（`on_note` 那条钉整个 `journey.notes` 列表、自测那条钉报告的字节）。
     """
     assert service._two_readers(None, None) is None
     assert service._two_readers() is None
@@ -606,9 +692,15 @@ def test_nothing_is_wired_when_no_reader_is_given():
 
 
 def test_an_explore_without_the_note_hook_behaves_exactly_as_before():
-    """`on_note` 不给（默认）→ 账本那一句**照旧**（今天的行为一个字节不变）。"""
+    """`on_note` 不给（默认）→ 账本**一个字节都不多**（今天的行为一个字节不变）。
+
+    ⚠️ 钉的是**整个 `notes` 列表**（修复轮 1 的 Minor-1）：只断言「那一句在」的话，
+    把 `_Gate._note` 里的 `if self._on_note is None: return` 早退删掉（于是 `None`
+    被当回调调、`TypeError` 被护栏吞成一句「旁路没记成」）它**照样绿** ——
+    而那句话说明行为已经变了。列表比句子严。
+    """
     journey = _explore_with_note(None)
-    assert MODEL_SAID in journey.notes, journey.notes
+    assert journey.notes == [MODEL_SAID], journey.notes
 
 
 def test_a_selftest_without_the_run_hook_reports_exactly_the_same_thing(
@@ -624,6 +716,33 @@ def test_a_selftest_without_the_run_hook_reports_exactly_the_same_thing(
         json.dumps(noisy.as_dict(), ensure_ascii=False)
     assert quiet.summary() == noisy.summary()
     assert quiet.narrate_broken == () and noisy.narrate_broken == ()
+
+
+def test_a_later_shot_that_lands_clears_the_broken_channel_note(tmp_path):
+    """拍成之后那句话要清掉（修复轮 1 的 Minor-5）—— **事实不许被拉长**。
+
+    `journey.shots_why` 说的是「这条**路**现在坏着吗」，不是一份历史记录。不清的话：
+    这一趟里有一张没拍成、后面每一步都正常，它仍然挂着那句话 —— 时间线上就会说
+    「探路里的步拍图这一次没留下」，而后面那些图其实都留下了。去重挡得住刷屏，
+    挡不住这件事。
+    """
+    where = tmp_path / "shots"
+    where.mkdir()
+    calls = {"n": 0}
+
+    def shooter(session, dest):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None, "桩说的：相机没电"
+        pathlib.Path(str(dest)).write_bytes(b"x")
+        return pathlib.Path(str(dest)).name, ""
+
+    journey = browser_agent.Journey()
+    shots = browser_agent._StepShots(journey, where, shooter)
+    shots.before_mutation({"action": "click"}, None, ("k",))
+    assert "相机没电" in journey.shots_why, journey.shots_why
+    shots.before_mutation({"action": "click"}, None, ("k",))
+    assert journey.shots_why == "", "拍成之后那句话还挂着（事实被拉长了）：%r" % journey.shots_why
 
 
 def test_the_hooks_are_optional_keyword_arguments_not_a_new_shape():

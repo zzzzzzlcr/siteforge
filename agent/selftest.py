@@ -191,8 +191,16 @@ class Report:
     #: **播报那条旁路**没送成的原因（第一条，人话）。空 = 每一遍都送到了。
     #: Task 5：`run(on_run=…)` 是 Console 的实时视图 —— 旁路坏掉**不许带塌自测**
     #: （同 Task 2 那条铁律），但也**不许静默**：坏掉这件事得有个落点，
-    #: 而自测这一层**够不着时间线**（那是服务的事），所以落在这里 ——
-    #: 它随 `as_dict()`（PROVENANCE）与 `summary()` 一起回到叫它的那个人手上。
+    #: 而自测这一层**够不着时间线**（那是服务的事），所以落在这里。
+    #:
+    #: ⚠️ **落点是这两个**（修复轮 1 的 Minor-2 改准了）：
+    #:   ① `summary()` —— 那段人话（服务把它放进 `result.selftest.say`，
+    #:      所以读 `/job/{id}` 的人看得见）；
+    #:   ② `as_dict()` —— 谁调它谁拿得到（今天主要是测试）。
+    #: **不是 PROVENANCE**：`PROVENANCE["selftest"]` 是 `graph._selftest_block`
+    #: **手工挑键**拼的（runs / passed / submissions / at / verdict），它不调 `as_dict()`。
+    #: 真正让时间线上也能看见的那一步在服务侧：`Service._note_narration_broken`
+    #: （读 state 里的 `report`，记一条 `narration_broken`）。
     narrate_broken: tuple = ()
 
     # ── 谁拦住了 `passed` ────────────────────────────────────────────

@@ -161,10 +161,23 @@ HUMAN_SAID_THROUGH_SAY = "这句话会一路带进「写这一版 py」。"
 HUMAN_SAID_PLAIN_SAY = "（你在「%s」那道闸上按了继续，没有多说。）"
 #: 目录表第 6 行的**闸拍**那一半。`%s` = 拍不成的原因**原文**（不许让空图框冒充页面）
 SHOT_MISSING_SAY = "这一轮没留下图：%s"
-#: 目录表第 6 行的**步拍**那一半（Task 5）。同一句规矩，说的那一步**具体是哪一步**。
-#: 与上面那一句分开：闸拍说的是「这一轮」，步拍说的是「这一步」——
-#: 句子里那个词就是读的人用来对号的位置。
+#: 目录表第 6 行的**步拍**那一半（Task 5）里**说得出是哪一步**的那一支
+#: （`step["shots_why"]`）。与上面那两句都不同 —— 三句话读的人要能**对号**：
+#:   ① 闸拍 = `SHOT_MISSING_SAY`（这一轮，闸上那一张）；
+#:   ② 步拍·某一步 = 这一句；
+#:   ③ 步拍·整条路 = 下面那句（说不出是哪一步，就**不许**说「这一步」）。
 STEP_SHOT_MISSING_SAY = "这一步没留下图：%s"
+#: 步拍**整条路**坏了那一支（`journey.shots_why` 的原文）。
+#: ⚠️ 它**说得出的是整条路**、不是某一步（那个字段就没有「哪一步」）—— 所以它既不许
+#: 跟着 ② 说「这一步」，也不许跟着 ① 说「这一轮」（那样读的人会以为是闸上那张图）。
+#: **说得出多少说多少，别编**（修复轮 1 的 Important-2）。
+STEP_SHOT_CHANNEL_SAY = ("探路里的步拍图这一次没留下：%s"
+                         "（说的是探路途中每一步的那些图，不是闸上停下来那一轮的那张 —— "
+                         "闸上那张没留成会另说。）")
+#: Task 5 修复轮 1（Important-1）：**自测的播报没送到时间线**。
+#: `%s` = 原因原文。这条是给读时间线的人看的 ——「这一趟你看到的自测结果可能不全」。
+NARRATION_BROKEN_SAY = ("自测的播报没送到时间线上：%s —— 自测**照常跑完**了"
+                        "（旁路坏掉不许带塌它），但这一趟的时间线上会少掉那几遍的结果。")
 #: 目录表第 6 行：撞上限时那句话的前缀（后面照抄 `end_note`）
 CAP_SAY_PREFIX = "撞上限了："
 #: 到头了但快照里**没留人话** —— 明说「它没说清」（`say` 不许空着，更不许不记）
@@ -851,6 +864,9 @@ class Job:
     #: 拍照坏掉通常是**每一步**都坏，每一步刷一条会把时间线灌满 —— 而多条不是信息。
     #: 认的是**那句话**、不是第几步：同一趟探路里两步的图没了往往是同一个原因。
     shots_reported: set = dataclasses.field(default_factory=set)
+    #: **播报坏了**这件事报过的原因（Task 5 修复轮 1）。同上：报告会一直躺在 state 里，
+    #: 而每次 `_advance` 返回都会去读它一遍 —— 不去重就是同一句话每推一步记一条。
+    narration_reported: set = dataclasses.field(default_factory=set)
 
     def snapshot_for_view(self) -> tuple:
         with self.lock:
@@ -1912,11 +1928,12 @@ class Service:
             return
         self._note_window_died(job, values)
         self._note_shots_missing(job, values)     # 目录表第 6 行的**步拍**那一半
+        self._note_narration_broken(job, values)  # 播报那条旁路自己坏了（修复轮 1）
         if ended:
             self._note_end(job, values)
 
     def _note_shots_missing(self, job: Job, values: dict) -> None:
-        """目录表第 6 行的**步拍**那一半：某一步的图没拍成 → 时间线上一条（Task 5）。
+        """目录表第 6 行的**步拍**那一半：图没拍成 → 时间线上一条（Task 5）。
 
         为什么要有这一条：第 6 行原先只有**闸拍**那一半（`_capture_pause` 的
         `shot_missing`），而探路里每一步自己也在拍（`shots_dir` 那条线）——
@@ -1925,15 +1942,24 @@ class Service:
         与「这一步没有图是因为窗口连不上」在页面上长得一模一样，而设计注
         §3.2 第 6 行明令不许让空图框冒充页面。
 
-        两种形状都认（都是「这一步没留下图」这件事的载体）：
+        两种形状都认（都是「图没留下」这件事的载体），**两句话不一样**
+        （修复轮 1 的 Important-2：一致不该靠抹平两个事实来达成）：
           - `step["shots_why"]`：**那一步**的图没成（`.get` 读 —— 没这个字段的
-            journey 一个字节都不受影响）；
+            journey 一个字节都不受影响）→「这一步没留下图」；
           - `journey.shots_why`：步拍这**条路**最近一次的坏法（步拍自己的代码抛了
-            就是这一种，它没有「哪一步」）。
+            就是这一种，它没有「哪一步」）→ 只说这一路，**不编「哪一步」**
+            （`STEP_SHOT_CHANNEL_SAY`）。
+
+        ⚠️ **射程：只有最后一趟**（修复轮 1 的 Minor-4）。重探时**前几趟**的 Journey
+        不进 state（`graph.explore` 只把最后一次的 `out["journey"] = journey` 留下），
+        所以前几趟的步拍失败**这一条线看不见** —— 那是简报设计本身带来的形状，
+        不是这里漏了。要让前几趟也说出来，得让图把每一趟的账都留下（不在这一片）。
 
         ⚠️ **同一句只报一次**（`job.shots_reported`）：拍照坏掉通常每一步都坏。
-        ⚠️ 整个函数是**旁路**：读不出来就什么都不做（`getattr` 兜着）——
-        它坏掉不许把 `_note_after_advance` 带塌（那会把一次读账变成一次跑挂）。
+        ⚠️ 读 journey 的那几行是**防御性**的（属性可能缺、步理论上可能不是字典），
+        但 `self.narrate(...)` **不吞异常** —— 那与 `_note_window_died` / `_note_end`
+        **一模一样**：`narrate` 抛是**编程错误**（形状写歪了），吞掉它就等于把
+        「时间线上少一条」变成静默（说得准比说得好听重要）。
         """
         journey = values.get("journey")
         if journey is None:
@@ -1957,10 +1983,38 @@ class Service:
             data = {"why": why}
             if isinstance(step_no, int):
                 data["step_no"] = step_no
-            # 两种形状两句话：**这一步**的图没了 / **这一轮**整条步拍路坏了
-            # （后者与闸拍那句同一句 —— 闸拍那一半本来就说的是「这一轮」）。
-            say = (STEP_SHOT_MISSING_SAY if per_step else SHOT_MISSING_SAY) % why
+            # 三句话三个事实（修复轮 1 的 Important-2）：**这一步**没了 /
+            # 探路里**整条步拍路**坏了（说不出哪一步）/ 闸上**那一轮**那张没了
+            # —— 最后那一句在 `_capture_pause` 里。三句必须读得出来是哪一件。
+            say = (STEP_SHOT_MISSING_SAY if per_step else STEP_SHOT_CHANNEL_SAY) % why
             self.narrate(job, "shot_missing", say, **data)
+
+    def _note_narration_broken(self, job: Job, values: dict) -> None:
+        """**播报那条旁路自己坏了** → 时间线上一条（Task 5 修复轮 1，Important-1）。
+
+        为什么要有它：`selftest.run` 的护栏把「回调抛了」记进 `Report.narrate_broken`
+        —— 那是「**旁路坏掉不许带塌自测**」那一半；另一半「**没有静默的路径**」在那一刻
+        还没兑现：自测那一层够不着时间线，报告要等到这里（`_advance` 返回、`report`
+        已经在 state 里）才有人读得到。
+
+        不加这一条会怎样：那个 `except` 就是**一条只有报告知道、页面上一个字都没有的
+        异常** —— 而它**不属于**「时间线自己坏了所以记不上」那一类（时间线好得很，
+        是回调自己抛了，比如 job 不在登记表里那种编程错误）。全局约束的字面是
+        「**任何一个 `except`** 都要有一条对应的时间线事件」。
+
+        去重：同一个原因只报一次（`job.narration_reported`）—— 报告会一直躺在 state 里，
+        而每次 `_advance` 返回都会来读一遍。
+        """
+        report = values.get("report")
+        for reason in list(getattr(report, "narrate_broken", None) or ()):
+            why = str(reason or "").strip()
+            if not why:
+                continue
+            with job.lock:
+                if why in job.narration_reported:
+                    continue
+                job.narration_reported.add(why)
+            self.narrate(job, "narration_broken", NARRATION_BROKEN_SAY % why, why=why)
 
     def _note_human_said(self, job: Job, job_id: str, body: ReplyRequest) -> None:
         """目录表第 8 行：人的原话 + **这句话去哪了**。

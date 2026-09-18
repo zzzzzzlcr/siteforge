@@ -244,20 +244,24 @@ class _SelftestGraph:
     桩图不叫它就永远看不见，而「词表里有、没人记得出来」正是这条机械断言要抓的。
     ⚠️ **不真起产物**（那是 `tests/test_selftest.py` 的事）：那一遍的结果由测试喂进来，
     但走的仍是**服务拼好的那根线**（`_selftest_cb` → `on_run` → `_run_teller`）。
+    ⚠️ `report` 要**像真图那样**存进 state（`graph._selftest` 的 `out["report"] = report`）：
+    `narration_broken` 那一条（Task 5 修复轮 1）就是从这儿读出来的。
     """
 
     def __init__(self, deps):
         self.deps = deps
         self.invokes: list = []
+        self.report = None
 
     def invoke(self, payload, config):
         self.invokes.append(payload)
-        self.deps.selftest("candidate.py", WS_URL, "form.json", SITE)
+        self.report = self.deps.selftest("candidate.py", WS_URL, "form.json", SITE)
         return {"site": SITE, "visits": ["selftest"], "end_reason": "selftest_unfinished",
                 "end_note": "自测跑了一遍就收工（这一条只关心那一遍有没有播出来）。"}
 
     def get_state(self, config):
         return _Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["selftest"],
+                             "report": self.report,
                              "end_reason": "selftest_unfinished",
                              "end_note": "自测跑了一遍就收工。"},
                      next=(), interrupts=())
@@ -708,8 +712,12 @@ def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
             ok=None, failed_step=None, trace_path=None,
             note="这一遍没跑：换窗口大小要调用方在窗口层动手 —— 这一类失败这次**没验到**。")
         kw["on_run"](run)
+        # ⚠️ `narrate_broken` 也一起喂进来（Task 5 修复轮 1）：一条真跑出来的报告
+        # 说「播报没送到」时，服务必须把它记成时间线上的一条（`narration_broken`）——
+        # 它跟 `selftest_run` 一样是**从调用点长出来的词**，就得有一条场景把它逼出来。
         return selftest_mod.Report(runs=(run,), passed=False, allowed_skips=("country",),
-                                   cdp_bin=None, site=site, py_path=str(py_path))
+                                   cdp_bin=None, site=site, py_path=str(py_path),
+                                   narrate_broken=("RuntimeError: 播报线断了（桩）",))
 
     monkeypatch.setattr(selftest_mod, "run", _fake_selftest)
     c9 = _client(graph_factory=lambda brief, deps: _SelftestGraph(deps),

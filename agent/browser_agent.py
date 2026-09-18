@@ -2761,6 +2761,11 @@ class _StepShots:
 
         ⚠️ 上限**在这一刻**判（`_on_disk` = 本趟此刻还在盘上的张数）—— 落盘之前判，
         所以「运行期任何时刻盘上都不超过 `MAX_KEPT_SHOTS`」。不数 `kept`：它要等结算才涨。
+
+        ⚠️ **拍成了就把 `journey.shots_why` 清掉**（Task 5 修复轮 1 的 Minor-5）：
+        那个字段说的是「这条**路**现在坏着吗」，不是一个历史记录。不清的话，这一趟里
+        有一张没拍成之后**后面每一步都正常**，它仍然挂着那句话 —— 读它的人会以为
+        「这一趟的图一直没留下」（事实被拉长了）。去重能挡住刷屏，挡不住这件事。
         """
         if len(self._on_disk) >= MAX_KEPT_SHOTS:
             if not self._said_cap:
@@ -2784,6 +2789,7 @@ class _StepShots:
             return None
         self._written.add(str(name))     # **落盘即登记** —— 收尾按这个收口
         self._on_disk.add(str(name))     # 上限按这个判（此刻它真的在盘上）
+        self.journey.shots_why = ""      # 拍成了 ⇒ 这条**路**现在不坏（见 docstring）
         return str(name)
 
     def _keep(self, pending: dict, step: dict) -> None:
