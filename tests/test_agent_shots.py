@@ -667,3 +667,66 @@ def test_a_failed_screenshot_does_not_void_the_chain(tmp_path):
         "报错的截图不动页面也不结算，不该把 click 那条链作废"
     assert click["shot_after_deferred"] is True
     assert len(s.left) == 2, s.left
+
+
+def test_the_accounting_reconciles_against_the_disk_not_the_pending(tmp_path, monkeypatch):
+    """**收口按盘上的实数，不靠回滚** —— `_keep` 自己抛异常时也不留孤儿。
+
+    复审当场证过：上一版加的那句「吞掉后回滚」**只在 `_pending` 还在手上时有用**，
+    而 `_keep` 抛异常那一刻它**早就被清了** —— 把回滚删掉，25 条用例 **0 红**。
+    根因一句话：**回滚只看得到 `_pending`，而账的真相在盘上。**
+
+    所以 `finish()` 改成「**拍过的所有名字** 减 **留住的步引用到的**」。
+    这条用例断的就是那个够不着的窗口：`_keep` 抛了，盘上**仍然 0 张**。
+    """
+    def boom(*_a, **_kw):
+        raise RuntimeError("_keep 自己炸了（桩）")
+
+    monkeypatch.setattr(browser_agent._StepShots, "_keep", boom)
+
+    s = _Shooter(tmp_path / "shots")
+    journey, _, _ = _go(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"content": "记账那一步炸了"}],
+        s,
+        budget=browser_agent.Budget(max_steps=10, max_rounds=10),
+    )
+    assert [x["action"] for x in journey.steps] == ["observe", "click", "observe"], journey.steps
+    assert s.dests, "该拍"
+    # 断的是**不变量**（盘上每一个文件都有主），不是「盘上必须为空」——
+    # `shot_after` 在 `_keep` 抛之前就已经设到步上了，所以它是**有主的**，留着是对的。
+    # 上一版会红在这里：那张**点前**图没人引用，却是它写的 ⇒ 孤儿。
+    referenced = set()
+    for st in journey.steps:
+        for key in ("shot_before", "shot_after"):
+            if st.get(key):
+                referenced.add(st[key])
+    orphans = sorted(set(s.left) - referenced)
+    assert orphans == [], f"盘上留下无主的图：{orphans}"
+
+
+def test_the_reconcile_does_not_delete_what_was_kept(tmp_path):
+    """**收口不许删过头** —— 已经留好的那两张，一个都不许动。
+
+    与上一条成对：**收口要「清掉孤儿」而不是「清空目录」**。
+    复审实测：上一版让回滚清空整个目录也 **0 红** —— 说明「删过头」根本没人钉。
+    """
+    s = _Shooter(tmp_path / "shots")
+    journey, _, _ = _go(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"content": "点了没变，该留两张"}],
+        s,
+        budget=browser_agent.Budget(max_steps=10, max_rounds=10),
+    )
+    click = [x for x in journey.steps if x["action"] == "click"][0]
+    assert click["shot_before"] and click["shot_after"], click
+    assert sorted(s.left) == sorted([click["shot_before"], click["shot_after"]]), \
+        f"收口删过头了：{s.left}"

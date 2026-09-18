@@ -520,7 +520,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                 step["note"] = _say(name, step["target"], False)
                 if step_shots is not None:
                     # 失败那条路：动页面动作 ⇒ 当场补拍点后那张（两张都留，§5.4 的 a 支）；
-                    # **别的动作**（比如一张报错的 `observe`）⇒ 那一链结算不了，作废。
+                    # **报错的 `observe`**（唯一「本该结算而没结算成」的那个）⇒ 那链作废。
                     # 放在 `emit` **之前**：账本是 emit 那一刻落的，晚一步这一步就没有图了。
                     _shots(step_shots.after_mutation, step, session, name, False)
                 journey.steps.append(step)
@@ -2362,6 +2362,9 @@ class _StepShots:
         self.where = pathlib.Path(where)
         self.shooter = shooter
         self.kept = 0
+        #: **这一步拍过的所有名字**（含后来被丢掉的）。收尾时拿它减「留住的步引用到的」
+        #: 就是盘上该删的 —— 见 `finish()` 的 docstring：**账的真相在盘上，不在手上**。
+        self._written: set = set()
         #: 待结算的那一步：`{"step", "before", "key", "tainted"}`。`None` = 手上没有。
         self._pending: dict | None = None
         self._said_cap = False
@@ -2417,8 +2420,10 @@ class _StepShots:
           ⚠️ 在这里清掉 pending 的话，那次观测就没有东西可结算，点前那张会**永远留在盘上**
           （实测栽过：跑顺的步也留了一张，整个策略的主要收益当场归零）。
         - **没做成的动页面动作** → 当场补拍点后那张，两张都留（§5.4 的 a 支）。
-        - **不是动页面动作**（比如一张**报错的 `observe`**）→ 它结算不了手上那一步，
+        - **报错的 `observe`** → 它是唯一「**本该结算而没结算成**」的动作，
           而「紧接着」这个条件也**再也回不来了** ⇒ **按「不留」办**，把点前那张删掉。
+          ⚠️ 报错的 `screenshot` / `diff` **不作废**：它们既不动页面、也不负责结算，
+          凭什么叫那条链作废？（原来按 `ok` 判，管得比该管的宽 —— 复审点名。）
           （不删就是漏：那张图会留在盘上、没有任何 `shot_before` 指向它、**也不计入 `kept`**
           —— `MAX_KEPT_SHOTS` 于是管不住盘。）
         """
@@ -2474,13 +2479,27 @@ class _StepShots:
             self._discard(pending)            # 页面变了 = 这一步跑顺了 → 一张不留
 
     def finish(self) -> None:
-        """一趟探路收尾：手上那个没结算的 → **删掉**。
+        """一趟探路收尾：**按盘上的实数收口** —— 不是看手上还有什么。
 
-        为什么需要：一趟**以动页面动作收尾**的探路（模型收工 / 预算到顶 / **人按停**）
+        为什么**不能**只看 `_pending`：它只是「**还在手上**的那一个」，而**账的真相在盘上**。
+        任何一条把引用弄丢的路都会让文件留在盘上而 `_pending` 上看不出来 ——
+        实测栽过两次：`_keep` 自己抛异常（那时 `_pending` 已经清了）、
+        `_take` 落盘与挂 pending 之间那个窗口。**在那两处加回滚，删掉也 0 条用例红**
+        （复审当场证的：`fbe1ae1` 与上一版结果逐字相同）。
+
+        所以收口用「**拍过的所有名字**」减「**留住的步引用到的名字**」——
+        这样无论哪条路把引用弄丢，盘上都不会剩孤儿；`kept` 也一并按实数重算。
+
+        ⚠️ 顺带：一趟**以动页面动作收尾**的探路（模型收工 / 预算到顶 / **人按停**）
         永远不会再来一次观测 —— 而「按停」正是这个功能的**主交互**。
-        不收的话点前那张就留在盘上、没人指向它、也不计入 `kept`（同 `after_mutation` 那条）。
         """
         self._discard_pending()
+        referenced = {s.get("shot_before") for s in self.journey.steps}
+        referenced |= {s.get("shot_after") for s in self.journey.steps}
+        referenced.discard(None)
+        for name in self._written - referenced:
+            self._drop(name)
+        self.kept = len(referenced)          # **按实数重算** —— 不靠一路加出来的那个数
 
     # ── 里面的 ──────────────────────────────────────────────────
 
@@ -2504,6 +2523,7 @@ class _StepShots:
         if not name:
             self.journey.shots_why = str(why or "拍不成，而且没说为什么")
             return None
+        self._written.add(str(name))     # **落盘即登记** —— 收尾按这个收口
         return str(name)
 
     def _keep(self, pending: dict, step: dict) -> None:
