@@ -19,7 +19,10 @@
 | 9 | `_capture_pause` 失败 | `test_a_shot_that_could_not_be_taken_…` |
 
 还有两个**这一版特有**的：
-- `/live` 的**骨架形状**（brief 钉的那几个字段：`gate` 恒 null、`input` 恒 queue、`rounds` 恒 []）；
+- `/live` 的**字段一个都不能少**（brief 钉的那一整套键）+ 剩下的两处骨架
+  （`input` 恒 queue、`stop` 恒「没请求停」—— Task 8/9 的事）。
+  ⚠️ `rounds` 与 `gate` **Task 6 起填上了**（原先恒 `[]` / 恒 `null`），
+  它们的性质由 `tests/test_rounds.py` 钉；
 - **读不许写**（`/live` 是 GET：调三次不许往时间线上加东西 —— 加了就是「看的人越多、时间线越长」）。
 
 桩在这里是**必须**的：真图不会自己抛异常、也不会按你要的顺序停在某一跳上。
@@ -362,12 +365,16 @@ def test_the_live_view_has_every_field_the_brief_pins(tmp_path):
     assert live["status"] == "waiting"
     assert live["delivered"] is False, "「停下来了」不是「交付了」—— 两件事分开摆"
     assert live["say"], "永远有一句人话（不编话那一条）"
-    # 骨架：这三样这一版**故意**是空的/恒定的（Task 6/8 填它们）——
+    # Task 6 起 `rounds` / `gate` **填上了**（原先这两格是骨架）—— 这个 job 停在 intake
+    # 那道闸上：闸在（页面据此决定能不能按），停过一道闸 = 一轮。那两样的性质
+    # 由 `tests/test_rounds.py` 钉，这里只钉「接线通了」。
+    assert live["gate"]["step"] == "intake", "停在闸上就该有闸（`_view` 那份照抄）"
+    assert [r["n"] for r in live["rounds"]] == [1]
+    assert live["rounds"][0]["now"]["name"] == "pause-1.png", "第 1 轮的闸拍"
+    # 骨架：这两样这一版**故意**是恒定的（Task 8/9 填它们）——
     # 钉在这儿，免得被读成「已经在工作了」。
-    assert live["gate"] is None, "骨架：闸口投影是 Task 8 的事（页面别据此显示按钮）"
     assert live["input"]["mode"] == "queue"
     assert live["input"]["queued"] == []
-    assert live["rounds"] == []
     assert live["stop"]["requested"] is False
     assert live["truncated"] is False
     assert live["stage"], "它现在/刚要做的那个节点：说不出来也得说「不知道」，不许空着"

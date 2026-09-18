@@ -65,7 +65,8 @@ from fastapi.responses import FileResponse
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from agent import browser_agent, events, graph, journal, measure, selftest, shots, tools
+from agent import (browser_agent, events, graph, journal, measure, rounds, selftest, shots,
+                   tools)
 from agent.graph import NODES, STEP_SAY
 from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_LINT_CAP,
                          END_NO_WINDOW, END_PAUSED, END_REVISION_CAP,
@@ -196,8 +197,22 @@ STATE_UNREADABLE_SAY = ("这一步结束之后，它读不回自己的状态（%
                         "任务本身的进展还在 checkpoint 里。")
 #: `/live` 的 `note`：时间线**不持久**这件事要明说（设计注 §3.5）。
 #: 不说的话，人会把「空」读成「它什么都没干」。
-RESTART_NOTE = ("服务重启过：这之前的时间线没有了。运行的状态还在（从 checkpoint 里读），"
-                "轮次与截图仍然完整。")
+#: ⚠️ 后半句 Task 6 改了（原先写「轮次与截图仍然完整」—— 那句话在**捡回来的 job** 上
+#: 是假的）：闸拍那本账（`Job.shot_notes`）与轮号一样是 **process-local** 的，
+#: 而轮号从 1 重新数 ⇒ 同一个名字（`pause-1.png`）的旧图会被新的一轮顶掉
+#: （`/job/{id}/shot/{name}` 那条 `no-cache` 就是为这件事写的）。
+#: 真话分两半：**图还在盘上**（这一条留），**轮次是从这次启动重新数的**（这一条补上）。
+RESTART_NOTE = ("服务重启过：这之前的时间线没有了。运行的状态还在（从 checkpoint 里读）；"
+                "之前拍下的图还在盘上，但**这一屏的轮次从这次启动起重新数**"
+                "（同一个名字的旧图会被新的一轮顶掉）。")
+#: `/live` 上「读不回状态」那句话。⚠️ **读**这一侧（GET）不许写时间线（「读不许写」），
+#: 所以这句话随响应回去、在页面上看得见 —— 那也是「没有静默的路径」在这一侧的样子。
+LIVE_STATE_UNREADABLE_SAY = ("这一屏少了几格：读不回这个任务的状态（%s）—— "
+                             "轮次与闸口这一次说不出来（时间线不受影响）。")
+#: `GET /runs` 空列表时的 `note`：这个列表是 **process-local** 的，
+#: 不说的话人会把「空」读成「什么都没提交过」。
+NO_RUNS_SAY = ("还没有任何运行。这个列表是**这个进程**记得的那些 —— 服务重启过的话，"
+               "之前提交的就不在这儿了（它们的状态还在 checkpoint 里，知道 job id 就还能看）。")
 #: 「撞上限」那三种停因（设计注 §3.2 第 4 行）—— 只用来挑 `kind`；
 #: 人话一律照抄快照里的 `end_note`（原话），不在这儿另写一句。
 CAP_END_REASONS = (END_REVISION_CAP, END_LINT_CAP, END_SELFTEST_CAP)
@@ -908,6 +923,11 @@ def _tighter(recorded, on_disk) -> dict:
     为什么不是相加、也不是取其中一份：两份都是**下界**（状态里那份可能因为节点抛异常而
     缺了后面几趟；盘上那份的 `rounds` 对「没量到」的趟记 0）—— 取 max 是**保守**的那一侧
     （预算只会更小、不会凭空变大），与 `graph._round_spends` 那条「不知道的一律按花算」同族。
+
+    ⚠️ **这一格 `rounds` 是「探路的模型轮数」**（`journey.rounds` / `attempts.jsonl`）——
+    **不是**「闸拍轮次」（图到过几次闸口）。后者是 `Job.pauses`，运营看见的那份投影在
+    `/live.rounds` 与 `/runs[].rounds`（`agent/rounds.py`）。**两个事实同名，别互相顶替**：
+    这一个「没量到」时会退成 0（`journey.rounds_measured` 才说得清），拿它当轮次数会多算。
     """
     out = {}
     for key in ("steps", "rounds", "attempts"):
@@ -2304,6 +2324,12 @@ class Service:
 
         状态与人话**只有一份口径**：`status`/`say`/`delivered` 直接取 `_view`（不编话）。
         时间线**不持久**（§3.5）：不在登记表里（重启过）或者是捡回来的 → `note` 明说。
+
+        **轮次与闸**（Task 6）：`rounds` / `gate` / `stage` 走 `rounds.project` 那一跳
+        （`agent/rounds.py`，纯函数 —— checkpoint + 闸拍清单 + 接线信息 → 一屏卡片）。
+        这一层只做三件事：把输入凑齐、把投影回来的那几格填上、把该说的话并进 `note`。
+        ⚠️ **闸只在 `waiting` 时非 null**（跑着/排队/到头了都没有闸）：那一格是
+        页面「还能不能按」的判据，露着头就是一个按钮（`rounds.project` 里再兜一次底）。
         """
         view = self._view(job_id)                 # 没这个 job 就 KeyError → 路由转 404
         job = self._jobs.get(job_id)
@@ -2312,9 +2338,17 @@ class Service:
         note = RESTART_NOTE if (timeline is None or job.recovered) else ""
         truncated = bool(timeline is not None
                          and (timeline.dropped() or len(timeline) > len(shown)))
-        if truncated:
-            note = "\n".join(x for x in (note, self._truncated_say(timeline, len(shown))) if x)
+        events_note = self._truncated_say(timeline, len(shown)) if truncated else ""
         token, where = self._where_it_stopped(job_id)
+
+        # 轮到闸拍清单与 state（读不回来也要说清 —— 见 `_live_facts`）
+        pauses, values, facts_note = self._live_facts(job, job_id)
+        proj = rounds.project(
+            values, view.get("gate"), job_id=job_id, status=view["status"],
+            say=str(view.get("say") or ""), delivered=bool(view.get("delivered")),
+            pauses=pauses, window=self.window_public(), shots_note=self.shots_note(),
+            stage=token)
+        note = "\n".join(x for x in (note, events_note, proj["rounds_note"], facts_note) if x)
         return {
             "job_id": job_id,
             "status": view["status"],
@@ -2327,20 +2361,73 @@ class Service:
             "stage_say": where,
             "note": note,
             "events": shown,                      # 旧 → 新；最多最近 500 条（`Timeline.all` 的默认）
-            # ── 下面这三样这一版**故意**是空的/恒定的（骨架）──
-            #: 闸口投影（Task 8 接）。**恒 null**：页面别据此显示按钮。
-            "gate": None,
+            #: 闸口投影（**只在 `waiting` 时非 null**）。原话照抄 `_view` 算好的那道闸，
+            #: 另加 `revisable`（`lint`/`selftest`/`deliver` 三道闸上「打回」才有那个意思）。
+            "gate": proj["gate"],
             #: 常开输入的语义（Task 8 定、Task 9 扩展）。**恒 queue**：这一版没有 `/say`。
             "input": {"mode": "queue", "queued": []},
             #: 「停」这条路这一版**还没有** —— 只说「没请求停」（真话）。
             #: 不许在这儿编一句「几秒内就会停」：那是 Task 8 的事，现在写上去就是假话。
             "stop": {"requested": False},
-            "shots_note": self.shots_note(),
-            "window": self.window_public(),
-            #: 轮次卡片（Task 6 从 checkpoint 投影）。这一版**恒 []**。
-            "rounds": [],
-            "truncated": truncated,
+            "shots_note": proj["shots_note"],
+            "window": proj["window"],
+            #: 轮次卡片（Task 6 从 checkpoint 投影）：**旧 → 新**，`rounds[n-1]` 就是第 n 轮。
+            "rounds": proj["rounds"],
+            "truncated": bool(truncated or proj["truncated"]),
         }
+
+    def _live_facts(self, job: Optional[Job], job_id: str) -> tuple:
+        """`/live` 要的两样输入 + 一句人话：闸拍清单、checkpoint 的 values。
+
+        闸拍清单**只从登记表来**（`Job.shot_notes`，一轮一条）—— 不在登记表里的 job
+        就没有它的轮次（那是 R12：轮号是 process-local 的，`note` 里明说）。
+
+        ⚠️ 状态读不回来时**不抛**（`/live` 是 GET，抛出去就是整页 500），也**不静默**：
+        原因随响应回到页面上（`LIVE_STATE_UNREADABLE_SAY`）+ 日志里一份 traceback。
+        **GET 不许写时间线**（「读不许写」），所以这件事的落点是那句话，不是一条事件。
+        """
+        pauses: list = []
+        if job is not None:
+            with job.lock:
+                pauses = [dict(x) for x in job.shot_notes]
+        try:
+            snap = self._snapshot(job_id)
+        except Exception as exc:                 # noqa: BLE001 —— 读不回来就说读不回来
+            traceback.print_exc()
+            raw = "%s: %s" % (type(exc).__name__, exc)
+            return pauses, {}, LIVE_STATE_UNREADABLE_SAY % raw
+        return pauses, dict(getattr(snap, "values", None) or {}), ""
+
+    def runs(self) -> dict:
+        """`GET /runs` 的正文（设计注 §8.1）：**能挑运行的最小列表**。
+
+        一行 = 一个 job：`{job_id, site, status, say, created_at, rounds, delivered}`。
+        `rounds` 是**闸拍轮次的个数**（`rounds.count(job.shot_notes)`）—— 与 `/live`
+        里卡片的张数**同源**（同一份清单、同一个算法）。
+        ⚠️ 别把它读成探路的模型轮数（`journey.rounds`）：**那是另一个事实**
+        （`agent/rounds.py` 的模块 docstring 里那张表）。
+
+        顺序：**最近的在前**（页面左边那一栏据此长）。
+        `note`：空列表时那句话说清「这个列表是 process-local 的」—— 不说的话，
+        人会把「空」读成「什么都没提交过」（§3.5 同一条纪律）。
+        """
+        with self._jobs_lock:
+            jobs = list(self._jobs.values())
+        jobs.sort(key=lambda j: j.created_at, reverse=True)
+        rows = []
+        for job in jobs:
+            view = self._view(job.job_id)         # 登记表里的 job 读得回来（读不回来是 500，不是少一行）
+            rows.append({
+                "job_id": job.job_id,
+                "site": (job.brief or {}).get("site"),
+                "status": view["status"],
+                "say": str(view.get("say") or ""),
+                "created_at": job.created_at,
+                #: 「到过几道闸」—— 轮数**只有这一个算法**（`rounds.count`）
+                "rounds": rounds.count(job.shot_notes),
+                "delivered": bool(view.get("delivered")),
+            })
+        return {"note": "" if rows else NO_RUNS_SAY, "runs": rows}
 
     @staticmethod
     def _truncated_say(timeline, shown: int) -> str:
@@ -2614,6 +2701,10 @@ class Service:
         （方向是对的：与 `_round_spends` 那条「不知道的一律按花算」同族）；
         而 `rounds` 里 `None`（没量到）在这里按 0 算 ⇒ 那一项偏松。取**逐键 max**
         （与状态里那份比），所以两边都不会被对方放松。
+
+        ⚠️ **这一格 `rounds` 是「探路的模型轮数」**（`journey.rounds` 那条线），
+        **不是**运营看见的那个「轮」（闸拍轮次 = 到过几道闸 = `Job.pauses`，
+        投影在 `/live.rounds` / `/runs[].rounds`，算法在 `agent/rounds.py` 的 `count`）。
         """
         out = {"steps": 0, "rounds": 0, "attempts": 0}
         try:
@@ -2785,6 +2876,16 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
     @api.post("/run", status_code=202)
     def run(body: RunRequest) -> dict:
         return svc.start(body)
+
+    @api.get("/runs")
+    def runs() -> dict:
+        """**能挑运行的最小列表**（设计注 §8.1）—— 页面左边那一栏只取它一个。
+
+        ⚠️ 它是 **process-local** 的：登记表里只有**这个进程**记得的那些 job
+        （`note` 在空列表时明说这件事）。状态本身在 checkpoint 里，所以
+        「不在这儿」不等于「没发生过」——知道 job id 就还能看。
+        """
+        return svc.runs()
 
     @api.get("/job/{job_id}")
     def job(job_id: str) -> dict:
