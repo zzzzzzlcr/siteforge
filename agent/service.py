@@ -346,7 +346,7 @@ class BitWindow:
         return self.probe()["alive"]
 
 
-def live_viewport(ws_url: str) -> Optional[tuple]:
+def live_viewport(ws_url: str, *, cdp_bin: Optional[str] = None) -> Optional[tuple]:
     """量**活着的**那个窗口现在多大 —— `cdp eval` 读 `window.innerWidth/innerHeight`（只读）。
 
     为什么要真去量（而不是回读 Bit 的配置）：**配置改了 ≠ 窗口变了**。实测过：
@@ -355,11 +355,15 @@ def live_viewport(ws_url: str) -> Optional[tuple]:
     只回读配置就报「换好了」，会把一次**空转**的扰动记成跑过了 —— R-5 里最贵的那种谎。
 
     量不出来（没有 cdp 二进制 / 连不上 / 输出看不懂）→ `None`（**不知道，不许当死**）。
+
+    ⚠️ **`cdp_bin` 由调用方给**（修复轮 2）：这里以前自己读环境 —— 于是
+    「服务构造时定死的那个二进制」在这条路上**根本不作数**，而这条路照样起子进程、
+    照样在**它自己被调用的时候**才读环境（探针是在自测的第 4 遍里被调的，
+    那时候设环境的东西早没了）。不传就按老规矩解析（`shots.cdp_bin_for`，**一份读法**）。
     """
     import re as _re
     import subprocess
-    cdp_bin = (os.environ.get("SITEFORGE_CDP_BIN") or os.environ.get("CDP_PATH")
-               or str(pathlib.Path(__file__).resolve().parents[1] / "tools" / "cdp" / "cdp"))
+    cdp_bin = shots.cdp_bin_for(cdp_bin)
     m = _re.match(r"^wss?://(?P<host>[^:/]+):(?P<port>\d+)/", str(ws_url or ""))
     if not m or not os.path.exists(cdp_bin):
         return None
@@ -621,8 +625,20 @@ class Service:
         self._window = window
         self._graph_factory = graph_factory
         self._out_dir = out_dir or str(graph.DEFAULT_OUT_DIR)
-        #: 「活着的窗口现在多大」怎么量（默认走 cdp 读页面；测试注入桩）
-        self._viewport_probe = viewport_probe or live_viewport
+        # ── 构造时**定死**的那几样（部署配置；之后再也不看环境）──────────────────
+        #: 图落哪、用哪个 cdp。⚠️ 为什么不「用的时候再读环境」：抓拍 / 窗口探针 / 自测
+        #: 都跑在**工作线程或子进程**里，可能比设那段环境的东西活得久 ——
+        #: 修复轮 1/2 各实测过一次漏（子进程里环境已经是空的，回退链于是落回**仓库里
+        #: 那个真二进制**，而去连的是真地址）。**定死了就没有「以后再看一眼环境」这回事。**
+        #: `shots_dir` ⇒ `SITEFORGE_SHOTS_DIR` ⇒ 仓库里的 `runtime/shots`；
+        #: `capture_bin` ⇒ `SITEFORGE_CDP_BIN` ⇒ `CDP_PATH` ⇒ 仓库里的 `tools/cdp/cdp`。
+        self._shots_dir = shots.root_for(shots_dir)
+        self._cdp_bin = shots.cdp_bin_for(capture_bin)
+        #: 「活着的窗口现在多大」怎么量（默认走 cdp 读页面；测试注入桩）。
+        #: ⚠️ 默认那根线是**同类通道里的第二条**（它自己也读环境、自己也起子进程）——
+        #: 所以把**定死的那个二进制**绑给它（`live_viewport(cdp_bin=…)`），它不再自己看环境。
+        self._viewport_probe = (viewport_probe
+                                or functools.partial(live_viewport, cdp_bin=self._cdp_bin))
         self._probe = None
         self._worker: Optional[threading.Thread] = None
         self._worker_lock = threading.Lock()
@@ -637,19 +653,10 @@ class Service:
         self._window_probe_thread: Optional[threading.Thread] = None
         self._active_job: Optional[str] = None
         # ── 闸拍（设计注 §5.5）：`runtime/shots/<job_id>/pause-<n>.png` ──────────
-        #: 图落在哪个根下面：`shots_dir` ⇒ `SITEFORGE_SHOTS_DIR` ⇒ 仓库里的 `runtime/shots`。
-        #: ⚠️ **在构造时定下来**（不是一个 `None` 留着以后解析）：解析留在落盘那一刻的话，
-        #: 环境变量在这中间变一下，同一个 job 的图就会落到**两个**根下面。
-        #: （顺带：测试里「一个测试结束了、它的工作线程还在拍」也不会再写到仓库里去。）
-        self._shots_dir = shots.root_for(shots_dir)
         #: 真去拍一张的那个函数：`(ws_url, dest, *, timeout) -> (文件名|None, 人话)`。
         #: 不给就用 `shots.capture_via_cli`（闸口上没有 MCP 会话，手上只有 `ws_url`）；
         #: ⚠️ **调用时才取**（不是构造时），测试要换掉它才换得动。
         self._capture = capture
-        #: 用哪个 cdp 二进制 —— **构造时就定死**（`capture_via_cli` 自己是从环境读的，
-        #: 而抓拍跑在工作线程上、可能比设那段环境的东西活得久：实测 4 条「发了 job 不等它」
-        #: 的用例就是这么漏到真二进制的）。定死之后「以后再看一眼环境」这件事不存在。
-        self._cdp_bin = shots.cdp_bin_for(capture_bin)
         #: 硬的：超过这么多秒就当这张没拍成（旁路线程，见 `_shoot`）。
         self._shot_timeout = float(SHOT_TIMEOUT_SECONDS if shot_timeout is None
                                    else shot_timeout)
@@ -663,6 +670,7 @@ class Service:
         生产走 `graph_factory=None` 那条：全是真接线。
         """
         deps = graph.Deps(explore=self._explore_for(brief, job_id),
+                          selftest=self._selftest_cb(),
                           set_viewport=(self._viewport_cb(brief.get("ws_url"))
                                         if brief.get("set_viewport") else None),
                           fresh_session=self._fresh_session_cb(),
@@ -670,6 +678,21 @@ class Service:
         if self._graph_factory is not None:
             return self._graph_factory(brief, deps)
         return graph.build(checkpointer=self._check.get(), deps=deps)
+
+    def _selftest_cb(self) -> Callable:
+        """`Deps.selftest`：把**构造时定死的**那个 cdp 二进制交给自测。
+
+        为什么（修复轮 2，复审点名的**第三条同类通道**）：`Deps.selftest` 的默认是
+        `selftest.run`（`graph.Deps`），而它自己会在 `selftest.py` 里**再读一次环境**
+        （`SITEFORGE_CDP_BIN` → `_default_cdp_bin()`，第二候选直接是仓库里那个二进制），
+        读的时刻是**调用的时刻** —— 自测在外面的世界（子进程 + 真窗口）里跑，
+        完全可能比设那段环境的东西活得久。绑死之后，交给产物的那个环境里
+        `SITEFORGE_CDP_BIN` 永远是**同一个**（服务定的那个）。
+
+        ⚠️ 与 `explore`/`shots`/`viewport_probe` 同一条不变量：
+        **构造时定死，之后不再看环境**（同一个进程里出现两个不同的 cdp = 漂）。
+        """
+        return functools.partial(selftest.run, cdp_bin=self._cdp_bin)
 
     def _explore_for(self, brief: dict, job_id: str = "") -> Optional[Callable]:
         """探路要朝**载荷里那个窗口**去（服务是知道窗口的那一层）。

@@ -1,20 +1,30 @@
-"""全仓测试的兜底：**测试既不许往仓库里写，也不许起真的 `cdp`**（Task 3，2026-09-18）。
+"""全仓测试的兜底：**不变量 —— 测试永远不碰真实世界**（真浏览器 / 仓库里的目录）。
 
-为什么要这条 autouse 的兜底（而不是各测试文件自己传根）：服务侧的**闸拍**会在每一轮
-落一张 `runtime/shots/<job_id>/pause-<n>.png`，而它的默认根**就是仓库里**那个
-`runtime/shots`（生产就该是那儿 —— `SITEFORGE_SHOTS_DIR` 只是运维的覆盖口）。
-于是任何一条「照生产那样拼一个 app、不传 `shots_dir`」的测试都会：
+**不变量怎么实现的（这才是它今天成立的原因，不是这个文件）**：服务把「图落哪、账落哪、
+用哪个 cdp」在**构造那一刻**定死（`Service.__init__`），而构造发生在**用例里面**
+（兜底生效时）。于是「抓拍/探针/自测比用例活得久」这件事**没有任何影响** ——
+它不会再回头看一眼环境。
 
-1. 在**源码树**里建目录 —— 实测：一次 `test_service.py` 在 `runtime/shots/` 建 **46 个**；
-2. 更要命的是它**起一个真的 `cdp` 子进程**，去连桩载荷里那个地址 ——
-   `test_service.py` 用的正是 `ws://127.0.0.1:9222/...` 与 `ws://192.168.1.197:55555/...`
-   （宿主那个调试端口 / 一台 worker）。测试不该去敲任何一个。
+**这个文件只负责把构造期那几条输入指到安全的地方**：
 
-所以两样一起按住：
+- `SITEFORGE_SHOTS_DIR` → `tmp_path`（图：闸拍 + 步拍）
+- `SITEFORGE_EXPLORE_DIR` → `tmp_path`（账：`baseline.json` / `attempt-*.jsonl`）
+- `SITEFORGE_CDP_BIN` → 一条**不存在**的路径（于是谁要用 cdp 都在**进程内**失败，
+  一个进程都不起）
 
-- `SITEFORGE_SHOTS_DIR` → `tmp_path`（图落进测试自己的地盘）；
-- `SITEFORGE_CDP_BIN` → 一条**不存在**的路径（于是 `capture_via_cli` 在**进程内**
-  就失败并说清「起不来 cdp…设 SITEFORGE_CDP_BIN 指到那个二进制」，一个进程都不起）。
+⚠️ **三条通道都封住了，靠的是「它们都走 `self._cdp_bin`」这一条**（修复轮 2 才封齐）：
+
+| 通道 | 走哪儿 |
+|---|---|
+| 闸拍 / 步拍（`shots.capture_via_cli`） | `Service._shoot` 把它 `functools.partial` 绑死 |
+| 窗口探针（`live_viewport`） | `Service.__init__` 起它时就绑死（它以前**自己读环境**） |
+| 自测（`selftest.run`） | `Service._selftest_cb` 绑死（它以前**又读一次环境**，回退链第二候选就是仓库里那个二进制） |
+
+⚠️ **所以这张表不是自动成立的**：以后再出现一条「自己读环境、自己起子进程」的通道，
+它**不在这条不变量里** —— 加它的时候要一起把它绑到 `self._cdp_bin` 上，
+并照着 `tests/test_service_shots.py` 里那三条「**删干净环境之后再调用**」的判据写一条。
+（那三条判据就是这条不变量的射程：`test_a_shot_that_runs_after_…`、
+`test_a_viewport_probe_that_runs_after_…`、`test_a_selftest_that_runs_after_…`。）
 
 ⚠️ 为什么是「不存在」而不是 `/bin/false` 那种**存在但没用**的东西：
 `selftest._cdp_binary()` 的兜底链是「环境变量 → 本仓库的 `tools/cdp/cdp` → 现构建」，

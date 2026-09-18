@@ -36,7 +36,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import browser_agent, graph, service, shots  # noqa: E402
+from agent import browser_agent, graph, selftest, service, shots  # noqa: E402
 from test_agent_shots import _Shooter  # noqa: E402  —— 步拍那个桩（它本身就是命令计数器）
 from test_browser_agent import PAGE_LANDING, _run  # noqa: E402
 from test_service import FakeGraph, _Snap, _gate, _wait  # noqa: E402  —— 桩图与「等到它停下」
@@ -98,6 +98,16 @@ def _fake_cdp(tmp_path, blob: bytes):
         'echo "$host $port" >> "%s"\n'
         'cp "%s" "$out"\n' % (log, src),
         encoding="utf-8")
+    script.chmod(0o755)
+    return script, log
+
+
+def _fake_cdp_eval(tmp_path, answer="400x800"):
+    """一个假 cdp：把 `answer` 打到 stdout（`live_viewport` 从那儿抠尺寸），并记下被叫的参数。"""
+    log = tmp_path / "cdp-eval.log"
+    script = tmp_path / "cdp-eval"
+    script.write_text('#!/bin/sh\necho "$*" >> "%s"\necho "%s"\n' % (log, answer),
+                      encoding="utf-8")
     script.chmod(0o755)
     return script, log
 
@@ -427,6 +437,80 @@ def test_a_shot_that_runs_after_the_fixtures_are_gone_cannot_touch_the_real_worl
     assert not (ROOT / "runtime" / "explore" / "job-late").exists()
 
 
+def test_a_viewport_probe_that_runs_after_the_fixtures_are_gone_cannot_touch_the_real_world(
+        tmp_path, monkeypatch):
+    """**同类通道里的第二条**（复审实测）：`_viewport_probe` 的默认是 `live_viewport`，
+    而它**自己读环境、自己起子进程** —— 删干净环境之后调它，记录仪被叫了、
+    `CDP_BIN=[<unset>]`，与刚修掉的那三次漏**同一个签名**。
+
+    走的是**真那条线**：`Service(window=…)._viewport_cb(ws_url)` → `cb(w, h)`
+    （自测第 4 遍「换个窗口大小」调的就是它）。
+    """
+    script, log = _fake_cdp_eval(tmp_path)
+    monkeypatch.setenv("SITEFORGE_CDP_BIN", str(script))
+    win = _Win()
+    svc = service.Service(window=win, shots_dir=str(tmp_path / "shots"),
+                          checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
+    cb = svc._viewport_cb("ws://127.0.0.1:1/devtools/page/X")
+    assert cb is not None
+
+    for name in ("SITEFORGE_CDP_BIN", "SITEFORGE_SHOTS_DIR", "SITEFORGE_EXPLORE_DIR"):
+        monkeypatch.delenv(name, raising=False)          # ← 「fixture 收掉了」
+
+    cb(400, 800)                       # 桩二进制答得出尺寸 ⇒ 不该抛
+    assert win.calls == [(400, 800)], win.calls
+    assert log.read_text(encoding="utf-8").strip() == \
+        "--host 127.0.0.1 --port 1 eval window.innerWidth + 'x' + window.innerHeight", \
+        log.read_text(encoding="utf-8")
+
+
+def test_a_selftest_that_runs_after_the_fixtures_are_gone_cannot_touch_the_real_world(
+        tmp_path, monkeypatch):
+    """**同类通道里的第三条**（复审点名）：`Deps.selftest` 的默认是 `selftest.run`，
+    而它在 `selftest.py` 里**又读一次环境**（`SITEFORGE_CDP_BIN` → `_default_cdp_bin()`，
+    第二候选直接是仓库里那个二进制）。
+
+    走的是**真那条线**：从服务拼好的那份 `Deps` 里拿 `selftest` 调一次，看它交给
+    **产物子进程**的那个环境里 `SITEFORGE_CDP_BIN` 是谁 —— 产物就是从那个环境里
+    选二进制的（复审的记录仪读的也是它）。
+    """
+    seen: dict = {}
+
+    def fake_execute(name, py, ws_url, form_file, correlation_id, log_level, env,
+                     run_dir, site, timeout, task_id=None, delay=None):
+        seen.setdefault("env", dict(env))
+        return selftest.Run(name=name, label=selftest.RUN_LABELS[name], status="failed",
+                            ok=False, failed_step=None, trace_path=None, note="桩")
+
+    monkeypatch.setattr(selftest, "_execute", fake_execute)
+    script = tmp_path / "cdp-bin"
+    script.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setenv("SITEFORGE_CDP_BIN", str(script))     # 构造期：定死就是它
+
+    captured: dict = {}
+
+    def factory(brief, deps):
+        captured["deps"] = deps
+        return _one_gate()
+
+    svc = service.Service(graph_factory=factory, shots_dir=str(tmp_path / "shots"),
+                          checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
+    svc._build_graph({"url": URL, "goal": GOAL, "success_text": SUCCESS, "ws_url": WS},
+                     "job-selftest")
+    py = tmp_path / "artifact.py"
+    py.write_text("print('x')\n", encoding="utf-8")
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+
+    for name in ("SITEFORGE_CDP_BIN", "SITEFORGE_SHOTS_DIR", "SITEFORGE_EXPLORE_DIR"):
+        monkeypatch.delenv(name, raising=False)              # ← 「fixture 收掉了」
+
+    captured["deps"].selftest(str(py), WS, str(form), SITE, run_dir=str(tmp_path / "traces"))
+
+    assert seen.get("env", {}).get("SITEFORGE_CDP_BIN") == str(script), seen.get("env")
+
+
 def test_a_job_driven_through_the_service_leaves_its_books_in_tmp_not_in_the_repo(
         tmp_path, monkeypatch):
     """账（`<explore_root>/<job_id>/baseline.json`）**不许落进仓库**。
@@ -609,9 +693,10 @@ class _Win:
 
     def __init__(self, worker="192.168.1.222", bit_id="8f2c1a90", port=54345):
         self.worker_ip, self.bit_id, self.port = worker, bit_id, port
+        self.calls: list = []
 
     def set_viewport(self, width, height):
-        pass
+        self.calls.append((width, height))
 
     def alive(self):
         return True
