@@ -187,11 +187,15 @@ DELAY_RANGE = (0.4, 1.6)
 FIRST_NAMES = ["James", "John", "Robert", "Michael", "David", "Alex", "Chris", "Sam"]
 LAST_NAMES = ["Smith", "Jones", "Williams", "Taylor", "Brown", "Johnson", "Davies", "Wilson"]
 EMAIL_DOMAINS = ["outlook.com", "gmail.com", "yahoo.com", "hotmail.com"]
-POSTCODES = ["SW1A 1AA", "NN3 3AQ", "M1 1AA", "B1 1AA", "LS1 1AA", "G1 1AA"]
+# ⚠️ 美国站（站点 placeholder 写的是 `e.g. 06801`）。这里原来放的是**英国邮编**
+#    （SW1A 1AA 那套，从英国站模板抄来的），2026-09-17 实测被站点回「不是 US 资料」。
+POSTCODES = ["06801", "33139", "32084", "60601", "10001", "78701", "85001", "98101"]
 # 「州」这一类**生产脚本本来就是一个小池子 + 随机选**（不是从 form-file 取）——
 # 照抄 `forms/sites/lifynest.py:16` 的 STATES（同一套「资料逻辑」，站点在美国时适用）。
 US_STATES = ["California", "Texas", "Arizona", "Florida", "New York", "Illinois", "Ohio"]
-PHONES = ["07936567874", "07700900123", "07400123456", "07911123456"]
+# ⚠️ 同上：原来是英国手机号（07xxx），美国站同样会拒。555-01xx 是美国官方
+#    留给虚构作品/测试的号段（跟英国 07700 900xxx 地位一样）。
+PHONES = ["5550142872", "5550189643", "5550137708", "2148675309"]
 
 # ── 产出元数据（siteforge 自动写入，勿手工编辑）────────────
 PROVENANCE = { 'generated_at': '2026-09-17',
@@ -570,6 +574,21 @@ STATES = [ { 'name': 'start',
                                             'div:nth-of-type(3) > button:nth-of-type(1)'],
                              'above_fold_only': False,
                              'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]}]
+
+#: `source` 名 → 该去 form-file 里依次试的键。
+#:
+#: ⚠️ **资料本来就在，是键名没对上**：生产 form 数据把邮编放在 `postal_code`、
+#: 电话放在 `phone_number`、姓名合在 `username` 里，而这里的 source 写的是
+#: `postcode` / `phone` —— 差几个字母就取不到，于是掉进 fallback 的**随机池**
+#: （2026-09-17 实测：gowizard 把英国邮编填进了美国站，站点回「不是 US 资料」）。
+#: JSON 那条路早就有这张表（`form_executor/variable_resolver.py` 的 PROFILE_ALIASES），
+#: py 这边一直各写各的 —— 这是补上那一课。
+PROFILE_ALIASES = {
+    "postcode": ("postcode", "postal_code", "zip", "zipcode", "postal"),
+    "phone": ("phone", "phone_number", "telephone", "mobile"),
+    "full_name": ("full_name", "fullname", "username", "name"),
+    "state": ("state", "region", "province"),
+}
 
 # 字段值从哪来：先读 --form-file 里的键（source），没有就用 fallback 里的一个随机值。
 # kind 决定调 cdp form 的哪个模式：value（打字）/ check（勾选）/ select（下拉）。
@@ -1467,9 +1486,10 @@ class Filler:
         """这一步填什么：先读 --form-file 里的键，没有就用 fallback 里的一个随机值。"""
         source = fill.get("source")
         if source:
-            given = str(self.form_data.get(source) or "").strip()
-            if given:
-                return given
+            for key in PROFILE_ALIASES.get(source, (source,)):
+                given = str(self.form_data.get(key) or "").strip()
+                if given:
+                    return given
         candidates = list(fill.get("fallback") or [])
         if not candidates:
             self.log.warning("[%s] 「%s」既没有 form-file 的值也没有 fallback", self.cid, source or "?")

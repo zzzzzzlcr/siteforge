@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""example-funnel —— siteforge 产出的站点脚本。
+"""gowizard —— siteforge 产出的站点脚本。
 
 siteforge 从真页面探索出来的重放脚本：按 STATES 走一遍，见到成功文案就算成功。
 
@@ -31,9 +31,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from common import CDPHelper, setup_logger, report_url
 
 
-SITE = "example-funnel"
+SITE = "gowizard"
 # 成功判据：页面上出现其中任意一段文字就算走通了（人话，不是选择器）
-SUCCESS_TEXTS = ['Thank you', 'Your quote is ready']
+SUCCESS_TEXTS = ["Good news - We've matched you! Your quote is on the way!"]
 # 早停：连续这么多步没做成，收摊（规格 §13 —— 重跑不许磨完全程）。
 # 生产 JSON 执行器的早停有**已知未修**的 bug（form_executor/json_executor.py:373 的
 # bool(_cur_tab) 恒真 → 连续失败计数每步被清零 → 失败任务必磨完全程），
@@ -274,19 +274,27 @@ DELAY_RANGE = (0.4, 1.6)
 FIRST_NAMES = ["James", "John", "Robert", "Michael", "David", "Alex", "Chris", "Sam"]
 LAST_NAMES = ["Smith", "Jones", "Williams", "Taylor", "Brown", "Johnson", "Davies", "Wilson"]
 EMAIL_DOMAINS = ["outlook.com", "gmail.com", "yahoo.com", "hotmail.com"]
-POSTCODES = ["SW1A 1AA", "NN3 3AQ", "M1 1AA", "B1 1AA", "LS1 1AA", "G1 1AA"]
+# ⚠️ 美国站（站点 placeholder 写的是 `e.g. 06801`）。这里原来放的是**英国邮编**
+#    （SW1A 1AA 那套，从英国站模板抄来的），2026-09-17 实测被站点回「不是 US 资料」。
+POSTCODES = ["06801", "33139", "32084", "60601", "10001", "78701", "85001", "98101"]
 # 「州」这一类**生产脚本本来就是一个小池子 + 随机选**（不是从 form-file 取）——
 # 照抄 `forms/sites/lifynest.py:16` 的 STATES（同一套「资料逻辑」，站点在美国时适用）。
 US_STATES = ["California", "Texas", "Arizona", "Florida", "New York", "Illinois", "Ohio"]
-PHONES = ["07936567874", "07700900123", "07400123456", "07911123456"]
+# ⚠️ 同上：原来是英国手机号（07xxx），美国站同样会拒。555-01xx 是美国官方
+#    留给虚构作品/测试的号段（跟英国 07700 900xxx 地位一样）。
+PHONES = ["5550142872", "5550189643", "5550137708", "2148675309"]
 
 # ── 产出元数据（siteforge 自动写入，勿手工编辑）────────────
-PROVENANCE = { 'generated_at': '2026-09-17T02:00:00+08:00',
-  'generator': 'siteforge/v0.1',
-  'env': {'proxy_country': 'US', 'dpr': 1, 'ua': 'Mozilla/5.0 (stub)', 'viewport': [1280, 800]},
-  'platform': {'guess': 'custom-quiz', 'confidence': 0.6},
+PROVENANCE = { 'generated_at': '2026-09-17',
+  'generator': 'siteforge (fix path)',
+  'env': None,
+  'platform': None,
   'selftest': None,
-  'source': {'kind': 'build', 'evidence': 'fixtures/reference_spec（合成站，不是真站）'}}
+  'source': { 'kind': 'fix',
+              'evidence': '/tmp/gwacc4/kept/gowizard.candidate.2.py',
+              'notes': [ '「textField-173862」：textfield_173862 → state（凭：站方配置里 component_173862 '
+                         '的 subtype/mappedQuestionId/正文）'],
+              'plan_steps': 25}}
 
 # ── 怎么走 ────────────────────────────────────────────────
 # 每个 target 都是**声明式多元描述**（§5.1b），不写死单个选择器。运行时的回退链：
@@ -310,78 +318,457 @@ PROVENANCE = { 'generated_at': '2026-09-17T02:00:00+08:00',
 #
 # 动作只有这五种（别的会在运行时被当成「产物写错了」）：click / form / scroll /
 # goto（直接导航，走 cdp navi —— 写路径不许用 eval）/ wait。
-STATES = [ { 'name': 'landing',
-    'when': {'url_contains': 'example.test', 'text_contains': ['Get Started']},
-    'steps': [ { 'action': 'click',
-                 'note': '点「Get Started」进漏斗',
-                 'target': { 'text': 'Get Started',
-                             'role': 'button',
-                             'near': 'hero',
-                             'selectors': ['#get-started', 'a.btn-primary']}},
-               {'action': 'scroll', 'pixels': '400', 'note': '往下滚，露出问卷'}]},
-  { 'name': 'quiz',
-    'when': {'text_contains': ['How often']},
-    'steps': [ { 'action': 'click',
-                 'note': '选「Tub to walk-in shower」',
-                 'target': { 'text': 'Tub to walk-in shower',
-                             'role': 'option',
-                             'near': None,
-                             'selectors': ['[data-value=tub]'],
-                             'above_fold_only': False}},
-               {'action': 'form', 'fill': 'postcode', 'note': '填邮编'}]},
-  { 'name': 'details',
+STATES = [ { 'name': 'start',
     'when': None,
-    'steps': [ {'action': 'form', 'fill': 'full_name', 'note': '填姓名'},
-               {'action': 'form', 'fill': 'email', 'note': '填邮箱'},
-               {'action': 'form', 'fill': 'phone', 'note': '填电话'},
-               { 'action': 'click',
-                 'note': '提交，等报价页',
-                 'target': { 'text': 'Get My Quote',
+    'steps': [ { 'action': 'goto',
+                 'url': 'https://www.gowizard.com/auto-warranty/',
+                 'note': '打开了 https://www.gowizard.com/auto-warranty/'}]},
+  { 'name': 'auto_warranty',
+    'when': { 'url_contains': 'https://www.gowizard.com/auto-warranty/',
+              'text_contains': ['The listings featured are compensated and this']},
+    'steps': [ { 'action': 'click',
+                 'note': '点了「Reject All」',
+                 'target': { 'text': 'Reject All',
                              'role': 'button',
+                             'near': 'dialog',
+                             'selectors': ['#onetrust-reject-all-handler'],
+                             'above_fold_only': False,
+                             'frame_id': ''}},
+               { 'action': 'click',
+                 'note': '点了「Get Free Quote」',
+                 'target': { 'text': 'Get Free Quote',
+                             'role': 'a',
                              'near': 'main',
-                             'selectors': ['button[type=submit]']}}]}]
+                             'selectors': [ '#post-25083 > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(3) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'a:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': ''}}]},
+  { 'name': 'auto',
+    'when': { 'url_contains': 'https://www.gowizard.com/auto/',
+              'text_contains': ['The listings featured are compensated and this']},
+    'steps': [ { 'action': 'click',
+                 'note': '点了「Sedan」',
+                 'target': { 'text': 'Sedan',
+                             'role': 'a',
+                             'near': 'main',
+                             'selectors': [ '#form > div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(2) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > a:nth-of-type(2)'],
+                             'above_fold_only': False,
+                             'frame_id': ''}},
+               { 'action': 'click',
+                 'note': '点了「Get Matched」',
+                 'target': { 'text': 'Get Matched',
+                             'role': 'a',
+                             'near': 'main',
+                             'selectors': [ 'a.main-cta-link',
+                                            '#form > div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(2) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(2) > a:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': ''}}]},
+  { 'name': 'auto-2',
+    'when': { 'url_contains': 'https://www.gowizard.com/auto/',
+              'text_contains': ['The listings featured are compensated and this']},
+    'steps': [ { 'action': 'click',
+                 'note': '点了「\u200b」',
+                 'target': { 'text': '\u200b',
+                             'role': 'combobox',
+                             'near': 'body',
+                             'selectors': [ '#inputAreaParentContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(6) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'gowizard',
+    'when': { 'url_contains': 'https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard',
+              'text_contains': ['Progress: 0% What is the year, make & model of']},
+    'steps': [ { 'action': 'click',
+                 'note': '点了「2020」',
+                 'target': { 'text': '2020',
+                             'role': 'option',
+                             'near': 'body',
+                             'selectors': [ 'li[data-value="2020"]',
+                                            '#mui-43 > li:nth-of-type(8)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'gowizard-3',
+    'when': { 'url_contains': 'https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard',
+              'text_contains': ['Progress: 0% What is the year, make & model of']},
+    'steps': [ { 'action': 'click',
+                 'note': '点了「\u200b」',
+                 'target': { 'text': '\u200b',
+                             'role': 'combobox',
+                             'near': 'body',
+                             'selectors': [ '#inputAreaParentContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(7) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'gowizard-4',
+    'when': { 'url_contains': 'https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard',
+              'text_contains': ['Progress: 0% What is the year, make & model of']},
+    'steps': [ { 'action': 'click',
+                 'note': '点了「BMW」',
+                 'target': { 'text': 'BMW',
+                             'role': 'option',
+                             'near': 'body',
+                             'selectors': [ 'li[data-value="BMW"]',
+                                            '#mui-51 > li:nth-of-type(6)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'gowizard-6',
+    'when': { 'url_contains': 'https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard',
+              'text_contains': ['Progress: 0% What is the year, make & model of']},
+    'steps': [ { 'action': 'click',
+                 'note': '点了「\u200b」',
+                 'target': { 'text': '\u200b',
+                             'role': 'combobox',
+                             'near': 'body',
+                             'selectors': [ '#inputAreaParentContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(8) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'gowizard-7',
+    'when': { 'url_contains': 'https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard',
+              'text_contains': ['Progress: 0% What is the year, make & model of']},
+    'steps': [ { 'action': 'click',
+                 'note': '点了「330i」',
+                 'target': { 'text': '330i',
+                             'role': 'option',
+                             'near': 'body',
+                             'selectors': [ 'li[data-value="330i"]',
+                                            '#mui-59 > li:nth-of-type(4)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'gowizard-8',
+    'when': { 'url_contains': 'https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard',
+              'text_contains': ['Progress: 10% Roughly, how many miles are on']},
+    'steps': [ { 'action': 'click',
+                 'note': '点了「没写名字的元素（div:nth-child(3) span > input[type="radio"]）」',
+                 'target': { 'text': None,
+                             'role': None,
+                             'near': None,
+                             'selectors': ['div:nth-child(3) span > input[type="radio"]'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'gowizard-9',
+    'when': { 'url_contains': 'https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard',
+              'text_contains': ['Progress: 20% How soon do you want your new']},
+    'steps': [ { 'action': 'click',
+                 'note': '点了「没写名字的元素（div:nth-child(3) span > input[type="radio"]）」',
+                 'target': { 'text': None,
+                             'role': None,
+                             'near': None,
+                             'selectors': ['div:nth-child(3) span > input[type="radio"]'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'gowizard-10',
+    'when': { 'url_contains': 'https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard',
+              'text_contains': ['Progress: 30% What state do you live in?']},
+    'steps': [ { 'action': 'form',
+                 'fill': 'textfield_173862',
+                 'note': '填好了「textField-173862」',
+                 'target': { 'text': None,
+                             'label': 'textField-173862',
+                             'role': None,
+                             'near': None,
+                             'selectors': [ 'input.MuiInputBase-input.css-mnn31',
+                                            '#inputAreaParentContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(2) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'input:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}},
+               { 'action': 'click',
+                 'note': '点了「Continue」',
+                 'target': { 'text': 'Continue',
+                             'role': 'button',
+                             'near': 'body',
+                             'selectors': [ 'button[data-testid="continuecta"]',
+                                            '#innerFooterContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(3) > button:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'gowizard-11',
+    'when': { 'url_contains': 'https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard',
+              'text_contains': ["Progress: 40% What's your ZIP code? \u200b Your ZIP"]},
+    'steps': [ { 'action': 'form',
+                 'fill': 'postcode',
+                 'note': '填好了「textField-173838」',
+                 'target': { 'text': None,
+                             'label': 'textField-173838',
+                             'role': None,
+                             'near': None,
+                             'selectors': [ 'input.MuiInputBase-input.MuiInputBase-inputAdornedStart',
+                                            '#inputAreaParentContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(2) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'input:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}},
+               { 'action': 'click',
+                 'note': '点了「Continue」',
+                 'target': { 'text': 'Continue',
+                             'role': 'button',
+                             'near': 'body',
+                             'selectors': [ 'button[data-testid="continuecta"]',
+                                            '#innerFooterContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(3) > button:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'gowizard-13',
+    'when': { 'url_contains': 'https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard',
+              'text_contains': ["Progress: 60% Hold on - we're finding suppliers"]},
+    'steps': [ { 'action': 'click',
+                 'note': '点了「Continue」',
+                 'target': { 'text': 'Continue',
+                             'role': 'button',
+                             'near': 'body',
+                             'selectors': [ 'button[data-testid="continuecta"]',
+                                            '#innerFooterContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(3) > button:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'gowizard-14',
+    'when': { 'url_contains': 'https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard',
+              'text_contains': ['Progress: 60% Almost done Fill in your last few']},
+    'steps': [ { 'action': 'form',
+                 'fill': 'full_name',
+                 'note': '填好了「Full Name:」',
+                 'target': { 'text': None,
+                             'label': 'Full Name:',
+                             'role': None,
+                             'near': None,
+                             'selectors': [ 'input.MuiInputBase-input.MuiInputBase-inputAdornedStart',
+                                            '#inputAreaParentContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(3) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'input:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'gowizard-15',
+    'when': { 'url_contains': 'https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard',
+              'text_contains': ['Progress: 60% Almost done Fill in your last few']},
+    'steps': [ { 'action': 'click',
+                 'note': '点了「Continue」',
+                 'target': { 'text': 'Continue',
+                             'role': 'button',
+                             'near': 'body',
+                             'selectors': [ 'button[data-testid="continuecta"]',
+                                            '#innerFooterContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(3) > button:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'gowizard-16',
+    'when': { 'url_contains': 'https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard',
+              'text_contains': ['Progress: 70% Only one more step left. Email']},
+    'steps': [ { 'action': 'form',
+                 'fill': 'email',
+                 'note': '填好了「Email Address:」',
+                 'target': { 'text': None,
+                             'label': 'Email Address:',
+                             'role': None,
+                             'near': None,
+                             'selectors': [ 'input.MuiInputBase-input.MuiInputBase-inputAdornedStart',
+                                            '#inputAreaParentContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(2) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'input:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}},
+               { 'action': 'click',
+                 'note': '点了「Continue」',
+                 'target': { 'text': 'Continue',
+                             'role': 'button',
+                             'near': 'body',
+                             'selectors': [ 'button[data-testid="continuecta"]',
+                                            '#innerFooterContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(3) > button:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'gowizard-17',
+    'when': { 'url_contains': 'https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard',
+              'text_contains': ['Progress: 80% This is the last page of']},
+    'steps': [ { 'action': 'form',
+                 'fill': 'phone',
+                 'note': '填好了「Phone Number:」',
+                 'target': { 'text': None,
+                             'label': 'Phone Number:',
+                             'role': None,
+                             'near': None,
+                             'selectors': [ 'input[data-testid="phoneNumberTextField"]',
+                                            'input.MuiInputBase-input.css-mnn31',
+                                            '#inputAreaParentContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(2) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(2) > input:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}},
+               { 'action': 'click',
+                 'note': '点了「See My Match」',
+                 'target': { 'text': 'See My Match',
+                             'role': 'button',
+                             'near': 'body',
+                             'selectors': [ 'button[data-testid="continuecta"]',
+                                            '#innerFooterContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(3) > button:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]},
+  { 'name': 'auto-3',
+    'when': { 'url_contains': 'https://www.gowizard.com/auto/',
+              'text_contains': ['The listings featured are compensated and this']},
+    'steps': [ { 'action': 'click',
+                 'note': '点了「See My Match」',
+                 'target': { 'text': 'See My Match',
+                             'role': 'button',
+                             'near': 'body',
+                             'selectors': [ 'button[data-testid="continuecta"]',
+                                            '#innerFooterContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(3) > button:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'}}]}]
+
+#: `source` 名 → 该去 form-file 里依次试的键。
+#:
+#: ⚠️ **资料本来就在，是键名没对上**：生产 form 数据把邮编放在 `postal_code`、
+#: 电话放在 `phone_number`、姓名合在 `username` 里，而这里的 source 写的是
+#: `postcode` / `phone` —— 差几个字母就取不到，于是掉进 fallback 的**随机池**
+#: （2026-09-17 实测：gowizard 把英国邮编填进了美国站，站点回「不是 US 资料」）。
+#: JSON 那条路早就有这张表（`form_executor/variable_resolver.py` 的 PROFILE_ALIASES），
+#: py 这边一直各写各的 —— 这是补上那一课。
+PROFILE_ALIASES = {
+    "postcode": ("postcode", "postal_code", "zip", "zipcode", "postal"),
+    "phone": ("phone", "phone_number", "telephone", "mobile"),
+    "full_name": ("full_name", "fullname", "username", "name"),
+    "state": ("state", "region", "province"),
+}
 
 # 字段值从哪来：先读 --form-file 里的键（source），没有就用 fallback 里的一个随机值。
 # kind 决定调 cdp form 的哪个模式：value（打字）/ check（勾选）/ select（下拉）。
-FILLS = { 'postcode': { 'name': 'postcode',
-                'source': 'zip',
+FILLS = { 'textfield_173862': { 'name': 'state',
+                        'source': 'state',
+                        'kind': 'value',
+                        'label': 'textField-173862',
+                        'target': { 'text': None,
+                                    'label': 'textField-173862',
+                                    'role': None,
+                                    'near': None,
+                                    'selectors': [ 'input.MuiInputBase-input.css-mnn31',
+                                                   '#inputAreaParentContainer > '
+                                                   'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                                   'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                                   'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                                   'div:nth-of-type(2) > div:nth-of-type(1) > '
+                                                   'div:nth-of-type(1) > input:nth-of-type(1)'],
+                                    'above_fold_only': False,
+                                    'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'},
+                        'fallback': [{'random': 'state'}]},
+  'postcode': { 'name': 'postcode',
+                'source': 'postcode',
                 'kind': 'value',
-                'label': 'Postcode',
+                'label': 'textField-173838',
                 'target': { 'text': None,
-                            'label': 'Postcode',
+                            'label': 'textField-173838',
                             'role': None,
                             'near': None,
-                            'selectors': ['input#postcode', 'input[name=zip]']},
+                            'selectors': [ 'input.MuiInputBase-input.MuiInputBase-inputAdornedStart',
+                                           '#inputAreaParentContainer > div:nth-of-type(1) > '
+                                           'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                           'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                           'div:nth-of-type(1) > div:nth-of-type(2) > '
+                                           'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                           'input:nth-of-type(1)'],
+                            'above_fold_only': False,
+                            'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'},
                 'fallback': [{'random': 'postcode'}]},
   'full_name': { 'name': 'full_name',
-                 'source': 'username',
+                 'source': 'full_name',
                  'kind': 'value',
-                 'label': 'Full name',
+                 'label': 'Full Name:',
                  'target': { 'text': None,
-                             'label': 'Full name',
+                             'label': 'Full Name:',
                              'role': None,
                              'near': None,
-                             'selectors': ['input#name']},
+                             'selectors': [ 'input.MuiInputBase-input.MuiInputBase-inputAdornedStart',
+                                            '#inputAreaParentContainer > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(3) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                            'input:nth-of-type(1)'],
+                             'above_fold_only': False,
+                             'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'},
                  'fallback': [{'random': 'full_name'}]},
   'email': { 'name': 'email',
              'source': 'email',
              'kind': 'value',
-             'label': 'Email',
+             'label': 'Email Address:',
              'target': { 'text': None,
-                         'label': 'Email',
+                         'label': 'Email Address:',
                          'role': None,
                          'near': None,
-                         'selectors': ['input[type=email]']},
+                         'selectors': [ 'input.MuiInputBase-input.MuiInputBase-inputAdornedStart',
+                                        '#inputAreaParentContainer > div:nth-of-type(1) > '
+                                        'div:nth-of-type(1) > div:nth-of-type(2) > '
+                                        'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                        'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                        'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                        'input:nth-of-type(1)'],
+                         'above_fold_only': False,
+                         'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'},
              'fallback': [{'random': 'email'}]},
   'phone': { 'name': 'phone',
              'source': 'phone',
              'kind': 'value',
-             'label': 'Phone',
+             'label': 'Phone Number:',
              'target': { 'text': None,
-                         'label': 'Phone',
+                         'label': 'Phone Number:',
                          'role': None,
                          'near': None,
-                         'selectors': ['input#phone']},
+                         'selectors': [ 'input[data-testid="phoneNumberTextField"]',
+                                        'input.MuiInputBase-input.css-mnn31',
+                                        '#inputAreaParentContainer > div:nth-of-type(1) > '
+                                        'div:nth-of-type(1) > div:nth-of-type(2) > '
+                                        'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                        'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                        'div:nth-of-type(1) > div:nth-of-type(1) > '
+                                        'div:nth-of-type(2) > input:nth-of-type(1)'],
+                         'above_fold_only': False,
+                         'frame_id': 'FCD98757EC2BFA7AFCA1EDCA0F2D5A01'},
              'fallback': [{'random': 'phone'}]}}
 
 
@@ -591,7 +978,7 @@ def _say(action, label, ok, level=None, progress=None, landing=""):
 
 
 class Filler:
-    """example-funnel 的重放器：确定性执行 STATES。
+    """gowizard 的重放器：确定性执行 STATES。
 
     ⚠️ 运行期**绝不**调模型（规格 §13：重跑必须便宜）。出问题就按回退链找、
     找不着就早停，不在跑的时候让谁去「想办法」。
@@ -1229,9 +1616,10 @@ class Filler:
         """这一步填什么：先读 --form-file 里的键，没有就用 fallback 里的一个随机值。"""
         source = fill.get("source")
         if source:
-            given = str(self.form_data.get(source) or "").strip()
-            if given:
-                return given
+            for key in PROFILE_ALIASES.get(source, (source,)):
+                given = str(self.form_data.get(key) or "").strip()
+                if given:
+                    return given
         candidates = list(fill.get("fallback") or [])
         if not candidates:
             self.log.warning("[%s] 「%s」既没有 form-file 的值也没有 fallback", self.cid, source or "?")
@@ -1631,6 +2019,15 @@ class Filler:
     #: 上一条 `when` **判的那一刻**算出来的解释（空串 = 当时判成立）。见 `_applies`。
     _when_why_cache = ""
 
+    #: 这一趟里等过、但没等到它走的遮挡物（见 `_covered_by`：赖过一次的就不再等）。
+    #: ⚠️ 类默认值是给 `object.__new__(Filler)` 那种实例兜底的（`__init__` 没跑过）；
+    #: 值必须是**不可变**的 —— 可变对象当类默认值会让所有实例共享一份（老坑）。
+    _stuck_covers = frozenset()
+
+    #: 同上（观测）：`_model_is_fresh()` 要问「手上那份观测还是不是这一页的」——
+    #: `None` = **没有观测**，正是「说不清」那一支，语义与 `__init__` 里的初值一致。
+    _last_model = None
+
     def _when_why(self, when):
         """这条 `when` 为什么不成立 —— **把手上实际有的东西原样摆出来**（给日志与 trace 用）。
 
@@ -1660,9 +2057,6 @@ class Filler:
                         "手上那份观测的正文开头：「%s」"
                         % (str(missing[0])[:60], signature[:200], self._frames_say(),
                            model_text[:120] or "（没有观测）"))
-        # ⚠️ 走到这里 = 这两条判据**在【此刻】都成立**（那么 `_matches` 此刻也会判成立）。
-        # 能走到这儿只有一种可能：**「判的那一刻」与「说这句话的那一刻」不是同一刻**。
-        # 所以 `_applies` 只在与判据同一刻一致时才把这句话记下来（见它的 docstring）。
         return ("判据说成立 —— 但这是**事后**算的：判的那一刻它不成立"
                 "（这句话自己就是证据：结论与解释在打架，别把它当成原因读）")
 
@@ -1699,12 +2093,10 @@ class Filler:
         # （广告/埋点一直在下载，正文早就好了）。原来写成 `if self._wait_ready(...)`——
         # 等不到就**不再看一眼**直接判「不像」，整组步骤被跳过；而**随后**那句 why
         # 读到的是已经加载完的页面，于是诚实地说「url 与正文都对上了却判成不像」——
-        # **结论与解释自相矛盾，而且是它自己指出来的**。
+        # **结论与解释自相矛盾**。实测 gowizard：这站 `load≈20.3s`，而这里只等 10 秒。
         # 现在：等完**无论 readyState 说什么，都重判一次**。
         self._wait_ready(timeout=WAIT_READY_SECONDS)
         ok = self._matches(when)
-        #: ⚠️ why 必须在**判的这一刻**算死，不许事后重算 ——
-        #: 事后再看一眼时页面已经变了，说出来的话就跟结论打架。
         self._when_why_cache = "" if ok else self._when_why(when)
         return ok
 
@@ -1847,8 +2239,7 @@ class Filler:
                         # 所以：① 日志里说明**为什么**（哪一条判据不成立）；
                         # ② trace 里也落一行（`skipped: true`）—— 自测/Console 读的是 trace；
                         # ③ 计入 `self.skipped`，最后那句总结里报出来。
-                        # ⚠️ 用 `_applies` 在**判的那一刻**算死的那句，不在这里重算 ——
-                        # 重算会读到另一个页面，说出来的话跟结论打架（2026-09-18 真站实测）。
+                        # 用 `_applies` 在**判的那一刻**算死的那句，不在这里重算。
                         why = self._when_why_cache
                         self.skipped += 1
                         self.skipped_states[name] = self.skipped_states.get(name, 0) + 1

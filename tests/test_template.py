@@ -26,6 +26,7 @@ import logging
 import pathlib
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -724,6 +725,49 @@ def test_goto_and_wait_are_supported(sandbox, form_file):
     assert ("click", "#go-a") in [(a[0], a[1]) for a in common.STATE.actions], common.STATE.actions
 
 
+def test_a_goto_that_never_saw_load_still_says_so_in_the_trace(sandbox, form_file):
+    """★ 2026-09-18 记的那笔账：`navi` 的「成功」现在有两种 —— 真等到 load 了，
+    和「导航发出去了、但没等到 load / 没取到 frame tree」。**后者只有 stderr 说得出来**。
+
+    而它原先被 `_do` 的 `return ""` 吞了 —— 「说了，但没人收得到」。这条用例钉两件事：
+
+      ① 那句话**进得了 trace 的 note**（收得到）；
+      ② 它里面**就算带个 `Error:`**，也**不许**把这一步判成失败 ——
+         判据走 `_ok`+`ERR_MARKERS`（认词），cdp 的原话走**另一个通道**。
+         这正是刚修掉的那个病：靠认词判「打不开」。
+    """
+    steps = [
+        {"action": "goto", "url": "https://example.test/quiz", "note": "直接打开问卷"},
+        _failed_click(2),
+    ]
+    src = template.render(
+        "example-goto-echo", "Thank you", _walk_states(2, lambda i: steps[i - 1]), [], SAMPLE_PROVENANCE
+    )
+    module, _ = _load("run_goto_echo", src, sandbox)
+    common = _stub(
+        sandbox,
+        observe={"url": "https://example.test/step-1", "actions": [], "fields": []},
+        diff={"actionable": True},
+        # 故意塞一个 `Error:` 进去 —— 它不许把「打开了」读成「打不开」；
+        # 再塞两行 chromedp 的噪音 —— 它**不许**整段灌进 note（真站实测一次 15 行）
+        navi_stderr=("could not unmarshal event: unknown IPAddressSpace value: Private\n"
+                     "cdp navi: 没等到 load 事件 —— Error: 这是 cdp 的原话，不是判据\n"
+                     "could not unmarshal event: unknown IPAddressSpace value: Private"),
+    )
+    common.STATE.texts = ["Walk"]
+
+    trace = sandbox / "goto_echo.jsonl"
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                  trace=str(trace)).run()
+    first = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert first["ok"] is True, first
+    assert "cdp 回执" in first["note"], first["note"]
+    assert "没等到 load" in first["note"], first["note"]
+    # 噪音**不许**整段灌进来 —— 但要**数出来**（「还有东西没说」）
+    assert "unmarshal" not in first["note"], first["note"]
+    assert "另有 2 行" in first["note"], first["note"]
+
+
 def test_scroll_step_is_shaped_like_the_cli(sandbox, form_file):
     """scroll 步必须发**选择器**（`cdp scroll [selector]`）—— 不许把像素当选择器。
 
@@ -1124,6 +1168,17 @@ class _State:
         #: 遮挡判据的答复（`"COVER|tag#id.class"`，空串 = 没被盖着）——
         #: 产物 `_covered_by` **只认带 `COVER|` 前缀**的答复。
         self.cover = ""
+        #: 遮挡判据的**逐次**答复：量一次弹一个，弹空了才退回上面那个固定值。
+        #: **加载蒙版**那条判据要靠它 —— 「第一次量还盖着、再量就没了」正是蒙版走掉的样子；
+        #: 用固定值只能演「一直盖着」，演不出「等一等就好了」。
+        self.cover_seq = []
+        #: 「**整页还在加载**」的答复（`"LOADER|<选择器>"`，空串 = 这一页好了）——
+        #: 产物动手**之前**问的那一句（`_page_ready`）。与 `cover` 是**两个问题**：
+        #: `cover` 问「我要点的那个东西被盖着吗」，它问「**整页**好了吗」。
+        #: ⚠️ 产物**只认带 `LOADER|` 前缀**的答复（与 `cover` 的 `COVER|` 同一个道理）。
+        self.page_loader = ""
+        #: 同 `cover_seq`：逐次答复，用来演「加载蒙版自己走了」。
+        self.page_loader_seq = []
         #: 这些**帧号**上的命令一律报错 —— 真 cdp 对一个不存在的 frameID 就是这个行为
         #: （`OOPIF eval: attach failed: No target with given id found`）。
         #: 「帧号漂了」这条路上的钉子靠它（同一个选择器在死帧里挂、在活帧里成）。
@@ -1187,7 +1242,16 @@ class CDPHelper:
         STATE.evals.append(script)
         if "privacy" in script:              # 同意弹层那个探针（它按 cookie|consent|gdpr|privacy 判）
             return json.dumps(STATE.consent)
+        # ⚠️ 顺序要紧：`_PAGE_LOADER_JS` 里**也用 `elementFromPoint`**
+        # （它要判「真的盖在视口中央」）—— 放在 `elementFromPoint` 那条**后面**
+        # 就会被截走，于是「整页还在加载」永远读成「没在加载」，闸等于不存在。
+        if "pageLoaderRe" in script:         # 「整页还在加载吗」那个探针
+            if STATE.page_loader_seq:
+                return json.dumps(STATE.page_loader_seq.pop(0))
+            return json.dumps(STATE.page_loader)
         if "elementFromPoint" in script:     # 遮挡判据那个探针
+            if STATE.cover_seq:
+                return json.dumps(STATE.cover_seq.pop(0))
             return json.dumps(STATE.cover)
         if "document.readyState" in script:              # `goto` 之后等这一页加载
             return json.dumps("complete")
@@ -1282,6 +1346,10 @@ if cmd in CFG:
     print(json.dumps(CFG[cmd]))
     sys.exit(0)
 if cmd == "navi":
+    # `navi_stderr`：真 cdp 在「导航发出去了、但没等到 load / 没取到 frame tree」时
+    # 会往 stderr 说一句（退出码仍是 0）—— 产物要把那句收进 trace 的 note。
+    if CFG.get("navi_stderr"):
+        sys.stderr.write(CFG["navi_stderr"] + "\\n")
     print("{}")
     sys.exit(0)
 sys.exit(1)
@@ -1422,6 +1490,10 @@ def test_a_covered_element_is_not_clicked_and_does_not_report_ok(sandbox, form_f
                    diff={"actionable": True})
     common.STATE.texts = ["Walk"]
     common.STATE.cover = "COVER|div#onetrust-banner"      # 盖着它的是同意弹层
+    # 生产那个 20 秒预算是给**加载蒙版**的（真站量出来的）。这条用例量的是**另一件事**
+    # ——「盖着就不点、不许记成做成」，遮挡是**永久**的那种。别让它真等 20 秒。
+    module.COVER_WAIT_SECONDS = 0.3
+    module.COVER_POLL_SECONDS = 0.02
 
     trace = sandbox / "covered.jsonl"
     ok = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
@@ -1448,6 +1520,180 @@ def test_an_uncovered_element_is_clicked_as_usual(sandbox, form_file):
     common.STATE.cover = ""                               # 没盖着
     module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
     assert ("click", "#go") in common.STATE.actions, common.STATE.actions
+
+
+def test_a_loading_mask_is_waited_out_and_then_clicked(sandbox, form_file):
+    """★ 2026-09-18 真站（gowizard）那条：盖着目标的是**加载蒙版**，页面还没加载完。
+
+    用户原话：「反正在人的视角来看他不就是加载蒙版吗？没加载完而已」。
+    所以判据是**先等**（蒙版自己会走），**不是**「一看盖着就判这一步不做」——
+    后者把「还没好」当成「不能做」，与 `_applies` 那个病是同一个。
+
+    这条用例是那一改的**正例**：蒙版走了 → 照常点下去。
+    """
+    module, _ = _load(
+        "run_mask_clears",
+        template.render("example-mask", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    # 头两次量还盖着（`div.js-chameleon-page-loader` —— 真站上那个选择器），再量就没了
+    common.STATE.cover_seq = ["COVER|div.js-chameleon-page-loader"] * 2 + [""] * 20
+    module.COVER_WAIT_SECONDS = 5.0      # 够宽，让「等」这件事真的发生
+    module.COVER_POLL_SECONDS = 0.02     # 但别让用例真等 5 秒
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    assert ("click", "#go") in common.STATE.actions, (
+        "蒙版自己走了就该照常点，而不是判这一步不做：%s" % common.STATE.actions)
+
+
+def test_a_mask_that_never_clears_is_not_waited_for_twice(sandbox, form_file):
+    """同一格的反面：**等过、没等到它走**的东西，后面不再等（它不是加载蒙版，是真挡路）。
+
+    没有这一格，每步都要白赔一笔预算，十来步就是一分多钟的空等。
+    判据用**量的次数**：第一次该量不止一次（在等），第二次该只量一次就返回。
+    """
+    module, _ = _load(
+        "run_mask_stuck",
+        template.render("example-mask-stuck", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.cover = "COVER|div#onetrust-banner"      # 一直在，不会自己走
+    module.COVER_WAIT_SECONDS = 0.3
+    module.COVER_POLL_SECONDS = 0.02
+
+    def measured():
+        return len([s for s in common.STATE.evals if "elementFromPoint" in s])
+
+    f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))
+    f._covered_by("#a", until=time.monotonic() + module.COVER_WAIT_SECONDS)
+    n1 = measured()
+    f._covered_by("#b", until=time.monotonic() + module.COVER_WAIT_SECONDS)
+    n2 = measured()
+    assert n1 > 1, "第一次该等它（量了不止一次），实际量了 %d 次" % n1
+    assert n2 - n1 == 1, (
+        "等过一次没走的东西，第二次该只量一次就返回，实际又量了 %d 次" % (n2 - n1))
+
+
+def test_the_relocated_candidate_is_checked_for_a_cover_too(sandbox, form_file):
+    """★ 2026-09-18 真站逮到的那条缝：**快路有遮挡判据，重找那条路没有**。
+
+    声明里的选择器全被盖住时，恰恰是**最该拦的那一下**从重找那条路上溜过去 ——
+    真站日志就是这个形状：`fallback_level: 1` + `ok: true` + `progress: false`。
+
+    这条用例是那个缺口的钉子：重找出来的候选**也要过同一道遮挡判据**。
+    """
+    module, common = _relocate_only(
+        sandbox, "relocate-covered", [_observe_action("#below-cta")],
+    )
+    common.STATE.cover = "COVER|div.js-chameleon-page-loader"
+    module.COVER_WAIT_SECONDS = 0.2      # 它会一直在（固定值），别真等
+    module.COVER_POLL_SECONDS = 0.02
+
+    ok = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    assert ok is False, "重找出来的候选被盖着，不许算做成"
+    assert ("click", "#below-cta") not in common.STATE.actions, (
+        "重找那条路也要过遮挡判据 —— 被盖着就不许点：%s" % common.STATE.actions)
+
+
+def test_a_step_does_not_act_while_the_whole_page_is_still_loading(sandbox, form_file):
+    """★★ 2026-09-18 那处**动手之前**的缺口：先问「这一页就绪了吗」，再动手。
+
+    真站对照（这是这一改的全部理由）：
+      · **成功那趟**（生产单 26005787）第 4 步的遮挡物是 `iframe#mvfFormWidget-…`
+        —— **表单 iframe 本人**，= 表单已经就位；
+      · **今天 5 趟全挂**，第 4 步的遮挡物是 `div.js-chameleon-page-loader`
+        —— **加载蒙版**，= 表单还没加载完，**而产物照样往下走**，于是后面全错。
+
+    现在只有「动手**之后**问页面变没变」（`progress` / `_covered_by`），
+    缺「动手**之前**问页面好没好」。这条用例钉的就是那一格。
+    """
+    module, _ = _load(
+        "run_page_loading",
+        template.render("example-page-loading", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.page_loader = "LOADER|div.js-chameleon-page-loader"   # 一直在加载，走不掉
+    module.PAGE_READY_SECONDS = 0.3
+    module.PAGE_READY_POLL = 0.02
+
+    ok = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    assert ok is False, "整页还在加载就不许算做成"
+    assert not [a for a in common.STATE.actions if a[0] == "click"], (
+        "整页还在加载时**不许动手**（点了也是白点，还会把后面的判据全带错）：%s"
+        % common.STATE.actions)
+
+
+def test_the_page_loader_is_waited_out_and_then_the_step_runs(sandbox, form_file):
+    """同一格的反面：**整页加载完（蒙版自己走了）→ 照常动手**。
+
+    没有这一格，就会写出「只要见过蒙版就整趟不做事」那种怂改法 ——
+    而那正好会把成功那趟也一起毙掉。
+    """
+    module, _ = _load(
+        "run_page_ready",
+        template.render("example-page-ready", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    # 头两次量还在加载，再量就好了
+    common.STATE.page_loader_seq = ["LOADER|div.js-chameleon-page-loader"] * 2 + [""] * 30
+    module.PAGE_READY_SECONDS = 5.0
+    module.PAGE_READY_POLL = 0.02
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    assert ("click", "#go") in common.STATE.actions, (
+        "整页加载好了就该照常点，而不是整趟不做事：%s" % common.STATE.actions)
+
+
+def test_a_junk_answer_is_not_read_as_a_loading_page(sandbox, form_file):
+    """★ 同一格的**闸**：答复形状不认识时，不许读成「整页在加载」。
+
+    这条是**被真事逼出来的**（2026-09-18）：我第一版探针**没要前缀**，
+    于是碰上一个「对任何 eval 都回一句页面文字」的替身 cdp（`test_selftest.py` 那个），
+    那句话被读成「盖着整页的加载物」—— **每一步干等 60 秒**，
+    全量套件 48 秒 → **293 秒**，一条 selftest 用例当场红。
+
+    与 `_covered_by` 的 `COVER|` 是**同一个病**：「量不出来」被读成「量出来了」。
+    ⚠️ 而且这一格的误判**比那边严重** —— 那边只是不点一个候选，
+    这边是**整趟什么都不做**。
+    """
+    module, _ = _load(
+        "run_page_junk",
+        template.render("example-page-junk", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    # 形状不认识的一句答复（真站上替身 cdp 就是这么回的）—— **不许**当成在加载
+    common.STATE.page_loader = "Thank you — https://example.test/done"
+    module.PAGE_READY_SECONDS = 0.3
+    module.PAGE_READY_POLL = 0.02
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    assert ("click", "#go") in common.STATE.actions, (
+        "答复形状不认识 = 量不出来 ≠ 在加载 —— 不许因此不做事：%s" % common.STATE.actions)
 
 
 def test_form_steps_carry_the_strict_gate_and_the_field_identity(sandbox, form_file):

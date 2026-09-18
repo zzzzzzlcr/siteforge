@@ -208,6 +208,93 @@ LIVE_PROBE_EVERY = 3.0
 #: 等不到也照旧往下走（一句人话说明），**不许**把它当成失败。
 WAIT_READY_SECONDS = 10.0
 
+#: 目标**被别的东西盖着**时，最多等它多久（秒）—— 等的是**加载蒙版**。
+#:
+#: 为什么是「先等」而不是「一看盖着就不点」（2026-09-18 真站实测 + 用户原话
+#: 「反正在人的视角来看他不就是加载蒙版吗？没加载完而已」）：
+#: 盖着目标的那层，十有八九是**页面还没加载完**，它自己会走。
+#: 一看盖着就判「这一步不做」，等于把「还没好」当成「不能做」——
+#: 与 `_applies` 那个病**同一个**（等不到 ≠ 判据不成立）。同一个坑今天掉两次。
+#:
+#: 但**等到头了它还不走，就真的不点**：那时它已经不是「还没好」，是「挡住了」，
+#: 点下去就是点到它身上。这一格由 `_covered_by` 兜住，**不许**被记成做成了。
+#:
+#: ⚠️ 这笔预算**按步共享**（同一步里所有候选选择器 + 重找那条路合起来这么多）——
+#: 不然每个被盖住的候选各赔一份，十来步会慢到没法用。
+#:
+#: ⚠️ **35.0 是两趟真站量出来的，不是拍的**（2026-09-18）：
+#: 第 1 趟：8 秒时还在，而 10 秒后那一步点成功时遮挡已经没了（⇒ 至少 >8）；
+#: 第 2 趟：**20 秒时还在**（`等了 20.0 秒 … 还盖着`），到 32 秒后那一步才没有遮挡。
+#: ⇒ 这层蒙版的寿命约 **25–35 秒**。8.0 / 20.0 都定短了，两趟都白赔一次没等着。
+#: 定 35 是**贴着量出来的上界**：再长就是替站点猜了，而这个数每步最多赔一次。
+COVER_WAIT_SECONDS = 35.0
+
+#: 等蒙版期间每隔多久再量一次（秒）
+COVER_POLL_SECONDS = 0.4
+
+#: **动手之前**最多等多久（秒）等「整页加载完」（`_page_ready`）。
+#:
+#: 为什么要这一格（2026-09-18 真站对照，这是它的全部理由）：
+#: 那次成功的生产单（`26005787`）第 4 步的遮挡物是 `iframe#mvfFormWidget-…`
+#: —— **表单 iframe 本人**，= 表单已就位；而今天 5 趟全挂，遮挡物是
+#: `div.js-chameleon-page-loader` —— **加载蒙版**，= 表单没加载完，
+#: **而产物照样往下走**，后面 20 步全错。
+#:
+#: 与 `COVER_WAIT_SECONDS` 是**两个问题**，别合并：
+#:   `_covered_by` 问「**我要点的那个东西**被盖着吗」（元素级）；
+#:   `_page_ready` 问「**整页**好了吗」（页面级）。
+#: 今天就是「元素没被压住」而「整页没好」—— 只看元素级就会漏掉。
+PAGE_READY_SECONDS = 60.0
+
+#: 等整页就绪期间每隔多久再量一次（秒）
+PAGE_READY_POLL = 0.5
+
+#: 「**整页还在加载吗**」的探针（读，不动页面）。返回盖着整页的那个加载物的
+#: 选择器，没有则空串。
+#:
+#: 判据三条**都要**（宁可漏，不可误判 —— 判错的代价是整趟不做事）：
+#:   ① 名字里带 loader / loading / spinner / preloader 那一族；
+#:   ② **真的盖在视口中央**（`elementFromPoint` 命中的就是它或它的后代）——
+#:      一个藏在角落里的 loading 图标不是「整页在加载」；
+#:   ③ **盖得够大**（至少视口面积的四分之一）—— 小转圈不算。
+#: ⚠️ 名字这一条是启发式。所以配了 ②③ 两道：**光看名字会把页面上任何一个
+#: 叫 `*loading*` 的小控件读成「整页没好」，那样产物就什么都不做了。**
+_PAGE_LOADER_JS = (
+    "var pageLoaderRe=/(page-?loader|preloader|loading|spinner|skeleton)/i;"
+    "var all=document.getElementsByTagName('*');"
+    "var vw=window.innerWidth||0, vh=window.innerHeight||0;"
+    "if(vw<=0||vh<=0) return '';"
+    "var cx=vw/2, cy=vh/2;"
+    "var top=document.elementFromPoint(cx,cy);"
+    "if(!top) return '';"
+    "for(var i=0;i<all.length;i++){"
+    "  var e=all[i];"
+    "  var lab=String(e.id||'')+' '+String(e.className||'');"
+    "  if(!pageLoaderRe.test(lab)) continue;"
+    "  if(!(e===top||e.contains(top)||top.contains(e))) continue;"
+    "  var r=e.getBoundingClientRect();"
+    "  if(!(r.width>0&&r.height>0)) continue;"
+    "  if(r.width*r.height < (vw*vh)*0.25) continue;"
+    "  var st=window.getComputedStyle(e);"
+    "  if(!st) continue;"
+    "  if(st.visibility==='hidden'||st.display==='none') continue;"
+    "  if(parseFloat(st.opacity||'1')===0) continue;"
+    "  return 'LOADER|'+e.tagName.toLowerCase()+(e.id?('#'+e.id):'')"
+    "+'.'+String(e.className||'').split(' ')[0];"
+    "}"
+    "return '';"
+)
+
+#: 「整页在加载」答复的**前缀**。`_page_ready` **只认带它的答复**。
+#:
+#: ⚠️ 这条规矩是抄 `_covered_by` 的，而且**是被测试逼出来的**（2026-09-18）：
+#: 我第一版探针**没要前缀** —— 于是在一个「对任何 eval 都回一句页面文字」的替身 cdp 下，
+#: 那句话被读成「盖着整页的加载物」，**每步干等 60 秒**（全量套件 48 秒 → 293 秒，
+#: 一条 selftest 用例当场红）。**这正是本项目那条老病**：
+#: 「量不出来」（答复形状不认识）被读成「量出来了，而且是那个坏结果」。
+#: 与本文件里 `COVER|` 那条是**同一个病、同一道闸**。
+LOADER_PREFIX = "LOADER|"
+
 #: `observe` 给 cookie 同意类遮挡物记的 kind（`internal/observe.go`：按
 #: 文字/ id / class 里有没有 cookie|consent|gdpr|privacy 判的）。**只点这一类** ——
 #: 一般的浮层（`overlay`）不去动它：那可能是页面自己要人看的东西，点掉它同样是「点到别的东西」。
@@ -584,6 +671,21 @@ class Filler:
     #: 同上（替身）：不进 `__init__` 的实例没有 CDPHelper —— 读帧那几条路靠它判「读不了」，
     #: 而不是抛 AttributeError（单测里那些只 stub 了 `_url`/`page_signature` 的实例）。
     cdp = None
+    #: 同上（观测）：`_model_is_fresh()` 要问「手上那份观测还是不是这一页的」——
+    #: `None` = **没有观测**，正是「说不清」那一支，语义与 `__init__` 里的初值一致。
+    #: ⚠️ 2026-09-18 补：`_applies` 改成「等完**无论 readyState 说什么都重判一次」之后，
+    #: 这条判断在 `object.__new__(Filler)` 那种实例上**第一次变成可达路径** ——
+    #: 在此之前它够不着，于是这一格漏了也没人发现（两条用例当场红）。
+    _last_model = None
+
+    #: 这一趟里**等过、但没等到它走**的遮挡物（`"tag#id.class"`）。它已经不是加载蒙版了，
+    #: 后面再遇到**不再等**（见 `_covered_by`）—— 不然每步白赔一笔。
+    #: 同样给一个类默认值：`object.__new__(Filler)` 那种实例上也够得着这一格。
+    _stuck_covers = frozenset()
+
+    #: 最近一次 `goto` 时 cdp 在 stderr 上说的话（见 `__init__` 与 `_do` 里 goto 那段）。
+    #: 类默认值同上：`object.__new__(Filler)` 的实例够得着这一格。
+    goto_echo = ""
 
     def __init__(self, ws_url, form_file, correlation_id, task_id="",
                  trace=None, stop_at=None, shots="failed", delay=DELAY_RANGE,
@@ -614,6 +716,9 @@ class Filler:
         self.observe_why = None    # 最近一次「重新看页面」没成的原因（人话）
         self.progress_why = None   # 最近一步「为什么 progress 是 null」（人话）
         self.shots_why = None      # 最近一步截图没落成的原因（人话）
+        #: 最近一次 `goto` 时 **cdp 自己在 stderr 上说的话**（成功时才留）。
+        #: 为什么单独一个通道：见 `_do` 里 goto 那段的说明（它**不参与判据**）。
+        self.goto_echo = ""
         #: 这条流程**动过手的帧**（STATES 里出现过的 frame_id）。产物读页面时也读它们 ——
         #: 见 page_signature / _urls 的 docstring：动手在子帧、读页面却只看主帧，
         #: 那两件事量的根本不是同一页。
@@ -626,6 +731,8 @@ class Filler:
         self._probe_at = 0.0    # 上一次「去找活帧」的时刻（节流用）
         #: 最近一次 observe 的模型（`page_signature` 一路都读不到正文时用它兜底）
         self._last_model = None
+        #: 这一趟里等过、但没等到它走的遮挡物（见 `_covered_by`：赖过一次的就不再等）
+        self._stuck_covers = frozenset()
 
     # ── 基础设施 ────────────────────────────────────────────
 
@@ -1156,6 +1263,29 @@ class Filler:
         if action == "goto":
             done = self._cdp("navi", value)
             ok = done is not None and done.returncode == 0
+            # ⚠️ **cdp 在 stderr 上说的那句不能丢**（2026-09-18 记的账）：
+            # `navi` 的「成功」现在有两种 —— 真等到 load 了，和「导航发出去了、
+            # 但没等到 load / 没取到 frame tree」。**后者只有 stderr 说得出来**，
+            # 而它原先被 `return ""` 吞了（「说了，但没人收得到」）。
+            #
+            # 为什么**不**把它并进返回值：返回的东西要过 `_ok()`，而 `_ok` 是**认词**的
+            # （`ERR_MARKERS`）。cdp 的原话里偶然带一个 `error:`，就会把「打开了」
+            # 读成「打不开」—— **那正是刚修掉的那个病**。所以走**第二个通道**：
+            # 放这儿，由 `_run_step` 拼进 trace 的 note，**不参与判据**。
+            self.goto_echo = ""
+            if ok and done is not None:
+                # ⚠️ **只留 cdp 自己说的话，别把它的告警洪水灌进 trace**
+                # （2026-09-18 真站实测：原始 stderr 一次 15 行
+                #  `could not unmarshal event: … unknown IPAddressSpace value: Private`
+                #  —— 那是 chromedp 跟不上 Chrome 新枚举值的噪音，与我们无关）。
+                # 噪音不丢干净：**数出来**，让人知道「还有东西没说」。
+                lines = [x.strip() for x in (done.stderr or "").splitlines() if x.strip()]
+                mine = [x for x in lines if "cdp navi:" in x]
+                noise = len(lines) - len(mine)
+                self.goto_echo = "；".join(mine)
+                if noise:
+                    self.goto_echo += ("；" if self.goto_echo else "") + \
+                        "（另有 %d 行 cdp 自己的告警，略）" % noise
             return "" if ok else "Error: 打开 %s 失败" % value
         raise ValueError("产物写错了：不认识这个动作「%s」" % action)
 
@@ -1279,20 +1409,40 @@ class Filler:
         return True, ("「%s」这一步：页面上已经没有同意弹层了（前面那次会话把它点掉过，"
                       "或者这一单本来就是干净会话没有弹层）—— 跳过，不算没做成。"
                       "产物开跑前本来就会自己清一次弹层（`_clear_obstructions`）。" % label)
-    def _covered_by(self, selector, frame_id=""):
-        """这个选择器指的元素**是不是被别的东西盖着**（读一次，不动页面）。盖着就返回盖它的东西。
+    def _page_ready(self, until=None):
+        """**整页**加载完了吗。没好 → 返回盖着整页的那个加载物；好了 → 空串。
 
-        为什么要它（同一条真站证据）：快路点击拿声明选择器**直接点**，不看目标上有没有盖着
-        东西 —— 点到 consent 弹层上，cdp 照样回 ok（`match_count: 1` 说的是「选择器命中 1 个」，
-        **不是**「点到的就是它」）。于是这一步被记成做成了，页面纹丝不动，后面全塌。
-        `_usable` 那条遮挡闸只在回退链上（要 observe 模型），快路没有 —— 这个函数就是补那一格。
+        为什么要它（2026-09-18 真站对照，见 `PAGE_READY_SECONDS` 那段）：
+        `_covered_by` 只看得见「**我要点的那个东西**被压住了吗」，
+        **看不见「整页还没好」** —— 今天每趟就是「元素恰好没被压住」而「整页还烂着」，
+        于是它动手、页面不响应、后面 20 步的判据全错。
 
-        判据与 `_usable` 同源（**盖着 = 不能动手**），只是换成在页面上直接量：
-        取元素中心点，问「那个点上站着的是谁」，接受自己 / 自己的后代 / 自己的祖先
-        （文字节点、label 包 input 这类都是「同一个东西」），别的一律算盖着。
-        量不出来（元素不在、零尺寸、点在视口外）**返回空串**（= 不加判断）——
-        那种情况由 cdp 自己的滚动与报错去说，不在这里替它下结论。
+        `until` 是单调时钟的截止点（`None` = 只量一次，不等）。
         """
+        waited = False
+        while True:
+            got = str(self._ev(_PAGE_LOADER_JS) or "").strip()
+            # ⚠️ **只认带 `LOADER|` 前缀的答复**（见 `LOADER_PREFIX` 那段）：
+            # 空串 / `null` / 任何别的形状都是「量不出来」—— 一律**不当成在加载**。
+            # 当成在加载的代价是**整趟什么都不做**，比漏判严重得多。
+            hit = got[1:-1] if (len(got) >= 2 and got[0] == got[-1] == '"') else got
+            hit = hit.strip()
+            if not hit.startswith(LOADER_PREFIX):
+                return ""
+            hit = hit[len(LOADER_PREFIX):]
+            if until is None or time.monotonic() >= until:
+                if waited:
+                    self.log.info("[%s] 等了 %.0f 秒，%s 还盖着整页 —— 这一页没加载完",
+                                  self.cid, PAGE_READY_SECONDS, hit)
+                return hit
+            if not waited:
+                waited = True
+                self.log.info("[%s] 这一页还在加载（%s 盖着整页）—— "
+                              "先等它加载完，最多 %.0f 秒", self.cid, hit, PAGE_READY_SECONDS)
+            time.sleep(PAGE_READY_POLL)
+
+    def _cover_once(self, selector, frame_id=""):
+        """**量一次**：这个选择器指的元素是不是被别的东西盖着。盖着就返回盖它的东西，否则空串。"""
         js = ("var all=document.getElementsByTagName('*'), el=null;"
               "for(var i=0;i<all.length;i++){try{if(all[i].matches(%s)){el=all[i];break;}}catch(e){}}"
               "if(!el) return '';"
@@ -1311,6 +1461,56 @@ class Filler:
         if not got.startswith("COVER|"):
             return ""
         return got[len("COVER|"):]
+
+    def _covered_by(self, selector, frame_id="", until=None):
+        """这个选择器指的元素**是不是被别的东西盖着**。盖着就返回盖它的东西（读，不动页面）。
+
+        **盖着不立刻下结论**：先等一等（`until`，单调时钟的截止点；`None` = 不等）。
+        等的是**加载蒙版** —— 页面还没加载完，它自己会走（用户 2026-09-18：
+        「他不就是加载蒙版吗？没加载完而已」）。**等到头了还不走，才真的当它盖着。**
+
+        `until` 由调用方按**步**给（同一歩所有候选共享一笔预算，见 `COVER_WAIT_SECONDS`）：
+        不共享的话，一个被盖住的候选就赔一份，十来步会慢到没法用。
+
+        为什么要它（同一条真站证据）：快路点击拿声明选择器**直接点**，不看目标上有没有盖着
+        东西 —— 点到 consent 弹层上，cdp 照样回 ok（`match_count: 1` 说的是「选择器命中 1 个」，
+        **不是**「点到的就是它」）。于是这一步被记成做成了，页面纹丝不动，后面全塌。
+        `_usable` 那条遮挡闸只在回退链上（要 observe 模型），快路没有 —— 这个函数就是补那一格。
+
+        判据与 `_usable` 同源（**盖着 = 不能动手**），只是换成在页面上直接量：
+        取元素中心点，问「那个点上站着的是谁」，接受自己 / 自己的后代 / 自己的祖先
+        （文字节点、label 包 input 这类都是「同一个东西」），别的一律算盖着。
+        量不出来（元素不在、零尺寸、点在视口外）**返回空串**（= 不加判断）——
+        那种情况由 cdp 自己的滚动与报错去说，不在这里替它下结论。
+        """
+        waited = False
+        while True:
+            cover = self._cover_once(selector, frame_id)
+            # 「没盖着」与「量不出来」都是空串 —— 两种都**不拦**，直接放行。
+            if not cover:
+                return ""
+            # 这个东西**这一趟里已经赖着不走过了** —— 它不是加载蒙版，是真挡路。
+            # 不再等（加载蒙版会走，赖过一次的不会）：不然每步白赔一笔，
+            # 十来步就是一分多钟的空等。
+            if cover in self._stuck_covers:
+                return cover
+            if until is None or time.monotonic() >= until:
+                if waited:
+                    # 等过还没走 —— 它已经不是「还没好」，是「挡住了」。记下来（上面那条），
+                    # 并把这件事说出来：别让读日志的人以为我们压根没等。
+                    # **重新绑一个新集合**，不去改手上那个 —— 类默认值是 `frozenset`
+                    # （见类属性那里），`object.__new__(Filler)` 的实例拿到的就是它；
+                    # 而可变对象当类默认值会让所有实例共享一份（老坑）。
+                    self._stuck_covers = self._stuck_covers | {cover}
+                    self.log.info("[%s] 等了 %.1f 秒，%s 还盖着这个元素 —— "
+                                  "不等了（它这一趟里已经不是加载蒙版了）",
+                                  self.cid, COVER_WAIT_SECONDS, cover)
+                return cover
+            if not waited:
+                waited = True
+                self.log.info("[%s] 这个元素现在被 %s 盖着（多半是加载蒙版）—— "
+                              "先等它自己走，最多 %.0f 秒", self.cid, cover, COVER_WAIT_SECONDS)
+            time.sleep(COVER_POLL_SECONDS)
 
     def _scroll(self, step, target, label):
         """把这一步的元素滚进视口。返回 `(ok, selector_used, level, note, frame_used)`。
@@ -1389,9 +1589,26 @@ class Filler:
             if not url:
                 return False, "", None, "产物写错了：goto 这一步没写 url", ""
             out = self._do("goto", "", url)
-            return _ok(out), "", None, _say("goto", url, _ok(out)), ""
+            ok = _ok(out)
+            note = _say("goto", url, ok)
+            # cdp 自己那句话（成功时才留）：**「打开了」这句领先于证据** ——
+            # `page_sig` 是 navi 返回那一刻读的，导航可能刚发出（2026-09-18 真站实测：
+            # 第 1 步 sig 读到的还是浏览器起始页）。把 cdp 的原话贴在 note 上，
+            # 让「它到底等没等到 load」在 trace 里**看得见**。
+            if ok and self.goto_echo:
+                note += "；cdp 回执：%s" % self.goto_echo
+            return ok, "", None, note, ""
         if action not in ("click", "form"):
             return False, "", None, "产物写错了：不认识「%s」这个动作" % (action or "(空)"), ""
+
+        # ★ **动手之前**先问「这一页就绪了吗」（2026-09-18 真站对照：见 `PAGE_READY_SECONDS`）。
+        # 整页还在加载就**不许动手** —— 点了也是白点，而且会把后面 20 步的判据全带错。
+        # 注意这与下面那个 `_covered_by` 是**两个问题**：那个问元素，这个问整页。
+        loading = self._page_ready(until=time.monotonic() + PAGE_READY_SECONDS)
+        if loading:
+            return False, "", None, (
+                "这一页没加载完（%s 盖着整页，等了 %.0f 秒还没走）—— **没动手**："
+                "点了也是白点，还会把后面的判据全带错" % (loading, PAGE_READY_SECONDS)), ""
 
         value, kind = None, "value"
         if action == "form":
@@ -1409,11 +1626,14 @@ class Filler:
         frame = str(target.get("frame_id") or "")
 
         selectors = [s for s in (target.get("selectors") or []) if s]
+        # 遮挡预算**按步开一次**（快路 + 重找那条路共用）：被盖住时先等加载蒙版走，
+        # 但整步只赔这一笔，不按候选数翻倍（见 COVER_WAIT_SECONDS）。
+        cover_until = time.monotonic() + COVER_WAIT_SECONDS
         for level, selector in enumerate(selectors):
             # **快路也要接遮挡判据**（真站实测的那条链）：不看一眼就点，
             # 点到盖着它的东西上（consent 弹层那类）cdp 照样回 ok —— 「点了个寂寞」
             # 被记成做成了。盖着就不点它，换下一个候选；全都被盖着就是这一步没做成。
-            cover = self._covered_by(selector, frame)
+            cover = self._covered_by(selector, frame, until=cover_until)
             if cover:
                 self.log.info("[%s] 第 %d 个选择器指的元素被 %s 盖着 —— 这一下不点"
                               "（点了等于点到盖着它的东西上）", self.cid, level + 1, cover)
@@ -1430,6 +1650,16 @@ class Filler:
                           self.cid, len(found))
         for extra, (selector, cand_frame) in enumerate(found):
             level = len(selectors) + extra
+            # ⚠️ **这条路原先漏了遮挡判据**（2026-09-18 真站实测逮到）：快路有、它没有，
+            # 于是「声明里的选择器全被盖住」时，恰恰是**最该拦的那一下**从这条路上溜过去。
+            # 真站日志就是这个形状：`fallback_level: 1` + `ok: true` + `progress: false`
+            # —— 点了个寂寞，还报成了做成了。
+            # 与快路**同一笔预算**（`cover_until` 在上面开的那一笔），不另开一份。
+            cover = self._covered_by(selector, cand_frame, until=cover_until)
+            if cover:
+                self.log.info("[%s] 重找出来的第 %d 个候选也被 %s 盖着 —— 这一下不点",
+                              self.cid, extra + 1, cover)
+                continue
             out = self._do(action, selector, value, kind, cand_frame)
             if _ok(out):
                 return (True, selector, level,
@@ -1462,6 +1692,9 @@ class Filler:
                 % (list(self.frames) or "（无）", list(self.live_frames) or "（无）",
                    "还是这一页的" if self._model_is_fresh() else "已经过期（换过页）"))
 
+    #: 上一条 `when` **判的那一刻**算出来的解释（空串 = 当时判成立）。见 `_applies`。
+    _when_why_cache = ""
+
     def _when_why(self, when):
         """这条 `when` 为什么不成立 —— **把手上实际有的东西原样摆出来**（给日志与 trace 用）。
 
@@ -1491,7 +1724,11 @@ class Filler:
                         "手上那份观测的正文开头：「%s」"
                         % (str(missing[0])[:60], signature[:200], self._frames_say(),
                            model_text[:120] or "（没有观测）"))
-        return "判据说不清为什么不成立（url 与正文都对上了却判成不像）"
+        # ⚠️ 走到这里 = 这两条判据**在【此刻】都成立**（那么 `_matches` 此刻也会判成立）。
+        # 能走到这儿只有一种可能：**「判的那一刻」与「说这句话的那一刻」不是同一刻**。
+        # 所以 `_applies` 只在与判据同一刻一致时才把这句话记下来（见它的 docstring）。
+        return ("判据说成立 —— 但这是**事后**算的：判的那一刻它不成立"
+                "（这句话自己就是证据：结论与解释在打架，别把它当成原因读）")
 
     def _matches(self, when):
         """这条 `when` 现在成不成立（**只看判据**，不做等待）。"""
@@ -1520,10 +1757,20 @@ class Filler:
         「正文里没有「The listings featured…」」而那一页马上就有那句话）。
         """
         if self._matches(when):
+            self._when_why_cache = ""
             return True
-        if self._wait_ready(timeout=WAIT_READY_SECONDS):
-            return self._matches(when)
-        return False
+        # ⚠️ 2026-09-18 真站实测的根因：`readyState != 'complete'` **不等于**「判据不成立」
+        # （广告/埋点一直在下载，正文早就好了）。原来写成 `if self._wait_ready(...)`——
+        # 等不到就**不再看一眼**直接判「不像」，整组步骤被跳过；而**随后**那句 why
+        # 读到的是已经加载完的页面，于是诚实地说「url 与正文都对上了却判成不像」——
+        # **结论与解释自相矛盾，而且是它自己指出来的**。
+        # 现在：等完**无论 readyState 说什么，都重判一次**。
+        self._wait_ready(timeout=WAIT_READY_SECONDS)
+        ok = self._matches(when)
+        #: ⚠️ why 必须在**判的这一刻**算死，不许事后重算 ——
+        #: 事后再看一眼时页面已经变了，说出来的话就跟结论打架。
+        self._when_why_cache = "" if ok else self._when_why(when)
+        return ok
 
     def _succeeded(self):
         signature = self.page_signature().lower()
@@ -1664,7 +1911,9 @@ class Filler:
                         # 所以：① 日志里说明**为什么**（哪一条判据不成立）；
                         # ② trace 里也落一行（`skipped: true`）—— 自测/Console 读的是 trace；
                         # ③ 计入 `self.skipped`，最后那句总结里报出来。
-                        why = self._when_why(state.get("when"))
+                        # ⚠️ 用 `_applies` 在**判的那一刻**算死的那句，不在这里重算 ——
+                        # 重算会读到另一个页面，说出来的话跟结论打架（2026-09-18 真站实测）。
+                        why = self._when_why_cache
                         self.skipped += 1
                         self.skipped_states[name] = self.skipped_states.get(name, 0) + 1
                         self.log.info("[%s] 第 %d 步**跳过**：这一页不像「%s」那个状态（%s）"
