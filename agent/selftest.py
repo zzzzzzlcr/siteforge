@@ -188,6 +188,12 @@ class Report:
     cdp_bin: Optional[str]
     site: str
     py_path: str
+    #: **播报那条旁路**没送成的原因（第一条，人话）。空 = 每一遍都送到了。
+    #: Task 5：`run(on_run=…)` 是 Console 的实时视图 —— 旁路坏掉**不许带塌自测**
+    #: （同 Task 2 那条铁律），但也**不许静默**：坏掉这件事得有个落点，
+    #: 而自测这一层**够不着时间线**（那是服务的事），所以落在这里 ——
+    #: 它随 `as_dict()`（PROVENANCE）与 `summary()` 一起回到叫它的那个人手上。
+    narrate_broken: tuple = ()
 
     # ── 谁拦住了 `passed` ────────────────────────────────────────────
     @property
@@ -238,6 +244,9 @@ class Report:
             "allowed_skips": list(self.allowed_skips),
             "cdp_bin": self.cdp_bin,
             "runs": [r.as_dict() for r in self.runs],
+            # Task 5：播报那条旁路坏掉时**不是空话**（见字段那头）。给出去的是 list
+            # （`as_dict` 要能进 JSON —— 与 `allowed_skips` 同一个写法）。
+            "narrate_broken": list(self.narrate_broken),
         }
 
     def summary(self) -> str:
@@ -263,6 +272,12 @@ class Report:
                 lines.append("· %s —— %s" % (run.label, run.note))
         for run in self.not_needed_runs:
             lines.append("· %s —— %s" % (run.label, run.note))
+        if self.narrate_broken:
+            # Task 5：**旁路坏掉要说**（不许静默）—— 上面那几行讲的是每一遍的结果，
+            # 这一行讲的是「那些结果有没有送到正在看的人手里」。
+            lines.append("⚠️ 有几遍的播报没送到时间线上（%s）—— 自测**照常跑完了**"
+                         "（旁路坏掉不许带塌自测），但看的人那边会少掉这几遍。"
+                         % self.narrate_broken[0])
         lines.append(CAVEAT)
         return "\n".join(lines)
 
@@ -522,7 +537,8 @@ def run(py_path, ws_url, form_file, site, *,
         task_id: Optional[str] = None,
         log_level: str = "INFO",
         allow_skips: Sequence[str] = DEFAULT_ALLOWED_SKIPS,
-        max_submissions: int = MAX_SUBMISSIONS) -> Report:
+        max_submissions: int = MAX_SUBMISSIONS,
+        on_run: Optional[Callable] = None) -> Report:
     """在真浏览器上按 `RUN_NAMES` 的序列跑，返回一份**说得清**的结论。
 
     ## 跑几遍（R-84，**用户裁定**）：按需，不再固定
@@ -545,6 +561,12 @@ def run(py_path, ws_url, form_file, site, *,
             ⚠️ 调大它 = 把「刷太多」那条裁定改掉 —— 要有人裁，不许顺手调。
             （它是参数、不是写死的常量：那套「没旋钮就跳过」的机制要靠它才验得到 ——
             默认 3 次之下，第 4/5 遍**到不了**。）
+        on_run         **每一遍跑完当场**回调一次那个 `Run`（Task 5，Console 的实时视图）——
+            **没跑的那几遍也要回调**：`skipped` / `not_needed` 正是「没验到」被吞掉的那条
+            路（设计注 §3.2 第 3 行），只在报告里看得见就等于没人看见。
+            不给 = 今天那条路，一个字节不变。
+            ⚠️ 它是**旁路**：回调抛异常**不许带塌自测**（剩余几遍照跑、报告照出），
+            但也不许静默 —— 原因落在 `Report.narrate_broken`（自测这一层够不着时间线）。
     """
     py = pathlib.Path(py_path)
     if not py.is_file():
@@ -575,6 +597,26 @@ def run(py_path, ws_url, form_file, site, *,
 
     runs: list = []
     submissions = 0
+    #: 播报那条旁路**第一条**没送成的原因（人话）。见 `Report.narrate_broken`。
+    narrate_broken: list = []
+
+    def _tell(run_obj: Run) -> None:
+        """一遍**跑完的当场**：入账 + 播报（Task 5）。**所有出口都必须走它。**
+
+        ⚠️ 为什么不是各处 `runs.append` 之后顺手补一句回调：这一支有**九个**出口
+        （硬顶 / 前一遍过了 / 五遍各自的分支），漏掉哪个出口，那一遍在时间线上就凭空
+        消失 —— 而「没跑的那几遍」正是最容易被漏的那些（它们看起来不像结果）。
+        与 `explore` 的 `emit` 同一条规矩：**旁路坏掉不许带塌主路**（回调抛了，
+        后面几遍照跑、报告照出），但**不许静默**（第一条原因记进 `narrate_broken`）。
+        """
+        runs.append(run_obj)
+        if on_run is None:
+            return
+        try:
+            on_run(run_obj)
+        except Exception as exc:                   # noqa: BLE001 —— 外部世界，什么都可能抛
+            if not narrate_broken:
+                narrate_broken.append("%s: %s" % (type(exc).__name__, exc))
 
     def _spend(name, **kw) -> Run:
         """跑一遍 = 一次**提交**（产物会把整个漏斗走一遍）。**计数只在这里加**。
@@ -589,14 +631,14 @@ def run(py_path, ws_url, form_file, site, *,
     for name in RUN_NAMES:
         # R-84 的两条闸：**到顶就停**、**过了就不再跑**。两条都要如实说为什么。
         if submissions >= max_submissions:
-            runs.append(_not_needed(name, "这一轮已经用满 %d 次提交（硬顶）" % max_submissions))
+            _tell(_not_needed(name, "这一轮已经用满 %d 次提交（硬顶）" % max_submissions))
             continue
         if any(r.status == "passed" for r in runs):
-            runs.append(_not_needed(name, "前一遍就过了（R-84：**过了就算过**，不再往下跑）"))
+            _tell(_not_needed(name, "前一遍就过了（R-84：**过了就算过**，不再往下跑）"))
             continue
 
         if name == "baseline":
-            runs.append(_spend("baseline"))
+            _tell(_spend("baseline"))
             continue
 
         if name == "rerun":
@@ -620,21 +662,21 @@ def run(py_path, ws_url, form_file, site, *,
                     except (OSError, subprocess.TimeoutExpired) as exc:
                         navi_failed = "cdp navi 没成（%s）" % exc
             if navi_failed:
-                runs.append(Run(name="rerun", label=RUN_LABELS["rerun"], status="failed",
-                                ok=False, failed_step=None, trace_path=None,
-                                note="这一遍的刷新没做成，所以它没验到状态残留：%s" % navi_failed))
+                _tell(Run(name="rerun", label=RUN_LABELS["rerun"], status="failed",
+                          ok=False, failed_step=None, trace_path=None,
+                          note="这一遍的刷新没做成，所以它没验到状态残留：%s" % navi_failed))
             else:
-                runs.append(_spend("rerun"))
+                _tell(_spend("rerun"))
             continue
 
         if name == "delay":
-            runs.append(_spend("delay", delay=delay))
+            _tell(_spend("delay", delay=delay))
             continue
 
         if name == "viewport":
             # 第 4 遍（R-5）：viewport 是窗口层的事，只有调用方能动。没给回调 = 跳过 + 吵。
             if set_viewport is None:
-                runs.append(_skipped("viewport", (
+                _tell(_skipped("viewport", (
                     "这一遍没跑：换窗口大小要调用方在窗口层动手（POST /browser/update），"
                     "产物和 cdp 内核都够不着。所以「折叠 / 遮挡 / 坐标假设」这一类失败这次"
                     "**没验到**；要跑就传 set_viewport=回调，要放弃就把它写进 allow_skips"
@@ -643,28 +685,29 @@ def run(py_path, ws_url, form_file, site, *,
                 try:
                     set_viewport(*viewport)
                 except Exception as exc:                       # 回调是外部世界，什么都可能抛
-                    runs.append(_skipped("viewport", (
+                    _tell(_skipped("viewport", (
                         "这一遍没跑成：换窗口大小的时候出错了（%s）。这一类失败这次**没验到** —— "
                         "不算过。" % exc)))
                 else:
-                    runs.append(_spend("viewport"))
+                    _tell(_spend("viewport"))
             continue
 
         # country（第 5 遍）：换代理国家（重拉 gost 链，成本高）。不给回调就跳过 —— 默认允许。
         if set_country is None:
-            runs.append(_skipped("country", (
+            _tell(_skipped("country", (
                 "这一遍没跑：换代理国家要重拉 gost 链（单遍成本高，规格 §10 就把它标成可选）。"
                 "所以「地区内容差异」这次**没验到**；要跑就传 set_country=回调 + country=…。")))
         else:
             try:
                 set_country(country)
             except Exception as exc:
-                runs.append(_skipped("country", (
+                _tell(_skipped("country", (
                     "这一遍没跑成：换代理国家的时候出错了（%s）。地区内容差异这次**没验到**。"
                     % exc)))
             else:
-                runs.append(_spend("country"))
+                _tell(_spend("country"))
 
     runs = tuple(runs)
     return Report(runs=runs, passed=_judge(runs, allowed), allowed_skips=allowed,
-                  cdp_bin=str(cdp_bin) if cdp_bin else None, site=site, py_path=str(py))
+                  cdp_bin=str(cdp_bin) if cdp_bin else None, site=site, py_path=str(py),
+                  narrate_broken=tuple(narrate_broken))

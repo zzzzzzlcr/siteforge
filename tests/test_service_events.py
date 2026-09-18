@@ -46,7 +46,7 @@ from langgraph.types import Interrupt
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import events, graph, llm, service  # noqa: E402
+from agent import events, graph, llm, selftest as selftest_mod, service  # noqa: E402
 
 SITE = "example-funnel"
 URL = "https://example-funnel.test/quiz"
@@ -234,6 +234,32 @@ class _ExploreGraph:
         return _Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"],
                              "end_reason": "explore_unfinished",
                              "end_note": "探了一趟就收工。"},
+                     next=(), interrupts=())
+
+
+class _SelftestGraph:
+    """`invoke` 里**叫一次自测那根线**的假图（Task 5 补 `selftest_run` 那个词时加的）。
+
+    与 `_ExploreGraph` 同一个道理：`selftest_run` 是从 `Deps.selftest` 里长出来的 ——
+    桩图不叫它就永远看不见，而「词表里有、没人记得出来」正是这条机械断言要抓的。
+    ⚠️ **不真起产物**（那是 `tests/test_selftest.py` 的事）：那一遍的结果由测试喂进来，
+    但走的仍是**服务拼好的那根线**（`_selftest_cb` → `on_run` → `_run_teller`）。
+    """
+
+    def __init__(self, deps):
+        self.deps = deps
+        self.invokes: list = []
+
+    def invoke(self, payload, config):
+        self.invokes.append(payload)
+        self.deps.selftest("candidate.py", WS_URL, "form.json", SITE)
+        return {"site": SITE, "visits": ["selftest"], "end_reason": "selftest_unfinished",
+                "end_note": "自测跑了一遍就收工（这一条只关心那一遍有没有播出来）。"}
+
+    def get_state(self, config):
+        return _Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["selftest"],
+                             "end_reason": "selftest_unfinished",
+                             "end_note": "自测跑了一遍就收工。"},
                      next=(), interrupts=())
 
 
@@ -581,6 +607,8 @@ def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
     | 交上去时前面正有 run | `queued` |
     | 服务重启后从 checkpoint 捡回来 | `recovered` |
     | 跑完一步之后状态读不回来 | `state_unreadable` |
+    | 探路走一步（模型也说了话） | `step` / `agent_said`（Task 5 起 `_Gate._note` 也接线了） |
+    | 自测跑完**一遍**（含没跑的那几遍） | `selftest_run`（Task 5 加的，⑨） |
 
     **要盯住的名字是「从调用点长出来的」**（`_kinds_the_service_narrates` AST 扫
     `agent/service.py`），不是手抄的：复审 2026-09-18 实测，手抄的名单对「按规矩加一个
@@ -669,6 +697,26 @@ def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
     j8 = c8.post("/run", json=_brief(tmp_path)).json()["job_id"]
     c8.app.state.service._queue.join()
     seen |= {e["kind"] for e in c8.app.state.service._jobs[j8].timeline.all()}
+
+    # ⑨ 自测跑完**一遍**（Task 5 的 `on_run`）—— ⑧ 那条走的是探路，逼不出这个词。
+    #     ⚠️ 这一遍**是 `skipped` 的那种**（没跑）：它正是最容易被漏掉的那一类，
+    #     而设计注 §3.2 第 3 行点名的就是它（「没验到」不许只在报告里躺着）。
+    #     换掉的是**库函数** `selftest.run`（不真起产物），走的是服务拼好的那根线。
+    def _fake_selftest(py_path, ws_url, form_file, site, **kw):
+        run = selftest_mod.Run(
+            name="viewport", label=selftest_mod.RUN_LABELS["viewport"], status="skipped",
+            ok=None, failed_step=None, trace_path=None,
+            note="这一遍没跑：换窗口大小要调用方在窗口层动手 —— 这一类失败这次**没验到**。")
+        kw["on_run"](run)
+        return selftest_mod.Report(runs=(run,), passed=False, allowed_skips=("country",),
+                                   cdp_bin=None, site=site, py_path=str(py_path))
+
+    monkeypatch.setattr(selftest_mod, "run", _fake_selftest)
+    c9 = _client(graph_factory=lambda brief, deps: _SelftestGraph(deps),
+                 window=StubWindow(alive=True))
+    j9 = c9.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    c9.app.state.service._queue.join()
+    seen |= {e["kind"] for e in c9.app.state.service._jobs[j9].timeline.all()}
 
     # ── 机械断言（三条，名字都从调用点推出来）──────────────────────
     derived = _kinds_the_service_narrates()

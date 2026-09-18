@@ -160,9 +160,12 @@ KINDS = (
     # ── 别的（目录表第 7、8、9 行 + 这一版补的）──
     "recovered",        # 服务重启过，这个 job 是从 checkpoint 捡回来的
     "human_said",       # 人说的话 / 人打过回（`who="you"`）
-    "shot_missing",     # 这一轮没留下图（配一句「为什么没有」）
+    "shot_missing",     # 这一轮 / 这一步没留下图（配一句「为什么没有」）
     "state_unreadable", # 跑完一步之后读不回自己的状态（**读**那一侧的静默路，Task 4 补）
-    "step",             # 「第 N 步」：契约七格主要落在这类事件上（探路的 `on_step` 是 Task 5）
+    "step",             # 「第 N 步」：契约七格主要落在这类事件上（探路的 `on_step`）
+    # ── 长节点自己开口说的那两条（Task 5，设计注 §3.3 / §3.2 第 3 行）──
+    "agent_said",       # 模型**每一轮**的推理（`_Gate._note` 的 `AI 说：…`，`who="agent"`）
+    "selftest_run",     # 扰动自测**每一遍**跑完的结果（含没跑的那几遍，`who="system"`）
 )
 
 #: 事件上限：超了**丢最旧的**（内存里的东西，随 job 一起活在进程里）。
@@ -245,7 +248,7 @@ def _require_why(why, cells: list) -> None:
 #:   - 状态机那些词（`done` / `failed` / `running` / `cap_hit` …）**只有服务那一方**能说。
 #: 为什么这条要紧：`datewhirl` 的病是「脚本自起的名字被后台照着当真话读」——
 #: 关上「新词」那半扇门、却留着一张嘴能说 `done`，那半扇门等于没关。
-VOICE_KINDS = {"agent": ("step",), "you": ("human_said",)}
+VOICE_KINDS = {"agent": ("step", "agent_said"), "you": ("human_said",)}
 
 _WORDS = re.compile(r"[^0-9A-Za-z]+")
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")

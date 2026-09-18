@@ -422,6 +422,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             ws_url: str | None = None, host: str | None = None, port: int | None = None,
             binary: str | None = None,
             on_step: Callable[[dict], None] | None = None,
+            on_note: Callable[[str], None] | None = None,
             resume_from: list | None = None,
             resume_note: str = "",
             window_alive: Callable | None = None,
@@ -440,6 +441,9 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
       - `session`：MCP 会话（测试用桩；不给就按 `ws_url`/`host`/`port` 起一个真的）
       - `client`：LLM 客户端（测试注入；不给就用 `llm.client()`）
       - `on_step`：每步**发生的当下**回调一次（Console 的实时视图靠它）
+      - `on_note`：模型**每一轮**说的话（`AI 说：…`）在记进 `journey.notes` 的**同一处**
+        回调一次，拿到的是**逐字那一句**（Console 的实时视图靠它 —— 见 `_Gate._note`）。
+        不给 = 今天那条路，一个字节不变
       - `resume_from`：**续跑的开头**（§1.7）。账本里那一段（`replayable_prefix` 切出来的
         那几行）——先照它走回去（**0 模型调用**），再把「重放了什么、边界在哪」告诉模型。
         不给就是从头探（**今天那条路**，一个字节都不差）
@@ -494,7 +498,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             raise RuntimeError("MCP 门上一个工具都没有 —— 工具循环没法开始")
         inner = client if client is not None else llm.client()
         gate = _Gate(inner, lambda: _stop_or_raise(paused, journey, taken, limits),
-                     journey, watch)
+                     journey, watch, on_note=on_note)
 
         #: 旁路的故障**只记一次**（别每步刷一条）—— 见 `emit` 的 docstring。
         side_broken: list = []
@@ -1170,13 +1174,22 @@ class _Gate:
     全部叙述**，恰恰在人最需要它的时候（正要靠那几句话决定「要不要接着跑」）。
     这道闸是唯一每轮都在场的东西，所以叙述归它 —— 计划模式的**位置与停滞也归它**
     （`watch`，同一个道理：只有每轮都在场，才记得住「连着几轮没推进」）。
+
+    `on_note`（Task 5）：那一句**当场**也要给 Console 一份（`explore` 的 docstring）。
+    ⚠️ 它**必须挂在 `_note` 里**（= 记进 `journey.notes` 的那一处），不许另找地方补：
+    两处各触发一次的话，账本与时间线会有**两份不同的真相**（改了前缀、漏了被打断那一轮），
+    而坐在屏幕前的人读到的就不一定是它真说过的那句。
     """
 
-    def __init__(self, inner, check: Callable[[], None], journey: Journey, watch=None):
+    def __init__(self, inner, check: Callable[[], None], journey: Journey, watch=None,
+                 on_note: Callable[[str], None] | None = None):
         self._inner = inner
         self._check = check
         self._journey = journey
         self._watch = watch
+        self._on_note = on_note
+        #: 「旁路没送成」这件事**说过了**没有（别每轮刷一条 —— 与 `emit` 同一条规矩）。
+        self._note_broken = False
         self.chat = _Namespace(completions=_Namespace(create=self._create))
 
     def _create(self, **kwargs):
@@ -1193,8 +1206,26 @@ class _Gate:
         return resp
 
     def _note(self, content: str) -> None:
-        if content:
-            self._journey.notes.append(f"AI 说：{content}")
+        if not content:
+            return
+        said = f"AI 说：{content}"
+        self._journey.notes.append(said)
+        if self._on_note is None:
+            return                                # 没接这根线 = 今天那条路，一个字节不变
+        # ⚠️ **旁路坏掉不许带塌主路**（与 `emit` 那条一模一样的规矩）：
+        # 回调抛出去的话，它会以**模型这一轮自己炸了**的身份穿过 `run_tool_loop`，
+        # 把一趟真探路变成废账 —— 而时间线坏掉不是产物的事。
+        # 但也**不许静默**：坏掉这件事记进账本（人看得出来这一趟的时间线少了它的推理）。
+        try:
+            self._on_note(said)
+        except Exception as exc:                   # noqa: BLE001 —— 外部世界，什么都可能抛
+            if self._note_broken:
+                return
+            self._note_broken = True
+            self._journey.notes.append(
+                "⚠️ 旁路（模型这一轮的话没送到时间线）没记成：%s: %s —— "
+                "探路照常往下走（旁路坏掉不许带塌主路），但这一趟的时间线上会少掉它的推理。"
+                % (type(exc).__name__, exc))
 
 
 def _content_of(resp) -> str:

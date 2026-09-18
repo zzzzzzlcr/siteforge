@@ -159,8 +159,12 @@ WINDOW_DEAD_SAY = ("窗口没了 —— Bit 的窗口只活几分钟。它停在
 HUMAN_SAID_THROUGH_SAY = "这句话会一路带进「写这一版 py」。"
 #: 没有 note 的那次「继续」：不能说「这句话带进去了」（没有话）
 HUMAN_SAID_PLAIN_SAY = "（你在「%s」那道闸上按了继续，没有多说。）"
-#: 目录表第 9 行。`%s` = 拍不成的原因**原文**（不许让空图框冒充页面）
+#: 目录表第 6 行的**闸拍**那一半。`%s` = 拍不成的原因**原文**（不许让空图框冒充页面）
 SHOT_MISSING_SAY = "这一轮没留下图：%s"
+#: 目录表第 6 行的**步拍**那一半（Task 5）。同一句规矩，说的那一步**具体是哪一步**。
+#: 与上面那一句分开：闸拍说的是「这一轮」，步拍说的是「这一步」——
+#: 句子里那个词就是读的人用来对号的位置。
+STEP_SHOT_MISSING_SAY = "这一步没留下图：%s"
 #: 目录表第 6 行：撞上限时那句话的前缀（后面照抄 `end_note`）
 CAP_SAY_PREFIX = "撞上限了："
 #: 到头了但快照里**没留人话** —— 明说「它没说清」（`say` 不许空着，更不许不记）
@@ -843,6 +847,10 @@ class Job:
     #: 「窗口已经死了」这件事**说过了**没有：每次 `_advance` 返回都去问窗口层，
     #: 但只有「不是没了 → 没了」那一翻要记一条（同一件事记十遍不是信息）。
     window_dead: bool = False
+    #: **步拍**报过的 `why`（人话原文）。**同一句只报一次**（Task 5，目录表第 6 行）：
+    #: 拍照坏掉通常是**每一步**都坏，每一步刷一条会把时间线灌满 —— 而多条不是信息。
+    #: 认的是**那句话**、不是第几步：同一趟探路里两步的图没了往往是同一个原因。
+    shots_reported: set = dataclasses.field(default_factory=set)
 
     def snapshot_for_view(self) -> tuple:
         with self.lock:
@@ -965,7 +973,7 @@ class Service:
         生产走 `graph_factory=None` 那条：全是真接线。
         """
         deps = graph.Deps(explore=self._explore_for(brief, job_id),
-                          selftest=self._selftest_cb(),
+                          selftest=self._selftest_cb(job_id),
                           set_viewport=(self._viewport_cb(brief.get("ws_url"))
                                         if brief.get("set_viewport") else None),
                           fresh_session=self._fresh_session_cb(),
@@ -974,7 +982,7 @@ class Service:
             return self._graph_factory(brief, deps)
         return graph.build(checkpointer=self._check.get(), deps=deps)
 
-    def _selftest_cb(self) -> Callable:
+    def _selftest_cb(self, job_id: str = "") -> Callable:
         """`Deps.selftest`：把**构造时定死的**那两样交给自测（二进制、trace 落哪）。
 
         为什么（修复轮 2 的第三条通道 + 修复轮 3 的 F2）：
@@ -991,10 +999,17 @@ class Service:
         ⚠️ 与 `explore`/`shots`/`viewport_probe` 同一条不变量：
         **构造时定死，之后不再看环境**（同一个进程里出现两个不同的 cdp = 漂）。
         ⚠️ 调用方**显式**给了 `run_dir` 就用它的（`setdefault`）：这是注入点，不是覆盖点。
+
+        第三样（Task 5）：**每一遍跑完当场播一条**（`on_run=_run_teller(job_id)`）。
+        为什么不图在 `run_dir`/`cdp_bin` 旁边直接写死：时间线挂在**这个 job** 上，
+        没有 `job_id` 就无处可记（空字符串 = 今天那条路，不接这条线）。
+        同上用 `setdefault`：显式给了 `on_run` 的调用方（测试 / 计划三的 Console）赢。
         """
 
         def run_selftest(py_path, ws_url, form_file, site, **kw):
             kw.setdefault("run_dir", str(selftest.default_run_dir(site, root=self._selftest_root)))
+            if job_id:
+                kw.setdefault("on_run", self._run_teller(job_id))
             return selftest.run(py_path, ws_url, form_file, site, cdp_bin=self._cdp_bin, **kw)
 
         return run_selftest
@@ -1063,10 +1078,15 @@ class Service:
             on_step = _two_readers(
                 (self._journal_for(job_id, self._next_attempt_no(job_id), journal_broken)
                  if job_id else None), tell)
+            # 模型**每一轮**的话（`AI 说：…`）—— 第三根线（Task 5，设计注 §3.3）。
+            # ⚠️ 它只有**一个**读者（时间线），所以不走 `_two_readers`；
+            # 坏掉那件事与上面两条共用 `timeline_broken` 那一本（同一个落点：时间线）。
+            on_note = self._note_teller(job_id, timeline_broken) if job_id else None
             try:
                 journey = browser_agent.explore(url, goal, budget=budget,
                                                 should_pause=should_pause, ws_url=ws_url,
                                                 on_step=on_step,
+                                                on_note=on_note,
                                                 resume_from=resume_from or None,
                                                 resume_note=resume_note or "",
                                                 window_alive=window_alive,
@@ -1701,6 +1721,65 @@ class Service:
 
         return tell
 
+    def _note_teller(self, job_id: str, broken: Optional[list] = None) -> Callable:
+        """`on_note`：模型**每一轮**说的话 → 时间线一条 `agent_said`（Task 5）。
+
+        为什么这一条要单独一根线（设计注 §3.3 原话）：那是**它的推理** ——
+        「我能充当他的眼睛或者纠错员」那句话里最需要的那一半，
+        而今天它只在跑完之后才看得到（`journey.notes` 里躺着，还要展开）。
+
+        `say` **逐字转抄**（`AI 说：…` 那整句，与 `journey.notes` 里那一行是同一句）：
+        转抄不是改写 —— 换一个字，读的人就是在读服务的话而不是它的话，
+        而这一片的承重句正是「承重的不是有哪几格，是**谁填**」（契约 §二①）。
+
+        ⚠️ 与 `_step_teller` 一模一样的两条：job 不在登记表里**不抛**（抛会把这一趟
+        探路整个带塌），但**不许静默**（原因进 `timeline_broken`，由 `run()` 写进
+        `journey.notes`）。
+        """
+        broken = broken if broken is not None else []
+
+        def tell(said: str) -> None:
+            job = self._jobs.get(job_id)
+            if job is None:
+                if not broken:
+                    broken.append("模型这一轮的话没记上（job %s 不在登记表里）" % job_id)
+                return
+            self.narrate(job, "agent_said", said, who="agent")
+
+        return tell
+
+    def _run_teller(self, job_id: str) -> Callable:
+        """`on_run`：自测**每一遍**跑完 → 时间线一条 `selftest_run`（Task 5）。
+
+        `say` = `Run.label` + `Run.note` **原文**（设计注 §3.2 第 3 行的形状）——
+        那两句本来就是人话（「第 4 遍：换个窗口大小再跑…」+「这一遍没跑：…」），
+        照搬，不重写、不再判断一次。
+
+        ⚠️ **没跑的那几遍也要说**（`skipped` / `not_needed`）：它们正是「哪一类失败这次
+        **没验到**」的载体，只在报告里看得见就等于没人看见（R-5 治的就是这个病）。
+
+        ⚠️ 没有 job 可记时**抛**（与 `_note_teller` 不同，理由见那一头）：自测的播报在
+        外面**没有** `journey.notes` 那样的落点，能看见它的只有 `selftest.run` 的护栏 ——
+        而护栏正是照「回调抛了」来处置的（记进 `Report.narrate_broken`，随报告回到
+        叫它的那一层）。**吞掉才是静默**：那样服务和人都不会知道这一趟的时间线少了每一遍。
+        """
+        def tell(run: Any) -> None:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise RuntimeError(
+                    "自测的那一遍没地方播报（job %s 不在登记表里）—— 时间线挂在这个 job 上，"
+                    "没有它就无处可记。" % job_id)
+            data = {"run": str(getattr(run, "name", "")),
+                    "status": str(getattr(run, "status", ""))}
+            step_no = getattr(run, "failed_step", None)
+            if isinstance(step_no, int):
+                data["failed_step"] = step_no
+            self.narrate(job, "selftest_run",
+                         "%s\n%s" % (getattr(run, "label", ""), getattr(run, "note", "")),
+                         **data)
+
+        return tell
+
     def _note_step(self, job: Job, step: dict, expects: list) -> None:
         """一条探路的步 → 时间线那两条事件（见 `_step_teller` 的表）。
 
@@ -1832,8 +1911,56 @@ class Service:
             self.narrate(job, "state_unreadable", STATE_UNREADABLE_SAY % raw, error=raw)
             return
         self._note_window_died(job, values)
+        self._note_shots_missing(job, values)     # 目录表第 6 行的**步拍**那一半
         if ended:
             self._note_end(job, values)
+
+    def _note_shots_missing(self, job: Job, values: dict) -> None:
+        """目录表第 6 行的**步拍**那一半：某一步的图没拍成 → 时间线上一条（Task 5）。
+
+        为什么要有这一条：第 6 行原先只有**闸拍**那一半（`_capture_pause` 的
+        `shot_missing`），而探路里每一步自己也在拍（`shots_dir` 那条线）——
+        那些拍不成的时候，原因今天只落在 `journey` 上（`step["shots_why"]` /
+        `journey.shots_why`），**时间线上一个字都没有**：一张空白的步拍图框
+        与「这一步没有图是因为窗口连不上」在页面上长得一模一样，而设计注
+        §3.2 第 6 行明令不许让空图框冒充页面。
+
+        两种形状都认（都是「这一步没留下图」这件事的载体）：
+          - `step["shots_why"]`：**那一步**的图没成（`.get` 读 —— 没这个字段的
+            journey 一个字节都不受影响）；
+          - `journey.shots_why`：步拍这**条路**最近一次的坏法（步拍自己的代码抛了
+            就是这一种，它没有「哪一步」）。
+
+        ⚠️ **同一句只报一次**（`job.shots_reported`）：拍照坏掉通常每一步都坏。
+        ⚠️ 整个函数是**旁路**：读不出来就什么都不做（`getattr` 兜着）——
+        它坏掉不许把 `_note_after_advance` 带塌（那会把一次读账变成一次跑挂）。
+        """
+        journey = values.get("journey")
+        if journey is None:
+            return
+        whys = []                                 # [(why, step_no|None, 是「哪一步」那条吗)]
+        for step in list(getattr(journey, "steps", None) or []):
+            try:
+                why = str(step.get("shots_why") or "").strip()
+            except AttributeError:                # 不是字典的步（不该有）—— 跳过它，不抛
+                continue
+            if why:
+                whys.append((why, step.get("step_no"), True))
+        whole = str(getattr(journey, "shots_why", "") or "").strip()
+        if whole:
+            whys.append((whole, None, False))
+        for why, step_no, per_step in whys:
+            with job.lock:
+                if why in job.shots_reported:
+                    continue
+                job.shots_reported.add(why)
+            data = {"why": why}
+            if isinstance(step_no, int):
+                data["step_no"] = step_no
+            # 两种形状两句话：**这一步**的图没了 / **这一轮**整条步拍路坏了
+            # （后者与闸拍那句同一句 —— 闸拍那一半本来就说的是「这一轮」）。
+            say = (STEP_SHOT_MISSING_SAY if per_step else SHOT_MISSING_SAY) % why
+            self.narrate(job, "shot_missing", say, **data)
 
     def _note_human_said(self, job: Job, job_id: str, body: ReplyRequest) -> None:
         """目录表第 8 行：人的原话 + **这句话去哪了**。
