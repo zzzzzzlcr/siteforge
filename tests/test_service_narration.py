@@ -367,11 +367,95 @@ def test_the_service_narration_kinds_stay_inside_the_closed_vocabulary():
 # ═══════════════ 4. 步拍没成 → 时间线（`shot_missing`）═══════════════
 
 
-def _journey(*, steps=(), shots_why=""):
+def _journey(*, steps=(), failures=(), shots_why=""):
+    """一个桩 journey。`failures` = `journey.shot_failures`（**只增**那本账，见下）。"""
     j = browser_agent.Journey()
     j.steps = list(steps)
+    j.shot_failures = list(failures)
     j.shots_why = shots_why
     return j
+
+
+def _shots(journey, where, shooter):
+    """一个真的 `_StepShots`（步拍那条路的正身 —— 这一片要测的正是它记了什么）。"""
+    where.mkdir(parents=True, exist_ok=True)
+    return browser_agent._StepShots(journey, where, shooter)
+
+
+def _shooter(*, fails=0, why="桩说的：相机没电"):
+    """前 `fails` 次报「拍不成」，之后每次都成。"""
+    calls = {"n": 0}
+
+    def shooter(session, dest):
+        calls["n"] += 1
+        if calls["n"] <= fails:
+            return None, why
+        pathlib.Path(str(dest)).write_bytes(b"x")
+        return pathlib.Path(str(dest)).name, ""
+
+    return shooter
+
+
+def test_a_shot_that_failed_and_then_worked_is_still_on_the_timeline(tmp_path):
+    """**验收 1**：第 1 张没成、第 2 张成 —— 时间线上**有**一条 `shot_missing`。
+
+    ⚠️ 这一条钉的是修复轮 2 的正身（复审判的洞）：`shots_why` 是**一格状态**
+    （拍成了就清 —— Minor-5 要的就是那个），于是「失败又恢复」在那上面留不下痕迹。
+    出口必须是**只增的账**：`journey.shot_failures`（步拍在**没成的那一刻**记的）。
+    这里走的是**真的** `_StepShots`（不是手搭的桩），失败与恢复都是它自己发生的。
+    """
+    journey = browser_agent.Journey()
+    shots = _shots(journey, tmp_path / "shots", _shooter(fails=1))
+    shots.before_mutation({"action": "click"}, None, ("k",))
+    assert "相机没电" in journey.shots_why, journey.shots_why
+    shots.before_mutation({"action": "click"}, None, ("k",))
+    assert journey.shots_why == "", "拍成之后那格状态该清掉（Minor-5）"
+    assert len(journey.shot_failures) == 1, journey.shot_failures
+
+    client, job_id = _one_job(tmp_path, _narrating(call="none",
+                                                   values={"journey": journey}))
+    told = _events(client, job_id, "shot_missing")
+    assert len(told) == 1, [e for e in _live(client, job_id)["events"]]
+    assert "相机没电" in told[0]["say"], told[0]["say"]
+
+
+def test_a_step_shot_code_crash_that_recovered_is_still_on_the_timeline(tmp_path):
+    """**验收 2**：步拍**自己的代码**抛了、随后一张拍成了 —— 一样有那条事件。
+
+    这是 `_safe` 那个 `except` 的出口（`browser_agent.py` 里那条「旁路，什么都得吞」）：
+    它够不着「哪一步」，所以那一句说的是「探路里的步拍图这一次没留下」。
+    """
+    journey = browser_agent.Journey()
+    shots = _shots(journey, tmp_path / "shots", _shooter())
+
+    def boom():
+        raise AttributeError("步拍自己坏了（桩）")
+
+    shots._safe("before_mutation", boom)
+    assert "步拍自己坏了" in journey.shots_why, journey.shots_why
+    shots.before_mutation({"action": "click"}, None, ("k",))
+    assert journey.shots_why == "", "拍成之后那格状态该清掉（Minor-5）"
+    assert len(journey.shot_failures) == 1, journey.shot_failures
+
+    client, job_id = _one_job(tmp_path, _narrating(call="none",
+                                                   values={"journey": journey}))
+    told = _events(client, job_id, "shot_missing")
+    assert len(told) == 1, [e for e in _live(client, job_id)["events"]]
+    assert "步拍自己坏了" in told[0]["say"], told[0]["say"]
+    assert "这一步" not in told[0]["say"], told[0]["say"]
+
+
+def test_a_channel_that_stayed_broken_is_told_once(tmp_path):
+    """**验收 3**：一直坏 —— 那本账会一直涨，但时间线上**只报一次**（去重不许坏）。"""
+    journey = browser_agent.Journey()
+    shots = _shots(journey, tmp_path / "shots", _shooter(fails=99))
+    for _ in range(3):
+        shots.before_mutation({"action": "click"}, None, ("k",))
+    assert len(journey.shot_failures) == 3, journey.shot_failures
+
+    client, job_id = _one_job(tmp_path, _narrating(call="none", values={"journey": journey}))
+    told = _events(client, job_id, "shot_missing")
+    assert len(told) == 1, [e["say"] for e in told]
 
 
 def test_a_step_whose_shot_did_not_land_is_told_once(tmp_path):
@@ -398,24 +482,35 @@ def test_a_step_whose_shot_did_not_land_is_told_once(tmp_path):
 
 
 def test_the_step_shot_channel_breaking_is_told_too(tmp_path):
-    """步拍那条路**整条**坏掉（`journey.shots_why`）也要说 —— 它是另一个 `why` 字段。
+    """步拍那条路**整条**坏掉（步拍自己的代码抛了那种）也要说。
 
-    ⚠️ 两种形状都认：`step["shots_why"]`（这一步的图没了）与 `journey.shots_why`
-    （这条**路**最近一次的坏法 —— 步拍自己的代码抛了就是这一种，它没有「哪一步」）。
-    「没有静默的路径」管的是**任何一个 `why` 字段**，不是只管路一个形状。
+    ⚠️ 它的形状是「**够不着哪一步**」那种（`_safe` 记的），所以那句话说的是这一路、
+    不是「这一步」（Important-2）。带 `when` 的那条（`_take` 记的）走的是另一句 ——
+    两句的分别由 `test_the_three_missing_shot_sentences_are_told_apart` 钉。
     """
-    values = {"journey": _journey(steps=[{"action": "click"}], shots_why=CHANNEL_WHY)}
+    values = {"journey": _journey(failures=[{"why": CHANNEL_WHY}])}
     client, job_id = _one_job(tmp_path, _narrating(call="none", values=values))
 
     told = _events(client, job_id, "shot_missing")
     assert len(told) == 1, [e for e in _live(client, job_id)["events"]]
     assert CHANNEL_WHY in told[0]["say"], told[0]["say"]
+    assert "这一步" not in told[0]["say"], told[0]["say"]
 
 
 def test_a_journey_without_a_missing_shot_says_nothing(tmp_path):
-    """反面：图都拍成了 → **没有** `shot_missing`（不许把「没事」也说成「缺图」）。"""
-    values = {"journey": _journey(steps=[{"action": "click", "shot_before": "a.png"}])}
-    client, job_id = _one_job(tmp_path, _narrating(call="none", values=values))
+    """**验收 4**（反面）：图都拍成了 → **没有** `shot_missing`。
+
+    不许变成「见到过就永远报」那种怂改法：这本账**只增**，而这里它自始至终是空的
+    （走的是真 `_StepShots`，两张都拍成）。
+    """
+    journey = browser_agent.Journey()
+    shots = _shots(journey, tmp_path / "shots", _shooter())
+    for _ in range(2):
+        shots.before_mutation({"action": "click"}, None, ("k",))
+    assert journey.shot_failures == [] and journey.shots_why == "", journey.shot_failures
+
+    client, job_id = _one_job(tmp_path, _narrating(call="none",
+                                                   values={"journey": journey}))
     assert _events(client, job_id, "shot_missing") == []
 
 
@@ -435,9 +530,9 @@ def test_the_three_missing_shot_sentences_are_told_apart(tmp_path):
         call="none", values={"journey": _journey(steps=[{"action": "click",
                                                           "shots_why": SHOT_WHY}])}))
     step_say = _says(c1, j1, "shot_missing")[0]
-    # ② 步拍·整条路（那条路的 why —— 没有「哪一步」）
+    # ② 步拍·整条路（够不着「哪一步」那种 —— `_safe` 记的，账上不带 `when`）
     c2, j2 = _one_job(tmp_path, _narrating(
-        call="none", values={"journey": _journey(shots_why=CHANNEL_WHY)}))
+        call="none", values={"journey": _journey(failures=[{"why": CHANNEL_WHY}])}))
     channel_say = _says(c2, j2, "shot_missing")[0]
     # ③ 闸拍（这一轮停下来的那张没拍成）
     c3, j3 = _one_job(tmp_path, _narrating(call="none"), capture=_shot_boom)
@@ -726,23 +821,16 @@ def test_a_later_shot_that_lands_clears_the_broken_channel_note(tmp_path):
     「探路里的步拍图这一次没留下」，而后面那些图其实都留下了。去重挡得住刷屏，
     挡不住这件事。
     """
-    where = tmp_path / "shots"
-    where.mkdir()
-    calls = {"n": 0}
-
-    def shooter(session, dest):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return None, "桩说的：相机没电"
-        pathlib.Path(str(dest)).write_bytes(b"x")
-        return pathlib.Path(str(dest)).name, ""
-
     journey = browser_agent.Journey()
-    shots = browser_agent._StepShots(journey, where, shooter)
+    shots = _shots(journey, tmp_path / "shots", _shooter(fails=1))
     shots.before_mutation({"action": "click"}, None, ("k",))
     assert "相机没电" in journey.shots_why, journey.shots_why
     shots.before_mutation({"action": "click"}, None, ("k",))
     assert journey.shots_why == "", "拍成之后那句话还挂着（事实被拉长了）：%r" % journey.shots_why
+    # ⚠️ 但**清空不等于没发生过**（修复轮 2）：那一刻的事在那本只增的账上留着 ——
+    # 清的是「现在坏着吗」，不是历史（历史由 `shot_failures` 负责）。
+    assert [row["why"] for row in journey.shot_failures] == ["桩说的：相机没电"], \
+        journey.shot_failures
 
 
 def test_the_hooks_are_optional_keyword_arguments_not_a_new_shape():

@@ -278,10 +278,21 @@ class Journey:
     notes: list = field(default_factory=list)
     stop_reason: str = "running"
     final_answer: str = ""
-    #: 最近一次**没拍成**的原因（人话）。空串 = 没出过问题。
+    #: **现在**坏着吗 —— 最近一次没拍成的原因（人话）。空串 = 这一刻没事。
     #: ⚠️ 与 `notes` **分开**：`notes` 是「这一趟发生了什么」，这个是「拍照那条旁路现在的状态」——
     #: 混进去会让「它为什么没有图」被别的 note 淹掉（旁路坏掉要能单独被看见）。
+    #: ⚠️ **它是一格状态，不是一本账**（Task 5 修复轮 2）：拍成了就清空 ——
+    #: 所以**「发生又消失」的事在它上面留不下痕迹**，要那种痕迹请看 `shot_failures`。
     shots_why: str = ""
+    #: 步拍**没成**的每一次，**当时**记一条（**只增不减**，Task 5 修复轮 2）：
+    #: `[{"why": 人话原因, "when": "before" | "after"}]`；`when` 缺席 = 这条不是某一步的
+    #: （步拍自己的代码抛了那种，`_safe` 记的，它够不着「哪一步」）。
+    #:
+    #: **为什么非要一本只增的账**（而不是只看 `shots_why`）：`shots_why` 说的是「这条**路
+    #: 现在**坏着吗」（拍成了就清，那是对的），而**一张没成、下一张成了**这种事在它上面
+    #: 什么痕迹都不留 —— 时间线于是会说「一切顺利」，而那一刻确实出过事。
+    #: **残留状态天生会漏掉「发生又消失」的事实**；那一刻的事只有当场记下来才留得住。
+    shot_failures: list = field(default_factory=list)
     pages: list = field(default_factory=list)
 
     # ── 计划模式的账（Task 3 起；没计划时全空 —— **不加计划就不假装有计划**）──
@@ -2576,6 +2587,24 @@ class _StepShots:
         self._pending: dict | None = None
         self._said_cap = False
 
+    def _fail(self, why, when: str = "") -> None:
+        """步拍没成的**那一刻**：两样一起记（Task 5 修复轮 2）。
+
+        - `journey.shots_why` = 「**现在**坏着」（拍成了会被 `_take` 清掉，那是它的本分）；
+        - `journey.shot_failures` = **只增**的那一条（`when` 给了才带 —— 带了 = 这是某一步的，
+          没带 = 这条够不着「哪一步」）。
+
+        ⚠️ 为什么必须在**这一刻**记：读的人要的是「这一趟出过什么事」。只更新那一格状态的话，
+        一张没成、下一张成了 ⇒ 时间线上**一条都没有** —— 而那一刻确实出过事
+        （复审实测过这个洞，它是我上一轮那行「成功就清空」带出来的）。
+        """
+        reason = str(why or "拍不成，而且没说为什么")
+        self.journey.shots_why = reason
+        row = {"why": reason}
+        if when:
+            row["when"] = when
+        self.journey.shot_failures.append(row)
+
     def _safe(self, what: str, fn, *args, **kwargs) -> None:
         """**旁路纪律的总闸**：步拍自己坏了，绝不许把探路带塌。
 
@@ -2592,8 +2621,10 @@ class _StepShots:
         try:
             fn(*args, **kwargs)
         except Exception as exc:                   # noqa: BLE001 —— 旁路，什么都得吞
-            self.journey.shots_why = ("步拍自己坏了（%s）：%s：%s"
-                                      % (what, type(exc).__name__, exc))
+            # ⚠️ 走 `_fail`（两样一起记）：这一条**没有 `when`** —— `_safe` 够不着「哪一步」，
+            # 所以时间线上那句说的是「探路里的步拍图这一次没留下」，不是「这一步」
+            # （Task 5 修复轮 1 的 Important-2：说得出多少说多少，别编）。
+            self._fail("步拍自己坏了（%s）：%s：%s" % (what, type(exc).__name__, exc))
             # ⚠️ 这里**故意不回滚**（`f0e3573` 那版在这儿有一句 `self._discard_pending()`，已删）。
             # 为什么原来那句是旧话：回滚只看得到 `_pending`（「还在手上」的那一个），而
             # **账的真相在盘上** —— 从结算钩子自己抛异常那一刻起它就够不着了
@@ -2766,6 +2797,10 @@ class _StepShots:
         那个字段说的是「这条**路**现在坏着吗」，不是一个历史记录。不清的话，这一趟里
         有一张没拍成之后**后面每一步都正常**，它仍然挂着那句话 —— 读它的人会以为
         「这一趟的图一直没留下」（事实被拉长了）。去重能挡住刷屏，挡不住这件事。
+
+        ⚠️ 但**清空不等于没发生过**（修复轮 2）：没成的那一刻进的是
+        `journey.shot_failures`（只增）—— 「一张没成、下一张成了」这件事，
+        时间线靠**那本账**看得见，不靠这一格状态。
         """
         if len(self._on_disk) >= MAX_KEPT_SHOTS:
             if not self._said_cap:
@@ -2781,11 +2816,10 @@ class _StepShots:
         try:
             name, why = self.shooter(session, dest)
         except Exception as exc:                   # noqa: BLE001 —— 外部世界，什么都可能抛
-            self.journey.shots_why = ("拍照时它抛了：%s：%s"
-                                      % (type(exc).__name__, exc))
+            self._fail("拍照时它抛了：%s：%s" % (type(exc).__name__, exc), when)
             return None
         if not name:
-            self.journey.shots_why = str(why or "拍不成，而且没说为什么")
+            self._fail(why, when)
             return None
         self._written.add(str(name))     # **落盘即登记** —— 收尾按这个收口
         self._on_disk.add(str(name))     # 上限按这个判（此刻它真的在盘上）

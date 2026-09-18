@@ -1942,20 +1942,28 @@ class Service:
         与「这一步没有图是因为窗口连不上」在页面上长得一模一样，而设计注
         §3.2 第 6 行明令不许让空图框冒充页面。
 
-        两种形状都认（都是「图没留下」这件事的载体），**两句话不一样**
+        两个来源都认（都是「图没留下」这件事的载体），**两句话不一样**
         （修复轮 1 的 Important-2：一致不该靠抹平两个事实来达成）：
           - `step["shots_why"]`：**那一步**的图没成（`.get` 读 —— 没这个字段的
             journey 一个字节都不受影响）→「这一步没留下图」；
-          - `journey.shots_why`：步拍这**条路**最近一次的坏法（步拍自己的代码抛了
-            就是这一种，它没有「哪一步」）→ 只说这一路，**不编「哪一步」**
-            （`STEP_SHOT_CHANNEL_SAY`）。
+          - `journey.shot_failures`：步拍**当场**记的那本只增的账（修复轮 2）——
+            带 `when` 的 = 某一步的（同上那句），不带的（`_safe`，步拍自己的代码抛了）
+            = 够不着哪一步 ⇒ 只说这一路，**不编「哪一步」**（`STEP_SHOT_CHANNEL_SAY`）。
+
+        ⚠️ **为什么扫的是那本只增的账，而不是 `journey.shots_why`**（修复轮 2 的正身）：
+        那一格状态说的是「这条**路现在**坏着吗」（拍成了就清，Minor-5 要的就是它），
+        而**残留状态天生会漏掉「发生又消失」的事实** —— 一张没成、下一张成了，
+        于是时间线上一条都没有，读的人以为一切顺利，可那一刻确实出过事。
+        这不是假设：修复轮 1 那行清空就是这么把一条真事件抹掉的（复审判的洞）。
+        **那一刻的事只有当场记下来才留得住**，所以出口是只增的账、不是残留状态。
 
         ⚠️ **射程：只有最后一趟**（修复轮 1 的 Minor-4）。重探时**前几趟**的 Journey
         不进 state（`graph.explore` 只把最后一次的 `out["journey"] = journey` 留下），
         所以前几趟的步拍失败**这一条线看不见** —— 那是简报设计本身带来的形状，
         不是这里漏了。要让前几趟也说出来，得让图把每一趟的账都留下（不在这一片）。
 
-        ⚠️ **同一句只报一次**（`job.shots_reported`）：拍照坏掉通常每一步都坏。
+        ⚠️ **同一句只报一次**（`job.shots_reported`）：拍照坏掉通常每一步都坏，
+        而且这本账**只增** —— 不按「那句话」去重就会每推一步把同一句再报一遍。
         ⚠️ 读 journey 的那几行是**防御性**的（属性可能缺、步理论上可能不是字典），
         但 `self.narrate(...)` **不吞异常** —— 那与 `_note_window_died` / `_note_end`
         **一模一样**：`narrate` 抛是**编程错误**（形状写歪了），吞掉它就等于把
@@ -1972,9 +1980,14 @@ class Service:
                 continue
             if why:
                 whys.append((why, step.get("step_no"), True))
-        whole = str(getattr(journey, "shots_why", "") or "").strip()
-        if whole:
-            whys.append((whole, None, False))
+        for row in list(getattr(journey, "shot_failures", None) or []):
+            try:
+                why = str(row.get("why") or "").strip()
+                per_step = bool(row.get("when"))  # 带 `when` = 那一刻知道是哪一步
+            except AttributeError:                # 同上：不是字典的记录，跳过
+                continue
+            if why:
+                whys.append((why, None, per_step))
         for why, step_no, per_step in whys:
             with job.lock:
                 if why in job.shots_reported:
