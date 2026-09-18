@@ -1,0 +1,918 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>siteforge 控制台</title>
+<!--
+  运营看和说话的那一屏（Task 7 / 设计注 §8.3 §8.4）。
+
+  三条硬约束（改这个文件的人先读这三条）：
+
+  1. **零外部资源**：CSS 与 JS 全在这一个文件里。不许加 npm / 打包 / CDN / 外部字体 ——
+     运营的浏览器在**内网**里，出网要过代理，任何一个指着外网的资源地址都是一张永远转圈的
+     空白页（A12）。`tests/test_console_page.py` 里有一把专门扫这个的尺子。
+  2. **JS 做笨**：一个 job id + 一个定时器 + 一个渲染函数。取 JSON → 拼 DOM。
+     **不持有状态机**：页面不推断任何事实（它在哪种输入模式、能不能按、停在哪 ——
+     全部是服务在 `/live` 里说了它才渲染）。取不到的那一格一律**说出来**，不替服务编。
+  3. **不编话**：每一句只从它该来的地方来（服务给的原话照抄；没有那句就写「没说」）。
+     选择器、原始回执、事件里那七格（`data`）—— 一个字节都不进这一屏（D16）。
+-->
+<style>
+  :root{
+    --bg:#f6f7f9; --surface:#fff; --surface-2:#fafbfc;
+    --line:#e4e7ec; --line-soft:#eef0f3;
+    --ink:#1d2129; --ink-2:#5b6472; --ink-3:#8b93a1;
+    --accent:#2f6fed; --system:#79818f; --you:#0e8a6a;
+    --bad:#c0392b; --warn:#a35b00; --warn-bg:#fff8ec; --warn-line:#f0dcb8;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --radius:10px;
+  }
+  *{box-sizing:border-box}
+  [hidden]{display:none !important}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.65 system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    -webkit-text-size-adjust:100%;
+  }
+  h1,h2,h3,h4,h5{margin:0; font-weight:600; line-height:1.4}
+  p{margin:0}
+  ol,ul{margin:0; padding:0; list-style:none}
+  figure{margin:0}
+  b{font-weight:600}
+  .app{display:grid; grid-template-columns:236px minmax(0,1fr); min-height:100dvh}
+  .main{display:flex; flex-direction:column; min-height:100dvh; min-width:0}
+  .mono{font-family:var(--mono); font-size:12.5px}
+  .code{font-family:var(--mono); font-size:12px; background:var(--surface-2);
+        border:1px solid var(--line-soft); border-radius:4px; padding:0 3px}
+
+  /* ── 左：能挑运行的最小列表 ───────────────────── */
+  .runs{background:var(--surface-2); border-right:1px solid var(--line); padding:14px 12px;
+        display:flex; flex-direction:column; gap:8px}
+  .runs h2{font-size:12px; color:var(--ink-3); letter-spacing:.06em}
+  .runs .foot-note{font-size:11.5px; color:var(--ink-3); line-height:1.55; margin-top:auto}
+  .runrow{display:block; width:100%; text-align:left; background:transparent; border:1px solid transparent;
+          border-radius:8px; padding:8px 9px; cursor:pointer; font:inherit; color:inherit}
+  .runrow:hover{background:var(--surface)}
+  .runrow.on{background:var(--surface); border-color:var(--line)}
+  .runrow.on .site{font-weight:600}
+  .runrow .id{display:block; font-family:var(--mono); font-size:11.5px; color:var(--ink-3)}
+  .runrow .site{display:block; font-size:13.5px; margin-top:1px}
+  .runrow .st{display:block; font-size:12px; color:var(--ink-2); margin-top:3px}
+
+  /* ── 顶栏 ─────────────────────────────────────── */
+  .top{border-bottom:1px solid var(--line); background:var(--surface); padding:10px 16px;
+       display:flex; flex-wrap:wrap; gap:6px 14px; align-items:baseline}
+  .brand{font-size:14px; font-weight:600}
+  .who-job{font-family:var(--mono); font-size:12px; color:var(--ink-2)}
+  .pill{display:inline-flex; align-items:center; gap:6px; font-size:12.5px; border:1px solid var(--line);
+        border-radius:999px; padding:2px 10px; color:var(--ink-2); background:var(--surface-2); white-space:nowrap}
+  .pill::before{content:""; width:7px; height:7px; border-radius:50%; background:var(--ink-3)}
+  .pill.live::before{background:var(--accent)}
+  .pill.wait::before{background:var(--warn)}
+  .pill.bad::before{background:var(--bad)}
+  .pill.ok::before{background:var(--you)}
+
+  /* ── 通栏告示（`shots_note` / `note` / 错误）─────── */
+  .notices{padding:0 16px}
+  .notice{margin:12px 0 0; border:1px solid var(--warn-line); background:var(--warn-bg); color:#6a3d00;
+          border-radius:var(--radius); padding:9px 12px; font-size:13px; line-height:1.6}
+  .notice.err{border-color:#f0c2bb; background:#fdf3f1; color:#8c2f22; white-space:pre-wrap}
+
+  /* ── 滚动区 ───────────────────────────────────── */
+  .scroll{flex:1; overflow:auto; padding:14px 16px 20px}
+  .wrap{max-width:960px; margin:0 auto; width:100%; display:flex; flex-direction:column; gap:14px}
+  .panel{border:1px solid var(--line); background:var(--surface); border-radius:var(--radius); overflow:hidden}
+  .panel>header{padding:10px 14px; border-bottom:1px solid var(--line-soft); background:var(--surface-2);
+                display:flex; flex-wrap:wrap; gap:4px 12px; align-items:baseline}
+  .panel>header h2{font-size:14px}
+  .panel .sub{font-size:12px; color:var(--ink-3)}
+  .panel .body{padding:12px 14px}
+
+  /* ── 时间线（主视图）─────────────────────────── */
+  .tlbox{max-height:52vh; overflow:auto; border:1px solid var(--line-soft); border-radius:8px; padding:8px 10px}
+  .tl{display:flex; flex-direction:column; gap:7px}
+  .ev{display:grid; grid-template-columns:64px 34px minmax(0,1fr); gap:8px; align-items:baseline;
+      padding:4px 6px; border-radius:7px}
+  .ev time{font-family:var(--mono); font-size:11.5px; color:var(--ink-3)}
+  .ev .who{font-size:12px; color:var(--ink-2); text-align:center; border-radius:999px;
+           border:1px solid var(--line); background:var(--surface-2)}
+  .ev-agent .who{color:var(--accent); border-color:#d6e2fb; background:#f2f6ff}
+  .ev-you .who{color:var(--you); border-color:#cfe8e0; background:#f1faf7}
+  .ev.warn{background:var(--warn-bg)}
+  .ev.warn .say{color:#6a3d00}
+  .ev .say{font-size:13.5px; word-break:break-word}
+  .newline{display:block; width:100%; margin-top:8px; padding:6px; font:inherit; font-size:12.5px;
+           color:var(--accent); background:#f2f6ff; border:1px dashed #c9dbfb; border-radius:8px; cursor:pointer}
+  .tl-note{margin-top:9px; font-size:12px; color:var(--ink-3); line-height:1.6}
+
+  /* ── 轮次卡片 ─────────────────────────────────── */
+  #rounds{display:flex; flex-direction:column; gap:12px}
+  #rounds.dim .round{opacity:.62}
+  .round{border:1px solid var(--line); border-radius:9px; padding:11px 12px; background:var(--surface)}
+  .round.here{border-color:#f0dcb8; background:#fffdf8}
+  .round .rhead{display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline; margin-bottom:8px}
+  .round .rhead h3{font-size:13.5px}
+  .lead{font-size:13.5px; line-height:1.68; margin:6px 0}
+  h4.sec{font-size:12px; color:var(--ink-3); margin:12px 0 2px; font-weight:600; letter-spacing:.02em}
+  .shot{margin:8px 0}
+  .shot img{display:block; max-width:100%; border:1px solid var(--line); border-radius:8px; cursor:zoom-in;
+            background:var(--surface-2)}
+  .shot figcaption{font-size:11.5px; color:var(--ink-3); margin-top:4px}
+  .shot .none{border:1px dashed var(--line); border-radius:8px; background:var(--surface-2); color:var(--ink-2);
+              font-size:12.5px; line-height:1.6; padding:12px; white-space:pre-wrap}
+  .pair{display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px}
+  .defer{color:var(--warn); border:1px solid var(--warn-line); background:var(--warn-bg);
+         border-radius:999px; padding:0 6px; font-size:11px}
+  .fold{margin:10px 0 2px; border:1px solid var(--line-soft); border-radius:8px; padding:6px 10px}
+  .fold summary{font-size:12.5px; color:var(--ink-2); cursor:pointer}
+  .steplist{margin:8px 0 2px; display:flex; flex-direction:column; gap:5px}
+  .steplist li{display:flex; flex-wrap:wrap; gap:6px; align-items:baseline; font-size:13px}
+  .steplist .k{font-family:var(--mono); font-size:11.5px; color:var(--ink-3); min-width:60px}
+  .chip{font:inherit; font-size:11.5px; color:var(--accent); background:#f2f6ff; border:1px solid #d6e2fb;
+        border-radius:999px; padding:0 7px; cursor:zoom-in}
+  .hintline{font-size:12px; color:var(--ink-3); line-height:1.6; margin-top:6px}
+  .lastshot{margin-top:10px; border-top:1px dashed var(--line); padding-top:6px}
+
+  /* ── 这个窗口 ─────────────────────────────────── */
+  .facts{display:flex; flex-wrap:wrap; gap:8px 16px; font-size:13px}
+  .facts b{font-family:var(--mono); font-size:12.5px}
+  .kvrow{display:grid; grid-template-columns:132px minmax(0,1fr); gap:8px; font-size:13px; margin-top:8px}
+  .kvrow .k{color:var(--ink-3); font-size:12.5px}
+  .hardrule{margin-top:12px; border:1px solid var(--warn-line); background:var(--warn-bg); color:#6a3d00;
+            border-radius:8px; padding:9px 11px; font-size:13px; line-height:1.65}
+
+  /* ── 常开的一行输入 ───────────────────────────── */
+  .composer{border-top:1px solid var(--line); background:var(--surface); padding:10px 16px 12px;
+            position:sticky; bottom:0}
+  .composer .inner{max-width:960px; margin:0 auto}
+  .crow{display:flex; flex-wrap:wrap; gap:8px}
+  .crow input{flex:1 1 320px; min-width:0; font:inherit; font-size:14px; padding:8px 10px;
+              border:1px solid var(--line); border-radius:8px; background:var(--surface-2); color:inherit}
+  .btn{font:inherit; font-size:13.5px; padding:8px 14px; border-radius:8px; border:1px solid var(--line);
+       background:var(--surface); color:var(--ink); cursor:pointer}
+  .btn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+  .btn:disabled{opacity:.45; cursor:not-allowed}
+  .btn.stop{margin-left:auto}
+  .hint{font-size:12px; color:var(--ink-3); line-height:1.6; margin-top:7px}
+  .hint.warn{color:var(--warn)}
+  .hardline{font-size:12px; color:var(--ink-3); line-height:1.6; margin-top:6px}
+
+  /* ── 大图 ─────────────────────────────────────── */
+  .lightbox{position:fixed; inset:0; background:rgba(16,24,40,.72); display:flex; align-items:center;
+            justify-content:center; padding:24px; cursor:zoom-out; z-index:9}
+  .lightbox figure{max-width:96vw; max-height:92vh; background:var(--surface); border-radius:10px; padding:10px}
+  .lightbox img{display:block; max-width:100%; max-height:78vh; border-radius:6px}
+  .lightbox figcaption{font-family:var(--mono); font-size:12px; color:var(--ink-2); margin-top:8px}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- 左：能挑运行的最小列表（`GET /runs`）-->
+  <aside class="runs" aria-label="运行列表">
+    <h2>运行</h2>
+    <div id="runs"></div>
+    <p class="foot-note">
+      这个列表是<b>这个进程</b>记得的那些 —— 服务重启过的话，之前提交的就不在这儿了
+      （状态还在 checkpoint 里，知道 job id 就还能看）。<br><br>
+      也可以在地址后面带 <span class="mono">?job=&lt;job id&gt;</span> 直接打开某一趟。
+    </p>
+  </aside>
+
+  <div class="main">
+
+    <header class="top">
+      <span class="brand">siteforge 控制台</span>
+      <span class="who-job" id="whoJob"></span>
+      <span class="pill" id="statePill">正在看这一趟…</span>
+    </header>
+
+    <!-- 通栏告示：出错（原样显示服务那句话）/ 降级 / 重启 / 轮次说明 -->
+    <div class="notices" id="notices"></div>
+    <!-- ⚠️ 错误那一条**单独一个容器**：`#notices` 每次重画都会被清空，
+         把它建在里面 = 下一次轮询把错误悄悄删掉（Step 4 实测踩到过：按下去 404，页面上什么都没有）。 -->
+    <div class="notices"><p class="notice err" id="errBox" hidden></p></div>
+
+    <main class="scroll">
+      <div class="wrap">
+
+        <!-- ── 时间线：主视图 ───────────────────────────────── -->
+        <section class="panel" id="timelinePanel">
+          <header>
+            <h2>时间线</h2>
+            <span class="sub">现场：它做了什么、它说了什么、系统知道什么 —— 按发生的顺序长出来，新的在下面。</span>
+          </header>
+          <div class="body">
+            <div class="tlbox" id="tlbox">
+              <ol class="tl" id="timeline"></ol>
+            </div>
+            <button class="newline" id="tlNew" type="button" hidden>你往上翻了 —— 新的在下面，按这里回到最新</button>
+            <p class="tl-note" id="tlNote">
+              时间线<b>活在服务进程里</b>：服务一重启，上面这些话就没了。轮次与截图还在（它们跟着运行的状态走）。
+              这一页每 3 秒问一次服务，看到的永远是服务现在知道的那一份。
+            </p>
+          </div>
+        </section>
+
+        <!-- ── 轮次与截图 ──────────────────────────────────── -->
+        <section class="panel" id="roundsPanel">
+          <header>
+            <h2>轮次与截图</h2>
+            <span class="sub" id="roundsSub">
+              这里的「第 N 轮」= <b>闸拍轮次</b>：它到过几次闸口、停下来等你回话。图的文件名里那个号就是它。
+            </span>
+          </header>
+          <div class="body">
+            <p class="hintline">
+              ⚠️ 自测报告原话里那个「这一轮」<b>不是</b>这个意思 —— 那指的是<b>一遍扰动</b>（它把这一趟重跑了 5 遍，
+              每跑一遍叫一轮）。两个「轮」指的是两件事，卡片上带「（闸拍）」的就是上面这个。
+            </p>
+            <div id="rounds"></div>
+          </div>
+        </section>
+
+        <!-- ── 去看活窗口 ──────────────────────────────────── -->
+        <section class="panel" id="windowPanel">
+          <header>
+            <h2>这个窗口</h2>
+            <span class="sub">截图是档案，不是直播。要看「现在」，去这一趟用的那个真窗口。</span>
+          </header>
+          <div class="body">
+            <div class="facts" id="winFacts">
+              <span>worker <b id="winWorker">…</b></span>
+              <span>窗口 id <b id="winId">…</b></span>
+              <span>控制口 <b id="winPort">…</b></span>
+            </div>
+            <div id="winHow"></div>
+            <p class="hardrule">
+              <b>写死的规矩：它正在跑（running）的时候不要动手。</b>
+              agent 在同一个窗口里点、填、滚，两边的鼠标会打架：动作落到别处，失败还会被记成产物的问题。
+              看一眼可以，动手等它停下。<b>停在闸上（在等你回话）是唯一适合动手的时刻</b> ——
+              但你动过页面之后，下一步就是在<b>你留下的那个页面</b>上跑的，所以动过之后用下面那个
+              「说一句」告诉它，别让它自己去猜。
+            </p>
+          </div>
+        </section>
+
+      </div>
+    </main>
+
+    <!-- ── 常开的一行输入（三个动作）──────────────────────── -->
+    <div class="composer">
+      <div class="inner">
+        <div class="crow">
+          <input type="text" id="sayBox" aria-label="说一句"
+                 placeholder="写一句它该怎么做">
+          <button class="btn primary" type="button" id="btnContinue">继续</button>
+          <button class="btn" type="button" id="btnSay">说一句，接着走</button>
+          <button class="btn stop" type="button" id="btnStop">停下，我要说一句</button>
+          <button class="btn" type="button" id="btnAgain" hidden>重新来一遍</button>
+        </div>
+        <p class="hint" id="modeHint">正在跟服务要这一趟的现状…</p>
+        <p class="hint" id="secondHint"></p>
+        <p class="hint warn" id="stopHint"></p>
+        <p class="hardline">
+          服务可以替人「停」，绝不替人「走」：排队的话只会预填到输入框，按一下才发出去，永远不会自动发。
+        </p>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- 点开看大图（图走 `/job/{id}/shot/{name}`，**字节不进 JSON**）-->
+<div class="lightbox" id="lightbox" hidden>
+  <figure>
+    <img id="lightboxImg" alt="放大的截图">
+    <figcaption id="lightboxCap"></figcaption>
+  </figure>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ── 三个动作各自的落点 ─────────────────────────────────────────────
+  // 页面**自己声明**它要用的每一跳（`/say` `/stop` `/again` 现在还不存在，是 Task 8 的 ——
+  // 写上它们是这一屏的合同：端点落地时页面不用改）。
+  var ACT = { "continue": "/reply", "say": "/say", "stop": "/stop", "again": "/again" };
+  var LIVE = "/live";
+  var SHOT = "/shot/";
+
+  // ── 常开输入的三种语义（**按服务器给的 mode 取，页面不猜**）────────────
+  // `/live` 的 `input.mode`：gate（这就是闸的回话）/ steer（探路里，下一轮直达）/ queue（排队）。
+  var MODES = {
+    "gate": {
+      placeholder: "写一句它该怎么做，或者按「继续」让它往下走",
+      hint: "这一行现在是**这道闸的回话**：按「说一句，接着走」才会送出去。"
+    },
+    "steer": {
+      placeholder: "写一句它该怎么做 —— 会直达它的下一轮",
+      hint: "这一行现在是**直达**：你打的字不排队，会进它的下一轮（送到之后时间线上会出现一条「交给它了」）。"
+    },
+    "queue": {
+      placeholder: "写一句它该怎么做 —— 它停下来时会进输入框",
+      hint: "这一行现在是**排队**：这句话先记下，等它到下一道闸时进到输入框 —— 你按一下才送过去，不会自动发。"
+    }
+  };
+
+  // ── 极少的几张小表（都是「怎么说人话」，没有事实）────────────────────
+  var WHO = { "agent": "它", "system": "系统", "you": "你" };
+  var WHO_CLASS = { "agent": "ev-agent", "system": "ev-system", "you": "ev-you" };
+  var STATUS_WORD = { "queued": "排队等窗口", "running": "在跑", "waiting": "停在闸上，等你回话",
+                      "done": "跑完了", "failed": "跑挂了" };
+  var PILL_CLASS = { "queued": "pill", "running": "pill live", "waiting": "pill wait",
+                     "done": "pill ok", "failed": "pill bad" };
+  //: 这几种事件是**坏消息**（时间线上换个底色，好让人扫一眼就看到）
+  var WARN_KINDS = { "window_died": 1, "failed": 1, "cap_hit": 1, "shot_missing": 1,
+                     "narration_broken": 1, "state_unreadable": 1 };
+
+  // ── 页面上的状态：就这三样（一个 job id + 一个定时器 + 最近那份 JSON）──
+  var jobId = new URLSearchParams(location.search).get("job") || "";
+  var live = null;      // 最近一次 `/live` 的正文
+  var seen = "";        // 上一次画出来的那一份（一样就不重画：图不会每 3 秒重下一遍）
+  var prefilled = "";   // 我们替人放进输入框的那句话（**不自动发**）
+  var tick = 0;
+
+  // ── 取值器：**每一格都按「它可能不在」读** ────────────────────────────
+  // 卡片**没有键集合断言**（加字段没人拦、丢字段也没人拦）—— 所以一律走这里，
+  // 不写一串点到底的属性链：中间那一格不在，那种写法会把整页 JS 打断
+  // （页面上就什么都不动了，也没人说是为什么）。
+  function at(obj, path, fallback) {
+    var cur = obj, parts = String(path).split("."), i;
+    for (i = 0; i < parts.length; i++) {
+      if (cur === null || cur === undefined || typeof cur !== "object") { cur = null; break; }
+      cur = cur[parts[i]];
+    }
+    if (cur === undefined || cur === null || cur === "") {
+      return fallback === undefined ? "" : fallback;
+    }
+    return cur;
+  }
+  function has(obj, path) { return at(obj, path, null) !== null; }
+  function shotName(row) { var n = at(row, "name", null); return typeof n === "string" ? n : ""; }
+
+  function esc(s) {
+    return String(s === null || s === undefined ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  //: 服务那些话里带 `**着重**`（写给运营看的原话就是这么写的）—— 只做这一件事：
+  //: 先转义，再把 `**x**` 变成粗体，把换行变成 `<br>`。**不解析别的**。
+  function rich(s) {
+    return esc(s)
+      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+      .replace(/`([^`]+)`/g, '<span class="code">$1</span>')   // 服务原话里的 `名字` 排成等宽
+      .replace(/\n/g, "<br>");
+  }
+  function clock(iso) {
+    var d = new Date(String(iso || ""));
+    if (isNaN(d.getTime())) { return "时刻读不出来"; }
+    return [d.getHours(), d.getMinutes(), d.getSeconds()]
+      .map(function (x) { return (x < 10 ? "0" : "") + x; }).join(":");
+  }
+  function shotURL(name) { return "/job/" + encodeURIComponent(jobId) + SHOT + encodeURIComponent(name); }
+
+  // ── 一张图（或「这一格没有图」+ 服务给的那句 why 原话）────────────────
+  function shotFig(name, why, cap, deferred) {
+    var tag = deferred ? ' <span class="defer">（随后确认时补拍）</span>' : "";
+    if (name) {
+      return '<figure class="shot">' +
+        '<img data-shot="' + esc(name) + '" src="' + shotURL(name) + '" alt="' + esc(cap) + '">' +
+        "<figcaption>" + rich(cap) + ' · <span class="mono">' + esc(name) + "</span>" + tag + "</figcaption>" +
+        "</figure>";
+    }
+    return '<figure class="shot"><div class="none">' +
+      rich(why || "这一格没有图，也没人说为什么。") + "</div>" +
+      "<figcaption>" + rich(cap) + "（没留下图）" + tag + "</figcaption></figure>";
+  }
+  function sameShotNote(name, cap) {
+    return '<figure class="shot"><div class="none">这一张与上面那张是<b>同一份字节</b>（同一个文件），不再显示一遍。' +
+      "</div><figcaption>" + rich(cap) + ' · 同 <span class="mono">' + esc(name) + "</span></figcaption></figure>";
+  }
+
+  // ══════════════════ 时间线（主视图）══════════════════
+  function paintTimeline() {
+    var box = document.getElementById("tlbox");
+    var list = document.getElementById("timeline");
+    var events = at(live, "events", []) || [];
+    // ① **先量一下人在不在底下** —— 量完再换 DOM（换完位置就变了）
+    var near = (box.scrollHeight - box.scrollTop - box.clientHeight) < 60;
+    var html = "", i;
+    for (i = 0; i < events.length; i++) {
+      var ev = events[i];
+      var who = at(ev, "who", "system");
+      var cls = "ev " + (WHO_CLASS[who] || "ev-system") + (WARN_KINDS[at(ev, "kind", "")] ? " warn" : "");
+      html += '<li class="' + cls + '">' +
+        "<time>" + esc(clock(at(ev, "at", ""))) + "</time>" +
+        '<span class="who">' + esc(WHO[who] || "系统") + "</span>" +
+        // ⚠️ 只搬这一句人话。事件里那七格（`data`）**一个字节都不进这一屏**（D16）。
+        '<p class="say">' + rich(at(ev, "say", "")) + "</p></li>";
+    }
+    list.innerHTML = html || '<li class="ev"><p class="say">时间线上现在还没有东西。</p></li>';
+    // ② 跟着长：**只在人本来就在底下的时候**才滚（人在上面看着，就不抢他的滚动）
+    if (near) {
+      box.scrollTop = box.scrollHeight;
+      document.getElementById("tlNew").hidden = true;
+    } else {
+      document.getElementById("tlNew").hidden = false;
+    }
+  }
+
+  // ══════════════════ 轮次卡片 ══════════════════
+  function paintRounds() {
+    var box = document.getElementById("rounds");
+    var cards = at(live, "rounds", []) || [];
+    var waiting = at(live, "status", "") === "waiting";
+    var status = at(live, "status", "");
+    var html = "", i;
+    for (i = 0; i < cards.length; i++) {
+      html += roundCard(cards[i], i, cards.length, waiting);
+    }
+    if (!cards.length) {
+      html = '<p class="hintline">到这一刻还没有一轮（它还没停在闸口上过）。</p>';
+    }
+    box.className = (status === "running" || status === "queued") ? "dim" : "";
+    box.innerHTML = html;
+    document.getElementById("roundsSub").innerHTML =
+      "这里的「第 N 轮」= <b>闸拍轮次</b>：它到过几次闸口、停下来等你回话（图的文件名里那个号就是它）。" +
+      (at(live, "truncated", false) ? " ⚠️ 这一屏是截断过的，只回了最近几轮。" : "");
+  }
+
+  function roundCard(card, i, total, waiting) {
+    var n = at(card, "n", i + 1);
+    var here = Boolean(waiting && i === total - 1);
+    var stepSay = at(card, "step_say", "");
+    var out = '<article class="round' + (here ? " here" : "") + '">';
+    out += '<div class="rhead"><h3>第 ' + esc(n) + " 轮（闸拍）· " + rich(stepSay) + "</h3>" +
+      (here ? '<span class="pill wait">现在这一页</span>' : "") + "</div>";
+
+    // ① 它刚要做什么 —— **只有停着的那一轮有闸口的原话**（历史轮次的闸话早就不在 state 里了）
+    var ask = at(card, "say", "");
+    if (here) {
+      out += '<p class="lead"><b>它刚要做什么：</b>' +
+        (ask ? rich(ask) : "这一轮停下来了，但闸口没说它刚要做什么（原话不在 state 里）。") + "</p>";
+    }
+
+    // ② 现在窗口里是这样（闸拍）
+    var now = at(card, "now", {}) || {};
+    out += shotFig(shotName(now), at(now, "why", ""), "现在窗口里是这样");
+
+    // ③ 刚才那一步做了什么
+    var done = at(card, "done", null);
+    if (!done) {
+      out += '<p class="hintline">第一道闸之前什么都没跑过 —— 所以这一轮没有「刚才那一步」，也没有成对的图。</p>';
+      return out + "</article>";
+    }
+    var doneStep = at(done, "step", "");
+    out += '<h4 class="sec">── 刚才那一步（' + esc(at(done, "step_say", doneStep)) + "）做了什么 ──</h4>";
+    var said = at(done, "say", "");
+    out += '<p class="lead">' + (said ? rich(said) : "这一步没说它做了什么。") + "</p>";
+    if (said && doneStep === "selftest") {
+      // ★ 已知的歧义（复审留下的第 3 条）：这一段是 `report.summary()` 的**原话**，
+      //   里面的「这一轮」= **一遍扰动**，与卡片抬头那个「第 N 轮（闸拍）」不是一件事 ——
+      //   当场说清，别把歧义原样印在运营眼前。
+      out += '<p class="hintline">↑ 这一段是自测报告的原话。里面的「这一轮」指的是一遍<b>扰动</b>，' +
+        "不是上面第 " + esc(n) + " 轮（闸拍）。</p>";
+    }
+
+    // ④ 夹住那一步的一对图（点前 / 点后）。`after` 与 `now` 是同一个文件时只说一遍。
+    var before = at(done, "shots.before", null);
+    var after = at(done, "shots.after", null);
+    var deferred = {};
+    var steps = at(done, "steps", []) || [];
+    var s;
+    for (s = 0; s < steps.length; s++) {
+      if (at(steps[s], "shot_after_deferred", false)) {
+        var dn = at(steps[s], "shots.after", "");
+        if (dn) { deferred[dn] = true; }
+      }
+    }
+    var afterFig;
+    if (after && after === shotName(now)) {
+      afterFig = sameShotNote(after, "点之后");
+    } else {
+      afterFig = shotFig(after, "点之后那张没留下（这一屏上没有说为什么的地方）。",
+                         "点之后", Boolean(after && deferred[after]));
+    }
+    out += '<div class="pair">' +
+      shotFig(before, "点之前那张没留下（这一屏上没有说为什么的地方）。", "点之前") +
+      afterFig + "</div>";
+
+    // ⑤ 探路里它走的每一步（折起来；空的时候**说清为什么空**）
+    var note = at(done, "steps_note", "");
+    if (steps.length) {
+      out += '<details class="fold"><summary>── 探路里它走的每一步（' + steps.length +
+        " 步，点开看；有图的那几步点图能看大图）──</summary><ol class=\"steplist\">";
+      for (s = 0; s < steps.length; s++) {
+        out += stepRow(steps[s]);
+      }
+      out += "</ol></details>";
+    } else if (note) {
+      out += '<p class="hintline">' + rich(note) + "</p>";
+    }
+
+    // ⑥ ★ 这一趟**最后那张图**（跑到头 / 跑挂那一刻拍的）——它不是某一轮的闸拍，
+    //    所以没有卡片挂它，只活在最后一张卡的这一格上。**不渲染它，这一趟最后的样子就没人提。**
+    var last = at(card, "last_shot", null);
+    if (last) {
+      out += '<div class="lastshot"><h4 class="sec">── 这一趟最后那张图 ──</h4>' +
+        shotFig(shotName(last), at(last, "why", ""),
+                "跑到头 / 跑挂那一刻的窗口里是这样 —— 它**不是**某一轮的闸拍（那会儿没有闸）") +
+        "</div>";
+    }
+    return out + "</article>";
+  }
+
+  function stepRow(step) {
+    var n = at(step, "n", null);
+    var out = '<li><span class="k">' + (n === null ? "某一步" : "第 " + esc(n) + " 步") + "</span>" +
+      "<span>" + rich(at(step, "note", "")) + "</span>";
+    var before = at(step, "shots.before", null);
+    var after = at(step, "shots.after", null);
+    if (before) { out += chip(before, "点前"); }
+    if (after) { out += chip(after, "点后" + (at(step, "shot_after_deferred", false) ? "（随后确认时补拍）" : "")); }
+    return out + "</li>";
+  }
+  function chip(name, label) {
+    return '<button class="chip" type="button" data-shot="' + esc(name) + '">' + esc(label) + "</button>";
+  }
+
+  // ══════════════════ 这个窗口 ══════════════════
+  function paintWindow() {
+    var win = at(live, "window", null);
+    var how = document.getElementById("winHow");
+    if (!win || typeof win !== "object") {
+      document.getElementById("winWorker").textContent = "看不到";
+      document.getElementById("winId").textContent = "看不到";
+      document.getElementById("winPort").textContent = "看不到";
+      how.innerHTML = '<p class="hintline">这个部署<b>没接窗口层</b> —— 看不到活窗口，' +
+        "所以这一趟是哪个 worker、哪个窗口 id、控制口多少，这一屏都给不出来（不编）。</p>";
+      return;
+    }
+    document.getElementById("winWorker").textContent = at(win, "worker", "没说");
+    document.getElementById("winId").textContent = at(win, "bit_id", "没说");
+    document.getElementById("winPort").textContent = at(win, "api_port", "没说");
+    var out = "";
+    if (at(win, "how", "")) {
+      out += '<div class="kvrow"><span class="k">怎么看（服务原话）</span><span>' + rich(at(win, "how")) + "</span></div>";
+    }
+    if (at(win, "when", "")) {
+      out += '<div class="kvrow"><span class="k">什么时候别动（服务原话）</span><span>' + rich(at(win, "when")) + "</span></div>";
+    }
+    how.innerHTML = out || '<p class="hintline">服务这一次没给「怎么连」与「什么时候别动」那两句原话。</p>';
+  }
+
+  // ══════════════════ 左边那一栏（`/runs`）══════════════════
+  function paintRuns(data) {
+    // 还没拿到 `/runs` 的时候**不画** —— 画出来的会是「还没有任何运行」，
+    // 而那正是「不编话」要治的形状：那一刻我们并不知道有没有运行。
+    if (!data || typeof data !== "object") { return; }
+    var box = document.getElementById("runs");
+    var rows = at(data, "runs", []) || [];
+    var html = "", i;
+    for (i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var id = at(row, "job_id", "");
+      var delivered = at(row, "delivered", false);
+      var st = (STATUS_WORD[at(row, "status", "")] || at(row, "status", "")) +
+        (at(row, "status", "") === "done" ? (delivered ? " · 交付了" : " · 没交付") : "") +
+        " · " + at(row, "rounds", 0) + " 轮（闸拍）";
+      html += '<button class="runrow' + (id === jobId ? " on" : "") + '" type="button" data-job="' + esc(id) + '">' +
+        '<span class="id">' + esc(id) + "</span>" +
+        '<span class="site">' + rich(at(row, "site", "（没说站点）")) + "</span>" +
+        '<span class="st">' + rich(st) + "</span></button>";
+    }
+    if (!rows.length) {
+      html = '<p class="hintline">' + rich(at(data, "note", "还没有任何运行。")) + "</p>";
+    }
+    box.innerHTML = html;
+  }
+
+  // ══════════════════ 通栏告示 ══════════════════
+  function noticeEl(text, cls) {
+    var p = document.createElement("p");
+    p.className = "notice" + (cls ? " " + cls : "");
+    p.innerHTML = rich(text);
+    return p;
+  }
+  function paintNotices() {
+    var box = document.getElementById("notices");
+    box.innerHTML = "";
+    // ⓪ 页面自己要说的一句话（「没点名看哪一趟，先看最新的那一趟」）—— **说出来**，
+    //    不许悄悄替人挑一趟（挑哪一趟是人的事，页面只负责说自己挑了哪个）
+    if (state.pickNote) { box.appendChild(noticeEl(state.pickNote)); }
+    // ① 降级 B 那句话：非空就**一直在顶部**（静默降级是明令禁止的）
+    if (at(live, "shots_note", "")) { box.appendChild(noticeEl(at(live, "shots_note"))); }
+    // ② 时间线不持久（服务重启过才有这一句）
+    if (at(live, "note", "")) { box.appendChild(noticeEl(at(live, "note"))); }
+    // ③ 轮次那一块要额外说的话（截断 / 有一张最后图没卡片挂）
+    if (at(live, "rounds_note", "")) { box.appendChild(noticeEl(at(live, "rounds_note"))); }
+  }
+
+  // ══════════════════ 顶栏与那一行输入 ══════════════════
+  function statusText() {
+    var status = at(live, "status", "");
+    var out = STATUS_WORD[status] || status || "状态读不出来";
+    if (status === "done") { out += at(live, "delivered", false) ? " · 交付了" : " · 没交付"; }
+    return out;
+  }
+  function elapsedText() {
+    var status = at(live, "status", "");
+    if (status !== "running" && status !== "queued") { return ""; }
+    var started = at(state, "startedAt", "");
+    if (!started) { return ""; }
+    var d = new Date(started);
+    if (isNaN(d.getTime())) { return ""; }
+    var secs = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+    return " · 已跑 " + Math.floor(secs / 60) + " 分 " + (secs % 60) + " 秒";
+  }
+  function paintElapsed() {
+    var pill = document.getElementById("statePill");
+    if (!pill || !live) { return; }
+    pill.textContent = statusText() + elapsedText();
+  }
+
+  function paintComposer() {
+    var status = at(live, "status", "");
+    var mode = at(live, "input.mode", "");
+    var m = MODES[mode] || null;
+    var box = document.getElementById("sayBox");
+    // ① placeholder 与提示：**服务说了哪一句就用哪一句**；没说就看 mode；
+    //    连 mode 都不认识 —— 明说这一屏不认识，**不套**一句可能不对的文案上去。
+    var ph = at(live, "input.placeholder", "") || (m ? m.placeholder : "");
+    box.placeholder = ph || "写一句它该怎么做";
+    document.getElementById("modeHint").innerHTML = m ? rich(m.hint) :
+      ("这一屏不认识服务给的输入模式（" + esc(mode || "空的") + "）—— 所以这一行输入现在是什么语义，" +
+       "这一屏说不出来，也不替它猜。");
+    // ② 排队的那句话到了闸上会预填进输入框（**不自动发** —— 服务可以替人「停」，绝不替人「走」）
+    var draft = at(live, "input.draft_note", "");
+    if (draft && (box.value === "" || box.value === prefilled)) { box.value = draft; prefilled = draft; }
+
+    // ③ 三个动作：能不能按**只看服务给的 status 与闸**（页面不推断）
+    var waiting = status === "waiting";
+    var over = status === "done" || status === "failed";
+    var revisable = at(live, "gate.revisable", false) === true;
+    document.getElementById("btnContinue").disabled = !waiting;
+    document.getElementById("btnSay").disabled = !waiting;
+    // 跟着 `revisable` 改名：true → 「打回带话」，false → 「说一句，接着走」
+    document.getElementById("btnSay").textContent = revisable ? "打回带话" : "说一句，接着走";
+    // 第二行小字：**跟着 `revisable` 走**，而且只在真能按的时候才提「继续」
+    // （它没在等你就别提一个按不动的按钮 —— 那是页面在说一件它不知道的事）
+    document.getElementById("secondHint").innerHTML = revisable
+      ? "打回：这一版不要了，它会回到「写这一版 py」，你这句话会一路带进去。"
+      : (waiting ? "这句话会一路带进它下一步要做的事；不写也能按「继续」让它往下走。"
+                 : "它现在没在等你回话 —— 这一行按上面说的那种语义送出去。");;
+    document.getElementById("btnStop").disabled = over || at(live, "stop.requested", false) === true;
+    document.getElementById("btnAgain").hidden = !over;
+    // ④ 「停」按下之后落在哪儿：**服务说的那句原话**（没说就明说没说）
+    var willStop = at(live, "stop.will_stop_at", "");
+    if (at(live, "stop.requested", false)) {
+      setStopHint(willStop || "已经请求停了，但服务这一次没说它会落在哪儿。");
+    }
+    // ⑤ 跑着的时候：卡片灰掉但**留在屏幕上**（页面不变空）
+    if (status === "running" || status === "queued") {
+      document.getElementById("rounds").className = "dim";
+    }
+  }
+
+  function setStopHint(text) { document.getElementById("stopHint").innerHTML = rich(text); }
+  //: 错误那一条从哪儿来（`live` = 拉数据拉的；`act` = 某个动作回的）。
+  //: 为什么要分：**重拉不许把刚才那条错误擦掉**（Step 4 实测：点「停」→ 404 的 detail
+  //: 刚摆上去，紧接着那次重拉成功了，一句 `setErr("")` 就把它擦了 —— 页面上又变回
+  //: 「什么都没发生」，正是这一屏最不许有的形状）。只有它自己那一类好了才收。
+  function setErr(text, from) {
+    var box = document.getElementById("errBox");
+    if (!box) { return; }
+    if (!text) { box.hidden = true; box.textContent = ""; state.errFrom = ""; return; }
+    box.hidden = false;
+    box.textContent = text;   // **原样**（textContent：不把服务那句话当 HTML 解释）
+    state.errFrom = from || "";
+  }
+
+  // ══════════════════ 画一屏（只有这一处写 DOM）══════════════════
+  function paint() {
+    if (!live) { return; }
+    var status = at(live, "status", "");
+    var pill = document.getElementById("statePill");
+    pill.className = PILL_CLASS[status] || "pill";
+    paintElapsed();
+    paintNotices();
+    paintRuns(state.runs || {});
+    paintTimeline();
+    paintRounds();
+    paintWindow();
+    paintComposer();
+  }
+
+  // ══════════════════ 取数据 ══════════════════
+  function readJSON(r) {
+    return r.text().then(function (body) {
+      var obj = null;
+      try { obj = JSON.parse(body); } catch (e) { obj = null; }
+      return { ok: r.ok, status: r.status, obj: obj, body: body };
+    });
+  }
+  function sayOf(res) {
+    // 服务每一句错误都是 `{"detail": "…人话…"}` —— **原样**摆出来。
+    // 页面**不翻译、不概括、不吞**：吞掉一次，「按下去什么都没发生」就回来了。
+    if (res.obj && at(res.obj, "detail", "")) { return at(res.obj, "detail", ""); }
+    return res.body || ("服务回了 HTTP " + res.status + "，正文是空的。");
+  }
+
+  function fetchLive() {
+    if (!jobId) { return Promise.resolve(); }
+    return fetch("/job/" + encodeURIComponent(jobId) + LIVE)
+      .then(readJSON)
+      .then(function (res) {
+        if (!res.ok) { sayLiveProblem(res); return; }
+        // ⚠️ 只收**拉数据那一类**的错误：动作刚回的那句话（比如 404 的 detail）不许被这次
+        //    重拉擦掉 —— 擦了就变成「按下去什么都没发生」。
+        if (state.errFrom === "live") { setErr(""); }
+        live = res.obj;
+        var key = JSON.stringify(res.obj);
+        if (key !== seen) { seen = key; paint(); }
+      })
+      .catch(function (e) {
+        setErr("这一屏取不到数据：" + e + " —— 服务可能没在跑，或者这个页签拿的是缓存的旧副本。",
+               "live");
+      });
+  }
+  function sayLiveProblem(res) {
+    // 503 / 404 都是**一句人话**（服务写好的），照抄。
+    setErr(sayOf(res), "live");
+    var pill = document.getElementById("statePill");
+    pill.className = "pill bad";
+    pill.textContent = res.status === 404 ? "没这个任务" : "这一屏少了几格（服务说读不回来）";
+  }
+
+  function fetchRuns() {
+    return fetch("/runs").then(readJSON).then(function (res) {
+      if (!res.ok) { return; }
+      state.runs = res.obj;
+      var rows = at(res.obj, "runs", []) || [];
+      if (!jobId && rows.length) {
+        // 没点名看哪一趟：先看**最新提交的那一趟**，并**说出来**（不悄悄替你挑）
+        pickJob(at(rows[0], "job_id", ""),
+                "没点名看哪一趟 —— 先看最新提交的 " + at(rows[0], "job_id", "") + "（左边点别的可以换）。");
+        return;
+      }
+      paintRuns(res.obj);
+    }).catch(function () { /* 左边那一栏取不到不影响主视图（主视图自己有话说） */ });
+  }
+
+  // ══════════════════ 三个动作 ══════════════════
+  function act(verb, payload) {
+    setErr("");
+    var url = "/job/" + encodeURIComponent(jobId) + (ACT[verb] || "");
+    return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload || {}) })
+      .then(readJSON)
+      .then(function (res) {
+        if (!res.ok) {
+          // 409（它已经不在你要对它做的那件事上了）/ 404（这一跳还没落地）/ 503 ……
+          // 一律**原样**把服务那句话摆出来，然后**重拉 `/live`** ——
+          // 出错的这一刻画面多半已经过期，停在那一刻会让人照着旧画面做下一个决定。
+          // ⚠️ 重拉**不许**把这句话擦掉（`setErr` 那个 `from` 就是为它分的）。
+          setErr(sayOf(res), "act");
+          fetchLive();
+          return null;
+        }
+        // 送出去了：把输入框清掉（不然人会按第二下，把那句话又送一遍）。
+        // ⚠️ 只有**真的收到了**才清 —— 没送出去的时候那句话还在框里，人不用重打。
+        var box = document.getElementById("sayBox");
+        if (box) { box.value = ""; }
+        prefilled = "";
+        return res.obj;
+      })
+      .catch(function (e) { setErr("这句话没送出去：" + e, "act"); });
+  }
+
+  function send() {
+    var box = document.getElementById("sayBox");
+    var text = box.value.trim();
+    var mode = at(live, "input.mode", "");
+    if (!jobId) { setErr("先挑一趟运行（左边那一栏，或者地址后面带 ?job=<job id>）。"); return; }
+    if (mode === "gate") {
+      // 闸上的回话：走 `/reply`（既有形状，不动）
+      if (!text) { act("continue", { "action": "continue" }); }
+      else { act("continue", { "action": "say", "note": text }); }
+    } else {
+      // 常开输入（steer / queue）：走 `/say` —— 服务说它现在是什么语义，页面就照哪个送
+      if (!text) { setErr("这一行现在是常开输入：它没在等你回话，所以空着按下去没有意义 —— 写一句再按。"); return; }
+      act("say", { "say": text });
+    }
+  }
+
+  function stopIt() {
+    var btn = document.getElementById("btnStop");
+    btn.disabled = true;                 // 按下**先禁用**（再按一次不会又发一遍）
+    act("stop", {}).then(function (out) {
+      var willStop = at(out, "stop.will_stop_at", "");
+      setStopHint(willStop || "已经请求停了 —— 但服务这一次没说它会落在哪儿（这一屏不替它编一句）。");
+    });
+  }
+
+  function pickJob(id, why) {
+    setErr("");
+    jobId = id;
+    live = null; seen = ""; prefilled = "";
+    state.startedAt = "";
+    state.pickNote = why || "";
+    try { history.replaceState(null, "", "?job=" + encodeURIComponent(id)); } catch (e) { /* 无所谓 */ }
+    document.getElementById("whoJob").textContent = id;
+    setStopHint("");
+    fetchLive();
+    fetchRuns();
+  }
+
+  function findRun(id) {
+    var rows = at(state.runs, "runs", []) || [], i;
+    for (i = 0; i < rows.length; i++) {
+      if (at(rows[i], "job_id", "") === id) { return rows[i]; }
+    }
+    return null;
+  }
+
+  //: 页面上**唯一**的第二样东西（除了 `jobId`）：左边那一栏最近一次拿到的正文，
+  //: 加上「开跑时刻」与「页面自己要说的一句话」。它不是状态机 ——
+  //: 里面没有一个是页面**算**出来的事实，全是「上一次取回来的 JSON」里抄下来的。
+  var state = { runs: null, startedAt: "", pickNote: "" };
+
+  // ══════════════════ 一个定时器 ══════════════════
+  function tickOnce() {
+    tick += 1;
+    if (tick % 3 === 1) { fetchLive(); }        // 每 3 秒拉一次 `/live`
+    if (tick % 15 === 0) { fetchRuns(); }       // 每 15 秒刷一次左边那一栏
+    if (live) {
+      var row = findRun(jobId);
+      state.startedAt = row ? at(row, "created_at", "") : "";
+      var who = document.getElementById("whoJob");
+      who.textContent = jobId + (row && at(row, "site", "") ? " · " + at(row, "site", "") : "");
+      paintElapsed();                            // 秒数在走（不重画整页）
+    }
+  }
+
+  // ══════════════════ 接线 ══════════════════
+  document.getElementById("btnContinue").addEventListener("click", function () {
+    if (!jobId) { setErr("先挑一趟运行。"); return; }
+    act("continue", { "action": "continue" });
+  });
+  document.getElementById("btnSay").addEventListener("click", send);
+  document.getElementById("btnStop").addEventListener("click", stopIt);
+  document.getElementById("btnAgain").addEventListener("click", function () {
+    if (!jobId) { setErr("先挑一趟运行。"); return; }
+    act("again", {});
+  });
+  document.getElementById("tlNew").addEventListener("click", function () {
+    var box = document.getElementById("tlbox");
+    box.scrollTop = box.scrollHeight;
+    document.getElementById("tlNew").hidden = true;
+  });
+  document.getElementById("sayBox").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { send(); }
+  });
+  // 点图看大图 / 点背景关掉（一个代理监听器，不给每张图各接一个）
+  document.addEventListener("click", function (e) {
+    var el = e.target;
+    if (el && el.getAttribute && el.getAttribute("data-shot")) {
+      document.getElementById("lightboxImg").src = shotURL(el.getAttribute("data-shot"));
+      document.getElementById("lightboxCap").textContent = el.getAttribute("data-shot");
+      document.getElementById("lightbox").hidden = false;
+      return;
+    }
+    if (el && el.id === "lightbox") { el.hidden = true; }
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") { document.getElementById("lightbox").hidden = true; }
+  });
+  document.addEventListener("click", function (e) {
+    var el = e.target;
+    while (el && el !== document.body) {
+      if (el.getAttribute && el.getAttribute("data-job")) { pickJob(el.getAttribute("data-job")); return; }
+      el = el.parentNode;
+    }
+  });
+
+  // 开跑：先拿左边那一栏（没点名 job 时它替我挑最新那一趟），再拉 `/live`
+  if (jobId) {
+    document.getElementById("whoJob").textContent = jobId;
+    fetchRuns();
+    fetchLive();
+  } else {
+    document.getElementById("whoJob").textContent = "还没挑运行";
+    fetchRuns().then(function () {
+      if (!jobId) {
+        document.getElementById("tlNote").innerHTML =
+          rich("还没挑运行：左边那一栏点一趟（或者地址后面带 `?job=<job id>`）。" +
+               "这一页只做一件事 —— 一个人盯一趟运行。");
+      }
+    });
+  }
+  setInterval(tickOnce, 1000);
+})();
+</script>
+</body>
+</html>

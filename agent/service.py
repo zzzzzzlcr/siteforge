@@ -61,7 +61,7 @@ import uuid
 from typing import Any, Callable, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
@@ -225,6 +225,18 @@ NO_RUNS_SAY = ("还没有任何运行。这个列表是**这个进程**记得的
 #: 「撞上限」那三种停因（设计注 §3.2 第 4 行）—— 只用来挑 `kind`；
 #: 人话一律照抄快照里的 `end_note`（原话），不在这儿另写一句。
 CAP_END_REASONS = (END_REVISION_CAP, END_LINT_CAP, END_SELFTEST_CAP)
+
+
+# ─────────────────── 给运营的那一屏（Task 7 / 设计注 §8.4）───────────────────
+#: 页面文件（`GET /console` 读它）。**放仓库里**的理由（设计注 §8.4）：页面是**可读的资产**
+#: （能 diff、能 review），不是塞在 py 里的字符串。每次请求现读 —— 改页面不用重启服务。
+CONSOLE_PATH = pathlib.Path(__file__).with_name("console.html")
+#: 页面文件读不出来时说的话（**不许**静默给一页空白）。
+#: 空白页是这一屏最坏的失败形状：它看起来像「还没有任何运行」，而真相是
+#: 「服务找不到它自己的页面文件」—— 两件事的处置完全不一样。
+CONSOLE_UNREADABLE_SAY = ("控制台页面读不出来：%s —— 服务在 %s 找它（`GET /console` 每次都是现读"
+                          "这个文件）。要么它没跟着镜像一起进去，要么权限不对。"
+                          "这一条不该出现：页面是仓库里的一个文件，不是运行产物。")
 
 
 # ─────────────────────────────── 窗口层（§4.6）───────────────────────────────
@@ -2888,6 +2900,36 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                   selftest_dir=selftest_dir, mcp_bin=mcp_bin)
     api = FastAPI(title="siteforge", version="0.1",
                   description="看着真页面产出 cdp-first py 脚本的 agent 服务（计划二 Task 8）")
+
+    @api.get("/console", response_class=HTMLResponse)
+    def console() -> HTMLResponse:
+        """**给运营的那一屏**（设计注 §8.4）：仓库里那个文件原样读出来。
+
+        为什么是「路由读文件」而不是 `StaticFiles` 挂一个目录：这一屏只此一页、
+        没有静态资源（**零外部资源**是硬约束，CSS/JS 全内联在那个文件里），
+        而 `StaticFiles` 会把整个目录暴露出去 —— 那是一个比它解决的问题更大的面。
+
+        ⚠️ 读不到就**响**（500 + 一句人话）：这是「没有静默的路径」在这一屏的样子。
+        给一页空白，运营看到的是「还没有任何运行」—— 和「服务找不到自己的页面」
+        完全不是一件事（`CONSOLE_UNREADABLE_SAY`）。
+
+        `no-store`：页面是**服务的一部分**（它按 `/live` 的形状渲染），
+        缓存住会让「新服务 + 旧页面」拼出一个谁也不认识的画面。这一页很小，重下载很便宜。
+        """
+        try:
+            html = CONSOLE_PATH.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise HTTPException(status_code=500,
+                                detail=CONSOLE_UNREADABLE_SAY % (exc, CONSOLE_PATH))
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+    @api.get("/")
+    def root() -> RedirectResponse:
+        """`GET /` → `/console`：运营手上的是 `http://<那台机器>:8080`，不带路径。
+
+        ⚠️ 302（**不是** 307）：这里要的是「去那一页」，不是「用同一个方法再发一次」。
+        """
+        return RedirectResponse(url="/console", status_code=302)
 
     @api.get("/health")
     def health() -> dict:
