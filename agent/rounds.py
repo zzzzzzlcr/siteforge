@@ -58,7 +58,7 @@ rounds[0].done         = None                         # 第一道闸之前什么
     —— ⚠️ **但兜底不许兜出「刚做完的那一个」**（那会变成「正要开始做一件刚做完的事」，
     幽灵卡的形状）；图走到 END 那一档**什么都不说**（本来就没有「正要做的」这回事）。
   - 「刚做完的」：`visits` 的最后那一项 —— ⚠️ 但**闸把人拦下来**那两条路上
-    （喊停 / 打回这一版），那一步**进过、一步都没做**（`_bailed`）：卡片照旧说它是
+    （喊停 / 打回这一版），那一步**进过、一步都没做**（`_bailed_indices`）：卡片照旧说它是
     「刚才那一步」，但**当场说清它没做**，不许让它看起来像做完了。
 - **跑挂（`failed`）与跑到头（`done`）在对齐上不是一回事**（复审 N1）：跑到头那一支
   最后一道闸的节点**落了盘**（对齐往回一格），跑挂那一支节点**抛了、写盘被丢掉**
@@ -97,25 +97,30 @@ FAILED = "failed"
 #: 这个服务自己挂了。它管的**只有一件事**：闸拍清单的最后一张是「这一趟最后那张图」
 #: （`_capture_pause` 在跑完/跑挂那一次也拍），**不是某一轮的闸** —— `count` 去掉它。
 OVER = ("done", "failed")
-#: ⚠️ 到头了里面**节点写了盘**的那一档 —— 管的是**对齐**，与 `OVER` **不是一回事**
-#: （复审 2026-09-18 N1 抓到我把两者当成一件事）：
-#:   - `done`（图走到了 END）：终局那一支 `_enter` 是**正常返回**的（喊停/打回那两条路上
-#:     节点收摊、`visits` 落了盘；正常走完那一条它本来就跑完了）⇒ 最后一道闸那个节点
-#:     **在 `visits` 里** ⇒ 对齐往回一格；
-#:   - `failed`（节点**抛了**）：它这一趟的写盘**整个被丢掉**（`visits` 里没有它）⇒
-#:     **不往回** —— 那一档要和「在闸上等人」用同一套对齐。
-#: ⚠️ 边界：跑挂发生在**节点之间**（上一个节点已经落了盘、随后图自己中断）时，这一格会
-#: 偏一格（说的是更早那个节点）。`project` 拿得到的输入里分不出这几种，**宁可偏一格，
-#: 也不假装知道**（与「不知道就说不知道」同一条规矩）。
+#: ⚠️ 「最后一道闸那个节点**进没进 `visits`**」——这是**对齐**要的那个事实，
+#: 与 `OVER`（轮数那条）**不是一回事**（复审 2026-09-18 N1/N1-bis）：
+#:   - `done`（图走到了 END）：终局那一支 `_enter` 是**正常返回**的 ⇒ 那个节点**在** `visits` 里；
+#:   - `failed`（这一趟跑挂了）：**两回事**，看**抛在哪儿** ——
+#:     节点**里**抛 ⇒ 它这一趟的写盘整个被丢掉（**不在** `visits` 里）；
+#:     **节点之间**抛（上一个节点已经落了盘、随后图自己中断）⇒ 在。
+#: ⚠️ **别只看 `status`**（复审实测：那是**代理**，会把「节点之间」那一档**整条往后错一格**，
+#: 两张卡的两个字段都错）。事实由 `_landed()` 用服务递进来的 `stage` 判，判不出来就
+#: `None` ⇒ **整条退成「说不出来」**（宁可不给名字，也不给一个错名字）。
 LANDED = "done"
 
 #: `checkpoint` 的价值里，这个模块读的那三个键（读不到就是读不到，一律不编）。
 #: ⚠️ `visits` 是节点**进过**的顺序（`graph._enter` 记的）—— **不是「做过」的顺序**（复审
 #: 2026-09-18 N1/N4）：闸把人拦下来（喊停/打回）那两条路上，最后那一项**一步都没做**；
-#: 节点抛异常时它这一趟**根本没落盘**。要判「做没做」看 `_bailed` / `LANDED` 那两处。
+#: 节点抛异常时它这一趟**根本没落盘**。要判「做没做」看 `_bailed_indices` / `_landed` 那两处。
 VISITS = "visits"
 JOURNEY = "journey"        #: 那一趟探路的账（`Journey`；步子清单与它自己的话从这儿来）
 REPORT = "report"          #: 自测的结论（`selftest.Report`；`summary()` 是**原话**）
+#: 人**打回**过哪几步（`graph._enter` 记的**只增**的账：`[{"at": <那一步>, "note": …}]`）。
+#: ⚠️ 判「哪一次进过是被拦下的」要读这本账 —— `values["revised_at"]` 那个记号会被
+#: `draft` 跑完清掉（复审 2026-09-18 ⑤：只看它的实现在下一道闸上就把「没做」说丢了）。
+REVISIONS = "revisions"
+#: 打回之后图回哪一步（`graph` 的三道路由都回它）—— 判「那次进过是被拦下的」用的凭据。
+DRAFT = "draft"
 #: 探路那一步的节点名 —— 这一趟探路的账长在**它刚做完**的那一轮上。
 EXPLORE = "explore"
 #: 自测那一步的节点名 —— 那一轮的结论是 `report.summary()`。
@@ -130,8 +135,13 @@ UNKNOWN_STEP_SAY = "不知道这一步是哪一步"
 FINISHED_SAY = "这一轮没有闸：这一趟到头了，这是它最后的样子"
 #: 同一格、**跑挂**那一支（复审 2026-09-18 N1）：它连「正要做什么」都说不出来时的那句话。
 #: 与 `FINISHED_SAY` **分开**：「跑到头」与「跑挂了」不是一件事（读的人要能对号）。
-CRASHED_SAY = "这一趟跑挂了：这一刻它正要做什么，state 里说不出来（这一轮的图是挂掉那一刻的）"
+CRASHED_SAY = "这一趟跑挂了：这一刻它正要做什么，state 里说不出来（挂掉那一刻那张图在 `last_shot` 上）"
 UNKNOWN_DONE_SAY = "不知道刚才那一步是哪一步"
+#: **对齐认不出来**时那一格说的话（判据 A/C）：宁可不给名字，也不给一个错的。
+ALIGNMENT_UNKNOWN_SAY = ("这一轮说不上是哪一步：这一趟挂在**节点之间**，而服务这一趟也报不出"
+                         "它停在哪 —— **宁可不给名字，也不给一个错的**。")
+#: `CRASHED_SAY` 里那句括注指的是**哪张图**（复审 2026-09-18 ⑤：先前那句指错了 ——
+#: 挂在卡片上的 `now` 是**闸上拍的那张**；挂掉那一刻那张在 `last_shot` 上）。
 #: 一条**空记录**（没有图，也没人写 `why`）—— 空图框不许冒充页面（§3.2 第 6 行）
 NO_SHOT_ROW_SAY = ("这一轮的闸拍没有留下记录（服务那本闸拍账上这一条是空的）—— "
                    "所以这一轮没有图，也没有人说为什么。")
@@ -222,9 +232,8 @@ def project(values: dict, gate: Optional[dict], *, job_id: str, status: str, say
 
     waiting = bool(status == WAITING)
     over = bool(status in OVER)
-    #: 最后一道闸那个节点**写没写进 `visits`**（决定对齐往回几格）——
-    #: ⚠️ 只有 `done` 那一档是「写了」（见 `LANDED` 那段）
-    landed = bool(status == LANDED)
+    #: 最后一道闸那个节点**进没进 `visits`**（决定对齐往回几格；`None` = 认不出来）
+    landed = _landed(status, visits, stage)
     #: **轮数 = 闸数**（到最后那一张「这一趟最后一张图」不算一轮）—— 一轮一张卡。
     gates = count(rows, status)
     gate_rows = rows[:gates]
@@ -232,16 +241,14 @@ def project(values: dict, gate: Optional[dict], *, job_id: str, status: str, say
     #: 留下来的第一张是**第几轮** —— 轮号用**真号**（`pause-<n>` 上的 n），别从 1 重数：
     #: 重数的话「第几轮」与「哪张图」当场错开，页面会把上一轮的图挂到这一轮上。
     first = gates - len(kept) + 1
-    #: 闸把**哪一个节点**拦下来了（喊停 / 打回 / 连否到上限）—— 空串 = 没有。
-    #: ⚠️ 认的是**节点名**（`visits[-1]`），不是「哪一张卡」：那个名字可能出现在
-    #: 最后一张卡的 `done.step`（打回那一支：图回 draft，那一轮已经过去了），
-    #: 也可能出现在它的 `step`（喊停那一支：图直接到头，那一轮压根没跑）。
-    bailed_node = visits[-1] if _bailed(values, visits) else ""
+    #: `visits` 里**哪几项是被闸拦下的**（喊停/连否到上限那一项 + 打回那些项的**下标**）。
+    #: ⚠️ 认的是**下标**（不是名字）：同一个节点可能在打回之后又跑到过一次（那一次真做了）。
+    bailed = _bailed_indices(values, visits, gate)
 
     gate_on = _gate_row(gate) if waiting else None
     cards = [_card(first + i, total=gates, shots=gate_rows, visits=visits, journey=journey,
                    report=report, gate=gate, stage=str(stage or ""), waiting=waiting,
-                   status=status, over=over, landed=landed, bailed_node=bailed_node)
+                   status=status, over=over, landed=landed, bailed=bailed)
              for i in range(len(kept))]
     #: 「这一趟最后一张图」：到头了才有（`_capture_pause` 在跑完/跑挂那一次也拍）。
     #: 挂在**最后一张卡**上（卡片的形状统一 —— 别的卡上是 `null`）；一张卡都没有时
@@ -279,24 +286,32 @@ def project(values: dict, gate: Optional[dict], *, job_id: str, status: str, say
 
 
 def _card(k: int, *, total: int, shots: list, visits: list, journey, report, gate, stage: str,
-          waiting: bool, status: str, over: bool, landed: bool, bailed_node: str) -> dict:
+          waiting: bool, status: str, over: bool, landed, bailed: set) -> dict:
     """第 k 轮（1 起）那张卡。`k == total` = **最后那一轮**（脚下这一道闸就在它上面）。
 
-    ⚠️ `here`（脚下这一道闸）**两道判据缺一不可**：是最后一轮 **且** 现在真的在等人
-    （`waiting`）**且** 有闸。少了 `waiting` 这一条，非等人的那几档（跑着 / 到头了）
-    只要调用方手上还拿着一道闸，这一张卡就会照抄它的 `step` / 原话 / `revisable` ——
-    页面上于是出现一个「还能按」的按钮，而那时**没有人等你回话**。
+    ⚠️ `here`（脚下这一道闸）**两个条件**：是最后一轮 **且** 现在真的在等人（`waiting`）
+    **且** 有闸 —— 三个写法合成一个布尔，缺一不可。少了 `waiting` 这一条，非等人的那几档
+    （跑着 / 到头了）只要调用方手上还拿着一道闸，这一张卡就会照抄它的 `step` / 原话 /
+    `revisable` —— 页面上于是出现一个「还能按」的按钮，而那时**没有人等你回话**。
+
+    ⚠️ `landed is None`（对齐**认不出来**，见 `_landed`）时**整条退**：这一张卡的
+    `step` 与 `done.step` 都**不给名字**（判据 A：宁可说不出，也不给一个错名字）。
     """
     now = _shot_row(k, shots)
     here = bool(k == total and waiting and gate)
-    #: 这一轮**刚做完**的那个节点（k == 1 时是 None：第一道闸之前什么都没跑）。
-    #: 先算出来 —— 下面那个兜底要拿它比一比（**兜底不许兜出同一个节点**）。
-    done_step = _node_at(visits, k, -1, total, landed=landed) if k > 1 else ""
+    #: 对齐认不出来（`_landed` 给的是 `None`）⇒ **整条不给名字**（判据 A/C）
+    names_ok = landed is not None
+    #: 这一轮**刚做完**那个节点在 `visits` 里的下标（`None` = 对不上/认不出来）
+    i_done = _node_index(visits, k, -1, total, landed=landed) if k > 1 else None
+    done_step = visits[i_done] if i_done is not None else ""
 
-    step = str(gate.get("step") or "") if here else ""
-    if not step:
-        step = _node_at(visits, k, 0, total, landed=landed)
-    if not step and k == total and stage and stage != done_step:
+    step, i_step = "", None
+    if here:
+        step = str(gate.get("step") or "")
+    else:
+        i_step = _node_index(visits, k, 0, total, landed=landed)
+        step = visits[i_step] if i_step is not None else ""
+    if not step and names_ok and k == total and stage and stage != done_step:
         # 前面都没有：这一轮正要做的那个节点只能问接线信息（`stage` = 服务记着的那一步：
         # 跑着时是**正在跑**的那个节点、跑挂时是**它卡在的那道闸**上那个节点）。
         # ⚠️ **兜底不许兜出「刚做完的那一个」**（复审 2026-09-18 N1）：那样这张卡会说
@@ -305,13 +320,17 @@ def _card(k: int, *, total: int, shots: list, visits: list, journey, report, gat
         step = str(stage)
 
     #: 这个节点**被闸拦下来了**（喊停 / 打回）—— 它「进过、一步都没做」。
-    #: 命中它的是**这一轮正要做的那个**（图直接到头那一支：那一轮压根没跑）。
-    stopped = bool(step and bailed_node and step == bailed_node)
+    #: ⚠️ 认的是**下标**（`visits` 里那一项），不是名字：同一个节点可能被打回之后**又跑过一次**
+    #: （那一次真做了）。下标对不上（比如 `step` 是从闸上抄来的）时退一步看名字 —— 但那时
+    #: 只认「最后那一项」那一条（喊停那一支：图就到那儿为止）。
+    stopped = bool(step and (i_step in bailed if i_step is not None
+                             else (len(visits) - 1 in bailed and step == visits[-1])))
     card = {
         "n": k,
         "step": step or None,
         "step_say": _step_say(step, stopped=stopped,
-                              finished=bool(k == total and not step and over), status=status),
+                              finished=bool(k == total and not step and over), status=status,
+                              unknown_alignment=bool(not names_ok and k == total)),
         #: 闸口的**原话**（「它刚要做什么」）—— 只有脚下这一道闸有；历史轮次的闸话
         #: 早就不在 state 里了，编一句出来就是假话。
         "say": str((gate or {}).get("ask") or "") if here else "",
@@ -324,49 +343,56 @@ def _card(k: int, *, total: int, shots: list, visits: list, journey, report, gat
     }
     if k > 1:
         card["done"] = _done_row(k, total=total, shots=shots, visits=visits, journey=journey,
-                                 report=report, now=now, landed=landed, step=done_step,
-                                 bailed_node=bailed_node)
+                                 report=report, now=now, step=done_step, i_step=i_done,
+                                 bailed=bailed, names_ok=names_ok)
     return card
 
 
-def _step_say(step: str, *, stopped: bool, finished: bool, status: str) -> str:
-    """这一轮「正要做的」那一格的人话（四种情形分开说）。
+def _step_say(step: str, *, stopped: bool, finished: bool, status: str,
+              unknown_alignment: bool = False) -> str:
+    """这一轮「正要做的」那一格的人话（五种情形分开说，一句都不许混）。
 
     被拦下的那一步挂在这一格上时（喊停 / 连否到上限 ⇒ 图直接到头），**当场说清它没做** ——
     不然那一轮读起来像「正要开始做一件刚做完的事」（F1 的那个幽灵形状）。
-    「说不出来」那一档再分两句话：**跑到头**（图走到了 END）与**跑挂**不是一件事。
+    「说不出来」那一档再分三句话：**对齐认不出来** / **跑到头** / **跑挂** —— 三件事。
     """
     if stopped:
         return "%s%s" % (STEP_SAY.get(step, step), BAILED_STEP_SUFFIX)
     if step:
         return STEP_SAY.get(step, step)
+    if unknown_alignment:
+        return ALIGNMENT_UNKNOWN_SAY
     if not finished:
         return UNKNOWN_STEP_SAY
     return CRASHED_SAY if status == FAILED else FINISHED_SAY
 
 
 def _done_row(k: int, *, total: int, shots: list, visits: list, journey, report, now: dict,
-              landed: bool, step: str, bailed_node: str) -> dict:
-    """这一轮「**刚才那一步**做了什么」—— 最后那一轮上就是 `values["visits"][-1]` 那件事。
+              step: str, i_step, bailed: set, names_ok: bool = True) -> dict:
+    """这一轮「**刚才那一步**做了什么」—— **脚下那一轮**上它就是 `values["visits"]` 的最后一项。
 
-    历史轮次按 `visits` 的顺序往回数（第 k 轮的刚才那一步 = 第 k-1 个节点）。两个索引
-    都对不上（`visits` 比轮次短/长）时退回 `visits[-1]` —— 那也是**读出来的**一个事实
-    （最近进过的是谁），不是编的。
+    历史轮次按 `visits` 的顺序往回数（第 k 轮的刚才那一步 = 第 k-1 个节点）。下标对不上
+    （`visits` 比轮次短/长、或者对齐认不出来）时退回 `visits[-1]` —— 那也是**读出来的**
+    一个事实（最近进过的是谁），不是编的；⚠️ **不是**「跑到头」那一档（那里 `visits[-1]`
+    正是最后一道闸的节点，`_node_index` 给得出下标）。
 
-    ⚠️ **`bailed`**：喊停 / 打回那两条路上，这一步**进过、一步都没做**
-    （`_bailed` 的三个记号）。卡片照旧说它是「刚才那一步」，但 `say` 与 `steps_note`
-    **当场说清它没做** —— 不许让它看起来像做完了（那正是「刚做完的必须真发生过」那条）。
+    ⚠️ **`bailed`**：喊停 / 打回那两条路上，这一步**进过、一步都没做**（`_bailed_indices`
+    那一组下标）。卡片照旧说它是「刚才那一步」，但 `say` 与 `steps_note` **当场说清它没做**
+    —— 不许让它看起来像做完了（那正是「刚做完的必须真发生过」那条）。
     """
-    step = step or (visits[-1] if visits else "")
-    #: 这个节点**被闸拦下来了**吗 —— 认的是**节点名**（打回那一支它就落在这一格里）
-    bailed = bool(step and bailed_node and step == bailed_node)
-    steps, steps_note = _steps_of(journey, step, bailed=bailed)
+    step = step or (visits[-1] if (names_ok and visits) else "")
+    #: 这一步**被闸拦下来了**吗 —— 认**下标**（同一个节点可能后来又跑过一次，那一次真做了）
+    was_bailed = bool(step and i_step is not None and i_step in bailed)
+    steps, steps_note = _steps_of(journey, step, bailed=was_bailed)
+    if not names_ok:
+        steps_note = ALIGNMENT_UNKNOWN_SAY
     return {
         "step": step or None,
-        "step_say": STEP_SAY.get(step, step) if step else UNKNOWN_DONE_SAY,
+        "step_say": (STEP_SAY.get(step, step) if step else
+                     (UNKNOWN_DONE_SAY if names_ok else ALIGNMENT_UNKNOWN_SAY)),
         #: 这一步**自己的结论**（自测那一步是 `report.summary()` 的原话；被闸拦下来的
         #: 那一步是「它没做」这句 —— 那确实是它的结论）
-        "say": BAILED_SAY if bailed else _report_say(report, step),
+        "say": BAILED_SAY if was_bailed else _report_say(report, step),
         #: 夹住刚才那个节点的一对闸拍（`pause-<k-1>` / `pause-<k>`）
         "shots": {"before": _name_at(shots, k - 1), "after": now.get("name")},
         "steps": steps,
@@ -374,43 +400,96 @@ def _done_row(k: int, *, total: int, shots: list, visits: list, journey, report,
     }
 
 
-def _node_at(visits: list, k: int, offset: int, total: int, *, landed: bool) -> str:
-    """第 k 轮（1 起）对应的那个节点：`offset=0` = 这一轮**正要**做的，`-1` = **刚做完的**。
+def _landed(status: str, visits: list, stage: str) -> Optional[bool]:
+    """最后一道闸那个节点**进没进 `visits`** —— 对齐要的那个**事实**（`None` = 认不出来）。
+
+    ⚠️ **不许只看 `status`**（复审 2026-09-18 N1-bis 实测）：那是个**代理**，
+    「跑挂」那一档里两种抛法**恰好相反** —— 节点**里**抛 ⇒ 这一趟的写盘被丢掉（**没进**）；
+    **节点之间**抛 ⇒ 上一个节点已经落了盘（**进了**）。拿状态当事实会把后一种**整条错一格**
+    （每张卡的 `step` 与 `done.step` **同时往后一个节点**）。
+
+    事实从**服务递进来的 `stage`** 读（`_where_it_stopped` 的产物，那一位就是它现在停在哪）：
+      - `done` ⇒ 进了（终局那一支 `_enter` 是正常返回的）；
+      - `failed` ⇒ **看 `stage` 与 `visits` 最后那一项是不是同一个节点**：
+        同一个 ⇒ 服务报的就是那个**已经落了盘**的节点（节点之间抛）⇒ 进了；
+        不同（或者 `visits` 是空的）⇒ 报的是**还没落盘**的那一个（节点里抛）⇒ 没进；
+      - `stage` 是空的 ⇒ **认不出来**（`None`）：调用方**整条退**，不给节点名。
+      - 在闸上等人 / 跑着 ⇒ 没进（`_enter` 被 `interrupt()` 打断了，那一格没落盘）。
+
+    ⚠️ 这一条是**代理的代理**：`stage` 自己也可能退化成 `visits[-1]`（快照里既没闸也没
+    `next` 的那一瞬 —— 比如**跑着**的时候读到了那一瞬），那时它会误判成「进了」。
+    最稳的做法是服务把快照里**出错那个 task 的节点名**直接递进来（复审点名的信号①）——
+    这一版先用信号②（`stage` 本来就在入参里），把这个边界写在这儿。
+    """
+    if status == LANDED:
+        return True
+    if status != FAILED:
+        return False
+    if not stage:
+        return None
+    return bool(visits) and str(stage) == visits[-1]
+
+
+def _node_index(visits: list, k: int, offset: int, total: int, *, landed) -> Optional[int]:
+    """第 k 轮（1 起）对应的那个节点**在 `visits` 里的下标**（对不上就是 `None`）。
 
     从 `visits` 的**末尾**对齐：这 `total` 轮对应的是 `visits` 最后的那几个节点
     （服务重启过的话，前面那些是上一趟的账 —— 起点对齐会把第 1 张卡说成**第一个**节点，
     而它说的是第 `total` 轮）。
 
-    `landed`（**只有 `done` 那一档**，见 `LANDED`）时再往回一格：终局那一支 `_enter`
-    是**正常返回**的 ⇒ 最后一道闸那个节点也在 `visits` 里 —— 它正是 `offset=0` 要的那一个。
-    另外三档都不往回：闸在等人、跑着的那两档 `_enter` 是被 `interrupt()` 打断的（没落盘），
-    而**跑挂那一档**节点抛了 ⇒ 它这一趟的写盘整个被丢掉（同样没落盘）。
-
-    对不上就返回空串，由调用方决定说什么（**不许在这儿编一个节点名**）。
+    `landed`（见 `_landed`）为真时再往回一格：那时最后一道闸那个节点**也在 `visits` 里**
+    （它正是 `offset=0` 要的那一个）。`landed` 为 `None`（认不出来）时**不给下标** ——
+    调用方要整条退。
     """
+    if landed is None:
+        return None
     i = len(visits) - (total - k) - (1 if landed else 0) + offset
-    if 0 <= i < len(visits):
-        return visits[i]
-    return ""
+    return i if 0 <= i < len(visits) else None
 
 
-def _bailed(values: dict, visits: list) -> bool:
-    """`visits` 的最后那一项**进过、但一步都没做**吗（闸把它拦下来了）。
+def _node_at(visits: list, k: int, offset: int, total: int, *, landed) -> str:
+    """第 k 轮（1 起）对应那个节点的**名字**（对不上 / 认不出来就空串，**不许编**）。"""
+    i = _node_index(visits, k, offset, total, landed=landed)
+    return visits[i] if i is not None else ""
+
+
+def _bailed_indices(values: dict, visits: list, gate: Optional[dict]) -> set:
+    """`visits` 里**哪几项进过、但一步都没做**（闸把人拦下来了）—— 一组下标。
 
     两个记号，都由 `graph._enter` 在**闸上**写：
-      - `revised_at == 那一步` —— 人在那一道闸上说「这版不行」（回 `draft` 重写）；
-      - `end_reason` 是**闸自己**写的那两条（`human_stop` / `revision_cap`）——
-        节点看到 `graph._held(out)` 就直接收摊。
+
+      - **喊停 / 连否到上限**（`end_reason` 是闸自己写的那两条）：图就到那儿为止 ⇒
+        **最后那一项**被拦下了（前一项是它之前那个节点，那个真做了）；
+      - **打回**（`revisions` 那本**只增的账**点了名的节点）：那一次进过、被拦下 ⇒
+        ⚠️ 凭据是「**紧接着一个 `draft` 轮**」：`_enter` 的 revise 分支只有
+        `lint`/`selftest`/`deliver` 三道闸有，而那三道被打回之后**路由都回 `draft`**
+        ⇒ `visits` 里那一项的下一项就是 `draft`。
+        ⚠️ **别按节点名一竿子认**（复审 2026-09-18 ⑤ 的射程）：同一个节点可能在打回之后
+        **又跑到过一次**（那一次是真做了），按名字认会把**那一次**也说成「没做」——
+        相邻那一格的凭据就是用来把两次分开的。
+        「下一项」的取法：`visits` 里紧接着的那一项；**最后那一项**没有下一项时看
+        **脚下这一道闸**（`gate.step` —— 打回之后停在 `draft` 闸上时，`draft` 那个节点的
+        `_enter` 被 `interrupt()` 打断了、还没落盘，所以它不在 `visits` 里）。
+        ⚠️ 也别只看 `revised_at`（复审实测的假话）：那个记号在**人又在下一道闸上回了话**
+        之后就没了（`draft` 跑完会清掉它）⇒ 历史轮次上的那句「没做」当场蒸发。
 
     ⚠️ 这不是「停因名单」：别的停因（`lint_cap` / `explore_unfinished` / …）是**节点自己
     做完了**才有的结论 —— 那些步**做了**。这张名单的根在 `graph._enter` 里，
-    有一条用例拿 AST 从那个函数的赋值点把它**长出来**（多一条拦人的路就红）。
+    有一条用例拿 AST 从那个函数的赋值点把它**长出来**（认得的那种写法多一条就红）。
     """
+    out = set()
     if not visits:
-        return False
-    if str(values.get("revised_at") or "") == visits[-1]:
-        return True
-    return str(values.get("end_reason") or "") in BAILED_END_REASONS
+        return out
+    if str(values.get("end_reason") or "") in BAILED_END_REASONS:
+        out.add(len(visits) - 1)
+    revised = {str((row or {}).get("at") or "")
+               for row in (values.get(REVISIONS) or []) if isinstance(row, dict)}
+    revised.discard("")
+    nexts = list(visits[1:]) + [str((gate or {}).get("step") or "")]
+    for i, name in enumerate(visits):
+        if name in revised and nexts[i] == DRAFT:
+            out.add(i)
+    return out
 
 
 def _revisable(step: str, here: bool) -> bool:

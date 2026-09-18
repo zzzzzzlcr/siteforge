@@ -874,8 +874,11 @@ class Job:
     graph: Any = None
     lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
     created_at: str = ""
-    #: **到过几次闸口**（= 第几轮）。`pause-<n>.png` 里的 n 就是它 ——
-    #: Task 6 的配对规则「第 n 道闸上拍的那张叫 `pause-<n>`」靠的正是这个数。
+    #: **闸拍张数**（= `pause-<n>.png` 里的 n）。Task 6 的配对规则
+    #: 「第 n 道闸上拍的那张叫 `pause-<n>`」靠的正是这个数。
+    #: ⚠️ 它**不是轮数**（复审 2026-09-18 N5 的同族）：`_capture_pause` 在**每一次**
+    #: advance 之后都拍，**跑完 / 跑挂那一次也拍** ⇒ 到头了的那两档它 = **轮数 + 1**。
+    #: 轮数的算法只有一处（`agent/rounds.py` 的 `count()`，它按状态去掉最后那张）。
     #: ⚠️ 拍不成的那一轮**也占号**（否则轮号与闸号会错开），差别记在 `shot_notes` 里。
     pauses: int = 0
     #: 每一轮一条：`{"n", "name", "why"}`。拍成了 `name="pause-<n>.png"` 且 `why=""`；
@@ -1269,9 +1272,12 @@ class Service:
     def _capture_pause(self, job: Job) -> None:
         """跑到闸口（或跑挂了）之后拍一张：`pause-<n>.png`。**不抛**。
 
-        `n` 是**第几轮**（`job.pauses`）—— Task 6 的配对规则「第 n 道闸上拍的那张叫
+        `n` 是**闸拍张数**（`job.pauses`）—— Task 6 的配对规则「第 n 道闸上拍的那张叫
         `pause-<n>`」靠的就是它，所以**拍不成的那一轮也占号**：不占号的话，
         「第 n 轮」与「`pause-<n>`」当场错开，页面会把上一轮的图挂到这一轮上。
+        ⚠️ 这一张**跑到头 / 跑挂那一次也拍**（那是「这一趟最后一张图」，不是某一轮的闸
+        ⇒ 轮数要比它少一张；算法在 `agent/rounds.py` 的 `count()`）。`%s` 那句人话里
+        说的「这一轮」指的是**这一次 advance**，不是某一轮（复审 N5 的同族）。
 
         ⚠️ **不许在锁里拍**（简报点名）：名字先取（拿一次锁）、拍完再记（再拿一次）。
         攥着 `job.lock` 拍 = 那 0.2 秒里 `GET /job/{id}` 读不动；
