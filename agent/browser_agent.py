@@ -158,6 +158,14 @@ MUTATING = tuple(a for a in REPLAY_ACTIONS if a != "wait")
 #: 而「不对劲的步」在一次典型探路里是**个位数**，40 是给异常情况留的余量。
 MAX_KEPT_SHOTS = 40
 
+#: 「**页面变了没有**」这条判据只对这几个动作成立 —— 产物侧同一张表在
+#: `template.SKELETON` 的**模板字符串里**（`agent/template.py`，生成的 py **不能** import
+#: `agent`，所以那一份必须自带）。**两份必须一致**，有哨兵盯着
+#: （`test_the_two_diff_judge_tables_agree`）—— 不一致的话，产物会在
+#: `form`/`scroll` 上按「判不了」办、而 agent 侧按「判得了」办，两边对同一步给出不同的留法。
+#: 为什么填框/滚动不能拿它判：签是 `body.innerText`，**填框不改它、滚动也不改它** ⇒ 必然假阳性。
+DIFF_JUDGES = ("click", "goto")
+
 #: 连着几次工具调用没成才去问一次「窗口还活着吗」（§1.8）。
 #: 为什么不是 1：一次失败在活窗口上再正常不过（选择器不对、元素还没渲染出来）。
 #: 为什么不是 5：窗口死掉之后每一次失败的代价都是白等（`MCP_TIMEOUT_S` 那个量级）。
@@ -484,6 +492,15 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                     "探路照常往下走（旁路坏掉不许带塌主路），但这一趟的账本可能是残的。"
                     % (type(exc).__name__, exc))
 
+        def _shots(fn, *a) -> None:
+            """步拍是**旁路** —— 一律走总闸 `_StepShots._safe`，坏了只记账、不带塌主路。
+
+            为什么要有这一层而不是直接调：`dispatch` 里抛出去的异常会被 `run_tool_loop`
+            记成**一次工具失败**，模型会照着那条假错换路走（实测栽过一次）。
+            """
+            if step_shots is not None:
+                step_shots._safe(fn.__name__, fn, *a)
+
         def dispatch(name: str, args: dict) -> Any:
             nonlocal taken, fails
             _stop_or_raise(paused, journey, taken, limits)   # ← 每一步之前（§6.2）
@@ -493,7 +510,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             # 它是**下限、省不掉** —— 动手之前不可能知道这一步会不会出问题。
             # 能省的只有「点后」那张：只在**已经知道不对劲**时才补拍。
             if step_shots is not None and name in MUTATING:
-                step_shots.before_mutation(step, session, pages.current_key)
+                _shots(step_shots.before_mutation, step, session, pages.current_key)
             t0 = time.time()
             try:
                 raw = session.call_tool(name, args)
@@ -502,9 +519,10 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                                   "error": f"{type(exc).__name__}: {exc}"}
                 step["note"] = _say(name, step["target"], False)
                 if step_shots is not None:
-                    # **没做成** ⇒ 当场补拍点后那张，两张都留（§5.4 的 a 支）。
+                    # 失败那条路：动页面动作 ⇒ 当场补拍点后那张（两张都留，§5.4 的 a 支）；
+                    # **别的动作**（比如一张报错的 `observe`）⇒ 那一链结算不了，作废。
                     # 放在 `emit` **之前**：账本是 emit 那一刻落的，晚一步这一步就没有图了。
-                    step_shots.after_mutation(step, session, False)
+                    _shots(step_shots.after_mutation, step, session, name, False)
                 journey.steps.append(step)
                 emit(step)
                 # ── 窗口死掉是一等停因（§1.8）──────────────────────────────
@@ -522,7 +540,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             step["result"] = _summarize(name, args, raw, _ms(t0), fill)
             if step_shots is not None:
                 # 做成了 ⇒ 这一步**先挂着**，留不留由**紧接着那次观测**说了算（§5.4 b 支）。
-                step_shots.after_mutation(step, session, True)
+                _shots(step_shots.after_mutation, step, session, name, True)
             # ⚠️ 这里原先有一行 `step["target"] = {"url": raw["url"]}`（把 target 盖成**落地地址**）。
             # **它被删掉了**（R-E7 ①）—— 那两行把「要打开哪」就地销毁，而账上**再无别处**存它
             # （`_summarize` 那次赋值写到的是 `result.url`，两份名字不同、用途也不同）。
@@ -538,15 +556,10 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                 if step_shots is not None:
                     # 结算手上那一步 —— **只有「紧接着」的这次观测才算**（§5.4 判据 2）。
                     # 放在 `note_page` **之后**：要比的是「这一眼看过之后」的签。
-                    step_shots.on_observation(session, pages.current_key)
+                    _shots(step_shots.on_observation, session, pages.current_key)
                 if moved:
                     journey.notes.append(
                         f"页面变了：现在是「{_title_of(raw)}」（{raw.get('url') or '?'}）")
-            if (step_shots is not None and name not in _SEEN_ACTIONS
-                    and name not in MUTATING):
-                # `screenshot` / `wait` 这类：不改页面、也不观测页面，
-                # 但它让**下一次观测不再「紧接着」**那次动页面动作 ⇒ 链断了（§5.4 判据 2）。
-                step_shots.on_other_action()
             if name == "scroll" and not any("滚进视口" in n for n in journey.notes):
                 journey.notes.append(
                     f"第 {len(journey.steps)} 步是把「{_label_of(step['target'])}」滚进视口；"
@@ -636,6 +649,11 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         if watch is not None:
             journey.plan_ledger = plan_module.ledger(plan, watch.rounds)
             watch.finish()              # 最后一轮也要结算（它没有下一次边界）—— **不抛停**
+        if step_shots is not None:
+            # 步拍也要收尾 —— 一趟**以动页面动作收尾**的探路（模型收工 / 预算到顶 /
+            # **人按停**）永远不会再来一次观测，那个没结算的点前图得删掉
+            # （「按停」正是这个功能的主交互，这条路上不收就是天天漏）。
+            _shots(step_shots.finish)
         # 起点那一页**与后面所有页都不同源**时，撤掉它的 `when`（见 `_drop_incidental_start_when`）。
         _drop_incidental_start_when(pages.pages, journey)
         journey.pages = [{"name": p["name"], "when": p["when"], "url": p["url"],
@@ -2350,30 +2368,68 @@ class _StepShots:
         self._dirty = False
         self._said_cap = False
 
-    # ── 对外的三个口 ────────────────────────────────────────────
+    def _safe(self, what: str, fn, *args, **kwargs) -> None:
+        """**旁路纪律的总闸**：步拍自己坏了，绝不许把探路带塌。
+
+        为什么不靠「小心别写错」：`dispatch` 里抛出去的异常会被 `run_tool_loop` 的
+        `except Exception` 记成**一次工具失败** —— 于是**模型会照着这条假错换路走**，
+        而账上留下的是「工具没做成」。
+        **实测栽过**：`on_observation` 里一个 `AttributeError` 就是这么变成「工具失败」的
+        （用例报的是 `KeyError: 'shot_before'`，看起来像「没留图」，其实是**拍照把探路搞挂了**）。
+
+        ⚠️ 与 `_take` 里那道**不是**同一个：那道挡的是 **shooter** 抛异常；
+        这道挡的是**步拍自己的代码**抛异常（写错了、外部模块变了、……）。
+        两道都要有 —— 只堵一道的话，另一道照样能把一趟真探路变成废账。
+        """
+        try:
+            fn(*args, **kwargs)
+        except Exception as exc:                   # noqa: BLE001 —— 旁路，什么都得吞
+            self.journey.shots_why = ("步拍自己坏了（%s）：%s：%s"
+                                      % (what, type(exc).__name__, exc))
+
+    # ── 对外的口（**都要走 `_safe`** —— 见上）─────────────────────
 
     def before_mutation(self, step: dict, session, key) -> None:
         """**动页面之前**拍一张，并把这步挂成待结算。
 
         `key` 是**动手那一刻**的页面签（`_Pages.current_key`）—— 后面拿它判「变了没有」。
+
+        **「认不出来」只有一种来源**：手上还有一个没被观测结算的动页面动作
+        （`click A → click B → observe` 那个形状）。`screenshot` / `wait` / `diff`
+        这类**不动页面**的动作**不算** —— 它们夹在中间，页面的签照样可比（见 `on_observation`）。
         """
-        # 「认不出来」的两种来源：手上还有一个没结算的，或者上一次动作之后夹了别的东西。
-        tainted = self._pending is not None or self._dirty
+        tainted = self._pending is not None
         self._discard_pending()
-        self._dirty = False
         name = self._take(session, step, "before")
         self._pending = ({"step": step, "before": name, "key": key, "tainted": tainted}
                          if name else None)
 
-    def after_mutation(self, step: dict, session, ok: bool) -> None:
-        """动作回来之后：**没做成**（`ok` 为假）→ 当场补拍点后那张，两张都留。
+    def after_mutation(self, step: dict, session, name: str, ok: bool) -> None:
+        """动作回来之后结算一次。
 
-        ⚠️ **做成了就什么都不做，而且 pending 要留着** —— 留不留由**紧接着那次观测**说了算。
-        在这里清掉 pending 的话，那次观测就没有东西可结算，点前那张会**永远留在盘上**
-        （实测栽过：跑顺的步也留了一张，整个策略的主要收益当场归零）。
+        三种情形：
+
+        - **做成了的动页面动作** → 什么都不做，**`pending` 留着** ——
+          留不留由**紧接着那次观测**说了算。
+          ⚠️ 在这里清掉 pending 的话，那次观测就没有东西可结算，点前那张会**永远留在盘上**
+          （实测栽过：跑顺的步也留了一张，整个策略的主要收益当场归零）。
+        - **没做成的动页面动作** → 当场补拍点后那张，两张都留（§5.4 的 a 支）。
+        - **不是动页面动作**（比如一张**报错的 `observe`**）→ 它结算不了手上那一步，
+          而「紧接着」这个条件也**再也回不来了** ⇒ **按「不留」办**，把点前那张删掉。
+          （不删就是漏：那张图会留在盘上、没有任何 `shot_before` 指向它、**也不计入 `kept`**
+          —— `MAX_KEPT_SHOTS` 于是管不住盘。）
         """
-        if ok:
+        if name not in MUTATING:
+            # ⚠️ **只有「失败」的非动页面动作**才在这里作废那条链（一张报错的 `observe`
+            # 结算不了手上那一步，而「紧接着」再也回不来了）。
+            # **成功的** `observe` **绝不能**在这儿动 —— 它由 `on_observation` 结算，
+            # 抢在它前面作废就是把它整个废掉（实测栽过：这一支写成无条件的之后，
+            # 「跑顺」和「没变」两种情形**都**变成「不留」，`form`/`scroll` 那几条更是全灭）。
+            if not ok:
+                self._discard_pending()
             return
+        if ok:
+            return                            # 做成了 ⇒ 挂着，等紧接着那次观测
         pending = self._pending
         self._pending = None
         step["shot_after"] = self._take(session, step, "after")
@@ -2385,12 +2441,23 @@ class _StepShots:
             self.kept += 1
 
     def on_observation(self, session, key) -> None:
-        """一张 `observe` 到了：结算手上那一步（**只有「紧接着」才算**）。"""
+        """一张 `observe` 到了：结算手上那一步。
+
+        ⚠️ **夹在中间的 `screenshot` / `wait` / `diff` 不算断链** —— 它们不动页面，
+        所以「动手时那一签」与「现在这一签」照样可比，判据仍然成立。
+        真正让判据失效的只有**另一个动页面动作**（那个由 `tainted` 挡下）。
+        """
         pending = self._pending
         self._pending = None
-        dirty, self._dirty = self._dirty, False
-        if pending is None or dirty or pending["tainted"]:
-            self._discard(pending)        # 认不出来 → 按「不留」
+        if pending is None or pending["tainted"]:
+            self._discard(pending)            # 认不出来 → 按「不留」
+            return
+        # 「页面变了没有」这条判据**只对** `click` / `goto` 成立 —— 与产物侧**同一张表**
+        # （`template.DIFF_JUDGES`，`agent/template.py:192`）。填框、滚动**都不改**
+        # `body.innerText`，拿它判它们必然**假阳性**（实测：一趟全部成功的漏斗
+        # 因为 3×form + 1×scroll 在盘上留了 10 张，而跑顺的运行本该一张不留）。
+        if str(pending["step"].get("action") or "") not in DIFF_JUDGES:
+            self._discard(pending)            # 没有通用判据的动作：不回看，不留
             return
         if key is not None and key == pending["key"]:
             step = pending["step"]
@@ -2398,17 +2465,16 @@ class _StepShots:
             step["shot_after_deferred"] = True    # **随后**补拍的 —— 必须标出来
             self._keep(pending, step)
         else:
-            self._discard(pending)        # 页面变了 = 这一步跑顺了 → 一张不留
+            self._discard(pending)            # 页面变了 = 这一步跑顺了 → 一张不留
 
-    def on_other_action(self) -> None:
-        """夹了一个既不是观测、也不动页面的动作（`screenshot` / `wait` / …）。
+    def finish(self) -> None:
+        """一趟探路收尾：手上那个没结算的 → **删掉**。
 
-        它让**下一次观测不再「紧接着」**那次动页面动作 —— 链断了，按「认不出来」办。
-        ⚠️ 只在**手上有待结算的步**时才记：`screenshot → click → observe` 里那张截图
-        不影响 `click` 自己的观测（那一次仍然是紧接着的）。
+        为什么需要：一趟**以动页面动作收尾**的探路（模型收工 / 预算到顶 / **人按停**）
+        永远不会再来一次观测 —— 而「按停」正是这个功能的**主交互**。
+        不收的话点前那张就留在盘上、没人指向它、也不计入 `kept`（同 `after_mutation` 那条）。
         """
-        if self._pending is not None:
-            self._dirty = True
+        self._discard_pending()
 
     # ── 里面的 ──────────────────────────────────────────────────
 

@@ -38,12 +38,18 @@ class _Shooter:
     def __init__(self, root, *, fail=False, boom=False):
         self.root = pathlib.Path(root)
         self.dests = []
+        #: **每次被叫时，盘上还剩什么**（按名字排序）。
+        #: 为什么要记这个：`explore` 收尾会 `finish()` 把没结算的删掉 ——
+        #: 只看「跑完盘上剩几张」的话，「观测**当场**结算了」与「收尾顺手清了」**分不开**，
+        #: 而这两件事是**不同的性质**（前者是策略在跑，后者只是没漏）。
+        self.state_at_call = []
         self.fail = fail
         self.boom = boom
 
     def __call__(self, session, dest):
         dest = pathlib.Path(dest)
         self.dests.append(dest)
+        self.state_at_call.append(sorted(p.name for p in self.root.glob("*.png")))
         if self.boom:
             raise RuntimeError("shooter 炸了（桩）")
         if self.fail:
@@ -95,25 +101,38 @@ def test_a_clean_click_leaves_nothing_on_disk(tmp_path):
     """**跑顺**的一步（紧接着的观测显示页面变了）→ **两张都不留、磁盘上一个文件都没有**。
 
     这是整个策略的**主要收益**：一次跑顺的探路可以一张不留。
+
+    ⚠️ **光看「跑完盘上剩几张」验不出这条** —— `explore` 收尾会 `finish()` 把没结算的删掉，
+    于是「观测**当场**结算了」与「收尾顺手清了」**长得一模一样**。
+    所以这里跑**两步**，并断在 `state_at_call` 上：**第二次动手时盘上必须是空的**
+    —— 那证明第一张是在**观测那一刻**就没的，不是收尾时才清的。
     """
+    second = dict(PAGE_QUIZ, page_text="第二问：你平时读多少本书", title="Example 第二问")
     s = _Shooter(tmp_path / "shots")
     journey, _, _ = _go(
         tmp_path,
-        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_QUIZ}]},
+        {"observe": [{"structured": PAGE_LANDING},
+                     {"structured": PAGE_QUIZ},
+                     {"structured": second}]},
         [{"calls": [("observe", {})]},
          {"calls": [("click", {"selector": "#get-started"})]},
          {"calls": [("observe", {})]},
-         {"content": "点完页面变了"}],
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"content": "两步都跑顺了"}],
         s,
         budget=browser_agent.Budget(max_steps=10, max_rounds=10),
     )
-    click = [x for x in journey.steps if x["action"] == "click"][0]
-    assert click["result"]["ok"] is True, click["result"]
+    clicks = [x for x in journey.steps if x["action"] == "click"]
+    assert len(clicks) == 2 and all(c["result"]["ok"] is True for c in clicks), journey.steps
 
-    assert len(s.dests) == 1, f"点前该拍一张（下限），实际拍了 {len(s.dests)} 次"
-    assert s.left == [], f"跑顺的那一步不该留东西，盘上却有 {s.left}"
-    assert not click.get("shot_before"), f"跑顺了还挂着点前那张：{click.get('shot_before')!r}"
-    assert not click.get("shot_after")
+    assert len(s.dests) == 2, f"两步各拍一张（点前是下限），实际 {len(s.dests)} 次"
+    assert s.state_at_call[1] == [], \
+        f"第二次动手时盘上还有 {s.state_at_call[1]} —— 第一张不是观测结算掉的（是收尾清的）"
+    assert s.left == [], f"跑顺的两步都不该留东西，盘上却有 {s.left}"
+    for c in clicks:
+        assert not c.get("shot_before"), f"跑顺了还挂着点前那张：{c.get('shot_before')!r}"
+        assert not c.get("shot_after")
 
 
 # ────────────────── 留的两种：没做成 / 没变 ──────────────────
@@ -204,11 +223,16 @@ def test_two_mutating_actions_in_a_row_keep_nothing(tmp_path):
         assert not c.get("shot_after"), c.get("shot_after")
 
 
-def test_an_observation_that_is_not_the_next_action_breaks_the_chain(tmp_path):
-    """`click → screenshot → observe(没变)` → **不留**。
+def test_a_screenshot_in_between_does_not_break_the_chain(tmp_path):
+    """`click → screenshot → observe(没变)` → **照留**。
 
-    中间的 `screenshot` 本身不改页面、也不观测页面，但它让那次 `observe` **不再是紧接着的**
-    —— 判据只认「紧接着」，所以按「认不出来」办。
+    **为什么 `screenshot` 不算断链**：它**不动页面** —— 所以「动手时那一签」与
+    「现在这一签」照样可比，判据仍然成立。真正让判据失效的只有**另一个动页面动作**
+    （那个由 `tainted` 挡下，见上一条）。
+
+    ⚠️ 我第一版把 `screenshot`/`wait` 也当成断链（保守），复审驳了：
+    **同一段代码里 `diff` 是透明的、`wait` 却断链，同性质两个待遇**；
+    而且保守的方向在这里是**多截**（该留的不留），不是少留。
     """
     s = _Shooter(tmp_path / "shots")
     journey, _, _ = _go(
@@ -225,7 +249,128 @@ def test_an_observation_that_is_not_the_next_action_breaks_the_chain(tmp_path):
     )
     click = [x for x in journey.steps if x["action"] == "click"][0]
     assert click["result"]["ok"] is True, click["result"]
-    assert s.left == [], f"链断了就不该留，盘上却有 {s.left}"
+    assert click["shot_before"] and click["shot_after"], "夹一张截图不该把该留的截掉"
+    assert click["shot_after_deferred"] is True
+    assert len(s.left) == 2, s.left
+
+
+# ────────────────── 「页面没变」只对 click / goto 成立 ──────────────────
+
+
+@pytest.mark.parametrize("action,args", [
+    ("form", {"selector": "#email", "value": "a@b.test"}),
+    ("scroll", {"selector": "#get-started"}),
+])
+def test_a_successful_fill_or_scroll_keeps_nothing(tmp_path, action, args):
+    """**做成了的 `form` / `scroll`，即使页面签没变，也一张不留。**
+
+    为什么：**「页面签没变」这条判据对它们根本不成立** —— 签是 `body.innerText`，
+    填框不改它、滚动也不改它。拿它判 = **必然假阳性**。
+    产物侧那张表（`template.DIFF_JUDGES = ("click", "goto")`）写的就是这个道理，
+    这里**复用同一张表**，不抄第二份。
+
+    ⚠️ 复审实测过这条假阳性的代价：一趟**全部成功**的漏斗（3×form + 1×scroll + 1×click）
+    在盘上留了 **10 张**，而 40 张的上限会被**健康步**吃掉 —— 真正不对劲的步反而没有图了。
+    """
+    s = _Shooter(tmp_path / "shots")
+    journey, _, _ = _go(
+        tmp_path,
+        # 两次观测**同一页**（签没变）—— 换成 click 的话这就该留了
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [(action, args)]},
+         {"calls": [("observe", {})]},
+         {"content": "填了/滚了，页面没变"}],
+        s,
+        budget=browser_agent.Budget(max_steps=10, max_rounds=10),
+    )
+    step = [x for x in journey.steps if x["action"] == action][0]
+    assert step["result"]["ok"] is True, step["result"]
+    assert s.left == [], f"{action} 做成了却留了 {s.left}（签没变对它不是判据）"
+    assert not step.get("shot_before")
+
+
+def test_the_two_diff_judge_tables_agree():
+    """**两张 `DIFF_JUDGES` 必须一致**：agent 侧一份，产物模板字符串里一份。
+
+    为什么**没法合成一份**：生成的 py 是**独立跑的**（生产里它不 import `agent`），
+    所以它必须自带那张表。**两份是结构上免不了的**，那就得有东西盯着它们别分家 ——
+    分家的后果：产物在 `form`/`scroll` 上按「判不了」办、agent 侧按「判得了」办，
+    **同一步两边留法不同**，而这种不一致**不会响**（各自都自洽）。
+
+    这条哨兵**直接从模板字符串里抠**产物那份 —— 不抄、不靠注释。
+    """
+    import re as _re
+
+    from agent import template as _template
+
+    found = _re.search(r"^DIFF_JUDGES = \((.*?)\)$",
+                       _template.SKELETON.template, _re.M)
+    assert found, "产物模板串里找不到 DIFF_JUDGES —— 它改名了？那这条哨兵要跟着改"
+    artifact = tuple(_re.findall(r'"([^"]+)"', found.group(1)))
+
+    assert artifact == tuple(browser_agent.DIFF_JUDGES), (
+        f"两张表分家了：产物 {artifact} vs agent {tuple(browser_agent.DIFF_JUDGES)}")
+    assert artifact == ("click", "goto")
+
+
+# ────────────────── 点前那张**不许漏在盘上** ──────────────────
+
+
+def test_an_attempt_ending_on_a_click_leaves_nothing(tmp_path):
+    """**一趟以动页面动作收尾** → 点前那张必须删掉（收尾结算）。
+
+    为什么这条要紧：模型收工 / 预算到顶 / **人按停** 都会这么收尾，而**「按停」正是这个
+    功能的主交互**。不结算的话那张图会留在盘上、没有任何 `shot_before` 指向它、
+    **也不计入 `kept`** —— `MAX_KEPT_SHOTS` 于是**管不住盘**。
+    """
+    s = _Shooter(tmp_path / "shots")
+    journey, _, _ = _go(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"content": "就点这一下，收工"}],       # ← 没有后续观测
+        s,
+        budget=browser_agent.Budget(max_steps=10, max_rounds=10),
+    )
+    assert [x["action"] for x in journey.steps] == ["observe", "click"], journey.steps
+    assert s.dests, "点前那张该拍"
+    assert s.left == [], f"收尾没结算，盘上漏了 {s.left}"
+    assert journey.steps[1].get("shot_before") is None
+
+
+def test_a_failed_observation_after_a_click_leaves_nothing(tmp_path):
+    """`click`（成功）→ **`observe` 报错** → **再跟一次成功的 `observe`** → 点前那张必须删掉。
+
+    报错的观测**结算不了**手上那一步，而「紧接着」这个条件**再也回不来了** ——
+    所以按「不留」办。
+
+    ⚠️ **为什么要跟那第三次**：不跟的话，`explore` 收尾的 `finish()` 也会把那张删掉，
+    **两种原因长得一样**（实测：去掉这处作废，只跑两步的版本照样绿）。
+    跟上之后区别就出来了 —— 那次**成功的**观测会拿**过期的签**去比，页面上什么都没变，
+    于是它会**错误地留下**两张。**这条用例断的就是那个「错误地留下」。**
+    """
+    s = _Shooter(tmp_path / "shots")
+    journey, _, _ = _go(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING},
+                     {"error": "这一眼没看成"},
+                     {"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"calls": [("observe", {})]},
+         {"content": "第一眼没看成，第二眼看到了同一页"}],
+        s,
+        budget=browser_agent.Budget(max_steps=10, max_rounds=10),
+    )
+    looks = [x for x in journey.steps if x["action"] == "observe"]
+    assert looks[1]["result"]["ok"] is False, looks[1]["result"]
+    assert looks[2]["result"]["ok"] is True, looks[2]["result"]
+
+    click = [x for x in journey.steps if x["action"] == "click"][0]
+    assert s.left == [], f"链在报错那一眼就断了，点前那张该删，盘上却剩 {s.left}"
     assert not click.get("shot_before")
 
 
@@ -314,8 +459,43 @@ def test_a_broken_shooter_does_not_break_the_run(tmp_path):
     )
     assert [x["action"] for x in journey.steps] == ["observe", "click", "observe"], journey.steps
     assert journey.steps[1]["result"]["ok"] is True, journey.steps[1]["result"]
-    assert journey.shots_why, "拍不成要说得出为什么（人话），不许静默"
+    # 断在两处「说法分得开」上 —— 与上一条（shooter **回一句**拍不成）**必须不一样**：
+    # 「截图工具坏了」和「步拍自己的代码坏了」是**两个诊断**，混成一个值就分不出该修哪儿。
+    assert "拍照时它抛了" in journey.shots_why, journey.shots_why
+    assert "步拍自己坏了" not in journey.shots_why, journey.shots_why
     assert s.left == []
+
+
+def test_the_step_shot_code_itself_blowing_up_does_not_break_the_run(tmp_path, monkeypatch):
+    """**步拍自己的代码抛异常 → 探路照常跑完。**（旁路纪律的**另一半**）
+
+    ⚠️ 与「shooter 抛异常」那条**不是**同一件事：那条挡的是**外部世界**（截图工具），
+    这条挡的是**步拍自己的代码**（写错了、外部模块改名了……）。
+    **实测栽过一次**：`on_observation` 里一个 `AttributeError` 被 `run_tool_loop`
+    记成了「**一次工具失败**」—— 于是**模型照着那条假错换路走**，
+    而用例报的是 `KeyError: 'shot_before'`（看起来像「没留图」，其实是**拍照把探路搞挂了**）。
+    """
+    def boom(*_a, **_kw):
+        raise AttributeError("步拍自己坏了（桩）")
+
+    monkeypatch.setattr(browser_agent._StepShots, "on_observation", boom)
+
+    s = _Shooter(tmp_path / "shots")
+    journey, _, _ = _go(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"content": "步拍坏了也走完了"}],
+        s,
+        budget=browser_agent.Budget(max_steps=10, max_rounds=10),
+    )
+    # 三步都真的发生了，而且**那次观测没被记成「工具失败」**
+    assert [x["action"] for x in journey.steps] == ["observe", "click", "observe"], journey.steps
+    assert all(x["result"]["ok"] is True for x in journey.steps), \
+        [x["result"] for x in journey.steps]
+    assert "AttributeError" in journey.shots_why, journey.shots_why
 
 
 def test_a_shooter_that_returns_a_reason_is_recorded(tmp_path):
