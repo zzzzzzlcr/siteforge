@@ -100,9 +100,26 @@ def test_the_page_names_every_hop_it_will_call_and_the_three_actions():
         assert hop in page, "页面没点名这一跳：%s" % hop
     for btn in ("btnContinue", "btnSay", "btnStop"):
         assert 'id="%s"' % btn in page, "页面少了这个动作的 id：%s" % btn
-    #: 三个动作要**发得出去**：光有 id 不算（id 是给测试与 `aria` 认的）
-    for verb in ("continue", "say", "stop"):
-        assert '"%s"' % verb in page, "页面里找不到动作 %s 的载荷" % verb
+    #: 每一跳的**落点**：逐条钉真字面量（⚠️ 修复轮 1：原来钉的是 `'"say"' in page`，
+    #: 而那个子串是被 `ACT` 映射表**自己**满足的 —— 把发出去的载荷改名它**照样通过**，是空钉子）
+    for pair in ('"continue": "/reply"', '"say": "/say"', '"stop": "/stop"',
+                 '"again": "/again"'):
+        assert pair in page, "动作到端点的对应不在页面上：%s" % pair
+
+
+def test_the_payloads_are_the_ones_the_plan_promised():
+    """三个动作**发出去的载荷**（不是它们的名字）—— 逐条钉真字面量。
+
+    ⚠️ 这一条是修复轮 1 补的：计划（`plans/2026-09-17-console-minimal.md`）把请求体写死了
+    两遍 —— `POST /job/{id}/say {"text": "…"}`、`POST /job/{id}/reply {"action": …}`。
+    我原先发的是 `{"say": …}`：Task 8 照计划实现 ⇒ **页面每一个「说一句」当场 422**。
+    钉法用真字面量（`'"text":'` 这种子串会被别处的键名满足 —— 那是空钉子）。
+    """
+    page = _page()
+    assert 'act("say", { "text":' in page, "`/say` 的载荷字段不是计划里的 `text`"
+    assert 'act("stop", {})' in page, "「停」这个动作的载荷不在页面上"
+    assert '"action": "continue"' in page, "闸上「继续」的载荷不在页面上"
+    assert '"action": "say", "note"' in page, "闸上「带话」的载荷不在页面上"
 
 
 def test_the_page_carries_both_copies_of_the_second_button():
@@ -246,11 +263,14 @@ def test_the_page_says_which_kind_of_round_it_means():
 def test_the_timeline_never_shows_the_raw_cells():
     """D16：`events[].data` 那七格（选择器 / 原始回执 / 判断词）**一个字节都不进主视图**。
 
-    钉法：页面里**一次都不许出现** `.data`（页面的数据只有 `/live` 那几个 JSON 字段，
-    里面没有一样叫 `data` 的东西 —— 出现了就说明有人在搬事件里那七格）。
+    ⚠️ 钉法（修复轮 1 改准了）：**`data` 这个键名在页面上一次都不许出现** ——
+    两种读法都挡：`at(ev, "data")` 与 `ev.data`。**旧那条钉的是 `.data` 这一个子串**，
+    复审实测：把时间线改成 `at(ev, "data")`（**真的把那七格搬上主视图**）它**照样通过** ——
+    空钉子。`data-shot` / `data-job` 这两个**属性名**不受影响（它们是 `data-`，不是 `data`）。
     """
     page = _page()
-    assert not re.search(r"\.data\b", page), "页面上出现了 `.data` —— D16：那七格不进主视图"
+    hit = re.search(r"""\.data\b|["']data["']""", page)
+    assert not hit, "页面上出现了 `data` 这个键名（%s）—— D16：那七格不进主视图" % hit.group(0)
 
 
 def test_the_timeline_follows_the_tail_unless_the_human_scrolled_up():
@@ -341,21 +361,142 @@ def test_the_facts_that_only_exist_in_live_are_all_rendered():
     - `shots_note`：降级 B 那句话，非空时**一直在顶部**（静默降级是明令禁止的）；
     - `will_stop_at`：「停」按下之后落在哪儿 —— brief 页面规则点名要它；
     - `stop.requested`：已经请求过停这件事，页面得知道（不然按钮会一直亮着）。
+
+    ⚠️ 钉法（修复轮 1 改准了）：钉**取那一格的那次调用**（`at(live, "note"` 这种真字面量），
+    不钉光秃秃的键名 —— 旧那条钉的 `"note"` 是 `"shots_note"` 的**子串**，
+    复审实测：**删掉渲染 `note` 的那一行**，它照样通过（空钉子）。
     """
     page = _page()
-    for key in ("note", "shots_note", "will_stop_at", "requested"):
-        assert key in page, "页面没渲染这一格：%s" % key
+    for call in ('at(live, "note"', 'at(live, "shots_note"', 'at(live, "stop.will_stop_at"',
+                 'at(live, "stop.requested"'):
+        assert call in page, "页面没渲染这一格：%s" % call
 
 
 def test_the_page_tolerates_cards_that_are_missing_fields():
     """★ 复审第 2 条：卡片**没有键集合断言** —— 加字段没人拦、丢字段也没人拦。
 
     钉法（HTTP 层能钉的那一半）：页面读卡片上的东西**一律走一个「可能不在」的取值器**
-    （`at()`），而不是 `card.done.shots.before` 那样的深链 —— 中间那一格不在的时候，
-    深链会当场把整页 JS 打断（页面上就什么都不动了，也没人说是为什么）。
+    （`at()`），而不是一串点到底的属性链 —— 中间那一格不在的时候，那种写法会当场把整页 JS
+    打断（页面上就什么都不动了，也没人说是为什么）。
+
+    ⚠️ 修复轮 1 改准了：**旧那条是 `page.count("at(") >= 10`** —— 复审实测页面上有 **83** 个
+    `at(`，门槛等于没有；把 `at(card, "done", null)` 换成 `card.done` 它**照样通过**（空钉子）。
+    现在钉的是**真要读的那几格各自走取值器**（真字面量），另加「不许出现深链」那三条。
     """
     page = _page()
     assert re.search(r"function at\(", page), "没有那个「可能不在」的取值器"
-    assert page.count("at(") >= 10, "取值器在，但没人用（深链照样会打断整页）"
+    for call in ('at(card, "done"', 'at(card, "now"', 'at(card, "last_shot"',
+                 'at(card, "step_say"', 'at(done, "shots.before"', 'at(done, "steps"',
+                 'at(step, "shot_after_deferred"', 'at(ev, "say"'):
+        assert call in page, "这一格没有走「可能不在」的取值器：%s" % call
     for deep in (".done.shots.", ".now.name", ".steps_note"):
         assert deep not in page, "页面里有深链 %s —— 中间那格不在就整页断" % deep
+
+
+# ═══════════════ 8. 修复轮 1（复审抓到的四条 + 两条改话）═══════════════
+
+
+def test_a_detail_that_is_not_a_sentence_is_turned_into_human_words():
+    """★ I1：`detail` **不一定是字符串** —— FastAPI 的字段校验错（422）里它是个**数组**。
+
+    复审实测的形状：桩台按 Task 8 的签名收 `{"text": …}`、而页面（那时）发 `{"say": …}`
+    ⇒ 真 422 ⇒ 浏览器里 `errBox.textContent` = **`[object Object]`**。
+    运营看到那个等于没看到，而这一屏的纪律是「没有静默的路径」——
+    **字在、话不在，就是一种静默**。
+    """
+    page = _page()
+    reader = re.search(r"function errorText\(.*?\n  \}", page, re.S)
+    assert reader, "没有把 `detail` 变成人话的那一处（`errorText`）"
+    body = reader.group(0)
+    assert "Array.isArray(detail)" in body, "数组那一支不在 —— 422 会退成 `[object Object]`"
+    assert "loc" in body and "msg" in body, "数组里的人话是从 `loc` / `msg` 拼的（不然还是读不出来）"
+    assert 'at(res.obj, "detail"' in page, "`sayOf` 得走 `errorText` 这条路"
+    setter = re.search(r"function setErr\(.*?\n  \}", page, re.S)
+    assert setter and "textContent" in setter.group(0), \
+        "错误是 `textContent` 写进去的（不是 innerHTML —— 服务那句话不许当 HTML 解释）"
+
+
+def test_a_stop_that_did_not_land_does_not_claim_it_did():
+    """★ I3：`/stop` 没成的时候页面**不许**说「已经请求停了」—— 那是编话。
+
+    404 意味着请求**根本没落地**：红条说「没这个端点」、下一行说「已经请求停了」，
+    同一屏两句话互相打架，而且它断言的是一件它不知道的事。
+    失败要说「没请求成」，而且**按钮得能再按**（它按下就禁用了，而 `paint()` 只在
+    `/live` 的 JSON 变了才重画 ⇒ 载荷不变时那个按钮会一直按不动）。
+    """
+    page = _page()
+    assert "已经请求停了" not in page, "失败那条路上还在断言一件它不知道的事"
+    stop = re.search(r"function stopIt\(.*?\n  \}", page, re.S)
+    assert stop, "找不到那个「停」的处理"
+    body = stop.group(0)
+    assert "没请求成" in body, "失败时没说「没请求成」"
+    assert "disabled = false" in body, "失败之后按钮一直按不动（载荷不变就不会重画）"
+
+
+def test_the_two_cells_that_disagree_are_named_out_loud():
+    """★ I4：输入区**内部**那处矛盾 —— `modeHint`（抄服务）与 `secondHint`（页面自己写的）
+    打架时，不许把两句**并排当都成立**印出去。
+
+    复审裁定的规矩：「页面不许自己猜」= 不许**认定**服务没说过的事实；
+    「不能自相矛盾」= 不许把两句打架的话**并排当都成立**。两格对不上时唯一合规的形状是
+    **照抄服务那两格 + 说出它们对不上** —— 这不需要知道谁对，所以它**不是猜**。
+    """
+    page = _page()
+    # ⚠️ 钉**判据本身**（两格真被拿来比了），不钉 `"mismatch" in page` 那种名字出现没出现 ——
+    #    我第一版就是那么钉的，变异实测：把它改成 `var mismatch = false;`（**关掉这个判据**）
+    #    照样通过（空钉子）。名字在、判据不在，正是「看着像钉子」的形状。
+    assert "waiting !== gated" in page, "两格（状态 / 输入语义）没有被拿来比 —— 那两句就被并排印出去了"
+    assert "服务这两格" in page and "对不上" in page, "对不上这件事没有被说出来"
+
+
+def test_the_left_column_says_so_when_it_cannot_be_read():
+    """★ M4：`/runs` 取不到**也要说** —— 这是全页最后一条会静默的路。
+
+    旧形状：`!res.ok` 直接 `return`、`catch` 是空的 ⇒ 左边那一栏停在一个空 div 上，
+    而**空 div 读起来就是「还没有任何运行」**（两件事完全不一样）。
+    """
+    page = _page()
+    assert "function runsProblem(" in page, "没有那句「这一栏读不到」的话"
+    runs = re.search(r"function fetchRuns\(.*?\n  \}", page, re.S)
+    assert runs, "找不到 `fetchRuns`"
+    body = runs.group(0)
+    assert "runsProblem(" in body, "取不到（非 2xx）的时候没说话"
+    assert "runsProblem(" in body.split(".catch(")[-1], "`catch` 那一支还是空的（异常那条路依旧静默）"
+    assert "没有运行" in page, "得说清「这不代表没有运行」"
+
+
+def test_the_elapsed_seconds_say_what_they_actually_measured():
+    """★ M5：「已跑 X 分 Y 秒」是从 **`created_at`**（提交时刻）算的 ——
+    里面含着排队、也含着停在闸上等你的时间，所以它**不是**「跑了多久」。
+
+    数据里没有「真正开跑的时刻」那一格 ⇒ **改话，不改数**
+    （说「这一趟开了多久」是量得住的那句）。
+    """
+    page = _page()
+    assert "这一趟开了" in page, "措辞要跟得上它量到的东西"
+    assert "已跑 " not in page, "「已跑」断言了一格数据里没有的东西"
+
+
+def _raw_markdown_hits(html_text: str) -> list:
+    """写进 DOM 的表达式里，**没过 `rich()` 却带着 `**`** 的那几个（正控/被测共用同一把尺子）。
+
+    `[^;]+` 到这一条语句的 `;` 为止 —— 页面里那几处赋值都是一句写完的。
+    """
+    return [m.group(1).strip()[:70]
+            for m in re.finditer(r"innerHTML\s*=\s*([^;]+);", html_text, re.S)
+            if "**" in m.group(1) and "rich(" not in m.group(1)]
+
+
+def test_no_raw_markdown_reaches_the_html():
+    """`**着重**` 是服务那些话的写法（页面自己写的文案里也用）—— 走 `innerHTML` 的必须过 `rich()`。
+
+    ⚠️ 这一条是修复轮 1 在**截图**里真看见的：新加的那句「服务这两格**对不上**」当时直接
+    喂给了 `innerHTML`，运营看到的就是两个星号。HTTP 层别的手段一条都拦不住（`**` 是合法文本），
+    所以钉法是把「写进 DOM 的表达式」扫一遍。
+    """
+    page = _page()
+    hits = _raw_markdown_hits(page)
+    assert not hits, "这些 innerHTML 没过 `rich()`（运营会看到 `**`）：%r" % hits
+    #: 正控：这把尺子**真的会响**
+    assert _raw_markdown_hits('el.innerHTML = "服务这两格**对不上**";'), "尺子漏了"
+    assert not _raw_markdown_hits('el.innerHTML = rich("服务这两格**对不上**");'), "误杀"

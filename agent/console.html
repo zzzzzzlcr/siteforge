@@ -305,14 +305,17 @@
   // `/live` 的 `input.mode`：gate（这就是闸的回话）/ steer（探路里，下一轮直达）/ queue（排队）。
   var MODES = {
     "gate": {
+      short: "闸上的回话",
       placeholder: "写一句它该怎么做，或者按「继续」让它往下走",
       hint: "这一行现在是**这道闸的回话**：按「说一句，接着走」才会送出去。"
     },
     "steer": {
+      short: "直达下一轮",
       placeholder: "写一句它该怎么做 —— 会直达它的下一轮",
       hint: "这一行现在是**直达**：你打的字不排队，会进它的下一轮（送到之后时间线上会出现一条「交给它了」）。"
     },
     "queue": {
+      short: "排队",
       placeholder: "写一句它该怎么做 —— 它停下来时会进输入框",
       hint: "这一行现在是**排队**：这句话先记下，等它到下一道闸时进到输入框 —— 你按一下才送过去，不会自动发。"
     }
@@ -627,7 +630,10 @@
     var d = new Date(started);
     if (isNaN(d.getTime())) { return ""; }
     var secs = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
-    return " · 已跑 " + Math.floor(secs / 60) + " 分 " + (secs % 60) + " 秒";
+    // ⚠️ 措辞要**量得住**（修复轮 1）：这个数是从 `created_at`（**提交时刻**）算的 ——
+    //    里面含着排队、也含着停在闸上等你的那些时间，所以它**不是**「跑了多久」。
+    //    数据里没有「真正开跑的时刻」那一格 ⇒ 改话，不改数（说「开了多久」是量得住的那句）。
+    return " · 这一趟开了 " + Math.floor(secs / 60) + " 分 " + (secs % 60) + " 秒";
   }
   function paintElapsed() {
     var pill = document.getElementById("statePill");
@@ -659,18 +665,37 @@
     document.getElementById("btnSay").disabled = !waiting;
     // 跟着 `revisable` 改名：true → 「打回带话」，false → 「说一句，接着走」
     document.getElementById("btnSay").textContent = revisable ? "打回带话" : "说一句，接着走";
-    // 第二行小字：**跟着 `revisable` 走**，而且只在真能按的时候才提「继续」
-    // （它没在等你就别提一个按不动的按钮 —— 那是页面在说一件它不知道的事）
-    document.getElementById("secondHint").innerHTML = revisable
-      ? "打回：这一版不要了，它会回到「写这一版 py」，你这句话会一路带进去。"
-      : (waiting ? "这句话会一路带进它下一步要做的事；不写也能按「继续」让它往下走。"
-                 : "它现在没在等你回话 —— 这一行按上面说的那种语义送出去。");;
+    // 第二行小字：**只印服务说得通的那一句**。
+    // ⚠️ 这一行是页面**自己写的文案**，所以「照抄服务」这条辩护在这儿不成立 ——
+    //    它要是和上面那行（`modeHint`，抄服务）打架，运营看到的就是两句都成立的话，
+    //    而它们不可能同时成立。两条规矩其实不冲突：
+    //      · 「页面不许自己猜」= 不许**认定**服务没说过的事实；
+    //      · 「不能自相矛盾」  = 不许把两句打架的话**并排当都成立**。
+    //    ⇒ 两格对不上时唯一合规的形状：**照抄服务那两格 + 说出它们对不上**
+    //      （这不需要知道谁对 —— 所以它不是猜）。
+    var gated = mode === "gate";           // 服务说这一行是「闸上的回话」
+    var mismatch = (waiting !== gated);    // 状态那格与输入语义那格对不上
+    //: 给「对不上」那句话用的短名（人话；不认识的模式把原样那串带上，`rich()` 会转义它）
+    var modeShort = m && m.short ? m.short : ("这一屏不认识的模式（" + mode + "）");
+    // ⚠️ 这一行是 `innerHTML`：**凡是带 `**着重**` 的那几句都要过 `rich()`**
+    //    （不过的话运营看到的就是两个星号 —— 截图里真出现过）
+    document.getElementById("secondHint").innerHTML = rich(
+      mismatch
+        ? ("⚠️ 服务这两格**对不上**：状态那格是「" + (STATUS_WORD[status] || status) +
+           "」，输入那格是「" + modeShort + "」—— 这两句不可能同时成立。" +
+           "这一屏照抄服务给的那两格，**不替它挑一句**；要送话就按上面的按钮，" +
+           "送不成它会原样把服务那句话摆出来。")
+        : (revisable ? "打回：这一版不要了，它会回到「写这一版 py」，你这句话会一路带进去。"
+                     : (waiting ? "这句话会一路带进它下一步要做的事；不写也能按「继续」让它往下走。"
+                                : "它现在没在等你回话 —— 这一行按上面说的那种语义送出去。")));
     document.getElementById("btnStop").disabled = over || at(live, "stop.requested", false) === true;
     document.getElementById("btnAgain").hidden = !over;
     // ④ 「停」按下之后落在哪儿：**服务说的那句原话**（没说就明说没说）
     var willStop = at(live, "stop.will_stop_at", "");
     if (at(live, "stop.requested", false)) {
-      setStopHint(willStop || "已经请求停了，但服务这一次没说它会落在哪儿。");
+      // ⚠️ 这一支是 `stop.requested` **为真**（服务说它记下了）—— 所以这里说得出
+      //    「服务说已经请求过」；`will_stop_at` 没说就明说没说（不替它编一个落点）。
+      setStopHint(willStop || "服务说「停」已经请求过了 —— 但它这一次没说会落在哪儿（这一屏不替它编一句）。");
     }
     // ⑤ 跑着的时候：卡片灰掉但**留在屏幕上**（页面不变空）
     if (status === "running" || status === "queued") {
@@ -715,10 +740,38 @@
       return { ok: r.ok, status: r.status, obj: obj, body: body };
     });
   }
+  //: 服务回的那一格 `detail` → **一句人话**。
+  //: ⚠️ **它不一定是字符串**：FastAPI 的字段校验错（422）里它是一个**数组**
+  //: （`[{loc, msg, type}, …]`）—— 直接 `String(…)` 出来的是 `[object Object]`。
+  //: 运营看到那个等于没看到，而这一屏的纪律是「没有静默的路径」：
+  //: `[object Object]` 就是一种静默（字在，话不在）。所以数组要**拆成人话**。
+  function errorText(detail) {
+    if (typeof detail === "string") { return detail; }
+    if (Array.isArray(detail)) {
+      var out = [], i, j;
+      for (i = 0; i < detail.length; i++) {
+        var item = detail[i] || {};
+        var where = at(item, "loc", []) || [], path = [];
+        for (j = 0; j < where.length; j++) {
+          // `body` 是框架自己的写法（「请求体」），人不用看这一节
+          if (String(where[j]) !== "body") { path.push(String(where[j])); }
+        }
+        var msg = at(item, "msg", "");
+        out.push((path.length ? path.join(".") + " —— " : "") +
+                 (msg || "这一项它没说哪儿不对"));
+      }
+      return "服务说这份请求不合它的格式（它一个字段都没收）：\n" + out.join("\n");
+    }
+    if (detail && typeof detail === "object") {
+      return "服务回了一句这一屏读不出来的错误（形状不是一句话）：" + JSON.stringify(detail);
+    }
+    return "";
+  }
   function sayOf(res) {
     // 服务每一句错误都是 `{"detail": "…人话…"}` —— **原样**摆出来。
     // 页面**不翻译、不概括、不吞**：吞掉一次，「按下去什么都没发生」就回来了。
-    if (res.obj && at(res.obj, "detail", "")) { return at(res.obj, "detail", ""); }
+    var said = errorText(at(res.obj, "detail", ""));
+    if (said) { return said; }
     return res.body || ("服务回了 HTTP " + res.status + "，正文是空的。");
   }
 
@@ -748,9 +801,20 @@
     pill.textContent = res.status === 404 ? "没这个任务" : "这一屏少了几格（服务说读不回来）";
   }
 
+  //: 左边那一栏读不出来时说的那句话（**这一栏也不许静默** —— 修复轮 1）。
+  //: 原来这条路是空的（`!res.ok` 直接 return、catch 是空的）：那一栏于是停在一个空 div 上，
+  //: 而**空 div 读起来就是「还没有任何运行」** —— 两件事完全不一样，而「没有静默的路径」
+  //: 是这一页的全局纪律。左边这一栏挂了不影响主视图，所以只说这一栏自己。
+  function runsProblem(why) {
+    var box = document.getElementById("runs");
+    if (!box) { return; }
+    box.innerHTML = '<p class="hintline">左边这一栏现在取不到：' + esc(why) + "</p>" +
+      '<p class="hintline">这不代表「没有运行」—— 只代表这一栏没读到（主视图自己有话说）。</p>';
+  }
+
   function fetchRuns() {
     return fetch("/runs").then(readJSON).then(function (res) {
-      if (!res.ok) { return; }
+      if (!res.ok) { runsProblem(sayOf(res)); return; }
       state.runs = res.obj;
       var rows = at(res.obj, "runs", []) || [];
       if (!jobId && rows.length) {
@@ -760,7 +824,7 @@
         return;
       }
       paintRuns(res.obj);
-    }).catch(function () { /* 左边那一栏取不到不影响主视图（主视图自己有话说） */ });
+    }).catch(function (e) { runsProblem(String(e)); });
   }
 
   // ══════════════════ 三个动作 ══════════════════
@@ -800,9 +864,12 @@
       if (!text) { act("continue", { "action": "continue" }); }
       else { act("continue", { "action": "say", "note": text }); }
     } else {
-      // 常开输入（steer / queue）：走 `/say` —— 服务说它现在是什么语义，页面就照哪个送
+      // 常开输入（steer / queue）：走 `/say` —— 服务说它现在是什么语义，页面就照哪个送。
+      // ⚠️ 载荷字段是 **`text`**：计划（`plans/2026-09-17-console-minimal.md`）写死的是
+      //    `POST /job/{id}/say {"text": "…"}`。写成 `say` 的话，Task 8 一落地，
+      //    页面上每一个「说一句」都会当场 422（而 422 的 detail 是个数组 —— 见 `errorText`）。
       if (!text) { setErr("这一行现在是常开输入：它没在等你回话，所以空着按下去没有意义 —— 写一句再按。"); return; }
-      act("say", { "say": text });
+      act("say", { "text": text });
     }
   }
 
@@ -810,8 +877,16 @@
     var btn = document.getElementById("btnStop");
     btn.disabled = true;                 // 按下**先禁用**（再按一次不会又发一遍）
     act("stop", {}).then(function (out) {
+      if (!out) {
+        // ⚠️ **这一跳没成**（404 / 422 / 503…）：请求**根本没落地** —— 下一行不许说
+        //    「停已经请求成了」（那是编话：页面不知道它收到了没有，而红条正说着
+        //    「没这个端点」，同一屏两句话互相打架）。失败要能**再按**一次（不然按钮一直按不动）。
+        btn.disabled = false;
+        setStopHint("这一次「停」**没请求成**：上面那条红的就是服务说的原因 —— 它什么都没收到。");
+        return;
+      }
       var willStop = at(out, "stop.will_stop_at", "");
-      setStopHint(willStop || "已经请求停了 —— 但服务这一次没说它会落在哪儿（这一屏不替它编一句）。");
+      setStopHint(willStop || "停的请求送到了 —— 但服务这一次没说它会落在哪儿（这一屏不替它编一句）。");
     });
   }
 
