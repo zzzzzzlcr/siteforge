@@ -12,7 +12,7 @@
 - `SITEFORGE_CDP_BIN` → 一条**不存在**的路径（于是谁要用 cdp 都在**进程内**失败，
   一个进程都不起）
 
-⚠️ **三条通道都封住了，靠的是「它们都走 `self._cdp_bin`」这一条**（修复轮 2 才封齐）：
+⚠️ **会起子进程的三条通道封住了，靠的是「它们都走 `self._cdp_bin`」这一条**（修复轮 2 才封齐）：
 
 | 通道 | 走哪儿 |
 |---|---|
@@ -20,11 +20,19 @@
 | 窗口探针（`live_viewport`） | `Service.__init__` 起它时就绑死（它以前**自己读环境**） |
 | 自测（`selftest.run`） | `Service._selftest_cb` 绑死（它以前**又读一次环境**，回退链第二候选就是仓库里那个二进制） |
 
-⚠️ **所以这张表不是自动成立的**：以后再出现一条「自己读环境、自己起子进程」的通道，
+还有**第四条**，性质不同 —— 它**不起子进程**，封的是「**报的 = 用的**」：
+
+| 通道 | 走哪儿 |
+|---|---|
+| `/health` 报的那个 `cdp` | 报 `svc._cdp_bin`（构造时定死的那个）。以前读活环境：显式给了 `capture_bin` 却报环境里那个；两个变量都没设时报 `null` —— 而服务实际用的是仓库里那个 |
+
+⚠️ **这张表不是自动成立的**：以后再出现一条「自己读环境、自己起子进程」的通道，
 它**不在这条不变量里** —— 加它的时候要一起把它绑到 `self._cdp_bin` 上，
-并照着 `tests/test_service_shots.py` 里那三条「**删干净环境之后再调用**」的判据写一条。
-（那三条判据就是这条不变量的射程：`test_a_shot_that_runs_after_…`、
-`test_a_viewport_probe_that_runs_after_…`、`test_a_selftest_that_runs_after_…`。）
+并照着 `tests/test_service_shots.py` 里那几条「**删干净环境之后再调用 / 或者显式给一个与环境不同的值**」
+的判据写一条。那几条判据就是这条不变量的射程：
+`test_a_shot_that_runs_after_…`、`test_a_viewport_probe_that_runs_after_…`、
+`test_a_selftest_that_runs_after_…`、`test_health_reports_the_cdp_…`、
+`test_health_never_reports_null_…`。
 
 ⚠️ 为什么是「不存在」而不是 `/bin/false` 那种**存在但没用**的东西：
 `selftest._cdp_binary()` 的兜底链是「环境变量 → 本仓库的 `tools/cdp/cdp` → 现构建」，

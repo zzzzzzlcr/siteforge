@@ -511,6 +511,34 @@ def test_a_selftest_that_runs_after_the_fixtures_are_gone_cannot_touch_the_real_
     assert seen.get("env", {}).get("SITEFORGE_CDP_BIN") == str(script), seen.get("env")
 
 
+def test_health_reports_the_cdp_the_service_will_actually_use(tmp_path, monkeypatch):
+    """**第四条通道**（`/health`，复审留的检查点）：它报的必须**就是**服务会用的那个。
+
+    今天它会骗人：环境里写着 `SITEFORGE_CDP_BIN`，而服务被**显式**给了 `capture_bin` ——
+    报的是**环境里那个**，服务用的是**另一个**。**名字说 A、量的是 B**。
+    """
+    monkeypatch.setenv("SITEFORGE_CDP_BIN", "/from-env/cdp")          # 环境里那个 = B
+    client = _client(tmp_path, graph_factory=lambda b, d: _one_gate(),
+                     capture_bin="/explicit/cdp")                      # 服务用的 = A
+    body = client.get("/health").json()
+    assert body["cdp"] == "/explicit/cdp", body
+
+
+def test_health_never_reports_null_for_a_cdp_the_service_will_use(tmp_path, monkeypatch):
+    """两个环境变量都不设、也不给 `capture_bin` → 报**解析结果**（仓库里那个），**不是 `null`**。
+
+    这正是今天会骗人的那个形状：`/health` 说 `null`（读起来像「这个部署没有 cdp」），
+    而服务实际会去起**仓库里那个** `tools/cdp/cdp`。
+    """
+    monkeypatch.delenv("SITEFORGE_CDP_BIN", raising=False)
+    monkeypatch.delenv("CDP_PATH", raising=False)
+    client = _client(tmp_path, graph_factory=lambda b, d: _one_gate())
+    body = client.get("/health").json()
+    assert body["cdp"], "报 null/空 —— 而服务实际会用仓库里那个"
+    assert body["cdp"] == str(ROOT / "tools" / "cdp" / "cdp"), body
+    assert body["cdp"] == client.app.state.service._cdp_bin, "报的与服务用的不是一个东西"
+
+
 def test_a_job_driven_through_the_service_leaves_its_books_in_tmp_not_in_the_repo(
         tmp_path, monkeypatch):
     """账（`<explore_root>/<job_id>/baseline.json`）**不许落进仓库**。

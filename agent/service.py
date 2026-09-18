@@ -1805,6 +1805,9 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
     `None` ⇒ `SITEFORGE_SHOTS_DIR` ⇒ 仓库里的 `runtime/shots`；`capture_bin` 是那个 cdp
     二进制（`None` ⇒ `SITEFORGE_CDP_BIN` ⇒ `CDP_PATH` ⇒ 仓库里的 `tools/cdp/cdp`）。
     ⚠️ 这两样都在**构造时定死**（不是在每次抓拍时再看一眼环境）—— 见 `Service.__init__`。
+    **上面那条链是「构造那一刻」的解析规则**：解析完就落进 `self._shots_dir` / `self._cdp_bin`，
+    之后**环境再变也不影响这个服务**（`/health` 报的就是这两个落下来的值 ——
+    报「环境里现在写着什么」曾经是第四条通道：名字说 A、量的是 B）。
     `capture` / `shot_timeout` 是给测试注入桩用的（与 `viewport_probe` 同一个理由）。
     """
     svc = Service(graph_factory=graph_factory, window=window, checkpointer=checkpointer,
@@ -1824,7 +1827,12 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
             "say": svc._check.say(),
             "window_layer": (type(svc._window).__name__ if svc._window is not None
                              else "没接（换窗口大小那根线给不了）"),
-            "cdp": os.environ.get("SITEFORGE_CDP_BIN") or os.environ.get("CDP_PATH"),
+            # ⚠️ 报的必须是**服务真正会用的那个**（构造时定死的），不是「环境里现在写着什么」：
+            #    这两个东西可以不一样（显式给了 `capture_bin` 而环境里另有一个），
+            #    而**名字说 A、量的是 B** 是这个项目最老的那条病。
+            #    以前这里读活环境，两个变量都没设时还报 `null` —— 像「没有 cdp」，
+            #    而服务实际会用**仓库里那个** `tools/cdp/cdp`（修复轮 2 的第四条，见 conftest）。
+            "cdp": svc._cdp_bin,
             "out_dir": svc._out_dir,
             "jobs": len(svc._jobs),
             "steps": {k: STEP_SAY[k] for k in NODES},
