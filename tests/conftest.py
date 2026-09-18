@@ -35,8 +35,8 @@
 | 不在兜底里 | 它是什么 | 一趟全量套件的数（`sys.addaudithook` 数 `subprocess.Popen`） |
 |---|---|---|
 | `tests/test_browser_agent.py::live_browser` | module 级 fixture，**按设计起真 Chrome**（私有端口 + 私有 profile `siteforge-r5-profile-*`） | **1 台** `google-chrome` |
-| **`tests/test_selftest.py::live_site`** | **另一个** module 级 fixture，**同样起真 Chrome**（profile `siteforge-live-profile-*`），而且**正是跑仓库里那个真 `tools/cdp/cdp` 的那个**（「真 Chrome + 真 cdp + 真产物」的 e2e） | **1 台** `google-chrome` + 仓库真 cdp exec（复审 strace 数：**58 次**） |
-| 探路那条 MCP 会话（`McpSession.open` → `cdp-mcp`） | 唯一**真连浏览器**的通道（步拍也走它）。服务那条路已绑死二进制；兜底**钉的是常量 `tools.MCP_BIN`**（没人点名时不可能 exec PATH 上那个） | **1 个** `cdp-mcp` + **1 次** `go build`（现编译） |
+| **`tests/test_selftest.py::live_site`** | **另一个** module 级 fixture，**同样起真 Chrome**（profile `siteforge-live-profile-*`），跑的是「真 Chrome + 真 cdp + 真产物」的 e2e。<br>⚠️ 「仓库里那个真 cdp」**有前提**：那条链（`test_selftest.py::_cdp_binary()`）是「环境变量（要可执行）→ **`ROOT/tools/cdp/cdp`（要存在）** → **现构建到 /tmp**」—— **净检出没有那个文件**（`.gitignore` 里躺着），那一刻它跑的是**现构建**的那个 | **1 台** `google-chrome`（本表量具）<br>+ 真 cdp 的 `execve`：**58 次**（⚠️ **不在本表量具的射程里** —— 见下） |
+| 探路那条 MCP 会话（`McpSession.open` → `cdp-mcp`） | **服务运行期**唯一**真连浏览器**的通道（步拍也走它）——⚠️「唯一」只在「服务运行期」这个限定下成立：同一张表上面那两台 `live_*` 也在真连浏览器，其中 `live_browser` 走的就是同一条 `cdp-mcp`。服务那条路已绑死二进制；兜底**钉的是常量 `tools.MCP_BIN`**（没人点名时不可能 exec PATH 上那个） | **1 个** `cdp-mcp` + **1 次** `go build`（现编译） |
 | `CDP_WS_URL` | 那条会话**连谁**。生产不设它；修复轮 3 把优先级改对了（显式参数赢），但它是「读活环境」这条病在真连浏览器那条通道上的最后一个旋钮 | —— |
 | `tests/test_tool_loop.py` | 打真 LLM、打真站（`RUN_LLM=1` 才跑，默认不跑） | **0** |
 | 产物自己的回退链（`agent/template.py`） | `SANDBOX_FILES` 已点名 | —— |
@@ -44,11 +44,20 @@
 ⚠️ 上面那两格写完**不许**再写成「其余 Popen 全是桩」——**那是假的**：
 那 2 台真 Chrome 里有一台（`live_site`）是**真 cdp 驱动真产物**在跑（58 次 exec）。
 剩下的确实是桩：桩 MCP 服务 ~136 条、tmp 里的沙箱假 cdp 134 条、
-兜底那条「**试图**起」~183 条（全在进程内失败 —— 个位数随用例数变）。
+兜底那条「**试图**起」~183 条（全在进程内失败）、
+`frozen-mcp-wrapper` 1 条（修复轮 5 路线 (b) 的桩，它自己 `exec` 桩 MCP 服务）——
+个位数随用例数变。
 
-⚠️ **这张表的量具也有射程**：它数的是 Python 的 `subprocess.Popen` ——
-看不见 `go build` 拉起的工具链（compile/link/asm/cgo/gcc ≈9 个）、
-也看不见 Chrome 启动脚本拉起的 `cp/readlink/dirname/mkdir`（≈35 条）。
+⚠️ **这张表的量具也有射程**（它数的是 Python 的 `subprocess.Popen`）：
+
+1. 看不见 `go build` 拉起的工具链（compile/link/asm/cgo/gcc ≈9 个），
+   也看不见 Chrome 启动脚本拉起的 `cp/readlink/dirname/mkdir`（≈35 条）；
+2. **更看不见「子进程自己再起的进程」** —— 上面 `live_site` 那 58 次 `execve`
+   就是这一类：它是**产物自己**（pytest 的**孙进程**）起的，本表的钩子在 pytest 进程里
+   **数到 0**；复审换 `strace -f` **单跑 `tests/test_selftest.py`** 才复现出那 58 次
+   （该文件总 `execve` 566 次）。⇒ 那一格的量纲是**混的**（前半 `Popen` / 后半 `execve`），
+   读的时候别当成同一支量具。
+
 别把「这张表」读成「这套件起了几个进程」；要那个数得换 `strace`（内核层 `execve`）。
 
 ⇒ 真话只有一句：**不碰「共享的」真实世界** —— 不去连载荷里那些真地址、不往仓库里写运行产物。
@@ -61,14 +70,22 @@
 - `test_a_shot_that_runs_after_the_fixtures_are_gone_cannot_touch_the_real_world`（闸拍）
 - `test_a_viewport_probe_that_runs_after_…`（窗口探针）
 - `test_a_selftest_that_runs_after_…` + `test_a_selftest_that_runs_after_…_writes_its_traces_in_tmp`（自测的两样）
-- `test_the_explore_session_binary_is_frozen_at_construction_too`（探路会话的二进制）
+- `test_the_explore_session_binary_is_frozen_at_construction_too`（探路会话的二进制 ——
+  ⚠️ **它的射程只到「服务那一跳」**：它把 `browser_agent.explore` 整个换成了桩，
+  所以它**替不了证**「`explore` 到 `cdp-mcp` 那一段」；那一段由下面两条钉：
+  `test_the_real_explore_hop_carries_the_frozen_mcp_binary`（真 `explore`，断 argv[0] **与**去向）
+  与 `test_the_frozen_binary_is_really_exec_d_with_the_destination_and_the_frame`
+  （越过 **exec 边界**：真 Popen → 子进程 → 图回来））
+- `test_the_services_explore_path_really_shoots_step_images`（默认 shooter 是**真的** ——
+  ⚠️ 只到「盘上有那张图」；「那张图**是**桩回的那张」由 `…really_exec_d…` 那条钉）
+- `test_the_payload_destination_really_reaches_the_real_mcp_binary`（去向被**下游**真用成连接目标）
 - `test_an_explicit_host_and_port_win_over_the_environment`（探路会话的去向）
 - `test_a_job_driven_through_the_service_leaves_its_books_in_tmp_not_in_the_repo`（**往仓库里写**那半 —— M26 钉的就是它）
 - `test_health_reports_the_cdp_…` / `test_health_never_reports_null_…` / `test_health_says_which_hop_won`（报的=用的）
 - `test_the_services_explore_wiring_hands_over_the_job_shots_dir` / `test_an_explore_with_a_job_id_…`（接线本身）
 
 ⚠️ 为什么是「不存在」而不是 `/bin/false` 那种**存在但没用**的东西：
-`selftest._cdp_binary()` 的兜底链是「环境变量 → 本仓库的 `tools/cdp/cdp` → 现构建」，
+`tests/test_selftest.py::_cdp_binary()`（**注意：它不在 `agent/selftest.py`** —— 那边那个叫 `_default_cdp_bin`，链是「环境 → 仓库 `tools/cdp/cdp` → `/usr/local/bin/cdp`」，**没有「现构建」那一跳**）的兜底链是「环境变量 → 本仓库的 `tools/cdp/cdp` → 现构建」，
 它先做 `os.access(given, os.X_OK)`；指到一个**不可执行**的名字，那条链**照旧**能落到
 仓库里那个真二进制上（`test_selftest.py` 的 e2e 全靠它）；指到 `/bin/false` 会让它们红。
 

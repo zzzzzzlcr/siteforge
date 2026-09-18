@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import json as _json
 import pathlib
 import re
 import struct
@@ -686,6 +687,11 @@ def test_the_real_explore_hop_carries_the_frozen_mcp_binary(tmp_path, monkeypatc
         run(URL, GOAL)                       # 真 explore：第一步就是开会话 → 记录仪抛
 
     assert seen.get("argv", [None])[0] == "/frozen/frozen-mcp", seen
+    # **K8（修复轮 5）**：光钉 `argv[0]` 不够 —— **去向**也得钉住。
+    # 复审实测：让真 `explore` 丢 `ws_url=ws_url`（只传 host/port/binary），**全量 0 红**，
+    # 而生产上那等于**退回默认 `127.0.0.1:9222` = 别人的浏览器**。
+    assert seen.get("argv", [None, None])[1:] == ["--ws-url", WS], \
+        "去向那一半：argv 里得是**载荷**那串：%r" % (seen,)
 
 
 def test_the_services_explore_path_really_shoots_step_images(tmp_path, monkeypatch):
@@ -729,6 +735,91 @@ def test_the_services_explore_path_really_shoots_step_images(tmp_path, monkeypat
     shots = sorted(p.name for p in where.glob("*.png"))
     assert shots, "服务那条路一张步拍图都没拍 —— shooter 那一跳被换掉了？%s" % (
         sorted(p.name for p in where.glob("*")),)
+    # **K7（修复轮 5）**：光断「盘上有文件」不够 —— **那个文件得是那张图**。
+    # 复审实测：把默认 shooter 换成「写一张垃圾文件再报名字」，**全量 0 红**。
+    assert (where / shots[0]).read_bytes() == _png(), \
+        "盘上那个文件不是桩回的那张图（字节不等）：%r" % (shots,)
+    called = [_json.loads(ln)["name"] for ln in _log.read_text(encoding="utf-8").splitlines()
+              if ln.strip()]
+    assert "screenshot" in called, "桩会话压根没被叫去截图：%r" % (called,)
+
+
+def test_the_frozen_binary_is_really_exec_d_with_the_destination_and_the_frame(
+        tmp_path, monkeypatch):
+    """**修复轮 5 的路线 (b)（复审给的三条免窗口路之一，它的原型）**：
+    越过 **exec 边界**的那三样一次钉住 ——
+
+    1. 冻住那个「二进制」**真的被 exec**；
+    2. **去向**（载荷那串 `ws_url`）真的到了**子进程**的 argv；
+    3. 落盘那张图**是这个子进程回的**（字节逐字相等）。
+
+    做法：把构造时定死的 `mcp_bin` 指向一个**真脚本**（wrapper：记一行 argv，再
+    `exec` 桩 MCP 服务）—— 于是这条路上**没有一处被换掉**：
+    服务闭包 → 真 `explore` → 真 `McpSession` → 真 `Popen` → 子进程（wrapper → 桩服务）
+    → 真 shooter → 图落盘。**不开浏览器。**
+    """
+    import base64
+    import json as _json2
+
+    from test_browser_agent import PAGE_LANDING, FakeLLM
+
+    program = tmp_path / "program.json"
+    log = tmp_path / "calls.jsonl"
+    shot = {"structured": {"png_base64": base64.b64encode(_png()).decode("ascii")}}
+    program.write_text(_json2.dumps({
+        "log": str(log),
+        "responses": {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_LANDING}],
+                      "screenshot": [shot, shot, shot, shot]}}), encoding="utf-8")
+    exec_log = tmp_path / "exec.log"
+    wrapper = tmp_path / "frozen-mcp-wrapper"
+    wrapper.write_text('#!/bin/sh\necho "$0|$*" >> "%s"\nexec %s %s "%s"\n'
+                       % (exec_log, sys.executable, ROOT / "tests" / "stub_mcp_server.py", program),
+                       encoding="utf-8")
+    wrapper.chmod(0o755)
+    monkeypatch.setattr(llm, "client", lambda: FakeLLM(
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"content": "点了"}]))
+
+    root = tmp_path / "shots"
+    svc = service.Service(shots_dir=str(root), mcp_bin=str(wrapper),
+                          checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
+    svc._explore_for({"ws_url": WS}, "job-exec")(URL, GOAL,
+                                                 budget=browser_agent.Budget(max_steps=10,
+                                                                             max_rounds=10))
+
+    said = exec_log.read_text(encoding="utf-8").strip().splitlines()[0]
+    assert said.startswith(str(wrapper)), "冻住那个二进制没被 exec：%r" % (said,)
+    assert ("--ws-url %s" % WS) in said, "去向没到子进程的 argv：%r" % (said,)
+    shots = sorted((root / "job-exec").glob("*.png"))
+    assert shots and shots[0].read_bytes() == _png(), \
+        "落盘那张不是这个子进程回的图：%r" % (shots,)
+
+
+def test_the_payload_destination_really_reaches_the_real_mcp_binary(monkeypatch):
+    """**修复轮 5 的路线 (a)**：载荷那串**真的被下游当成连接目标**。
+
+    走**真** `cdp-mcp`（现构建，~1s）+ 一个**没人听的**自由端口：它自己会去打那个地址、
+    失败，并把**点名 target** 的那句话说回来 ⇒「去向没有被换成本机 `127.0.0.1:9222`」
+    这件事**不用真窗口**也看得见。**不开浏览器**（那个端口上什么都没有）。
+    """
+    from test_browser_agent import _cdp_mcp_binary
+
+    import socket
+    with socket.socket() as sock:                 # 要一个**没人听**的端口
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+
+    ws = "ws://127.0.0.1:%d/devtools/browser/PROBE-1" % port
+    session = tools.McpSession([_cdp_mcp_binary(), "--ws-url", ws], timeout=20)
+    try:
+        with pytest.raises(tools.McpToolError) as err:
+            session.call_tool("observe", {})
+        said = str(err.value)
+    finally:
+        session.close()
+    assert str(port) in said, "下游没去连载荷那个地址（它连的是别处）：%s" % said
 
 
 def test_ws_url_that_is_only_spaces_counts_as_nobody_named_it(monkeypatch):
@@ -756,6 +847,26 @@ def test_ws_url_that_is_only_spaces_counts_as_nobody_named_it(monkeypatch):
     assert argv_of(ws_url="   ") == ["--ws-url", "ws://127.0.0.1:9222/devtools/page/ENV-ONE"]
     assert argv_of(ws_url="  ws://10.0.0.9:1/x  ") == ["--ws-url", "ws://10.0.0.9:1/x"], \
         "正常串只去首尾空白，别把它吃掉"
+
+
+def test_nobody_named_it_never_takes_path_cdp_mcp(monkeypatch):
+    """**G5（修复轮 5）**：兜底钉的是 `tools.MCP_BIN` **常量** —— 复审：「收益那半今天 0 判据，
+    2 行就能钉」。没人点名时 `McpSession.open()` 该落在**那条不存在的路径**上（进程内失败），
+    而**不是** PATH 上那个 `cdp-mcp`。
+    """
+    seen: dict = {}
+
+    def fake_popen(argv, **rest):
+        seen["argv"] = [str(x) for x in argv]
+        raise RuntimeError("别真起（桩）")
+
+    monkeypatch.setattr(tools.subprocess, "Popen", fake_popen)
+    with pytest.raises(RuntimeError):
+        tools.McpSession.open()                       # 谁都没点名
+    assert seen["argv"] == [tools.MCP_BIN], seen
+    assert tools.MCP_BIN != "cdp-mcp", "没人点名时会去 exec PATH 上那个 cdp-mcp"
+    assert not pathlib.Path(tools.MCP_BIN).exists(), \
+        "兜底钉的那个路径居然存在：%r" % tools.MCP_BIN
 
 
 def test_the_cdp_chain_has_exactly_one_implementation(monkeypatch):

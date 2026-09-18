@@ -339,6 +339,17 @@ def cdp_bin_with_source(cdp_bin=None) -> tuple[str, str]:
     （那正是刚关掉的那条「读活环境」的口子换了个形式）。
     名字只有这四个（稳定键，测试与页面都认它们）：
     `"capture_bin"` / `"SITEFORGE_CDP_BIN"` / `"CDP_PATH"` / `"repo-default"`。
+
+    ⚠️ **「一份读法」的射程**：说的是**服务侧**这条链（`_cdp_bin` / `cdp_bin_for` /
+    `cdp_bin_with_source` 三个名字同一个实现）。全仓**还有两处、规矩不同、都是旧有有意的**：
+
+    - `agent/selftest.py` 的 `_default_cdp_bin()`：要「存在且可执行」、多一跳
+      `/usr/local/bin/cdp`、**找不到回 `None`**（不动子进程环境，谁配的算谁的）；
+    - `agent/template.py` 的产物侧链：只有「环境 → **产物旁边**那个 cdp」
+      （产物独立跑，不 import `agent`；`conftest` 的 `SANDBOX_FILES` 就是靠它活的）。
+
+    三处的**用途**不同（服务怎么选 / 自测子进程怎么回退 / 产物自己怎么找），
+    所以不是「复制了三份」—— 但**别把这条说成「全仓唯一」**。
     """
     if cdp_bin:
         return str(cdp_bin), "capture_bin"
