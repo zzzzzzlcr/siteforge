@@ -289,7 +289,8 @@ def _store(dest: pathlib.Path, png: bytes) -> str:
 def capture_via_session(session, dest) -> tuple[str | None, str]:
     """用**已经在手的** MCP 会话拍一张，落到 `dest`；返回 `(文件名, "")` 或 `(None, 人话)`。
 
-    `dest` 是**完整的落点**（`dir_for(job_id) / "step-3-before.png"` 那种），
+    `dest` 是**完整的落点**（`dir_for(job_id) / "82ece6-step-3-before.png"` 那种 ——
+    步拍的名字带**本趟标记**（6 位 hex），形状见 `browser_agent._StepShots` 的类注释），
     返回的只有它的**文件名** —— 账本里存名字，字节只在磁盘上。
     **不抛**：会话是外部世界，它什么都可能抛（见模块头第 1 条纪律）。
     """

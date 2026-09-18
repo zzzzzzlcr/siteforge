@@ -1839,7 +1839,9 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
     `explore_dir` 是**运行产物**落哪（`runtime/explore/<job_id>/`，Task 1）。默认给的是
     仓库里那个 `runtime/`（不进 git）；测试一律传自己的 `tmp_path`。
 
-    `shots_dir` 是**闸拍与步拍**落哪（`runtime/shots/<job_id>/pause-<n>.png` / `step-…`，Task 3）：
+    `shots_dir` 是**闸拍与步拍**落哪（`runtime/shots/<job_id>/pause-<n>.png` /
+    `<本趟标记>-step-…`，Task 3）—— 步拍的名字**带本趟标记**（6 位 hex，`_StepShots`），
+    因为同一个 job 目录会被最多 3 趟重探共用（见 `shots.dir_for` 那段）：
     `None` ⇒ `SITEFORGE_SHOTS_DIR` ⇒ 仓库里的 `runtime/shots`；`capture_bin` 是那个 cdp
     二进制（`None` ⇒ `SITEFORGE_CDP_BIN` ⇒ `CDP_PATH` ⇒ 仓库里的 `tools/cdp/cdp`）。
     ⚠️ 这两样都在**构造时定死**（不是在每次抓拍时再看一眼环境）—— 见 `Service.__init__`。

@@ -14,6 +14,7 @@
 """
 
 import pathlib
+import re
 import sys
 
 import pytest
@@ -479,6 +480,134 @@ def test_the_cap_is_hard_at_the_moment_of_the_write_not_only_at_finish(tmp_path,
     assert any("上限" in n for n in journey.notes), f"撞上限没说一句人话：{journey.notes}"
 
 
+class _Notes(list):
+    """人话账本 —— **每句话写下去的那一刻，`where` 底下真有几张图**。
+
+    `journey.notes` 只是个 list，所以换成本类就能在**说话的那一刻**把盘拍下来。
+    为什么要它：上限那句人话报了一个数（「已经有 N 张了」），而它报得对不对看的是
+    **说那句话的当时**盘上有几张 —— 跑完之后再量是另一回事（后面还会落盘、还会删）。
+    """
+
+    def __init__(self, where):
+        super().__init__()
+        self.where = pathlib.Path(where)
+        #: 与 `self` **一一对应**：第 i 句话写下去那一刻，`where` 里的 png 名字（排序）。
+        self.state_at_say: list = []
+
+    def append(self, text) -> None:
+        super().append(text)
+        self.state_at_say.append(sorted(p.name for p in self.where.glob("*.png")))
+
+    def extend(self, items) -> None:
+        for item in items:                 # 逐条走 `append` —— 搬家也一样记盘（口径只有一份）
+            self.append(item)
+
+
+def _notes_spy(monkeypatch, where):
+    """把 `journey.notes` 换成会记账的那本（见 `_Notes`），返回它。
+
+    换在 `_StepShots` **出生那一刻**：`explore()` 里它是跟着 `journey` 一起建的，
+    所以从它一存在起，后面每一句话都在账上。之前已经写下的话一并搬过去（逐条 `append`）。
+    """
+    real_init = browser_agent._StepShots.__init__
+    notes = _Notes(where)
+
+    def spy_init(self, journey, shots_where, shooter):
+        real_init(self, journey, shots_where, shooter)
+        notes.extend(journey.notes)
+        journey.notes = notes
+
+    monkeypatch.setattr(browser_agent._StepShots, "__init__", spy_init)
+    return notes
+
+
+def test_the_gate_follows_the_disk_not_how_many_were_written(tmp_path, monkeypatch):
+    """**闸必须跟着「盘上此刻几张」走** —— 一张被丢掉之后它当场放松，不许留幽灵计数。
+
+    上限这件事有**两半**，而 `_take` 只钉住了其中一半（顶不许破）。这一条钉的是另一半：
+
+    形状：上限 2 + **四个跑顺的 click**（每个都拍一张点前图，紧接着那次观测显示页面变了
+    ⇒ 当场把它删掉 ⇒ 盘上任何一刻都不超过 1 张）。正确行为下闸**一次都不该 engage**
+    ⇒ 四个 click **一个都不许被挡** —— 点前那张是**下限**（动手之前不可能知道这一步会不会
+    出问题，所以它省不掉）。
+
+    ⚠️ 拿「写过多少张」（`_written`）或者「一个只增不减的集合」当「盘上有多少张」时，
+    闸会在第 3 步起**关死**：后面每一步的**点前图全没了**（正是这个功能存在的理由的反面），
+    而且它还会写下一句**假话** ——「盘上已经有 2 张了」，而此刻目录**是空的**。
+    两条变异（`_drop` 不减 `_on_disk` / 闸改数 `_written`）在这条之前**各自 31 全绿**。
+    """
+    monkeypatch.setattr(browser_agent, "MAX_KEPT_SHOTS", 2, raising=True)
+
+    pages = [dict(PAGE_LANDING, title="Example 第 %d 屏" % i, page_text="第 %d 屏" % i)
+             for i in range(5)]
+    turns = [{"calls": [("observe", {})]}]
+    for _ in range(4):
+        turns.append({"calls": [("click", {"selector": "#get-started"})]})
+        turns.append({"calls": [("observe", {})]})        # 页面变了 ⇒ 这一步跑顺 ⇒ 点前那张丢掉
+    turns.append({"content": "四步都跑顺了"})
+
+    s = _Shooter(tmp_path / "shots")
+    journey, _, _ = _go(
+        tmp_path,
+        {"observe": [{"structured": p} for p in pages]},
+        turns, s, budget=browser_agent.Budget(max_steps=20, max_rounds=20),
+    )
+    clicks = [x for x in journey.steps if x["action"] == "click"]
+    assert len(clicks) == 4 and all(c["result"]["ok"] is True for c in clicks), \
+        f"这条形状该是四个跑顺的 click：{[x['action'] for x in journey.steps]}"
+    assert len(s.dests) == 4, (
+        f"四个跑顺的 click 各该拍一张点前图（那是下限），实际只发了 {len(s.dests)} 条命令 —— "
+        f"闸被前面那些**已经删掉**的图关死了。每次动手前盘上：{s.state_at_call}")
+    assert s.left == [], f"跑顺的四步一张都不该留，盘上却有 {s.left}"
+    lied = [n for n in journey.notes if "已经有" in n]
+    assert not lied, f"盘上任何一刻都不超过 1 张，却报了「撞上限」：{lied}"
+
+
+def test_the_cap_note_reports_a_number_that_is_really_on_disk(tmp_path, monkeypatch):
+    """**那句人话报的数必须是真的** —— 说「已经有 N 张」时，`where` 底下真要有 N 张。
+
+    形状（上限 2）：第 1 步**跑顺**（点前那张丢掉 ⇒ 盘上回到空），第 2 步**点了没变**
+    （两张都留 ⇒ 盘上 2 张），第 3 步动手前撞上限。
+
+    判据落在**说那句话的那一刻**（`_Notes` 把盘拍在 append 里），不是收工之后 ——
+    收工那个数由收口收拾过，与「当时句话说得对不对」是两件事。
+    「已经有 N 张」里的 N 是**盘上此刻的实况**：报大了会让人以为图还在（幽灵计数），
+    报小了会让运维按错的数去翻目录。
+    """
+    monkeypatch.setattr(browser_agent, "MAX_KEPT_SHOTS", 2, raising=True)
+
+    where = tmp_path / "shots"
+    notes = _notes_spy(monkeypatch, where)
+
+    turns = [{"calls": [("observe", {})]},                            # 第 1 屏
+             {"calls": [("click", {"selector": "#get-started"})]},    # 跑顺：点前那张会丢
+             {"calls": [("observe", {})]},                            # 第 2 屏 ≠ 第 1 屏
+             {"calls": [("click", {"selector": "#get-started"})]},    # 点了没变：两张都留
+             {"calls": [("observe", {})]},                            # 还是第 2 屏
+             {"calls": [("click", {"selector": "#get-started"})]},    # 动手前：撞上限
+             {"calls": [("observe", {})]},
+             {"content": "看看它报几张"}]
+    s = _Shooter(where)
+    journey, _, _ = _go(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING},
+                     {"structured": PAGE_QUIZ},
+                     {"structured": PAGE_QUIZ},
+                     {"structured": PAGE_QUIZ}]},
+        turns, s, budget=browser_agent.Budget(max_steps=20, max_rounds=20),
+    )
+    cap = [(text, state) for text, state in zip(notes, notes.state_at_say)
+           if "已经有" in text]
+    assert cap, f"这条形状该撞上限（不撞就是在量空气）：{list(notes)}"
+    for text, state in cap:
+        m = re.search(r"已经有 (\d+) 张", text)
+        assert m, f"这句人话里没有那个数，判不出来就别放过：{text!r}"
+        assert int(m.group(1)) == len(state), (
+            "这句人话报的数与它说话那一刻盘上的实况对不上：说「已经有 %d 张」，"
+            "而那一刻 %s 底下是 %d 张（%s）—— 报大 = 让人以为图还在，报小 = 按错的数去翻目录"
+            % (int(m.group(1)), where, len(state), state))
+
+
 # ────────────────── 拍照永远不许把探路搞挂 ──────────────────
 
 
@@ -667,10 +796,14 @@ def test_a_second_attempt_on_the_same_job_dir_cannot_eat_the_first_attempts_evid
     第 2 趟写了自己的 `step-1-before.png`（它这一步是跑顺的，紧接着的观测就把那张删了），
     而**第 1 趟特意留下的那张证据正压在这个名字上** ⇒ **2 张丢 1 张**。
 
-    判据落在**两件**上（缺一不可）：
-    1. 第 1 趟引用到的名字，一个都不许没；
-    2. 而且**字节还得是第 1 趟的** —— 只断「文件在不在」验不出「第 2 趟写了个同名的、
-       内容已经换主」那个形状（名字还在，像素已经是别人的了）。
+    判据 = **第 1 趟引用到的名字，一个都不许没**（外加：第 2 趟自己那几张要么在、要么不留）。
+
+    ⚠️ 「**字节还得是第 1 趟的**」那句断言原来长在这条用例里，复审把它**打不红**
+    （`M-D-tag-constant`：强制同标记，这条形状里断1 先响，断2 **永远够不着**）——
+    因为这条形状的第 2 趟是**跑顺**的一趟：它一写就删，名字先没了，字节换主这件事
+    根本量不到。**一条永远不会红的钉子 = 没钉**，所以那半根轴搬去了它自己的形状：
+    `test_two_attempts_with_the_same_tag_still_never_overwrite`（第 2 趟也**留**两张）。
+    这条只管名字那根轴。
     """
     where = tmp_path / "shots"
     first = _Shooter(where, mark=b"one")
@@ -705,9 +838,74 @@ def test_a_second_attempt_on_the_same_job_dir_cannot_eat_the_first_attempts_evid
 
     gone = sorted(n for n in kept_by_first if not (where / n).is_file())
     assert gone == [], f"第 2 趟的收口把第 1 趟的证据删了：{gone}（盘上现在 {second_shooter.left}）"
-    for name in sorted(kept_by_first):
-        assert (where / name).read_bytes() == PNG_HEAD + b"one", \
-            f"这个名字上的图已经换主了（不是第 1 趟那张）：{name}"
+
+
+def test_two_attempts_with_the_same_tag_still_never_overwrite(tmp_path, monkeypatch):
+    """**两趟拿到同一个标记时，第 1 趟那张还是一个字节都不许换主。**
+
+    上一版挡住跨趟撞车的**只有** `uuid4().hex[:6]`（24 位）⇒ 那是**概率**（3 趟 ≈ 1.8e-7），
+    而类注释把它写成了「一个名字 = 一次落盘」这条不变量。复审逐字复现过这个形状
+    （`M-D-tag-constant`）：强制两趟同标记 ⇒ 第 2 趟把第 1 趟那张写成了自己的像素。
+
+    所以这条用例**故意让标记撞上**（桩把 `self.tag` 写死成 `aaaaaa`）—— 随机标记下这个形状
+    一辈子也复现不出来，而它是**唯一**能分辨「名字的唯靠 uuid」与「名字的唯靠盘上有没有人占」
+    的形状。撞车时**正确行为是让名字岔开**（第 2 趟数到下一个没人占的名字），
+    不是「反正 uuid 撞不上、照写」：后者一写就把别人的证据换主，而**证据被换主比没有证据更坏**
+    （页面上看着像第 1 趟那一步的图，其实是第 2 趟的）。
+
+    ⚠️ 第 2 趟**留两张**（点了没变）是这条形状的要害：跑顺那趟一写就删，名字先没了，
+    「字节换主」这件事就**量不到**（那是 `test_a_second_attempt_…` 里那句断言的形状，
+    复审判它够不着）。`_name_for` 里那道 `exists()` 去掉，红的就是这条。
+    """
+    where = tmp_path / "shots"
+    real_init = browser_agent._StepShots.__init__
+
+    def same_tag(self, journey, shots_where, shooter):
+        real_init(self, journey, shots_where, shooter)
+        self.tag = "aaaaaa"                  # 模拟 `uuid4().hex[:6]` 撞车
+
+    monkeypatch.setattr(browser_agent._StepShots, "__init__", same_tag)
+
+    first = _Shooter(where, mark=b"one")
+    j1 = _one_attempt(
+        tmp_path, where, first,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"content": "第 1 趟：点了没变，两张都留"}])
+    kept_by_first = {st.get("shot_before") for st in j1.steps} | \
+                    {st.get("shot_after") for st in j1.steps}
+    kept_by_first.discard(None)
+    assert len(kept_by_first) == 2, f"第 1 趟该留两张：{kept_by_first}"
+    assert sorted(first.left) == sorted(kept_by_first), first.left
+
+    second = _Shooter(where, mark=b"two")
+    j2 = _one_attempt(
+        tmp_path, where, second,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"content": "第 2 趟：同一个标记，也点了没变"}])
+    wrote_by_second = [d.name for d in second.dests]
+    assert len(wrote_by_second) == 2, f"第 2 趟该拍两张（点前是下限、点后是补拍）：{wrote_by_second}"
+    kept_by_second = {st.get("shot_before") for st in j2.steps} | \
+                     {st.get("shot_after") for st in j2.steps}
+    kept_by_second.discard(None)
+    assert len(kept_by_second) == 2, f"第 2 趟也该留两张（不然下面量的是空气）：{kept_by_second}"
+
+    # ① 名字一个都不许没（第 1 趟的、第 2 趟的都不许）
+    gone = sorted(n for n in (kept_by_first | kept_by_second) if not (where / n).is_file())
+    assert gone == [], f"盘上该有 4 张（两趟各 2 张），这些没了：{gone}（盘上现在 {second.left}）"
+    # ② 而且第 1 趟那两张**字节还是第 1 趟的** —— 同标记下最坏的那条路是「照写、把别人的换主」，
+    #    这时 ① 照样绿（名字都在），只有这一句能分辨。
+    swapped = sorted(n for n in kept_by_first
+                     if (where / n).read_bytes() != PNG_HEAD + b"one")
+    assert swapped == [], (
+        f"这两张上的像素已经不是第 1 趟的了（两趟撞上同一个标记时，第 2 趟把它们顶了）：{swapped}"
+        f"（第 2 趟写的是 {wrote_by_second}）")
+    assert sorted(second.left) == sorted(kept_by_first | kept_by_second), second.left
 
 
 def test_two_steps_never_share_one_name(tmp_path):

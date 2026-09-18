@@ -350,10 +350,16 @@
 ### 5.6 字节落在哪
 
 ```
-runtime/shots/<job_id>/pause-<n>.png           ← 闸拍（服务拍）
-runtime/shots/<job_id>/step-<n>-before.png     ← 步拍（agent 拍）
-runtime/shots/<job_id>/step-<n>-after.png
+runtime/shots/<job_id>/pause-<n>.png                     ← 闸拍（服务拍）
+runtime/shots/<job_id>/<本趟标记>-step-<n>-before.png    ← 步拍（agent 拍）
+runtime/shots/<job_id>/<本趟标记>-step-<n>-after.png
 ```
+
+⚠️ **步拍的名字带「本趟标记」**（6 位 hex，`_StepShots.tag`）：同一个 job 目录会被**多趟**
+探路共用（一次节点最多 3 趟重探），而步拍的收口是**按名字**删的 —— 不带标记的话，第 2 趟
+写的 `step-1-before.png` 会顶掉第 1 趟特意留下的证据，再被第 2 趟的收口删掉（复审实测：
+**2 张丢 1 张**）。标记撞上时名字会岔开（`…-before-2.png`），**不会有人被顶掉**。
+**认图的人（Task 6 与页面）照这个名字认**：前缀是标记、不是 `step-`。
 
 `runtime/` **不进 git**（`selftest._default_run_dir()` 已有先例，同层不同目录）；根可配 `SITEFORGE_SHOTS_DIR`；
 **清理不在这一片**；产物自测留下的那几张（trace 旁边）**顺带**能服务，但不在验收里。
