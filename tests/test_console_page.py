@@ -409,11 +409,21 @@ def test_a_detail_that_is_not_a_sentence_is_turned_into_human_words():
     assert reader, "没有把 `detail` 变成人话的那一处（`errorText`）"
     body = reader.group(0)
     assert "Array.isArray(detail)" in body, "数组那一支不在 —— 422 会退成 `[object Object]`"
-    assert "loc" in body and "msg" in body, "数组里的人话是从 `loc` / `msg` 拼的（不然还是读不出来）"
     assert 'at(res.obj, "detail"' in page, "`sayOf` 得走 `errorText` 这条路"
     setter = re.search(r"function setErr\(.*?\n  \}", page, re.S)
     assert setter and "textContent" in setter.group(0), \
         "错误是 `textContent` 写进去的（不是 innerHTML —— 服务那句话不许当 HTML 解释）"
+
+    #: ★ 修复轮 2：钉**组装**，不钉「函数体里有 `loc` / `msg` 这两个词」。
+    #:    复审的两个变异正是从这儿溜过去的（都绿）：
+    #:      ① 分支留着、只把拼装换成 `out.push(item)` ⇒ `[object Object]` 原样回来；
+    #:      ② `loc` / `msg` 只用来拼一句**固定话**（不看真错）。
+    push = re.search(r"out\.push\((.*?)\);", body, re.S)
+    assert push, "`errorText` 里没有把每一项拼出来（`out.push(...)` 不在）"
+    expr = push.group(1)
+    assert "path.join(" in expr, "推进去的那句话没有用上 `loc` 的真值（那就成了一句静态话术）"
+    assert "msg" in expr, "推进去的那句话没有用上 `msg` 的真值"
+    assert "+" in expr, "它没有把这两样**拼起来**（拼一句固定的话不算）"
 
 
 def test_a_stop_that_did_not_land_does_not_claim_it_did():
@@ -432,6 +442,18 @@ def test_a_stop_that_did_not_land_does_not_claim_it_did():
     assert "没请求成" in body, "失败时没说「没请求成」"
     assert "disabled = false" in body, "失败之后按钮一直按不动（载荷不变就不会重画）"
 
+    #: ★ 修复轮 2：钉**两支互斥**。复审的变异：条件反过来写 `if (out)` ——
+    #:    于是 **404 时页面说「停的请求送到了」**，而修复轮 1 的钉子照样绿。
+    then = body.split(".then(function (out) {", 1)[1]
+    assert re.search(r"if \(!out\) \{", then), "失败那一支没判在 `!out` 上（反过来就成了：404 时说送到了）"
+    fail_branch, _, ok_branch = then.split("if (!out) {", 1)[1].partition("return;")
+    assert fail_branch.strip(), "失败那一支是空的"
+    assert "没请求成" in fail_branch, "失败那一支没有说清「没请求成」"
+    assert "送到了" not in fail_branch, "失败那一支里出现了「送到了」—— 两句都能成立就等于都没说"
+    assert ok_branch.strip(), "失败那一支没有 `return;` —— 它会接着往下走到成功那句话"
+    assert "送到了" in ok_branch, "成功那一支没有说「送到了」"
+    assert "没请求成" not in ok_branch, "成功那一支里出现了「没请求成」—— 两句都能成立就等于都没说"
+
 
 def test_the_two_cells_that_disagree_are_named_out_loud():
     """★ I4：输入区**内部**那处矛盾 —— `modeHint`（抄服务）与 `secondHint`（页面自己写的）
@@ -446,7 +468,17 @@ def test_the_two_cells_that_disagree_are_named_out_loud():
     #    我第一版就是那么钉的，变异实测：把它改成 `var mismatch = false;`（**关掉这个判据**）
     #    照样通过（空钉子）。名字在、判据不在，正是「看着像钉子」的形状。
     assert "waiting !== gated" in page, "两格（状态 / 输入语义）没有被拿来比 —— 那两句就被并排印出去了"
-    assert "服务这两格" in page and "对不上" in page, "对不上这件事没有被说出来"
+
+    #: ★ 修复轮 2：再钉两样（复审的变异从这儿溜过去，两条都绿）：
+    #:   ① **方向**：判据用反（`!mismatch`）⇒ 两格**一致**时才说「对不上」；
+    #:   ② **照抄的那两格**：只说「对不上」而不把两格印出来 ⇒ 运营看不出是哪两格对不上。
+    after = page.split('"secondHint").innerHTML = rich(', 1)[1]
+    assert re.match(r"\s*mismatch\s*\?", after), \
+        "判据被用反了/被绕开了（`!mismatch` 就成了：一致时才说「对不上」）"
+    branch = after.split("?", 1)[1].split(": (revisable", 1)[0]
+    assert "STATUS_WORD[status]" in branch, "没把「状态那格」照抄出来（只说对不上，人看不出是哪两格）"
+    assert "modeShort" in branch, "没把「输入那格」照抄出来（只说对不上，人看不出是哪两格）"
+    assert "对不上" in branch, "对不上这件事没有被说出来"
 
 
 def test_the_left_column_says_so_when_it_cannot_be_read():
@@ -456,13 +488,26 @@ def test_the_left_column_says_so_when_it_cannot_be_read():
     而**空 div 读起来就是「还没有任何运行」**（两件事完全不一样）。
     """
     page = _page()
-    assert "function runsProblem(" in page, "没有那句「这一栏读不到」的话"
+    problem = re.search(r"function runsProblem\(.*?\n  \}", page, re.S)
+    assert problem, "没有那句「这一栏读不到」的话"
+    assert "box.innerHTML" in problem.group(0), "`runsProblem` 没把话写进 DOM（空转的函数不算）"
+    assert "没有运行" in problem.group(0), "得说清「这不代表没有运行」"
     runs = re.search(r"function fetchRuns\(.*?\n  \}", page, re.S)
     assert runs, "找不到 `fetchRuns`"
     body = runs.group(0)
-    assert "runsProblem(" in body, "取不到（非 2xx）的时候没说话"
+    assert "runsProblem(sayOf(res))" in body, "非 2xx 那条路没说话（空转 / 只喊个名字都不算）"
     assert "runsProblem(" in body.split(".catch(")[-1], "`catch` 那一支还是空的（异常那条路依旧静默）"
-    assert "没有运行" in page, "得说清「这不代表没有运行」"
+
+    #: ★★ 修复轮 2（复审最重要的一条）：**那句话得留在屏幕上**。
+    #: 复审拿真页面 + 桩台（`/runs` 返 500）装了 `MutationObserver`，看到的是：
+    #:   `[24ms 那句话] → [25ms「还没有任何运行。」] → [1s/4s 都还是那句假话]` —— **只活了 1 毫秒**。
+    #: 机制就是这一格：`paint()` 里 `paintRuns(state.runs || {})` 的那个 `{}` **绕过**了
+    #: `paintRuns` 开头那道 `if (!data …) return`，把「读不到」画成**空列表的默认话**。
+    #: ⚠️ 这和我 Step 4 抓到的两个坑是**同一个形状**（重画把话擦掉），HTTP 层一条断言都看不见 ——
+    #: 所以这里钉的是**传下去的那一份是不是原样的**（屏幕上的证据在报告 §修复轮 2）。
+    assert "paintRuns(state.runs)" in page, "`paint()` 没把「拿到的那一份」原样传下去"
+    assert "paintRuns(state.runs || {})" not in page, \
+        "那个 `|| {}` 绕过了 `paintRuns` 开头的闸 —— 「读不到」会被画成「还没有任何运行」"
 
 
 def test_the_elapsed_seconds_say_what_they_actually_measured():
@@ -477,14 +522,28 @@ def test_the_elapsed_seconds_say_what_they_actually_measured():
     assert "已跑 " not in page, "「已跑」断言了一格数据里没有的东西"
 
 
+def _strip_js_comments(text: str) -> str:
+    """把 JS 注释抠掉 —— 判据只看**真写进 DOM 的表达式**。
+
+    ⚠️ 不抠的话，赋值语句里一句合法的 `// …**着重**…` 注释会被判成违规
+    —— 复审点名的**误杀**：这个文件到处是 `**着重**` 的注释写法，将来写进去就红。
+    `(?<!:)//` 是为了不把字符串里的 `http://` 当成行注释。
+    """
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return re.sub(r"(?<!:)//[^\n]*", "", text)
+
+
 def _raw_markdown_hits(html_text: str) -> list:
     """写进 DOM 的表达式里，**没过 `rich()` 却带着 `**`** 的那几个（正控/被测共用同一把尺子）。
 
-    `[^;]+` 到这一条语句的 `;` 为止 —— 页面里那几处赋值都是一句写完的。
+    两种写法都在射程里（复审点名的两条路）：`innerHTML = …` 与 `innerHTML += …`。
+    ⚠️ **助手内部**（`setStopHint` / `noticeEl`）不在这把尺子里 —— 那是另一个函数体，
+    由 `test_the_html_helpers_go_through_rich` 单独钉。
     """
-    return [m.group(1).strip()[:70]
-            for m in re.finditer(r"innerHTML\s*=\s*([^;]+);", html_text, re.S)
-            if "**" in m.group(1) and "rich(" not in m.group(1)]
+    text = _strip_js_comments(html_text)
+    return [m.group(2).strip()[:70]
+            for m in re.finditer(r"innerHTML\s*(\+?=)\s*([^;]+);", text, re.S)
+            if "**" in m.group(2) and "rich(" not in m.group(2)]
 
 
 def test_no_raw_markdown_reaches_the_html():
@@ -497,6 +556,23 @@ def test_no_raw_markdown_reaches_the_html():
     page = _page()
     hits = _raw_markdown_hits(page)
     assert not hits, "这些 innerHTML 没过 `rich()`（运营会看到 `**`）：%r" % hits
-    #: 正控：这把尺子**真的会响**
-    assert _raw_markdown_hits('el.innerHTML = "服务这两格**对不上**";'), "尺子漏了"
+    #: 正控：这把尺子**真的会响** —— 两种写法（赋值 / `+=` 追加）都要响
+    assert _raw_markdown_hits('el.innerHTML = "服务这两格**对不上**";'), "尺子漏了赋值那一路"
+    assert _raw_markdown_hits('el.innerHTML += "服务这两格**对不上**";'), "尺子漏了 `+=` 那一路"
+    #: 反向：过了 `rich()` 的不许被误杀；**注释里的 `**` 也不许被误杀**（复审点名的误杀）
     assert not _raw_markdown_hits('el.innerHTML = rich("服务这两格**对不上**");'), "误杀"
+    assert not _raw_markdown_hits('el.innerHTML = (\n  // 这里说的是**着重**，不是要写进 DOM 的字\n  "文案");'), \
+        "注释里的 `**` 被当成违规了（这个文件到处是这种注释写法）"
+
+
+def test_the_html_helpers_go_through_rich():
+    """写进 DOM 的**助手内部**也要过 `rich()`。
+
+    复审的变异：把 `setStopHint` 内部的 `rich(text)` 改回裸串 —— 上面那把尺子**看不见**
+    （它只扫 `innerHTML = …` 那一句），于是**绿**，而运营在屏幕上看到 `**没请求成**`。
+    """
+    page = _page()
+    for helper in ("function setStopHint(", "function noticeEl("):
+        body = re.search(re.escape(helper) + r"[^{]*\{([^}]*)\}", page, re.S)
+        assert body, "找不到这个助手：%s" % helper
+        assert "rich(" in body.group(1), "%s 内部没过 `rich()`（运营会看到 `**`）" % helper

@@ -675,8 +675,10 @@
     //      （这不需要知道谁对 —— 所以它不是猜）。
     var gated = mode === "gate";           // 服务说这一行是「闸上的回话」
     var mismatch = (waiting !== gated);    // 状态那格与输入语义那格对不上
-    //: 给「对不上」那句话用的短名（人话；不认识的模式把原样那串带上，`rich()` 会转义它）
-    var modeShort = m && m.short ? m.short : ("这一屏不认识的模式（" + mode + "）");
+    //: 给「对不上」那句话用的短名（人话）。不认识的模式把原样那串带上；
+    //: **服务那一格是空的**时不许拼出一个空的括号（修复轮 2 的 nit：「这一屏不认识的模式（）」）。
+    var modeShort = m && m.short ? m.short
+      : (mode ? ("这一屏不认识的模式（" + mode + "）") : "服务没说");
     // ⚠️ 这一行是 `innerHTML`：**凡是带 `**着重**` 的那几句都要过 `rich()`**
     //    （不过的话运营看到的就是两个星号 —— 截图里真出现过）
     document.getElementById("secondHint").innerHTML = rich(
@@ -725,7 +727,11 @@
     pill.className = PILL_CLASS[status] || "pill";
     paintElapsed();
     paintNotices();
-    paintRuns(state.runs || {});
+    // ⚠️ **不许写 `state.runs || {}`**（修复轮 2）：那个 `{}` 会**绕过** `paintRuns` 开头
+    //    那道 `if (!data …) return` 的闸，于是「还没拿到 / 拿不到」被画成**空列表的默认话**
+    //    —— 「还没有任何运行」。实测：那句话在屏幕上只活了 **1 毫秒**就被它盖掉。
+    //    拿不到就传 `null`，让 `paintRuns` 自己闭嘴（左边那一栏由 `runsProblem` 说话）。
+    paintRuns(state.runs);
     paintTimeline();
     paintRounds();
     paintWindow();
@@ -760,7 +766,9 @@
         out.push((path.length ? path.join(".") + " —— " : "") +
                  (msg || "这一项它没说哪儿不对"));
       }
-      return "服务说这份请求不合它的格式（它一个字段都没收）：\n" + out.join("\n");
+      var head = "服务说这份请求不合它的格式（它一个字段都没收）：";
+      // 空数组也别留一个空行（修复轮 2 的 nit：说得出就说，说不出就别说半句）
+      return out.length ? (head + "\n" + out.join("\n")) : (head + "（它没说是哪一格）");
     }
     if (detail && typeof detail === "object") {
       return "服务回了一句这一屏读不出来的错误（形状不是一句话）：" + JSON.stringify(detail);
@@ -815,6 +823,11 @@
   function fetchRuns() {
     return fetch("/runs").then(readJSON).then(function (res) {
       if (!res.ok) { runsProblem(sayOf(res)); return; }
+      if (!res.obj || typeof res.obj !== "object") {
+        // 200 但正文不是 JSON —— 同样是「这一栏读不到」，**不许**当成空列表
+        runsProblem("服务回了 200，但正文读不出来（不是 JSON）。");
+        return;
+      }
       state.runs = res.obj;
       var rows = at(res.obj, "runs", []) || [];
       if (!jobId && rows.length) {
