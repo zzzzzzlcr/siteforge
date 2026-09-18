@@ -34,12 +34,22 @@
 
 | 不在兜底里 | 它是什么 | 一趟全量套件的数（`sys.addaudithook` 数 `subprocess.Popen`） |
 |---|---|---|
-| `tests/test_browser_agent.py::live_browser` | module 级 fixture，**按设计起真 Chrome**（私有端口 + 私有 profile） | **2 台** `google-chrome --headless=new` |
-| 探路那条 MCP 会话（`McpSession.open` → `cdp-mcp`） | 唯一**真连浏览器**的通道（步拍也走它）。服务那条路已绑死二进制，但**本兜底不钉 `CDP_MCP_BIN`** —— 钉了 `live_browser` 就会红（那是有意的） | **1 个** `cdp-mcp` + **1 次** `go build`（现构建） |
+| `tests/test_browser_agent.py::live_browser` | module 级 fixture，**按设计起真 Chrome**（私有端口 + 私有 profile `siteforge-r5-profile-*`） | **1 台** `google-chrome` |
+| **`tests/test_selftest.py::live_site`** | **另一个** module 级 fixture，**同样起真 Chrome**（profile `siteforge-live-profile-*`），而且**正是跑仓库里那个真 `tools/cdp/cdp` 的那个**（「真 Chrome + 真 cdp + 真产物」的 e2e） | **1 台** `google-chrome` + 仓库真 cdp exec（复审 strace 数：**58 次**） |
+| 探路那条 MCP 会话（`McpSession.open` → `cdp-mcp`） | 唯一**真连浏览器**的通道（步拍也走它）。服务那条路已绑死二进制；兜底**钉的是常量 `tools.MCP_BIN`**（没人点名时不可能 exec PATH 上那个） | **1 个** `cdp-mcp` + **1 次** `go build`（现编译） |
 | `CDP_WS_URL` | 那条会话**连谁**。生产不设它；修复轮 3 把优先级改对了（显式参数赢），但它是「读活环境」这条病在真连浏览器那条通道上的最后一个旋钮 | —— |
 | `tests/test_tool_loop.py` | 打真 LLM、打真站（`RUN_LLM=1` 才跑，默认不跑） | **0** |
 | 产物自己的回退链（`agent/template.py`） | `SANDBOX_FILES` 已点名 | —— |
-| 其余 457 条/趟的 `Popen` | 全是桩：`python` 起的桩 MCP 服务 127 条、tmp 里的沙箱假 cdp 134 条、兜底那条「**试图**起」180 条（全在进程内失败） | —— |
+
+⚠️ 上面那两格写完**不许**再写成「其余 Popen 全是桩」——**那是假的**：
+那 2 台真 Chrome 里有一台（`live_site`）是**真 cdp 驱动真产物**在跑（58 次 exec）。
+剩下的确实是桩：桩 MCP 服务 ~136 条、tmp 里的沙箱假 cdp 134 条、
+兜底那条「**试图**起」~183 条（全在进程内失败 —— 个位数随用例数变）。
+
+⚠️ **这张表的量具也有射程**：它数的是 Python 的 `subprocess.Popen` ——
+看不见 `go build` 拉起的工具链（compile/link/asm/cgo/gcc ≈9 个）、
+也看不见 Chrome 启动脚本拉起的 `cp/readlink/dirname/mkdir`（≈35 条）。
+别把「这张表」读成「这套件起了几个进程」；要那个数得换 `strace`（内核层 `execve`）。
 
 ⇒ 真话只有一句：**不碰「共享的」真实世界** —— 不去连载荷里那些真地址、不往仓库里写运行产物。
 **私有实例的真浏览器，套件本来就会起。**
@@ -90,6 +100,12 @@ SANDBOX_FILES = {"test_template.py"}
 
 @pytest.fixture(autouse=True)
 def _tests_never_touch_the_repo_or_a_real_cdp(request, tmp_path, monkeypatch):
+    #: **没人点名时**那条 MCP 会话用哪个可执行文件：`tools.MCP_BIN` 是**导入期**读的常量
+    #: （`CDP_MCP_BIN`），所以「钉环境变量」对它无效（复审实测：钉常量是**免费**的 ——
+    #: 钉上后全量 623 绿 0 红，因为两条 live 线都自己造会话、不看这个常量）。
+    #: 于是「测试里会不会 exec PATH 上那个 `cdp-mcp`」从「看 PATH」变成**不可能**。
+    from agent import tools as _tools
+    monkeypatch.setattr(_tools, "MCP_BIN", NO_SUCH_CDP)
     monkeypatch.setenv("SITEFORGE_SHOTS_DIR", str(tmp_path / "runtime" / "shots"))
     #: 账（`baseline.json` / `attempt-*.jsonl`）落在哪 —— **第三条**通往仓库的路。
     #: 修复轮 1 实测漏掉的就是它：`runtime/explore/<job_id>/` 一趟全量套件 22 个目录，

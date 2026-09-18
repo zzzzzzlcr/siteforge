@@ -36,7 +36,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import browser_agent, graph, selftest, service, shots, tools  # noqa: E402
+from agent import browser_agent, graph, llm, selftest, service, shots, tools  # noqa: E402
 from test_agent_shots import _Shooter  # noqa: E402  —— 步拍那个桩（它本身就是命令计数器）
 from test_browser_agent import PAGE_LANDING, _run  # noqa: E402
 from test_service import FakeGraph, _Snap, _gate, _wait  # noqa: E402  —— 桩图与「等到它停下」
@@ -564,11 +564,13 @@ def test_an_explicit_host_and_port_win_over_the_environment(monkeypatch):
         return seen["argv"]
 
     assert argv_of(ws_url="ws://192.168.1.197:55555/devtools/page/PAYLOAD")[1:] == \
-        ["--ws-url", "ws://192.168.1.197:55555/devtools/page/PAYLOAD"]
+        ["--ws-url", "ws://192.168.1.197:55555/devtools/page/PAYLOAD"], \
+        "格 1：显式 ws_url 赢（护栏 —— 防「把 host/port 抬到 ws_url 之上」那种修法）"
     assert argv_of(host="192.168.1.197", port=55555)[1:] == \
-        ["--host", "192.168.1.197", "--port", "55555"], "环境把显式给的 host/port 顶掉了"
+        ["--host", "192.168.1.197", "--port", "55555"], \
+        "格 2：显式 host/port 赢（**这一次修的就是它**）"
     assert argv_of()[1:] == ["--ws-url", "ws://127.0.0.1:9222/devtools/page/REAL-ONE"], \
-        "没人点名时环境变量**仍然**是兜底（别把它一起修没了）"
+        "格 3：没人点名时环境变量**仍然**是兜底（别把它一起修没了）"
 
 
 def test_a_selftest_that_runs_after_the_fixtures_are_gone_writes_its_traces_in_tmp(
@@ -618,8 +620,9 @@ def test_a_selftest_that_runs_after_the_fixtures_are_gone_writes_its_traces_in_t
     captured["deps"].selftest(str(py), WS, str(form), SITE)   # 不给 run_dir
 
     where = pathlib.Path(seen["run_dir"])
-    assert where.parent == tmp_path / "runtime" / "selftest", where
-    assert where.name.startswith(SITE + "-"), where
+    assert where.parent == tmp_path / "runtime" / "selftest", \
+        "trace 落点那一格（该落在服务定死的根下）：%r" % (where,)
+    assert where.name.startswith(SITE + "-"), "名字那一格（<site>-<时刻>）：%r" % (where,)
     after = sorted(p.name for p in repo_selftest.glob("*")) if repo_selftest.is_dir() else []
     assert after == before, "这一趟往仓库的 runtime/selftest 里加了东西：%s" % (
         sorted(set(after) - set(before)),)
@@ -649,8 +652,131 @@ def test_the_explore_session_binary_is_frozen_at_construction_too(tmp_path, monk
 
     svc._explore_for({"ws_url": WS}, "job-mcp")(URL, GOAL)
 
-    assert seen["binary"] == "/frozen/cdp-mcp", seen
-    assert seen["ws_url"] == WS, seen          # 去向仍由**载荷**定（不是环境）
+    assert seen["binary"] == "/frozen/cdp-mcp", "探路会话的**二进制**那一格：%r" % (seen,)
+    assert seen["ws_url"] == WS, \
+        "探路会话的**去向**那一格（该由载荷定、不是环境）：%r" % (seen,)
+
+
+def test_the_real_explore_hop_carries_the_frozen_mcp_binary(tmp_path, monkeypatch):
+    """**G1（修复轮 4，承重）**：`explore` 里那一跳**真的**把服务定死的二进制送进子进程。
+
+    为什么要有这一条：上面那条 `test_the_explore_session_binary_is_frozen_at_construction_too`
+    **把 `browser_agent.explore` 整个换成了桩** —— 它守的是**服务那一跳**，
+    而「从 `explore` 到 `cdp-mcp` 的那一段」（真正把值送进 `Popen` 的那一段）
+    **没有任何判据**。实测（复审）：把 `browser_agent.py` 里的 `binary=binary` 剪掉，
+    **全量一条都不红** —— 那条性质只在纸面上被钉住。
+
+    这条让 `explore` **真的走那一跳**：只桩 `tools.subprocess.Popen`（记下 argv、不真起），
+    拿服务拼好的闭包调**真** `browser_agent.explore`，断 `argv[0]` 就是构造时定死的那个。
+    """
+    seen: dict = {}
+
+    def fake_popen(argv, **rest):
+        seen.setdefault("argv", [str(x) for x in argv])
+        raise RuntimeError("别真起（桩）")
+
+    monkeypatch.setattr(tools.subprocess, "Popen", fake_popen)
+    monkeypatch.setenv("CDP_MCP_BIN", "/frozen/frozen-mcp")      # 构造期：定死就是它
+    svc = service.Service(shots_dir=str(tmp_path / "shots"),
+                          checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
+    monkeypatch.delenv("CDP_MCP_BIN", raising=False)             # ← 「fixture 收掉了」
+
+    run = svc._explore_for({"ws_url": WS}, "job-real-hop")
+    with pytest.raises(BaseException):
+        run(URL, GOAL)                       # 真 explore：第一步就是开会话 → 记录仪抛
+
+    assert seen.get("argv", [None])[0] == "/frozen/frozen-mcp", seen
+
+
+def test_the_services_explore_path_really_shoots_step_images(tmp_path, monkeypatch):
+    """**G3（修复轮 4，承重）**：服务那条路交出去的 `explore` 用的是**真的** shooter。
+
+    为什么要有这一条：`explore` 里 `shooter or shots.capture_via_session` 那一跳
+    **今天没有任何判据** —— 复审实测：把那个默认换成假的，**全量 644 条红 0**；
+    而 `service.py` 是**唯一的生产调用方、它不传 `shooter`** ⇒ 换掉那行，
+    生产上一张步拍图都不会拍，而测试全绿。
+
+    这条把整条路走通：服务的闭包 → **真** `explore` → 真 shooter
+    （`capture_via_session` → MCP 会话的 `screenshot` 工具）→
+    **一张步拍图真的落在服务那个 job 目录里**。会话与模型都是桩（不开浏览器）。
+    """
+    import base64
+
+    from test_browser_agent import PAGE_LANDING, FakeLLM, _stub
+
+    #: 桩会话对 `screenshot` 的回话：`capture_via_session` 就是从这里拿 `png_base64` 的
+    shot = {"structured": {"png_base64": base64.b64encode(_png()).decode("ascii")}}
+    session, _log = _stub(tmp_path, {
+        "observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_LANDING}],
+        "screenshot": [shot, shot, shot, shot]})
+    monkeypatch.setattr(tools.McpSession, "open", classmethod(lambda cls, **kw: session))
+    #: 点一下、**页面没变** ⇒ 步拍策略把「点前 + 点后」两张都留住（跑顺的会被删掉，
+    #: 那样就看不到「真 shooter 跑过」了）
+    monkeypatch.setattr(llm, "client", lambda: FakeLLM(
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"content": "点了"}]))
+    monkeypatch.setenv("SITEFORGE_CDP_BIN", "/frozen/not-used-here")
+
+    root = tmp_path / "shots"
+    svc = service.Service(shots_dir=str(root),
+                          checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
+    run = svc._explore_for({"ws_url": WS}, "job-steps")
+    run(URL, GOAL, budget=browser_agent.Budget(max_steps=10, max_rounds=10))
+
+    where = root / "job-steps"
+    shots = sorted(p.name for p in where.glob("*.png"))
+    assert shots, "服务那条路一张步拍图都没拍 —— shooter 那一跳被换掉了？%s" % (
+        sorted(p.name for p in where.glob("*")),)
+
+
+def test_ws_url_that_is_only_spaces_counts_as_nobody_named_it(monkeypatch):
+    """**G2（修复轮 4）**：`ws_url="   "` 算「没人点名」—— 这是修复轮 3 **悄悄**加进去的语义
+    （`.strip()`），文档与提交信息都没说。复审的规矩是：**语义改动要有一条判据钉住**。
+
+    三格：只有空格 → 空（真值）时 host/port 接手；只有空格 + 环境有值 → 环境接手；
+    正常串 → 原样（**别把 strip 修成「连正常串也吃掉」**）。
+    """
+    def argv_of(**kw):
+        monkeypatch.setenv("CDP_WS_URL", "ws://127.0.0.1:9222/devtools/page/ENV-ONE")
+        seen: dict = {}
+
+        def fake_popen(argv, **rest):
+            seen["argv"] = [str(x) for x in argv]
+            raise RuntimeError("别真起（桩）")
+
+        monkeypatch.setattr(tools.subprocess, "Popen", fake_popen)
+        with pytest.raises(RuntimeError):
+            tools.McpSession.open(**kw)
+        return seen["argv"][1:]
+
+    assert argv_of(ws_url="   ", host="192.168.1.197", port=55555) == \
+        ["--host", "192.168.1.197", "--port", "55555"], "只有空格的 ws_url 该算「没人点名」"
+    assert argv_of(ws_url="   ") == ["--ws-url", "ws://127.0.0.1:9222/devtools/page/ENV-ONE"]
+    assert argv_of(ws_url="  ws://10.0.0.9:1/x  ") == ["--ws-url", "ws://10.0.0.9:1/x"], \
+        "正常串只去首尾空白，别把它吃掉"
+
+
+def test_the_cdp_chain_has_exactly_one_implementation(monkeypatch):
+    """**G4（修复轮 4）**：那条「用哪个 cdp」的链**只有一份实现**。
+
+    复审在 `shots.py` 里逮到**第二份**：`_cdp_bin()` 自己的 `or` 链（`capture_via_cli` 走它），
+    而 `/health` 走的是 `cdp_bin_with_source()` —— 6 组输入今天 0 处不一致，**但那是运气**。
+    现在 `_cdp_bin` 只是后者的第 0 个返回值（结构上不可能漂）；这条哨兵盯着
+    「两份读数在任何一格上都不许分家」——**任何一格分家都当场红**。
+    """
+    for env, cap in ((None, None), ("/env/cdp", None), (None, "/cap/cdp"),
+                     ("/env/cdp", "/cap/cdp")):
+        if env is None:
+            monkeypatch.delenv("SITEFORGE_CDP_BIN", raising=False)
+        else:
+            monkeypatch.setenv("SITEFORGE_CDP_BIN", env)
+        monkeypatch.setenv("CDP_PATH", "/path/cdp")
+        path, source = shots.cdp_bin_with_source(cap)
+        assert shots._cdp_bin(cap) == path, \
+            "两份实现分家了（env=%r cap=%r）：%r != %r" % (env, cap, shots._cdp_bin(cap), path)
+        assert path and source, (env, cap, path, source)
 
 
 def test_health_says_which_hop_won(tmp_path, monkeypatch):
@@ -666,14 +792,16 @@ def test_health_says_which_hop_won(tmp_path, monkeypatch):
 
     monkeypatch.setenv("SITEFORGE_CDP_BIN", "/from-env/cdp")
     monkeypatch.setenv("CDP_PATH", "/from-path/cdp")
-    assert health(capture_bin="/explicit/cdp")["cdp_source"] == "capture_bin"
-    assert health()["cdp_source"] == "SITEFORGE_CDP_BIN"
+    assert health(capture_bin="/explicit/cdp")["cdp_source"] == "capture_bin", \
+        "第 1 跳（显式参数）那一格"
+    assert health()["cdp_source"] == "SITEFORGE_CDP_BIN", "第 2 跳（SITEFORGE_CDP_BIN）那一格"
     monkeypatch.delenv("SITEFORGE_CDP_BIN")
-    assert health()["cdp_source"] == "CDP_PATH"
+    assert health()["cdp_source"] == "CDP_PATH", "第 3 跳（CDP_PATH）那一格"
     monkeypatch.delenv("CDP_PATH")
     body = health()
-    assert body["cdp_source"] == "repo-default", body
-    assert body["cdp"] == str(ROOT / "tools" / "cdp" / "cdp"), body
+    assert body["cdp_source"] == "repo-default", "第 4 跳（仓库默认）那一格：%r" % (body,)
+    assert body["cdp"] == str(ROOT / "tools" / "cdp" / "cdp"), \
+        "同一格上的**取值**（不许只有 source 对、路径是 null/别的）：%r" % (body,)
 
 
 def test_a_job_driven_through_the_service_leaves_its_books_in_tmp_not_in_the_repo(

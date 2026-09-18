@@ -319,9 +319,15 @@ def capture_via_session(session, dest) -> tuple[str | None, str]:
 
 def _cdp_bin(cdp_bin=None) -> str:
     """cdp 二进制在哪（与 `service.live_viewport()` 同一套约定：参数 > `SITEFORGE_CDP_BIN`
-    > `CDP_PATH` > 仓库里的 `tools/cdp/cdp`）。"""
-    return str(cdp_bin or os.environ.get("SITEFORGE_CDP_BIN") or os.environ.get("CDP_PATH")
-               or (_REPO / "tools" / "cdp" / "cdp"))
+    > `CDP_PATH` > 仓库里的 `tools/cdp/cdp`）。
+
+    ⚠️ **这里不许有自己的 `or` 链**（修复轮 4 的 G4）：这条链曾经有**两份实现** ——
+    这一份与 `cdp_bin_with_source()` 那份，而 `capture_via_cli` 走的是**这一份**、
+    `/health` 走的是**那一份**。复审拿 6 组输入比过：今天 0 处不一致，**但那是运气** ——
+    它正是这个仓库最老的那条病（同一个判据两份实现，早晚分家）。现在它只是
+    `cdp_bin_with_source` 的第 0 个返回值：**一份读法**（与 `step_shots_on` 同一条规矩）。
+    """
+    return cdp_bin_with_source(cdp_bin)[0]
 
 
 def cdp_bin_with_source(cdp_bin=None) -> tuple[str, str]:
