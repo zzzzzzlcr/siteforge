@@ -81,7 +81,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
-__all__ = ["Run", "Report", "run", "RUN_NAMES", "DEFAULT_ALLOWED_SKIPS", "CAVEAT"]
+__all__ = ["Run", "Report", "run", "RUN_NAMES", "DEFAULT_ALLOWED_SKIPS", "CAVEAT",
+           "DEFAULT_ROOT", "default_run_dir"]
 
 _REPO = pathlib.Path(__file__).resolve().parents[1]
 
@@ -406,9 +407,27 @@ def _not_needed(name: str, why: str) -> Run:
                     % (why, RUN_BLASTS[name]))
 
 
+#: 默认根：`runtime/selftest/`（`runtime/` 不进 git）。服务侧可以**构造时**换掉它
+#: （`SITEFORGE_SELFTEST_DIR`，与 `SITEFORGE_SHOTS_DIR` / `SITEFORGE_EXPLORE_DIR` 同一套）。
+DEFAULT_ROOT = _REPO / "runtime" / "selftest"
+
+
+def default_run_dir(site: str, *, root=None) -> pathlib.Path:
+    """这一趟的 trace 放哪：`<root>/<site>-<时刻>/`（不给 root 就是仓库里那个）。
+
+    ⚠️ **服务那条路要在构造时把 `root` 定死**（修复轮 3）：这个名字里带**时刻**，
+    只能在调用的那一刻算 —— 于是「调用时再解析」这件事一旦留在服务路径上，
+    测试/teardown 就管不住它（实测：拿服务拼好的 `Deps.selftest` 不给 `run_dir` 调一次，
+    仓库里立刻多一个 `runtime/selftest/<site>-<时刻>/`）。
+    库的默认值**留着是对的**（直接调用方就想要这个），但服务不许走到它。
+    """
+    return pathlib.Path(root if root is not None else DEFAULT_ROOT) / (
+        "%s-%s" % (site, time.strftime("%Y%m%d-%H%M%S")))
+
+
 def _default_run_dir(site: str) -> pathlib.Path:
     """默认把每一遍的 trace 放在 `runtime/selftest/<site>-<时刻>/`（`runtime/` 不进 git）。"""
-    return _REPO / "runtime" / "selftest" / ("%s-%s" % (site, time.strftime("%Y%m%d-%H%M%S")))
+    return default_run_dir(site)
 
 
 def _default_cdp_bin() -> Optional[str]:

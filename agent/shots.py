@@ -62,9 +62,9 @@ import pathlib
 import re
 import subprocess
 
-__all__ = ["DEFAULT_ROOT", "root_for", "cdp_bin_for", "path_for", "dir_for", "name_ok",
-           "host_port", "step_shots_on", "STEP_SHOTS_ENV", "capture_via_session",
-           "capture_via_cli"]
+__all__ = ["DEFAULT_ROOT", "root_for", "cdp_bin_for", "cdp_bin_with_source", "path_for",
+           "dir_for", "name_ok", "host_port", "step_shots_on", "STEP_SHOTS_ENV",
+           "capture_via_session", "capture_via_cli"]
 
 _REPO = pathlib.Path(__file__).resolve().parents[1]
 
@@ -323,17 +323,42 @@ def _cdp_bin(cdp_bin=None) -> str:
                or (_REPO / "tools" / "cdp" / "cdp"))
 
 
+def cdp_bin_with_source(cdp_bin=None) -> tuple[str, str]:
+    """`cdp_bin_for` 的「**哪一跳赢了**」版本：`(路径, 那一跳的名字)`。
+
+    为什么要两个返回值（修复轮 3 的 F5）：`/health` 报的必须是服务**真正会用的那个**
+    （上一轮做的），而运维看到它会问的下一个问题是「**为什么**是这个」——
+    答案就是这条链上赢的那一跳。一次解析、两个产物；**不许**在 `/health` 那里再解析一次
+    （那正是刚关掉的那条「读活环境」的口子换了个形式）。
+    名字只有这四个（稳定键，测试与页面都认它们）：
+    `"capture_bin"` / `"SITEFORGE_CDP_BIN"` / `"CDP_PATH"` / `"repo-default"`。
+    """
+    if cdp_bin:
+        return str(cdp_bin), "capture_bin"
+    env = os.environ.get("SITEFORGE_CDP_BIN")
+    if env:
+        return str(env), "SITEFORGE_CDP_BIN"
+    env = os.environ.get("CDP_PATH")
+    if env:
+        return str(env), "CDP_PATH"
+    return str(_REPO / "tools" / "cdp" / "cdp"), "repo-default"
+
+
 def cdp_bin_for(cdp_bin=None) -> str:
     """`_cdp_bin` 的正身（给**别的模块**用）。
 
     为什么要把它露出来（Task 3 修复轮 1）：服务要把用哪个二进制**在构造时**定下来
     （`Service(capture_bin=...)`）—— 而 `capture_via_cli` 是从**环境**读的，
     读的时刻就是调用的时刻。抓拍跑在**工作线程**上，它可能比给它设环境的那段代码活得久
-    （实测：4 条「发了 job 不等它」的用例就是这么漏的 —— 子进程里
-    `SITEFORGE_CDP_BIN` 已经是空的，于是回退链落回**仓库里那个真二进制**）。
+    （实测：全量套件里**每趟 2–4 次**（竞态量：取决于哪几条「发了 job 不等它」的用例的
+    worker 活过了它的 fixture）—— 那一刻子进程里 `SITEFORGE_CDP_BIN` 已经是空的，
+    于是回退链落回**仓库里那个真二进制**）。
     **定死了就没有「以后再看一眼环境」这回事。**
+
+    它和 `cdp_bin_with_source` 是**同一**条链（后者多报一个「哪一跳赢了」）——
+    `_cdp_bin` 只是这条链的旧名字，别再在别处复制第三份。
     """
-    return _cdp_bin(cdp_bin)
+    return cdp_bin_with_source(cdp_bin)[0]
 
 
 def capture_via_cli(ws_url, dest, *, cdp_bin=None, timeout: float = 30.0) -> tuple[str | None, str]:

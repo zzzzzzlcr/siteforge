@@ -36,7 +36,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import browser_agent, graph, selftest, service, shots  # noqa: E402
+from agent import browser_agent, graph, selftest, service, shots, tools  # noqa: E402
 from test_agent_shots import _Shooter  # noqa: E402  —— 步拍那个桩（它本身就是命令计数器）
 from test_browser_agent import PAGE_LANDING, _run  # noqa: E402
 from test_service import FakeGraph, _Snap, _gate, _wait  # noqa: E402  —— 桩图与「等到它停下」
@@ -539,6 +539,143 @@ def test_health_never_reports_null_for_a_cdp_the_service_will_use(tmp_path, monk
     assert body["cdp"] == client.app.state.service._cdp_bin, "报的与服务用的不是一个东西"
 
 
+def test_an_explicit_host_and_port_win_over_the_environment(monkeypatch):
+    """**F1（修复轮 3）**：会话去连谁，**只由调用方说的算**。
+
+    优先级以前写反了：`ws_url = ws_url or os.environ.get("CDP_WS_URL") or ""` ——
+    没给 `ws_url` 就**先读环境**，于是「显式传了 `host`/`port`」被环境里那串顶掉：
+    一个环境变量能**悄悄改掉一条会话的去向**，而这是**唯一真连浏览器**的那条通道
+    （探路 → `McpSession.open` → `cdp-mcp`）。口子窄（`ws_url` 空 + 传了 host/port +
+    环境里有 `CDP_WS_URL`），但那是**写反了**，不是设计如此。
+
+    三格一起钉：显式 `ws_url` 赢 > 显式 `host`/`port` 赢 > **都没给时环境才作数**。
+    """
+    def argv_of(**kw):
+        monkeypatch.setenv("CDP_WS_URL", "ws://127.0.0.1:9222/devtools/page/REAL-ONE")
+        seen: dict = {}
+
+        def fake_popen(argv, **rest):
+            seen["argv"] = list(argv)
+            raise RuntimeError("别真起（桩）")
+
+        monkeypatch.setattr(tools.subprocess, "Popen", fake_popen)
+        with pytest.raises(RuntimeError):
+            tools.McpSession.open(**kw)
+        return seen["argv"]
+
+    assert argv_of(ws_url="ws://192.168.1.197:55555/devtools/page/PAYLOAD")[1:] == \
+        ["--ws-url", "ws://192.168.1.197:55555/devtools/page/PAYLOAD"]
+    assert argv_of(host="192.168.1.197", port=55555)[1:] == \
+        ["--host", "192.168.1.197", "--port", "55555"], "环境把显式给的 host/port 顶掉了"
+    assert argv_of()[1:] == ["--ws-url", "ws://127.0.0.1:9222/devtools/page/REAL-ONE"], \
+        "没人点名时环境变量**仍然**是兜底（别把它一起修没了）"
+
+
+def test_a_selftest_that_runs_after_the_fixtures_are_gone_writes_its_traces_in_tmp(
+        tmp_path, monkeypatch):
+    """**F2（修复轮 3）**：trace 落哪，也是**构造时**定死的。
+
+    `selftest.run` 的 `run_dir` 不给就落到 `_default_run_dir(site)` = **仓库里**的
+    `runtime/selftest/<site>-<时刻>/`（`_selftest_kwargs` 不给 `run_dir`）——
+    名字里带时刻 ⇒ 只能在**调用的那一刻**算 ⇒ 与 `_shots_dir`/`_explore_root` 同一个病
+    （复审实测：不给 `run_dir` 调一次，仓库里立刻多一个目录）。
+
+    这条走服务拼好的 `Deps.selftest`、**不给 `run_dir`**（生产就是这么调的），
+    并先删干净环境。
+    """
+    seen: dict = {}
+
+    def fake_execute(name, py, ws_url, form_file, correlation_id, log_level, env,
+                     run_dir, site, timeout, task_id=None, delay=None):
+        seen.setdefault("run_dir", str(run_dir))
+        return selftest.Run(name=name, label=selftest.RUN_LABELS[name], status="failed",
+                            ok=False, failed_step=None, trace_path=None, note="桩")
+
+    monkeypatch.setattr(selftest, "_execute", fake_execute)
+    #: 仓库里那个目录**本来就可能存在**（别的片跑过自测）—— 所以断的是
+    #: 「**这一趟没往里加东西**」，不是「它不存在」（后者是假判据，会随别人的产物变红/变绿）。
+    repo_selftest = ROOT / "runtime" / "selftest"
+    before = sorted(p.name for p in repo_selftest.glob("*")) if repo_selftest.is_dir() else []
+    captured: dict = {}
+
+    def factory(brief, deps):
+        captured["deps"] = deps
+        return _one_gate()
+
+    svc = service.Service(graph_factory=factory, shots_dir=str(tmp_path / "shots"),
+                          checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
+    svc._build_graph({"url": URL, "goal": GOAL, "success_text": SUCCESS, "ws_url": WS},
+                     "job-traces")
+    py = tmp_path / "artifact.py"
+    py.write_text("print('x')\n", encoding="utf-8")
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+
+    for name in ("SITEFORGE_CDP_BIN", "SITEFORGE_SHOTS_DIR", "SITEFORGE_EXPLORE_DIR",
+                 "SITEFORGE_SELFTEST_DIR"):
+        monkeypatch.delenv(name, raising=False)              # ← 「fixture 收掉了」
+
+    captured["deps"].selftest(str(py), WS, str(form), SITE)   # 不给 run_dir
+
+    where = pathlib.Path(seen["run_dir"])
+    assert where.parent == tmp_path / "runtime" / "selftest", where
+    assert where.name.startswith(SITE + "-"), where
+    after = sorted(p.name for p in repo_selftest.glob("*")) if repo_selftest.is_dir() else []
+    assert after == before, "这一趟往仓库的 runtime/selftest 里加了东西：%s" % (
+        sorted(set(after) - set(before)),)
+
+
+def test_the_explore_session_binary_is_frozen_at_construction_too(tmp_path, monkeypatch):
+    """**F3（修复轮 3）**：探路那条**唯一真连浏览器**的通道也在同一条不变量里。
+
+    `explore` 自己开会话（`McpSession.open` → `cdp-mcp`），用的二进制来自
+    `tools.MCP_BIN` —— 那是**导入期**读的 `CDP_MCP_BIN`：它「已经定死」，
+    但**不是**被这个服务定死的（测试 / 运维换不动它）。服务的探路闭包现在把
+    **构造时定死的那个**交下去（`explore(binary=…)`），与 `_cdp_bin` 同一个形状。
+    """
+    seen: dict = {}
+
+    def fake_explore(url, goal, budget=None, should_pause=None, ws_url=None, on_step=None,
+                     resume_from=None, resume_note="", window_alive=None, shots_dir=None,
+                     binary=None, **rest):
+        seen.update(binary=binary, ws_url=ws_url)
+        return browser_agent.Journey()
+
+    monkeypatch.setattr(browser_agent, "explore", fake_explore)
+    monkeypatch.setenv("CDP_MCP_BIN", "/frozen/cdp-mcp")          # 构造期：定死就是它
+    svc = service.Service(shots_dir=str(tmp_path / "shots"),
+                          checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
+    monkeypatch.delenv("CDP_MCP_BIN", raising=False)              # ← 「fixture 收掉了」
+
+    svc._explore_for({"ws_url": WS}, "job-mcp")(URL, GOAL)
+
+    assert seen["binary"] == "/frozen/cdp-mcp", seen
+    assert seen["ws_url"] == WS, seen          # 去向仍由**载荷**定（不是环境）
+
+
+def test_health_says_which_hop_won(tmp_path, monkeypatch):
+    """**F5（修复轮 3）**：`/health` 除了「用哪个 cdp」，还要说清「**哪一跳赢了**」。
+
+    复审驳了「再报一个『环境里那个』」（会永远相等、且等于把「读活环境」那个口子
+    换个形式开回来），给的替代就是这一个字段 —— 它是一次解析的产物，不读环境。
+    四跳：`capture_bin` > `SITEFORGE_CDP_BIN` > `CDP_PATH` > `repo-default`。
+    """
+    def health(**kw) -> dict:
+        client = _client(tmp_path, graph_factory=lambda b, d: _one_gate(), **kw)
+        return client.get("/health").json()
+
+    monkeypatch.setenv("SITEFORGE_CDP_BIN", "/from-env/cdp")
+    monkeypatch.setenv("CDP_PATH", "/from-path/cdp")
+    assert health(capture_bin="/explicit/cdp")["cdp_source"] == "capture_bin"
+    assert health()["cdp_source"] == "SITEFORGE_CDP_BIN"
+    monkeypatch.delenv("SITEFORGE_CDP_BIN")
+    assert health()["cdp_source"] == "CDP_PATH"
+    monkeypatch.delenv("CDP_PATH")
+    body = health()
+    assert body["cdp_source"] == "repo-default", body
+    assert body["cdp"] == str(ROOT / "tools" / "cdp" / "cdp"), body
+
+
 def test_a_job_driven_through_the_service_leaves_its_books_in_tmp_not_in_the_repo(
         tmp_path, monkeypatch):
     """账（`<explore_root>/<job_id>/baseline.json`）**不许落进仓库**。
@@ -568,7 +705,7 @@ def test_the_services_explore_wiring_hands_over_the_job_shots_dir(tmp_path, monk
 
     def fake_explore(url, goal, budget=None, should_pause=None, ws_url=None, on_step=None,
                      resume_from=None, resume_note="", window_alive=None,
-                     shots_dir=None, shooter=None):
+                     shots_dir=None, shooter=None, **rest):
         seen.update(shots_dir=shots_dir, ws_url=ws_url)
         return browser_agent.Journey()
 
@@ -592,7 +729,7 @@ def test_an_explore_with_a_job_id_that_cannot_be_a_directory_still_runs(tmp_path
 
     def fake_explore(url, goal, budget=None, should_pause=None, ws_url=None, on_step=None,
                      resume_from=None, resume_note="", window_alive=None,
-                     shots_dir=None, shooter=None):
+                     shots_dir=None, shooter=None, **rest):
         seen["shots_dir"] = shots_dir
         return browser_agent.Journey()
 

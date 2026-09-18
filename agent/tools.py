@@ -107,8 +107,18 @@ class McpSession:
           少一步转换 = 少一个搞错的机会）
         - `host`/`port` —— 自己拆好的情况
         - 两个都不给 → 交给 `cdp-mcp` 自己按 `CDP_HOST`/`CDP_PORT` 与默认值定
+
+        ⚠️ **优先级（修复轮 3）**：这个会话去连谁，**只由调用方说的算** ——
+        `ws_url` > `host`/`port` > 环境变量 `CDP_WS_URL`。以前写反了：先看 `ws_url`，
+        没有就**先读环境**，于是「显式传了 `host`/`port`」会被环境里那串顶掉 ——
+        一个环境变量能**悄悄改掉一条会话的去向**（而这是唯一真连浏览器的通道）。
+        触发口子很窄（`ws_url` 空 + 传了 host/port + 环境里有 `CDP_WS_URL`），
+        但那是**写反了**，不是「设计如此」。生产今天不设 `CDP_WS_URL`，所以不响。
         """
-        ws_url = ws_url or os.environ.get("CDP_WS_URL") or ""
+        ws_url = str(ws_url or "").strip()
+        if not ws_url and not (host or port):
+            # 只有**没人点名**的时候才轮到环境变量（它是兜底，不是覆盖）
+            ws_url = os.environ.get("CDP_WS_URL") or ""
         argv = [binary or MCP_BIN]
         if ws_url:
             argv += ["--ws-url", ws_url]

@@ -65,7 +65,7 @@ from fastapi.responses import FileResponse
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from agent import browser_agent, graph, journal, measure, selftest, shots
+from agent import browser_agent, graph, journal, measure, selftest, shots, tools
 from agent.graph import NODES, STEP_SAY
 from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_NO_WINDOW,
                          END_PAUSED, END_WINDOW_GONE)
@@ -616,7 +616,8 @@ class Service:
                  explore_dir: Optional[str] = None,
                  window_probe_seconds: Optional[float] = None,
                  shots_dir: Optional[str] = None, capture: Optional[Callable] = None,
-                 shot_timeout: Optional[float] = None, capture_bin: Optional[str] = None):
+                 shot_timeout: Optional[float] = None, capture_bin: Optional[str] = None,
+                 selftest_dir: Optional[str] = None, mcp_bin: Optional[str] = None):
         self._jobs: dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
         self._queue: "queue.Queue[tuple]" = queue.Queue()
@@ -626,14 +627,27 @@ class Service:
         self._graph_factory = graph_factory
         self._out_dir = out_dir or str(graph.DEFAULT_OUT_DIR)
         # ── 构造时**定死**的那几样（部署配置；之后再也不看环境）──────────────────
-        #: 图落哪、用哪个 cdp。⚠️ 为什么不「用的时候再读环境」：抓拍 / 窗口探针 / 自测
-        #: 都跑在**工作线程或子进程**里，可能比设那段环境的东西活得久 ——
-        #: 修复轮 1/2 各实测过一次漏（子进程里环境已经是空的，回退链于是落回**仓库里
-        #: 那个真二进制**，而去连的是真地址）。**定死了就没有「以后再看一眼环境」这回事。**
+        #: 图落哪、账落哪、用哪个 cdp / 哪个 cdp-mcp。⚠️ 为什么不「用的时候再读环境」：
+        #: 抓拍 / 窗口探针 / 自测 / 探路会话都跑在**工作线程或子进程**里，
+        #: 可能比设那段环境的东西活得久 —— 修复轮 1/2 各实测过一次漏（子进程里环境已经是
+        #: 空的，回退链于是落回**仓库里那个真二进制**，而去连的是真地址）。
+        #: ⚠️ 次数是**竞态量**：全量套件里**每趟 2–4 次**（取决于哪几条「发了 job 不等它」的
+        #: 用例的 worker 活过了它的 fixture）——**别把它当仪器读数**，它是「有这个病」的证据。
+        #: **定死了就没有「以后再看一眼环境」这回事。**
         #: `shots_dir` ⇒ `SITEFORGE_SHOTS_DIR` ⇒ 仓库里的 `runtime/shots`；
         #: `capture_bin` ⇒ `SITEFORGE_CDP_BIN` ⇒ `CDP_PATH` ⇒ 仓库里的 `tools/cdp/cdp`。
         self._shots_dir = shots.root_for(shots_dir)
-        self._cdp_bin = shots.cdp_bin_for(capture_bin)
+        self._cdp_bin, self._cdp_bin_source = shots.cdp_bin_with_source(capture_bin)
+        #: 自测每一遍的 trace 落哪（`<root>/<site>-<时刻>/`）—— 同上，构造时定死。
+        #: ⚠️ 以前这里没有：`run_dir` 由 `selftest.run` 在**调用那一刻**解析成
+        #: **仓库里**的 `runtime/selftest/…`（修复轮 3 的 F2，实测真被建出来）。
+        self._selftest_root = str(selftest_dir
+                                  or os.environ.get("SITEFORGE_SELFTEST_DIR")
+                                  or selftest.DEFAULT_ROOT)
+        #: 探路那条会话（`McpSession.open` → `cdp-mcp`）用哪个可执行文件 ——
+        #: **唯一真连浏览器**的通道也在同一条不变量里（`tools.MCP_BIN` 是导入期读的，
+        #: 那次读数**不是**这个服务定的；这里把它按服务的意愿定死，测试/运维才换得动）。
+        self._mcp_bin = str(mcp_bin or os.environ.get("CDP_MCP_BIN") or tools.MCP_BIN)
         #: 「活着的窗口现在多大」怎么量（默认走 cdp 读页面；测试注入桩）。
         #: ⚠️ 默认那根线是**同类通道里的第二条**（它自己也读环境、自己也起子进程）——
         #: 所以把**定死的那个二进制**绑给它（`live_viewport(cdp_bin=…)`），它不再自己看环境。
@@ -680,19 +694,29 @@ class Service:
         return graph.build(checkpointer=self._check.get(), deps=deps)
 
     def _selftest_cb(self) -> Callable:
-        """`Deps.selftest`：把**构造时定死的**那个 cdp 二进制交给自测。
+        """`Deps.selftest`：把**构造时定死的**那两样交给自测（二进制、trace 落哪）。
 
-        为什么（修复轮 2，复审点名的**第三条同类通道**）：`Deps.selftest` 的默认是
-        `selftest.run`（`graph.Deps`），而它自己会在 `selftest.py` 里**再读一次环境**
-        （`SITEFORGE_CDP_BIN` → `_default_cdp_bin()`，第二候选直接是仓库里那个二进制），
-        读的时刻是**调用的时刻** —— 自测在外面的世界（子进程 + 真窗口）里跑，
-        完全可能比设那段环境的东西活得久。绑死之后，交给产物的那个环境里
-        `SITEFORGE_CDP_BIN` 永远是**同一个**（服务定的那个）。
+        为什么（修复轮 2 的第三条通道 + 修复轮 3 的 F2）：
+
+        - **二进制**：`Deps.selftest` 的默认是 `selftest.run`（`graph.Deps`），而它自己会在
+          `selftest.py` 里**再读一次环境**（`SITEFORGE_CDP_BIN` → `_default_cdp_bin()`，
+          第二候选直接是仓库里那个二进制），读的时刻是**调用的时刻**。
+        - **trace 落哪**：`run_dir` 不给就落到 `_default_run_dir(site)` = **仓库里**的
+          `runtime/selftest/<site>-<时刻>/`（`_selftest_kwargs` **不给** `run_dir`）——
+          名字里带时刻 ⇒ 只能在调用那一刻算 ⇒ 与 `_shots_dir`/`_explore_root` 同一个病：
+          **服务路径上「调用时再解析」= 测试与运维都管不住它**（实测：不给 `run_dir`
+          调一次，仓库里立刻多一个目录）。所以这里**连目录一起给**（根是构造时定死的）。
 
         ⚠️ 与 `explore`/`shots`/`viewport_probe` 同一条不变量：
         **构造时定死，之后不再看环境**（同一个进程里出现两个不同的 cdp = 漂）。
+        ⚠️ 调用方**显式**给了 `run_dir` 就用它的（`setdefault`）：这是注入点，不是覆盖点。
         """
-        return functools.partial(selftest.run, cdp_bin=self._cdp_bin)
+
+        def run_selftest(py_path, ws_url, form_file, site, **kw):
+            kw.setdefault("run_dir", str(selftest.default_run_dir(site, root=self._selftest_root)))
+            return selftest.run(py_path, ws_url, form_file, site, cdp_bin=self._cdp_bin, **kw)
+
+        return run_selftest
 
     def _explore_for(self, brief: dict, job_id: str = "") -> Optional[Callable]:
         """探路要朝**载荷里那个窗口**去（服务是知道窗口的那一层）。
@@ -716,6 +740,15 @@ class Service:
         #: 步拍落在哪（这一趟探路的 job 级目录）。**算不出来就不接** ——
         #: `job_id` 不像话时 `dir_for` 报错，而这里是图的路径上，不许抛；
         #: 闸拍那条路自己会把这个原因记成一句人话（`_shoot_pause`）。
+        #:
+        #: ⚠️ **这个目录是「一轮」共用的，而 Task 2 的上限是「一趟」的**（修复轮 3 的判定）：
+        #: `MAX_KEPT_SHOTS = 40` 判的是**本趟**盘上属于这一趟的张数（`_StepShots` 每一趟
+        #: 新建一个），而一个节点最多重探 `graph.EXPLORE_ATTEMPTS = 3` 趟 ⇒
+        #: **一个 job 目录里最多 3×40 = 120 张步拍图**（典型 ~110KB/张 ⇒ ~13MB）
+        #: **+ 每轮一张闸拍**（`pause-<n>.png`，**不计入**那个上限 —— 它是服务侧另一条路）。
+        #: 这不是 bug，是「上限=每趟」这件事没说出口：设计注 §5.5 的「最坏 ~20MB」本来就
+        #: 按 40 张/次 + 闸图算的，量级对得上。**要收紧就收在「每 job」那一层**
+        #: （跨趟计数），那是清理/保留策略的事，不在这一片。
         try:
             shots_where = str(shots.dir_for(job_id, root=self._shots_dir)) if job_id else None
         except ValueError:
@@ -743,7 +776,8 @@ class Service:
                                                 resume_from=resume_from or None,
                                                 resume_note=resume_note or "",
                                                 window_alive=window_alive,
-                                                shots_dir=shots_where)
+                                                shots_dir=shots_where,
+                                                binary=self._mcp_bin)
             except BaseException as exc:       # noqa: BLE001 —— `_Stop` 也是 BaseException
                 # 探路自己炸了 —— 也得留一行，不然「这一次尝试」凭空消失，
                 # 而消失的那一次恰恰是最该被看见的那一次。记完**原样再抛**。
@@ -902,7 +936,9 @@ class Service:
         """
         # ⚠️ 二进制**用构造时定下的那个**（`functools.partial` 把它绑死）——
         #    `capture_via_cli` 不给 `cdp_bin` 时会去读环境，而读的时刻是**调用的时刻**：
-        #    抓拍在工作线程上，它可能比设那段环境的代码活得久（实测漏过 4 次）。
+        #    抓拍在工作线程上，它可能比设那段环境的代码活得久
+        #    （全量套件里实测**每趟 2–4 次**漏 —— 竞态量，取决于哪几条「发了 job 不等它」
+        #    的用例的 worker 活过了它的 fixture；别把它当仪器读数）。
         capture = (self._capture
                    or functools.partial(shots.capture_via_cli, cdp_bin=self._cdp_bin))
         box: dict = {}
@@ -1792,7 +1828,9 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                window_probe_seconds: Optional[float] = None,
                shots_dir: Optional[str] = None, capture: Optional[Callable] = None,
                shot_timeout: Optional[float] = None,
-               capture_bin: Optional[str] = None) -> FastAPI:
+               capture_bin: Optional[str] = None,
+               selftest_dir: Optional[str] = None,
+               mcp_bin: Optional[str] = None) -> FastAPI:
     """拼一个 app。测试从这里注入桩图 / 桩窗口 / 内存 saver。
 
     `window=None` 是**默认且合法**的：这个部署没接窗口层 —— 于是 `set_viewport` 那根线
@@ -1814,7 +1852,8 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                   checkpointer_url=checkpointer_url, out_dir=out_dir,
                   viewport_probe=viewport_probe, explore_dir=explore_dir,
                   window_probe_seconds=window_probe_seconds, shots_dir=shots_dir,
-                  capture=capture, shot_timeout=shot_timeout, capture_bin=capture_bin)
+                  capture=capture, shot_timeout=shot_timeout, capture_bin=capture_bin,
+                  selftest_dir=selftest_dir, mcp_bin=mcp_bin)
     api = FastAPI(title="siteforge", version="0.1",
                   description="看着真页面产出 cdp-first py 脚本的 agent 服务（计划二 Task 8）")
 
@@ -1833,6 +1872,9 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
             #    以前这里读活环境，两个变量都没设时还报 `null` —— 像「没有 cdp」，
             #    而服务实际会用**仓库里那个** `tools/cdp/cdp`（修复轮 2 的第四条，见 conftest）。
             "cdp": svc._cdp_bin,
+            #: **哪一跳赢了**（`capture_bin` / `SITEFORGE_CDP_BIN` / `CDP_PATH` / `repo-default`）——
+            #: 运维看到 `cdp` 会问的下一个问题。与 `cdp` 同一次解析的产物（不再读环境）。
+            "cdp_source": svc._cdp_bin_source,
             "out_dir": svc._out_dir,
             "jobs": len(svc._jobs),
             "steps": {k: STEP_SAY[k] for k in NODES},
