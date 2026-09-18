@@ -521,14 +521,19 @@ def test_a_journey_without_a_missing_shot_says_nothing(tmp_path):
 #: `journey.notes`）。复审实测过：只看一个文件时，往 `agent/shots.py` 写一句
 #: `journey.shots_why = why` —— 这条判据**完全瞎**（而它正是唯一挡着那个耦合的东西）。
 #:
-#: **不扫**这三类，各有各的理由：
+#: **不扫**这几类，各有各的理由：
 #:   - `.venv` / `venv` / `__pycache__` / `.git` / `.pytest_cache` —— 不是源码；
-#:   - `runtime/` —— 运行产物（不进 git）；
-#:   - **`.superpowers/`** —— 过程账本（`sdd/.gitignore` 里就是 `*`，整片不进 git），
-#:     而**变异脚本住在那儿**：它们把「被改过的源码」当**数据**摆在文件里，
-#:     扫它们等于把数据当代码读（今天实测是干净的，但那是运气，不是结构）。
-#:     ⚠️ 宁可漏一个不进 git 的目录，也不要**误杀**：`events.py` 那条判断词规矩自己写着
-#:     「误杀一次，人就再也不信这条规矩了」。这两句是取舍，不是「恰好如此」。
+#:   - **`.superpowers/` 与 `runtime/`** —— **harness 目录**：两个都不进 git
+#:     （`sdd/.gitignore` 里就是 `*`），产品代码一处都不 import 它们
+#:     （`agent` / `tests` / `forms` / `fixtures` / `tools` 里 grep = 0）。
+#:     ⚠️ 理由**不是**「扫描器会把数据当代码读」——**字符串字面量不会**被当代码
+#:     （`.superpowers/task-2-mutations.py` 里那条 `journey.shots_why = …`
+#:     就躺在一个字符串里，**扫它也不会红**）。真正的理由是：
+#:     **harness 目录里会有代码形状的复现体 / 变异体**（变异脚本会把改过的源码
+#:     **写进真文件本身**，写完还原 —— `TASK-3-mutations.py` 里 `TARGET = ROOT/"agent"/…`）。
+#:     一个「最小复现」哪天被写成真代码摆在那儿，排除就是唯一挡住**误杀**的东西 ——
+#:     而 `events.py` 那条判断词规矩自己写着「误杀一次，人就再也不信这条规矩了」。
+#:     漏的边界很干净：**能上生产的代码，全在被扫的这一侧**。
 _SKIP_DIRS = {".venv", "venv", "__pycache__", ".git", ".pytest_cache", "runtime",
               "node_modules", ".superpowers"}
 
@@ -562,6 +567,20 @@ def _writes_to_journey_shots_why(src: str) -> list:
     `template.py` / `fixtures/` / `forms/sites/*.py` 里那些）与 `journey.shots_why` 是
     **同名不同物** —— 只有接收者是 `journey`（`journey` / `something.journey`）的才算。
     全仓换这条规则后，命中仍然只有 `browser_agent.py` 里那两处（零误伤）。
+
+    ⚠️ **已知的盲点**（静态分析的固有边界 —— **这是给下一位读者的地图，不是返工清单**；
+    别为这些把判据写复杂，成本比收益高）：
+
+      1. **别名**：`self._journey.shots_why = …` 判据**看不见**。⚠️ 而本仓**已经有**这个命名 ——
+         `_Gate.__init__` 里就写着 `self._journey = journey`，`_Gate` 里已经在用
+         `self._journey.notes.append(...)` 那样写。**这是四个盲点里最现实的一个。**
+      2. **下标写**：`journey.__dict__["shots_why"] = …` / `vars(journey)["shots_why"] = …`。
+      3. **`for` / `with` 的目标**：判据只认 `Assign` / `AnnAssign` / `AugAssign` / `setattr`
+         四种语句形状；`for x.shots_why in …` 这类编译期写入点不在里面。
+      4. **动态拼属性名**：`setattr(o, "shots" + "_why", …)`（值没法静态判）。
+
+    这四条今天**都不是活的**（判据 + 全量套件在本轮之前一直绿，且跨模块那句是被逮住的），
+    写下来是因为**射程**正是这类判据最弱的地方 —— 复审原话：「这是地图」。
     """
     tree = ast.parse(src)
     out: list = []
@@ -716,8 +735,9 @@ def test_a_broken_channel_is_only_written_where_it_is_accounted_for():
     （`journey` / `x.journey`），所以产物自己那些 `self.shots_why` 全被挡掉。
     跳过哪些目录、为什么，写在 `_SKIP_DIRS` 那一头。
 
-    ⚠️ **已知的盲点**（静态判不了，**可以接受**，别为它们把判据写复杂）：
-    动态拼属性名（`setattr(o, 'shots' + '_why', …)`）。
+    ⚠️ **已知的盲点**（静态判不了，**可以接受**，**别为它们把判据写复杂** ——
+    四个逐个列在 `_writes_to_journey_shots_why` 的 docstring 里，最现实的那个是
+    **别名** `self._journey`：本仓 `_Gate` 已经在那么用了）。
     ⚠️ **不许**用改名 / 删字段 / 改成 property 去堵：msgpack 还原走 `cls(**kwargs)`，
     构造函数一抛就被 ext hook 吞掉、返回 `None` —— 老代码收到不认识的字段，
     那个 job 的 `journey` 会**静默变成 `None`**。只能靠测试钉，不能动字段形状。
