@@ -35,7 +35,7 @@ class _Shooter:
     这个数在几条用例里比「盘上剩几张」更要紧 —— `shots_dir=None` 那条断的就是它。
     """
 
-    def __init__(self, root, *, fail=False, boom=False):
+    def __init__(self, root, *, fail=False, boom=False, mark=b""):
         self.root = pathlib.Path(root)
         self.dests = []
         #: **每次被叫时，盘上还剩什么**（按名字排序）。
@@ -45,6 +45,9 @@ class _Shooter:
         self.state_at_call = []
         self.fail = fail
         self.boom = boom
+        #: 写进字节里的标记（默认空）—— 跨趟那几条用例靠它分辨「这个名字上的**像素**是谁的」：
+        #: 只看「文件还在不在」分不出「第 1 趟那张还在」与「第 2 趟写了个同名的、内容已经换主」。
+        self.mark = mark
 
     def __call__(self, session, dest):
         dest = pathlib.Path(dest)
@@ -55,7 +58,7 @@ class _Shooter:
         if self.fail:
             return None, "拍不成（桩说的）"
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(PNG_HEAD)
+        dest.write_bytes(PNG_HEAD + bytes(self.mark))
         return dest.name, ""
 
     @property
@@ -437,6 +440,45 @@ def test_the_cap_stops_shooting_and_says_so(tmp_path, monkeypatch):
         f"到顶没说一句人话：{journey.notes}"
 
 
+def test_the_cap_is_hard_at_the_moment_of_the_write_not_only_at_finish(tmp_path, monkeypatch):
+    """**上限在要落盘的那一刻就硬** —— 不是收尾重算一遍。
+
+    复审实测的那个形状：结算钩子（`_keep`）自己抛异常 ⇒ `kept` **永远不涨** ⇒
+    上限 2 的那道闸**一次都没 engage**：**10 条命令、运行期盘上最多 9 张**，
+    收工后才由收口抹平到 5。**「收口把账做平」与「闸是硬的」是两件事。**
+
+    判据 = **运行期任一刻**的盘上张数（桩 shooter 每次被叫时记的 `state_at_call`），
+    **不是**收工后那个数。`+1` 是因为它记的是**落盘之前**那一刻 —— 那一张马上要写下去。
+    """
+    monkeypatch.setattr(browser_agent, "MAX_KEPT_SHOTS", 2, raising=True)
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("_keep 自己炸了（桩）")
+
+    monkeypatch.setattr(browser_agent._StepShots, "_keep", boom)
+
+    s = _Shooter(tmp_path / "shots")
+    turns = [{"calls": [("observe", {})]}]
+    for _ in range(5):
+        turns.append({"calls": [("click", {"selector": "#get-started"})]})
+        turns.append({"calls": [("observe", {})]})          # 每一下都没变 ⇒ 每次都该留两张
+    turns.append({"content": "连点五下"})
+    journey, _, _ = _go(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}] * 10},
+        turns,
+        s,
+        budget=browser_agent.Budget(max_steps=20, max_rounds=20),
+    )
+    assert len(journey.steps) >= 6, [x["action"] for x in journey.steps]
+    peak = max((len(seen) + 1 for seen in s.state_at_call), default=0)
+    assert peak <= 2, (
+        f"上限 2，运行期盘上却到过 {peak} 张 —— 闸是收尾才算的，不是落盘那一刻："
+        f"{[len(x) for x in s.state_at_call]}")
+    assert len(s.left) <= 2, f"收工后也超了：{s.left}"
+    assert any("上限" in n for n in journey.notes), f"撞上限没说一句人话：{journey.notes}"
+
+
 # ────────────────── 拍照永远不许把探路搞挂 ──────────────────
 
 
@@ -608,19 +650,126 @@ def test_the_shot_files_land_where_the_caller_said(tmp_path):
         assert where in d.parents, f"落点跑出调用方给的目录了：{d}"
 
 
+# ────────── 一个名字 = 一次落盘（跨趟 / 同趟都不许撞）──────────
+
+
+def _one_attempt(tmp_path, where, shooter, responses, turns):
+    """跑一趟桩探路（`shots_dir` = `where`）—— 跨趟那两条用例要跑**两趟**，共用一个目录。"""
+    return _go(tmp_path, responses, turns, shooter,
+               budget=browser_agent.Budget(max_steps=20, max_rounds=20))[0]
+
+
+def test_a_second_attempt_on_the_same_job_dir_cannot_eat_the_first_attempts_evidence(tmp_path):
+    """**同一个 job 目录里的两趟探路：第 2 趟的收口不许碰第 1 趟留下的图。**
+
+    生产形状（`agent/service.py` 的 `shots.dir_for(job_id)`）：一次节点**最多 3 趟**重探
+    共用一个 `<root>/<job_id>/`，而收口是**按名字**删的。复审实测（名字不带趟号那版）：
+    第 2 趟写了自己的 `step-1-before.png`（它这一步是跑顺的，紧接着的观测就把那张删了），
+    而**第 1 趟特意留下的那张证据正压在这个名字上** ⇒ **2 张丢 1 张**。
+
+    判据落在**两件**上（缺一不可）：
+    1. 第 1 趟引用到的名字，一个都不许没；
+    2. 而且**字节还得是第 1 趟的** —— 只断「文件在不在」验不出「第 2 趟写了个同名的、
+       内容已经换主」那个形状（名字还在，像素已经是别人的了）。
+    """
+    where = tmp_path / "shots"
+    first = _Shooter(where, mark=b"one")
+    j1 = _one_attempt(
+        tmp_path, where, first,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"content": "点了没变，两张都留"}])
+    kept_by_first = {st.get("shot_before") for st in j1.steps} | \
+                    {st.get("shot_after") for st in j1.steps}
+    kept_by_first.discard(None)
+    assert len(kept_by_first) == 2, f"第 1 趟该留两张：{kept_by_first}"
+
+    second = dict(PAGE_QUIZ, page_text="第二问：你平时读多少本书", title="Example 第二问")
+    second_shooter = _Shooter(where, mark=b"two")
+    j2 = _one_attempt(
+        tmp_path, where, second_shooter,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": second}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"content": "这一步跑顺了（一张不留）"}])
+    # ⚠️ 别用 `second_shooter.left`：那个属性 glob 的是**整个共用目录**（含第 1 趟留的）。
+    wrote_by_second = [d.name for d in second_shooter.dests]
+    assert wrote_by_second, "第 2 趟该拍过（点前那张是下限）"
+    assert not [n for n in wrote_by_second if (where / n).is_file()], \
+        f"第 2 趟是跑顺的一步，它自己写的那张不该留：{wrote_by_second}"
+    assert not ({st.get("shot_before") for st in j2.steps} - {None}), \
+        [st.get("shot_before") for st in j2.steps]
+
+    gone = sorted(n for n in kept_by_first if not (where / n).is_file())
+    assert gone == [], f"第 2 趟的收口把第 1 趟的证据删了：{gone}（盘上现在 {second_shooter.left}）"
+    for name in sorted(kept_by_first):
+        assert (where / name).read_bytes() == PNG_HEAD + b"one", \
+            f"这个名字上的图已经换主了（不是第 1 趟那张）：{name}"
+
+
+def test_two_steps_never_share_one_name(tmp_path):
+    """**同一个名字只许压一次落盘** —— 两条步引用同一张图时，前一条的证据是假的。
+
+    复审记过这个形状（`click(没变) → observe(补拍) → click(失败)`）：两条步算出来的落点是
+    **同一个** `step-3-after.png`（名字里的 `%d` 是**此刻**的 `len(journey.steps)`，
+    **不是**步的唯一号），而盘上那串字节是后一条写的 ⇒ 前一条「点后」那张
+    **看着像证据，其实是别人的像素**（比没有图更坏）。
+    """
+    s = _Shooter(tmp_path / "shots")
+    j = _one_attempt(
+        tmp_path, tmp_path / "shots", s,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_LANDING}],
+         "click": [{}, {"error": "没有找到选择器 #ghost"}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#ghost"})]},
+         {"content": "第二下点不着"}])
+
+    names = [d.name for d in s.dests]
+    assert len(names) == 4, f"这条形状该拍 4 张：{names}"
+    assert len(set(names)) == len(names), f"同一次落盘被写了两次（后一张会顶掉前一张）：{names}"
+    for st in j.steps:
+        for key in ("shot_before", "shot_after"):
+            if st.get(key):
+                assert (s.root / st[key]).is_file(), f"{st['action']} 引用的图不在盘上：{st[key]}"
+
+
 def test_a_swallowed_step_shot_error_leaves_no_orphan(tmp_path, monkeypatch):
-    """**旁路吞掉之后必须回滚** —— 盘上不许留无主的图。
+    """**吞掉异常之后，盘上仍然不许留无主的图 —— 而且收的是 `finish()`，不是那句回滚。**
 
-    复审实测的问题：`_safe` 吞掉异常**但不回滚** ⇒ 盘上留 2 张（点前＋点后）、
-    `shot_before` 丢了、`kept` 也不计它们 ⇒ **账实不符由旁路自己造出来**，
-    **上限在那条路上不再成立**。
+    这个形状就是「本该被回滚挡住」的那个：结算钩子在**清 `_pending` 之前**抛
+    （`_safe` 的 `except` 那一刻 `_pending` 还在手上），于是那张点前图没人引用。
+    复审实测：以前挡住它的是 `_safe` 里那句 `self._discard_pending()`；**那句已经删掉**
+    （它对「盘上不留孤儿」一次都没起作用 —— 结算钩子抛异常时 `_pending` 早就被清了，
+    删掉它这一片**全绿**），现在挡住它的是 `finish()` 的两道收口。
 
-    吞异常是「不让它带塌探路」，**不是**「让盘上的账烂掉」—— 两件事要一起做。
+    ⚠️ 所以这条用例**不能**只断「收工时盘上是空的」—— 那对「谁清的」一无所知。
+    它在 `finish()` **跑之前**量一次：那张孤儿**真的在盘上**（不然这条用例是空转），
+    跑完之后它没了 ⇒ 「收口是那道闸」这句话是**量出来的**，不是推断的。
+    （`finish()` 里两道收口**都**删掉，红的就是这条；只删一道不会红 —— 两道都挡得住。）
+
+    ⚠️ 反过来说：**把那句回滚加回去，这条也会红** —— 红的不是性质（盘上照样不留孤儿），
+    是**前提**（那条形状下孤儿在收口之前就被清了，这条用例量不到东西）。加回回滚的人
+    会看到这句人话，然后要来这里说清楚「为什么宁可丢那一步的证据也要把那链掐死」。
     """
     def boom(*_a, **_kw):
         raise RuntimeError("步拍自己坏了（桩）")
 
     monkeypatch.setattr(browser_agent._StepShots, "on_observation", boom)
+
+    seen: dict = {}
+    real_finish = browser_agent._StepShots.finish
+
+    def spy(self):
+        seen["before"] = sorted(p.name for p in self.where.glob("*.png"))
+        real_finish(self)
+        seen["after"] = sorted(p.name for p in self.where.glob("*.png"))
+
+    monkeypatch.setattr(browser_agent._StepShots, "finish", spy)
 
     s = _Shooter(tmp_path / "shots")
     journey, _, _ = _go(
@@ -634,8 +783,13 @@ def test_a_swallowed_step_shot_error_leaves_no_orphan(tmp_path, monkeypatch):
         budget=browser_agent.Budget(max_steps=10, max_rounds=10),
     )
     assert [x["action"] for x in journey.steps] == ["observe", "click", "observe"], journey.steps
-    assert s.left == [], f"吞掉之后没回滚，盘上留下无主的图：{s.left}"
     assert "RuntimeError" in journey.shots_why, journey.shots_why
+    assert len(s.dests) == 1, f"那张点前图该拍下去、然后没人引用它：{[d.name for d in s.dests]}"
+    assert seen["before"] == [s.dests[0].name], (
+        "收口跑之前盘上该正好压着那张没主的点前图（不然这条用例量的是空气）：%r"
+        % (seen["before"],))
+    assert seen["after"] == [], f"收口没把那张没主的图收掉：{seen['after']}"
+    assert s.left == [], f"收工时盘上还有无主的图：{s.left}"
 
 
 def test_a_failed_screenshot_does_not_void_the_chain(tmp_path):
@@ -677,7 +831,13 @@ def test_the_accounting_reconciles_against_the_disk_not_the_pending(tmp_path, mo
     根因一句话：**回滚只看得到 `_pending`，而账的真相在盘上。**
 
     所以 `finish()` 改成「**拍过的所有名字** 减 **留住的步引用到的**」。
-    这条用例断的就是那个够不着的窗口：`_keep` 抛了，盘上**仍然 0 张**。
+    这条用例断的就是那个够不着的窗口：`_keep` 抛了，盘上**只剩 1 张** ——
+    点后那张（`shot_after` 在 `_keep` 抛**之前**就已经设到步上了）⇒ **它有主、该留**；
+    点前那张没人引用 ⇒ 孤儿，**收口必须把它删掉**。
+
+    ⚠️ 「1 张」是**钉死**的数（不是 0 张、也不是 2 张）：这条 docstring 原来写的是
+    「盘上**仍然 0 张**」，而实测是 1 —— **名字说 A、量的是 B**（修复轮 4 改的 A 条）。
+    现在下面那条 `assert s.left == [...]` 量的就是它：说错一个数就红。
     """
     def boom(*_a, **_kw):
         raise RuntimeError("_keep 自己炸了（桩）")
@@ -697,9 +857,13 @@ def test_the_accounting_reconciles_against_the_disk_not_the_pending(tmp_path, mo
     )
     assert [x["action"] for x in journey.steps] == ["observe", "click", "observe"], journey.steps
     assert s.dests, "该拍"
+    click = [x for x in journey.steps if x["action"] == "click"][0]
     # 断的是**不变量**（盘上每一个文件都有主），不是「盘上必须为空」——
     # `shot_after` 在 `_keep` 抛之前就已经设到步上了，所以它是**有主的**，留着是对的。
     # 上一版会红在这里：那张**点前**图没人引用，却是它写的 ⇒ 孤儿。
+    assert not click.get("shot_before"), \
+        f"`_keep` 抛了，点前那张不该留在步上：{click.get('shot_before')!r}"
+    assert click.get("shot_after"), click
     referenced = set()
     for st in journey.steps:
         for key in ("shot_before", "shot_after"):
@@ -707,6 +871,8 @@ def test_the_accounting_reconciles_against_the_disk_not_the_pending(tmp_path, mo
                 referenced.add(st[key])
     orphans = sorted(set(s.left) - referenced)
     assert orphans == [], f"盘上留下无主的图：{orphans}"
+    assert s.left == [click["shot_after"]], (
+        f"盘上该正好剩那张**有主的**点后图（1 张），实际 {s.left}")
 
 
 def test_the_reconcile_does_not_delete_what_was_kept(tmp_path):
@@ -730,3 +896,51 @@ def test_the_reconcile_does_not_delete_what_was_kept(tmp_path):
     assert click["shot_before"] and click["shot_after"], click
     assert sorted(s.left) == sorted([click["shot_before"], click["shot_after"]]), \
         f"收口删过头了：{s.left}"
+
+
+def test_the_gate_shot_in_the_same_dir_is_neither_counted_nor_deleted(tmp_path, monkeypatch):
+    """**`kept` 的口径**：它是「**本趟步拍**留住的张数」，**不是**「这个目录里有几张图」。
+
+    服务侧的闸拍（`pause-<n>.png`，`agent/service.py`）落在**同一个 job 目录**里
+    （步拍与闸拍共用一个 `<root>/<job_id>/`）。两件事都要成立，而它们**不是**一件事：
+
+    - **不删**：收口删的名单是 `_written`（本趟写过的），**不是扫目录** ⇒ 闸拍不会被误伤；
+    - **不计入 `kept`**：`kept` 数的是本趟步拍留在盘上的那些（`finish()` 按 `journey.steps`
+      引用重算）—— 数成「目录里的图数」的话，`kept` 就是**另一样东西的数**了。
+
+    复审点名要把这条口径写下来（「让下一个人自己猜」是这个项目常见的死法），
+    所以这里不给它留余地：**把闸拍预置在同一个目录里**，两件事各断一次。
+    """
+    where = tmp_path / "shots"
+    where.mkdir(parents=True)
+    gate = where / "pause-1.png"
+    gate.write_bytes(PNG_HEAD + b"gate")
+
+    seen: dict = {}
+    real_finish = browser_agent._StepShots.finish
+
+    def spy(self):
+        real_finish(self)
+        seen["kept"] = self.kept
+
+    monkeypatch.setattr(browser_agent._StepShots, "finish", spy)
+
+    s = _Shooter(where)
+    journey, _, _ = _go(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"content": "点了没变，该留两张"}],
+        s,
+        budget=browser_agent.Budget(max_steps=10, max_rounds=10),
+    )
+    click = [x for x in journey.steps if x["action"] == "click"][0]
+    assert seen.get("kept") == 2, (
+        "`kept` 该是「本趟步拍留在盘上的张数」= 2，实际 %r —— 目录里那第三张是**闸拍**，"
+        "不归它管（口径见 `_StepShots` 的类注释）" % (seen.get("kept"),))
+    assert gate.read_bytes() == PNG_HEAD + b"gate", \
+        f"收口动了同一个目录里的闸拍（它不是本趟写的，一个字节都不该动）：{s.left}"
+    assert sorted(s.left) == sorted([click["shot_before"], click["shot_after"], "pause-1.png"]), \
+        s.left

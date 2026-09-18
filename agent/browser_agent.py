@@ -122,6 +122,7 @@ import inspect
 import pathlib
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -153,6 +154,9 @@ _ACTIONS = ("click", "form", "scroll", "goto")
 MUTATING = tuple(a for a in REPLAY_ACTIONS if a != "wait")
 
 #: 步拍**留在盘上**的上限（张）。到顶就不再拍，并往 `journey.notes` 写一句人话。
+#: ⚠️ **判在要落盘的那一刻**（`_take` 里数的是「此刻盘上属于本趟的张数」`_on_disk`），
+#: 不是收尾才算 —— 数 `kept` 那种写法在结算钩子抛异常时永远到不了顶（复审实测：
+#: 上限 2、坏 `_keep`、5 个 click ⇒ 10 条命令、运行期盘上最多 9 张）。
 #: 为什么是 40：一张约 110 KB（17 次真跑实测的中位）⇒ 到顶约 4.4 MB，可以接受；
 #: 而「不对劲的步」在一次典型探路里是**个位数**，40 是给异常情况留的余量。
 MAX_KEPT_SHOTS = 40
@@ -2353,18 +2357,50 @@ class _StepShots:
     shooter **抛异常**或者**回一句「拍不成」**，都只记 `journey.shots_why`，然后照常往下走。
     两条路都要堵：`shots.capture_via_session` 是**不抛**的那种，它把失败说在返回值里。
 
-    **上限管的是盘**：`kept` 数的是**真正留在盘上**的张数（丢掉的不算）——
-    上限要防的是磁盘，不是命令数。
+    **一个名字 = 一次落盘**（账是按**名字**认的，所以名字必须唯一）。名字的形状：
+
+        <本趟标记>-step-<第几步>-<before|after>[-<第几次>].png
+
+    - **本趟标记**（`self.tag`）**每个实例一个**。为什么非要它：同一个 job 目录会被**多趟**
+      探路共用（生产形状：一次节点**最多 3 趟**重探，`service.py` 的 `shots.dir_for(job_id)`），
+      而 `finish()` 是**按名字**删的 —— 不带标记的话，第 2 趟写的 `step-1-before.png` 会
+      顶掉第 1 趟特意留下的证据、再被第 2 趟的收口删掉（复审实测：**2 张丢 1 张**）。
+      为什么用「每实例一个标记」而不是「趟号」：`explore()` 手上**没有**趟号（调用方
+      每趟都是新起一个 `_StepShots`），而标记在**实例**上 ⇒ 两趟同时写同一个目录也不撞。
+    - **`[-<第几次>]`**：同一趟内 `(步号, 时刻)` 被写第二次时的去重。实测那个形状
+      （`click(没变) → observe(补拍) → click(失败)`）里两条步会引用**同一个**
+      `step-3-after.png`，而盘上那串字节是后一条的 ⇒ 前一条的「点后」证据当场变成**假证据**。
+
+    **`kept` 的口径**（别读成「这个目录里有几张图」）：它数是**本趟步拍留在盘上的张数**
+    —— `finish()` 按 `journey.steps` 引用到的名字重算。**别处**写进同一个目录的图
+    （服务侧的闸拍 `pause-<n>.png`）**不计入**，收口也**不会碰它们**：收口删的名单是
+    `_written - referenced`（**本趟写过的**），**不是扫目录**。
+
+    **上限在要落盘的那一刻就硬**：`MAX_KEPT_SHOTS` 判的是**这一刻盘上属于本趟的张数**
+    （`_on_disk`），判在 `_take` 落盘**之前** ⇒ 运行期任何时刻都不会超。为什么不能数
+    `kept`：`kept` 只在结算（`_keep`）时涨，而结算钩子自己抛异常时它**永远不涨**
+    （复审实测：上限 2、坏 `_keep`、5 个 click ⇒ **10 条命令、运行期盘上最多 9 张**，
+    收工后才由收口抹平）—— **账平 ≠ 闸硬**。
     """
 
     def __init__(self, journey, where, shooter):
         self.journey = journey
         self.where = pathlib.Path(where)
         self.shooter = shooter
+        #: **本趟留住的张数**（`finish()` 按 `journey.steps` 的引用重算）。别处写进同一个
+        #: 目录的图（闸拍 `pause-<n>.png`）**不算**它 —— 口径见类注释。
+        #: ⚠️ 上限**不**看它（看 `_on_disk`）：它只在结算时涨，坏 `_keep` 那条路上永远不涨。
         self.kept = 0
-        #: **这一步拍过的所有名字**（含后来被丢掉的）。收尾时拿它减「留住的步引用到的」
+        #: **本趟的标记**：名字的第一段，保证跨趟不撞名（见类注释「一个名字 = 一次落盘」）。
+        #: 每个实例一个（= 每次 `explore()` 一个）—— **不用趟号**：`explore()` 手上没有它，
+        #: 而标记在实例上 ⇒ 两趟同时写同一个目录也不撞。
+        self.tag = uuid.uuid4().hex[:6]
+        #: **本趟拍过的所有名字**（含后来被丢掉的）。收尾时拿它减「留住的步引用到的」
         #: 就是盘上该删的 —— 见 `finish()` 的 docstring：**账的真相在盘上，不在手上**。
         self._written: set = set()
+        #: **本趟此刻还在盘上的那些** —— 上限判它，不判 `kept`（见类注释最后一段）。
+        #: 落盘时加、`_drop` 真删掉了才减（删不掉的不减：那张图还在盘上占地方）。
+        self._on_disk: set = set()
         #: 待结算的那一步：`{"step", "before", "key", "tainted"}`。`None` = 手上没有。
         self._pending: dict | None = None
         self._said_cap = False
@@ -2387,11 +2423,15 @@ class _StepShots:
         except Exception as exc:                   # noqa: BLE001 —— 旁路，什么都得吞
             self.journey.shots_why = ("步拍自己坏了（%s）：%s：%s"
                                       % (what, type(exc).__name__, exc))
-            # ⚠️ **吞掉之后必须回滚**（复审实测：不回滚的话旁路自己造出账实不符 ——
-            # 盘上留下两张无主的图、`shot_before` 丢了、`kept` 也不计它们 ⇒
-            # **上限在那条路上不再成立**）。吞异常是「不让它带塌探路」，
-            # 不是「让盘上的账烂掉」—— 这两件事要一起做。
-            self._discard_pending()
+            # ⚠️ 这里**故意不回滚**（`f0e3573` 那版在这儿有一句 `self._discard_pending()`，已删）。
+            # 为什么原来那句是旧话：回滚只看得到 `_pending`（「还在手上」的那一个），而
+            # **账的真相在盘上** —— 从结算钩子自己抛异常那一刻起它就够不着了
+            # （`on_observation` / `after_mutation` 都是**先清 `_pending`、后调 `_keep`**），
+            # 所以那句回滚对「盘上不留孤儿」**一次都没起作用**（复审实测：删掉它，27 条 0 红）。
+            # 现在挡住孤儿的是 `finish()` 的收口（`_written - referenced`）：它对**每一条**
+            # 「把引用弄丢」的路都成立，不挑「异常抛在哪一行」。
+            # 残留的 `_pending` 也不会变成坏账：要么被紧接着那次观测正常结算，要么在
+            # `finish()` 里被 `_discard_pending()` 收掉 —— 两条路都不留孤儿。
 
     # ── 对外的口（**都要走 `_safe`** —— 见上）─────────────────────
 
@@ -2490,6 +2530,16 @@ class _StepShots:
         所以收口用「**拍过的所有名字**」减「**留住的步引用到的名字**」——
         这样无论哪条路把引用弄丢，盘上都不会剩孤儿；`kept` 也一并按实数重算。
 
+        ⚠️ 这条收口的**射程**（别读宽了）：
+        - 它删的**只有本趟写过的名字**（`_written` 是本实例的，而名字带本趟标记 ⇒
+          跨趟那些一个都碰不到）。**不是扫目录** —— 服务侧的闸拍 `pause-<n>.png`
+          就落在同一个目录里，它不在 `_written` 里 ⇒ **不会被动**（这是对的：删谁由
+          「本趟写过谁」说了算，不由目录里有什么说了算）。
+        - `kept = len(referenced)` = **本趟留住的张数**（本趟步拍的），**不是**这个目录里
+          的图数（闸拍不在里面）。口径写在类注释里。
+        - 它**不**负责上限：上限在 `_take` 落盘那一刻就判（`_on_disk`）—— 收口是收尾的
+          兜底，不是运行期的闸。
+
         ⚠️ 顺带：一趟**以动页面动作收尾**的探路（模型收工 / 预算到顶 / **人按停**）
         永远不会再来一次观测 —— 而「按停」正是这个功能的**主交互**。
         """
@@ -2503,17 +2553,35 @@ class _StepShots:
 
     # ── 里面的 ──────────────────────────────────────────────────
 
+    def _name_for(self, when: str) -> str:
+        """这一张落在哪个名字上 —— **本趟、本次落盘**唯一（见类注释「一个名字 = 一次落盘」）。
+
+        `%d` 是**此刻**的 `len(journey.steps)`（点前那张在步入账**之前**拍，所以它常常比
+        那一步的序号小 1）—— 与产物侧同源，但它**不是**步的唯一号：同一个步号会被写两次
+        （点前 / 点后，或者两条步的落点撞到一起），所以撞上已写过的名字要依次数下去。
+        """
+        base = "%s-step-%d-%s" % (self.tag, len(self.journey.steps), when)
+        name, n = base + ".png", 1
+        while name in self._written:      # 本趟已经写过这个名字 → 换下一个（`_written` 只增不减：
+            n += 1                        # 被丢掉的名字也不复用 —— 免得「删过的名字」又活过来）
+            name = "%s-%d.png" % (base, n)
+        return name
+
     def _take(self, session, step: dict, when: str) -> str | None:
-        """拍一张落到 `where`。**不抛**：两条失败路（抛了 / 回了句拍不成）都只记账。"""
-        if self.kept >= MAX_KEPT_SHOTS:
+        """拍一张落到 `where`。**不抛**：两条失败路（抛了 / 回了句拍不成）都只记账。
+
+        ⚠️ 上限**在这一刻**判（`_on_disk` = 本趟此刻还在盘上的张数）—— 落盘之前判，
+        所以「运行期任何时刻盘上都不超过 `MAX_KEPT_SHOTS`」。不数 `kept`：它要等结算才涨。
+        """
+        if len(self._on_disk) >= MAX_KEPT_SHOTS:
             if not self._said_cap:
                 self._said_cap = True
                 self.journey.notes.append(
-                    "步拍已经留了 %d 张（上限 %d）—— **从这一步起不再拍**。"
+                    "步拍在这个目录里已经有 %d 张了（上限 %d）—— **从这一步起不再拍**。"
                     "后面的步要是不对劲，账上不会再有图：这是**知道的**，不是漏了。"
-                    % (self.kept, MAX_KEPT_SHOTS))
+                    % (len(self._on_disk), MAX_KEPT_SHOTS))
             return None
-        dest = self.where / ("step-%d-%s.png" % (len(self.journey.steps), when))
+        dest = self.where / self._name_for(when)
         try:
             name, why = self.shooter(session, dest)
         except Exception as exc:                   # noqa: BLE001 —— 外部世界，什么都可能抛
@@ -2524,6 +2592,7 @@ class _StepShots:
             self.journey.shots_why = str(why or "拍不成，而且没说为什么")
             return None
         self._written.add(str(name))     # **落盘即登记** —— 收尾按这个收口
+        self._on_disk.add(str(name))     # 上限按这个判（此刻它真的在盘上）
         return str(name)
 
     def _keep(self, pending: dict, step: dict) -> None:
@@ -2546,7 +2615,8 @@ class _StepShots:
         try:
             (self.where / str(name)).unlink()
         except (OSError, ValueError):       # 删不掉不是错 —— 收尾失败不许盖掉别的人话
-            pass
+            return                          # ⚠️ 但它**还在盘上** ⇒ 上限那张照数（别越收越紧）
+        self._on_disk.discard(str(name))    # 真没了才减
 
 
 class _Pages:
