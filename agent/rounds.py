@@ -8,7 +8,7 @@
 
 | 词 | 指的是 | 谁在管（谁是真源） |
 |---|---|---|
-| **闸拍轮次**（**本模块**） | 图**到过几次闸口** —— 每停一次等人 = 一轮 | `Job.pauses` / `pause-<n>.png` / 这里投影出来的卡片 |
+| **闸拍轮次**（**本模块**） | 图**到过几次闸口** —— 每停一次等人 = 一轮 | 这里投影出来的卡片；轮数的算在 `count()`（⚠️ **不是** `Job.pauses` —— 那是**闸拍张数**，跑完/跑挂那一次也拍 ⇒ 到头了那两档 = 轮数+1） |
 | **探路的模型轮数** | 一次探路里**问了几轮模型** | `journey.rounds`（`rounds_measured` 说它量到没有）/ `attempts.jsonl` 的那一格 |
 
 两个都是真事实、都叫 `rounds`（线缆上也是：§8.2 的 `/live.rounds` 是**卡片**、
@@ -53,11 +53,16 @@ rounds[0].done         = None                         # 第一道闸之前什么
   最后那张「这一趟最后一张图」不冒充一轮，它挂在**最后一张卡**的 `last_shot` 上
   （一张卡都没有时，`rounds_note` 里点名说它 —— 不许有一张图**没人提**）。
 - 一条卡说「**正要做的**」和「**刚做完的**」时，那件事必须**真的会发生 / 真的发生过**：
-  - 「正要做的」：闸上说 `gate.step`；跑着的时候说 `stage`（服务记着刚交下去的是哪一步）；
-    **已经到头的那一档什么都不说**（没有「正要做的」这回事，编一个就是幽灵卡）。
+  - 「正要做的」：闸上说 `gate.step`；没有闸的时候（跑着 / 跑挂）说 `stage`
+    （服务记着的那一步：跑着时是**正在跑**的那个节点、跑挂时是**卡在的那道闸**上那个节点）
+    —— ⚠️ **但兜底不许兜出「刚做完的那一个」**（那会变成「正要开始做一件刚做完的事」，
+    幽灵卡的形状）；图走到 END 那一档**什么都不说**（本来就没有「正要做的」这回事）。
   - 「刚做完的」：`visits` 的最后那一项 —— ⚠️ 但**闸把人拦下来**那两条路上
     （喊停 / 打回这一版），那一步**进过、一步都没做**（`_bailed`）：卡片照旧说它是
     「刚才那一步」，但**当场说清它没做**，不许让它看起来像做完了。
+- **跑挂（`failed`）与跑到头（`done`）在对齐上不是一回事**（复审 N1）：跑到头那一支
+  最后一道闸的节点**落了盘**（对齐往回一格），跑挂那一支节点**抛了、写盘被丢掉**
+  （对齐与「在闸上等人」一样）。`OVER` 管前者（轮数），`LANDED` 管后者（对齐）。
 
 ## 这个函数的纪律
 
@@ -85,15 +90,30 @@ __all__ = ["project", "count", "WAITING", "OVER", "VISITS", "JOURNEY", "REPORT",
 #: 两边不许漂：`tests/test_rounds.py` 有一条用例钉着 `rounds.WAITING == service.WAITING`
 #: （`OVER` 那两档同一条用例一起钉）。
 WAITING = "waiting"
+#: 「这个服务自己挂了」那一档（`service.FAILED`）—— 只有 `_step_say` 用它挑那句话
+#: （「跑到头」与「跑挂了」要分开说）。
+FAILED = "failed"
 #: 这一趟**已经到头**的两档（`service.DONE` / `service.FAILED`）：图走到了 END，或者
-#: 这个服务自己挂了。它们决定两件事（两件都是**同一个事实**的两面）：
-#:   ① 闸拍清单的最后一张是「这一趟最后那张图」，不是某一轮的闸（`count` 去掉它）；
-#:   ② 最后一道闸那个节点**已经进过 `visits`**（终局那一支 `_enter` 是**正常返回**的，
-#:      它把 `visits` 提交了）—— 所以对齐要再往回一格（`_node_at` 的 `over`）。
+#: 这个服务自己挂了。它管的**只有一件事**：闸拍清单的最后一张是「这一趟最后那张图」
+#: （`_capture_pause` 在跑完/跑挂那一次也拍），**不是某一轮的闸** —— `count` 去掉它。
 OVER = ("done", "failed")
+#: ⚠️ 到头了里面**节点写了盘**的那一档 —— 管的是**对齐**，与 `OVER` **不是一回事**
+#: （复审 2026-09-18 N1 抓到我把两者当成一件事）：
+#:   - `done`（图走到了 END）：终局那一支 `_enter` 是**正常返回**的（喊停/打回那两条路上
+#:     节点收摊、`visits` 落了盘；正常走完那一条它本来就跑完了）⇒ 最后一道闸那个节点
+#:     **在 `visits` 里** ⇒ 对齐往回一格；
+#:   - `failed`（节点**抛了**）：它这一趟的写盘**整个被丢掉**（`visits` 里没有它）⇒
+#:     **不往回** —— 那一档要和「在闸上等人」用同一套对齐。
+#: ⚠️ 边界：跑挂发生在**节点之间**（上一个节点已经落了盘、随后图自己中断）时，这一格会
+#: 偏一格（说的是更早那个节点）。`project` 拿得到的输入里分不出这几种，**宁可偏一格，
+#: 也不假装知道**（与「不知道就说不知道」同一条规矩）。
+LANDED = "done"
 
 #: `checkpoint` 的价值里，这个模块读的那三个键（读不到就是读不到，一律不编）。
-VISITS = "visits"          #: 节点**按顺序**的账（闸在节点之前 ⇒ 它的最后一项就是刚做完那个）
+#: ⚠️ `visits` 是节点**进过**的顺序（`graph._enter` 记的）—— **不是「做过」的顺序**（复审
+#: 2026-09-18 N1/N4）：闸把人拦下来（喊停/打回）那两条路上，最后那一项**一步都没做**；
+#: 节点抛异常时它这一趟**根本没落盘**。要判「做没做」看 `_bailed` / `LANDED` 那两处。
+VISITS = "visits"
 JOURNEY = "journey"        #: 那一趟探路的账（`Journey`；步子清单与它自己的话从这儿来）
 REPORT = "report"          #: 自测的结论（`selftest.Report`；`summary()` 是**原话**）
 #: 探路那一步的节点名 —— 这一趟探路的账长在**它刚做完**的那一轮上。
@@ -105,9 +125,12 @@ SELFTEST = "selftest"
 STEP_UNSAID_SAY = "这一步没说它做了什么"
 #: 读不出来是哪一步时写的那句（§8.2 的 `stage` 那一格是同一个态度：不知道就说不知道）
 UNKNOWN_STEP_SAY = "不知道这一步是哪一步"
-#: 最后那一轮、而且**已经到头**：这一趟没有「正要做的」那件事了（它不在闸上 ——
-#: 图走到了 END，或者这个服务自己挂了）。**不许**拿兜底凑一个节点出来当「正要做的」。
+#: 最后那一轮、而且**已经到头**：这一趟没有「正要做的」那件事了（图走到了 END）。
+#: **不许**拿兜底凑一个节点出来当「正要做的」（凑出来的那个常常正是「刚做完的」= 幽灵卡）。
 FINISHED_SAY = "这一轮没有闸：这一趟到头了，这是它最后的样子"
+#: 同一格、**跑挂**那一支（复审 2026-09-18 N1）：它连「正要做什么」都说不出来时的那句话。
+#: 与 `FINISHED_SAY` **分开**：「跑到头」与「跑挂了」不是一件事（读的人要能对号）。
+CRASHED_SAY = "这一趟跑挂了：这一刻它正要做什么，state 里说不出来（这一轮的图是挂掉那一刻的）"
 UNKNOWN_DONE_SAY = "不知道刚才那一步是哪一步"
 #: 一条**空记录**（没有图，也没人写 `why`）—— 空图框不许冒充页面（§3.2 第 6 行）
 NO_SHOT_ROW_SAY = ("这一轮的闸拍没有留下记录（服务那本闸拍账上这一条是空的）—— "
@@ -129,8 +152,10 @@ BAILED_STEPS_SAY = "这一步没有步子清单：它一步都没做（人在闸
 #: 把话说在它头上就是新的一句假话。
 BAILED_STEP_SUFFIX = "（**没做**：人在闸上把它拦下来了）"
 #: 「闸把节点拦下来」= `graph._enter` 自己写下 `end_reason` 的那两条路（喊停 / 连否到上限）。
-#: ⚠️ **这张名单的根在 `graph._enter` 里**（别的停因是节点做完了才写的）——
-#: `tests/test_rounds.py` 有一条用例拿 AST 从那个函数的赋值点把它长出来，多一条就红。
+#: ⚠️ **这张名单的根在 `graph._enter` 里**（别的停因是节点做完了才写的）。
+#: ⚠️ 盯它的那条用例（`test_the_bail_markers_come_from_the_gates_own_code`）**只认一种形状**：
+#: `out["end_reason"] = <常量名>`。别的写法（`out.update({...})` / 拼 key / 经别的函数写）
+#: **它认不出来** —— 但它会**红**（不是静默通过），所以那种写法进不了仓而不被看见。
 BAILED_END_REASONS = (END_HUMAN_STOP, END_REVISION_CAP)
 #: 步子清单空着时的三句话（**一句都不能省**：三件事各不相同，读的人要能对号）
 NO_JOURNEY_SAY = ("这一轮没有探路的步子清单：state 里没有这一次探路的账（`journey`）—— "
@@ -197,6 +222,9 @@ def project(values: dict, gate: Optional[dict], *, job_id: str, status: str, say
 
     waiting = bool(status == WAITING)
     over = bool(status in OVER)
+    #: 最后一道闸那个节点**写没写进 `visits`**（决定对齐往回几格）——
+    #: ⚠️ 只有 `done` 那一档是「写了」（见 `LANDED` 那段）
+    landed = bool(status == LANDED)
     #: **轮数 = 闸数**（到最后那一张「这一趟最后一张图」不算一轮）—— 一轮一张卡。
     gates = count(rows, status)
     gate_rows = rows[:gates]
@@ -213,7 +241,7 @@ def project(values: dict, gate: Optional[dict], *, job_id: str, status: str, say
     gate_on = _gate_row(gate) if waiting else None
     cards = [_card(first + i, total=gates, shots=gate_rows, visits=visits, journey=journey,
                    report=report, gate=gate, stage=str(stage or ""), waiting=waiting,
-                   over=over, bailed_node=bailed_node)
+                   status=status, over=over, landed=landed, bailed_node=bailed_node)
              for i in range(len(kept))]
     #: 「这一趟最后一张图」：到头了才有（`_capture_pause` 在跑完/跑挂那一次也拍）。
     #: 挂在**最后一张卡**上（卡片的形状统一 —— 别的卡上是 `null`）；一张卡都没有时
@@ -251,7 +279,7 @@ def project(values: dict, gate: Optional[dict], *, job_id: str, status: str, say
 
 
 def _card(k: int, *, total: int, shots: list, visits: list, journey, report, gate, stage: str,
-          waiting: bool, over: bool, bailed_node: str) -> dict:
+          waiting: bool, status: str, over: bool, landed: bool, bailed_node: str) -> dict:
     """第 k 轮（1 起）那张卡。`k == total` = **最后那一轮**（脚下这一道闸就在它上面）。
 
     ⚠️ `here`（脚下这一道闸）**两道判据缺一不可**：是最后一轮 **且** 现在真的在等人
@@ -261,16 +289,20 @@ def _card(k: int, *, total: int, shots: list, visits: list, journey, report, gat
     """
     now = _shot_row(k, shots)
     here = bool(k == total and waiting and gate)
+    #: 这一轮**刚做完**的那个节点（k == 1 时是 None：第一道闸之前什么都没跑）。
+    #: 先算出来 —— 下面那个兜底要拿它比一比（**兜底不许兜出同一个节点**）。
+    done_step = _node_at(visits, k, -1, total, landed=landed) if k > 1 else ""
 
     step = str(gate.get("step") or "") if here else ""
     if not step:
-        step = _node_at(visits, k, 0, total, over=over)
-    if not step and k == total:
-        # 前面都没有：跑着的时候**没有闸**，这一轮正要做的那个节点只能问接线信息
-        # （`stage` = 服务记着刚交下去的那一步）。**到头了那一档不编** ——
-        # 没有「正要做的」这回事，硬给一个就是一张幽灵卡（它的 `step` 会与 `done.step`
-        # 是同一个节点，读起来像「正要开始做一件已经做完的事」）。
-        step = str(stage or "") if not over else ""
+        step = _node_at(visits, k, 0, total, landed=landed)
+    if not step and k == total and stage and stage != done_step:
+        # 前面都没有：这一轮正要做的那个节点只能问接线信息（`stage` = 服务记着的那一步：
+        # 跑着时是**正在跑**的那个节点、跑挂时是**它卡在的那道闸**上那个节点）。
+        # ⚠️ **兜底不许兜出「刚做完的那一个」**（复审 2026-09-18 N1）：那样这张卡会说
+        # 「正要开始做一件刚做完的事」—— 那正是幽灵卡的形状。同一个节点就**不编**，
+        # 由 `_step_say` 说清「说不出来」。
+        step = str(stage)
 
     #: 这个节点**被闸拦下来了**（喊停 / 打回）—— 它「进过、一步都没做」。
     #: 命中它的是**这一轮正要做的那个**（图直接到头那一支：那一轮压根没跑）。
@@ -279,7 +311,7 @@ def _card(k: int, *, total: int, shots: list, visits: list, journey, report, gat
         "n": k,
         "step": step or None,
         "step_say": _step_say(step, stopped=stopped,
-                              finished=bool(k == total and over and not step)),
+                              finished=bool(k == total and not step and over), status=status),
         #: 闸口的**原话**（「它刚要做什么」）—— 只有脚下这一道闸有；历史轮次的闸话
         #: 早就不在 state 里了，编一句出来就是假话。
         "say": str((gate or {}).get("ask") or "") if here else "",
@@ -292,25 +324,29 @@ def _card(k: int, *, total: int, shots: list, visits: list, journey, report, gat
     }
     if k > 1:
         card["done"] = _done_row(k, total=total, shots=shots, visits=visits, journey=journey,
-                                 report=report, now=now, over=over, bailed_node=bailed_node)
+                                 report=report, now=now, landed=landed, step=done_step,
+                                 bailed_node=bailed_node)
     return card
 
 
-def _step_say(step: str, *, stopped: bool, finished: bool) -> str:
-    """这一轮「正要做的」那一格的人话（三种情形分开说）。
+def _step_say(step: str, *, stopped: bool, finished: bool, status: str) -> str:
+    """这一轮「正要做的」那一格的人话（四种情形分开说）。
 
     被拦下的那一步挂在这一格上时（喊停 / 连否到上限 ⇒ 图直接到头），**当场说清它没做** ——
     不然那一轮读起来像「正要开始做一件刚做完的事」（F1 的那个幽灵形状）。
+    「说不出来」那一档再分两句话：**跑到头**（图走到了 END）与**跑挂**不是一件事。
     """
     if stopped:
         return "%s%s" % (STEP_SAY.get(step, step), BAILED_STEP_SUFFIX)
     if step:
         return STEP_SAY.get(step, step)
-    return FINISHED_SAY if finished else UNKNOWN_STEP_SAY
+    if not finished:
+        return UNKNOWN_STEP_SAY
+    return CRASHED_SAY if status == FAILED else FINISHED_SAY
 
 
 def _done_row(k: int, *, total: int, shots: list, visits: list, journey, report, now: dict,
-              over: bool, bailed_node: str) -> dict:
+              landed: bool, step: str, bailed_node: str) -> dict:
     """这一轮「**刚才那一步**做了什么」—— 最后那一轮上就是 `values["visits"][-1]` 那件事。
 
     历史轮次按 `visits` 的顺序往回数（第 k 轮的刚才那一步 = 第 k-1 个节点）。两个索引
@@ -321,7 +357,7 @@ def _done_row(k: int, *, total: int, shots: list, visits: list, journey, report,
     （`_bailed` 的三个记号）。卡片照旧说它是「刚才那一步」，但 `say` 与 `steps_note`
     **当场说清它没做** —— 不许让它看起来像做完了（那正是「刚做完的必须真发生过」那条）。
     """
-    step = _node_at(visits, k, -1, total, over=over) or (visits[-1] if visits else "")
+    step = step or (visits[-1] if visits else "")
     #: 这个节点**被闸拦下来了**吗 —— 认的是**节点名**（打回那一支它就落在这一格里）
     bailed = bool(step and bailed_node and step == bailed_node)
     steps, steps_note = _steps_of(journey, step, bailed=bailed)
@@ -338,20 +374,21 @@ def _done_row(k: int, *, total: int, shots: list, visits: list, journey, report,
     }
 
 
-def _node_at(visits: list, k: int, offset: int, total: int, *, over: bool) -> str:
+def _node_at(visits: list, k: int, offset: int, total: int, *, landed: bool) -> str:
     """第 k 轮（1 起）对应的那个节点：`offset=0` = 这一轮**正要**做的，`-1` = **刚做完的**。
 
     从 `visits` 的**末尾**对齐：这 `total` 轮对应的是 `visits` 最后的那几个节点
     （服务重启过的话，前面那些是上一趟的账 —— 起点对齐会把第 1 张卡说成**第一个**节点，
     而它说的是第 `total` 轮）。
 
-    `over`（到头了）时再往回一格：终局那一支 `_enter` 是**正常返回**的 ⇒ 最后一道闸
-    那个节点也在 `visits` 里 —— 它正是 `offset=0` 要的那一个；而闸在等人/跑着的那两档
-    `_enter` 是被 `interrupt()` 打断的，它**没落盘** ⇒ 不用往回。
+    `landed`（**只有 `done` 那一档**，见 `LANDED`）时再往回一格：终局那一支 `_enter`
+    是**正常返回**的 ⇒ 最后一道闸那个节点也在 `visits` 里 —— 它正是 `offset=0` 要的那一个。
+    另外三档都不往回：闸在等人、跑着的那两档 `_enter` 是被 `interrupt()` 打断的（没落盘），
+    而**跑挂那一档**节点抛了 ⇒ 它这一趟的写盘整个被丢掉（同样没落盘）。
 
     对不上就返回空串，由调用方决定说什么（**不许在这儿编一个节点名**）。
     """
-    i = len(visits) - (total - k) - (1 if over else 0) + offset
+    i = len(visits) - (total - k) - (1 if landed else 0) + offset
     if 0 <= i < len(visits):
         return visits[i]
     return ""

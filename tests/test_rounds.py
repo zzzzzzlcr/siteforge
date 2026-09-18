@@ -231,15 +231,22 @@ def test_revisable_is_true_only_on_the_three_gates_that_can_send_it_back(step):
     """「打回」= 这一版不要了、回 `draft` 重写 —— 只有 `lint`/`selftest`/`deliver` 三道闸是这个意思。
 
     名字直接从 `graph.REVISABLE` 来（不在这儿另抄一张名单 —— 两张名单早晚会漂）。
+
+    ⚠️ **fixture 里必须有一轮的节点是 `lint`**（复审 2026-09-18 N2）：先前那份
+    `visits=["intake","explore","draft"]` 让**历史轮次永远不可能**落在 `REVISABLE` 里，
+    于是「历史轮次一律 False」那句**恒真** —— 把 `_revisable` 里的 `here` 去掉都不红。
+    这里这份是**生产可达**的形状：打回之后 `visits` = `[intake, explore, draft, lint, draft]`
+    （第 4 张卡说的就是 `lint`）—— 页面上那一张**已经过去了**，它不该有「打回」那个按钮。
     """
-    values = _values(visits=["intake", "explore", "draft"])
-    proj = _project(values, _gate(step), pauses=[_shot(i) for i in range(1, 5)])
+    values = _values(visits=["intake", "explore", "draft", "lint", "draft"])
+    proj = _project(values, _gate(step), pauses=[_shot(i) for i in range(1, 7)])
     want = step in graph.REVISABLE
 
+    assert proj["rounds"][3]["step"] == "lint", proj["rounds"][3]
     assert proj["gate"]["revisable"] is want
     assert proj["rounds"][-1]["revisable"] is want
-    assert [r["revisable"] for r in proj["rounds"][:-1]] == [False, False, False], \
-        "历史轮次上没有闸 —— 打回那两个字对它们没有意义"
+    assert [r["revisable"] for r in proj["rounds"][:-1]] == [False] * 5, \
+        "历史轮次上没有闸 —— 打回那两个字对它们没有意义（**含节点是 lint 的那一张**）"
 
 
 # ═════════════ 2.5 到头了那一档：没有幽灵卡 / 清单最后那张不是一轮 ═════════════
@@ -349,25 +356,71 @@ def test_a_final_image_with_no_card_at_all_is_still_mentioned():
     assert "pause-1.png" in proj["rounds_note"], proj["rounds_note"]
 
 
+def test_the_crash_card_never_borrows_the_node_it_calls_just_finished():
+    """⚠️ 复审 N1 的那条警告：跑挂那一档**光把对齐修对还不够**。
+
+    最后一张卡的 `step` 会落到兜底 `stage` 上，而 `stage`（`_where_it_stopped`）在
+    「快照里既没有闸、也没有 `next`」时会回 `visits[-1]` —— **那正是这一张卡的 `done.step`**
+    ⇒ 幽灵形状又回来了。所以兜底要**比一比**：兜出来的节点 == 刚做完的那一个 ⇒ **不编**，
+    由 `_step_say` 说「跑挂了，这一刻正要做什么 state 里说不出来」。
+    """
+    proj = _project(_values(visits=["intake", "explore"]), None,
+                    pauses=[_shot(1), _shot(2), _shot(3)], status=service.FAILED,
+                    stage="explore", say="这一步没跑成，停下了。")
+    last = proj["rounds"][-1]
+    assert last["n"] == 2 and last["done"]["step"] == "explore"
+    assert last["step"] is None, "兜底兜出了「刚做完的那一个」= 幽灵卡的形状"
+    assert "跑挂" in last["step_say"], last["step_say"]
+
+
+def test_a_running_round_that_cannot_say_what_is_next_does_not_claim_the_run_is_over():
+    """兜底也兜不出来时，**不许**顺口说「这一趟到头了」—— 那个 job 还在跑，说那句就是假话。
+
+    「到头了」与「跑挂了」两句话都只在**真到头**的时候才准出现（`over`）。
+    """
+    proj = _project(_values(visits=["intake"]), None, pauses=[_shot(1), _shot(2)],
+                    status=service.RUNNING, stage="")     # stage 退化成空 = 这一步说不出来
+    last = proj["rounds"][-1]
+    assert last["step"] is None
+    assert last["step_say"] == rounds.UNKNOWN_STEP_SAY, last["step_say"]
+
+
 def test_the_bail_markers_come_from_the_gates_own_code():
     """「闸把节点拦下来」那两条停因**不是手抄的名单** —— 从 `graph._enter` 的赋值点长出来。
 
     闸上将来多一条拦人的路（又写一个 `end_reason`）而这里不知道 ⇒ 那条路上的卡片会说
     「这一步做了」（复审 F7 的根：名单得跟着调用点走，别跟着记忆走）。
+
+    ⚠️ **这条量具的射程**（复审 2026-09-18 N3 证伪了我原来那句「形状变了会抛」）：
+      ① 它认得的形状**只有一种**：`out["end_reason"] = <常量名>`（直接下标赋值 + 一个 Name）；
+      ② **不认得**别的写法（`out.update({...})` / 拼 key / 经别的函数写）——
+         所以那些写法**不能靠它发现**。为此这条用例**不是**「扫到几条算几条」：
+         它把 `_enter` 里出现的**每一个 `"end_reason"` 字面量**都数一遍，
+         认不出来的那些 ⇒ **当场红**（留一条会静默的量具，比没有量具更坏）。
     """
     tree = ast.parse(pathlib.Path(graph.__file__).read_text(encoding="utf-8"))
     enter = next(n for n in ast.walk(tree)
                  if isinstance(n, ast.FunctionDef) and n.name == "_enter")
-    written = set()
+    written, recognized = set(), 0
     for node in ast.walk(enter):
         if not isinstance(node, ast.Assign):
             continue
         for tgt in node.targets:
             if (isinstance(tgt, ast.Subscript) and isinstance(tgt.slice, ast.Constant)
                     and tgt.slice.value == "end_reason"):
-                assert isinstance(node.value, ast.Name), ast.dump(node.value)
+                assert isinstance(node.value, ast.Name), (
+                    "这一条 `end_reason` 的赋值形状这条量具认不出，别让它静默过去：%r"
+                    % ast.dump(node.value))
                 written.add(getattr(state, node.value.id))
+                recognized += 1
+    mentions = sum(1 for n in ast.walk(enter)
+                   if isinstance(n, ast.Constant) and n.value == "end_reason")
     assert written, "一条都没扫到 = 量具坏了"
+    assert recognized == mentions, (
+        "`_enter` 里出现了 %d 处 `end_reason`，其中 %d 处是这条量具认得的那种写法 —— "
+        "剩下的那种写法人**认不出来**（比如 `out.update({...})`）：闸上多了一条拦人的路，"
+        "而 `rounds.BAILED_END_REASONS` 不会跟着长。要么改成认得的那种写法，"
+        "要么把这条量具扩到认它。" % (mentions, recognized))
     assert written == set(rounds.BAILED_END_REASONS), written
 
 
@@ -827,6 +880,87 @@ def _never_used_deps() -> graph.Deps:
     def boom(*a, **kw):
         raise AssertionError("这一条只停在 intake —— 不该走到会开浏览器的那一步")
     return graph.Deps(explore=boom, selftest=boom)
+
+
+def _real_client(deps):
+    """真图（`graph.build`）+ 桩依赖 —— 那一趟会**真**走节点、真落盘、真停/真抛。"""
+    saver = InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)
+    return _client(lambda brief, d: graph.build(checkpointer=saver, deps=deps),
+                   checkpointer=saver)
+
+
+def _reply_until_it_blew_up(client, job_id, *, tries=8, timeout=25.0):
+    """一路替人按「继续」，直到这一趟跑挂（桩依赖里那一步会抛）。
+
+    判据是 `status` 或 `gate` 那一对**变了**（服务是异步的：`reply` 返回时工作线程
+    可能还没接手 —— 拿固定 `sleep` 会做出一个看心情的用例）。
+    """
+    for _ in range(tries):
+        view = _wait(client, job_id, until=("waiting", "done", "failed"))
+        if view["status"] != "waiting":
+            return view
+        was = (view.get("gate") or {}).get("step")
+        client.post("/job/%s/reply" % job_id, json={"action": "continue"})
+        end = time.time() + timeout
+        while time.time() < end:
+            now = client.get("/job/%s" % job_id).json()
+            if now["status"] in ("failed", "done"):
+                return now
+            if now["status"] == "waiting" and (now.get("gate") or {}).get("step") != was:
+                break
+            time.sleep(0.02)
+        else:
+            raise AssertionError("回复之后这一趟没有动：%r" % (now,))
+    raise AssertionError("这一趟没有跑挂（桩依赖里那一步没抛？）")
+
+
+def _cards(live):
+    return [(c["n"], c["step"], (c["done"] or {}).get("step")) for c in live["rounds"]]
+
+
+def test_a_run_that_crashed_in_the_explored_node_keeps_its_cards_straight(tmp_path):
+    """⚠️ **跑挂（`failed`）那一档的对齐**（复审 2026-09-18 N1，真图 + 真 service）。
+
+    `failed` 与 `done` 在对齐上**不是一回事**：节点抛了 ⇒ 它这一趟的写盘**整个被丢掉**
+    （`visits` 里没有它）⇒ 最后一道闸那个节点**不在** `visits` 里。按 `done` 那样往回一格，
+    **每张卡都往前错一个节点**，最后一张还会变成 `step == done.step` 的幽灵
+    （复审的复现原话：`r2 step=intake | done.step=intake`，而真相是「第 2 轮正要做的 = explore」）。
+    """
+    def boom(*a, **kw):
+        raise RuntimeError("浏览器连不上（这一条就是来把这一趟弄挂的）")
+
+    client = _real_client(graph.Deps(explore=boom, selftest=boom))
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    assert _reply_until_it_blew_up(client, job_id)["status"] == "failed"
+
+    live = _live(client, job_id)
+    assert _cards(live) == [(1, "intake", None), (2, "explore", "intake")], _cards(live)
+    assert live["rounds"][-1]["last_shot"]["name"] == "pause-3.png", "挂掉那一刻的图"
+    assert all(c["done"]["step"] != c["step"] for c in live["rounds"] if c["done"])
+
+
+def test_a_run_that_crashed_further_along_keeps_every_card_straight(tmp_path):
+    """同一个坑、走得更远那一支（复审的第二个探针）：`draft` 那一步炸 ⇒ 三道闸都错位。
+
+    真相是 `r1=intake / r2=explore / r3=draft`；按 `done` 对齐的实现会说成
+    `r1=None / r2=intake(done=explore) / r3=explore(done=intake)` —— **整条错一格**。
+    """
+    import test_graph as TG                      # 那个文件里有**照生产形状**的全套桩依赖
+
+    def boom(*a, **kw):
+        raise RuntimeError("写这一版 py 的时候炸了（draft 那一步）")
+
+    deps, _rec = TG._deps(write=boom)
+    client = _real_client(deps)
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    assert _reply_until_it_blew_up(client, job_id)["status"] == "failed"
+
+    live = _live(client, job_id)
+    assert _cards(live) == [(1, "intake", None), (2, "explore", "intake"),
+                            (3, "draft", "explore")], _cards(live)
+    assert live["rounds"][-1]["last_shot"]["name"] == "pause-4.png"
+    row = [r for r in client.get("/runs").json()["runs"] if r["job_id"] == job_id][0]
+    assert row["rounds"] == 3, "三道闸 = 三轮（最后那张图不是一轮）"
 
 
 def test_runs_is_the_short_list_you_pick_from(tmp_path):

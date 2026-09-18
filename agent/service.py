@@ -934,8 +934,10 @@ def _tighter(recorded, on_disk) -> dict:
     （预算只会更小、不会凭空变大），与 `graph._round_spends` 那条「不知道的一律按花算」同族。
 
     ⚠️ **这一格 `rounds` 是「探路的模型轮数」**（`journey.rounds` / `attempts.jsonl`）——
-    **不是**「闸拍轮次」（图到过几次闸口）。后者是 `Job.pauses`，运营看见的那份投影在
-    `/live.rounds` 与 `/runs[].rounds`（`agent/rounds.py`）。**两个事实同名，别互相顶替**：
+    **不是**「闸拍轮次」（图到过几次闸口）。后者运营看见的那份投影在 `/live.rounds` 与
+    `/runs[].rounds`，轮数的算在 `agent/rounds.py` 的 `count()`（⚠️ **不是** `Job.pauses`
+    —— 那是**闸拍张数**：跑完/跑挂那一次也拍，到头了那两档 = 轮数+1）。
+    **两个事实同名，别互相顶替**：
     这一个「没量到」时会退成 0（`journey.rounds_measured` 才说得清），拿它当轮次数会多算。
     """
     out = {}
@@ -2733,8 +2735,9 @@ class Service:
         （与状态里那份比），所以两边都不会被对方放松。
 
         ⚠️ **这一格 `rounds` 是「探路的模型轮数」**（`journey.rounds` 那条线），
-        **不是**运营看见的那个「轮」（闸拍轮次 = 到过几道闸 = `Job.pauses`，
-        投影在 `/live.rounds` / `/runs[].rounds`，算法在 `agent/rounds.py` 的 `count`）。
+        **不是**运营看见的那个「轮」（闸拍轮次 = 到过几道闸，投影在 `/live.rounds` /
+        `/runs[].rounds`，算法在 `agent/rounds.py` 的 `count` —— ⚠️ **不是** `Job.pauses`：
+        那是**闸拍张数**，跑完/跑挂那一次也拍 ⇒ 到头了那两档它 = 轮数+1）。
         """
         out = {"steps": 0, "rounds": 0, "attempts": 0}
         try:
