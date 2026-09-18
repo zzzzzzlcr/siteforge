@@ -7,6 +7,7 @@ import (
 	"math"
 	mathrand "math/rand"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -388,8 +389,52 @@ func mergeFrameIntoTree(ft *page.FrameTree, parentID cdp.FrameID, newFrame *cdp.
 	return ft
 }
 
+// : 导航之后最多等多久（等 load 事件的预算）。
+// : ⚠️ 到点**不等于失败** —— 见 `Navigate` 里那段说明。
+// : 这个数**必须小于产物那边的 `subprocess` 超时（60 秒）**，否则产物会先把它掐掉，
+// : 而那种掐法产出的是一句「没能让 cdp 重新看这一页」，把真因盖住。
+// :
+// : 45 → 15（2026-09-18 真站量出来的）：`cdp navi` 那一步实耗 **61 秒** ≈ 45（等满）
+// : + 5（取树上限）+ 开销 ⇒ **gowizard 那一页的 load 事件 45 秒都没来**
+// : （它有广告/埋点，`load` 要等全部子资源）。而**等到等不到都已经不改判**了，
+// : 所以这 45 秒是**纯等**。产物那边自己还有 `_wait_ready`（10 秒）看 `readyState`。
+// : 15 秒够接住「本来就快」的那些页，又不会在「永远不来」的页上白耗。
+const naviWaitTotal = 15 * time.Second
+
+// : 取 frame tree 的截止时间。**这个数必须有** ——
+// : `c.ctx` 是 `context.Background()` 下来的（见 `NewClient`），
+// : **它没有截止时间**：浏览器不回，任何一次 CDP 往返都会**永远等下去**。
+// :
+// : 2026-09-18 实测（gowizard 真站）：`Navigate` 在「没等到 load 事件」这条路上
+// : 第一次调到 `GetFrameTree`，整条 `cdp navi` 就**挂住不返回**。
+// : 原先够不着是因为老代码在那条路上直接 `return err`、**根本不调它**。
+// : ⇒ 挂住的不是 `GetFrameTree` 这个名字，是「这个客户端没有一处 CDP 往返有上限」。
+const naviTreeTimeout = 5 * time.Second
+
+// getFrameTreeBounded 与 `GetFrameTree` 同，但**自带截止时间**。
+// 超时返回错误 —— 调用方**不许**把它读成「导航失败」（见 `Navigate`）。
+func (c *Client) getFrameTreeBounded(limit time.Duration) (*page.FrameTree, error) {
+	ctx, cancel := context.WithTimeout(c.ctx, limit)
+	defer cancel()
+	var frameTree *page.FrameTree
+	err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		var err error
+		frameTree, err = page.GetFrameTree().Do(ctx)
+		return err
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return frameTree, nil
+}
+
 // Navigate navigates the current page (or a specific frame) to the given URL,
 // waits for the load event, then returns the updated frame tree.
+//
+// ⚠️ **「导航发出去」与「页面加载完」是两件事，判据只能是前一件**
+// （2026-09-18 真站实测：`nav.Do` 成功了、紧接着 `cdp eval 'location.href'`
+// 回的正是那个网址，可这条命令报 `timeout waiting for page load (30s)`、
+// 退出码 1 —— 产物把它读成「打不开 <url>」，而页面明明打开了）。
 func (c *Client) Navigate(url, frameID string) (*page.FrameTree, error) {
 	// Listen for LoadEventFired before starting navigation
 	loadCh := make(chan struct{}, 1)
@@ -404,6 +449,8 @@ func (c *Client) Navigate(url, frameID string) (*page.FrameTree, error) {
 	})
 	defer listenCancel()
 
+	// 「load 事件到没到」只用来决定**说不说那句话**，不用来决定成没成（见下）
+	waited := true
 	err := chromedp.Run(c.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		nav := page.Navigate(url)
 		if frameID != "" {
@@ -416,19 +463,36 @@ func (c *Client) Navigate(url, frameID string) (*page.FrameTree, error) {
 		if errorText != "" {
 			return fmt.Errorf("navigate error: %s", errorText)
 		}
+		// ⚠️ **等 load 必须【在 Run 里面】等** —— `chromedp.ListenTarget` 的回调
+		// 只有 `chromedp.Run` 正在跑的时候才会被派发。原码把 `select` 放在 `Run` **外面**：
+		// `Run` 发完导航就退出，**事件随后到了也没人接**，于是硬等满 30 秒报超时。
+		// （2026-09-18 真站实测：`dcl≈12.8s`、`load≈20.3s` —— 事件**确实到了**，
+		// 只是没人接。所以这不是「页面慢」，是「我们自己没在听」。）
+		select {
+		case <-loadCh:
+		case <-time.After(naviWaitTotal):
+			waited = false
+		}
 		return nil
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("failed to navigate to %s: %w", url, err)
 	}
 
-	select {
-	case <-loadCh:
-	case <-time.After(30 * time.Second):
-		return nil, fmt.Errorf("timeout waiting for page load (30s)")
+	// ── 从这里往下**只加菜，不改判**：导航成不成，上面 `nav.Do` 已经定了 ──
+	if !waited {
+		fmt.Fprintf(os.Stderr, "cdp navi: 没等到 load 事件（等了 %s）—— "+
+			"「没等到」不等于「没打开」，页面在不在由调用方自己看\n", naviWaitTotal)
 	}
-
-	return c.GetFrameTree()
+	ft, terr := c.getFrameTreeBounded(naviTreeTimeout)
+	if terr != nil {
+		// ⚠️ **取不到树不是导航失败** —— 这正是那条假失败的形状：
+		// 页面明明打开了，可整条命令挂住 / 报错，被读成「打不开」。
+		fmt.Fprintf(os.Stderr, "cdp navi: 导航已发出（%s），但没能在 %s 内取到 frame tree：%v "+
+			"—— 这**不是**导航失败\n", url, naviTreeTimeout, terr)
+		return nil, nil
+	}
+	return ft, nil
 }
 
 // GetFrameOrCreateContext gets or creates a cached execution context for the given frame.
