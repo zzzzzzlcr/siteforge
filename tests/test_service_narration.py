@@ -514,50 +514,121 @@ def test_a_journey_without_a_missing_shot_says_nothing(tmp_path):
     assert _events(client, job_id, "shot_missing") == []
 
 
-def _writes_to_shots_why(src: str) -> list:
-    """扫一份源码：**哪些地方在写 `.shots_why`**（Task 5 修复轮 3 的量具）。
+#: **判据扫哪些文件**（Task 5 修复轮 4 把射程写下来了 —— 复审点名：射程是这条判据最弱的地方）。
+#:
+#: **扫**：仓库里的**每一个 `.py`**（`ROOT.rglob("*.py")`）—— 不只是 `browser_agent.py`。
+#: 为什么：耦合的另一头在**别的模块**里也可能被写（`agent/service.py:1125` 本来就在跨模块写
+#: `journey.notes`）。复审实测过：只看一个文件时，往 `agent/shots.py` 写一句
+#: `journey.shots_why = why` —— 这条判据**完全瞎**（而它正是唯一挡着那个耦合的东西）。
+#:
+#: **不扫**这三类，各有各的理由：
+#:   - `.venv` / `venv` / `__pycache__` / `.git` / `.pytest_cache` —— 不是源码；
+#:   - `runtime/` —— 运行产物（不进 git）；
+#:   - **`.superpowers/`** —— 过程账本（`sdd/.gitignore` 里就是 `*`，整片不进 git），
+#:     而**变异脚本住在那儿**：它们把「被改过的源码」当**数据**摆在文件里，
+#:     扫它们等于把数据当代码读（今天实测是干净的，但那是运气，不是结构）。
+#:     ⚠️ 宁可漏一个不进 git 的目录，也不要**误杀**：`events.py` 那条判断词规矩自己写着
+#:     「误杀一次，人就再也不信这条规矩了」。这两句是取舍，不是「恰好如此」。
+_SKIP_DIRS = {".venv", "venv", "__pycache__", ".git", ".pytest_cache", "runtime",
+              "node_modules", ".superpowers"}
 
-    返回 `[(函数链, 值节点, 行号)]`。认三种写法：`x.shots_why = …`、`x.shots_why += …`、
-    `setattr(x, "shots_why", …)`（最后那种**没法静态判断值**，所以它永远算「非空」）。
+
+def _repo_py_files() -> list:
+    """判据要扫的那一串文件（射程见 `_SKIP_DIRS` 那头）。"""
+    return sorted(p for p in ROOT.rglob("*.py")
+                  if not _SKIP_DIRS & set(p.relative_to(ROOT).parts))
+
+
+def _is_journey(node) -> bool:
+    """这个节点是不是「那个 journey」（`journey` / `self.journey` / `x.journey`）。"""
+    if isinstance(node, ast.Name):
+        return node.id == "journey"
+    return isinstance(node, ast.Attribute) and node.attr == "journey"
+
+
+def _writes_to_journey_shots_why(src: str) -> list:
+    """扫一份源码：**哪些地方在写 `journey.shots_why`**（Task 5 修复轮 3/4 的量具）。
+
+    返回 `[(函数链, 值节点, 行号)]`（函数链带类名，于是能认出 `("_StepShots", "_fail")`）。
+    认这些写法：
+
+      - `journey.shots_why = …` / `x.journey.shots_why = …`
+      - `journey.shots_why += …`（`AugAssign`）
+      - `journey.shots_why: str = …`（`AnnAssign`；**只有注解没有赋值不算写**）
+      - `journey.shots_why, n = '窗口没了', n`（**元组解包** —— 值按位置对上那一格）
+      - `setattr(journey, "shots_why", …)`（值**没法静态判断**，所以它永远算「非空」）
+
+    ⚠️ **看接收者，不是看属性名**（修复轮 4 的 N3）：`self.shots_why`（**产物自己**那一份，
+    `template.py` / `fixtures/` / `forms/sites/*.py` 里那些）与 `journey.shots_why` 是
+    **同名不同物** —— 只有接收者是 `journey`（`journey` / `something.journey`）的才算。
+    全仓换这条规则后，命中仍然只有 `browser_agent.py` 里那两处（零误伤）。
     """
     tree = ast.parse(src)
     out: list = []
 
+    def record(targets, value, lineno, where):
+        flat: list = []
+        for target in targets:
+            flat.extend(_flatten(target))
+        hits = [i for i, target in enumerate(flat) if _is_shots_why_of_journey(target)]
+        if not hits:
+            return
+        # 元组解包：值也摊平，**按位置**对上那一格（`a, b = x, y` ⇒ a 拿 x）
+        elts = list(value.elts) if isinstance(value, (ast.Tuple, ast.List)) else None
+        for i in hits:
+            out.append((where, elts[i] if (elts is not None and i < len(elts)) else value,
+                        lineno))
+
     def walk(node, where):
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                walk(child, where + (child.name,))     # 类名也要进函数链（`_StepShots._fail`）
+                walk(child, where + (child.name,))     # 类名也要进函数链
                 continue
-            values = []
             if isinstance(child, ast.Assign):
-                hit = any(isinstance(t, ast.Attribute) and t.attr == "shots_why"
-                          for t in child.targets)
-                if hit:
-                    values.append((child.value, child.lineno))
+                record(child.targets, child.value, child.lineno, where)
+            elif isinstance(child, ast.AnnAssign):
+                if child.value is not None:            # 只有注解 = 没写东西
+                    record([child.target], child.value, child.lineno, where)
             elif isinstance(child, ast.AugAssign):
-                if isinstance(child.target, ast.Attribute) and child.target.attr == "shots_why":
-                    values.append((child.value, child.lineno))
+                record([child.target], child.value, child.lineno, where)
             elif isinstance(child, ast.Call) and getattr(child.func, "id", "") == "setattr":
                 args = child.args
                 if (len(args) >= 3 and isinstance(args[1], ast.Constant)
-                        and args[1].value == "shots_why"):
-                    values.append((args[2], child.lineno))
-            out.extend((where, value, lineno) for value, lineno in values)
+                        and args[1].value == "shots_why" and _is_journey(args[0])):
+                    out.append((where, args[2], child.lineno))
             walk(child, where)
 
     walk(tree, ())
     return out
 
 
+def _flatten(target) -> list:
+    """`a, (b, c) = …` 这样的目标摊平成一层（元组解包里的那一格也是一次写）。"""
+    if isinstance(target, (ast.Tuple, ast.List)):
+        out: list = []
+        for elt in target.elts:
+            out.extend(_flatten(elt))
+        return out
+    return [target]
+
+
+def _is_shots_why_of_journey(target) -> bool:
+    return (isinstance(target, ast.Attribute) and target.attr == "shots_why"
+            and _is_journey(target.value))
+
+
 def _unaccounted_shots_why_writes(src: str) -> list:
-    """`(函数链, 行号)`：**把 `.shots_why` 赋成非空值、却不在对账的地方**。
+    """`(函数链, 行号)`：**把 `journey.shots_why` 写成非空值、却不在对账的地方**。
 
     判据（修复轮 3 的 ①）：**非空 = 出过事 ⇒ 必须有对账** —— 那本只增的账
     （`journey.shot_failures`）是这条事实**唯一**的时间线出口，所以非空赋值只许待在
     **同时写账**的那个方法里（`_StepShots._fail`）。**唯一例外是赋成 `""`**
     （「现在不坏了」，不是新事实）。
+
+    ⚠️ **这条规则是「看接收者」的**（修复轮 4 的 N3）：`self.shots_why`（产物自己那份）
+    不算 —— 见 `_writes_to_journey_shots_why` 的射程说明。
     """
-    return [(where, lineno) for where, value, lineno in _writes_to_shots_why(src)
+    return [(where, lineno) for where, value, lineno in _writes_to_journey_shots_why(src)
             if where != ("_StepShots", "_fail")
             and not (isinstance(value, ast.Constant) and value.value == "")]
 
@@ -632,40 +703,63 @@ def test_the_shot_cap_says_so_on_the_timeline(tmp_path, monkeypatch):
 
 
 def test_a_broken_channel_is_only_written_where_it_is_accounted_for():
-    """**非空 = 出过事 ⇒ 必须有对账**：`.shots_why` 的非空赋值只许待在 `_StepShots._fail`。
+    """**非空 = 出过事 ⇒ 必须有对账**：`journey.shots_why` 的非空赋值只许待在 `_StepShots._fail`。
 
     为什么要有这条（修复轮 3 的 ①）：那本只增的账是这条事实**唯一**的时间线出口，
     而「出口与写入点在同一个方法里」原来只是一句**注释** —— 今天成立只因为恰好没有
     第三方写。全局约束是「**没有静默的路径**」，不是「**有注释的静默路**」；
     这条判据把「恰好」变成「有东西挡着」（同形状的先例：扫 `service.py` 的 narrate 那条）。
 
+    **射程**（修复轮 4 的 N3 —— 射程是这条判据最弱的地方，所以写在这儿）：
+    扫的是**全仓每一个 `.py`**（不是只有一个文件），因为耦合的另一头可能在别处被写
+    （`agent/service.py:1125` 本来就在跨模块写 `journey.notes`）；规则是**看接收者**
+    （`journey` / `x.journey`），所以产物自己那些 `self.shots_why` 全被挡掉。
+    跳过哪些目录、为什么，写在 `_SKIP_DIRS` 那一头。
+
+    ⚠️ **已知的盲点**（静态判不了，**可以接受**，别为它们把判据写复杂）：
+    动态拼属性名（`setattr(o, 'shots' + '_why', …)`）。
     ⚠️ **不许**用改名 / 删字段 / 改成 property 去堵：msgpack 还原走 `cls(**kwargs)`，
     构造函数一抛就被 ext hook 吞掉、返回 `None` —— 老代码收到不认识的字段，
     那个 job 的 `journey` 会**静默变成 `None`**。只能靠测试钉，不能动字段形状。
     ⚠️ 撞上限那一条**不经 `_fail`**（账里那条是 `capped`）—— 它由
     `test_the_shot_cap_says_so_on_the_timeline` 钉。
     """
-    src = pathlib.Path(browser_agent.__file__).read_text(encoding="utf-8")
-    writes = _writes_to_shots_why(src)
-    assert writes, "一处都没扫到 = 量具坏了（字段改名了？）"
-    bad = _unaccounted_shots_why_writes(src)
+    writes, bad = [], []
+    for path in _repo_py_files():
+        where = str(path.relative_to(ROOT))
+        found = _writes_to_journey_shots_why(path.read_text(encoding="utf-8"))
+        writes.extend((where, w, line) for w, _v, line in found)
+        bad.extend((where, w, line) for w, line in _unaccounted_shots_why_writes(
+            path.read_text(encoding="utf-8")))
+    # 量具**不是瞎的**：真源码里那两处（`_fail` 里写、`_take` 里清空）必须被扫到 ——
+    # 一处都扫不到就说明字段改名了 / 射程断了，而这条判据会**静默地永远绿**。
+    assert len(writes) >= 2, "一处都没扫到 = 量具坏了（字段改名了？射程断了？）：%r" % (writes,)
+    assert any(w == ("_StepShots", "_fail") for _f, w, _l in writes), writes
     assert not bad, (
-        "这些地方把 `.shots_why` 写成了非空值，却没同时写那本只增的账 —— "
+        "这些地方把 `journey.shots_why` 写成了非空值，却没同时写那本只增的账 —— "
         "非空 = 出过事 ⇒ 必须有对账（否则时间线上是静默的）：%r" % (bad,))
 
-    # 量具**自己有牙**：喂它一段带违规写法的源码，它得当场逮住那一行
-    # （不靠外部变异也能证明这条判据会响）。
+    # 量具**自己有牙**：喂它一段带违规写法的源码，它得**逐行**点出来
+    # （不靠外部变异也能证明这条判据会响）。第 6 行是允许的例外（赋成 `""`），
+    # 第 10 行是**别人的** `shots_why`（接收者不是 journey ⇒ 不算）。
     trap = (
-        "class _StepShots:\n"
-        "    def _fail(self, why):\n"
-        "        self.journey.shots_why = why\n"
-        "    def somewhere_else(self):\n"
-        "        self.journey.shots_why = '窗口没了'\n"
-        "        self.journey.shots_why = ''\n"
-        "        setattr(self.journey, 'shots_why', why)\n")
+        "class _StepShots:\n"                                     # 1
+        "    def _fail(self, why):\n"                             # 2
+        "        self.journey.shots_why = why\n"                  # 3  允许（对账那一处）
+        "    def somewhere_else(self, journey, n, why):\n"        # 4
+        "        journey.shots_why = '窗口没了'\n"                 # 5  违规
+        "        journey.shots_why = ''\n"                        # 6  允许（清空）
+        "        setattr(journey, 'shots_why', why)\n"            # 7  违规
+        "        journey.shots_why, n = '窗口没了', n\n"           # 8  违规（元组解包）
+        "        journey.shots_why: str = '窗口没了'\n"            # 9  违规（AnnAssign）
+        "        n.shots_why = '别人的，不算'\n"                    # 10 不算（接收者不是 journey）
+        "        journey.shots_why += ' 又一句'\n")                # 11 违规（AugAssign）
     assert _unaccounted_shots_why_writes(trap) == [
-        (("_StepShots", "somewhere_else"), 5), (("_StepShots", "somewhere_else"), 7)], \
-        _writes_to_shots_why(trap)
+        (("_StepShots", "somewhere_else"), 5),
+        (("_StepShots", "somewhere_else"), 7),
+        (("_StepShots", "somewhere_else"), 8),
+        (("_StepShots", "somewhere_else"), 9),
+        (("_StepShots", "somewhere_else"), 11)], _writes_to_journey_shots_why(trap)
 
 
 # ═══════════════ 5. 旁路坏掉要**响**（回调和它自己的那本账）═══════════════
