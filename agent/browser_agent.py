@@ -1795,10 +1795,11 @@ def _label_of(target) -> str:
     for key in ("text", "label", "name"):
         if target.get(key):
             return str(target[key])
-    selectors = target.get("selectors") or []
-    if selectors:
-        # 没有文字名字时把选择器带上 —— 不是给人读的，是排查时对得回页面
-        return f"没写名字的元素（{selectors[0]}）"
+    # ⚠️ 没有文字名字时**不许**把选择器端给人看（2026-09-18 复审 F3）：这句话进的是
+    # `_say` → `step["note"]` → 时间线的 `events[].say` **和**轮次卡片 —— 那一屏是给
+    # 运营看的（D16：主视图里没有选择器）。选择器**本来就在** `target["selectors"]` 里
+    # （账本上没丢），排查时对得回页面；端进句子里是**多此一举地把实现细节摆上主视图**。
+    # 与 `template.py` 渲染进产物那份同一个说法（那边写着「不把选择器端给人看」）。
     return "没写名字的元素"
 
 

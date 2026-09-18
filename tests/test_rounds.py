@@ -38,7 +38,7 @@ from langgraph.types import Interrupt
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import browser_agent, graph, rounds, selftest, service  # noqa: E402
+from agent import browser_agent, graph, rounds, selftest, service, state  # noqa: E402
 
 SITE = "example-funnel"
 URL = "https://example-funnel.test/quiz"
@@ -195,20 +195,35 @@ def test_a_shot_row_that_says_nothing_at_all_does_not_become_an_unexplained_empt
 # ═══════════════════ 2. 闸只在 waiting 时露头（brief 点名的坑）═══════════════════
 
 
-def test_the_gate_is_null_unless_it_is_waiting():
-    """跑着/排队/到头了**没有闸** —— 露着头，页面上就是一个「还能按」的按钮。"""
-    pauses = [_shot(1), _shot(2)]
-    for status in (service.QUEUED, service.RUNNING, service.DONE, service.FAILED):
-        proj = _project(_values(visits=["intake"], journey=_journey()), _gate("explore"),
-                        pauses=pauses, status=status)
-        assert proj["gate"] is None, status
-        assert all(r["revisable"] is False for r in proj["rounds"]), status
+def test_the_gate_is_null_unless_it_is_waiting_and_no_card_borrows_from_it():
+    """跑着/排队/到头了**没有闸** —— 露着头，页面上就是一个「还能按」的按钮。
 
-    waiting = _project(_values(visits=["intake"], journey=_journey()), _gate("explore"),
-                       pauses=pauses, status=service.WAITING)
-    assert waiting["gate"]["step"] == "explore"
+    ⚠️ **两道判据**（复审 2026-09-18 F2）：`gate` 那一格是 `null` 只是第一半 ——
+    **卡片也不许从闸上借东西**：`step`（闸说的那一步）、`say`（闸口的原话）、
+    `revisable`（「打回」那个按钮）在**没人等你回话**的时候一个都不许出现。
+
+    ⚠️ 量具用**会打回的那道闸**（`lint`）：拿 `explore` 试的话 `revisable` 恒为 False
+    （它本来就不在那三道里），这条断言就永远绿。
+    """
+    for status in (service.QUEUED, service.RUNNING, service.DONE, service.FAILED):
+        proj = _project(_values(visits=["intake", "explore", "draft"]), _gate("lint"),
+                        pauses=[_shot(i) for i in range(1, 5)], status=status, stage="explore")
+        assert proj["gate"] is None, status
+        for card in proj["rounds"]:
+            assert card["revisable"] is False, (status, card["n"])
+            assert card["say"] == "", (status, card["n"], card["say"])
+            assert card["step"] != "lint", (status, card["n"],
+                                            "这一轮从闸上借了「正要做的」那一步")
+
+    waiting = _project(_values(visits=["intake", "explore", "draft"]), _gate("lint"),
+                       pauses=[_shot(i) for i in range(1, 5)], status=service.WAITING)
+    assert waiting["gate"]["step"] == "lint"
     assert waiting["gate"]["ask"] == GATE_ASK, "闸口的**原话**照抄（不重写）"
     assert waiting["gate"]["can"] == list(graph.HUMAN_CAN)
+    assert waiting["gate"]["revisable"] is True, "停在 lint 上 = 页面该给「打回」那个按钮"
+    assert waiting["rounds"][-1]["revisable"] is True
+    assert waiting["rounds"][-1]["say"] == GATE_ASK
+    assert waiting["rounds"][-1]["step"] == "lint"
 
 
 @pytest.mark.parametrize("step", ["intake", "explore", "draft", "lint", "selftest", "deliver"])
@@ -225,6 +240,135 @@ def test_revisable_is_true_only_on_the_three_gates_that_can_send_it_back(step):
     assert proj["rounds"][-1]["revisable"] is want
     assert [r["revisable"] for r in proj["rounds"][:-1]] == [False, False, False], \
         "历史轮次上没有闸 —— 打回那两个字对它们没有意义"
+
+
+# ═════════════ 2.5 到头了那一档：没有幽灵卡 / 清单最后那张不是一轮 ═════════════
+
+
+def test_a_run_that_reached_the_end_has_no_ghost_round():
+    """⚠️ **幽灵卡**（复审 2026-09-18 F1，Critical）：`_capture_pause` 在**每一次** advance
+    之后都拍 —— **跑完那一次也拍** ⇒ 闸拍清单比闸数多一条。照单全收的话，最后会多出一张
+    `step == done.step` 的卡（它的 `step` 取不到闸、落到 `stage` 兜底；`done.step` 落到
+    `visits[-1]`；两个兜底指向**同一个节点**）：运营读到的是「正要开始做一件已经做完的事」。
+
+    判据两条：**卡片张数 = 闸数**、**一张卡都没有那种自指**；最后那张图**没丢**。
+    """
+    visits = ["intake", "explore", "draft", "lint", "selftest", "deliver"]
+    pauses = [_shot(i) for i in range(1, 8)]                 # 6 道闸 + 跑到头那一次
+    proj = _project(_values(visits=visits), None, pauses=pauses, status=service.DONE,
+                    say="写进站点目录了。", delivered=True, stage="deliver")
+
+    assert [c["n"] for c in proj["rounds"]] == [1, 2, 3, 4, 5, 6], "6 道闸 = 6 张卡"
+    assert rounds.count(pauses, service.DONE) == 6, "轮数只有一个算法（`count`）"
+    for card in proj["rounds"]:
+        assert not (card["done"] and card["done"]["step"] == card["step"]), card
+    # 最后那张图不是一轮，但**也不许没人提**：它挂在最后一张卡上
+    assert proj["rounds"][-1]["last_shot"]["name"] == "pause-7.png"
+    assert [c["last_shot"] for c in proj["rounds"][:-1]] == [None] * 5
+    assert proj["rounds"][-1]["step"] == "deliver", "最后那一道闸正要做的还是 deliver（它真做了）"
+    assert proj["rounds"][-1]["done"]["step"] == "selftest"
+
+
+def test_a_run_that_was_stopped_at_the_gate_says_that_step_did_not_happen():
+    """**喊停**那一支（复审 F1 的另一半）：人在 lint 门口喊停 —— lint **一步没做、也不会做**。
+
+    ⇒ 「正要做的」那一格**当场说清它没做**；「刚做完的」是**上一个真做了**的节点（`draft`），
+    而**不许**把「没做」那句安到它头上（那会是新的一句假话）。
+    """
+    proj = _project(_values(visits=["intake", "explore", "draft", "lint"],
+                            end_reason="human_stop", end_note="人喊停：…"),
+                    None, pauses=[_shot(i) for i in range(1, 6)], status=service.DONE,
+                    say="人喊停：…", stage="lint")
+    last = proj["rounds"][-1]
+    assert [c["n"] for c in proj["rounds"]] == [1, 2, 3, 4]
+    assert last["step"] == "lint" and "没做" in last["step_say"], last
+    assert last["done"]["step"] == "draft", "刚做完的是**真做了**的那一个"
+    assert last["done"]["say"] == "", "draft 真做了 —— 别把「没做」那句安在它头上"
+    assert last["last_shot"]["name"] == "pause-5.png", "喊停那一刻的图也不许丢"
+
+
+def test_a_step_that_was_sent_back_is_not_claimed_as_something_that_just_finished():
+    """**打回**那一支（复审 2026-09-18 F7）：人在 selftest 门口说「这版不行」⇒
+    selftest **进过、一步都没做**，图回 `draft`。
+
+    下一张卡（`draft` 那道闸）的「刚才那一步」就是 selftest —— 它必须**当场说清没做**，
+    而且**不许**把 state 里那本探路的账挂到它头上（那会读成「它做了 30 步」）。
+    """
+    journey = _journey([_step(1, "看了一眼页面")])
+    proj = _project(_values(visits=["intake", "explore", "draft", "lint", "selftest"],
+                            journey=journey, revised_at="selftest"),
+                    _gate("draft"), pauses=[_shot(i) for i in range(1, 7)],
+                    status=service.WAITING)
+    last = proj["rounds"][-1]
+    assert last["step"] == "draft"
+    assert last["done"]["step"] == "selftest"
+    assert "没做" in last["done"]["say"], last["done"]
+    assert last["done"]["steps"] == [], "那一步没做 —— 没有步子清单"
+    assert "没做" in last["done"]["steps_note"]
+
+
+def test_the_rounds_are_anchored_to_the_end_of_the_visits_ledger():
+    """**重启之后接着跑**（复审 2026-09-18 F5）：`visits` 里还带着重启之前那些节点，
+    而轮次账（闸拍清单）是从这次启动**重新数**的 ⇒ 第 k 轮对应 `visits` **末尾**那几个。
+
+    起点对齐会把第 1 张卡说成 `intake`（它说的其实是 `lint` 那一轮）。
+    """
+    proj = _project(_values(visits=["intake", "explore", "draft", "lint"]), _gate("selftest"),
+                    pauses=[_shot(1), _shot(2)], status=service.WAITING)
+    assert [c["step"] for c in proj["rounds"]] == ["lint", "selftest"]
+    assert proj["rounds"][-1]["done"]["step"] == "lint", \
+        "刚做完的是**最近**那个节点，不是重启之前最老的那个"
+
+
+def test_the_round_count_comes_from_the_one_algorithm():
+    """`count()` 是轮数的唯一算法（`/live` 的卡片张数、`/runs` 上那个数字）。
+
+    ⚠️ 到头了那两档要把「最后那张图」去掉 —— 它是 `_capture_pause` 在跑完/跑挂那一次拍的，
+    **不是某一轮的闸拍**（复审 F1 的复现里正是这里报成 7，而实际只过了 6 道闸）。
+    """
+    five = [_shot(i) for i in range(1, 6)]
+    assert rounds.count(five, service.WAITING) == 5
+    assert rounds.count(five, service.RUNNING) == 5
+    assert rounds.count(five, service.QUEUED) == 5
+    assert rounds.count(five, service.DONE) == 4
+    assert rounds.count(five, service.FAILED) == 4
+    assert rounds.count([], service.DONE) == 0
+
+    done = _project(_values(visits=["intake"]), None, pauses=five, status=service.DONE)
+    assert len(done["rounds"]) == rounds.count(five, service.DONE)
+    failed = _project(_values(visits=["intake"]), None, pauses=five, status=service.FAILED)
+    assert len(failed["rounds"]) == rounds.count(five, service.FAILED)
+
+
+def test_a_final_image_with_no_card_at_all_is_still_mentioned():
+    """一张卡都没有（还没走到过闸口）时，「这一趟最后一张图」得在 `rounds_note` 里点名 ——
+    **不许有一张图没人提**（那张常常正是跑挂那一刻的窗口）。"""
+    proj = _project(_values(visits=[]), None, pauses=[_shot(1)], status=service.FAILED,
+                    say="这一步没跑成，停下了。")
+    assert proj["rounds"] == []
+    assert "pause-1.png" in proj["rounds_note"], proj["rounds_note"]
+
+
+def test_the_bail_markers_come_from_the_gates_own_code():
+    """「闸把节点拦下来」那两条停因**不是手抄的名单** —— 从 `graph._enter` 的赋值点长出来。
+
+    闸上将来多一条拦人的路（又写一个 `end_reason`）而这里不知道 ⇒ 那条路上的卡片会说
+    「这一步做了」（复审 F7 的根：名单得跟着调用点走，别跟着记忆走）。
+    """
+    tree = ast.parse(pathlib.Path(graph.__file__).read_text(encoding="utf-8"))
+    enter = next(n for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef) and n.name == "_enter")
+    written = set()
+    for node in ast.walk(enter):
+        if not isinstance(node, ast.Assign):
+            continue
+        for tgt in node.targets:
+            if (isinstance(tgt, ast.Subscript) and isinstance(tgt.slice, ast.Constant)
+                    and tgt.slice.value == "end_reason"):
+                assert isinstance(node.value, ast.Name), ast.dump(node.value)
+                written.add(getattr(state, node.value.id))
+    assert written, "一条都没扫到 = 量具坏了"
+    assert written == set(rounds.BAILED_END_REASONS), written
 
 
 def test_the_three_names_that_can_be_sent_back_are_the_graphs_own():
@@ -259,9 +403,14 @@ def test_the_steps_are_human_words_and_carry_no_selector_and_no_raw_result():
     for row in done["steps"]:
         assert set(row) == {"n", "note", "shots", "shot_after_deferred"}, row
 
+    # ⚠️ 下面这几条字符串断言的**射程**（复审 2026-09-18 F3 点破的）：fixture 里那句
+    # `note` 是**手写的人话**，所以它们**只能**证明「没有整段搬 `target` / `result`」——
+    # 证明不了「脚本自己那句话里没有选择器」（那条路由
+    # `test_a_target_without_a_text_name_does_not_put_a_selector_into_the_words` 钉，
+    # 用的是**生产函数**造出来的那句话）。别把这一条读成 D16 的全部。
     blob = json.dumps(proj, ensure_ascii=False)
-    assert "#get-started" not in blob, "选择器一个都不许进这一屏（D16）"
-    assert "querySelector" not in blob, "原始回执一个都不许进这一屏"
+    assert "#get-started" not in blob, "`target.selectors` 一个字都不许搬进这一屏"
+    assert "querySelector" not in blob, "原始回执一个都不许搬进这一屏"
     assert "a.btn-primary" not in blob and "sig-1" not in blob
 
 
@@ -498,6 +647,12 @@ class StubWindow:
         return self.alive_
 
 
+def _interrupt(step, n=1):
+    """真 `Interrupt`（闸口的形状：`graph._enter` 交上去的那个 dict）。"""
+    return Interrupt(value={"step": step, "say": GATE_ASK, "facts": {},
+                            "can": list(graph.HUMAN_CAN)}, id="i-%d" % n)
+
+
 def _shot_ok(ws_url, dest, *, timeout=None):
     """闸拍那条路**拍成了**：盘上那张图的名字就是落点的名字（`pause-<n>.png`）。"""
     return pathlib.Path(str(dest)).name, ""
@@ -516,10 +671,11 @@ def _runtime_goes_to_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(service.measure, "DEFAULT_ROOT", tmp_path / "runtime" / "explore")
 
 
-def _client(graph_factory, *, window=None):
+def _client(graph_factory, *, window=None, checkpointer=None):
     return TestClient(service.create_app(
         graph_factory=graph_factory, window=window if window is not None else StubWindow(),
-        checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST),
+        checkpointer=(checkpointer if checkpointer is not None
+                      else InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)),
         capture=_shot_ok))
 
 
@@ -543,12 +699,9 @@ def _live(client, job_id):
 def test_live_fills_the_rounds_and_the_gate_the_page_need(tmp_path):
     """`/live` 的 `rounds` / `gate` 填上了（Task 4 的骨架这一版接上）—— 两轮走一遍真接线。"""
     g = _FakeGraph([
-        _Snap(values={"site": SITE, "ws_url": WS_URL},
-              interrupts=(Interrupt(value={"step": "intake", "say": GATE_ASK, "facts": {},
-                                           "can": list(graph.HUMAN_CAN)}, id="i-1"),)),
+        _Snap(values={"site": SITE, "ws_url": WS_URL}, interrupts=(_interrupt("intake"),)),
         _Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"]},
-              interrupts=(Interrupt(value={"step": "explore", "say": GATE_ASK, "facts": {},
-                                           "can": list(graph.HUMAN_CAN)}, id="i-2"),)),
+              interrupts=(_interrupt("explore", 2),)),
     ])
     client = _client(lambda brief, deps: g)
     job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
@@ -606,12 +759,80 @@ def test_live_says_so_when_the_state_cannot_be_read_instead_of_quietly_losing_th
     assert live["status"] == service.RUNNING
 
 
+def test_a_waiting_job_whose_state_cannot_be_read_gets_words_not_a_bare_500(tmp_path):
+    """**停在闸上**的 job 读不回状态时也要给一句人话（复审 2026-09-18 F4）。
+
+    那一档 `_view` **自己**就要读 state（在 `_live_facts` 之前）⇒ `_live_facts` 兜不住 ——
+    它必须**响**（不能拿一个编出来的状态糊过去），但响的是一句**人话**（503 + detail），
+    不是一页 `Internal Server Error`。而「停在闸上」恰恰是最该看得见的那一档。
+    """
+    client = _client(lambda brief, deps: _FakeGraph([_Snap()]))
+    job = service.Job(job_id="job-dark-waiting", brief={"site": SITE}, status=service.DONE,
+                      created_at="2026-09-18T00:00:00+08:00")
+    job.graph = _BoomGraph()
+    client.app.state.service._jobs[job.job_id] = job
+
+    r = client.get("/job/job-dark-waiting/live")
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert "读不回" in detail and "重拉" in detail, detail
+
+
+def test_a_recovered_job_says_why_the_earlier_rounds_are_not_on_this_screen(tmp_path):
+    """重启过：轮次账（`Job.shot_notes`）**在进程里** ⇒ 之前那几轮的卡片这一屏没有。
+
+    **明说**，并且说清**为什么不从盘上反推**（复审 2026-09-18 F8：那句拒绝的理由也得是
+    运营看得见的话 —— 不然「少了几轮」本身就是一条静默的路径）。
+    ⚠️ 必须用**真图**：假图的状态活在它自己身上，checkpoint 里什么都没有，
+    `_recover` 捡不到东西（捡一个不存在的东西不是这条要测的）。
+    """
+    saver = InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)
+    factory = lambda brief, deps: graph.build(checkpointer=saver, deps=_never_used_deps())  # noqa: E731
+    first = _client(factory, checkpointer=saver)
+    job_id = first.post("/run", json=_brief(tmp_path, ws_url=None,
+                                            allow_skips=["country", "viewport"])).json()["job_id"]
+    assert _wait(first, job_id)["status"] == "waiting"
+
+    second = _client(factory, checkpointer=saver)          # 换一个服务实例 = 重启过
+    assert second.app.state.service._recover(job_id) is not None
+    live = _live(second, job_id)
+    assert "重新数" in live["note"] and "不显示" in live["note"], live["note"]
+    assert "反推" in live["note"], "拒绝反推的理由也要说出来（不然就是一条静默的路径）"
+    assert live["rounds"] == [], "重启之前那几轮不冒充卡片（账在进程里）"
+
+
+def test_a_target_without_a_text_name_does_not_put_a_selector_into_the_words():
+    """**D16**：目标没有文字名字时，那句话里**一个选择器都不许有**（复审 2026-09-18 F3）。
+
+    ⚠️ 这一条的射程是**生产函数**（`browser_agent._say` → 脚本写进 `note` 的那句话），
+    不是手写的假人话：手写的人话里没有选择器，那条字符串断言**永远不会红**
+    （这正是复审点破的那条空断言 —— 它当时唯一真正的防线是键集合那条）。
+    这句话会同时进**时间线的 `events[].say`**（同屏）与这里的卡片，所以必须堵在**源头**。
+    """
+    target = {"selectors": ["#get-started", "a.btn-primary"], "role": "button"}
+    said = browser_agent._say("click", target, True)
+    assert "#" not in said and "get-started" not in said, said
+    assert "没写名字的元素" in said, "兜底那句人话还在（只是不许带选择器）"
+
+    journey = _journey([{**_step(1, said), "note": said, "target": target}])
+    proj = _project(_values(visits=["intake", "explore"], journey=journey), _gate("draft"),
+                    pauses=[_shot(1), _shot(2), _shot(3)])
+    blob = json.dumps(proj, ensure_ascii=False)
+    assert "#get-started" not in blob and "a.btn-primary" not in blob, blob
+    assert proj["rounds"][-1]["done"]["steps"][0]["note"] == said
+
+
+def _never_used_deps() -> graph.Deps:
+    """真图的桩依赖：这一条**只停在 intake 那一道闸上**，一个都不该被叫到。"""
+    def boom(*a, **kw):
+        raise AssertionError("这一条只停在 intake —— 不该走到会开浏览器的那一步")
+    return graph.Deps(explore=boom, selftest=boom)
+
+
 def test_runs_is_the_short_list_you_pick_from(tmp_path):
     """`GET /runs`：**能挑运行的最小列表**（§8.1）—— 轮数与 `/live` 的卡片同源。"""
     g = _FakeGraph([_Snap(values={"site": SITE, "ws_url": WS_URL},
-                          interrupts=(Interrupt(value={"step": "intake", "say": GATE_ASK,
-                                                       "facts": {}, "can": list(graph.HUMAN_CAN)},
-                                                id="i-1"),))])
+                          interrupts=(_interrupt("intake"),))])
     client = _client(lambda brief, deps: g)
     job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
     _wait(client, job_id)
@@ -627,6 +848,31 @@ def test_runs_is_the_short_list_you_pick_from(tmp_path):
     assert row["say"], "挑运行的人先看这一句人话"
     assert row["created_at"]
     assert row["rounds"] == len(_live(client, job_id)["rounds"])
+
+
+def test_runs_counts_the_gates_not_the_last_picture(tmp_path):
+    """`/runs` 上那个数字 = **到过几道闸**（复审 F1 的复现：跑到头时它报成了 7，而只过了 6 道闸）。
+
+    这一条走**两道闸**的真接线：第 1 次 advance 停在 intake 那道闸上（一轮），
+    `reply` 之后这一趟跑到头（`_capture_pause` 又拍了一张 —— 那**不是**一轮）。
+    ⇒ `/runs` 说 **1 轮**，`/live` 也是 1 张卡。拿 `len(shot_notes)` 当轮数的实现会说 2。
+    """
+    g = _FakeGraph([
+        _Snap(values={"site": SITE, "ws_url": WS_URL}, interrupts=(_interrupt("intake"),)),
+        _Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"],
+                      "end_reason": "explore_unfinished", "end_note": "探路没走完。"}),
+    ])
+    client = _client(lambda brief, deps: g)
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, job_id)
+    client.post("/job/%s/reply" % job_id, json={"action": "continue"})
+    assert _wait(client, job_id)["status"] == "done"
+
+    row = [r for r in client.get("/runs").json()["runs"] if r["job_id"] == job_id][0]
+    assert row["rounds"] == 1, row
+    live = _live(client, job_id)
+    assert len(live["rounds"]) == 1 and live["rounds"][0]["n"] == 1
+    assert live["rounds"][0]["last_shot"]["name"] == "pause-2.png", "最后那张图挂在这一张卡上"
 
 
 def test_runs_on_a_fresh_service_says_why_it_is_empty(tmp_path):

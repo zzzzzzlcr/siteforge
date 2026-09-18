@@ -204,11 +204,20 @@ STATE_UNREADABLE_SAY = ("这一步结束之后，它读不回自己的状态（%
 #: 真话分两半：**图还在盘上**（这一条留），**轮次是从这次启动重新数的**（这一条补上）。
 RESTART_NOTE = ("服务重启过：这之前的时间线没有了。运行的状态还在（从 checkpoint 里读）；"
                 "之前拍下的图还在盘上，但**这一屏的轮次从这次启动起重新数**"
-                "（同一个名字的旧图会被新的一轮顶掉）。")
-#: `/live` 上「读不回状态」那句话。⚠️ **读**这一侧（GET）不许写时间线（「读不许写」），
-#: 所以这句话随响应回去、在页面上看得见 —— 那也是「没有静默的路径」在这一侧的样子。
+                "（同一个名字的旧图会被新的一轮顶掉）。**重启之前那几轮的卡片这一屏不显示** "
+                "—— 轮次账在进程里，没从盘上反推：反推会把轮号与新旧文件名混在一起，"
+                "比不显示更容易骗人。")
+#: `/live` 上「读不回状态」那句话（**跑着/排队**那几档：`_live_facts` 兜得住）。
+#: ⚠️ **读**这一侧（GET）不许写时间线（「读不许写」），所以这句话随响应回去、
+#: 在页面上看得见 —— 那也是「没有静默的路径」在这一侧的样子。
 LIVE_STATE_UNREADABLE_SAY = ("这一屏少了几格：读不回这个任务的状态（%s）—— "
                              "轮次与闸口这一次说不出来（时间线不受影响）。")
+#: 同一件事、另一档：**停在闸上 / 到头了**的 job 读不回状态时给的那句话。
+#: 那两档 `_view` **自己**就要读 state（在 `_live_facts` 之前），兜不住 ⇒ 只能响 ——
+#: 但响的是一句人话（503），不是一页 `Internal Server Error`（页面上原样显示 detail + 重拉）。
+LIVE_STATE_UNREADABLE_503 = ("读不回这个任务的状态（%s）—— 它现在是**在等人还是到头了**"
+                             "这一次说不出来，所以这一屏给不了。过一会儿重拉一次；"
+                             "运行本身的进展还在 checkpoint 里。")
 #: `GET /runs` 空列表时的 `note`：这个列表是 **process-local** 的，
 #: 不说的话人会把「空」读成「什么都没提交过」。
 NO_RUNS_SAY = ("还没有任何运行。这个列表是**这个进程**记得的那些 —— 服务重启过的话，"
@@ -2330,8 +2339,22 @@ class Service:
         这一层只做三件事：把输入凑齐、把投影回来的那几格填上、把该说的话并进 `note`。
         ⚠️ **闸只在 `waiting` 时非 null**（跑着/排队/到头了都没有闸）：那一格是
         页面「还能不能按」的判据，露着头就是一个按钮（`rounds.project` 里再兜一次底）。
+
+        ⚠️ **状态读不回来**时的两条口径（**不一样**，因为读发生的地方不一样）：
+          - 跑着 / 排队 / 跑挂那三档：`_view` 不读 state ⇒ `_live_facts` 兜得住 ⇒
+            **200 + 一句人话**（`LIVE_STATE_UNREADABLE_SAY` 进 `note`）；
+          - **停在闸上 / 到头了**那两档：`_view` 自己就要读 state（在 `_live_facts` **之前**）
+            ⇒ 兜不住 ⇒ **503 + 一句人话**（`LIVE_STATE_UNREADABLE_503`，不是裸 500）。
+            「没这个 job」那条路照旧 `KeyError` → 404。
         """
-        view = self._view(job_id)                 # 没这个 job 就 KeyError → 路由转 404
+        try:
+            view = self._view(job_id)             # 没这个 job 就 KeyError → 路由转 404
+        except KeyError:
+            raise
+        except Exception as exc:                  # noqa: BLE001 —— 读不回状态：响，但说人话
+            traceback.print_exc()
+            raw = "%s: %s" % (type(exc).__name__, exc)
+            raise HTTPException(status_code=503, detail=LIVE_STATE_UNREADABLE_503 % raw)
         job = self._jobs.get(job_id)
         timeline = job.timeline if job is not None else None
         shown = timeline.all() if timeline is not None else []
@@ -2382,9 +2405,13 @@ class Service:
         闸拍清单**只从登记表来**（`Job.shot_notes`，一轮一条）—— 不在登记表里的 job
         就没有它的轮次（那是 R12：轮号是 process-local 的，`note` 里明说）。
 
-        ⚠️ 状态读不回来时**不抛**（`/live` 是 GET，抛出去就是整页 500），也**不静默**：
+        ⚠️ 状态读不回来时**在这一层不抛**（`/live` 是 GET，抛出去就是整页 500），也**不静默**：
         原因随响应回到页面上（`LIVE_STATE_UNREADABLE_SAY`）+ 日志里一份 traceback。
         **GET 不许写时间线**（「读不许写」），所以这件事的落点是那句话，不是一条事件。
+
+        ⚠️ **这一层的射程只有三档**（跑着 / 排队 / 跑挂）：那三档 `_view` 不读 state，
+        所以读失败到得了这里。**停在闸上 / 到头了**那两档 `_view` 自己先读、先抛 ——
+        那一支由 `Service.live` 兜（503 + 一句人话）。别把这条读成「`/live` 永远不抛」。
         """
         pauses: list = []
         if job is not None:
@@ -2402,8 +2429,10 @@ class Service:
         """`GET /runs` 的正文（设计注 §8.1）：**能挑运行的最小列表**。
 
         一行 = 一个 job：`{job_id, site, status, say, created_at, rounds, delivered}`。
-        `rounds` 是**闸拍轮次的个数**（`rounds.count(job.shot_notes)`）—— 与 `/live`
-        里卡片的张数**同源**（同一份清单、同一个算法）。
+        `rounds` 是**到过几道闸**（`rounds.count(job.shot_notes, status)`）—— 与 `/live`
+        里卡片的张数**同源**（同一份清单、同一个算法）。⚠️ **跑到头了的 job 不算最后那张图**
+        （`_capture_pause` 在跑完/跑挂那一次也拍 —— 那一张不是某一轮的闸拍），
+        所以「6 道闸」的 job 这里就是 **6**，不是 7。
         ⚠️ 别把它读成探路的模型轮数（`journey.rounds`）：**那是另一个事实**
         （`agent/rounds.py` 的模块 docstring 里那张表）。
 
@@ -2423,8 +2452,9 @@ class Service:
                 "status": view["status"],
                 "say": str(view.get("say") or ""),
                 "created_at": job.created_at,
-                #: 「到过几道闸」—— 轮数**只有这一个算法**（`rounds.count`）
-                "rounds": rounds.count(job.shot_notes),
+                #: 「到过几道闸」—— 轮数**只有这一个算法**（`rounds.count`）；
+                #: 到头了的那两档要把「最后那张图」去掉（它不是一轮）
+                "rounds": rounds.count(job.shot_notes, view["status"]),
                 "delivered": bool(view.get("delivered")),
             })
         return {"note": "" if rows else NO_RUNS_SAY, "runs": rows}
