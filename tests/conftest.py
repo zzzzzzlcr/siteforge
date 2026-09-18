@@ -47,6 +47,10 @@ SANDBOX_FILES = {"test_template.py"}
 @pytest.fixture(autouse=True)
 def _tests_never_touch_the_repo_or_a_real_cdp(request, tmp_path, monkeypatch):
     monkeypatch.setenv("SITEFORGE_SHOTS_DIR", str(tmp_path / "runtime" / "shots"))
+    #: 账（`baseline.json` / `attempt-*.jsonl`）落在哪 —— **第三条**通往仓库的路。
+    #: 修复轮 1 实测漏掉的就是它：`runtime/explore/<job_id>/` 一趟全量套件 22 个目录，
+    #: 全是我那份测试文件建的（`test_service.py` 有自己的 `_runtime_goes_to_tmp`）。
+    monkeypatch.setenv("SITEFORGE_EXPLORE_DIR", str(tmp_path / "runtime" / "explore"))
     if pathlib.Path(request.path).name in SANDBOX_FILES:
         return
     monkeypatch.setenv("SITEFORGE_CDP_BIN", NO_SUCH_CDP)

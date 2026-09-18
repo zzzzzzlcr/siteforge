@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import functools
 import json
 import os
 import pathlib
@@ -130,9 +131,13 @@ WINDOW_WHEN = ("**它正在跑（running）的时候不要动手** —— agent 
 
 #: **降级 B** 那句话（设计注 §5.5）：关掉每步抓拍时，页面上**一直**显示它。
 #: ⚠️ 不许静默降级 —— 运营看到一次「没有逐步图」的运行，必须同时看到「为什么」。
+#: ⚠️ 而且**每一句都得是真的**（修复轮 1 抓到的）：接线补上之前，「去掉开关就恢复」是空话
+#: （`explore(shots_dir=...)` 在生产里没有调用方）—— 现在 `_explore_for` 给了目录，
+#: 这句话才成立；「**下一次探路**」那几个字也不许省：开关不会把已经跑过的那些步补回来。
 SHOTS_OFF_SAY = ("这一次没留逐步的图：%s"
                  "每一道闸拍的那张还在（`pause-<n>.png`），逐步的一句话清单也还在。"
-                 "要恢复逐步的图：把 `SITEFORGE_STEP_SHOTS` 去掉、或设成 1。")
+                 "要恢复逐步的图：把 `SITEFORGE_STEP_SHOTS` 去掉、或设成 1 —— "
+                 "**下一次探路**就会重新逐步拍（这一次已经跑过的那几步补不回来）。")
 
 
 # ─────────────────────────────── 窗口层（§4.6）───────────────────────────────
@@ -607,7 +612,7 @@ class Service:
                  explore_dir: Optional[str] = None,
                  window_probe_seconds: Optional[float] = None,
                  shots_dir: Optional[str] = None, capture: Optional[Callable] = None,
-                 shot_timeout: Optional[float] = None):
+                 shot_timeout: Optional[float] = None, capture_bin: Optional[str] = None):
         self._jobs: dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
         self._queue: "queue.Queue[tuple]" = queue.Queue()
@@ -641,6 +646,10 @@ class Service:
         #: 不给就用 `shots.capture_via_cli`（闸口上没有 MCP 会话，手上只有 `ws_url`）；
         #: ⚠️ **调用时才取**（不是构造时），测试要换掉它才换得动。
         self._capture = capture
+        #: 用哪个 cdp 二进制 —— **构造时就定死**（`capture_via_cli` 自己是从环境读的，
+        #: 而抓拍跑在工作线程上、可能比设那段环境的东西活得久：实测 4 条「发了 job 不等它」
+        #: 的用例就是这么漏到真二进制的）。定死之后「以后再看一眼环境」这件事不存在。
+        self._cdp_bin = shots.cdp_bin_for(capture_bin)
         #: 硬的：超过这么多秒就当这张没拍成（旁路线程，见 `_shoot`）。
         self._shot_timeout = float(SHOT_TIMEOUT_SECONDS if shot_timeout is None
                                    else shot_timeout)
@@ -672,10 +681,22 @@ class Service:
 
         另外两件（计划四 Task 1，都是**加**）：每一步落 journal（G1：`on_step` 早就有，
         服务没接）、一次探路收场时记一行账（`attempts.jsonl` —— 基线 M2/M3 的输入）。
+
+        第三件（Task 3 修复轮 1）：**步拍那个目录也归这里给**（`shots_dir=<job 级目录>`）。
+        不给的话 Task 2 整片步拍在**生产里是死的**（`explore(shots_dir=...)` 只有测试传），
+        而页面上那句「关掉逐步的图是为了省钱」就成了空话。目录由 `shots.dir_for` 按需建
+        （**写**的那一侧），根与闸拍同一个（服务构造时定死的那个）。
         """
         ws_url = str(brief.get("ws_url") or "").strip()
         if not ws_url:
             return None                       # 没人给窗口 → 用默认（图会在自测那步停下点名）
+        #: 步拍落在哪（这一趟探路的 job 级目录）。**算不出来就不接** ——
+        #: `job_id` 不像话时 `dir_for` 报错，而这里是图的路径上，不许抛；
+        #: 闸拍那条路自己会把这个原因记成一句人话（`_shoot_pause`）。
+        try:
+            shots_where = str(shots.dir_for(job_id, root=self._shots_dir)) if job_id else None
+        except ValueError:
+            shots_where = None
         #: 账本第一个**没记成**的原因。`on_step` 吞掉异常，但要留下它 —— 由 `run()` 写进
         #: `journey.notes`（那一层才有 journey）。见 `_journal_for` 的注释。
         #: ⚠️ **每一趟清空一次**（M-6）：不在 `run()` 开头清的话，上一趟的故障会跟着
@@ -698,7 +719,8 @@ class Service:
                                                 on_step=on_step,
                                                 resume_from=resume_from or None,
                                                 resume_note=resume_note or "",
-                                                window_alive=window_alive)
+                                                window_alive=window_alive,
+                                                shots_dir=shots_where)
             except BaseException as exc:       # noqa: BLE001 —— `_Stop` 也是 BaseException
                 # 探路自己炸了 —— 也得留一行，不然「这一次尝试」凭空消失，
                 # 而消失的那一次恰恰是最该被看见的那一次。记完**原样再抛**。
@@ -855,7 +877,11 @@ class Service:
         （D6）—— 拍照那条路（真实现是 `cdp` 子进程）卡住的话，整个服务就停在那儿了。
         超时只丢这一张图：闸照旧在、账照旧记，人话里说清是超时。
         """
-        capture = self._capture or shots.capture_via_cli
+        # ⚠️ 二进制**用构造时定下的那个**（`functools.partial` 把它绑死）——
+        #    `capture_via_cli` 不给 `cdp_bin` 时会去读环境，而读的时刻是**调用的时刻**：
+        #    抓拍在工作线程上，它可能比设那段环境的代码活得久（实测漏过 4 次）。
+        capture = (self._capture
+                   or functools.partial(shots.capture_via_cli, cdp_bin=self._cdp_bin))
         box: dict = {}
 
         def work() -> None:
@@ -1742,7 +1768,8 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                explore_dir: Optional[str] = None,
                window_probe_seconds: Optional[float] = None,
                shots_dir: Optional[str] = None, capture: Optional[Callable] = None,
-               shot_timeout: Optional[float] = None) -> FastAPI:
+               shot_timeout: Optional[float] = None,
+               capture_bin: Optional[str] = None) -> FastAPI:
     """拼一个 app。测试从这里注入桩图 / 桩窗口 / 内存 saver。
 
     `window=None` 是**默认且合法**的：这个部署没接窗口层 —— 于是 `set_viewport` 那根线
@@ -1751,15 +1778,17 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
     `explore_dir` 是**运行产物**落哪（`runtime/explore/<job_id>/`，Task 1）。默认给的是
     仓库里那个 `runtime/`（不进 git）；测试一律传自己的 `tmp_path`。
 
-    `shots_dir` 是**闸拍**落哪（`runtime/shots/<job_id>/pause-<n>.png`，Task 3）：
-    `None` ⇒ `SITEFORGE_SHOTS_DIR` ⇒ 仓库里的 `runtime/shots`。`capture` / `shot_timeout`
-    是给测试注入桩用的（与 `viewport_probe` 同一个理由）。
+    `shots_dir` 是**闸拍与步拍**落哪（`runtime/shots/<job_id>/pause-<n>.png` / `step-…`，Task 3）：
+    `None` ⇒ `SITEFORGE_SHOTS_DIR` ⇒ 仓库里的 `runtime/shots`；`capture_bin` 是那个 cdp
+    二进制（`None` ⇒ `SITEFORGE_CDP_BIN` ⇒ `CDP_PATH` ⇒ 仓库里的 `tools/cdp/cdp`）。
+    ⚠️ 这两样都在**构造时定死**（不是在每次抓拍时再看一眼环境）—— 见 `Service.__init__`。
+    `capture` / `shot_timeout` 是给测试注入桩用的（与 `viewport_probe` 同一个理由）。
     """
     svc = Service(graph_factory=graph_factory, window=window, checkpointer=checkpointer,
                   checkpointer_url=checkpointer_url, out_dir=out_dir,
                   viewport_probe=viewport_probe, explore_dir=explore_dir,
                   window_probe_seconds=window_probe_seconds, shots_dir=shots_dir,
-                  capture=capture, shot_timeout=shot_timeout)
+                  capture=capture, shot_timeout=shot_timeout, capture_bin=capture_bin)
     api = FastAPI(title="siteforge", version="0.1",
                   description="看着真页面产出 cdp-first py 脚本的 agent 服务（计划二 Task 8）")
 

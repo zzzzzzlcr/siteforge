@@ -386,6 +386,112 @@ def test_a_job_recovered_from_the_checkpoint_can_be_shot_too(tmp_path, monkeypat
     assert (tmp_path / "shots" / "job-recovered" / "pause-1.png").is_file()
 
 
+# ────────────── 2.5 「不许碰真实世界」那条不变量（修复轮 1）──────────────
+#: 复审点名的那个形状：**抓拍跑在工作线程上，它比用例活得久** —— 等到它真去起进程的时候，
+#: 「fixture 设的那几个环境变量」早就还回去了。实测（副本里的真 cdp 换成记录脚本）：
+#: 子进程里 `SITEFORGE_CDP_BIN` 是空的，回退链落回**仓库里那个真二进制**，
+#: 去连的是桩载荷里那个地址（`192.168.1.197:55555`）。
+#:
+#: 挡住它的**不许是环境变量**（那东西在 teardown 时就没了），必须是
+#: 「**`Service` 在构造时就把「图落哪、账落哪、用哪个 cdp」定死了**」这条不变量 ——
+#: 而构造发生在用例里面（兜底生效时）。下面三条就是它的判据。
+
+
+def test_a_shot_that_runs_after_the_fixtures_are_gone_cannot_touch_the_real_world(
+        tmp_path, monkeypatch):
+    """**「本该漏」那条的形状**：抓拍那一刻，**这一条用例的 fixture 已经收掉了**。
+
+    做法是**当场把那一层撤掉**（三个环境变量删干净，与 teardown 同一效果），
+    再看服务会起哪个二进制、往哪写。
+    """
+    script, log = _fake_cdp(tmp_path, _png())
+    monkeypatch.setenv("SITEFORGE_CDP_BIN", str(script))
+    client = _client(tmp_path, graph_factory=lambda b, d: _one_gate(),
+                     shots_dir=str(tmp_path / "shots"))
+    svc = client.app.state.service
+    job = service.Job(job_id="job-late", brief={
+        "url": URL, "goal": GOAL, "success_text": SUCCESS,
+        # 一个**立刻连不上**的地址：万一真去起了真二进制，也是当场的失败（不占 20 秒超时）
+        "ws_url": "ws://127.0.0.1:1/devtools/page/X"})
+
+    for name in ("SITEFORGE_CDP_BIN", "SITEFORGE_SHOTS_DIR", "SITEFORGE_EXPLORE_DIR"):
+        monkeypatch.delenv(name, raising=False)          # ← 「fixture 收掉了」
+
+    svc._capture_pause(job)                              # 抓拍「发生在 fixture 之后」
+
+    assert job.shot_notes[0]["name"] == "pause-1.png", job.shot_notes
+    assert (tmp_path / "shots" / "job-late" / "pause-1.png").is_file()
+    # 只有**桩脚本**写得出这张图（仓库里那个真 cdp 一次都没被碰）
+    assert log.read_text(encoding="utf-8").strip() == "127.0.0.1 1", log.read_text()
+    assert not (ROOT / "runtime" / "shots" / "job-late").exists()
+    assert not (ROOT / "runtime" / "explore" / "job-late").exists()
+
+
+def test_a_job_driven_through_the_service_leaves_its_books_in_tmp_not_in_the_repo(
+        tmp_path, monkeypatch):
+    """账（`<explore_root>/<job_id>/baseline.json`）**不许落进仓库**。
+
+    修复轮 1 实测漏掉的正是它：一趟全量套件在仓库里建 **22 个** `runtime/explore/job-*`
+    —— 全是我这份文件建的（`test_service.py` 有自己的 `_runtime_goes_to_tmp`），
+    而它**没人看着**（静默）。驱动走真那条路：`POST /run` → 工作线程 → `_advance`
+    → `_write_baseline`，因为漏就是这么漏的。
+    """
+    client, job_id, _, _ = _to_the_first_gate(tmp_path, monkeypatch)
+    view = _wait(client, job_id)
+    assert view["status"] == "waiting", view
+    assert (tmp_path / "runtime" / "explore" / job_id / "baseline.json").is_file()
+    assert not (ROOT / "runtime" / "explore" / job_id).exists(), "账落进仓库了"
+    assert not (ROOT / "runtime" / "shots" / job_id).exists(), "图落进仓库了"
+
+
+def test_the_services_explore_wiring_hands_over_the_job_shots_dir(tmp_path, monkeypatch):
+    """**生产那一根线真的接上了**：服务拼的那个探路闭包会把 **job 级**的 shots 目录
+    交给 `browser_agent.explore`（Task 2 整片步拍的生产入口）。
+
+    为什么不能靠图那条路验：`test_service.py` 那些「真图」用例把 `deps.explore` 换成了桩
+    —— 走图**永远碰不到**这根线（修复轮 1 复审替我验的正是这条：接上它全量 605 绿、
+    零回归，代价是零）。所以这里**直接调那个闭包**。
+    """
+    seen: dict = {}
+
+    def fake_explore(url, goal, budget=None, should_pause=None, ws_url=None, on_step=None,
+                     resume_from=None, resume_note="", window_alive=None,
+                     shots_dir=None, shooter=None):
+        seen.update(shots_dir=shots_dir, ws_url=ws_url)
+        return browser_agent.Journey()
+
+    monkeypatch.setattr(browser_agent, "explore", fake_explore)
+    svc = service.Service(shots_dir=str(tmp_path / "shots"),
+                          checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
+    run = svc._explore_for({"ws_url": WS}, "job-wired")
+    assert run is not None
+    run(URL, GOAL)
+
+    assert seen["ws_url"] == WS, seen
+    assert seen["shots_dir"] == str(tmp_path / "shots" / "job-wired"), seen
+    assert (tmp_path / "shots" / "job-wired").is_dir(), \
+        "目录得按需建出来（这是**写**的那一侧）"
+    assert not (ROOT / "runtime" / "shots" / "job-wired").exists()
+
+
+def test_an_explore_with_a_job_id_that_cannot_be_a_directory_still_runs(tmp_path, monkeypatch):
+    """`job_id` 不像话时**步拍那条线不接，但探路照跑** —— 这里是图的路径上，不许抛。"""
+    seen: dict = {}
+
+    def fake_explore(url, goal, budget=None, should_pause=None, ws_url=None, on_step=None,
+                     resume_from=None, resume_note="", window_alive=None,
+                     shots_dir=None, shooter=None):
+        seen["shots_dir"] = shots_dir
+        return browser_agent.Journey()
+
+    monkeypatch.setattr(browser_agent, "explore", fake_explore)
+    svc = service.Service(shots_dir=str(tmp_path / "shots"),
+                          checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
+    run = svc._explore_for({"ws_url": WS}, "../etc")
+    run(URL, GOAL)                       # 不抛
+    assert seen["shots_dir"] is None, seen
+
+
 # ───────────────────── 3. 图片端点：名字与路径 ─────────────────────
 
 

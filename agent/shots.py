@@ -62,8 +62,9 @@ import pathlib
 import re
 import subprocess
 
-__all__ = ["DEFAULT_ROOT", "root_for", "path_for", "dir_for", "name_ok", "host_port",
-           "step_shots_on", "STEP_SHOTS_ENV", "capture_via_session", "capture_via_cli"]
+__all__ = ["DEFAULT_ROOT", "root_for", "cdp_bin_for", "path_for", "dir_for", "name_ok",
+           "host_port", "step_shots_on", "STEP_SHOTS_ENV", "capture_via_session",
+           "capture_via_cli"]
 
 _REPO = pathlib.Path(__file__).resolve().parents[1]
 
@@ -320,6 +321,19 @@ def _cdp_bin(cdp_bin=None) -> str:
     > `CDP_PATH` > 仓库里的 `tools/cdp/cdp`）。"""
     return str(cdp_bin or os.environ.get("SITEFORGE_CDP_BIN") or os.environ.get("CDP_PATH")
                or (_REPO / "tools" / "cdp" / "cdp"))
+
+
+def cdp_bin_for(cdp_bin=None) -> str:
+    """`_cdp_bin` 的正身（给**别的模块**用）。
+
+    为什么要把它露出来（Task 3 修复轮 1）：服务要把用哪个二进制**在构造时**定下来
+    （`Service(capture_bin=...)`）—— 而 `capture_via_cli` 是从**环境**读的，
+    读的时刻就是调用的时刻。抓拍跑在**工作线程**上，它可能比给它设环境的那段代码活得久
+    （实测：4 条「发了 job 不等它」的用例就是这么漏的 —— 子进程里
+    `SITEFORGE_CDP_BIN` 已经是空的，于是回退链落回**仓库里那个真二进制**）。
+    **定死了就没有「以后再看一眼环境」这回事。**
+    """
+    return _cdp_bin(cdp_bin)
 
 
 def capture_via_cli(ws_url, dest, *, cdp_bin=None, timeout: float = 30.0) -> tuple[str | None, str]:
