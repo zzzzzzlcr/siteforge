@@ -220,6 +220,40 @@ def _says(client, job_id, kind):
     return [e["say"] for e in _live(client, job_id)["events"] if e["kind"] == kind]
 
 
+def _one_job(tmp_path, graph, *, window=None, capture=_shot_ok, submit_before_wait=False):
+    """跑一个 job 到它停下来，返回 `(client, job_id)`。
+
+    `submit_before_wait=True` 用在「前一个 job 正占着工作线程」那种场景：
+    那一条不能等它停下来（等它停下就不是「前面有人」了）。
+    """
+    client = _client(graph_factory=_factory(graph), window=window or StubWindow(alive=True),
+                     capture=capture)
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    if not submit_before_wait:
+        _wait(client, job_id)
+    return client, job_id
+
+
+def _restart_and_recover(tmp_path):
+    """「服务重启过」那个场景：真图跑一个 job 到 intake 闸上，换一个服务实例把它捡回来。
+
+    ⚠️ 必须用**真图**（桩依赖）：假图的状态活在它自己身上，**checkpoint 里什么都没有** ——
+    那样测的是「捡一个不存在的东西」。「重启之后还读得到」靠的正是状态真的在 saver 里（R-19）。
+    返回 `(新的 client, job_id, 捡回来的 job)`。
+    """
+    saver = InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)
+    factory = lambda brief, deps: graph.build(checkpointer=saver, deps=_never_used_deps())  # noqa: E731
+    first = _client(graph_factory=factory, window=None, checkpointer=saver)
+    job_id = first.post("/run", json=_brief(
+        tmp_path, ws_url=None, allow_skips=["country", "viewport"])).json()["job_id"]
+    view = _wait(first, job_id)
+    assert view["status"] == "waiting" and view["gate"]["step"] == "intake", view
+    second = _client(graph_factory=factory, window=None, checkpointer=saver)
+    job = second.app.state.service._recover(job_id)
+    assert job is not None
+    return second, job_id, job
+
+
 # ══════════════════ `/live` 的骨架（brief 钉的那几个字段）══════════════════
 
 
@@ -282,27 +316,76 @@ def test_live_is_404_for_a_job_nobody_knows(tmp_path):
 def test_the_seven_cells_survive_the_trip_to_the_live_json(tmp_path):
     """契约那七格要**一路走得到页面**（`/live` 的 `events`）—— 不是只在 `events.py` 里落得下。
 
-    这一版**没人填**它们（那是后面的任务）；这里用唯一的写入口 `Service.narrate`
-    记一条**带满七格**的，看它原样出现在 `/live` 里。
+    ⚠️ 七格**不是一方填的**（契约 §二那张表的「谁填」一列），所以这里记**两条**：
+    脚本那一条（前五格）与服务/裁判那一条（`expect` / `verdict`）——
+    复审 2026-09-18 点名：原来那条判据把 `expect`/`verdict` **自己减掉了**，
+    「这两格能到页面」于是没有探针（而它们正是契约的诚实阀门）。
     """
     g = FakeGraph(steps=[_Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"]},
                                interrupts=(_gate(step="intake"),))])
     client = _client(graph_factory=_factory(g), window=StubWindow(alive=True))
     job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
     _wait(client, job_id)
-    job = client.app.state.service._jobs[job_id]
-    client.app.state.service.narrate(
-        job, "step", "第 2 步：点了「下一步」", who="agent",
-        step_no=2, action={"what": "click", "target": "下一步"},
-        receipt={"raw": "ok", "from": "cdp"},
-        sig_before={"url": URL, "text": "a1b2c3", "visible": 12},
-        sig_after=None, why="动作之后窗口没答，读不到页面")
+    svc = client.app.state.service
+    job = svc._jobs[job_id]
+    svc.narrate(job, "step", "第 2 步：点了「下一步」", who="agent",
+                step_no=2, action={"what": "click", "target": "下一步"},
+                receipt={"verb": "click", "raw": "ok"},
+                sig_before={"url": URL, "text": "a1b2c3", "visible": 12},
+                sig_after=None, why="动作之后窗口没答，读不到页面")
+    svc.narrate(job, "step", "第 2 步（核对）", who="system",
+                expect=events.UNDECLARED, verdict={"changed": False})
 
-    last = _live(client, job_id)["events"][-1]
-    assert set(events.CELLS) - {"expect", "verdict"} <= set(last["data"])
-    assert last["data"]["receipt"]["raw"] == "ok"
-    assert last["data"]["sig_after"] is None, "「看不见」是一等值，一路带到页面都一样"
-    assert last["who"] == "agent" and last["say"].startswith("第 2 步")
+    step_events = [e for e in _live(client, job_id)["events"] if e["kind"] == "step"]
+    assert len(step_events) == 2, step_events
+    mine, theirs = step_events
+    assert set(events.CELLS) - {"expect", "verdict"} <= set(mine["data"])
+    assert mine["data"]["receipt"]["verb"] == "click"
+    assert mine["data"]["sig_after"] is None, "「看不见」是一等值，一路带到页面都一样"
+    assert mine["who"] == "agent" and mine["say"].startswith("第 2 步")
+    assert theirs["data"]["expect"] == events.UNDECLARED, "「未声明」也要到得了页面"
+    assert theirs["data"]["verdict"] == {"changed": False}
+    assert "expect" not in mine["data"] and "verdict" not in mine["data"], (
+        "脚本那一条里不许有这两格（谁填哪一格）")
+
+
+def test_a_value_that_cannot_survive_the_live_json_never_gets_in(tmp_path):
+    """**端到端**：进不去的值根本进不来；进得来的值一个都不许被改写。
+
+    复审 2026-09-18 实测出来的洞：`json.dumps` 默认放行 `nan`，而 starlette 渲染 `/live`
+    用的是 `allow_nan=False` ⇒ `/live` 回 **200**，但把值**悄悄改写成 `null`** ——
+    而 `null` 正是 `sig_after` 表示「**看不见**」的那个一等值。
+    ⇒ 「看不见」和「一个数」被抹成同一个：这份契约要治的病，换了个层次又来一次。
+    修法选的是「**让它根本进不来**」（不是「让它活着穿过去」）—— 理由见
+    `agent/events.py` 里那段注释。
+
+    这条测的是**线上那一层**（真 HTTP + 真渲染），所以它 witness 得了自己盯的那条性质：
+    把 `allow_nan=False` 拆掉 → 第一段就红（不再是 500/抛，而是一路 200 + `null`）。
+    """
+    g = FakeGraph(steps=[_Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"]},
+                               interrupts=(_gate(step="intake"),))])
+    client = _client(graph_factory=_factory(g), window=StubWindow(alive=True))
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, job_id)
+    svc = client.app.state.service
+    job = svc._jobs[job_id]
+
+    before = len(svc._jobs[job_id].timeline.all())
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            svc.narrate(job, "step", "第 3 步：量了一下", progress=bad)
+    assert len(job.timeline.all()) == before, "抛了的那条不许留在时间线上"
+
+    # 「看不见」的正确写法穿过整条线之后仍然是它自己（而且线上那一层就是 `null` 这个字面值）
+    svc.narrate(job, "step", "第 3 步：量了一下", who="system",
+                sig_after=None, why="探针这一次没量出来", visible=0)
+    r = client.get("/job/%s/live" % job_id)
+    assert r.status_code == 200
+    last = r.json()["events"][-1]["data"]
+    assert last["sig_after"] is None and "sig_after" in last
+    assert last["visible"] == 0, "一个真的 0 不许被改写成 null"
+    assert '"sig_after":null' in r.text.replace(" ", ""), (
+        "线上那一层：null 是那个字面值（不是缺键、不是别的写法）")
 
 
 def test_truncated_is_true_and_explained_when_events_are_dropped(tmp_path, monkeypatch):
@@ -317,7 +400,7 @@ def test_truncated_is_true_and_explained_when_events_are_dropped(tmp_path, monke
     svc = client.app.state.service
     job = svc._jobs[job_id]
     for i in range(5):
-        svc.narrate(job, "note", "第 %d 句" % i)
+        svc.narrate(job, "step", "第 %d 句" % i)
 
     live = _live(client, job_id)
     assert live["truncated"] is True
@@ -328,16 +411,11 @@ def test_truncated_is_true_and_explained_when_events_are_dropped(tmp_path, monke
 # ═════════════════ 目录表第 3/4/6 行：跑起来就有话说 ═════════════════
 
 
-def test_no_path_is_silent_from_submission_to_delivery(tmp_path):
-    """**这一条是这一片的核心断言**（brief Step 2 点名的那条机械断言）。
+def _life_of_a_job(tmp_path):
+    """一个 job 的**正常一生**：提交 → 停在闸上 → 人说一句 → 探路没走完 → 重开窗口 → 交付。
 
-    一个桩 job 走完它的一生：提交 → 停在闸上 → 人说一句 → 探路没走完（窗口那一支）
-    → 重开窗口 → 交付。走完之后这五个 `kind` 一个都不能少：
-
-        submitted / running / window_reopened / human_said / done
-
-    **任何一条静默的路径都会让这条测试红** —— 比如 `_advance` 里少接一个 narrate、
-    或者 `reopen` 只写 `job.say` 不写时间线（P9：`say` 是一次性的，下一次 `_advance` 就冲掉了）。
+    返回 `(client, job_id)`。给两条用例用：一条断言**内容**（顺序、交付），
+    一条把它算进「目录表每一行都有探针」那个**并集**里。
     """
     py_path = tmp_path / "forms" / "sites" / "example-funnel.py"
     py_path.parent.mkdir(parents=True, exist_ok=True)
@@ -358,17 +436,102 @@ def test_no_path_is_silent_from_submission_to_delivery(tmp_path):
     assert client.post("/job/%s/reply" % job_id,
                        json={"action": "continue", "note": "不是那个按钮，是下面那个"}).status_code == 200
     _wait(client, job_id)
-    r = client.post("/job/%s/reopen" % job_id,
-                    json={"ws_url": NEW_WS_URL, "entry_url": URL})
+    r = client.post("/job/%s/reopen" % job_id, json={"ws_url": NEW_WS_URL, "entry_url": URL})
     assert r.status_code == 200, r.text
     _wait(client, job_id)
+    return client, job_id
+
+
+def test_a_job_that_runs_to_delivery_has_its_whole_life_on_the_timeline(tmp_path):
+    """一个 job 的正常一生那五个 `kind` 一个都不能少，而且**从头读起**。
+
+    ⚠️ 名字收窄过（复审 2026-09-18）：原来它叫「no path is silent」，而实测它
+    **只能替目录表 4 行半作证**（窗口死 / 撞上限 / 跑挂 / 没图 / 捡回来 / 读不回 / 排队
+    七条变异一条都没让它红）。「任何一条静默路径」那条性质现在由
+    `test_no_catalog_row_is_silent` 用**并集**来钉。
+    """
+    client, job_id = _life_of_a_job(tmp_path)
 
     kinds = _kinds(client, job_id)
     for kind in ("submitted", "running", "window_reopened", "human_said", "done"):
         assert kind in kinds, "这一条路是**静默**的：%r 里没有 %r" % (kinds, kind)
     assert kinds[0] == "submitted", "时间线从头读起：先「收到了」"
+    assert "queued" not in kinds, "前面没有别的 run 时**不许**说「排队等窗口」（说反了就是编话）"
     assert _live(client, job_id)["delivered"] is True, "落盘的那一版在盘上"
     assert _live(client, job_id)["status"] == "done"
+
+
+def test_no_catalog_row_is_silent(tmp_path):
+    """**目录表九行、每行都有一个真实场景把它逼出来** —— 少接一处 narrate，这条就红。
+
+    复审 2026-09-18 点名的正是这个洞：单 job 那一条只能替 4 行半作证，
+    「**任何一条静默的路径都会让它红**」这句话当时是名不副实的。这条按**场景**凑齐：
+
+    | 场景 | 逼出来的那几行 |
+    |---|---|
+    | 一个 job 的正常一生 | `submitted` / `running` / `done` / `window_reopened` / `human_said` |
+    | 单跑一个（前面没东西） | 反面：**不许**有 `queued` |
+    | 图撞上限 | `cap_hit` |
+    | 图抛异常 | `failed` |
+    | 窗口死在干活中间 + 抓拍也没成 | `window_died` / `shot_missing` |
+    | 交上去时前面正有 run | `queued` |
+    | 服务重启后从 checkpoint 捡回来 | `recovered` |
+    """
+    seen = set()
+
+    # ① 正常一生（+ 反面：前面没东西时不许说「排队等窗口」）
+    client, job_id = _life_of_a_job(tmp_path)
+    seen |= set(_kinds(client, job_id))
+
+    # ② 撞上限
+    cap = FakeGraph(steps=[_Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["lint"],
+                                        "end_reason": "lint_cap",
+                                        "end_note": "打回 2 次还是同样的地方不过。"})])
+    c2, j2 = _one_job(tmp_path, cap)
+    seen |= set(_kinds(c2, j2))
+
+    # ③ 跑挂
+    c3, j3 = _one_job(tmp_path, FakeGraph(raise_on=[1]))
+    seen |= set(_kinds(c3, j3))
+
+    # ④ 窗口死在干活中间（hold 里翻），这一轮抓拍也没成
+    win = StubWindow(alive=True)
+    c4, j4 = _one_job(tmp_path,
+                      FakeGraph(steps=[_Snap(values={"site": SITE, "ws_url": WS_URL,
+                                                     "visits": ["intake"]},
+                                             interrupts=(_gate(step="intake"),))],
+                                hold=lambda n: setattr(win, "alive_", False) if n == 1 else None),
+                      window=win, capture=_shot_boom)
+    seen |= set(_kinds(c4, j4))
+
+    # ⑤ 前面正有 run 在跑（第二个 job 得排队）
+    inside, release = threading.Event(), threading.Event()
+
+    def hold(n):
+        if n == 1:
+            inside.set()
+            assert release.wait(5), "第一个 job 没被放走"
+
+    c5, j5 = _one_job(tmp_path,
+                      FakeGraph(steps=[_Snap(values={"site": SITE, "ws_url": WS_URL,
+                                                     "visits": ["intake"]},
+                                             interrupts=(_gate(step="intake"),))], hold=hold),
+                      submit_before_wait=True)
+    assert inside.wait(5), "第一个 job 没进到 invoke 里"
+    second = c5.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    release.set()
+    _wait(c5, j5)
+    _wait(c5, second)
+    seen |= set(_kinds(c5, second))
+
+    # ⑥ 服务重启过（从 checkpoint 捡回来）
+    c6, j6, job = _restart_and_recover(tmp_path)
+    seen |= {e["kind"] for e in job.timeline.all()}
+
+    missing = {"submitted", "queued", "running", "failed", "done", "cap_hit",
+               "window_died", "window_reopened", "recovered", "human_said",
+               "shot_missing"} - seen
+    assert not missing, "这些目录行**没有任何一条路径**记事件（静默）：%r" % sorted(missing)
 
 
 def test_a_job_that_has_to_wait_behind_another_gets_a_queued_event(tmp_path):
@@ -611,31 +774,119 @@ def test_a_recovered_job_says_so_on_the_timeline_and_in_the_note(tmp_path):
     时间线是 **process-local** 的：新的服务实例上它是**空的**（那不是 bug，是这一版的边界）——
     所以「空」这件事必须由 `note` 说出来，不许让人以为「它什么都没干」。
 
-    ⚠️ 这一条要用**真图**（桩依赖）：假图的状态活在它自己身上，**checkpoint 里什么都没有** ——
-    那样测的是「捡一个不存在的东西」。「重启之后还读得到」靠的正是状态真的在 saver 里（R-19）。
+    ⚠️ 这一条要用**真图**（桩依赖）—— 见 `_restart_and_recover` 的 docstring。
     """
+    # 「服务重启了」：另一个服务实例，接在**同一份** saver 上（状态在 saver 里，R-19）
     saver = InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)
     factory = lambda brief, deps: graph.build(checkpointer=saver, deps=_never_used_deps())  # noqa: E731
     client = _client(graph_factory=factory, window=None, checkpointer=saver)
     job_id = client.post("/run", json=_brief(
         tmp_path, ws_url=None, allow_skips=["country", "viewport"])).json()["job_id"]
-    view = _wait(client, job_id)
-    assert view["status"] == "waiting" and view["gate"]["step"] == "intake", view
-
-    # 「服务重启了」：另一个服务实例，接在**同一份** saver 上（状态在 saver 里，R-19）
+    _wait(client, job_id)
     client2 = _client(graph_factory=factory, window=None, checkpointer=saver)
     before = _live(client2, job_id)
     assert before["events"] == [], "时间线**不持久**：重启之后它是空的（§3.5）"
     assert RESTART_NOTE_HINT in before["note"], before["note"]
 
     job = client2.app.state.service._recover(job_id)          # 捡回来（`reply`/`reopen` 走的就是它）
-    assert job is not None
     assert [e["kind"] for e in job.timeline.all()] == ["recovered"]
     assert "checkpoint 里捡回来" in job.timeline.all()[0]["say"]
     after = _live(client2, job_id)
     assert [e["kind"] for e in after["events"]] == ["recovered"]
     assert RESTART_NOTE_HINT in after["note"]
     assert after["status"] == "waiting", "时间线没了不等于任务没了：它还在闸上等人"
+
+
+# ═════════════ 「没有静默的路径」：时间线自己坏掉的时候 ═════════════
+
+
+def test_a_narration_that_throws_does_not_leave_the_job_looking_running(tmp_path, monkeypatch):
+    """记不下「在跑」这一条时，必须**说它失败了** —— 不许让 job 停在一个假状态上。
+
+    复审 2026-09-18 实测出来的：那一行原先写在 `try` **外面**，它一抛就绕过下面的 except
+    ⇒ 时间线一个字节没变、`job.status` 停在 `running`、`/live` 一直报「在跑」，
+    全部后果只是 `_work` 的一行 `print_exc`。**一个永远不会再动的 job，被系统报成「在跑」。**
+    """
+    real = service.Service.narrate
+
+    def broken(self, job, kind, say, *, who="system", **data):
+        if kind == "running":
+            raise ValueError("形状判据炸了（这是编程错误）")
+        return real(self, job, kind, say, who=who, **data)
+
+    monkeypatch.setattr(service.Service, "narrate", broken)
+    g = FakeGraph(steps=[_Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"]},
+                               interrupts=(_gate(step="intake"),))])
+    client, job_id = _one_job(tmp_path, g)
+
+    live = _live(client, job_id)
+    assert live["status"] == "failed", live
+    assert "没跑成" in live["say"], live["say"]
+    assert [e["kind"] for e in live["events"]] == ["submitted", "failed"]
+    assert g.invokes == [], "「在跑」这一条都记不下，就不该真去推图"
+    # 它走的是 `_advance` **自己的** except 那条路（旁路的闸拍照旧走），不是从 `_advance` 里逃出去
+    # —— 逃出去的话 `_capture_pause` 根本轮不到，而那一行才是 `try` 里外之分唯一的**可观察**差别。
+    job = client.app.state.service._jobs[job_id]
+    assert job.pauses == 1 and [n["n"] for n in job.shot_notes] == [1], (
+        "那一轮的闸拍照旧要拍（旁路不许被带塌）：pauses=%r notes=%r"
+        % (job.pauses, job.shot_notes))
+
+
+def test_the_last_net_catches_an_escape_that_happens_after_the_graph_ran(tmp_path, monkeypatch):
+    """**最后一层网**（`_work` → `_note_escaped`）：`_advance` 里**任何一步**抛出都不许留下假状态。
+
+    上面那一条走的是 `try` 里那一段（`_advance` 自己的 except 就能兜住）；这一条刻意选
+    **兜不住的那一段**：图跑完了、闸拍也拍了，坏的只是「这一轮没留下图」那一条的叙述
+    （`_capture_pause` 在 `status = DONE` **之前**跑，而它的 narrate 在 `_advance` 的 try 之外）。
+    没有这层网，那个 job 会**永远**停在 `running` —— 没人再推它，而 `/live` 一直说「在跑」。
+    """
+    real = service.Service.narrate
+
+    def broken(self, job, kind, say, *, who="system", **data):
+        if kind == "shot_missing":
+            raise ValueError("这一条的叙述炸了")
+        return real(self, job, kind, say, who=who, **data)
+
+    monkeypatch.setattr(service.Service, "narrate", broken)
+    g = FakeGraph(steps=[_Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"]},
+                               interrupts=(_gate(step="intake"),))])
+    client, job_id = _one_job(tmp_path, g, capture=_shot_boom)   # 抓拍抛 → 会有那个 kind
+
+    live = _live(client, job_id)
+    assert live["status"] == "failed", live
+    assert "没跑成" in live["say"], live["say"]
+    kinds = [e["kind"] for e in live["events"]]
+    assert kinds[:2] == ["submitted", "running"] and "failed" in kinds, kinds
+    job = client.app.state.service._jobs[job_id]
+    assert job.pauses == 1, "闸拍照旧拍了（它在逃出去之前）—— 网只补状态，不重跑旁路"
+
+
+def test_a_broken_timeline_still_cannot_make_a_job_look_running(tmp_path, monkeypatch):
+    """时间线**整个坏掉**（每条 narrate 都抛）时，最后一层网也要把状态改对。
+
+    这一层（`_work` → `_note_escaped`）**不许依赖 narrate 成功**：它先改状态、再试一次记事件。
+    判据是那句会一直说下去的假话消失了 —— `/live` 不许报「在跑」，`/job/{id}` 说 failed。
+    （复审 2026-09-18 点名 `_work` 是「新代码唯一会被吞掉的那条路」，而它手里**就有 `job`**：
+    补它不需要任何跨任务的接口决定。）
+    """
+    real = service.Service.narrate
+
+    def broken(self, job, kind, say, *, who="system", **data):
+        if kind == "submitted":                  # 交上去那一刻时间线还是好的
+            return real(self, job, kind, say, who=who, **data)
+        raise ValueError("时间线整个坏了")
+
+    monkeypatch.setattr(service.Service, "narrate", broken)
+    g = FakeGraph(steps=[_Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"]},
+                               interrupts=(_gate(step="intake"),))])
+    client, job_id = _one_job(tmp_path, g)
+
+    live = _live(client, job_id)
+    assert live["status"] == "failed", live
+    assert "没跑成" in live["say"], "状态改对了，人话也要跟上：%r" % live["say"]
+    assert [e["kind"] for e in live["events"]] == ["submitted"], "时间线坏着，就只有那一条"
+    assert client.get("/job/%s" % job_id).json()["status"] == "failed", (
+        "`/job/{id}` 也不许报「在跑」")
 
 
 # ═════════════════ 目录表第 8 行：人说的话 ═════════════════

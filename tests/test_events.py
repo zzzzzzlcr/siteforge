@@ -35,12 +35,37 @@ from agent import events  # noqa: E402
 
 
 def test_the_interface_is_the_one_the_brief_pins():
-    """三个名字、一个上限、三个方法 —— 跨任务接口（计划 §「跨任务接口」1）就靠它们。"""
+    """三个名字、一个上限、一张词表、三个方法 —— 跨任务接口（计划 §「跨任务接口」1）就靠它们。"""
     assert events.WHO == ("agent", "system", "you")
     assert events.MAX_EVENTS == 2000
+    assert isinstance(events.KINDS, tuple) and events.KINDS, "kind 的词表（第 4 条规矩）"
     tl = events.Timeline()
     assert tl.dropped() == 0
     assert tl.all() == []
+
+
+def test_the_kind_vocabulary_covers_the_catalog_and_nothing_else():
+    """`kind` 是一张**封闭**的词表（目录表那九行的产出 + 这一版补的两个）。
+
+    为什么这条要紧（复审 2026-09-18）：`datewhirl` 的病就是「**脚本自起的名字，
+    后台照着当真话读**」。一个自称「事件词汇表」的模块，要是谁递什么名字都收，
+    它就只是一个字符串字段 —— 那扇门今天开着，只是没人走。
+    """
+    # 目录表九行的全部产出，一个都不能少（少一个就是「这一行没地方记」）
+    for kind in ("window_died", "window_reopened", "queued", "submitted", "running",
+                 "failed", "done", "cap_hit", "recovered", "human_said", "shot_missing"):
+        assert kind in events.KINDS, "目录表里的 %r 不在词表里" % kind
+    # 判断词一个都不在词表里（`done` 是**状态机**的词，不是判据 —— 见 `service.py:83`）
+    for word in ("success", "ok", "passed", "changed"):
+        assert word not in events.KINDS
+    tl = events.Timeline()
+    for bad in ("success", "ok", "passed", "changed", "step-ish", "窗口没了"):
+        with pytest.raises(ValueError) as caught:
+            tl.add(bad, "一句话")
+        assert "KINDS" in str(caught.value), "报错要说清词表在哪：%s" % caught.value
+    assert tl.all() == [], "抛了的那条不许留在时间线上"
+    # 词表里的词照收
+    assert tl.add("step", "第 1 步：看了一眼页面")["kind"] == "step"
 
 
 def test_add_keeps_the_signature_the_brief_pins():
@@ -55,7 +80,7 @@ def test_add_keeps_the_signature_the_brief_pins():
     assert signature.parameters["who"].kind is inspect.Parameter.KEYWORD_ONLY
     assert signature.parameters["data"].kind is inspect.Parameter.KEYWORD_ONLY
     assert signature.parameters["data"].default is None
-    assert events.Timeline().add("note", "一句话", data={"receipt": {"raw": "ok"}})["data"] == {
+    assert events.Timeline().add("step", "一句话", data={"receipt": {"raw": "ok"}})["data"] == {
         "receipt": {"raw": "ok"}}
 
 
@@ -66,8 +91,8 @@ def test_n_is_monotonic_and_the_timestamp_is_second_resolution():
     这正是「排序用 `n`」的理由；把 `at` 当排序键的话，同一秒里的先后就随机了。
     """
     tl = events.Timeline()
-    first = tl.add("note", "第一句")
-    second = tl.add("note", "第二句")
+    first = tl.add("step", "第一句")
+    second = tl.add("step", "第二句")
     assert (first["n"], second["n"]) == (1, 2), "n 从 1 起、一次一条"
     assert first["at"] == second["at"] or first["n"] < second["n"]
     assert "." not in first["at"], "秒级时间戳里不该有小数（%r）" % first["at"]
@@ -76,7 +101,7 @@ def test_n_is_monotonic_and_the_timestamp_is_second_resolution():
 
 def test_the_shape_is_the_five_keys_plus_data():
     """事件形状就是 `{n, at, kind, who, say, data}` —— 多一个键少一个键都是漂了。"""
-    event = events.Timeline().add("note", "一句话")
+    event = events.Timeline().add("step", "一句话")
     assert set(event) == {"n", "at", "kind", "who", "say", "data"}
     assert event["who"] == "system", "默认那一方是系统（服务自己说的话）"
     assert event["data"] == {}, "没给 data 是个**空字典**（不是 None —— 读的人不用判空）"
@@ -86,9 +111,9 @@ def test_who_only_knows_three_values():
     """`who` 只认三个值：页面靠它决定气泡长相。别的值**直接抛**（不许静默归成 system）。"""
     tl = events.Timeline()
     for who in events.WHO:
-        assert tl.add("note", "一句话", who=who)["who"] == who
+        assert tl.add("step", "一句话", who=who)["who"] == who
     with pytest.raises(ValueError) as caught:
-        tl.add("note", "一句话", who="机器")
+        tl.add("step", "一句话", who="机器")
     assert "agent" in str(caught.value), "报错要说清有哪三个值：%s" % caught.value
     assert len(tl.all()) == 3, "抛了的那条不许留在时间线上"
 
@@ -101,12 +126,12 @@ def test_an_empty_say_is_refused():
     tl = events.Timeline()
     for empty in ("", "   ", "\n", "\t "):
         with pytest.raises(ValueError):
-            tl.add("note", empty)
+            tl.add("step", empty)
     assert tl.all() == []
 
 
 def test_the_kind_has_to_be_a_nonempty_string():
-    """`kind` 是事件的词汇表，不许空着、不许不是字符串（`None` 会被读成「没这个词」）。"""
+    """`kind` 不许空着、不许不是字符串（`None` 会被读成「没这个词」）。"""
     tl = events.Timeline()
     for bad in ("", "   ", None, 7):
         with pytest.raises(ValueError):
@@ -117,9 +142,9 @@ def test_the_kind_has_to_be_a_nonempty_string():
 def test_a_say_that_is_not_a_string_is_refused_too():
     tl = events.Timeline()
     with pytest.raises(ValueError):
-        tl.add("note", None)
+        tl.add("step", None)
     with pytest.raises(ValueError):
-        tl.add("note", {"say": "这句话装在一个字典里"})
+        tl.add("step", {"say": "这句话装在一个字典里"})
     assert tl.all() == []
 
 
@@ -132,7 +157,7 @@ def test_the_oldest_events_are_dropped_and_dropped_counts_them(monkeypatch):
     monkeypatch.setattr(events, "MAX_EVENTS", 5)
     tl = events.Timeline()
     for i in range(8):
-        tl.add("note", "第 %d 句" % i)
+        tl.add("step", "第 %d 句" % i)
     kept = [e["n"] for e in tl.all()]
     assert kept == [4, 5, 6, 7, 8], "留下的是**最后** 5 条（最旧的三条丢了）：%r" % kept
     assert tl.dropped() == 3, "丢了几条要数得出来"
@@ -145,7 +170,7 @@ def test_the_real_cap_is_two_thousand():
     assert events.MAX_EVENTS == 2000
     tl = events.Timeline()
     for i in range(events.MAX_EVENTS + 1):
-        tl.add("note", "第 %d 句" % i)
+        tl.add("step", "第 %d 句" % i)
     assert len(tl.all(limit=events.MAX_EVENTS + 10)) == events.MAX_EVENTS
     assert tl.dropped() == 1
     assert tl.all(limit=1)[0]["n"] == 2001
@@ -155,7 +180,7 @@ def test_all_limit_returns_the_last_ones_not_the_first():
     """`all(limit)` 给的是**最后** limit 条（页面要的是「刚刚发生了什么」）。"""
     tl = events.Timeline()
     for i in range(10):
-        tl.add("note", "第 %d 句" % i)
+        tl.add("step", "第 %d 句" % i)
     assert [e["n"] for e in tl.all(3)] == [8, 9, 10]
     assert [e["n"] for e in tl.all()] == list(range(1, 11))
 
@@ -163,7 +188,7 @@ def test_all_limit_returns_the_last_ones_not_the_first():
 def test_a_limit_that_is_not_a_positive_number_returns_nothing():
     """`limit<=0` = 「一条也不要」。**不许**把 `0` 读成「不限」（`[-0:]` 是整个列表 —— 老坑）。"""
     tl = events.Timeline()
-    tl.add("note", "一句话")
+    tl.add("step", "一句话")
     assert tl.all(0) == []
     assert tl.all(-1) == []
 
@@ -171,7 +196,7 @@ def test_a_limit_that_is_not_a_positive_number_returns_nothing():
 def test_a_reader_cannot_change_what_is_stored():
     """读出来的是**副本**：改它不许动到时间线里那份（否则一条读就能改历史）。"""
     tl = events.Timeline()
-    tl.add("note", "原话", data={"receipt": {"raw": "ok"}})
+    tl.add("step", "原话", data={"receipt": {"raw": "ok"}})
     got = tl.all()
     got[0]["say"] = "改过的"
     got[0]["data"]["receipt"]["raw"] = "改过的"
@@ -193,7 +218,7 @@ def test_n_stays_monotonic_when_callbacks_come_from_many_threads():
     def writer(who: int) -> None:
         barrier.wait()
         for i in range(each):
-            tl.add("note", "线程 %d 的第 %d 句" % (who, i))
+            tl.add("step", "线程 %d 的第 %d 句" % (who, i))
 
     pool = [threading.Thread(target=writer, args=(k,)) for k in range(threads)]
     for t in pool:
@@ -326,6 +351,78 @@ def test_the_repo_own_fact_names_are_allowed(key):
     assert event["data"][key] == 1
 
 
+def test_a_judgment_word_is_not_allowed_as_a_nested_field_name_either():
+    """判断词**哪一层都不许当键**（复审 2026-09-18 实测出的洞）。
+
+    只查最外面那一层 = 没查：`{"step_no": 3, "result": {"ok": true}}` 的顶层键全是干净的，
+    判**藏在里面**。而 `result.ok` 正是这个仓库里**已经存在**的那个正身
+    （`journey.steps[].result.ok` —— 脚本自己给自己下的判）。
+    """
+    tl = events.Timeline()
+    for bad in ({"result": {"ok": True}},
+                {"a": {"b": {"c": {"done": True}}}},
+                {"list": [{"passed": True}]},
+                {"targets": [{"success": True}]}):
+        with pytest.raises(ValueError) as caught:
+            tl.add("step", "第 7 步：走了一步", who="system", data=bad)
+        assert "判断词" in str(caught.value), caught.value
+    assert tl.all() == []
+    # 反面：干干净净的收据形状照收
+    ok = tl.add("step", "第 7 步：点了一个按钮", who="system",
+                data={"receipt": {"verb": "click", "error": "element not found",
+                                  "raw": "元素没找到"}})
+    assert ok["data"]["receipt"]["error"] == "element not found"
+
+
+def test_the_judgment_word_rule_stops_at_a_cells_own_content():
+    """这条规矩的**边界**：七格的「内容」里不查判断词 —— 那是**填格子的那一方**的形状。
+
+    为什么要豁免（每一条都是实测过的理由，不是宽容）：
+    - `verdict={"changed": true}` 正是「变没变」那一格的内容（复审 2026-09-18 背书过，别改）；
+    - `expect={"screen_changed": true}` 是契约 §四那张菜单里「换了一屏」那一项的机器形状
+      —— 照契约写的形状，不能被我这条规矩挡住；
+    - `receipt={"verb": "click", "ok": false, …}` 是**转抄来的原文**（契约 §二：脚本只转抄、
+      也留原文）—— 回执自己怎么写字不是脚本能改的。
+
+    而脚本**用不上**这个豁免：它不许填 `verdict` / `expect`（规矩 3），
+    `receipt` 是它**转抄**的东西，不是它起的名。
+    """
+    tl = events.Timeline()
+    event = tl.add("step", "第 7 步：核对了一下", who="system",
+                   data={"verdict": {"changed": True},
+                         "expect": {"screen_changed": True},
+                         "receipt": {"verb": "click", "ok": False,
+                                     "error": "element not found"},
+                         "sig_before": {"url": "u", "success": True}})
+    assert event["data"]["verdict"] == {"changed": True}
+    assert event["data"]["expect"] == {"screen_changed": True}
+    assert event["data"]["receipt"]["ok"] is False
+
+
+def test_a_cell_name_is_only_allowed_at_the_top_level():
+    """七格的名字**只在顶层**：`receipt` 里冒出一个 `verdict`，说明有人把「判」塞进收据里了。
+
+    （收据是**转抄**：契约 §二说脚本只转抄、也留原文 —— 转抄来的东西里不该有判。）
+    ⚠️ 但**一格的内容**里可以出现判断词：`verdict={"changed": true}` 正是「变没变」
+    那一格的内容，那一格的形状归填它的那一方定（复审 2026-09-18 背书过这一条，别改）。
+    """
+    tl = events.Timeline()
+    for bad in ({"receipt": {"verdict": "success"}},
+                {"sig_after": {"url": "u", "verdict": True}},
+                {"action": {"targets": [{"expect": "x"}]}}):
+        with pytest.raises(ValueError) as caught:
+            tl.add("step", "第 7 步：走了一步", who="system", data=bad)
+        assert "顶层" in str(caught.value), caught.value
+    assert tl.all() == []
+    # 七格自己当然在顶层；一格的内容里放什么由那一格说了算
+    event = tl.add("step", "第 8 步：核对了一下", who="system",
+                   data={"verdict": {"changed": True},
+                         "expect": {"url_contains": "/wizard"},
+                         "receipt": {"verb": "click", "raw": "元素没找到"}})
+    assert event["data"]["verdict"] == {"changed": True}
+    assert event["data"]["expect"] == {"url_contains": "/wizard"}
+
+
 def test_the_script_may_not_fill_the_verdict_or_the_expectation():
     """契约 §二①：**脚本只填前五格** —— 第七格永远不是它的，第六格是运营写的。
 
@@ -381,15 +478,50 @@ def test_a_nested_fact_that_json_cannot_hold_is_refused():
     assert tl.all() == []
 
 
-def test_a_stored_event_is_json_round_trippable():
-    """存下来的每一条都得是**能进 `/live` 那个 JSON** 的东西 —— 拿真 json 走一遍。"""
+def test_a_number_that_cannot_survive_the_live_json_is_refused():
+    """`nan` / `inf` **进不来** —— 因为它们在 `/live` 那一层会被**悄悄写成 `null`**。
+
+    复审 2026-09-18 实测：`json.dumps` 默认放行 `nan`，而 starlette 渲染 `/live` 用的是
+    `allow_nan=False` 那一支 ⇒ 值被**静默改写**成 `null`。而 `null` 正是 `sig_after`
+    用来表示「**看不见**」的那个一等值 —— 「看不见」与「一个数」被抹成同一个，
+    正是这份契约要治的那个病（「什么都没看见」被判成「做完了」）换了个层次又来一次，
+    这次是**框架默认参数**干的。
+
+    选的是「**让它根本进不来**」这条（不是「让它活着穿过去」）：`NaN`/`Infinity`
+    **本身就不是合法 JSON**（`json.dumps(..., allow_nan=True)` 吐出来的那串东西
+    浏览器 `JSON.parse` 读不了），放它过去就得同时改 `/live` 的渲染器，
+    而那会把一个**读不了**的响应体送到页面上。所以闸放在写这一侧：
+    要记「量不出来」，明写 `None`（签名那两格配一句 `why`）—— 那才是契约里那个一等值。
+    """
+    tl = events.Timeline()
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError) as caught:
+            tl.add("step", "第 9 步：量了一下", who="system", data={"progress": bad})
+        said = str(caught.value)
+        assert "null" in said and "看不见" in said, "报错要说清它会被写成什么：%s" % said
+    assert tl.all() == [], "抛了的那条不许留在时间线上"
+    # 「量不出来」的正确写法：明写 None（签名那两格配一句 why）
+    ok = tl.add("step", "第 9 步：量了一下", who="system",
+                data={"sig_after": None, "why": "探针这一次没量出来"})
+    assert ok["data"]["sig_after"] is None
+
+
+def test_a_stored_event_survives_the_same_json_settings_the_wire_uses():
+    """存下来的每一条都得过 **starlette 那一档**的 JSON（`allow_nan=False`）。
+
+    ⚠️ 量具的刻度要跟被量的东西一样（复审 2026-09-18 的教训）：拿 `json.dumps` 的
+    **默认**参数走一遍，是**看不见 `nan` 那个洞**的 —— 默认允许 NaN，而线上那一层不允许。
+    一条用错刻度的用例，证明不了它盯的那条性质。
+    """
     tl = events.Timeline()
     tl.add("step", "第 12 步：点了一个按钮", who="agent",
            data={"step_no": 12, "action": {"what": "click", "target": "下一步"},
                  "receipt": {"raw": "元素没找到", "from": "cdp"},
                  "sig_before": {"url": "https://x.test/a", "text": "a1b2c3", "visible": 12},
                  "sig_after": None, "why": "窗口没答"})
-    raw = json.dumps({"events": tl.all()}, ensure_ascii=False)
+    raw = json.dumps({"events": tl.all()}, ensure_ascii=False, allow_nan=False)
     back = json.loads(raw)
     assert back["events"][0]["data"]["receipt"]["raw"] == "元素没找到"
     assert back["events"][0]["data"]["sig_after"] is None
+    # 而且「看不见」在**线上那一层**是 `null` 这个字面值（不是缺键、不是别的值）
+    assert '"sig_after": null' in raw.replace("\n", "")

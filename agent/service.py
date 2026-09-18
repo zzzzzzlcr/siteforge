@@ -1530,23 +1530,62 @@ class Service:
             job, payload = self._queue.get()
             try:
                 self._advance(job, payload)
-            except BaseException:                    # noqa: BLE001 —— 工作线程**不许**死
+            except BaseException as exc:             # noqa: BLE001 —— 工作线程**不许**死
                 traceback.print_exc()
+                self._note_escaped(job, exc)
             finally:
                 self._queue.task_done()
+
+    def _note_escaped(self, job: Job, exc: BaseException) -> None:
+        """`_advance` 里**逃出来**的东西（最后一层网）—— 不许静默，更不许报「在跑」。
+
+        今天能走到这儿的只有「`narrate` 自己抛了」（形状判据是设计成编程错误的），
+        而那正好是**时间线坏掉**的那一刻 —— 所以这一层**不许**依赖 narrate 成功。
+        两件事的次序就是照这个排的：
+
+          ① **先把状态改对**：`/live` 再也不许说「在跑」。一句会一直说下去的假话
+             （job 永远不会再动，因为没人推它了）比一条记不上的事件坏得多；
+          ② 再试一次 narrate（记不上也已经在日志里了 —— 时间线此刻本来就是坏的）。
+
+        ⚠️ 图要是已经到头（`DONE`）或者已经挂过（`FAILED`），这一层**不动它**
+        —— 状态本来就是诚实的，没有谎要收；那种情况下少的是**时间线里的一条**，
+        而时间线坏了的时候，任何一条事件都记不上（那条路只剩日志）。
+        （登记表里只有 `queued` / `running` / `done` / `failed` 四种；「在等人」是从
+        checkpoint 投影出来的，从来不写进登记表 —— 所以这里不必考虑它。）
+        """
+        raw = "%s: %s" % (type(exc).__name__, exc)
+        with job.lock:
+            if job.status not in (QUEUED, RUNNING):
+                return                               # 状态是诚实的，别覆盖它
+            job.status = FAILED
+            job.error = raw
+            job.say = ("这一步没跑成，停下了：%s\n"
+                       "（任务没有交付任何东西 —— 产物目录里不会有它写的 py。）" % exc)
+            said = job.say
+        try:
+            self.narrate(job, "failed", said, error=raw)
+        except Exception:                            # noqa: BLE001 —— 网里的网：这一层不能再抛
+            traceback.print_exc()
 
     def _advance(self, job: Job, payload) -> None:
         """把图往前推一步 —— **这是唯一一个 job 会动的地方**（单飞）。
 
         抛出来的东西一律变成 `failed`：一个跑挂的 job **绝不许**被读成跑成了
         （它 `result` 为 `None`，状态是 `failed`，人话里留着原始错误）。
+        ⚠️ 「一律」的边界：`try` **只包**「说一句在跑 + 推图」那两句。except 里那条 narrate
+        自己再抛、或者 `_capture_pause` / `_note_after_advance` 抛，会从 `_advance` 里
+        **逃出去** —— 那一路归 `_work` 的最后一层网（`_note_escaped`），它先改状态再试一次记。
         """
         with job.lock:
             job.status = RUNNING
             job.say = RUNNING_SAY
-        # 目录表第 4 行：拿到 job 就说「在跑」（与 `/job/{id}` 上那句**同一句**）。
-        self.narrate(job, "running", RUNNING_SAY)
         try:
+            # 目录表第 4 行：拿到 job 就说「在跑」（与 `/job/{id}` 上那句**同一句**）。
+            # ⚠️ 这一条必须在 `try` **里面**（复审 2026-09-18 实测）：写在 try 外面的话，
+            #    它一抛就绕过下面那个 except —— 时间线一个字节没变、`job.status` 停在
+            #    `running`、`/live` 一直报「在跑」，而全部后果只是 `_work` 的一行 print。
+            #    「没有静默的路径」在这儿的正身就是：**记不下这一条，也要说它失败了**。
+            self.narrate(job, "running", RUNNING_SAY)
             with self._check.lock:                   # 一个 saver 连接不被两个线程同时用
                 out = job.graph.invoke(payload, self._cfg(job.job_id))
         except BaseException as exc:                 # noqa: BLE001 —— 包括 _Stop 之类的 BaseException

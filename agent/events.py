@@ -20,24 +20,34 @@
 | `expect` | **运营** | `data["expect"]`（从菜单里选、填人话；或 `UNDECLARED`） |
 | `verdict` | **收到上面那些的那一方** | `data["verdict"]`（**永远不是脚本的**） |
 
-**这一版一个都不填**（契约 §五：只把七格如实记下来；算的那一方是下一步）。
+**这一版七格一格都没填 —— 而原因不是「契约要求别填」，是「没有填的人」。**
+契约 §五那句的**字面**是「只把七格**如实记下来**」（记 ≠ 不记）：它要求的是**别替它算**，
+不是**别记**。这一版记不下来的原因是**来源**：
+
+- `receipt`：**没有任何一方在写它**（契约 §一自己写着今天的 CDP 回执「没上报」）；
+- `sig_before` / `sig_after`：**没有人在算**「那一页的原始签」；
+- `verdict`：**裁判不存在**（契约 §五：这一版不判 Business Truth）；
+- `expect`：**运营写它的入口不存在**，而且已声明那一半的机器形状还没定（契约 §四那张菜单）。
+
+**落不下的不是格子，是填格子的人** —— 格子已经在形状里等他们了。
 这个文件管的是**形状**：七格落得下、落得对、落不下的地方**响**（抛），不静默。
 
 ⚠️ **不是「先拼个时间线、字段随手定」**（契约 §三）。反过来做会得到
 「给旧的 `step` 字段换个名字」—— 三层（Action / State / Business Truth）就白分了。
 
-## 二、三条硬规矩（都在下面机械挡掉了）
+## 二、四条硬规矩（都在下面机械挡掉了）
 
 1. **字段名里不许出现判断词**（契约 §二③）。不许有 `success` / `changed` / `done`
    这种格子。今天那个 `step="success"` 就是这么来的：**脚本自起的名字，后台照着当真话读**。
-   挡的是 `data` 的**键**（不是 `kind` 的值 —— 事件词汇表由服务那一侧定，
-   `done` / `failed` 说的是「图走到哪了」，不是「成没成」）。
+   挡的是 `data` 里**每一层**的**键**（顶层挡得住、`{"result": {"ok": true}}` 挡不住 =
+   等于没挡），以及 `kind` 的值（见第 4 条）。
 2. **「看不见」是一等值**（契约 §二②）：`sig_after = None` **加一句 `why`**，
    **不许**被折算成「没变化」。所以 `None` 一路原样留着（连 `json.dumps` 都不许把它吃掉），
    而写了 `None` 却不说是为什么 —— **抛**。
 3. **谁填哪一格**（契约 §二①）：脚本只填前五格。时间线上脚本的声音就是 `who="agent"`，
    它的 `data` 里**不许**出现 `verdict`（判断）与 `expect`（那是运营写的）——
    脚本替运营声明期望，正是「执行的那一方在当裁判」换个地方又长出来。
+4. **`kind` 是一张封闭的词表**（`KINDS`，见下）：没有的词不认。
 
 ## 三、为什么错误一律「抛」而不是「忽略」
 
@@ -55,11 +65,38 @@ import json
 import re
 import threading
 
-__all__ = ["WHO", "MAX_EVENTS", "CELLS", "UNDECLARED", "JUDGMENT_WORDS", "Timeline"]
+__all__ = ["WHO", "KINDS", "MAX_EVENTS", "CELLS", "UNDECLARED", "JUDGMENT_WORDS",
+           "Timeline"]
 
 #: 时间线上说话的**三方**（页面靠它决定气泡长相：它就是「聊天」那一半）。
 #: `agent` = 它自己（探路的步、模型的话）；`system` = 服务/系统；`you` = 人。
 WHO = ("agent", "system", "you")
+
+#: **事件的词表**（计划 Task 4 目录表那九行的全部产出 + 这一版补的两个）——
+#: **封闭**：不在表里的 `kind` 一律拒收。
+#:
+#: 为什么要关这扇门（复审 2026-09-18 点名）：`datewhirl` 那个病的形状正是
+#: **「脚本自起的名字，后台照着当真话读」**（`step="success"`）。一个自称「事件词汇表」
+#: 的模块要是谁递什么名字都收，那它就只是「一个字符串字段」。加一个词的门槛很低的 ——
+#: 往这张表里加一行、并想清它说的是**哪一件事实**（不是「它感觉怎么样」）。
+KINDS = (
+    # ── 一个 job 的一生（目录表第 3、4、5、6 行）──
+    "submitted",        # 收到了（`start()`）
+    "queued",           # 排队等窗口（前面还有 run）
+    "running",          # 在跑
+    "failed",           # 跑挂了（**跑挂 ≠ 跑成**）
+    "done",             # 图走到了 END（**不是**「成了」—— 成没成看 `end_note` 原话）
+    "cap_hit",          # 撞上限了（revision / lint / selftest）
+    # ── 窗口那一支（目录表第 1、2 行）──
+    "window_died",      # 窗口没了（从「不是没了」翻成「没了」的那一翻）
+    "window_reopened",  # 窗口重开了（探路重跑 / 从断点接着跑，两句不同的话）
+    # ── 别的（目录表第 7、8、9 行 + 这一版补的）──
+    "recovered",        # 服务重启过，这个 job 是从 checkpoint 捡回来的
+    "human_said",       # 人说的话 / 人打过回（`who="you"`）
+    "shot_missing",     # 这一轮没留下图（配一句「为什么没有」）
+    "state_unreadable", # 跑完一步之后读不回自己的状态（**读**那一侧的静默路，Task 4 补）
+    "step",             # 「第 N 步」：契约七格主要落在这类事件上（探路的 `on_step` 是 Task 5）
+)
 
 #: 事件上限：超了**丢最旧的**（内存里的东西，随 job 一起活在进程里）。
 #: 一次探路 30 步 → 几百条短字符串（设计注 §3.3 算过这笔账）——
@@ -122,13 +159,49 @@ def _require_text(value, name: str) -> str:
     return value
 
 
+def _nested_problem(node, *, top: bool, inside_cell: bool):
+    """把事实里**每一层**的键过一遍，返回第一个不对的 `(哪条规矩, 键, 路径)`。
+
+    为什么不能只看最外面那一层（复审 2026-09-18 实测）：`{"step_no":3, "result":{"ok":true}}`
+    顶层键全是干净的 —— 判**藏在里面**，等于没挡。
+
+    两层规矩，各自有各自的来由：
+
+    1. **判断词不许当键** —— 但**一格的内容里不查**：`verdict={"changed": true}` 就是
+       「变没变」那一格的内容（那一格的形状归**填它的那一方**定，不是脚本起的名字）。
+       而 `{"result": {"ok": true}}` 里的 `result` **不是**格子，那里的 `ok` 就是脚本自己下的判。
+    2. **七格的名字只在顶层**：`receipt` 是**转抄**（契约 §二：脚本只转抄、也留原文）——
+       转抄来的东西里冒出一个 `verdict`，说明有人把「判」塞进收据里了。
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            name = str(key)
+            if not inside_cell:
+                hit = [w for w in _words(name) if w in JUDGMENT_WORDS]
+                if hit:
+                    return ("judgment", name, hit[0])
+            if not top and name in CELLS:
+                return ("cell", name, "")
+            deeper = _nested_problem(value, top=False,
+                                     inside_cell=inside_cell or (top and name in CELLS))
+            if deeper:
+                return deeper
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            deeper = _nested_problem(item, top=False, inside_cell=inside_cell)
+            if deeper:
+                return deeper
+    return None
+
+
 def _facts(data) -> dict:
     """`data` → 一个**装得下**、**没有判断词**、**没被折算过**的事实字典。
 
-    五道判据，每一道都对应契约里的一条（顺序即报错的优先级）：
+    六道判据，每一道都对应契约里的一条（顺序即报错的优先级）：
       ① 它得是个 mapping（七格是**有名字的格子**）；
-      ② JSON 装得下（**字节不进 JSON**：图走文件名，字节在盘上）；
-      ③ 键里不许出现判断词；④ `expect` 不许留空；⑤ 写了 `None` 的签名格要带 `why`。
+      ② **原样**进得了 `/live` 的 JSON（字节、`nan`/`inf` 都不行 —— 见下）；
+      ③ 键里不许出现判断词（**每一层**）；④ 七格的名字只在顶层；
+      ⑤ `expect` 不许留空；⑥ 写了 `None` 的签名格要带 `why`。
     """
     if data is None:
         return {}
@@ -139,23 +212,39 @@ def _facts(data) -> dict:
     # （或者改某个嵌套的小字典）不许改到历史（append-only 的意思就在这儿）。
     facts = copy.deepcopy(data)
 
+    # ⚠️ `allow_nan=False` **不是洁癖**（复审 2026-09-18 实测出来的洞）：
+    # `json.dumps` 默认允许 `nan`/`inf`，而 starlette 渲染 `/live` 时用的是
+    # `allow_nan=False` 那一支 —— 于是 `nan` 会**悄悄变成 `null`**，而 `null` 正是
+    # `sig_after` 用来表示「**看不见**」的那个一等值。⇒「看不见」与「一个数」被抹成同一个，
+    # 正是这份契约要治的那个病（`datewhirl` 把「什么都没看见」判成「做完了」），换了个层次。
+    # 判据：`test_a_number_that_cannot_survive_the_live_json_is_refused` +
+    # `test_service_events.py::test_a_value_that_cannot_survive_the_live_json_never_gets_in`
+    # （拆掉这个参数就当场红）。顺带：`NaN` / `Infinity` **本身就不是合法 JSON**
+    # （`json.dumps` 吐出来的那串东西浏览器 `JSON.parse` 读不了）。
     try:
-        json.dumps(facts, ensure_ascii=False)
+        json.dumps(facts, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise ValueError(
-            "data 里有个值 JSON 装不下（%s）—— **字节不进 JSON**："
-            "图走文件名（`pause-<n>.png`），字节在盘上。整份 data 得能原样进 `/live` 的 JSON。"
+            "data 里有个值**原样**进不了 `/live` 的 JSON（%s）—— 两条路，都不是「随便塞」：\n"
+            "· **字节**（bytes / 一个文件对象）：图走文件名（`pause-<n>.png`），字节在盘上；\n"
+            "· **数字**（`nan` / `inf`）：它们不是合法 JSON，`/live` 会把它们写成 `null` —— "
+            "而 `null` 是「**看不见**」那个一等值的写法（`sig_after = None` + 一句 `why`）。"
+            "要记「量不出来」就明写 `None`（并说为什么），**不许**用一个会变成 `null` 的数。"
             % exc)
 
-    for key in facts:
-        hit = [w for w in _words(key) if w in JUDGMENT_WORDS]
-        if hit:
-            raise ValueError(
-                "判断词不许当字段名（%r 里的 %r）—— 契约 §二③：字段名里不许出现 "
-                "success / changed / done 这种词。判断不是脚本写的格子："
-                "「该怎样」用 `expect`（运营写）或 `verdict`（收到事实的那一方写），"
-                "「变没变」用 `sig_before` / `sig_after`（`None` 就是「看不见」，见下）。"
-                % (key, hit[0]))
+    bad = _nested_problem(facts, top=True, inside_cell=False)
+    if bad and bad[0] == "judgment":
+        raise ValueError(
+            "判断词不许当字段名（%r 里的 %r）—— 契约 §二③：字段名里不许出现 "
+            "success / changed / done 这种词，**哪一层都不许**（只查最外面那一层 = 没查）。"
+            "判断不是脚本写的格子：「该怎样」用 `expect`（运营写）或 `verdict`（收到事实的那一方写），"
+            "「变没变」用 `sig_before` / `sig_after`（`None` 就是「看不见」，见下）。"
+            % (bad[1], bad[2]))
+    if bad and bad[0] == "cell":
+        raise ValueError(
+            "`%s` 是**顶层**那七格之一，不许藏在别的键里面 —— 收据（`receipt`）是**转抄**"
+            "（契约 §二：脚本只转抄、也留原文），转抄来的东西里冒出一个格子名，"
+            "说明有人把「判」塞进收据里了。七个格子只有顶层那七把椅子。" % bad[1])
 
     if "expect" in facts and facts["expect"] is None:
         raise ValueError(
@@ -196,11 +285,20 @@ class Timeline:
     def add(self, kind: str, say: str, *, who: str = "system", data=None) -> dict:
         """记一条，返回它（副本）。形状不对就**抛**，一条都不留。
 
-        形状不对包括：`who` 不是那三方、`say` 不是人话（空/不是字符串）、`kind` 空着、
-        `data` 不是字典、`data` 里有判断词/字节/留空的 `expect`/没带 `why` 的 `None` 签名 ——
+        形状不对包括：`who` 不是那三方、`say` 不是人话（空/不是字符串）、`kind` 不在词表里
+        （`KINDS`）、`data` 不是字典、`data` 里有判断词（哪一层都不许）/字节或 `nan`/
+        留空的 `expect`/没带 `why` 的 `None` 签名、七格的名字藏在别的键里面 ——
         还有「脚本替运营声明期望」。
         """
         kind = _require_text(kind, "kind")
+        if kind not in KINDS:
+            raise ValueError(
+                "不认得这个 kind：%r —— 事件的词表就写在 `agent/events.py` 的 `KINDS` 里"
+                "（第 4 条规矩）。一个自称「事件词汇表」的模块要是谁递什么名字都收，"
+                "那它就只是一个字符串字段 —— 而「脚本自起的名字被后台照着当真话读」"
+                "正是这一片要治的那个病（`datewhirl.py:175` 的 `step=\"success\"`）。"
+                "要加一个词：往 `KINDS` 里加一行，并想清它说的是**哪一件事实**。"
+                "现有：%s" % (kind, " / ".join(KINDS)))
         say = _require_text(say, "say")
         if who not in WHO:
             raise ValueError(
