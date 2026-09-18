@@ -65,10 +65,11 @@ from fastapi.responses import FileResponse
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from agent import browser_agent, graph, journal, measure, selftest, shots, tools
+from agent import browser_agent, events, graph, journal, measure, selftest, shots, tools
 from agent.graph import NODES, STEP_SAY
-from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_NO_WINDOW,
-                         END_PAUSED, END_WINDOW_GONE)
+from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_LINT_CAP,
+                         END_NO_WINDOW, END_PAUSED, END_REVISION_CAP,
+                         END_SELFTEST_CAP, END_WINDOW_GONE)
 
 __all__ = ["create_app", "app", "BitWindow", "Service", "Checkpointer",
            "QUEUED", "RUNNING", "WAITING", "DONE", "FAILED"]
@@ -138,6 +139,45 @@ SHOTS_OFF_SAY = ("这一次没留逐步的图：%s"
                  "每一道闸拍的那张还在（`pause-<n>.png`），逐步的一句话清单也还在。"
                  "要恢复逐步的图：把 `SITEFORGE_STEP_SHOTS` 去掉、或设成 1 —— "
                  "**下一次探路**就会重新逐步拍（这一次已经跑过的那几步补不回来）。")
+
+
+# ── 时间线（Task 4 / 契约七格）：目录表那九条各自的**人话**─────────────────
+# 这些话**写死在这儿**（不在九个调用点上现拼）：它们是给运营看的（D16），
+# 散着写早晚漂成两套口径。**只有真事实才在调用点上填**（哪一步、为什么、哪个错误），
+# 而且填进去的必须是从快照/回执/异常里**读出来的** —— 读不出来就明说读不出来，不编。
+#: 目录表第 3 行：交上去了 / 前面还有 run 在排队等窗口
+SUBMITTED_SAY = "收到了，排队开跑。"
+QUEUED_SAY = "排队等窗口（前面还有别的 run 在用）。"
+#: 目录表第 4 行（与 `/job/{id}` 上那句**同一句** —— 一件事一处口径）
+RUNNING_SAY = "在跑：真浏览器 + 模型，做完一步或需要你时就会停下来。"
+#: 目录表第 7 行
+RECOVERED_SAY = "（服务重启过：这个任务是从 checkpoint 里捡回来的）"
+#: 目录表第 1 行。`%s` = 它停在哪一步**之前**（从快照里读出来的人话步骤名）
+WINDOW_DEAD_SAY = ("窗口没了 —— Bit 的窗口只活几分钟。它停在「%s」之前；"
+                   "接着走之前得先重开一个窗口。")
+#: 目录表第 8 行：**说了就要让人知道这句话去哪了**
+HUMAN_SAID_THROUGH_SAY = "这句话会一路带进「写这一版 py」。"
+#: 没有 note 的那次「继续」：不能说「这句话带进去了」（没有话）
+HUMAN_SAID_PLAIN_SAY = "（你在「%s」那道闸上按了继续，没有多说。）"
+#: 目录表第 9 行。`%s` = 拍不成的原因**原文**（不许让空图框冒充页面）
+SHOT_MISSING_SAY = "这一轮没留下图：%s"
+#: 目录表第 6 行：撞上限时那句话的前缀（后面照抄 `end_note`）
+CAP_SAY_PREFIX = "撞上限了："
+#: 到头了但快照里**没留人话** —— 明说「它没说清」（`say` 不许空着，更不许不记）
+END_UNSAID_SAY = ("这一趟到头了（%s），但快照里没留一句人话说明是怎么结束的 —— "
+                  "这本身就不正常，别把它当成跑成了。")
+#: 一条**新**的、会静默的路（不在目录表九条里）：跑完这一步之后状态读不回来。
+#: 只 `traceback.print_exc()` 的话，「窗口还在不在」「这一趟是不是到头了」就没人说过。
+STATE_UNREADABLE_SAY = ("这一步结束之后，它读不回自己的状态（%s）—— 「窗口还在不在」"
+                        "「这一趟是不是到头了」这两件事这次没记进时间线。"
+                        "任务本身的进展还在 checkpoint 里。")
+#: `/live` 的 `note`：时间线**不持久**这件事要明说（设计注 §3.5）。
+#: 不说的话，人会把「空」读成「它什么都没干」。
+RESTART_NOTE = ("服务重启过：这之前的时间线没有了。运行的状态还在（从 checkpoint 里读），"
+                "轮次与截图仍然完整。")
+#: 「撞上限」那三种停因（设计注 §3.2 第 4 行）—— 只用来挑 `kind`；
+#: 人话一律照抄快照里的 `end_note`（原话），不在这儿另写一句。
+CAP_END_REASONS = (END_REVISION_CAP, END_LINT_CAP, END_SELFTEST_CAP)
 
 
 # ─────────────────────────────── 窗口层（§4.6）───────────────────────────────
@@ -582,6 +622,15 @@ class Job:
     #: 每一轮一条：`{"n", "name", "why"}`。拍成了 `name="pause-<n>.png"` 且 `why=""`；
     #: 没拍成 `name=None` 且 `why` 是一句**人话**（拍不成绝不许静默）。
     shot_notes: list = dataclasses.field(default_factory=list)
+    #: 时间线（Task 4 / 契约七格，`agent/events.py`）。**唯一的写入口是 `Service.narrate`** ——
+    #: 谁都别直接 `timeline.add`（否则人话纪律与「谁填哪一格」会散）。
+    #: ⚠️ 它是 **process-local** 的：服务一重启就没了（`/live` 的 `note` 明说这件事）。
+    timeline: events.Timeline = dataclasses.field(default_factory=events.Timeline)
+    #: 这个 job 是不是**服务重启之后从 checkpoint 捡回来的**（`/live` 的 `note` 靠它明说）。
+    recovered: bool = False
+    #: 「窗口已经死了」这件事**说过了**没有：每次 `_advance` 返回都去问窗口层，
+    #: 但只有「不是没了 → 没了」那一翻要记一条（同一件事记十遍不是信息）。
+    window_dead: bool = False
 
     def snapshot_for_view(self) -> tuple:
         with self.lock:
@@ -911,6 +960,11 @@ class Service:
         name, why = self._shoot_pause(job, n)
         with job.lock:
             job.shot_notes.append({"n": n, "name": name, "why": why})
+        if name is None:
+            # 目录表第 9 行：这一轮没留下图要**说出来**（why 原文照抄）。
+            # 空图框冒充页面是设计注明令禁止的（§3.2 第 6 行）—— 人话里就写着为什么没有。
+            self.narrate(job, "shot_missing", SHOT_MISSING_SAY % (why or "没说为什么"),
+                         n=n, why=why)
 
     def _shoot_pause(self, job: Job, n: int) -> tuple[Optional[str], str]:
         """真去拍一张（`_capture_pause` 的下半截）。**不抛** —— 连算落点的 `ValueError` 也收在这儿。"""
@@ -1319,6 +1373,146 @@ class Service:
         with self._check.lock:
             return g.get_state(self._cfg(job_id))
 
+    # ── 时间线：**唯一的写入口**（Task 4；契约 `docs/执行事实契约-2026-09-18.md`）────
+    # 目录表那九条触发点各自的调用点见 `_advance` / `start` / `reply` / `reopen` /
+    # `_recover` / `_capture_pause`；这里放的是**入口**与几个共用的小工具。
+    # ⚠️ 这一节整节是**旁路**（与 journal / 闸拍同一条规矩）：记时间线**绝不许**把
+    #    主路带塌 —— 但「读不回状态」那一支是**响的**（记一条 `state_unreadable`），
+    #    因为那正是「没有静默的路径」在**读**那一侧的样子。
+
+    def narrate(self, job: Job, kind: str, say: str, *, who: str = "system", **data) -> dict:
+        """往这个 job 的时间线上记一条 —— **谁都别直接碰 `job.timeline`**。
+
+        为什么要只有一个口子（计划 §「跨任务接口」1）：人话纪律与七格的形状是靠
+        「只有一条路进来」守住的；直接 `add` 的地方一多，「给旧的 `step` 换个名字」就会长回来。
+
+        回调是从**工作线程**里来的（探路的步、抓拍、闸口），所以 `job.lock` 只包**一次**
+        append（微秒级）：绝不在这里读快照、起进程、发请求。
+        形状不对（`events.Timeline.add` 那几条：空 `say`、第四个 `who`、判断词当字段名…）**抛** ——
+        那是编程错误，不是运行时状况（人话写不出来就说明还没想清）。
+        """
+        with job.lock:
+            return job.timeline.add(kind, say, who=who, data=data or None)
+
+    def _where_it_stopped(self, job_id: str) -> tuple:
+        """它停/走在**哪一步**：`(节点名, 人话)` —— 「窗口没了」那句话的 `%s` 与 `/live` 的 `stage`。
+
+        三档，**全是从快照里读出来的**（读不出来就写「不知道哪一步」，绝不编）：
+          ① 有闸口 → 闸在问哪一步（那正是它这一趟接着要做的事，也是设计注里
+             「它停在「写这一版 py」之前」那个例子）；
+          ② 没闸口但有 `next` → 图下一步要跑的节点；
+          ③ 都没有 → `visits` 里最后落下的那一步。
+        """
+        unknown = ("", "不知道哪一步")
+        try:
+            snap = self._snapshot(job_id)
+        except Exception:                      # noqa: BLE001 —— 读不出来就说不知道
+            traceback.print_exc()
+            return unknown
+        values = dict(getattr(snap, "values", None) or {})
+        gates = self._interrupts(snap)
+        if gates:
+            value = gates[0].value if hasattr(gates[0], "value") else gates[0]
+            step = str((value or {}).get("step") or "")
+            if step:
+                return step, STEP_SAY.get(step, step)
+        nxt = tuple(getattr(snap, "next", None) or ())
+        if nxt:
+            node = str(nxt[0])
+            return node, STEP_SAY.get(node, node)
+        visits = [str(v) for v in (values.get("visits") or [])]
+        if visits:
+            return visits[-1], STEP_SAY.get(visits[-1], visits[-1])
+        return unknown
+
+    def _note_window_died(self, job: Job, values: dict, *, dead: Optional[bool] = None) -> None:
+        """目录表第 1 行：窗口**从「不是没了」翻成「没了」**的那一刻记一条。
+
+        ⚠️ 三个判据（少一个就成了另一种毛病）：
+        - **只有明确说死了才算**（`_window_is_gone`：问不出来一律当不知道 —— 不许误杀）；
+        - **只有那一翻才记**：每次 `_advance` 返回都去问，但同一件事不记第二遍；
+        - **重开窗口之后要能再记**（`reopen` 把 `window_dead` 清掉）——
+          换的那个窗口也会死，那是一条**新**事实。
+        `dead` 是**已经问过了**的那个答案（`reply()` 手上就有）：传进来就不必再问一次
+        （每 15 秒多打一个 `/browser/pids/alive` 是白花的 —— 同一个理由）。
+        """
+        if job.window_dead:
+            return
+        ws_url = values.get("ws_url") or (job.brief or {}).get("ws_url")
+        if not (self._window_is_gone(ws_url) if dead is None else dead):
+            return
+        token, where = self._where_it_stopped(job.job_id)
+        with job.lock:
+            job.window_dead = True
+        self.narrate(job, "window_died", WINDOW_DEAD_SAY % where,
+                     where=token, ws_url=str(ws_url or ""))
+
+    def _note_end(self, job: Job, values: dict) -> None:
+        """目录表第 6 行：快照里已经有终局 → `done` / `cap_hit`。
+
+        `done` 说的是「**图走到了 END**」（与 `DONE` 那个状态同一个意思，
+        **不是**「成了」—— 成没成看 `end_note` 的原话与 `/live` 的 `delivered`）。
+        撞上限（`revision_cap` / `lint_cap` / `selftest_cap`）单独一个 `kind`：
+        那是**它自己的一个结论**（再来一次还是同样的地方不过），人话前面加「撞上限了：」。
+        """
+        reason = str(values.get("end_reason") or "")
+        if not reason:
+            return                              # 没到头（停在闸上 / 还在跑）—— 没有终局可说
+        note = str(values.get("end_note") or "").strip()
+        if reason in CAP_END_REASONS:
+            say = CAP_SAY_PREFIX + (note or "（快照里没写是撞了哪条上限 —— 这本身就不正常。）")
+            self.narrate(job, "cap_hit", say, end_reason=reason, end_note=note)
+            return
+        self.narrate(job, "done", note or (END_UNSAID_SAY % reason),
+                     end_reason=reason, end_note=note)
+
+    def _note_after_advance(self, job: Job, *, ended: bool) -> None:
+        """一次 `_advance` 返回之后要记的两件事（目录表第 1、6 行）。
+
+        ⚠️ 顺序：**先现场，后结论** —— 「窗口还在不在」决定了下一步能不能走，
+        「这一趟到头了」是这一跳的结果。
+        ⚠️ `ended=False` 是**跑挂**那一支：那儿只记现场，**不许**记 `done`
+        （「跑挂 ≠ 跑成」：快照里可能还留着上一次的 `end_reason`，照抄它就成了假话）。
+        """
+        try:
+            values = dict(getattr(self._snapshot(job.job_id), "values", None) or {})
+        except Exception as exc:               # noqa: BLE001 —— 旁路，但**响**
+            traceback.print_exc()
+            raw = "%s: %s" % (type(exc).__name__, exc)
+            self.narrate(job, "state_unreadable", STATE_UNREADABLE_SAY % raw, error=raw)
+            return
+        self._note_window_died(job, values)
+        if ended:
+            self._note_end(job, values)
+
+    def _note_human_said(self, job: Job, job_id: str, body: ReplyRequest) -> None:
+        """目录表第 8 行：人的原话 + **这句话去哪了**。
+
+        ⚠️ 没有 note 的那次「继续」**也要有一条**（那是最常见的一次交互）：
+        不记的话「人按了什么」在时间线上是空白。只是它不能说「这句话带进去了」（没有话）。
+        ⚠️ 这句话的 `who` 是 `"you"` —— 页面靠它决定气泡长相。
+        """
+        note = str(body.note or "").strip()
+        token, where = self._where_it_stopped(job_id)
+        if note:
+            say = "%s\n%s" % (note, HUMAN_SAID_THROUGH_SAY)
+        else:
+            say = HUMAN_SAID_PLAIN_SAY % where
+        self.narrate(job, "human_said", say, who="you",
+                     reply=str(body.action or ""), note=note, step=token)
+
+    def _something_is_ahead(self) -> bool:
+        """交上去的这一刻，**前面还有没有别的 run**（目录表第 3 行那一半）。
+
+        两样事实：队列里压着活、或者正有一个 job 在跑（单飞：一次只有一个在窗口上）。
+        ⚠️ 这是**快照**，不是保证 —— 判完队列还可能变。所以只在**真说得出「前面有东西」**
+        时才说「排队等窗口」：漏说一句只是少一句话，说反了就是编话。
+        """
+        if not self._queue.empty():
+            return True
+        with self._jobs_lock:
+            return any(j.status == RUNNING for j in self._jobs.values())
+
     # ── 排队与跑 ──────────────────────────────────────────────────
     def _ensure_worker(self):
         with self._worker_lock:
@@ -1349,7 +1543,9 @@ class Service:
         """
         with job.lock:
             job.status = RUNNING
-            job.say = "在跑：真浏览器 + 模型，做完一步或需要你时就会停下来。"
+            job.say = RUNNING_SAY
+        # 目录表第 4 行：拿到 job 就说「在跑」（与 `/job/{id}` 上那句**同一句**）。
+        self.narrate(job, "running", RUNNING_SAY)
         try:
             with self._check.lock:                   # 一个 saver 连接不被两个线程同时用
                 out = job.graph.invoke(payload, self._cfg(job.job_id))
@@ -1359,11 +1555,16 @@ class Service:
                 job.error = "%s: %s" % (type(exc).__name__, exc)
                 job.say = ("这一步没跑成，停下了：%s\n"
                            "（任务没有交付任何东西 —— 产物目录里不会有它写的 py。）" % exc)
+                said, raw = job.say, job.error
             self._measure_after(job.job_id)          # 旁路：跑挂了也要留账（吞异常）
+            # 目录表第 5 行：跑挂了**也要说**（原始错误进 `data`，人话不把它盖掉）。
+            # ⚠️ 放在抓拍**之前**：抓拍最坏要等 20 秒，而「它挂了」人该立刻看见。
+            self.narrate(job, "failed", said, error=raw)
             # 跑挂了那一屏更该看得见 —— 同一个出口、同一条纪律（旁路，不抛）。
             # ⚠️ 这条路上 `FAILED` **先**落（人该立刻看见它挂了），图随后才到 ——
             #    所以这一刻的快照里可能还没有这一轮的 note，下一次读就有。
             self._capture_pause(job)
+            self._note_after_advance(job, ended=False)   # 只记现场（跑挂 ≠ 跑成）
             return
         self._measure_after(job.job_id)              # 旁路：记一行时间线 + 汇总 baseline
         # ⚠️ 闸拍放在**这里**：`invoke` 之外（写锁已经放开）、`job.lock` 也没拿着 ——
@@ -1375,6 +1576,7 @@ class Service:
             # （状态的唯一真源在 saver 里，R-19）—— 所以这里不再存一份 `say`。
             job.status = DONE
             job.say = ""
+        self._note_after_advance(job, ended=True)    # 目录表第 1、6 行
 
     # ── 服务重启之后：从 checkpoint 把 job 捡回来（R-19）───────────────
     def _recover(self, job_id: str) -> Optional[Job]:
@@ -1398,13 +1600,19 @@ class Service:
         brief = {k: values[k] for k in keep if values.get(k) is not None}
         brief["set_viewport"] = bool(self._window is not None
                                      and hasattr(self._window, "set_viewport"))
-        job = Job(job_id=job_id, brief=brief, status=DONE,
-                  say="（服务重启过：这个任务是从 checkpoint 里捡回来的）",
+        job = Job(job_id=job_id, brief=brief, status=DONE, say=RECOVERED_SAY, recovered=True,
                   created_at=datetime.datetime.now().astimezone().isoformat(timespec="seconds"))
         job.graph = self._build_graph(brief, job_id)
         with self._jobs_lock:
             self._jobs.setdefault(job_id, job)
-            return self._jobs[job_id]
+            landed = self._jobs[job_id]
+        if landed is job:
+            # 目录表第 7 行：捡回来的 job 要**说** —— `job.say` 下一次 `_advance` 就把它冲掉了
+            # （P9），而「这个任务是捡回来的」是**系统已经知道**的一件事。
+            # ⚠️ 只记在**真的落进登记表**那一个上（两个线程同时捡的时候，另一个那份时间线
+            #    没人看得到 —— 记在它上面等于没记）。
+            self.narrate(landed, "recovered", RECOVERED_SAY)
+        return landed
 
     # ── 投影：把 checkpoint 变成给人看的那个东西 ─────────────────────
     def _view(self, job_id: str) -> dict:
@@ -1483,6 +1691,68 @@ class Service:
                 "say": report.summary() if hasattr(report, "summary") else "",
                 "runs": runs}
 
+    # ── `/live`：页面的**唯一**数据源（Task 4 先出骨架）────────────────
+    def live(self, job_id: str) -> dict:
+        """`GET /job/{id}/live` 的正文（设计注 §8.2；这一版是**骨架**）。
+
+        为什么合成一份一次给完（§8.3 第 1 条）：页面只有一个 `job_id` + 一个定时器，
+        取一份 JSON 就画完。分成几个端点会让「时间线说在跑、卡片还显示在等人」这种
+        **自相矛盾**的画面变得可能。
+        **字节不进 JSON**：图走 `/job/{id}/shot/{name}`（文件名带轮号、内容永不变）。
+
+        状态与人话**只有一份口径**：`status`/`say`/`delivered` 直接取 `_view`（不编话）。
+        时间线**不持久**（§3.5）：不在登记表里（重启过）或者是捡回来的 → `note` 明说。
+        """
+        view = self._view(job_id)                 # 没这个 job 就 KeyError → 路由转 404
+        job = self._jobs.get(job_id)
+        timeline = job.timeline if job is not None else None
+        shown = timeline.all() if timeline is not None else []
+        note = RESTART_NOTE if (timeline is None or job.recovered) else ""
+        truncated = bool(timeline is not None
+                         and (timeline.dropped() or len(timeline) > len(shown)))
+        if truncated:
+            note = "\n".join(x for x in (note, self._truncated_say(timeline, len(shown))) if x)
+        token, where = self._where_it_stopped(job_id)
+        return {
+            "job_id": job_id,
+            "status": view["status"],
+            "say": str(view.get("say") or ""),
+            "delivered": bool(view.get("delivered")),
+            #: 它现在/正要做的那个节点：`stage` 是节点名（页面按它对按钮/文案），
+            #: `stage_say` 是它的**人话**（D16：给运营看的字段是人话；与 `/job/{id}`
+            #: 那道闸的 `step` / `step_say` 同一个形状）。
+            "stage": token,
+            "stage_say": where,
+            "note": note,
+            "events": shown,                      # 旧 → 新；最多最近 500 条（`Timeline.all` 的默认）
+            # ── 下面这三样这一版**故意**是空的/恒定的（骨架）──
+            #: 闸口投影（Task 8 接）。**恒 null**：页面别据此显示按钮。
+            "gate": None,
+            #: 常开输入的语义（Task 8 定、Task 9 扩展）。**恒 queue**：这一版没有 `/say`。
+            "input": {"mode": "queue", "queued": []},
+            #: 「停」这条路这一版**还没有** —— 只说「没请求停」（真话）。
+            #: 不许在这儿编一句「几秒内就会停」：那是 Task 8 的事，现在写上去就是假话。
+            "stop": {"requested": False},
+            "shots_note": self.shots_note(),
+            "window": self.window_public(),
+            #: 轮次卡片（Task 6 从 checkpoint 投影）。这一版**恒 []**。
+            "rounds": [],
+            "truncated": truncated,
+        }
+
+    @staticmethod
+    def _truncated_say(timeline, shown: int) -> str:
+        """`truncated` 为真时**说清**丢了什么/回了多少（设计注 §8.2：「并说明」）。"""
+        parts = []
+        dropped = timeline.dropped()
+        if dropped:
+            parts.append("最早那 %d 条已经丢掉了（时间线上限 %d 条）。"
+                         % (dropped, events.MAX_EVENTS))
+        rest = len(timeline) - shown
+        if rest > 0:
+            parts.append("这一次只回最近 %d 条（前面还有 %d 条没回）。" % (shown, rest))
+        return "时间线太长：" + "".join(parts)
+
     # ── 输入检查（**免费的那些**：在烧掉一次探路之前）────────────────────
     def _intake_problems(self, body: RunRequest) -> list:
         problems = []
@@ -1528,8 +1798,7 @@ class Service:
         brief["success_text"] = body.success_text
         self._clean_window_for_explore(brief)     # R-F1 的另一半：**探路也要干净会话**
         job_id = "job-%s" % uuid.uuid4().hex[:12]
-        job = Job(job_id=job_id, brief=brief, status=QUEUED,
-                  say="收到了，排队开跑。",
+        job = Job(job_id=job_id, brief=brief, status=QUEUED, say=SUBMITTED_SAY,
                   created_at=datetime.datetime.now().astimezone().isoformat(timespec="seconds"))
         with self._jobs_lock:
             self._jobs[job_id] = job
@@ -1540,11 +1809,20 @@ class Service:
                 job.status = FAILED
                 job.error = "%s: %s" % (type(exc).__name__, exc)
                 job.say = ("起不来：%s\n（这一趟**没有**开浏览器、也没有写任何产物。）" % exc)
+                said, raw = job.say, job.error
+            # 目录表第 5 行说的是 `_advance` 的 except；**这一条**（图都拼不起来）
+            # 同样是「跑挂」，同样不许静默 —— 时间线上得有一条，否则它像没存在过。
+            self.narrate(job, "failed", said, error=raw)
             return self._view(job_id)
         # 窗口时间线探针：从这一刻起盯住「窗口是哪个进程」（Task 1 / G3）。
         # **只在能给 PID 的窗口层上起** —— 桩窗口没有 PID，那样的线判不出「重开了几次」。
         self._active_job = job_id
         self._start_window_probe()
+        # 目录表第 3 行：先记「收到」，再（前面有东西时）记「排队等窗口」。
+        # ⚠️ **先说后交**是有意的：交给队列之后工作线程可能立刻喊「在跑」，顺序就反了。
+        self.narrate(job, "submitted", SUBMITTED_SAY)
+        if self._something_is_ahead():
+            self.narrate(job, "queued", QUEUED_SAY)
         self._submit(job, self._payload(brief))
         return self._view(job_id)
 
@@ -1571,6 +1849,10 @@ class Service:
         values = dict((self._snapshot(job_id).values or {}))
         dead = self._window_is_gone(values.get("ws_url"))
         if dead:
+            # 目录表第 1 行的另一处落点：这件事是**在这儿**被发现的（人回了话，服务才去查），
+            # 那就得**在这儿**说 —— 否则「窗口没了」只有那个 409 知道，
+            # 而坐在页面前面的人只看到「回话被拒」：时间线上一片安静（那正是这一片要治的）。
+            self._note_window_died(job, values, dead=True)
             raise HTTPException(status_code=409, detail=
                                 "先别接着走：这个窗口**已经不在了**（§4.6：Bit 窗口只活几分钟，"
                                 "而这一步可能跑很久）。现在接着走的话，自测会拿着一个死窗口跑，"
@@ -1584,6 +1866,8 @@ class Service:
         with job.lock:
             job.status = RUNNING
             job.say = "收到你的话，接着跑（下一个要你拿主意的地方会再停下来）。"
+        # 目录表第 8 行：人的原话与它去哪了（**交下去之前**记，否则工作线程先喊「在跑」）。
+        self._note_human_said(job, job_id, body)
         self._submit(job, Command(resume={"action": body.action, "note": body.note}))
         return self._view(job_id)
 
@@ -1660,8 +1944,15 @@ class Service:
             job.status = RUNNING
             job.error = None                    # 上一次那个失败不再是这个 job 的现状
             job.say = say
+            # 换了一个窗口 = 上一趟那个「窗口没了」不再适用（新的那个也会死，那是**新**事实）
+            job.window_dead = False
         with self._check.lock:
             job.graph.update_state(self._cfg(job_id), patch, as_node=resume_from)
+        # 目录表第 2 行：**照搬它现有那句 `say`**（探路重跑 / 从断点接着跑，两句不同）。
+        # ⚠️ 位置有讲究：放在 `update_state` **之后**（状态真写进去了才算「重开了」——
+        #    写失败还报一句「重开了」，那句话就是假的），放在 `_submit` **之前**
+        #    （交下去之后工作线程会立刻喊「在跑」）。
+        self.narrate(job, "window_reopened", say, where=step, ws_url=str(body.ws_url))
         self._submit(job, None)                      # None = 「接着跑」，不是新的输入
         return self._view(job_id)
 
@@ -1895,6 +2186,21 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                                 detail="没这个任务：%s（服务里没有它，checkpoint 里也没有）。"
                                        "要么 id 写错了，要么它是在**另一个** saver 上跑的 —— "
                                        "状态住在 saver 里，不在这个进程里（R-19）。" % job_id)
+
+    @api.get("/job/{job_id}/live")
+    def live(job_id: str) -> dict:
+        """**页面的唯一数据源**（Task 4 先出骨架）：一个轮询喂一个页面（设计注 §8.3）。
+
+        与 `/job/{job_id}` 的关系：那边是**既有形状**，别的地方在读它，一个字段都不改；
+        这边是新的那份（时间线 + 骨架里的闸口/输入/轮次/窗口）。**字节一个都不进来**（§8.3 第 2 条）。
+        """
+        try:
+            return svc.live(job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=(
+                "没这个任务：%s（服务里没有它，checkpoint 里也没有）。"
+                "要么 id 写错了，要么它是在**另一个** saver 上跑的 —— "
+                "状态住在 saver 里，不在这个进程里（R-19）。" % job_id))
 
     @api.get("/job/{job_id}/shot/{name:path}")
     def shot(job_id: str, name: str):
