@@ -1479,6 +1479,40 @@ def _fallback(kind: str, value: str, label: str, element) -> list:
     return [{"random": "full_name"}]
 
 
+def _diag_row(d: dict) -> dict:
+    """一条诊断在账本里长什么样：**哪一帧、因为什么**。
+
+    ⚠️ 别退回「只留 `kind`」（2026-09-18 homebuddy 真站实测的后果）：`cmd/observe.go:215`
+    写着「诊断的详情就是**这一行的全部价值**」，而这里原先只抄了 `kind` ——
+    那趟探路的账本里只剩 `["frame-blind", "frame-error", "frame-error"]` 一串光秃秃的
+    kind，**没有理由、没有帧**。`frame-blind` 有**两个分支**（iframe 计数求值失败 /
+    数量对不上），光看 kind 分不出是哪一种；`frame-error` 的真实报错也只在 `detail` 里
+    ⇒ 事后**查不出它为什么瞎**，而那正是当时最要紧的问题。
+
+    形状与工具返回**同形**（`{kind, detail, frame_path}`，见 `internal.Diagnostic`）：
+    读账的人手里那份 observe JSON 怎么读，这一行就怎么读，不用再学一套键名。
+    ⚠️ 但**是白名单**、不是整条抄：`Journey.steps` 会进 checkpoint
+    （`graph.MSGCPACK_ALLOWLIST` 点名允许 `Journey`），而工具返回里可能有几百 KB 的
+    base64 截图 / 整段 DOM（`_summarize` 的存在理由就是这件事）—— 今天多抄一个键，
+    明天谁给诊断挂上 `screenshot`，账本就跟着涨。
+    ⚠️ 空的那两格**不写**（`detail` 为空时不写 `""`）：账本是给人读的，
+    写一个空字符串只会让人以为「详情就是空的」。
+    """
+    row = {"kind": d.get("kind")}
+    path = d.get("frame_path")
+    if isinstance(path, (list, tuple)):
+        path = [str(x) for x in path]
+    elif path:
+        # 契约上它是数组（Go 侧 `[]string`，主帧那条给 `["main"]`）——这一步是**防御**：
+        # 标量进来也编成数组，别让账本里出现两种形状。
+        path = [str(path)]
+    if path:
+        row["frame_path"] = path
+    if d.get("detail"):
+        row["detail"] = str(d["detail"])
+    return row
+
+
 def _summarize(name: str, args: dict, raw: Any, elapsed_ms: int, fill: dict | None) -> dict:
     """这一步的**结果**（进 Journey 的那份）。
 
@@ -1494,7 +1528,8 @@ def _summarize(name: str, args: dict, raw: Any, elapsed_ms: int, fill: dict | No
         out["fields"] = len(raw.get("fields") or [])
         out["option_groups"] = len(raw.get("option_groups") or [])
         out["honeypots"] = len(raw.get("honeypots") or [])
-        out["diagnostics"] = [d.get("kind") for d in (raw.get("diagnostics") or [])
+        # 诊断：**哪一帧、因为什么**（`_diag_row` 的 docstring 写了「只留 kind」的后果）
+        out["diagnostics"] = [_diag_row(d) for d in (raw.get("diagnostics") or [])
                               if isinstance(d, dict)]
     elif name == "goto":
         out["url"] = (raw or {}).get("url") if isinstance(raw, dict) else None

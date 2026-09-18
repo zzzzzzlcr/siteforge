@@ -50,7 +50,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import browser_agent, lint, llm, plan, template, tools  # noqa: E402
+from agent import browser_agent, journal, lint, llm, plan, template, tools  # noqa: E402
 
 STUB_SERVER = ROOT / "tests" / "stub_mcp_server.py"
 
@@ -3143,3 +3143,130 @@ def test_the_product_replays_a_goto_to_the_address_we_asked_for(tmp_path):
     assert gotos, f"goto 没进重放规格：{[s['action'] for s in steps]}"
     assert gotos[0]["url"] == "https://example.test/go?src=hero", \
         "产物重放 goto 发的是落地地址 —— 那串常常带会话参数，在干净身份的浏览器上不可复现"
+
+
+# ─────────────── 诊断进账本：哪一帧、因为什么（2026-09-18 homebuddy 真站）───────────────
+
+#: homebuddy 真站上**原样**观测到的那一条（`/tmp/hb_observe_page1.json`，2026-09-16 探针）。
+#: 两半都在：**哪一帧**（`frame_path` 里那个 frameId）+ **因为什么**（`detail` 那句话）。
+#: ⚠️ 这两半正是 `_summarize` 原先丢掉的东西 —— 丢完之后账上只剩 `["frame-blind"]`，
+#: 而 `frame-blind` 有**两个分支**（iframe 计数求值失败 / 数量对不上），
+#: 光看 kind **分不出是哪一种**，于是「它为什么瞎」这件事事后**根本查不出来**。
+REAL_FRAME_BLIND = {
+    "kind": "frame-blind",
+    "detail": "这一帧的 DOM 里有 1 个 iframe 元素，帧树只枚举到 0 个子帧 —— "
+              "帧枚举可能不完整（DOM 穿透失败、或子帧在跨源帧里面时，子帧会整个消失）",
+    "frame_path": ["main", "60AFD8844FA4656F93333C1DBBBB92D3"],
+}
+
+#: 子帧观测失败那条的**同形**夹具（不是真站原样 —— 真站那份原始返回没落盘，见下）：
+#: `Detail` 放的是**真实报错**，Go 侧是 `firstRunes(err.Error(), 160)`
+#: （`tools/cdp/internal/observe_frames.go`）—— 所以这一格**上限 160**。
+#: ⚠️ 它刻意长过 80：`cmd/observe.go:215` 写着「截到 80 会把 target-ambiguous 那条里的
+#: target ID / URL 掐掉」，而**账本这一侧再截一刀**这件事，短夹具瞒得住、这一条瞒不住。
+#: （真站上那两条 `frame-error` 的 `Detail` 在账本里已经丢了 —— 丢的正是这一格。）
+FRAME_ERROR_160 = {
+    "kind": "frame-error",
+    "detail": "observe 子帧失败: Runtime.evaluate: Execution context was destroyed, most "
+              "likely because of a navigation.（帧 3F1B2C4D5E6A7B8C9D0E1F2A3B4C5D6E 在枚举"
+              "之后被销毁 —— 广告/追踪帧常见）",
+    "frame_path": ["main", "60AFD8844FA4656F93333C1DBBBB92D3"],
+}
+
+
+def _page_with_diagnostics(*diags):
+    """一份带诊断的页面模型 —— `PAGE_LANDING` 一个字段都不动，只挂上 `diagnostics`。"""
+    page = dict(PAGE_LANDING)
+    page["diagnostics"] = [dict(d) for d in diags]
+    return page
+
+
+def test_a_diagnostic_keeps_which_frame_and_why_when_it_lands_in_the_ledger(tmp_path):
+    """**这条钉的性质**：一条带 `detail` 的诊断，**进了账本之后 `detail` 还在**。
+
+    为什么这是承重的（工具层自己写着）：`cmd/observe.go:215` 的注释是
+    「⚠️ `detail` 截到 160 而不是别处的 40/80：**诊断的详情就是这一行的全部价值**」——
+    工具说「这半句是全部价值」，而消费者（`_summarize`）把它整个扔了。
+    实测后果：2026-09-18 那趟 homebuddy 探路的账本里只剩
+    `["frame-blind", "frame-error", "frame-error"]` 一串光秃秃的 kind，
+    **没有理由、没有帧**，事后查不出它为什么瞎 —— 而那正是当时最要紧的问题。
+
+    ⚠️ 走的是**真那一趟**（`_run` = 桩 MCP + 假模型 + `explore`），不是直接调 `_summarize`：
+    要钉的是「**账本里**那一行长什么样」，而账本是 `dispatch` 写进 `Journey.steps` 的。
+    """
+    # 夹具得**留在射程里**：真报错可以长到 160（Go 侧的上限），比 80 长才对得上
+    # 「账本这一侧再截一刀」那条 —— 夹具哪天被改短，这道钉会**静默**失效。
+    assert len(FRAME_ERROR_160["detail"]) > 80, len(FRAME_ERROR_160["detail"])
+    journey, _, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": _page_with_diagnostics(REAL_FRAME_BLIND,
+                                                           FRAME_ERROR_160)}]},
+        [{"calls": [("observe", {})]}, {"content": "看完了"}],
+    )
+    step = journey.steps[0]
+    assert step["action"] == "observe", step
+    diags = (step["result"] or {}).get("diagnostics")
+    assert isinstance(diags, list) and len(diags) == 2, f"诊断没进账本：{diags!r}"
+    # ① kind 仍在（原先就有的那半，别修着修着丢了）
+    assert [d["kind"] for d in diags] == ["frame-blind", "frame-error"], diags
+    # ② **因为什么**（`detail` 就是那一行的全部价值，**原样**进账 —— 工具已经截过了）
+    assert diags[0]["detail"] == REAL_FRAME_BLIND["detail"], diags[0]
+    assert diags[1]["detail"] == FRAME_ERROR_160["detail"], diags[1]
+    # ③ **哪一帧**（`frame-blind` 的两个分支靠 detail 分、帧靠这里分）
+    assert diags[0]["frame_path"] == ["main", "60AFD8844FA4656F93333C1DBBBB92D3"], diags[0]
+    assert diags[1]["frame_path"] == FRAME_ERROR_160["frame_path"], diags[1]
+
+
+def test_the_journal_line_on_disk_keeps_which_frame_and_why(tmp_path):
+    """同一条性质的**落盘那一端**：账本文件里那一行读回来，`detail` / `frame_path` 还在。
+
+    为什么要单钉一条（`_summarize` 那条不是已经管了吗）：`journal` 的行是
+    **JSON 序列化过**的（`json.dumps` → 读回），而「进账本」对读账的人 =
+    **盘上那一行**。窗口死掉之后，人与复审只能靠这行文件 —— 内存里那份早没了。
+
+    ⚠️ 落盘那侧刻意**不做检查**（`journal` 的模块 docstring 写了：那是 `_summarize`
+    的职责，两处都写就成了两份判据）—— 所以这条只是把「读回来的那一行」量出来。
+    """
+    journey, _, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": _page_with_diagnostics(REAL_FRAME_BLIND,
+                                                           FRAME_ERROR_160)}]},
+        [{"calls": [("observe", {})]}, {"content": "看完了"}],
+    )
+    path = tmp_path / "attempt-1.jsonl"
+    journal.append(path, journey.steps[0])
+    rows, skipped = journal.read(path)
+    assert skipped == [] and len(rows) == 1, (rows, skipped)
+    diags = rows[0]["result"]["diagnostics"]
+    assert diags[0]["detail"] == REAL_FRAME_BLIND["detail"], diags
+    assert diags[0]["frame_path"] == REAL_FRAME_BLIND["frame_path"], diags
+    # 长的那条（真报错那一档，160 上限）也要原样过一遍盘 —— 半路被截就红在这儿
+    assert diags[1]["detail"] == FRAME_ERROR_160["detail"], diags[1]
+
+
+def test_a_diagnostic_row_does_not_drag_the_rest_of_the_tool_return_in(tmp_path):
+    """诊断那一格**只留诊断自己的几个字段** —— 工具返回的别的东西一个都不许跟进来。
+
+    为什么这条非有不可：`Journey.steps` 会进 **checkpoint**（`graph.MSGCPACK_ALLOWLIST`
+    点名允许 `Journey`），而原始工具返回里可能有几百 KB 的 base64 截图
+    （`_summarize` 的 docstring 就是为这件事写的：「整份抄进账本只会让内存和落盘都变得没法读」）。
+    所以修「只留 kind」时**不许顺手改成「整条诊断抄进来」**——
+    今天多一个键，明天工具给诊断挂上 `screenshot`，账本就跟着涨。
+    """
+    fat = dict(REAL_FRAME_BLIND,
+               # 真实形状：工具哪天给诊断挂上这些（截图 / 整段 DOM / 元素坐标列表）
+               screenshot="data:image/png;base64," + "A" * 20000,
+               dom="<html>" + "x" * 20000,
+               bbox=list(range(2000)))
+    journey, _, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": _page_with_diagnostics(fat)}]},
+        [{"calls": [("observe", {})]}, {"content": "看完了"}],
+    )
+    diags = journey.steps[0]["result"]["diagnostics"]
+    assert len(diags) == 1, diags
+    assert set(diags[0]) == {"kind", "frame_path", "detail"}, \
+        f"诊断那一格混进了别的东西：{sorted(diags[0])}"
+    # 账本那一行整个（一步，含正文）也要守住体量：截图跟着进来的话这里就是 2 万+ 字符。
+    line = json.dumps(journey.steps[0], ensure_ascii=False)
+    assert len(line) < 2000, f"账本那一步被工具返回撑大了：{len(line)} 字符"
