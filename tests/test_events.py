@@ -108,14 +108,47 @@ def test_the_shape_is_the_five_keys_plus_data():
 
 
 def test_who_only_knows_three_values():
-    """`who` 只认三个值：页面靠它决定气泡长相。别的值**直接抛**（不许静默归成 system）。"""
+    """`who` 只认三个值：页面靠它决定气泡长相。别的值**直接抛**（不许静默归成 system）。
+
+    ⚠️ 每一方说的 `kind` 不一样（`VOICE_KINDS`，见下一条用例）：这里各用各的嗓子。
+    """
     tl = events.Timeline()
-    for who in events.WHO:
-        assert tl.add("step", "一句话", who=who)["who"] == who
+    for who, kind in (("agent", "step"), ("system", "running"), ("you", "human_said")):
+        assert tl.add(kind, "一句话", who=who)["who"] == who
     with pytest.raises(ValueError) as caught:
         tl.add("step", "一句话", who="机器")
     assert "agent" in str(caught.value), "报错要说清有哪三个值：%s" % caught.value
     assert len(tl.all()) == 3, "抛了的那条不许留在时间线上"
+
+
+def test_the_kind_vocabulary_is_split_by_voice():
+    """**词表按嗓子分**（`VOICE_KINDS`）—— 与「一格内容豁免」是同一个病的两半（修复轮 2 的 M1/M4）。
+
+    承重的不是「有哪几个词」，是**谁在说**：
+    - 脚本（`who="agent"`）只说得出口**它自己干的事**（`step`）；
+    - 人（`who="you"`）只说得出**人自己的话**（`human_said`）；
+    - 状态机那些词（`done` / `failed` / `running` / `cap_hit` …）**只有服务那一方**能说。
+
+    为什么这条要紧：`datewhirl` 那个病的形状是「**脚本自起的名字，后台照着当真话读**」
+    （`step="success"`）。上一轮关上了「新词」那半扇门（`KINDS`），却留着一张能说 `done` 的嘴 ——
+    那半扇门等于没关。
+    """
+    tl = events.Timeline()
+    # 脚本这张嘴：说得出口它自己干的事，说不出状态机的话
+    assert tl.add("step", "第 1 步：点了一个按钮", who="agent")["kind"] == "step"
+    for kind in ("done", "failed", "running", "cap_hit", "submitted", "window_died",
+                 "human_said"):
+        with pytest.raises(ValueError) as caught:
+            tl.add(kind, "一句话", who="agent")
+        assert "VOICE_KINDS" in str(caught.value), caught.value
+    # 人这张嘴：只说得出人自己的话
+    assert tl.add("human_said", "不是那个按钮", who="you")["kind"] == "human_said"
+    for kind in ("done", "failed", "step"):
+        with pytest.raises(ValueError):
+            tl.add(kind, "一句话", who="you")
+    # 服务那一方：13 个词**全说得出**（它是唯一能说状态机的嗓子）
+    for kind in events.KINDS:
+        assert tl.add(kind, "一句话", who="system")["kind"] == kind
 
 
 def test_an_empty_say_is_refused():
@@ -289,23 +322,64 @@ def test_none_is_a_first_class_value_and_is_not_dropped_or_rewritten():
     assert tl.all()[0]["data"] == data
 
 
-def test_a_signature_that_could_not_be_seen_must_come_with_a_why():
-    """`sig_after = None`（**看不见**）必须带一句 `why` —— 否则抛。
+def test_anything_that_could_not_be_seen_must_come_with_a_why():
+    """**任何一格**写了 `None`（**看不见**）都必须配一句 `why` —— 否则抛（修复轮 2 的 M3）。
 
     为什么这条要机械挡（契约 §二②）：`None` 与「没变化」在纸上长得一样，
     读的人分不出来。留一句人话是**唯一**能把两者分开的东西 ——
     `goldenagesouls.py` 的 `read()` 读不到返回 `None` 是今天唯一做对的那个。
+
+    ⚠️ 为什么从「签名那两格」扩到**所有格**（复审实测出来的不对称）：
+    `nan` 那条路被闸挡住了（写的人当场挨一句报错），而**裸 `None` 那条路一直开着、
+    连一句解释都不要** —— 两条路到了线上是**同一个形状**（`null`）。
+    闸拿掉响的那条、留下静的那条，理由（「`null` 是『看不见』那个一等值」）在别的格同样成立。
     """
     tl = events.Timeline()
-    with pytest.raises(ValueError) as caught:
-        tl.add("step", "第 4 步：看了一眼页面", who="system", data={"sig_after": None})
-    assert "why" in str(caught.value), "报错要说清该怎么办：%s" % caught.value
+    for cell in ("sig_after", "sig_before", "visible", "progress", "receipt", "action"):
+        with pytest.raises(ValueError) as caught:
+            tl.add("step", "第 4 步：看了一眼页面", who="system", data={cell: None})
+        assert "why" in str(caught.value), "报错要说清该怎么办：%s" % caught.value
     with pytest.raises(ValueError):
         tl.add("step", "第 4 步：看了一眼页面", who="system",
                data={"sig_after": None, "why": "   "})
     ok = tl.add("step", "第 4 步：看了一眼页面", who="system",
                 data={"sig_after": None, "why": "动作之后窗口没答，读不到页面"})
     assert ok["data"]["sig_after"] is None
+
+
+def test_the_why_can_name_which_cell_it_is_about():
+    """`why` 也可以**按字段点名**（字典）—— 同一件事里有两格以上看不见时用得着。
+
+    （复审 2026-09-18 第一轮 Q1 附带指出过：一句话的 `why` 挂在两格上，
+    读的人分不出它是说哪一格的。一句话仍然合法 —— 那是绝大多数情况；
+    但要有一种**说清是哪一格**的写法，而且写歪了就抛。）
+    """
+    tl = events.Timeline()
+    event = tl.add("step", "第 4 步：看了一眼页面", who="system",
+                   data={"sig_after": None, "visible": None,
+                         "why": {"sig_after": "窗口没答", "visible": "接口没回这个数"}})
+    assert event["data"]["sig_after"] is None and event["data"]["visible"] is None
+    # 点名点漏了一格 → 抛，并且**指出漏的是哪一格**
+    with pytest.raises(ValueError) as caught:
+        tl.add("step", "第 5 步：看了一眼页面", who="system",
+               data={"sig_after": None, "visible": None, "why": {"sig_after": "窗口没答"}})
+    assert "visible" in str(caught.value), caught.value
+    with pytest.raises(ValueError):
+        tl.add("step", "第 5 步：看了一眼页面", who="system",
+               data={"sig_after": None, "why": {"sig_after": "  "}})
+
+
+def test_the_verdict_cell_may_be_none_without_an_explanation():
+    """`verdict=None` **不要** why：那是那一格定义好的一等值（「**还没人判过**」），
+    与「量不出来」不是一回事。
+
+    （这是这条规矩**唯一**的豁免，写在 `NONE_WITHOUT_WHY` 里 —— 一条规矩的边界要能被看见，
+    不然下一个人只能靠猜。）
+    """
+    tl = events.Timeline()
+    event = tl.add("step", "第 6 步：走了一步", who="system", data={"verdict": None})
+    assert event["data"]["verdict"] is None
+    assert events.NONE_WITHOUT_WHY == ("verdict",)
 
 
 def test_the_undeclared_expectation_is_a_value_and_not_a_blank():
@@ -374,37 +448,65 @@ def test_a_judgment_word_is_not_allowed_as_a_nested_field_name_either():
     assert ok["data"]["receipt"]["error"] == "element not found"
 
 
-def test_the_judgment_word_rule_stops_at_a_cells_own_content():
-    """这条规矩的**边界**：七格的「内容」里不查判断词 —— 那是**填格子的那一方**的形状。
+def test_the_judgment_word_rule_follows_who_fills_the_cell_not_which_cell():
+    """这条规矩的边界是「**谁填**」，不是「它在不在格子里」（修复轮 2 的 M1）。
 
-    为什么要豁免（每一条都是实测过的理由，不是宽容）：
-    - `verdict={"changed": true}` 正是「变没变」那一格的内容（复审 2026-09-18 背书过，别改）；
-    - `expect={"screen_changed": true}` 是契约 §四那张菜单里「换了一屏」那一项的机器形状
-      —— 照契约写的形状，不能被我这条规矩挡住；
-    - `receipt={"verb": "click", "ok": false, …}` 是**转抄来的原文**（契约 §二：脚本只转抄、
-      也留原文）—— 回执自己怎么写字不是脚本能改的。
+    上一轮我把豁免给了「**格子的内容**」（只要进了某一格就整棵子树放行）—— **用宽了**：
+    复审实测 `{"action": {"clicked_ok": true}}`、`{"sig_before": {"success": true}}`、
+    `{"step_no": {"ok": 1}}` 全收，而**这三格的填写人就是脚本自己**：
 
-    而脚本**用不上**这个豁免：它不许填 `verdict` / `expect`（规矩 3），
-    `receipt` 是它**转抄**的东西，不是它起的名。
+    | 格 | 谁填 | 判断词 |
+    |---|---|---|
+    | `receipt` | cdp（脚本逐字**转抄**） | **必须有** —— 过滤就是伪造笔录 |
+    | `verdict` / `expect` | 裁判 / 运营 | **必须有** —— 判断就该待在这两格里 |
+    | `step_no` / `action` / `sig_before` / `sig_after` | **脚本** | **一个字都不许** |
+
+    凭据是「装着**别人的**原话」：`receipt` 里那个 `ok` 是 CDP 说的，脚本只是抄；
+    而脚本在自己那四格里写的 `ok` 是**脚本自起的名字** —— 正是规矩 ① 那一句
+    「脚本自起的名字，后台照着当真话读」换到了一个格子里。
     """
     tl = events.Timeline()
+    # ① 脚本自己填的四格：**一个字都不许**（含嵌套、含列表里）
+    for bad in ({"action": {"clicked_ok": True}},
+                {"action": {"result": {"ok": True}}},
+                {"sig_before": {"url": "u", "success": True}},
+                {"sig_after": {"changed": True}},
+                {"step_no": {"ok": 1}}):
+        with pytest.raises(ValueError) as caught:
+            tl.add("step", "第 7 步：走了一步", who="system", data=bad)
+        assert "判断词" in str(caught.value), caught.value
+    # ② 别人填的那三格：**必须有**（转抄 / 判断）
     event = tl.add("step", "第 7 步：核对了一下", who="system",
                    data={"verdict": {"changed": True},
                          "expect": {"screen_changed": True},
                          "receipt": {"verb": "click", "ok": False,
-                                     "error": "element not found"},
-                         "sig_before": {"url": "u", "success": True}})
+                                     "error": "element not found"}})
     assert event["data"]["verdict"] == {"changed": True}
     assert event["data"]["expect"] == {"screen_changed": True}
     assert event["data"]["receipt"]["ok"] is False
+
+
+def test_the_script_cannot_reach_the_three_exempt_cells_anyway():
+    """反面里的反面：脚本**够不着**那三格的豁免 —— 它不许填 `verdict` / `expect`，
+    `receipt` 是它**转抄**的东西（那三格里的判断词是别人的原话）。
+
+    所以「按谁填分」这条边界，脚本这一侧没有任何缺口：它能填的四格全查。
+    """
+    tl = events.Timeline()
+    for bad in ({"verdict": {"changed": True}}, {"expect": {"screen_changed": True}}):
+        with pytest.raises(ValueError) as caught:
+            tl.add("step", "第 8 步：走了一步", who="agent", data=bad)
+        assert "脚本只填前五格" in str(caught.value) or "verdict" in str(caught.value), caught.value
+    # 三格里的判断词**由别人填**时才合法 —— 脚本填不了它们（上面那两条就是证据）
+    ok = tl.add("step", "第 8 步：走了一步", who="agent",
+                data={"receipt": {"verb": "click", "ok": False}})
+    assert ok["data"]["receipt"]["ok"] is False, "转抄位（cdp 的回执原文）脚本照抄就行"
 
 
 def test_a_cell_name_is_only_allowed_at_the_top_level():
     """七格的名字**只在顶层**：`receipt` 里冒出一个 `verdict`，说明有人把「判」塞进收据里了。
 
     （收据是**转抄**：契约 §二说脚本只转抄、也留原文 —— 转抄来的东西里不该有判。）
-    ⚠️ 但**一格的内容**里可以出现判断词：`verdict={"changed": true}` 正是「变没变」
-    那一格的内容，那一格的形状归填它的那一方定（复审 2026-09-18 背书过这一条，别改）。
     """
     tl = events.Timeline()
     for bad in ({"receipt": {"verdict": "success"}},
@@ -460,6 +562,28 @@ def test_bytes_never_get_into_an_event():
     assert tl.all() == []
 
 
+def test_the_gate_uses_the_same_scale_as_the_wire():
+    """写侧那道闸的刻度 = **线上那一层**的刻度（修复轮 2 的 M2c：复审实测出来的第二格刻度）。
+
+    闸原来只判到 `json.dumps` 的**字符串**为止，而线上最后还要 `.encode("utf-8")`：
+    一个**孤立代理对**（`"\\ud800"`）过得了闸，到 `/live` 直接 **500**（整条时间线一条都读不出来）。
+    量具的刻度比被量的东西低一档 —— 「我量过了」就是假的。
+
+    判据（两个方向都要能红）：
+    - **过不了线上的**：字节 / `nan` / `inf` / 孤立代理对 → 闸抛；
+    - **过得了线上的**：中日韩、emoji、代理**对**（`"\\U0001F600"` 这种是合法的）→ 闸收，
+      而且真的经得起 `.encode("utf-8")`。
+    """
+    tl = events.Timeline()
+    for bad in (b"\x89PNG", float("nan"), float("inf"), "\ud800", "\udfff"):
+        with pytest.raises(ValueError):
+            tl.add("step", "第 10 步：走了一步", who="system", data={"x": bad})
+    good = tl.add("step", "第 10 步：走了一步", who="system",
+                  data={"what": "点了「下一步」", "emoji": "\U0001F600", "cjk": "中文"})
+    assert json.dumps(good["data"], ensure_ascii=False, allow_nan=False).encode("utf-8")
+    assert tl.all()[0]["data"]["emoji"] == "\U0001F600"
+
+
 def test_data_has_to_be_a_mapping():
     """`data` 是一个字典（七格是**有名字的格子**）—— 给列表/字符串不是这个形状。"""
     tl = events.Timeline()
@@ -481,17 +605,18 @@ def test_a_nested_fact_that_json_cannot_hold_is_refused():
 def test_a_number_that_cannot_survive_the_live_json_is_refused():
     """`nan` / `inf` **进不来** —— 因为它们在 `/live` 那一层会被**悄悄写成 `null`**。
 
-    复审 2026-09-18 实测：`json.dumps` 默认放行 `nan`，而 starlette 渲染 `/live` 用的是
-    `allow_nan=False` 那一支 ⇒ 值被**静默改写**成 `null`。而 `null` 正是 `sig_after`
-    用来表示「**看不见**」的那个一等值 —— 「看不见」与「一个数」被抹成同一个，
-    正是这份契约要治的那个病（「什么都没看见」被判成「做完了」）换了个层次又来一次，
-    这次是**框架默认参数**干的。
+    **因果写对**（修复轮 2 的 M2a：上一版把账记在 starlette 头上，实测是错的）：
+    `/live` 的路由标注是 `-> dict`，FastAPI 会把它过一遍 **pydantic 的 JSON-mode 序列化**
+    （`ser_json_inf_nan` 默认把 `nan`/`inf` 写成 **`null`**）；starlette 的 `JSONResponse.render`
+    用的是 `allow_nan=False`，**那一档是抛**（500）。所以少了写侧这道闸，
+    得到的是**一次静默改写**，不是一声响 —— 线上那一层的真身在
+    `test_service_events.py::test_the_wire_turns_nan_into_null_and_a_lone_surrogate_into_a_500`。
 
     选的是「**让它根本进不来**」这条（不是「让它活着穿过去」）：`NaN`/`Infinity`
     **本身就不是合法 JSON**（`json.dumps(..., allow_nan=True)` 吐出来的那串东西
     浏览器 `JSON.parse` 读不了），放它过去就得同时改 `/live` 的渲染器，
     而那会把一个**读不了**的响应体送到页面上。所以闸放在写这一侧：
-    要记「量不出来」，明写 `None`（签名那两格配一句 `why`）—— 那才是契约里那个一等值。
+    要记「量不出来」，明写 `None` 并且**说清为什么**（规矩 2，任何一格都一样）。
     """
     tl = events.Timeline()
     for bad in (float("nan"), float("inf"), float("-inf")):
@@ -500,18 +625,21 @@ def test_a_number_that_cannot_survive_the_live_json_is_refused():
         said = str(caught.value)
         assert "null" in said and "看不见" in said, "报错要说清它会被写成什么：%s" % said
     assert tl.all() == [], "抛了的那条不许留在时间线上"
-    # 「量不出来」的正确写法：明写 None（签名那两格配一句 why）
+    # 「量不出来」的正确写法：明写 None + 一句 why
     ok = tl.add("step", "第 9 步：量了一下", who="system",
                 data={"sig_after": None, "why": "探针这一次没量出来"})
     assert ok["data"]["sig_after"] is None
 
 
-def test_a_stored_event_survives_the_same_json_settings_the_wire_uses():
-    """存下来的每一条都得过 **starlette 那一档**的 JSON（`allow_nan=False`）。
+def test_a_stored_event_survives_the_gates_own_scale():
+    """存下来的每一条都过得了**闸自己那把尺**（`allow_nan=False` + `.encode("utf-8")`）。
 
-    ⚠️ 量具的刻度要跟被量的东西一样（复审 2026-09-18 的教训）：拿 `json.dumps` 的
-    **默认**参数走一遍，是**看不见 `nan` 那个洞**的 —— 默认允许 NaN，而线上那一层不允许。
-    一条用错刻度的用例，证明不了它盯的那条性质。
+    ⚠️ 名字收窄过（修复轮 2 的 M5）：上一版叫「与线上同一套设置」，而线上**不用**
+    `json.dumps` —— 它走的是 pydantic 的 JSON-mode 序列化。两把尺**对齐的是那一档**
+    （`nan` 不许活着、编码要过得去），不是同一件东西；说成「同一套设置」是名实不符。
+
+    这条量的是「**闸放行的那一档，确实出得去**」（与线上那一层的行为比，
+    另有 `test_service_events.py` 里绕过闸的那条判据）。
     """
     tl = events.Timeline()
     tl.add("step", "第 12 步：点了一个按钮", who="agent",
@@ -519,9 +647,9 @@ def test_a_stored_event_survives_the_same_json_settings_the_wire_uses():
                  "receipt": {"raw": "元素没找到", "from": "cdp"},
                  "sig_before": {"url": "https://x.test/a", "text": "a1b2c3", "visible": 12},
                  "sig_after": None, "why": "窗口没答"})
-    raw = json.dumps({"events": tl.all()}, ensure_ascii=False, allow_nan=False)
-    back = json.loads(raw)
+    raw = json.dumps({"events": tl.all()}, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    back = json.loads(raw.decode("utf-8"))
     assert back["events"][0]["data"]["receipt"]["raw"] == "元素没找到"
     assert back["events"][0]["data"]["sig_after"] is None
-    # 而且「看不见」在**线上那一层**是 `null` 这个字面值（不是缺键、不是别的值）
-    assert '"sig_after": null' in raw.replace("\n", "")
+    # 而且「看不见」在这一档就是 `null` 这个字面值（不是缺键、不是别的值）
+    assert '"sig_after": null' in raw.decode("utf-8")

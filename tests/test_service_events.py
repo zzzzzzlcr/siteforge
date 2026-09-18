@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 import sys
@@ -169,13 +170,45 @@ def _runtime_goes_to_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(service.measure, "DEFAULT_ROOT", tmp_path / "runtime" / "explore")
 
 
-def _client(*, graph_factory, window=None, capture=_shot_ok, **kw):
-    """装好桩的 TestClient —— **不碰**进程级默认（那会去连 Postgres / 真 Bit 窗口）。"""
+def _client(*, graph_factory, window=None, capture=_shot_ok, raise_server_exceptions=True, **kw):
+    """装好桩的 TestClient —— **不碰**进程级默认（那会去连 Postgres / 真 Bit 窗口）。
+
+    `raise_server_exceptions=False` 用在「线上那一层会 500」的那条判据里（量状态码，
+    而不是接一个异常）。
+    """
     kw.setdefault("checkpointer", InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
     kw.setdefault("capture", capture)
     if isinstance(window, StubWindow):
         kw.setdefault("viewport_probe", lambda ws_url, w=window: (w.calls[-1] if w.calls else None))
-    return TestClient(service.create_app(graph_factory=graph_factory, window=window, **kw))
+    return TestClient(service.create_app(graph_factory=graph_factory, window=window, **kw),
+                      raise_server_exceptions=raise_server_exceptions)
+
+
+def _kinds_the_service_narrates() -> set:
+    """**从实际调用点推出来**：AST 扫 `agent/service.py` 里每个 `narrate(...)` 的 kind。
+
+    为什么要这么办（复审 2026-09-18 点名）：并集判据原来用的是**手抄的十一个词** ——
+    往 `KINDS` 里加一个没人记的新词，全套 **0 红**。「没有静默的路径」这条性质
+    **不会跟着词表长**，所以名单得从**调用点**长出来（它才是「谁在说」的正身）。
+
+    ⚠️ kind 不是字符串常量的调用点会让这条量具**瞎掉**（静默漏一个）—— 所以这里直接**抛**。
+    """
+    tree = ast.parse(pathlib.Path(service.__file__).read_text(encoding="utf-8"))
+    out = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name != "narrate" or len(node.args) < 2:
+            continue
+        kind = node.args[1]
+        if not (isinstance(kind, ast.Constant) and isinstance(kind.value, str)):
+            raise AssertionError("有一条 narrate 的 kind 不是常量，这条量具扫不到它：%r"
+                                 % ast.dump(kind))
+        out.add(kind.value)
+    assert out, "一个调用点都没扫到 = 量具坏了"
+    return out
 
 
 def _factory(g: FakeGraph):
@@ -388,6 +421,51 @@ def test_a_value_that_cannot_survive_the_live_json_never_gets_in(tmp_path):
         "线上那一层：null 是那个字面值（不是缺键、不是别的写法）")
 
 
+def test_the_wire_turns_nan_into_null_and_a_lone_surrogate_into_a_500(tmp_path):
+    """**绕过写侧那道闸**塞进去，量线上那一层到底怎么处理 —— 闸为什么存在，就钉在这条里。
+
+    复审 2026-09-18 量出来的机制（我逐条复现）：
+
+    | 塞进去的 | 线上那一层 |
+    |---|---|
+    | `nan` | **200**，而值被**悄悄写成 `"progress":null`** |
+    | 孤立代理对 `"\\ud800"` | **500**（编码不了 —— 整条时间线一条都读不出来） |
+
+    ⚠️ **因果写对**（修复轮 2 的 M2a）：把 `nan` 变成 `null` 的是 **FastAPI 把 `-> dict`
+    的返回值过 pydantic 的 JSON-mode 序列化**（`ser_json_inf_nan` 默认 `null`），
+    **不是** starlette —— starlette 那一档 `allow_nan=False` 是**抛**（500）。
+    这个区别要紧到能翻转结论：照上一版注释去推，拆掉写侧闸应该得到一声**响**，
+    实际得到的是一次**静默改写**（`nan` 变成「看不见」那个一等值的字面值）—— 最坏的那种。
+
+    ⚠️ 为什么这里要**绕过闸**（直接往 `timeline._events` 里追加事件字典）：闸挡在前面，
+    正常路径在测试里**走不到**线上那一层 —— 不绕过去，这条性质就没有探针（复审正是这么量的）。
+    """
+    g = FakeGraph(steps=[_Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"]},
+                               interrupts=(_gate(step="intake"),))])
+    client = _client(graph_factory=_factory(g), window=StubWindow(alive=True),
+                     raise_server_exceptions=False)
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, job_id)
+    timeline = client.app.state.service._jobs[job_id].timeline
+
+    def _sneak(value):
+        timeline._events.append({"n": 9000, "at": "2026-09-18T13:00:00+08:00",
+                                 "kind": "step", "who": "system",
+                                 "say": "第 9 步：量了一下", "data": {"progress": value}})
+
+    _sneak(float("nan"))
+    r = client.get("/job/%s/live" % job_id)
+    assert r.status_code == 200, "线上那一层不会为 nan 报错 —— 它会**悄悄改写**"
+    assert '"progress":null' in r.text.replace(" ", ""), (
+        "nan 到了线上就是 null（而 null 正是「看不见」那个一等值的写法）")
+
+    _sneak("\ud800")                       # 孤立代理对：闸的上一版放它过去
+    r2 = client.get("/job/%s/live" % job_id)
+    assert r2.status_code == 500, (
+        "编码不了的东西线上直接 500 —— 而且**整条时间线一条都读不出来**（不只是那一条）")
+    assert r2.status_code != 200
+
+
 def test_truncated_is_true_and_explained_when_events_are_dropped(tmp_path, monkeypatch):
     """超上限时 `truncated` 为真，而且 `note` 里**说清**丢了什么（设计注 §8.2：「并说明」）。"""
     g = FakeGraph(steps=[_Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"]},
@@ -476,6 +554,11 @@ def test_no_catalog_row_is_silent(tmp_path):
     | 窗口死在干活中间 + 抓拍也没成 | `window_died` / `shot_missing` |
     | 交上去时前面正有 run | `queued` |
     | 服务重启后从 checkpoint 捡回来 | `recovered` |
+    | 跑完一步之后状态读不回来 | `state_unreadable` |
+
+    **要盯住的名字是「从调用点长出来的」**（`_kinds_the_service_narrates` AST 扫
+    `agent/service.py`），不是手抄的：复审 2026-09-18 实测，手抄的名单对「按规矩加一个
+    新词」**没有反应**（往 `KINDS` 里加一行没人记的词 ⇒ 全套 0 红）。
     """
     seen = set()
 
@@ -528,10 +611,24 @@ def test_no_catalog_row_is_silent(tmp_path):
     c6, j6, job = _restart_and_recover(tmp_path)
     seen |= {e["kind"] for e in job.timeline.all()}
 
-    missing = {"submitted", "queued", "running", "failed", "done", "cap_hit",
-               "window_died", "window_reopened", "recovered", "human_said",
-               "shot_missing"} - seen
-    assert not missing, "这些目录行**没有任何一条路径**记事件（静默）：%r" % sorted(missing)
+    # ⑦ 跑完一步之后状态读不回来（读那一侧的静默路 —— 它的探针只有一条，所以并集里也要有）
+    # ⚠️ 这一条**不轮询 `/job`**（那一条路自己也会 500），用 `queue.join()` 等它跑完：
+    #    工作线程在 `finally` 里 `task_done`，而那在 `_note_after_advance` **之后**。
+    g7 = BlindGraph(steps=[_Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"]},
+                                 interrupts=(_gate(step="intake"),))])
+    c7 = _client(graph_factory=_factory(g7), window=StubWindow(alive=True))
+    j7 = c7.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    c7.app.state.service._queue.join()
+    seen |= {e["kind"] for e in c7.app.state.service._jobs[j7].timeline.all()}
+
+    # ── 机械断言（三条，名字都从调用点推出来）──────────────────────
+    derived = _kinds_the_service_narrates()
+    reserved = {"step"}          # 给 Task 5 预留的词：今天**没有任何生产调用点**记它
+    assert set(events.KINDS) - derived == reserved, (
+        "词表与「真的有人在说」对不上 —— 多出来的词没人记（或少了人有词）：%r"
+        % sorted(set(events.KINDS) - derived))
+    missing = derived - seen
+    assert not missing, "这些 kind 有生产调用点、却没有任何一条场景记过事件（静默）：%r" % sorted(missing)
 
 
 def test_a_job_that_has_to_wait_behind_another_gets_a_queued_event(tmp_path):
