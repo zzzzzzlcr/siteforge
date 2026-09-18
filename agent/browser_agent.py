@@ -119,7 +119,6 @@ Task 1 的 spike 证明了模型**肯**调工具（24 跑 0 编造、47 次真 o
 from __future__ import annotations
 
 import inspect
-import os
 import pathlib
 import re
 import time
@@ -439,9 +438,10 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
     #: （连 `shooter` 都不看一眼）。`shooter` 不给就用 `shots.capture_via_session`。
     #:
     #: **降级 B 的开关**（设计注 §5.5）：`SITEFORGE_STEP_SHOTS=0` ⇒ 关掉每步抓拍，只留闸拍。
-    #: 为什么默认**开**：真窗口上量过 —— 一张 **中位 193ms / 110 KB**（17 次真跑实测），
-    #: 远在 1.5s 那道门槛之下。这个开关是留给「哪天它变贵了」的退路，不是现在的默认。
-    if str(os.environ.get("SITEFORGE_STEP_SHOTS", "")).strip() == "0":
+    #: ⚠️ 读法**只有一处**（`shots.step_shots_on`）：这条开关还有**第二个读者**
+    #: （`Service.shots_note()` —— 页面上那句「为什么这次没有逐步的图」）。
+    #: 两处各自解析就是两份口径，后果是设计注禁止的**静默降级**：图没了、一个字没解释。
+    if not shots.step_shots_on():
         shots_dir = None
     step_shots = (_StepShots(journey, shots_dir, shooter or shots.capture_via_session)
                   if shots_dir else None)

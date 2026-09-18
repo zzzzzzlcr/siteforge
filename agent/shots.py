@@ -36,6 +36,14 @@ CLI 那条**必须把 stdout 丢进 /dev/null**：内核的 `cmd/screenshot.go` 
 失败时也不会把旧图删掉。CLI 那条因此**不再需要信任退出码**：算数的是临时文件里
 是不是一张完整的 PNG（非空 + magic + `IEND` 收尾）。
 
+## 降级 B 那个开关：**一份读法**，不是两份（2026-09-18 裁定）
+
+`SITEFORGE_STEP_SHOTS=0` 这条开关**有两个读者**：探路的步拍（`browser_agent.explore`，
+它决定「拍不拍」）与页面上的那句话（`service.Service.shots_note()`，它解释「为什么没有图」）。
+两处各自解析就是两份口径（一处 strip 一处不 strip），于是会出现
+「图没了、一个字没解释」—— 那正是设计注 §5.5 明令禁止的**静默降级**。
+所以读法**只有** `step_shots_on()` 这一处，两个读者都走它。
+
 ## ws_url → host/port：**一份**，不是三份
 
 `Service.live_viewport()` 与 `selftest._host_port()` 各有一份自己的拆法，这里抽成
@@ -54,8 +62,8 @@ import pathlib
 import re
 import subprocess
 
-__all__ = ["DEFAULT_ROOT", "path_for", "dir_for", "name_ok", "host_port",
-           "capture_via_session", "capture_via_cli"]
+__all__ = ["DEFAULT_ROOT", "root_for", "path_for", "dir_for", "name_ok", "host_port",
+           "step_shots_on", "STEP_SHOTS_ENV", "capture_via_session", "capture_via_cli"]
 
 _REPO = pathlib.Path(__file__).resolve().parents[1]
 
@@ -92,6 +100,16 @@ def _root(root=None) -> pathlib.Path:
     return pathlib.Path(root or os.environ.get("SITEFORGE_SHOTS_DIR") or DEFAULT_ROOT)
 
 
+def root_for(root=None) -> pathlib.Path:
+    """`_root` 的正身（给**别的模块**用）。
+
+    为什么要把它露出来（Task 3）：服务要把根**在构造时**定下来（`Service(shots_dir=...)`
+    —— 部署配置不该在服务跑起来之后跟着环境变量变），而不是每次落盘时再解析一遍。
+    解析只有一处，规矩与 `step_shots_on()` 一样：**一份读法**。
+    """
+    return _root(root)
+
+
 def path_for(job_id: str, *, root=None) -> pathlib.Path:
     """`<root>/<job_id>/` —— **只解析，不碰盘**（一个字节都不写）。
 
@@ -122,6 +140,28 @@ def dir_for(job_id: str, *, root=None) -> pathlib.Path:
 def name_ok(name: str) -> bool:
     """这个名字能不能当一张图的名字（`/shot?name=` 收到的东西一律先过这里）。"""
     return NAME_RE.fullmatch(str(name or "")) is not None
+
+
+#: **降级 B 的开关**（设计注 §5.5）：`SITEFORGE_STEP_SHOTS=0` ⇒ 关掉每步抓拍，只留闸拍。
+#: 为什么默认**开**：真窗口上量过 —— 一张 **中位 193ms / 110 KB**（17 次真跑实测），
+#: 远在 1.5s 那道门槛之下。这个开关是留给「哪天它变贵了」的退路，不是现在的默认。
+STEP_SHOTS_ENV = "SITEFORGE_STEP_SHOTS"
+
+
+def step_shots_on(env=None) -> bool:
+    """每步抓拍开着吗 —— **唯一**一份读法（两个读者都走它）。
+
+    为什么要抽出来（上一轮复审点名、2026-09-18 裁定）：这条开关**有两个读者** ——
+    探路的步拍（`browser_agent.explore`）与页面上的那句话（`Service.shots_note()`）。
+    两处各自解析就是两份口径，而它的后果**不是**「开关偶尔不灵」，是
+    **「图没了、一个字没解释」** —— 设计注 §5.5 明令禁止的静默降级。
+    判据：**翻这个开关时，「图没了」与「有人解释为什么」必须同时发生或同时不发生。**
+
+    **只有恰好 `"0"` 才算关**（`"1"` / `""` / 没设 / `"0.0"` 都照拍）：判据写宽了
+    （比如「非空就关」）会把一个**明确要求开着**的部署反着关掉 —— 比没有这个开关更坏。
+    """
+    env = os.environ if env is None else env
+    return str(env.get(STEP_SHOTS_ENV, "") or "").strip() != "0"
 
 
 def host_port(ws_url) -> tuple[str, str] | None:

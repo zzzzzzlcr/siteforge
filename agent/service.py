@@ -5,6 +5,7 @@ POST /run                 收开场白 → {job_id}（立刻返回；活在一�
 GET  /job/{id}            走到哪了、在问你什么、结果是什么（**人话**）
 POST /job/{id}/reply      回答图停下来的那个问题（继续 / 喊停 / 一句纠正 / 这版不行）
 POST /job/{id}/reopen     窗口没了 → 重开一个，**从断点接着跑**（P6）
+GET  /job/{id}/shot/{n}   闸拍那张图（`image/png`）—— **字节走这儿，不进 JSON**（Task 3）
 GET  /health              活着吗、状态存哪儿了、cdp 在哪
 ```
 
@@ -59,10 +60,11 @@ import uuid
 from typing import Any, Callable, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from agent import browser_agent, graph, journal, measure, selftest
+from agent import browser_agent, graph, journal, measure, selftest, shots
 from agent.graph import NODES, STEP_SAY
 from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_NO_WINDOW,
                          END_PAUSED, END_WINDOW_GONE)
@@ -103,6 +105,34 @@ _AFTER = {prev: step for step, prev in WINDOW_STEPS.items()}
 #:   - `window_gone`：窗口没了（§1.8 的**一等停因**，与「预算走完」分开报）。
 WINDOW_END_REASONS = {"explore": (END_EXPLORE_UNFINISHED, END_PAUSED, END_WINDOW_GONE),
                       "selftest": (END_NO_WINDOW,)}
+
+#: 闸拍：**硬超时**（秒）。拍照跑在旁路线程上，超过这个数就当它没成、记一句人话 ——
+#: 单飞的工作线程是唯一推图的地方（D6），被一张图按在那里 = 整个服务停摆（计划 §R6）。
+SHOT_TIMEOUT_SECONDS = 20.0
+
+#: 「这个窗口」那一块的两句人话（设计注 §十）。**写死在这里**、页面原样显示 ——
+#: 不编话那条规矩在这一块的样子：方法与事实是服务说得清的，
+#: 而「那台机器怎么连」是**运维知识**（仓库里没有证据），所以只说「连到那台机器」。
+#: ⚠️ **不许出现 URL**：设计注明说「Bit 有一个能远程用的网页控制台 URL」是**猜测、没核实**，
+#: 编一个摆上去，运营会照着一个不存在的地址去点。
+WINDOW_HOW = ("连到**那台机器**的桌面（远程桌面，或那台机器上装着的 BitBrowser 客户端），"
+              "在 BitBrowser 里打开下面这个窗口 id —— 就是 agent 正在用的这个浏览器；"
+              "连得上就**看得见、也能直接接管**（鼠标键盘）。"
+              "⚠️ 服务不代你看窗口，也不给你一个网页入口：仓库里没有证据说 Bit 有能远程用的"
+              "控制台地址，所以这里不编一个。")
+WINDOW_WHEN = ("**它正在跑（running）的时候不要动手** —— agent 在同一个窗口里点、填、滚，"
+               "两边的鼠标会打架：动作落到别处，失败还会被记成产物的问题。看一眼可以，动手等它停下。\n"
+               "**停在闸上（waiting）是唯一适合动手的时刻**（图没在动，接管不会跟它抢），"
+               "但你动过页面之后，下一步就是在**你留下的那个页面**上跑的 —— "
+               "**用「说一句」告诉它你动过**。\n"
+               "窗口只活几分钟，去看它**不会让它活更久**；把它**关掉** = 这一趟的窗口没了"
+               "（图会停在「自测那一步没有窗口」，那是一条正常的路，不是 bug）。")
+
+#: **降级 B** 那句话（设计注 §5.5）：关掉每步抓拍时，页面上**一直**显示它。
+#: ⚠️ 不许静默降级 —— 运营看到一次「没有逐步图」的运行，必须同时看到「为什么」。
+SHOTS_OFF_SAY = ("这一次没留逐步的图：%s"
+                 "每一道闸拍的那张还在（`pause-<n>.png`），逐步的一句话清单也还在。"
+                 "要恢复逐步的图：把 `SITEFORGE_STEP_SHOTS` 去掉、或设成 1。")
 
 
 # ─────────────────────────────── 窗口层（§4.6）───────────────────────────────
@@ -536,6 +566,13 @@ class Job:
     graph: Any = None
     lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
     created_at: str = ""
+    #: **到过几次闸口**（= 第几轮）。`pause-<n>.png` 里的 n 就是它 ——
+    #: Task 6 的配对规则「第 n 道闸上拍的那张叫 `pause-<n>`」靠的正是这个数。
+    #: ⚠️ 拍不成的那一轮**也占号**（否则轮号与闸号会错开），差别记在 `shot_notes` 里。
+    pauses: int = 0
+    #: 每一轮一条：`{"n", "name", "why"}`。拍成了 `name="pause-<n>.png"` 且 `why=""`；
+    #: 没拍成 `name=None` 且 `why` 是一句**人话**（拍不成绝不许静默）。
+    shot_notes: list = dataclasses.field(default_factory=list)
 
     def snapshot_for_view(self) -> tuple:
         with self.lock:
@@ -568,7 +605,9 @@ class Service:
                  window: Any = None, checkpointer=None, checkpointer_url: Optional[str] = None,
                  out_dir: Optional[str] = None, viewport_probe: Optional[Callable] = None,
                  explore_dir: Optional[str] = None,
-                 window_probe_seconds: Optional[float] = None):
+                 window_probe_seconds: Optional[float] = None,
+                 shots_dir: Optional[str] = None, capture: Optional[Callable] = None,
+                 shot_timeout: Optional[float] = None):
         self._jobs: dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
         self._queue: "queue.Queue[tuple]" = queue.Queue()
@@ -592,6 +631,19 @@ class Service:
                                     or 15.0)
         self._window_probe_thread: Optional[threading.Thread] = None
         self._active_job: Optional[str] = None
+        # ── 闸拍（设计注 §5.5）：`runtime/shots/<job_id>/pause-<n>.png` ──────────
+        #: 图落在哪个根下面：`shots_dir` ⇒ `SITEFORGE_SHOTS_DIR` ⇒ 仓库里的 `runtime/shots`。
+        #: ⚠️ **在构造时定下来**（不是一个 `None` 留着以后解析）：解析留在落盘那一刻的话，
+        #: 环境变量在这中间变一下，同一个 job 的图就会落到**两个**根下面。
+        #: （顺带：测试里「一个测试结束了、它的工作线程还在拍」也不会再写到仓库里去。）
+        self._shots_dir = shots.root_for(shots_dir)
+        #: 真去拍一张的那个函数：`(ws_url, dest, *, timeout) -> (文件名|None, 人话)`。
+        #: 不给就用 `shots.capture_via_cli`（闸口上没有 MCP 会话，手上只有 `ws_url`）；
+        #: ⚠️ **调用时才取**（不是构造时），测试要换掉它才换得动。
+        self._capture = capture
+        #: 硬的：超过这么多秒就当这张没拍成（旁路线程，见 `_shoot`）。
+        self._shot_timeout = float(SHOT_TIMEOUT_SECONDS if shot_timeout is None
+                                   else shot_timeout)
 
     # ── 外面那三层：图、窗口、检查点 ────────────────────────────────
     def _build_graph(self, brief: dict, job_id: str = ""):
@@ -756,6 +808,171 @@ class Service:
             except Exception as exc:                  # noqa: BLE001
                 _remember(exc)
         return on_step
+
+    # ── 闸拍：推进一步之后**把这一轮的眼睛留下**（设计注 §5.5）─────────────
+    # ⚠️ 这一节整节是**旁路**（与 journal / 步拍同一条规矩）：拍不成只记一句人话，
+    #    **绝不**抛到 `_advance` 上 —— 那会把「一次截图失败」变成「整趟跑挂」。
+    #    更要命的是**闸**：抓拍坏掉不许把「停在闸上等人」弄丢
+    #    （闸没了 = 人的交互点被吃掉，比没有图坏得多）。
+
+    def _capture_pause(self, job: Job) -> None:
+        """跑到闸口（或跑挂了）之后拍一张：`pause-<n>.png`。**不抛**。
+
+        `n` 是**第几轮**（`job.pauses`）—— Task 6 的配对规则「第 n 道闸上拍的那张叫
+        `pause-<n>`」靠的就是它，所以**拍不成的那一轮也占号**：不占号的话，
+        「第 n 轮」与「`pause-<n>`」当场错开，页面会把上一轮的图挂到这一轮上。
+
+        ⚠️ **不许在锁里拍**（简报点名）：名字先取（拿一次锁）、拍完再记（再拿一次）。
+        攥着 `job.lock` 拍 = 那 0.2 秒里 `GET /job/{id}` 读不动；
+        攥着 `self._check.lock` 拍 = 整个单飞的工作线程都在等它。
+        """
+        with job.lock:
+            job.pauses += 1
+            n = job.pauses
+        name, why = self._shoot_pause(job, n)
+        with job.lock:
+            job.shot_notes.append({"n": n, "name": name, "why": why})
+
+    def _shoot_pause(self, job: Job, n: int) -> tuple[Optional[str], str]:
+        """真去拍一张（`_capture_pause` 的下半截）。**不抛** —— 连算落点的 `ValueError` 也收在这儿。"""
+        ws_url = str((job.brief or {}).get("ws_url") or "").strip()
+        if not ws_url:
+            # ⚠️ 这一格比 `capture_via_cli` 里那格更靠前：**压根没有窗口**，
+            #    所以一个进程都不该起（那一格管的是「给了串但认不出来」，
+            #    它会明说**绝不**退回 127.0.0.1:9222 —— 那是本机的**另一个**浏览器）。
+            return None, ("还没开浏览器（这份开场白里没有 ws_url）—— 这一轮没有窗口可拍。"
+                          "窗口开出来（`bit.sh open` 那串）之后的轮次才有图。")
+        try:
+            dest = shots.path_for(job.job_id, root=self._shots_dir) / ("pause-%d.png" % n)
+        except ValueError as exc:
+            return None, "落点算不出来：%s" % exc
+        return self._shoot(ws_url, dest)
+
+    def _shoot(self, ws_url: str, dest) -> tuple[Optional[str], str]:
+        """`capture` 跑在**旁路线程**上，`self._shot_timeout` 秒没回来就当它没成（硬超时）。
+
+        为什么要多一层线程（设计注 §5.5 / 计划 §R6）：单飞的工作线程是**唯一**推图的地方
+        （D6）—— 拍照那条路（真实现是 `cdp` 子进程）卡住的话，整个服务就停在那儿了。
+        超时只丢这一张图：闸照旧在、账照旧记，人话里说清是超时。
+        """
+        capture = self._capture or shots.capture_via_cli
+        box: dict = {}
+
+        def work() -> None:
+            try:
+                box["out"] = capture(ws_url, str(dest), timeout=self._shot_timeout)
+            except BaseException as exc:                  # noqa: BLE001 —— 外面世界
+                box["boom"] = exc
+
+        worker = threading.Thread(target=work, name="siteforge-shot", daemon=True)
+        worker.start()
+        worker.join(self._shot_timeout)
+        if worker.is_alive():
+            return None, ("拍照超过 %.0f 秒还没回来（超时）—— 窗口可能卡住了；"
+                          "这张图没留下，闸照旧在" % self._shot_timeout)
+        if "boom" in box:
+            exc = box["boom"]
+            return None, "拍照时它抛了 %s：%s" % (type(exc).__name__, exc)
+        out = box.get("out")
+        if not (isinstance(out, tuple) and len(out) == 2):
+            return None, "拍照没给出（文件名, 人话）这样的结果：%r" % (out,)
+        name, why = out
+        if not name:
+            return None, str(why or "拍不成，而且没说为什么")
+        return str(name), ""
+
+    def _shot_note_for(self, job: Optional[Job], name: str) -> Optional[dict]:
+        """这一轮**拍过吗**（按文件名反查 `pause-<n>` 那条记录）。没有这个 job 就是 `None`。"""
+        if job is None:
+            return None
+        with job.lock:
+            notes = [dict(x) for x in job.shot_notes]
+        for note in reversed(notes):
+            if name == "pause-%s.png" % note.get("n"):
+                return note
+        return None
+
+    def shot_file(self, job_id: str, name: str) -> pathlib.Path:
+        """`/job/{id}/shot/{name}` 的两个字符串 → 一个**安全**的落点；不像话就 404（人话）。
+
+        三道判据（缺一不可）：
+          - `name` 过 `shots.name_ok`（一段、以 `.png` 结尾）—— 这个参数是外面来的；
+          - `job_id` 过 `shots.path_for`（**只解析、不建目录**：这是**读**的那一侧，
+            用 `dir_for` 就等于「一个 GET 建一个目录」）；
+          - 解析完**再确认一次它真的在那个目录里** —— 名字合法不等于路径老实：
+            一个指向 `/etc/passwd` 的 `pause-1.png` 也是「一段、以 .png 结尾」。
+        """
+        if not shots.name_ok(name):
+            raise HTTPException(status_code=404, detail=(
+                "这个名字不能当图名：%r —— 图名只许是 `pause-3.png` 那样的一段"
+                "（字母数字与 . _ -，1–64 字，以 .png 结尾）。这一个参数是外面来的，"
+                "带 `/` 或 `..` 的名字能把人带去别的地方读文件。" % (name,)))
+        try:
+            where = shots.path_for(job_id, root=self._shots_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="这个任务 id 不能当目录名：%s" % exc)
+        path = where / str(name)
+        inside = os.path.realpath(str(where))
+        real = os.path.realpath(str(path))
+        if os.path.dirname(real) != inside:
+            raise HTTPException(status_code=404, detail=(
+                "这张图不在那个任务的目录里：%s —— 它顺着链接跑到别处去了，不给你读。"
+                % name))
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail=self._no_shot_say(job_id, name))
+        return path
+
+    def _no_shot_say(self, job_id: str, name: str) -> str:
+        """「没有这张图」的人话。这一轮**拍过、只是没拍成**的话，把那句 `why` 一起带上
+        （不然页面上只剩「没有这张图」，而原因明明就在手上 —— 那也是一种静默）。"""
+        said = ("没有这张图：%s/%s —— 盘上就没有它。图是**跑到闸口时**才拍的"
+                "（一轮一张，`pause-<n>.png`）。" % (job_id, name))
+        note = self._shot_note_for(self._jobs.get(job_id), name)
+        if note and note.get("why"):
+            said += "这一轮拍过，但没拍成：%s" % note["why"]
+        return said
+
+    # ── 两块接线信息（页面不自己编）────────────────────────────────
+
+    def window_public(self) -> Optional[dict]:
+        """「这个窗口」那一块（设计注 §十）：**只摆事实 + 方法，不编 URL**。
+
+        没接窗口层 → `None`（页面据此**明说**「看不到活窗口」，而不是显示一块空表）。
+        `how` / `when` 两句写死在这个文件里（`WINDOW_HOW` / `WINDOW_WHEN`）：页面原样显示。
+        身份那三样里缺的（桩窗口、或者别的实现没带）给 `None` —— 不知道就说不知道。
+        """
+        window = self._window
+        if window is None:
+            return None
+        return {"worker": getattr(window, "worker_ip", None),
+                "bit_id": getattr(window, "bit_id", None),
+                "api_port": getattr(window, "port", BIT_API_PORT),
+                "how": WINDOW_HOW, "when": WINDOW_WHEN}
+
+    def shots_note(self) -> str:
+        """**降级 B** 那句话（设计注 §5.5）：每步抓拍开着 → `""`；关着 → 一句人话。
+
+        ⚠️ 判据走 `shots.step_shots_on()` —— 与 `explore` **同一份读法**。
+        这里要是自己再解析一次（哪怕只差一个 `strip`），就会出现
+        「图没了、一个字没解释」= 设计注明令禁止的**静默降级**。
+        """
+        if shots.step_shots_on():
+            return ""
+        return SHOTS_OFF_SAY % self._shot_price_say()
+
+    @staticmethod
+    def _shot_price_say() -> str:
+        """「一张图多少钱」那半句。**没给实测数就不吹具体数字**（那是个猜测，写上去就成了事实）。"""
+        raw = str(os.environ.get("SITEFORGE_SHOT_SECONDS") or "").strip()
+        if not raw:
+            return ("每步抓拍被关掉了（`SITEFORGE_STEP_SHOTS=0`）——"
+                    "这里没有实测的每张耗时，就不编一个数字。")
+        try:
+            seconds = float(raw)
+        except ValueError:
+            return ("每步抓拍被关掉了（`SITEFORGE_STEP_SHOTS=0`）——"
+                    "`SITEFORGE_SHOT_SECONDS=%r` 不是一个数，实测耗时读不出来。" % raw)
+        return "截图实测 %.1f 秒/张，太贵。" % seconds
 
     def _note_attempt(self, job_id: str, *, started: str, journey, boom: BaseException = None) -> None:
         """一次尝试收场 → `attempts.jsonl` 一行（墙钟 / 轮数 / 步数 / 停因）。
@@ -1058,8 +1275,15 @@ class Service:
                 job.say = ("这一步没跑成，停下了：%s\n"
                            "（任务没有交付任何东西 —— 产物目录里不会有它写的 py。）" % exc)
             self._measure_after(job.job_id)          # 旁路：跑挂了也要留账（吞异常）
+            # 跑挂了那一屏更该看得见 —— 同一个出口、同一条纪律（旁路，不抛）。
+            # ⚠️ 这条路上 `FAILED` **先**落（人该立刻看见它挂了），图随后才到 ——
+            #    所以这一刻的快照里可能还没有这一轮的 note，下一次读就有。
+            self._capture_pause(job)
             return
         self._measure_after(job.job_id)              # 旁路：记一行时间线 + 汇总 baseline
+        # ⚠️ 闸拍放在**这里**：`invoke` 之外（写锁已经放开）、`job.lock` 也没拿着 ——
+        #    拍照那 0.2 秒（最坏 20 秒）里不该按着整个服务（简报点名的第一条）。
+        self._capture_pause(job)
         with job.lock:
             # 登记表只补「正在跑 / 跑挂了」这两件 checkpoint 答不了的事。
             # 「停在等人」还是「跑到头了」、以及**为什么停**，一律**从 checkpoint 投影**
@@ -1516,7 +1740,9 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                checkpointer=None, checkpointer_url: Optional[str] = None,
                out_dir: Optional[str] = None, viewport_probe: Optional[Callable] = None,
                explore_dir: Optional[str] = None,
-               window_probe_seconds: Optional[float] = None) -> FastAPI:
+               window_probe_seconds: Optional[float] = None,
+               shots_dir: Optional[str] = None, capture: Optional[Callable] = None,
+               shot_timeout: Optional[float] = None) -> FastAPI:
     """拼一个 app。测试从这里注入桩图 / 桩窗口 / 内存 saver。
 
     `window=None` 是**默认且合法**的：这个部署没接窗口层 —— 于是 `set_viewport` 那根线
@@ -1524,11 +1750,16 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
 
     `explore_dir` 是**运行产物**落哪（`runtime/explore/<job_id>/`，Task 1）。默认给的是
     仓库里那个 `runtime/`（不进 git）；测试一律传自己的 `tmp_path`。
+
+    `shots_dir` 是**闸拍**落哪（`runtime/shots/<job_id>/pause-<n>.png`，Task 3）：
+    `None` ⇒ `SITEFORGE_SHOTS_DIR` ⇒ 仓库里的 `runtime/shots`。`capture` / `shot_timeout`
+    是给测试注入桩用的（与 `viewport_probe` 同一个理由）。
     """
     svc = Service(graph_factory=graph_factory, window=window, checkpointer=checkpointer,
                   checkpointer_url=checkpointer_url, out_dir=out_dir,
                   viewport_probe=viewport_probe, explore_dir=explore_dir,
-                  window_probe_seconds=window_probe_seconds)
+                  window_probe_seconds=window_probe_seconds, shots_dir=shots_dir,
+                  capture=capture, shot_timeout=shot_timeout)
     api = FastAPI(title="siteforge", version="0.1",
                   description="看着真页面产出 cdp-first py 脚本的 agent 服务（计划二 Task 8）")
 
@@ -1560,6 +1791,22 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                                 detail="没这个任务：%s（服务里没有它，checkpoint 里也没有）。"
                                        "要么 id 写错了，要么它是在**另一个** saver 上跑的 —— "
                                        "状态住在 saver 里，不在这个进程里（R-19）。" % job_id)
+
+    @api.get("/job/{job_id}/shot/{name:path}")
+    def shot(job_id: str, name: str):
+        """一张闸拍图（设计注 §8.1）：**字节走这儿，不进 `/live` 的 JSON**。
+
+        ⚠️ `{name:path}`（不是 `{name}`）：名字里带 `/` 的请求也要**落到人手里** ——
+        不然框架会拿一个英文的 `{"detail":"Not Found"}` 先把它挡掉，
+        而这条路上最该说清的就是「这个名字不能当图名」（它是一次路径穿越的尝试）。
+        名字与路径的判据全在 `Service.shot_file` 里（白名单 + 解析后仍在那个目录里）。
+        """
+        path = svc.shot_file(job_id, name)
+        # `no-cache`：文件名带轮号，正常永远不会变 —— 但**服务重启后捡回来的 job**
+        # 轮号从 1 重新数，同一个名字可能换一张图。让浏览器每次回来问一句（304 很便宜），
+        # 否则页面上会出现一张**对不上的旧图**（看着像证据，比不显示坏得多）。
+        return FileResponse(str(path), media_type="image/png",
+                            headers={"Cache-Control": "no-cache"})
 
     @api.post("/job/{job_id}/reply")
     def reply(job_id: str, body: ReplyRequest) -> dict:
