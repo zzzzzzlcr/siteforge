@@ -606,3 +606,64 @@ def test_the_shot_files_land_where_the_caller_said(tmp_path):
     assert s.dests, "该拍"
     for d in s.dests:
         assert where in d.parents, f"落点跑出调用方给的目录了：{d}"
+
+
+def test_a_swallowed_step_shot_error_leaves_no_orphan(tmp_path, monkeypatch):
+    """**旁路吞掉之后必须回滚** —— 盘上不许留无主的图。
+
+    复审实测的问题：`_safe` 吞掉异常**但不回滚** ⇒ 盘上留 2 张（点前＋点后）、
+    `shot_before` 丢了、`kept` 也不计它们 ⇒ **账实不符由旁路自己造出来**，
+    **上限在那条路上不再成立**。
+
+    吞异常是「不让它带塌探路」，**不是**「让盘上的账烂掉」—— 两件事要一起做。
+    """
+    def boom(*_a, **_kw):
+        raise RuntimeError("步拍自己坏了（桩）")
+
+    monkeypatch.setattr(browser_agent._StepShots, "on_observation", boom)
+
+    s = _Shooter(tmp_path / "shots")
+    journey, _, _ = _go(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"content": "步拍坏了"}],
+        s,
+        budget=browser_agent.Budget(max_steps=10, max_rounds=10),
+    )
+    assert [x["action"] for x in journey.steps] == ["observe", "click", "observe"], journey.steps
+    assert s.left == [], f"吞掉之后没回滚，盘上留下无主的图：{s.left}"
+    assert "RuntimeError" in journey.shots_why, journey.shots_why
+
+
+def test_a_failed_screenshot_does_not_void_the_chain(tmp_path):
+    """**报错的 `screenshot` 不作废那条链** —— 它既不动页面、也不负责结算。
+
+    复审点名：原来那条闸只按 `ok` 判，于是报错的 `screenshot` / `diff` 也会把链作废，
+    而成功的不会 —— **同一个动作因为成功与否得到两种待遇**，
+    而「凭什么」说不出来（它们既不改页面，也不结算）。
+
+    只有**报错的 `observe`** 才该作废：它是唯一「本该结算而没结算成」的那个。
+    """
+    s = _Shooter(tmp_path / "shots")
+    journey, _, _ = _go(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_LANDING}],
+         "screenshot": [{"error": "截图工具报错（桩）"}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("screenshot", {})]},
+         {"calls": [("observe", {})]},
+         {"content": "截图坏了，可页面没变"}],
+        s,
+        budget=browser_agent.Budget(max_steps=10, max_rounds=10),
+    )
+    shot = [x for x in journey.steps if x["action"] == "screenshot"][0]
+    assert shot["result"]["ok"] is False, shot["result"]
+    click = [x for x in journey.steps if x["action"] == "click"][0]
+    assert click["shot_before"] and click["shot_after"], \
+        "报错的截图不动页面也不结算，不该把 click 那条链作废"
+    assert click["shot_after_deferred"] is True
+    assert len(s.left) == 2, s.left

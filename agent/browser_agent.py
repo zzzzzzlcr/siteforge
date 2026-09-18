@@ -2364,8 +2364,6 @@ class _StepShots:
         self.kept = 0
         #: 待结算的那一步：`{"step", "before", "key", "tainted"}`。`None` = 手上没有。
         self._pending: dict | None = None
-        #: 建了 pending 之后出现过**不是观测**的动作？（出现了 ⇒ 那次观测「不紧接着」）
-        self._dirty = False
         self._said_cap = False
 
     def _safe(self, what: str, fn, *args, **kwargs) -> None:
@@ -2386,6 +2384,11 @@ class _StepShots:
         except Exception as exc:                   # noqa: BLE001 —— 旁路，什么都得吞
             self.journey.shots_why = ("步拍自己坏了（%s）：%s：%s"
                                       % (what, type(exc).__name__, exc))
+            # ⚠️ **吞掉之后必须回滚**（复审实测：不回滚的话旁路自己造出账实不符 ——
+            # 盘上留下两张无主的图、`shot_before` 丢了、`kept` 也不计它们 ⇒
+            # **上限在那条路上不再成立**）。吞异常是「不让它带塌探路」，
+            # 不是「让盘上的账烂掉」—— 这两件事要一起做。
+            self._discard_pending()
 
     # ── 对外的口（**都要走 `_safe`** —— 见上）─────────────────────
 
@@ -2425,7 +2428,10 @@ class _StepShots:
             # **成功的** `observe` **绝不能**在这儿动 —— 它由 `on_observation` 结算，
             # 抢在它前面作废就是把它整个废掉（实测栽过：这一支写成无条件的之后，
             # 「跑顺」和「没变」两种情形**都**变成「不留」，`form`/`scroll` 那几条更是全灭）。
-            if not ok:
+            # ⚠️ **只有报错的 `observe` 才作废那条链** —— 它是唯一**本该结算而没结算成**的那个。
+            # 报错的 `screenshot` / `diff` 既不动页面、也不负责结算，凭什么把链作废？
+            # （复审点名：原来按 `ok` 判，管得比该管的宽。）
+            if not ok and name == "observe":
                 self._discard_pending()
             return
         if ok:

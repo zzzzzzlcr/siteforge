@@ -160,6 +160,9 @@ time cdp --host <worker_ip> --port <port> screenshot --out /tmp/shot.png   # 跑
 点后：只在已经知道不对劲时 ——
         a) ok 为假            → 立刻补拍
         b) 做成了、但**紧接着**那次观测显示页面签没变 → 那一刻补拍（标 shot_after_deferred=True）
+              ⚠️ **b) 只对 `click` / `goto` 成立** —— 签是 `body.innerText`，**填框/滚动都不改它**，
+              拿它判那两个是**必然假阳性**（2026-09-18 实测：一趟全成功的漏斗因此留了 10 张，
+              40 张上限被健康步吃掉）。表同产物侧的 `DIFF_JUDGES`，有防漂移哨兵盯着。
 留：只有 a、b 留「点前+点后」；其余情况**把点前那张删掉**
 锚点：`_Pages` 的 key（(url, title, page_text[:400])），与 when_holds / _applies 同口径
 判据只在**紧接着**的那次观测上生效（click A → click B → observe 不认）
