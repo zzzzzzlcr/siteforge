@@ -975,7 +975,22 @@
   document.getElementById("btnStop").addEventListener("click", stopIt);
   document.getElementById("btnAgain").addEventListener("click", function () {
     if (!jobId) { setErr("先挑一趟运行。"); return; }
-    act("again", {});
+    // ⚠️ 按下去**必须有反馈**（Task 10 修复轮 1 / N-3）：`/again` 起的是**另一个 job**，
+    //    而这一屏同一刻只盯一趟 —— 不跟着走、也不说一句，屏幕上就是**什么都不变**
+    //    （旧那一趟还停在「跑挂了」上），运营只会以为按钮坏了。
+    //    两件事一起做：**跟着新那一趟走**（`pickJob`）+ **把服务那句话摆出来**
+    //    （`say` 是服务算好的那句原话；没给就明说不知道新的是哪一个，不替它猜）。
+    act("again", {}).then(function (out) {
+      if (!out) { return; }            // 没成：`act` 已经把服务那句话**原样**摆在红条上了
+      var fresh = at(out, "job_id", "");
+      var said = at(out, "say", "");
+      if (!fresh) {
+        setErr(said || ("「重新来一遍」服务收下了，但它没回新的 job id —— "
+                        + "这一屏不知道新那一趟是哪一个，不替它猜。"));
+        return;
+      }
+      pickJob(fresh, said || ("「重新来一遍」起的是新的一趟：" + fresh + "。"));
+    });
   });
   document.getElementById("tlNew").addEventListener("click", function () {
     var box = document.getElementById("tlbox");

@@ -4,10 +4,11 @@
 // 打印**一行 JSON**（观测结果）到 stdout，退出码 0；自己出错就非 0 退出（不吞）。
 //
 // 它做的事：把页面里那段**原样的** JS（`agent/console.html` 一个字节都不改）在一个
-// 假 DOM / 假 fetch 里跑起来，然后**按一个真人会走的顺序**驱动它：
-//   开页 →（`/live` + `/runs` 各来一份）→ 点「停」（服务回 404 人话）→ `/live` 变了（重画）
-//   → `/runs` 取不到（左边那一栏说真话）→ `/live` 又变（**又一次重画**）
-// 打完这些之后，把屏幕上**那几个元素此刻的文本**交回去。
+// 假 DOM / 假 fetch 里跑起来，然后**按一个真人会走的顺序**驱动它。两个场景（`payload.scenario`）：
+//   · `repaint`（默认）：开页 →（`/live` + `/runs` 各来一份）→ 点「停」（服务回 404 人话）
+//     → `/live` 变了（重画）→ `/runs` 取不到（左边那一栏说真话）→ `/live` 又变（**又一次重画**）
+//   · `again`：开页（这一趟到头了）→ 点「重新来一遍」→ `/again` 回新 job
+// 打完这些之后，把屏幕上**那几个元素此刻的文本**交回去，外加一个数：**重画了几次**。
 //
 // ⚠️ 射程（写在 `tests/test_console_js.py` 的模块 docstring 里，这里只留一句）：
 //    它看得见「哪个值、什么顺序、被写进哪个元素」；看不见像素、看不见真浏览器的
@@ -30,6 +31,12 @@ const source = html.slice(open + "<script>".length, close);
 // ── 假 DOM ──────────────────────────────────────────────────────────────
 const els = {};
 let newEls = 0;
+//: **重画次数**（Task 10 修复轮 1 / C1）：`paintTimeline()` 每画一次就把 `#timeline` 的
+//: `innerHTML` 写一次，而它只由 `paint()` 调用 ⇒ 这个数 = `paint()` 的次数 = **重画次数**。
+//: ⚠️ 别拿「`/live` 被 fetch 了几次」当它：页面每 3 拍**无条件** fetch，
+//: 而重画由 `if (key !== seen)` 单独决定 —— 载荷一旦不变，fetch 照数，重画是 0
+//: （实测：三种载荷下 fetch 都是 10，重画是 10 / 3 / 2）。
+let timelineWrites = 0;
 function el(id) {
   if (!els[id]) {
     els[id] = {
@@ -43,6 +50,15 @@ function el(id) {
       },
       getAttribute: function () { return null; },
     };
+    if (id === "timeline") {
+      //: `#timeline` 的 `innerHTML` 换成一对带计数的取值器（见 `timelineWrites`）
+      let wrote = "";
+      Object.defineProperty(els[id], "innerHTML", {
+        get: function () { return wrote; },
+        set: function (v) { wrote = v; timelineWrites += 1; },
+        configurable: true,
+      });
+    }
   }
   return els[id];
 }
@@ -93,14 +109,9 @@ vm.createContext(sandbox);
 const settle = () => new Promise((r) => setTimeout(r, 0));
 const ticks = async (n) => { for (let i = 0; i < n; i++) { ticker(); await settle(); } };
 
-(async () => {
-  vm.runInContext(source, sandbox, { filename: "console.html" });
-  await settle();                                   // 开页那两次 fetch
-
-  const out = {};
+async function repaintScenario(out) {
   out.afterLoad = { errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
                     secondHint: el("secondHint").innerHTML, runs: el("runs").innerHTML };
-  out.stopRequests = 0;
 
   el("btnStop").listeners.click();                  // 人按「停」（服务回 404）
   await settle();
@@ -111,11 +122,34 @@ const ticks = async (n) => { for (let i = 0; i < n; i++) { ticker(); await settl
   await ticks(15);                                  // 走满一轮：`/live` 每 3 拍、`/runs` 每 15 拍
   out.afterRunsFailure = { runs: el("runs").innerHTML, errBox: el("errBox").textContent,
                            errHidden: el("errBox").hidden };
+  out.paintsBeforeRepaint = timelineWrites;         // 「左边那一栏坏掉」那一刻的重画数
   await ticks(9);                                   // 之后**又三次重画**（`/live` 每 3 拍就变）
   out.afterRepaint = { runs: el("runs").innerHTML, errBox: el("errBox").textContent,
                        errHidden: el("errBox").hidden, secondHint: el("secondHint").innerHTML,
                        statusPill: el("statePill").textContent,
                        sayBoxPlaceholder: el("sayBox").placeholder };
+}
+
+//: 「重新来一遍」那一趟（Task 10 修复轮 1 / N-3）：运营**按下去**，屏幕上总得发生点什么。
+async function againScenario(out) {
+  out.afterLoad = { who: el("whoJob").textContent, notices: el("notices").innerHTML,
+                    againHidden: el("btnAgain").hidden };
+  el("btnAgain").listeners.click();                 // 人按「重新来一遍」（服务回新 job）
+  await settle();
+  await settle();                                   // `pickJob` 里那两次 fetch 也落地
+  out.afterAgain = { who: el("whoJob").textContent, notices: el("notices").innerHTML,
+                     errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
+                     timeline: el("timeline").innerHTML };
+}
+
+(async () => {
+  vm.runInContext(source, sandbox, { filename: "console.html" });
+  await settle();                                   // 开页那两次 fetch
+
+  const out = {};
+  if (payload.scenario === "again") { await againScenario(out); }
+  else { await repaintScenario(out); }
+  out.paints = timelineWrites;                      // **重画了几次**（C1：别拿 fetch 数代替）
   out.urls = seen;
   process.stdout.write(JSON.stringify(out) + "\n");
 })().catch((e) => { console.error("夹具自己挂了：" + (e && e.stack || e)); process.exit(1); });

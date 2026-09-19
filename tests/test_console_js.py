@@ -18,9 +18,10 @@ Task 7 那一轮的复审发现：「**只有浏览器看得见**」的缺陷**�
 
 | # | 性质 | 它为什么只有跑起来才看得见 |
 |---|---|---|
-| 1 | 出错的**那一刻**服务那句话原样上屏，且**活过之后 18 次重画** | 「写进去」与「还在不在」是两件事（`setErr` 写对了，下一次 `fetchLive` 成功就擦掉 —— 修复轮 1 的坑） |
+| 1 | 出错的**那一刻**服务那句话原样上屏，且**活过之后 3 次重画**（`/runs` 坏掉之后那一段；按「停」之后到结束是 8 次，整段是 10 次 —— **三个数都是量的**，见 `paints`） | 「写进去」与「还在不在」是两件事（`setErr` 写对了，下一次 `fetchLive` 成功就擦掉 —— 修复轮 1 的坑） |
 | 2 | 左边那一栏读不到时，那句真话**不被过期列表盖掉** | 修复轮 3 的坑：`fetchRuns` 失败只是**写了字**，而 `paint()` 每 3 秒把 `state.runs`（上一次那份**好**列表）照画一遍 |
 | 3 | 服务那两格**对不上**时，页面说出来（而不是自己挑一句） | 两句话是同一段 `innerHTML` 的**两个分支** —— 源码文本断言看得见「分支在」，看不见**这一刻走了哪一支** |
+| 4 | 按「重新来一遍」之后**页面上真的变了**（跟着新那一趟走 + 把服务那句原话摆出来） | 服务侧回的是 `202 {job_id, say}`，**页面接不接它是页面的事** —— 接不接，源码文本断言两边都绿 |
 
 **钉不住**（照实说，别把它读大）：
 
@@ -33,6 +34,10 @@ Task 7 那一轮的复审发现：「**只有浏览器看得见**」的缺陷**�
 - **CSS / 无障碍 / 真窗口大小**：一个字都不测。
 - 射程的**共同前提**：事件处理是按**真人点按钮**那条路调的（`btnStop.listeners.click()`），
   不是直接调内部函数 —— 但夹具仍然看不到「浏览器真的把点击派发到那个元素上」。
+- ⚠️ **夹具的牙挂在一个前提上：每一份 `/live` 正文都必须不一样**（页面只在
+  `JSON.stringify(正文) !== seen` 时才重画）。这个前提**今天被量着**（驱动脚本数
+  `#timeline` 的写入次数 = 重画次数，用例断言它等于 `/live` 的 fetch 次数）——
+  Task 10 修复轮 1 之前它**只被 fetch 数装样子**（三种载荷下 fetch 都是 10、重画是 10/3/2）。
 
 ⚠️ **正控在用例里**：`test_the_fixture_can_actually_fire` 拿一个**已知会破坏行为**的改写
 （把 `setErr("")` 那道 `errFrom` 判据改成恒真）证明这套夹具**真的会响** ——
@@ -67,6 +72,9 @@ RUNS_500 = "Internal Server Error（桩）"
 ERR_STILL = STOP_404
 RUNS_STILL = "左边这一栏现在取不到"
 STOP_HINT_STILL = "没请求成"
+#: 服务对 `/again` 回的那句人话 —— **从服务自己的常量算出来**（不在这里手抄一遍：
+#: 那句话改一个字，这一份就会跟着变，不会两边漂）。
+AGAIN_SAY = service.AGAIN_SAY % ("job-2", "job-1", 2)
 
 
 def _live(status: str, mode: str, *, n: int, stop_requested: bool = False) -> dict:
@@ -102,6 +110,9 @@ def _payloads(*, final_mode: str) -> dict:
     lives = [{"body": _live("running", "queue", n=1)},
              {"body": _live("running", "queue", n=2)}]
     lives += [{"body": _live("waiting", final_mode, n=3 + i)} for i in range(20)]
+    #: 那句前提**在这里就量掉**（Task 10 修复轮 1 / C1）：22 份正文两两不同，
+    #: 而用例还会用「重画次数 == `/live` 的 fetch 次数」再量一遍**行为**。
+    _assert_all_different([x["body"] for x in lives], "`/live` 的正文")
     return {
         "search": "?job=job-1",
         "responses": {
@@ -121,21 +132,77 @@ def _payloads(*, final_mode: str) -> dict:
     }
 
 
-def _drive(tmp_path, *, final_mode: str, page: pathlib.Path = None) -> dict:
+def _again_payloads() -> dict:
+    """「重新来一遍」那一趟的响应（Task 10 修复轮 1 / C3 = N-3）。
+
+    这一趟**到头了**（`status="failed"`）—— 那个按钮只在到头的两档才露头
+    （`over` 为真），而 `/again` 对着一趟还在跑的 job 会回 409（`service.py` 那条）。
+    新那一趟是 **job-2**：服务回的那句 `say` 是它自己算好的原话（`AGAIN_SAY` 那句）。
+    """
+    over = _live("failed", "queue", n=2)
+    over["say"] = "这一步没跑成，停下了。"
+    fresh = _live("queued", "queue", n=1)
+    fresh["job_id"] = "job-2"
+    fresh["say"] = "排队等窗口（前面还有别的 run 在用）"
+    _assert_all_different([over, fresh], "两份 `/live` 的正文")
+    return {
+        "scenario": "again",
+        "search": "?job=job-1",
+        "responses": {
+            "/runs": [
+                {"body": {"note": "", "runs": [{"job_id": "job-1", "site": "example-funnel",
+                                                "status": "failed", "say": "这一步没跑成，停下了。",
+                                                "created_at": "2026-09-19T21:00:00+08:00",
+                                                "rounds": 0, "delivered": False}]}},
+            ],
+            "/job/job-1/live": [{"body": over}],
+            "/job/job-1/again": [{"body": {"job_id": "job-2", "say": AGAIN_SAY}}],
+            "/job/job-2/live": [{"body": fresh}],
+        },
+    }
+
+
+def _assert_all_different(bodies: list, what: str) -> None:
+    """那些正文**两两不同** —— 夹具的牙挂在这个前提上（页面只在正文变了才重画）。"""
+    seen = {json.dumps(b, sort_keys=True) for b in bodies}
+    assert len(seen) == len(bodies), (
+        "%s 有重复（%d 份里只有 %d 份不同）—— 页面不会重画，这套夹具的牙就没了"
+        % (what, len(bodies), len(seen)))
+
+
+def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
+           page: pathlib.Path = None) -> dict:
     """跑一次夹具，把驱动脚本打回来的那份观测解析出来。"""
-    data = tmp_path / ("payloads-%s.json" % final_mode)
-    data.write_text(json.dumps(_payloads(final_mode=final_mode)), encoding="utf-8")
+    payload = _again_payloads() if scenario == "again" else _payloads(final_mode=final_mode)
+    data = tmp_path / ("payloads-%s-%s.json" % (scenario, final_mode))
+    data.write_text(json.dumps(payload), encoding="utf-8")
     r = subprocess.run([NODE, str(DRIVER), str(page or service.CONSOLE_PATH), str(data)],
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, "夹具自己挂了（rc=%s）：\n%s\n%s" % (r.returncode, r.stdout, r.stderr)
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
-pytestmark = pytest.mark.skipif(
-    NODE is None,
-    reason="这台机器上没有 `node`（`command -v node` 没找到）—— 这套执行夹具跑不起来。"
-           "**替代方案**：在有 node 的机器上跑这一份；或者在本地 headless Chrome 里开 "
-           "`GET /console` 手工走一遍（那是 Task 10 Step 3 那些手工验收条目里的事）。")
+@pytest.fixture(autouse=True)
+def _node_is_a_hard_dependency():
+    """**没有 `node` 就红，不是 skip**（Task 10 修复轮 1 / C2）。
+
+    为什么不是 `skipif`（改之前的样子，复审实测：5 skipped、`rc=0`）：那三条性质
+    在**源码文本断言**那边**本来就是空的**（M8/M9/M10 三个变异下 `test_console_page.py`
+    的三条同名断言全绿）⇒ 没有 node 时它们**一道守都没有**，而「全绿」会**静默地**
+    退化成「948 + 5 skip」。这一片的主题就是「没有静默的路径」，所以这件事要**响**。
+
+    **代价（说清）**：没有 node 的机器上，这一份会**红 6 条**（不是 5 条 —— 这条自己也算），
+    而不是安安静静地跳过。要让它绿，装一个 node（本机实测 v22.22.1）；
+    真的不想装，就在 CI 里**显式**把这一份排除并记账 —— **别让它变成 skip**。
+    """
+    if NODE is None:
+        pytest.fail(
+            "这台机器上没有 `node`（`command -v node` 没找到）—— 这一份执行夹具"
+            "（Task 10 Step 2.5）钉着 4 条**只有浏览器看得见**的性质，而源码文本断言那边"
+            "一条都拦不住（复审实测：M8/M9/M10 下那三条同名源码断言全绿）。"
+            "⇒ 缺了 node，这几条性质**一道守都没有**（不是「守得弱」）。"
+            "装一个 node（本机实测 v22.22.1 够用）；真不想装就在 CI 里**显式**排除这一份"
+            "并把它记进账 —— **不要退回 `skipif`**（那会让全量套件在别的机器上静默变绿）。")
 
 
 def test_the_fixture_reads_the_very_file_the_route_serves():
@@ -166,17 +233,28 @@ def test_a_sentence_the_service_said_stays_on_screen_through_the_repaints(tmp_pa
     这一条要的是：**三处地方的那句话都还在**（错误条 / 左边那一栏 / 「停」那行小字）。
     全是「写进去之后还在不在」，只有真跑起来才看得见。
 
-    ⚠️ 「重画真的发生了」是**量出来的**（`urls` 那一行）：`/live` 每次都喂一份**不一样的**
-    正文，而页面只在正文变了才重画 —— 次数对不上就说明这条用例量的是别的什么东西。
+    ⚠️ 「重画真的发生了」是**量出来的**，而且量的是**重画**、不是 fetch
+    （Task 10 修复轮 1 / C1）：驱动脚本给 `#timeline` 的 `innerHTML` 装了写计数器
+    （`paintTimeline` 每画一次就写它一次 ⇒ 这个数 = `paint()` 的次数）。页面每 3 拍
+    **无条件** fetch、而重画由 `if (key !== seen)` 单独决定 —— 拿 fetch 数装样子的话，
+    载荷一旦不变，这一条照绿而夹具的牙全没（复审实测：三种载荷下 fetch 都是 10、
+    重画是 10 / 3 / 2）。
     """
     out = _drive(tmp_path, final_mode="gate")
 
     # 量具**不是瞎的**：这几跳真的被走过了（不然下面几条是空过）
     urls = out["urls"]
     assert urls.count("/runs") >= 2, urls
-    assert urls.count("/job/job-1/live") >= 8, (
-        "重画次数不够（每一份 `/live` 都不一样才画一次）：%r" % urls)
     assert urls.count("/job/job-1/stop") == 1, urls
+    # ★ 重画次数 == `/live` 的 fetch 次数：每一份正文都不一样 ⇒ 每一次都真的重画了
+    live_fetches = urls.count("/job/job-1/live")
+    assert live_fetches >= 8, urls
+    assert out["paints"] == live_fetches, (
+        "重画次数（%d）不等于 `/live` 的 fetch 次数（%d）—— 有几次取回正文**没有重画**"
+        "（正文没变？），这一条用例量到的就不是「重画擦不掉」：%r"
+        % (out["paints"], live_fetches, urls))
+    #: 「左边那一栏坏掉」之后**确实又重画过**（不然第 ③ 步是个空步）
+    assert out["paints"] - out["paintsBeforeRepaint"] >= 3, out
 
     # ① 按下去那一刻：服务的原话上屏（**原样**，不是页面自己编的一句）
     assert out["afterStop"]["errBox"] == ERR_STILL, out["afterStop"]
@@ -190,7 +268,7 @@ def test_a_sentence_the_service_said_stays_on_screen_through_the_repaints(tmp_pa
     assert RUNS_STILL in out["afterRunsFailure"]["runs"], out["afterRunsFailure"]["runs"]
     assert RUNS_500 in out["afterRunsFailure"]["runs"], out["afterRunsFailure"]["runs"]
 
-    # ③ ★ 十八次重画之后：三句话**一句都没被擦掉**，而过期列表**没上屏**
+    # ③ ★ 又 3 次重画之后：三句话**一句都没被擦掉**，而过期列表**没上屏**
     after = out["afterRepaint"]
     assert after["errBox"] == ERR_STILL, "错误条被重画擦掉了：%r" % after
     assert after["errHidden"] is False, after
@@ -214,6 +292,35 @@ def test_the_page_says_the_two_cells_disagree_instead_of_picking_one(tmp_path):
     consistent = _drive(tmp_path, final_mode="gate")["afterRepaint"]
     assert "对不上" not in consistent["secondHint"], \
         "两格一致的时候也在喊「对不上」—— 那是把判据用反了：%r" % consistent["secondHint"]
+
+
+def test_the_again_button_really_changes_the_screen(tmp_path):
+    """**N-3**（Task 10 修复轮 1 / C3）：按下「重新来一遍」之后，页面上**真的变了**。
+
+    修之前那一屏：`act("again", {})` 发完请求就**没人接那个响应** —— 旧那一趟照旧停在
+    「跑挂了」上，通知栏一个字没有，运营只会以为按钮坏了（**运营看得见的一个按钮按下去
+    没有反馈**，正是这一片的主题）。修之后两件事一起发生：页面**跟着新那一趟走**
+    （`#whoJob` 变成新 id、`/live` 真的改成拉新的那个 job）+ **把服务那句原话摆出来**。
+
+    ⚠️ 这一条**只有跑起来才钉得住**：接不接那个响应，源码文本断言两边都绿
+    （Task 7 那 29 条里没有一条**跑**过它）。
+    """
+    out = _drive(tmp_path, scenario="again")
+
+    # 开页：这一趟到头了 ⇒ 那个按钮**露头**（`over` 那一档），屏幕上还停在 job-1
+    assert "job-1" in out["afterLoad"]["who"], out["afterLoad"]
+    assert out["afterLoad"]["againHidden"] is False, out["afterLoad"]
+
+    # 按下去：服务回的是**新的一趟**（job-2）
+    assert out["urls"].count("/job/job-1/again") == 1, out["urls"]
+    assert "/job/job-2/live" in out["urls"], (
+        "页面没有跟着新那一趟走（一次都没去拉新 job 的 `/live`）：%r" % out["urls"])
+    assert "job-2" in out["afterAgain"]["who"], out["afterAgain"]
+    # **服务那句原话**（`AGAIN_SAY`）在屏幕上 —— 一字不差地照抄，页面不自己编一句
+    assert AGAIN_SAY in out["afterAgain"]["notices"], out["afterAgain"]["notices"]
+    # 而且这一屏**不是**「什么都没变」：新那一趟的事件已经在时间线上了
+    assert "第 1 条（夹具）" in out["afterAgain"]["timeline"], out["afterAgain"]["timeline"]
+    assert out["afterAgain"]["errBox"] == "" and out["afterAgain"]["errHidden"] is True, out["afterAgain"]
 
 
 def test_the_fixture_can_actually_fire(tmp_path):
