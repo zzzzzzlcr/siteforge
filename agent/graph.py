@@ -470,7 +470,7 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
         note = ("⚠️ 第 %d 趟探路**没有在页面上见到成功文案** —— 账本里很可能没有那条通向"
                 "成功的路（拿它去定稿+自测会白跑，第九轮实测过）。**自动重探一趟**"
                 "（换一组随机答案；最多重探 %d 次）。" % (n - 1, EXPLORE_ATTEMPTS - 1))
-        journey.notes.append(note)
+        journey.note(note)
         journey = pass_once(n)
     reached = attempts[-1]["reached"]
     out["journey"] = journey
@@ -484,7 +484,7 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
     if len(attempts) > 1:
         # **两次账本的差异**（问题 2/3 的答案顺手就有）：各自填了什么、哪一趟没走通
         out["explore_attempts_note"] = _attempts_note(attempts)
-        journey.notes.append(out["explore_attempts_note"])
+        journey.note(out["explore_attempts_note"])
     stop = str(getattr(journey, "stop_reason", "") or "")
     if stop not in FINISHED_EXPLORATION:
         # **停因排在「没见到成功文案」前面**（顺序有讲究）：这一趟**根本没走完**的时候，
@@ -512,7 +512,7 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
                     "所以不重探：这一趟不算对这条路的一次干净观察，"
                     "重探只会把同一段在真页面上再撞一遍。停下，如实报，"
                     "**不进入定稿 + 自测**（拿一条走不通的账本去定稿+自测是必然白跑）。")
-        journey.notes.append(note)
+        journey.note(note)
         out["end_reason"] = END_EXPLORE_UNFINISHED
         out["end_note"] = note
     return out

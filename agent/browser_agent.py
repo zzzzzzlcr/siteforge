@@ -238,6 +238,20 @@ START_STATE = "start"
 #: 一个字都不许出现（不然每次收尾都在说人那句话，那是编话）。
 STEER_WRAPPED_UP_NOTE = "你插话之后它就收尾了 —— 看一眼它的结论对不对"
 
+#: 一条 note 里混进了**线上写不出来**的字节时，接在**那条话自己尾巴上**的那句（`%d` = 几个）。
+#:
+#: 为什么接在自己身上、不另起一条：`notes` 是个**有顺序的**单子，`graph._journey_say`
+#: 的尾巴取的是 `notes[-1]`（那句「有信息的是停因那句」的注释就在 `_walk_back` 上面）——
+#: 另起一条报数会把那一句顶掉，于是「换了几个字节」这个**次要**消息压掉了**主要**消息。
+#: 这与 `_utf8_safe` 把那句话写进**这一步自己的 `why`** 是同一条规矩：报数跟着**出事的那条
+#: 记录**走（不另开一格，也不吞掉）。
+#:
+#: ⚠️ 措辞与 `service.UNWRITABLE_BYTES_SAY` 那个**同源**（同一件事在两个出口说，
+#: 说的就该是同一种话）；只有「从哪来的」那半句不同 —— 那边是**人打的/粘的**，
+#: 这边是**页面上的字 / 模型说的话**（`_utf8_safe` 那句里点的也是这两个来源）。
+NOTE_UNWRITABLE_SAY = ("（这条里有 %d 个字节**线上写不出来**（孤立代理对，来自页面上的字 / "
+                       "模型说的话）—— 已按 `�` 记，不是它本来长这样。）")
+
 _SYSTEM = """你是 siteforge 的探路 agent：在一个**真的浏览器**里把目标站点走一遍，\
 把「怎么走」探清楚，后面要照它生成一条能重放的 py 脚本。
 
@@ -361,6 +375,40 @@ class Journey:
     #: `llm.summarize(rounds)` 的产物（几轮 / 几次工具调用 / token / 耗时）。
     #: 被人打断那条路是空的 `{}` —— 与 `rounds == 0` 同一个道理。
     usage: dict = field(default_factory=dict)
+
+    # ── 账本那一句一句的话（**唯一的写入口**，见下）──
+
+    def note(self, text: str) -> None:
+        """往 `notes` 记一句人话 —— **`journey.notes` 唯一的写入口**。
+
+        ⚠️ **为什么要收成一个口子**（Task 8 补丁 B，2026-09-19）：`notes` 是**外面来的字**
+        进系统的第二个口子（第一个是载荷，补丁 A 治的）—— 页面自报的标题与地址、页面上的
+        元素文字、模型每一轮的推理，全都从这儿进来。它们随后被 `graph._unfinished_note` /
+        `graph._journey_say` 拼成 `end_note` 进 state，而**一个孤立代理对过得了
+        `json.dumps`、过不了最后那次 `.encode("utf-8")`** ⇒ `GET /job/{id}` 与
+        `GET /job/{id}/live` **双双 500**（运营那一屏整条读不出来）。
+        后果与补丁 A 那个口子**同一个症状**，而**可达性更高**：这里的字来自真站页面与模型，
+        **不需要运营犯任何错**。
+
+        ⚠️ **为什么不是「在每个写点记得接一下」**：补丁之前写点有 **22 处**
+        （`grep -n "journey.notes.append(" agent/*.py` —— 那串字符现在只剩这一行文档还写着它，
+        真调用一处都没有），靠人记得 = 早晚漏一个 —— 这正是 `_utf8_safe` 的注释里那句
+        「不能靠写的人小心」。收成一个口子之后，新加的写点**自动**走消毒；
+        而「绕开这个口子直接往 list 里塞」由 `tests/test_notes_intake.py` 的机器守当场拦下
+        （它走 AST，认的是**真调用**，不会被这行文档骗到）。
+
+        ⚠️ **换掉是有损的 ⇒ 有损必须说**（Global Constraints：没有静默的路径）：换掉的个数
+        接在**这条话自己的尾巴**上（与 `_utf8_safe` 把那句话写进**这一步自己的 `why`** 同一条
+        规矩）。**不另起一条 note** —— 另起一条会顶掉 `notes[-1]`，而 `graph._journey_say`
+        的尾巴取的正是那一句（见 `_walk_back` 上面那段「顺序有讲究」）。
+
+        ⚠️ 非 `str` 的值照收（`notes` 的契约是 `[str]`，但这一层不替调用方改类型）：
+        `events.safe_value` 对它原样返回，于是行为与以前**一个字节都不差**。
+        """
+        safe, replaced = events.safe_value(text)
+        if replaced:
+            safe = "%s%s" % (safe, NOTE_UNWRITABLE_SAY % replaced)
+        self.notes.append(safe)
 
     # ── 给 Task 7 的 draft 节点用：直接喂 template.render() ──
 
@@ -561,7 +609,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                 if side_broken:
                     return
                 side_broken.append(True)
-                journey.notes.append(
+                journey.note(
                     "⚠️ 旁路（实时视图 / 账本）在这一步上没记成：%s: %s —— "
                     "探路照常往下走（旁路坏掉不许带塌主路），但这一趟的账本可能是残的。"
                     % (type(exc).__name__, exc))
@@ -679,10 +727,10 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                     # 放在 `note_page` **之后**：要比的是「这一眼看过之后」的签。
                     _shots(step_shots.on_observation, session, pages.current_key)
                 if moved:
-                    journey.notes.append(
+                    journey.note(
                         f"页面变了：现在是「{_title_of(raw)}」（{raw.get('url') or '?'}）")
             if name == "scroll" and not any("滚进视口" in n for n in journey.notes):
-                journey.notes.append(
+                journey.note(
                     f"第 {len(journey.steps)} 步是把「{_label_of(step['target'])}」滚进视口；"
                     "重放时会照做同一件事（把那个元素滚进视口），元素在子帧里时连帧一起带")
             emit(step)
@@ -724,7 +772,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         #: 一步都不走，连模型都不问（问一轮也是白花：这一趟没有任何步数可走）。
         #: 放在重放之前：重放是为「接着往下探」准备的，而这一趟探不了。
         if limits.max_steps <= 0 or limits.max_rounds <= 0:
-            journey.notes.append(
+            journey.note(
                 "这一趟的预算**一开始就是 0**（这个 job 前面几趟已经花掉：给了 %d 步 / %d 轮）"
                 "—— 一步都不走，如实停下（`reopen` 也救不了它：那只是再烧一次，该人看一眼）。"
                 % (limits.max_steps, limits.max_rounds))
@@ -762,8 +810,8 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         # ⚠️ **顺序有讲究**（复审 I-4）：`graph._journey_say` 的尾巴取的是 `notes[-1]`,
         # 而**有信息的是停因那句**（带「卡在第几步、卡在哪一句描述上」）。轮数那句是
         # bookkeeping，先记 —— 反过来写，人最终看到的就是那句 bookkeeping。
-        journey.notes.append(_rounds_lost_note(stop.reason))
-        journey.notes.append(_stop_note(stop.reason, len(journey.steps), stop.detail))
+        journey.note(_rounds_lost_note(stop.reason))
+        journey.note(_stop_note(stop.reason, len(journey.steps), stop.detail))
     finally:
         # 计划模式的账**在 `finally` 里收**：被打断 / 停滞 / 预算到顶那几条路上 `rounds`
         # 一样拿不到，但 `_PlanWatch` **每轮都在场** —— 「怎么停的」不该决定「账还在不在」。
@@ -810,7 +858,7 @@ def _walk_back(journey: Journey, rows: list, session, emit, alive, boundary: str
     journey.replay = dict(out)
     if str(boundary or "").strip():
         journey.replay["boundary_reason"] = str(boundary)
-    journey.notes.append(
+    journey.note(
         "这一趟开头**照账本重放**了 %d 个动作（0 模型调用）：%s%s"
         % (int(out.get("done") or 0), out.get("why") or "",
            (" 边界（它为什么停在这儿）：" + str(boundary)) if str(boundary or "").strip() else ""))
@@ -1010,7 +1058,7 @@ def _wrap_up(journey: Journey, rounds: list, budget: Budget) -> None:
     last = rounds[-1] if rounds else None
     if last is None:
         journey.stop_reason = "no_rounds"
-        journey.notes.append("一轮都没跑起来 —— 模型一次都没回话")
+        journey.note("一轮都没跑起来 —— 模型一次都没回话")
     elif not last.get("tool_calls"):
         # **C3**：没有 tool_calls = 它讲完了（那道门上没有 done()）
         journey.stop_reason = "model_done"
@@ -1021,13 +1069,13 @@ def _wrap_up(journey: Journey, rounds: list, budget: Budget) -> None:
             # 记一句人话给人看：这可能是它**被那句话逼收的尾**（那道门上没有 `done()`，
             # 「不调工具」在图上就是「探路走完了」），人得自己看一眼结论对不对。
             # ⚠️ 只有**真插过话**才记（没插话也记 = 每次收尾都把人那句话搬出来，那是编话）。
-            journey.notes.append(STEER_WRAPPED_UP_NOTE)
+            journey.note(STEER_WRAPPED_UP_NOTE)
     elif len(rounds) >= budget.max_rounds:
         journey.stop_reason = "budget_rounds"
-        journey.notes.append(_stop_note("budget_rounds", len(rounds)))
+        journey.note(_stop_note("budget_rounds", len(rounds)))
     else:
         journey.stop_reason = "ended"
-        journey.notes.append("循环停了，但最后一轮既没有 tool_calls 也没到预算上限")
+        journey.note("循环停了，但最后一轮既没有 tool_calls 也没到预算上限")
 
 
 def _as_budget(budget) -> Budget:
@@ -1099,7 +1147,7 @@ class _PlanWatch:
         #: 夹到最小的有意义的值比静默关掉更稳。夹了会**说出来**（不静悄悄）。
         self.stall_limit = stall_limit if stall_limit > 0 else 1
         if stall_limit <= 0:
-            journey.notes.append(
+            journey.note(
                 f"停滞判据的上限给成了 {stall_limit}（不是个能成立的阈值）——这一趟按 1 算；"
                 "夹住而不是关掉：关掉之后卡住的探路会把预算全烧在真页面上。")
         #: `() -> str`：当前那一页在 `_Pages` 里的名字（换页 = 换状态）。
@@ -1152,7 +1200,7 @@ class _PlanWatch:
             return
         if k is None:
             # §2.4：没报 / 报了个清单上没有的号 → 位置**不动**，如实记一句「不知道」。
-            self.journey.notes.append(_NO_MARK_NOTE)
+            self.journey.note(_NO_MARK_NOTE)
             return
         if k != self.position:
             self.position = k
@@ -1250,7 +1298,7 @@ class _Gate:
         if not content:
             return
         said = f"AI 说：{content}"
-        self._journey.notes.append(said)
+        self._journey.note(said)
         if self._on_note is None:
             return                                # 没接这根线 = 今天那条路，一个字节不变
         # ⚠️ **旁路坏掉不许带塌主路**（与 `emit` 那条一模一样的规矩）：
@@ -1263,7 +1311,7 @@ class _Gate:
             if self._note_broken:
                 return
             self._note_broken = True
-            self._journey.notes.append(
+            self._journey.note(
                 "⚠️ 旁路（模型这一轮的话没送到时间线）没记成：%s: %s —— "
                 "探路照常往下走（旁路坏掉不许带塌主路），但这一趟的时间线上会少掉它的推理。"
                 % (type(exc).__name__, exc))
@@ -2843,7 +2891,7 @@ class _StepShots:
         if len(self._on_disk) >= MAX_KEPT_SHOTS:
             if not self._said_cap:
                 self._said_cap = True
-                self.journey.notes.append(
+                self.journey.note(
                     "本趟的步拍图有 %d 张还在盘上（上限 %d）—— **从这一步起不再拍**。"
                     "（这个数是**本趟**的，**不是**这个目录里的图数：服务侧的闸拍 "
                     "`pause-<n>.png` 就跟步拍落在同一个目录里，它不计入、也不受这道上限管。）"
@@ -3210,7 +3258,7 @@ def _drop_incidental_start_when(pages: list, journey: Journey) -> None:
     if any(_host_of(pg.get("url") or "") == first_host for pg in pages[1:]):
         return
     pages[0]["when"] = None
-    journey.notes.append(
+    journey.note(
         "起点那一页（%s）与后面**每一页**都不同源 —— 它是「我们碰巧从那儿开始」的旁枝，"
         "不是站点自己的页。所以它的状态**不设判据**（那种页的地址每开一次窗口都不一样，"
         "设了判据会在换窗之后把起点那组步骤整组跳过）。" % first_host)

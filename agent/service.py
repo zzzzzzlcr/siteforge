@@ -1653,12 +1653,12 @@ class Service:
                 self._note_attempt(job_id, started=started, journey=None, boom=exc)
                 raise
             if journal_broken:
-                journey.notes.append(
+                journey.note(
                     "⚠️ 这一步之后的账本没记全：%s —— 探路照常走完（旁路坏掉不许带塌主路），"
                     "但这一趟的 journal 是残的（`attempt-*.jsonl` 里缺步）。" % journal_broken[0])
             if timeline_broken:
                 # 时间线那一本**单独说**（两个旁路的坏法不一样，合并会把话说过头）。
-                journey.notes.append(
+                journey.note(
                     "⚠️ 这一步之后的时间线没记全：%s —— 探路照常走完（旁路坏掉不许带塌主路），"
                     "但这一趟的 `/live` 上会缺事件。" % timeline_broken[0])
             self._note_attempt(job_id, started=started, journey=journey)
