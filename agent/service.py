@@ -161,11 +161,19 @@ HUMAN_SAID_THROUGH_SAY = "这句话会一路带进「写这一版 py」。"
 #: 没有 note 的那次「继续」：不能说「这句话带进去了」（没有话）
 HUMAN_SAID_PLAIN_SAY = "（你在「%s」那道闸上按了继续，没有多说。）"
 #: 有一句不再往输入框里摆了（修复轮 2 / NEW-1）：他这一次按下去的是**别的**。
-#: ⚠️ **不许说「你改口了」**（修复轮 3 / NEW-R2）：服务**不知道他屏幕上画的是哪一句**
+#: ⚠️ **不许说「你改口了」** [禁语]（修复轮 3 / NEW-R2）：服务**不知道他屏幕上画的是哪一句**
 #: （页面预填**不覆盖正在打字的框**，`console.html:661`）—— 他可能压根没看见过这一句
-#: （他按下「说一句」之后、下一次轮询之前又开始打字，那一句就从没上过他的屏）。
-#: 说「你改口了」就是替他编一个他没做过的动作。服务这一侧**真知道**的只有一件事：
+#: （他按下「说一句」之后、下一次轮询之前又开始打字，那一句就从没上过他的屏 [禁语]）。
+#: 说「你改口了」就是替他编一个他没做过的动作 [禁语]。服务这一侧**真知道**的只有一件事：
 #: 「我本来要摆给你的是这一句」（那一刻 `draft_note` 会给的就是它）。
+#: ⚠️ **这一族的话只许出现在标了 `[禁语]` 的行上**：
+#: 标了 = 「这一行是在说**这个词不许用**，不是在用它」——词表（下一行本身就是例子）：
+#: 改口 / 不要了 / 想不想要 / 改主意 / 反悔 / 摆在他面前 / 别再摆给我看 … [禁语]
+#: 全表在 `tests/test_service_input.py` 的 `_INTENT_PATTERNS`（加词只改那一处）。
+#: 两条机器守（修复轮 4 / F3）：①散文里出现族里的词就必须标 `[禁语]`
+#: （`…the_forbidden_intent_words_only_appear_on_marked_lines`）；
+#: ②**人话（字符串字面量）里一个都不许有**，没有豁免
+#: （`…no_human_facing_text_attributes_intent_to_him`）。加词只改 `_INTENT_PATTERNS` 那一处。
 HUMAN_SAID_SUPERSEDED_SAY = ("（我本来要摆给你的那句是「%s」，这一次不摆了 —— "
                              "你刚送下去的是别的；它还记着，按「重新来一遍」会带上。）")
 #: 目录表第 6 行的**闸拍**那一半。`%s` = 拍不成的原因**原文**（不许让空图框冒充页面）
@@ -1144,10 +1152,13 @@ class Job:
     #: 人说过、**还没送到它手上**的话（Task 8 的 `/say` 排队那条路）。每一条至少
     #: `{"text", "at", "delivered", "superseded"}` —— 送到时**改的是同一条**
     #: （不是追加一条新的），Task 9 就是靠 `delivered` 分辨「喂过它没有」。
-    #: ⚠️ 但「没送出去」**不再等于**「该喂」：被改口的（`superseded`）要不要喂，
-    #: 是 **Task 9 自己**的决定（别默认照喂 —— 他刚说过「别再摆给我看了」）。
+    #: ⚠️ 但「没送出去」**不再等于**「该喂」：不再摆给他的那些（`superseded`）要不要喂，
+    #: 是 **Task 9 自己**的决定 —— **别默认照喂**。理由也必须用观察语（修复轮 4 / F4）：
+    #: 服务**观察到的**是「这一次送下去的是别的」，**不是**「他心里怎么想」——
+    #: 这里原先写的是「他刚说过『别再摆给我看了』」 [禁语]，那是**替人编了一句他从没说过的话**
+    #: （被标的那条他可能压根没看见过），跟它下面三行当场打架。
     #: `superseded`（修复轮 2 / NEW-1）：这一句**不再往输入框里摆**了 —— 观察到的事实是
-    #: 「服务本来要摆给他的就是这一句，而他按下去的是**别的**」（**不是**猜他还想不想要：
+    #: 「服务本来要摆给他的就是这一句，而他按下去的是**别的**」（**不是**猜他心里怎么想：
     #: 服务不知道他屏幕上画的是哪一句，修复轮 3 / NEW-R2）。于是它不再进输入框（不再问一次），
     #: 但**还记着**（`/again` 照带）。两格各说一件事，**都用观察语**：
     #: `delivered` = 「到过它手上没有」，`superseded` = 「还摆不摆给他」。
@@ -2494,9 +2505,11 @@ class Service:
         ⚠️ 没有 note 的那次「继续」**也要有一条**（那是最常见的一次交互）：
         不记的话「人按了什么」在时间线上是空白。只是它不能说「这句话带进去了」（没有话）。
         ⚠️ 这句话的 `who` 是 `"you"` —— 页面靠它决定气泡长相。
-        `superseded`（修复轮 2 / NEW-1）：这一次他改了口（摆在他面前的那句不要了）——
-        **同一件事的两半**（他按下去的那一句 + 他不要了的那一句），所以并进**同一条**气泡里，
-        而不是另起一条（分开写会让「他改了口」看起来像两件事）。
+        `superseded`（修复轮 2 / NEW-1）：这一次**服务本来要摆给他的那一句没摆**
+        （他送下去的是**别的**）—— **同一件事的两半**（他按下去的那一句 + 服务本来要摆给他的
+        那一句），所以并进**同一条**气泡里，而不是另起一条（分开写会让这件事看起来像两件事）。
+        ⚠️ 这一段原来用的是**意图语**（**替他编了一个他没做过的动作** —— 服务不知道他屏幕上
+        画的是哪一句）：修复轮 4 / F3 改掉了，规矩与词表见 `HUMAN_SAID_SUPERSEDED_SAY` 上面那段。
         """
         note = str(body.note or "").strip()
         token, where = self._where_it_stopped(job_id)
@@ -3090,8 +3103,8 @@ class Service:
         with job.lock:
             job.status = RUNNING
             job.say = "收到你的话，接着跑（下一个要你拿主意的地方会再停下来）。"
-        # 送这一句会怎么改变队里那些话（**先算、不改**）：送出去的 + 他改口不要的。
-        # 算在这一步，是因为下面那条时间线要把「他改了口」一起说出来
+        # 送这一句会怎么改变队里那些话（**先算、不改**）：送出去的 + 不再摆给他的。
+        # 算在这一步，是因为下面那条时间线要把「那一句不再摆给他了」一起说出来
         # （同一件事的两半，并进他**这一条**气泡里）。
         sent, superseded = self._inbox_plan(job, str(body.note or ""))
         # 目录表第 8 行：人的原话与它去哪了（**交下去之前**记，否则工作线程先喊「在跑」）。
@@ -3157,25 +3170,28 @@ class Service:
 
     @staticmethod
     def _inbox_plan(job: Job, note: str) -> tuple:
-        """这一句按下去会怎么改变队里那些话：`(要翻成已送出的, 要标成改口的)`。**只算不改。**
+        """这一句按下去会怎么改变队里那些话：`(要翻成已送出的, 要标成不再摆给他的)`。**只算不改。**
 
         - **送出去的按文字认**（`delivered`）：`note` 与哪几条的 `text` 一样，那几条都算送到了
           —— 送下去的话就一句（同文说两遍、按一次 = 那两遍都送到了；只翻一条的话，
           剩下那条下一道闸**又被预填**，那正是 I-2/NEW-1 要治的形状）。
-        - **改口的按「他面前摆的是哪一句」认**（`superseded`）：他按下去的是**别的**
-          （`note` 非空、且与摆在最前面那条不同）⇒ 那条标上。
-          ⚠️ 这是**观察到的事实**，不是猜他的意图：这一句摆在他面前过（`draft_note` 给的就是它，
-          页面照它预填），而他送下去的是别的。
+        - **不再摆给他的那一条，按「服务本来要摆的是哪一句」认**（`superseded`）：他按下去的是
+          **别的**（`note` 非空、且与还在等的那最后一条不同）⇒ 那条标上。
+          ⚠️ 这是**观察到的事实**，不是猜他的意图：服务**本来要摆给他的就是这一句**
+          （那一刻 `draft_note` 会给的就是它），而他送下去的是**别的**。
+          ⚠️ 这里原先写的是「这一句**摆在他面前过**」 [禁语]—— 那是**假话**（预填不覆盖正在打字的
+          框，他可能压根没看见过；见 `HUMAN_SAID_SUPERSEDED_SAY` 上面那段）。修复轮 4 / F3。
         - `note` 空（按的是「继续」、框里没话）⇒ **什么都不改**：他没送这句，也没说别的。
+        ⚠️ 判据不在这儿（修复轮 4 / F1）：这一条**全程持着 `job.lock`**，而 `_still_waiting`
+          自己也会拿锁 ⇒ 在这儿调它**会死锁**。所以判据放在**不拿锁的纯核**里
+          （`_waiting_entries` / `_delivered_by`），这里只是**持着锁直接用**。
         """
         text = str(note or "").strip()
         if not text:
             return [], []
         with job.lock:
-            sent = [x for x in job.inbox
-                    if not x.get("delivered") and str(x.get("text") or "") == text]
-            waiting = [x for x in job.inbox
-                       if not x.get("delivered") and not x.get("superseded")]
+            sent = Service._delivered_by(job.inbox, text)
+            waiting = Service._waiting_entries(job.inbox)
             front = waiting[-1] if waiting else None
             superseded = ([front] if (front is not None
                                       and str(front.get("text") or "") != text) else [])
@@ -3256,24 +3272,59 @@ class Service:
                          "will_stop_at": plan["will_stop_at"],
                          "say": STOP_RECORDED_SAY % plan["will_stop_at"]}}
 
+    # ── 队里那些话的**判据**（Task 8 修复轮 4）：全部收在下面三个**纯核**里 ──────────
+    # ⚠️ 它们**只吃一组条目、不拿锁**：调用方按自己手上的处境决定怎么拿锁 ——
+    #    `Job.lock` 是**普通 `Lock`**（不是 `RLock`），在**已经持锁**的地方调一个自己拿锁的
+    #    函数就是自己等自己（实测**永久挂住**，`/live` 上就是运营那一屏永远转圈）。
+    #    ⇒ 形状是「**一个不拿锁的纯核 + 薄调用方**」：`_still_waiting` 自己拿锁再调纯核；
+    #      `_inbox_plan` 在它**已经持着锁**的地方直接调纯核。两个要求于是同时成立：
+    #      **判据只有一处**（下面这排），而且**没有一处**在持锁时再去拿锁。
+    # ⚠️ **不许在别处读条目上那两个键**（`delivered` / `superseded`）：副本会**静默分岔**
+    #    （修复轮 4 / F1：`_inbox_plan` 里那份「决定谁被标 `superseded`」的副本漂过了整整一轮，
+    #    复审的变异 `R1e` 让两份分岔 ⇒ **全绿**）。机器守在
+    #    `tests/test_service_input.py::test_the_inbox_criteria_live_in_exactly_one_place`。
+
+    @staticmethod
+    def _waiting_entries(entries: list) -> list:
+        """（判据 ①）**真正还在等**的话：没送出、也不再摆给他。⚠️ 纯核，**不拿锁**。"""
+        return [x for x in entries
+                if not x.get("delivered") and not x.get("superseded")]
+
+    @staticmethod
+    def _delivered_by(entries: list, text: str) -> list:
+        """（判据 ②）这一句送下去，哪些条目算**送到了**：同文、且还没送过。⚠️ 纯核，**不拿锁**。"""
+        return [x for x in entries
+                if not x.get("delivered") and str(x.get("text") or "") == text]
+
+    @staticmethod
+    def _unsent_texts(entries: list) -> list:
+        """（判据 ③）**没送到它手上**的那几句（`/again` 要带过去的；**含**不再摆给他的那些）。
+        ⚠️ 纯核，**不拿锁**。
+        """
+        return [str(x.get("text") or "") for x in entries if not x.get("delivered")]
+
     @staticmethod
     def _still_waiting(job: Job) -> list:
-        """队里**真正还在等**的那些话（没送出、也没被改口）—— **这一条判据只有这一处**。
+        """队里**真正还在等**的那些话 —— 判据写在 `_waiting_entries`（**只有那一处**）。
 
         ⚠️ 为什么必须只有一处（修复轮 3 / NEW-R1）：同一个口径原先写了两处半
         （`_input_now` 一处、`_has_queued_words` 一处、`/say` 里的 `n` 半处），
         第三处漏了 ⇒ `/say` 的人话说「队列里现在排着 **2** 句」而同一刻
         `input.queued` 只有 1 条：那句话对一条**再也不会预填**的话也说「会进输入框」。
-        ⇒ 要改口径（比如 Task 9 决定「被改口的也喂下去」）就改**这里**，别去改调用点。
+        ⚠️ 「这一条判据只有这一处」在修复轮 4 之前是**假话**（复审 3 一句 grep 就证伪）：
+        `_inbox_plan` 里还**手写着一份副本**，而且是**承重的那一份**（它决定谁被标
+        `superseded`），两份可以分岔且零红灯（F1）。现在副本没了，这句话才成立 ——
+        判据在 `_waiting_entries`，**这一条只是自己拿锁的那个薄调用方**。
+        ⇒ 要改口径（比如 Task 9 决定「不再摆给他的也喂下去」）就改 `_waiting_entries`，
+        别去改调用点；也别在别处再抄一份（有机器守着，见上面那段）。
         """
         with job.lock:
-            return [x for x in job.inbox
-                    if not x.get("delivered") and not x.get("superseded")]
+            return Service._waiting_entries(job.inbox)
 
     def _has_queued_words(self, job: Job) -> bool:
         """队里还有没有**还等着送**的话（只影响那句人话要不要提它一句）。
 
-        ⚠️ 被改口的那几条**不算**：它们不会再进输入框，说「你说的话已经排好了，
+        ⚠️ 不再摆给他的那几条**不算**：它们不会再进输入框，说「你说的话已经排好了，
         到那儿会进输入框」就是假话（判据见 `_still_waiting`）。
         """
         return bool(self._still_waiting(job))
@@ -3329,8 +3380,9 @@ class Service:
         ① checkpoint 的 `hints`：在闸上**真说过的**（`graph._enter` 一路攒下来的）；
         ② `Job.inbox` 里**还没送出去的**：说了、但还没到它手上（§4.1 第一行承诺的
            「你说的话我记着」就是这一批）。
-        ⚠️ ②**包含被他改口不要的那几条**（`superseded`，NEW-1）：改口是「别再摆给我看了」，
-        **不是**「把我这句话作废」—— 重新来一遍的那一趟照样要带上（R5）。
+        ⚠️ ②**包含不再摆给他的那几条**（`superseded`，NEW-1）：那一格只是**不再往输入框里摆**，
+        **不是**「这句话就当没说过」—— 重新来一遍的那一趟照样要带上（R5）。
+        ⚠️ 判据不在这儿：它走的是 `_unsent_texts`（判据 ③，同样只那一处、不拿锁）。
         返回 `(话, 读不回来的原因或空串)` —— 读不回来时**不许静默少带一半**（R5 的代价）。
         """
         words: list = []
@@ -3342,8 +3394,7 @@ class Service:
             traceback.print_exc()
             unreadable = "%s: %s" % (type(exc).__name__, exc)
         with job.lock:
-            words.extend(str(x.get("text") or "") for x in job.inbox
-                         if not x.get("delivered"))
+            words.extend(Service._unsent_texts(job.inbox))
         return [w for w in words if w.strip()], unreadable
 
 

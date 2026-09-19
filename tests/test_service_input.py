@@ -25,8 +25,10 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import pathlib
+import re
 import sys
 import threading
 import time
@@ -371,14 +373,17 @@ def test_a_word_the_human_replaced_is_kept_but_never_offered_again(tmp_path):
     """人把预填那句**改了**再按 ⇒ 原来那句**不再摆到他面前**，但**一个字都不丢**（修复轮 2 / NEW-1）。
 
     为什么这一条要紧（复审与控制者的改判）：页面**不渲染** `input.queued`（`grep` = 0），
-    所以运营唯一能遇到那句「他已经改口不要的话」的方式，就是**下一道闸又被预填** ——
+    所以运营唯一能遇到那句「不再摆给他的那句话」的方式，就是**下一道闸又被预填** ——
     而页面在闸上会把框里的字**原样**当他的话送下去（`console.html:893-901`）。
     那与 I-2 要治的形状是同一个（预填一句不该再摆出来的话 = 请人再按一次），
-    只差在 I-2 那句是「已送出」、这句是「已改口」。
+    只差在 I-2 那句是「已送出」、这句是「不再摆给他」。
 
     判据拆成两件事（**不是**把 `delivered` 翻掉 —— 那一句一个字都没到过它手上）：
-      · `superseded`：**观察到的事实** —— 这一句摆在他面前过，而他按下去的是**别的**；
+      · `superseded`：**观察到的事实** —— 服务本来要摆给他的就是这一句，而他按下去的是**别的**；
       · 于是 `draft_note` / `input.queued` 都不再列它，而**时间线上要说出来**这件事。
+    ⚠️ 说法这一格在修复轮 4 收准了（F3）：不写「摆在他面前过」——**那是假话**
+    （页面预填不覆盖正在打字的框，他可能压根没看见过），详见 `agent/service.py` 里
+    `HUMAN_SAID_SUPERSEDED_SAY` 上面那段。
     """
     g = FakeGraph(steps=[
         _Snap(values={"site": SITE, "visits": ["intake"]}, interrupts=(_gate("intake"),)),
@@ -399,7 +404,7 @@ def test_a_word_the_human_replaced_is_kept_but_never_offered_again(tmp_path):
 
     live = _live(client, job_id)
     assert live["input"]["draft_note"] == "", \
-        "他改口不要的那句不许再摆到输入框里（摆了就等着他再按一次）：%r" % live["input"]["draft_note"]
+        "不再摆给他的那句不许再进输入框（进了就等着他再按一次）：%r" % live["input"]["draft_note"]
     assert live["input"]["queued"] == [], \
         "它也不在「还在等」那一列里（那一列是给「等着送」的话的）：%r" % live["input"]["queued"]
     # 「没有静默的路径」：这件事必须有一条人说得出的话（在他的那一条气泡里）
@@ -424,13 +429,13 @@ def test_a_word_the_human_replaced_is_kept_but_never_offered_again(tmp_path):
     assert r.status_code == 202, r.text
     _settle(client)
     assert g.invokes[-1]["hints"] == ["算了，先点 cookie 同意", "不是那个按钮"], \
-        "改口不等于作废他说过的话 —— 重来那一趟要带上它：%r" % (g.invokes[-1].get("hints"),)
+        "不再摆给他 ≠ 这句话就当没说过 —— 重来那一趟要带上它：%r" % (g.invokes[-1].get("hints"),)
 
 
 def test_the_superseded_line_does_not_claim_he_changed_his_mind(tmp_path):
     """那句人话只许说服务**真知道**的事（修复轮 3 / NEW-R2）。
 
-    失效形状（复审探针 B）：他说 A（**上过他的屏**），又说 C（他还没看见 —— 页面预填
+    失效形状（复审探针 B）：他说 A（**服务本来要摆给他的就是 A**），又说 C（他还没看见 —— 页面预填
     **不覆盖正在打字的框**，`console.html:661`），然后他按下去的是**别的**。
     服务这一侧「最后一条等着送的」是 C ⇒ 被标 `superseded` 的是 **C**，
     而时间线上写着「**你改口了**：C」—— **一句他从没做过的动作**（他根本没看见过 C）。
@@ -465,7 +470,7 @@ def test_the_superseded_line_does_not_claim_he_changed_his_mind(tmp_path):
 def test_the_queue_length_it_reports_is_the_one_that_is_really_waiting(tmp_path):
     """`/say` 的 `n` 与 `/live.input.queued` **同一个口径**（修复轮 3 / NEW-R1）。
 
-    失效形状（复审探针 C）：改口之后再说一句 ⇒ 人话说「队列里现在排着 **2** 句」，
+    失效形状（复审探针 C）：有一句不再摆给他之后再新说一句 ⇒ 人话说「队列里现在排着 **2** 句」，
     而同一刻 `input.queued` 只有 1 条 —— 那句话对一条**再也不会预填**的话也说「会进输入框」，
     而且同一个名字（`n` / `queued`）指向两个事实（Task 9 拿 `n` 会与页面/`live` 对不上）。
     """
@@ -495,7 +500,7 @@ def test_the_stop_promise_only_mentions_words_that_are_really_waiting(tmp_path):
 
     两个方向都钉（复审量化过：全仓原先**没有一条**断言碰过 `STOP_WORDS_HELD_SAY`）：
       ① 真有一条等着 ⇒ 那句话里有「已经排好了」；
-      ② 那条被他改口了 ⇒ 那句话里**没有**（再说一次「会进输入框」就是假话）。
+      ② 那条不再摆给他了 ⇒ 那句话里**没有**（再说一次「会进输入框」就是假话）。
     """
     g = FakeGraph(steps=[_Snap(values={"site": SITE, "visits": ["intake"]})])
     client = _client(graph_factory=_factory(g))
@@ -507,7 +512,7 @@ def test_the_stop_promise_only_mentions_words_that_are_really_waiting(tmp_path):
     said = client.post("/job/job-running/stop", json={}).json()["stop"]["will_stop_at"]
     assert service.STOP_WORDS_HELD_SAY in said, "真有一条等着，那句话要说出来：%r" % said
 
-    # 它被改口了（他按下去的是别的）⇒ 不许再说「会进输入框」
+    # 它不再摆给他了（他按下去的是别的 —— 服务**观察到的**那件事）⇒ 不许再说「会进输入框」
     with job.lock:
         job.inbox[0]["superseded"] = True
     said = client.post("/job/job-running/stop", json={}).json()["stop"]["will_stop_at"]
@@ -1269,3 +1274,226 @@ def test_again_on_a_run_that_blew_up_carries_the_words_too(tmp_path):
     assert payload["url"] == URL
     assert json.dumps(payload, ensure_ascii=False)  # 交下去的必须是说得清的 JSON
     assert svc._jobs[new_id].brief["url"] == URL
+
+
+# ═════════ 修复轮 4：按【类】上守（判据只有一处 / 不许替他编动作）═════════
+#
+# 前三轮的病是**改窄**：每轮只修被点名的那一处，把那一类留在原地（修复轮 3 修了
+# `Job.inbox` 那一个 gloss，同一族的另外三处 docstring 原样过审）。所以这一节的两道守
+# **都不是钉字面的**：
+#   · `…criteria_live_in_exactly_one_place` 按 **AST** 扫，问的是「还有没有别的地方
+#     自己在读那两个键」—— 将来在**任何**位置冒出手写的判据（换写法也算）都会红；
+#   · `…intent_…` 两条问的是「这句话是不是在**替他编一个他没做过的动作**」，
+#     词表在 `_INTENT_PHRASES`（加词只改那一处），不是只禁「你改口了」这一个词。
+
+#: 「**替他编一个他没做过的动作**」这一族的话（F3/F4 那一类）—— **正则片段**，不是字面。
+#: 服务**不知道**他屏幕上画的是哪一句、也不知道他心里想什么 —— 这些话都不是观察语。
+#: ⚠️ 为什么写成模式而不是一串词（这一条是这一轮的教训）：复审 3 的反例 `R2c` 是
+#: 「**你不要它**了」—— 一个只列了「不要了」的**字面**词表**抓不到它**（子串对不上）。
+#: 这一族里「改主意」那一支的**形状**是「不＋要/想/愿＋<宾语>＋了」，所以按形状找。
+#: ⚠️ 两处刻意的排除（都会**假红**，所以写明）：
+#:   · `改口` 后面跟 `径` ＝ 这一片自己的行话（「改口径」= 改判据），不是意图语；
+#:   · 这一族的「不…了」**必须带那个「了」**，否则「要不要喂」（`Job.inbox` 那段）这种
+#:     正当用法会被扫进来 —— 那些是「还没决定」，不是「他改主意了」。
+#: ⚠️ 这仍是一张**词/形状表**，不是证明：表外的同义说法（比如换一个我们没列进来的词）
+#: 它挡不住 —— 报告 §射程里照实写了。但**表内**每多一个实例、或有人想换一个新词，
+#: 都必须先动这里（那正是「有人会看见」的地方）。
+_INTENT_PATTERNS = (
+    r"改了?口(?!径)",                   # 改口 / 改了口（但不含「改了口径」那个行话）
+    r"改主意", r"反悔", r"变卦", r"作废",
+    r"不[要想愿][^。，；：]{0,6}了",     # 不要了 / 不要它了 / 不想要了 / 不愿要了 …
+    r"摆在他面前", r"上过他的屏", r"别再摆给我看",
+)
+_INTENT_RE = re.compile("|".join(_INTENT_PATTERNS))
+
+
+def _intent_hits(text: str):
+    """这一串里出现了哪几个「意图语」（返回**命中的原文**，不是模式）。"""
+    return sorted({m.group(0) for m in _INTENT_RE.finditer(text)})
+
+
+#: 标了它 = 「这一行是在说**这个词不许用**，不是在用它」。**只豁免散文**（注释 / 文档串）。
+_FORBIDDEN_MARK = "[禁语]"
+
+#: 唯一允许**从条目上读**那两个键的几个函数（＝判据的纯核）。别处读 = 又抄了一份判据。
+_CRITERIA_HOME = {"_waiting_entries", "_delivered_by", "_unsent_texts"}
+
+#: 条目上表示状态的键。
+_ENTRY_KEYS = {"delivered", "superseded"}
+
+#: 唯二的两个**同名不同物**的例外：`/job/{id}` 的投影 `view` 与 checkpoint 的 `values`
+#: 里也有一个 `delivered`（那是「这一趟的产物送到没有」，**不是** `inbox` 条目的那一格）。
+#: ⇒ 守按**接收者名字**放行这两个（别的名字一律要落在 `_CRITERIA_HOME` 里）。
+_NOT_INBOX_RECEIVERS = {"view", "values"}
+
+
+def _agent_python_files():
+    return sorted(p for p in pathlib.Path(service.__file__).resolve().parent.glob("*.py")
+                  if p.is_file())
+
+
+def _entry_key_read(node):
+    """这一处是不是**从条目上读**状态键 —— 返回接收者那串源码，不是就返回 `None`。
+
+    ⚠️ 只认**读**：写（`entry["delivered"] = True`）与造条目（`{"delivered": False, …}`）
+    是合法的、也不是判据。所以认的是 `.get(<键>)` 与**取值**下标。
+    """
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+            and node.func.attr == "get" and node.args:
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and first.value in _ENTRY_KEYS:
+            return ast.unparse(node.func.value)
+    if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Load):
+        if isinstance(node.slice, ast.Constant) and node.slice.value in _ENTRY_KEYS:
+            return ast.unparse(node.value)
+    return None
+
+
+def _criteria_outside_their_home():
+    """全仓扫一遍：**从条目上读那两个键**的地方有没有跑到那三个纯核外面。
+
+    导出 `(野的清单, 正经判据处数)`。⚠️ 这一扫**不认写法**：不推导式也认（普通 `if` 也认），
+    所以「换一种筛法」躲不过去 —— 躲得过去的只有「不读这两个键」。
+    """
+    bad, seen_home = [], 0
+    for path in _agent_python_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(func):
+                receiver = _entry_key_read(node)
+                if receiver is None or receiver in _NOT_INBOX_RECEIVERS:
+                    continue
+                if func.name in _CRITERIA_HOME:
+                    seen_home += 1
+                else:
+                    bad.append("%s:%d 在 `%s` 里从条目上读了 %s"
+                               % (path.name, node.lineno, func.name, ast.unparse(node)))
+    return bad, seen_home
+
+
+def test_the_inbox_criteria_live_in_exactly_one_place():
+    """「谁还在等」这条判据**只许有一处**（修复轮 4 / F1、F2）。
+
+    失效形状（复审 3 的 `R1e`）：`_still_waiting` 与 `_inbox_plan` 里**各写一份**判据，
+    把其中一份改坏 —— **38 passed，全绿**。而 `_inbox_plan` 那一份是**承重的那一份**
+    （它决定谁被标 `superseded`），`_still_waiting` 的 docstring 却写着「这一条判据只有这一处」。
+
+    ⚠️ 为什么守的是**AST**、不是那句 docstring 的字面：这一族的病是「又冒出一个新实例」，
+    而新实例可以换写法（换变量名、先存一格再筛、写成 `for` 循环、抄成 `if` 判断）。
+    这里问的是**「还有没有别的地方**从条目上读**那两个键」** —— 换写法躲不过
+    （量过：`x.get("delivered")` / `x["delivered"] is False` / 先 `_e = job.inbox` 再筛，**都红**，
+    见报告 §三 的 `R4a`/`R4c`/`R4c2`）。
+    ⚠️ 它的射程到此为止 —— 量过的三条**躲得过去**的路（都在报告 §四 里照实记了）：
+    ①键名不写字面量（`_k = "delivered"; x.get(_k)`）；②`getattr(x, "delivered")`；
+    ③条目换成位置结构（`x[2]`）。这三条今天一条都没有，但它们**不会响**。
+    ⚠️ 两个**同名不同物**的例外写在 `_NOT_INBOX_RECEIVERS`（`view` / `values` 里那个
+    `delivered` 说的是「这一趟的产物送到没有」，与 `inbox` 无关）—— 不加这两个名字，
+    这一条会在 `/runs` 那一行**假红**。
+    """
+    bad, seen_home = _criteria_outside_their_home()
+    assert not bad, ("队里那两个键被读的地方不止一处 —— 判据又有副本了：\n  %s\n"
+                     "（判据只在 `%s` 里；要改口径改那儿，别在调用点再抄一份）"
+                     % ("\n  ".join(bad), " / ".join(sorted(_CRITERIA_HOME))))
+    # ⚠️ 哨兵：证明这一扫**真的在看东西**（判据被删光时，上面那句「没有野的」会**静默变真**）
+    assert seen_home >= 3, ("只扫到 %d 处正经判据 —— 那三个纯核不见了？"
+                            "（这一扫要是空的，上面那条断言什么都没证明）" % seen_home)
+
+
+def test_the_two_places_that_ask_who_is_waiting_agree(tmp_path):
+    """问「谁还在等」的两处**必须是同一个答案**（修复轮 4 / F1）。
+
+    `_inbox_plan`（决定谁被标 `superseded`）与 `_still_waiting`（决定 `draft_note` / `n`）
+    原先各有一份判据 —— 两份今天**逐字一样**，所以这条用例在旧实现上不会红（它是**补牙**，
+    不是红→绿；红灯由变异 `R4-b` 给，见报告）。它钉的是**行为上的同一个答案**：
+    队里三种条目（还能摆的 / 已送出的 / 不再摆给他的）同时在场，两处各问一次。
+    """
+    g = FakeGraph(steps=[_Snap(values={"site": SITE, "visits": ["intake"]})])
+    client = _client(graph_factory=_factory(g))
+    svc = client.app.state.service
+    job = _running_job(svc, stage="selftest")
+    with job.lock:
+        job.inbox.extend([
+            {"text": "A：还能摆给他的", "at": "2026-09-19T00:00:00+08:00",
+             "delivered": False, "superseded": False},
+            {"text": "B：已经送出去的", "at": "2026-09-19T00:00:01+08:00",
+             "delivered": True, "superseded": False},
+            {"text": "C：不再摆给他的", "at": "2026-09-19T00:00:02+08:00",
+             "delivered": False, "superseded": True},
+        ])
+
+    still = service.Service._still_waiting(job)
+    assert [x["text"] for x in still] == ["A：还能摆给他的"], [x["text"] for x in still]
+    # 决定「谁被标 superseded」的那一处，认的必须是**同一条**
+    sent, superseded = service.Service._inbox_plan(job, "他打的是别的")
+    assert sent == [], sent
+    assert [x["text"] for x in superseded] == [x["text"] for x in still][-1:], \
+        "标错了那一条（两份判据分岔）：%r" % [x["text"] for x in superseded]
+    # 端点上也必须是同一个答案（`/live.input.queued` 与 `/say` 的 `n`）
+    live = _live(client, "job-running")
+    assert [x["text"] for x in live["input"]["queued"]] == ["A：还能摆给他的"], live["input"]
+    r = client.post("/job/job-running/say", json={"text": "D：新说的一句"})
+    assert r.status_code == 202, r.text
+    assert r.json()["n"] == 2, "还能摆给他的那一条 + 刚说的这一条：%r" % r.json()
+
+
+def test_the_intent_guard_really_matches_the_variants_it_claims():
+    """哨兵：证明上面那两条守**真的在找东西**（词表写坏了会静默全绿）。
+
+    ⚠️ 这一条是**给自己上的钉子**：本轮第一版词表**就是坏的** —— 它列的是字面「不要了」，
+    而复审 3 的反例是「你不要**它**了」（中间隔一个字，子串对不上）⇒ 变异 `R4e` **全绿**。
+    形状改成 `不[要想愿]…了` 之后才抓住。**没有这一条，那张表坏了没人知道。**
+    """
+    assert _intent_hits("他改了口"), "「改了口」与「改口」都得认（中间那个「了」是常见写法）"
+    assert _intent_hits("你不要它了"), "复审 3 的反例 R2c 必须被认出来（这是本轮修的第一件事）"
+    assert _intent_hits("他不想要了"), "同一族的另一个变体也得认"
+    assert _intent_hits("这一句摆在他面前过"), "「上过他的屏」那一类假断言也要认"
+    assert _intent_hits("他说「别再摆给我看了」"), "替人编一句他没说过的话也要认"
+    # 反方向：正当用法不许被扫进来（不然这一条会把好句子判红，久了就没人信它）
+    assert _intent_hits("要改口径就改这里") == [], "「改口径」是行话（改判据），不是意图语"
+    assert _intent_hits("队里还有没有还等着送的话，要不要提它一句") == [], "「要不要」是没决定，不是改主意"
+
+
+def test_the_forbidden_intent_words_only_appear_on_marked_lines():
+    """散文（注释/文档串）里出现这一族的话**必须**标 `[禁语]`（修复轮 4 / F3）。
+
+    规矩立在 `agent/service.py` 那段（`HUMAN_SAID_SUPERSEDED_SAY` 上面）：
+    标了 = 「这一行是在说**这个词不许用**」。没标 = 有人正在用这个词 —— 那正是这一片的病史
+    （修复轮 3 把「他改了口」从**一句人话**里拿掉，同一族的**三处 docstring** 原样留着过审）。
+    """
+    src = pathlib.Path(service.__file__).read_text(encoding="utf-8")
+    bad = []
+    for line_no, line in enumerate(src.splitlines(), 1):
+        hit = _intent_hits(line)
+        if hit and _FORBIDDEN_MARK not in line:
+            bad.append("service.py:%d %s —— %s" % (line_no, hit, line.strip()[:90]))
+    assert not bad, (
+        "这一族的话只许出现在标了 %s 的行上（标了 = 这一行在说它**不许用**；"
+        "要用它就得先想清楚：服务**观察不到**他在想什么）：\n  %s"
+        % (_FORBIDDEN_MARK, "\n  ".join(bad)))
+
+
+def test_no_human_facing_text_attributes_intent_to_him():
+    """**给运营看的话**里一个都不许有（修复轮 4 / F3 的另一半）。
+
+    散文还能靠 `[禁语]` 自证「我在说它不许用」；**人话没有这个豁免** —— 它直接画到运营屏上
+    （`narrate` 的句子 / `job.say` / 那些 `*_SAY` 常量全是**字符串字面量**）。
+    复审 3 的变异 `R2c`（把「你刚送下去的是别的」换成「你不要它了」，其余一字不动）
+    在旧验收上**全绿** —— 那说明旧验收钉的是**那一串字**，不是**那一类**。
+    """
+    tree = ast.parse(pathlib.Path(service.__file__).read_text(encoding="utf-8"))
+    prose = {id(n.value) for n in ast.walk(tree)
+             if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+             and isinstance(n.value.value, str)}
+    bad = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+            continue
+        if id(node) in prose:
+            continue
+        hit = _intent_hits(node.value)
+        if hit:
+            bad.append("service.py:%d %s —— %s" % (node.lineno, hit, node.value.strip()[:90]))
+    assert not bad, ("人话里不许出现这一族的话（它们都在替他编一个他没做过的动作）：\n  %s"
+                     % "\n  ".join(bad))
