@@ -371,10 +371,13 @@ def test_the_live_view_has_every_field_the_brief_pins(tmp_path):
     assert live["gate"]["step"] == "intake", "停在闸上就该有闸（`_view` 那份照抄）"
     assert [r["n"] for r in live["rounds"]] == [1]
     assert live["rounds"][0]["now"]["name"] == "pause-1.png", "第 1 轮的闸拍"
-    # 骨架：这两样这一版**故意**是恒定的（Task 8/9 填它们）——
-    # 钉在这儿，免得被读成「已经在工作了」。
-    assert live["input"]["mode"] == "queue"
+    # ⚠️ **Task 8 改了这一条**（骨架 → 真值）：`input.mode` 从「恒 queue」变成
+    # 「`gate` 当且仅当在等人」（A4）—— 这个 job 正停在 intake 那道闸上，所以是 `gate`。
+    # 原先那句恒 `queue` 让页面上**每一道闸**都在显示一句「服务这两格对不上」的假警告
+    # （`console.html:680`），Task 8 修的就是它。`queued` 仍是空的（没人说过话）。
+    assert live["input"]["mode"] == "gate"
     assert live["input"]["queued"] == []
+    assert live["input"]["draft_note"] == ""
     assert live["stop"]["requested"] is False
     assert live["truncated"] is False
     assert live["stage"], "它现在/刚要做的那个节点：说不出来也得说「不知道」，不许空着"
@@ -620,6 +623,7 @@ def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
     | 跑完一步之后状态读不回来 | `state_unreadable` |
     | 探路走一步（模型也说了话） | `step` / `agent_said`（Task 5 起 `_Gate._note` 也接线了） |
     | 自测跑完**一遍**（含没跑的那几遍） | `selftest_run`（Task 5 加的，⑨） |
+    | 跑着的时候人按了「停」，它跑完停在闸上 | `stop_landed`（Task 8 加的，⑩） |
 
     **要盯住的名字是「从调用点长出来的」**（`_kinds_the_service_narrates` AST 扫
     `agent/service.py`），不是手抄的：复审 2026-09-18 实测，手抄的名单对「按规矩加一个
@@ -732,6 +736,25 @@ def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
     j9 = c9.post("/run", json=_brief(tmp_path)).json()["job_id"]
     c9.app.state.service._queue.join()
     seen |= {e["kind"] for e in c9.app.state.service._jobs[j9].timeline.all()}
+
+    # ⑩ 人在它跑着的时候按了「停」，它跑完这一步停在闸上 —— `stop_landed`（Task 8 / A3）。
+    #     ⚠️ 这条场景是**必须**的（与 ⑧⑨ 同一个道理）：`stop_landed` 是 Task 8 加的**新词**，
+    #     它「有人记」这件事在调用点上是看得见的，但「真说得出来」只有一条场景逼得出来 ——
+    #     少了这一条，并集判据就只证明了「有人在说」而没证明「说得出」。
+    #     走的是真路径：`/stop`（人按的）→ 这一次 invoke 跑完 → 图停在下一道闸上 ⇒ 兑现。
+    g10 = FakeGraph(steps=[_Snap(values={"site": SITE, "ws_url": WS_URL,
+                                         "visits": ["intake", "selftest"]},
+                                 interrupts=(_gate(step="draft"),))])
+    c10 = _client(graph_factory=_factory(g10), window=StubWindow(alive=True))
+    svc10 = c10.app.state.service
+    job10 = service.Job(job_id="job-stop-landed", brief={"site": SITE},
+                        status=service.RUNNING, created_at="2026-09-19T00:00:00+08:00")
+    job10.running_step = "selftest"          # A2 那一次采样（服务在进程里记的那一格）
+    job10.graph = g10
+    svc10._jobs[job10.job_id] = job10
+    assert c10.post("/job/%s/stop" % job10.job_id, json={}).status_code == 200
+    svc10._advance(job10, None)               # 这一步跑完 → 停在 draft 那道闸上
+    seen |= {e["kind"] for e in job10.timeline.all()}
 
     # ── 机械断言（三条，名字都从调用点推出来）──────────────────────
     derived = _kinds_the_service_narrates()

@@ -206,7 +206,11 @@ RESTART_NOTE = ("服务重启过：这之前的时间线没有了。运行的状
                 "之前拍下的图还在盘上，但**这一屏的轮次从这次启动起重新数**"
                 "（同一个名字的旧图会被新的一轮顶掉）。**重启之前那几轮的卡片这一屏不显示** "
                 "—— 轮次账在进程里，没从盘上反推：反推会把轮号与新旧文件名混在一起，"
-                "比不显示更容易骗人。")
+                "比不显示更容易骗人。"
+                # Task 8 补的一句：`Job.inbox`（说了还没送到它手上的话）与时间线**同一条命** ——
+                # 不说的话，人重启之后看到输入框空了，会以为「服务把它送到了」（那是编话）。
+                "**排队等它停下来才发的那几句话也在这个进程里**：重启之后它们没了，要说就重说一句"
+                "（`/again` 带过去的也只有它还记得的那些）。")
 #: `/live` 上「读不回状态」那句话（**跑着/排队**那几档：`_live_facts` 兜得住）。
 #: ⚠️ **读**这一侧（GET）不许写时间线（「读不许写」），所以这句话随响应回去、
 #: 在页面上看得见 —— 那也是「没有静默的路径」在这一侧的样子。
@@ -237,6 +241,188 @@ CONSOLE_PATH = pathlib.Path(__file__).with_name("console.html")
 CONSOLE_UNREADABLE_SAY = ("控制台页面读不出来：%s —— 服务在 %s 找它（`GET /console` 每次都是现读"
                           "这个文件）。要么它没跟着镜像一起进去，要么权限不对。"
                           "这一条不该出现：页面是仓库里的一个文件，不是运行产物。")
+
+
+# ───────────────── 人在回路（Task 8 / 设计注 §四）───────────────────────────
+# 三条线：`/say`（说一句）/ `/stop`（停下，我要说一句）/ `/again`（重新来一遍）。
+# 这一节里**写死的都是人话**（散着写早晚漂成两套口径）；判据在下面那三个**纯函数**里。
+#
+# ⚠️ 三条线共用一条**硬规矩**（Global Constraints）：**服务可以替人「停」，绝不替人「走」。**
+#    「停」不让任何一步发生（它是**阻止**）；而替人回一句「继续」会让一步在没人看着的
+#    情况下跑掉（`c998a72` 那次修复钉住的事故）。所以：排队的插话**只预填、不自动发**；
+#    没有任何一条路径会因为超时、因为排队、因为「看起来没人管」而自动继续。
+
+#: 常开输入的三种语义（页面 `console.html:306` 的 `MODES` 就是这三个词）。
+#: **服务说了算**（设计注 §8.2 第 3 条：页面不许自己猜它在哪种模式）。
+INPUT_GATE = "gate"       #: 这就是**这道闸的回话**（只可能在 `waiting` 那一档）
+INPUT_STEER = "steer"     #: 探路里跑 —— 下一轮直达（Task 9 的通道）
+INPUT_QUEUE = "queue"     #: 排队：到下一道闸进输入框
+
+#: `/say` 的一句话**送到没有**：直达它的下一轮 / 排在队里等闸。
+SAY_DELIVERED = "delivered"
+SAY_QUEUED = "queued"
+
+#: 探路那个节点（`NODES` 里那个）—— 只有它跑着的时候才有「下一轮」这回事（设计注 §3.4）。
+STEER_STAGE = "explore"
+
+#: 「直达」那条通道（Task 9 的 `steer`）**接上了没有**。**这一版写死 `False`**：
+#: `llm.run_tool_loop(steer=…)` 还没落地，而 Global Constraints 说得很死 ——
+#: 「一半的插话（说了没送到）比不做更坏」⇒ **今天任何路径都不许回 `delivered`**（R1）。
+#: Task 9 落地时改的是**这个实参**（不是判据）：把它翻成 `True`，并把 `/say` 里那条
+#: 「直达」的通道接上（`say_route` 那一支今天就写好了，只是到不了）。
+STEER_WIRED = False
+
+#: 一句话最多留多少字（R4）。为什么是这个数：它进 `hints` → 一路带进「写这一版 py」
+#: 的提示里，而那是一句**人的纠正**（「不是那个按钮，是下面那个」）—— 一段话的长度。
+#: 400 是仓库里已有的「一句人话」那个量级（`_cannot_reopen_say` 里那句 `[:400]` 同源）。
+#: 超了**截断并说出来**：响应与事件里都说清截了多少、留了多少（绝不悄悄丢）。
+SAY_MAX_CHARS = 400
+
+#: 「停」在**闸上**那一档的答复（设计注 §4.1 矩阵第 3 行，**原话**）。三处引用同一句：
+#: `/stop` 的响应、`/live` 的 `stop.will_stop_at`、以及测试。
+STOP_AT_GATE_SAY = "停下了。这一步没有做，页面与文件都是原样。"
+
+#: `/say` 在闸上说的那一句（`%s` = 闸口点名的那一步的人话）
+SAY_QUEUED_AT_GATE_SAY = ("记下了 —— 它现在停在闸上（「%s」）：这句话已经放进输入框了，"
+                          "**按一下**才送过去（不会自动发）。")
+#: `/say` 在别处说的那一句（`%s` = 它现在在哪，见 `_where_it_is_say`）
+SAY_QUEUED_SAY = ("记下了 —— 它现在%s，这一句先排着：到下一道闸会进输入框，"
+                  "**按一下**才送（不会自动发）。")
+#: 队里不止一句时补一句（说得出就说 —— 与「截断要说出来」同一条纪律）
+SAY_QUEUE_LENGTH_SAY = "队列里现在排着 %d 句 —— 都是只预填、不自动发。"
+#: 截断那句（R4）：**两个数都要说**（原来多长、留下多少）
+SAY_CUT_SAY = "你这句话有 %d 字，只留下前 %d 字 —— 被切掉的那些**没带上**。"
+#: 直达那一句（**今天到不了**：`STEER_WIRED` 是 False，见 R1）
+SAY_DELIVERED_SAY = "这句话**直达**它的下一轮了（它正在探路里跑）。"
+#: 「直达」的开关被打开、而通道没接上时给的那句（**不许**把没送到的话说成送到了）
+SAY_STEER_UNWIRED_SAY = ("这条路上它现在收不到「直达」的话：那条通道（Task 9）还没接上。"
+                         "**不许**把一句没送到的话说成送到了 —— 所以服务在这儿回一句实话，"
+                         "而不是把这句话咽进队列里。写一句短一点的，或者等它到下一道闸。")
+#: 空文本（400）
+SAY_EMPTY_SAY = ("这一句是空的。要它接着走，闸上那个「继续」按钮才是那件事；"
+                 "要说话，就写一句再送。")
+#: 到头了（409；R3：`/stop` 对同一件事给**同一种**答复）
+SAY_OVER_SAY = ("这个任务已经到头了（%s）—— 你说的话它不会收到了。要它再走一遍："
+                "按「重新来一遍」（同一份开场白 + 你说过的话，新起一趟）。")
+#: 矩阵第 1 行：**探路里跑** → 几秒内停（`should_pause` 每一步/每一轮之前各查一次）
+STOP_IN_EXPLORE_SAY = ("停下了（几秒内）—— 探路的账本不完整（页面状态没了），"
+                       "要接着做就得重来一次：按「重新来一遍」会带上你说的话。")
+#: 矩阵第 2 行：**别的节点里跑** → 跑完这一步，停在下一个闸口（那个闸口**本来就在等人**）
+STOP_IN_NODE_SAY = ("现在停不下来：它在「%s」里（这一步中途没有停的口子）。"
+                    "不过**它跑完这一步一定会停下来问你** —— 那个闸口本来就在等你，"
+                    "所以你要做的只是**什么都不用按**。")
+#: 上一行那句的后半段（**只在队里真有话时说** —— 没说就不许说「你说的话我排好了」）
+STOP_WORDS_HELD_SAY = "你刚才说的话已经排好了，到那儿会进输入框。"
+#: 跑着、但**说不准是哪一个节点**（这一次采样没读出来）：**不许编**一个节点名
+STOP_IN_UNKNOWN_NODE_SAY = ("现在停不下来：它正在跑（这一刻说不准是哪一个节点）。"
+                            "不过**它跑完这一步一定会停下来问你**（每一步之前都停），"
+                            "所以你要做的只是**什么都不用按**。")
+#: R2（矩阵里没有的那一行）：**还没轮到窗口**它还没开跑
+STOP_NOT_STARTED_SAY = ("还没轮到窗口 —— 它还没开跑，没有什么可停的。你按的「停」我记下了："
+                        "它一动就会**先停在第一道闸上**（那本来就等你），你什么都不用按。")
+#: 「停」兑现了（A3）：两种落点，两句**不同**的话（落闸上 / 这一趟停下来了）
+STOP_LANDED_GATE_SAY = ("你按的「停」兑现了 —— 它停在「%s」那道闸上，正等着你"
+                        "（这一步没有做，页面与文件都是原样）。")
+STOP_LANDED_OVER_SAY = "你按的「停」有结果了 —— 这一趟停在「%s」，没有接着往下走。"
+#: 上一句的补充：探路那一趟停下的 ⇒ 账本不完整（设计注 §4.3 第 2 条）
+STOP_LANDED_PAUSED_ADD = ("（探路那一趟的账本不完整：要接着做就按「重新来一遍」—— "
+                          "你说的话会带过去。）")
+#: 状态读不回来那一档：「停」照样兑现，但**说得出多少说多少**
+STOP_LANDED_BLIND_SAY = ("你按的「停」兑现了 —— 这一趟停下来了（它结束之后读不回状态，"
+                         "所以落在哪儿这一次说不准）。")
+#: 终态 job 上按「停」（409，R3）
+STOP_OVER_SAY = ("这个任务已经到头了（%s）—— 没有什么可停的。要再走一遍就另起一个任务"
+                 "（「重新来一遍」会把你说过的话带上）。")
+#: `/again` 起的那一趟，时间线**第一句**（`submitted`）：「这是重来」（计划 Task 8）
+AGAIN_SUBMITTED_SAY = ("收到了 —— 这是**从头再来一遍**（照 %s 那份开场白 + 你说过的 %d 句话）。"
+                       "排队开跑。")
+#: `/again` 的响应（两个 job id 都要有：新的那个去哪儿看，旧的那个是重来哪一趟）
+AGAIN_SAY = ("重新来一遍：新任务 %s（照 %s 那份开场白 + 你说过的 %d 句话）。"
+             "它在排队；跑起来会先停在第一道闸上。")
+#: 旧那一趟的时间线上留的那一笔（人按了那个按钮）
+AGAIN_PRESSED_SAY = ("你按了「重新来一遍」—— 新任务 %s（同一份开场白 + 你说过的 %d 句话）。"
+                     "这一趟就停在这儿。")
+#: 还在跑的时候按「重新来一遍」（409）
+AGAIN_RUNNING_SAY = ("它还在跑（%s）—— 要重新来一遍，先按「停」："
+                     "两趟一起跑会在同一个窗口上互相踩。")
+#: 重来的这一趟起不来（`start()` 那条路自己会给人话，这里只保证**这一屏上留一笔**）
+AGAIN_FAILED_SAY = "你按了「重新来一遍」，可这一趟没能起得来：%s"
+#: 旧那一趟在闸上说过的话读不回来（R5 的代价那栏：**不许静默少带一半**）
+AGAIN_WORDS_UNREADABLE_SAY = ("读不回这个任务的状态（%s）—— 你**在闸上说过的话**这一次"
+                              "没能带进重新起的那一趟（说了还没送出去的那些照带）。")
+#: `/live` 在**跑着**那一档故意不读 checkpoint 时说的那句（A1）。
+#: 不说的话，「这一屏少了几张卡片」就是一条静默的路径。
+LIVE_BUSY_SAY = ("它现在**正在跑** —— 这一屏没有去读它的状态（读一次要排在这次 invoke 后面，"
+                 "真站点上可能几分钟，而这一屏每 3 秒就刷新一次）。"
+                 "轮次卡片与「刚做完的那一步」等它停下来再补全。")
+#: 「不知道哪一步」——`_where_it_stopped` 与 `/live` 的 `stage_say` **同一句**（一处口径）
+UNKNOWN_STEP_SAY = "不知道哪一步"
+
+
+def input_mode(status: str, stage: str, *, steer: bool) -> str:
+    """常开输入这一行现在是**哪一种语义**（页面照它挑 placeholder 与提示）。
+
+    `gate` **当且仅当** `status == WAITING`（A4）—— 页面拿这两格**对不上**就显示一句
+    警告（`console.html:680`：`waiting !== gated`），所以这两格必须同源、不许各算一套。
+    `steer` 要求**两件事同时成立**：它正在探路里跑 + 那条通道接上了（Task 9）。
+    """
+    if status == WAITING:
+        return INPUT_GATE
+    if steer and status == RUNNING and stage == STEER_STAGE:
+        return INPUT_STEER
+    return INPUT_QUEUE
+
+
+def say_route(status: str, stage: str, *, steer: bool) -> str:
+    """`/say` 的一句话会怎么到它手上：`delivered`（直达下一轮）/ `queued`（排队等闸）。
+
+    ⚠️ 判据写在这儿而不是端点里（R1）：Task 9 落地时改的是**实参**（那个开关），
+    不是这几行 —— 两个分支今天就都在，只是 `steer=False` 那一支走不到 `delivered`。
+    """
+    if input_mode(status, stage, steer=steer) == INPUT_STEER:
+        return SAY_DELIVERED
+    return SAY_QUEUED
+
+
+def stop_plan(status: str, stage: str, *, held_words: bool = False) -> dict:
+    """「停」按下去会落在哪儿：`{"where": 节点名, "will_stop_at": 一句人话}`（设计注 §4.1）。
+
+    矩阵四行（前三行是设计注的，第四行是 R2）：
+      ① `waiting`（已经在闸上）→ **立刻**（这一步不做）；
+      ② `running` + 探路 → **几秒内**（`should_pause` 每一步/每一轮之前各查一次）；
+      ③ `running` + 别的节点 → **跑完这一步**，停在下一个闸口（那个闸口本来就在等人）；
+      ④ `queued`（还没轮到窗口）→ 它一动就会先停在第一道闸上（R2 —— 矩阵里没有这一行）。
+
+    ⚠️ `where` 是**服务记着的那个名字**（跑着时是 `Job.running_step` 那一次采样，
+    闸上是闸口点名的那一步）；**说不出来就是空串** —— R2 明令：**不许编一个节点名**。
+    """
+    if status == WAITING:
+        return {"where": str(stage or ""), "will_stop_at": STOP_AT_GATE_SAY}
+    if status == QUEUED:
+        return {"where": "", "will_stop_at": STOP_NOT_STARTED_SAY}
+    if status == RUNNING:
+        if not stage:
+            say = STOP_IN_UNKNOWN_NODE_SAY
+            return {"where": "", "will_stop_at": (say + "\n" + STOP_WORDS_HELD_SAY
+                                                  if held_words else say)}
+        say = (STOP_IN_EXPLORE_SAY if stage == STEER_STAGE
+               else STOP_IN_NODE_SAY % STEP_SAY.get(stage, stage))
+        if held_words and stage != STEER_STAGE:
+            say += "\n" + STOP_WORDS_HELD_SAY
+        return {"where": stage, "will_stop_at": say}
+    # 到头了 / 跑挂：端点先拦（409），这里给的是「没有落点」这个事实
+    return {"where": "", "will_stop_at": ""}
+
+
+def _cut_say(text: str) -> tuple:
+    """一句话太长就切（R4）：返回 `(留下的那段, 切掉了几个字)`。
+
+    ⚠️ 调用方**必须说出来**（响应与事件里两个数都要有）：悄悄切 = 时间线上留着一句
+    它其实没带进去的话 —— 那正是这一片最不许有的形状。
+    """
+    if len(text) <= SAY_MAX_CHARS:
+        return text, 0
+    return text[:SAY_MAX_CHARS], len(text) - SAY_MAX_CHARS
 
 
 # ─────────────────────────────── 窗口层（§4.6）───────────────────────────────
@@ -653,6 +839,15 @@ class RunRequest(BaseModel):
         False, description="把**窗口层那根线**接上（第 4 遍扰动要换窗口大小，`POST /browser/update`）。"
                            "尺寸由自测那一步定（`selftest.DEFAULT_VIEWPORT`）；这个部署没接窗口层时"
                            "给 true 会被拒 —— 不替你默认放过那一遍（R-5）")
+    # ── Task 8 加的两个（**加**字段不是改既有形状**：既有形状那条约束管的是 `/job/{id}` 的响应）──
+    hints: Optional[list] = Field(
+        None, description="人说过的话**播种**进这一趟的 state（`/again` 带过来的那几句，R5）。"
+                          "⚠️ 图在每一道闸上往它后面**追加**（`graph._enter`），所以它只影响"
+                          "「这一趟开跑时手上有什么」。不给 = 一开始没有人的话")
+    again_from: Optional[str] = Field(
+        None, description="这一趟是**从哪个 job 重来的**（`/again`）。⚠️ **只服务用得上**"
+                          "（时间线第一句要说清这是重来）—— 它**不往下发给图**（`_payload` 不带它）："
+                          "图不需要知道它的上一世")
 
 
 class ReplyRequest(BaseModel):
@@ -660,6 +855,17 @@ class ReplyRequest(BaseModel):
 
     action: str = Field("continue", description="continue / stop / revise（不认识的当纠正处理，不丢）")
     note: str = Field("", description="纠正的话：直接说该点哪（会一路带进 draft）")
+
+
+class SayRequest(BaseModel):
+    """`POST /job/{id}/say` 的载荷（Task 8）。
+
+    ⚠️ 字段名是 **`text`**：计划（`plans/2026-09-17-console-minimal.md` 的 Task 8）与页面
+    （`console.html:914` 那段注释就是为这件事写的）都写死它 —— 写成 `say` 的话，
+    页面上每一个「说一句」都会当场 422。
+    """
+
+    text: str = Field("", description="人说的那一句（空文本 400；超长截断并**说出来**）")
 
 
 class ReopenRequest(BaseModel):
@@ -912,6 +1118,29 @@ class Job:
     #: **播报坏了**这件事报过的原因（Task 5 修复轮 1）。同上：报告会一直躺在 state 里，
     #: 而每次 `_advance` 返回都会去读它一遍 —— 不去重就是同一句话每推一步记一条。
     narration_reported: set = dataclasses.field(default_factory=set)
+    #: 人说过、**还没送到它手上**的话（Task 8 的 `/say` 排队那条路）。每一条至少
+    #: `{"text", "at", "delivered"}` —— 送到时**改的是同一条**（不是追加一条新的），
+    #: Task 9 就是靠 `delivered` 分辨「喂过它没有」。
+    #: ⚠️ 只活在进程里（与 `timeline` 同一条命）；服务重启后它没了 —— 而它本来就只装
+    #: 「说了还没送出去」的话，重启之后那些话的去处由 `timeline` 那句话自己说。
+    inbox: list = dataclasses.field(default_factory=list)
+    #: 有一个**还没兑现**的停请求（`/stop` 记下的）。它是**探路 `should_pause` 读的那一格**
+    #: （设计注 §4.1：停是**安全**的那一半授权 —— 它不让任何一步发生），也是页面禁用
+    #: 「停」那个按钮的判据（`console.html:696`）。到闸上/这一趟结束了就**兑现并清掉**
+    #: （`_note_stop_landed`，A3）。
+    stop_requested: bool = False
+    #: 按下去那一刻**那句承诺**（与它的落点）。⚠️ 存下来而不是每次重算：在闸上按的「停」
+    #: 是**立刻**兑现的（矩阵第 3 行），而那一刻之后状态还会往前翻（running → done）——
+    #: 重算就会把「立刻」说成「跑完这一步才停」（假话）。
+    stop_where: str = ""
+    stop_say: str = ""
+    #: **这一趟的图现在在跑哪个节点**（服务自己在进程里记的一个字符串，A2）。
+    #: ⚠️ 为什么不是「要用的时候去读 checkpoint」：`_snapshot` 在读连接那三种形态下
+    #: （内存 saver / 调用方给的 saver / `graph_factory`）会**一直等到这一步跑完**（A1）——
+    #: 而 `/say` `/stop` `/live` 唯一有用的那一档**正是「跑着」**（真站点上一趟几分钟）。
+    #: 它是 `_where_it_stopped` **在安全时刻（一次 invoke 开始之前）采的那一次样**，
+    #: **不是第二个真相源**。
+    running_step: str = ""
 
     def snapshot_for_view(self) -> tuple:
         with self.lock:
@@ -1045,7 +1274,10 @@ class Service:
                           set_viewport=(self._viewport_cb(brief.get("ws_url"))
                                         if brief.get("set_viewport") else None),
                           fresh_session=self._fresh_session_cb(),
-                          window_alive=self._window_alive_cb())
+                          window_alive=self._window_alive_cb(),
+                          # Task 8：「停下，我要说一句」伸进浏览器的那根线（设计注 §4.1 第 1 行）。
+                          # 接上它，探路才会**每一步/每一轮之前**问一句「人喊停了吗」。
+                          should_pause=self._pause_cb(job_id))
         if self._graph_factory is not None:
             return self._graph_factory(brief, deps)
         return graph.build(checkpointer=self._check.get(), deps=deps)
@@ -1197,6 +1429,22 @@ class Service:
         if window is None or not hasattr(window, "alive"):
             return None
         return window.alive
+
+    def _pause_cb(self, job_id: str) -> Callable:
+        """`Deps.should_pause`：探路**每一步 / 每一轮之前**问的那一句（设计注 §4.1 第 1 行）。
+
+        ⚠️ 这是「停」那一半授权在代码里的样子：返回 `True` **只是让探路收住**
+        （它不让任何一步发生）；而「替人往前走一步」这一版**一条路径都没有**
+        （Global Constraints：`c998a72` 那次事故就是替人回了一句「继续」）。
+        ⚠️ 读的是**登记表里那一个 job**（不是建图那一刻闭包住的副本）：`reopen` / `_recover`
+        都会再拼一次图，而它们要读的必须是同一个标志。登记表里没有它时回 `False`
+        （不是抛）—— 那意味着「没有 job 可停」，不是「人没喊停过」之外的事。
+        """
+        def should_pause() -> bool:
+            job = self._jobs.get(job_id)
+            return bool(job is not None and job.stop_requested)
+
+        return should_pause
 
     def _explore_dir(self, job_id: str) -> pathlib.Path:
         """`runtime/explore/<job_id>/`。⚠️ `job_id` 是从 HTTP 进来的字符串 —— 必须挡住 `../`，
@@ -1714,6 +1962,31 @@ class Service:
         with self._check.lock:
             return g.get_state(self._cfg(job_id))
 
+    def _snapshot_soon(self, job_id: str):
+        """**不等**地读一次状态：写锁被占着就立刻回 `None`（**不排队**）。
+
+        Task 8 / A1 的正身：`/live` 在**跑着**那一档**不许读 checkpoint** ——
+        而「不许读」要落到机械上，就是这一条：读的东西与 `_snapshot` **一模一样**
+        （同一个 saver、同一张图），差的只有「等不等」。别把它读成第二个真相源。
+
+        为什么非这样不可：内存 saver / 调用方给的 saver / `graph_factory` 这三种形态下，
+        一次读会**排在那次 invoke 后面**（`_advance` 整段持着写锁），真站点上几分钟 ——
+        而页面每 3 秒轮询一次：整屏冻在那里，人按了停也只会转圈。
+        （生产的 Postgres 形态有第二条读连接，本来就不排队 —— 这一条是给另外三种形态的，
+        而「测试与嵌入式部署」正好就是那三种。）
+        """
+        job = self._jobs.get(job_id)
+        if self._graph_factory is None and self._check.separate_reader:
+            with self._check.reader_lock:            # 读连接：从来不与写抢（生产形状）
+                return self._probe_graph().get_state(self._cfg(job_id))
+        g = job.graph if (job is not None and job.graph is not None) else self._probe_graph()
+        if not self._check.lock.acquire(blocking=False):
+            return None                              # 有人在写（它正在跑）⇒ 这一次不读
+        try:
+            return g.get_state(self._cfg(job_id))
+        finally:
+            self._check.lock.release()
+
     # ── 时间线：**唯一的写入口**（Task 4；契约 `docs/执行事实契约-2026-09-18.md`）────
     # 目录表那九条触发点各自的调用点见 `_advance` / `start` / `reply` / `reopen` /
     # `_recover` / `_capture_pause`；这里放的是**入口**与几个共用的小工具。
@@ -1894,7 +2167,7 @@ class Service:
             judged["step_no"] = step_no
         self.narrate(job, "step", verdict_say, **judged)
 
-    def _where_it_stopped(self, job_id: str) -> tuple:
+    def _where_it_stopped(self, job_id: str, snap=None) -> tuple:
         """它停/走在**哪一步**：`(节点名, 人话)` —— 「窗口没了」那句话的 `%s` 与 `/live` 的 `stage`。
 
         三档，**全是从快照里读出来的**（读不出来就写「不知道哪一步」，绝不编）：
@@ -1902,13 +2175,18 @@ class Service:
              「它停在「写这一版 py」之前」那个例子）；
           ② 没闸口但有 `next` → 图下一步要跑的节点；
           ③ 都没有 → `visits` 里最后落下的那一步。
+
+        `snap` 是**调用方手上已经有的那一份**（Task 8 加的，可选）：一次读在真 saver 上
+        就是一次查询，手里已经有了就不该再读一次。不传 = 自己读（与以前一模一样）。
+        ⚠️ 它**不会**替你等写锁 —— 要「不等」的那一档用 `_snapshot_soon`（A1）。
         """
-        unknown = ("", "不知道哪一步")
-        try:
-            snap = self._snapshot(job_id)
-        except Exception:                      # noqa: BLE001 —— 读不出来就说不知道
-            traceback.print_exc()
-            return unknown
+        unknown = ("", UNKNOWN_STEP_SAY)
+        if snap is None:
+            try:
+                snap = self._snapshot(job_id)
+            except Exception:                  # noqa: BLE001 —— 读不出来就说不知道
+                traceback.print_exc()
+                return unknown
         values = dict(getattr(snap, "values", None) or {})
         gates = self._interrupts(snap)
         if gates:
@@ -1967,25 +2245,86 @@ class Service:
                      end_reason=reason, end_note=note)
 
     def _note_after_advance(self, job: Job, *, ended: bool) -> None:
-        """一次 `_advance` 返回之后要记的两件事（目录表第 1、6 行）。
+        """一次 `_advance` 返回之后要记的那几件事（目录表第 1、6 行 + Task 8 的停）。
 
         ⚠️ 顺序：**先现场，后结论** —— 「窗口还在不在」决定了下一步能不能走，
         「这一趟到头了」是这一跳的结果。
         ⚠️ `ended=False` 是**跑挂**那一支：那儿只记现场，**不许**记 `done`
         （「跑挂 ≠ 跑成」：快照里可能还留着上一次的 `end_reason`，照抄它就成了假话）。
+        ⚠️ 「停」的兑现（A3）**两条路都要走**：跑挂也意味着这一步跑完了，那个标志同样要还回去
+        （不还的话，`reopen` 之后探路会一上来就自己停住 —— 人根本没再按过）。
         """
         try:
-            values = dict(getattr(self._snapshot(job.job_id), "values", None) or {})
+            snap = self._snapshot(job.job_id)
+            values = dict(getattr(snap, "values", None) or {})
+            # ⚠️ `ended=False`（跑挂那一支）时**不许**说「它停在闸上等着你」：那一刻
+            # 快照里可能还留着上一次那道闸（节点里抛时状态没往前走），而这一趟是**跑挂**了，
+            # 不是在等人。同一件事已经在上面那条 `failed` 里说过了。
+            at_gate = bool(self._interrupts(snap)) if ended else False
         except Exception as exc:               # noqa: BLE001 —— 旁路，但**响**
             traceback.print_exc()
             raw = "%s: %s" % (type(exc).__name__, exc)
             self.narrate(job, "state_unreadable", STATE_UNREADABLE_SAY % raw, error=raw)
+            # 读不回来也要把那个按钮还回去（不清 = 它**永久**按不动，A3）——
+            # 而「状态读不回来」这件事本身已经记过了（上面那一条）。
+            self._note_stop_landed(job, snap=None, at_gate=None)
             return
+        self._note_stop_landed(job, snap=snap, at_gate=at_gate)
         self._note_window_died(job, values)
         self._note_shots_missing(job, values)     # 目录表第 6 行的**步拍**那一半
         self._note_narration_broken(job, values)  # 播报那条旁路自己坏了（修复轮 1）
         if ended:
             self._note_end(job, values)
+
+    def _note_stop_landed(self, job: Job, *, snap, at_gate: Optional[bool]) -> None:
+        """有一个**还没兑现**的停请求，而这一步已经跑完了 —— 「停」这件事**兑现了**（A3）。
+
+        为什么必须清（A3 的代价那栏，一个字不改）：`console.html:696` 是
+        `btnStop.disabled = over || stop.requested === true` —— **不清的话那个按钮永久按不动**，
+        而人正看着一道**本来就等着他**的闸。到闸上，「停」就兑现了：人就在那儿，闸本来就是停。
+
+        为什么必须**说出来**（「没有静默的路径」）：清掉的是他按过的那一下；
+        而且它答得出**落在哪** —— 那正是按下去那一刻那句承诺要的答案（两句话不同：
+        落在闸上 / 这一趟停下来了）。
+
+        ⚠️ 三个判据照 `_note_window_died`：真按过才清、**只清一次**（标志位自己就是
+        「说过了」的记号）、认的是**事实**（闸还在不在）而不是「跑了几次」。
+        """
+        with job.lock:
+            if not job.stop_requested:
+                return
+            job.stop_requested = False
+            promised = str(job.stop_say or "")
+            job.stop_say = job.stop_where = ""
+        if at_gate is None:
+            say = STOP_LANDED_BLIND_SAY
+            token = ""
+        else:
+            # 兑现落在哪：从**这一步跑完之后的**状态里读（此刻 invoke 已经结束 —— 读是安全的，
+            # 而且手上就有那一份快照，不必再读一次）
+            token, human = self._where_it_stopped(job.job_id, snap)
+            if at_gate:
+                say = STOP_LANDED_GATE_SAY % human
+            else:
+                say = STOP_LANDED_OVER_SAY % human
+                if str((getattr(snap, "values", None) or {}).get("end_reason") or "") == END_PAUSED:
+                    say += STOP_LANDED_PAUSED_ADD
+        self.narrate(job, "stop_landed", say, where=token, promised=promised)
+
+    def _sample_running_step(self, job: Job) -> None:
+        """把「这一步在跑哪个节点」记进 `Job.running_step`（A2）—— 在**写锁还没拿**的时刻采。
+
+        为什么要有这一格：`/say` `/stop` `/live` 唯一有用的那一档正是「跑着」，
+        而**那一刻读一次 checkpoint 会一直等到这一步跑完**（A1 的三种形态；真站点上几分钟）
+        —— 人按了停，浏览器转圈转到这一步跑完，那个按钮就等于没有。
+
+        ⚠️ **不是第二个真相源**：同一个 `_where_it_stopped` 在安全时刻采的那一次样。
+        `_enter()` 在每个节点开工**之前**都 `interrupt()` ⇒ 从一次 resume 到下一道闸之间
+        恰好只有一个节点体在跑 ⇒ 这一格在整个 `running` 窗口里都是准的。
+        """
+        token, _ = self._where_it_stopped(job.job_id)
+        with job.lock:
+            job.running_step = token
 
     def _note_shots_missing(self, job: Job, values: dict) -> None:
         """目录表第 6 行的**步拍**那一半：图没拍成 → 时间线上一条（Task 5）。
@@ -2188,6 +2527,10 @@ class Service:
         自己再抛、或者 `_capture_pause` / `_note_after_advance` 抛，会从 `_advance` 里
         **逃出去** —— 那一路归 `_work` 的最后一层网（`_note_escaped`），它先改状态再试一次记。
         """
+        # ⚠️ **最上面这一句**（A2）：此刻上一次 invoke 已经结束、这一次还没开始，
+        #    而 `_work` 只有一个工作线程 ⇒ 写锁没人拿 ⇒ 读快照是安全的。
+        #    跑起来之后再想读它，就是「等这一步跑完」（A1）—— 那是这一片最贵的那个坑。
+        self._sample_running_step(job)
         with job.lock:
             job.status = RUNNING
             job.say = RUNNING_SAY
@@ -2382,10 +2725,13 @@ class Service:
         truncated = bool(timeline is not None
                          and (timeline.dropped() or len(timeline) > len(shown)))
         events_note = self._truncated_say(timeline, len(shown)) if truncated else ""
-        token, where = self._where_it_stopped(job_id)
+        # ⚠️ **跑着那两档不许读 checkpoint**（A1/A2）：`stage` 取自进程里那一格采样。
+        token, where = self._stage_now(job, job_id, view["status"])
 
-        # 轮到闸拍清单与 state（读不回来也要说清 —— 见 `_live_facts`）
-        pauses, values, facts_note = self._live_facts(job, job_id)
+        # 轮到闸拍清单与 state（读不回来也要说清 —— 见 `_live_facts`）。
+        # `soon=`：跑着那两档**不等** —— 人在跑的时候每 3 秒要能看到这一屏（A1）。
+        pauses, values, facts_note = self._live_facts(
+            job, job_id, soon=view["status"] in (QUEUED, RUNNING))
         proj = rounds.project(
             values, view.get("gate"), job_id=job_id, status=view["status"],
             say=str(view.get("say") or ""), delivered=bool(view.get("delivered")),
@@ -2407,11 +2753,14 @@ class Service:
             #: 闸口投影（**只在 `waiting` 时非 null**）。原话照抄 `_view` 算好的那道闸，
             #: 另加 `revisable`（`lint`/`selftest`/`deliver` 三道闸上「打回」才有那个意思）。
             "gate": proj["gate"],
-            #: 常开输入的语义（Task 8 定、Task 9 扩展）。**恒 queue**：这一版没有 `/say`。
-            "input": {"mode": "queue", "queued": []},
-            #: 「停」这条路这一版**还没有** —— 只说「没请求停」（真话）。
-            #: 不许在这儿编一句「几秒内就会停」：那是 Task 8 的事，现在写上去就是假话。
-            "stop": {"requested": False},
+            #: 常开输入的语义（Task 8 定、Task 9 扩展）：`gate`（闸上的回话）/ `steer`
+            #: （探路里，下一轮直达）/ `queue`（排队）—— **服务说了算**，页面不猜。
+            #: `draft_note` = 最近一条**还没送出去**的话（页面拿它预填，**不自动发**）；
+            #: `queued` = 那些话本身（`Job.inbox` 里还没送出去的那些）。
+            "input": self._input_now(job, view["status"], token),
+            #: 「停」这条路这一版**接上了**（Task 8）：`requested` = 有一个还没兑现的停请求；
+            #: `will_stop_at` = **按下去那一刻**服务承诺的落点（页面把它摆在按钮底下）。
+            "stop": self._stop_now(job),
             "shots_note": proj["shots_note"],
             "window": proj["window"],
             #: 轮次卡片（Task 6 从 checkpoint 投影）：**旧 → 新**，`rounds[n-1]` 就是第 n 轮。
@@ -2419,7 +2768,54 @@ class Service:
             "truncated": bool(truncated or proj["truncated"]),
         }
 
-    def _live_facts(self, job: Optional[Job], job_id: str) -> tuple:
+    def _stage_now(self, job: Optional[Job], job_id: str, status: str) -> tuple:
+        """`/live` 的 `stage` / `stage_say`：**跑着（含排队）那两档读进程里那一格**。
+
+        为什么（A1/A2）：那两档正在推进（或者前面正有别的 run 在推进同一个 saver），
+        读一次 checkpoint 会**排在一次 invoke 后面**；而 `/live` 每 3 秒被点一次 ——
+        卡一次整屏就冻一次。剩下三档（在等人 / 到头了 / 跑挂）没有并发的那次 invoke 在写，
+        而且那几档的答案本来就只在 checkpoint 里（闸口点名的那一步 / 最后落下的那一步）。
+        """
+        if job is not None and status in (QUEUED, RUNNING):
+            token = str(job.running_step or "")
+            return token, (STEP_SAY.get(token, token) if token else UNKNOWN_STEP_SAY)
+        return self._where_it_stopped(job_id)
+
+    def _input_now(self, job: Optional[Job], status: str, stage: str) -> dict:
+        """`/live.input`：这一行输入**现在是什么语义** + 排着的那几句话（`/say` 排的）。
+
+        `draft_note` = **最近一条还没送出去的话**（页面拿它预填输入框 —— **不自动发**，
+        这是 Global Constraints 点名的那个不对称授权：服务可以替人「停」，绝不替人「走」）。
+        """
+        pending: list = []
+        if job is not None:
+            with job.lock:
+                pending = [dict(x) for x in job.inbox if not x.get("delivered")]
+        return {"mode": input_mode(status, stage, steer=STEER_WIRED),
+                "draft_note": str(pending[-1].get("text") or "") if pending else "",
+                "queued": pending}
+
+    @staticmethod
+    def _stop_now(job: Optional[Job]) -> dict:
+        """`/live.stop`：**按过的那个「停」**（还没兑现的那一次）—— 页面据此禁用按钮、显示落点。
+
+        ⚠️ 报的是**按下去那一刻**那句承诺（`Job.stop_say`），不是现在重算一句：在闸上按的
+        「停」是**立刻**兑现的（矩阵第 3 行），而那一刻之后状态还会往前翻（running → done）
+        —— 重算就会把「立刻」说成「跑完这一步才停」（那是假话）。
+        ⚠️ 没请求过时那几格是**空的**，不是「预览一下按下去会怎样」：矩阵那三句写的是
+        **结果**（「停下了」「现在停不下来」），把它们摆在还没按的按钮底下就是编话。
+        """
+        empty = {"requested": False, "where": "", "will_stop_at": "", "say": ""}
+        if job is None:
+            return dict(empty)
+        with job.lock:
+            if not job.stop_requested:
+                return dict(empty)
+            said = str(job.stop_say or "")
+            return {"requested": True, "where": str(job.stop_where or ""),
+                    "will_stop_at": said, "say": said}
+
+    def _live_facts(self, job: Optional[Job], job_id: str, *, soon: bool = False) -> tuple:
         """`/live` 要的两样输入 + 一句人话：闸拍清单、checkpoint 的 values。
 
         闸拍清单**只从登记表来**（`Job.shot_notes`，一轮一条）—— 不在登记表里的 job
@@ -2432,17 +2828,23 @@ class Service:
         ⚠️ **这一层的射程只有三档**（跑着 / 排队 / 跑挂）：那三档 `_view` 不读 state，
         所以读失败到得了这里。**停在闸上 / 到头了**那两档 `_view` 自己先读、先抛 ——
         那一支由 `Service.live` 兜（503 + 一句人话）。别把这条读成「`/live` 永远不抛」。
+
+        `soon=True`（Task 8，跑着/排队那两档）：**不等**（`_snapshot_soon`）——
+        有人在写就这一次不读，并**说出来**（`LIVE_BUSY_SAY`，不是「读不回」：那两件事
+        不一样，一句话盖两件事就是编话）。
         """
         pauses: list = []
         if job is not None:
             with job.lock:
                 pauses = [dict(x) for x in job.shot_notes]
         try:
-            snap = self._snapshot(job_id)
+            snap = self._snapshot_soon(job_id) if soon else self._snapshot(job_id)
         except Exception as exc:                 # noqa: BLE001 —— 读不回来就说读不回来
             traceback.print_exc()
             raw = "%s: %s" % (type(exc).__name__, exc)
             return pauses, {}, LIVE_STATE_UNREADABLE_SAY % raw
+        if snap is None:                         # 「不等」那一条：有人在写 ⇒ 这一次不读
+            return pauses, {}, LIVE_BUSY_SAY
         return pauses, dict(getattr(snap, "values", None) or {}), ""
 
     def runs(self) -> dict:
@@ -2566,17 +2968,33 @@ class Service:
         self._start_window_probe()
         # 目录表第 3 行：先记「收到」，再（前面有东西时）记「排队等窗口」。
         # ⚠️ **先说后交**是有意的：交给队列之后工作线程可能立刻喊「在跑」，顺序就反了。
-        self.narrate(job, "submitted", SUBMITTED_SAY)
+        self.narrate(job, "submitted", self._submitted_say(body))
         if self._something_is_ahead():
             self.narrate(job, "queued", QUEUED_SAY)
         self._submit(job, self._payload(brief))
         return self._view(job_id)
 
     @staticmethod
+    def _submitted_say(body: RunRequest) -> str:
+        """交上去的那一刻那句话（目录表第 3 行）。
+
+        ⚠️ `/again` 起的那一趟要说清**它是重来**：不说的那一屏，第一句与一趟全新的跑
+        长得一模一样 —— 而「你说的话我记着」正是那个按钮唯一的承诺（计划 Task 8）。
+        """
+        if body.again_from:
+            return AGAIN_SUBMITTED_SAY % (body.again_from, len(body.hints or []))
+        return SUBMITTED_SAY
+
+    @staticmethod
     def _payload(brief: dict) -> dict:
-        """开场白 → 图认得的那几个键（服务这一层的开关，比如 `set_viewport`，不往里塞）。"""
+        """开场白 → 图认得的那几个键（服务这一层的开关，比如 `set_viewport`，不往里塞）。
+
+        ⚠️ `hints` 进得来、`again_from` 不进：前者是**图的状态**（`state.hints`，一路带进
+        draft），后者是**服务自己的一句话**（「这是从哪一趟重来的」）—— 图不需要知道它的上一世。
+        """
         keep = ("url", "goal", "mode", "success_text", "evidence", "site", "ws_url",
-                "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url")
+                "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url",
+                "hints")
         return {k: brief[k] for k in keep if k in brief}
 
     def reply(self, job_id: str, body: ReplyRequest) -> dict:
@@ -2616,6 +3034,193 @@ class Service:
         self._note_human_said(job, job_id, body)
         self._submit(job, Command(resume={"action": body.action, "note": body.note}))
         return self._view(job_id)
+
+    # ── Task 8：人在回路（`/say` `/stop` `/again`）──────────────────────────
+    # ⚠️ 这三个都**不替人往前走一步**（Global Constraints 的原话：「服务可以替人「停」，
+    #    绝不替人「走」」）。`/say` 只**记下来**（到下一道闸进输入框，人按按钮才发）；
+    #    `/stop` 是**阻止**那一半授权；`/again` 起的是**新的一趟**（不是替人回答什么问题）。
+
+    def say(self, job_id: str, text: str) -> dict:
+        """`POST /job/{id}/say` —— 人说了一句（设计注 §4.2）。
+
+        它**永远不替人往前走一步**：这一句只是记进 `Job.inbox`，到下一道闸进输入框，
+        **人按按钮才发**。为什么不在闸上直接当 note 送下去（那本来是 §4.2 第一行说的）：
+        那正是「替人走一步」—— 送下去 = 图被 resume = 一步在没人看着的情况下跑掉了。
+        要送，人按闸上那个按钮（页面在闸上走的是 `/reply`，那是他**自己**按的）。
+
+        `202`：这句话被**收下**了，但它还没送到它手上（送到了才叫 delivered）。
+        ⚠️ `queued` / `delivered` 那两格由 `say_route` 那个纯函数定（R1）—— 今天恒 `queued`。
+        """
+        job = self._jobs.get(job_id) or self._recover(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        text = str(text or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail=SAY_EMPTY_SAY)
+        kept, cut = _cut_say(text)
+        view = self._view(job_id)
+        status = view["status"]
+        if status in (DONE, FAILED):
+            raise HTTPException(status_code=409, detail=SAY_OVER_SAY % self._status_say(status))
+        stage = self._stage_now(job, job_id, status)[0]
+        route = say_route(status, stage, steer=STEER_WIRED)
+        if route == SAY_DELIVERED:
+            # **今天到不了这一支**：`STEER_WIRED` 写死 `False`（那条通道是 Task 9 的，R1）。
+            # 真走到了（有人把开关打开、却没接通道）**不许静默排队** —— 那正是
+            # 「说了没送到」比不做更坏：回一句实话，而不是把话咽下去还说「送到了」。
+            raise HTTPException(status_code=503, detail=SAY_STEER_UNWIRED_SAY)
+        with job.lock:
+            job.inbox.append({"text": kept,
+                              "at": datetime.datetime.now().astimezone()
+                                    .isoformat(timespec="seconds"),
+                              "delivered": False})
+            n = len([x for x in job.inbox if not x.get("delivered")])
+        say = self._queued_say(view, stage, n)
+        if cut:
+            say += "\n" + (SAY_CUT_SAY % (len(text), len(kept)))
+        # 时间线上记的是**人自己那句话**（逐字转抄，只有超长那一截不带 —— 而且说了）
+        self.narrate(job, "human_said", "%s\n%s" % (kept, say), who="you",
+                     text=kept, route=route, n=n, cut=cut)
+        return {SAY_QUEUED: True, SAY_DELIVERED: False, "n": n, "say": say}
+
+    def _queued_say(self, view: dict, stage: str, n: int) -> str:
+        """「这句话排着了」那句人话（**两种处境两句不同的话**，不许拿一句盖两件事）。"""
+        if view["status"] == WAITING:
+            step = str((view.get("gate") or {}).get("step") or "")
+            say = SAY_QUEUED_AT_GATE_SAY % STEP_SAY.get(step, step or UNKNOWN_STEP_SAY)
+        else:
+            say = SAY_QUEUED_SAY % self._where_it_is_say(view["status"], stage)
+        if n > 1:
+            say += "\n" + (SAY_QUEUE_LENGTH_SAY % n)
+        return say
+
+    def _where_it_is_say(self, status: str, stage: str) -> str:
+        """它**现在在哪儿**（一句人话）—— 给上面那两句当宾语。说不准就说不准，不编。"""
+        if status == QUEUED:
+            return "还在排队等窗口"
+        if status == RUNNING:
+            if stage:
+                return "在跑（%s）" % STEP_SAY.get(stage, stage)
+            return "正在跑（这一刻说不准是哪一个节点）"
+        return self._status_say(status)
+
+    def stop(self, job_id: str) -> dict:
+        """`POST /job/{id}/stop` —— 「停下，我要说一句」（设计注 §四.1 + R2）。
+
+        矩阵四行，落在四个地方（每一条都**说出来**，而且**都不推进任何一步**）：
+          ① 已经在闸上 → **立刻**：把 `{"action": "stop"}` 交下去（这一步**不做**）；
+          ② 探路里跑 → **几秒内**：`stop_requested` 就是探路 `should_pause` 读的那一格；
+          ③ 别的节点里跑 → **跑完这一步**，停在下一个闸口（那个闸口本来就在等人）；
+          ④ 还没轮到窗口（`queued`）→ 它一动就会先停在第一道闸上（R2：**不编节点名**）。
+        ⚠️ 只有 ① 会推图，而推下去的是**「停」**（不是「继续」）—— 那是这一片唯一的让步。
+        """
+        job = self._jobs.get(job_id) or self._recover(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        view = self._view(job_id)
+        status = view["status"]
+        if status in (DONE, FAILED):
+            raise HTTPException(status_code=409, detail=STOP_OVER_SAY % self._status_say(status))
+        held = self._has_queued_words(job)
+        if status == WAITING:
+            # 矩阵第 3 行：**立刻**（== `reply {"action":"stop"}`）—— 「停」是阻止，不是推进，
+            # 所以这一条**不替人往前走**：它让这一步**不发生**。
+            step = str((view.get("gate") or {}).get("step") or "")
+            plan = stop_plan(status, step, held_words=held)
+            with job.lock:
+                job.stop_requested = True
+                job.stop_where = plan["where"]
+                job.stop_say = plan["will_stop_at"]
+                job.status = RUNNING
+                job.say = STOP_AT_GATE_SAY
+            self._note_human_stop(job, plan)
+            self._submit(job, Command(resume={"action": "stop", "note": ""}))
+            return {"stop": {"requested": True, "where": plan["where"],
+                             "will_stop_at": plan["will_stop_at"],
+                             "say": plan["will_stop_at"]}}
+        stage = self._stage_now(job, job_id, status)[0]
+        plan = stop_plan(status, stage, held_words=held)
+        with job.lock:
+            job.stop_requested = True
+            job.stop_where = plan["where"]
+            job.stop_say = plan["will_stop_at"]
+        self._note_human_stop(job, plan)
+        return {"stop": {"requested": True, "where": plan["where"],
+                         "will_stop_at": plan["will_stop_at"],
+                         "say": plan["will_stop_at"]}}
+
+    @staticmethod
+    def _has_queued_words(job: Job) -> bool:
+        """队里还有没有**没送出去**的话（只影响那句人话要不要提它一句）。"""
+        with job.lock:
+            return any(not x.get("delivered") for x in job.inbox)
+
+    def _note_human_stop(self, job: Job, plan: dict) -> None:
+        """按「停」那一刻的那条时间线（`who="you"`：这是人打过的一次回）。
+
+        ⚠️ 与 `_note_human_said` **分开**：那一句说的是「你在闸上按了继续」（`reply` 那条路），
+        照抄过来会说成「按了继续」—— 那是**假话**（人按的是停）。
+        """
+        self.narrate(job, "human_said", "你按了「停」：%s" % plan["will_stop_at"],
+                     who="you", where=str(plan["where"] or ""))
+
+    def again(self, job_id: str) -> dict:
+        """`POST /job/{id}/again` —— 「重新来一遍」（设计注 §4.3 的那条替代品）。
+
+        它**不是**「从断点接着走」（那一版不做，理由在 §4.3：探路一停下账本就缺了，
+        「接着走」等于「重探一遍」，只是多一套状态）。这一条是：**同一份开场白 +
+        你说过的话**，新起一趟（新 job、新时间线）。
+
+        ⚠️ 起新 job 走的是 **`Service.start()` 那条路**（R6）—— **别另写一条起跑路径**：
+        排队、记 `submitted`、拼图、起窗口探针那边全做过一遍了，两条路就是两份口径。
+        """
+        job = self._jobs.get(job_id) or self._recover(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        view = self._view(job_id)
+        if view["status"] not in (DONE, FAILED):
+            # ⚠️ 这一条**是本片自己拍的**（计划与裁定都没写）：页面上那个按钮只在 `over` 时
+            #    露头，而「重来」对着一趟**正在动**的 run 说不通 —— 两趟会在同一个窗口上互相踩。
+            raise HTTPException(status_code=409,
+                                detail=AGAIN_RUNNING_SAY % self._status_say(view["status"]))
+        words, unreadable = self._words_the_human_said(job, job_id)
+        if unreadable:
+            # 读不回旧那一趟在闸上说过的话 —— **不许静默少带一半**（R5 的代价那栏）
+            self.narrate(job, "state_unreadable", AGAIN_WORDS_UNREADABLE_SAY % unreadable,
+                         error=unreadable)
+        given = {k: v for k, v in job.brief.items() if k in RunRequest.model_fields}
+        given.update({"hints": words or None, "again_from": job_id})
+        try:
+            out = self.start(RunRequest(**given))
+        except HTTPException as exc:
+            # 新那一趟**没起得来**：他按的那一下也要留一笔（否则这一屏上什么都没发生）
+            self.narrate(job, "human_said", AGAIN_FAILED_SAY % exc.detail, who="you")
+            raise
+        new_id = str(out["job_id"])
+        self.narrate(job, "human_said", AGAIN_PRESSED_SAY % (new_id, len(words)), who="you")
+        return {"job_id": new_id, "say": AGAIN_SAY % (new_id, job_id, len(words))}
+
+    def _words_the_human_said(self, job: Job, job_id: str) -> tuple:
+        """`/again` 要带过去的话（R5）：**两个来源都带**，各按自己的顺序，闸上的在前。
+
+        ① checkpoint 的 `hints`：在闸上**真说过的**（`graph._enter` 一路攒下来的）；
+        ② `Job.inbox` 里**还没送出去的**：说了、但还没到它手上（§4.1 第一行承诺的
+           「你说的话我记着」就是这一批）。
+        返回 `(话, 读不回来的原因或空串)` —— 读不回来时**不许静默少带一半**（R5 的代价）。
+        """
+        words: list = []
+        unreadable = ""
+        try:
+            values = dict(getattr(self._snapshot(job_id), "values", None) or {})
+            words.extend(str(x) for x in (values.get("hints") or []))
+        except Exception as exc:               # noqa: BLE001 —— 说得出就说，说不出来就明说
+            traceback.print_exc()
+            unreadable = "%s: %s" % (type(exc).__name__, exc)
+        with job.lock:
+            words.extend(str(x.get("text") or "") for x in job.inbox
+                         if not x.get("delivered"))
+        return [w for w in words if w.strip()], unreadable
+
 
     def reopen(self, job_id: str, body: ReopenRequest) -> dict:
         """窗口没了 → 换一个新窗口，**从 checkpoint 接着跑**（P6）。
@@ -3013,6 +3618,41 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
     def reply(job_id: str, body: ReplyRequest) -> dict:
         try:
             return svc.reply(job_id, body)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="没这个任务：%s。" % job_id)
+
+    @api.post("/job/{job_id}/say", status_code=202)
+    def say(job_id: str, body: SayRequest) -> dict:
+        """人说了一句（Task 8）：`{"text": "…"}` → `{queued|delivered, n, say}`。
+
+        `202`：这句话**收下了**，但还没送到它手上（送到了才叫 `delivered`）——
+        **它绝不替人往前走一步**（到下一道闸进输入框，人按按钮才发）。
+        """
+        try:
+            return svc.say(job_id, body.text)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="没这个任务：%s。" % job_id)
+
+    @api.post("/job/{job_id}/stop")
+    def stop(job_id: str) -> dict:
+        """「停下，我要说一句」（Task 8）→ `{stop: {requested, where, will_stop_at, say}}`。
+
+        `will_stop_at` 是**服务说它落在哪**的那句人话（页面把它摆在按钮底下，不自己编）。
+        """
+        try:
+            return svc.stop(job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="没这个任务：%s。" % job_id)
+
+    @api.post("/job/{job_id}/again", status_code=202)
+    def again(job_id: str) -> dict:
+        """「重新来一遍」（Task 8）→ `{job_id, say}`：**新的一趟**（同一份开场白 + 你说过的话）。
+
+        `202`：与 `/run` 同一个语义（活交下去了、在排队）—— 两个端点做同一件事，
+        就该有同一种答复。
+        """
+        try:
+            return svc.again(job_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="没这个任务：%s。" % job_id)
 
