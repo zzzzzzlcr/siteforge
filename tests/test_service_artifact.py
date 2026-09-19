@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import pathlib
+import re
 import sys
 
 import pytest
@@ -121,7 +122,7 @@ def _factory(*, reason=END_DELIVERED, note="写好了：这一版跑通了。", 
             if write and record_src:
                 #: 真图写盘那句是 `path.write_text(src, encoding="utf-8")`，而 `src` 也进
                 #: state（`out.update({"src": src})`）—— 所以「这一趟写下的那串字节」
-                #: 在 checkpoint 里查得到（指纹就是拿它算的，见 `_run_wrote`）。
+                #: 在 checkpoint 里查得到（**端出去的就是它**，见 `_recorded_bytes`）。
                 values["src"] = body_.decode("utf-8")
         values.update(extra or {})
         return FakeGraph(steps=[_Snap(values=values)])
@@ -305,6 +306,71 @@ def test_a_run_that_died_says_it_died_instead_of_pretending_it_never_wrote(tmp_p
     #    ⇒ 话说的是「**记录里**没有它写下 py 的证据」（可查的），不是「它没走到那一步」（猜的）。
     assert "记录里" in detail, "那句话没说是**记录里**有什么（说的是服务不知道的事）：%r" % detail
     assert "没跑到" not in detail, "又断言了服务不知道的因果（「没跑到那一步」）：%r" % detail
+    # ⚠️ **同一句假话在另一个出口里也说过**（复审 R1′：`_advance` 自己那道 except，
+    #    `service.py:3206`）—— 那条路**到不了**产物这一格（它走的是 `view["say"]`），
+    #    所以只钉产物那句是钉不住的。这里直接钉**跑挂那句话本身**。
+    assert "不会有它写的 py" not in str(view.get("say") or ""), \
+        "跑挂那句话又断言了它不知道的事（`_advance` 那道 except 里的那句）：%r" % view["say"]
+    assert "没有交付任何东西" not in str(view.get("say") or ""), view["say"]
+
+
+def test_a_delivered_run_whose_writes_did_not_land_still_gets_its_bytes_out(tmp_path):
+    """**R1′ 的那一格**（复审 E3c）：交付**写盘成功**、可**那一笔账没落**（saver 抖了）⇒
+    登记表说 failed，而产物**在记录里、也在盘上** —— 字节照样交得出去，且那句话不许说
+    「**产物目录里不会有它写的 py**」（文件 116404 字节就躺在那儿，那是假话）。
+
+    复现的是 `_advance` 自己那道 `except`（`:3201` 包着 `invoke`）：把 `invoke` 换成一抛，
+    而快照（= 记录）**已经是交付过的**那一份 —— 这正是「写盘成功、那一笔没落」的形状。
+    """
+    written = "# 交付写盘成功，账却没落\nBODY = 1\n"
+    py = _out_dir(tmp_path) / ("%s.py" % SITE)
+    py.parent.mkdir(parents=True, exist_ok=True)
+    py.write_text(written, encoding="utf-8")
+    g = FakeGraph(steps=[], raise_on=[1])          # 那一步抛（等价于「那一笔没落」）
+    g.state = _Snap(values={                        # 记录：**交付过**（写也落了）
+        "site": SITE, "visits": ["intake", "deliver"], "out_dir": str(_out_dir(tmp_path)),
+        "end_reason": END_DELIVERED, "end_note": "写好了：这一版跑通了。",
+        "py_path": str(py), "src": written})
+    client = _client(tmp_path, lambda brief, deps: g)
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    view = _wait(client, job_id, until=("failed", "done"))
+    assert view["status"] == "failed", view
+    assert py.is_file(), "桩没造对：交付的那个 py 应该在盘上"
+
+    r = client.get("/job/%s/artifact" % job_id)
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert r.content == written.encode("utf-8"), "交付过的那一趟被当成了「没有产物」"
+    said = str(view.get("say") or "")
+    assert "不会有它写的 py" not in said, \
+        "盘上那份 116404 字节就躺在那儿，而这句话说「不会有它写的 py」：%r" % said
+    assert "没有交付任何东西" not in said, said
+    assert "看它自己的记录" in said, "那句话没把运营指向**记录**：%r" % said
+
+
+def test_the_download_name_is_sanitised_even_when_the_record_is_nasty(tmp_path):
+    """记录里那个文件名**再脏也不许进头字段**（复审 A3：这一档**零守**，M12 ⇒ 0 红）。
+
+    `Content-Disposition` 是个**头字段**：名字里一个换行就是**头注入**，
+    而那个名字来自**这一趟的记录**（`py_path` 的末一段）—— 记录里会出现什么，服务说了不算。
+    这一条要三件事：① 头里出现的是**洗过的**名字（只留 `[A-Za-z0-9._-]`，≤64 字）；
+    ② 头里**没有** CR/LF、也没有多出来的双引号；③ 页面那一格的 `filename` 与头里那个**同一个**。
+    """
+    nasty = _out_dir(tmp_path) / 'bad"name\r\nX-Injected: 1.py'
+    client = _client(tmp_path, _factory(path=nasty))
+    job_id, _ = _run_to_the_end(client, tmp_path)
+    assert nasty.is_file(), "桩没造对：这个（很脏的）文件名在 ext4 上是合法的"
+
+    r = client.get("/job/%s/artifact" % job_id)
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert r.content == _py_bytes(SITE), "字节不该受名字影响"
+    got = r.headers["content-disposition"]
+    assert got.startswith('attachment; filename="') and got.endswith('"'), got
+    name = got[len('attachment; filename="'):-1]
+    assert re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name), "名字没洗干净：%r" % name
+    assert got.count('"') == 2, "名字里带的引号跑进头里了（头字段被截断/注入）：%r" % got
+    assert "\r" not in got and "\n" not in got, "头字段里出现了换行（头注入）：%r" % got
+    assert _live(client, job_id)["artifact"]["filename"] == name, \
+        "页面那一格说的下载名与头里那个不是同一个"
 
 
 def test_a_run_that_has_not_reached_the_writing_step_says_it_is_still_coming(tmp_path):
@@ -349,6 +415,13 @@ def test_a_delivered_run_whose_file_vanished_still_hands_over_its_own_bytes(tmp_
     assert cell["url"] and cell["path"] == str(on_disk), cell
     assert "没有这个文件" in cell["say"], "盘上那一份没了没说：%r" % cell["say"]
     assert "没有产出" not in cell["say"], "「产出过、后来没了」被说成了「没有产出」：%r" % cell["say"]
+    # ⚠️ **反向打架**（复审 A4）：这一档 `delivered` 是 **False** ⇒ 同一屏的顶栏会写
+    #    「· **没交付**」，而这一格**能下**。两格按定义都对（一个说盘上那份在不在、
+    #    一个说这一趟写下的那串拿不拿得到），但页面上那两个字得有人解释一句。
+    assert _live(client, job_id)["delivered"] is False, \
+        "前提变了：盘上那份没了之后 `delivered` 还是 True（那这条就不是那一格了）"
+    assert "不是「这一趟没交出去」" in cell["say"], \
+        "同屏那两个字（「没交付」）与「能下」并排摆着，却一个字都没解释：%r" % cell["say"]
 
 
 # ══════════════ 3. ★ 安全边界：路径只来自这一趟的记录 ══════════════
