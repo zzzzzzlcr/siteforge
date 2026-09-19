@@ -58,7 +58,7 @@ import traceback
 import urllib.error
 import urllib.request
 import uuid
-from typing import Any, Callable, ClassVar, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -338,6 +338,11 @@ SAY_CUT_SAY = "你这句话有 %d 字，只留下前 %d 字 —— 被切掉的�
 #: 在两个出口说，说的就该是同一种话。
 UNWRITABLE_BYTES_SAY = ("（这条里有 %d 个字节**线上写不出来**（孤立代理对，多半是从别处粘来的）"
                         "—— 已按 `�` 记，不是它本来长这样。）")
+#: `brief` 里那个**只给服务自己用**的键：`expects` **逐项**换了几个（`Service.start` 写、
+#: `_note_step` 读）。为什么得走这一趟：`expects` 只在 `brief` 里活着，而**判那一步的**
+#: 那一层（`_note_step`）在图上跑，门口换掉之后它手上只剩换好的值 —— 不说个数就没人说了。
+#: ⚠️ 它是**服务内部**的键，不在契约里，也不往下发给图（`_payload` 的 keep 清单里没有它）。
+EXPECTS_UNWRITABLE = "expects_unwritable"
 #: 直达那一句（`say_route` 说这句话会直达它的下一轮）
 SAY_DELIVERED_SAY = "这句话**直达**它的下一轮了（它正在探路里跑）。"
 #: 真的把它交出去那一刻，时间线上那条（设计注 §4.2 的**原话**「已经交给它了」）。
@@ -908,6 +913,14 @@ class _Intake(BaseModel):
     新加一个字段、新加一个载荷模型，**一个字节都不用记得** ——
     `tests/test_service_intake.py` 那条机器守会把每个模型的每个文本字段都塞一个坏字节量一遍。
 
+    ⚠️ **21 个文本字段一个都不例外**（修复轮 1 把 `expects` 那个例外去掉了）：要让一个字段
+    例外，得先证明「它没有任何直通响应的出口」—— 而那句话当时就**不成立**
+    （`expects` 进 `/live` 的 `data.expect`，既有断言 `tests/test_service_steps.py:457`
+    一直在量它），真实情况只是「它唯一那个出口自己有一道消毒的缝」；而那道缝在
+    `text_appears` 那一支**不报数**（换了字节一声不吭）—— 例外身上于是挂着一条**静默路径**。
+    现在门口照换，个数**跟着载荷走到判那一步的那句话里**说（见 `RunRequest` 与 `_note_step`）
+    ⇒ 例外不需要了，机器守也就不必再留一个「例外表」的口子。
+
     ⚠️ **同一台机器**：用的就是 `events.safe_value`（那个模块里最有资格管这件事的那一个）——
     别在别处再造一台（`browser_agent._utf8_safe` 也只是给它加了一句「换了几个」）。
 
@@ -923,14 +936,11 @@ class _Intake(BaseModel):
     #: 换掉了几个字节（0 = 原样收下的）。**不上线**：它是给端点说人话用的，不是载荷的字段。
     _unwritable: int = PrivateAttr(default=0)
 
-    #: **不在入口换**的字段名（默认空；哪个载荷模型要就自己点名）—— 它们在**自己那个出口**
-    #: 转抄的那一刻消毒并**报数**（`_note_step` 那句注释与 `Service.narrate` 是同一台机器）。
-    #: 在入口先换掉的话，那两处就**没得报**，而「你这几个字节写不出来、已按 `�` 记」
-    #: 正是读那句话的人要知道的事。
-    #: ⚠️ 能进这一格的**唯一条件**：这个字段**没有任何直通响应的出口**
-    #: （不进 state / `/live` / `/job/{id}` / 盘）—— 漏一个字节就是一次 500。
-    #: ⚠️ 今天只有 `RunRequest.expects` 一个，理由写在那边的定义上。
-    SANITISED_AT_ITS_OWN_SEAM: ClassVar[tuple] = ()
+    #: **列表形状**那几格逐项的个数（`{字段名: [第 1 项换了几个, 第 2 项…]}`；只记真换过的格）。
+    #: 为什么要有它：`expects` 的定义是「第 i 项 = 第 i 步的期望」（契约 §四），
+    #: 于是「第 3 步那条里有坏字节」与「第 1 步那条有」**不是同一句话** —— 说给判那一步的人
+    #: 听的那句人话只能报**那一步**这个数（多报一个与少报一个一样是假话）。
+    _unwritable_items: dict = PrivateAttr(default_factory=dict)
 
     @model_validator(mode="after")
     def _sanitise_the_intake(self):
@@ -938,20 +948,29 @@ class _Intake(BaseModel):
 
         逐格走 `model_dump(exclude_none=True)`：**同一个映射**，所以「有哪些格」这件事
         不需要在这里再列一遍（列一遍就是第二份清单，迟早与模型对不上）——
-        点名的那些格例外（`SANITISED_AT_ITS_OWN_SEAM`），而且**个数只算真换掉的那些**
-        （多报一个与少报一个一样是假话）。
+        而且**个数只算真换掉的那些**（多报一个与少报一个一样是假话）。
+        ⚠️ **一个字段都不例外**（修复轮 1 把 `expects` 那个例外去掉了，理由见类 docstring）：
+        例外那一格当年的处境是「唯一出口自己有一道缝」，而缝里那条分支**不报数**。
+        列表形状的格子**逐项**数（`_unwritable_items`），理由见那个私有格。
         """
-        own = set(self.SANITISED_AT_ITS_OWN_SEAM)
-        replaced, safe = 0, {}
+        replaced, safe, items = 0, {}, {}
         for key, value in self.model_dump(exclude_none=True).items():
-            fixed, n = events.safe_value(value)          # 点名的那些照收不换（它们自己会报数）
-            replaced += 0 if key in own else n
-            safe[key] = value if key in own else fixed
+            if isinstance(value, list):
+                one_by_one = [events.safe_value(item) for item in value]
+                fixed, counts = [f for f, _ in one_by_one], [n for _, n in one_by_one]
+                n = sum(counts)
+                if n:
+                    items[key] = counts
+            else:
+                fixed, n = events.safe_value(value)
+            replaced += n
+            safe[key] = fixed
         if not replaced:
             return self
         for key, value in safe.items():
             object.__setattr__(self, key, value)         # 绕过赋值校验：换过的值仍然合形状
         self._unwritable = replaced
+        self._unwritable_items = items
         return self
 
     def unwritable_say(self) -> str:
@@ -960,6 +979,15 @@ class _Intake(BaseModel):
         ⇒ 端点那一行永远是 `say += body.unwritable_say()` 一句，没有分支可写错。
         """
         return ("\n" + UNWRITABLE_BYTES_SAY % self._unwritable) if self._unwritable else ""
+
+    def unwritable_items(self, field: str) -> tuple:
+        """`field` 这一格**逐项**换了几个（列表形状；没换过的项是 0，没换过这一格 = 空）。
+
+        ⚠️ 只给「个数要跟着载荷走到**别处**去说」的格子用（今天只有 `RunRequest.expects`
+        —— 判那一步的是 `_note_step`，它在图上跑，手里只有 `brief`）。
+        端点自己那句人话照旧用 `unwritable_say()`（总数）。
+        """
+        return tuple(self._unwritable_items.get(field) or ())
 
 
 class RunRequest(_Intake):
@@ -971,15 +999,15 @@ class RunRequest(_Intake):
     """
 
     #: `expects` 是**唯一**一个「只活在 `job.brief` 里」的载荷字段（`_payload` 不往下发、
-    #: `graph.py` 里一个字都不提它）—— 它的两个读者各自在**转抄那一刻**消毒**并报数**：
-    #: `judge_step` 那句话（走 `Service.narrate`）与 `_note_step` 的 `expect` 格
-    #: （`events.safe_value`）。在入口先换掉，那两处就**没得报** ——
-    #: 而「你写的那条期望里少了几个字节」正是判那一步的人最该看到的那句话
-    #: （`tests/test_service_steps.py::test_a_receipt_with_unwritable_bytes_…` 的 ④
-    #: 钉的就是它，那条既有断言**一个字没动**）。
-    #: ⚠️ 它也**没有**直通响应的出口：不进 state、不进 `/live`、不进 `/job/{id}`、不进盘
-    #: —— 这正是它能被点名留在原样的唯一理由（见 `_Intake.SANITISED_AT_ITS_OWN_SEAM`）。
-    SANITISED_AT_ITS_OWN_SEAM: ClassVar[tuple] = ("expects",)
+    #: `graph.py` / `state.py` 里一个字都不提它）。
+    #: ⚠️ **它照样在门口换**（修复轮 1 把补丁 A 给它点的那个例外去掉了）——
+    #: 当年点名它的理由是「它**没有**直通响应的出口」，**那句是错的**：它进 `/live` 的
+    #: `data.expect`（`_note_step` 那一格），既有断言 `tests/test_service_steps.py:457`
+    #: 一直在量它。真实情况只是「它那个出口自己有一道消毒的缝」，而那道缝在 `text_appears`
+    #: 这一支**不报数**（裁判话是固定的一句、不引期望原文）—— 例外身上于是挂了一条
+    #: **静默路径**，与「没有静默的路径」这条全局约束直接冲突（复审 2026-09-19 实测）。
+    #: 现在：门口换 + 逐项的个数**跟着载荷走**（`brief[EXPECTS_UNWRITABLE]`）到判那一步的
+    #: 那句话里说（`_note_step`）—— 于是例外不需要了，而既有那条断言 ④ 一个字没动。
 
     url: str = Field("", description="站点 URL")
     goal: str = Field("", description="人给的意图：要摸清什么 / 什么算完成")
@@ -2333,6 +2361,9 @@ class Service:
         （今天病根是「判断和执行是同一方」）。
         """
         expects = list(brief.get("expects") or [])
+        #: 「第 i 项换了几个」（门口数好的，见 `EXPECTS_UNWRITABLE`）—— 与 `expects` 一起
+        #: 在**建这根线的时候**取一次：判每一步时手上要有的就是这两样。
+        expects_unwritable = tuple(brief.get(EXPECTS_UNWRITABLE) or ())
         broken = broken if broken is not None else []
 
         def tell(step: dict) -> None:
@@ -2349,7 +2380,7 @@ class Service:
                     broken.append("第 %s 步没记上（job %s 不在登记表里）"
                                   % (step.get("step_no"), job_id))
                 return
-            self._note_step(job, step, expects)
+            self._note_step(job, step, expects, expects_unwritable)
 
         return tell
 
@@ -2412,8 +2443,14 @@ class Service:
 
         return tell
 
-    def _note_step(self, job: Job, step: dict, expects: list) -> None:
+    def _note_step(self, job: Job, step: dict, expects: list,
+                   expects_unwritable: tuple) -> None:
         """一条探路的步 → 时间线那两条事件（见 `_step_teller` 的表）。
+
+        `expects_unwritable`：**第 i 项**换了几个字节（门口数的，`EXPECTS_UNWRITABLE`）——
+        ⚠️ **不给默认值**：漏了它 = 那一步「换了字节却不说」（静默路径），
+        而漏一个参数是**当场炸**、不是悄悄少说一句话（后者正是这条线要治的病）。
+
 
         **前五格一个字都不动**（脚本写什么就是什么，这一层只转抄）—— 除了一件事：
         缺席与 `None` 是两件事，而 `Timeline` 要求「写了 `None` 就得配一句 `why`」。
@@ -2448,11 +2485,22 @@ class Service:
             expect=expect, expect_present=present)
         judged = {"verdict": verdict}
         if present:
-            # 运营写的字也是**外面来的**：写不出去的码位在这儿换掉（不换的话 `_facts`
-            # 那道闸会**整条拒掉**这一条事件 —— 而丢记录比换一个字节坏得多）。
+            # 运营写的字也是**外面来的**：门口（`_Intake`）已经换过了 —— 这儿再换一次是
+            # **幂等**的（换过的值再换一遍数出来是 0），留着它的用处是：这一格进 `data`，
+            # 而 `_facts` 那道闸拒的是**写代码的人**的编程错误，不该由它兜外面来的字。
             judged["expect"] = events.safe_value(expect)[0]
         if isinstance(step_no, int):
             judged["step_no"] = step_no
+        # ⚠️ **这条期望里换了几个字节，要说在判这一步的这句话里**（修复轮 1）：
+        # 门口换掉之后 `judge_step` 那句人话里已经没有坏字节了 ⇒ `narrate` 的外壳**没得报**；
+        # 而 `text_appears` 那一支的裁判话是**固定的一句**（`_meets` 不引期望原文），
+        # 从前那道缝换掉时**一声不吭** —— 这条静默路径就是这么来的。
+        # 个数是**逐项**带上来的：说的是**这一步**这一条，不是整张表（多报一个是假话）。
+        replaced = (expects_unwritable[step_no - 1]
+                    if present and isinstance(step_no, int)
+                    and 1 <= step_no <= len(expects_unwritable) else 0)
+        if replaced:
+            verdict_say += "\n" + (UNWRITABLE_BYTES_SAY % replaced)
         self.narrate(job, "step", verdict_say, **judged)
 
     def _where_it_stopped(self, job_id: str, snap=None) -> tuple:
@@ -3283,6 +3331,10 @@ class Service:
         brief = body.model_dump(exclude_none=True)
         brief.setdefault("out_dir", self._out_dir)
         brief["success_text"] = body.success_text
+        # ⚠️ `expects` 也在门口换了（修复轮 1），所以「第几项换了几个」要**跟着这条载荷走**：
+        # 判那一步的是 `_note_step`（在图上跑），门口换掉之后它手上只剩换好的值
+        # —— 不把个数带过去，那条静默路径就又回来了。
+        brief[EXPECTS_UNWRITABLE] = list(body.unwritable_items("expects"))
         self._clean_window_for_explore(brief)     # R-F1 的另一半：**探路也要干净会话**
         job_id = "job-%s" % uuid.uuid4().hex[:12]
         job = Job(job_id=job_id, brief=brief, status=QUEUED, say=SUBMITTED_SAY,

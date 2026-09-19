@@ -280,24 +280,26 @@ def test_the_notes_list_has_exactly_one_write_entry(tmp_path):
         "`Journey.note` 这个写入口不见了（整台消毒机器就没了）：%r" % (writes,))
 
 
-# ══════════ ④ 那个点名的例外：`POST /run` 的 `expects` ══════════
+# ══════════ ④ `POST /run` 的 `expects`：它只归服务（修复轮 1 起也在门口换）══════════
 
 
 def test_the_expects_exception_is_still_safe_today(tmp_path):
-    """`expects` 是补丁 A 点名**不在门口消毒**的那一格。这一条量的是它的安全性。
+    """`expects` **只活在 `job.brief` 里**（它进不了图、进不了 state、不往下发）。
 
-    它的理由（`RunRequest.SANITISED_AT_ITS_OWN_SEAM` 那段注释）是一句**判断**：
-    「它没有任何直通响应的出口」。这一条把那句判断量出来，而不是接着信它：
+    ⚠️ 这一条原来叫「那个点名例外今天还安全吗」（补丁 A 把它点名成**不在门口消毒**）。
+    **修复轮 1 把那个例外去掉了**（它也走门口的消毒），但那句判断留下的三格**仍然要量**：
+    它们是「期望只归服务」这件事的形状（契约 §四：期望必须来自业务，不能来自执行者）——
+    今天它们仍然是 `expects` 唯一能被机器看见的边界。
 
       - 图收到的那份载荷里没有它（`_payload` 的 keep 清单）；
       - `agent/graph.py` / `agent/state.py` 里一个字都不提它（它进不了 state）；
-      ⇒ 它到不了 `.encode("utf-8")` 那一层，所以门口不消毒**今天**不会 500。
+      ⇒ 它到不了脚本那一侧。
     """
     src = (ROOT / "agent" / "graph.py").read_text(encoding="utf-8")
-    assert "expects" not in src, "`expects` 进了图 —— 「它没有直通出口」那句判断作废了"
+    assert "expects" not in src, "`expects` 进了图 —— 「期望只归服务」这条边界破了"
     state_src = (ROOT / "agent" / "state.py").read_text(encoding="utf-8")
-    assert "expects" not in state_src, "`expects` 进了 state —— 那句判断作废了"
+    assert "expects" not in state_src, "`expects` 进了 state —— 那条边界破了"
 
     keep = service.Service._payload({"url": URL, "goal": "看看", "expects": [{"url_contains": "/x"}]})
     assert "expects" not in keep, (
-        "`_payload` 把 `expects` 往下发了 —— 那句判断作废了：%r" % (sorted(keep),))
+        "`_payload` 把 `expects` 往下发了 —— 那条边界破了：%r" % (sorted(keep),))

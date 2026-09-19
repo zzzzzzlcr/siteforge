@@ -174,8 +174,8 @@ def test_no_payload_entry_can_take_the_console_down(tmp_path):
             body = client.get(path).json()
             assert not _has_lone_surrogate(body), (
                 "%s：`%s` 的正文里还留着线上的坏字节（换了却没说 / 根本没换）" % (label, path))
-        if field in service.RunRequest.SANITISED_AT_ITS_OWN_SEAM:
-            continue        # `expects` 那一路**故意不在入口换**（它自己那两个出口各自报数）
+        # ⚠️ 这一行**不再有例外**（修复轮 1 之前 `expects` 从这儿 `continue` 掉了）：
+        # 它也在门口换，「换了几个」同样要在 `submitted` 那句里说出来。
         submitted = [e for e in live.json()["events"] if e["kind"] == "submitted"]
         assert submitted and (service.UNWRITABLE_BYTES_SAY % 1) in submitted[-1]["say"], (
             "%s：换了字节却不说个数（有损必须说）—— 运营读的那一句在 `submitted` 上：%r"
@@ -242,6 +242,76 @@ def test_a_lone_surrogate_in_reopen_still_goes_through(tmp_path):
         "换掉了就要说：%r" % events[-1]["say"])
 
 
+# ══════ ④ `expects`：门口也换，而个数跟着**判那一步的那句话**走（修复轮 1）══════
+
+
+def _verdict_event(client, job_id, step_no):
+    """时间线上**服务判的那条**（`who=system` 的 `step`），按步号取。"""
+    hit = [e for e in _live(client, job_id)["events"]
+           if e["kind"] == "step" and e["who"] == "system"
+           and e["data"].get("step_no") == step_no and "verdict" in e["data"]]
+    assert hit, "第 %s 步没有裁判那条事件" % step_no
+    return hit[0]
+
+
+def _tell_a_step(client, job_id, step_no, *, action="click"):
+    """走**真的**那根线：`Service._step_teller` → `_note_step` → `judge_step` → `narrate`。
+
+    为什么不直接调 `_note_step`：判那一步的那一层手上得**同时**有载荷（`expects` 与
+    逐项的个数都住在 `brief` 里）和 job，而 `_step_teller` 正是把它们凑到一起的那一跳 ——
+    绕过它，就正好绕过了被测的那件事（**个数有没有跟着载荷走到裁判那句话里**）。
+    """
+    svc = client.app.state.service
+    job = svc._jobs[job_id]
+    tell = svc._step_teller(job.brief, job_id)
+    tell({"step_no": step_no, "action": action, "target": "#go",
+          "receipt": {"ok": True,
+                      "note": "动作已下发（没有报错）。它有没有推进页面，用 diff 比一比才知道"},
+          "sig_before": {"url": URL, "fingerprint": "aaa"},
+          "sig_after": {"url": URL, "fingerprint": "bbb"}})
+
+
+def test_a_bad_byte_in_a_text_appears_expectation_is_said_not_silenced(tmp_path):
+    """`expects` 里那个坏字节：**换了要说**，而且要说在**判这一步的那句话**里。
+
+    复审实测（2026-09-19，`68ddc4f`）：`expects` 被点名「不在门口换」，靠两道缝各自报数
+    —— 可 `text_appears` 那一支的裁判话是**固定的一句**（`_meets` 不引期望原文），
+    壳子于是没得报，`_note_step` 那道缝换掉字节时**一声不吭**。
+    那就成了例外身上唯一的一条静默路径，而「没有静默的路径」是这张单子的全局约束。
+
+    修复轮 1 的做法（复审给的那条两全路）：**门口也换** + 把「这条里换了几个」从门口
+    一路带到裁判那句话里 —— 于是既有断言 ④（`test_service_steps.py` 那条，一个字没动）
+    照样绿，例外本身则**不再需要**。
+    """
+    client, job_id = _gateful(tmp_path, expects=[{"text_appears": SUCCESS + BAD}])
+    _tell_a_step(client, job_id, 1)
+    judged = _verdict_event(client, job_id, 1)
+    assert judged["data"]["expect"] == {"text_appears": SUCCESS + SAFE}, (
+        "`expect` 那一格应当是**换过**的那份：%r" % (judged["data"]["expect"],))
+    assert (service.UNWRITABLE_BYTES_SAY % 1) in judged["say"], (
+        "这条期望里换了字节却一声不吭（静默路径）：%r" % judged["say"])
+    assert client.get("/job/%s/live" % job_id).status_code == 200, "那一屏读不出来"
+
+
+def test_the_count_is_said_on_the_step_whose_expectation_had_it(tmp_path):
+    """个数是**逐项**的：说的是「这一步这一条里有几个」，不是「整张表里有几个」。
+
+    `expects` 的定义就是「第 i 项 = 第 i 步的期望」（契约 §四）——把整张表的个数放在
+    第 1 步那条人话里，读的人会去第 1 步里找一个根本不存在的坏字节：
+    **多报一个与少报一个一样是假话**（`_Intake` 自己那句注释）。
+    """
+    client, job_id = _gateful(
+        tmp_path,
+        expects=[{"url_contains": "/wizard"}, {"text_appears": SUCCESS + BAD}])
+    _tell_a_step(client, job_id, 1)
+    _tell_a_step(client, job_id, 2, action="scroll")
+    one, two = _verdict_event(client, job_id, 1), _verdict_event(client, job_id, 2)
+    assert "写不出来" not in one["say"], (
+        "第 1 步那条期望是干净的，却报了（别处的）个数：%r" % one["say"])
+    assert (service.UNWRITABLE_BYTES_SAY % 1) in two["say"], (
+        "第 2 步那条才是换了字节的那条，它得说：%r" % two["say"])
+
+
 # ═══════════════════ ③ 机器守：每一个载荷模型、每一个字段 ═══════════════════
 
 
@@ -257,11 +327,16 @@ def _payload_models() -> list:
     return sorted(out, key=lambda m: m.__name__)
 
 
-def _bad_value(annotation):
-    """给一个标注造一个**带孤立代理对**的值；不是文本形状的返回 `None`（跳过）。"""
+def _text_shape(annotation):
+    """这个标注是不是**文本形状**（`str` / `list` / `dict`，`Optional` 剥掉）。"""
     args = [a for a in typing.get_args(annotation) if a is not type(None)]
     inner = args[0] if args else annotation
-    origin = typing.get_origin(inner) or inner
+    return typing.get_origin(inner) or inner
+
+
+def _bad_value(annotation):
+    """给一个标注造一个**带孤立代理对**的值；不是文本形状的返回 `None`（跳过）。"""
+    origin = _text_shape(annotation)
     if origin is str:
         return BAD
     if origin is list:
@@ -269,6 +344,48 @@ def _bad_value(annotation):
     if origin is dict:
         return {"k": BAD}
     return None                      # bool / int / 别的：这里不量（它们本来也带不了字节）
+
+
+def _measure_every_payload_model() -> tuple:
+    """那条机器守的**正身**（正控要复用同一份量法）。返回 `(量到的字段数, 一个文本字段都没有的模型名)`。
+
+    `assert values` 曾经在这儿**假红**过一次（复审 2026-09-19 的 G5d）：合法地加一个
+    **只收 bool** 的载荷模型，它会报「一个文本字段都没有？这条守量不到它」——
+    而「量不到」不是错，是这条守的射程。现在那一条换成了它**本来想抓**的那件事：
+    「这个模型**有**文本形状的字段，而 `_bad_value` 一个值都造不出来」= 这条守**瞎了**。
+    """
+    # 底座自己不算「一个载荷模型」（它没有字段 —— 它**就是**那条消毒）
+    models = [m for m in _payload_models() if m is not service._Intake]
+    assert {m.__name__ for m in models} >= {"RunRequest", "ReplyRequest", "SayRequest",
+                                            "ReopenRequest"}, (
+        "载荷模型没找全（这条守会变成量空气）：%r" % [m.__name__ for m in models])
+    measured, no_text_fields = 0, []
+    for model in models:
+        values = {}
+        for name, field in model.model_fields.items():
+            bad = _bad_value(field.annotation)
+            if bad is not None:
+                values[name] = bad
+        if not values:
+            blind = [name for name, f in model.model_fields.items()
+                     if _text_shape(f.annotation) in (str, list, dict)]
+            assert not blind, (
+                "%s 有文本形状的字段 %r，可这条守一个值都造不出来 —— "
+                "**这条守对它是瞎的**（新标注形状没跟上）：%r"
+                % (model.__name__, blind, sorted(model.model_fields)))
+            no_text_fields.append(model.__name__)
+            continue
+        got = model(**values).model_dump(exclude_none=True)
+        for name in values:
+            assert not _has_lone_surrogate(got[name]), (
+                "%s.%s 没过消毒（把线上的坏字节原样收下了）" % (model.__name__, name))
+            measured += 1
+    #: ⚠️ 21 = 今天**全部**文本字段（补丁 A 是 20：`expects` 那个例外在修复轮 1 去掉了，
+    #: 它也进了这一格）。少一个就是这条守开始瞎了 —— 改这个数字要说明**哪一个**不量了、
+    #: 为什么（下限而不是等式：合法地**去掉**一个字段不该在这儿假红）。
+    assert measured >= 21, (
+        "量到的字段数不对（%d，今天应当是 21）—— 这条守多半在量空气" % measured)
+    return measured, tuple(sorted(no_text_fields))
 
 
 def test_every_payload_model_and_every_field_is_sanitised():
@@ -279,39 +396,42 @@ def test_every_payload_model_and_every_field_is_sanitised():
     这条守自己把**每个模型的每个文本字段**都塞一个坏字节进去，量出来的值还写不写得出去
     —— 所以「加了新字段忘了消毒」这件事**当场红**，不靠谁记得。
 
+    ⚠️ **一个字段都不例外**（修复轮 1 把 `expects` 那个点名例外去掉了）：从前那条
+    「例外集只许有 `expects`」的尾巴断言随机制一起去掉了 —— 现在**没有可加的例外**：
+    门口少换一格，下面那条逐格断言就红（改门的人绕不过去，见 `test_service_intake`
+    那两条端到端用例与变异 M3/M8）。
+
     ⚠️ **射程照实写**：它量的是**模型那一步**（构造出来的值干不干净），
     不量「端点有没有把换掉的个数说出来」—— 后者每一处的人话都不一样，
-    由上面那几条端到端的用例钉（每一处一条）。
+    由上面那几条端到端的用例钉（每一处一条；`expects` 那一条在 `_note_step`，
+    由 `…text_appears_expectation_is_said_not_silenced` 与 `…count_is_said_on_the_step…` 钉）。
     """
-    # 底座自己不算「一个载荷模型」（它没有字段 —— 它**就是**那条消毒）
-    models = [m for m in _payload_models() if m is not service._Intake]
-    assert {m.__name__ for m in models} >= {"RunRequest", "ReplyRequest", "SayRequest",
-                                            "ReopenRequest"}, (
-        "载荷模型没找全（这条守会变成量空气）：%r" % [m.__name__ for m in models])
-    measured, skipped = 0, set()
-    for model in models:
-        values = {}
-        for name, field in model.model_fields.items():
-            bad = _bad_value(field.annotation)
-            if bad is not None:
-                values[name] = bad
-        assert values, "%s 一个文本字段都没有？这条守量不到它" % model.__name__
-        got = model(**values).model_dump(exclude_none=True)
-        for name in values:
-            if name in model.SANITISED_AT_ITS_OWN_SEAM:
-                skipped.add("%s.%s" % (model.__name__, name))
-                continue
-            assert not _has_lone_surrogate(got[name]), (
-                "%s.%s 没过消毒（把线上的坏字节原样收下了）" % (model.__name__, name))
-            measured += 1
-    assert measured >= 15, "量到的字段数不对（%d）—— 这条守多半在量空气" % measured
-    # ⚠️ **例外只许有一个**（多一个都要在这儿过一遍，见 `_Intake.SANITISED_AT_ITS_OWN_SEAM`
-    # 那段：能进那格的唯一条件是「这个字段没有任何直通响应的出口」）——
-    # `expects` 那条路自己的两个出口各自消毒+报数，由既有那条端到端用例钉着
-    # （`test_service_steps.py::test_a_receipt_with_unwritable_bytes_…`：本条守改动前后都绿）。
-    assert skipped == {"RunRequest.expects"}, (
-        "入口消毒的例外集变了（%r）—— 加一个例外之前先说清它在**哪个出口**换、在哪报数"
-        % (sorted(skipped),))
+    measured, _ = _measure_every_payload_model()
+    assert measured >= 21, measured        # 下限在正身里也有一条，这里只是把它摆在明面上
+
+
+def test_a_bool_only_payload_model_is_not_a_false_red(tmp_path, monkeypatch):
+    """**正控**：合法地加一个**只收 bool** 的载荷模型 ⇒ 这条守必须**绿**（修复轮 1 / A3）。
+
+    补丁 A 的 `assert values` 在这件事上假红过一次（复审 G5d 实测）——「合法加一格」
+    被拦下来，而拦它的那句话说的其实是「这条守量不到它」。正控量两件事：
+      ① 那个模型**真的被这条守看见了**（不然这次绿是「没收集到」的假绿）；
+      ② 看见之后它落在「没有文本字段」那一档，而不是红。
+    """
+    class FlagOnly(service._Intake):
+        """只收 bool 的载荷模型（合法形状：文本形状的字段一个都没有）。"""
+
+        set_viewport: bool = False
+
+    FlagOnly.__name__ = "FlagOnlyRequest"
+    FlagOnly.__qualname__ = "FlagOnlyRequest"
+    FlagOnly.__module__ = service.__name__          # `_payload_models()` 只收本模块定义的
+    monkeypatch.setattr(service, "FlagOnlyRequest", FlagOnly, raising=False)
+
+    measured, no_text_fields = _measure_every_payload_model()
+    assert "FlagOnlyRequest" in no_text_fields, (
+        "那个 bool-only 模型**没被这条守看见**（这次绿是假的）：%r" % (no_text_fields,))
+    assert measured >= 21, measured
 
 
 def test_the_surrogate_is_really_unwritable_so_the_probe_is_not_vacuous():
