@@ -160,11 +160,14 @@ WINDOW_DEAD_SAY = ("窗口没了 —— Bit 的窗口只活几分钟。它停在
 HUMAN_SAID_THROUGH_SAY = "这句话会一路带进「写这一版 py」。"
 #: 没有 note 的那次「继续」：不能说「这句话带进去了」（没有话）
 HUMAN_SAID_PLAIN_SAY = "（你在「%s」那道闸上按了继续，没有多说。）"
-#: 人**改了口**（修复轮 2 / NEW-1）：摆在他面前的那句，他按下去的是**别的** ——
-#: 它**不再往输入框里摆**（摆了就是请他再送一次他刚改口不要的话），
-#: 但它**还记着**（`/again` 会带上）：改口不等于作废自己说过的话。
-HUMAN_SAID_SUPERSEDED_SAY = ("（你改口了：「%s」不再往输入框里摆 —— 但它还记着，"
-                             "按「重新来一遍」会带上。）")
+#: 有一句不再往输入框里摆了（修复轮 2 / NEW-1）：他这一次按下去的是**别的**。
+#: ⚠️ **不许说「你改口了」**（修复轮 3 / NEW-R2）：服务**不知道他屏幕上画的是哪一句**
+#: （页面预填**不覆盖正在打字的框**，`console.html:661`）—— 他可能压根没看见过这一句
+#: （他按下「说一句」之后、下一次轮询之前又开始打字，那一句就从没上过他的屏）。
+#: 说「你改口了」就是替他编一个他没做过的动作。服务这一侧**真知道**的只有一件事：
+#: 「我本来要摆给你的是这一句」（那一刻 `draft_note` 会给的就是它）。
+HUMAN_SAID_SUPERSEDED_SAY = ("（我本来要摆给你的那句是「%s」，这一次不摆了 —— "
+                             "你刚送下去的是别的；它还记着，按「重新来一遍」会带上。）")
 #: 目录表第 6 行的**闸拍**那一半。`%s` = 拍不成的原因**原文**（不许让空图框冒充页面）
 SHOT_MISSING_SAY = "这一轮没留下图：%s"
 #: 目录表第 6 行的**步拍**那一半（Task 5）里**说得出是哪一步**的那一支
@@ -1141,9 +1144,13 @@ class Job:
     #: 人说过、**还没送到它手上**的话（Task 8 的 `/say` 排队那条路）。每一条至少
     #: `{"text", "at", "delivered", "superseded"}` —— 送到时**改的是同一条**
     #: （不是追加一条新的），Task 9 就是靠 `delivered` 分辨「喂过它没有」。
-    #: `superseded`（修复轮 2 / NEW-1）：这句**摆在他面前过**，而他按下去的是**别的** ——
-    #: 于是它不再进输入框（不再问一次），但**还记着**（`/again` 照带）。两格各说一件事：
-    #: `delivered` = 「到过它手上没有」，`superseded` = 「他还想不想要」。
+    #: ⚠️ 但「没送出去」**不再等于**「该喂」：被改口的（`superseded`）要不要喂，
+    #: 是 **Task 9 自己**的决定（别默认照喂 —— 他刚说过「别再摆给我看了」）。
+    #: `superseded`（修复轮 2 / NEW-1）：这一句**不再往输入框里摆**了 —— 观察到的事实是
+    #: 「服务本来要摆给他的就是这一句，而他按下去的是**别的**」（**不是**猜他还想不想要：
+    #: 服务不知道他屏幕上画的是哪一句，修复轮 3 / NEW-R2）。于是它不再进输入框（不再问一次），
+    #: 但**还记着**（`/again` 照带）。两格各说一件事，**都用观察语**：
+    #: `delivered` = 「到过它手上没有」，`superseded` = 「还摆不摆给他」。
     #: ⚠️ 只活在进程里（与 `timeline` 同一条命）；服务重启后它没了 —— 而它本来就只装
     #: 「说了还没送出去」的话，重启之后那些话的去处由 `timeline` 那句话自己说。
     inbox: list = dataclasses.field(default_factory=list)
@@ -2314,10 +2321,12 @@ class Service:
         ⚠️ 三个判据照 `_note_window_died`：真按过才清、**只清一次**（标志位自己就是
         「说过了」的记号）、认的是**事实**（闸还在不在）而不是「跑了几次」。
 
-        ⚠️ **同一份快照只有一套信任口径**（修复轮 1 / M-1）：`at_gate` 与 `end_reason` 是
-        同一份快照上的两格 —— 跑挂那一支**两格都不信**（`ended=False`）。跑挂时快照里
-        留着的是**上一趟**的结论（上一趟那道闸、上一趟的 `paused`），只信其中一格
-        就会说出一句这一趟不成立的话（「探路那一趟的账本不完整」说的是**上一趟**）。
+        ⚠️ **同一份快照只有一套信任口径**（修复轮 1 / M-1；字句在修复轮 3 / NEW-R3 收准）：
+        跑挂那一支（`ended=False`）**不信手上这份快照** —— `at_gate`、`end_reason`、
+        `interrupts`（节点名）三格一个都不用。跑挂时快照里留着的是**上一趟**的结论
+        （上一趟那道闸、上一趟的 `paused`），只信其中一格就会说出一句这一趟不成立的话。
+        ⚠️ 节点名那一格改用 `Job.running_step`（**采样时刻**的那次样）—— 采样本身也是一次读
+        （A2），所以这**不是**「名字一定新鲜」，而是「同一份数据不在同一个函数里被两套口径对待」。
         """
         with job.lock:
             if not job.stop_requested:
@@ -2340,10 +2349,14 @@ class Service:
                        .get("end_reason") or "") == END_PAUSED:
                     say += STOP_LANDED_PAUSED_ADD
         else:
-            # 跑挂那一支：**那一份快照一格都不信**（NEW-2）—— 包括它的 `interrupts`
-            # （节点名正是从那儿来的）。改用服务自己在**安全时刻**采的那次样
-            # （`Job.running_step`）：它正是这一趟在跑的那个节点，也正是按「停」的时候
-            # 告诉过他的那个词（A2）—— 两处不许打架。
+            # 跑挂那一支：**不信手上这份快照**（NEW-2）—— `at_gate` / `end_reason` /
+            # `interrupts` 一个都不用（节点名正是从 `interrupts` 来的）。改用
+            # `Job.running_step`：**采样时刻**的那次样，也正是按「停」的时候告诉过他的
+            # 那个词（A2）—— 两处不许打架。
+            # ⚠️ **别把这句话读成「那个名字一定不是过期数据」**（修复轮 3 / NEW-R3）：
+            # 采样本身也是一次读，它读的就是同一份 checkpoint —— 快照**在采样之前**就已经
+            # 过期时，两条路给出同一个名字（复审探针 F-a：出厂代码与「改回读快照」输出逐字相同）。
+            # 这一条钉的是**同一份数据不在同一个函数里被两套口径对待**，不是「名字一定新鲜」。
             token = str(job.running_step or "")
             human = STEP_SAY.get(token, token) if token else UNKNOWN_STEP_SAY
             say = STOP_LANDED_OVER_SAY % human
@@ -2830,11 +2843,9 @@ class Service:
         `draft_note` = **最近一条还没送出去的话**（页面拿它预填输入框 —— **不自动发**，
         这是 Global Constraints 点名的那个不对称授权：服务可以替人「停」，绝不替人「走」）。
         """
-        pending: list = []
-        if job is not None:
-            with job.lock:
-                pending = [dict(x) for x in job.inbox
-                           if not x.get("delivered") and not x.get("superseded")]
+        # ⚠️ 别再套一层 `with job.lock:`（`job.lock` 是**普通 Lock**，不是 RLock ——
+        # 套一层就是自己等自己，整个服务停摆；2026-09-19 实测过一次）
+        pending = [dict(x) for x in self._still_waiting(job)] if job is not None else []
         return {"mode": input_mode(status, stage, steer=STEER_WIRED),
                 "draft_note": str(pending[-1].get("text") or "") if pending else "",
                 "queued": pending}
@@ -3134,7 +3145,8 @@ class Service:
                               "at": datetime.datetime.now().astimezone()
                                     .isoformat(timespec="seconds"),
                               "delivered": False, "superseded": False})
-            n = len([x for x in job.inbox if not x.get("delivered")])
+        # `n` 与 `/live.input.queued` **同一个口径**（修复轮 3 / NEW-R1）—— 同一处判据
+        n = len(self._still_waiting(job))
         say = self._queued_say(view, stage, n)
         if cut:
             say += "\n" + (SAY_CUT_SAY % (len(text), len(kept)))
@@ -3245,15 +3257,26 @@ class Service:
                          "say": STOP_RECORDED_SAY % plan["will_stop_at"]}}
 
     @staticmethod
-    def _has_queued_words(job: Job) -> bool:
-        """队里还有没有**还等着送**的话（只影响那句人话要不要提它一句）。
+    def _still_waiting(job: Job) -> list:
+        """队里**真正还在等**的那些话（没送出、也没被改口）—— **这一条判据只有这一处**。
 
-        ⚠️ 被改口的那几条**不算**（NEW-1）：它们不会再进输入框，说「你说的话已经排好了，
-        到那儿会进输入框」就是假话。
+        ⚠️ 为什么必须只有一处（修复轮 3 / NEW-R1）：同一个口径原先写了两处半
+        （`_input_now` 一处、`_has_queued_words` 一处、`/say` 里的 `n` 半处），
+        第三处漏了 ⇒ `/say` 的人话说「队列里现在排着 **2** 句」而同一刻
+        `input.queued` 只有 1 条：那句话对一条**再也不会预填**的话也说「会进输入框」。
+        ⇒ 要改口径（比如 Task 9 决定「被改口的也喂下去」）就改**这里**，别去改调用点。
         """
         with job.lock:
-            return any(not x.get("delivered") and not x.get("superseded")
-                       for x in job.inbox)
+            return [x for x in job.inbox
+                    if not x.get("delivered") and not x.get("superseded")]
+
+    def _has_queued_words(self, job: Job) -> bool:
+        """队里还有没有**还等着送**的话（只影响那句人话要不要提它一句）。
+
+        ⚠️ 被改口的那几条**不算**：它们不会再进输入框，说「你说的话已经排好了，
+        到那儿会进输入框」就是假话（判据见 `_still_waiting`）。
+        """
+        return bool(self._still_waiting(job))
 
     def _note_human_stop(self, job: Job, plan: dict) -> None:
         """按「停」那一刻的那条时间线（`who="you"`：这是人打过的一次回）。

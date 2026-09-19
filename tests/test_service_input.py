@@ -403,9 +403,14 @@ def test_a_word_the_human_replaced_is_kept_but_never_offered_again(tmp_path):
     assert live["input"]["queued"] == [], \
         "它也不在「还在等」那一列里（那一列是给「等着送」的话的）：%r" % live["input"]["queued"]
     # 「没有静默的路径」：这件事必须有一条人说得出的话（在他的那一条气泡里）
-    said = _of_kind(client, job_id, "human_said")
-    assert any("改口" in e["say"] and "不是那个按钮" in e["say"] for e in said), \
-        "改口这件事一个字都没说：%r" % [e["say"] for e in said]
+    # ⚠️ 说法在修复轮 3 / NEW-R2 收准了：**不说「你改口了」**（服务不知道他屏幕上画的是哪一句）——
+    # 只说它真知道的那件事（「我本来要摆给你的是这一句」）。
+    said = [e["say"] for e in _of_kind(client, job_id, "human_said")]
+    # ⚠️ 认**带那句话的那一条**（「说一句」那条事件里也有人说的原文 —— 只按文字筛会挑错那条）
+    hit = [s for s in said if "我本来要摆给你的那句" in s and "不是那个按钮" in s]
+    assert hit, "这件事一个字都没说：%r" % said
+    assert "不摆了" in hit[0] and "重新来一遍" in hit[0], hit[0]
+    assert not any("你改口了" in s for s in said), "整条时间线都不许替他说这个动作：%r" % said
 
     # 但它**没有被丢掉**（R5 的「你说的话我记着」）：那条仍然是「没送到」，`/again` 照带
     with svc._jobs[job_id].lock:
@@ -420,6 +425,94 @@ def test_a_word_the_human_replaced_is_kept_but_never_offered_again(tmp_path):
     _settle(client)
     assert g.invokes[-1]["hints"] == ["算了，先点 cookie 同意", "不是那个按钮"], \
         "改口不等于作废他说过的话 —— 重来那一趟要带上它：%r" % (g.invokes[-1].get("hints"),)
+
+
+def test_the_superseded_line_does_not_claim_he_changed_his_mind(tmp_path):
+    """那句人话只许说服务**真知道**的事（修复轮 3 / NEW-R2）。
+
+    失效形状（复审探针 B）：他说 A（**上过他的屏**），又说 C（他还没看见 —— 页面预填
+    **不覆盖正在打字的框**，`console.html:661`），然后他按下去的是**别的**。
+    服务这一侧「最后一条等着送的」是 C ⇒ 被标 `superseded` 的是 **C**，
+    而时间线上写着「**你改口了**：C」—— **一句他从没做过的动作**（他根本没看见过 C）。
+
+    ⚠️ 机制**不改**（服务不知道页面画了什么，根治要页面报「我看见的是哪一句」= Task 10）：
+    这一条钉的是**那句话的说法**必须对任何一条都成立（用服务真知道的那件事说）。
+    """
+    g = FakeGraph(steps=[
+        _Snap(values={"site": SITE, "visits": ["intake"]}, interrupts=(_gate("intake"),)),
+        _Snap(values={"site": SITE, "visits": ["intake", "explore"]}, interrupts=(_gate("draft"),)),
+    ])
+    client = _client(graph_factory=_factory(g))
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, job_id)
+
+    client.post("/job/%s/say" % job_id, json={"text": "A：他看见过的那句"})
+    client.post("/job/%s/say" % job_id, json={"text": "C：他没看见过的那句"})
+    client.post("/job/%s/reply" % job_id, json={"action": "say", "note": "他打的是别的"})
+    _wait(client, job_id)
+
+    said = [e["say"] for e in _of_kind(client, job_id, "human_said")]
+    hit = [s for s in said if "我本来要摆给你的那句" in s and "C：他没看见过的那句" in s]
+    assert hit, "这件事一个字都没说：%r" % said
+    assert not any("你改口了" in s for s in said), \
+        "替他说了一个他没做过的动作（他没看见过那一句）：%r" % said
+    # 机制这一半也钉住（写下来的是**行为**，不是「应该」）：
+    # 被标的是**服务侧最后一条**（C），而 A 留在队里 —— Task 10 若让页面报「我看见的是哪一句」，
+    # 这两句会跟着改（那正是这条用例存在的意义：改的时候有人会看见它）。
+    assert [x["text"] for x in _live(client, job_id)["input"]["queued"]] == ["A：他看见过的那句"]
+
+
+def test_the_queue_length_it_reports_is_the_one_that_is_really_waiting(tmp_path):
+    """`/say` 的 `n` 与 `/live.input.queued` **同一个口径**（修复轮 3 / NEW-R1）。
+
+    失效形状（复审探针 C）：改口之后再说一句 ⇒ 人话说「队列里现在排着 **2** 句」，
+    而同一刻 `input.queued` 只有 1 条 —— 那句话对一条**再也不会预填**的话也说「会进输入框」，
+    而且同一个名字（`n` / `queued`）指向两个事实（Task 9 拿 `n` 会与页面/`live` 对不上）。
+    """
+    g = FakeGraph(steps=[
+        _Snap(values={"site": SITE, "visits": ["intake"]}, interrupts=(_gate("intake"),)),
+        _Snap(values={"site": SITE, "visits": ["intake", "explore"]}, interrupts=(_gate("draft"),)),
+    ])
+    client = _client(graph_factory=_factory(g))
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, job_id)
+
+    client.post("/job/%s/say" % job_id, json={"text": "A：会被改口的那句"})
+    client.post("/job/%s/reply" % job_id, json={"action": "say", "note": "他打的是别的"})
+    _wait(client, job_id)
+    r = client.post("/job/%s/say" % job_id, json={"text": "D：新说的一句"})
+    assert r.status_code == 202, r.text
+
+    live = _live(client, job_id)
+    assert r.json()["n"] == len(live["input"]["queued"]) == 1, \
+        ("`n`（/say）与 `queued`（/live）对不上：%r vs %r" % (r.json()["n"], live["input"]["queued"]))
+    assert "排着 2 句" not in r.json()["say"], r.json()["say"]
+    assert [x["text"] for x in live["input"]["queued"]] == ["D：新说的一句"]
+
+
+def test_the_stop_promise_only_mentions_words_that_are_really_waiting(tmp_path):
+    """`/stop` 那句「你说的话排好了」只在**真还有话等着送**时才说（修复轮 3 / NEW-N）。
+
+    两个方向都钉（复审量化过：全仓原先**没有一条**断言碰过 `STOP_WORDS_HELD_SAY`）：
+      ① 真有一条等着 ⇒ 那句话里有「已经排好了」；
+      ② 那条被他改口了 ⇒ 那句话里**没有**（再说一次「会进输入框」就是假话）。
+    """
+    g = FakeGraph(steps=[_Snap(values={"site": SITE, "visits": ["intake"]})])
+    client = _client(graph_factory=_factory(g))
+    svc = client.app.state.service
+    job = _running_job(svc, stage="selftest")
+    with job.lock:
+        job.inbox.append({"text": "还等着的那句", "at": "2026-09-19T00:00:00+08:00",
+                          "delivered": False, "superseded": False})
+    said = client.post("/job/job-running/stop", json={}).json()["stop"]["will_stop_at"]
+    assert service.STOP_WORDS_HELD_SAY in said, "真有一条等着，那句话要说出来：%r" % said
+
+    # 它被改口了（他按下去的是别的）⇒ 不许再说「会进输入框」
+    with job.lock:
+        job.inbox[0]["superseded"] = True
+    said = client.post("/job/job-running/stop", json={}).json()["stop"]["will_stop_at"]
+    assert service.STOP_WORDS_HELD_SAY not in said, \
+        "那句已经不会再进输入框了，说「已经排好了」是假话：%r" % said
 
 
 def test_the_same_word_said_twice_is_sent_and_carried_once(tmp_path):
