@@ -47,6 +47,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import functools
+import hashlib
 import json
 import os
 import pathlib
@@ -272,6 +273,25 @@ CAP_END_REASONS = (END_REVISION_CAP, END_LINT_CAP, END_SELFTEST_CAP)
 ARTIFACT_URL = "/job/%s/artifact"
 #: 有产物时那句话（页面原样摆在时间线上那一步上）。
 ARTIFACT_READY_SAY = "这一趟的 py 写下来了 —— 点文件名下载，它落在盘上的位置写在下面。"
+#: ★ **A15：同一个站点共用一个文件**（交付点是 `<out_dir>/<site>.py`）——
+#: 后来的运行会把前一趟的产物**盖掉**。指纹对不上就是「盘上这一份**不是它写的**」：
+#: **不给**（宁可说拿不到，也不把别人的字节当成它的交出去 —— 那才是真正的静默失败）。
+ARTIFACT_OVERWRITTEN_SAY = ("这一趟的那份产物**已经被后来的运行覆盖了** —— 同一个站点共用一个文件"
+                            "（%s），后来的那一趟写的就是同一个路径。\n"
+                            "它写下的是 %s 字节（sha256 %s…），盘上现在是 %s 字节（sha256 %s…）。\n"
+                            "**这一屏不把现在这个文件交给你**：那会是「拿到了别人的」。"
+                            "要这一趟那一份，只能重跑一趟。")
+#: 核对不了（checkpoint 里没留下它写下的那串字节：更早的版本跑的 / 记录不全 / 这一次读不回它的记录）。
+#: 「核对不了」与「对不上」**不是一回事**，但处置**一样**：不给 —— 因为同一个站点共用一个文件，
+#: 核对不了就等于**可能**给的是别人的。
+ARTIFACT_UNVERIFIABLE_SAY = ("这一趟的 py 在盘上（%s），可**没法确认它是这一趟写的**："
+                             "checkpoint 里没有留下它写下的那串字节"
+                             "（这一次读不回它的记录，或者这一趟是更早的版本跑的）。"
+                             "同一个站点共用一个文件，后来的运行会把它盖掉 —— "
+                             "所以这一屏**不把现在这个文件交给你**。要那一份，只能重跑一趟。")
+#: 盘上那个文件这一次读不出字节（权限之类）—— 照实说，同样是拿不到。
+ARTIFACT_UNREADABLE_SAY = ("这一趟的 py 在盘上（%s），可**这一次读不出它的字节**（%s）——"
+                           "所以拿不到。")
 #: 「到头了但没有产物」那句话的**头**。原因一律照抄这一趟自己留下的那句话（下面那两格）。
 NO_ARTIFACT_HEAD_DONE = "这一趟**没有产出 py**（它到头了，但没写下那个文件）"
 NO_ARTIFACT_HEAD_FAILED = "这一趟**没有产出 py**（它跑挂了，没跑到写下那个文件那一步）"
@@ -294,6 +314,37 @@ NO_ARTIFACT_OUTSIDE_SAY = ("这一趟记下的产物路径**不在产物目录�
 NO_SUCH_JOB_SAY = ("没这个任务：%s（服务里没有它，checkpoint 里也没有）。"
                    "要么 id 写错了，要么它是在**另一个** saver 上跑的 —— "
                    "状态住在 saver 里，不在这个进程里（R-19）。")
+
+
+def _fingerprint(blob: bytes) -> dict:
+    """一串字节的**指纹**：`size` + `sha256`（§15.5 / A15 判「这一份是不是它写的」用的就是它）。"""
+    return {"size": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}
+
+
+def _run_wrote(values: dict) -> Optional[dict]:
+    """**这一趟写下的那串字节**的指纹 —— 从 checkpoint 自己算，**不是**从盘上现读。
+
+    ★ 为什么是 checkpoint 而不是「服务第一次看见交付时记一份」：`graph._deliver` 写下那个
+    py 的那一句是 `path.write_text(src, encoding="utf-8")`，而**同一个 `src` 也进了 state**
+    （`out.update({"src": src, …})`，与 `py_path` 一起）⇒ 「这一趟写下的字节」**本来就记着**。
+    好处不是省事，是**它活得比进程长**：服务重启过、或者它不在的那段时间里那个文件被
+    后来的运行盖掉了，这一份记录照样在 —— 而现记一份的话，「第一次看见」看到的可能已经是
+    别人的文件，基准就立错了。
+
+    没有就是 `None`（更早的版本跑的 / 记录不全 / 这一次读不回它的记录）—— **不许猜**。
+    """
+    src = (values or {}).get("src")
+    if not isinstance(src, str):
+        return None
+    return _fingerprint(src.encode("utf-8"))
+
+
+def _disk_fingerprint(path) -> Optional[dict]:
+    """盘上那个文件此刻的指纹；读不出来就是 `None`（不吞成一个空指纹 —— 那会变成「空 == 空」）。"""
+    try:
+        return _fingerprint(pathlib.Path(path).read_bytes())
+    except OSError:
+        return None
 
 
 def _inside(path, root, *, direct: bool = False) -> bool:
@@ -2045,25 +2096,59 @@ class Service:
         说**交付了**的时候才算数（跑挂的那一趟 state 里可能还留着上一次真跑留下的
         `py_path` —— `tests/test_service.py` 那条钉着同一件事）。
 
-        判据全在 `_servable_py`（与 `/live` 的产物那一格**同一处**）。
-        这里只多一步：把「拿得出来」变成一次文件响应。
+        判据全在 `_artifact_state`（与 `/live` 的产物那一格**同一处**）。
+        这里只多一步：**核对过了**才把它变成一次文件响应（`trust == "this_run"`）。
         """
         view = self._view(job_id)                       # 没这个任务 → KeyError（路由转 404）
         raw = str((view.get("result") or {}).get("py_path") or "").strip()
-        # `values` 只为**产物目录**那一格（`/job/{id}` 的既有形状里没有它）——
+        # `values` 只为**产物目录**那一格 + 那一趟写下的字节（`/job/{id}` 的既有形状里没有它们）——
         # 没有路径要判的时候就别读它：跑着 / 停在闸上那两档不该为一次点击多读一次 checkpoint。
         values = dict(getattr(self._snapshot(job_id), "values", None) or {}) if raw else {}
-        found = self._servable_py(view, values)
-        if found is None:
-            raise HTTPException(status_code=409, detail=self._no_artifact_say(view, values))
-        return found
+        state = self._artifact_state(view, values)
+        if state["trust"] != "this_run":
+            raise HTTPException(status_code=409, detail=state["say"])
+        return state["path"]
 
-    def _servable_py(self, view: dict, values: Optional[dict] = None) -> Optional[pathlib.Path]:
-        """这一趟**拿得出来**的那个 py（`None` = 拿不出来，原因在 `_no_artifact_say`）。
+    def _artifact_state(self, view: dict, values: Optional[dict] = None) -> dict:
+        """这一趟的产物**现在**是什么状态。★ **唯一一处**判它（页面那格与端点都走这里）。
 
-        ★ **唯一一处**判「能不能拿」：`/live` 的产物那一格与 `/job/{id}/artifact` 都走它。
-        三件事缺一不可：① 这一趟到头了；② 记录里有一个路径、且**解析符号链接之后**
-        那个路径还在产物目录里；③ 那个东西真的在盘上、而且是个文件。
+        返回 `{"path": …|None, "trust": "this_run"|None, "say": <人话>}` ——
+        **只有 `trust == "this_run"` 才给字节**（端点是 200、页面那一格才有下载）。
+
+        ★ A15（§15.5）：交付点是 `<out_dir>/<site>.py` —— **一个站点一个文件**，
+        所以「这一趟的那份」**会被后来的运行盖掉**。四件事缺一不可：
+          ① 这一趟到头了、记录里有一个路径，解析符号链接之后还在产物目录里（`_artifact_on_disk`）；
+          ② 那个东西真的在盘上、是个文件，而且**读得出字节**；
+          ③ checkpoint 里留着**这一趟写下的那串字节**（`_run_wrote`）；
+          ④ 两者指纹**对得上**。
+        任何一条不成立 ⇒ `trust is None` ⇒ 拿不到，而且**说清是哪一档**：
+        「没产出 / 产出过但没了 / 路径不在产物目录里 / 被覆盖了 / 核对不了 / 读不出来」
+        —— 「拿不到」是六件不同的事，**不合并成一句**。
+        """
+        path = self._artifact_on_disk(view, values)
+        if path is None:
+            return {"path": None, "trust": None,
+                    "say": self._no_artifact_say(view, values)}
+        now = _disk_fingerprint(path)
+        if now is None:
+            return {"path": path, "trust": None,
+                    "say": ARTIFACT_UNREADABLE_SAY % (path, "这一次读不出它的字节")}
+        wrote = _run_wrote(values or {})
+        if wrote is None:
+            return {"path": path, "trust": None, "say": ARTIFACT_UNVERIFIABLE_SAY % path}
+        if (now["size"], now["sha256"]) != (wrote["size"], wrote["sha256"]):
+            return {"path": path, "trust": None,
+                    "say": ARTIFACT_OVERWRITTEN_SAY % (path, wrote["size"], wrote["sha256"][:12],
+                                                       now["size"], now["sha256"][:12])}
+        return {"path": path, "trust": "this_run", "say": ARTIFACT_READY_SAY}
+
+    def _artifact_on_disk(self, view: dict, values: Optional[dict] = None) -> Optional[pathlib.Path]:
+        """**记录里那个路径上，此刻有一个文件吗**（`None` = 没有，原因在 `_no_artifact_say`）。
+
+        三件事：① 这一趟到头了、记录里有一个路径；② 解析符号链接之后它还在产物目录里；
+        ③ 那个东西真的在盘上、而且是个文件。
+        ⚠️ 这一层**不判**「这一份是不是它写的」（那是 `_artifact_state` 的后半段）——
+        两者分开是因为「没有」与「有但不是它写的」要说**不同的话**。
         """
         result = view.get("result") or {}
         raw = str(result.get("py_path") or "").strip()
@@ -2112,20 +2197,23 @@ class Service:
 
         - `None` —— **还没到「写下了 py」那一步**（在跑 / 排队 / 停在闸上）：
           页面上那个位置**不存在**（§15.4：不是灰按钮，是**还没有**）；
-        - `{url, filename, path, say}` —— 有产物；**`url` 非空才是真的能下**；
-        - `{url: None, filename: None, path: None, say: …}` —— 到头了但没产物：
+        - `{url, filename, path, say}` —— 这一趟的产物**核对过了**（`trust == "this_run"`）：
+          `url` 非空 = 真的能下；
+        - `{url: None, filename: None, path: None, say: …}` —— 到头了但**拿不到**
+          （没产出 / 产出过但没了 / 路径出界 / **被后来的运行覆盖了** / 核对不了）：
           页面摆那句话、**不摆按钮**（§15.2 / A14）。
 
-        ⚠️ 判据是 `_servable_py`（与端点**同一处**）；`values` 只用来读产物目录那一格。
+        ⚠️ 判据是 `_artifact_state`（与端点**同一处**）—— 「能下」这四个字只有一个来源，
+        不然就会出现「页面说能下、点下去 409」那种点了没反应的按钮。
         """
         if str(view.get("status") or "") not in (DONE, FAILED):
             return None
-        path = self._servable_py(view, values)
-        if path is None:
-            return {"url": None, "filename": None, "path": None,
-                    "say": self._no_artifact_say(view, values)}
+        state = self._artifact_state(view, values)
+        if state["trust"] != "this_run":
+            return {"url": None, "filename": None, "path": None, "say": state["say"]}
+        path = state["path"]
         return {"url": ARTIFACT_URL % job_id, "filename": path.name,
-                "path": str(path), "say": ARTIFACT_READY_SAY}
+                "path": str(path), "say": state["say"]}
 
     # ── 两块接线信息（页面不自己编）────────────────────────────────
 
