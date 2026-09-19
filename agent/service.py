@@ -336,14 +336,21 @@ SAY_DELIVERED_SAY = "这句话**直达**它的下一轮了（它正在探路里�
 #: ⚠️ **「那一刻」= 那一次模型调用真的发出去了之后**（回归 1 / F2③）—— 在那之前说它，
 #: 就是在说一件还没发生的事（调用可能被那道闸拦下、也可能自己炸）。
 STEER_LANDED_SAY = "已经交给它了 —— 它下一轮就会看到（一轮几秒到几十秒）。"
-#: **这一趟到头了，而队里还有话没送到它手上**（回归 1 / F1b + F2②）。两个 `%s`：
-#: 那几句话 / 为什么没送到（**知道多少说多少**，见下面两句）。话**不会丢**（一直排在队里：
-#: `/live.input.queued`、预填、`/again` 都看得见）—— 丢的是**那句承诺**，所以要在这儿说回来。
+#: **答应过「直达下一轮」的话没送到**（回归 1 / F1b + F2②；回归 2 按 NEW-1 改了触发面）。
+#: 两个 `%s`：那几句话 / **为什么没送到**（三个出口三句话，见下 —— **一句都不许互换**）。
+#: 话**不会丢**（一直排在队里：`/live.input.queued`、预填、`/again` 都看得见）——
+#: 丢的是**那句承诺**，所以要在这儿说回来。
+#: ⚠️ **谁说这一条**（回归 2 / NEW-1）：只有**当初被承诺过直达**的那些话
+#: （条目上那一格 `promised`，`/say` 回 `delivered` 时盖的）——**没承诺过的不报**
+#: （排队收下的那些，`/say` 当时说的就是「到下一道闸进输入框」，那本来就是诚实的）。
 STEER_MISSED_SAY = ("你插的话**没送到它手上** —— %s\n%s。话没丢：它们还在队里"
                     "（会摆回输入框，「重新来一遍」也会带上）。")
-#: 到头了的那一半：这一趟跑完了（`done` / 撞上限），而它没再问一次模型
-STEER_MISSED_ENDED_SAY = "这一趟探路结束了，它**没再问一次模型**，所以这几句它没看到"
-#: 跑挂的那一半：那一次调用**没发出去**（`create` 抛了 —— 被那道闸拦下也算）
+#: 出口①停在闸上（`NEW-1 / O2`）：这一趟在它下次问模型之前就停在闸上了 ——
+#: 那几句**还有个去处**（页面把它们摆进输入框），这一半也必须说（只说到头那两处就漏了它）
+STEER_MISSED_AT_GATE_SAY = "这一趟在它下一次问模型之前就**停在闸上了**，所以没直达 —— 它们已经摆进输入框了，**按一下**才送"
+#: 出口②到头了（`done` / 撞上限）：这一趟跑完了，而它没再问一次模型
+STEER_MISSED_ENDED_SAY = "这一趟结束了，它**没再问一次模型**，所以这几句它没看到"
+#: 出口③跑挂：那一次调用**没发出去**（`create` 抛了 —— 被那道闸拦下也算）
 STEER_MISSED_DIED_SAY = "那一轮**没发出去**（这一趟没跑完），所以这几句它没看到"
 #: 空文本（400）
 SAY_EMPTY_SAY = ("这一句是空的。要它接着走，闸上那个「继续」按钮才是那件事；"
@@ -1188,7 +1195,7 @@ class Job:
     #: 而每次 `_advance` 返回都会去读它一遍 —— 不去重就是同一句话每推一步记一条。
     narration_reported: set = dataclasses.field(default_factory=set)
     #: 人说过、**还没送到它手上**的话（Task 8 的 `/say` 排队那条路）。每一条至少
-    #: `{"text", "at", "delivered", "superseded"}` —— 送到时**改的是同一条**
+    #: `{"text", "at", "delivered", "superseded", "promised"}` —— 送到时**改的是同一条**
     #: （不是追加一条新的），Task 9 就是靠 `delivered` 分辨「喂过它没有」。
     #: ⚠️ 但「没送出去」**不再等于**「该喂」：不再摆给他的那些（`superseded`）要不要喂，
     #: 是 **Task 9 自己**的决定 —— **别默认照喂**。理由也必须用观察语（修复轮 4 / F4）：
@@ -2443,6 +2450,10 @@ class Service:
             self._note_stop_landed(job, snap=None, at_gate=None, ended=False)
             return
         self._note_stop_landed(job, snap=snap, at_gate=at_gate, ended=ended)
+        if at_gate:
+            # 出口①：**停在闸上了** —— 答应过直达的话到这儿还没送到，就要说回来（NEW-1 / O2）。
+            # ⚠️ 只在真停在闸上时（`at_gate` 是从快照的闸口投影出来的，不是「大概」）。
+            self._note_steer_missed(job, at_gate=True)
         self._note_window_died(job, values)
         self._note_shots_missing(job, values)     # 目录表第 6 行的**步拍**那一半
         self._note_narration_broken(job, values)  # 播报那条旁路自己坏了（修复轮 1）
@@ -3298,7 +3309,11 @@ class Service:
             job.inbox.append({"text": kept,
                               "at": datetime.datetime.now().astimezone()
                                     .isoformat(timespec="seconds"),
-                              "delivered": False, "superseded": False})
+                              "delivered": False, "superseded": False,
+                              # ⚠️ **服务答应的那一格**（回归 2 / NEW-1）：只有走直达那条路
+                              # 收下的话才盖它 —— 兑现不了时的更正（`steer_missed`）
+                              # **以这一格为准**（不是「队里还有没有话」）。
+                              "promised": route == SAY_DELIVERED})
         # `n` 与 `/live.input.queued` **同一个口径**（修复轮 3 / NEW-R1）—— 同一处判据
         n = len(self._still_waiting(job))
         # ⚠️ 两句话说的是两条路（R2 的「同一件事不许两个名字」反过来：
@@ -3419,7 +3434,7 @@ class Service:
                          "will_stop_at": plan["will_stop_at"],
                          "say": STOP_RECORDED_SAY % plan["will_stop_at"]}}
 
-    # ── 队里那些话的**判据**（Task 8 修复轮 4）：全部收在下面三个**纯核**里 ──────────
+    # ── 队里那些话的**判据**（Task 8 修复轮 4；Task 9 回归 2 加了第四个）：全部收在纯核里 ──
     # ⚠️ 它们**只吃一组条目、不拿锁**：调用方按自己手上的处境决定怎么拿锁 ——
     #    `Job.lock` 是**普通 `Lock`**（不是 `RLock`），在**已经持锁**的地方调一个自己拿锁的
     #    函数就是自己等自己（实测**永久挂住**，`/live` 上就是运营那一屏永远转圈）。
@@ -3442,6 +3457,19 @@ class Service:
         """（判据 ②）这一句送下去，哪些条目算**送到了**：同文、且还没送过。⚠️ 纯核，**不拿锁**。"""
         return [x for x in entries
                 if not x.get("delivered") and str(x.get("text") or "") == text]
+
+    @staticmethod
+    def _steer_promised(entries: list) -> list:
+        """（判据 ④，Task 9 回归 2）**答应过直达、而还没送到**的那些话。
+
+        ⚠️ 纯核，**不拿锁**（与那三个同一条纪律）。`promised` 那一格是 `/say` 在
+        `route == delivered` 那一刻盖的 —— 更正（`steer_missed`）**以它为准**：
+        没承诺过的不报（那样会把一句从没给过的承诺收回来 = 编话），
+        承诺过的**每个出口都要报**（到头 / 停在闸上 —— 不然承诺就烂在时间线上）。
+        ⚠️ `superseded` **不排除**：那一格说的是「还摆不摆给他」（预填），
+        与「答应过直达没有」是两件事 —— **不再摆给他的**那一条**照样答应过**，照样要收回。
+        """
+        return [x for x in entries if x.get("promised") and not x.get("delivered")]
 
     @staticmethod
     def _unsent_texts(entries: list) -> list:
@@ -3514,35 +3542,43 @@ class Service:
         self.narrate(job, "steer_landed", STEER_LANDED_SAY, text=text)
         self._apply_inbox_plan(job, sent, [])
 
-    def _note_steer_missed(self, job: Job) -> None:
-        """**这一趟到头了**，而队里还有没送到它手上的话 ⇒ 说一条（回归 1 / F1b + F2②）。
+    def _note_steer_missed(self, job: Job, *, at_gate: bool = False) -> None:
+        """**答应过直达的话没送到** ⇒ 说一条（回归 1 / F1b + F2②；回归 2 按 NEW-1 改准）。
 
         为什么非有它（Global Constraints 的「没有静默的路径」）：`/say` 在探路里回的是
         「直达下一轮」，而**送不到是可能的** —— 人刚按了停、话正好说在最后一轮之后、
         或者那一次调用自己炸了。话**不会丢**（一直排在队里：`/live.input.queued`、
-        下一屏的预填、`/again` 都看得见），**丢的是那句承诺**；承诺兑现不了，就要在这儿说回来。
+        下一屏的预填、`/again` 都看得见），**丢的是那句承诺**；承诺兑现不了，就要说回来。
 
-        ⚠️ **只在到头了的时候说**（`done` / `cap_hit` / 跑挂）：停在闸上那几句是**正常的排队**
-        （下一屏就摆进输入框），那时候说「它没看到」是**假话** —— 这一条与「该说的要说」
-        是同一个纪律的两半。
-        ⚠️ **只在开关打开时才有这一句**：它要说回来的是**「直达」那句承诺**，而那句承诺
-        只有通道接上时才给得出来（`say_route` 的 `held`/`steer` 两个实参）。关着的时候
-        `/say` 说的是「排队、到下一道闸进输入框」——**那本来就是诚实的**（R1），
-        没有承诺要收回，今天生产那条路因此**一个字节都不变**。
-        ⚠️ 同一句话只报一次（`job.steer_missed_reported`）：`reopen` 之后这一趟还会再走到头一次。
-        ⚠️ 判据仍走纯核 `_waiting_entries`（**不拿锁的那个**）—— 持锁处不许调 `_still_waiting`。
+        ⚠️ **谁说**（回归 2 / NEW-1 的修正）：**当初被承诺过直达**的那些（纯核
+        `_steer_promised` = 条目上 `promised` 那一格 + 还没送到）—— 不是「队里还有话」。
+        排队收下的那些**不报**：`/say` 当时说的就是「到下一道闸进输入框，按一下才送」，
+        那本来就是诚实的；替它收回一句从没给过的承诺就是**编话**，
+        而且会把理由句也说错（「那一轮没发出去」跟它没经历过的事对不上）。
+
+        ⚠️ **在哪儿说**（回归 2 / NEW-1 的修正）：**出口有三处，三句话各不相同**
+        （`at_gate` / 跑挂 / 到头了）—— 停在闸上那一处原先没有，于是「承诺了却停在闸上」
+        一个字都不更正（复审 O2）。三句**不许互换**（各自说的是各自那一刻发生的事）。
+
+        ⚠️ **只在开关打开时才有这一句**：要说回来的是**「直达」那句承诺**，而它只有通道
+        接上时才给得出来（`say_route` 的 `steer`/`held` 两个实参）。关着的时候 `/say` 说的是
+        「排队、到下一道闸进输入框」——**那本来就是诚实的**（R1），今天生产那条路**一个字节都不变**。
+        ⚠️ 同一句话只报一次（`job.steer_missed_reported`）：同一趟里停在闸上说过一次、
+        后来这一趟到头了，**不许**再说一遍。
+        ⚠️ 判据仍走纯核（**不拿锁的那个**）—— 持锁处不许调 `_still_waiting`。
         """
         if not STEER_WIRED:
             return
         with job.lock:
-            waiting = [str(x.get("text") or "") for x in Service._waiting_entries(job.inbox)]
-            fresh = [t for t in waiting if t and t not in job.steer_missed_reported]
+            promised = [str(x.get("text") or "") for x in Service._steer_promised(job.inbox)]
+            fresh = [t for t in promised if t and t not in job.steer_missed_reported]
             if not fresh:
                 return
             job.steer_missed_reported.update(fresh)
             crashed = job.status == FAILED
         said = "\n".join(fresh)
-        why = STEER_MISSED_DIED_SAY if crashed else STEER_MISSED_ENDED_SAY
+        why = (STEER_MISSED_AT_GATE_SAY if at_gate
+               else (STEER_MISSED_DIED_SAY if crashed else STEER_MISSED_ENDED_SAY))
         self.narrate(job, "steer_missed", STEER_MISSED_SAY % (said, why), text=said)
 
     def _note_human_stop(self, job: Job, plan: dict) -> None:

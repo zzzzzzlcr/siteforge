@@ -72,7 +72,7 @@ STEER_HEAD = "人在你探路的时候插了一句话，下面是他的原话（
 #: ⇒ `stop_reason = model_done` ⇒ 图会认成「**探路走完了**」（R11）。
 #: 人的一句话很容易被模型读成「话题结束了」；这句是**当面**把那个误读堵回去
 #: （背面那一半在 `browser_agent`：真发生了就往 `journey.notes` 追一句人话）。
-STEER_REMINDER = "这是人插的话，接着探，别把它当成收尾。"
+STEER_REMINDER = "这是人插的话，接着探，别把它当成收尾"
 
 
 def steer_message(text: str) -> dict:

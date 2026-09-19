@@ -35,6 +35,8 @@ from test_service_input import (GOAL, SITE, URL, FakeGraph, StubWindow,  # noqa:
 
 #: 人插的那句话（**逐字**用在两处：插进模型的那条消息里、时间线上）。
 SAID = "不是那个按钮，是下面那个"
+#: H 那一幕专用的一句开场白（独一无二 ⇒ 桩的「卡住」不会被别的 job 抢走）
+_H_GOAL = "H 那一幕：话是在最后一轮**之后**才说的"
 #: 设计注 §3.4 写死的那句提醒（**原话**）—— 这一片唯一的「别把它当成收尾」。
 REMINDER = "这是人插的话，接着探，别把它当成收尾"
 #: 设计注 §3.4 写死的那句人话（插话之后那一轮就收尾时，进 `journey.notes`）。
@@ -74,11 +76,16 @@ class _StubLLM:
         好让测试在「`steer()` 已经问过、这一轮还没回来」的时刻插一句话（实例 H）。
     """
 
-    def __init__(self, turns: list, *, fail_on: int | None = None, block_first=None):
+    def __init__(self, turns: list, *, fail_on: int | None = None, block_first=None,
+                 block_if: str | None = None):
         self.turns = list(turns)
         self.calls: list[dict] = []
         self.fail_on = fail_on
         self.block_first = block_first
+        #: 只有**这一趟**的任务里带着这句话时才卡（⚠️ 防串味：同一会话里别的 job 也会来取
+        #: 这个桩（`llm.client` 被本用例接管），不挑的话它会把「卡住」这件事先做掉，
+        #: 于是本用例以为「我这一轮卡住了」，其实卡的是别人 —— 复审的 H 脚本就这么串过味）。
+        self.block_if = block_if
 
     @property
     def chat(self):
@@ -94,9 +101,12 @@ class _StubLLM:
         if self.fail_on == n:
             raise RuntimeError("模型这一次调用没成（这一条就是来把它弄挂的）")
         if n == 1 and self.block_first is not None:
-            ready, go = self.block_first
-            ready.set()
-            assert go.wait(10), "测试没放走这一轮"
+            mine = self.block_if is None or self.block_if in json.dumps(
+                kwargs.get("messages") or [], ensure_ascii=False)
+            if mine:
+                ready, go = self.block_first
+                ready.set()
+                assert go.wait(10), "测试没放走这一轮"
         turn = self.turns[min(n - 1, len(self.turns) - 1)]
         return _reply(turn.get("content", ""), turn.get("calls"))
 
@@ -144,6 +154,9 @@ def test_the_words_go_into_the_round_that_comes_next():
     assert SAID in first[-1]["content"], first[-1]
     assert REMINDER in first[-1]["content"], (
         "插进去的话**必须带那句提醒** —— 那道门上没有 `done()`，「不调工具」=它宣布讲完了（R11）")
+    # ⚠️ 子串断言管不到「多一个字」——那句话是**设计注 §3.4 的原话**（引号里没有句号），
+    #    所以另钉一条**等式**（回归 2 / NEW-2：上一轮我自报改了，代码里其实没改）。
+    assert llm.STEER_REMINDER == REMINDER, llm.STEER_REMINDER
     assert rounds[0]["steered"] == SAID, rounds[0]
     # 说了就那一次：下一轮里它**还在对话里**（1 条），但没有被再插一遍
     assert _said_in(stub.calls[1]["messages"], SAID) == 1, "同一条话插了两遍"
@@ -497,7 +510,7 @@ def test_say_while_a_stop_is_pending_does_not_promise_direct_delivery(tmp_path, 
 
 
 def _chain(tmp_path, monkeypatch, *, wired=True, fail_on=None, block_first=False,
-           queued_first=True, turns=None) -> dict:
+           queued_first=True, turns=None, block_if=None, brief_over=None) -> dict:
     """走**真那条链**起一趟探路，**卡在门口**（`_HoldGraph`），把几只「放行」的手柄交给测试。
 
     不靠 sleep 抢时序：`invoke` 卡在 `go` 上、桩模型可以卡在 `ready`/`model_go` 上 ——
@@ -512,7 +525,7 @@ def _chain(tmp_path, monkeypatch, *, wired=True, fail_on=None, block_first=False
     made: list = []
 
     def _new_client():
-        stub = _StubLLM(turns, fail_on=fail_on,
+        stub = _StubLLM(turns, fail_on=fail_on, block_if=block_if,
                         block_first=(ready, model_go) if block_first else None)
         made.append(stub)
         return stub
@@ -532,7 +545,7 @@ def _chain(tmp_path, monkeypatch, *, wired=True, fail_on=None, block_first=False
     client = _client(graph_factory=lambda brief, deps: _HoldGraph(deps, inside, go),
                      window=StubWindow(alive=True), mcp_bin=str(wrapper),
                      shots_dir=str(tmp_path / "shots"))
-    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    job_id = client.post("/run", json=_brief(tmp_path, **(brief_over or {}))).json()["job_id"]
     assert inside.wait(10), "这一趟没进到 invoke 里"
     svc = client.app.state.service
     job = svc._jobs[job_id]
@@ -579,8 +592,13 @@ def steer_over_the_real_chain(tmp_path, monkeypatch) -> set:
 
 
 def steer_missed_over_the_real_chain(tmp_path, monkeypatch) -> set:
-    """`steer_missed` 那一条的场景（同一个目录表用的，理由同上）。"""
-    out = _chain(tmp_path, monkeypatch, fail_on=1)
+    """`steer_missed` 那一条的场景（同一个目录表用的，理由同上）。
+
+    ⚠️ 走 `/say`（不是预先塞进队里）：**只有被承诺过直达的话**才说得出口「没送到」
+    （回归 2 / NEW-1 改准的那一格）—— 预先塞进去的那些没有 `promised`，服务从没答应过。
+    """
+    out = _chain(tmp_path, monkeypatch, fail_on=1, queued_first=False)
+    _say(out)
     out["go"].set()
     _settle(out["client"])
     return set(_kinds(out))
@@ -605,6 +623,7 @@ def test_the_words_reach_the_model_over_the_real_chain(tmp_path, monkeypatch):
                for m in seen if m.get("role") == "user"), seen
     kinds = [e["kind"] for e in out["job"].timeline.all()]
     assert "steer_landed" in kinds, kinds
+    assert "steer_missed" not in kinds, "真送到了的话**不许**再报一次「没送到」"
     assert out["job"].inbox[0]["delivered"] is True, "真交出去了 ⇒ 那一条翻成已送出"
 
 
@@ -652,10 +671,12 @@ def test_say_after_a_stop_is_pressed_end_to_end(tmp_path, monkeypatch):
     _settle(client)
     kinds = _kinds(out)
     assert "steer_landed" not in kinds, "下一轮根本没发生 ⇒ 不许说「已经交给它了」"
-    assert "steer_missed" in kinds, "话没送到这件事**必须有**一条（不然就是静默）"
-    missed = [e for e in out["job"].timeline.all() if e["kind"] == "steer_missed"][0]
-    assert SAID in missed["data"]["text"], missed
+    # ⚠️ 也**不许**报「没送到」（回归 2 / NEW-1）：这一句 `promised` 那一格**没盖上**
+    #    （`/say` 当时回的是排队，页面那一行也是「排队」）—— 服务从没答应过直达，
+    #    到头了再去替它收回一句没给过的承诺，就是编话（理由句也会指错事）。
+    assert "steer_missed" not in kinds, kinds
     assert out["job"].inbox[0]["delivered"] is False
+    assert out["job"].inbox[0].get("promised") is False, out["job"].inbox[0]
     assert service.Service._unsent_texts(out["job"].inbox) == [SAID], "话没丢：`/again` 会带上"
 
 
@@ -666,8 +687,12 @@ def test_words_said_after_the_last_round_are_reported_missed(tmp_path, monkeypat
     （这是这条通道的固有形状，不是漏判）：所以 `delivered` 照旧承诺。**承诺兑现不了，
     就必须在结尾说出来**（F1b 的正身：丢的不是话，是那句承诺）。
     """
+    # ⚠️ `block_if`：这句开场白只有**这一趟**有 —— 别的 job（同会话里别的用例留下的）
+    #    也会从这个桩上取客户端，不认准的话它会先把「卡住」做掉（复审的 H 脚本就这么串过味：
+    #    跑整份文件时 `ready` 是**别人**置的，于是 `/say` 落在探路开始之前，结论整个反过来）。
     out = _chain(tmp_path, monkeypatch, block_first=True, queued_first=False,
-                 turns=[{"content": "我探完了"}])
+                 turns=[{"content": "我探完了"}],
+                 block_if=_H_GOAL, brief_over={"goal": _H_GOAL})
     out["go"].set()                                  # 放它进 explore
     assert out["ready"].wait(10), "桩模型没卡在第 1 轮 create 里"
     body = _say(out)                                 # ← 此刻 `steer()` 已经问过了
@@ -678,6 +703,8 @@ def test_words_said_after_the_last_round_are_reported_missed(tmp_path, monkeypat
     kinds = _kinds(out)
     assert "steer_landed" not in kinds, "那句话从没进过任何一次调用 ⇒ 不许说交给它了"
     assert "steer_missed" in kinds, "承诺过「直达」而没送到 ⇒ 结尾必须说"
+    missed = [e for e in out["job"].timeline.all() if e["kind"] == "steer_missed"][0]
+    assert service.STEER_MISSED_ENDED_SAY in missed["say"], missed["say"]
     # 判据全落在**这个 job 自己**身上（不扫桩）：`steer_landed` 与 `delivered` 都只在
     # 「那一轮真的发出去了」时才落（F2③），所以「没有那一条 + 还留在队里」= 它确实没见过
     # —— 而上面那条 `steer_missed` 把这件事说了出来。
@@ -693,7 +720,9 @@ def test_the_round_that_dies_takes_neither_the_words_nor_the_truth_with_it(tmp_p
     现在三样都对：① 话还在队里（`/again` 与页面都还看得见）；② 时间线有一条**说清那一轮
     没发出去**；③ 「已经交给它了」**根本没记**（那条消息没发出去，就没什么可「已经」的）。
     """
-    out = _chain(tmp_path, monkeypatch, fail_on=1)
+    out = _chain(tmp_path, monkeypatch, fail_on=1, queued_first=False)
+    out["say"] = _say(out)            # ← 走 `/say`：探路里跑着 ⇒ 承诺了直达（`promised`）
+    assert out["say"]["delivered"] is True, out["say"]
     out["go"].set()
     _settle(out["client"])
     job = out["job"]
@@ -703,7 +732,8 @@ def test_the_round_that_dies_takes_neither_the_words_nor_the_truth_with_it(tmp_p
     assert "steer_landed" not in kinds, "那一次调用失败了 ⇒ 不许说「已经交给它了」（F2③）"
     assert "steer_missed" in kinds, "F2②：那一轮没发出去这件事必须说"
     missed = [e for e in job.timeline.all() if e["kind"] == "steer_missed"][0]
-    assert SAID in missed["data"]["text"] and "没看到" in missed["say"], missed
+    assert SAID in missed["data"]["text"], missed
+    assert service.STEER_MISSED_DIED_SAY in missed["say"], missed["say"]
     # F2①：话没丢 —— `/again` 与页面都还看得见它
     assert job.inbox[0]["delivered"] is False
     assert service.Service._unsent_texts(job.inbox) == [SAID], "`/again` 必须还带得上这句"
@@ -711,21 +741,84 @@ def test_the_round_that_dies_takes_neither_the_words_nor_the_truth_with_it(tmp_p
     assert [x["text"] for x in live["input"]["queued"]] == [SAID], live["input"]
 
 
-def test_words_still_waiting_at_a_gate_are_not_reported_as_missed(tmp_path, monkeypatch):
-    """反面（**防滥报**）：还没到头的 job（停在闸上等人）**不许**说「没送到」。
+def _gate_graph(interrupts=True, end_reason=""):
+    """一跳停在闸上（`interrupts=True`）或者一跳就**到头**（`end_reason` 非空 = 撞上限那种）。"""
+    return FakeGraph(steps=[_Snap(values={"site": SITE, "visits": ["intake"],
+                                          "end_reason": end_reason,
+                                          "end_note": "打回 2 次还是同样的地方不过。"},
+                                  interrupts=((_gate("draft"),) if interrupts else ()))])
 
-    停在闸上的那几句是**正常的排队**：页面下一屏就把它们摆进输入框，人按一下才送。
-    在那儿说「它没看到」是**假话**（它只是还没轮到），也正是「没有静默的路径」反过来那半边：
-    该说的时候要说，**不该说的时候不许说**。
+
+def test_words_that_were_never_promised_are_not_reported_as_missed(tmp_path, monkeypatch):
+    """**防滥报（NEW-1 / O1）**：服务**从没承诺过直达**的话，到头了也**不许**报「没送到」。
+
+    判据是**那句话当初是按哪条路收下的**（条目上那一格 `promised`），不是「队里还有没有话」：
+    排队收下的那些，`/say` 当时说的就是「到下一道闸进输入框，按一下才送」——**那本来就是诚实的**
+    （R1），到头了再去替它收回一句从没给过的承诺，就是**编话**（而且会把那两句理由句也说错：
+    「这一趟探路结束了 / 那一轮没发出去」跟它没发生过的事对不上）。
+    ⚠️ 这一跳必须**真的到头**（`end_reason` 非空 —— 停在闸上不算到头），不然什么都没量到。
     """
-    client, svc = _wired_client(tmp_path, monkeypatch)     # ⚠️ 开关**打开**：不开的话那一笔根本
-    job = _registered_job(svc, job_id="job-gate")          #    不说话，这条测试就什么都没量
-    _queued(job, SAID)
-    job.graph = FakeGraph(steps=[_Snap(values={"site": SITE, "visits": ["intake"],
-                                               "end_reason": "", "end_note": ""},
-                                       interrupts=(_gate("draft"),))])
+    client, svc = _wired_client(tmp_path, monkeypatch)
+    job = _registered_job(svc, job_id="job-gate", stage="draft")   # ⚠️ 不在探路里 ⇒ `/say` 只排队
+    _queued(job, SAID)                                             #（没盖 `promised` 那一格）
+    job.graph = _gate_graph(interrupts=False, end_reason="lint_cap")
 
-    svc._advance(job, None)                       # 这一跳停在 `draft` 那道闸上（还没到头）
+    svc._advance(job, None)
+
+    assert "cap_hit" in [e["kind"] for e in job.timeline.all()], "这一跳真的到头了（撞上限）"
+    assert "steer_missed" not in [e["kind"] for e in job.timeline.all()]
+    assert job.inbox[0]["delivered"] is False, "它当然没送到 —— 但**没人承诺过**，所以不报"
+
+
+def test_a_promise_that_died_at_a_gate_is_taken_back(tmp_path, monkeypatch):
+    """**承诺了却停在闸上（NEW-1 / O2）** ⇒ 那一刻就要收回（不是等到「到头」）。
+
+    承诺过「直达下一轮」的话，如果这一趟**在它下一次问模型之前就停在闸上了**，
+    那就是「没直达」——两个出口（到头 **或** 停在闸上）都得说，不然承诺就烂在时间线上了。
+    ⚠️ 停在闸上时那几句**还有个去处**（页面把它们摆进输入框，人按一下才送）—— 这句要说全。
+    """
+    client, svc = _wired_client(tmp_path, monkeypatch)
+    job = _registered_job(svc, job_id="job-gate")                  # 探路里跑着 ⇒ `/say` 会承诺直达
+    client.post("/job/job-gate/say", json={"text": SAID})
+    assert job.inbox[0].get("promised") is True, "承诺过的条目要盖那一格：%r" % job.inbox[0]
+    job.graph = _gate_graph()
+
+    svc._advance(job, None)                                       # 停在 `draft` 那道闸上
+
+    missed = [e for e in job.timeline.all() if e["kind"] == "steer_missed"]
+    assert len(missed) == 1, [e["kind"] for e in job.timeline.all()]
+    assert SAID in missed[0]["data"]["text"], missed[0]
+    assert "停在闸上" in missed[0]["say"], missed[0]["say"]
+    assert job.inbox[0]["delivered"] is False
+
+
+def test_the_same_sentence_is_not_taken_back_twice(tmp_path, monkeypatch):
+    """**同一句话只说一次（C7）**：停在闸上说了一次，后来这一趟到头了**不许**再说一遍。"""
+    client, svc = _wired_client(tmp_path, monkeypatch)
+    job = _registered_job(svc, job_id="job-gate")
+    client.post("/job/job-gate/say", json={"text": SAID})
+    job.graph = _gate_graph()
+    svc._advance(job, None)                                       # 停在闸上 ⇒ 收回一次
+
+    job.graph = _gate_graph(interrupts=False, end_reason="lint_cap")
+    svc._advance(job, None)                                       # 这一跳到头了
+
+    said = [e for e in job.timeline.all() if e["kind"] == "steer_missed"]
+    assert len(said) == 1, "同一句话说了两遍：%r" % [e["say"] for e in said]
+
+
+def test_words_still_queued_at_a_gate_are_not_reported_as_missed(tmp_path, monkeypatch):
+    """反面（**防滥报**）：没承诺过的话停在闸上 —— 一个字都不说（那是**正常的排队**）。
+
+    停在闸上的那几句：页面下一屏就把它们摆进输入框，人按一下才送。在那儿说「它没看到」
+    是**假话**（它只是还没轮到）—— 「该说的要说」的另外半边。
+    """
+    client, svc = _wired_client(tmp_path, monkeypatch)
+    job = _registered_job(svc, job_id="job-gate", stage="draft")   # 不在探路里 ⇒ 只排队
+    _queued(job, SAID)
+    job.graph = _gate_graph()
+
+    svc._advance(job, None)
 
     assert "steer_missed" not in [e["kind"] for e in job.timeline.all()]
     live = _live(client, "job-gate")

@@ -1373,15 +1373,17 @@ def _intent_hits(text: str):
 _FORBIDDEN_MARK = "[禁语]"
 
 #: 唯一允许**从条目上读**那两个键的几个函数（＝判据的纯核）。别处读 = 又抄了一份判据。
-_CRITERIA_HOME = {"_waiting_entries", "_delivered_by", "_unsent_texts"}
+_CRITERIA_HOME = {"_waiting_entries", "_delivered_by", "_unsent_texts", "_steer_promised"}
 
 #: 三个纯核**各自**该被算到几次（修复轮 5 / 加固①）——「总数 ≥ N」两头都挡不住：
 #: 掉**一条**读键（4 → 3）它还绿；往纯核**内部**再塞一份副本反而把计数**推大**（4 → 5），
 #: 哨兵被喂饱。逐个对账才两头都挡（两条都量过，见报告 §修复轮 5）。
-_CRITERIA_READS = {"_waiting_entries": 2, "_delivered_by": 1, "_unsent_texts": 1}
+_CRITERIA_READS = {"_waiting_entries": 2, "_delivered_by": 1, "_unsent_texts": 1,
+                   # Task 9 回归 2 加的第四个：`promised` + `delivered` 各一次
+                   "_steer_promised": 2}
 
 #: 条目上表示状态的键。
-_ENTRY_KEYS = {"delivered", "superseded"}
+_ENTRY_KEYS = {"delivered", "superseded", "promised"}
 
 #: 唯二的两个**同名不同物**的例外：`/job/{id}` 的投影 `view` 与 checkpoint 的 `values`
 #: 里也有一个 `delivered`（那是「这一趟的产物送到没有」，**不是** `inbox` 条目的那一格）。
@@ -1548,6 +1550,9 @@ def test_the_criteria_guard_sees_every_position():
                            ' if not y.get("delivered")])(i)\n',
         "读键的接收者本身叫 view（在别的函数里）": 'def f(view):\n    return view.get("delivered")\n',
         "读键的接收者本身叫 values（在别的函数里）": 'def f(values):\n    return values.get("delivered")\n',
+        # Task 9 回归 2 加的那一格（`promised`）也在守里 —— 新键不是「没人看的一格」
+        "新键 promised（模块级）": 'X = [x for x in [] if x.get("promised")]\n',
+        "新键 promised（函数里、位置不对）": 'def f(xs):\n    return [e for e in xs if e.get("promised")]\n',
     }.items():
         bad, _seen, _by = _criteria_in_tree(ast.parse(src), "<合成>")
         assert bad, "「%s」里的判据没被扫出来（副本身份就这么混过去了）：%s" % (why, src)
@@ -1559,6 +1564,8 @@ def test_the_criteria_guard_sees_every_position():
                                         '    return values.get("delivered")\n',
         "三个纯核自己": 'def _waiting_entries(xs):\n'
                         '    return [e for e in xs if not e.get("delivered")]\n',
+        "第四个纯核自己": 'def _steer_promised(xs):\n'
+                          '    return [e for e in xs if e.get("promised") and not e.get("delivered")]\n',
     }.items():
         bad, seen, by = _criteria_in_tree(ast.parse(src), "<合成>")
         assert bad == [], "「%s」被误伤了：%r" % (why, bad)
