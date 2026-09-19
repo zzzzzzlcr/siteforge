@@ -1282,9 +1282,11 @@ def test_again_on_a_run_that_blew_up_carries_the_words_too(tmp_path):
 # `Job.inbox` 那一个 gloss，同一族的另外三处 docstring 原样过审）。所以这一节的两道守
 # **都不是钉字面的**：
 #   · `…criteria_live_in_exactly_one_place` 按 **AST** 扫，问的是「还有没有别的地方
-#     自己在读那两个键」—— 将来在**任何**位置冒出手写的判据（换写法也算）都会红；
-#   · `…intent_…` 两条问的是「这句话是不是在**替他编一个他没做过的动作**」，
-#     词表在 `_INTENT_PHRASES`（加词只改那一处），不是只禁「你改口了」这一个词。
+#     自己在读那两个键」—— 将来在 `agent/*.py` 的**任何位置**（含模块级 / 类体 / lambda）、
+#     用**任何写法**冒出手写的判据都会红；⚠️ 但「任何」到此为止，**四条量过的盲路**照实列在
+#     那条用例的 docstring 里（键名不写字面量 / `getattr` / 位置下标 / 别的目录）；
+#   · `…intent_…` 三条问的是「这句话是不是在**替他编一个他没做过的动作**」，
+#     词表在 `_INTENT_PATTERNS`（加词只改那一处），不是只禁「你改口了」这一个词。
 
 #: 「**替他编一个他没做过的动作**」这一族的话（F3/F4 那一类）—— **正则片段**，不是字面。
 #: 服务**不知道**他屏幕上画的是哪一句、也不知道他心里想什么 —— 这些话都不是观察语。
@@ -1303,8 +1305,31 @@ _INTENT_PATTERNS = (
     r"改主意", r"反悔", r"变卦", r"作废",
     r"不[要想愿][^。，；：]{0,6}了",     # 不要了 / 不要它了 / 不想要了 / 不愿要了 …
     r"摆在他面前", r"上过他的屏", r"别再摆给我看",
+    # 修复轮 5 / N1：**猜他心里怎么想**也是这一族（服务观察不到）——「想不想要」原先只写在
+    # `service.py` 那段散文的「词表」里、表里没有它（量过：不认）。它正是前两轮从 `Job.inbox`
+    # 的 gloss 里拿掉的那个词（「他还想不想要」→「这一句还摆不摆给他」）⇒ 下一个人最可能
+    # 以为它被守着。这两处现在是**一处**：散文点名的那七个字由哨兵逐个断言。
+    r"想不想要",
 )
 _INTENT_RE = re.compile("|".join(_INTENT_PATTERNS))
+
+
+def _glossed_words_in_service():
+    """从 `service.py` 的那段散文里**读**出它点名的词 —— **不手抄**（手抄就是又一个「两个名字」）。
+
+    那一行（`HUMAN_SAID_SUPERSEDED_SAY` 上面那一段）自称是这一族的「词表」，形如
+    `#: 改口 / 不要了 / … / 别再摆给我看 … [禁语]`。⚠️ **修复轮 5 / N1**：它原先点着
+    「想不想要」，而 `_INTENT_PATTERNS` 里**没有**这个词（量过：`_intent_hits("想不想要")` ⇒ `[]`）
+    —— 那句「词表」当时是**推**出来的。现在散文点一个、哨兵就问一遍「表里认不认」。
+    """
+    for line in pathlib.Path(service.__file__).read_text(encoding="utf-8").splitlines():
+        if not (line.lstrip().startswith("#:") and _FORBIDDEN_MARK in line and " / " in line):
+            continue
+        body = line.split("——")[-1].split(_FORBIDDEN_MARK)[0].strip().lstrip("#:").strip()
+        words = [w.strip() for w in body.replace("…", " ").split("/") if w.strip()]
+        if len(words) >= 3:
+            return words
+    return []
 
 
 def _intent_hits(text: str):
@@ -1318,13 +1343,22 @@ _FORBIDDEN_MARK = "[禁语]"
 #: 唯一允许**从条目上读**那两个键的几个函数（＝判据的纯核）。别处读 = 又抄了一份判据。
 _CRITERIA_HOME = {"_waiting_entries", "_delivered_by", "_unsent_texts"}
 
+#: 三个纯核**各自**该被算到几次（修复轮 5 / 加固①）——「总数 ≥ N」两头都挡不住：
+#: 掉**一条**读键（4 → 3）它还绿；往纯核**内部**再塞一份副本反而把计数**推大**（4 → 5），
+#: 哨兵被喂饱。逐个对账才两头都挡（两条都量过，见报告 §修复轮 5）。
+_CRITERIA_READS = {"_waiting_entries": 2, "_delivered_by": 1, "_unsent_texts": 1}
+
 #: 条目上表示状态的键。
 _ENTRY_KEYS = {"delivered", "superseded"}
 
 #: 唯二的两个**同名不同物**的例外：`/job/{id}` 的投影 `view` 与 checkpoint 的 `values`
 #: 里也有一个 `delivered`（那是「这一趟的产物送到没有」，**不是** `inbox` 条目的那一格）。
-#: ⇒ 守按**接收者名字**放行这两个（别的名字一律要落在 `_CRITERIA_HOME` 里）。
-_NOT_INBOX_RECEIVERS = {"view", "values"}
+#: ⇒ 守按「接收者名字 **+ 它出现在哪个函数里**」放行这两个（别的名字一律要落在 `_CRITERIA_HOME` 里）。
+#: ⚠️ **修复轮 5 / 加固②**：原先**只按接收者名字**放行 ⇒ 任何一条**条目**只要那个变量叫
+#: `view` / `values` 就自动免检，而 `view` 正是这个文件里最常见的名字
+#: （量过：在别的函数里写 `view.get("delivered")`（`view` 是一条条目）⇒ 旧守**全绿**）。
+#: 现在还要**出现在下面点名的那个函数里** —— 名字对、地方不对 ＝ 野的。
+_NOT_INBOX_RECEIVERS = {"view": ("live", "runs"), "values": ("_measure_after",)}
 
 
 def _agent_python_files():
@@ -1350,27 +1384,73 @@ def _entry_key_read(node):
 
 
 def _criteria_outside_their_home():
-    """全仓扫一遍：**从条目上读那两个键**的地方有没有跑到那三个纯核外面。
+    """扫 `agent/` 下那一层 `*.py`：**从条目上读那两个键**的地方有没有跑到那三个纯核外面。
 
-    导出 `(野的清单, 正经判据处数)`。⚠️ 这一扫**不认写法**：不推导式也认（普通 `if` 也认），
-    所以「换一种筛法」躲不过去 —— 躲得过去的只有「不读这两个键」。
+    导出 `(野的清单, 正经判据处数, 每个纯核各被算到几次)`。
+    ⚠️ 这一扫**不认写法**：不推导式也认（普通 `if` 也认），所以「换一种筛法」躲不过去
+    —— 躲得过去的只有「不读这两个键」。
     """
-    bad, seen_home = [], 0
+    bad, seen_home, by_core = [], 0, {}
     for path in _agent_python_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for func in ast.walk(tree):
-            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        b, n, c = _criteria_in_tree(ast.parse(path.read_text(encoding="utf-8")), path.name)
+        bad += b
+        seen_home += n
+        for name, k in c.items():
+            by_core[name] = by_core.get(name, 0) + k
+    return bad, seen_home, by_core
+
+
+def _nearest_named_function(node, parents):
+    """从这一处往外找**最近的具名函数**的名 —— 模块级 / 类体 / 类体里的 lambda ⇒ `None`。
+
+    ⚠️ **修复轮 5 / N3**：原先是「只遍历 `FunctionDef`」，所以**不在任何函数里**的三处
+    （模块级 / 类体 / 类体里的 lambda）**整个跳过**（量过：三处全绿）。现在按**位置**判。
+    """
+    cur = parents.get(node)
+    while cur is not None:
+        if isinstance(cur, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return cur.name
+        cur = parents.get(cur)
+    return None
+
+
+def _criteria_in_tree(tree, filename):
+    """扫**一棵** AST：哪些地方从条目上读了那两个键、而**不在**那三个纯核里。
+
+    导出 `(野的清单, 正经判据处数, 每个纯核各被算到几次)`。
+    ⚠️ **位置**也算（修复轮 5 / N3）：最近的具名函数不在 `_CRITERIA_HOME` 里就是野的
+    —— 包括**不在任何具名函数里**的（模块级 / 类体 / 类体里的 lambda），也包括**嵌在纯核里的
+    另一个函数**（它自己就是最近的具名函数）。
+    ⚠️ 够不着的四条（**量过全绿**，不是「挡得住」）：键名不写字面量 / `getattr` / 位置下标 /
+    `agent/` 单层以外的一切（子目录、`tests/`、别的目录）。
+    """
+    bad, seen_home, by_core = [], 0, {}
+    parents = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+    for node in ast.walk(tree):
+        receiver = _entry_key_read(node)
+        if receiver is None:
+            continue
+        home = _nearest_named_function(node, parents)
+        if receiver in _NOT_INBOX_RECEIVERS:
+            if home in _NOT_INBOX_RECEIVERS[receiver]:
                 continue
-            for node in ast.walk(func):
-                receiver = _entry_key_read(node)
-                if receiver is None or receiver in _NOT_INBOX_RECEIVERS:
-                    continue
-                if func.name in _CRITERIA_HOME:
-                    seen_home += 1
-                else:
-                    bad.append("%s:%d 在 `%s` 里从条目上读了 %s"
-                               % (path.name, node.lineno, func.name, ast.unparse(node)))
-    return bad, seen_home
+            bad.append("%s:%d 在 `%s` 里从条目上读了 %s —— 接收者叫 `%s`，但那两个**同名不同物**的"
+                       "读键只许出现在 `%s` 里"
+                       % (filename, node.lineno, home or "（不在任何函数里）",
+                          ast.unparse(node), receiver,
+                          " / ".join(_NOT_INBOX_RECEIVERS[receiver])))
+        elif home in _CRITERIA_HOME:
+            seen_home += 1
+            by_core[home] = by_core.get(home, 0) + 1
+        else:
+            bad.append("%s:%d 在 `%s` 里从条目上读了 %s"
+                       % (filename, node.lineno,
+                          home or "（不在任何函数里：模块级 / 类体 / lambda）",
+                          ast.unparse(node)))
+    return bad, seen_home, by_core
 
 
 def test_the_inbox_criteria_live_in_exactly_one_place():
@@ -1385,20 +1465,84 @@ def test_the_inbox_criteria_live_in_exactly_one_place():
     这里问的是**「还有没有别的地方**从条目上读**那两个键」** —— 换写法躲不过
     （量过：`x.get("delivered")` / `x["delivered"] is False` / 先 `_e = job.inbox` 再筛，**都红**，
     见报告 §三 的 `R4a`/`R4c`/`R4c2`）。
-    ⚠️ 它的射程到此为止 —— 量过的三条**躲得过去**的路（都在报告 §四 里照实记了）：
-    ①键名不写字面量（`_k = "delivered"; x.get(_k)`）；②`getattr(x, "delivered")`；
-    ③条目换成位置结构（`x[2]`）。这三条今天一条都没有，但它们**不会响**。
+    ⚠️ **射程（修复轮 5 / N3 收准 —— 逐条量过，不是推的）**：
+      ✅ `agent/` 那一层 `*.py` 里**任何位置**：模块级 / 类体 / 类体里的 lambda / 任何函数名 /
+         任何写法（推导式、`if`、先存一格、下标、另一个模块、嵌 `def`、默认参数）；
+      ✅ `view` / `values` 的豁免是「**名字 + 它出现在哪个函数里**」——名字对、地方不对就是野的。
+      ❌ **仍躲得过去**（四条，全部量过**全绿**）：①键名不写字面量（`_k = "delivered"; x.get(_k)`）；
+         ②`getattr(x, "delivered")`；③条目换成位置结构（`x[2]`）；
+         ④ `agent/` **单层**以外的一切（子目录、`tests/`、别的目录）。
+      合成源码的正/反控在 `…sees_every_position`；真文件里那几条由变异证明（报告 §修复轮 5）。
     ⚠️ 两个**同名不同物**的例外写在 `_NOT_INBOX_RECEIVERS`（`view` / `values` 里那个
-    `delivered` 说的是「这一趟的产物送到没有」，与 `inbox` 无关）—— 不加这两个名字，
-    这一条会在 `/runs` 那一行**假红**。
+    `delivered` 说的是「这一趟的产物送到没有」，与 `inbox` 无关）—— 不豁免这两处，
+    这一条会**假红 4 处**（`live` 两处 + `runs` 一处 + `_measure_after` 一处；量过）。
     """
-    bad, seen_home = _criteria_outside_their_home()
+    bad, seen_home, by_core = _criteria_outside_their_home()
     assert not bad, ("队里那两个键被读的地方不止一处 —— 判据又有副本了：\n  %s\n"
                      "（判据只在 `%s` 里；要改口径改那儿，别在调用点再抄一份）"
                      % ("\n  ".join(bad), " / ".join(sorted(_CRITERIA_HOME))))
     # ⚠️ 哨兵：证明这一扫**真的在看东西**（判据被删光时，上面那句「没有野的」会**静默变真**）
-    assert seen_home >= 3, ("只扫到 %d 处正经判据 —— 那三个纯核不见了？"
+    # 修复轮 5 / 加固①：原先 `>= 3` 松一格（今天就是 4 —— 掉 1 条读键还剩 3 ⇒ 哨兵**不响**）。
+    assert seen_home >= 4, ("只扫到 %d 处正经判据 —— 那三个纯核不见了？"
                             "（这一扫要是空的，上面那条断言什么都没证明）" % seen_home)
+    # ⚠️ 光有总数不够（修复轮 5 / 加固①）：往纯核**内部**再塞一份漂移副本会把计数**推大**
+    # （4 → 5），哨兵反而**被喂饱**（量过：那种形状下旧哨兵全绿）。逐个纯核对账，两头都挡：
+    # 掉一条读键 → 少一个计数；塞副本 → 多一个计数；纯核被掏空 → 那一格没了。
+    assert by_core == _CRITERIA_READS, (
+        "三个纯核各自该被算到几次对不上：量到 %r，该是 %r —— 要么某个纯核不再读那两个键了"
+        "（判据被掏空/改坏了），要么有人在纯核里又塞了一份副本（两份会**静默分岔**）。"
+        "**照实改了就一起改 `_CRITERIA_READS`**，别只把数调过去。" % (by_core, _CRITERIA_READS))
+
+
+def test_the_criteria_guard_sees_every_position():
+    """守看得见**不在任何函数里**的判据、也看得见**接收者名字冒充**的（修复轮 5 / N3）。
+
+    复审 4 量到的四条盲路（当时**都没自认**，我逐条重量过，都**全绿**）：
+    ① **模块级**（不在任何函数里）；② **类体**；③ **类体里的 lambda**（lambda 体不是 `FunctionDef`
+    —— 原先那一扫只走 `FunctionDef`，这三处整个跳过）；
+    ④ **接收者名字**放行：`view` / `values` 只按**变量名**免检 ⇒ 一条**条目**只要那个变量叫
+    `view` 就自动过（量过：`view.get("delivered")` **绿**）。⚠️ 复审举的那个例子
+    （`[e for e in view if e.get("delivered")]`）**当时就是红的** —— 读键的接收者是 `e`，
+    不是 `view`；真正躲得过去的是「**读键的接收者本身**叫 `view`/`values`」那一种。
+    这一条拿**合成源码**把这两件事钉住（真文件里那五条由变异证明，见报告 §修复轮 5）。
+    ⚠️ 下面那两段**照实钉住它够不着的地方**（不是「挡得住」）。
+    """
+    for why, src in {
+        "模块级": 'X = [x for x in [] if not x.get("delivered")]\n',
+        "类体": 'class A:\n    X = [x for x in [] if not x.get("superseded")]\n',
+        "类体里的 lambda": 'class A:\n    x = staticmethod('
+                           'lambda i: [y for y in i if not y.get("delivered")])\n',
+        "函数里的 lambda": 'def f(i):\n    return (lambda j: [y for y in j'
+                           ' if not y.get("delivered")])(i)\n',
+        "读键的接收者本身叫 view（在别的函数里）": 'def f(view):\n    return view.get("delivered")\n',
+        "读键的接收者本身叫 values（在别的函数里）": 'def f(values):\n    return values.get("delivered")\n',
+    }.items():
+        bad, _seen, _by = _criteria_in_tree(ast.parse(src), "<合成>")
+        assert bad, "「%s」里的判据没被扫出来（副本身份就这么混过去了）：%s" % (why, src)
+    # 反方向：那两处**同名不同物**的读键、以及三个纯核自己，不许被误伤
+    for why, src in {
+        "live 里读投影 `view`": 'def live(view):\n    return view.get("delivered")\n',
+        "runs 里读投影 `view`": 'def runs(view):\n    return view.get("delivered")\n',
+        "_measure_after 里读 `values`": 'def _measure_after(values):\n'
+                                        '    return values.get("delivered")\n',
+        "三个纯核自己": 'def _waiting_entries(xs):\n'
+                        '    return [e for e in xs if not e.get("delivered")]\n',
+    }.items():
+        bad, seen, by = _criteria_in_tree(ast.parse(src), "<合成>")
+        assert bad == [], "「%s」被误伤了：%r" % (why, bad)
+    # ⚠️ 它**够不着**的四条（前三条是复审自认的，第四条是豁免机制自己的窄缝；都重量过：绿）
+    for why, src in {
+        "键名不写字面量": 'def f(xs):\n    k = "delivered"\n    return [e for e in xs if e.get(k)]\n',
+        "getattr": 'def f(xs):\n    return [e for e in xs if not getattr(e, "delivered")]\n',
+        "位置下标": 'def f(xs):\n    return [e for e in xs if not e[2]]\n',
+        # 名字对、**地点也对**（在 `live` 里）⇒ 一律放行 —— 哪怕那儿读的其实是一条**条目**
+        # （AST 分不出「投影」与「条目」；加固②之后**仍然**是这么放的，照实钉住）
+        "在 live 里读一个叫 view 的东西": 'def live(view):\n    return view.get("superseded")\n',
+    }.items():
+        bad, _seen, _by = _criteria_in_tree(ast.parse(src), "<合成>")
+        assert bad == [], ("「%s」量过是**绿的**（守够不着的路，报告里照实记着）——"
+                           "它要是变红了：把这一条改成正向断言，并更新那条用例的 docstring"
+                           "与报告 §射程" % why)
 
 
 def test_the_two_places_that_ask_who_is_waiting_agree(tmp_path):
@@ -1450,6 +1594,19 @@ def test_the_intent_guard_really_matches_the_variants_it_claims():
     assert _intent_hits("他不想要了"), "同一族的另一个变体也得认"
     assert _intent_hits("这一句摆在他面前过"), "「上过他的屏」那一类假断言也要认"
     assert _intent_hits("他说「别再摆给我看了」"), "替人编一句他没说过的话也要认"
+    # ⚠️ 修复轮 5 / N1：`service.py` 那段散文（`HUMAN_SAID_SUPERSEDED_SAY` 上面那一段）
+    # 自称是「词表」，它**逐个点名**的那些字就**必须**每个都被认出来 —— 否则那一行是**推**出来的，
+    # 不是量出来的（当时「想不想要」写在那一行里、表里没有它；而它正是前两轮从 `Job.inbox` 的
+    # gloss 里拿掉的那个词 ⇒ 下一个人**最可能**以为它被守着）。
+    # ⚠️ 这份名单**从散文里读**（`_glossed_words_in_service`），**不手抄** —— 手抄就是又一个
+    # 「一个事实两个名字」，而这一片的病正是那个。
+    _glossed = _glossed_words_in_service()
+    assert len(_glossed) >= 3, (
+        "`service.py` 那段自称「词表」的散文没读出来（它被改了形？）：%r" % (_glossed,))
+    for _w in _glossed:
+        assert _intent_hits(_w), (
+            "`service.py` 那段散文点名的「%s」必须真的被认出来（认不出就把那一行改准，"
+            "或者把它收进 `_INTENT_PATTERNS`）" % _w)
     # 反方向：正当用法不许被扫进来（不然这一条会把好句子判红，久了就没人信它）
     assert _intent_hits("要改口径就改这里") == [], "「改口径」是行话（改判据），不是意图语"
     assert _intent_hits("队里还有没有还等着送的话，要不要提它一句") == [], "「要不要」是没决定，不是改主意"
@@ -1474,6 +1631,57 @@ def test_the_forbidden_intent_words_only_appear_on_marked_lines():
         % (_FORBIDDEN_MARK, "\n  ".join(bad)))
 
 
+def _string_assembly_text(node):
+    """这一处是不是**在同一处表达式里拼字符串** —— 是就返回「各段字面量接起来」的串。
+
+    ⚠️ **过度近似**：接缝里的东西（`str(1)` / `{}` 那些）被丢掉。方向是**保守的**
+    （宁可假红，不可漏），因为这一族的形状 `不[要想愿][^。，；：]{0,6}了` 本来就允许 ≤6 字的缝。
+    """
+    if isinstance(node, ast.JoinedStr):        # f-string
+        return "".join(v.value for v in node.values
+                       if isinstance(v, ast.Constant) and isinstance(v.value, str))
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        parts, stack = [], [node]
+        while stack:
+            cur = stack.pop(0)
+            if isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
+                stack = [cur.left, cur.right] + stack
+            elif isinstance(cur, ast.Constant) and isinstance(cur.value, str):
+                parts.append(cur.value)
+        return "".join(parts)
+    return None
+
+
+def _human_facing_intent_hits(tree):
+    """人话（**给运营看的字符串**）里出现的意图语 —— 逐条 `"service.py:行 命中 —— 原文"`。
+
+    认两种：①字符串**字面量**；②**同一处表达式里拼出来**的串（`+` 链 / f-string）。
+    ⚠️ ②是**修复轮 5 / N2** 补的：原先只认字面量 ⇒ `"你不要" + str(1) + "它了"` 这种
+    拆开再拼的写法**整体绕过**（成品串画到屏上、谓词也认得出，两道守却全绿 —— 复审 4 量到）。
+    ⚠️ **它看不见的**：跨语句拼（先存进变量）、`"".join([...])`、从别处读来的串 ——
+    这几条量过**全绿**，见 `…sees_text_assembled_in_one_place` 与报告 §修复轮 5。
+    """
+    prose = {id(n.value) for n in ast.walk(tree)
+             if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+             and isinstance(n.value.value, str)}
+    bad = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if id(node) in prose:
+                continue
+            text, where = node.value, "字面量"
+        else:
+            text = _string_assembly_text(node)
+            if not text:
+                continue
+            where = "拼出来的"
+        hit = _intent_hits(text)
+        if hit:
+            bad.append("service.py:%d %s %s —— %s"
+                       % (node.lineno, hit, where, text.strip()[:90]))
+    return bad
+
+
 def test_no_human_facing_text_attributes_intent_to_him():
     """**给运营看的话**里一个都不许有（修复轮 4 / F3 的另一半）。
 
@@ -1481,19 +1689,35 @@ def test_no_human_facing_text_attributes_intent_to_him():
     （`narrate` 的句子 / `job.say` / 那些 `*_SAY` 常量全是**字符串字面量**）。
     复审 3 的变异 `R2c`（把「你刚送下去的是别的」换成「你不要它了」，其余一字不动）
     在旧验收上**全绿** —— 那说明旧验收钉的是**那一串字**，不是**那一类**。
+    ⚠️ 射程（修复轮 5 / N2 收准）：字面量 + **同一处表达式里拼出来**的串都认；
+    **跨语句**拼出来的看不见（见 `…sees_text_assembled_in_one_place` 与报告 §修复轮 5）。
     """
-    tree = ast.parse(pathlib.Path(service.__file__).read_text(encoding="utf-8"))
-    prose = {id(n.value) for n in ast.walk(tree)
-             if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
-             and isinstance(n.value.value, str)}
-    bad = []
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
-            continue
-        if id(node) in prose:
-            continue
-        hit = _intent_hits(node.value)
-        if hit:
-            bad.append("service.py:%d %s —— %s" % (node.lineno, hit, node.value.strip()[:90]))
+    bad = _human_facing_intent_hits(ast.parse(pathlib.Path(service.__file__).read_text(
+        encoding="utf-8")))
     assert not bad, ("人话里不许出现这一族的话（它们都在替他编一个他没做过的动作）：\n  %s"
                      % "\n  ".join(bad))
+
+
+def test_the_human_facing_guard_sees_text_assembled_in_one_place():
+    """守看得见**同一处表达式里拼出来**的人话（修复轮 5 / N2）。
+
+    复审 4 量到的那条缝：守原先**逐字符串常量**判 ⇒ 把一句话拆成几段再拼起来
+    （`"你不要" + str(1) + "它了"`）**整体绕过**：成品串画到运营屏上、`_intent_hits(成品)`
+    也认得出（=`['不要1它了']`），两道守却 **2 passed**。这一条拿**合成源码**把「拼出来的也算」
+    钉住（真文件那条路由变异证明，见报告 §修复轮 5）。
+    ⚠️ 下面那半段**照实钉住它看不见的那几种**：它们量过是全绿的，不是「挡得住」。
+    """
+    for why, src in {
+        "同行 `+` 拼": 'SAY = "你不要" + str(1) + "它了"\n',
+        "跨行 `+` 链": 'SAY = ("你不要"\n       + str(1)\n       + "它了")\n',
+        "f-string（接缝里是一个表达式）": 'SAY = f"你不要{str(1)}它了"\n',
+    }.items():
+        hits = _human_facing_intent_hits(ast.parse(src))
+        assert hits, "守没看见%s —— 那条缝还在：%s" % (why, src)
+    for why, src in {
+        "跨语句拼（先存进变量）": 'A = "你不要"\nSAY = A + "1" + "它了"\n',
+        '`"".join([...])`': 'SAY = "".join(["你不要", "1", "它了"])\n',
+    }.items():
+        assert _human_facing_intent_hits(ast.parse(src)) == [], (
+            "%s 这一条**量过是全绿的**（守看不见的残留缝，报告里照实记着）——"
+            "它要是变红了：把这一条改成正向断言，并更新 `service.py` 那段散文与报告" % why)
