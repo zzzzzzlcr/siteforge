@@ -110,6 +110,19 @@ STEP_MARK = 'data-artifact-step="1"'
 DL_MARK = 'data-download="1"'
 
 
+def _thin(text: str) -> tuple:
+    """把服务那句话拆成**它在屏幕上该长的样子**的两段：`(粗体那一段, 它后面那一段)`。
+
+    为什么不整句比：页面的 `rich()` 会把 `**x**` 渲染成 `<b>x</b>`、把换行渲染成 `<br>` ——
+    整句拿去 `in` 是比不中的。按 `**` 拆开的两段各自是**原样**上屏的，所以能直接比
+    （`NO_ART_SAY` 的形状就是「头 `**…**` 尾」）—— 这么写断言直接引用**服务那句话**，
+    它改一个字这一份跟着变，不会两边漂。
+    """
+    parts = str(text).split("**")
+    assert len(parts) == 3, "这句话的形状变了（不再是「头 **粗体** 尾」）：%r" % text
+    return parts[1], parts[2]
+
+
 def _live(status: str, mode: str, *, n: int, stop_requested: bool = False,
           tag: str = "夹具", artifact: dict = None, delivered: bool = False) -> dict:
     """一份 `/live` 正文（**只填这一份夹具要读的那几格**，其余按页面「可能不在」的读法留空）。
@@ -477,8 +490,12 @@ def test_a_run_that_ended_without_an_artifact_says_so_and_offers_no_button(tmp_p
 
     end = out["afterRepaint"]["timeline"]
     assert STEP_MARK in end, "到头了却没产出的那一趟，页面上连那句话都没有：%r" % end
-    assert "没有产出 py" in end, "到头了却没产出的那一趟，页面上没说出这件事：%r" % end
-    assert "撞上限" in end, "说了「没有产出」却没说是**为什么**：%r" % end
+    #: 服务那句「没有可交付的产物」**原样**上屏（两段都不许少 —— 见 `_thin`）
+    bold, tail = _thin(NO_ART_SAY)
+    assert "<b>%s</b>" % bold in end, \
+        "服务那句话的粗体那一段没上屏：%r" % end
+    assert tail[:16] in end, "服务那句话的尾巴没上屏：%r" % end
+    assert "撞上限" in end, "说了「没有产物」却没说是**为什么**：%r" % end
     assert DL_MARK not in end, "没有产物却摆了一个下载（A14 点名不许的形状）：%r" % end
     # 开页时（还在跑）那个位置也不存在 —— 与上一条同一个判据的另一头
     assert STEP_MARK not in out["afterLoad"]["timeline"], out["afterLoad"]

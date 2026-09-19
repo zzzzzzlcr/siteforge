@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import pathlib
 import sys
 
@@ -298,6 +299,12 @@ def test_a_run_that_died_says_it_died_instead_of_pretending_it_never_wrote(tmp_p
     detail = got.json()["detail"]
     assert "跑挂" in detail, detail
     assert "窗口连不上" in detail, "跑挂那句原话要留着：%r" % detail
+    # ⚠️ **服务只说它知道的那件事**（复审 R1）：「跑挂」是它知道的；
+    #    「**没跑到**写下那个文件那一步」**不是** —— 交付之后服务自己那一步也会炸
+    #    （`_capture_pause` 在 `job.status = DONE` 之前），那种一趟**交付过**。
+    #    ⇒ 话说的是「**记录里**没有它写下 py 的证据」（可查的），不是「它没走到那一步」（猜的）。
+    assert "记录里" in detail, "那句话没说是**记录里**有什么（说的是服务不知道的事）：%r" % detail
+    assert "没跑到" not in detail, "又断言了服务不知道的因果（「没跑到那一步」）：%r" % detail
 
 
 def test_a_run_that_has_not_reached_the_writing_step_says_it_is_still_coming(tmp_path):
@@ -323,11 +330,11 @@ def test_a_run_that_has_not_reached_the_writing_step_says_it_is_still_coming(tmp
     assert "没有产出" not in detail, "它还没跑到那儿，说成「没有产出」就是假话：%r" % detail
 
 
-def test_a_delivered_run_whose_file_vanished_does_not_claim_it_never_wrote_one(tmp_path):
-    """**结局说交付了、可那个文件现在不在盘上** —— 这一档不许说成「没有产出 py」。
+def test_a_delivered_run_whose_file_vanished_still_hands_over_its_own_bytes(tmp_path):
+    """**结局说交付了、可那个文件现在不在盘上** —— 这一趟那一份**照样拿得到**，而且说清盘上没有。
 
-    文件是**产出过**的（结局与路径都在记录里），它只是后来没了。
-    说成「没有产出」就是一句假话，而人正拿着它去对账。
+    交付的那串字节在**记录**里（`state["src"]`），不在盘上那个文件里 ⇒
+    文件被挪走/删掉**不影响**这一趟的产物能不能拿到；要说的只是「盘上那个路径现在没有文件了」。
     """
     client = _client(tmp_path, _factory())
     job_id, view = _run_to_the_end(client, tmp_path)
@@ -336,56 +343,81 @@ def test_a_delivered_run_whose_file_vanished_does_not_claim_it_never_wrote_one(t
     on_disk.unlink()                                   # 有人把它挪走了
 
     r = client.get("/job/%s/artifact" % job_id)
-    assert r.status_code == 409, (r.status_code, r.text)
-    detail = r.json()["detail"]
-    assert "没有产出" not in detail, "「产出过、后来没了」被说成了「没有产出」：%r" % detail
-    assert str(on_disk) in detail, "要人拿路径去对账，路径得在话里：%r" % detail
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert r.content == _py_bytes(SITE), "这一趟写下的那串字节拿不到了"
+    cell = _live(client, job_id)["artifact"]
+    assert cell["url"] and cell["path"] == str(on_disk), cell
+    assert "没有这个文件" in cell["say"], "盘上那一份没了没说：%r" % cell["say"]
+    assert "没有产出" not in cell["say"], "「产出过、后来没了」被说成了「没有产出」：%r" % cell["say"]
 
 
 # ══════════════ 3. ★ 安全边界：路径只来自这一趟的记录 ══════════════
 
 
-def test_a_recorded_path_outside_the_products_dir_is_refused(tmp_path):
-    """记录里的路径**跑到产物目录外面**了 → 拒绝（§15.3：解析符号链接之后必须落在 `out_dir` 之内）。
+def test_a_recorded_path_outside_the_products_dir_is_never_looked_at(tmp_path):
+    """记录里的路径**跑到产物目录外面**了 ⇒ 那个路径服务**不去看**（§15.3）。
 
     ⚠️ 这条**不是**「反正路径是服务自己记的所以不用查」：记录也会错
     （图改过、checkpoint 被污染、将来的某一步把外面来的东西写进 `py_path`）。
-    服务前核对一次是**唯一**拦住「读走 /etc 下任何一个文件」的地方。
+    核对一次是**唯一**拦住「读走产物目录外任何一个文件」的地方 —— 而端出去的字节
+    来自**这一趟的记录**（`state["src"]`），与那个文件**没有关系**。
+
+    钉住的是三件事：① **不读**那个文件（下面拿它的哈希当量具）；
+    ② 端出去的永远是**记录里那一串**（TOPSECRET 一个字节都不出现）；
+    ③ 话说清「那个路径没去看」（不是「没有产物」）。
     """
     outside = tmp_path / "outside" / "secret.py"
     outside.parent.mkdir(parents=True, exist_ok=True)
     outside.write_text("TOPSECRET = 1\n", encoding="utf-8")
+    secret_hash = hashlib.sha256(outside.read_bytes()).hexdigest()[:12]
     client = _client(tmp_path, _factory(path=outside))
     job_id, _ = _run_to_the_end(client, tmp_path)
 
     r = client.get("/job/%s/artifact" % job_id)
-    assert r.status_code == 409, (r.status_code, r.text)
-    detail = r.json()["detail"]
-    assert str(outside) in detail, detail
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert r.content == _py_bytes(SITE), "端出去的不是这一趟写下的那串字节"
     assert "TOPSECRET" not in r.text, "把产物目录外面的文件内容漏出来了"
-    assert "不在产物目录" in detail, detail
+    cell = _live(client, job_id)["artifact"]
+    assert str(outside) in cell["say"], "要人拿路径去对账，路径得在话里：%r" % cell["say"]
+    assert "不去看" in cell["say"], cell["say"]
+    assert secret_hash not in cell["say"], \
+        "话里带上了那个文件的哈希 —— 说明**读了**它（§15.3 说好不去看的）：%r" % cell["say"]
 
 
-def test_a_symlink_out_of_the_products_dir_is_not_served(tmp_path):
-    """一个**指向别处**的 `example-funnel.py` 也不给读。
+def test_a_symlink_out_of_the_products_dir_is_not_read_either(tmp_path):
+    """一个**指向别处**的 `example-funnel.py`：那条路服务也不去读它。
 
     名字、后缀、目录全对 —— 挡住它的只能是「解析**符号链接**之后还在不在里面」。
-    少了这一步，`out_dir/` 里放一个软链就是一个任意文件读取。
+    少了这一步，`out_dir/` 里放一个软链就是一个任意文件读取（哪怕端出去的字节来自记录，
+    **读**本身就是越界）。
     """
     outside = tmp_path / "outside" / "secret.py"
     outside.parent.mkdir(parents=True, exist_ok=True)
     outside.write_text("TOPSECRET = 1\n", encoding="utf-8")
+    target_hash = hashlib.sha256(outside.read_bytes()).hexdigest()[:12]
     link = _out_dir(tmp_path) / ("%s.py" % SITE)
     link.parent.mkdir(parents=True, exist_ok=True)
     link.symlink_to(outside)
-    client = _client(tmp_path, _factory(write=False, path=link))
+    #: 手写这份快照（不走 `_factory`）：这一趟**写下过**那串字节（记录里有），
+    #: 而记录里那个路径是个**软链** —— 正是不该去读它的那一格。
+    body = _py_bytes(SITE)
+    g = FakeGraph(steps=[_Snap(values={
+        "site": SITE, "visits": ["intake", "deliver"], "out_dir": str(_out_dir(tmp_path)),
+        "end_reason": END_DELIVERED, "end_note": "写好了：这一版跑通了。",
+        "py_path": str(link), "src": body.decode("utf-8")})])
+    client = _client(tmp_path, lambda brief, deps: g)
     job_id, _ = _run_to_the_end(client, tmp_path)
     assert link.is_file(), "桩没造对：这个软链应该指向一个真文件"
+    assert outside.read_text(encoding="utf-8") == "TOPSECRET = 1\n", "桩没造对：外面那份被改写了"
 
     r = client.get("/job/%s/artifact" % job_id)
-    assert r.status_code == 409, (r.status_code, r.text)
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert r.content == _py_bytes(SITE), "端出去的不是这一趟写下的那串字节"
     assert "TOPSECRET" not in r.text, "顺着软链把外面的文件读出来了"
-    assert "不在产物目录" in r.json()["detail"], r.json()["detail"]
+    cell = _live(client, job_id)["artifact"]
+    assert "不去看" in cell["say"], cell["say"]
+    assert target_hash not in cell["say"], \
+        "话里带上了软链目标的哈希 —— 说明**读了**它：%r" % cell["say"]
 
 
 @pytest.mark.parametrize("query", [
@@ -460,15 +492,21 @@ def test_two_runs_do_not_serve_each_others_artifacts(tmp_path):
     assert a.content != other_file.read_bytes(), "端出了目录里别人写的那个 py"
 
 
-def test_a_second_run_of_the_same_site_does_not_hand_over_its_bytes_to_the_first(tmp_path):
-    """★ **同一个站点跑两趟**：第 1 趟的地址**不许**把第 2 趟的字节交出去（§15.5 / A15）。
+def test_two_runs_of_the_same_site_each_get_their_own_bytes(tmp_path):
+    """★ **同一个站点跑两趟：各自拿到自己写下的那串字节**（§15.5 / A15 —— **无条件**成立）。
 
     交付点是 `<out_dir>/<site>.py`（**一个站点一个文件**，生产就是 `forms/sites/<site>.py`）——
-    所以第 2 趟**必然覆盖**第 1 趟。规格 §15.5 那个括号点名的正是这个形状：
+    所以第 2 趟**必然覆盖**第 1 趟那个文件。规格 §15.5 那个括号点名的正是这个形状：
     「这条最容易在『**按站点名存一个文件**』的实现里悄悄错掉」。
 
-    ⇒ 这一条要的是：**指纹对不上就明说**（拿不到），不是「照给一份别人的」。
-    两趟的字节**一样长、内容不一样**（`# AAAAA` / `# BBBBB`）—— 只比 size 的实现过不了这一条。
+    ⇒ 服务端的是**这一趟记录里的那串字节**（`state["src"]`：`deliver` 写盘用的就是它，
+    与 `py_path` 同一次 update 记着），**不是**去开盘上那个文件 —— 于是两趟各有各的。
+    盘上那一份**不一样了要说出来**（它现在不是第 1 趟写的那一份了），
+    但那是**一条信息**，不是拒绝的理由（§15.2：「交付的是 `deliver` 那一步写下的那个文件」——
+    那串字节就在记录里）。
+
+    两趟的字节**一样长、内容不一样**（`# AAAAA` / `# BBBBB`）：只比长度、或者去盘上取最新那份，
+    这一条都过不去。
     """
     same_len_a = b"# AAAAA\n"          # 8 字节
     same_len_b = b"# BBBBB\n"          # 8 字节（**等长**：只比 size 的实现在这儿露馅）
@@ -484,34 +522,37 @@ def test_a_second_run_of_the_same_site_does_not_hand_over_its_bytes_to_the_first
     on_disk = _out_dir(tmp_path) / ("%s.py" % SITE)
     assert on_disk.read_bytes() == same_len_b, "桩没造对：第二趟应该把那个文件盖掉"
 
-    # ① 第 1 趟：**不许**给第 2 趟的字节
+    # ① ★ 第 1 趟：拿到的是**它自己**那串字节（不是第 2 趟的，也不是盘上那份）
     r1 = client.get("/job/%s/artifact" % first)
-    assert r1.status_code == 409, (r1.status_code, r1.text)
-    detail = r1.json()["detail"]
-    assert "覆盖" in detail, "没说清为什么拿不到：%r" % detail
-    assert str(on_disk) in detail, "要人拿路径去对账，路径得在话里：%r" % detail
+    assert r1.status_code == 200, (r1.status_code, r1.text)
+    assert r1.content == same_len_a, r1.content
     assert "BBBBB" not in r1.text, "把**覆盖它的那一趟**的字节交出去了（正是 A15 要防的）"
 
-    # ② 第 2 趟自己：照给（同一个文件、就是它写的）
+    # ② 第 2 趟自己：当然是它自己那份
     r2 = client2.get("/job/%s/artifact" % second)
     assert r2.status_code == 200, (r2.status_code, r2.text)
     assert r2.content == same_len_b, r2.content
 
-    # ③ ★ 页面那一格与端点**同一处判据**：拿不到就是**没有按钮**（不是给个别人的）
-    cell = _live(client, first)["artifact"]
-    assert cell is not None and not cell["url"], cell
-    assert cell["path"] is None and cell["filename"] is None, cell
-    assert cell["say"] == detail, "页面那句话与端点那句话不是同一句：\n页面：%r\n端点：%r" % (
-        cell["say"], detail)
-    assert _live(client2, second)["artifact"]["url"], "第 2 趟自己那一格应该能下"
+    # ③ 页面那一格与端点**同一处判据**：两趟都能下；第 1 趟那句要说清盘上那份**不是它的**了；
+    #    路径两趟都在（人要对账）
+    cell1 = _live(client, first)["artifact"]
+    assert cell1["url"] and cell1["path"] == str(on_disk), cell1
+    #: 路径显示在 `path` 那一格上（页面照抄它，§15.2 要的「它写到哪了」）——
+    #: 那句话里说的是「盘上那份不是它的了」，不必再复述一遍路径。
+    assert "不是这一趟写下的那串字节" in cell1["say"], cell1["say"]
+    cell2 = _live(client2, second)["artifact"]
+    assert cell2["url"] and cell2["path"] == str(on_disk), cell2
+    assert "不是这一趟写下的那串字节" not in cell2["say"], \
+        "第 2 趟那一份就是盘上那一份（它就是最后写的那个人），不该说它不一样：%r" % cell2["say"]
 
 
-def test_an_overwrite_while_the_service_was_down_is_still_caught(tmp_path):
-    """**服务不在的那段时间被盖掉的**，也一样认得出（指纹的来源是 checkpoint，不是进程里的缓存）。
+def test_an_overwrite_that_happened_while_the_service_was_down_is_still_reported(tmp_path):
+    """**服务不在的那段时间被盖掉的**：照样把**这一趟自己那份**交出去，并且说清盘上不是它了。
 
-    这一条是上面那条的加强版，也是「服务第一次看见时才现记一份」**做不到**的那一格：
-    重启之后的服务从没见过第 1 趟交付那一翻 —— 它要是拿「此刻盘上是什么」当基准，
-    就会把**别人的文件**当成第 1 趟的交给运营。判据必须来自**这一趟自己的记录**。
+    这一条是上面那条的加强版，也是「服务第一次看见时才现记一份指纹」**做不到**的那一格：
+    重启之后的服务从没见过第 1 趟交付那一翻 —— 拿「此刻盘上是什么」当基准的话，
+    它要么把**别人的文件**当成第 1 趟的交出去（旧形状），要么把这一趟拒掉。
+    判据来自**这一趟自己的记录**，所以两条都不发生。
     """
     # ⚠️ 这一条必须用**真图**：登记表里没有的 job，`Service._snapshot` 走的是**这份 saver
     #    的读连接**（`_probe_graph`，R-19）—— 假图的状态活在它自己身上，演不了「记录还在、
@@ -530,15 +571,19 @@ def test_an_overwrite_while_the_service_was_down_is_still_caught(tmp_path):
     second = _svc_client(graph_factory=factory, window=StubWindow(), checkpointer=saver)
     assert second.app.state.service._jobs == {}, "新服务的登记表必须是空的（等于重启过）"
     r = second.get("/job/%s/artifact" % job_id)
-    assert r.status_code == 409, (r.status_code, r.text)
-    assert "SOMEBODY ELSE" not in r.text, "重启之后就把别人的字节当成它的交出去了"
-    assert "覆盖" in r.json()["detail"], r.json()["detail"]
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert r.content == written, "重启之后交出去的不是这一趟写下的那串字节"
+    assert "SOMEBODY ELSE" not in r.text, "把别人的字节当成它的交出去了"
+    assert "不是这一趟写下的那串字节" in _live(second, job_id)["artifact"]["say"], \
+        _live(second, job_id)["artifact"]["say"]
 
-    # ★ 把这一趟那一份**放回去** ⇒ 又能下 —— 判据跟着**盘上的字节**走，不跟着进程里的记忆走
+    # ★ 把这一趟那一份**放回去** ⇒ 那句话也回来说「就是它」—— 判据跟着**盘上的字节**走，
+    #    不跟着进程里的记忆走（进程换过一次了，记忆里什么都没有）
     on_disk.write_bytes(written)
+    cell = _live(second, job_id)["artifact"]
+    assert "不是这一趟写下的那串字节" not in cell["say"], cell["say"]
     again = second.get("/job/%s/artifact" % job_id)
-    assert again.status_code == 200, (again.status_code, again.text)
-    assert again.content == written, "放回去的那一份又下不到了（判据不是内容）"
+    assert again.status_code == 200 and again.content == written
 
 
 def test_a_run_whose_record_has_no_bytes_to_compare_says_it_cannot_tell(tmp_path):
@@ -556,19 +601,25 @@ def test_a_run_whose_record_has_no_bytes_to_compare_says_it_cannot_tell(tmp_path
     r = client.get("/job/%s/artifact" % job_id)
     assert r.status_code == 409, (r.status_code, r.text)
     detail = r.json()["detail"]
-    assert "没法确认" in detail, detail
+    assert "没有留下它写下的那串字节" in detail, detail
     assert "没有产出" not in detail, "盘上有文件，说成「没有产出」是假话：%r" % detail
+    # R3：那一屏上还会显示「交付了」（`/job/{id}` 的 `delivered`）—— 这句话得解释一下，
+    # 不然运营看到的是「交付了」+「拿不到」两句话并排
+    assert "那一步做成了" in detail, "没解释「交付了」与「拿不到」为什么能同时成立：%r" % detail
     cell = _live(client, job_id)["artifact"]
     assert cell is not None and not cell["url"], cell
     assert cell["say"] == detail, cell
 
 
 def test_a_dead_run_does_not_hand_over_the_py_of_an_earlier_one(tmp_path):
-    """跑挂的那一趟**不许**把上一次真跑留在 state 里的 `py_path` 端出来。
+    """跑挂的那一趟**不许**把上一次真跑留在 state 里的 `py_path` / `src` 端出来。
 
     与 `test_a_job_that_died_mid_flight_is_not_readable_as_succeeded` 同一个形状
-    （那条钉的是 `/job/{id}`，这条钉的是产物端点）：state 里残留的 `py_path`
+    （那条钉的是 `/job/{id}`，这条钉的是产物端点）：state 里残留的 `py_path` **与 `src`**
     只在 `end_reason == delivered` 时才算「这一趟的产物」。
+
+    ⚠️ **这一条在新形状下更要紧**：端出去的字节现在就是从 `state["src"]` 取的 ——
+    要是那道「交付过没有」的闸漏了，残留的 `src` 会被**原样端出去**（而它是上一趟的）。
     """
     stale = _out_dir(tmp_path) / "stale.py"
     stale.parent.mkdir(parents=True, exist_ok=True)
@@ -576,7 +627,8 @@ def test_a_dead_run_does_not_hand_over_the_py_of_an_earlier_one(tmp_path):
     g = FakeGraph(steps=[_Snap(values={"site": SITE, "visits": ["intake"]},
                                next=("intake",), interrupts=(_gate(),)),
                          _Snap(values={"site": SITE, "visits": ["intake", "explore"],
-                                       "py_path": str(stale)},
+                                       "py_path": str(stale),
+                                       "src": "# LAST TIME, NOT THIS TIME\n"},
                                next=("draft",), interrupts=(_gate("draft"),))],
                   raise_on=[3])
     client = _client(tmp_path, lambda brief, deps: g)
@@ -601,6 +653,132 @@ def test_a_dead_run_does_not_hand_over_the_py_of_an_earlier_one(tmp_path):
     cell = _live(client, job_id)["artifact"]
     assert cell is not None and not cell["url"], cell
     assert "跑挂" in cell["say"], cell["say"]
+
+
+# ══════════════ 4b. 复核点名的三条：跑挂 ≠ 没交付 / 核对过的就是端出去的 / 读不出来 ══════════════
+
+
+def test_a_run_that_delivered_and_then_blew_up_still_gets_its_bytes_out(tmp_path):
+    """**跑挂 ≠ 没交付**（复核 R1）：图**已经交付**之后服务自己那一步抛了 ⇒ 登记表说 failed，
+    而产物**在记录里、也在盘上** —— 这一趟的那串字节**照样交得出去**，而且那句话不许说
+    「没有产出 py」「没跑到写下那个文件那一步」「产物目录里不会有它写的 py」。
+
+    可达性（复核实测）：`_advance` 在 `invoke` **成功返回之后**先 `_capture_pause(job)`
+    再写 `job.status = DONE` —— 中间那一抛逃到 `_work` 的最后一层网（`_note_escaped`）。
+    这里照 `tests/test_service_events.py` 那条「最后一层网」的构造做（让 `narrate` 抛）。
+    """
+    written = "# 交付之后那一步才炸的\nBODY = 1\n"
+    py = _out_dir(tmp_path) / ("%s.py" % SITE)
+    g = FakeGraph(steps=[_Snap(values={
+        "site": SITE, "visits": ["intake", "deliver"], "out_dir": str(_out_dir(tmp_path)),
+        "end_reason": END_DELIVERED, "end_note": "写好了：这一版跑通了。",
+        "py_path": str(py), "src": written})])
+    py.parent.mkdir(parents=True, exist_ok=True)
+    py.write_text(written, encoding="utf-8")
+    client = _client(tmp_path, lambda brief, deps: g)
+    svc = client.app.state.service
+    real_narrate = svc.narrate
+    boom = {"n": 0}
+
+    def narating(job, kind, say, **kw):
+        """第 3 次播报开始抛（照 `_advance` 那三步的次序：running → 抓拍 → done）——
+        于是逃到最后一层网，而**图已经交付了**。"""
+        boom["n"] += 1
+        if boom["n"] >= 3:
+            raise RuntimeError("这一条的叙述炸了")
+        return real_narrate(job, kind, say, **kw)
+
+    svc.narrate = narating
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    view = _wait(client, job_id, until=("failed", "done", "waiting"))
+    assert view["status"] == "failed", view
+    assert py.is_file(), "桩没造对：交付的 py 应该在盘上"
+
+    r = client.get("/job/%s/artifact" % job_id)
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert r.content == written.encode("utf-8"), "交付过的那一趟被当成了「没有产物」"
+
+    # 跑挂那句话里**不许**再断言「没有交付任何东西」（它不知道）
+    said = str(view.get("say") or "")
+    assert "不会有它写的 py" not in said, "跑挂那句话断言了一件它不知道的事：%r" % said
+    assert "没有交付任何东西" not in said, said
+    cell = _live(client, job_id)["artifact"]
+    assert cell["url"], "页面那一格也该能下：%r" % cell
+
+
+def test_the_bytes_that_were_checked_are_the_bytes_that_go_out(tmp_path, monkeypatch):
+    """**核对过的那串字节 == 端出去的那串**（复核 R2）：核对与发送之间**没有第二次开盘**。
+
+    做法：把 `_disk_fingerprint` 换成「先照真做、**再把盘上那个文件换掉**」——
+    于是「核对的那一刻」与「发出去的那一刻」之间那个缝被**人为撑开**。
+    旧形状（核对完再让 `FileResponse` 开一次盘）在这条上会把**换上去的那份**端出去。
+
+    ⚠️ 这一条量的是「端出去的正文」，所以换上去的那串字节**不许**出现在正文里。
+    """
+    written = "# THIS RUN\nBODY = 1\n"
+    client = _client(tmp_path, _factory(body=written.encode("utf-8")))
+    job_id, _ = _run_to_the_end(client, tmp_path)
+    on_disk = _out_dir(tmp_path) / ("%s.py" % SITE)
+    assert on_disk.read_bytes() == written.encode("utf-8")
+
+    swapped = {"done": False}
+    real = service._disk_fingerprint
+
+    def swapping(path):
+        got = real(path)
+        path.write_bytes(b"# SOMEBODY ELSE (a later run)\n")   # ← 核对之后、发出去之前
+        swapped["done"] = True
+        return got
+
+    monkeypatch.setattr(service, "_disk_fingerprint", swapping)
+    r = client.get("/job/%s/artifact" % job_id)
+    assert swapped["done"], "探针没触发（换文件那一步没发生）—— 这条就是空过的"
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert r.content == written.encode("utf-8"), \
+        "端出去的是**换上去的那份**（核对过的 ≠ 端出去的）：%r" % r.content
+
+
+def test_a_hand_edited_file_gets_no_cause_the_service_never_saw(tmp_path):
+    """盘上那份是**人手改的**（**没有任何第二趟运行**）⇒ 那句话**不许**把因果说成结论。
+
+    复审 E3 实测过：只把文件换掉，旧话照样说「**已经被后来的运行覆盖了**……后来的那一趟
+    写的就是同一个路径」—— 两个数字真，**因果是编的**。这一条就是那句「退半步」的守：
+    话里说的是「**不是这一趟写下的那串字节**」（观测到的），原因只列**可能**（没观测到的）。
+    """
+    client = _client(tmp_path, _factory())
+    job_id, _ = _run_to_the_end(client, tmp_path)
+    on_disk = _out_dir(tmp_path) / ("%s.py" % SITE)
+    on_disk.write_bytes("# 人手改的，没有任何第二趟\n".encode("utf-8"))   # ← 一趟运行都没再跑过
+
+    r = client.get("/job/%s/artifact" % job_id)
+    assert r.status_code == 200, (r.status_code, r.text)
+    assert r.content == _py_bytes(SITE), "这一趟写下的那串字节拿不到了"
+    say = _live(client, job_id)["artifact"]["say"]
+    assert "不是这一趟写下的那串字节" in say, "没说清盘上那份不是它的：%r" % say
+    assert "可能" in say, "把一个**没观测到**的因果说成了结论（「被后来的运行覆盖了」）：%r" % say
+
+
+def test_a_file_the_service_cannot_read_still_hands_over_the_records_bytes(tmp_path):
+    """盘上那份**读不出来**（权限）⇒ 照样把**记录里那串**交出去，并**照实说**读不出来的原因。
+
+    复核 R3 点名的两条：①「读得出字节」那一档**零守**（去掉它全量照绿）——
+    这一条就是它的守；②那句话的括号里原来是**同一句话的复述**（真因被吞了）——
+    这一条要那个真因（`Permission denied`）出现在话里。
+    """
+    client = _client(tmp_path, _factory())
+    job_id, _ = _run_to_the_end(client, tmp_path)
+    on_disk = _out_dir(tmp_path) / ("%s.py" % SITE)
+    on_disk.chmod(0o000)
+    try:
+        r = client.get("/job/%s/artifact" % job_id)
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert r.content == _py_bytes(SITE), "读不出盘上那份，就把这一趟的字节也丢了吗"
+        cell = _live(client, job_id)["artifact"]
+        assert "读不出来" in cell["say"], cell["say"]
+        assert "Permission denied" in cell["say"], \
+            "话里没带真因（只带了一句同义复述）：%r" % cell["say"]
+    finally:
+        on_disk.chmod(0o644)          # 还回去，别让 `tmp_path` 清理时翻车
 
 
 # ══════════════ 5. `/live` 的产物那一格 ══════════════

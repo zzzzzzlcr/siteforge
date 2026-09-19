@@ -62,7 +62,7 @@ import uuid
 from typing import Any, Callable, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from langgraph.types import Command
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
@@ -271,30 +271,42 @@ CAP_END_REASONS = (END_REVISION_CAP, END_LINT_CAP, END_SELFTEST_CAP)
 
 #: 产物那一格那个地址。**服务给**（页面不自己拼）：路由换了，页面跟着服务走。
 ARTIFACT_URL = "/job/%s/artifact"
-#: 有产物时那句话（页面原样摆在时间线上那一步上）。
+#: 有产物（= 这一趟写下的那串字节拿到了）那句话。
 ARTIFACT_READY_SAY = "这一趟的 py 写下来了 —— 点文件名下载，它落在盘上的位置写在下面。"
-#: ★ **A15：同一个站点共用一个文件**（交付点是 `<out_dir>/<site>.py`）——
-#: 后来的运行会把前一趟的产物**盖掉**。指纹对不上就是「盘上这一份**不是它写的**」：
-#: **不给**（宁可说拿不到，也不把别人的字节当成它的交出去 —— 那才是真正的静默失败）。
-ARTIFACT_OVERWRITTEN_SAY = ("这一趟的那份产物**已经被后来的运行覆盖了** —— 同一个站点共用一个文件"
-                            "（%s），后来的那一趟写的就是同一个路径。\n"
-                            "它写下的是 %s 字节（sha256 %s…），盘上现在是 %s 字节（sha256 %s…）。\n"
-                            "**这一屏不把现在这个文件交给你**：那会是「拿到了别人的」。"
-                            "要这一趟那一份，只能重跑一趟。")
-#: 核对不了（checkpoint 里没留下它写下的那串字节：更早的版本跑的 / 记录不全 / 这一次读不回它的记录）。
-#: 「核对不了」与「对不上」**不是一回事**，但处置**一样**：不给 —— 因为同一个站点共用一个文件，
-#: 核对不了就等于**可能**给的是别人的。
-ARTIFACT_UNVERIFIABLE_SAY = ("这一趟的 py 在盘上（%s），可**没法确认它是这一趟写的**："
-                             "checkpoint 里没有留下它写下的那串字节"
-                             "（这一次读不回它的记录，或者这一趟是更早的版本跑的）。"
-                             "同一个站点共用一个文件，后来的运行会把它盖掉 —— "
-                             "所以这一屏**不把现在这个文件交给你**。要那一份，只能重跑一趟。")
-#: 盘上那个文件这一次读不出字节（权限之类）—— 照实说，同样是拿不到。
-ARTIFACT_UNREADABLE_SAY = ("这一趟的 py 在盘上（%s），可**这一次读不出它的字节**（%s）——"
-                           "所以拿不到。")
+# ── 盘上那一份**现在是什么**：一句**信息**（端出去的是记录里那一串，与它无关）──
+#: 盘上那份**不是这一趟写下的那串字节**了。
+#: ⚠️ **不许断言因果**（复审实测：没有任何第二趟运行、只把文件换掉，也会走到这儿）——
+#: 只列**可能**，不挑一个当结论。
+ARTIFACT_DISK_DIFFERS_SAY = ("⚠️ 盘上那个路径现在这一份**不是这一趟写下的那串字节**了"
+                             "（可能是后来的运行覆盖了它 —— 同一个站点共用一个文件；"
+                             "也可能是有人直接改过、或者换过那个文件）。"
+                             "下面这个文件是**这一趟写下的那一份**（从这一趟的记录里取的，"
+                             "与盘上那一份不是一回事）。")
+#: 盘上那个路径**没有文件**了（挪走 / 删掉）。
+ARTIFACT_DISK_GONE_SAY = ("盘上那个路径现在**没有这个文件**了 —— 下面这个文件是这一趟写下的"
+                          "那一份（从记录里取的）。")
+#: 盘上那个文件**读不出来**（权限之类）—— 原因**照实带出来**（不是一句同义复述）。
+ARTIFACT_DISK_UNREADABLE_SAY = ("盘上那个路径现在**读不出来**（%s）—— 下面这个文件是这一趟"
+                               "写下的那一份（从记录里取的）。")
+#: 记录里的路径**不在产物目录里**（§15.3）—— 那个路径服务**不去看**（不读、不 stat 内容）。
+ARTIFACT_DISK_OUTSIDE_SAY = ("记录里的路径**不在产物目录里**（%s）—— 那个路径服务**不去看**"
+                             "（§15.3）。下面这个文件是这一趟写下的那一份（从记录里取的）。")
+#: 记录说它**交付过**，可记录里**没有留下它写下的那串字节**（这一次读不回它的记录，或者这一趟是
+#: 更早的版本跑的）—— 这一档**交付不出来**（§15.3 的 409）。
+#: ⚠️ 尾上那半句是给**同一屏**看的：`/job/{id}` 的 `delivered` 会说「交付了」，
+#: 两句话并排摆着，**一个字都不解释**就是一种自相矛盾（复审 R3 点名）。
+ARTIFACT_UNVERIFIABLE_SAY = ("这一趟的结局说它**交付过**（%s），可它的记录里**没有留下它写下的"
+                             "那串字节**（这一次读不回它的记录，或者这一趟是更早的版本跑的）——"
+                             "所以这一份**交付不出来**。\n"
+                             "（上面说「交付了」指的是**那一步做成了**，不是「现在还能下」——"
+                             "两件事。）")
 #: 「到头了但没有产物」那句话的**头**。原因一律照抄这一趟自己留下的那句话（下面那两格）。
-NO_ARTIFACT_HEAD_DONE = "这一趟**没有产出 py**（它到头了，但没写下那个文件）"
-NO_ARTIFACT_HEAD_FAILED = "这一趟**没有产出 py**（它跑挂了，没跑到写下那个文件那一步）"
+#: ⚠️ **跑挂 ≠ 没交付**（复审 R1）：交付之后服务自己那一步还会炸（`_advance` 里
+#: `_capture_pause` 在 `job.status = DONE` **之前**）—— 那种一趟**交付过**，
+#: 所以这两句只说**这一趟的记录**（服务真的知道的那件事），
+#: 不说「没跑到写下那个文件那一步」（服务不知道，而且它可能是假的）。
+NO_ARTIFACT_HEAD_DONE = "这一趟**没有可交付的产物**（它到头了，记录里没有它写下 py 的证据）"
+NO_ARTIFACT_HEAD_FAILED = "这一趟**没有可交付的产物**（它跑挂了，记录里没有它写下 py 的证据）"
 #: 「还没跑到写 py 那一步」那句（在跑 / 排队 / 停在闸上）。⚠️ 与上面两格**不是一回事**：
 #: 一个是「它还没写到那儿」，一个是「它跑完了但没有」—— 混成一个就是编话。
 NO_ARTIFACT_YET_SAY = ("这一趟还没有产物（它现在是「%s」）—— 产物要等它走到「写下了 py」"
@@ -317,34 +329,67 @@ NO_SUCH_JOB_SAY = ("没这个任务：%s（服务里没有它，checkpoint 里�
 
 
 def _fingerprint(blob: bytes) -> dict:
-    """一串字节的**指纹**：`size` + `sha256`（§15.5 / A15 判「这一份是不是它写的」用的就是它）。"""
+    """一串字节的**指纹**：`size` + `sha256`（判「盘上那一份是不是这一趟写下的」用的就是它）。"""
     return {"size": len(blob), "sha256": hashlib.sha256(blob).hexdigest()}
 
 
-def _run_wrote(values: dict) -> Optional[dict]:
-    """**这一趟写下的那串字节**的指纹 —— 从 checkpoint 自己算，**不是**从盘上现读。
+def _delivered_path(values: dict) -> Optional[str]:
+    """这一趟**交付过**的那个路径 —— ★ 这道闸的**唯一**写法：`end_reason` 说交付了才算数。
 
-    ★ 为什么是 checkpoint 而不是「服务第一次看见交付时记一份」：`graph._deliver` 写下那个
-    py 的那一句是 `path.write_text(src, encoding="utf-8")`，而**同一个 `src` 也进了 state**
-    （`out.update({"src": src, …})`，与 `py_path` 一起）⇒ 「这一趟写下的字节」**本来就记着**。
-    好处不是省事，是**它活得比进程长**：服务重启过、或者它不在的那段时间里那个文件被
-    后来的运行盖掉了，这一份记录照样在 —— 而现记一份的话，「第一次看见」看到的可能已经是
-    别人的文件，基准就立错了。
+    ⚠️ 跑挂 / 没跑完的那一趟 state 里可能还留着**上一次**真跑留下的 `py_path` 与 `src`
+    （`tests/test_service.py::test_a_job_that_died_mid_flight…` 与
+    `tests/test_service_artifact.py::test_a_dead_run_does_not_hand_over…` 钉着这件事）——
+    所以「state 里有 py_path」**不等于**「这一趟交付过」。
+
+    `_project`（`/job/{id}` 那一份投影）与产物那一路**都用它**：一处口径。
+    """
+    values = values or {}
+    if str(values.get("end_reason") or "") != END_DELIVERED:
+        return None
+    raw = values.get("py_path")
+    return str(raw) if raw else None
+
+
+def _recorded_bytes(values: dict) -> Optional[bytes]:
+    """**这一趟写下的那串字节** —— 从 checkpoint 里取（`state["src"]`），不是从盘上现读。
+
+    ★ 为什么是它：`graph._deliver` 把这一版写到盘上那一句是
+    `path.write_text(src, encoding="utf-8")`，而**同一个 `src` 也进了 state**
+    （`out.update({"src": src, …})`，与 `py_path` **同一次 update**）⇒
+    「这一趟写下的那串字节」**本来就记着**，而且与「它写到哪了」是同一份记录里的两格。
+
+    这是 §15.2「交付的是 `deliver` 那一步**真正写下的那个文件**」在**同站点**那一格上
+    唯一站得住的读法：交付点是 `<out_dir>/<site>.py`（**一个站点一个文件**），
+    盘上那一份随时可能被后来的运行盖掉，而**这一趟写下的**只有这一份记录说得清。
 
     没有就是 `None`（更早的版本跑的 / 记录不全 / 这一次读不回它的记录）—— **不许猜**。
     """
     src = (values or {}).get("src")
-    if not isinstance(src, str):
-        return None
-    return _fingerprint(src.encode("utf-8"))
+    return src.encode("utf-8") if isinstance(src, str) else None
 
 
-def _disk_fingerprint(path) -> Optional[dict]:
-    """盘上那个文件此刻的指纹；读不出来就是 `None`（不吞成一个空指纹 —— 那会变成「空 == 空」）。"""
+def _disk_fingerprint(path) -> tuple:
+    """盘上那个文件此刻的指纹 + **读不出来时的真原因**。
+
+    ⚠️ 原因是**带出来**的，不是吞掉：那句话里那个括号要填的是真原因（`EACCES…`），
+    填一句同义复述（「读不出来」）等于没填 —— 那是复审 R3 点名的一处空话。
+    也**不许**把失败吞成一个空指纹（那会变成「空 == 空」）。
+    """
     try:
-        return _fingerprint(pathlib.Path(path).read_bytes())
-    except OSError:
-        return None
+        return _fingerprint(pathlib.Path(path).read_bytes()), ""
+    except OSError as exc:                      # noqa: PERF203 —— 读不出来是**一等结果**
+        return None, "%s: %s" % (type(exc).__name__, exc)
+
+
+def _download_name(raw: str) -> str:
+    """下下来叫什么：**这一趟记下的那个路径**的末一段，只留安全字符。
+
+    ⚠️ 它要进 `Content-Disposition` 头 —— 头字段里一个换行就是**头注入**
+    （`site` 是运营在载荷里给的），所以只留 `[A-Za-z0-9._-]`，其余换成 `_`。
+    （名字来自**记录里那个路径**，不是来自盘上那个文件：端点现在**不打开**那个文件。）
+    """
+    name = pathlib.Path(str(raw or "")).name
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name)[:64] or "artifact.py"
 
 
 def _inside(path, root, *, direct: bool = False) -> bool:
@@ -2087,77 +2132,74 @@ class Service:
     # 而且是有理由的：图名是**外面来的**（多一层就多一个可乘之机 ⇒ `direct=True`），
     # 产物路径是**服务自己记下来的**（仍然核对，但按 §15.3 的原话用宽松那一档）。
 
-    def artifact_file(self, job_id: str) -> pathlib.Path:
-        """`/job/{id}/artifact` → 这一趟**自己记下的**那个 py；拿不出来就 409（人话）。
+    def artifact_file(self, job_id: str) -> dict:
+        """`/job/{id}/artifact` → **这一趟写下的那串字节** + 它下下来叫什么、落在哪；拿不出来就 409。
 
         ★ **这条路上没有参数可以过**（§15.3）：`job_id` 只是查快照的钥匙。
-        一旦有一个参数能影响取哪个文件，它就是**任意文件读取**。所以路径只从
-        **这一趟的运行记录**里取（`state["py_path"]`），而且只在 `end_reason`
-        说**交付了**的时候才算数（跑挂的那一趟 state 里可能还留着上一次真跑留下的
-        `py_path` —— `tests/test_service.py` 那条钉着同一件事）。
+        一旦有一个参数能影响取哪个文件／哪串字节，它就是**任意文件读取**。
+        而端出去的字节来自**这一趟自己的记录**（`state["src"]`，见 `_recorded_bytes`）——
+        所以这条路上**一个盘上的字节都不端出去**（盘上那份只用来**比对**，见 `_disk_note`）。
 
         判据全在 `_artifact_state`（与 `/live` 的产物那一格**同一处**）。
-        这里只多一步：**核对过了**才把它变成一次文件响应（`trust == "this_run"`）。
+        返回值给路由：`{"bytes", "filename", "path", "say"}` —— **核对过的那串字节就是端出去的
+        那串**（同一个 `bytes` 对象，路由不再开一次盘：核对与发送之间不许有第二个动作）。
         """
         view = self._view(job_id)                       # 没这个任务 → KeyError（路由转 404）
-        raw = str((view.get("result") or {}).get("py_path") or "").strip()
-        # `values` 只为**产物目录**那一格 + 那一趟写下的字节（`/job/{id}` 的既有形状里没有它们）——
-        # 没有路径要判的时候就别读它：跑着 / 停在闸上那两档不该为一次点击多读一次 checkpoint。
-        values = dict(getattr(self._snapshot(job_id), "values", None) or {}) if raw else {}
+        # ⚠️ 跑着 / 排队那两档**不等**（`_snapshot_soon`）：读一次 checkpoint 会排在一次 invoke
+        # 后面（A1），而一次点击也不该卡住 —— 那两档的答案本来就是「还没有」。
+        soon = str(view.get("status") or "") in (QUEUED, RUNNING)
+        snap = self._snapshot_soon(job_id) if soon else self._snapshot(job_id)
+        values = dict(getattr(snap, "values", None) or {}) if snap is not None else {}
         state = self._artifact_state(view, values)
-        if state["trust"] != "this_run":
+        if not state["bytes"]:
             raise HTTPException(status_code=409, detail=state["say"])
-        return state["path"]
+        return state
 
     def _artifact_state(self, view: dict, values: Optional[dict] = None) -> dict:
-        """这一趟的产物**现在**是什么状态。★ **唯一一处**判它（页面那格与端点都走这里）。
+        """这一趟的产物**此刻是什么状态**。★ **唯一一处**判它（端点与页面那格都走它）。
 
-        返回 `{"path": …|None, "trust": "this_run"|None, "say": <人话>}` ——
-        **只有 `trust == "this_run"` 才给字节**（端点是 200、页面那一格才有下载）。
+        返回 `{"bytes": bytes|None, "filename": str|None, "path": str|None, "say": <人话>}` ——
+        **`bytes` 非空** = 这一趟写下的那串字节拿到了（端点 200、页面那格才有下载）。
 
-        ★ A15（§15.5）：交付点是 `<out_dir>/<site>.py` —— **一个站点一个文件**，
-        所以「这一趟的那份」**会被后来的运行盖掉**。四件事缺一不可：
-          ① 这一趟到头了、记录里有一个路径，解析符号链接之后还在产物目录里（`_artifact_on_disk`）；
-          ② 那个东西真的在盘上、是个文件，而且**读得出字节**；
-          ③ checkpoint 里留着**这一趟写下的那串字节**（`_run_wrote`）；
-          ④ 两者指纹**对得上**。
-        任何一条不成立 ⇒ `trust is None` ⇒ 拿不到，而且**说清是哪一档**：
-        「没产出 / 产出过但没了 / 路径不在产物目录里 / 被覆盖了 / 核对不了 / 读不出来」
-        —— 「拿不到」是六件不同的事，**不合并成一句**。
+        ★ **字节来自记录**（`state["src"]`），不是来自盘上那个文件 ⇒
+        A15（§15.5）**无条件成立**：每一趟拿到的是**它自己写下的**那串字节，
+        哪怕同一个站点的后一趟已经把 `<out_dir>/<site>.py` 盖掉了。
+        盘上那一份**仍然要看一眼**（`_disk_note`），但那是**一条信息**，不是给不给的理由。
+
+        拿不到只有两种情形（都 409 + 一句人话）：① 记录里没有它交付过的证据；
+        ② 记录说交付过、可没留下那串字节。
         """
-        path = self._artifact_on_disk(view, values)
-        if path is None:
-            return {"path": None, "trust": None,
+        values = dict(values or {})
+        raw = _delivered_path(values)          # ★ 这道闸的唯一写法（与 `_project` 同一句）
+        if raw is None:
+            return {"bytes": None, "filename": None, "path": None,
                     "say": self._no_artifact_say(view, values)}
-        now = _disk_fingerprint(path)
-        if now is None:
-            return {"path": path, "trust": None,
-                    "say": ARTIFACT_UNREADABLE_SAY % (path, "这一次读不出它的字节")}
-        wrote = _run_wrote(values or {})
-        if wrote is None:
-            return {"path": path, "trust": None, "say": ARTIFACT_UNVERIFIABLE_SAY % path}
-        if (now["size"], now["sha256"]) != (wrote["size"], wrote["sha256"]):
-            return {"path": path, "trust": None,
-                    "say": ARTIFACT_OVERWRITTEN_SAY % (path, wrote["size"], wrote["sha256"][:12],
-                                                       now["size"], now["sha256"][:12])}
-        return {"path": path, "trust": "this_run", "say": ARTIFACT_READY_SAY}
+        blob = _recorded_bytes(values)
+        if blob is None:
+            return {"bytes": None, "filename": None, "path": None,
+                    "say": ARTIFACT_UNVERIFIABLE_SAY % raw}
+        note = self._disk_note(raw, blob, values)
+        return {"bytes": blob, "filename": _download_name(raw), "path": raw,
+                "say": ARTIFACT_READY_SAY + (("\n" + note) if note else "")}
 
-    def _artifact_on_disk(self, view: dict, values: Optional[dict] = None) -> Optional[pathlib.Path]:
-        """**记录里那个路径上，此刻有一个文件吗**（`None` = 没有，原因在 `_no_artifact_say`）。
+    def _disk_note(self, raw: str, blob: bytes, values: dict) -> str:
+        """盘上那一份**现在是什么**（一句信息；没什么可说的就是 `""`）。
 
-        三件事：① 这一趟到头了、记录里有一个路径；② 解析符号链接之后它还在产物目录里；
-        ③ 那个东西真的在盘上、而且是个文件。
-        ⚠️ 这一层**不判**「这一份是不是它写的」（那是 `_artifact_state` 的后半段）——
-        两者分开是因为「没有」与「有但不是它写的」要说**不同的话**。
+        五种：一样（不说）/ 不是这一趟写下的那串字节 / 没了 / 读不出来 / 路径不在产物目录里（**不去看**）。
+        ⚠️ 「不一样」时**不许断言因果**（复审实测：没有第二趟运行、只把文件换掉也会走到那儿）。
+        ⚠️ 路径不在产物目录里时**连读都不读**（§15.3）—— 外面那个文件与这一趟的产物无关。
         """
-        result = view.get("result") or {}
-        raw = str(result.get("py_path") or "").strip()
-        if str(view.get("status") or "") != DONE or not raw:
-            return None                                 # 没到头 / 这一趟没有产物记录
         path = pathlib.Path(raw)
-        if not _inside(path, self._products_dir(values or {})):
-            return None
-        return path if path.is_file() else None
+        if not _inside(path, self._products_dir(values)):
+            return ARTIFACT_DISK_OUTSIDE_SAY % raw
+        if not path.is_file():
+            return ARTIFACT_DISK_GONE_SAY
+        got, why = _disk_fingerprint(path)
+        if got is None:
+            return ARTIFACT_DISK_UNREADABLE_SAY % why
+        if (got["size"], got["sha256"]) != (len(blob), hashlib.sha256(blob).hexdigest()):
+            return ARTIFACT_DISK_DIFFERS_SAY
+        return ""
 
     def _products_dir(self, values: dict) -> pathlib.Path:
         """这一趟的产物目录：**它自己记的那个**（`state["out_dir"]`），没记就按这个部署的算。
@@ -2170,7 +2212,10 @@ class Service:
         return pathlib.Path(raw) if raw else pathlib.Path(self._out_dir)
 
     def _no_artifact_say(self, view: dict, values: Optional[dict] = None) -> str:
-        """「这一趟为什么没有产出 py」—— **409 的正文与 `/live.artifact.say` 同一句**。
+        """「这一趟为什么没有可交付的产物」—— **409 的正文与 `/live.artifact.say` 同一句**。
+
+        只覆盖「记录里**没有**它交付过的证据」那一大类；「记录说交付过、可没留下那串字节」
+        由 `_artifact_state` 直接给 `ARTIFACT_UNVERIFIABLE_SAY`（本函数不管那一档）。
 
         ⚠️ **不编原因**：到头了那几档，原因一律**照抄这一趟自己留下的那句话**
         （`end_note` / 跑挂那句 `say`）。撞上限那三种按**时间线上那条事件同一条规则**
@@ -2179,13 +2224,6 @@ class Service:
         status = str(view.get("status") or "")
         if status not in (DONE, FAILED):
             return NO_ARTIFACT_YET_SAY % self._status_say(status)
-        raw = str((view.get("result") or {}).get("py_path") or "").strip()
-        if raw:
-            # 记了路径却拿不出来 —— 两种，说法**不一样**（一种是我们不服务它，一种是它没了）。
-            root = self._products_dir(values or {})
-            if not _inside(pathlib.Path(raw), root):
-                return NO_ARTIFACT_OUTSIDE_SAY % (raw, root)
-            return NO_ARTIFACT_GONE_SAY % raw
         head = NO_ARTIFACT_HEAD_DONE if status == DONE else NO_ARTIFACT_HEAD_FAILED
         said = str(view.get("say") or "").strip() or NO_ARTIFACT_UNSAID_SAY
         if status == DONE and str((view.get("result") or {}).get("end_reason") or "") in CAP_END_REASONS:
@@ -2197,11 +2235,11 @@ class Service:
 
         - `None` —— **还没到「写下了 py」那一步**（在跑 / 排队 / 停在闸上）：
           页面上那个位置**不存在**（§15.4：不是灰按钮，是**还没有**）；
-        - `{url, filename, path, say}` —— 这一趟的产物**核对过了**（`trust == "this_run"`）：
-          `url` 非空 = 真的能下；
-        - `{url: None, filename: None, path: None, say: …}` —— 到头了但**拿不到**
-          （没产出 / 产出过但没了 / 路径出界 / **被后来的运行覆盖了** / 核对不了）：
-          页面摆那句话、**不摆按钮**（§15.2 / A14）。
+        - `{url, filename, path, say}` —— 这一趟**写下的那串字节拿到了**（`bytes` 非空）：
+          `url` 非空 = 真的能下；`path` = **它写到哪了**（对账用，§15.2），
+          `say` 可能还带一句盘上那份现在是什么（不一样 / 没了 / 读不出来 / 没去看）；
+        - `{url: None, filename: None, path: None, say: …}` —— **拿不到**（记录里没有它交付过的
+          证据 / 记录里没留下那串字节）：页面摆那句话、**不摆按钮**（§15.2 / A14）。
 
         ⚠️ 判据是 `_artifact_state`（与端点**同一处**）—— 「能下」这四个字只有一个来源，
         不然就会出现「页面说能下、点下去 409」那种点了没反应的按钮。
@@ -2209,11 +2247,10 @@ class Service:
         if str(view.get("status") or "") not in (DONE, FAILED):
             return None
         state = self._artifact_state(view, values)
-        if state["trust"] != "this_run":
+        if not state["bytes"]:
             return {"url": None, "filename": None, "path": None, "say": state["say"]}
-        path = state["path"]
-        return {"url": ARTIFACT_URL % job_id, "filename": path.name,
-                "path": str(path), "say": state["say"]}
+        return {"url": ARTIFACT_URL % job_id, "filename": state["filename"],
+                "path": state["path"], "say": state["say"]}
 
     # ── 两块接线信息（页面不自己编）────────────────────────────────
 
@@ -3123,8 +3160,13 @@ class Service:
                 return                               # 状态是诚实的，别覆盖它
             job.status = FAILED
             job.error = raw
+            # ⚠️ **跑挂 ≠ 没交付**（复审 R1）：图可能**已经交付**了，是这一步之后（服务自己
+            #    那一步）炸的 —— 所以这里**不许**说「任务没有交付任何东西」「产物目录里不会有
+            #    它写的 py」（那是服务**不知道**的事，而实测那句话在可达状态下是假的）。
+            #    说服务真知道的那件事：它在这一步上跑挂了；交付过没有，记录里写着。
             job.say = ("这一步没跑成，停下了：%s\n"
-                       "（任务没有交付任何东西 —— 产物目录里不会有它写的 py。）" % exc)
+                       "（**这一趟有没有交付过，看它自己的记录** —— 服务是在这一步上跑挂的，"
+                       "它不知道前面几步做成了什么；产物那一格会照记录说。）" % exc)
             said = job.say
         try:
             self.narrate(job, "failed", said, error=raw)
@@ -3261,9 +3303,10 @@ class Service:
                              "can": value.get("can") or []}}
 
         end_reason = str(values.get("end_reason") or "")
-        py_path = values.get("py_path") if end_reason == END_DELIVERED else None
-        delivered = bool(end_reason == END_DELIVERED and py_path
-                         and pathlib.Path(str(py_path)).is_file())
+        #: ★ 这道闸只有一处写法（`_delivered_path`）—— 产物那一路读的是**同一句**：
+        #: 两处各写一遍「交付过没有」，迟早会漂成两个答案（本片病史：同一个事实两个名字）。
+        py_path = _delivered_path(values)
+        delivered = bool(py_path and pathlib.Path(py_path).is_file())
         report = values.get("report")
         note = str(values.get("end_note") or "").strip()
         return {**base, "status": DONE, "delivered": delivered,
@@ -4482,23 +4525,27 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
 
     @api.get("/job/{job_id}/artifact")
     def artifact(job_id: str):
-        """这一趟写下的那个 py（设计注 §十五）：**字节走这儿**，文件名在 `Content-Disposition` 里。
+        """这一趟写下的那份 py（设计注 §十五）：**字节走这儿**，文件名在 `Content-Disposition` 里。
 
-        ⚠️ **不接受任何路径参数**（§15.3）：路径只从这一趟自己的记录里取，服务前再核对一次
-        它真的在产物目录里（**解析符号链接之后**）。一旦这儿能传路径，它就是一个
-        **任意文件读取** —— 所以这个函数**没有第二个参数**，这不是省事，是判据的一部分。
-        没产物 → **409 + 一句人话**（为什么没有），不是 404、也不是一个空文件。
+        ⚠️ **不接受任何路径参数**（§15.3）：一旦这儿能传路径，它就是一个**任意文件读取** ——
+        所以这个函数**没有第二个参数**，这不是省事，是判据的一部分。
+        端出去的是**这一趟记录里那串字节**（`state["src"]`），不是盘上那个文件 ⇒
+        **同一个站点跑两趟，各自拿到自己那一份**（A15 无条件成立），
+        盘上那一份现在是不是它的，由那句话如实说。
+        拿不到 → **409 + 一句人话**（为什么拿不到），不是 404、也不是一个空文件。
         """
         try:
-            path = svc.artifact_file(job_id)
+            state = svc.artifact_file(job_id)
         except KeyError:
             raise HTTPException(status_code=404, detail=NO_SUCH_JOB_SAY % job_id)
-        # 下载名取**服务要交付的那个文件自己的名字**（`<site>.py`：生产那条路上它是
-        # `graph._delivery_path` 写出来的那个名字）—— 不是拿站点名再拼一遍
-        # （那种拼法在路径与站点名分岔时会给出一个对不上的名字）。
-        # `filename=` 由 starlette 落成 `attachment; filename="…"`；要转义时它自己走
-        # `filename*=utf-8''…`（名字里的 CR/LF 到不了头字段上 —— 头注入没路走）。
-        return FileResponse(str(path), media_type="text/x-python", filename=path.name)
+        # ★ 端出去的**就是核对过的那串字节**（`state["bytes"]` 同一个对象）：
+        # `FileResponse` 会**再开一次盘**，那两次之间被换掉的话，端出去的就是没核对过的字节
+        # （复核 R2 实测复现过）。这里没有第二次读 —— 核对与发送之间没有缝。
+        # 下载名来自**这一趟记录里的路径**（不是盘上那个文件的名字），并且只留安全字符
+        # （它进的是头字段 —— 一个换行就是头注入）。
+        return Response(content=state["bytes"], media_type="text/x-python",
+                        headers={"Content-Disposition":
+                                 'attachment; filename="%s"' % state["filename"]})
 
     @api.get("/job/{job_id}/shot/{name:path}")
     def shot(job_id: str, name: str):
