@@ -985,6 +985,12 @@ def _journey_say(journey) -> str:
     `window_gone` 都是**说得出理由**的停 —— 抬头写「停得不明不白」是**假话**，
     而人话就在 `notes` 里（尾巴那句），一句话都没丢。内部停因的 token
     （`plan_stalled` 这种）也不许进人话（M-5）：读这份账的人是非技术的人。
+
+    ⚠️ **有人插过话而它就收尾了**（Task 9 的 R11）那一句**不按位置认**（回归 1 / F4）：
+    尾巴只取 `notes[-1]`，而 `service._explore_for.run` 在 `explore` 返回**之后**还会往
+    `notes` 追两句（账本 / 时间线没记全）—— 押在位置上，旁路坏过一趟那句话就没了。
+    所以按**它自己那句话**在不在 `notes` 里认（同一个常量，两个模块共用），
+    并且**已经在尾巴上时不重复说**。
     """
     stop = str(getattr(journey, "stop_reason", "") or "")
     notes = [str(n) for n in (getattr(journey, "notes", None) or [])]
@@ -1002,7 +1008,11 @@ def _journey_say(journey) -> str:
     else:
         head = "探路停得不明不白（%s）。" % (stop or "没说为什么")
     steps = len(getattr(journey, "steps", None) or [])
-    return "%s%s走了 %d 步。%s" % (head, _resume_say(journey), steps, tail)
+    said = "%s%s走了 %d 步。%s" % (head, _resume_say(journey), steps, tail)
+    if browser_agent.STEER_WRAPPED_UP_NOTE in notes \
+            and browser_agent.STEER_WRAPPED_UP_NOTE not in tail:
+        said += browser_agent.STEER_WRAPPED_UP_NOTE
+    return said
 
 
 def _resume_say(journey) -> str:

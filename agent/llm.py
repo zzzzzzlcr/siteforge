@@ -84,6 +84,41 @@ def steer_message(text: str) -> dict:
     return {"role": "user", "content": "%s\n%s\n%s" % (STEER_HEAD, text, STEER_REMINDER)}
 
 
+class SteerLine(Protocol):
+    """「人的话」那根线（Task 9）—— `steer=` 收的就是它。
+
+    `__call__` 是**必须**的那一半：循环在**每一次模型调用之前**问一次，回一句非空的话就
+    插进这一轮。后两个是**可选**的那一半（服务那一侧实现了它们）：那一次调用**有结果之后**
+    回填一次 —— **「已经交给它了」与 `delivered` 都等到那一轮真的发出去了才落**。
+
+    ⚠️ 为什么非要把「放进了消息」与「发出去了」分开（复审 F2）：「放进消息」是**可证的**
+    （我们确实 append 了），「它看到了」不可证（R6 的原话）；而 `create` 可能在发出**之前**
+    就被拦下（人喊停）、也可能自己炸（网络 / 4xx）—— 那时候模型一个字都没看到，
+    再说「已经交给它了」就是一句**假话**，而且那句话会跟着被记成「送到了」
+    （`/again` 于是不再带上它 —— 人的话两头都没有了）。
+    """
+
+    def __call__(self) -> str | None: ...
+
+    def went_out(self) -> None: ...
+
+    def missed(self) -> None: ...
+
+
+def _tell_steer(steer, *, went_out: bool) -> None:
+    """把「这一轮到底发出去没有」告诉那根线（`SteerLine` 的**可选**那一半）。
+
+    ⚠️ 为什么只有**这里**分得清：`create` 就是这一次调用的全部 —— 它**返回** = 请求发出去了
+    （模型看到了）；它**抛** = 没发出去（被那道闸拦下、或者调用自己炸了）。这两件事在这一个
+    `try` 里干净利落，别处都分不出（循环的调用方只看见「循环炸了 / 没炸」，
+    看不出炸在发出去**之前**还是之后）。
+    ⚠️ 那根线没有这两个方法（测试里那些只回一句话的 lambda）⇒ **什么也不做** = 默认那条路。
+    """
+    hook = getattr(steer, "went_out" if went_out else "missed", None)
+    if hook is not None:
+        hook()
+
+
 def client():
     """按 env 建 OpenAI 兼容客户端。key 只从 env 读，**不落任何文件**。"""
     from openai import OpenAI
@@ -139,6 +174,8 @@ def run_tool_loop(
     传 `None`（默认）⇒ 一次都不问、一个消息都不插：**这条路与今天逐字节相同**。
     ⚠️ 插进去的那句话里带着 `STEER_REMINDER`（那道门上没有 `done()`，「不调工具」=它宣布
     讲完了 —— 这一条是**当面**堵那个误读；真发生了由 `browser_agent` 记一句人话，见 R11）。
+    ⚠️ 这一次调用**有结果之后**还要回填一次（`_tell_steer`）：返回 ⇒ `went_out()`、
+    抛 ⇒ `missed()` —— 那根线靠它才知道「到底发出去了没有」（`SteerLine`，复审 F2）。
     """
     cli = _client or client()
     model = model or DEFAULT_MODEL
@@ -160,12 +197,20 @@ def run_tool_loop(
                 messages.append(steer_message(said))
                 steered = said
         t0 = time.time()
-        resp = cli.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=tool_specs or None,
-            max_tokens=max_tokens,
-        )
+        try:
+            resp = cli.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tool_specs or None,
+                max_tokens=max_tokens,
+            )
+        except BaseException:                      # noqa: BLE001 —— `_Stop`（人喊停）也是 BaseException
+            # 这一次调用**没发出去** —— 那根线要据此把「已经交给它了」收回去（`missed`）。
+            _tell_steer(steer, went_out=False)
+            raise
+        if steered:
+            # 真的发出去了（模型看到这一轮了）—— 这才算「交给它了」（复审 F2③）。
+            _tell_steer(steer, went_out=True)
         elapsed_ms = int((time.time() - t0) * 1000)
 
         choice = resp.choices[0]

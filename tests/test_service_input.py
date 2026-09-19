@@ -254,6 +254,11 @@ def test_say_while_it_explores_goes_straight_in_instead_of_queuing(tmp_path, mon
     这句话此刻只是排在队里等着下一轮交出去（`input.queued` 里看得到它、它自己的
     `delivered` 还是 False，时间线上那条「已经交给它了」**还没有**）。
     真正的兑现是 `steer_landed`（Task 9 的用例在 `tests/test_steer.py`）。
+
+    ⚠️ **说两句**（回归 1 / F3）：队里排着不止一句时，排队那条路上还会补**尾巴那句**
+    （`SAY_QUEUE_LENGTH_SAY`：「队列里现在排着 %d 句 —— 都是只预填、不自动发。」）——
+    只发一句的话那条尾巴根本不会出现，「不带排队那套话」这条断言就**量不到它**。
+    （复审的 V3 反证：自造一句「直达 + 尾巴那句」能全绿 —— 就是因为队里只有一句。）
     """
     monkeypatch.setattr(service, "STEER_WIRED", True)
     g = FakeGraph(steps=[_Snap(values={"site": SITE, "visits": ["intake"]})])
@@ -262,14 +267,22 @@ def test_say_while_it_explores_goes_straight_in_instead_of_queuing(tmp_path, mon
 
     r = client.post("/job/job-running/say", json={"text": "先点 cookie 那个同意"})
     assert r.status_code == 202, r.text
-    body = r.json()
+    r2 = client.post("/job/job-running/say", json={"text": "再点下一步"})
+    assert r2.status_code == 202, r2.text
+    body = r2.json()                       # ← 第二句：队里这时**排着两句**
     assert body["delivered"] is True and body["queued"] is False, body
+    assert body["n"] == 2, ("队里两句 —— 排队那条路这时**真的会**补上尾巴那句，"
+                            "所以下面那条断言才量得到它：%r" % body)
     assert "直达" in body["say"], body["say"]
+    # 排队那条路上的**两句话**都不许出现在这儿（正文那句 + 尾巴那句）：
+    # 「按一下才送」/「只预填、不自动发」说的都是排队，摆在直达这条路上就是假话。
     assert "不会自动发" not in body["say"], (
-        "「按一下才送」说的是排队那条路 —— 摆在直达这条路上就是假话：%r" % body["say"])
+        "排队那条路的正文摆在了直达这条路上：%r" % body["say"])
+    assert "只预填、不自动发" not in body["say"], (
+        "排队那条路的**尾巴**摆在了直达这条路上（队里两句时它才会出现）：%r" % body["say"])
     live = _live(client, "job-running")
     # ① 它进了队（等着下一轮交出去）—— 而**还没**到它手上
-    assert [x["text"] for x in live["input"]["queued"]] == ["先点 cookie 那个同意"]
+    assert [x["text"] for x in live["input"]["queued"]] == ["先点 cookie 那个同意", "再点下一步"]
     assert live["input"]["queued"][0]["delivered"] is False, "还没交出去 ⇒ 不许说送到了"
     # ② 人自己那句话 + 它会怎么到它手上，都在时间线上（`who="you"`）
     said = [e for e in live["events"] if e["kind"] == "human_said"]

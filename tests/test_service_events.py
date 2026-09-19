@@ -625,6 +625,7 @@ def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
     | 自测跑完**一遍**（含没跑的那几遍） | `selftest_run`（Task 5 加的，⑨） |
     | 跑着的时候人按了「停」，它跑完停在闸上 | `stop_landed`（Task 8 加的，⑩） |
     | 人在它探路跑着的时候插了一句话，那句话进了它的下一轮 | `steer_landed`（Task 9 加的，⑪） |
+    | 人插的那句话**没送到**（这一趟到头了） | `steer_missed`（Task 9 回归 1 加的，⑫） |
 
     **要盯住的名字是「从调用点长出来的」**（`_kinds_the_service_narrates` AST 扫
     `agent/service.py`），不是手抄的：复审 2026-09-18 实测，手抄的名单对「按规矩加一个
@@ -762,8 +763,14 @@ def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
     #     「有人记」在调用点上看得出，而「真说得出来」只有一条走真链的场景逼得出来。
     #     ⚠️ 场景本体写在 `tests/test_steer.py`（那里才有那一段桩与那条判据），这里**借它**
     #     —— 抄第二份就是两份口径（哪天通道改了，只会有一份跟着动）。
-    from test_steer import steer_over_the_real_chain
+    from test_steer import steer_missed_over_the_real_chain, steer_over_the_real_chain
     seen |= steer_over_the_real_chain(tmp_path, monkeypatch)
+
+    # ⑫ 人插的那句话**没送到**（那一轮没发出去）—— `steer_missed`（Task 9 回归 1 加的，⑫）。
+    #     同一个道理：它也是**从调用点长出来的词**，只有一条走真链的场景逼得出来。
+    #     ⚠️ 这一条**只在开关打开时**说得出口（关着的时候没有「直达」那句承诺要收回）——
+    #     而这里的场景自己会把开关打开（`_chain` 的 `wired=True`）。
+    seen |= steer_missed_over_the_real_chain(tmp_path, monkeypatch)
 
     # ── 机械断言（三条，名字都从调用点推出来）──────────────────────
     derived = _kinds_the_service_narrates()
