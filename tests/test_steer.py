@@ -836,6 +836,50 @@ def test_a_second_promise_of_the_same_words_is_taken_back_too(tmp_path, monkeypa
     assert service.STEER_MISSED_DIED_SAY in said[1]["say"], said[1]["say"]
 
 
+def test_the_sentence_number_does_not_come_from_the_queue_position(tmp_path, monkeypatch):
+    """**话的号**（`seq`）**不随队列长度走**（回归 4 / ★1）：删掉一条也不会撞号。
+
+    为什么非要这样（复审搭形状量过）：号要是从 `len(job.inbox)` 来，那么**将来**有人加一句
+    「送出去了就从队里拿掉」（今天没有）⇒ 新条目的号会**撞上老条目的号**，
+    而去重集合里那个号会把**新**那条承诺当成「报过了」滤掉 ⇒ 那条承诺**此后每个出口都收不回来**
+    （不可自愈的静默）。换成 Job 上**只增不减的计数器**，这件事就**不再依赖任何前提**了。
+    ⚠️ 这条用例**手工模拟那一步删除**（`inbox.pop(0)`）—— 今天生产里没有这一步，
+    所以它是**形状的守**，不是行为的守。
+    """
+    client, svc = _wired_client(tmp_path, monkeypatch)
+    job = _registered_job(svc, job_id="job-seq", stage="draft")
+    client.post("/job/job-seq/say", json={"text": "第一句"})
+    client.post("/job/job-seq/say", json={"text": "第二句"})
+    with job.lock:
+        job.inbox.pop(0)                       # ← 模拟「将来有人把送出去的拿掉」
+    client.post("/job/job-seq/say", json={"text": "第三句"})
+
+    seqs = [x["seq"] for x in job.inbox]
+    assert len(seqs) == 2, seqs
+    assert len(set(seqs)) == len(seqs), "号撞了（去重集合会认错条目）：%r" % (seqs,)
+
+
+def test_an_empty_sentence_is_never_marked_as_reported(tmp_path, monkeypatch):
+    """**空文本的条目不许被记成「报过了」**（回归 4 / G2：那会变成永久静默）。
+
+    `/say` 今天进不来空文本（400 —— 复审把 `""` / `"   "` / `"\n\t "` 都试过），
+    但**形状**不许留这个坑：先标记、再发现「没话可说」就早退 ⇒ 那一条**此后每个出口**
+    都被去重滤掉，永远不再被人看见。⇒ 早退必须在**标记之前**。
+    """
+    client, svc = _wired_client(tmp_path, monkeypatch)
+    job = _registered_job(svc, job_id="job-empty")
+    with job.lock:                             # 手造一条：`/say` 那层挡着，这里直接放进去
+        job.inbox.append({"text": "  ", "at": "2026-09-19T00:00:00+08:00",
+                          "delivered": False, "superseded": False, "promised": True, "seq": 99})
+    job.graph = _gate_graph()
+
+    svc._advance(job, None)
+
+    assert not [e for e in job.timeline.all() if e["kind"] == "steer_missed"], "空话没什么可说的"
+    assert 99 not in job.steer_missed_reported, \
+        "被记成「报过了」= 此后每个出口都静默滤掉它（不可自愈）"
+
+
 def test_words_still_queued_at_a_gate_are_not_reported_as_missed(tmp_path, monkeypatch):
     """反面（**防滥报**）：没承诺过的话停在闸上 —— 一个字都不说（那是**正常的排队**）。
 

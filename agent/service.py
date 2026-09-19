@@ -1232,6 +1232,9 @@ class Job:
     #: 它是 `_where_it_stopped` **在安全时刻（一次 invoke 开始之前）采的那一次样**，
     #: **不是第二个真相源**。
     running_step: str = ""
+    #: `/say` 收到第几句话（**只增不减**，回归 4 / ★1）。它是条目上 `seq` 那一格的来源 ——
+    #: 号**只认这个计数器**，与队列里现在有几条、条目有没有被拿掉**都不相干**。
+    say_seq: int = 0
     #: 「**没送到它手上**」这件事**报过**的那几条话（回归 1 / F1b + F2②）。与 `shots_reported` /
     #: `narration_reported` 同一个形状：**同一条话只报一次** —— `reopen` 之后这一趟还会再走到头
     #: 一次，那几条**照样还在队里**（没送到就是没送到），不去重就会把同一句再说一遍。
@@ -1246,6 +1249,17 @@ class Job:
 
 
 # ─────────────────────────────── 服务本体 ───────────────────────────────
+
+
+def _next_say_seq(job: Job) -> int:
+    """**这一条话的号**（回归 4 / ★1）：Job 上那个只增不减的计数器往前走一格。
+
+    ⚠️ **持锁里调**（`say()` 的 append 那一块就在 `with job.lock:` 里）—— 两个线程同时
+    `/say` 也不会拿到同一个号。⚠️ 它**不是** `len(job.inbox)`：那种写法要靠「条目只增不删」，
+    而号一旦与队列长度绑在一起，将来有人删条目就会**撞号**（去重集合会把新承诺当成报过了）。
+    """
+    job.say_seq += 1
+    return job.say_seq
 
 
 class _SteerLine:
@@ -3331,8 +3345,12 @@ class Service:
                               # ⚠️ **这一条话的号**（回归 3 / R3）：更正**按条目**去重就靠它 ——
                               # 按**文本**去重的话，「同一句话说了两遍」产生的**第二条承诺**
                               # 每个出口都收不回来（复审判出来的那条残余静默）。
-                              # 条目只增不删 ⇒ `len(inbox)` 就是它的号（持锁里取的，不会撞）。
-                              "seq": len(job.inbox)})
+                              # ⚠️ 号来自 **Job 上只增不减的计数器**（回归 4 / ★1），**不是**
+                              # `len(inbox)`：后者要靠「条目只增不删」—— 而将来有人加一句
+                              # 「送出去就从队里拿掉」，号就会**撞上老条目**，那条新承诺
+                              # 此后每个出口都被去重滤掉（不可自愈的静默，复审搭形状量过）。
+                              # 计数器不靠任何别的东西，所以这件事**没有前提**。
+                              "seq": _next_say_seq(job)})
         # `n` 与 `/live.input.queued` **同一个口径**（修复轮 3 / NEW-R1）—— 同一处判据
         n = len(self._still_waiting(job))
         # ⚠️ 两句话说的是两条路（R2 的「同一件事不许两个名字」反过来：
@@ -3592,14 +3610,16 @@ class Service:
         with job.lock:
             # ⚠️ 去重按**条目**（`seq`）不按文本（回归 3 / R3）：同文说两遍 = **两条承诺**，
             # 两条都要在各自的出口收回（按文本去重时第二条永远收不回来）。
+            # ⚠️ 「没话可说」的那一条**不许进 fresh**（回归 4 / G2）：先标记、再发现没话说而早退，
+            # 就是把那一条记成「报过了」—— 它此后**每个出口**都被去重滤掉（永久静默）。
+            # `/say` 今天挡着空文本（400），但形状不许留这个坑（下一个人挪一行它就可达了）。
             fresh = [x for x in Service._steer_promised(job.inbox)
-                     if x.get("seq") not in job.steer_missed_reported]
+                     if x.get("seq") not in job.steer_missed_reported
+                     and str(x.get("text") or "").strip()]
             if not fresh:
                 return
             job.steer_missed_reported.update(x.get("seq") for x in fresh)
-            said = "\n".join(str(x.get("text") or "") for x in fresh if x.get("text"))
-            if not said:
-                return
+            said = "\n".join(str(x.get("text") or "") for x in fresh)
             crashed = job.status == FAILED
         why = (STEER_MISSED_AT_GATE_SAY if at_gate
                else (STEER_MISSED_DIED_SAY if crashed else STEER_MISSED_ENDED_SAY))
