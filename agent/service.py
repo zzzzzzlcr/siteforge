@@ -259,6 +259,62 @@ NO_RUNS_SAY = ("还没有任何运行。这个列表是**这个进程**记得的
 CAP_END_REASONS = (END_REVISION_CAP, END_LINT_CAP, END_SELFTEST_CAP)
 
 
+# ───────────────── §十五 产物交付（Task 11）─────────────────────────────
+# 运营拿到产物的唯一方式，从前是去文件系统里捞（`out_dir` 是服务端的一个路径，
+# 页面上一个字都没提）。这一节把那一段补上：**这一趟记下的那个 py，页面上就能拿到**。
+#
+# ⚠️ 这一节里**只有一个判据**（`Service._servable_py`）：`/live` 的产物那一格与
+# `/job/{id}/artifact` **都走它**。两套判据的后果不是「多写几行」——
+# 页面会说「能下」而端点回 409，运营拿到的是一个点了没反应的按钮
+# （本片病史：同一个事实两个名字）。
+
+#: 产物那一格那个地址。**服务给**（页面不自己拼）：路由换了，页面跟着服务走。
+ARTIFACT_URL = "/job/%s/artifact"
+#: 有产物时那句话（页面原样摆在时间线上那一步上）。
+ARTIFACT_READY_SAY = "这一趟的 py 写下来了 —— 点文件名下载，它落在盘上的位置写在下面。"
+#: 「到头了但没有产物」那句话的**头**。原因一律照抄这一趟自己留下的那句话（下面那两格）。
+NO_ARTIFACT_HEAD_DONE = "这一趟**没有产出 py**（它到头了，但没写下那个文件）"
+NO_ARTIFACT_HEAD_FAILED = "这一趟**没有产出 py**（它跑挂了，没跑到写下那个文件那一步）"
+#: 「还没跑到写 py 那一步」那句（在跑 / 排队 / 停在闸上）。⚠️ 与上面两格**不是一回事**：
+#: 一个是「它还没写到那儿」，一个是「它跑完了但没有」—— 混成一个就是编话。
+NO_ARTIFACT_YET_SAY = ("这一趟还没有产物（它现在是「%s」）—— 产物要等它走到「写下了 py」"
+                       "那一步才有。这条路只看**这一趟自己记下的**那个路径。")
+#: 到头了、可它一个字没说 —— 明说「它没说」，不替它编一个原因。
+NO_ARTIFACT_UNSAID_SAY = "（它没留下说明为什么的那句话 —— 这本身就不正常。）"
+#: 结局说交付了、可那个文件现在不在盘上 —— 那**不是**「没产出」，说成没产出就是假话
+#: （文件是产出过的，人正拿着路径去对账）。
+NO_ARTIFACT_GONE_SAY = ("这一趟的结局说它**交付了**，可 %s 那儿现在不是一个文件 —— "
+                        "它被挪走、删掉，或者被换成了目录。这一屏不替你另找一个："
+                        "产物只认这一趟自己记下的那个路径。")
+#: 记录里的路径**跑到产物目录外面**去了 → 不服务它（§15.3 的安全边界）。
+NO_ARTIFACT_OUTSIDE_SAY = ("这一趟记下的产物路径**不在产物目录里**：%s —— 解析完符号链接之后"
+                           "它落在 %s 外面，这个路径不服务。产物只认产物目录里面的文件（§15.3）。")
+#: 「没这个任务」（404）：`/job/{id}`、`/live`、`/artifact` 三处**同一句**
+#: （一件事一处口径 —— 三条路读的是同一份 checkpoint/登记表）。
+NO_SUCH_JOB_SAY = ("没这个任务：%s（服务里没有它，checkpoint 里也没有）。"
+                   "要么 id 写错了，要么它是在**另一个** saver 上跑的 —— "
+                   "状态住在 saver 里，不在这个进程里（R-19）。")
+
+
+def _inside(path, root, *, direct: bool = False) -> bool:
+    """解析符号链接之后，`path` 还在 `root` 里面吗。
+
+    ⚠️ 用**解析后的路径**判，不是「长得像不像」：一个指向 `/etc/passwd` 的
+    `forms/sites/x.py` 在字符串上看一模一样，解析完才看得出来。
+    前缀比较带上 `os.sep` —— 否则 `sites-evil/` 会「以 `sites` 开头」而混过去。
+
+    `direct=True` 是更严的一档：**直接躺在那个目录里**（不许再下一层）。
+    `/job/{id}/shot/{name}` 用它（那儿的「名字」是外面来的，多一层就多一个可乘之机）；
+    产物那一路用宽松那一档（§15.3 的原话是「落在 `out_dir` 之内」——
+    而这一趟记下的路径本来就只有服务自己写得出来）。
+    """
+    real = os.path.realpath(str(path))
+    base = os.path.realpath(str(root))
+    if direct:
+        return os.path.dirname(real) == base
+    return real == base or real.startswith(base + os.sep)
+
+
 # ─────────────────── 给运营的那一屏（Task 7 / 设计注 §8.4）───────────────────
 #: 页面文件（`GET /console` 读它）。**放仓库里**的理由（设计注 §8.4）：页面是**可读的资产**
 #: （能 diff、能 review），不是塞在 py 里的字符串。每次请求现读 —— 改页面不用重启服务。
@@ -1956,9 +2012,7 @@ class Service:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail="这个任务 id 不能当目录名：%s" % exc)
         path = where / str(name)
-        inside = os.path.realpath(str(where))
-        real = os.path.realpath(str(path))
-        if os.path.dirname(real) != inside:
+        if not _inside(path, where, direct=True):
             raise HTTPException(status_code=404, detail=(
                 "这张图不在那个任务的目录里：%s —— 它顺着链接跑到别处去了，不给你读。"
                 % name))
@@ -1975,6 +2029,103 @@ class Service:
         if note and note.get("why"):
             said += "这一轮拍过，但没拍成：%s" % note["why"]
         return said
+
+    # ── 产物那一个文件（§十五）：`/job/{id}/artifact` 与 `/live` 的产物那一格 ──
+    # 两个「服务一个文件」的端点（图和产物）用**同一道**判据：解析完符号链接之后，
+    # 那个东西必须还在它该在的那个目录里（`_inside`）。形状不同的地方只有一处，
+    # 而且是有理由的：图名是**外面来的**（多一层就多一个可乘之机 ⇒ `direct=True`），
+    # 产物路径是**服务自己记下来的**（仍然核对，但按 §15.3 的原话用宽松那一档）。
+
+    def artifact_file(self, job_id: str) -> pathlib.Path:
+        """`/job/{id}/artifact` → 这一趟**自己记下的**那个 py；拿不出来就 409（人话）。
+
+        ★ **这条路上没有参数可以过**（§15.3）：`job_id` 只是查快照的钥匙。
+        一旦有一个参数能影响取哪个文件，它就是**任意文件读取**。所以路径只从
+        **这一趟的运行记录**里取（`state["py_path"]`），而且只在 `end_reason`
+        说**交付了**的时候才算数（跑挂的那一趟 state 里可能还留着上一次真跑留下的
+        `py_path` —— `tests/test_service.py` 那条钉着同一件事）。
+
+        判据全在 `_servable_py`（与 `/live` 的产物那一格**同一处**）。
+        这里只多一步：把「拿得出来」变成一次文件响应。
+        """
+        view = self._view(job_id)                       # 没这个任务 → KeyError（路由转 404）
+        raw = str((view.get("result") or {}).get("py_path") or "").strip()
+        # `values` 只为**产物目录**那一格（`/job/{id}` 的既有形状里没有它）——
+        # 没有路径要判的时候就别读它：跑着 / 停在闸上那两档不该为一次点击多读一次 checkpoint。
+        values = dict(getattr(self._snapshot(job_id), "values", None) or {}) if raw else {}
+        found = self._servable_py(view, values)
+        if found is None:
+            raise HTTPException(status_code=409, detail=self._no_artifact_say(view, values))
+        return found
+
+    def _servable_py(self, view: dict, values: Optional[dict] = None) -> Optional[pathlib.Path]:
+        """这一趟**拿得出来**的那个 py（`None` = 拿不出来，原因在 `_no_artifact_say`）。
+
+        ★ **唯一一处**判「能不能拿」：`/live` 的产物那一格与 `/job/{id}/artifact` 都走它。
+        三件事缺一不可：① 这一趟到头了；② 记录里有一个路径、且**解析符号链接之后**
+        那个路径还在产物目录里；③ 那个东西真的在盘上、而且是个文件。
+        """
+        result = view.get("result") or {}
+        raw = str(result.get("py_path") or "").strip()
+        if str(view.get("status") or "") != DONE or not raw:
+            return None                                 # 没到头 / 这一趟没有产物记录
+        path = pathlib.Path(raw)
+        if not _inside(path, self._products_dir(values or {})):
+            return None
+        return path if path.is_file() else None
+
+    def _products_dir(self, values: dict) -> pathlib.Path:
+        """这一趟的产物目录：**它自己记的那个**（`state["out_dir"]`），没记就按这个部署的算。
+
+        与 `Service.start` 里那句 `brief.setdefault("out_dir", self._out_dir)` 是**同一条规则**
+        ——「写到哪」与「算不算在里面」必须是**同一个值**。两套的话会出现一种假拒：
+        产物明明写对了、路径也没错，只因为服务配置里的默认值不同就被挡在门外。
+        """
+        raw = str((values or {}).get("out_dir") or "").strip()
+        return pathlib.Path(raw) if raw else pathlib.Path(self._out_dir)
+
+    def _no_artifact_say(self, view: dict, values: Optional[dict] = None) -> str:
+        """「这一趟为什么没有产出 py」—— **409 的正文与 `/live.artifact.say` 同一句**。
+
+        ⚠️ **不编原因**：到头了那几档，原因一律**照抄这一趟自己留下的那句话**
+        （`end_note` / 跑挂那句 `say`）。撞上限那三种按**时间线上那条事件同一条规则**
+        加 `CAP_SAY_PREFIX`（`_note_end`）—— 一处口径，两处显示。
+        """
+        status = str(view.get("status") or "")
+        if status not in (DONE, FAILED):
+            return NO_ARTIFACT_YET_SAY % self._status_say(status)
+        raw = str((view.get("result") or {}).get("py_path") or "").strip()
+        if raw:
+            # 记了路径却拿不出来 —— 两种，说法**不一样**（一种是我们不服务它，一种是它没了）。
+            root = self._products_dir(values or {})
+            if not _inside(pathlib.Path(raw), root):
+                return NO_ARTIFACT_OUTSIDE_SAY % (raw, root)
+            return NO_ARTIFACT_GONE_SAY % raw
+        head = NO_ARTIFACT_HEAD_DONE if status == DONE else NO_ARTIFACT_HEAD_FAILED
+        said = str(view.get("say") or "").strip() or NO_ARTIFACT_UNSAID_SAY
+        if status == DONE and str((view.get("result") or {}).get("end_reason") or "") in CAP_END_REASONS:
+            said = CAP_SAY_PREFIX + said
+        return head + "。它自己交代的是：\n" + said
+
+    def _artifact_cell(self, job_id: str, view: dict, values: dict) -> Optional[dict]:
+        """`/live.artifact`（§十五 那一格）。**三档**：
+
+        - `None` —— **还没到「写下了 py」那一步**（在跑 / 排队 / 停在闸上）：
+          页面上那个位置**不存在**（§15.4：不是灰按钮，是**还没有**）；
+        - `{url, filename, path, say}` —— 有产物；**`url` 非空才是真的能下**；
+        - `{url: None, filename: None, path: None, say: …}` —— 到头了但没产物：
+          页面摆那句话、**不摆按钮**（§15.2 / A14）。
+
+        ⚠️ 判据是 `_servable_py`（与端点**同一处**）；`values` 只用来读产物目录那一格。
+        """
+        if str(view.get("status") or "") not in (DONE, FAILED):
+            return None
+        path = self._servable_py(view, values)
+        if path is None:
+            return {"url": None, "filename": None, "path": None,
+                    "say": self._no_artifact_say(view, values)}
+        return {"url": ARTIFACT_URL % job_id, "filename": path.name,
+                "path": str(path), "say": ARTIFACT_READY_SAY}
 
     # ── 两块接线信息（页面不自己编）────────────────────────────────
 
@@ -3118,6 +3269,10 @@ class Service:
             "status": view["status"],
             "say": str(view.get("say") or ""),
             "delivered": bool(view.get("delivered")),
+            #: 产物那一格（§十五）：`None` = 还没到「写下了 py」那一步（那个位置**不存在**）；
+            #: 否则 `{url, filename, path, say}` —— `url` 非空才是真的能下。
+            #: ⚠️ 判据与 `/job/{id}/artifact` **同一处**（`_servable_py`）。
+            "artifact": self._artifact_cell(job_id, view, values),
             #: 它现在/正要做的那个节点：`stage` 是节点名（页面按它对按钮/文案），
             #: `stage_say` 是它的**人话**（D16：给运营看的字段是人话；与 `/job/{id}`
             #: 那道闸的 `step` / `step_say` 同一个形状）。
@@ -4223,10 +4378,7 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
         try:
             return svc._view(job_id)
         except KeyError:
-            raise HTTPException(status_code=404,
-                                detail="没这个任务：%s（服务里没有它，checkpoint 里也没有）。"
-                                       "要么 id 写错了，要么它是在**另一个** saver 上跑的 —— "
-                                       "状态住在 saver 里，不在这个进程里（R-19）。" % job_id)
+            raise HTTPException(status_code=404, detail=NO_SUCH_JOB_SAY % job_id)
 
     @api.get("/job/{job_id}/live")
     def live(job_id: str) -> dict:
@@ -4238,10 +4390,27 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
         try:
             return svc.live(job_id)
         except KeyError:
-            raise HTTPException(status_code=404, detail=(
-                "没这个任务：%s（服务里没有它，checkpoint 里也没有）。"
-                "要么 id 写错了，要么它是在**另一个** saver 上跑的 —— "
-                "状态住在 saver 里，不在这个进程里（R-19）。" % job_id))
+            raise HTTPException(status_code=404, detail=NO_SUCH_JOB_SAY % job_id)
+
+    @api.get("/job/{job_id}/artifact")
+    def artifact(job_id: str):
+        """这一趟写下的那个 py（设计注 §十五）：**字节走这儿**，文件名在 `Content-Disposition` 里。
+
+        ⚠️ **不接受任何路径参数**（§15.3）：路径只从这一趟自己的记录里取，服务前再核对一次
+        它真的在产物目录里（**解析符号链接之后**）。一旦这儿能传路径，它就是一个
+        **任意文件读取** —— 所以这个函数**没有第二个参数**，这不是省事，是判据的一部分。
+        没产物 → **409 + 一句人话**（为什么没有），不是 404、也不是一个空文件。
+        """
+        try:
+            path = svc.artifact_file(job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=NO_SUCH_JOB_SAY % job_id)
+        # 下载名取**服务要交付的那个文件自己的名字**（`<site>.py`：生产那条路上它是
+        # `graph._delivery_path` 写出来的那个名字）—— 不是拿站点名再拼一遍
+        # （那种拼法在路径与站点名分岔时会给出一个对不上的名字）。
+        # `filename=` 由 starlette 落成 `attachment; filename="…"`；要转义时它自己走
+        # `filename*=utf-8''…`（名字里的 CR/LF 到不了头字段上 —— 头注入没路走）。
+        return FileResponse(str(path), media_type="text/x-python", filename=path.name)
 
     @api.get("/job/{job_id}/shot/{name:path}")
     def shot(job_id: str, name: str):

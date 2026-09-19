@@ -1089,6 +1089,31 @@ def test_a_symlink_out_of_the_shots_dir_is_not_served(tmp_path, monkeypatch):
     assert "root:" not in r.text, "顺着链接把外面的文件读出来了"
 
 
+def test_a_symlink_still_inside_the_job_dir_but_one_level_down_is_refused(tmp_path, monkeypatch):
+    """一个**没有跑出这个任务目录、但下了一层**的软链也不给读（**Task 11 加的一条**）。
+
+    为什么非要有它：上一档（指向 `shots/` 外面的链接）**两种判法都会拒** ——
+    所以「解析完必须**直接躺在**那个目录里」（`_inside(..., direct=True)`）与
+    「解析完在那个目录的**下面**就行」（`direct=False`）**只有这一条用例分得开**。
+    Task 11 把两个「服务一个文件」的端点收进了**同一个** `_inside`
+    （`/job/{id}/shot/{name}` 与 `/job/{id}/artifact` —— 两套判据就是下一个洞），
+    并给图那一路留了更严的一档（它的「名字」是**外面来的**）。这一条就是那一档的守：
+    谁把它放宽成 `direct=False`，这儿的 404 会变成 200 + 一张真图。
+    """
+    client, job_id, _, _ = _to_the_first_gate(tmp_path, monkeypatch)
+    _wait(client, job_id)
+    sub = tmp_path / "shots" / job_id / "sub"
+    sub.mkdir()
+    (sub / "real.png").write_bytes(_png())                # 一张**真** PNG（放宽了就会 200）
+    link = tmp_path / "shots" / job_id / "pause-1.png"
+    link.unlink()
+    link.symlink_to(sub / "real.png")
+
+    r = client.get("/job/%s/shot/pause-1.png" % job_id)
+    assert r.status_code == 404, (r.status_code, r.text)
+    assert "不在那个任务的目录里" in r.json()["detail"], r.json()["detail"]
+
+
 # ───────────────────── 4. 两块接线信息（不编话） ─────────────────────
 
 

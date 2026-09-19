@@ -8,6 +8,8 @@
 //   · `repaint`（默认）：开页 →（`/live` + `/runs` 各来一份）→ 点「停」（服务回 404 人话）
 //     → `/live` 变了（重画）→ `/runs` 取不到（左边那一栏说真话）→ `/live` 又变（**又一次重画**）
 //   · `again`：开页（这一趟到头了）→ 点「重新来一遍」→ `/again` 回新 job
+//   · `artifact`：开页（**还没有**产物）→ `/live` 里出现产物那一格 → 又三次重画
+//     （量「写进去了」之后**还在不在** —— Task 11 / §十五）
 // 打完这些之后，把屏幕上**那几个元素此刻的文本**交回去，外加一个数：**重画了几次**。
 //
 // ⚠️ 射程（写在 `tests/test_console_js.py` 的模块 docstring 里，这里只留一句）：
@@ -135,6 +137,20 @@ async function repaintScenario(out) {
                        sayBoxPlaceholder: el("sayBox").placeholder };
 }
 
+//: 产物那一趟（Task 11 / §十五）：开页时**还没有**产物 → 跑着跑着 `/live` 里出现了那一格
+//: → 之后**还继续重画**（「写进去了」与「还在不在」是两件事 —— Task 7 那一族）。
+//: 两个场景（有产物 / 到头了但没产物）走的**是同一段驱动**：差别只在载荷里那一格。
+async function artifactScenario(out) {
+  out.paintMarks = {};
+  out.paintMarks.afterLoad = timelineWrites;        // 开页那一次（还没有产物）
+  out.afterLoad = { timeline: el("timeline").innerHTML };
+  await ticks(4);                                   // 第二次 `/live` 里就有产物了
+  out.paintMarks.afterArtifact = timelineWrites;
+  out.afterArtifact = { timeline: el("timeline").innerHTML };
+  await ticks(9);                                   // 之后**又三次重画**（正文每次都在变）
+  out.afterRepaint = { timeline: el("timeline").innerHTML };
+}
+
 //: 「重新来一遍」那一趟（Task 10 修复轮 1 / N-3）：运营**按下去**，屏幕上总得发生点什么。
 async function againScenario(out) {
   out.afterLoad = { who: el("whoJob").textContent, notices: el("notices").innerHTML,
@@ -153,6 +169,7 @@ async function againScenario(out) {
 
   const out = {};
   if (payload.scenario === "again") { await againScenario(out); }
+  else if (payload.scenario === "artifact") { await artifactScenario(out); }
   else { await repaintScenario(out); }
   out.paints = timelineWrites;                      // **重画了几次**（C1：别拿 fetch 数代替）
   if (out.paintMarks) { out.paintMarks.end = timelineWrites; }

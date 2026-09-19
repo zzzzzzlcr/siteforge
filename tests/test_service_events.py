@@ -358,9 +358,14 @@ def test_the_live_view_has_every_field_the_brief_pins(tmp_path):
     _wait(client, job_id)
 
     live = _live(client, job_id)
+    # ⚠️ **Task 11 收紧了这一条**（加一格 `artifact`）：这仍然是**精确相等**——
+    #    也就是说新那一格现在是**必须**在的（少一格、多一格都红）。
+    #    不是放宽：这一条要的正是「字段一个都不能少」，而 `/live` 多了一格就得在这里说清。
+    #    那一格的性质由 `tests/test_service_artifact.py` 钉（这里只钉「它在」）。
     assert set(live) == {"job_id", "status", "say", "delivered", "stage", "stage_say", "note",
                          "events", "gate", "input", "stop", "shots_note", "window", "rounds",
-                         "truncated"}
+                         "truncated", "artifact"}
+    assert live["artifact"] is None, "这个 job 停在 intake 闸上 —— 那个位置还不该存在（§15.4）"
     assert live["job_id"] == job_id
     assert live["status"] == "waiting"
     assert live["delivered"] is False, "「停下来了」不是「交付了」—— 两件事分开摆"

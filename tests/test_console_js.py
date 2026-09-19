@@ -84,16 +84,42 @@ AGAIN_SAY = service.AGAIN_SAY % ("job-2", "job-1", 2)
 OLD_TAG = "旧那一趟"
 NEW_TAG = "新那一趟"
 
+# ── Task 11（§十五）：产物那一格 ────────────────────────────────────────
+#: 有产物那一格。三格字符串**从服务自己的常量算出来**（不在这里手抄一遍 —— 服务的路由或
+#: 那句话改一个字，这一份就跟着变，不会两边漂）。与 `AGAIN_SAY` 同一个做法。
+#:
+#: ⚠️ 地址尾巴上那个 `?fixture=1` **是故意的**：不加的话，这个地址与
+#: 「页面拿 `jobId` 自己拼一个 `/job/<id>/artifact`」**长得一模一样** ——
+#: 于是「地址是服务给的、页面不自己拼」这条判据**量不出来**（拼出来的那个也照过）。
+#: 加上之后，页面里任何一处自己拼地址的写法都会露出马脚。
+ART_URL = service.ARTIFACT_URL % "job-1" + "?fixture=1"
+ART_SAY = service.ARTIFACT_READY_SAY
+ART = {"url": ART_URL, "filename": "example-funnel.py",
+       "path": "/srv/siteforge/forms/sites/example-funnel.py", "say": ART_SAY}
+#: 到头了但没产物那一格（A14）：**没有地址**，只有一句人话。
+#: 那句话的形状与服务那句**同源**（`_no_artifact_say` 就是「头 + 它自己交代的那句」，
+#: 撞上限那三种按时间线同一条规则加前缀）—— 这里拼的是这一份夹具要摆上去的那一句。
+NO_ART_SAY = "%s。它自己交代的是：\n%s停：这一版 py 被打回 2 次还是同样的地方不过。" % (
+    service.NO_ARTIFACT_HEAD_DONE, service.CAP_SAY_PREFIX)
+NO_ART = {"url": None, "filename": None, "path": None, "say": NO_ART_SAY}
+#: 夹具认的两个记号（`agent/console.html` 的 `artifactStep` 上各挂一个）：
+#: `STEP_MARK` = 那一步本身在不在（§15.4）；`DL_MARK` = 那条下载在不在（A14）。
+#: ⚠️ 两个名字**不许写得能互相包含**（`data-artifact` 与 `data-artifact-step` 那种）——
+#: 那样「那一步在」会让「下载不在」这条断言**永远假绿**。
+STEP_MARK = 'data-artifact-step="1"'
+DL_MARK = 'data-download="1"'
+
 
 def _live(status: str, mode: str, *, n: int, stop_requested: bool = False,
-          tag: str = "夹具") -> dict:
+          tag: str = "夹具", artifact: dict = None, delivered: bool = False) -> dict:
     """一份 `/live` 正文（**只填这一份夹具要读的那几格**，其余按页面「可能不在」的读法留空）。
 
     `tag` 进每一句事件的人话里 —— **两趟用不同的 tag**，好让「时间线里是哪一趟的事件」
     这条判据**分得开新旧**（修复轮 2 / D1：同一条文字两趟都有 ⇒ 那条断言钉不住东西）。
+    `artifact`（Task 11 / §十五）：`None` = 还没到「写下了 py」那一步（页面**不摆**那个位置）。
     """
     return {
-        "job_id": "job-1", "status": status, "delivered": False,
+        "job_id": "job-1", "status": status, "delivered": delivered,
         "say": "在跑。" if status == "running" else "停下来了，在等你一句话。",
         "stage": "explore", "stage_say": "探路",
         "note": "", "shots_note": "",
@@ -105,6 +131,7 @@ def _live(status: str, mode: str, *, n: int, stop_requested: bool = False,
         "input": {"mode": mode, "draft_note": "", "queued": []},
         "stop": {"requested": stop_requested, "where": "", "will_stop_at": ""},
         "window": None, "rounds": [], "truncated": False,
+        "artifact": artifact,
     }
 
 
@@ -191,10 +218,44 @@ def _assert_all_different(bodies: list, what: str) -> None:
         % (what, len(bodies), len(seen)))
 
 
+def _artifact_payloads(*, with_artifact: bool) -> dict:
+    """产物那一趟（Task 11 / §十五）的两份载荷（**同一个驱动**，只有那一格不同）：
+
+    · `with_artifact=True`：开页时在跑、**还没有**产物 → 后面几份里那一格出现了；
+    · `with_artifact=False`：开页时在跑 → 后面几份**到头了但没产物**（A14 那一档）。
+
+    ⚠️ 每一份正文都不一样（夹具的牙挂在这个前提上），而且产物出现之后**还要继续变** ——
+    「写进去了」与「还在不在」是两件事（Task 7 那一族就是这么漏的）。
+    """
+    tail = (ART if with_artifact else NO_ART)
+    status = "done" if with_artifact else "failed"
+    lives = [{"body": _live("running", "queue", n=1)},
+             {"body": _live("running", "queue", n=2)}]
+    lives += [{"body": _live(status, "queue", n=3 + i, artifact=tail,
+                             delivered=with_artifact)}
+              for i in range(4)]
+    _assert_all_different([x["body"] for x in lives], "`/live` 的正文")
+    return {"scenario": "artifact", "search": "?job=job-1",
+            "responses": {
+                "/runs": [{"body": {"note": "", "runs": [
+                    {"job_id": "job-1", "site": "example-funnel", "status": "running",
+                     "say": "在跑。", "created_at": "2026-09-19T21:00:00+08:00",
+                     "rounds": 0, "delivered": False}]}}],
+                "/job/job-1/live": lives,
+            }}
+
+
 def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
            page: pathlib.Path = None) -> dict:
     """跑一次夹具，把驱动脚本打回来的那份观测解析出来。"""
-    payload = _again_payloads() if scenario == "again" else _payloads(final_mode=final_mode)
+    if scenario == "again":
+        payload = _again_payloads()
+    elif scenario == "artifact":
+        payload = _artifact_payloads(with_artifact=True)
+    elif scenario == "artifact-missing":
+        payload = _artifact_payloads(with_artifact=False)
+    else:
+        payload = _payloads(final_mode=final_mode)
     data = tmp_path / ("payloads-%s-%s.json" % (scenario, final_mode))
     data.write_text(json.dumps(payload), encoding="utf-8")
     r = subprocess.run([NODE, str(DRIVER), str(page or service.CONSOLE_PATH), str(data)],
@@ -351,6 +412,76 @@ def test_the_again_button_really_changes_the_screen(tmp_path):
     #    `#errBox`（`act()` 开头先清一次），所以它只在「页面把一个成功当失败」时才会响。
     #    留着是因为它便宜，**别把它读成「这条钉住了什么」**。
     assert out["afterAgain"]["errBox"] == "" and out["afterAgain"]["errHidden"] is True, out["afterAgain"]
+
+
+def test_the_download_is_not_there_until_the_artifact_really_is(tmp_path):
+    """**产物出现之前那个位置不存在；出现了就是真的能下；而且它活得过重画**（Task 11 / §15.4）。
+
+    三件事一条链（一条链是因为它们说的是**同一个位置**的三个时刻）：
+
+    ① 开页时在跑、还没有产物 ⇒ 屏幕上**没有**那一步（不是灰按钮、也不是一个空链接 ——
+       §15.4 的原话是「不是灰着的按钮，是**还没有**」）；
+    ② `/live` 里出现了那一格 ⇒ 页面上那一步**在了**，而且照抄的是**服务给的那三格**
+       （地址 / 文件名 / 路径 —— 页面不许自己拼）；
+    ③ 之后**又三次重画** ⇒ 它**还在**（「写进去」≠「还在」—— Task 7 那一族在这一片
+       出现过 4 次，而源码文本断言一条都拦不住）。
+
+    ⚠️ 这一条**只有跑起来才钉得住**：三个时刻的差别全在「这一刻画出来的那一份 HTML 里有什么」，
+    而源码里 `artifactStep` 那一段三个分支一直都在（源码文本断言照绿）。
+    ⚠️ ① 量的是**那一步在不在**（`STEP_MARK`），不是「有没有按钮」——
+       只盯按钮的话，「恒画一个空壳子」那种改法量不出来（壳子里本来就没有按钮，实测过）。
+    """
+    out = _drive(tmp_path, scenario="artifact")
+
+    # 量具**不是瞎的**：这一趟真的走到了「产物出现之后」那几次重画（不然 ③ 是个空步）
+    marks = out["paintMarks"]
+    assert marks["afterArtifact"] > marks["afterLoad"], marks
+    assert marks["end"] - marks["afterArtifact"] >= 3, marks
+
+    # ① 产物出现之前：那个位置**不存在**
+    before = out["afterLoad"]["timeline"]
+    assert STEP_MARK not in before, "产物还没出现，页面上就已经有了那一步：%r" % before
+    assert DL_MARK not in before, before
+
+    # ② 出现了：地址 / 文件名 / 路径都是**服务给的那三格**（页面不自己拼）
+    mid = out["afterArtifact"]["timeline"]
+    assert STEP_MARK in mid, "产物那一格出现了，页面上却没有那一步：%r" % mid
+    assert DL_MARK in mid, "产物那一格出现了，页面上却没有下载：%r" % mid
+    assert 'href="%s"' % ART_URL in mid, mid
+    # ⚠️ 文件名要按 `download="…"` 那一格量，**不能只量那串字在不在这份 HTML 里**：
+    #    路径那一行里本来就有同一串字（`…/sites/example-funnel.py`）——
+    #    那样量的话，把链接上的文件名拿掉照绿（实测过：M7）。
+    assert 'download="%s"' % ART["filename"] in mid, \
+        "下下来叫什么没摆出来：%r" % mid
+    assert ART["path"] in mid, "「它写到哪了」没摆出来（人要拿它去对账）：%r" % mid
+    assert ART_SAY[:20] in mid, "服务那句人话没上屏：%r" % mid
+
+    # ③ ★ 又三次重画之后：它**还在**（重画不许把它擦掉）
+    end = out["afterRepaint"]["timeline"]
+    assert STEP_MARK in end, "产物那一步被下一次重画擦掉了：%r" % end
+    assert DL_MARK in end, end
+    assert 'href="%s"' % ART_URL in end, end
+    assert ART["path"] in end, end
+
+
+def test_a_run_that_ended_without_an_artifact_says_so_and_offers_no_button(tmp_path):
+    """**A14**：一趟**没有产出**的运行，页面**明确说出没有产出以及为什么**。
+
+    **不许**出现一个点了没反应、或者下下来一个空文件的下载（§15.5 的原话）——
+    所以这一条同时要：那句人话**在屏上**、而且**没有**任何下载/地址。
+    """
+    out = _drive(tmp_path, scenario="artifact-missing")
+
+    # 量具**不是瞎的**：这一趟真的重画过（不然下面量的是第一帧）
+    assert out["paintMarks"]["end"] - out["paintMarks"]["afterLoad"] >= 3, out["paintMarks"]
+
+    end = out["afterRepaint"]["timeline"]
+    assert STEP_MARK in end, "到头了却没产出的那一趟，页面上连那句话都没有：%r" % end
+    assert "没有产出 py" in end, "到头了却没产出的那一趟，页面上没说出这件事：%r" % end
+    assert "撞上限" in end, "说了「没有产出」却没说是**为什么**：%r" % end
+    assert DL_MARK not in end, "没有产物却摆了一个下载（A14 点名不许的形状）：%r" % end
+    # 开页时（还在跑）那个位置也不存在 —— 与上一条同一个判据的另一头
+    assert STEP_MARK not in out["afterLoad"]["timeline"], out["afterLoad"]
 
 
 def test_the_fixture_can_actually_fire(tmp_path):

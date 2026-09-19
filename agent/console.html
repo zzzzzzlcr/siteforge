@@ -100,6 +100,15 @@
            border:1px solid var(--line); background:var(--surface-2)}
   .ev-agent .who{color:var(--accent); border-color:#d6e2fb; background:#f2f6ff}
   .ev-you .who{color:var(--you); border-color:#cfe8e0; background:#f1faf7}
+  /* ── 产物那一步（§十五）：时间线上自带一个下载 ─── */
+  /* 用 inset 阴影画那一圈，不用 border：`.ev` 是 grid，给单独一行加 border 会让它
+     比别的行多 2px（行高不齐）。 */
+  .ev.artifact{background:#f7fbf8; box-shadow:inset 0 0 0 1px #d8ece2}
+  .ev.artifact .who{color:var(--you); border-color:#cfe8e0; background:#f1faf7}
+  .ev.artifact .dl{margin-top:7px}
+  .ev.artifact .dl a{display:inline-block; text-decoration:none}
+  .ev.artifact .where{font-family:var(--mono); font-size:11.5px; color:var(--ink-3);
+                      margin-top:6px; word-break:break-all}
   .ev.warn{background:var(--warn-bg)}
   .ev.warn .say{color:#6a3d00}
   .ev .say{font-size:13.5px; word-break:break-word}
@@ -396,6 +405,37 @@
       "</div><figcaption>" + rich(cap) + ' · 同 <span class="mono">' + esc(name) + "</span></figcaption></figure>";
   }
 
+  // ══════════════════ 产物那一步（§十五）══════════════════
+  // 「它写下了 py」是**这一步**自带一个下载（不是一个全局按钮），而**产物出现之前那个位置
+  // 不存在**（§15.4：不是灰着的按钮，是**还没有**）。三格全照抄服务：
+  //   · `url` 非空 = **这一趟真的能下**（服务给的地址；页面不自己拼 `/artifact`）；
+  //   · `filename` / `path` = 下下来叫什么、它落在盘上哪儿（人要对账）；
+  //   · `say` = 服务那句话（有产物是一句，没产物是**为什么没有**那句）。
+  // ⚠️ 没有产物时**只摆那句话、绝不摆按钮**（A14：点了没反应/下下来一个空文件是点名不许的形状）。
+  // ⚠️ 两处**给夹具认的记号**（与 `data-shot` / `data-job` 同一个用法）：
+  //    `data-artifact-step` = **这一步本身**在不在（§15.4 量的是它，不是按钮 ——
+  //    只盯「有没有按钮」的话，「恒画一个空壳子」这种改法量不出来：壳子里本来就没有按钮）；
+  //    `data-download` = **那条下载**在不在（A14 量的是它）。两个名字不许写成能互相包含的形状。
+  function artifactStep(art) {
+    var url = at(art, "url", "");
+    var name = at(art, "filename", "");
+    var where = at(art, "path", "");
+    // 时刻那一格给一个破折号：这一步**不是一条时间线事件**（它来自 checkpoint，比进程活得久），
+    // 没有时刻可摆 —— 编一个「大概是什么时候」比空着坏得多。
+    var out = '<li class="ev artifact ev-system" data-artifact-step="1">' +
+      '<time>—</time><span class="who">产物</span>' +
+      '<p class="say">' + rich(at(art, "say", "")) + "</p>";
+    if (url) {
+      out += '<p class="dl"><a class="btn primary" data-download="1" href="' + esc(url) + '"' +
+        (name ? ' download="' + esc(name) + '"' : "") + ">" +
+        esc(name || "下载这一版的 py") + "</a></p>";
+    }
+    if (where) {
+      out += '<p class="where">它落在盘上的位置：' + esc(where) + "</p>";
+    }
+    return out + "</li>";
+  }
+
   // ══════════════════ 时间线（主视图）══════════════════
   function paintTimeline() {
     var box = document.getElementById("tlbox");
@@ -414,6 +454,9 @@
         // ⚠️ 只搬这一句人话。事件里那七格（`data`）**一个字节都不进这一屏**（D16）。
         '<p class="say">' + rich(at(ev, "say", "")) + "</p></li>";
     }
+    // ★ 产物那一步（§十五）：**`artifact` 是 `null` 就没有这一步**（不是灰按钮，是还没有）。
+    var art = at(live, "artifact", null);
+    if (art) { html += artifactStep(art); }
     list.innerHTML = html || '<li class="ev"><p class="say">时间线上现在还没有东西。</p></li>';
     // ② 跟着长：**只在人本来就在底下的时候**才滚（人在上面看着，就不抢他的滚动）
     if (near) {
