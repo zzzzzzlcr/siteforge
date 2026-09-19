@@ -312,6 +312,11 @@ STEER_WIRED = False
 #: 超了**截断并说出来**：响应与事件里都说清截了多少、留了多少（绝不悄悄丢）。
 SAY_MAX_CHARS = 400
 
+#: `/live.input.queued` 每一条**上线**只放这几格（回归 3 / R1）。**白名单**：
+#: 条目上比它多的那些（`promised` / `seq`）是**内部**的，整条拷出去就等于把内部状态放到线上
+#: —— 而「今天生产一个字节都不变」这句话就靠它守着（守在同名的用例里）。
+LIVE_QUEUED_KEYS = ("at", "delivered", "superseded", "text")
+
 #: 「停」在**闸上**那一档的答复（设计注 §4.1 矩阵第 3 行，**原话**）。三处引用同一句：
 #: `/stop` 的响应、`/live` 的 `stop.will_stop_at`、以及测试。
 STOP_AT_GATE_SAY = "停下了。这一步没有做，页面与文件都是原样。"
@@ -1195,7 +1200,7 @@ class Job:
     #: 而每次 `_advance` 返回都会去读它一遍 —— 不去重就是同一句话每推一步记一条。
     narration_reported: set = dataclasses.field(default_factory=set)
     #: 人说过、**还没送到它手上**的话（Task 8 的 `/say` 排队那条路）。每一条至少
-    #: `{"text", "at", "delivered", "superseded", "promised"}` —— 送到时**改的是同一条**
+    #: `{"text", "at", "delivered", "superseded", "promised", "seq"}` —— 送到时**改的是同一条**
     #: （不是追加一条新的），Task 9 就是靠 `delivered` 分辨「喂过它没有」。
     #: ⚠️ 但「没送出去」**不再等于**「该喂」：不再摆给他的那些（`superseded`）要不要喂，
     #: 是 **Task 9 自己**的决定 —— **别默认照喂**。理由也必须用观察语（修复轮 4 / F4）：
@@ -1227,10 +1232,12 @@ class Job:
     #: 它是 `_where_it_stopped` **在安全时刻（一次 invoke 开始之前）采的那一次样**，
     #: **不是第二个真相源**。
     running_step: str = ""
-    #: 「**没送到它手上**」这件事**报过**的那几句（回归 1 / F1b + F2②）。与 `shots_reported` /
-    #: `narration_reported` 同一个形状：同一句话只报一次 —— `reopen` 之后这一趟还会再走到头一次，
-    #: 那几句**照样还在队里**（没送到就是没送到），不去重就会把同一句再说一遍。
-    #: ⚠️ 收到这儿的是**话本身**（`text`），不是「报过几次」：判据是「这句话说过了没有」。
+    #: 「**没送到它手上**」这件事**报过**的那几条话（回归 1 / F1b + F2②）。与 `shots_reported` /
+    #: `narration_reported` 同一个形状：**同一条话只报一次** —— `reopen` 之后这一趟还会再走到头
+    #: 一次，那几条**照样还在队里**（没送到就是没送到），不去重就会把同一句再说一遍。
+    #: ⚠️ 收到这儿的是**条目号**（`seq`），**不是文本**（回归 3 / R3）：按文本收的话，
+    #: 「同一句话说了两遍」（页面预填 + 人再按一次发送，可达）产生的**第二条承诺**
+    #: 每个出口都收不回来 —— 那是残余的静默。
     steer_missed_reported: set = dataclasses.field(default_factory=set)
 
     def snapshot_for_view(self) -> tuple:
@@ -3003,7 +3010,14 @@ class Service:
         """
         # ⚠️ 别再套一层 `with job.lock:`（`job.lock` 是**普通 Lock**，不是 RLock ——
         # 套一层就是自己等自己，整个服务停摆；2026-09-19 实测过一次）
-        pending = [dict(x) for x in self._still_waiting(job)] if job is not None else []
+        # ⚠️ **上线的那几格是白名单**（回归 3 / R1）—— 条目上还有两格是**内部的**
+        # （`promised`：答应过直达没有；`seq`：这个 job 的第几句话），它们**不上线**：
+        # 整条 `dict(x)` 拷出去过一次，于是 `/live` 的负载上多了一格（复审量到，
+        # 而报告当时写的是「没有进 `/live`」—— 假话）。加一格内部状态时，
+        # **这里不写它就不会漏**（`test_the_live_input_entries_go_out_with_exactly_the_documented_keys`
+        # 是这道形状的机器守）。
+        pending = [{k: x.get(k) for k in LIVE_QUEUED_KEYS}
+                   for x in self._still_waiting(job)] if job is not None else []
         return {"mode": input_mode(status, stage, steer=STEER_WIRED,
                                    held=self._steer_held(job)),
                 "draft_note": str(pending[-1].get("text") or "") if pending else "",
@@ -3313,7 +3327,12 @@ class Service:
                               # ⚠️ **服务答应的那一格**（回归 2 / NEW-1）：只有走直达那条路
                               # 收下的话才盖它 —— 兑现不了时的更正（`steer_missed`）
                               # **以这一格为准**（不是「队里还有没有话」）。
-                              "promised": route == SAY_DELIVERED})
+                              "promised": route == SAY_DELIVERED,
+                              # ⚠️ **这一条话的号**（回归 3 / R3）：更正**按条目**去重就靠它 ——
+                              # 按**文本**去重的话，「同一句话说了两遍」产生的**第二条承诺**
+                              # 每个出口都收不回来（复审判出来的那条残余静默）。
+                              # 条目只增不删 ⇒ `len(inbox)` 就是它的号（持锁里取的，不会撞）。
+                              "seq": len(job.inbox)})
         # `n` 与 `/live.input.queued` **同一个口径**（修复轮 3 / NEW-R1）—— 同一处判据
         n = len(self._still_waiting(job))
         # ⚠️ 两句话说的是两条路（R2 的「同一件事不许两个名字」反过来：
@@ -3563,20 +3582,25 @@ class Service:
         ⚠️ **只在开关打开时才有这一句**：要说回来的是**「直达」那句承诺**，而它只有通道
         接上时才给得出来（`say_route` 的 `steer`/`held` 两个实参）。关着的时候 `/say` 说的是
         「排队、到下一道闸进输入框」——**那本来就是诚实的**（R1），今天生产那条路**一个字节都不变**。
-        ⚠️ 同一句话只报一次（`job.steer_missed_reported`）：同一趟里停在闸上说过一次、
-        后来这一趟到头了，**不许**再说一遍。
+        ⚠️ **同一条话只报一次**（`job.steer_missed_reported`，按条目的 `seq` 认）：
+        同一趟里停在闸上说过一次、后来这一趟到头了**不许**再说一遍；
+        而「同一句话说了两遍」= **两条**话（各自的 `seq` 不同）⇒ **两条都要收回**（R3）。
         ⚠️ 判据仍走纯核（**不拿锁的那个**）—— 持锁处不许调 `_still_waiting`。
         """
         if not STEER_WIRED:
             return
         with job.lock:
-            promised = [str(x.get("text") or "") for x in Service._steer_promised(job.inbox)]
-            fresh = [t for t in promised if t and t not in job.steer_missed_reported]
+            # ⚠️ 去重按**条目**（`seq`）不按文本（回归 3 / R3）：同文说两遍 = **两条承诺**，
+            # 两条都要在各自的出口收回（按文本去重时第二条永远收不回来）。
+            fresh = [x for x in Service._steer_promised(job.inbox)
+                     if x.get("seq") not in job.steer_missed_reported]
             if not fresh:
                 return
-            job.steer_missed_reported.update(fresh)
+            job.steer_missed_reported.update(x.get("seq") for x in fresh)
+            said = "\n".join(str(x.get("text") or "") for x in fresh if x.get("text"))
+            if not said:
+                return
             crashed = job.status == FAILED
-        said = "\n".join(fresh)
         why = (STEER_MISSED_AT_GATE_SAY if at_gate
                else (STEER_MISSED_DIED_SAY if crashed else STEER_MISSED_ENDED_SAY))
         self.narrate(job, "steer_missed", STEER_MISSED_SAY % (said, why), text=said)

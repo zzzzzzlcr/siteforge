@@ -293,6 +293,32 @@ def test_say_while_it_explores_goes_straight_in_instead_of_queuing(tmp_path, mon
     assert live["input"]["mode"] == "steer", "开关说通道接上了 ⇒ 页面那一行也该是「直达」"
 
 
+#: `/live.input.queued` 每一条**上线**只许有这四个键（回归 3 / R1 + R2）。
+#: ⚠️ 内部那一格（`promised` = 答应过直达没有、`seq` = 这个 job 的第几句话）**不上线** ——
+#: 它们进 `/live` 会让「今天生产一个字节都不变」这句话变成假话（复审量到过一次）。
+#: ⚠️ 这是一道**形状的机器守**：往条目里加一格而忘了在投影里挡掉 ⇒ **这条当场红**。
+LIVE_QUEUED_KEYS = ("at", "delivered", "superseded", "text")
+
+
+def test_the_live_input_entries_go_out_with_exactly_the_documented_keys(tmp_path, monkeypatch):
+    """`/live.input.queued` 的条目**上线只有那四个键** —— 开关开着/关着都一样。
+
+    为什么要有这条（回归 3 / R2 的类级要求）：连续两轮，我关于「改了什么」的话都是**没量就写**的
+    （一次说「句号去掉了」而没改；一次说「`promised` 没有进 `/live`」而进了）。
+    ⇒ 从这一轮起，「线上形状没变」这句话**由这道守来保证**，不靠我记得去量。
+    """
+    for wired in (False, True):
+        monkeypatch.setattr(service, "STEER_WIRED", wired)
+        job_id = "job-keys-%s" % ("on" if wired else "off")
+        client = _client(graph_factory=_factory(FakeGraph(steps=[_Snap(values={"site": SITE})])))
+        _running_job(client.app.state.service, job_id=job_id, stage="explore")
+        assert client.post("/job/%s/say" % job_id, json={"text": "X"}).status_code == 202
+
+        entry = _live(client, job_id)["input"]["queued"][0]
+        assert tuple(sorted(entry)) == LIVE_QUEUED_KEYS, (
+            "`/live.input.queued` 的条目键集变了（开关 %s）：%r" % (wired, sorted(entry)))
+
+
 # ══════════════════════════ `/say`：一句话去哪了 ══════════════════════════
 
 

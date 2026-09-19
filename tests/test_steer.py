@@ -807,6 +807,35 @@ def test_the_same_sentence_is_not_taken_back_twice(tmp_path, monkeypatch):
     assert len(said) == 1, "同一句话说了两遍：%r" % [e["say"] for e in said]
 
 
+def test_a_second_promise_of_the_same_words_is_taken_back_too(tmp_path, monkeypatch):
+    """**承诺过的每个出口都要报（R3）**：同一句话说了两遍 ⇒ **两条承诺**，两条都要收回。
+
+    这一条是复审判出来的那个残余：`steer_missed_reported` 原先**按文本**去重 ——
+    同文说两遍，第二遍那条承诺**每个出口都不会被收回**（一条残余的静默），
+    而 docstring 那一轮刚写下「承诺过的每个出口都要报」。
+    ⚠️ 形状是**可达**的：页面本来就预填上一句没送出去的话（`draft_note`），
+    人再按一次发送就是这个样子。
+    """
+    client, svc = _wired_client(tmp_path, monkeypatch)
+    job = _registered_job(svc, job_id="job-twice")
+    client.post("/job/job-twice/say", json={"text": SAID})
+    job.graph = _gate_graph()
+    svc._advance(job, None)                       # ① 停在闸上 ⇒ 收回第一条承诺
+
+    with job.lock:                                # `/reply` 之后这一趟又跑起来了（同一个形状）
+        job.status = service.RUNNING
+    job.running_step = "explore"
+    assert client.post("/job/job-twice/say", json={"text": SAID}).status_code == 202   # 同文第二遍
+    job.graph = FakeGraph(raise_on=[1])           # ② 这一趟跑挂 ⇒ 第二条承诺也要收回
+    svc._advance(job, None)
+
+    said = [e for e in job.timeline.all() if e["kind"] == "steer_missed"]
+    assert len(said) == 2, "两条承诺只收回了 %d 条：%r" % (len(said), [e["say"] for e in said])
+    assert all(SAID in e["data"]["text"] for e in said), said
+    assert service.STEER_MISSED_AT_GATE_SAY in said[0]["say"], said[0]["say"]
+    assert service.STEER_MISSED_DIED_SAY in said[1]["say"], said[1]["say"]
+
+
 def test_words_still_queued_at_a_gate_are_not_reported_as_missed(tmp_path, monkeypatch):
     """反面（**防滥报**）：没承诺过的话停在闸上 —— 一个字都不说（那是**正常的排队**）。
 
