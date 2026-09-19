@@ -18,7 +18,12 @@ Task 7 那一轮的复审发现：「**只有浏览器看得见**」的缺陷**�
 
 | # | 性质 | 它为什么只有跑起来才看得见 |
 |---|---|---|
-| 1 | 出错的**那一刻**服务那句话原样上屏，且**活过之后 3 次重画**（`/runs` 坏掉之后那一段；按「停」之后到结束是 8 次，整段是 10 次 —— **三个数都是量的**，见 `paints`） | 「写进去」与「还在不在」是两件事（`setErr` 写对了，下一次 `fetchLive` 成功就擦掉 —— 修复轮 1 的坑） |
+| 1 | 出错的**那一刻**服务那句话原样上屏，且**活过之后 3 次重画**（`/runs` 坏掉那一段；按「停」之后到结束 **8**；整段 **10**） | 「写进去」与「还在不在」是两件事（`setErr` 写对了，下一次 `fetchLive` 成功就擦掉 —— 修复轮 1 的坑） |
+
+⚠️ 上面那**三个数**不是同一个读数，是驱动脚本 `paintMarks` 那四个**时刻读数**两两相减得来的
+（实测 `{afterLoad: 1, afterStop: 2, afterRunsBroken: 7, end: 10}`）：整段 = `end` = **10**；
+按「停」之后 = `end - afterStop` = **8**；`/runs` 坏掉之后 = `end - afterRunsBroken` = **3**。
+四个读数**都在驱动输出里**（`paintMarks`），用例只用其中两个差。
 | 2 | 左边那一栏读不到时，那句真话**不被过期列表盖掉** | 修复轮 3 的坑：`fetchRuns` 失败只是**写了字**，而 `paint()` 每 3 秒把 `state.runs`（上一次那份**好**列表）照画一遍 |
 | 3 | 服务那两格**对不上**时，页面说出来（而不是自己挑一句） | 两句话是同一段 `innerHTML` 的**两个分支** —— 源码文本断言看得见「分支在」，看不见**这一刻走了哪一支** |
 | 4 | 按「重新来一遍」之后**页面上真的变了**（跟着新那一趟走 + 把服务那句原话摆出来） | 服务侧回的是 `202 {job_id, say}`，**页面接不接它是页面的事** —— 接不接，源码文本断言两边都绿 |
@@ -75,17 +80,25 @@ STOP_HINT_STILL = "没请求成"
 #: 服务对 `/again` 回的那句人话 —— **从服务自己的常量算出来**（不在这里手抄一遍：
 #: 那句话改一个字，这一份就会跟着变，不会两边漂）。
 AGAIN_SAY = service.AGAIN_SAY % ("job-2", "job-1", 2)
+#: 两趟事件人话里的**记号**（修复轮 2 / D1）：时间线上是哪一趟的事件，靠它分。
+OLD_TAG = "旧那一趟"
+NEW_TAG = "新那一趟"
 
 
-def _live(status: str, mode: str, *, n: int, stop_requested: bool = False) -> dict:
-    """一份 `/live` 正文（**只填这一份夹具要读的那几格**，其余按页面「可能不在」的读法留空）。"""
+def _live(status: str, mode: str, *, n: int, stop_requested: bool = False,
+          tag: str = "夹具") -> dict:
+    """一份 `/live` 正文（**只填这一份夹具要读的那几格**，其余按页面「可能不在」的读法留空）。
+
+    `tag` 进每一句事件的人话里 —— **两趟用不同的 tag**，好让「时间线里是哪一趟的事件」
+    这条判据**分得开新旧**（修复轮 2 / D1：同一条文字两趟都有 ⇒ 那条断言钉不住东西）。
+    """
     return {
         "job_id": "job-1", "status": status, "delivered": False,
         "say": "在跑。" if status == "running" else "停下来了，在等你一句话。",
         "stage": "explore", "stage_say": "探路",
         "note": "", "shots_note": "",
         "events": [{"n": i + 1, "at": "2026-09-19T21:0%d:00+08:00" % i, "kind": "running",
-                    "who": "system", "say": "第 %d 条（夹具）" % (i + 1)} for i in range(n)],
+                    "who": "system", "say": "第 %d 条（%s）" % (i + 1, tag)} for i in range(n)],
         "gate": None if status != "waiting" else
                 {"step": "deliver", "step_say": "交付", "ask": "要交付吗？", "facts": {},
                  "can": ["让它继续"], "revisable": True},
@@ -138,13 +151,21 @@ def _again_payloads() -> dict:
     这一趟**到头了**（`status="failed"`）—— 那个按钮只在到头的两档才露头
     （`over` 为真），而 `/again` 对着一趟还在跑的 job 会回 409（`service.py` 那条）。
     新那一趟是 **job-2**：服务回的那句 `say` 是它自己算好的原话（`AGAIN_SAY` 那句）。
+
+    ⚠️ 两趟的**事件文字故意不同**（`tag`，修复轮 2 / D1）：文字一样的话，
+    「时间线上是新那一趟的事件」这条断言在两趟之间**分不出来**（旧那一趟那条也在）。
     """
-    over = _live("failed", "queue", n=2)
+    over = _live("failed", "queue", n=2, tag=OLD_TAG)
     over["say"] = "这一步没跑成，停下了。"
-    fresh = _live("queued", "queue", n=1)
+    fresh = _live("queued", "queue", n=1, tag=NEW_TAG)
     fresh["job_id"] = "job-2"
     fresh["say"] = "排队等窗口（前面还有别的 run 在用）"
     _assert_all_different([over, fresh], "两份 `/live` 的正文")
+    #: 「时间线上是哪一趟的事件」这条判据靠**文字不同**分新旧 —— 那两个记号不许被合成一个，
+    #: 也不许哪天忘了写进事件里（那样判据会**静默**变成分不出来：两趟的文字又一样了）。
+    assert OLD_TAG != NEW_TAG, "两个记号是同一个 —— 「新那一趟」这条判据就分不出新旧了"
+    assert OLD_TAG in over["events"][0]["say"], over["events"][0]
+    assert NEW_TAG in fresh["events"][0]["say"], fresh["events"][0]
     return {
         "scenario": "again",
         "search": "?job=job-1",
@@ -254,7 +275,8 @@ def test_a_sentence_the_service_said_stays_on_screen_through_the_repaints(tmp_pa
         "（正文没变？），这一条用例量到的就不是「重画擦不掉」：%r"
         % (out["paints"], live_fetches, urls))
     #: 「左边那一栏坏掉」之后**确实又重画过**（不然第 ③ 步是个空步）
-    assert out["paints"] - out["paintsBeforeRepaint"] >= 3, out
+    marks = out["paintMarks"]
+    assert marks["end"] - marks["afterRunsBroken"] >= 3, marks
 
     # ① 按下去那一刻：服务的原话上屏（**原样**，不是页面自己编的一句）
     assert out["afterStop"]["errBox"] == ERR_STILL, out["afterStop"]
@@ -318,8 +340,16 @@ def test_the_again_button_really_changes_the_screen(tmp_path):
     assert "job-2" in out["afterAgain"]["who"], out["afterAgain"]
     # **服务那句原话**（`AGAIN_SAY`）在屏幕上 —— 一字不差地照抄，页面不自己编一句
     assert AGAIN_SAY in out["afterAgain"]["notices"], out["afterAgain"]["notices"]
-    # 而且这一屏**不是**「什么都没变」：新那一趟的事件已经在时间线上了
-    assert "第 1 条（夹具）" in out["afterAgain"]["timeline"], out["afterAgain"]["timeline"]
+    # ★ 画面上那**一趟的内容**真的换了（修复轮 2 / D1 改准）：时间线里现在是**新那一趟**的事件，
+    #   而**旧那一趟**那条已经不在屏幕上。⚠️ 两趟的事件文字必须**不同**（`OLD_TAG` / `NEW_TAG`）——
+    #   文字一样的话这条断言在两趟之间分不出来（复审实测：旧那一趟的时间线里本来就有那句话）。
+    assert NEW_TAG in out["afterAgain"]["timeline"], (
+        "时间线上没有新那一趟的事件 —— 屏幕还停在旧那一趟上：%r" % out["afterAgain"]["timeline"])
+    assert OLD_TAG not in out["afterAgain"]["timeline"], (
+        "时间线上还是**旧那一趟**的事件：%r" % out["afterAgain"]["timeline"])
+    # ⚠️ 下面这一条**是防线，不是钉子**（复审实测：M14 下它照过）—— 成功路径上没有任何人写
+    #    `#errBox`（`act()` 开头先清一次），所以它只在「页面把一个成功当失败」时才会响。
+    #    留着是因为它便宜，**别把它读成「这条钉住了什么」**。
     assert out["afterAgain"]["errBox"] == "" and out["afterAgain"]["errHidden"] is True, out["afterAgain"]
 
 

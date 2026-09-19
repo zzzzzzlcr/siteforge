@@ -36,6 +36,8 @@ let newEls = 0;
 //: ⚠️ 别拿「`/live` 被 fetch 了几次」当它：页面每 3 拍**无条件** fetch，
 //: 而重画由 `if (key !== seen)` 单独决定 —— 载荷一旦不变，fetch 照数，重画是 0
 //: （实测：三种载荷下 fetch 都是 10，重画是 10 / 3 / 2）。
+//: 几个**时刻上的读数**收在 `paintMarks`（`afterLoad` / `afterStop` / `afterRunsBroken` / `end`）——
+//: 「活过几次重画」那几个数是它们**两两相减**得来的，不是估的（修复轮 2 / D2）。
 let timelineWrites = 0;
 function el(id) {
   if (!els[id]) {
@@ -110,11 +112,14 @@ const settle = () => new Promise((r) => setTimeout(r, 0));
 const ticks = async (n) => { for (let i = 0; i < n; i++) { ticker(); await settle(); } };
 
 async function repaintScenario(out) {
+  out.paintMarks = {};
+  out.paintMarks.afterLoad = timelineWrites;        // 开页那一次
   out.afterLoad = { errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
                     secondHint: el("secondHint").innerHTML, runs: el("runs").innerHTML };
 
   el("btnStop").listeners.click();                  // 人按「停」（服务回 404）
   await settle();
+  out.paintMarks.afterStop = timelineWrites;        // 「停」之后的那个数（第三个数的减法要用它）
   out.afterStop = { errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
                     stopHint: el("stopHint").innerHTML, statusPill: el("statePill").textContent };
   out.stopRequests = seen.filter((u) => u.endsWith("/stop")).length;
@@ -122,7 +127,7 @@ async function repaintScenario(out) {
   await ticks(15);                                  // 走满一轮：`/live` 每 3 拍、`/runs` 每 15 拍
   out.afterRunsFailure = { runs: el("runs").innerHTML, errBox: el("errBox").textContent,
                            errHidden: el("errBox").hidden };
-  out.paintsBeforeRepaint = timelineWrites;         // 「左边那一栏坏掉」那一刻的重画数
+  out.paintMarks.afterRunsBroken = timelineWrites;  // 「左边那一栏坏掉」那一刻的重画数
   await ticks(9);                                   // 之后**又三次重画**（`/live` 每 3 拍就变）
   out.afterRepaint = { runs: el("runs").innerHTML, errBox: el("errBox").textContent,
                        errHidden: el("errBox").hidden, secondHint: el("secondHint").innerHTML,
@@ -150,6 +155,7 @@ async function againScenario(out) {
   if (payload.scenario === "again") { await againScenario(out); }
   else { await repaintScenario(out); }
   out.paints = timelineWrites;                      // **重画了几次**（C1：别拿 fetch 数代替）
+  if (out.paintMarks) { out.paintMarks.end = timelineWrites; }
   out.urls = seen;
   process.stdout.write(JSON.stringify(out) + "\n");
 })().catch((e) => { console.error("夹具自己挂了：" + (e && e.stack || e)); process.exit(1); });

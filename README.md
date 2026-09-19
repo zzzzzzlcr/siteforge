@@ -63,6 +63,28 @@ python3 -m venv .venv
 .venv/bin/python -m pytest tests/ -q
 ```
 
+**测试依赖：`node`（Task 10 的执行夹具要它）**
+
+`tests/test_console_js.py` + `tests/console_js_driver.js` 把 `agent/console.html` 里那段 JS
+抠出来、在 `node` 里跑（假 `document` / 假 `fetch`，**不开浏览器**），钉四条
+「只有浏览器看得见」的性质（真话活过重画 / 左栏不被过期列表盖掉 / 两格对不上时说清楚 /
+「重新来一遍」按下去屏幕真的变）。**缺 `node` 时那一份红**（不是一个 skip）：
+
+```bash
+node --version      # 实测 v22.22.1 够用（发行版的 nodejs 包就行，不需要 npm）
+```
+
+**为什么写在这一节**（而不是 `requirements.txt` / `Dockerfile`）：它是**跑测试**要的宿主依赖 ——
+`requirements.txt` 只装 Python 包（`pip` 装不了 node）；这一份夹具又**不开浏览器**，
+所以它与「镜像里那条 R-29」是两回事（那一节用的是镜像自己的 chromium）。
+
+⚠️ **R-29 那条「在镜像里跑同一套测试」现在也需要 `node`**：没有的话那 6 条会**红**
+（正是上面那句「不是一个 skip」的后果）。**实测那份验收镜像（`siteforge:acc-task8`）里
+`chromium` 在、`node` 不在**。两条明路，**别让它悄悄变绿**：
+① 在 `Dockerfile` 那条 `apt-get install` 里加上 `nodejs`（与 `chromium` 同一行、同一个理由 ——
+那是「跑测试要的、服务本身不要的」）；② 或者在 R-29 那条命令上**显式**排除这一份
+（`-k 'not test_console_js'`）并把它记在验收结论里。
+
 ### 在镜像里跑同一套测试（R-29）
 
 宿主的 python 与**镜像里的**不是一套（宿主 venv 有、镜像没有的包；浏览器路径；Go 工具链的有无），
