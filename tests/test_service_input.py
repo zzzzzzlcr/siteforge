@@ -70,17 +70,21 @@ class FakeGraph:
 
     `hold(第几次 invoke)` 让测试能**停在那一次 invoke 里面**（不靠抢时序）——
     A1 那条用例要的就是这个：一次真占着写锁的 invoke。
+    `raise_on` 让某一次 invoke **抛**（跑挂那一支：跑挂 ≠ 跑成，快照可能还留着上一趟的结论）。
     """
 
-    def __init__(self, *, steps=None, hold=None):
+    def __init__(self, *, steps=None, hold=None, raise_on=None):
         self.steps = list(steps or [])
         self.hold = hold or (lambda n: None)
+        self.raise_on = list(raise_on or [])
         self.invokes: list = []
         self.state = _Snap(values={}, next=(), interrupts=())
 
     def invoke(self, payload, config):
         self.invokes.append(payload)
         self.hold(len(self.invokes))
+        if len(self.invokes) in self.raise_on:
+            raise RuntimeError("窗口连不上了（这一条就是来把这一趟弄挂的）")
         out = (self.steps[min(len(self.invokes) - 1, len(self.steps) - 1)]
                if self.steps else _Snap(values={}))
         self.state = out if isinstance(out, _Snap) else _Snap(values=dict(out))
@@ -147,6 +151,18 @@ def _live(client, job_id):
     r = client.get("/job/%s/live" % job_id)
     assert r.status_code == 200, r.text
     return r.json()
+
+
+def _settle(client) -> None:
+    """等**队列**空下来（工作线程把它手上那一件做完了）—— 把「靠时序」的断言变成确定性的。
+
+    为什么要这一句（复审 M-3）：`len(g.invokes) == 1` 这类断言要的是「工作线程**此刻**
+    手上没有活」，而 `_wait(...)` 只看**状态**、不看队列 —— `say()` / `again()` 把活交下去
+    到工作线程接手之间有一条缝，缝里读到的 `invokes` 少一条，断言就**看运气**。
+    `_queue.join()` 就是那条缝的正身（`worker` 在 `finally` 里 `task_done`）。
+    ⚠️ 只在**确定空得了**的地方用：队列里压着别人时（比如某个 job 正卡在 invoke 里）它会一直等。
+    """
+    client.app.state.service._queue.join()
 
 
 def _events(client, job_id):
@@ -265,6 +281,9 @@ def test_saying_something_while_it_waits_queues_it_and_never_sends_it(tmp_path):
     assert body["n"] == 1, "队列里现在有几句 —— 这一格要说得出：%r" % body
     assert "不会自动发" in body["say"], body["say"]
 
+    # M-3：**先把队列等空**再读状态与计数 —— 上一步要是偷偷推了一下（这一条要抓的就是它），
+    # 那一刻它已经跑完了，下面的断言读的是一个**落定**的世界，不靠运气。
+    _settle(client)
     live = _live(client, job_id)
     # ① 肯定的那一半：**闸还在**（状态没变、闸没走、还是同一道）
     assert live["status"] == "waiting", live["status"]
@@ -276,6 +295,9 @@ def test_saying_something_while_it_waits_queues_it_and_never_sends_it(tmp_path):
         "到闸上就进输入框（页面照这一格预填，**不自动发**）"
     assert live["input"]["mode"] == "gate", "停在闸上 ⇒ 这一行就是这道闸的回话（A4）"
     # ③ 图**一次都没有被推**：这一句话没有变成一个动作
+    #    ⚠️ 再等一次队列（M-3）：上面那几次 `/live` 要是**自己**偷偷推了一下
+    #    （这一条也要抓它），这一步之后它已经落地 —— 计数于是是确定性的，不是看运气。
+    _settle(client)
     assert len(g.invokes) == 1, "这一句被自动发出去了（只有人家按的那一下才许推图）"
     # ④ 时间线上有它，`who="you"`（页面靠它决定气泡），而且记的是**留下**的那段
     said = _of_kind(client, job_id, "human_said")
@@ -310,7 +332,97 @@ def test_the_queued_words_are_still_only_prefilled_at_the_next_gate(tmp_path):
     assert live["input"]["draft_note"] == "表格里的邮编要真能收到信", \
         "排队的那句话**到下一道闸**要进输入框"
     assert [x["text"] for x in live["input"]["queued"]] == ["表格里的邮编要真能收到信"]
+    _settle(client)                                  # M-3：别靠时序
     assert len(g.invokes) == 2, "被推了两次：那一次「继续」+ 别的什么（这一句不该自己发）"
+
+
+def test_a_word_that_was_sent_at_the_gate_leaves_the_queue(tmp_path):
+    """送下去过的话要**离开队列**（修复轮 1 / I-2 —— 设计注 §4.2：送到之后那个标记消失）。
+
+    ⚠️ 这条断言今天是**新的**：原先没有任何用例问过「送出去了它还在不在队里」，
+    所以 `delivered` 从来没人翻、`draft_note` 永远预填一句已经送下去的话 —— **连红灯都没有**。
+    """
+    g = FakeGraph(steps=[
+        _Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"]},
+              interrupts=(_gate("intake"),)),
+        _Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake", "explore"]},
+              interrupts=(_gate("draft"),)),
+    ])
+    client = _client(graph_factory=_factory(g))
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, job_id)
+    text = "不是那个按钮，是下面那个"
+
+    client.post("/job/%s/say" % job_id, json={"text": text})
+    assert [x["text"] for x in _live(client, job_id)["input"]["queued"]] == [text], "先说一句：它在队里"
+    # 人在闸上按下那个按钮 —— 页面在 `gate` 那一档走的就是这一跳（`note` 是预填进去的那句）
+    client.post("/job/%s/reply" % job_id, json={"action": "say", "note": text})
+    _wait(client, job_id)
+
+    live = _live(client, job_id)
+    assert live["gate"]["step"] == "draft", live
+    assert live["input"]["queued"] == [], "送下去了就该离开队列（「还没送到」不许永远挂着）"
+    assert live["input"]["draft_note"] == "", \
+        "它不许在下一道闸**再预填一次**已经送下去的话（那是在请人再按一次）"
+
+
+def test_a_word_the_human_replaced_is_not_marked_as_sent(tmp_path):
+    """人把预填那句**改了**再按 ⇒ 送出去的是他改过的那句，**原来那句没送到**（修复轮 1 / I-2）。
+
+    为什么单钉：`delivered` 那一格翻错，**两个方向都是错话** ——
+      · 该翻不翻：那句「还没送到」永远挂着（到下一道闸再预填一次已经送下去的话）；
+      · 不该翻却翻了：他**改口之前**说的那句被记成「送到了」，从此没人再提它
+        （而它一个字都没到过它手上）。
+    判据认的是**那句话本身**（`text == note`），不是「队里最老的那条」。
+    """
+    g = FakeGraph(steps=[
+        _Snap(values={"site": SITE, "visits": ["intake"]}, interrupts=(_gate("intake"),)),
+        _Snap(values={"site": SITE, "visits": ["intake", "explore"]}, interrupts=(_gate("draft"),)),
+    ])
+    client = _client(graph_factory=_factory(g))
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, job_id)
+
+    client.post("/job/%s/say" % job_id, json={"text": "不是那个按钮"})
+    # 人在闸上把它**改了**再按（页面在 `gate` 那一档发的就是这一跳）
+    client.post("/job/%s/reply" % job_id, json={"action": "say", "note": "算了，先点 cookie 同意"})
+    _wait(client, job_id)
+
+    live = _live(client, job_id)
+    assert [x["text"] for x in live["input"]["queued"]] == ["不是那个按钮"], \
+        "他没送出去的那句话不许被当成送到了：%r" % live["input"]["queued"]
+    assert live["input"]["draft_note"] == "不是那个按钮", "下一道闸该把它再摆出来"
+
+
+def test_again_does_not_carry_a_word_that_was_already_sent(tmp_path):
+    """送下去过的话**不许在重来的那一趟里出现两遍**（修复轮 1 / I-2 的第 2 条后果）。
+
+    R5「两个来源都带」没有错，错的是**其中一个来源是过期的**：话在闸上送下去之后
+    既进了 checkpoint 的 `hints`，又还赖在 `Job.inbox` 里 ⇒ `/again` 带两遍，
+    而把一个纠正说成两句，正是 `/again` 那个承诺（「你说的话我记着」）最不该出的错。
+    """
+    text = "不是那个按钮，是下面那个"
+    g = FakeGraph(steps=[
+        _Snap(values={"site": SITE, "visits": ["intake"]}, interrupts=(_gate("intake"),)),
+        # 这一趟到头了：checkpoint 里那句**已经送下去过**的话就在 `hints` 里（真图会这么写）
+        _Snap(values={"site": SITE, "visits": ["intake", "explore"], "hints": [text],
+                      "end_reason": "human_stop", "end_note": "人把这一趟停了。"}),
+    ])
+    client = _client(graph_factory=_factory(g))
+    svc = client.app.state.service
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, job_id)
+
+    client.post("/job/%s/say" % job_id, json={"text": text})
+    client.post("/job/%s/reply" % job_id, json={"action": "say", "note": text})
+    _wait(client, job_id)
+
+    r = client.post("/job/%s/again" % job_id, json={})
+    assert r.status_code == 202, r.text
+    _settle(client)
+    assert g.invokes[-1]["hints"] == [text], \
+        "同一句话被带了两遍（`inbox` 那份是过期的）：%r" % (g.invokes[-1].get("hints"),)
+    assert svc._jobs[r.json()["job_id"]].brief["hints"] == [text]
 
 
 def test_saying_something_while_it_runs_queues_it_and_the_input_stays_queue_mode(tmp_path):
@@ -365,6 +477,73 @@ def test_the_input_mode_is_gate_exactly_when_it_is_waiting(tmp_path):
             "状态是 %s，输入语义却是 %r（页面会一直报「这两格对不上」）" % (status, live["input"])
 
 
+def test_a_queued_job_is_not_told_that_it_is_running(tmp_path):
+    """**I-1**：排队的那一趟不许被人话那格说成「它现在**正在跑**」。
+
+    失效形状（复审给的那条）：A 在跑（写锁被它占着），B 交上去排在队里 —— B 的 `/live`
+    拿不到写锁 ⇒ 进那句人话。**同一屏** `status` 说「排队等窗口」、`note` 说「正在跑」，
+    两句对着干，正是页面那句「服务这两格对不上」要防的形状（A4 治的是同一族的病）。
+    """
+    inside, let_go = threading.Event(), threading.Event()
+
+    def hold(n):
+        if n == 1:
+            inside.set()
+            let_go.wait(10)
+
+    a = FakeGraph(steps=[_Snap(values={"site": SITE, "visits": ["intake"]})], hold=hold)
+    client = _client(graph_factory=_factory(a))
+    a_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    assert inside.wait(10), "A 没有进到 invoke 里"
+    try:
+        b_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+        live_b = _live(client, b_id)
+        assert live_b["status"] == "queued", live_b["status"]
+        assert "排队" in live_b["note"], "排队那一档要说「排队」：%r" % live_b["note"]
+        assert "正在跑" not in live_b["note"], \
+            "同一屏两格打架（status 说排队、note 说正在跑）：%r" % live_b["note"]
+
+        live_a = _live(client, a_id)
+        assert live_a["status"] == "running", live_a["status"]
+        assert "正在跑" in live_a["note"], "跑着那一档那句话还得在：%r" % live_a["note"]
+    finally:
+        let_go.set()
+    _wait(client, a_id)
+
+
+def test_a_crashed_run_does_not_paste_a_stale_ledger_note(tmp_path):
+    """跑挂那一支**不许**贴「账本不完整」（修复轮 1 / M-1）。
+
+    同一个函数上面几行刚因为「快照里可能还留着上一趟那道闸」把 `at_gate` 在跑挂那一支
+    强制成 `False`，那就**不许**再照信**同一份快照**的 `end_reason` —— 它同样可能是上一趟
+    留下的。**同一份数据两套信任口径**，正是这个仓库的老病之一。
+
+    ⚠️ **射程（别读大）**：这一条钉的是**判据**（那个 `paused` 是**手工摆进** checkpoint 的）。
+    复审和我都**没能**用服务自己的路构造出一条真会带着过期 `end_reason` 跑挂的路
+    （`reopen` 的 patch 会把它清掉）—— 摆在这儿是因为「同一份快照在同一函数里
+    要么都信、要么都不信」这条性质该死，**不是**因为这条场景今天可达。
+    """
+    stale = _Snap(values={"site": SITE, "visits": ["intake", "explore"],
+                          "end_reason": "paused",             # ← 上一趟留下的结论
+                          "end_note": "上一趟：人喊停，探路收住了。"})
+    g = FakeGraph(steps=[stale], raise_on=[1])
+    g.state = stale                          # 这一趟还没写任何东西，checkpoint 里是上一趟那份
+    client = _client(graph_factory=_factory(g))
+    svc = client.app.state.service
+    job = _running_job(svc, stage="explore")
+    job.graph = g
+    assert client.post("/job/job-running/stop", json={}).status_code == 200
+
+    svc._advance(job, None)                   # 这一次 invoke 抛了 —— 跑挂那一支
+    assert job.status == service.FAILED, job.status
+
+    landed = _of_kind(client, "job-running", "stop_landed")
+    assert len(landed) == 1, landed
+    assert "有结果了" in landed[0]["say"], landed[0]["say"]
+    assert "账本不完整" not in landed[0]["say"], \
+        "跑挂那一支照抄了上一趟的 `end_reason`（同一份快照两套信任口径）：%r" % landed[0]["say"]
+
+
 def test_the_live_view_fills_the_input_and_the_stop_the_page_reads(tmp_path):
     """`/live` 那两格的**形状**（brief 钉的）：`input` 三个键、`stop` 四个键。"""
     g = FakeGraph(steps=[_Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"]},
@@ -375,7 +554,10 @@ def test_the_live_view_fills_the_input_and_the_stop_the_page_reads(tmp_path):
 
     live = _live(client, job_id)
     assert set(live["input"]) == {"mode", "draft_note", "queued"}, live["input"]
-    assert set(live["stop"]) == {"requested", "where", "will_stop_at", "say"}, live["stop"]
+    # ⚠️ **三格**（修复轮 1 / N-2）：原先这里还有一格 `say`，它与 `will_stop_at` **一字不差**
+    # —— 同一个事实两个名字。`/live` 上 `requested` + `will_stop_at` 已经把那件事说完；
+    # 「这一下按到了」那句话只对**响应**有意义，它现在在 `/stop` 的响应里（那一格不是别名）。
+    assert set(live["stop"]) == {"requested", "where", "will_stop_at"}, live["stop"]
     assert live["stop"]["requested"] is False, "还没人按过停 —— 说得出就说「没请求过」"
     assert live["input"]["draft_note"] == "", "没人说过话时这一格是空的（不是句废话）"
     assert live["input"]["queued"] == []
@@ -468,7 +650,11 @@ def test_stopping_something_that_runs_in_another_node_promises_the_next_gate(tmp
     assert stop["where"] == "selftest", "它现在在哪个节点：说要说得准（`running_step` 那一次采样）"
     assert "自测" in stop["will_stop_at"], stop["will_stop_at"]
     assert "跑完这一步" in stop["will_stop_at"] and "不用按" in stop["will_stop_at"], stop["will_stop_at"]
-    assert stop["say"] == stop["will_stop_at"], "一句话两处引用 —— 不许漂成两句"
+    # N-2（修复轮 1）：`say` 与 `will_stop_at` **不是同一句话** —— 前者说的是「这一下按到了」
+    # （那是响应这一侧的事实），后者是落点。两格一字不差就是「同一个事实两个名字」。
+    assert stop["say"] != stop["will_stop_at"], stop
+    assert "记下了" in stop["say"], stop["say"]
+    assert stop["will_stop_at"] in stop["say"], "落点那句要**原样**在里面（不是各写一份）：%r" % stop["say"]
     assert len(g.invokes) == 0, "「停」**绝不许**替人往前走一步（它只阻止，不推进）"
     assert len(_events(client, "job-running")) == before + 1, "按了「停」也是一次人的回话：要有事件"
 
@@ -566,11 +752,18 @@ def test_stopping_at_a_gate_stops_it_right_now_and_that_step_is_not_done(tmp_pat
     assert stop["requested"] is True and stop["where"] == "intake", stop
     assert stop["will_stop_at"] == service.STOP_AT_GATE_SAY, stop["will_stop_at"]
     assert "这一步没有做" in stop["will_stop_at"], stop["will_stop_at"]
+    # N-2 的那条判据**两支都要钉**（闸上这一支与跑着那一支各有一句 `say`）——
+    # 只钉一支的话，另一支哪天变回别名，一条红的都不会有。
+    assert stop["say"] != stop["will_stop_at"] and "记下了" in stop["say"], stop
+    assert stop["will_stop_at"] in stop["say"], stop["say"]
 
     view = _wait(client, job_id)
     assert view["status"] == "done", view
     assert view["result"]["end_reason"] == "human_stop", view["result"]
     assert view["result"]["visits"] == [], "「停」在闸上：这一步**一步都没有做**"
+    # M-2（修复轮 1）：到头之后那个请求**已经兑现并清掉了**（复审量过、我这里钉住）——
+    # 「停」不是一条一直挂着的状态，它是**一次**请求（A3 的清在每一种落点上都生效）。
+    assert _live(client, job_id)["stop"]["requested"] is False, _live(client, job_id)["stop"]
     # 交下去的必须是「停」本身 —— 不是「继续」（服务绝不替人往前走）
     assert getattr(g.invokes[1], "resume", None) == {"action": "stop", "note": ""}, \
         "resume 的那一句不是「停」：%r" % (g.invokes[1],)
@@ -706,7 +899,9 @@ def test_say_stop_and_live_do_not_wait_for_a_running_step(tmp_path):
         assert live["stage"] == "intake", "跑着时的 stage 是 `running_step` 那一次采样"
         stopped = client.post("/job/%s/stop" % job_id, json={}).json()["stop"]
         assert stopped["where"] == live["stage"], "同一趟里 `/live.stage` 与 `/stop.where` 是同一个词"
-        assert "正在跑" in live["note"] or "跑" in live["note"], live["note"]
+        # ⚠️ 收窄过（修复轮 1 / N-1）：原先写的是 `"正在跑" in note or "跑" in note` ——
+        # 那个 `or` 让**任何**含「跑」的句子都能让这条过（看着像钉子、其实没钉住那句原话）。
+        assert "正在跑" in live["note"], live["note"]
     finally:
         let_go.set()
     _wait(client, job_id)
@@ -741,6 +936,7 @@ def test_again_starts_a_new_job_with_the_same_brief_and_the_words_the_human_said
     assert new_id and new_id != job_id, body
     assert job_id in body["say"], "那句话要说清「这是哪一趟的重来」：%r" % body["say"]
 
+    _settle(client)                      # M-3：`invokes[-1]` 要等队列空（不然读的是时序）
     new = svc._jobs[new_id]
     # ① 同一份开场白
     for key in ("url", "goal", "success_text", "site", "ws_url", "form_file", "out_dir"):
@@ -820,6 +1016,7 @@ def test_again_on_a_run_that_blew_up_carries_the_words_too(tmp_path):
 
     r = client.post("/job/%s/again" % job_id, json={})
     assert r.status_code == 202, r.text
+    _settle(client)                      # M-3：同上
     new_id = r.json()["job_id"]
     payload = g.invokes[-1]
     assert isinstance(payload, dict), "重来是一趟**新跑**（payload 是开场白，不是 resume）：%r" % (payload,)
