@@ -160,6 +160,11 @@ WINDOW_DEAD_SAY = ("窗口没了 —— Bit 的窗口只活几分钟。它停在
 HUMAN_SAID_THROUGH_SAY = "这句话会一路带进「写这一版 py」。"
 #: 没有 note 的那次「继续」：不能说「这句话带进去了」（没有话）
 HUMAN_SAID_PLAIN_SAY = "（你在「%s」那道闸上按了继续，没有多说。）"
+#: 人**改了口**（修复轮 2 / NEW-1）：摆在他面前的那句，他按下去的是**别的** ——
+#: 它**不再往输入框里摆**（摆了就是请他再送一次他刚改口不要的话），
+#: 但它**还记着**（`/again` 会带上）：改口不等于作废自己说过的话。
+HUMAN_SAID_SUPERSEDED_SAY = ("（你改口了：「%s」不再往输入框里摆 —— 但它还记着，"
+                             "按「重新来一遍」会带上。）")
 #: 目录表第 6 行的**闸拍**那一半。`%s` = 拍不成的原因**原文**（不许让空图框冒充页面）
 SHOT_MISSING_SAY = "这一轮没留下图：%s"
 #: 目录表第 6 行的**步拍**那一半（Task 5）里**说得出是哪一步**的那一支
@@ -364,8 +369,11 @@ AGAIN_WORDS_UNREADABLE_SAY = ("读不回这个任务的状态（%s）—— 你*
 LIVE_BUSY_RUNNING_SAY = ("它现在**正在跑** —— 这一屏没有去读它的状态（读一次要排在这次 invoke 后面，"
                          "真站点上可能几分钟，而这一屏每 3 秒就刷新一次）。"
                          "轮次卡片与「刚做完的那一步」等它停下来再补全。")
-LIVE_BUSY_QUEUED_SAY = ("它还在**排队等窗口**（前面还有 run 在用那个浏览器）—— 这一屏没有去读它的状态"
-                        "（读一次要排在那一趟后面，真站点上可能几分钟）。"
+#: ⚠️ 排队那句**不许说前面那趟在干什么**（修复轮 2 / NEW-6）：单飞只保证「前面还有活」，
+#: **不保证那活在用浏览器** —— 前面那趟可能正在 `draft` / `lint`（那两个节点一个字节都不碰 cdp）。
+#: 说一个自己不知道的原因，就是编话（`QUEUED_SAY` 那句用的是「在用」，不点是什么，见那条的注释）。
+LIVE_BUSY_QUEUED_SAY = ("它还在**排队等窗口**（前面还有别的 run 在跑 —— 单飞，一次只跑一个）—— "
+                        "这一屏没有去读它的状态（读一次要排在那一趟后面，真站点上可能几分钟）。"
                         "轮次卡片等它真开跑、停在闸上之后才会长出来。")
 #: 「不知道哪一步」——`_where_it_stopped` 与 `/live` 的 `stage_say` **同一句**（一处口径）
 UNKNOWN_STEP_SAY = "不知道哪一步"
@@ -1131,8 +1139,11 @@ class Job:
     #: 而每次 `_advance` 返回都会去读它一遍 —— 不去重就是同一句话每推一步记一条。
     narration_reported: set = dataclasses.field(default_factory=set)
     #: 人说过、**还没送到它手上**的话（Task 8 的 `/say` 排队那条路）。每一条至少
-    #: `{"text", "at", "delivered"}` —— 送到时**改的是同一条**（不是追加一条新的），
-    #: Task 9 就是靠 `delivered` 分辨「喂过它没有」。
+    #: `{"text", "at", "delivered", "superseded"}` —— 送到时**改的是同一条**
+    #: （不是追加一条新的），Task 9 就是靠 `delivered` 分辨「喂过它没有」。
+    #: `superseded`（修复轮 2 / NEW-1）：这句**摆在他面前过**，而他按下去的是**别的** ——
+    #: 于是它不再进输入框（不再问一次），但**还记着**（`/again` 照带）。两格各说一件事：
+    #: `delivered` = 「到过它手上没有」，`superseded` = 「他还想不想要」。
     #: ⚠️ 只活在进程里（与 `timeline` 同一条命）；服务重启后它没了 —— 而它本来就只装
     #: 「说了还没送出去」的话，重启之后那些话的去处由 `timeline` 那句话自己说。
     inbox: list = dataclasses.field(default_factory=list)
@@ -2317,7 +2328,7 @@ class Service:
         if at_gate is None:
             say = STOP_LANDED_BLIND_SAY
             token = ""
-        else:
+        elif ended:
             # 兑现落在哪：从**这一步跑完之后的**状态里读（此刻 invoke 已经结束 —— 读是安全的，
             # 而且手上就有那一份快照，不必再读一次）
             token, human = self._where_it_stopped(job.job_id, snap)
@@ -2325,9 +2336,17 @@ class Service:
                 say = STOP_LANDED_GATE_SAY % human
             else:
                 say = STOP_LANDED_OVER_SAY % human
-                if ended and str((getattr(snap, "values", None) or {})
-                                 .get("end_reason") or "") == END_PAUSED:
+                if str((getattr(snap, "values", None) or {})
+                       .get("end_reason") or "") == END_PAUSED:
                     say += STOP_LANDED_PAUSED_ADD
+        else:
+            # 跑挂那一支：**那一份快照一格都不信**（NEW-2）—— 包括它的 `interrupts`
+            # （节点名正是从那儿来的）。改用服务自己在**安全时刻**采的那次样
+            # （`Job.running_step`）：它正是这一趟在跑的那个节点，也正是按「停」的时候
+            # 告诉过他的那个词（A2）—— 两处不许打架。
+            token = str(job.running_step or "")
+            human = STEP_SAY.get(token, token) if token else UNKNOWN_STEP_SAY
+            say = STOP_LANDED_OVER_SAY % human
         self.narrate(job, "stop_landed", say, where=token, promised=promised)
 
     def _sample_running_step(self, job: Job) -> None:
@@ -2455,12 +2474,16 @@ class Service:
                 job.narration_reported.add(why)
             self.narrate(job, "narration_broken", NARRATION_BROKEN_SAY % why, why=why)
 
-    def _note_human_said(self, job: Job, job_id: str, body: ReplyRequest) -> None:
+    def _note_human_said(self, job: Job, job_id: str, body: ReplyRequest,
+                         *, superseded: str = "") -> None:
         """目录表第 8 行：人的原话 + **这句话去哪了**。
 
         ⚠️ 没有 note 的那次「继续」**也要有一条**（那是最常见的一次交互）：
         不记的话「人按了什么」在时间线上是空白。只是它不能说「这句话带进去了」（没有话）。
         ⚠️ 这句话的 `who` 是 `"you"` —— 页面靠它决定气泡长相。
+        `superseded`（修复轮 2 / NEW-1）：这一次他改了口（摆在他面前的那句不要了）——
+        **同一件事的两半**（他按下去的那一句 + 他不要了的那一句），所以并进**同一条**气泡里，
+        而不是另起一条（分开写会让「他改了口」看起来像两件事）。
         """
         note = str(body.note or "").strip()
         token, where = self._where_it_stopped(job_id)
@@ -2468,6 +2491,8 @@ class Service:
             say = "%s\n%s" % (note, HUMAN_SAID_THROUGH_SAY)
         else:
             say = HUMAN_SAID_PLAIN_SAY % where
+        if superseded:
+            say += "\n" + (HUMAN_SAID_SUPERSEDED_SAY % superseded)
         self.narrate(job, "human_said", say, who="you",
                      reply=str(body.action or ""), note=note, step=token)
 
@@ -2808,7 +2833,8 @@ class Service:
         pending: list = []
         if job is not None:
             with job.lock:
-                pending = [dict(x) for x in job.inbox if not x.get("delivered")]
+                pending = [dict(x) for x in job.inbox
+                           if not x.get("delivered") and not x.get("superseded")]
         return {"mode": input_mode(status, stage, steer=STEER_WIRED),
                 "draft_note": str(pending[-1].get("text") or "") if pending else "",
                 "queued": pending}
@@ -3053,13 +3079,20 @@ class Service:
         with job.lock:
             job.status = RUNNING
             job.say = "收到你的话，接着跑（下一个要你拿主意的地方会再停下来）。"
+        # 送这一句会怎么改变队里那些话（**先算、不改**）：送出去的 + 他改口不要的。
+        # 算在这一步，是因为下面那条时间线要把「他改了口」一起说出来
+        # （同一件事的两半，并进他**这一条**气泡里）。
+        sent, superseded = self._inbox_plan(job, str(body.note or ""))
         # 目录表第 8 行：人的原话与它去哪了（**交下去之前**记，否则工作线程先喊「在跑」）。
-        self._note_human_said(job, job_id, body)
+        self._note_human_said(job, job_id, body,
+                              superseded=(str(superseded[0].get("text") or "")
+                                          if superseded else ""))
         self._submit(job, Command(resume={"action": body.action, "note": body.note}))
-        # Task 8 修复轮 1（I-2）：**真的交下去了**才翻「已送到」—— 排队里那一条要跟着走。
+        # 真的交下去了，队里那几条才跟着走（修复轮 1 / I-2；位置见修复轮 2 的那条用例）。
         # ⚠️ 位置在 `_submit` **之后**：上一步（narrate）抛的话，这句话并没有送出去，
-        # 那就一个字都不许翻（`delivered` 翻了 = 把没送到的话记成送到了）。
-        self._deliver_from_inbox(job, str(body.note or ""))
+        # 那就一个字都不许翻（翻了 = 把没送到的话记成送到了）——
+        # `test_the_queue_only_flips_after_the_sentence_really_went_out` 钉着它。
+        self._apply_inbox_plan(job, sent, superseded)
         return self._view(job_id)
 
     # ── Task 8：人在回路（`/say` `/stop` `/again`）──────────────────────────
@@ -3100,7 +3133,7 @@ class Service:
             job.inbox.append({"text": kept,
                               "at": datetime.datetime.now().astimezone()
                                     .isoformat(timespec="seconds"),
-                              "delivered": False})
+                              "delivered": False, "superseded": False})
             n = len([x for x in job.inbox if not x.get("delivered")])
         say = self._queued_say(view, stage, n)
         if cut:
@@ -3111,28 +3144,39 @@ class Service:
         return {SAY_QUEUED: True, SAY_DELIVERED: False, "n": n, "say": say}
 
     @staticmethod
-    def _deliver_from_inbox(job: Job, note: str) -> None:
-        """这一句**送到它手上了** —— 队列里那一条翻成 `delivered`（修复轮 1 / I-2）。
+    def _inbox_plan(job: Job, note: str) -> tuple:
+        """这一句按下去会怎么改变队里那些话：`(要翻成已送出的, 要标成改口的)`。**只算不改。**
 
-        ⚠️ 为什么这件事必须有人做：`Job.inbox` 每一条说的是「说了、**还没送到**」
-        （`input.queued` 与 `input.draft_note` 都从它来，`/again` 也按它决定要不要带过去）——
-        **没人翻它，「还没送到」就永远不消失**：到下一道闸页面会**再预填一次已经送下去的话**
-        （那是在请人再按一次），而 `/again` 会把同一句话**带两遍**（R5 的两个来源里有一个过期了）。
-        ⚠️ 认的是**那句话本身**（`text == note`）：人要是把预填那句**改了**再按，送出去的是他改过的
-        那句 —— 原来那句**确实没送到**，它留在队里是对的（改口是他的事，服务不替他抹掉）。
-        ⚠️ 改的是**同一条**（不是追加一条新的）：这一格是那条话自己的状态，Task 9 的直达通道
-        也要按同一格翻（「送出去时改的是同一条」）。
-        ⚠️ 时刻：与 `_note_human_said` 说的**同一件事的两侧** —— 时间线那边说「这句话会一路
-        带进「写这一版 py」」，数据这边就是它离开队列。
+        - **送出去的按文字认**（`delivered`）：`note` 与哪几条的 `text` 一样，那几条都算送到了
+          —— 送下去的话就一句（同文说两遍、按一次 = 那两遍都送到了；只翻一条的话，
+          剩下那条下一道闸**又被预填**，那正是 I-2/NEW-1 要治的形状）。
+        - **改口的按「他面前摆的是哪一句」认**（`superseded`）：他按下去的是**别的**
+          （`note` 非空、且与摆在最前面那条不同）⇒ 那条标上。
+          ⚠️ 这是**观察到的事实**，不是猜他的意图：这一句摆在他面前过（`draft_note` 给的就是它，
+          页面照它预填），而他送下去的是别的。
+        - `note` 空（按的是「继续」、框里没话）⇒ **什么都不改**：他没送这句，也没说别的。
         """
         text = str(note or "").strip()
         if not text:
-            return
+            return [], []
         with job.lock:
-            for entry in job.inbox:
-                if not entry.get("delivered") and str(entry.get("text") or "") == text:
-                    entry["delivered"] = True
-                    return
+            sent = [x for x in job.inbox
+                    if not x.get("delivered") and str(x.get("text") or "") == text]
+            waiting = [x for x in job.inbox
+                       if not x.get("delivered") and not x.get("superseded")]
+            front = waiting[-1] if waiting else None
+            superseded = ([front] if (front is not None
+                                      and str(front.get("text") or "") != text) else [])
+        return sent, superseded
+
+    @staticmethod
+    def _apply_inbox_plan(job: Job, sent: list, superseded: list) -> None:
+        """把上面算出来的那两件事写回那几条**自己**（不追加新的 —— 这一格是那条话自己的状态）。"""
+        with job.lock:
+            for entry in sent:
+                entry["delivered"] = True
+            for entry in superseded:
+                entry["superseded"] = True
 
     def _queued_say(self, view: dict, stage: str, n: int) -> str:
         """「这句话排着了」那句人话（**两种处境两句不同的话**，不许拿一句盖两件事）。"""
@@ -3202,9 +3246,14 @@ class Service:
 
     @staticmethod
     def _has_queued_words(job: Job) -> bool:
-        """队里还有没有**没送出去**的话（只影响那句人话要不要提它一句）。"""
+        """队里还有没有**还等着送**的话（只影响那句人话要不要提它一句）。
+
+        ⚠️ 被改口的那几条**不算**（NEW-1）：它们不会再进输入框，说「你说的话已经排好了，
+        到那儿会进输入框」就是假话。
+        """
         with job.lock:
-            return any(not x.get("delivered") for x in job.inbox)
+            return any(not x.get("delivered") and not x.get("superseded")
+                       for x in job.inbox)
 
     def _note_human_stop(self, job: Job, plan: dict) -> None:
         """按「停」那一刻的那条时间线（`who="you"`：这是人打过的一次回）。
@@ -3257,6 +3306,8 @@ class Service:
         ① checkpoint 的 `hints`：在闸上**真说过的**（`graph._enter` 一路攒下来的）；
         ② `Job.inbox` 里**还没送出去的**：说了、但还没到它手上（§4.1 第一行承诺的
            「你说的话我记着」就是这一批）。
+        ⚠️ ②**包含被他改口不要的那几条**（`superseded`，NEW-1）：改口是「别再摆给我看了」，
+        **不是**「把我这句话作废」—— 重新来一遍的那一趟照样要带上（R5）。
         返回 `(话, 读不回来的原因或空串)` —— 读不回来时**不许静默少带一半**（R5 的代价）。
         """
         words: list = []

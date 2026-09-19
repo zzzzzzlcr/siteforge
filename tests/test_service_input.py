@@ -125,11 +125,12 @@ def _runtime_goes_to_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(service.measure, "DEFAULT_ROOT", tmp_path / "runtime" / "explore")
 
 
-def _client(*, graph_factory, window=None, **kw):
+def _client(*, graph_factory, window=None, raise_server_exceptions=True, **kw):
     kw.setdefault("checkpointer", InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
     kw.setdefault("capture", lambda ws_url, dest, *, timeout=None: (pathlib.Path(str(dest)).name, ""))
     return TestClient(service.create_app(graph_factory=graph_factory,
-                                         window=window or StubWindow(), **kw))
+                                         window=window or StubWindow(), **kw),
+                      raise_server_exceptions=raise_server_exceptions)
 
 
 def _factory(g):
@@ -366,20 +367,28 @@ def test_a_word_that_was_sent_at_the_gate_leaves_the_queue(tmp_path):
         "它不许在下一道闸**再预填一次**已经送下去的话（那是在请人再按一次）"
 
 
-def test_a_word_the_human_replaced_is_not_marked_as_sent(tmp_path):
-    """人把预填那句**改了**再按 ⇒ 送出去的是他改过的那句，**原来那句没送到**（修复轮 1 / I-2）。
+def test_a_word_the_human_replaced_is_kept_but_never_offered_again(tmp_path):
+    """人把预填那句**改了**再按 ⇒ 原来那句**不再摆到他面前**，但**一个字都不丢**（修复轮 2 / NEW-1）。
 
-    为什么单钉：`delivered` 那一格翻错，**两个方向都是错话** ——
-      · 该翻不翻：那句「还没送到」永远挂着（到下一道闸再预填一次已经送下去的话）；
-      · 不该翻却翻了：他**改口之前**说的那句被记成「送到了」，从此没人再提它
-        （而它一个字都没到过它手上）。
-    判据认的是**那句话本身**（`text == note`），不是「队里最老的那条」。
+    为什么这一条要紧（复审与控制者的改判）：页面**不渲染** `input.queued`（`grep` = 0），
+    所以运营唯一能遇到那句「他已经改口不要的话」的方式，就是**下一道闸又被预填** ——
+    而页面在闸上会把框里的字**原样**当他的话送下去（`console.html:893-901`）。
+    那与 I-2 要治的形状是同一个（预填一句不该再摆出来的话 = 请人再按一次），
+    只差在 I-2 那句是「已送出」、这句是「已改口」。
+
+    判据拆成两件事（**不是**把 `delivered` 翻掉 —— 那一句一个字都没到过它手上）：
+      · `superseded`：**观察到的事实** —— 这一句摆在他面前过，而他按下去的是**别的**；
+      · 于是 `draft_note` / `input.queued` 都不再列它，而**时间线上要说出来**这件事。
     """
     g = FakeGraph(steps=[
         _Snap(values={"site": SITE, "visits": ["intake"]}, interrupts=(_gate("intake"),)),
         _Snap(values={"site": SITE, "visits": ["intake", "explore"]}, interrupts=(_gate("draft"),)),
+        _Snap(values={"site": SITE, "visits": ["intake", "explore", "draft"],
+                      "hints": ["算了，先点 cookie 同意"],
+                      "end_reason": "human_stop", "end_note": "人把这一趟停了。"}),
     ])
     client = _client(graph_factory=_factory(g))
+    svc = client.app.state.service
     job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
     _wait(client, job_id)
 
@@ -389,9 +398,60 @@ def test_a_word_the_human_replaced_is_not_marked_as_sent(tmp_path):
     _wait(client, job_id)
 
     live = _live(client, job_id)
-    assert [x["text"] for x in live["input"]["queued"]] == ["不是那个按钮"], \
-        "他没送出去的那句话不许被当成送到了：%r" % live["input"]["queued"]
-    assert live["input"]["draft_note"] == "不是那个按钮", "下一道闸该把它再摆出来"
+    assert live["input"]["draft_note"] == "", \
+        "他改口不要的那句不许再摆到输入框里（摆了就等着他再按一次）：%r" % live["input"]["draft_note"]
+    assert live["input"]["queued"] == [], \
+        "它也不在「还在等」那一列里（那一列是给「等着送」的话的）：%r" % live["input"]["queued"]
+    # 「没有静默的路径」：这件事必须有一条人说得出的话（在他的那一条气泡里）
+    said = _of_kind(client, job_id, "human_said")
+    assert any("改口" in e["say"] and "不是那个按钮" in e["say"] for e in said), \
+        "改口这件事一个字都没说：%r" % [e["say"] for e in said]
+
+    # 但它**没有被丢掉**（R5 的「你说的话我记着」）：那条仍然是「没送到」，`/again` 照带
+    with svc._jobs[job_id].lock:
+        entry = [x for x in svc._jobs[job_id].inbox if x["text"] == "不是那个按钮"][0]
+    assert entry["delivered"] is False, "它一个字都没到过它手上，不许翻成送到了"
+    assert entry["superseded"] is True, entry
+    # 让它走到头（重来要在一个终态的 job 上按）
+    client.post("/job/%s/reply" % job_id, json={"action": "continue"})
+    _wait(client, job_id)
+    r = client.post("/job/%s/again" % job_id, json={})
+    assert r.status_code == 202, r.text
+    _settle(client)
+    assert g.invokes[-1]["hints"] == ["算了，先点 cookie 同意", "不是那个按钮"], \
+        "改口不等于作废他说过的话 —— 重来那一趟要带上它：%r" % (g.invokes[-1].get("hints"),)
+
+
+def test_the_same_word_said_twice_is_sent_and_carried_once(tmp_path):
+    """同一句话说了两遍、按一次 —— **两遍都算送到**，队列不留半条（修复轮 2 / NEW-1 同族）。
+
+    复审量到的那一笔：判据原先只翻**第一条**同文的 ⇒ 剩下那条下一道闸**又被预填**，
+    而 `/again` 把「说了一遍」变成 hints 里的两条。送下去的话就一句：同文的那几条一起翻。
+    """
+    g = FakeGraph(steps=[
+        _Snap(values={"site": SITE, "visits": ["intake"]}, interrupts=(_gate("intake"),)),
+        _Snap(values={"site": SITE, "visits": ["intake", "explore"], "hints": ["先点 cookie 同意"],
+                      "end_reason": "human_stop", "end_note": "人把这一趟停了。"}),
+    ])
+    client = _client(graph_factory=_factory(g))
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, job_id)
+
+    for _ in range(2):
+        client.post("/job/%s/say" % job_id, json={"text": "先点 cookie 同意"})
+    assert [x["text"] for x in _live(client, job_id)["input"]["queued"]] == ["先点 cookie 同意"] * 2
+    client.post("/job/%s/reply" % job_id, json={"action": "say", "note": "先点 cookie 同意"})
+    _wait(client, job_id)
+
+    live = _live(client, job_id)
+    assert live["input"]["queued"] == [], "送下去了，两条都该走：%r" % live["input"]["queued"]
+    assert live["input"]["draft_note"] == "", live["input"]
+
+    r = client.post("/job/%s/again" % job_id, json={})
+    assert r.status_code == 202, r.text
+    _settle(client)
+    assert g.invokes[-1]["hints"] == ["先点 cookie 同意"], \
+        "他说了两遍同一句话，带过去的不许变成两条：%r" % (g.invokes[-1].get("hints"),)
 
 
 def test_again_does_not_carry_a_word_that_was_already_sent(tmp_path):
@@ -502,6 +562,11 @@ def test_a_queued_job_is_not_told_that_it_is_running(tmp_path):
         assert "排队" in live_b["note"], "排队那一档要说「排队」：%r" % live_b["note"]
         assert "正在跑" not in live_b["note"], \
             "同一屏两格打架（status 说排队、note 说正在跑）：%r" % live_b["note"]
+        # NEW-6（修复轮 2）：单飞只保证「前面还有活」，**不保证那活在用浏览器**
+        # （前面那趟可能正在 `draft` / `lint` —— 那两个节点一个字节都不碰 cdp）。
+        # 说一个自己不知道的**原因**，就是编话。
+        assert "浏览器" not in live_b["note"], \
+            "排队那句在编一个原因（前面那趟不一定在用浏览器）：%r" % live_b["note"]
 
         live_a = _live(client, a_id)
         assert live_a["status"] == "running", live_a["status"]
@@ -523,11 +588,15 @@ def test_a_crashed_run_does_not_paste_a_stale_ledger_note(tmp_path):
     （`reopen` 的 patch 会把它清掉）—— 摆在这儿是因为「同一份快照在同一函数里
     要么都信、要么都不信」这条性质该死，**不是**因为这条场景今天可达。
     """
+    clean = _Snap(values={"site": SITE, "visits": ["intake"]})   # 开跑前：干净
     stale = _Snap(values={"site": SITE, "visits": ["intake", "explore"],
                           "end_reason": "paused",             # ← 上一趟留下的结论
-                          "end_note": "上一趟：人喊停，探路收住了。"})
-    g = FakeGraph(steps=[stale], raise_on=[1])
-    g.state = stale                          # 这一趟还没写任何东西，checkpoint 里是上一趟那份
+                          "end_note": "上一趟：人喊停，探路收住了。"},
+                  interrupts=(_gate("deliver"),))             # ← 上一趟那道闸也还在（NEW-2）
+    g = FakeGraph(steps=[clean], raise_on=[1],
+                  # 这一趟跑着的时候，checkpoint 换成了上一趟那份（跑挂之后服务读到的就是它）
+                  hold=lambda n: setattr(g, "state", stale) if n == 1 else None)
+    g.state = clean
     client = _client(graph_factory=_factory(g))
     svc = client.app.state.service
     job = _running_job(svc, stage="explore")
@@ -542,6 +611,86 @@ def test_a_crashed_run_does_not_paste_a_stale_ledger_note(tmp_path):
     assert "有结果了" in landed[0]["say"], landed[0]["say"]
     assert "账本不完整" not in landed[0]["say"], \
         "跑挂那一支照抄了上一趟的 `end_reason`（同一份快照两套信任口径）：%r" % landed[0]["say"]
+    # NEW-2（修复轮 2）：**节点名**也不许从那同一份快照里来 —— 上面刚说过不信它的闸，
+    # 紧接着又用它的 `interrupts` 报节点名，就是「同一格两套口径」。
+    # 跑挂这一支改用服务自己在安全时刻采的那次样（`running_step`）：那也正是
+    # `/stop` 按下去时告诉他的那个词（A2），两处不许打架。
+    assert "把它写进站点目录" not in landed[0]["say"], \
+        "节点名从**那份快照的闸**里来的（上面刚说过不信它）：%r" % landed[0]["say"]
+    assert "开工前的确认" in landed[0]["say"], \
+        "跑挂那一支的节点名该是这一趟在跑的那个（`running_step`）：%r" % landed[0]["say"]
+    assert landed[0]["data"]["where"] == "intake", landed[0]["data"]
+
+
+def test_the_queue_only_flips_after_the_sentence_really_went_out(tmp_path, monkeypatch):
+    """「已送到」那一翻要在**真的交下去之后**（修复轮 2：这个位置以前只活在注释里）。
+
+    怎么钉：让 `_note_human_said` 那条 narrate 抛（它在 `_submit` **之前**）—— `/reply` 会 500
+    （时间线坏了是编程错误，本来就该响），而**队里那一条一个字都不许翻**：
+    翻了就是把一句**没送到**的话记成送到了（I-2 要治的正是这种假账）。
+    """
+    text = "不是那个按钮"
+    g = FakeGraph(steps=[_Snap(values={"site": SITE, "visits": ["intake"]},
+                               interrupts=(_gate("intake"),))])
+    client = _client(graph_factory=_factory(g), raise_server_exceptions=False)
+    svc = client.app.state.service
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, job_id)
+    client.post("/job/%s/say" % job_id, json={"text": text})
+
+    real = svc.narrate
+
+    def broken(job, kind, say, **kw):
+        if kind == "human_said":
+            raise RuntimeError("时间线坏了（这一条就是来让它抛的）")
+        return real(job, kind, say, **kw)
+
+    monkeypatch.setattr(svc, "narrate", broken)
+    r = client.post("/job/%s/reply" % job_id, json={"action": "say", "note": text})
+    assert r.status_code == 500, r.text
+
+    with svc._jobs[job_id].lock:
+        entry = svc._jobs[job_id].inbox[0]
+        assert entry["delivered"] is False, "没送出去却翻了「已送到」"
+        assert entry["superseded"] is False, entry
+    _settle(client)
+    assert len(g.invokes) == 1, "那一句并没有交下去（推图的次数不该涨）"
+
+
+def test_settle_really_waits_for_the_work_to_be_done(tmp_path):
+    """`_settle` 的确定性靠一条性质：**`task_done()` 在工作之后**（修复轮 2 / NEW-5）。
+
+    为什么这条性质要有人钉：`_settle` 一旦不再等「工作真的做完」，那几条
+    `len(invokes) == N` 的断言就**悄悄退回靠时序**（M-3 刚治好的那条缝又开了），
+    而**不会有任何红灯**。判据是行为：工作还卡在 invoke 里时，`join()` **不许**回来。
+    """
+    inside, let_go = threading.Event(), threading.Event()
+
+    def hold(n):
+        if n == 1:
+            inside.set()
+            let_go.wait(10)
+
+    client = _client(graph_factory=_factory(
+        FakeGraph(steps=[_Snap(values={"site": SITE, "visits": ["intake"]})], hold=hold)))
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    assert inside.wait(10), "这一趟没有进到 invoke 里"
+
+    joined = threading.Event()
+
+    def settle():
+        client.app.state.service._queue.join()
+        joined.set()
+
+    t = threading.Thread(target=settle, daemon=True)
+    t.start()
+    try:
+        assert not joined.wait(0.5), \
+            "工作还卡在 invoke 里，`join()` 就回来了 —— `task_done` 跑到工作前面去了（`_settle` 于是不再确定）"
+    finally:
+        let_go.set()
+    assert joined.wait(10), "放开那一次 invoke 之后 `join()` 该回来"
+    _wait(client, job_id)
 
 
 def test_the_live_view_fills_the_input_and_the_stop_the_page_reads(tmp_path):
@@ -661,6 +810,9 @@ def test_stopping_something_that_runs_in_another_node_promises_the_next_gate(tmp
     live = _live(client, "job-running")
     assert live["stop"]["requested"] is True
     assert live["stop"]["will_stop_at"] == stop["will_stop_at"], "/live 说的与刚才那一句要是同一句"
+    # NEW-4（修复轮 2）：**请求过**那一支也必须是三格 —— 只在「没请求过」那支钉的话，
+    # 哪天 `say` 那格从这一支长回来，「同一个事实两个名字」会静默地长回去。
+    assert set(live["stop"]) == {"requested", "where", "will_stop_at"}, live["stop"]
     # A2：跑着的同一趟里，`/live.stage` 与 `/stop` 的 `where` 是**同一个词**
     assert live["stage"] == stop["where"] == "selftest", (live["stage"], stop["where"])
 
