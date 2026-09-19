@@ -64,6 +64,26 @@ class Dispatch(Protocol):
     def __call__(self, name: str, arguments: dict) -> Any: ...
 
 
+#: 插进去的那条消息的抬头：先点名**这是谁说的**（人），再逐字贴他的话。
+STEER_HEAD = "人在你探路的时候插了一句话，下面是他的原话（逐字）："
+#: 那条消息**必须带**的那句提醒（设计注 §3.4 的「已知风险」，**原话**）。
+#:
+#: 为什么非有它不可：探路那道门上**没有 `done()`** —— 「不调工具」= 它宣布讲完了
+#: ⇒ `stop_reason = model_done` ⇒ 图会认成「**探路走完了**」（R11）。
+#: 人的一句话很容易被模型读成「话题结束了」；这句是**当面**把那个误读堵回去
+#: （背面那一半在 `browser_agent`：真发生了就往 `journey.notes` 追一句人话）。
+STEER_REMINDER = "这是人插的话，接着探，别把它当成收尾。"
+
+
+def steer_message(text: str) -> dict:
+    """把人插的那句话包成一条 `user` 消息（循环里插进对话的那条**就是它**）。
+
+    一字不改地贴他的话（`text` 原样在中间那行），前后各一句**我们加的**：
+    前面那句说清**谁在说**，后面那句说清**这不是收尾**。
+    """
+    return {"role": "user", "content": "%s\n%s\n%s" % (STEER_HEAD, text, STEER_REMINDER)}
+
+
 def client():
     """按 env 建 OpenAI 兼容客户端。key 只从 env 读，**不落任何文件**。"""
     from openai import OpenAI
@@ -86,6 +106,7 @@ def run_tool_loop(
     *,
     model: str | None = None,
     max_tokens: int = DEFAULT_MAX_TOKENS,
+    steer: Callable[[], str | None] | None = None,
     _client=None,
 ) -> list[dict]:
     """跑一轮工具循环，返回**每一轮**的记录。
@@ -102,6 +123,7 @@ def run_tool_loop(
           "elapsed_ms": 1234,
           "finish_reason": "tool_calls" | "stop" | ...,
           "messages":   [...],               # 追加进对话的原样 message（便于事后重放）
+          "steered":    "…" | None,          # 这一轮**人插的那句话**（没有就是 None）
         }
 
     **为什么返回每一轮而不是只返回最终答案**：这个 spike 要量的不是「答对没有」，
@@ -109,6 +131,14 @@ def run_tool_loop(
 
     ⚠️ 刻意**不**做的事：模型不调工具直接答时，这里**不**回一句「请用工具」把循环续上。
     那正是要量的失败模式，接住了就看不见了。
+
+    `steer`（Task 9）：**每一次模型调用之前**问它一次「人刚说了什么吗」——回了非空的一句，
+    就把它包装成一条 `user` 消息**插在这一次调用前面**（`steer_message`），
+    于是**这一轮**它就看到了；那一轮的 record 里记 `steered`（**人自己那句话**，
+    不带包装 —— `messages` 里那条才是发出去的全文）。
+    传 `None`（默认）⇒ 一次都不问、一个消息都不插：**这条路与今天逐字节相同**。
+    ⚠️ 插进去的那句话里带着 `STEER_REMINDER`（那道门上没有 `done()`，「不调工具」=它宣布
+    讲完了 —— 这一条是**当面**堵那个误读；真发生了由 `browser_agent` 记一句人话，见 R11）。
     """
     cli = _client or client()
     model = model or DEFAULT_MODEL
@@ -121,6 +151,14 @@ def run_tool_loop(
     rounds: list[dict] = []
 
     for i in range(1, max_rounds + 1):
+        # 人的话（Task 9）：**在一次调用之前**插进去 —— 插在之后这一轮就看不到它，
+        # 而「下一轮就看到了」正是这条通道对那个人唯一的一句承诺。
+        steered = None
+        if steer is not None:
+            said = str(steer() or "").strip()
+            if said:
+                messages.append(steer_message(said))
+                steered = said
         t0 = time.time()
         resp = cli.chat.completions.create(
             model=model,
@@ -143,6 +181,7 @@ def run_tool_loop(
             "elapsed_ms": elapsed_ms,
             "finish_reason": choice.finish_reason,
             "messages": [],
+            "steered": steered,
         }
 
         # 原样把 assistant message 追加进对话（OpenAI 要求 tool 消息必须紧跟带

@@ -294,10 +294,16 @@ SAY_QUEUED = "queued"
 STEER_STAGE = "explore"
 
 #: 「直达」那条通道（Task 9 的 `steer`）**接上了没有**。**这一版写死 `False`**：
-#: `llm.run_tool_loop(steer=…)` 还没落地，而 Global Constraints 说得很死 ——
-#: 「一半的插话（说了没送到）比不做更坏」⇒ **今天任何路径都不许回 `delivered`**（R1）。
-#: Task 9 落地时改的是**这个实参**（不是判据）：把它翻成 `True`，并把 `/say` 里那条
-#: 「直达」的通道接上（`say_route` 那一支今天就写好了，只是到不了）。
+#: 代码接上了（`llm.run_tool_loop(steer=…)` + `_steer_cb` + `/say` 那条直达的路），
+#: 但**没在真站上验过**（R1：真站演练与 Task 10 合到同一趟窗口）——
+#: 而 Global Constraints 说得很死：「一半的插话（说了没送到）比不做更坏」。
+#: ⇒ **今天任何路径都不许回 `delivered`**，`/say` 一律排队（页面文案跟着 `mode` 走，
+#: 自动是「排队」——**那是诚实的**：服务确实还没把话送到它手上）。
+#:
+#: ⚠️ 它是一个开关、**不是一个判据**（R1）：`say_route` / `input_mode` 两个纯函数
+#: 早就把两个分支都写好了，`/say` 与 `_explore_for` **都读这一格** ——
+#: 翻成 `True` 就是「两处一起开」（而不是只开一半：页面说「直达」而话根本没喂下去，
+#: 或者话喂下去了而页面说「排队」——两种都是同一个事实两个名字）。
 STEER_WIRED = False
 
 #: 一句话最多留多少字（R4）。为什么是这个数：它进 `hints` → 一路带进「写这一版 py」
@@ -320,12 +326,14 @@ SAY_QUEUED_SAY = ("记下了 —— 它现在%s，这一句先排着：到下一
 SAY_QUEUE_LENGTH_SAY = "队列里现在排着 %d 句 —— 都是只预填、不自动发。"
 #: 截断那句（R4）：**两个数都要说**（原来多长、留下多少）
 SAY_CUT_SAY = "你这句话有 %d 字，只留下前 %d 字 —— 被切掉的那些**没带上**。"
-#: 直达那一句（**今天到不了**：`STEER_WIRED` 是 False，见 R1）
+#: 直达那一句（`say_route` 说这句话会直达它的下一轮）
 SAY_DELIVERED_SAY = "这句话**直达**它的下一轮了（它正在探路里跑）。"
-#: 「直达」的开关被打开、而通道没接上时给的那句（**不许**把没送到的话说成送到了）
-SAY_STEER_UNWIRED_SAY = ("这条路上它现在收不到「直达」的话：那条通道（Task 9）还没接上。"
-                         "**不许**把一句没送到的话说成送到了 —— 所以服务在这儿回一句实话，"
-                         "而不是把这句话咽进队列里。写一句短一点的，或者等它到下一道闸。")
+#: 真的把它交出去那一刻，时间线上那条（设计注 §4.2 的**原话**「已经交给它了」）。
+#: ⚠️ 它说的是**服务兑现了**这件事（`who="system"`），不是人说的、也不是它说的 ——
+#: 与 `stop_landed` 同一族（人开的口、服务兑现，两件事两个时刻两张嘴）。
+#: 页面那句提示也是这么承诺的（`console.html` 的 `MODES.steer`：
+#: 「送到之后时间线上会出现一条「交给它了」」）。
+STEER_LANDED_SAY = "已经交给它了 —— 它下一轮就会看到（一轮几秒到几十秒）。"
 #: 空文本（400）
 SAY_EMPTY_SAY = ("这一句是空的。要它接着走，闸上那个「继续」按钮才是那件事；"
                  "要说话，就写一句再送。")
@@ -1444,7 +1452,10 @@ class Service:
                                                 resume_note=resume_note or "",
                                                 window_alive=window_alive,
                                                 shots_dir=shots_where,
-                                                binary=self._mcp_bin)
+                                                binary=self._mcp_bin,
+                                                # Task 9：人的话「直达下一轮」那条线
+                                                # （开关没打开时它回 `None` = 今天那条路）。
+                                                steer=self._steer_cb(job_id))
             except BaseException as exc:       # noqa: BLE001 —— `_Stop` 也是 BaseException
                 # 探路自己炸了 —— 也得留一行，不然「这一次尝试」凭空消失，
                 # 而消失的那一次恰恰是最该被看见的那一次。记完**原样再抛**。
@@ -1498,6 +1509,39 @@ class Service:
             return bool(job is not None and job.stop_requested)
 
         return should_pause
+
+    def _steer_cb(self, job_id: str) -> Optional[Callable]:
+        """`Deps.explore(steer=…)`：探路**每一次模型调用之前**问的那一句（Task 9）。
+
+        为什么是这一根线而不是让 `explore` 自己去看 `Job.inbox`：那个登记表是**服务的**，
+        探路那一层够不着它（`browser_agent` 不认识 `Job`）—— 形状与 `should_pause` /
+        `window_alive` 同一个（**服务手上有、探路要问**的东西都从这里递下去）。
+
+        ⚠️ **开关没打开就回 `None`**（`STEER_WIRED`，今天写死 `False`）：`explore` 于是走它
+        默认那条路（`steer=None`，一个字节不变）。这一格与 `/say` 那边读的是**同一个开关**
+        —— 半开的通道就是「同一个事实两个名字」：页面说「排队」而话偷偷喂了下去（或者反过来）。
+
+        ⚠️ 拿锁：`steer()` 跑在**工作线程**上（一次 invoke 里面），那条线程**不持**
+        `job.lock`（`_advance` 只在改状态那两处短暂拿一下）—— 所以这里可以自己拿
+        （`Job.lock` 是普通 `Lock`，**持锁处再调拿锁的函数 = 自己等自己**：判据全走不拿锁的纯核）。
+        """
+        if not STEER_WIRED or not job_id:
+            return None
+
+        def steer() -> Optional[str]:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            if job.stop_requested:
+                # 有个**还没兑现**的「停」⇒ 这一轮**不会发生**（`_Gate._create` 一上来就问它，
+                # 真就抛 `_Stop`）——那就**一个字都不许交出去**：
+                # 交了就要翻 `delivered`，而那条消息根本没发出去 = 说了但没送到；
+                # 更糟的是 `/again` 也不会再带上它（`_unsent_texts` 只带**没送出去**的）
+                # —— 人的话两头都没有了。留着不动的代价只是它继续排队（页面照旧看得见）。
+                return None
+            return self._take_steer_words(job) or None
+
+        return steer
 
     def _explore_dir(self, job_id: str) -> pathlib.Path:
         """`runtime/explore/<job_id>/`。⚠️ `job_id` 是从 HTTP 进来的字符串 —— 必须挡住 `../`，
@@ -3145,7 +3189,18 @@ class Service:
         要送，人按闸上那个按钮（页面在闸上走的是 `/reply`，那是他**自己**按的）。
 
         `202`：这句话被**收下**了，但它还没送到它手上（送到了才叫 delivered）。
-        ⚠️ `queued` / `delivered` 那两格由 `say_route` 那个纯函数定（R1）—— 今天恒 `queued`。
+        ⚠️ `queued` / `delivered` 那两格由 `say_route` 那个纯函数定（R1）。
+
+        ⚠️ **两支走的是同一条路**（Task 9）：都只进 `Job.inbox`，谁都没在这儿把话送出去 ——
+        差的是**它会怎么到它手上**（`route`）：
+
+          - `queued`：到下一道闸进输入框，人按按钮才发；
+          - `delivered`：探路**下一次问模型之前**由 `_steer_cb` 交给它（那才是真正送出去的那一刻，
+            时间线上那条 `steer_landed` 说的就是它）。
+
+        ⇒ 「直达」**不等于**「它已经看到了」：这一句此刻只是排在队里等着下一轮交出去
+        （`input.queued` 里看得见它，`delivered` 那一格还是 `False`）。页面那句提示也是这么
+        承诺的：**送到之后**时间线上才会出现一条「交给它了」。
         """
         job = self._jobs.get(job_id) or self._recover(job_id)
         if job is None:
@@ -3160,11 +3215,6 @@ class Service:
             raise HTTPException(status_code=409, detail=SAY_OVER_SAY % self._status_say(status))
         stage = self._stage_now(job, job_id, status)[0]
         route = say_route(status, stage, steer=STEER_WIRED)
-        if route == SAY_DELIVERED:
-            # **今天到不了这一支**：`STEER_WIRED` 写死 `False`（那条通道是 Task 9 的，R1）。
-            # 真走到了（有人把开关打开、却没接通道）**不许静默排队** —— 那正是
-            # 「说了没送到」比不做更坏：回一句实话，而不是把话咽下去还说「送到了」。
-            raise HTTPException(status_code=503, detail=SAY_STEER_UNWIRED_SAY)
         with job.lock:
             job.inbox.append({"text": kept,
                               "at": datetime.datetime.now().astimezone()
@@ -3172,13 +3222,19 @@ class Service:
                               "delivered": False, "superseded": False})
         # `n` 与 `/live.input.queued` **同一个口径**（修复轮 3 / NEW-R1）—— 同一处判据
         n = len(self._still_waiting(job))
-        say = self._queued_say(view, stage, n)
+        # ⚠️ 两句话说的是两条路（R2 的「同一件事不许两个名字」反过来：
+        # 两件事不许共用一个名字）——「排队等闸、按一下才送」摆在直达那条路上就是假话。
+        # `_queued_say` 的尾巴那句「队列里现在排着 N 句 —— **只预填、不自动发**」同理不带上：
+        # 直达那几秒里它们**都会**进下一轮，说「只预填」是反的（`n` 那一格照报，它是事实）。
+        say = (SAY_DELIVERED_SAY if route == SAY_DELIVERED
+               else self._queued_say(view, stage, n))
         if cut:
             say += "\n" + (SAY_CUT_SAY % (len(text), len(kept)))
         # 时间线上记的是**人自己那句话**（逐字转抄，只有超长那一截不带 —— 而且说了）
         self.narrate(job, "human_said", "%s\n%s" % (kept, say), who="you",
                      text=kept, route=route, n=n, cut=cut)
-        return {SAY_QUEUED: True, SAY_DELIVERED: False, "n": n, "say": say}
+        return {SAY_QUEUED: route == SAY_QUEUED, SAY_DELIVERED: route == SAY_DELIVERED,
+                "n": n, "say": say}
 
     @staticmethod
     def _inbox_plan(job: Job, note: str) -> tuple:
@@ -3340,6 +3396,50 @@ class Service:
         到那儿会进输入框」就是假话（判据见 `_still_waiting`）。
         """
         return bool(self._still_waiting(job))
+
+    # ── 直达（Task 9）：把还在等的那几句交给探路的下一轮 ────────────────────────
+
+    @staticmethod
+    def _steer_plan(entries: list) -> tuple:
+        """（Task 9 的判据）这一轮交给它的那几句 + 交完之后算**送到了**的那些条目。
+
+        ⚠️ **纯核，不拿锁**（与那三个纯核同一条纪律）：调用方按自己手上的处境决定怎么拿锁。
+        ⚠️ 判据一个字都不在这儿（R2/R3）——这里只把**那两处**的结果加起来：
+          - **喂的集合** = `_waiting_entries`（真正还在等的那些：没送出、也不再摆给他的）；
+          - **算送到了的** = `_delivered_by`（按「**这一句真的发出去了**」认，
+            Task 8 那处立的判据：同文说两遍，那一句送出去 = 那两遍都送到了）。
+
+        ⇒ 「不再摆给他的」（`superseded`）**不进喂的集合**（`_waiting_entries` 天然不含它们，
+        一行特例都不用写，R3）—— 但要是**同一句话**另有一条还在等，`_delivered_by` 照样
+        把那一条也算成送到了（那是「这句话到过它手上没有」，不是「还摆不摆给他」）。
+
+        返回 `(要喂的那段话, 要翻的条目)`：话是**按人说过的先后**拼的（一次交完），
+        空队就是 `("", [])`。
+        """
+        waiting = Service._waiting_entries(entries)
+        texts = [t for t in (str(x.get("text") or "") for x in waiting) if t]
+        if not texts:
+            return "", []
+        return "\n".join(texts), [x for t in texts for x in Service._delivered_by(entries, t)]
+
+    def _take_steer_words(self, job: Job) -> str:
+        """把还在等的那几句交给探路的下一轮：**算 → 说 → 翻**（Task 9 / R6）。
+
+        ⚠️ **顺序照 `/reply` 那条路同一条纪律**（那一处的原话：narrate 抛的话，这句话
+        并没有送出去，那就一个字都不许翻 —— 翻了就是把没送到的话记成送到了）：
+        `_steer_plan`（算）→ `narrate`（说）→ 翻。三者**不嵌套**：`narrate` 自己也拿
+        `job.lock`，套在持锁的块里就是自己等自己（`Job.lock` 不是 `RLock`）。
+
+        ⚠️ 翻用的是 `_apply_inbox_plan`（Task 8 立的那个**唯一的写入口**）——
+        `delivered` 这一格全仓只有它一处写（判据那一侧是三个纯核，两处都不许再抄）。
+        """
+        with job.lock:
+            text, sent = Service._steer_plan(job.inbox)
+        if not text:
+            return ""
+        self.narrate(job, "steer_landed", STEER_LANDED_SAY, text=text)
+        self._apply_inbox_plan(job, sent, [])
+        return text
 
     def _note_human_stop(self, job: Job, plan: dict) -> None:
         """按「停」那一刻的那条时间线（`who="you"`：这是人打过的一次回）。

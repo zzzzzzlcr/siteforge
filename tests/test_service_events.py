@@ -624,6 +624,7 @@ def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
     | 探路走一步（模型也说了话） | `step` / `agent_said`（Task 5 起 `_Gate._note` 也接线了） |
     | 自测跑完**一遍**（含没跑的那几遍） | `selftest_run`（Task 5 加的，⑨） |
     | 跑着的时候人按了「停」，它跑完停在闸上 | `stop_landed`（Task 8 加的，⑩） |
+    | 人在它探路跑着的时候插了一句话，那句话进了它的下一轮 | `steer_landed`（Task 9 加的，⑪） |
 
     **要盯住的名字是「从调用点长出来的」**（`_kinds_the_service_narrates` AST 扫
     `agent/service.py`），不是手抄的：复审 2026-09-18 实测，手抄的名单对「按规矩加一个
@@ -755,6 +756,14 @@ def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
     assert c10.post("/job/%s/stop" % job10.job_id, json={}).status_code == 200
     svc10._advance(job10, None)               # 这一步跑完 → 停在 draft 那道闸上
     seen |= {e["kind"] for e in job10.timeline.all()}
+
+    # ⑪ 人在它探路跑着的时候插了一句话，那句话**真的进了它的下一轮** ——
+    #     `steer_landed`（Task 9 加的，⑪）。同一个道理（⑧⑨⑩）：它是**新词**，
+    #     「有人记」在调用点上看得出，而「真说得出来」只有一条走真链的场景逼得出来。
+    #     ⚠️ 场景本体写在 `tests/test_steer.py`（那里才有那一段桩与那条判据），这里**借它**
+    #     —— 抄第二份就是两份口径（哪天通道改了，只会有一份跟着动）。
+    from test_steer import steer_over_the_real_chain
+    seen |= steer_over_the_real_chain(tmp_path, monkeypatch)
 
     # ── 机械断言（三条，名字都从调用点推出来）──────────────────────
     derived = _kinds_the_service_narrates()

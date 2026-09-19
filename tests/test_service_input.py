@@ -240,13 +240,20 @@ def test_the_steer_channel_is_not_wired_yet_so_no_path_returns_delivered(tmp_pat
     assert body["queued"] is True, body
 
 
-def test_a_steer_switch_without_the_channel_refuses_instead_of_pretending(tmp_path, monkeypatch):
-    """开关打开了、通道却没接上 → **503 + 一句实话**，绝不咽进队列还说「送到了」。
+def test_say_while_it_explores_goes_straight_in_instead_of_queuing(tmp_path, monkeypatch):
+    """探路里跑着的时候说一句 → 回 `delivered`（计划 Task 8 Step 1 里「之后回 delivered」那半）。
 
-    ⚠️ 这一条今天**走不到生产**（`STEER_WIRED` 写死 False）—— 它钉的是**将来那半扇门**：
-    Task 9 会把那个实参翻成 True，而翻的时候忘了接通道，就是「说了没送到」那件事
-    （Global Constraints 明令：那比不做更坏）。所以要有一条用例证明：
-    那时候服务**响**，而不是静默降级。
+    ⚠️ 这一条**换掉了** Task 8 立的 `test_a_steer_switch_without_the_channel_refuses_instead_of_pretending`
+    （那条钉的是「开关开了、通道没接上 ⇒ 503」）。Task 9 把通道接上了 ⇒ **那个状态从这天起
+    不存在**：开关与通道是同一件事（`STEER_WIRED` 一翻，`_explore_for` 就把那根线交下去、
+    `_steer_cb` 就在每一次模型调用之前把它喂给它）。计划正文写死了这一条的两个时态
+    （Task 8 Step 1：「`running` 且 `stage=="explore"` 时 `/say` → **Task 9 之前回 `queued`、
+    之后回 `delivered`**」）—— 前一种在 `test_the_steer_channel_is_not_wired_yet_…` 里。
+
+    ⚠️ 判据**一个字没放宽**：`delivered` 说的是**它会走哪条路**，不是「它已经看到了」——
+    这句话此刻只是排在队里等着下一轮交出去（`input.queued` 里看得到它、它自己的
+    `delivered` 还是 False，时间线上那条「已经交给它了」**还没有**）。
+    真正的兑现是 `steer_landed`（Task 9 的用例在 `tests/test_steer.py`）。
     """
     monkeypatch.setattr(service, "STEER_WIRED", True)
     g = FakeGraph(steps=[_Snap(values={"site": SITE, "visits": ["intake"]})])
@@ -254,10 +261,22 @@ def test_a_steer_switch_without_the_channel_refuses_instead_of_pretending(tmp_pa
     _running_job(client.app.state.service, stage="explore")
 
     r = client.post("/job/job-running/say", json={"text": "先点 cookie 那个同意"})
-    assert r.status_code == 503, r.text
-    assert "没接上" in r.json()["detail"], r.json()
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["delivered"] is True and body["queued"] is False, body
+    assert "直达" in body["say"], body["say"]
+    assert "不会自动发" not in body["say"], (
+        "「按一下才送」说的是排队那条路 —— 摆在直达这条路上就是假话：%r" % body["say"])
     live = _live(client, "job-running")
-    assert live["input"]["queued"] == [], "送到没送到都说不清的时候，**不许**悄悄排进队列"
+    # ① 它进了队（等着下一轮交出去）—— 而**还没**到它手上
+    assert [x["text"] for x in live["input"]["queued"]] == ["先点 cookie 那个同意"]
+    assert live["input"]["queued"][0]["delivered"] is False, "还没交出去 ⇒ 不许说送到了"
+    # ② 人自己那句话 + 它会怎么到它手上，都在时间线上（`who="you"`）
+    said = [e for e in live["events"] if e["kind"] == "human_said"]
+    assert said and said[-1]["who"] == "you", said
+    assert said[-1]["data"]["route"] == "delivered", said[-1]
+    # ③ **此刻还没有**「已经交给它了」：人刚说完、那一轮还没来（R6 的那个时刻）
+    assert not [e for e in live["events"] if e["kind"] == "steer_landed"], live["events"]
     assert live["input"]["mode"] == "steer", "开关说通道接上了 ⇒ 页面那一行也该是「直达」"
 
 

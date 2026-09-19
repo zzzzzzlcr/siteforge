@@ -228,6 +228,15 @@ FALLBACK_STATE_NAME = "page"
 FALLBACK_FILL_NAME = "field"
 #: 「还没看过页面」那个状态的名字。它会被**预占**，免得页面 slug 与它撞名。
 START_STATE = "start"
+#: **插话之后那一轮它就收尾了** —— 往账上追的那句人话（设计注 §3.4 的「已知风险」/ R11，**原话**）。
+#:
+#: 为什么非记不可：探路那道门上**没有 `done()`**，所以「模型这一轮没调工具」与
+#: 「探路走完了」在图上是同一件事（`stop_reason = model_done`）。人插的那句话**可能**
+#: 就是它收尾的原因（那句话读起来像「说完了」）—— 而**系统分不出**「它是被那句话逼收的」
+#: 还是「它本来就探完了」。分不出就**不许替它下判**：如实记一句，让人自己去看结论。
+#: ⚠️ 判据只有一条：**这一轮真有人插的话**（`record["steered"]` 非空）—— 没人插话时
+#: 一个字都不许出现（不然每次收尾都在说人那句话，那是编话）。
+STEER_WRAPPED_UP_NOTE = "你插话之后它就收尾了 —— 看一眼它的结论对不对"
 
 _SYSTEM = """你是 siteforge 的探路 agent：在一个**真的浏览器**里把目标站点走一遍，\
 把「怎么走」探清楚，后面要照它生成一条能重放的 py 脚本。
@@ -443,7 +452,8 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             resume_from: list | None = None,
             resume_note: str = "",
             window_alive: Callable | None = None,
-            shots_dir=None, shooter: Callable | None = None) -> Journey:
+            shots_dir=None, shooter: Callable | None = None,
+            steer: Callable[[], str | None] | None = None) -> Journey:
     """在真浏览器里为 `goal` 探 `url` 这条路，返回 `Journey`。
 
     参数：
@@ -473,6 +483,12 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         **只有「明确说死了」才停** —— 没接这根线（`None`）、探针自己抛异常、
         或探针答「不知道」（`None`）一律**不编**一个停因出来（`_window_is_dead` 的 docstring）。
         ⚠️ **不许**拿工具那句错误文字去猜（§1.8）
+      - `steer`（Task 9）：**人的话**的注入点。循环**每一次模型调用之前**问它一次
+        （`llm.run_tool_loop(steer=…)` 透传下去），回了非空的一句就插进这一轮的对话里。
+        不给（`None`）= 今天那条路，**一个字节都不插**。
+        ⚠️ 它**只在那一次调用之前**被问，所以**插进去那一刻起这一轮就带着它**；
+        而「插话之后那一轮它就收尾了」这件事**必须写进账**（`STEER_WRAPPED_UP_NOTE`，
+        见 `_wrap_up`）—— 那道门上没有 `done()`，收尾与「讲完了」在这里是同一件事（R11）
 
     出错怎么办：
       - **工具自己报的错**（找不到元素 / 连不上窗口）→ 记进**那一步**，也回给模型，
@@ -730,7 +746,8 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             opening = _with_resume(opening, resume_from, journey.replay)
         rounds = llm.run_tool_loop(
             _SYSTEM, opening, specs, dispatch,
-            max_rounds=limits.max_rounds, max_tokens=MAX_TOKENS, _client=gate,
+            max_rounds=limits.max_rounds, max_tokens=MAX_TOKENS,
+            steer=steer, _client=gate,
         )
         _wrap_up(journey, rounds, limits)
     except _Stop as stop:
@@ -998,6 +1015,13 @@ def _wrap_up(journey: Journey, rounds: list, budget: Budget) -> None:
         # **C3**：没有 tool_calls = 它讲完了（那道门上没有 done()）
         journey.stop_reason = "model_done"
         journey.final_answer = (last.get("content") or "").strip()
+        if last.get("steered"):
+            # **R11**：人刚插了一句话，而**这一轮**它就收尾了（`steered` 与「没有 tool_calls」
+            # 同时落在最后那一轮上 —— 循环一遇到没有 tool_calls 的轮就停，所以只可能是它）。
+            # 记一句人话给人看：这可能是它**被那句话逼收的尾**（那道门上没有 `done()`，
+            # 「不调工具」在图上就是「探路走完了」），人得自己看一眼结论对不对。
+            # ⚠️ 只有**真插过话**才记（没插话也记 = 每次收尾都把人那句话搬出来，那是编话）。
+            journey.notes.append(STEER_WRAPPED_UP_NOTE)
     elif len(rounds) >= budget.max_rounds:
         journey.stop_reason = "budget_rounds"
         journey.notes.append(_stop_note("budget_rounds", len(rounds)))
