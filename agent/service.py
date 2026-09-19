@@ -58,12 +58,12 @@ import traceback
 import urllib.error
 import urllib.request
 import uuid
-from typing import Any, Callable, Optional
+from typing import Any, Callable, ClassVar, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from langgraph.types import Command
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from agent import (browser_agent, events, graph, journal, measure, rounds, selftest, shots,
                    tools)
@@ -331,6 +331,13 @@ SAY_QUEUED_SAY = ("记下了 —— 它现在%s，这一句先排着：到下一
 SAY_QUEUE_LENGTH_SAY = "队列里现在排着 %d 句 —— 都是只预填、不自动发。"
 #: 截断那句（R4）：**两个数都要说**（原来多长、留下多少）
 SAY_CUT_SAY = "你这句话有 %d 字，只留下前 %d 字 —— 被切掉的那些**没带上**。"
+#: **入口换掉了字节**时说的那句话（Task 8 补丁 A）。`%d` = 换了几个。
+#: 换掉是**有损**的 ⇒ 有损必须说（Global Constraints：没有静默的路径）——
+#: 与 `SAY_CUT_SAY`「切掉了多少要报两个数」同一条纪律。
+#: ⚠️ 措辞与 `Service.narrate` 里那一句**同源**：同一件事（人话里混着外面来的坏字节）
+#: 在两个出口说，说的就该是同一种话。
+UNWRITABLE_BYTES_SAY = ("（这条里有 %d 个字节**线上写不出来**（孤立代理对，多半是从别处粘来的）"
+                        "—— 已按 `�` 记，不是它本来长这样。）")
 #: 直达那一句（`say_route` 说这句话会直达它的下一轮）
 SAY_DELIVERED_SAY = "这句话**直达**它的下一轮了（它正在探路里跑）。"
 #: 真的把它交出去那一刻，时间线上那条（设计注 §4.2 的**原话**「已经交给它了」）。
@@ -884,13 +891,95 @@ class Checkpointer:
 # ─────────────────────────────── 收上来的东西 ───────────────────────────────
 
 
-class RunRequest(BaseModel):
+class _Intake(BaseModel):
+    """**载荷模型的底座**：外面来的字在**进服务那一刻**消毒（Task 8 补丁 A）。
+
+    ## 为什么消毒必须挂在这一层（而不是在每个端点里逐个字段手写）
+
+    载荷里的字**全是「外面来的」**：运营在输入框里打的/从别处粘的、`bit.sh open` 吐的那串窗口名
+    —— 而**一个孤立代理对过得了 `json.dumps`、过不了 `/live` 最后那次 `.encode("utf-8")`**。
+    后果不是「那一格坏了」，是 `/live` **500、整条时间线一条都读不出来**
+    （运营那一屏整个挂掉）。这一片已经治过一次同一件事（`Service.narrate` 的 `say`、
+    `browser_agent._utf8_safe` 的转抄、`_note_step` 的 `expect`）——
+    **这一处是它漏掉的入口**（复审 2026-09-19 在 `07fcbd4` 基线上实测：带坏字节的 `/say` 500，
+    并且 `/live` 一起挂）。
+
+    挂在底座上的理由只有一个：**这一类**（这一片的病史：六轮「修了被点名的那一处，没修那一类」）。
+    新加一个字段、新加一个载荷模型，**一个字节都不用记得** ——
+    `tests/test_service_intake.py` 那条机器守会把每个模型的每个文本字段都塞一个坏字节量一遍。
+
+    ⚠️ **同一台机器**：用的就是 `events.safe_value`（那个模块里最有资格管这件事的那一个）——
+    别在别处再造一台（`browser_agent._utf8_safe` 也只是给它加了一句「换了几个」）。
+
+    ⚠️ **它不替 `events._facts` 那道闸干活，两把尺子各管各的**：那道闸挡的是
+    **写代码的人**把 bytes / `nan` 塞进 `data`（编程错误 ⇒ 当场拒）；这里挡的是
+    **外面来的字**（⇒ 换掉 + 数出来，**不拒**）。换掉而不拒的理由与该模块那句原话一样：
+    拒掉整条 = 「这句话没收到」/「这一步没记上」，而**丢记录正是这一片要治的病**。
+
+    ⚠️ **换了几个**记在私有那一格里（`unwritable_say()`）：由**端点**把它并进自己那句人话
+    （每一处说的不是同一件事，所以那一句各处自己写 —— 但**不许不说**：没有静默的路径）。
+    """
+
+    #: 换掉了几个字节（0 = 原样收下的）。**不上线**：它是给端点说人话用的，不是载荷的字段。
+    _unwritable: int = PrivateAttr(default=0)
+
+    #: **不在入口换**的字段名（默认空；哪个载荷模型要就自己点名）—— 它们在**自己那个出口**
+    #: 转抄的那一刻消毒并**报数**（`_note_step` 那句注释与 `Service.narrate` 是同一台机器）。
+    #: 在入口先换掉的话，那两处就**没得报**，而「你这几个字节写不出来、已按 `�` 记」
+    #: 正是读那句话的人要知道的事。
+    #: ⚠️ 能进这一格的**唯一条件**：这个字段**没有任何直通响应的出口**
+    #: （不进 state / `/live` / `/job/{id}` / 盘）—— 漏一个字节就是一次 500。
+    #: ⚠️ 今天只有 `RunRequest.expects` 一个，理由写在那边的定义上。
+    SANITISED_AT_ITS_OWN_SEAM: ClassVar[tuple] = ()
+
+    @model_validator(mode="after")
+    def _sanitise_the_intake(self):
+        """把这一条载荷里**线上写不出来**的码位换掉（并记住换了几个）。
+
+        逐格走 `model_dump(exclude_none=True)`：**同一个映射**，所以「有哪些格」这件事
+        不需要在这里再列一遍（列一遍就是第二份清单，迟早与模型对不上）——
+        点名的那些格例外（`SANITISED_AT_ITS_OWN_SEAM`），而且**个数只算真换掉的那些**
+        （多报一个与少报一个一样是假话）。
+        """
+        own = set(self.SANITISED_AT_ITS_OWN_SEAM)
+        replaced, safe = 0, {}
+        for key, value in self.model_dump(exclude_none=True).items():
+            fixed, n = events.safe_value(value)          # 点名的那些照收不换（它们自己会报数）
+            replaced += 0 if key in own else n
+            safe[key] = value if key in own else fixed
+        if not replaced:
+            return self
+        for key, value in safe.items():
+            object.__setattr__(self, key, value)         # 绕过赋值校验：换过的值仍然合形状
+        self._unwritable = replaced
+        return self
+
+    def unwritable_say(self) -> str:
+        """「换掉了几个字节」那句 —— **可以直接接在人话尾巴上**（含换行；没换过 = 空串）。
+
+        ⇒ 端点那一行永远是 `say += body.unwritable_say()` 一句，没有分支可写错。
+        """
+        return ("\n" + UNWRITABLE_BYTES_SAY % self._unwritable) if self._unwritable else ""
+
+
+class RunRequest(_Intake):
     """`POST /run` 的载荷 —— 等于图的开场白（`state.SiteState` 的前几项）。
 
     图 **不自己发明** 任何「没验到也算过」的默认值（§2.5），所以它要的那几样只有调用方给得了：
     `success_text`（什么算成功，只有人知道）、`ws_url` / `form_file`（§4.6 前提层的产物）、
     以及窗口层的旋钮（`set_viewport` / `allow_skips` / `entry_url`，R-31）。
     """
+
+    #: `expects` 是**唯一**一个「只活在 `job.brief` 里」的载荷字段（`_payload` 不往下发、
+    #: `graph.py` 里一个字都不提它）—— 它的两个读者各自在**转抄那一刻**消毒**并报数**：
+    #: `judge_step` 那句话（走 `Service.narrate`）与 `_note_step` 的 `expect` 格
+    #: （`events.safe_value`）。在入口先换掉，那两处就**没得报** ——
+    #: 而「你写的那条期望里少了几个字节」正是判那一步的人最该看到的那句话
+    #: （`tests/test_service_steps.py::test_a_receipt_with_unwritable_bytes_…` 的 ④
+    #: 钉的就是它，那条既有断言**一个字没动**）。
+    #: ⚠️ 它也**没有**直通响应的出口：不进 state、不进 `/live`、不进 `/job/{id}`、不进盘
+    #: —— 这正是它能被点名留在原样的唯一理由（见 `_Intake.SANITISED_AT_ITS_OWN_SEAM`）。
+    SANITISED_AT_ITS_OWN_SEAM: ClassVar[tuple] = ("expects",)
 
     url: str = Field("", description="站点 URL")
     goal: str = Field("", description="人给的意图：要摸清什么 / 什么算完成")
@@ -931,14 +1020,14 @@ class RunRequest(BaseModel):
                           "图不需要知道它的上一世")
 
 
-class ReplyRequest(BaseModel):
+class ReplyRequest(_Intake):
     """人在闸口的回话（`state.human_reply` 认的那三种写法 + 这几种同义写法）。"""
 
     action: str = Field("continue", description="continue / stop / revise（不认识的当纠正处理，不丢）")
     note: str = Field("", description="纠正的话：直接说该点哪（会一路带进 draft）")
 
 
-class SayRequest(BaseModel):
+class SayRequest(_Intake):
     """`POST /job/{id}/say` 的载荷（Task 8）。
 
     ⚠️ 字段名是 **`text`**：计划（`plans/2026-09-17-console-minimal.md` 的 Task 8）与页面
@@ -949,7 +1038,7 @@ class SayRequest(BaseModel):
     text: str = Field("", description="人说的那一句（空文本 400；超长截断并**说出来**）")
 
 
-class ReopenRequest(BaseModel):
+class ReopenRequest(_Intake):
     """窗口死了之后重开一个（P6）：把**新窗口**放回状态，从断点接着跑。"""
 
     ws_url: str = Field(..., description="新开出来的窗口（bit.sh open 吐的那串）")
@@ -2683,6 +2772,9 @@ class Service:
             say = HUMAN_SAID_PLAIN_SAY % where
         if superseded:
             say += "\n" + (HUMAN_SAID_SUPERSEDED_SAY % superseded)
+        # ⚠️ 他打的字里要是混着**线上写不出来**的字节（`/reply` 的 `note` 是外面来的），
+        # 消毒在载荷进来的那一刻做过（`_Intake`）—— 那一句并在这儿（Task 8 补丁 A）。
+        say += body.unwritable_say()
         self.narrate(job, "human_said", say, who="you",
                      reply=str(body.action or ""), note=note, step=token)
 
@@ -3215,7 +3307,11 @@ class Service:
         self._start_window_probe()
         # 目录表第 3 行：先记「收到」，再（前面有东西时）记「排队等窗口」。
         # ⚠️ **先说后交**是有意的：交给队列之后工作线程可能立刻喊「在跑」，顺序就反了。
-        self.narrate(job, "submitted", self._submitted_say(body))
+        # ⚠️ 载荷里换掉的字节要说出来（Task 8 补丁 A）：`/run` 收的**全是外面来的字**
+        # （url / goal / success_text / 窗口那一串…），而它们一路会进 state、再回 `/live`
+        # 与 `/job/{id}`。这一句人话落在时间线上（那正是运营读的那一屏）——
+        # `/job/{id}` 的**既有形状**一个字都不动（那儿不加格）。
+        self.narrate(job, "submitted", self._submitted_say(body) + body.unwritable_say())
         if self._something_is_ahead():
             self.narrate(job, "queued", QUEUED_SAY)
         self._submit(job, self._payload(brief))
@@ -3298,7 +3394,7 @@ class Service:
     #    绝不替人「走」」）。`/say` 只**记下来**（到下一道闸进输入框，人按按钮才发）；
     #    `/stop` 是**阻止**那一半授权；`/again` 起的是**新的一趟**（不是替人回答什么问题）。
 
-    def say(self, job_id: str, text: str) -> dict:
+    def say(self, job_id: str, body: SayRequest) -> dict:
         """`POST /job/{id}/say` —— 人说了一句（设计注 §4.2）。
 
         它**永远不替人往前走一步**：这一句只是记进 `Job.inbox`，到下一道闸进输入框，
@@ -3323,7 +3419,7 @@ class Service:
         job = self._jobs.get(job_id) or self._recover(job_id)
         if job is None:
             raise KeyError(job_id)
-        text = str(text or "").strip()
+        text = str(body.text or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail=SAY_EMPTY_SAY)
         kept, cut = _cut_say(text)
@@ -3359,6 +3455,11 @@ class Service:
         # 直达那几秒里它们**都会**进下一轮，说「只预填」是反的（`n` 那一格照报，它是事实）。
         say = (SAY_DELIVERED_SAY if route == SAY_DELIVERED
                else self._queued_say(view, stage, n))
+        # ⚠️ **换掉的字节要说出来**（Task 8 补丁 A）：消毒在**载荷进服务那一刻**做过
+        # （`_Intake`），个数记在那条载荷身上 —— 那一句人话由这里并进响应（并随它进时间线）。
+        # 位置与「截断」那一条**并列**：两件都是「你写的字没有原样留下」的**有损**，
+        # 有损就得报个数（Global Constraints：没有静默的路径）。
+        say += body.unwritable_say()
         if cut:
             say += "\n" + (SAY_CUT_SAY % (len(text), len(kept)))
         # 时间线上记的是**人自己那句话**（逐字转抄，只有超长那一截不带 —— 而且说了）
@@ -3618,12 +3719,29 @@ class Service:
                      and str(x.get("text") or "").strip()]
             if not fresh:
                 return
-            job.steer_missed_reported.update(x.get("seq") for x in fresh)
+            # ⚠️ **这里原先就把 `seq` 记进 `steer_missed_reported` 了**（Task 8 补丁 A 挪走的那一行）：
+            # 「先标记、后说」在**说得出**的时候看不出来，说不出的时候就是**永久静默**
+            # （标了 = 此后每个出口都被去重滤掉）。所以标记挪到 `narrate` **之后**
+            # （与 `_note_steer_landed` / `/reply` 同一条纪律：**说在前、翻在后**）。
             said = "\n".join(str(x.get("text") or "") for x in fresh)
             crashed = job.status == FAILED
+        # ⚠️ **转抄的那一刻换掉线上写不出来的字节**（Task 8 补丁 A；与 `_note_step` 里
+        # `expect` 那一行同一条纪律 —— 人打的字同样是**外面来的**）：不换的话 `events._facts`
+        # 那道闸会**整条拒掉**这一条事件，于是「说不出」又回来了
+        # （而丢记录比换一个字节坏得多 —— 契约 §二②）。
+        said, replaced = events.safe_value(said)
         why = (STEER_MISSED_AT_GATE_SAY if at_gate
                else (STEER_MISSED_DIED_SAY if crashed else STEER_MISSED_ENDED_SAY))
-        self.narrate(job, "steer_missed", STEER_MISSED_SAY % (said, why), text=said)
+        sentence = STEER_MISSED_SAY % (said, why)
+        if replaced:
+            sentence += "\n" + (UNWRITABLE_BYTES_SAY % replaced)
+        self.narrate(job, "steer_missed", sentence, text=said)
+        # ⚠️ **说出来了才算「报过了」**（标在说之后 —— 见上）。两条之间有一条缝，
+        # 而这条缝里**没有第二个线程**：这四个出口全都在**工作线程**上
+        # （`_advance` → `_note_after_advance` / `_note_end` / 跑挂那一支），
+        # 所以不会把同一句承诺说两遍。
+        with job.lock:
+            job.steer_missed_reported.update(x.get("seq") for x in fresh)
 
     def _note_human_stop(self, job: Job, plan: dict) -> None:
         """按「停」那一刻的那条时间线（`who="you"`：这是人打过的一次回）。
@@ -3746,6 +3864,9 @@ class Service:
                 dict(getattr(self._snapshot(job_id), "values", None) or {}).get("explore_spent"),
                 self._spent_from_attempts(job_id))
             say = self._reopen_explore_say(prefix, note)
+        # ⚠️ 窗口那一串（`bit.sh open` 吐的）也是**外面来的字**：消毒在载荷进来那一刻做过
+        # （`_Intake`），那一句并在这儿 —— 它会进 `job.say`、进时间线（`window_reopened`）。
+        say += body.unwritable_say()
         with job.lock:
             job.brief.update({"ws_url": body.ws_url})
             job.brief.pop("_failed_at", None)
@@ -4101,7 +4222,7 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
         **它绝不替人往前走一步**（到下一道闸进输入框，人按按钮才发）。
         """
         try:
-            return svc.say(job_id, body.text)
+            return svc.say(job_id, body)
         except KeyError:
             raise HTTPException(status_code=404, detail="没这个任务：%s。" % job_id)
 

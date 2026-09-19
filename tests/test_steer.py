@@ -897,3 +897,85 @@ def test_words_still_queued_at_a_gate_are_not_reported_as_missed(tmp_path, monke
     live = _live(client, "job-gate")
     assert [x["text"] for x in live["input"]["queued"]] == [SAID], "它只是排着，下一道闸会摆出来"
     assert live["input"]["draft_note"] == SAID
+
+
+# ── Task 8 补丁 A：**说不出 ≠ 说过了**（回归 4 的 G2 是同一个形状的另一个正身）──
+
+#: 手造那一条时用的坏字节（孤立代理对 —— 线上写不出来，见 `tests/test_service_intake.py`）
+_BAD = "\ud800"
+#: 它被换成什么（`events._UNWRITABLE`）
+_SAFE = "�"
+
+
+def test_a_promise_that_cannot_be_said_is_not_marked_as_reported(tmp_path, monkeypatch):
+    """**说在前、标在后**（Task 8 补丁 A；与 `_note_steer_landed` / `/reply` 同一条纪律）。
+
+    为什么（复审 2026-09-19 复现 4 步判出来的）：`_note_steer_missed` 原先**先**把那些
+    `seq` 记进 `steer_missed_reported`、**再** `narrate` —— narrate 一抛（那句话说不出来），
+    标记已经落下了 ⇒ 那几条承诺**此后每个出口**都被去重滤掉：**永久静默**
+    （正是这一片要治的那个病，换到了「服务自己」这张嘴上）。
+
+    ⇒ 判据是**反的**那一头：说不出的时候，**不许**留下「报过了」的记号
+    （下一次出口还得再说一遍 —— 说不出来是响的，静默才是病）。
+
+    ⚠️ 让 `narrate` 只对**这一种** kind 抛：`_advance` 开头那几条 `running` 也得记，
+    一上来就抛的话这一条用例根本走不到它要量的那一行（量到的是别的东西）。
+    """
+    client, svc = _wired_client(tmp_path, monkeypatch)
+    job = _registered_job(svc, job_id="job-unsayable", stage="draft")
+    with job.lock:
+        job.inbox.append({"text": "把那个按钮点一下", "at": "2026-09-19T00:00:00+08:00",
+                          "delivered": False, "superseded": False,
+                          "promised": True, "seq": 7})
+    job.graph = _gate_graph()
+
+    real = svc.narrate
+
+    def _cannot_say(that_job, kind, *a, **kw):
+        if kind == "steer_missed":
+            raise ValueError("这一条说不出来（这条用例就是来把 narrate 弄抛的）")
+        return real(that_job, kind, *a, **kw)
+
+    monkeypatch.setattr(svc, "narrate", _cannot_say)
+
+    with pytest.raises(ValueError):
+        svc._advance(job, None)
+
+    assert 7 not in job.steer_missed_reported, (
+        "说不出却已经标成「报过了」= 此后每个出口都被去重滤掉（不可自愈的静默）")
+
+
+def test_a_lone_surrogate_in_the_queue_is_replaced_and_counted_not_silenced(tmp_path,
+                                                                          monkeypatch):
+    """**换个不会「标了说不出」的形状**（Task 8 补丁 A 的另一半）：转抄那一刻就换掉。
+
+    与 `_note_step` 里 `expect` 那一行同一条纪律（运营写的字也是外面来的）：
+    不换的话 `_facts` 那道闸会**整条拒掉**这一条事件 —— 而**丢记录**比换一个字节坏得多
+    （契约 §二②：「看不见」是一等值，少一条记录 = 那件事没人知道了）。
+
+    手造这一条（`/say` 那一层现在挡着了）：量的是**形状** —— 队里还会不会有这种条目
+    （下一个挪一行、换一个入口，它就可达了，与 `test_an_empty_sentence_is_never_marked_…`
+    同一个理由）。
+    """
+    client, svc = _wired_client(tmp_path, monkeypatch)
+    job = _registered_job(svc, job_id="job-bytes", stage="draft")
+    with job.lock:
+        job.inbox.append({"text": "把那个按钮点一下" + _BAD, "at": "2026-09-19T00:00:00+08:00",
+                          "delivered": False, "superseded": False,
+                          "promised": True, "seq": 7})
+    job.graph = _gate_graph()
+
+    svc._advance(job, None)
+
+    said = [e for e in job.timeline.all() if e["kind"] == "steer_missed"]
+    assert said, "那句承诺一个字都没说（说不出 ≠ 说过了）"
+    assert (service.UNWRITABLE_BYTES_SAY % 1) in said[-1]["say"], (
+        "换掉了字节却不说个数（有损必须说）：%r" % said[-1]["say"])
+    assert said[-1]["data"]["text"] == "把那个按钮点一下" + _SAFE, said[-1]
+    assert 7 in job.steer_missed_reported, "说出来了 ⇒ 这一条才算报过（此后不再重复）"
+    # ⚠️ 这里**不**量 `/live` 读不读得出来：队里那一条是**手造**的（绕过了唯一的写入口），
+    # 而 `/live.input.queued` 是**照抄**队里那几条的 —— 手造的这一条当然会把它带挂。
+    # 生产那条路走 `/say`，而它**收下之前就换掉了**（`tests/test_service_intake.py` 那条端到端
+    # 量的正是「那一屏照旧读得出来」）。写入队里的地方全仓**只有 `/say` 一处**
+    # （`grep -n "inbox.append" agent/service.py` ⇒ 一行）—— 这一条钉的是**形状**
+    # （再说一遍：说不出 ≠ 说过了），不是可达的那条路。
