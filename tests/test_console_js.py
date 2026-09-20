@@ -52,6 +52,7 @@ Task 7 那一轮的复审发现：「**只有浏览器看得见**」的缺陷**�
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import pathlib
 import re
@@ -68,7 +69,7 @@ sys.path.insert(0, str(ROOT))
 from agent import fmr  # noqa: E402
 from agent import graph  # noqa: E402
 from agent import service  # noqa: E402
-from test_fmr import MEASURED_STEPS  # noqa: E402
+from test_fmr import MEASURED_STEPS, Recorder, envelope  # noqa: E402
 
 DRIVER = pathlib.Path(__file__).with_name("console_js_driver.js")
 NODE = shutil.which("node")
@@ -293,6 +294,8 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _failures_payloads()
     elif scenario == "failures-unmeasured":
         payload = _failures_unmeasured_payloads()
+    elif scenario == "rank-diag":
+        payload = _rank_payloads()
     else:
         payload = _payloads(final_mode=final_mode)
     #: 分支名与载荷自己声明的那一个**同不同名**：不同名 = 上面又漏了一个分支，
@@ -1225,3 +1228,298 @@ def test_the_failures_fixture_can_actually_fire(tmp_path):
         "那说明它量不到那一栏（观测值照旧是 %r）" % bad["afterQuery"])
     #: 正控还得**落到那一句假话上**：改坏之后屏幕上出现的正是「没有失败」那句
     assert "失败的记录" in bad["afterQuery"]["fails"], bad["afterQuery"]
+
+
+# ═════════════ Task 4：榜单 → 失败单 → 原因（那条链的三下）═════════════════
+#
+# 病（brief §0）：FMR 上**失败看得见、原因看不见**；`formStep` 只有 `id/task_id/step/url`
+# 四列 —— **设计上就没有「原因」这一格**。`fail_diag` 那张表刚接上，
+# 这一段钉的是**运营那一屏**上那条链长什么样。
+#
+# 四条判据，每条都对应 brief 里的一条硬要求，而且都是「只有跑起来才看得见」的那一类：
+#
+# | # | 性质 | 源码文本断言为什么拦不住 |
+# |---|---|---|
+# | 1 | 榜单那一栏长出来的是**人话**（不是 JSON） | 字面量在不在与**这一刻画上去的是哪一份**无关 |
+# | 2 | ★ **脏键**⇒「按这个键查不到」说出来，**不是**留白、也不是「没有失败」 | 两句都在源码里；哪一句上了屏只有跑一遍才知道 |
+# | 3 | ★ `exit=unknown` ⇒「**没报上来**」（不编成那三种之一） | 同上 |
+# | 4 | ★ **还没有原因**⇒ 服务那句 `note` 上屏（不许空着） | 同上 |
+#
+# ⚠️ 那几行日志**原样**摆（不过 `rich()`）—— 单有一条钉着它（`**` 会被当格式吃掉）。
+
+#: 榜单上那个**干净**的键（`formLog` 认它）。
+RANK_CLEAN = "www.gowizard.com/auto-warranty"
+#: ★ 榜单上那个**脏**键 —— brief §2 R1 里那一条真实样本（同一个站今天在榜单里有**两条**：
+#: 一条干净的，一条整条 URL 带 query、尾巴上还粘着一段 CDP 报错）。
+#: 这一条夹具的**全部意义**就是它：拿它去查 `formLog` 会**查不到**。
+RANK_DIRTY = ('callyourdate.com/land/sp/519015a5/?utm_source=taboola&id_visit_prev=#'
+              'c3RlcDM=" 2026/09/20 03:45:22 ERROR: could not unmarshal event')
+#: 那一单**有原因**。
+DIAG_TASK = "26034602"
+#: 那一单**还没有原因**（brief §2 R2 说的那种：新功能 / 老单 / 机器没发上来）。
+NO_DIAG_TASK = "26033398"
+#: 榜单那一天的正文 —— **三个数对得上**（5 + 1 + 1 == 7），于是那一句里**不会**出现
+#: 「没摆全」；要量「没摆全」那一条得另给一份（见 `test_..._says_when_it_did_not_show_everything`）。
+RANK_DATA = {
+    "date": "2026-09-20", "failed_total": 7, "unattributed": 1,
+    "rank": [
+        {"site": RANK_CLEAN, "fail": 5, "config_id": 66, "config_status": "启用",
+         "has_script": True},
+        {"site": RANK_DIRTY, "fail": 1, "config_id": None, "config_status": None,
+         "has_script": None, "note": "没有配置"},
+    ],
+}
+#: 服务那句抬头 + 每一行的人话 —— **现算**（`fmr.rank_say` / `fmr.rank_row_say`），
+#: 不在这儿手抄一遍：那句话改一个字这一份跟着变，不会两边漂（与 `FAIL_ROW_SAY` 同一个做法）。
+RANK_SAY = fmr.rank_say(RANK_DATA, fmr.DEFAULT_RANK_LIMIT)
+RANK_ROW_SAYS = [fmr.rank_row_say(r) for r in RANK_DATA["rank"]]
+#: 那一栏的三跳地址（**从服务自己的常量算出来**，不在这儿手拼一份）。
+RANK_URL = service.RANK_PATH
+FAIL_CLEAN_URL = service.FAILURES_PATH + "?site=" + urllib.parse.quote(RANK_CLEAN, safe="")
+FAIL_DIRTY_URL = service.FAILURES_PATH + "?site=" + urllib.parse.quote(RANK_DIRTY, safe="")
+DIAG_WITH_URL = service.DIAG_PATH % DIAG_TASK
+DIAG_NO_URL = service.DIAG_PATH % NO_DIAG_TASK
+#: 那两单的失败行（`/failures` 那一栏要摆出来的）—— 人话**现算**。
+RANK_FAIL_ROWS = [
+    {"task_id": DIAG_TASK, "site": RANK_CLEAN, "status": "failed",
+     "type": "site_specific", "country": "US", "created_at": "2026-09-19T10:21:38+08:00"},
+    {"task_id": NO_DIAG_TASK, "site": RANK_CLEAN, "status": "failed",
+     "type": "site_specific", "country": "US", "created_at": "2026-09-19T09:58:02+08:00"},
+]
+#: ★ 那几行日志 —— **照生产日志的真实形状**（`failure-log-shipping-spec.md:54` 那一段）：
+#: 里面**成对地带 `**`**（「第 18 步**跳过**」）。这一格是故意的：
+#: 页面要是把这几行过了 `rich()`，那一对星号会被吃成 `<b>`，**原话就没了** ——
+#: 而「随机挑一段没有星号的日志」那种夹具**量不出这件事**。
+DIAG_LINES = ("第 18 步**跳过**：这一页不像「gowizard-13」那个状态"
+              "（正文里没有「Progress: 60% …」）\n"
+              "读页面用的帧：账本 ['FCD98757'] ／ 活帧 ['080A7732']")
+#: 有原因那一单的正文（服务那份投影：`say` 人话 + `lines` 原样 + `note` 空）。
+DIAG_BODY = {
+    "task_id": DIAG_TASK,
+    "say": "单 %s 有 1 条原因行（最近一次的现场在最前面）。" % DIAG_TASK,
+    "diag": [{"say": fmr.diag_head_say({"machine": "worker-07", "exit": "unknown",
+                                        "at": "2026-09-20T14:32:11+08:00"}),
+              "lines": DIAG_LINES}],
+    "note": "",
+}
+#: 还没有原因那一单的正文 —— ★ `note` 就是 `fmr.NO_DIAG_SAY`（**服务给的**，页面不自己编一句）。
+NO_DIAG_BODY = {
+    "task_id": NO_DIAG_TASK,
+    "say": "单 %s 现在**一条原因行都没有**。" % NO_DIAG_TASK,
+    "diag": [],
+    "note": fmr.NO_DIAG_SAY,
+}
+
+
+def _refused_404() -> Exception:
+    """服务会回的那句「那个站它不认识」—— 让 `FmrClient` **真的**在 404 时抛一次。
+
+    ⚠️ 不在这儿手抄一句：这一份要证明的正是「页面上那句是**服务说的**那一句」——
+    手抄就变成「页面上是一句与它长得一样的字」（与 `FAIL_502` 同一个做法）。
+    """
+    rec = Recorder(envelope(None, status=404, msg="config not found: " + RANK_DIRTY))
+    try:
+        fmr.FmrClient(token="tok", opener=rec).fetch_failures(RANK_DIRTY)
+    except fmr.FmrUnmeasured as exc:
+        return exc
+    raise AssertionError("404 居然没抛 —— 这一份载荷的判据就不成立了")
+
+
+#: 脏键那一下服务那句人话（**它就是服务会说的那一句**）。
+DIRTY_SAY = str(_refused_404())
+
+
+#: 页面那个 `rich()` **会动的**那些字符：转义 `& < > " '`、把 `**x**` 包成 `<b>`、
+#: 把 `` `x` `` 包成 `<span class="code">`、把换行换成 `<br>`。
+#: ⇒ 服务那句话在屏幕上**不是一整句**，被这些字符切成了几段。
+_RICH_TOUCHES = re.compile(r"[*`&<>\"'\n]")
+
+
+def _onscreen(html: str, said: str, what: str) -> None:
+    """服务那句话**逐段**上屏了。
+
+    ⚠️ 整句拿去 `in` 是**比不中**的（见 `_RICH_TOUCHES`）。所以按那些字符切开，
+    只比切出来的**安全段** —— 每一段都必须是**原样**在屏幕上的。
+
+    ⚠️ **太短的段不算**：一两个字的段（「的」「。」「7」）满屏都是，`in` 是白送的 ——
+    那种断言永远绿，而它对「这句话到底上没上屏」什么都没说（这一片的老坑：
+    一条白送的断言比没有断言更坏，因为它看起来像有守）。
+    这里要求**比中的总字数**够多（≥ 12），否则这一条会当场响，而不是静默地变成空转。
+    """
+    chunks = [c for c in _RICH_TOUCHES.split(str(said)) if len(c.strip()) >= 5]
+    assert sum(len(c) for c in chunks) >= 12, \
+        "这句话切不出足够的「安全段」（这条断言会退化成白送）：%r -> %r" % (said, chunks)
+    for c in chunks:
+        assert c in html, "%s：这一段没上屏：%r\n屏幕上：%r" % (what, c, html)
+
+
+def _rank_payloads() -> dict:
+    """那条链那一趟：看榜单 → 挑站（干净 / 脏）→ 挑单（有原因 / 没原因）→ 三次重画。
+
+    ⚠️ **开页是挑着某一趟的**（`?job=job-1`）—— 与 `_failures_payloads` 同一条理由：
+    不挑运行的话 `paint()` 一次都不跑，「活过三次重画」量的是**没有重画**。
+    """
+    live_one = [{"body": _live("running", "queue", n=1 + i, tag="这一趟")} for i in range(8)]
+    _assert_all_different([x["body"] for x in live_one], "`/live` 的正文")
+    return {"scenario": "rank-diag", "search": "?job=job-1",
+            "rank": {"clean": RANK_CLEAN, "dirty": RANK_DIRTY,
+                     "withDiag": DIAG_TASK, "noDiag": NO_DIAG_TASK},
+            "responses": {
+                "/runs": [{"body": {"note": "", "runs": [
+                    {"job_id": "job-1", "site": "example-funnel", "status": "running",
+                     "say": "在跑。", "created_at": "2026-09-19T21:00:00+08:00",
+                     "rounds": 0, "delivered": False}]}}],
+                "/job/job-1/live": live_one,
+                RANK_URL: [{"body": {
+                    "date": RANK_DATA["date"], "limit": fmr.DEFAULT_RANK_LIMIT,
+                    "say": RANK_SAY,
+                    "rank": [{"site": r["site"], "say": s}
+                             for r, s in zip(RANK_DATA["rank"], RANK_ROW_SAYS)]}}],
+                FAIL_CLEAN_URL: [{"body": {
+                    "site": RANK_CLEAN, "since": "2026-09-19 00:00:00",
+                    "limit": fmr.DEFAULT_LIMIT,
+                    "say": "这个站从 2026-09-19 00:00 起有 2 条失败的记录"
+                           "（这一屏最多摆 20 条）。",
+                    "failures": [{"task_id": r["task_id"], "say": fmr.failure_say(r)}
+                                 for r in RANK_FAIL_ROWS]}}],
+                # ★ 脏键那一下：后端**不认识**这个键（404 那一族）⇒ 服务回 502 + 那句话。
+                FAIL_DIRTY_URL: [{"status": 502, "body": {"detail": DIRTY_SAY}}],
+                DIAG_WITH_URL: [{"body": DIAG_BODY}],
+                DIAG_NO_URL: [{"body": NO_DIAG_BODY}],
+            }}
+
+
+def test_the_rank_panel_shows_the_rank_as_human_words(tmp_path):
+    """① 榜单那一栏长出来的**是人话**，而且**逐段**就是服务给的那一句。"""
+    out = _drive(tmp_path, scenario="rank-diag")
+    html = out["afterRank"]["rank"]
+    _onscreen(html, RANK_SAY, "榜单那句抬头")
+    for said in RANK_ROW_SAYS:
+        _onscreen(html, said, "榜单里那一行")
+    assert out["afterRank"]["actHidden"] is False, "有榜单可挑，那一块却是收着的"
+    #: 那一行同时要能看到**站点键**（人拿它去核对）—— 它是这一行的身份。
+    assert RANK_CLEAN in html, html
+    #: ⚠️ 后端那几格**原样的字段名**不许上屏（页面画的是人话，不是一份 JSON 转储）。
+    for code in ("config_id", "config_status", "has_script", "failed_total"):
+        assert code not in html, "字段名上了屏（%s）：%r" % (code, html)
+
+
+def test_clicking_a_site_asks_the_existing_panel_for_that_sites_failures(tmp_path):
+    """② 挑一个站 ⇒ **它的失败单**：走的是**既有那一栏**那条路（填 `#failSite` + 查）。"""
+    out = _drive(tmp_path, scenario="rank-diag")
+    assert out["afterClean"]["siteBox"] == RANK_CLEAN, out["afterClean"]
+    assert FAIL_CLEAN_URL in out["urls"], out["urls"]
+    #: 那一栏里摆出来的就是这两单的人话（既有那条路画的）。
+    for row in RANK_FAIL_ROWS:
+        assert row["task_id"] in out["afterClean"]["fails"], out["afterClean"]["fails"]
+    #: 这一下**只查**：`POST /run` 一次都不许发（与 Task 13 那条纪律同源）。
+    assert [s for s in out["sent"] if s["url"] == "/run"] == [], out["sent"]
+
+
+def test_a_dirty_key_that_cannot_be_found_says_so_instead_of_looking_healthy(tmp_path):
+    """★★ brief §2 R1 + R2 的**正身**：脏键 ⇒「按这个键查不到」**说出来**。
+
+    为什么这条是这一片最贵的形状：拿站点键去 join 原因会**查到 0 行而且不报错** ——
+    一个查不到的站会被显示成健康的（本仓实测过一次：无效 key 回 404，
+    诊断页写成「近 2 天没有失败 ✓」）。
+
+    这一条量**三下**，缺一条都可以靠改坏另一条过：
+      ① 那句「按这个键查不到」**在**；
+      ② 后端那句**原因**（404 那句）**也在**（不是这一屏自己编了一句「查不到」）；
+      ③ 那一栏里**没有**「这个站没有失败的记录」那句假话。
+    """
+    out = _drive(tmp_path, scenario="rank-diag")
+    note = out["afterDirty"]["rankNote"]
+    fails = out["afterDirty"]["fails"]
+    assert "按这个键查不到" in note, note
+    #: ⚠️ 那串键要按**页面上转义之后的样子**比（`&`→`&amp;`、`"`→`&quot;`）——
+    #: 原样那串里有 `&` 和 `"`，直接 `in` 是比不中的。
+    #: 页面的 `esc()` 与 `html.escape(quote=True)` 转义的是同一组字符，所以这里算得出来。
+    assert html.escape(RANK_DIRTY, quote=True) in note, "没说清是**哪个键**：%r" % note
+    #: ② 后端那句原因原样在那儿（这一句是**服务**说的，页面不替它编）。
+    _onscreen(fails, DIRTY_SAY, "脏键那一下后端那句话")
+    #: ③ 假话不在。
+    assert "没有失败的记录" not in fails, "把「查不到」画成了「这个站没有失败」：%r" % fails
+
+
+def test_the_reason_is_shown_and_the_unknown_exit_is_said_as_not_reported(tmp_path):
+    """③④ 挑一单 ⇒ 原因行；`exit=unknown` ⇒「**没报上来**」（brief §2 R3）。"""
+    out = _drive(tmp_path, scenario="rank-diag")
+    html = out["afterDiag"]["diag"]
+    assert DIAG_WITH_URL in out["urls"], out["urls"]
+    _onscreen(html, DIAG_BODY["diag"][0]["say"], "那一单的抬头")
+    assert "没报上来" in html, html
+    #: ★ 那三种**一个都不许**出现（编成其中之一就是把客户端刻意留下的话填死了）。
+    for word in ("卡住", "原地打转"):
+        assert word not in html, "把 unknown 编成了「%s」：%r" % (word, html)
+
+
+def test_the_log_lines_are_shown_verbatim_and_not_through_the_rich_renderer(tmp_path):
+    """★ 那几行日志**原样**摆 —— **不过 `rich()`**。
+
+    为什么单钉一条：那几行是脚本的步骤输出，**成对地带 `**`**（「第 18 步**跳过**」）。
+    过了 `rich()`，那一对星号会被吃成 `<b>` —— **原话就没了**，
+    而这一栏存在的全部理由就是「把那一趟的原因原样摆给人看」。
+    """
+    out = _drive(tmp_path, scenario="rank-diag")
+    html = out["afterDiag"]["diag"]
+    assert "第 18 步**跳过**" in html, "那几行被加工过了：%r" % html
+    assert "<b>跳过</b>" not in html, "星号被当格式吃掉了：%r" % html
+    #: 另一行也得在（不是只留了第一行那种「摘要」）。
+    assert "读页面用的帧" in html, html
+
+
+def test_a_task_with_no_reason_yet_says_so_and_is_not_left_blank(tmp_path):
+    """★★ brief §2 R2 的另一半：**「还没有原因」要说出来，不许空着**。
+
+    量三下：① 服务那句 `note` 上屏；② 那一栏**不是空字符串**；③ 换一单之后
+    屏幕上**真的换了**（否则这一条只是「上一次那句话还在」）。
+    """
+    out = _drive(tmp_path, scenario="rank-diag")
+    html = out["afterNoDiag"]["diag"]
+    assert html.strip(), "那一栏是空的 —— 这一条就是来钉「不许留白」的"
+    _onscreen(html, fmr.NO_DIAG_SAY, "「还没有原因」那一句")
+    assert "还没有原因行" in html, html
+    #: ③ 与「有原因」那一屏**不是同一份**（正控：这一条量的是「换了一单」）。
+    assert html != out["afterDiag"]["diag"], "换了一单，屏幕上一个字都没变"
+
+
+def test_what_the_chain_showed_survives_three_repaints(tmp_path):
+    """⑥ 那几栏**活过之后三次重画**（Task 7 那一族：写进去 ≠ 还在）。
+
+    ⚠️ 分**两处**量，因为它们量的不是同一件事：
+      · 「按这个键查不到」那一句**就地**量（`afterDirtyRepaint`）—— 它是这一节最贵的一句话，
+        而后面那几步会**故意**把它换掉（附注说的是**最后那一下**，换了才对）；
+      · 末尾那一次量的是「最后那一屏整块还在不在」（榜单 + 原因 + 失败单）。
+    """
+    out = _drive(tmp_path, scenario="rank-diag")
+    assert "按这个键查不到" in out["afterDirtyRepaint"]["rankNote"], out["afterDirtyRepaint"]
+    _onscreen(out["afterDirtyRepaint"]["fails"], DIRTY_SAY, "脏键那句活过三次重画")
+
+    before, after = out["afterNoDiag"]["diag"], out["afterRepaint"]["diag"]
+    assert before and before == after, "重画之后那一栏被擦掉了（%r → %r）" % (before, after)
+    _onscreen(out["afterRepaint"]["rank"], RANK_SAY, "重画之后的榜单")
+    assert DIAG_TASK in out["afterRepaint"]["fails"], out["afterRepaint"]
+
+
+def test_the_rank_fixture_can_actually_fire(tmp_path):
+    """**正控**（这一节自己的牙）：改坏一处已知会破坏行为的写法 ⇒ 同一批断言必须红。
+
+    改的是**脏键那一条路上**那一步：把「按这个键查不到」写成「这个站没有失败」
+    （「查不到就当没有」—— 这正是这一片从头到尾在治的那个形状的**代码**）。
+    """
+    original = service.CONSOLE_PATH.read_text(encoding="utf-8")
+    broken = original.replace('        rankNote("⚠️ **按这个键查不到**："',
+                              '        rankNote("这个站没有失败的记录。" + ')
+    assert broken != original, "正控没改动任何东西（那一行没找到？）—— 那这条正控是空的"
+    page = tmp_path / "console-broken-rank.html"
+    page.write_text(broken, encoding="utf-8")
+
+    good = _drive(tmp_path, scenario="rank-diag")
+    bad = _drive(tmp_path, scenario="rank-diag", page=page)
+    assert "按这个键查不到" in good["afterDirty"]["rankNote"], good["afterDirty"]
+    assert "按这个键查不到" not in bad["afterDirty"]["rankNote"], (
+        "把「查不到」写成「没有失败」之后这一份夹具**没有响** —— "
+        "那说明它量不到那一条（观测值照旧是 %r）" % bad["afterDirty"])
+    #: 正控还得**落到那一句假话上**：改坏之后屏幕上出现的正是「没有失败」那句。
+    assert "没有失败的记录" in bad["afterDirty"]["rankNote"], bad["afterDirty"]

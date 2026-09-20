@@ -851,3 +851,98 @@ def test_the_page_names_the_two_new_hops():
     #: 服务那边的两个常量也钉一下（页面那两个字符串就是照它们写的）
     assert service.FAILURES_PATH == "/failures", service.FAILURES_PATH
     assert service.FAILURE_EVIDENCE_PATH == "/failures/%s/evidence", service.FAILURE_EVIDENCE_PATH
+
+
+# ═════════════ Task 4：榜单 → 失败单 → 原因（那三栏在页面上）═════════════════
+#
+# 这一节钉两件事，都是**静态的**（跑起来那半在 `test_console_js.py` 的 `rank-diag` 里）：
+#   ① 那两跳的地址**是服务给的那两个**（不是页面手拼的一份 —— 两份手拼的迟早漂，
+#      而漂了的那一份在页面上看着像「后端没数据」）；
+#   ② ★ **既有的那一份契约一个字节没动**（brief §3 那四条 + §6.5）。
+
+
+def test_the_new_hops_are_the_ones_the_service_declares():
+    """★ `RANK` / `DIAG` 两个字面量**逐字**等于服务那两个常量（同源，不是「长得像」）。"""
+    page = _page()
+    assert 'var RANK = "%s";' % service.RANK_PATH in page, \
+        "页面那一跳的地址与服务给的 `RANK_PATH` 不一致"
+    #: 原因那一跳在页面上是**前缀**（后面拼单号），所以比的是它去掉 `%s` 之后那一段。
+    assert 'var DIAG = "%s";' % service.DIAG_PATH.split("%s")[0] in page, \
+        "页面那一跳的地址与服务给的 `DIAG_PATH` 不一致"
+
+
+def test_the_reason_hop_is_built_from_the_task_id_and_never_from_the_site_key():
+    """★★ brief §2 R1：原因那一跳**只拼单号**。
+
+    榜单那个站点键**不保证干净**（线上实测过：整条 URL 带 query、尾巴上还粘着一段报错）——
+    拿它当 join 键会**查到 0 行而且不报错**。所以这一页里**任何一处**拿站点键去查原因的写法
+    都必须是错的：这一条钉的是**拼法**（`DIAG + encodeURIComponent(id)`），
+    而且钉住「这一页里没有第二个 `/diag` 的去处」。
+    """
+    page = _page()
+    assert "fetch(DIAG + encodeURIComponent(id))" in page, \
+        "原因那一跳不是拿**单号**拼的"
+    #: 那一段代码里**只有一处**真的去发这一跳（注释里提到它不算 —— 所以数的是 `fetch(`）。
+    assert page.count("fetch(DIAG") == 1, \
+        "页面上有不止一处在发原因那一跳（第二处很可能就是拿站点键拼的）"
+    #: 正控：那个「拿站点键拼」的形状**今天真的不在**（写的不是一句空话）。
+    for wrong in ("fetch(DIAG + encodeURIComponent(site))",
+                  "fetch(DIAG + encodeURIComponent(failSite))",
+                  "fetch(DIAG + encodeURIComponent(key))"):
+        assert wrong not in page, "拿站点键去查原因了：%s" % wrong
+
+
+def test_the_three_panels_are_in_the_order_the_chain_is_read():
+    """三栏的**先后**就是那条链的顺序（榜单 → 失败单 → 原因）——
+    摆反了人就得从下往上读，而这一屏是给「一屏看完」用的。"""
+    page = _page()
+    rank_at = page.index('id="rankPanel"')
+    fails_at = page.index('id="failsPanel"')
+    diag_at = page.index('id="diagPanel"')
+    assert rank_at < fails_at < diag_at, (rank_at, fails_at, diag_at)
+
+
+def test_the_task_4_panels_are_added_and_the_existing_contract_is_untouched():
+    """★★ brief §3 / §6.5：**既有那一屏一个字节没变** —— 逐条钉那份契约。
+
+    这四条是 brief 点名不许动的。它们**全都在别处的用例里**（MODES 的文案在
+    `test_the_three_input_semantics_are_on_the_page_and_keyed_by_the_mode`、
+    载荷在 `test_the_payloads_are_the_ones_the_plan_promised`）——
+    这一条不重复那些，它钉的是**同一份契约的边界**：三档就是三档、四条就是四条、
+    那个守卫就是那一句。Task 4 加了两栏界面，这条就是那次改动的**回执**。
+    """
+    page = _page()
+    #: ① `MODES` **三档**（多一档 = 这一屏多了一种它其实不会遇到的语义）。
+    for mode in ('"gate": {', '"steer": {', '"queue": {'):
+        assert mode in page, "`MODES` 少了一档：%s" % mode
+    modes = page[page.index("var MODES = {"):page.index("// ── 极少的几张小表")]
+    assert modes.count("short:") == 3, "`MODES` 不是三档了：%d 个" % modes.count("short:")
+    #: ② `ACT` 那四条（外加 Task 11/12 加的三条 —— 它们**本来就在**，这条不重钉）。
+    for pair in ('"continue": "/reply"', '"say": "/say"',
+                 '"stop": "/stop"', '"again": "/again"'):
+        assert pair in page, "`ACT` 少了一条：%s" % pair
+    #: ③ `/say` 的**载荷字段名**（`text` —— 改成别的，Task 8 那条路当场 422）。
+    assert 'act("say", { "text":' in page, "`/say` 的载荷字段名被改了"
+    #: ④ `btnAgain` 那个**守卫**（没有 job 就不许发）。
+    assert 'document.getElementById("btnAgain").addEventListener("click", function () {\n' \
+           '    if (!jobId) { setErr("先挑一趟运行。"); return; }' in page, \
+        "`btnAgain` 那个守卫没了（那一下会对着空的 job id 发出去）"
+    #: ⑤ ★ `STEER_WIRED` **仍是 `False`**（插话通道未上线，等真站演练）。
+    assert service.STEER_WIRED is False, "插话通道的开关被翻开了"
+
+
+def test_the_rank_panel_does_not_offer_anything_that_changes_anything():
+    """★ 这一任务**只加「读」**（brief §4）：新那两栏里**没有一个** `POST`。
+
+    判据取的是**真实的写法**（`method: "POST"`）而不是按钮的措辞 ——
+    措辞会变，方法不会（而「只读」这句话的全部内容就是「没有写请求」）。
+    """
+    page = _page()
+    for panel in ("rankPanel", "diagPanel"):
+        start = page.index('id="%s"' % panel)
+        #: 到下一个 `<section` 为止（那一栏自己的那一块）。
+        block = page[start:page.index("<section", start + 10)] \
+            if "<section" in page[start + 10:] else page[start:]
+        assert "POST" not in block, "%s 里有写请求 —— 这一任务只加「读」" % panel
+    #: 正控：这一条得**真的能响** —— 页面别处**有** `POST`（证明上面那个判据不是恒真）。
+    assert 'method: "POST"' in page, "这一页上根本没有 POST —— 那上面那条判据是空转的"

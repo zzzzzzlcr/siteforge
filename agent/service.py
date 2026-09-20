@@ -365,6 +365,19 @@ FAILURES_PATH = "/failures"
 #: 一条失败的证据那一跳（`{单号}` 是路径上那一格）。
 FAILURE_EVIDENCE_PATH = "/failures/%s/evidence"
 
+# ── Task 4：榜单（哪个站坏了）+ 原因（为什么）──────────────────────────────
+# 这一节把两头补上：运营现在能「查某个站的失败」，但**不知道今天哪些站在失败**
+# （得先有人告诉他查哪个站），也**看不到原因**（原因刚有去处 —— `fail_diag` 那张表）。
+# 接成一条链：榜单 → 失败单（`/failures`，Task 13 那条）→ 原因 → evidence 一屏看完。
+#
+# ⚠️ **原因这一跳走【单号】，不走站点键**（brief §2 R1）：榜单那个 `site` 键实测脏过
+# （线上有过一条：整条 URL 带 query，尾巴上还粘着一段 CDP 报错）——
+# 拿它当 join 键会**查到 0 行而且不报错**。单号是精确的。
+#: 榜单那一跳。**服务给**（与 `FAILURES_PATH` 同一个做法）：路由换了，页面跟着服务走。
+RANK_PATH = "/rank"
+#: 一单的原因那一跳（`{单号}` 是路径上那一格）。
+DIAG_PATH = "/diag/%s"
+
 #: 量不到时那**三种**各自的 HTTP 码。都不是 200、都不是空列表。
 #: · 503 = 这个部署**干不了这件事**（没配 token）—— 换个人来也一样；
 #: · 502 = 上游**这次给不出可用答复**（连不上 / 非 JSON / 后端自己回了个错码）。
@@ -405,6 +418,24 @@ def _failures_say(site: str, since: str, rows: list, limit: int) -> str:
         return said
     return ("这个站从 %s 起**没有**失败的记录 —— 这是**量到的**结果（不是「没量着」）。"
             % when)
+
+
+def _diag_say(task_id: str, rows: list) -> str:
+    """④ 原因那一栏顶上那句人话：**量的是哪一个单、量到几条**。
+
+    ⚠️ 「几条」这件事在这儿比别处重要：`failDiag` 回的是**一根裸数组**（不带总数），
+    而它一页最多 100 条（`fmr.DIAG_PAGE_SIZE`）⇒ 正好够了 100 条时，
+    「还有没有更早的」**这一层答不上来**。答不上来就**照实说答不上来**
+    —— 不说的话，100 条这个数看着就像「一共就这些」（「没有静默的路径」）。
+    """
+    if not rows:
+        return "单 %s 现在**一条原因行都没有**。" % (task_id or "（空的）")
+    said = "单 %s 有 %d 条原因行（最近一次的现场在最前面）。" % (task_id, len(rows))
+    if len(rows) >= fmr.DIAG_PAGE_SIZE:
+        said += ("⚠️ **摆满了**（这个接口一页最多 %d 条）—— 更早的可能还有，"
+                 "而这个接口**不回总数**，所以这一屏**分不出**是不是到底了。"
+                 % fmr.DIAG_PAGE_SIZE)
+    return said
 
 
 # ───────────────── §十五 产物交付（Task 11）─────────────────────────────
@@ -3893,6 +3924,69 @@ class Service:
             "fill_url": bool(str(got.get("url") or "").strip()),
         }
 
+    # ── ③ 榜单（哪个站坏了）+ ④ 原因（为什么）（Task 4）──────────────
+    def rank(self, date: Any = None, limit: Any = None) -> dict:
+        """`GET /rank` 的正文（Task 4 ③）：**这一天哪些站在失败**，一行一句人话。
+
+        ⚠️ 端出去的**不是** FMR 那份 JSON：每一行只留 `site`（页面拿它去查失败单 ——
+        那是 `formLog` 认的那个键）与 `say`（人话）。`config_id` / `config_status` /
+        `has_script` 那些码在 `agent/fmr.py` 的表里就换成人话了 —— 与 `/failures` 同一条纪律。
+
+        ⚠️ 那句 `say` 里带着**三个数**（一共失败多少次 / 其中多少次归不到站 / 摆出来几个站）——
+        它们**对不上是正常的**（`limit` 只截断 `rank`），而 `say` 会把差额说出来。
+        页面**照抄**那一句，不自己拿数字算一遍（两处各算一次迟早漂）。
+
+        ⚠️ 三种「量不到」在这儿的形状与 `/failures` **一模一样**：**非 2xx**。
+        """
+        try:
+            data = self._fmr.fetch_rank(date=date, limit=limit)
+        except fmr.FmrUnmeasured as exc:
+            raise self._unmeasured_to_http(exc)
+        n = fmr.DEFAULT_RANK_LIMIT if limit in (None, "") else int(limit)
+        rows = [r for r in (data.get("rank") or []) if isinstance(r, dict)]
+        return {
+            "date": str(data.get("date") or ""),
+            "limit": n,
+            "say": fmr.rank_say(data, n),
+            "rank": [{"site": str(r.get("site") or ""), "say": fmr.rank_row_say(r)}
+                     for r in rows],
+        }
+
+    def diag(self, task_id: Any) -> dict:
+        """`GET /diag/{单号}` 的正文（Task 4 ④）：**这一单为什么失败**。
+
+        ★ 走**单号**（brief §2 R1）：榜单那个站点键不保证干净，拿它当 join 键会
+        **查到 0 行而且不报错**；单号是精确的。
+
+        ⚠️ **`note` 那一格是这一屏的一半**：单号在 `failDiag` 里**还没有原因行**是很常见的
+        （新功能 / 老单 / 那台机器没发上来 —— 三种在数据上长得一样，分不出）。
+        那**不是**错误（`200` + 空数组 = 量到了、没有），但**也不许留白**：
+        `note` 由 `fmr.NO_DIAG_SAY` 给（与 `/runs` 空列表放 `note` 同一个做法）。
+
+        ⚠️ `lines` 是**原样**的（那几行日志就是这条链要给人看的东西）——
+        这一层不加工它、不截断它（后端那侧已经截到 64KB 了）；页面负责转义后摆出来。
+        """
+        key = str(task_id or "").strip()
+        if not key:
+            # 免费的那道闸（与 `/failures` 缺 site、`/diag` 缺单号同一档）。
+            raise HTTPException(
+                status_code=400,
+                detail="还没说**是哪个单**：这一栏要的是 FMR 那边的**单号**"
+                       "（形如 `26034602`）。缺它的这一下**一个请求都没发出去**。")
+        try:
+            rows = self._fmr.fetch_diag(key)
+        except fmr.FmrUnmeasured as exc:
+            raise self._unmeasured_to_http(exc)
+        return {
+            "task_id": key,
+            "say": _diag_say(key, rows),
+            #: 页面拿 `say` 当抬头（人话）、`lines` 当正文（原样摆）。
+            "diag": [{"say": fmr.diag_head_say(r), "lines": str(r.get("lines") or "")}
+                     for r in rows],
+            #: 空 = 没有话要说；非空 = 这一单还没有原因行（**不是**错误，但必须说出来）。
+            "note": "" if rows else fmr.NO_DIAG_SAY,
+        }
+
     @staticmethod
     def _truncated_say(timeline, shown: int) -> str:
         """`truncated` 为真时**说清**丢了什么/回了多少（设计注 §8.2：「并说明」）。"""
@@ -4935,6 +5029,26 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
         页面拿它去填「开一趟」那张表（Task 12 那张）—— **页面自己不拼** evidence。
         """
         return svc.failure_evidence(task_id, site=site, since=since or None)
+
+    @api.get("/rank")
+    def rank(date: str = "", limit: str = "") -> dict:
+        """**这一天哪些站在失败**（Task 4 ③）—— 一行一句人话。
+
+        ⚠️ 与 `/failures` 同一个形状：**三种「量不到」一律非 2xx**。
+        「今天一个站都没失败」是 `200` + 那句说清了「这是量到的」的 `say` ——
+        两件事在屏幕上必须分得开（这一片从头到尾治的就是那个形状）。
+        """
+        return svc.rank(date=date or None, limit=_count(limit))
+
+    @api.get("/diag/{task_id}")
+    def diag(task_id: str) -> dict:
+        """**这一单为什么失败**（Task 4 ④）—— 抬头 + 它自己报的那几行，原样。
+
+        ⚠️ 走**单号**（`brief §2 R1`）：榜单那个站点键脏过，拿它当 join 键会静默查到 0 行。
+        ⚠️ 这一单**还没有原因行**是很常见的，那**不是**错误：`200` + `diag: []` + 一句 `note`
+        （页面照着 `note` 说「还没有原因」，不许留白）。
+        """
+        return svc.diag(task_id)
 
     @api.post("/run", status_code=202)
     def run(body: RunRequest) -> dict:

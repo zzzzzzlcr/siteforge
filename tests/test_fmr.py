@@ -661,3 +661,386 @@ def test_the_client_says_which_of_the_two_it_is_configured_or_not():
     said = fmr.FmrClient(token=FAKE_TOKEN).say()
     assert "配了" in said or "有了" in said, said
     assert FAKE_TOKEN not in said, "token 本身进了人话：%r" % said
+
+
+# ══════════════ Task 4 ③：榜单（今天哪些站在失败）══════════════
+#
+# 病（用户 2026-09-20 的原话那条链）：FMR 上**失败看得见、原因看不见**；
+# 而 ①（`formLog`）**必须带 `site`** —— 它问的是「**这个站**今天怎么了」。
+# 要答「今天**哪些站**在失败」，原来只能去翻后台页 / 控制台。
+#
+# `formLogRank` 补的就是这一问。这一份钉的是它**读回来之后**那几件事：
+#
+# | # | 性质 | 为什么值得单钉一条 |
+# |---|---|---|
+# | 1 | 那一天**没有失败**时回来的是**一个对象**（不是空数组） | 形状事故与「今天没有站在失败」在屏幕上会一模一样 |
+# | 2 | 三个数（`failed_total` / `unattributed` / 摆出来的）**对不上是正常的**，`say` 要把差额说出来 | 只说「摆了 3 个站」，读的人会以为今天就坏这几个 |
+# | 3 | `has_script` 是**三态** | `False`（有配置没脚本）与 `null`（没有配置）处置相反 |
+# | 4 | 没有配置时**照抄后端的 `note`** | 后端那两种 note 的处置也相反（建配置 vs 修映射） |
+
+#: **线上实测的那一行**（brief §1.1 里那一条，逐字）+ 并列的第二行（脏键那一条，brief §2 R1）。
+#: ⚠️ 脏键那一条**不是编的**：同一个站今天在榜单里**有两条**，一条干净、一条整条 URL 带 query，
+#: 尾巴上还粘着一段 CDP 报错 —— 这就是「原因查询一律走单号」那条纪律的**全部理由**。
+RANK_DIRTY_KEY = ('callyourdate.com/land/sp/519015a5/?utm_source=taboola&id_visit_prev=#'
+                  'c3RlcDM=" 2026/09/20 03:45:22 ERROR: could not unmarshal event')
+MEASURED_RANK = {
+    "date": "2026-09-20", "failed_total": 18, "unattributed": 2,
+    "rank": [
+        {"site": "callyourdate.com/land/sp/519015a5", "fail": 3,
+         "config_id": 66, "config_status": "启用", "has_script": True},
+        {"site": RANK_DIRTY_KEY, "fail": 1,
+         "config_id": None, "config_status": None, "has_script": None, "note": "没有配置"},
+    ],
+}
+
+
+def test_the_rank_query_is_the_one_that_was_measured():
+    """那一跳的**路径与参数**：`/api/quest/formLogRank?date=…&limit=…`，token 走请求头。"""
+    rec = Recorder(envelope(MEASURED_RANK))
+    client(rec).fetch_rank(date="2026-09-20", limit=7)
+    path, params = query_of(rec.urls[0])
+    assert path == "/api/quest/formLogRank", rec.urls[0]
+    assert params == {"date": "2026-09-20", "limit": "7"}, params
+    assert rec.headers[0]["X-Api-Token"] == FAKE_TOKEN, rec.headers[0]
+
+
+def test_the_rank_leaves_both_cells_out_so_the_backend_picks_the_day():
+    """★ 不给 `date` 时**整格不发** —— 缺省（= 后端那边的「今天」）不是「发一个空串」。
+
+    发空串不是缺省：后端对 `?limit=` 会回 400（`ConvertEmptyStringsToNull` 那个坑，
+    ① 那边的注释里记着同一个形状）。所以这一格**宁可不发**。
+    """
+    rec = Recorder(envelope(MEASURED_RANK))
+    client(rec).fetch_rank()
+    path, params = query_of(rec.urls[0])
+    assert path == "/api/quest/formLogRank", rec.urls[0]
+    assert params == {}, "空着居然发了参数：%r" % (rec.urls[0],)
+
+
+def test_the_rank_answer_is_the_object_the_backend_gave():
+    """回给调用方的是**后端那个对象**（四个格子），这一层**不重排、不改写**。"""
+    rec = Recorder(envelope(MEASURED_RANK))
+    got = client(rec).fetch_rank()
+    assert got == MEASURED_RANK, got
+
+
+def test_a_rank_answer_that_is_not_an_object_is_unmeasured_not_an_empty_day():
+    """★★ **形状事故不许变成「今天没有站在失败」。**
+
+    判据在**类型**上：那一天真没有失败时，后端回的**照样是这个对象**
+    （`failed_total:0` / `rank:[]`）—— 所以「回的不是对象」只可能是**这一次没量着**。
+
+    正控在下面那一条：**同一个对象、`rank` 空**必须**不抛** —— 两条一起看，
+    才说得上「这一条量的是形状，不是空不空」。
+    """
+    rec = Recorder(envelope([]))
+    with pytest.raises(fmr.FmrUnmeasured) as e:
+        client(rec).fetch_rank()
+    said = str(e.value)
+    assert fmr.UNMEASURED_SAY in said, said
+    assert "2026-09-20" not in said, "这一句不该像一份榜单：%r" % said
+
+
+def test_an_empty_rank_object_is_exactly_how_no_failures_looks():
+    """**真量了、真没有** → 不抛：`failed_total:0` 的日子回来的还是那个对象。"""
+    day = {"date": "2026-09-20", "failed_total": 0, "unattributed": 0, "rank": []}
+    got = client(Recorder(envelope(day))).fetch_rank()
+    assert got["failed_total"] == 0 and got["rank"] == [], got
+
+
+def test_the_rank_says_the_three_numbers_and_the_gap():
+    """★ `say` 里**三个数都要在**，而且**差额要说出来**。
+
+    实测那一份：一共 18 次、其中 2 次归不到站、摆出来两个站（3+1=4）⇒ 还差 **12** 次。
+    ⇒ 只说「下面摆了 2 个站」，读的人会以为今天就这么两个站坏了。
+    """
+    said = fmr.rank_say(MEASURED_RANK, 50)
+    assert "2026-09-20" in said, said
+    assert "18" in said, said
+    assert "2" in said, said
+    assert "12" in said, "差额没说：%r" % said
+    #: ⚠️ 那两个键**原样的字**不许出现在这一句里：它们是给机器 join 用的，不是给人读的。
+    assert "callyourdate" not in said, said
+
+
+def test_a_day_with_nothing_failing_is_said_as_measured_not_as_a_blank():
+    """「一个站都没有」有两种成因，**必须分得开**：真没有（总数 0）vs 全归不到站。"""
+    said = fmr.rank_say({"date": "2026-09-20", "failed_total": 0, "unattributed": 0,
+                         "rank": []}, 50)
+    assert "量到" in said and "0" in said, said
+    other = fmr.rank_say({"date": "2026-09-20", "failed_total": 2, "unattributed": 2,
+                          "rank": []}, 50)
+    assert "归不出来" in other or "归不到" in other, other
+    assert other != said, "两种成因说了同一句话"
+
+
+def test_the_rank_says_when_it_did_not_show_everything():
+    """★ 截断了**要说**（`limit` 只截断 `rank`，`failed_total` 是当日全量）。"""
+    data = {"date": "2026-09-20", "failed_total": 18, "unattributed": 2,
+            "rank": [{"site": "a.com/x", "fail": 3, "config_id": 1,
+                      "config_status": "启用", "has_script": True}]}
+    said = fmr.rank_say(data, 1)
+    assert "没摆全" in said, said
+    assert "13" in said, "差额没算对：%r" % said
+    assert str(fmr.RANK_MAX_LIMIT) in said, "没说后端上限：%r" % said
+    #: ★ 截断时**不许**说一句「摆全了」——「差额也报出来了」与「还说了一句摆全了」
+    #:    只差几个字，而后者是一句**假话**（摆出来 3 次、当日 18 次，摆全了是哪门子摆全）。
+    assert "摆全了" not in said, said
+    #: 正控（这个判据的另一半）：**对得上**的那一份说的是**相反**的话 ——
+    #: 否则上面那条「不许出现」可以靠「这一句里永远不说摆全了」满足，而那等于没量。
+    whole = dict(data, failed_total=5)
+    assert "对得上" in fmr.rank_say(whole, 50), fmr.rank_say(whole, 50)
+    assert "没摆全" not in fmr.rank_say(whole, 50), fmr.rank_say(whole, 50)
+
+
+def test_a_rank_row_becomes_one_human_sentence():
+    """一行的人话：`失败 3 次 · 配置 66（启用） · 有 py 脚本`（码一个都不许在）。"""
+    said = fmr.rank_row_say(MEASURED_RANK["rank"][0])
+    assert said == "失败 3 次 · 配置 66（启用） · 有 py 脚本", said
+
+
+def test_has_script_is_three_states_not_two():
+    """★ `True` / `False` / `None` **三态三句话** —— 后两种的处置**正好相反**。
+
+    `False` = 有配置但脚本那一格是空的（**去写脚本**）；
+    `None` = 连配置都没有（**去建配置**）。
+    合成一句「没有脚本」，运营就会拿着「没配置」的站去改脚本（那一步根本无处可改）。
+    """
+    yes, no, absent = (fmr.has_script_say(True), fmr.has_script_say(False),
+                       fmr.has_script_say(None))
+    assert len({yes, no, absent}) == 3, (yes, no, absent)
+    assert "配置" in absent, absent
+    assert "脚本" in no and "配置" not in no.split("没有脚本")[0][-4:], no
+
+
+def test_a_rank_row_without_a_config_uses_the_backends_own_note():
+    """★ 没有配置时**照抄后端那句 `note`** —— 后端的两种 note 处置相反，合起来就是把两件事变一件。"""
+    said = fmr.rank_row_say(MEASURED_RANK["rank"][1])
+    assert "没有配置" in said, said
+    orphan = dict(MEASURED_RANK["rank"][1], note="映射指向的配置行不存在")
+    other = fmr.rank_row_say(orphan)
+    assert "映射指向的配置行不存在" in other, other
+    assert other != said, "两种 note 说了同一句话"
+
+
+def test_a_config_status_this_page_does_not_know_is_said_out_loud():
+    """取值是开放的 ⇒ 认不出的一格要**带着原样的字**冒出来（不猜、也不悄悄放行）。"""
+    row = dict(MEASURED_RANK["rank"][0], config_status="archived")
+    said = fmr.rank_row_say(row)
+    assert "archived" in said, said
+    assert "不认识" in said, said
+
+
+# ══════════════ Task 4 ④：原因（这一单为什么失败）══════════════
+#
+# 结构性事实（2026-09-20 量）：`formStep` 只有 4 列（`id/task_id/step/url`）——
+# **设计上就没有「原因」这一格**。原因只写在跑单那台机器自己的 `logs/<site>.log` 里，
+# 而本机日志覆盖不到别的机器跑的趟 ⇒「原因看不见」是从这儿来的。
+# `fail_diag` 那张表是它的新去处，`failDiag` 是读侧。
+
+#: **后端那份 §2.2 的形状**（`GET /api/quest/failDiag?task_id=…` → 行数组，按 `created_at` 倒序）。
+#: ⚠️ `task_id` 回来是**数字**（库里是 int，控制器显式 `(int)` 转）——所以下面这条夹具是数字。
+MEASURED_DIAG = [
+    {"id": 83, "task_id": 26033398,
+     "site": "www.gowizard.com/auto-warranty", "machine": "worker-07", "exit": "stuck",
+     "lines": "第 18 步跳过：这一页不像「gowizard-13」那个状态（正文里没有「Progress: 60% …」）",
+     "at": "2026-09-20T14:32:11+08:00", "created_at": "2026-09-20T14:35:00+08:00"},
+]
+
+
+def test_the_diag_query_is_the_one_that_was_measured():
+    """★ 那一跳**只带单号**（`?task_id=`）—— **没有 `site`**。
+
+    这是 brief §2 R1 那条纪律的可判形状：站点键会**静默**查到 0 行，
+    而单号是精确的。所以这一条同时钉「发了什么」与「**没发**什么」。
+    """
+    rec = Recorder(envelope(MEASURED_DIAG))
+    client(rec).fetch_diag("26033398")
+    path, params = query_of(rec.urls[0])
+    assert path == "/api/quest/failDiag", rec.urls[0]
+    assert params == {"task_id": "26033398"}, params
+    assert "site" not in params, "原因那一跳带了站点键：%r" % (params,)
+    assert rec.headers[0]["X-Api-Token"] == FAKE_TOKEN, rec.headers[0]
+
+
+def test_a_diag_query_without_a_task_is_refused_for_free():
+    """没说是哪个单 —— **一个请求都不发**（与 ① 缺 site、② 缺 task_id 同一档）。"""
+    rec = Recorder(envelope(MEASURED_DIAG))
+    with pytest.raises(fmr.FmrUnmeasured) as e:
+        client(rec).fetch_diag("")
+    assert rec.urls == [], "缺单号居然发了请求：%r" % (rec.urls,)
+    #: ⚠️ 这一句里**没有** `UNMEASURED_SAY`，与 ① 缺 site / ② 缺 task_id 那两句**同一体例**：
+    #: 「一个请求都没发出去」本来就不可能是「那个站没有失败」那一族的误会，
+    #: 那句话是给**量过之后**没量着的那几种用的。
+    assert "免费" in str(e.value) and "没说是" in str(e.value), str(e.value)
+
+
+def test_an_empty_diag_list_is_measured_not_a_failure_to_measure():
+    """★ **空数组 = 「量到了，这单还没有原因行」**，**不抛**。
+
+    这是这一层里少数几个「空是合法的」的口子之一 —— 但它**不是**「没有失败」那一族：
+    它说的是**这一屏现在没有这一单的原因**（成因三种，数据上分不出）。
+    正控：同一个形状把 `status` 改成 401 就必须**抛**。
+    """
+    assert client(Recorder(envelope([]))).fetch_diag("26033398") == []
+    with pytest.raises(fmr.FmrUnmeasured):
+        client(Recorder(envelope([], status=401, msg="no"))).fetch_diag("26033398")
+
+
+def test_a_diag_answer_that_is_not_a_list_is_unmeasured():
+    """回的是**一个对象**（不是行数组）—— 形状事故，**抛**，不许读成「一条都没有」。"""
+    with pytest.raises(fmr.FmrUnmeasured) as e:
+        client(Recorder(envelope({"rows": MEASURED_DIAG}))).fetch_diag("26033398")
+    assert fmr.UNMEASURED_SAY in str(e.value), str(e.value)
+
+
+def test_the_diag_rows_come_back_in_the_order_the_backend_gave_them():
+    """后端给的是 `created_at` 倒序 —— 这一层**不重排**（重排就是这一层编了一个顺序）。"""
+    two = [MEASURED_DIAG[0], dict(MEASURED_DIAG[0], id=71, exit="no_success")]
+    got = client(Recorder(envelope(two))).fetch_diag("26033398")
+    assert [r["id"] for r in got] == [83, 71], got
+
+
+def test_exit_unknown_is_said_as_not_reported_and_not_folded_into_the_three():
+    """★★ **`unknown` 是「没报上来」** —— 编成那三种之一就是把客户端的话改掉。
+
+    出处（客户端自己的原话，`/opt/skills/auto-farm-skill/scripts/ad-task.py:1265`）：
+    「导航态 / 认不出来 → `unknown` —— 别硬塞成三个已知值之一：那会让查的人**看错原因**，
+    比空着更坏」。
+
+    正控：三个已知值各有各的说法，**与 `unknown` 那句都不相等** ——
+    一条「什么都答没报上来」的实现过不了这一条。
+    """
+    said = fmr.exit_say("unknown")
+    assert "没报上来" in said, said
+    three = {code: fmr.exit_say(code) for code in ("stuck", "stalled", "no_success")}
+    assert len(set(three.values())) == 3, three
+    for code, word in three.items():
+        assert word != said, "%s 与 unknown 说了同一句" % code
+        assert "没报上来" not in word, (code, word)
+
+
+def test_the_exit_words_are_the_same_words_the_terminal_say_uses():
+    """★ **同一个词两个口子报**（`formStep` 的最后一行 / `failDiag` 的 `exit`）——
+    两处各写一份迟早漂。这一条钉的是「没有各写一份」，不是「这两句长得像」。
+    """
+    for code in ("stuck", "stalled", "no_success"):
+        assert fmr.EXIT_SAY[code] == fmr.TERMINAL_SAY[code][0], code
+
+
+def test_an_exit_code_this_page_does_not_know_is_said_out_loud():
+    """取值**有意是开放的**（后端不校验）⇒ 认不出的一格带着原样的字冒出来。"""
+    said = fmr.exit_say("timeout")
+    assert "timeout" in said and "不认识" in said, said
+    assert "结束方式它没给" == fmr.exit_say(""), fmr.exit_say("")
+
+
+def test_the_diag_head_uses_the_moment_the_failure_happened_not_the_ingest_moment():
+    """★ 时刻取 `at`（**失败真正发生的时刻**），不是 `created_at`（入库时刻）。
+
+    后端自己的注释点过：离线机器**晚补发**时两者差很多，而查的人要的是「哪天失败的」。
+    这一条拿一条**两者不同**的夹具把这件事量死（同一句里不许出现入库那个时刻）。
+    """
+    said = fmr.diag_head_say(MEASURED_DIAG[0])
+    assert "9-20 14:32" in said, said
+    assert "14:35" not in said, "抬头用了入库时刻：%r" % said
+    assert "worker-07" in said, said
+    assert "卡住" in said, said
+
+
+def test_a_diag_row_without_at_says_it_fell_back_to_the_ingest_moment():
+    """`at` 没给（老客户端 / 手工发的）才退回入库时刻 —— **并且要说出退过**。
+
+    不说的坏处：一个晚补发的班次会让「9-20 **收上来的**」被读成「9-20 **失败的**」。
+    """
+    said = fmr.diag_head_say(dict(MEASURED_DIAG[0], at=None))
+    assert "9-20 14:35" in said, said
+    assert "收上来" in said, said
+
+
+# ══════════════ Task 4 §4：**一处旋钮** + HTTP 码那句话 ══════════════
+
+
+def test_the_one_knob_moves_all_four_reads():
+    """★★ brief §4 的硬要求：四个读口的基址**是同一个旋钮**，没有「按接口各配一个」。
+
+    为什么这条是硬的：线上 `fmr.3tkj.cn` **还没有** `failDiag`（brief 实测 404），
+    本地 `192.168.1.51:6060` **有** ⇒ 要对着本地那份跑就得换基址。
+    真长出「按接口各配一个」的那天，「名字说 A、量的是 B」就回来了。
+    """
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setenv(fmr.BASE_ENV, "http://192.168.1.51:6060")
+        rec = Recorder(envelope([]), envelope([]), envelope({}), envelope([]))
+        got = fmr.FmrClient(token=FAKE_TOKEN, opener=rec)
+        got.fetch_failures("s/")
+        got.fetch_steps("1")
+        got.fetch_rank()
+        got.fetch_diag("1")
+        assert len(rec.urls) == 4, rec.urls
+        for url in rec.urls:
+            assert url.startswith("http://192.168.1.51:6060/api/quest/"), url
+    finally:
+        monkey.undo()
+
+
+def test_the_default_base_is_still_the_one_that_was_measured():
+    """★ 加两个新口子**没有动**那个默认值（旋钮只有一处，默认值还是线上那一个）。"""
+    assert fmr.DEFAULT_BASE == "https://fmr.3tkj.cn"
+
+
+def test_a_route_that_is_not_deployed_is_said_as_that_not_as_cannot_connect():
+    """★ HTTP 404（**路由不存在**）与「连不上」**不是一件事** —— 人话要说准。
+
+    为什么这条单钉：`failDiag` 今天就是这个形状（线上还没上），
+    把它说成「连不上那个后端」，运维会去查网络 / 代理 / 防火墙，而真因是**那个路由没上**。
+    这一族的正常形状是「**HTTP 恒 200**、码在 body 里」⇒ 按 HTTP 回码**本身**就说明
+    说话的不是这个接口，是它前面的那一层。
+    """
+    import urllib.error
+
+    def boom(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(urllib.request, "urlopen", boom)
+    try:
+        with pytest.raises(fmr.FmrUnreachable) as e:
+            fmr.FmrClient(token=FAKE_TOKEN).fetch_diag("26033398")
+    finally:
+        monkey.undo()
+    said = str(e.value)
+    assert "404" in said, said
+    assert "没部署" in said, said
+    assert "连不上那个后端" not in said, "把「路由没上」说成了「连不上」：%r" % said
+    assert fmr.UNMEASURED_SAY in said, said
+
+
+def test_the_noun_each_reader_prints_is_the_one_for_that_endpoint():
+    """四个口各自那句「读不了**什么**」—— 新加的两个不许顶着「失败记录」这四个字。"""
+    assert fmr._PATH_SAY["/api/quest/formLogRank"] == "失败榜单"
+    assert fmr._PATH_SAY["/api/quest/failDiag"] == "失败原因"
+    assert fmr._PATH_SAY["/api/quest/formLog"] == "失败记录"
+    assert fmr._PATH_SAY["/api/quest/formStep"] == "逐步记录"
+
+
+def test_the_rank_row_text_carries_no_emphasis_markers():
+    """★★ 那一行**一个 `**` 都不许有** —— 它是这一族里唯一要进 `<option>` 的一句。
+
+    页面上它既是「读的那一行」（走 `rich()`，`**x**` 会变成 `<b>x</b>`）、
+    也是「挑的那一格」（`<option>` 里放不了标记 ⇒ 可见结果就是**两个星号**）。
+    两句长相不同 = 人读到的和挑到的不一样；而这一屏的规矩是**同一个来源**。
+
+    ⚠️ 这条钉的是**为什么**：不是「星号不好看」，是那一句的**两个去处**里
+    有一个放不了标记。所以判据是「这一句的每一个出口都不含 `**`」——
+    下面把三种 `has_script` / 两种 `note` 都过一遍，别只测一个样本。
+    """
+    samples = [MEASURED_RANK["rank"][0], MEASURED_RANK["rank"][1],
+               dict(MEASURED_RANK["rank"][1], note="映射指向的配置行不存在")]
+    for hs in (True, False, None):
+        samples.append(dict(MEASURED_RANK["rank"][0], has_script=hs))
+    for row in samples:
+        said = fmr.rank_row_say(row)
+        assert "**" not in said, "这一句带了着重号（它在 <option> 里会显示成两个星号）：%r" % said
+    #: 正控：`has_script` 那三态**确实**各有各的说法（否则上面那一圈是空转的）。
+    assert len({fmr.has_script_say(v) for v in (True, False, None)}) == 3

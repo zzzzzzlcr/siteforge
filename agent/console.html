@@ -180,6 +180,26 @@
   #fails .faillist .mono{color:var(--ink-3)}
   #failAct{margin-top:12px; border-top:1px dashed var(--line); padding-top:12px}
 
+  /* ── 榜单（Task 4 ③）与原因（Task 4 ④）───────────
+     两栏共用 `#fails` 那套列表样式（`paintRank` 画的就是 `ul.faillist`）——
+     同一个形状不另起一套，省得两栏的读法长得不一样。 */
+  #rank .faillist{margin:8px 0 0; display:flex; flex-direction:column; gap:5px}
+  #rank .faillist li{font-size:13.5px; line-height:1.6; display:flex; flex-wrap:wrap; gap:8px;
+                     align-items:baseline; border-bottom:1px dashed var(--line-soft); padding-bottom:5px}
+  #rank .faillist .mono{color:var(--ink-3)}
+  #rankAct{margin-top:12px; border-top:1px dashed var(--line); padding-top:12px}
+  /*: 那句附注（「按这个键查不到」/「这两个数对不上」）—— 它自带一行，别挤进列表里。 */
+  #rankNote{margin:8px 0 0}
+  /* ── 原因那几行（日志原文，**原样**摆）── */
+  #diag .diaglist{margin:8px 0 0; display:flex; flex-direction:column; gap:10px}
+  #diag .diagitem{border-bottom:1px dashed var(--line-soft); padding-bottom:8px}
+  #diag .diaghead{margin:0; font-size:13.5px; line-height:1.6}
+  #diag pre.diaglines{margin:6px 0 0; padding:8px 10px; border:1px solid var(--line);
+                      border-radius:8px; background:var(--surface-2); color:inherit;
+                      font-size:12.5px; line-height:1.55;
+                      white-space:pre-wrap; word-break:break-word;
+                      max-height:22em; overflow:auto}
+
   /* ── 常开的一行输入 ───────────────────────────── */
   .composer{border-top:1px solid var(--line); background:var(--surface); padding:10px 16px 12px;
             position:sticky; bottom:0}
@@ -235,6 +255,54 @@
     <main class="scroll">
       <div class="wrap">
 
+        <!-- ── 今天哪些站在失败（Task 4 ③）─────────────────────────
+             病：在那一栏之前，运营要发起修复得**先知道查哪个站** —— 而「今天哪些站坏了」
+             只能去翻后台页/控制台。这一栏补的就是这一问，它是这条链的**头**：
+                 榜单（哪个站坏了）→ 失败单 → 原因 → evidence
+             ⚠️ 四条纪律（与这一屏别处同一套）：
+               · **读不到就说读不到** —— 那一句**不是**「今天没有站在失败」（这一屏最怕的形状）；
+               · **码不上屏** —— `config_status` 这种在服务那边就换成人话了；
+               · ★ **榜单那个键不保证干净**（线上实测过一条：整条 URL 带 query、尾巴上还粘着
+                 一段别人的报错）⇒ 拿它去查失败单**可能查不到**，那一下要**如实说出来**
+                 （「按这个键查不到」），不许静默地显示成「这个站没有失败」；
+               · ★ 榜单说这个键失败 N 次、可按这个键只查到 M 条 —— 这两个数**对不上是常见事**
+                 （一个按配置归、一个按键查），对不上就**照实摆着**，别挑一个当结论。 -->
+        <section class="panel" id="rankPanel">
+          <header>
+            <h2>今天哪些站在失败</h2>
+            <span class="sub">挑一个站，看它失败的那几趟 —— 不用先知道是哪个站坏了。</span>
+          </header>
+          <div class="body">
+            <div class="nrun">
+              <div class="field">
+                <label for="rankDate">看哪一天</label>
+                <input type="text" id="rankDate" autocomplete="off" spellcheck="false"
+                       placeholder="YYYY-MM-DD（留空就是今天）">
+                <p class="why">留空看今天。这一格要的是**那一天**（后端按整天算，从 00:00 到次日 00:00）
+                  —— 它会把看的是哪一天写在结果那一句里。</p>
+              </div>
+              <div class="go">
+                <button class="btn primary" type="button" id="btnRank">看榜单</button>
+                <p class="hint" id="rankHint">按下去它去后端读**这一天哪些站在失败**。</p>
+              </div>
+            </div>
+            <div id="rank"></div>
+            <div class="nrun" id="rankAct" hidden>
+              <div class="field">
+                <label for="rankPick">看哪个站的失败单</label>
+                <select id="rankPick"></select>
+                <p class="why">上面列出来的哪个站 —— 挑好按下面那个按钮：
+                  它会把那个站的名字填进下一栏，并**替你按一下「查失败」**（只查，不动任何东西）。</p>
+              </div>
+              <div class="go">
+                <button class="btn primary" type="button" id="btnRankGo">看这个站的失败单</button>
+                <p class="hint" id="rankGoHint">这一下只**查**，不开跑、不改任何东西。</p>
+              </div>
+            </div>
+            <p class="hintline" id="rankNote"></p>
+          </div>
+        </section>
+
         <!-- ── 这个站失败的那些趟（Task 13 ③）─────────────────────
              病：在这一块之前，运营要在面板上发起一趟修复，得**从别处把失败手抄进来**
              （失败记录在另一个系统里，这一屏一个字都没有）。
@@ -285,6 +353,33 @@
                   「什么算成功」那一格只有你知道，填完你自己按「开一趟」。</p>
               </div>
             </div>
+          </div>
+        </section>
+
+        <!-- ── 这一单为什么失败（Task 4 ④）─────────────────────────
+             病：FMR 上**失败看得见、原因看不见** —— `formStep` 设计上就没有「原因」这一格
+             （只有 `id/task_id/step/url`），原因只写在跑单那台机器自己的日志里。
+             `fail_diag` 那张表刚接上，这一栏是它的**读侧**，也是这条链的**尾**：
+                 榜单 → 失败单 → 原因 → evidence
+             ⚠️ 四条纪律：
+               · ★ **走单号，不走站点键**（上一栏那个键脏过 —— 拿它当 join 键会查到 0 行且不报错）；
+               · ★ **「还没有原因行」要如实说出来** —— 新功能 / 老单 / 那台机器没发上来，
+                 三种长得一样。**不许留白**（留白与「查不到」在这一屏上分不开）；
+               · ★ `exit=unknown` 是**跑单那边有意报的**（它认不出收尾时宁可不硬塞一个），
+                 所以这里显示成「没报上来」—— 编成那三种之一就是把人家的话改掉；
+               · 那几行日志**原样**摆（转义后），**不加工、不摘要** —— 它就是这条链要给人看的东西。 -->
+        <section class="panel" id="diagPanel">
+          <header>
+            <h2>这一单为什么失败</h2>
+            <span class="sub">上面「要修哪一条」挑的是哪一单，这里就查哪一单。</span>
+          </header>
+          <div class="body">
+            <div class="go">
+              <button class="btn primary" type="button" id="btnDiag">看这一单的原因</button>
+              <p class="hint" id="diagHint">原因由**跑那一趟的机器**自己报上来 ——
+                还没报上来的单，这里会直说，不会空着。</p>
+            </div>
+            <div id="diag"></div>
           </div>
         </section>
 
@@ -1353,6 +1448,14 @@
   var FAILS = "/failures";
   var FAIL_EV = "/evidence";
 
+  //: Task 4 那两跳（榜单 / 原因）。**服务给**（`service.RANK_PATH` / `service.DIAG_PATH`）——
+  //: 与上面那两跳同一个做法。`tests/test_console_js.py` 拿服务那两个常量**算一遍**
+  //: 再去喂假 `fetch`：两边不一致时那几条会红。
+  //: ★ 原因那一跳拼的是**单号**（`DIAG + encodeURIComponent(单号)`）——
+  //:   这一页里**没有任何一处**拿站点键去查原因（那个键实测脏过，见 `goRank` 那段）。
+  var RANK = "/rank";
+  var DIAG = "/diag/";
+
   //: 「查哪一段」那一格 → 那个查询参数。
   //: ⚠️ 挑「今天」时**不给** `since`（服务那边的默认就是今天 00:00 —— 契约里那一条）。
   //: 挑「今天和昨天」才给一个日期：**契约明说「要查昨天必须显式给」**，
@@ -1512,6 +1615,220 @@
       });
   }
 
+  // ══════════════════ 今天哪些站在失败（Task 4 ③）══════════════════
+  // 这一栏是那条链的**头**：运营原先得先知道「查哪个站」才能查失败 —— 而这件事
+  // 只有后台页/控制台答得上。它补的就是这一问。
+  //: 这一栏读不到时说的话。与 `failProblem` **同一套纪律**（这一屏从头到尾治的就是
+  //: 「把量不出来读成量出来了」那个形状，而这两件事在屏幕上一模一样）。
+  function rankProblem(why) {
+    var box = document.getElementById("rank");
+    document.getElementById("rankAct").hidden = true;
+    if (!box) { return; }
+    box.innerHTML = '<p class="lead">这一栏现在取不到榜单：' + rich(why) + "</p>" +
+      '<p class="hintline">' +
+      rich("这不代表「今天没有站在失败」—— 只代表**这一栏没读到**。") + "</p>";
+  }
+
+  //: 那一份 `/rank` 的正文里**能当列表画的那些行**；读不到就是 `null`（与 `failRows` 同一族）。
+  function rankRows(data) {
+    if (!data || typeof data !== "object") { return null; }
+    var rows = at(data, "rank", null);
+    return Array.isArray(rows) ? rows : null;
+  }
+
+  //: 榜单那一栏下面那句**附注**（挑完站之后才用得上：那个键到底查得到查不到）。
+  //: ⚠️ 它进 `innerHTML`，所以走 `rich()`。
+  function rankNote(said) {
+    var el = document.getElementById("rankNote");
+    if (el) { el.innerHTML = said ? rich(said) : ""; }
+  }
+
+  //: 榜单上**那个站自己说的**失败次数（拿来与失败列表的条数对账）。
+  //: 找不到就给 `null` —— **不给 0**：0 是一个合法的读数，混起来就是把「对不上」写成「对上了」。
+  function rankWant(site) {
+    var rows = rankRows(state.rank) || [], i, n;
+    for (i = 0; i < rows.length; i++) {
+      if (String(at(rows[i], "site", "")) === site) {
+        n = at(rows[i], "fail", null);
+        return (typeof n === "number") ? n : null;
+      }
+    }
+    return null;
+  }
+
+  function paintRank(data) {
+    var box = document.getElementById("rank");
+    var rows = rankRows(data);
+    if (!box || rows === null) { return; }   // 读不到：由 `rankProblem` 说话，这里闭嘴
+    var html = '<p class="lead">' + rich(at(data, "say", "")) + "</p>";
+    if (!rows.length) {
+      // 「一个站都没有」——这是**量到**的（服务那句 `say` 说了是量出来的）。
+      box.innerHTML = html;
+      document.getElementById("rankAct").hidden = true;
+      return;
+    }
+    var items = [], opts = [], i, site, said;
+    for (i = 0; i < rows.length; i++) {
+      site = at(rows[i], "site", "");
+      said = at(rows[i], "say", "");
+      //: ⚠️ 列表里那一句走 `rich()`（这一节里每一处写进 `innerHTML` 的字都要走它 ——
+      //:    漏一处，运营看到的就是两个星号，修复轮 1 在截图里真看见过）。
+      //:    `<option>` 那边**只能**放纯文本，所以服务那一句**自带不带 `**`** 的义务
+      //:    （`fmr.rank_row_say` 的 docstring 里写着，`test_fmr.py` 有一条钉着它）。
+      items.push('<li><span class="mono">' + esc(site) + "</span> " + rich(said) + "</li>");
+      opts.push('<option value="' + esc(site) + '">' + esc(site) + " — " + esc(said) + "</option>");
+    }
+    box.innerHTML = html + '<ul class="faillist">' + items.join("") + "</ul>";
+    var pick = document.getElementById("rankPick");
+    var keep = pick.value;                  // 人已经挑过的那个别丢（重查一次还在的话）
+    pick.innerHTML = opts.join("");
+    if (keep) { pick.value = keep; }
+    document.getElementById("rankAct").hidden = false;
+  }
+
+  function fetchRank() {
+    var day = document.getElementById("rankDate").value.trim();
+    var btn = document.getElementById("btnRank");
+    btn.disabled = true;
+    rankNote("");
+    //: ⚠️ 空着**整格不发**（那才是「看今天」）—— 发一个空串不是缺省，背后那一层对它会回 400。
+    return fetch(RANK + (day ? "?date=" + encodeURIComponent(day) : ""))
+      .then(readJSON)
+      .then(function (res) {
+        btn.disabled = false;
+        if (!res.ok) {
+          // **原样**摆服务那句人话（502「量不到」/ 503「没配 token」…）——
+          // 这儿**不许**退回「画一份空榜单」，那正是这一片要治的形状。
+          rankProblem(sayOf(res));
+          return null;
+        }
+        var rows = rankRows(res.obj);
+        if (rows === null) {
+          rankProblem("服务回了 200，但正文不是一份榜单（读不出「哪些站在失败」）。");
+          return null;
+        }
+        state.rank = res.obj;
+        paintRank(res.obj);
+        return res.obj;
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        rankProblem("这一栏没读到：" + e + " —— 服务可能没在跑。");
+      });
+  }
+
+  //: ★ 挑一个站 → **把它的失败单查出来**（走上面那栏**既有**的那条路：`#failSite` + 查失败）。
+  //:
+  //: ⚠️ 这一下的重点全在**查不到的时候**（brief §2 R1/R2）。榜单那个键**不保证干净**：
+  //: 线上实测过同一个站有两条 —— 一条是干净的，另一条是**整条 URL 带 query**、
+  //: 尾巴上还粘着一段 CDP 报错。拿它去查，后端要么回 404、要么回一份空列表 ——
+  //: **而两种都不报错**。所以这里**必须把「按这个键查不到」说出来**，
+  //: 绝不能让它以「这个站没有失败」的样子过去。
+  function goRank() {
+    var site = String(document.getElementById("rankPick").value || "").trim();
+    var btn = document.getElementById("btnRankGo");
+    if (!site) {
+      setErr("先在「看哪个站的失败单」那一格挑一个站 —— 它现在是空的" +
+             "（上面那一栏里有几个站就摆几个）。");
+      return;
+    }
+    setErr("");
+    rankNote("");
+    btn.disabled = true;
+    //: 交给**既有**那一栏去查：那一栏自己会说「读不到」还是「没有失败」，
+    //: 这里替它说一遍就成了两个口径（这一屏栽过的是「同一个事实两个名字」）。
+    document.getElementById("failSite").value = site;
+    var want = rankWant(site);
+    return fetchFailures().then(function (got) {
+      btn.disabled = false;
+      if (!got) {
+        rankNote("⚠️ **按这个键查不到**：" + site + " —— 上面那一栏里那句就是**后端自己**说的原因。" +
+                 "榜单这个键**不保证是干净的站点键**（实测过带 query、带尾斜杠的），" +
+                 "所以这一下是**量不到**，不是「这个站没有失败」。");
+        return null;
+      }
+      var n = (failRows(got) || []).length;
+      var said = "这个键查到了 " + n + " 条失败 —— 在下面「这个站失败的那些趟」那一栏里。";
+      if (want !== null && n < want) {
+        said += " ⚠️ 榜单说这个键失败 " + want + " 次，可按这个键只查到 " + n +
+                " 条 —— 这两个数**对不上**（榜单是按配置归的，失败列表是按这个键查的），照实摆着。";
+      }
+      rankNote(said);
+      return got;
+    });
+  }
+
+  // ══════════════════ 这一单为什么失败（Task 4 ④）══════════════════
+  // 这是那条链的**尾**：`formStep` 只有 id/task_id/step/url —— **设计上就没有「原因」这一格**，
+  // 原因只写在跑单那台机器自己的日志里。`fail_diag` 那张表是它的新去处，这一栏是读侧。
+  //: 那一栏读不到时说的话（与 `failProblem` / `rankProblem` 同一套）。
+  function diagProblem(why) {
+    var box = document.getElementById("diag");
+    if (!box) { return; }
+    box.innerHTML = '<p class="lead">这一栏现在取不到原因：' + rich(why) + "</p>" +
+      '<p class="hintline">' +
+      rich("这不代表「这一单没有原因」—— 只代表**这一栏没读到**。") + "</p>";
+  }
+
+  function diagRows(data) {
+    if (!data || typeof data !== "object") { return null; }
+    var rows = at(data, "diag", null);
+    return Array.isArray(rows) ? rows : null;
+  }
+
+  function paintDiag(data) {
+    var box = document.getElementById("diag");
+    var rows = diagRows(data);
+    if (!box || rows === null) { return; }
+    var html = '<p class="lead">' + rich(at(data, "say", "")) + "</p>";
+    //: ★ 「这一单还没有原因行」那一句是**服务给的**（`note`）—— 页面不自己编一句同义的。
+    //: ⚠️ 它**必须上屏**：留白与「这一栏坏了」在这一屏上分不开（这一片的老规矩）。
+    var note = at(data, "note", "");
+    if (note) { html += '<p class="hintline">' + rich(note) + "</p>"; }
+    if (!rows.length) { box.innerHTML = html; return; }
+    var items = [], i, head, lines;
+    for (i = 0; i < rows.length; i++) {
+      head = at(rows[i], "say", "");
+      //: ⚠️ 那几行是**日志原文**：只转义，**不过 `rich()`** ——
+      //: 过了的话，日志里成对的星号/反引号会被当格式吃掉，那几行就不是机器报的那几行了。
+      lines = esc(at(rows[i], "lines", ""));
+      items.push('<div class="diagitem"><p class="diaghead">' + rich(head) + "</p>" +
+                 (lines ? '<pre class="diaglines">' + lines + "</pre>"
+                        : '<p class="hintline">这一条回复里没有那几行日志。</p>') + "</div>");
+    }
+    box.innerHTML = html + '<div class="diaglist">' + items.join("") + "</div>";
+  }
+
+  function fetchDiag() {
+    //: ⚠️ 走的是**上面那一栏挑好的单号**（`#failPick`）—— 这一屏里「哪一单」只有这一处，
+    //: 不另开一格（两处就有两个口径）。
+    var id = String(document.getElementById("failPick").value || "").trim();
+    var btn = document.getElementById("btnDiag");
+    if (!id) {
+      diagProblem("还没挑是**哪一单** —— 上面「要修哪一条」那一格是空的" +
+                  "（先按一次「查失败」，那一格就有得挑了）。");
+      return;
+    }
+    btn.disabled = true;
+    return fetch(DIAG + encodeURIComponent(id))
+      .then(readJSON)
+      .then(function (res) {
+        btn.disabled = false;
+        if (!res.ok) { diagProblem(sayOf(res)); return null; }
+        var rows = diagRows(res.obj);
+        if (rows === null) {
+          diagProblem("服务回了 200，但正文不是一份原因（读不出「为什么失败」）。");
+          return null;
+        }
+        paintDiag(res.obj);
+        return res.obj;
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        diagProblem("这一栏没读到：" + e + " —— 服务可能没在跑。");
+      });
+  }
+
   // ══════════════════ 窗口那两下（Task 12）══════════════════
   //: 关窗口 / 重开窗口：都发**当前这一趟**（它们在 `/job/<id>/` 下面）。
   //: ⚠️ 两下的答复里，服务说的那句话都**原样上屏**（`setErr` 那条红杠是这一屏唯一
@@ -1566,7 +1883,7 @@
   //: 页面上**唯一**的第二样东西（除了 `jobId`）：左边那一栏最近一次拿到的正文，
   //: 加上「开跑时刻」与「页面自己要说的一句话」。它不是状态机 ——
   //: 里面没有一个是页面**算**出来的事实，全是「上一次取回来的 JSON」里抄下来的。
-  var state = { runs: null, startedAt: "", pickNote: "", runsBroken: false };
+  var state = { runs: null, startedAt: "", pickNote: "", runsBroken: false, rank: null };
 
   // ══════════════════ 一个定时器 ══════════════════
   function tickOnce() {
@@ -1601,6 +1918,16 @@
   //      「点哪一条」这件事就没有一处是可测的了：动态建出来的元素在这套夹具里点不着）。
   document.getElementById("btnFail").addEventListener("click", fetchFailures);
   document.getElementById("btnFixFrom").addEventListener("click", fixFrom);
+  // ★ 榜单 → 失败单 → 原因（Task 4）：那条链的三下。
+  //   ⚠️ 「看这个站的失败单」**不自己查** —— 它把站名填进上面那一栏再调**既有的**那一下
+  //      （查不到/没有失败那两句话只有一处口径）。
+  //   ⚠️ 「看这一单的原因」读的是**上面「要修哪一条」那一格** —— 这一屏里「哪一单」只此一处。
+  document.getElementById("btnRank").addEventListener("click", fetchRank);
+  document.getElementById("btnRankGo").addEventListener("click", goRank);
+  document.getElementById("btnDiag").addEventListener("click", fetchDiag);
+  //: 「看哪个站的失败单」那一块开页是**收着**的（还没有任何一份榜单）。
+  //: 与 `failAct` 同一行规矩：**开页时它是什么样由这一行算出来**，不靠静态标记。
+  document.getElementById("rankAct").hidden = true;
   //: 「要修哪一条」那一块开页是**收着**的（还没有任何一条可挑）。
   //: 与 `runEvidenceField` 同一行规矩：**开页时它是什么样由这一行算出来**，
   //: 不靠静态标记、也不靠人的记性（标记改了、这行忘了改，两边就分叉了）。

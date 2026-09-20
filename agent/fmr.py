@@ -48,6 +48,49 @@
   `_cdp_bin` / `_shots_dir` / `_selftest_root` 同一条不变量 —— 服务跑起来之后
   环境再变，不该悄悄换一个身份（那是「名字说 A、量的是 B」）。
 
+## 这一层现在有四个读口（Task 4 起）
+
+| 口 | 答的是 |
+|---|---|
+| `fetch_failures(site)` | **这个站**失败了哪几趟 |
+| `fetch_steps(task_id)` | 那一趟报过哪几步 |
+| `fetch_rank(date)` | **今天哪些站**在失败（榜单）—— Task 4 加的 |
+| `fetch_diag(task_id)` | **这一单为什么**失败（原因行）—— Task 4 加的 |
+
+```
+③ GET {base}/api/quest/formLogRank?date=<YYYY-MM-DD>&limit=<n>   X-Api-Token: <token>
+ → {"status":200,"msg":"success","data":{
+      "date":"2026-09-20","failed_total":18,"unattributed":2,
+      "rank":[{"site":"callyourdate.com/land/sp/519015a5","fail":3,
+               "config_id":66,"config_status":"启用","has_script":true}, …]}}
+   ⚠️ `data` 是**对象，不是数组**；而**没有失败的那一天回的也是这个对象**
+      （`failed_total:0` / `rank:[]`）⇒ 所以「`data` 不是对象」= 这一次**没量着**，
+      **不是**「今天没有失败」。（这就是下面 `_call(shape=…)` 存在的理由。）
+   ⚠️ `limit`（默认 50、上限 200）**只截断 `rank`**：`failed_total` / `unattributed` 是当日全量
+      ⇒ `sum(rank[].fail) + unattributed` 可以**小于** `failed_total`，差额就是没摆出来的部分
+      （不是接口漏了数据，但**屏幕上要说出来**）。
+   ⚠️ `rank[].site` 是**展示用的键，不是 join 键**：线上实测过它带 query、带尾斜杠、
+      甚至粘着一段别人的报错 ⇒ 拿它去 `formLog` 查**可能查不到**，而那一次是「量不到」。
+      **要办事一律走 `task_id`**（Task 4 的三条硬要求 R1）。
+④ GET {base}/api/quest/failDiag?task_id=<单号>                X-Api-Token: 同上
+ → {"status":200,"msg":"success","data":[
+      {"id":83,"task_id":99999999,"site":"…","machine":"…","exit":"stuck",
+       "lines":"…那几行日志…","at":"…","created_at":"…"}]}
+   按 `created_at` **倒序**（第一行 = 最近一次的现场）；`task_id` 回来是**数字**（库里是 int）。
+   ⚠️ **空数组 = 「量到了，这单还没有原因行」**（新功能 / 老单 / 那台机器没发上来）——
+      它不是「量不到」，但屏幕上**也不许留白**（要明说「还没有原因」，Task 4 R2）。
+   ⚠️ `exit` 的取值**有意是开放的**（后端刻意不校验），实测客户端会报 `unknown` ⇒ 见 `EXIT_SAY`。
+
+## ★ 后端地址：**一处旋钮**（Task 4 §4）
+
+`DEFAULT_BASE` ／ 环境变量 `FMR_BASE_URL`（常量名 `BASE_ENV`）—— **四个读口全走它这一个**，
+在 `FmrClient.__init__` 里读**一次**（构造之后不再看环境）。
+
+⚠️ 今天两边的部署**不同步**（这是 §4 存在的原因）：线上 `fmr.3tkj.cn` **还没有** `failDiag`
+（brief 实测 404），本地 `192.168.1.51:6060` **有**。所以要对着本地实例跑就把这一处换掉：
+`FMR_BASE_URL=http://192.168.1.51:6060`。
+**没有「按接口各配一个基址」这回事** —— 真长出来就是「名字说 A、量的是 B」那个老病的新变种。
+
 ⚠️ 这一层**不打真模型、不开浏览器**；`opener` 是注入的口子（测试给它桩）。
 """
 from __future__ import annotations
@@ -65,6 +108,10 @@ __all__ = [
     "DEFAULT_BASE", "TOKEN_ENV", "BASE_ENV", "DEFAULT_LIMIT", "DEFAULT_TIMEOUT",
     "UNMEASURED_SAY", "failure_say", "step_say", "evidence_text", "entry_url",
     "today_midnight", "since_text",
+    # Task 4：榜单（③）与原因（④）
+    "DEFAULT_RANK_LIMIT", "RANK_MAX_LIMIT", "DIAG_PAGE_SIZE",
+    "EXIT_SAY", "CONFIG_STATUS_SAY", "NO_DIAG_SAY",
+    "exit_say", "has_script_say", "rank_row_say", "rank_say", "diag_head_say",
 ]
 
 #: 线上实测过的那一个。`FMR_BASE_URL` 只是给测试/灰度留的口子 —— **默认值就是它**。
@@ -76,6 +123,23 @@ BASE_ENV = "FMR_BASE_URL"
 
 #: 一次最多摆几条。**摆满了要说**（「可能还有更早的」）—— 悄悄截断就是「没有静默的路径」的反面。
 DEFAULT_LIMIT = 20
+#: ③ 榜单一次最多摆几个站。与 ① 那个 `DEFAULT_LIMIT` **不是一回事**（两个接口的默认值/上限
+#: 各归各的：后端 `RANK_DEFAULT_LIMIT = 50` / `RANK_MAX_LIMIT = 200`）—— 所以单开一格，
+#: 不拿 ① 那个数去顶（顶了就是「名字说 A、量的是 B」）。
+#: 出处：`farmer` 仓 `app/Http/Controllers/api/QuestDiagnosisController.php` 的
+#: `const RANK_DEFAULT_LIMIT = 50;`（本文件只读它，不改它）。
+DEFAULT_RANK_LIMIT = 50
+#: ③ 榜单一次最多能要几个站（后端 `RANK_MAX_LIMIT = 200` 的镜像 —— 超了后端回 400，
+#: 而 400 到屏幕上只剩「量不到」，读的人不知道是自己那一格要多了）。
+#: ⚠️ 它**只是**用来把那句话说出来（「后端上限 200」），本层**不替调用方截断**
+#: —— 悄悄截到 200 就是把一次 400 换成一句看不出来的少算。
+RANK_MAX_LIMIT = 200
+#: ④ 一单**最多回几条**原因行 —— 后端那份的 `DEFAULT_LIMIT = 100`（我们不发 `per_page`，
+#: 所以就是它）。出处：`farmer` 仓 `QuestDiagnosisController.php` 的
+#: `const DEFAULT_LIMIT = 100;` 与 `$perPageRaw = $request->input('per_page', self::DEFAULT_LIMIT);`。
+#: ⚠️ 这个数**只用来把「摆满了」说出来**：那接口回的是一根**裸数组**（**不带总数**），
+#: 所以「够 100 条」时我们**分不出**是不是到底了 —— 那就照实说分不出，别装作到底了。
+DIAG_PAGE_SIZE = 100
 #: 读这两个接口的超时（秒）。它们是只读的旁路，慢一点可以等，但**不许无限等**。
 DEFAULT_TIMEOUT = 20.0
 
@@ -146,6 +210,39 @@ TERMINAL_SAY = {
     "no_success": ("没成功", "能走的都走完了，成功那一页从头到尾没出现"),
     "ai_completed_no_success": ("没成功", "AI 那一路跑完了，没见到成功那一页"),
 }
+
+# ── ④ 原因那一屏的两格（Task 4）──────────────────────────────────────────
+#: `failDiag` 的 `exit` 那一格 —— 跑单那边报的「这趟是怎么结束的」。
+#:
+#: ★★ **`unknown` 在这里是「没报上来」，不是那三种之一。** 出处（客户端自己的原话）：
+#: `/opt/skills/auto-farm-skill/scripts/ad-task.py:1265` `_fail_diag_exit()` ——
+#: 「导航态 / 认不出来 → `unknown` —— 别硬塞成三个已知值之一：那会让查的人**看错原因**，
+#: 比空着更坏」（同文件 `:1047` 是它认得的那三个 `FAIL_DIAG_EXIT_LABELS`）。
+#: ⇒ 这一屏**照它的意思办**：把 `unknown` 编成三种之一，就是把客户端刻意不说的那句话说回去。
+#:
+#: ⚠️ **表是从 `TERMINAL_SAY` 派生的，不是抄的**：这三格在 `formStep` 那边是**终点**、
+#: 在 `failDiag` 这边是 `exit` —— **同一个词两个口子报**，两处各写一份迟早漂。
+#: （`success` / `ai_completed_no_success` 也一起带过来了：后端**有意**不校验取值集合，
+#: 万一哪台机器真报了，照实显示比装作不认识有用 —— 而且那是个该被人看见的矛盾。）
+EXIT_SAY = {code: word for code, (word, _why) in TERMINAL_SAY.items()}
+EXIT_SAY["unknown"] = "没报上来"
+
+#: ③ 榜单里 `config_status` 那一格。后端给的就是中文（`启用` / `停用`，没有配置时是 `null`）。
+#: ⚠️ 既然它是**给它自己人看的一格**，为什么还要过表：**取值是开放的**（后端在别处还会
+#: 长出别的状态）。过一遍表，认不出的那种才会**带着原样的字**冒出来，而不是悄悄放行
+#: （「一个我们不认识的词被原样当人话显示」正是这一屏要防的那类静默）。
+CONFIG_STATUS_SAY = {
+    "启用": "启用",
+    "停用": "停用",
+}
+
+#: ★ ④ 里**最常见的那一种**：单号查得到、可是**还没有原因行**。
+#: （新功能刚上 / 老单 / 跑那趟的机器没把它发上来 —— 三种都长这样，**分不出是哪一种**，
+#: 所以这一句**只说不许猜的那部分**：这一屏现在没有这一单的原因。）
+#: ⚠️ 它**不是**错误：`fetch_diag` 回空数组是「量到了、没有」，与「量不到」（抛）是两件事。
+NO_DIAG_SAY = ("这一单**还没有原因行** —— 这是**量到的**结果（不是「没查到」）。"
+               "FMR 上「原因」这张表是刚接上的：老单不会有，"
+               "跑那一趟的机器也可能没把它发上来（这三种在这一屏上长得一样，**分不出**）。")
 
 #: 那三种输入都认：`datetime` / `2026-09-19` / 量过的那一串 `2026-09-19 00:00:00`。
 _ACCEPTED_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d")
@@ -448,7 +545,167 @@ def failure_say_tail(row: dict) -> str:
                              _word(row.get("type"), TYPE_SAY, "类型"))
 
 
+# ──────────────── ③ 榜单 + ④ 原因：人话（Task 4）────────────────
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    """一个数 → `int`；读不出来给 `None`（**不给 0** —— 0 是一个合法的读数，混起来就是编话）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def exit_say(value: Any) -> str:
+    """④ `exit` 那一格 → 人话。★ **`unknown` → 「没报上来」**，不许编成那三种之一。
+
+    ⚠️ 这句话的分量在**客户端那一侧的注释**上（`ad-task.py:1265`）：
+    它**有意**在认不出收尾时报 `unknown`，理由是「硬塞成三个已知值之一会让查的人**看错原因**」。
+    这一屏要是在这儿把它折算成 `stuck`，就等于把客户端**刻意留下**的那个空白又填死了 ——
+    而填进去的那个字是**这一屏编的**，不是任何一台机器说的。
+    """
+    return _word(value, EXIT_SAY, "结束方式")
+
+
+def has_script_say(value: Any) -> str:
+    """③ `has_script` 那一格 → 人话。**它是三态，不是两态**（后端那三条各有各的处置）。
+
+    | 值 | 人话 | 运营该做的事 |
+    |---|---|---|
+    | `True` | 有 py 脚本 | 不用管 |
+    | `False` | 有配置，但**没有脚本** | **去写脚本**（这份配置跑不起来） |
+    | `None` | 没有配置，谈不上 | **去建配置**（连配置都没有） |
+
+    ⚠️ 把后两行合成一句「没有脚本」是本接口**专门防**的那个形状：
+    「去建配置」与「去写脚本」是两件不同的事，在屏幕上长成一句，运营就会做错那一步。
+    """
+    if value is None:
+        return "有没有脚本：没有配置，谈不上"
+    if value is True:
+        return "有 py 脚本"
+    if value is False:
+        return "有配置，可是没有脚本"
+    return "有没有脚本：它写的是「%s」（这一屏不认识的写法）" % (value,)
+
+
+def rank_row_say(row: dict) -> str:
+    """③ 榜单里一行的**人话**：`失败 3 次 · 配置 66（启用）· 有 py 脚本`。
+
+    ⚠️ **站点键不在这一句里**：它是这一行的身份，由调用方**原样**摆在最前面
+    （运营要拿它去别处问）。这一句只说**这一行该怎么读**。
+    ⚠️ 没有配置时**照抄后端那句 `note`**，不在这一层合成「没有配置」——
+    后端的两种 `note`（`没有配置` / `映射指向的配置行不存在`）处置**完全相反**
+    （一个去建、一个去修映射），合起来就是把两件事变成一件。
+
+    ★★ **这一句里一个 `**` 都不许有。** 这一族里**只有它**要同时进 `<li>` 与
+    **`<option>`**（页面上它既是「读的那一行」、也是「挑的那一格」）——
+    而 `<option>` 里放不了标记：带 `**` 的句子在那儿的可见结果就是**两个星号**
+    （本仓修复轮 1 在截图里真看见过这个形状：「漏一处，运营看到的就是两个星号」）。
+    强调靠**措辞**（「可是没有脚本」），不靠标记。
+    `tests/test_fmr.py::test_the_rank_row_text_carries_no_emphasis_markers` 钉着这一条。
+    """
+    row = row if isinstance(row, dict) else {}
+    parts = []
+    n = _int_or_none(row.get("fail"))
+    parts.append("失败 %d 次" % n if n is not None
+                 else "失败几次它没给（那一格写的是 %r）" % (row.get("fail"),))
+    if row.get("config_id") is None:
+        note = str(row.get("note") or "").strip()
+        parts.append(note if note else "配置它没给，也没说为什么不给")
+    else:
+        parts.append("配置 %s（%s）" % (row.get("config_id"),
+                                     _word(row.get("config_status"),
+                                           CONFIG_STATUS_SAY, "它的状态")))
+    parts.append(has_script_say(row.get("has_script")))
+    return " · ".join(parts)
+
+
+def rank_say(data: dict, limit: Any = None) -> str:
+    """③ 榜单顶上那句人话：**量的是哪一天、量到多少、摆出来的占多少**。
+
+    ⚠️ 三个数都得在，因为**它们对不上是正常的**（后端自己的注释点名过）：
+      · `failed_total` = 那一天**全部**失败的行数；
+      · `unattributed` = 其中**归不到任何一个站**的（没有匹配键）；
+      · `rank` = 按站聚合后**摆出来的**那几个 —— 而 `limit` **只截断它**。
+    ⇒ 「摆了 3 个站」与「今天失败了 18 次」**可以同时为真**。只说前者，
+      读的人会以为今天就这么几个站坏了；**差额必须说出来**（「没有静默的路径」）。
+    """
+    data = data if isinstance(data, dict) else {}
+    day = str(data.get("date") or "").strip()
+    rows = [r for r in (data.get("rank") or []) if isinstance(r, dict)]
+    total = _int_or_none(data.get("failed_total"))
+    unattr = _int_or_none(data.get("unattributed"))
+    shown = sum(n for n in (_int_or_none(r.get("fail")) for r in rows) if n is not None)
+    when = ("%s 这一天" % day) if day else "这一天（它没说是哪一天）"
+
+    if total is None:
+        head = ("%s：**一共失败了多少次它没给**（那一格写的是 %r）—— "
+                "下面摆出来的只是它列的那几个站。" % (when, data.get("failed_total")))
+    else:
+        head = "%s一共失败 **%d** 次" % (when, total)
+        if unattr is None:
+            head += "（其中归不到站的有几次，它没给）"
+        elif unattr:
+            head += "（其中 **%d** 次归不到任何一个站 —— 没有匹配键）" % unattr
+        head += "。"
+
+    if not rows:
+        if total == 0:
+            return head + "一个站都没有 —— 这是**量到的**结果（不是「没量着」）。"
+        if unattr is not None and unattr == total:
+            return head + "**一个站都归不出来** —— 全部归不到任何一个站。"
+        return (head + "可它**一个站都没摆出来** —— 上面那个总数与这一栏对不上，"
+                "照实摆着，别读成「今天没有站在失败」。")
+
+    n = _int_or_none(limit)
+    cap = ("这一屏一次最多摆 %s 个站。" % n) if n else ""
+    tail = "下面摆了 %d 个站" % len(rows)
+    gap = None if (total is None or unattr is None) else total - shown - unattr
+    if gap is None:
+        tail += "（这几个站加起来 %d 次失败）—— 与上面那个总数差多少，这一份算不出来。%s" % (shown, cap)
+    elif gap > 0:
+        tail += ("（这几个站加起来 %d 次失败）—— ⚠️ **没摆全**：还差 **%d** 次属于没摆出来的站，"
+                 "把 `limit` 放大再查（后端上限 %d）。%s" % (shown, gap, RANK_MAX_LIMIT, cap))
+    elif gap == 0:
+        tail += "（这几个站加起来 %d 次失败，**与上面那个总数对得上**）。" % shown
+    else:
+        tail += ("（这几个站加起来 %d 次失败 —— ⚠️ 比上面那个总数还多 %d，这两格对不上，"
+                 "照实摆着）。" % (shown, -gap))
+    return head + tail
+
+
+def diag_head_say(row: dict) -> str:
+    """④ 一条原因行的**抬头**：`失败于 9-20 14:32 · 机器 worker-07 · 结束方式：卡住`。
+
+    ⚠️ 时刻取 `at`（**失败真正发生的那一刻**），**不是** `created_at`（入库时刻）——
+    后端自己的注释点过这件事：离线机器晚补发时两者差很多，而查的人要的是「哪天失败的」。
+    `at` 没给（老客户端 / 手工发的）才退回入库时刻，**并且要说出退过**
+    （不说的话，一个晚补发的班次会让「9-20 收上来的」被读成「9-20 失败的」）。
+    ⚠️ `lines` **不在这句里**：那是几十行的正文，调用方单独摆（原样、不加工）。
+    """
+    row = row if isinstance(row, dict) else {}
+    if str(row.get("at") or "").strip():
+        when = "失败于 %s" % _when_say(row.get("at"))
+    elif str(row.get("created_at") or "").strip():
+        when = ("失败时刻它没给 —— 这是 %s **收上来**的时刻（不是它失败的时刻）"
+                % _when_say(row.get("created_at")))
+    else:
+        when = "时刻它没给（失败那一刻与入库那一刻都没有）"
+    machine = str(row.get("machine") or "").strip()
+    return "%s · 机器 %s · 结束方式：%s" % (
+        when, machine or "（它没给是哪台机器跑的）", exit_say(row.get("exit")))
+
+
 # ─────────────────────────── 客户端 ───────────────────────────
+
+#: 每个读口**读的是什么**（人话里的开头）。四个口一张表 —— 加接口时在这儿补一行，
+#: 别在四个 `raise` 里各写各的（那样「说了没有」会变成四件事）。
+_PATH_SAY = {
+    "/api/quest/formLog": "失败记录",
+    "/api/quest/formStep": "逐步记录",
+    "/api/quest/formLogRank": "失败榜单",
+    "/api/quest/failDiag": "失败原因",
+}
 
 
 def _default_get(url: str, headers: dict, timeout: float = DEFAULT_TIMEOUT) -> str:
@@ -498,21 +755,63 @@ class FmrClient:
                 % (TOKEN_ENV, TOKEN_ENV))
 
     # ── HTTP ──────────────────────────────────────────────────────
-    def _call(self, path: str, params: dict) -> Any:
-        """一次读。**失败一律抛**（`FmrUnmeasured` 的三个子类），**绝不返回空**。"""
+    def _what(self, path: str) -> str:
+        """这个读口**读的是什么**（出错的人话用它开头，而不是把接口路径摆在最前）。"""
+        return _PATH_SAY.get(path, path)
+
+    def _unreadable_say(self, path: str, exc: Exception) -> str:
+        """★ **发出去之后没读成** → 人话。分两种，因为**下一步不是一件事**：
+
+        · 有 HTTP 码（`HTTPError`）—— 请求**到了后端**，是**它**按 HTTP 回了个码。
+          重点：这一族的正常形状是「**HTTP 恒 200**，码放在 body 里」（契约那张表），
+          所以按 HTTP 回码说明**不是接口在说话** —— 是它前面的那一层（路由 / 网关）。
+        · 没有码（DNS 失败 / 连不上 / 超时 / TLS…）—— 一个字节都没到。
+
+        ⚠️ **404 那一支要点名**「**这个接口在这个后端上不存在**」——
+        这不是抠字眼：`GET /api/quest/failDiag` 就是一个真实例子（线上还没部署，
+        见模块 docstring 那个旋钮）。把它说成「连不上那个后端」，
+        读的人会去查网络 / 代理 / 防火墙，而真因是**那个路由没上**。
+        """
+        noun = self._what(path)
+        status = getattr(exc, "code", None)
+        if status is None:
+            return ("读不了%s：连不上那个后端（%s）。%s。"
+                    "（真因：%s: %s）"
+                    % (noun, self.base, UNMEASURED_SAY, type(exc).__name__, exc))
+        extra = ""
+        if int(status) == 404:
+            extra = ("—— ⚠️ 这**不是**「这台机器连不上」：请求到了后端，"
+                     "是**那个地址在它那儿没有**。多半是这个接口**还没部署到 %s**"
+                     "（这一族接口是分开上的，不是一次上齐的）。" % self.base)
+        elif int(status) in (401, 403):
+            extra = ("—— 后端的**网关那一层**先拦了（这一族的 401 正常是 body 里那个码，"
+                     "不是 HTTP 码）：那串 token 对不上，或者根本没到业务层。")
+        return ("读不了%s：**请求到了后端，可它按 HTTP 回了 %s**（不是在读这件事上给了答复）。"
+                "%s%s（真因：%s: %s）"
+                % (noun, status, extra, UNMEASURED_SAY, type(exc).__name__, exc))
+
+    def _call(self, path: str, params: dict, *, shape=(list, dict)) -> Any:
+        """一次读。**失败一律抛**（`FmrUnmeasured` 的三个子类），**绝不返回空**。
+
+        `shape` 是 `data` 那一格**该长成什么样**（Task 4 加的）。默认 `(list, dict)` = 老行为
+        （`data: null` / 少一格 → 空数组）。
+
+        ★ 为什么 ③ 榜单要传 `shape=dict`：那个接口**没有失败的那一天回的也是一个对象**
+        （`failed_total:0` / `rank:[]`）⇒「回的不是对象」只可能是**这一次没量着**。
+        不传的话，一次形状事故会以 `200 {"rank": …}` 的面目变成「今天没有站在失败」——
+        而那正是这一层从头到尾在治的那句话。
+        """
         if not self.configured:
             raise FmrNoToken(
-                "读不了失败记录：这个部署**没配 %s**（一个请求都没发出去）。"
-                "%s。" % (TOKEN_ENV, UNMEASURED_SAY))
+                "读不了%s：这个部署**没配 %s**（一个请求都没发出去）。"
+                "%s。" % (self._what(path), TOKEN_ENV, UNMEASURED_SAY))
         url = "%s%s?%s" % (self.base, path, urllib.parse.urlencode(params))
         # ⚠️ token 走**请求头**，绝不进 URL（URL 会进日志、进 `ps`）。
         headers = {"X-Api-Token": self.token}
         try:
             raw = self._opener(url, headers)
         except Exception as exc:                       # noqa: BLE001 —— 什么都算「量不到」
-            raise FmrUnreachable(
-                "读不了失败记录：连不上那个后端（%s）。%s。"
-                "（真因：%s: %s）" % (self.base, UNMEASURED_SAY, type(exc).__name__, exc)) from exc
+            raise FmrUnreachable(self._unreadable_say(path, exc)) from exc
         try:
             body = json.loads(raw)
         except (ValueError, TypeError) as exc:
@@ -527,7 +826,11 @@ class FmrClient:
         if status != 200:
             raise FmrRefused(self._refused_say(path, params, body, status), status=int(status or 0))
         data = body.get("data")
-        return data if isinstance(data, (list, dict)) else []
+        if not isinstance(data, shape):
+            raise FmrUnreachable(
+                "读不了 %s：后端回的信封对得上（`status:200`），可 `data` 那一格**不是要的那种"
+                "形状**（读回来的是 %s…）。%s。" % (path, str(data)[:60], UNMEASURED_SAY))
+        return data
 
     @staticmethod
     def _refused_say(path: str, params: dict, body: dict, status: Any) -> str:
@@ -537,18 +840,26 @@ class FmrClient:
         `主机+路径`）。那一次它被显示成「近 2 天没有失败 ✓」——
         一个查不到的站被标成健康的。所以这一句必须让人**照着去改那串 key**。
         """
+        noun = _PATH_SAY.get(path, path)
         msg = str(body.get("msg") or "").strip()
         tail = ("后端自己那句是：「%s」。" % msg) if msg else "后端没给它那句说明。"
         if int(status or 0) == 404:
-            key = str(params.get("site") or params.get("task_id") or "")
-            return ("读不了失败记录：**那个站它不认识**（后端回 404）—— "
-                    "多半是这一串名字给错了：%r（真实的名字形如 `主机名/路径`，"
-                    "带上路径那一截）。%s %s" % (key, UNMEASURED_SAY, tail))
+            # ⚠️ 404 的语义**按查的是什么分岔**：按站查时它是「这个站它不认识」，
+            # 按单号查时它是「这个单它那儿没有」。合成一句就会让按单号那次
+            # 给人一句「那串名字（站名）给错了」——而那次根本没有站名这回事。
+            if params.get("site"):
+                key = str(params.get("site"))
+                return ("读不了%s：**那个站它不认识**（后端回 404）—— "
+                        "多半是这一串名字给错了：%r（真实的名字形如 `主机名/路径`，"
+                        "带上路径那一截）。%s %s" % (noun, key, UNMEASURED_SAY, tail))
+            key = str(params.get("task_id") or "")
+            return ("读不了%s：**这个单它那儿没有**（后端回 404）—— "
+                    "多半是单号给错了：%r。%s %s" % (noun, key, UNMEASURED_SAY, tail))
         if int(status or 0) == 401:
-            return ("读不了失败记录：**鉴权没过**（后端回 401）—— 那串 token 不对或过期了。"
-                    "%s %s" % (UNMEASURED_SAY, tail))
-        return ("读不了失败记录：后端回的是 %s（不是在读失败列表这件事上成功）。%s %s"
-                % (status, UNMEASURED_SAY, tail))
+            return ("读不了%s：**鉴权没过**（后端回 401）—— 那串 token 不对或过期了。"
+                    "%s %s" % (noun, UNMEASURED_SAY, tail))
+        return ("读不了%s：后端回的是 %s（不是在读这件事上成功）。%s %s"
+                % (noun, status, UNMEASURED_SAY, tail))
 
     # ── ① 失败列表 ─────────────────────────────────────────────────
     def fetch_failures(self, site: str, since: Any = None, limit: Any = None) -> List[dict]:
@@ -579,6 +890,40 @@ class FmrClient:
                 "读不了逐步记录：没说是**哪个单** —— 这是免费的检查（一个请求都没发出去）。",
                 kind="no-task")
         data = self._call("/api/quest/formStep", {"task_id": key})
+        return [r for r in (data or []) if isinstance(r, dict)]
+
+    # ── ③ 榜单：这一天哪些站在失败 ───────────────────────────────────
+    def fetch_rank(self, date: Any = None, limit: Any = None) -> dict:
+        """③ **这一天哪些站在失败**（按失败数倒序，并列按站点名字节序 —— 后端那边定的，不重排）。
+
+        ⚠️ 回的是后端那个**对象**：`{date, failed_total, unattributed, rank:[…]}`。
+        `data` 那一格不是一个对象 ⟹ **抛**（见 `_call` 的 `shape` 那段）——
+        那一天没有失败时后端回的**照样是这个对象**（`failed_total:0` / `rank:[]`），
+        所以「形状不对」只可能是「这一次没量着」，**不许**读成「今天没有站在失败」。
+        """
+        params: dict = {}
+        day = str(date or "").strip()
+        if day:
+            params["date"] = day
+        #: ⚠️ 不给就**整格不发**（缺省 = 后端那边的「今天」）。发一个空串不是缺省：
+        #: 后端对它回 400（`?limit=` 经 ConvertEmptyStringsToNull 就是 null，同一个坑）。
+        if limit not in (None, ""):
+            params["limit"] = int(limit)
+        return self._call("/api/quest/formLogRank", params, shape=dict)
+
+    # ── ④ 原因：这一单为什么失败 ─────────────────────────────────────
+    def fetch_diag(self, task_id: Any) -> List[dict]:
+        """④ 这一单在 FMR 上留着的**原因行**（按入库时刻倒序，第一行 = 最近一次的现场）。
+
+        ⚠️ **空 list = 真量了、这单还没有原因行**（成因见 `NO_DIAG_SAY`：新功能 / 老单 /
+        那台机器没发上来）—— 它不是「量不到」，但调用方**也不许**把它画成一片空白。
+        """
+        key = str(task_id or "").strip()
+        if not key:
+            raise FmrUnmeasured(
+                "读不了失败原因：没说是**哪个单** —— 这是免费的检查（一个请求都没发出去）。",
+                kind="no-task")
+        data = self._call("/api/quest/failDiag", {"task_id": key}, shape=list)
         return [r for r in (data or []) if isinstance(r, dict)]
 
     # ── ★ 一段人话（`POST /run` 的 `evidence`）─────────────────────

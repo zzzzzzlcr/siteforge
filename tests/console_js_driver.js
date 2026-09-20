@@ -290,6 +290,64 @@ async function failuresUnmeasuredScenario(out) {
   out.afterRepaint = { fails: el("fails").innerHTML, actHidden: el("failAct").hidden };
 }
 
+//: ★ 榜单 → 失败单 → 原因（Task 4）：那条链的**三下**，按一个真人会走的顺序走一遍。
+//: 量六样，前四样各对应 brief 的一条硬要求：
+//:   ① 榜单那一栏长出的是**人话**（`#rank` 里是服务给的那句 `say`）；
+//:   ② 挑一个站 ⇒ **它的失败单**（走的是既有那一栏的那条路：`#failSite` + `/failures`）；
+//:   ③ ★ **脏键**（榜单上那个带 query / 粘报错的键）⇒「**按这个键查不到**」**说出来**，
+//:      而且**不是**留白、也**不是**「这个站没有失败」（brief §2 R1/R2）；
+//:   ④ ★ 挑一单 ⇒ **原因行**；`exit=unknown` 那一单上屏的是「**没报上来**」（brief §2 R3）；
+//:   ⑤ 没有原因的那一单 ⇒ 服务那句 `note`（「还没有原因」）**上屏**，不许空着；
+//:   ⑥ 上面那些**活过之后三次重画**（Task 7 那一族：写进去 ≠ 还在）。
+async function rankScenario(out) {
+  out.afterLoad = { rank: el("rank").innerHTML, actHidden: el("rankAct").hidden,
+                    note: el("rankNote").innerHTML };
+  // ① 看榜单：那一格**空着**（= 看今天）—— 于是那一跳的 URL 上**没有** `date`。
+  fire("btnRank", "click");
+  await settle();
+  await settle();
+  out.afterRank = { rank: el("rank").innerHTML, actHidden: el("rankAct").hidden,
+                    disabled: el("btnRank").disabled };
+  // ② 挑那个**干净**的键 ⇒ 它的失败单（这一下会替人按一次「查失败」）
+  el("rankPick").value = payload.rank.clean;
+  fire("btnRankGo", "click");
+  await settle();
+  await settle();
+  out.afterClean = { rankNote: el("rankNote").innerHTML, fails: el("fails").innerHTML,
+                     siteBox: el("failSite").value, disabled: el("btnRankGo").disabled };
+  // ③ ★ 挑那个**脏**键 ⇒ 后端回 502「那个站它不认识」
+  el("rankPick").value = payload.rank.dirty;
+  fire("btnRankGo", "click");
+  await settle();
+  await settle();
+  out.afterDirty = { rankNote: el("rankNote").innerHTML, fails: el("fails").innerHTML };
+  //: ★ 那句「按这个键查不到」**本身就是一条要活过重画的读数**（Task 7 那一族）——
+  //: 这一屏栽过的是「写进去了，下一次重画就没了」。就地量一次，别等最后那一次：
+  //: 后面那几步会把它换成别的话（那是**对的**：附注说的是**最后那一下**）。
+  await ticks(9);
+  out.afterDirtyRepaint = { rankNote: el("rankNote").innerHTML, fails: el("fails").innerHTML };
+  // ④ 回到那条干净的、挑**有原因**的那一单 ⇒ 原因行
+  el("rankPick").value = payload.rank.clean;
+  fire("btnRankGo", "click");
+  await settle();
+  await settle();
+  el("failPick").value = payload.rank.withDiag;
+  fire("btnDiag", "click");
+  await settle();
+  await settle();
+  out.afterDiag = { diag: el("diag").innerHTML, disabled: el("btnDiag").disabled };
+  // ⑤ 挑**还没有原因**的那一单 ⇒ 服务那句 `note` 上屏
+  el("failPick").value = payload.rank.noDiag;
+  fire("btnDiag", "click");
+  await settle();
+  await settle();
+  out.afterNoDiag = { diag: el("diag").innerHTML };
+  // ⑥ 活过之后三次重画
+  await ticks(9);
+  out.afterRepaint = { rank: el("rank").innerHTML, diag: el("diag").innerHTML,
+                       rankNote: el("rankNote").innerHTML, fails: el("fails").innerHTML };
+}
+
 //: 闸口摊开的事实那一趟（Task 14 修复轮 1）：`/live` 停在闸上、`rounds` 里有两张卡 ——
 //: 量的是**屏幕上**看得见什么（`#rounds` 那一块），不是载荷里有什么。
 //: 三样一起量：
@@ -334,6 +392,7 @@ async function againScenario(out) {
   else if (payload.scenario === "window") { await windowScenario(out); }
   else if (payload.scenario === "failures") { await failuresScenario(out); }
   else if (payload.scenario === "failures-unmeasured") { await failuresUnmeasuredScenario(out); }
+  else if (payload.scenario === "rank-diag") { await rankScenario(out); }
   else { await repaintScenario(out); }
   out.paints = timelineWrites;                      // **重画了几次**（C1：别拿 fetch 数代替）
   if (out.paintMarks) { out.paintMarks.end = timelineWrites; }
