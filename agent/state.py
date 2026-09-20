@@ -21,7 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional, TypedDict
 
-from agent.browser_agent import DEFAULT_MAX_ROUNDS, DEFAULT_MAX_STEPS, Journey
+from agent.browser_agent import (DEFAULT_MAX_ROUNDS, DEFAULT_MAX_STEPS,
+                                 STOP_REACHED_SUCCESS, Journey)
 from agent.selftest import Report
 
 __all__ = ["SiteState", "Caps", "GENERATOR", "MODE_BUILD", "MODE_FIX",
@@ -115,9 +116,16 @@ END_NO_WINDOW = "no_window"
 #: 交付前最后一道自检没过（要落盘的那串字节自己脏了）—— 一个字节都不落
 END_DELIVER_LINT = "deliver_lint"
 
-#: 探路的账本**算走完了**的标记。只有这一种：模型自己说「讲完了」。
+#: 探路的账本**算走完了**的标记。两种：
+#:
+#: 1. `model_done` —— 模型自己说「讲完了」；
+#: 2. `reached_success`（`browser_agent.STOP_REACHED_SUCCESS`，Task 15）—— **页面上出现了
+#:    人给的那句成功文案**（探路当场收摊，不再往下点）。它算**走完了**：这一趟**成了**，
+#:    那条通向成功的路就在账本里 ⇒ 照常往下定稿 + 自测 + 交付。
+#:    ⚠️ **不是「没走完」** —— 把它归到那一支会因为成功而拒绝写 py。
+#:
 #: 其余（`budget_*` / `no_rounds` / `ended`）都是「没走完」，一律停下交给人（R0）。
-FINISHED_EXPLORATION = ("model_done",)
+FINISHED_EXPLORATION = ("model_done", STOP_REACHED_SUCCESS)
 
 
 @dataclass(frozen=True)

@@ -3345,3 +3345,244 @@ def test_a_diagnostic_row_does_not_drag_the_rest_of_the_tool_return_in(tmp_path)
     # 账本那一行整个（一步，含正文）也要守住体量：截图跟着进来的话这里就是 2 万+ 字符。
     line = json.dumps(journey.steps[0], ensure_ascii=False)
     assert len(line) < 2000, f"账本那一步被工具返回撑大了：{len(line)} 字符"
+
+
+# ══════════ 见到成功文案就收摊（Task 15：真站 job-a4d100addd25 第 66 → 71 步）══════════
+#
+# **病**（2026-09-20 真站实测）：`runtime/explore/job-a4d100addd25/attempt-1.jsonl` 的
+# **第 66 步**是一眼 `observe`，它的 `result.page_text_head` 里**就是**人给的那句成功文案
+# （下面 `MATCHED` 那句，逐字相同）；而它**没有停** —— 一路走到第 71 步（中间 `goto` 去了
+# 别的页、又点了一下），最后是**人按了停**才收的（`attempts.jsonl`：71 步 / `paused`）。
+# 运营的原话：「能成功为啥还要继续？」「我不希望她再刷」。
+#
+# 这条道理本仓库**自己已经写过** —— `replayable_prefix` 的 R3
+# （`agent/browser_agent.py` 那条注释：「成功文案出现 = 这一趟已经成了；过了那条线之后
+# 每一个动作都可能是**重复的真实请求**」）—— 只是它**只用在重放上**。
+# 这个 section 把它接到**活着的那一趟**上：`_stop_reason` 多一条。
+
+#: 真站那一趟第 66 步的正文里逐字含着的那句 —— 就是人（运营）给的成功判据。
+MATCHED = "Good news - We've matched you! Your quote is on the way!"
+
+PAGE_MATCHED = {
+    "url": "https://example.test/funnel?matched=1",
+    "title": "Example 漏斗 匹配好了",
+    "page_text": MATCHED + " Best Match Endurance Direct claims, no middleman",
+    "shadow_roots": 0,
+    "viewport_css_px": {"width": 1280, "height": 800},
+    "actions": [
+        {
+            "selector": "#see-other-quotes", "alternates": [], "stability": "high",
+            "text": "See Other Quotes", "role": "button", "tag": "BUTTON", "type": "",
+            "visible": True, "occluded_by": None, "shadow_depth": 0,
+            "frame_path": ["main"], "bbox": [10, 300, 200, 60], "region": "main",
+            "above_fold": True, "relative_size": 0.2, "peer_count": 1,
+            "z_index": "auto", "contrast": "", "nearby_text": [],
+        }
+    ],
+    "fields": [], "option_groups": [], "obstructions": [], "honeypots": [], "diagnostics": [],
+}
+
+
+def test_it_stops_the_moment_the_success_text_shows_up_instead_of_going_on(tmp_path):
+    """★ 看见了那句成功文案 ⇒ **当场收摊**，之后一次真请求都不许再发。
+
+    真站那一趟第 66 步看见了，**第 67 步还是一个 `goto`**（真人页面上的真请求）——
+    「过了那条线之后的每一个动作都可能是重复的真实请求」说的就是这个。
+    所以判据落在**桩服务那边真发出去的调用**上（agent 自己的账本可以自证不了）。
+    """
+    journey, fake, calls = _run(
+        tmp_path,
+        # 第 1 眼在还没成的页上，第 2 眼就看见了 —— 与真站那一趟的形状同源
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_MATCHED}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#see-other-quotes"})]},   # ← 过了线它还想再点
+         {"content": "我又点了一下"}],
+        budget=browser_agent.Budget(max_steps=50, max_rounds=50),
+        success_text=MATCHED,
+    )
+    assert journey.stop_reason == "reached_success", journey.stop_reason
+    assert [c["name"] for c in calls] == ["goto", "observe", "observe"], (
+        "过了那条线之后还有真请求发出去：%r"
+        % [(c["name"], c["args"]) for c in calls])
+    assert len(journey.steps) == 2, [s["action"] for s in journey.steps]
+    assert len(fake.calls) == 2, (
+        "看见了成功文案之后还问了一轮模型（%d 轮）—— 那一轮让「再点一下」有了机会"
+        % len(fake.calls))
+
+
+def test_a_click_queued_in_the_same_round_after_the_look_never_reaches_the_site(tmp_path):
+    """同一轮里排在「看见成功文案那一眼」**后面**的动作也一律不发（C2 那个形状）。
+
+    问的是「停」发生在**每一步之前**还是**每一轮之后**：只在轮边界上检查的实现，
+    会把同一轮剩下的动作照发出去 —— 而真站那一趟正是「一轮里好几个动作」的形状。
+    """
+    journey, _fake, calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_MATCHED}]},
+        [{"calls": [("observe", {}), ("click", {"selector": "#see-other-quotes"})]}],
+        budget=browser_agent.Budget(max_steps=50, max_rounds=50),
+        success_text=MATCHED,
+    )
+    assert [c["name"] for c in calls] == ["goto", "observe"], (
+        "同一轮里排在后面那一下也发出去了：%r" % [(c["name"], c["args"]) for c in calls])
+    assert journey.stop_reason == "reached_success", journey.stop_reason
+
+
+def test_the_human_stop_is_still_reported_as_the_human_stop(tmp_path):
+    """⚠️ **人喊停那一条的语义一个字没动**：两道闸同时为真时，报的是**人**那一句。
+
+    「停」的**时刻**两条一模一样（都在下一步之前、都不做那一步）；
+    变的只是**理由报哪个** —— 而人按下去的那一下永远是优先的那个。
+    """
+    journey, _fake, calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_MATCHED}]},
+        [{"calls": [("observe", {})]}],
+        budget=browser_agent.Budget(max_steps=50, max_rounds=50),
+        success_text=MATCHED,
+        should_pause=lambda j: len(j.steps) >= 1,
+    )
+    assert journey.stop_reason == "paused", journey.stop_reason
+    assert [c["name"] for c in calls] == ["goto", "observe"], calls
+
+
+def test_a_budget_stop_that_never_saw_the_line_is_still_a_budget_stop(tmp_path):
+    """⚠️ **预算那一条的语义也一个字没动**：没看见成功文案时，停因还是 `budget_steps`。
+
+    （这一条同时是「空判据 / 没给判据**不会**把每一页都算成成功」的对照 ——
+    页面正文与 `MATCHED` 无关时，预算照旧走到顶。）
+    """
+    journey, _fake, _calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]}],
+        budget=browser_agent.Budget(max_steps=3, max_rounds=50),
+        success_text=MATCHED,
+    )
+    assert journey.stop_reason == "budget_steps", journey.stop_reason
+    assert len(journey.steps) == 3, len(journey.steps)
+
+
+@pytest.mark.parametrize("extra", [{}, {"success_text": ""}])
+def test_an_empty_success_text_is_a_missing_input_not_a_free_pass(tmp_path, extra):
+    """判据没给 / 给了个空串 ⇒ **判不了就不停**（空**不是**「什么都算成功」）。
+
+    空串要是被当成通配，这一趟会在**第 1 步**就停下并自称成功 —— 那是把
+    「少给了一个输入」翻译成了一句**假话**。所以：**不猜**（与 `graph._explore_reached_success`
+    给空的处置同口径：判不了就是判不了），照常跑到预算顶。
+    """
+    journey, _fake, _calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_MATCHED}]},     # 页面上**确实**有那句文案
+        [{"calls": [("observe", {})]}],
+        budget=browser_agent.Budget(max_steps=2, max_rounds=50),
+        **extra,
+    )
+    assert journey.stop_reason == "budget_steps", journey.stop_reason
+    assert len(journey.steps) == 2, "空判据把它在第 1 步就拦下了 —— 那是「什么都算成功」"
+
+
+def test_the_account_says_it_stopped_because_it_succeeded(tmp_path):
+    """账上那句话必须是「成了」—— **不许**落进「没走完」那一支（R0 那半份账本的说法）。
+
+    为什么这条是硬的：`_unfinished_note` / R0 一族的说法（「没走完 ⇒ 拿半份账本写不出对的 py」）
+    会让下游**因为成功而拒绝写 py**；而这一趟是**探到了**的，账本里有那条通向成功的路。
+    """
+    journey, _fake, _calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_MATCHED}]},
+        [{"calls": [("observe", {})]}, {"calls": [("observe", {})]}, {"content": "说完了"}],
+        budget=browser_agent.Budget(max_steps=50, max_rounds=50),
+        success_text=MATCHED,
+    )
+    tail = journey.notes[-1]
+    assert "成功文案" in tail, tail
+    assert "reached_success" not in tail, (
+        "内部停因的 token 进了人话（M-5：这份账的读者是非技术的人）：%s" % tail)
+    trailing = "".join(journey.notes[-2:])
+    assert "没走完" not in trailing, (
+        "「成了就停」被写成了「没走完」—— 读账的人会以为这一趟白跑了：%s" % trailing)
+
+
+def test_the_line_the_live_run_stops_on_is_the_same_line_the_graph_settles(tmp_path):
+    """活的那一趟停下的判据，与图上**事后**结算的 `_explore_reached_success` = **同一把尺子**。
+
+    两边要是不一致：这一趟在 `reached_success` 上停住，而图上把它结算成
+    「没在页面上见到成功文案」⇒ 人会读到**两句互相打架的话**，而坏的那句会
+    **拒绝往下写 py**（尽管这一趟明明成了）。
+    """
+    from agent import graph as graph_mod
+
+    journey, _fake, _calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_MATCHED}]},
+        [{"calls": [("observe", {})]}, {"calls": [("observe", {})]}, {"content": "说完了"}],
+        budget=browser_agent.Budget(max_steps=50, max_rounds=50),
+        success_text=MATCHED,
+    )
+    assert journey.stop_reason == "reached_success", journey.stop_reason
+    assert graph_mod._explore_reached_success(journey, MATCHED) is True, (
+        "停下来说「见着了」、图上结算说「没见着」—— 同一个事实两个答案")
+
+
+@pytest.mark.parametrize("raw", ["", "  ", "a\nb", " a\t b ", "a b", "x  y", "甲　乙"])
+def test_the_two_norms_are_one_yardstick(raw):
+    """`browser_agent._norm` 与 `graph._norm_text` 必须是**同一把尺子**。
+
+    两边判的是**同一句话在不在页面上**：一个在活的探路上判（`_stop_reason`），
+    一个在事后结算里判（`_explore_reached_success`）。两边各自的归一化要是漂了，
+    上面那条「同一把尺子」会在**某些字节上**（换行 / 不换行空格 / 全角空格）悄悄裂开 ——
+    而裂开的那一侧是「图上说没见着」⇒ 拒绝写 py。
+    """
+    from agent import graph as graph_mod
+
+    assert browser_agent._norm(raw) == graph_mod._norm_text(raw)
+
+
+def test_a_replay_that_already_crossed_the_line_does_not_walk_on(tmp_path):
+    """续跑那一趟：重放回来的那一眼**已经**含着成功文案 ⇒ 重放完就收，**一轮模型都不问**。
+
+    ⚠️ 生产路径上走不到这一形（`replayable_prefix` 的 R3 会把跨过那条线的那一步切在边界外）；
+    这一条钉的是**判据长在哪**：它长在 `journey.steps` 上（重放那几步也在里面）。
+    换成「只看模型驱动的那几步」的实现，这一条当场红。
+    """
+    line = "已经收到你的申请。" + MATCHED
+    rows = [_goto(ENTRY, state="start"),
+            _look(ENTRY, TEXT_A, state="start"),
+            _click("开始申请", state="funnel"),
+            _look(QUOTE, line, state="funnel")]
+    journey, fake, calls = _run(
+        tmp_path,
+        {"observe": [{"structured": _live_page(ENTRY, TEXT_A)},
+                     {"structured": _live_page(QUOTE, line)}]},
+        [{"calls": [("click", {"selector": "#cta"})]}],      # 重放完之后它还想再点
+        budget=browser_agent.Budget(max_steps=50, max_rounds=50),
+        resume_from=rows,
+        success_text=MATCHED,
+    )
+    assert journey.replay.get("done") == 2, journey.replay
+    assert [c["name"] for c in calls] == ["goto", "observe", "click", "observe"], calls
+    assert len(fake.calls) == 0, "重放完还问了一轮模型：%d" % len(fake.calls)
+    assert journey.stop_reason == "reached_success", journey.stop_reason
+
+
+def test_the_line_wins_over_the_budget_when_both_are_true(tmp_path):
+    """⚠️ 两道闸**同时为真**时报的是**成功**那条（看见文案的那一眼正好是预算的最后一步）。
+
+    报 `budget_steps` 会把这一趟判成「没走完」⇒ 图那边**拒绝写 py** —— 而它明明成了。
+    停的**时刻**两条**一模一样**（都在下一步之前、都不做那一步），变的只是理由报哪个。
+    ⚠️ 这一条钉的是 `_stop_reason` 里那两条的**先后**：调过来它当场红。
+    """
+    journey, _fake, calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_MATCHED}]},
+        [{"calls": [("observe", {})]}],
+        budget=browser_agent.Budget(max_steps=1, max_rounds=50),   # 那一眼就是最后一步
+        success_text=MATCHED,
+    )
+    assert len(journey.steps) == 1, [s["action"] for s in journey.steps]
+    assert [c["name"] for c in calls] == ["goto", "observe"], calls
+    assert journey.stop_reason == "reached_success", (
+        "预算与成功线同时为真时报了 %r —— 那一趟会被判成「没走完」，于是不写 py"
+        % journey.stop_reason)

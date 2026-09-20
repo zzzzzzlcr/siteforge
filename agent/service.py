@@ -1944,7 +1944,7 @@ class Service:
         timeline_broken: list = []
 
         def run(url, goal, budget=None, should_pause=None, resume_from=None,
-                resume_note="", window_alive=None):
+                resume_note="", window_alive=None, success_text=""):
             started = measure._now()
             # ⚠️ **每一趟取一次号**（I-1）：`deps.explore` 在一次节点执行里最多被调
             # `graph.EXPLORE_ATTEMPTS`(=3) 趟（重探），而「一趟 = 一个 `attempt-<n>.jsonl`」。
@@ -1974,6 +1974,13 @@ class Service:
                                                 resume_from=resume_from or None,
                                                 resume_note=resume_note or "",
                                                 window_alive=window_alive,
+                                                # ⚠️ **透传**（Task 15）：这一根线是**生产那条**
+                                                # —— `graph._explore` 交给 `Deps.explore` 的
+                                                # `success_text` 走到这儿就断了的话，「见到成功
+                                                # 文案就收摊」在生产里一次都不会发生（而链路上
+                                                # 每一处看起来都接好了）。图的默认 `deps.explore`
+                                                # 是 `browser_agent.explore`，这条是服务那一条。
+                                                success_text=success_text or "",
                                                 shots_dir=shots_where,
                                                 binary=self._mcp_bin,
                                                 # Task 9：人的话「直达下一轮」那条线

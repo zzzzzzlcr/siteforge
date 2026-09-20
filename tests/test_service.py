@@ -2183,3 +2183,26 @@ def test_a_pass_that_crashed_does_not_hand_the_next_one_a_full_budget(tmp_path, 
     # 不是「那个差恰好是 26」。
     assert seen[2]["budget"].max_steps == browser_agent.DEFAULT_MAX_STEPS - 4, \
         "上一趟那 4 步没算进去（拿回了满预算）：%r" % (seen[2]["budget"],)
+
+
+def test_the_explore_the_service_builds_carries_the_success_text(monkeypatch):
+    """服务那一层**透传**成功判据（Task 15）—— 生产真正走的就是这根线。
+
+    图把 `success_text` 交给 `Deps.explore`，而生产里那根 `Deps.explore` **就是**
+    `_explore_for(...).run`（`service.py:1856` 那一处拼图）。这一层少透一次：
+    链路上每一处看起来都接好了（图上交了、`explore()` 也收，两个单测都绿），
+    而**生产里「见到成功文案就收摊」一次都不会发生** —— 真站那一趟的形状原样回来。
+    """
+    seen: dict = {}
+
+    def fake_explore(url, goal, budget=None, should_pause=None, **kw):
+        seen.update(kw)
+        return _journey(url)
+
+    monkeypatch.setattr(browser_agent, "explore", fake_explore)
+    svc = service.Service()
+    dep = svc._explore_for({"ws_url": NEW_WS_URL})
+    assert dep is not None, "载荷里给了窗口，探路那一步就得朝它去"
+    dep("https://example-funnel.test/quiz", "走通", success_text=SUCCESS)
+    assert seen.get("success_text") == SUCCESS, (
+        "服务那层把成功判据丢了（探路拿到的关键字：%r）" % sorted(seen))

@@ -35,6 +35,11 @@ Task 1 的 spike 证明了模型**肯**调工具（24 跑 0 编造、47 次真 o
 停下来的信号是 `_Stop`，它**故意**继承 `BaseException`：`run_tool_loop` 对 dispatch 抛出的
 `Exception` 是「记成一次工具失败、接着跑」—— 那对工具自己的错是对的，对「人喊停」是错的。
 
+⚠️ **闸不只那一道人的**（Task 15）：同一个 `_stop_reason` 里还有「预算到顶」与
+「**已经在页面上见到了人给的那句成功文案**」（`STOP_REACHED_SUCCESS`）。三条**共用**
+上面那两道闸 —— 所以判据加在 `_stop_reason` 里就等于**每一个工具调用之前、每一轮模型调用
+之前**都问了一遍，不必另开检查点。三条的**优先级**见 `_stop_reason` 的 docstring。
+
 两条**同源**的诚实要求（R-12）：
 
 - 人那道闸**自己抛异常**时，归一成「暂停」而不是「一次工具失败」（`_stop_or_raise`）。
@@ -577,11 +582,22 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             resume_note: str = "",
             window_alive: Callable | None = None,
             shots_dir=None, shooter: Callable | None = None,
-            steer: Callable[[], str | None] | None = None) -> Journey:
+            steer: Callable[[], str | None] | None = None,
+            success_text: str = "") -> Journey:
     """在真浏览器里为 `goal` 探 `url` 这条路，返回 `Journey`。
 
     参数：
       - `url` / `goal`：探哪一页、要摸清什么
+      - `success_text`：**人给的成功判据**（「走通之后页面上会出现哪段文字」）。
+        给了它，这一趟就多一条停因（`STOP_REACHED_SUCCESS`）：**页面上出现了这句话就
+        当场收摊**，不再往下点。为什么非加不可（2026-09-20 真站 `job-a4d100addd25`）：
+        第 66 步的正文里**就是**运营给的那句成功文案，而那一趟没有停 —— 一路走到第 71 步
+        （中间还 `goto` 去别的页、又点了一下），最后是**人按了停**才收的。
+        过线之后的每个动作都可能是**重复的真实请求**（运营的原话：「能成功为啥还要继续」
+        「我不希望她再刷」）。这句话本来就是 R3 的判据，Task 15 把它从**重放**接到了
+        **活着的那一趟**上。
+        ⚠️ **不给 / 给空串 = 判不了**（不据此停，照常跑到别的停因）—— 空不是「没有约束」，
+        更不是「什么都算成功」。口径见 `_success_hit`
       - `budget`：`Budget` / 步数（int）/ dict；不给就用默认上限（防跑飞）
       - `plan`：人给的**检查点清单**（`agent/plan.py` 的 `Plan`）。给了、且里面够
         `MIN_STEPS` 步 → 走**计划模式**（简报换成清单那一版，位置 / 偏离 / 停滞开始记账）；
@@ -654,7 +670,8 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         if not specs:
             raise RuntimeError("MCP 门上一个工具都没有 —— 工具循环没法开始")
         inner = client if client is not None else llm.client()
-        gate = _Gate(inner, lambda: _stop_or_raise(paused, journey, taken, limits),
+        gate = _Gate(inner, lambda: _stop_or_raise(paused, journey, taken, limits,
+                                                   success_text),
                      journey, watch, on_note=on_note)
 
         #: 旁路的故障**只记一次**（别每步刷一条）—— 见 `emit` 的 docstring。
@@ -701,7 +718,9 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
 
         def dispatch(name: str, args: dict) -> Any:
             nonlocal taken, fails
-            _stop_or_raise(paused, journey, taken, limits)   # ← 每一步之前（§6.2）
+            # ← 每一步之前（§6.2）。⚠️ 三条闸（人 / 成功文案 / 预算）都在这一个出口上：
+            # 模型一轮里丢了五个动作时，**过线之后的那些一个都不许发**。
+            _stop_or_raise(paused, journey, taken, limits, success_text)
             taken += 1
             step, fill = _describe(name, args, pages, journey)
             # ── 契约七格里的**前五格**：脚本只填这五格（契约 §二①）──────────────
@@ -882,7 +901,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         # 还会触发步拍、把后面每一步的编号整体挪一格 —— 而它其实是**站位**，不是探索。
         # 代价是它不进 `journey.steps`，所以**必须有一句人话说出来**（见 `_enter_target`）。
         if not resume_from:
-            _stop_or_raise(paused, journey, taken, limits)
+            _stop_or_raise(paused, journey, taken, limits, success_text)
             _enter_target(session, url, journey)
 
         opening = _brief(url, goal, limits, plan)
@@ -1021,19 +1040,84 @@ def _with_resume(opening: str, rows: list, result: dict) -> str:
     ])
 
 
-# ─────────────────────── 停止条件（人 / 预算）───────────────────────
+# ─────────────────────── 停止条件（人 / 预算 / 成功线）───────────────────────
 
 
-def _stop_reason(paused, journey, taken: int, budget: Budget) -> str | None:
-    """该不该停下？返回理由或 None。**只看，不做**（做由调用方决定）。"""
+#: 停因：**这一趟已经在页面上见到了人给的那句成功文案**（Task 15）。
+#:
+#: 为什么它是一条**独立的**停因，而不是并进「预算到顶」那一族：它说的是「这一趟**成了**」。
+#: 图那边据此照常往下写 py（`state.FINISHED_EXPLORATION`），**不是**按「没走完」处理 ——
+#: 「拿半份账本写 py」是 R0 那条禁忌，而这里账本是**全的**（通向成功的那条路就在里面）。
+#: 名字与图上事后结算的 `_explore_reached_success` **同一个事实**（同一个词，别再造一个）。
+STOP_REACHED_SUCCESS = "reached_success"
+
+
+def _success_hit(steps: list, success_text: str) -> int | None:
+    """那句成功文案**最早**出现在第几步那一眼里（`None` = 没出现过 / 判不了）。
+
+    判据与 `replayable_prefix` 的 **R3** 是**同一把尺子**：同一个 `_norm` + 子串，
+    而且只认 `observe` 行的 `page_text_head`（R3 的**前提**：正文只有 `observe` 行才写，
+    `_summarize` 是唯一的写点、破了会当场抛 `_TextPremiseBroken`）。
+    R3 与这里问的是**同一个问题**（「过了那条线没有」），只是一个问在**重放**上、
+    一个问在**活着的那一趟**上 —— 而「过了那条线之后的每一个动作都可能是重复的真实请求」
+    这句话，在活着的那一趟上更贵。
+
+    ⚠️ **两边必须一直是同一把尺子**：活的探路停下来说「见着了」、图上事后结算说
+    「没见到成功文案」的话，人读到的是两句互相打架的话，而坏的那句会**拒绝写 py**。
+    钉住它的用例：`test_the_line_the_live_run_stops_on_is_the_same_line_the_graph_settles`
+    与 `test_the_two_norms_are_one_yardstick`。
+
+    ⚠️ `success_text` 为空 ⇒ `None`（**判不了就不猜**）。空**不是**「没有约束」，
+    更**不是**「什么都算成功」—— 拿空串当通配的话，第一页就会「匹配上」并自称成功，
+    那是把「少给了一个输入」翻译成一句假话。口径与 `graph._explore_reached_success`
+    给空的三态（`None`）一致。`replayable_prefix` 对空**抛**，因为它的输入由
+    `service.reopen` 一处掌控；而这一格的输入来自**每一次** `explore()` 调用
+    （`success_text` 是个可选参数），直接抛会把「调用方没传」变成异常 —— 判据的松紧搞反了。
+    """
+    want = _norm(str(success_text or ""))
+    if not want:
+        return None
+    for i, row in enumerate(steps or []):
+        if str((row or {}).get("action") or "") != "observe":
+            continue                      # R3 的前提：正文只跟着 `observe` 进来
+        head = _norm(((row or {}).get("result") or {}).get("page_text_head") or "")
+        if head and want in head:
+            return i
+    return None
+
+
+def _stop_reason(paused, journey, taken: int, budget: Budget,
+                 success_text: str = "") -> str | None:
+    """该不该停下？返回理由或 None。**只看，不做**（做由调用方决定）。
+
+    三条闸，**顺序就是优先级**（同时为真时报哪个，全看这里）：
+
+    1. `paused` —— **人喊停**。人按下去的那一下永远是优先的那条（与 `_Gate` 那条
+       「人 / 预算在前」的注释同源）。
+    2. `reached_success` —— **页面上已经出现了人给的那句成功文案**（`_success_hit`）。
+       见到就收摊：过了那条线之后**每一个动作都可能是重复的真实请求**
+       （这句话是 R3 的判据原文，Task 15 把它从重放接到了活着的那一趟上）。
+    3. `budget_steps` —— 预算到顶。
+
+    ⚠️ ②排在③**前面**是**有意的**，不是顺手：两条同时为真时（看见成功文案的那一眼
+    正好是预算允许的最后一步），报 `budget_steps` 会把这一趟判成「没走完」⇒ 图那边
+    **拒绝写 py** —— 而它明明成了。停的**时刻**两条**一模一样**（都在下一步之前、
+    都不做那一步），变的只是**理由报哪个**；`paused` 与 `budget_steps` 各自的语义
+    因此一个字没动。钉住这两条的用例：
+    `test_the_human_stop_is_still_reported_as_the_human_stop` /
+    `test_a_budget_stop_that_never_saw_the_line_is_still_a_budget_stop`。
+    """
     if paused is not None and paused(journey):
         return "paused"
+    if _success_hit(journey.steps, success_text) is not None:
+        return STOP_REACHED_SUCCESS
     if taken >= budget.max_steps:
         return "budget_steps"
     return None
 
 
-def _stop_or_raise(paused, journey, taken: int, budget: Budget) -> None:
+def _stop_or_raise(paused, journey, taken: int, budget: Budget,
+                   success_text: str = "") -> None:
     """该停就抛 `_Stop` —— **两道闸共用这一个出口**（每步之前 / 每轮之前）。
 
     ⚠️ 人那道闸**自己抛异常**时，这里把它**归一成「暂停」**。不这么做的话，闸的错误
@@ -1043,7 +1127,7 @@ def _stop_or_raise(paused, journey, taken: int, budget: Budget) -> None:
     闸坏了要**停下来**（带上它坏在哪），不能带着一个坏掉的闸往下跑。
     """
     try:
-        reason = _stop_reason(paused, journey, taken, budget)
+        reason = _stop_reason(paused, journey, taken, budget, success_text)
     except _Stop:
         raise
     except Exception as exc:                           # noqa: BLE001
@@ -1083,6 +1167,12 @@ def _stop_note(reason: str, steps: int, detail: str = "") -> str:
                     "停下来，这一步**没有做**。宁可停下，也不带着一个坏掉的闸往下跑。")
         return (f"人喊停：在第 {steps + 1} 步之前停下来 —— 这一步**没有做**，页面保持原样"
                 "（§6.2：人是每一步都在的旁路，不是最后一关）")
+    if reason == STOP_REACHED_SUCCESS:
+        # ⚠️ 这是**成功的收尾**，不是「没走完」（那两句话下游处置相反：一说「成了、
+        # 照常写 py」，一说「半份账本写不出对的 py」）。措辞里**不许**出现「没走完」。
+        return ("这一趟**成了**：走到第 %d 步那一看，页面上已经出现了**人给的那句成功文案**"
+                " —— 见到就收摊，下一步**没有做**（过了那条线之后每一次点击都可能是"
+                "**重复的真实请求**；真站那一趟就是这么又点了几下、最后要人按停）。" % steps)
     if reason == "budget_steps":
         return f"预算到顶：走满 {steps} 步就停下（预算是**防跑飞**，不是省钱）"
     if reason == "budget_rounds":
@@ -1114,6 +1204,12 @@ def _rounds_lost_note(reason: str) -> str:
     if reason == "paused":
         return ("这一趟被人打断了，**没记到轮数**（打断的信号一穿出工具循环，"
                 "那个数就没了）—— 这里的 0 是「没量到」，不是「一轮都没花」。")
+    if reason == STOP_REACHED_SUCCESS:
+        # ⚠️ 与「人喊停」同一个形状（`_Stop` 一穿出工具循环，`rounds` 就丢了），
+        # 但**不是同一件事**：这一趟是**见到成功文案收的尾**。所以那句话
+        # （「没走完就停下了」）**不许**用在这儿 —— 它会把一次成功说成一次白跑。
+        return ("这一趟是**见到成功文案收的尾**，可轮数一样**没记到**（停止的信号一穿出"
+                "工具循环，那个数就没了）—— 这里的 0 是「没量到」，不是「一轮都没花」。")
     return ("这一趟没走完就停下了（**不是人打断的** —— 为什么停，紧挨着的那一条记着），"
             "同样**没记到轮数**（停止的信号一穿出工具循环，那个数就没了）—— "
             "这里的 0 是「没量到」，不是「一轮都没花」。")

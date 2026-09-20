@@ -1586,3 +1586,64 @@ def test_a_pass_whose_replay_needed_a_second_try_is_not_retried(tmp_path):
     note = out.get("end_note") or ""
     assert "没有重探" in note, note
     assert "系统分不出" in note, "那句人话把原因说死了（复审 ②：判据看不出是窗口还是选择器）：%s" % note
+
+
+# ────────── 见到成功文案而停 = 这一趟成了（Task 15）──────────
+#
+# 真站那一趟（2026-09-20，`job-a4d100addd25`）：第 66 步的正文里**就是**人给的
+# 成功文案，而它没停 —— 一路走到第 71 步，最后是**人按了停**才收的。
+# 修好之后这一趟会以 `reached_success` 收尾，而它的语义与 `paused` / `budget_*` 相反：
+# **它是一次成功的收尾**（那条通向成功的路就在账本里）⇒ 照常定稿 + 自测 + 交付，
+# 不许落进「没走完 ⇒ 半份账本写不出对的 py」（R0）那一支。
+
+
+def _journey_that_saw_the_line(*, stop_reason="reached_success"):
+    """一份「在页面上见到了那句成功文案就收摊」的真 Journey。
+
+    `SUCCESS` 就在最后那一眼的正文里 —— 这正是真站第 66 步的样子，
+    也是 `_explore_reached_success` 判 True 的原料（两处判的是同一句话）。
+    """
+    book = _journey(stop_reason=stop_reason)
+    book.steps.append({"state": "thanks", "action": "observe", "note": "看了一眼页面",
+                       "target": {}, "result": {"ok": True, "url": URL, "title": "Thanks",
+                                                "page_text_head": "已经收到你的申请。" + SUCCESS}})
+    return book
+
+
+def test_a_run_that_saw_the_success_line_goes_on_and_writes_the_py(tmp_path):
+    """★ 见到了成功文案而停 ⇒ **照常往下写 py**（不是 `explore_unfinished`）。
+
+    判据落在**真发生的事**上：`rec.write` 有没有被调（图有没有走到 draft），
+    以及 `explore_say`（人读的那句话）有没有把这一趟说成「停得不明不白」。
+    """
+    deps, rec = _deps(journey=_journey_that_saw_the_line())
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] != "explore_unfinished", (
+        "「成了就停」落进了「没走完」那一支 —— 那会因为成功而拒绝写 py：%r"
+        % (out.get("end_note"),))
+    assert len(rec.write) == 1, (
+        "这一趟已经踩到成功文案了，却没往下写 py：%r" % (out.get("end_note"),))
+    assert out["explore_reached_success"] is True, out.get("explore_reached_success")
+    assert len(rec.explore) == 1, (
+        "成了的那一趟还重探了 %d 趟 —— 重探就是在真页面上把同一段再撞一遍" % len(rec.explore))
+    say = out["explore_say"]
+    assert "不明不白" not in say, say
+    assert "reached_success" not in say, "内部停因的 token 进了人话（M-5）：%s" % say
+
+
+def test_the_graph_hands_explore_the_success_text_the_human_gave(tmp_path):
+    """探路要拿到**人给的那句成功判据** —— 那是「见到就停」唯一的输入。
+
+    图上没有别的地方能给得出它：`success_text` 只活在 state 里（载荷 → intake → state），
+    而 `explore()` 原先只收 url / goal / 预算 / 暂停谓词那几样。少给这一个输入，
+    这一趟就会**照旧**在成功之后继续点下去（2026-09-20 真站那一趟的形状）。
+    """
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    _drive(app, cfg, _brief(tmp_path))
+
+    assert rec.explore, "探路一次都没被调"
+    assert rec.explore[0]["kw"].get("success_text") == SUCCESS, (
+        "图上没把成功判据交给探路（拿到的关键字：%r）" % sorted(rec.explore[0]["kw"]))

@@ -504,7 +504,14 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
                             should_pause=deps.should_pause,
                             resume_from=resume_from or None,
                             resume_note=resume_note,
-                            window_alive=deps.window_alive)
+                            window_alive=deps.window_alive,
+                            # ⚠️ **人给的那句成功文案**（Task 15）：探路靠它判断
+                            # 「这一趟已经成了 ⇒ 当场收摊」，不再往下点（过了那条线之后
+                            # 每一个动作都可能是重复的真实请求）。图上**只有这里**能给得出它
+                            # —— 它活在 state 里（载荷 → intake → state），而 `explore()`
+                            # 原先收不到。少传这一个参数：这一趟会照旧在成功之后继续点下去
+                            # （2026-09-20 真站那一趟的形状），而且**没有任何地方会响**。
+                            success_text=state.get("success_text"))
         journeys.append(book)
         attempts.append({"n": n,
                          "reached": _explore_reached_success(book, state.get("success_text")),
@@ -588,6 +595,11 @@ def _worth_retrying(reached, journey, resume_from) -> bool:
 
     **留着**的（`model_done` / `ended` / `plan_stalled`）都是「这一趟对这条路做了一次干净的
     观察、只是没走到成功」—— 换个随机答案可能走通，那正是重探的立意。
+
+    ⚠️ **「见到了成功文案而停」（`browser_agent.STOP_REACHED_SUCCESS`，Task 15）走不到这里**
+    —— 最上面那条 `if reached is not False: return False` 先拦住了它：那个停因的定义就是
+    「页面上见到了那句文案」⇒ `_explore_reached_success` 必为 True ⇒ 这一趟**本来就不该重探**
+    （重探 = 在真页面上把同一段再撞一遍）。这里写下来是因为上面那张名单看着像「所有停因」。
 
     ⚠️ **它同时是「不许内外两层 3 次叠加」的那根结构线**（复审 Q3 / 修复轮 2 的 ②）：
     `replay` 内部最多 `REPLAY_ATTEMPTS=3` 遍；而**烧了不止一遍的那一趟一定是最后一趟**
@@ -1047,6 +1059,12 @@ def _journey_say(journey) -> str:
     tail = notes[-1] if notes else ""
     if stop == "model_done":
         head = "探路走完了：agent 自己说讲完了。"
+    elif stop == browser_agent.STOP_REACHED_SUCCESS:
+        # ⚠️ 这一条**必须**说成「走完了」：它是**成功的收尾**（页面上出现了人给的那句
+        # 成功文案），不是「停得不明不白」——抬头写成后者是**假话**，而且内部停因的
+        # token 也不许进人话（M-5：读这份账的人是非技术的人）。
+        head = ("探路走完了：页面上见到了人给的那句**成功文案**（见到就收摊"
+                "—— 过了那条线之后每一次点击都可能是重复的真实请求）。")
     elif stop == "paused":
         head = "探路被人喊停了。"
     elif stop.startswith("budget"):
