@@ -39,6 +39,25 @@ SUCCESS_TEXTS = ['Thank you', 'Your quote is ready']
 # bool(_cur_tab) 恒真 → 连续失败计数每步被清零 → 失败任务必磨完全程），
 # 所以这条必须产物**自带**，不指望外面兜。
 STUCK_LIMIT = 3
+# 一步**没做成**之后，把它那一组**从头再走一遍**；这个数是**一趟里**的总次数上限。
+#
+# 为什么要重试（2026-09-20 真站实测，单号 26015658）：
+#   第 11 步「页面上没找到「330i」」 —— 就这一下，问卷没前进 ⇒ 第 12~24 步的
+#   `Progress: N%` 判据全废 ⇒ 最后在**空表**上点「See My Match」、一个字段都没填。
+#   现有的兜底（`_relocate` 那条「换了第 3 个找法」）**已经跑过**了：找过、没找到。
+#   缺的是「失败之后退一步重来」—— 产物是**纯线性**的，一步没成，后面全部错位。
+#   而这类站最常见的自愈就是「下拉没选上 ⇒ 重开一次多半能选上」。
+#
+# 为什么是 **1**（不是 2、不是 3）：重试的代价是**在真页面上多做几个真实动作**，
+# 而运营那边的口径是「刷太多不太好」「能成功为啥还要继续」——
+#   - 一趟里至多 1 次 ⇒ 整趟**多做的真实动作 = 那一组的动作数**，不随失败次数累积；
+#   - 这个数有多大是量过的（本产物 `STATES` 19 组、25 步：13 组 1 步、6 组 2 步）
+#     ⇒ **一次重试最多多做 2 个真实动作**；实测卡住的那一组（「点 330i」）是 1 步。
+# ⚠️ 这是**报给运营拍板**的数，不是这里能自己放大的 —— **别调大它而不去问**。
+GROUP_RETRY_LIMIT = 1
+# 判据**只有地址**时，开跑之前要说的那句话（生成期在 `when["text_why"]` 里留了原因时，
+# 把那一句接在它后面 —— 生成期说的话**原样转出来**，产物不另编一句）。
+URL_ONLY_WHY = "生成期没给它正文判据 —— 这一组只靠地址认页"
 # trace 里落的页面签名长度：与 cdp observe 的 page_text 同口径（§4.3「归一化后前 600 字」）。
 PAGE_TEXT_CHARS = 600
 #: trace 里**另外**留的尾部长度（`page_sig_tail`）—— 子帧的正文常常落在前 600 字之后，
@@ -649,6 +668,11 @@ class Filler:
     #: 类默认值同上：`object.__new__(Filler)` 的实例够得着这一格。
     goto_echo = ""
 
+    #: 「这一组要重来一遍」那句话 / 这一趟重试过几次（见 `__init__`）。
+    #: 类默认值同上：`object.__new__(Filler)` 那种实例也要够得着（它是 `_run_step` 读的）。
+    retry_why = None
+    group_retries = 0
+
     def __init__(self, ws_url, form_file, correlation_id, task_id="",
                  trace=None, stop_at=None, shots="failed", delay=DELAY_RANGE,
                  no_report=False):
@@ -671,6 +695,13 @@ class Filler:
         self.skipped = 0       # 被 `when` 判据整组跳过的步数（最后那句总结要报出来）
         self.skipped_states = {}   # 状态名 → 被跳过的步数（报「跳过最多的是哪个状态」）
         self.stalled = 0       # 连续「点了但页面没动」的步数（另一种原地打转）
+        #: 这一趟**已经重试过几次状态组**（上限 `GROUP_RETRY_LIMIT`，一趟里算总数）。
+        #: ⚠️ 它与 `stuck` 是**两个**计数器，别合并：`stuck` 数「连着几步没做成」（早停看它），
+        #: 它数「退一步重来过几次」（成本闸看它）。重试成功了 `stuck` 会清零，它**不清**——
+        #: 否则「重试上限」就变成了「只要这次重试成了，下次还能再重试」。
+        self.group_retries = 0
+        #: 触发重试的那一步要带的那句话（进它的 trace 行；用完即清，与 `progress_why` 同规矩）。
+        self.retry_why = None
         self._reported_url = ""
         self.missing = set()   # 这个 cdp 没有的命令（认出来一次就够：之后不再白跑、不再喊）
         self.commands = None   # 它的命令表（`--help` 数的）；None = 还没探过/探不出来
@@ -1781,6 +1812,37 @@ class Filler:
         self._when_why_cache = "" if ok else self._when_why(when)
         return ok
 
+    def _say_url_only_whens(self):
+        """哪些状态的判据**只有地址** —— 开跑之前说一次（**不许沉默**）。
+
+        ★ 2026-09-20 gowizard 线①：`when.text_contains` 是生成期**从一次观测**取的一段
+        子串。站点对同一页给两种免责声明（A/B，实测 72 趟里 3 趟撞上 B）时，钉住 A 的
+        那条判据在 B 那一趟**整组不成立** —— 而 `auto_warranty` 是 `start` 之后的
+        **第一个**状态组，它一跳过，「Reject All」「Get Free Quote」两个动作都没做
+        ⇒ 25 步里 24 步全跳过 ⇒ **0 次真实点击** ⇒ `no_success`。
+
+        产物上「只有地址一条」与「判据本来就只有地址」长得**一模一样** —— 读日志的人
+        分不出「查过了，只有地址稳」和「没钉出来，只好只钉地址」。所以这里主动说，
+        不等它真的整组跳过了，再从「没走到成功」那句里往回猜。
+
+        ⚠️ **只报「有地址、没正文」的那种**：`when=None` 是**有意不设**判据（旁枝起点
+        那类，见 `_drop_incidental_start_when`），与「钉不出来」是两件事。混在一起，
+        真钉不出来的那些会被有意不设的那堆淹掉。
+        """
+        bare = []
+        for state in STATES:
+            when = state.get("when")
+            if not isinstance(when, dict) or not when.get("url_contains"):
+                continue
+            if when.get("text_contains"):
+                continue
+            bare.append((state.get("name") or SITE, when))
+        for name, when in bare:
+            self.log.warning("[%s] 状态「%s」的判据**只有地址**（%s）：%s",
+                             self.cid, name, when["url_contains"],
+                             when.get("text_why") or URL_ONLY_WHY)
+        return len(bare)
+
     def _succeeded(self):
         signature = self.page_signature().lower()
         return any(_norm(t).lower() in signature for t in SUCCESS_TEXTS if t)
@@ -1793,6 +1855,10 @@ class Filler:
 
         before_path, shot_before, signature = None, None, ""
         self.progress_why, self.shots_why = None, None
+        #: 「这一组要重来一遍」那句（`run()` 在上一步**没做成**之后写下的）—— 它是
+        #: **这一步**的一部分（这一步就是那一组的重来），所以在这里取走并清掉，
+        #: 与 `progress_why` 同一条规矩：那句话只属于触发它的那一步，不许粘在下一步上。
+        retry_why, self.retry_why = self.retry_why, None
         if self.tracing:
             signature = self.page_signature()
             model = self._observe()
@@ -1832,6 +1898,11 @@ class Filler:
                 except OSError:
                     pass
 
+        if retry_why:
+            # 重试这件事**必须进 trace**（Console 与自测读的是 trace，不是日志）：
+            # 不说的话，读的人只看到「第 1 步 ok=false、第 2 步 ok=true」，会读成
+            # 「它自己好了」—— 而第 2 步其实是**在真页面上多做的那个动作**。
+            note = "%s；%s" % (retry_why, note)
         if progress is False:
             note += "；页面没有变化"
         elif progress is None and self.tracing:
@@ -1901,6 +1972,10 @@ class Filler:
         # 生产每单都是新窗口 → 每单都会遇到它，而账本里通常没有这一步）。
         self._clear_obstructions()
 
+        # ★ 线①：判据**只有地址**的状态，先喊一声（见 `_say_url_only_whens` 的 docstring）——
+        # 在**任何一步之前**说，这样即使它整组被跳过了，日志里也早就有那句为什么。
+        self._say_url_only_whens()
+
         index = 0
         try:
             for state in STATES:
@@ -1909,7 +1984,11 @@ class Filler:
                     continue
                 name = state.get("name") or SITE
                 applies = self._applies(state.get("when"))
-                for step in steps:
+                #: 这一组走到第几个动作了。⚠️ 用**游标**而不是 `for step in steps`：
+                #: 一步没做成时要把这一组**从头再走一遍**（线③），游标能回去，for 不能。
+                cursor = 0
+                while cursor < len(steps):
+                    step = steps[cursor]
                     index += 1
                     self.step = index
                     if not applies:
@@ -1932,6 +2011,10 @@ class Filler:
                                      "skipped": True, "state": name, "why": why,
                                      "note": "第 %d 步跳过：这一页不像「%s」那个状态（%s）"
                                              % (index, name, why)})
+                        # ⚠️ 游标**必须自己前进**：这里原来是 `for step in steps` 里的
+                        # `continue`（循环自己会往下走），换成 `while` 之后不推它就是**死循环**
+                        # （跳过的那一组会一直判、一直跳过、跑到天荒地老）。
+                        cursor += 1
                         continue
                     self._rpt_if_moved(name)
                     if (step.get("action") or "") == "goto":
@@ -1971,6 +2054,35 @@ class Filler:
                                       self.cid, index)
                         self._trace({"stopped_at": index})
                         return False
+
+                    # ── 线③：一步没做成 ⇒ **把这一组从头再走一遍**（一次为限）──────────
+                    # 真站实测（26015658）：第 11 步「页面上没找到「330i」」⇒ 问卷没前进 ⇒
+                    # 第 12~24 步的 `Progress: N%` 判据全废 ⇒ 最后在**空表**上点提交、
+                    # 一个字段都没填。产物是**纯线性**的，一步没成后面全部错位；
+                    # 而这类站最常见的自愈就是「下拉没选上 ⇒ 重开一次多半能选上」。
+                    #
+                    # ⚠️ 三件事都钉在这里，缺一不可：
+                    #   ① 上限（`GROUP_RETRY_LIMIT`，且**一趟里算总数**）—— 不许无限重试；
+                    #   ② **说人话**（日志一行 + 那一步的 trace 行）—— 不许静默重试；
+                    #   ③ 重来的是**整组**（游标回 0），不是「把那一步再点一下」。
+                    # ⚠️ 位置在**早停之后**：连着没做成的步数照旧攒，`stuck` 到顶就收摊 ——
+                    #    重试不许把早停那条唯一的刹车拆掉（§13 的成本模型）。
+                    # ⚠️ 重试**不再判一次 `when`**：这一组的门在进组时已经判过了，而页面上
+                    #    什么都没推进（失败的那一步没成）。重判会把「重试」变成「整组跳过」——
+                    #    那正是这套产物最贵的那类失败。
+                    if not ok and self.group_retries < GROUP_RETRY_LIMIT:
+                        self.group_retries += 1
+                        self.retry_why = (
+                            "重试「%s」这一组（第 %d 次，上限 %d 次）：刚才那一步没做成，"
+                            "把这一组 %d 步从头再走一遍"
+                            % (name, self.group_retries, GROUP_RETRY_LIMIT, len(steps)))
+                        self.log.warning("[%s] 第 %d 次重试「%s」这一组（上限 %d 次）："
+                                         "把它那 %d 步从头再走一遍 —— 刚才第 %d 步没做成",
+                                         self.cid, self.group_retries, name, GROUP_RETRY_LIMIT,
+                                         len(steps), index)
+                        cursor = 0
+                        continue
+                    cursor += 1
 
             if self._succeeded():
                 self._rpt("success")

@@ -252,6 +252,28 @@ _SENTENCE_RE = re.compile(r"[。！？\n]+")
 #: 一个状态的 `when` 里带多少字的页面文字（够认出「是不是这一页」，又不至于一改就失配）。
 WHEN_SNIPPET_CHARS = 48
 
+#: 判据里**钉不出正文那半条**时，写在 `when` 上的那句人话（`when["text_why"]`）。
+#:
+#: ⚠️ **为什么非要留这句话**（2026-09-20，gowizard 线①）：`when.text_contains` 是生成期
+#: **从一次观测**取的一段子串 —— 站点对同一页给两种免责声明（实测 72 趟里 3 趟撞上 B）时，
+#: 钉住 A 的那条判据在 B 那一趟**整组不成立**；而 `auto_warranty` 是 `start` 之后的
+#: **第一个**状态组，它一跳过，「Reject All」「Get Free Quote」两个动作都没做
+#: ⇒ 25 步里 24 步全跳过 ⇒ **0 次真实点击** ⇒ `no_success`。
+#:
+#: 而产物上「只有 URL 一条」与「本来就只有 URL」长得**一模一样**（都是 `{'url_contains': …}`）
+#: —— 读的人分不出「查过了，只有 URL 稳」和「没钉出来，只好只钉 URL」。所以要**说出来**：
+#: 生成期写进 `when["text_why"]`，产物开跑时照着它喊（`Filler._say_url_only_whens`）。
+WHEN_TEXT_DROPPED = ("这个状态的判据**只有 URL**：生成期没能钉出一段稳定的正文（%s）—— "
+                     "站点换一版文案，这一组就会**整组被跳过**。")
+#: 「没钉出正文」的第一种原因：这一次观测**根本没读到正文**。
+WHEN_NO_TEXT_WHY = "这一次观测没读到页面正文（`page_text` 是空的）"
+#: 第二种原因：读到了正文，可**照它取出来的那条判据当场就不成立**。
+#: ⚠️ 这一支眼下够不着（`_snippet` 取的是那一页正文自己的前缀，必然成立）——
+#: 留着是因为它的**反面**才是要命的那件事：判据当场不成立却照样发出去，
+#: 重放时会变成整组静默跳过。够不着 ≠ 可以删：删了它，「取出来的判据当场不成立」
+#: 就会**静默**地发出去。（别把这句读成「有一条用例钉着它」—— 没有。）
+WHEN_TEXT_UNVERIFIED_WHY = "照这一次观测取出来的那段正文，在这一次观测上就不成立"
+
 #: 看着像轮换码的 path 末段长什么样（字母数字，可带 `-_.` 分隔；**还要含数字**才算，
 #: 见 `_id_like`）。`cr640` / `gt1791-1` / `a3f9c2` / `12345` 都算，`checkout` 不算。
 _ID_LIKE_RE = re.compile(r"[0-9a-z]+(?:[-_.][0-9a-z]+)*")
@@ -692,7 +714,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
     limits = _as_budget(budget)
     paused = _as_predicate(should_pause)
     journey = Journey()
-    pages = _Pages()
+    pages = _Pages(journey=journey)
     #: 步拍（§5.4）。**只有调用方给了目录才建** —— 不给 = 今天的行为，一个字节不变
     #: （连 `shooter` 都不看一眼）。`shooter` 不给就用 `shots.capture_via_session`。
     #:
@@ -3332,10 +3354,15 @@ class _Pages:
     而 `when` 是在**进这个状态时**判的（`_applies`），判错了整组步骤被静默跳过。
     """
 
-    def __init__(self, site_url: str = ""):
+    def __init__(self, site_url: str = "", journey=None):
         self.pages: list = []
         self._used = {START_STATE}
         self._current: dict | None = None
+        #: 记一页时**顺手往账本上说一句话**的去处（`note_page` 里那条「判据只有 URL」）。
+        #: 为什么它在这儿而不是在 `note_page` 里现取：`_Pages` 自己够不着账本，
+        #: 而这一句话的**出处**就是「记了这一页」那一刻 —— 挪出去就变成了「谁记得谁来记」。
+        #: 不给（测试直接 `_Pages()`）= 不记账，其余行为一个字节不差。
+        self.journey = journey
         #: 这次要探的那个站点的主机名（判「第一页是不是站点自己的页」用）
         self._site_host = _host_of(site_url)
         #: **最近一眼那页的原始签**（契约 §二 `sig_before` 就是它）。
@@ -3388,7 +3415,21 @@ class _Pages:
         }
         self.pages.append(entry)
         self._current = entry
+        self._note_if_the_when_is_bare(entry)
         return previous
+
+    def _note_if_the_when_is_bare(self, entry: dict) -> None:
+        """这个状态的判据**只有 URL** 时，往账本上说一句（带状态名）。
+
+        ⚠️ 为什么要在**记下这一页的那一刻**说：这句话说明的是「生成期没钉出正文判据」，
+        而它唯一的出处就是 `_when_for` —— 挪到收尾时再扫一遍，等于把同一件事的判据
+        在第二个地方重写一遍，两处早晚会漂（这句就是 `WHEN_TEXT_DROPPED` 那个常量的
+        意思，一个字都不改地搬过来）。
+        """
+        when = entry.get("when")
+        why = when.get("text_why") if isinstance(when, dict) else None
+        if why and self.journey is not None:
+            self.journey.note("「%s」这个状态：%s" % (entry.get("name") or "", why))
 
     def _unique(self, stem: str) -> str:
         name = stem
@@ -3410,6 +3451,11 @@ def _when_for(model: dict) -> dict | None:
     「防 A/B 变体、防步骤增减」。`when` 判太严的后果**永远是**整组步骤被静默跳过。
     正文那一段是从这一页的 `page_text` 里**取的原文** —— 它是当时那一页的**子串**，
     所以必然成立（`when_holds` 在生成时就会验一遍）。
+
+    ⚠️ **正文那半条钉不出来的时候要说出来**：返回的 `when` 上带一句 `text_why`
+    （见 `WHEN_TEXT_DROPPED`）。这是**有损**的（判据少了一半），而有损必须说 ——
+    不然产物上「只有 URL」与「判据本来就只有 URL」长得一模一样，读的人分不出
+    「查过了，只有 URL 稳」和「没钉出来」。**不许**悄悄退化成只有 `url_contains` 一条。
     """
     when: dict = {}
     url = _stable_url(model.get("url") or "")
@@ -3421,7 +3467,17 @@ def _when_for(model: dict) -> dict | None:
         when["text_contains"] = [snippet]
     if not when:
         return None
-    return when if when_holds(when, model) else ({"url_contains": url} if url else None)
+    if snippet and when_holds(when, model):
+        return when
+    # ── 退化成「**只有 URL**」那一条 ────────────────────────────────────
+    # ⚠️ 这一支是**有损**的（判据少了一半，站点改文案就整组跳过）⇒ **有损必须说**
+    #    （Global Constraints：没有静默的路径）。所以不是返回一个光秃秃的
+    #    `{'url_contains': …}`，而是**带上那句为什么**（读产物/日志的人靠它分辨
+    #    「查过、只有 URL 稳」与「没钉出来」）。
+    if not url:
+        return None
+    why = WHEN_NO_TEXT_WHY if not snippet else WHEN_TEXT_UNVERIFIED_WHY
+    return {"url_contains": url, "text_why": WHEN_TEXT_DROPPED % why}
 
 
 def _stable_url(url: str) -> str:

@@ -1502,6 +1502,69 @@ def test_the_when_snippet_does_not_lead_with_decoration():
         "Progress: 30% What state do you live in?"
 
 
+def test_a_when_that_can_not_be_pinned_says_so():
+    """★ 线①：钉不出正文判据时**必须说出来** —— 不许悄悄退化成只有 `url_contains` 一条。
+
+    为什么这是硬要求（2026-09-20 gowizard 线①）：`when.text_contains` 是生成期**从一次
+    观测**取的一段子串。站点对同一页给两种免责声明时（实测 72 趟里 3 趟），钉住 A 的那条
+    判据在 B 那一趟整组不成立 —— `auto_warranty` 是 `start` 之后的**第一个**状态组，
+    它一跳过，「Reject All」「Get Free Quote」两个动作都没做，25 步里 24 步全跳过、
+    **0 次真实点击** ⇒ `no_success`。
+
+    而产物上「只有 URL 一条」与「本来就只有 URL」长得**一模一样**（都是
+    `{'url_contains': …}`）—— 读的人分不出「查过了，只有 URL 稳」和「没钉出来」。
+    这一格把**后者**说出来：判据里带一句人话（`text_why`）。
+    """
+    # ① 这一眼**根本没读到正文**（真站实测有这一格：`page_text` 读出来是空的）
+    bare = {"url": "https://example.test/quiz", "title": "t", "page_text": ""}
+    when = browser_agent._when_for(bare)
+    assert when["url_contains"] == "https://example.test/quiz", when
+    assert "text_contains" not in when, when
+    assert "text_why" in when, "钉不出来就得说出来：%r" % (when,)
+    assert "只有 URL" in when["text_why"], when["text_why"]
+
+    # ② 正文只有装饰字符（`_snippet` 削完就什么都不剩）—— 同一格
+    junk = {"url": "https://example.test/quiz", "title": "t", "page_text": "___ ---  "}
+    when2 = browser_agent._when_for(junk)
+    assert "text_contains" not in when2 and "text_why" in when2, when2
+
+    # ③ 反例（同一格）：正文钉得出来 → **一个字都不许加**
+    #    （正常情况被说成「不稳定」= 每个产物都在喊狼来了）
+    ok = browser_agent._when_for(PAGE_LANDING)
+    assert ok["text_contains"], ok
+    assert "text_why" not in ok, ok
+
+    # ④ 连地址都取不出来（不是 http(s)）→ 仍然是「没有判据」，不许编一句出来
+    assert browser_agent._when_for({"url": "", "title": "t", "page_text": ""}) is None
+
+
+def test_the_unpinned_when_reaches_the_ledger(tmp_path):
+    """钉不出来的那句话要**进账本**，而且要**带着状态名** —— 读账本的人才知道是哪一组。"""
+    journey, _, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": dict(PAGE_LANDING, page_text="")},
+                     {"structured": PAGE_QUIZ}],
+         "click": [{"structured": {"ok": True}}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#opt-daily"})]},
+         {"content": "完了"}],
+    )
+    states = journey.states()
+    assert len(states) == 2, "前提：两页各得留下一步，不然状态会被整组丢掉：%s" % (states,)
+    said = [n for n in journey.notes if "只有 URL" in n]
+    assert said, "钉不出正文判据这件事必须进账本：%s" % (journey.notes,)
+    assert any(states[0]["name"] in n for n in said), (states[0]["name"], said)
+
+    # 判据跟着状态一起走（产物就靠它把这件事说给读日志的人）
+    assert states[0]["when"]["text_why"], states[0]["when"]
+    assert "text_contains" not in states[0]["when"], states[0]["when"]
+
+    # 反例（同一格）：**钉得出来的那一页不许被记账**（不然账上每页都在喊）
+    assert "text_why" not in (states[1]["when"] or {}), states[1]["when"]
+
+
 def test_an_incidental_start_page_gets_no_when():
     """起点那一页与**后面每一页**都不同源 → 它是旁枝，**不设判据**。
 

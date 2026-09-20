@@ -905,6 +905,12 @@ def test_shots_only_for_failed_steps(sandbox, form_file, tmp_path):
 
     ⚠️ 中间的填表步是**故意**的：diff 判不了填/选（§4.6 的能力边界），
     所以一个填表步就算 progress=false 也不该被当成「失败」而留图。
+
+    ⚠️ **2026-09-20 这条的形状变了**（Task 5 线③：一步没成 ⇒ 把它那一组从头再走一遍）：
+    第 1 步没做成之后多了**一次重走**（同一个 `target`、同样的失败），
+    所以现在是 5 步、失败落在第 1/2/5 步。改的是**步号**，判据一个字没放宽：
+    仍然是「失败的留两张图、成功的**一张都不留**」，而且现在多钉了一条
+    「重走那一步也是一步，它照样按失败留图」。
     """
     steps = [
         _failed_click(1),
@@ -929,9 +935,13 @@ def test_shots_only_for_failed_steps(sandbox, form_file, tmp_path):
     f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace))
     f.run()
     pngs = sorted(p.name for p in tmp_path.glob("*.png"))
-    assert pngs == ["1-after.png", "1-before.png", "4-after.png", "4-before.png"], pngs
+    assert pngs == ["1-after.png", "1-before.png", "2-after.png", "2-before.png",
+                    "5-after.png", "5-before.png"], pngs
     lines = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert [ln["ok"] for ln in lines] == [False, True, True, False]
+    assert [ln["ok"] for ln in lines] == [False, False, True, True, False]
+    assert [ln["target"] for ln in lines][:3] == ["Go", "Go", "没写名字的元素"], (
+        "第 2 步是**重走**那一组的第一个动作（同一个 target「Go」），不是「往下走」: %s"
+        % ([ln["target"] for ln in lines],))
     assert all(ln["shot_before"] and ln["shot_after"] for ln in lines if ln["ok"] is False)
     assert all(ln["shot_before"] is None and ln["shot_after"] is None for ln in lines if ln["ok"])
 
@@ -983,7 +993,13 @@ def _gap_warnings(caplog, text="不会"):
 
 
 def test_legacy_cdp_gaps_are_said_in_human_words(sandbox, form_file, tmp_path, caplog):
-    """缺命令 → **人话说一次**（每条一次）+ trace 里的 null 带上为什么，而不是静默。"""
+    """缺命令 → **人话说一次**（每条一次）+ trace 里的 null 带上为什么，而不是静默。
+
+    ⚠️ **2026-09-20 这条的行数变了**（2 → 3，Task 5 线③ 的状态组重试）：第 1 步没做成
+    之后多了**一次重走**，所以 trace 是 3 行。这正是「重试要花一个真实动作」那笔账 ——
+    而这个站的产物里那一组至多 2 步（见模板里 `GROUP_RETRY_LIMIT` 的注释）。
+    ⚠️ 缺命令那几句的口径**没动**：仍然每条只喊一次（重走那一步没让它多喊）。
+    """
     src = template.render("example-legacy", "Thank you", _walk_states(2, _failed_click),
                           [], SAMPLE_PROVENANCE)
     module, _ = _load("run_legacy", src, sandbox)
@@ -1004,7 +1020,7 @@ def test_legacy_cdp_gaps_are_said_in_human_words(sandbox, form_file, tmp_path, c
     assert not [m for m in said if "#" in m], ("给人看的话里不许出现选择器", said)
 
     lines = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert len(lines) == 2, lines
+    assert len(lines) == 3, lines
     for line in lines:
         assert line["progress"] is None, "判不出来就说判不出来 —— 不许当成「没推进」"
         assert "cdp" in (line["progress_why"] or ""), line
@@ -1193,6 +1209,10 @@ class _State:
         # 生产那个 cdp 没有 screenshot 命令，而真 CDPHelper.screenshot() 只交 stdout、
         # 把 stderr 丢了（common.py:244 `return result.stdout.strip()`）—— 于是它返回空串。
         self.fail_screenshot = False
+        #: 逐选择器的失败**次数表**：`{"#go": 1}` = 「#go 前 1 次报错，之后就好」。
+        #: 为什么需要它：`fail_actions` 是**一路错到底**，演不出「重试之后好了」——
+        #: 而「下拉没选上 ⇒ 重开一次多半能选上」正是状态组重试要治的那个形状。
+        self.fail_plan = {}
         self.actions = []        # ("click", sel) / ("form", sel, value) / ("scroll", px) / ("goto", url)
         #: 每次 `form` 的 (选择器, strict, expect_label) —— 严格闸那两条参数的钉子
         self.form_strict = []
@@ -1217,6 +1237,10 @@ class CDPHelper:
         self.host, self.port = (head.split(":") + ["9222"])[:2]
 
     def _fail(self, selector, frame_id=""):
+        left = STATE.fail_plan.get(selector, 0)
+        if left > 0:                       # 按次数失败：演「第一次没成、重试成了」
+            STATE.fail_plan[selector] = left - 1
+            return True
         return (STATE.fail_actions or selector in STATE.fail_selectors
                 or (bool(frame_id) and frame_id in STATE.fail_frames))
 
@@ -2366,3 +2390,215 @@ def test_a_consent_step_whose_banner_is_still_there_is_still_a_failure(sandbox, 
         "#onetrust-accept-btn-handler|Accept Cookies")     # 弹层还在
     assert rows[1]["ok"] is False, (
         "弹层还在页面上时，那一步找不到元素**就是失败**，不许软跳过: %s" % rows.get(1))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Task 5 —— 线①（判据只有 URL 要说出来）+ 线③（一步没成 ⇒ 重走那一组）
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+#: 生成期钉不出正文判据时写在 `when` 上的那句话（形状照抄
+#: `agent/browser_agent.py` 的 `WHEN_TEXT_DROPPED`；这里**写死一份字面量**是有意的 ——
+#: 产物与生成器是两个文件，它们之间那句契约由这条用例钉着，不由 import 糊过去）。
+URL_ONLY_WHY = ("这个状态的判据**只有 URL**：生成期没能钉出一段稳定的正文"
+                "（这一次观测没读到页面正文（`page_text` 是空的））—— "
+                "站点换一版文案，这一组就会**整组被跳过**。")
+
+
+def _url_only_states():
+    """一个判据**只有地址**的状态（生成期没钉出正文那半条）。"""
+    return [{
+        "name": "quiz",
+        "when": {"url_contains": "https://example.test/quiz", "text_why": URL_ONLY_WHY},
+        "steps": [_ok_click(1)],
+    }]
+
+
+def test_a_url_only_when_is_announced_when_the_product_starts(sandbox, form_file, caplog):
+    """★ 线①：判据**只有地址**的状态，产物**开跑之前**就要说出来 —— 不许沉默。
+
+    为什么这条是硬要求（2026-09-20 gowizard 线①）：`when.text_contains` 是生成期从
+    **一次观测**取的子串。站点对同一页给两种免责声明（A/B，实测 72 趟里 3 趟）时，
+    钉住 A 的那条判据在 B 那一趟整组不成立 —— 而 `auto_warranty` 是 `start` 之后的
+    **第一个**状态组，它一跳过，「Reject All」「Get Free Quote」两个动作都没做 ⇒
+    25 步里 24 步全跳过 ⇒ **0 次真实点击** ⇒ `no_success`。
+
+    产物上「只有 URL 一条」与「判据本来就只有 URL」长得**一模一样**，所以这里主动说 ——
+    不等它真的整组跳过了，才让读日志的人从「没走到成功」那句里往回猜。
+    """
+    src = template.render("example-url-only", "Thank you", _url_only_states(),
+                          [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_url_only", src, sandbox)
+    common = _stub(sandbox, observe={"url": "https://example.test/quiz", "actions": [], "fields": []})
+    common.STATE.texts = ["Thank you"]
+
+    with caplog.at_level(logging.WARNING):
+        assert module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run() is True
+
+    said = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    hits = [m for m in said if "quiz" in m and "只有" in m]
+    assert len(hits) == 1, ("判据只有 URL 的状态要喊一次，实际 %r" % (said,))
+    assert "https://example.test/quiz" in hits[0], hits[0]
+    # 判据丢掉的理由**原样转出来**（生成期说的那句话，产物不许自己另编一句）
+    assert "没读到页面正文" in hits[0], hits[0]
+
+    # 生成期**没写** `text_why` 的（手写的 / 更早生成的产物）也要说 —— 判据弱是**事实**，
+    # 与「这句话有没有传下来」无关（少说一句就等于沉默，而沉默正是这一格要治的）
+    caplog.clear()
+    old_module, _ = _load(
+        "run_url_only_old",
+        template.render("example-url-only-old", "Thank you", [{
+            "name": "quiz", "when": {"url_contains": "https://example.test/quiz"},
+            "steps": [_ok_click(1)]}], [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common.STATE.reset()
+    common.STATE.texts = ["Thank you"]
+    with caplog.at_level(logging.WARNING):
+        assert old_module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run() is True
+    old_hits = [r.getMessage() for r in caplog.records
+                if r.levelno >= logging.WARNING and "quiz" in r.getMessage()
+                and "只有" in r.getMessage()]
+    assert len(old_hits) == 1, caplog.text
+
+    # 反例（同一格）：**判据齐的产物一个字都不许喊** —— 不然每个产物都在喊狼来了
+    caplog.clear()
+    ok_module, _ = _load(
+        "run_url_only_ok",
+        template.render("example-when-ok", "Thank you",
+                        [{"name": "go", "when": {"url_contains": "https://example.test/",
+                                                 "text_contains": ["Get Started"]},
+                          "steps": [_ok_click(1)]}], [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common.STATE.reset()
+    common.STATE.texts = ["Thank you"]
+    with caplog.at_level(logging.WARNING):
+        assert ok_module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run() is True
+    assert not [m for m in (r.getMessage() for r in caplog.records) if "只有" in m], caplog.text
+
+
+def test_a_when_with_no_criterion_at_all_is_not_called_unstable(sandbox, form_file, caplog):
+    """反例（同一格）：`when=None` 是**有意不设判据**（旁枝起点那类），不是「钉不出来」。
+
+    这两件事必须分得开 —— 混在一起的话，「有意」的那些会被读成「生成器没钉出来」，
+    而真钉不出来的那些会被这堆噪音淹掉。
+    """
+    src = template.render("example-no-when", "Thank you",
+                          [{"name": "walk", "when": None, "steps": [_ok_click(1)]}],
+                          [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_no_when", src, sandbox)
+    common = _stub(sandbox, observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common.STATE.texts = ["Thank you"]
+    with caplog.at_level(logging.WARNING):
+        assert module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run() is True
+    assert not [m for m in (r.getMessage() for r in caplog.records) if "只有" in m], caplog.text
+
+
+# ── 线③：一步没做成 ⇒ **把那一组从头再走一遍**（一次为限）────────────────────
+
+def _group(n_steps, selectors=("#a", "#b")):
+    return [{"name": "quiz", "when": None, "steps": [
+        {"action": "click", "note": "第 %d 步：点「%s」" % (i, sel),
+         "target": {"text": sel, "role": "button", "near": None, "selectors": [sel]}}
+        for i, sel in enumerate(selectors[:n_steps], start=1)
+    ]}]
+
+
+def test_a_failed_step_replays_its_whole_state_group(sandbox, form_file, caplog):
+    """★ 线③：一步没做成 ⇒ **把它那一组从头再走一遍**（一次为限）。
+
+    真站实测（26015658）：第 11 步「页面上没找到「330i」」⇒ 问卷没前进 ⇒ 第 12~24 步的
+    `Progress: N%` 判据全废 ⇒ 最后在**空表**上点「See My Match」、一个字段都没填。
+    缺口是「失败之后没有退一步重来」—— 产物是**纯线性**的，一步没成后面全部错位。
+
+    这一条钉住的正是那个「重来」：**整组**（不是那一步）、而且**会说话**。
+    """
+    src = template.render("example-retry", "Thank you", _group(2), [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_retry", src, sandbox)
+    common = _stub(sandbox, observe={"url": "https://example.test/q", "actions": [], "fields": []})
+    common.STATE.texts = ["Walk"]
+    common.STATE.fail_plan = {"#a": 1}          # 第一步**头一次**没成，之后就好
+
+    with caplog.at_level(logging.WARNING):
+        f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))
+        f.run()
+
+    # ① 整组重走：`#a` 重试成了之后，**同组的 `#b` 照做**（不是只把失败那一步再来一遍）
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert clicks == ["#a", "#b"], ("重试之后要把这一组走完：%s" % (clicks,))
+    # ② 多做的那一下**就是重试那一下**（#a 一共点了两次，其中一次是重试）
+    assert f.step == 3, ("第 1 步没成 → 重试（第 2 步）→ 第 3 步接着走；实际停在 %d" % f.step)
+    # ③ **会说人话**：第几次、哪一组、为什么
+    said = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    hits = [m for m in said if "重试" in m and "quiz" in m]
+    assert len(hits) == 1, ("重试必须进日志、说人话（不许静默重试）：%r" % (said,))
+    assert "第 1 次" in hits[0] and "上限 1" in hits[0], hits[0]
+
+
+def test_the_group_retry_happens_at_most_once(sandbox, form_file, caplog):
+    """反例（同一格）：**重试有上限，而且上限是 1**（一趟里算总数）。
+
+    运营那边的口径是「刷太多不太好」「能成功为啥还要继续」—— 重试的代价是**在真页面上
+    多做几个真实动作**，所以这个数宁少勿多（`GROUP_RETRY_LIMIT` 的注释里写着它是按什么
+    量出来的）。这一条钉死「第二次失败**不再**重试」：`#a` 连错两次，只许重走一遍。
+    """
+    src = template.render("example-retry-cap", "Thank you", _group(2), [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_retry_cap", src, sandbox)
+    common = _stub(sandbox, observe={"url": "https://example.test/q", "actions": [], "fields": []})
+    common.STATE.texts = ["Walk"]
+    common.STATE.fail_plan = {"#a": 2}          # 头一次、重试那一次**都没成**
+
+    with caplog.at_level(logging.WARNING):
+        f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))
+        f.run()
+
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert clicks == ["#b"], ("#a 两次都没成 ⇒ 不再重试，直接往下磨：%s" % (clicks,))
+    assert f.step == 3, ("1 失败 + 1 重试 + 1 继续；实际 %d 步 —— 多了就是在上限之外又重试" % f.step)
+    hits = [r.getMessage() for r in caplog.records if "重试" in r.getMessage()]
+    assert len(hits) == 1, ("上限 1：整趟只许重试一次，实际 %d 次：%r" % (len(hits), hits))
+
+
+def test_a_clean_run_never_replays_a_group(sandbox, form_file, caplog):
+    """反例（同一格）：**一次都没失败 → 一次都不重试**（重试不是「多走一遍保险起见」）。"""
+    src = template.render("example-no-retry", "Thank you", _group(2), [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_no_retry", src, sandbox)
+    common = _stub(sandbox, observe={"url": "https://example.test/q", "actions": [], "fields": []})
+    common.STATE.texts = ["Walk"]
+
+    with caplog.at_level(logging.WARNING):
+        f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))
+        f.run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert clicks == ["#a", "#b"], clicks
+    assert f.step == 2, f.step
+    assert not [r for r in caplog.records if "重试" in r.getMessage()], caplog.text
+
+
+def test_the_group_retry_is_written_into_the_trace(sandbox, form_file, tmp_path):
+    """重试也要**进 trace**（Console 与自测读的是 trace，不是日志）。
+
+    判据落在**重走的那一步**上（不是失败的那一步）：它是**在真页面上多做的那个动作**，
+    运营要数的正是它。没有这句话，读 trace 的人只看到「第 1 步 ok=false、第 2 步 ok=true
+    （同一个 target #a）」，会把它读成「重试了一下」或者干脆读成「它自己好了」。
+    """
+    src = template.render("example-retry-trace", "Thank you", _group(2), [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_retry_trace", src, sandbox)
+    common = _stub(sandbox, observe={"url": "https://example.test/q", "actions": [], "fields": []})
+    common.STATE.texts = ["Walk"]
+    common.STATE.fail_plan = {"#a": 1}
+    trace = tmp_path / "retry.jsonl"
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace)).run()
+    lines = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(lines) == 3, lines
+    assert lines[0]["ok"] is False and lines[1]["ok"] is True, lines
+    assert lines[1]["target"] == "#a", "第 2 行是**重走**的那一下（同一个 target）: %s" % (lines[1],)
+    assert "重试" in (lines[1].get("note") or ""), (
+        "重走的那一步要说出来，不然 trace 里它长得跟第一步一模一样：%s" % (lines[1],))
+    assert "重试" not in (lines[2].get("note") or ""), (
+        "那句话只属于**触发它的那一步**，不许粘在下一步上：%s" % (lines[2],))
+    # ⚠️ trace 的每一行都是「一步」，`ok` 这个键**不许**因为加了重试就不写了
+    for line in lines:
+        assert "ok" in line, line
