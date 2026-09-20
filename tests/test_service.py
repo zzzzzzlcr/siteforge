@@ -645,7 +645,8 @@ def test_the_job_view_comes_back_from_the_checkpoint_after_a_restart(tmp_path):
                      checkpointer=saver)
     view = _wait(second, job_id)
     assert view["status"] == "waiting", view
-    assert view["gate"]["step"] == "intake", view["gate"]
+    # ⚠️ `explore`（2026-09-20 起 `intake` 不设闸，它就是第一道闸）
+    assert view["gate"]["step"] == "explore", view["gate"]
 
     done = _reply_until_done(second, job_id)
     assert done["status"] == "done", done
@@ -1430,7 +1431,8 @@ def test_reopen_picks_up_a_run_whose_window_died_during_the_explore(tmp_path):
         tmp_path, allow_skips=["country", "viewport"])).json()["job_id"]
 
     view = _wait(client, job_id)
-    assert view["status"] == "waiting" and view["gate"]["step"] == "intake"
+    # ⚠️ `explore`（2026-09-20 起 `intake` 不设闸，它就是第一道闸）
+    assert view["status"] == "waiting" and view["gate"]["step"] == "explore"
     client.post("/job/%s/reply" % job_id, json={"action": "revise", "note": "ZIP 要填真的"})
     view = _reply_until_done(client, job_id)
 
@@ -2161,7 +2163,11 @@ def test_a_pass_that_crashed_does_not_hand_the_next_one_a_full_budget(tmp_path, 
     view = _reply_until_done(client, job_id)
     assert view["status"] == "failed", view          # 第 2 趟抛了 ⇒ 这一步没落下来
     assert len(seen) == 2, seen
-    assert seen[0]["budget"].max_steps == 30, seen[0]["budget"]     # 第 1 趟拿的是满预算
+    # 第 1 趟拿的是满预算 —— ⚠️ 从字面量 30 改成**那个常量本身**（2026-09-20 预算标定：
+    # 30/20 → 100/80）。这条要钉的是**关系**（「第 1 趟 = 满预算」），
+    # 不是「那个数恰好是 30」；写死字面量的话，每次标定预算都得来改一遍测试，
+    # 而它并不会因此多钉住任何东西（真正钉住那个数的是 `tests/test_budget_calibration.py`）。
+    assert seen[0]["budget"].max_steps == browser_agent.DEFAULT_MAX_STEPS, seen[0]["budget"]
 
     # 盘上：第 1 趟记着 4 步，第 2 趟「连账本都没生成」
     rows = [json.loads(x) for x in (tmp_path / "explore" / job_id / "attempts.jsonl")
@@ -2172,6 +2178,8 @@ def test_a_pass_that_crashed_does_not_hand_the_next_one_a_full_budget(tmp_path, 
     assert r.status_code == 200, r.text
     _reply_until_done(client, job_id)
     assert len(seen) == 3, seen
-    # **那 4 步要算进这个 job 的账**（不读回来就是 30 —— 白送一趟）
-    assert seen[2]["budget"].max_steps == 26, \
+    # **那 4 步要算进这个 job 的账**（不读回来就是满预算 —— 白送一趟）
+    # ⚠️ 从 `26`（= 30−4）改成 `DEFAULT_MAX_STEPS - 4`：钉的是**「减掉了那 4 步」这个关系**，
+    # 不是「那个差恰好是 26」。
+    assert seen[2]["budget"].max_steps == browser_agent.DEFAULT_MAX_STEPS - 4, \
         "上一趟那 4 步没算进去（拿回了满预算）：%r" % (seen[2]["budget"],)

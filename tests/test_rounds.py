@@ -1055,9 +1055,9 @@ def test_a_run_that_crashed_in_the_explored_node_keeps_its_cards_straight(tmp_pa
     job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
     assert _reply_until_it_blew_up(client, job_id)["status"] == "failed"
 
-    live = _wait_for_the_settled_cards(client, job_id,
-                                       [(1, "intake", None), (2, "explore", "intake")])
-    assert live["rounds"][-1]["last_shot"]["name"] == "pause-3.png", "挂掉那一刻的图"
+    # ⚠️ 从两道闸改成一道（2026-09-20：`intake` 不设闸）—— 闸拍号也跟着少一张。
+    live = _wait_for_the_settled_cards(client, job_id, [(1, "explore", None)])
+    assert live["rounds"][-1]["last_shot"]["name"] == "pause-2.png", "挂掉那一刻的图"
     assert all(c["done"]["step"] != c["step"] for c in live["rounds"] if c["done"])
 
 
@@ -1091,16 +1091,16 @@ def test_a_run_that_crashed_between_two_nodes_keeps_every_card_straight(tmp_path
     job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
     assert _reply_until_it_blew_up(client, job_id)["status"] == "failed"
 
-    live = _wait_for_the_settled_cards(client, job_id,
-                                       [(1, "intake", None), (2, "explore", "intake")])
-    assert live["rounds"][-1]["last_shot"]["name"] == "pause-3.png"
+    live = _wait_for_the_settled_cards(client, job_id, [(1, "explore", None)])
+    assert live["rounds"][-1]["last_shot"]["name"] == "pause-2.png"
 
 
 def test_a_run_that_crashed_further_along_keeps_every_card_straight(tmp_path):
-    """同一个坑、走得更远那一支（复审的第二个探针）：`draft` 那一步炸 ⇒ 三道闸都错位。
+    """同一个坑、走得更远那一支（复审的第二个探针）：`draft` 那一步炸 ⇒ 两道闸都错位。
 
-    真相是 `r1=intake / r2=explore / r3=draft`；按 `done` 对齐的实现会说成
-    `r1=None / r2=intake(done=explore) / r3=explore(done=intake)` —— **整条错一格**。
+    真相是 `r1=explore / r2=draft`；按 `done` 对齐的实现会说成
+    `r1=None / r2=explore(done=draft)` —— **整条错一格**。
+    （`intake` 不设闸之后少了一道，被钉的那条错位一模一样。）
     """
     import test_graph as TG                      # 那个文件里有**照生产形状**的全套桩依赖
 
@@ -1113,11 +1113,10 @@ def test_a_run_that_crashed_further_along_keeps_every_card_straight(tmp_path):
     assert _reply_until_it_blew_up(client, job_id)["status"] == "failed"
 
     live = _wait_for_the_settled_cards(client, job_id,
-                                       [(1, "intake", None), (2, "explore", "intake"),
-                                        (3, "draft", "explore")])
-    assert live["rounds"][-1]["last_shot"]["name"] == "pause-4.png"
+                                       [(1, "explore", None), (2, "draft", "explore")])
+    assert live["rounds"][-1]["last_shot"]["name"] == "pause-3.png"
     row = [r for r in client.get("/runs").json()["runs"] if r["job_id"] == job_id][0]
-    assert row["rounds"] == 3, "三道闸 = 三轮（最后那张图不是一轮）"
+    assert row["rounds"] == 2, "两道闸 = 两轮（最后那张图不是一轮）"
 
 
 def test_runs_is_the_short_list_you_pick_from(tmp_path):

@@ -339,7 +339,7 @@ def _one_job(tmp_path, graph, *, window=None, capture=_shot_ok, submit_before_wa
 
 
 def _restart_and_recover(tmp_path):
-    """「服务重启过」那个场景：真图跑一个 job 到 intake 闸上，换一个服务实例把它捡回来。
+    """「服务重启过」那个场景：真图跑一个 job 到第一道闸上，换一个服务实例把它捡回来。
 
     ⚠️ 必须用**真图**（桩依赖）：假图的状态活在它自己身上，**checkpoint 里什么都没有** ——
     那样测的是「捡一个不存在的东西」。「重启之后还读得到」靠的正是状态真的在 saver 里（R-19）。
@@ -351,7 +351,8 @@ def _restart_and_recover(tmp_path):
     job_id = first.post("/run", json=_brief(
         tmp_path, ws_url=None, allow_skips=["country", "viewport"])).json()["job_id"]
     view = _wait(first, job_id)
-    assert view["status"] == "waiting" and view["gate"]["step"] == "intake", view
+    # ⚠️ `explore`（2026-09-20 起 `intake` 不设闸，它就是第一道闸）
+    assert view["status"] == "waiting" and view["gate"]["step"] == "explore", view
     second = _client(graph_factory=factory, window=None, checkpointer=saver)
     job = second.app.state.service._recover(job_id)
     assert job is not None

@@ -12,9 +12,20 @@ START → intake → explore → draft → lint → selftest → deliver → END
 
 ### 1. 人不是最后一道关，是**每一步都在**（§6.2）
 
-每个节点**开工之前**都 `interrupt()` 一次：第一个节点之前、`deliver` 之前，一视同仁。
-不是「以后加个 UI」—— 它是架构约束：**任何一步都不许设计成「不可打断、跑完才汇报」**。
-所以这道闸写在 `_enter()` 里，每个节点第一件事就是过它，没有例外。
+每个**花钱 / 动真页面**的节点**开工之前**都 `interrupt()` 一次：`explore` 之前、
+`deliver` 之前，一视同仁。不是「以后加个 UI」—— 它是架构约束：
+**任何一步都不许设计成「不可打断、跑完才汇报」**。所以这道闸写在 `_enter()` 里，
+节点第一件事就是过它。
+
+⚠️ **唯一的例外是 `intake`，而它是有理由的**（2026-09-20 改）：运营点「开一趟」那一下
+**就是**「开工前的确认」，在 `intake` 上再停一次是**同一件事问两遍** —— 而第二遍
+**等不到人时一声不出**（2026-09-20 真面板上连撞三次，详见 `_intake` 里那段）。
+`intake` 做的是**免费**的事（校验开场白、读底稿），它一步贵的事都不做；
+而它后面那道闸就是 `explore`，**照停**，且**排在开真窗口之前**。
+⇒ 这条改动**放松的只是「几道闸」这个数**（6 → 5），
+**没有放松它承重的那半句**：人没按「继续」之前，一步贵的都不会跑。
+用例：`test_no_browser_and_no_model_before_a_human_confirms` /
+`test_the_operator_is_not_asked_to_confirm_the_start_a_second_time`。
 
 中断之后**真能接着跑**，靠的是 checkpointer（R-19）：`build(checkpointer=…)` 是**必需**参数，
 不许默认 `None` —— 「没有 saver」正是「中断之后恢复不了」的根因：
@@ -45,7 +56,7 @@ START → intake → explore → draft → lint → selftest → deliver → END
 
 | 输入 | 谁给 | 不给会怎样 |
 |---|---|---|
-| `success_text`（什么算成功） | 人（`POST /run` 的载荷） | 在 `intake` 就停 —— 不猜。成功判据只有人知道（§6.1） |
+| `success_text`（什么算成功） | 人（`POST /run` 的载荷） | **在 `intake` 就结束这一趟**（`end_reason=no_success_text`）—— 不猜，也不先烧一个窗口。成功判据只有人知道（§6.1） |
 | `ws_url` / `form_file` | §4.6 前提层（Task 8：拉链 → 下发指纹 → `bit.sh open`） | `selftest` 停（`no_window`），**不许跳过自测当通过** |
 | `Deps.set_viewport`（**窗口层**那根线） | Task 8 的服务（换窗口大小 = `POST /browser/update`） | 停（`missing_knob`）并点名 —— 因为第 4 遍扰动跳过了就**不算过**（R-5），而图不许自己放过它 |
 | `allow_skips`（点名放弃哪几遍） | 人（载荷） | 不给 = 用 Task 6 的默认（只允许跳 country） |
@@ -55,7 +66,10 @@ START → intake → explore → draft → lint → selftest → deliver → END
 **窗口层那根线在不在，是「自测的结论完不完整」的分水岭**：不给它，第 4 遍必然记成
 「这一类没验到」，`_judge` 必然判不过 —— 那不是产物不行，是**少给了一个输入**。
 所以「缺旋钮」这件事在 `intake`（免费）与 `selftest`（跑到那儿时手上这根线还在不在）各查一次，
-两次都是**停下点名**，不是转到自测上限。
+两次都是**停**下来点名，不是转到自测上限。
+
+⚠️ 两处的**停法不一样**（2026-09-20 起）：`intake` 那处**结束这一趟**（`end_reason=missing_knob`，
+它不设闸 —— 运营点「开一趟」就是确认，没有「停下这一步」可言）；`selftest` 那处照旧**停在闸上**等人。
 
 ### 3. `deliver` 写出的 py 带 `PROVENANCE`（§5.3）
 
@@ -243,7 +257,10 @@ def _held(out: dict) -> bool:
 
 
 def _enter(state, caps: Caps, step: str, say: str, facts: Optional[dict] = None) -> dict:
-    """**每个节点开工之前**过这道闸（§6.2）。返回该写回状态的那部分。
+    """**节点开工之前**过这道闸（§6.2）。返回该写回状态的那部分。
+
+    ⚠️ **`intake` 不过它**（2026-09-20）：运营点「开一趟」那一下就是确认，
+    在那儿再停一次是同一件事问两遍。理由与承重的那半句见模块 docstring §1 与 `_intake`。
 
     - `interrupt()` 在这里抛出去：图就停在**这一步之前**，这一步**没有做**
     - 人回来说的话：纠正 → 收进 `hints`（一路带着，进 draft）；喊停 → 写 `end_reason`
@@ -282,6 +299,30 @@ def _enter(state, caps: Caps, step: str, say: str, facts: Optional[dict] = None)
 
 
 # ─────────────────────────────── 六个节点 ───────────────────────────────
+# ⚠️ 六个节点，但**五道闸**（2026-09-20 起）：`intake` 不设闸（见模块 docstring §1）。
+#    下面 `_brief_facts` 是**节点用的助手**，不是第七个节点 —— 它算的是第一道闸要摊开的东西。
+
+
+def _brief_facts(state, deps: Deps, missing: list) -> dict:
+    """开场白那几项 —— **人点「开一趟」时确认的东西**，摊在**第一道闸**上。
+
+    ⚠️ **为什么它现在长在 `explore` 那一侧**（2026-09-20）：`intake` 不再设闸了
+    （运营点「开一趟」那一下**就是**确认，在那儿再停一次是同一件事问两遍）。
+    这几项原先摊在 `intake` 那道闸上 —— 没人接手的话，第一道闸换成 `explore` 之后
+    运营就**少看了一半信息**：那不叫「少问一次」，那叫「把确认变成走过场」。
+    ⇒ 第一道闸要带着**同一份开场白**。
+
+    ⚠️ **现算，不搬运**：算的是**这一刻**的状态（`_missing_knobs` 读 `deps` 上那几根线）。
+    从 `intake` 搬一份存进 state 的话，两道闸之间哪根线掉了它也不会说 ——
+    而「哪根线还在」正是这道闸要让人看见的东西之一。
+    """
+    return {"url": str(state.get("url") or "").strip(),
+            "goal": str(state.get("goal") or state.get("evidence") or "").strip(),
+            "成功判据": state.get("success_text"),
+            "mode": state.get("mode") or MODE_BUILD,
+            "要用的窗口": state.get("ws_url"),
+            "允许跳过的扰动": list(state.get("allow_skips") or []),
+            "还缺的窗口旋钮": [k["knob"] for k in missing]}
 
 
 def _intake(state, deps: Deps, caps: Caps) -> dict:
@@ -297,13 +338,11 @@ def _intake(state, deps: Deps, caps: Caps) -> dict:
     """
     url = str(state.get("url") or "").strip()
     goal = str(state.get("goal") or state.get("evidence") or "").strip()
-    say = ("准备开工：站点是「%s」，这次要做的是「%s」。成功判据是「%s」。" % (
-        url or "（还没说）", goal or "（还没说）", state.get("success_text") or "（还没说）")
-        + "开工之后每一步之前都会再问你一次，随时可以喊停或纠正。")
     missing = _missing_knobs(state, deps)
-    # ⚠️ 读底稿**排在 _enter 之前**：这样「这是修站、读到了什么、改了哪些格」能进
-    # **第一道闸**的 facts —— 人在这儿就能看见它要拿哪份稿去改。放到闸后面的话，
-    # 这一趟最重要的事实要等过了闸才出现（而人正是在闸上做决定的）。
+    # ⚠️ 读底稿**排在**返回之前：这样「这是修站、读到了什么、改了哪些格」能进
+    # **第一道闸**（现在是 `explore`）的 facts —— 人在这儿就能看见它要拿哪份稿去改。
+    # （2026-09-20 之前第一道闸是 `intake` 自己；`intake` 不设闸之后，这几项由
+    # `_explore` 那边的 `_brief_facts` / 修站那一支接手，见它们的注释。）
     fix_py = str(state.get("fix_py") or "").strip()
     fix_read: dict = {}
     fix_failed = ""
@@ -322,22 +361,28 @@ def _intake(state, deps: Deps, caps: Caps) -> dict:
                 fix_read = {"mode": MODE_FIX, "fix_py": fix_py, "fix_src": src_before,
                             "fix_states": fix_states, "fix_fills": fix_fills,
                             "fix_notes": fix_notes, "fix_plan_steps": len(plan.steps)}
-    facts = {"url": url, "goal": goal, "成功判据": state.get("success_text"),
-             "mode": fix_read.get("mode") or state.get("mode") or MODE_BUILD,
-             "要用的窗口": state.get("ws_url"),
-             "允许跳过的扰动": list(state.get("allow_skips") or []),
-             "还缺的窗口旋钮": [k["knob"] for k in missing]}
-    if fix_py:
-        facts["模式"] = "修站（MODE_FIX）" if fix_read else "修站（读不出底稿）"
-        facts["底稿"] = fix_py
-        if fix_read:
-            facts["底稿步数"] = fix_read["fix_plan_steps"]
-            facts["改了哪些格"] = fix_read["fix_notes"] or ["（一处都没改）"]
-        else:
-            facts["读不出来的原因"] = fix_failed
-    out = _enter(state, caps, "intake", say, facts=facts)
-    if _held(out):
-        return out
+    # ⚠️ **`intake` 不设闸**（2026-09-20 真面板实测逼出来的）。
+    #
+    # 运营点「开一趟」那一下**就是**「开工前的确认」。在这儿再停一次 = **同一件事问两遍**，
+    # 而第二遍**等不到人时一声不出** —— 2026-09-20 一天里连撞三次：
+    # ①停在 intake 上没人按 ⇒ 运营以为「失败了」，把页面关了；
+    # ②同一趟再派一次时按成了「停」（时间线上记的是「你按了「停」」）；
+    # ③运营原话：「我作为一个使用者我现在就是看着他页面卡住啥也操作不了也不知道啥情况啊」。
+    #
+    # `_enter` 那四件事在 `intake` 上**本来就只有一件是真的需要的**（复审口径：量出来的，不是猜的）：
+    #   - `REVISABLE` 打回：**空转** —— `intake` 不在 `REVISABLE` 里（`("lint","selftest","deliver")`）；
+    #   - `end_reason` 喊停：`intake` 是**刚点完「开一趟」**那一下，没有「停下这一步」可言
+    #     （而它后面那道闸就是 `explore`，那一道**照停**，且排在真窗口之前 —— 见下一条）；
+    #   - `hints` 收话：还没人说过话，而且 `_intake` 本来就把 `state["hints"]` 原样带着走；
+    #   - `visits` 记账：**这个要留** —— 它是「走过的节点」（§6.4 人看路线用），
+    #     `rounds.py` 给第一张卡片配「刚做完的是哪一步」读的也是它。少记一格，
+    #     卡片就会把「刚做完的」说成下一个节点 —— 那是编话。
+    #
+    # ⚠️ **承重的那条不变量没被这条改动放松**：「任何一步都不许设计成不可打断、跑完才汇报」。
+    # 它现在落在 `_explore`：那道 `_enter` **排在 `deps.explore`（开真窗口 + 跑模型）之前**，
+    # 所以 **人没按「继续」之前，一步贵的都不会跑**（用例：`test_no_browser_and_no_model_before_a_human_confirms`）。
+    # 这条闸之后那几道（explore / draft / lint / selftest / deliver）**一道没少**。
+    out: dict = {"visits": _visited(state, "intake")}
     if not url or not goal:
         out.update({"end_reason": END_NO_BRIEF,
                     "end_note": ("开不了工：得先说清**哪个站点**（url）和**要做什么**（goal 或失败证据）。"
@@ -399,10 +444,11 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
         if notes:
             say += " 改动：" + "；".join(notes)
         out = _enter(state, caps, "explore", say,
-                     facts={"模式": "修站（MODE_FIX）", "底稿": state.get("fix_py"),
-                            "底稿步数": int(state.get("fix_plan_steps") or 0),
-                            "改了哪些格": notes,
-                            "探路": "**没有探路**（修站这条路不探索：账本/产物已经有了）"})
+                     facts=dict(_brief_facts(state, deps, _missing_knobs(state, deps)),
+                                **{"模式": "修站（MODE_FIX）", "底稿": state.get("fix_py"),
+                                   "底稿步数": int(state.get("fix_plan_steps") or 0),
+                                   "改了哪些格": notes,
+                                   "探路": "**没有探路**（修站这条路不探索：账本/产物已经有了）"}))
         if _held(out):
             return out
         out["explore_say"] = say
@@ -418,8 +464,11 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
     if resume_from:
         say += ("这一趟**接着上一趟走**：开头先照账本重放 %d 行（0 模型调用），再从断点接着探。"
                 % len(resume_from))
-    facts = {"url": state["url"], "goal": state["goal"],
-             "预算": _budget_say(budget, spent)}
+    # ⚠️ 第一道闸带着**开场白那几项**（`_brief_facts`）：`intake` 不设闸之后，
+    # 人是在这一道闸上第一次（也是唯一一次）确认「这就是我要开的那一趟」——
+    # 少摊一项就是让他少看一半信息去点「继续」。
+    facts = _brief_facts(state, deps, _missing_knobs(state, deps))
+    facts["预算"] = _budget_say(budget, spent)
     if resume_from:
         facts["重放"] = _resume_facts(resume_from, resume_note)
     out = _enter(state, caps, "explore", say, facts=facts)
@@ -917,7 +966,8 @@ def build(*, checkpointer, deps: Optional[Deps] = None, caps: Optional[Caps] = N
                       存 dataclass 的 saver 记得 `allowlisted(...)`。
         deps          跟外面世界的接触面（全部可注入；测试里全是桩）。
                       **窗口层那根线（`set_viewport`）就在这里** —— 不给它，自测的第 4 遍
-                      没法真跑，图会在 `intake`/`selftest` 停下点名（见模块 docstring §2.5）
+                      没法真跑，图会在 `intake`（**结束这一趟**，不设闸）或 `selftest`
+                      （**停在闸上**）点名（见模块 docstring §2.5）
         caps          硬上限（`state.Caps`）
 
     开场白里那几项**必需**的输入（`success_text` / `ws_url` / `form_file`）见 §2.5：

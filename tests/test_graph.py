@@ -259,7 +259,9 @@ def test_happy_path_walks_every_step_in_order_and_writes_a_py(tmp_path):
     assert out["report"].passed is True, out.get("end_note")
     assert rec.selftest[0]["set_viewport"] is _viewport_cb
 
-    assert [p["step"] for p in payloads] == ["intake", "explore", "draft", "lint",
+    # ⚠️ `intake` **不在停顿序列里**（2026-09-20：运营点「开一趟」就是确认，不再问第二遍）——
+    # 但它**在 `visits` 里**（下一行），因为「走过的节点」它是真的走过。
+    assert [p["step"] for p in payloads] == ["explore", "draft", "lint",
                                              "selftest", "deliver"], payloads
     assert out["end_reason"] == "delivered", out.get("end_note")
     assert out["visits"] == ["intake", "explore", "draft", "lint", "selftest", "deliver"]
@@ -287,16 +289,28 @@ def test_happy_path_walks_every_step_in_order_and_writes_a_py(tmp_path):
 
 
 def test_every_node_is_preceded_by_a_pause_that_speaks_human(tmp_path):
-    """**人不是最后一道关**：每个节点之前都停一次，而且问的话是人话（D16）。
+    """**人不是最后一道关**：每个**花钱 / 动真页面**的节点之前都停一次，问的话是人话（D16）。
 
     这是 §6.2 的机器化：`deliver` 之前那次停顿与 `explore` 之前那次**同等重要** ——
-    人可以在第 2 步就拦住它，而不是等它带着错走完 6 步。
+    人可以在第 2 步就拦住它，而不是等它带着错走完。
+
+    ⚠️ **计数从 6 改成 5**（2026-09-20）：`intake` 不再设闸（运营点「开一趟」就是确认）。
+    这是**有意改的事实**，不是把断言放松了 —— 这条用例要钉的两件事一件没少，
+    而且第一件钉得**更细**了：
+      ① **一步贵的都不许在没确认之前跑** —— 现在是拿「第一道闸**就是** `explore`、
+         而 `explore` 的闸排在开真窗口之前」钉的（`test_no_browser_and_no_model_before_a_human_confirms`
+         直接量了那件事：确认之前 `rec.explore` 是空的）；
+      ② 每一道闸问的话都是人话（下面那个循环，一道没少）。
     """
     deps, _ = _deps()
     app, cfg, _ = _build(deps=deps)
     payloads, _ = _drive(app, cfg, _brief(tmp_path))
 
-    assert len(payloads) == 6, "六个节点 = 六次停顿（少一次就是「跑完才汇报」）"
+    assert [p["step"] for p in payloads] == ["explore", "draft", "lint",
+                                             "selftest", "deliver"], payloads
+    assert len(payloads) == 5, "五个会花钱的节点 = 五次停顿（少一次就是「跑完才汇报」）"
+    assert payloads[0]["step"] == "explore", \
+        "第一道闸必须是 explore —— 它前面只剩下不花钱的 intake：%r" % (payloads[0]["step"],)
     for payload in payloads:
         assert payload["say"].strip(), payload
         assert payload["can"], payload                       # 人能做什么，得写出来
@@ -304,6 +318,88 @@ def test_every_node_is_preceded_by_a_pause_that_speaks_human(tmp_path):
         # 不是错误码、不是选择器：说人话那一段里不许出现 traceback / 异常类名
         for junk in ("Traceback", "Exception", "<class", "selector:"):
             assert junk not in payload["say"], payload["say"]
+
+
+def test_the_operator_is_not_asked_to_confirm_the_start_a_second_time(tmp_path):
+    """**运营点了「开一趟」之后，不该再被问一次「开工前的确认」**（2026-09-20）。
+
+    验收口径（一句话）：第一次 `invoke` 之后停下来的那道闸**不是 `intake`**。
+    `intake`（「开工前的确认」）与运营点「开一趟」那一下是**重复的两次确认** ——
+    而第二次等不到人时**不出声**（2026-09-20 真面板上连撞三次：①停在 intake 没人按 ⇒
+    运营以为「失败了」把页面关了；②同一趟再派时按成了「停」；③原话
+    「我作为一个使用者我现在就是看着他页面卡住啥也操作不了也不知道啥情况啊」）。
+
+    留着的那部分（`visits` 记账）在同一趟上钉着，见
+    `test_intake_still_shows_up_in_the_ledger_even_though_it_does_not_ask`。
+    """
+    deps, _rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    payloads, _out = _drive(app, cfg, _brief(tmp_path))
+
+    assert payloads, "一道闸都没有 —— 那等于「跑完才汇报」"
+    assert payloads[0]["step"] == "explore", (
+        "第一道闸还是 %r —— 运营点完「开一趟」又被问了一次「开工前的确认」" % payloads[0]["step"])
+    assert "intake" not in [p["step"] for p in payloads], payloads
+
+
+def test_intake_still_shows_up_in_the_ledger_even_though_it_does_not_ask(tmp_path):
+    """`intake` **不再设闸，但它依然是个走过的节点** —— 账上要看得见它。
+
+    为什么非记不可：`visits` 是「走过的节点」（§6.4 人看路线用），而 `rounds.py`
+    给每一轮卡片配「刚做完的是哪一步」时读的就是它。少记一格，卡片就会把
+    「刚做完的」说成**下一个**节点的名字 —— 那是编话。
+    """
+    deps, _rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    out = app.invoke(_brief(tmp_path), cfg)              # 停在第一道闸上
+    assert out["__interrupt__"], "第一道闸不见了"
+    assert out["__interrupt__"][0].value["step"] == "explore", out["__interrupt__"]
+    assert app.get_state(cfg).values["visits"] == ["intake"], \
+        app.get_state(cfg).values["visits"]
+
+
+def test_the_first_gate_carries_the_brief_the_operator_is_confirming(tmp_path):
+    """第一道闸上要看得到**人在确认的那份开场白**。
+
+    ⚠️ 为什么这条跟着上面那条一起加：第一道闸从 `intake` 换成 `explore` 之后，
+    `intake` 那道闸原本摊开的几项（**成功判据** / 模式 / 要用的窗口 / 还缺的窗口旋钮）
+    要是没人接手，运营就是在**少看了一半信息**的情况下点「继续」——
+    那不叫「少问一次」，那叫「把确认变成走过场」。
+    （url / goal / 模式那几项 `explore` 自己的人话里本来就有，所以这里钉的是**新补上来的**那几项。）
+    """
+    deps, _rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    payloads, _out = _drive(app, cfg, _brief(tmp_path))
+
+    first = payloads[0]
+    assert first["step"] == "explore", first
+    assert first["facts"]["成功判据"] == SUCCESS, first["facts"]
+    assert first["facts"]["url"] == URL, first["facts"]
+    assert first["facts"]["要用的窗口"] == WS_URL, first["facts"]
+    assert first["facts"]["还缺的窗口旋钮"] == [], first["facts"]
+
+
+def test_no_browser_and_no_model_before_a_human_confirms(tmp_path):
+    """**「人不是最后一道关」那条不变量的承重部分**：确认之前一步**贵**的都不许跑。
+
+    这条之所以要单独立着：把第一道闸从 `intake` 挪到 `explore` 之后，
+    「六个节点六次停顿」那个**字面**说法不再成立（少一次）—— 但那句话的**要点**
+    （任何一步都不许设计成「不可打断、跑完才汇报」）**必须原样成立**。
+    要点落在哪儿：`_explore` 的 `_enter` **排在** `deps.explore`（开真窗口 + 跑模型）**之前**。
+
+    判据是**测量出来的两半**：第一道闸之前 `rec.explore` 是空的（一步没跑），
+    回了「继续」之后它才有东西（那一步真的做了）。
+    """
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+
+    out = app.invoke(_brief(tmp_path), cfg)              # 停在第一道闸上
+    assert out["__interrupt__"], "第一道闸不见了"
+    assert rec.explore == [], \
+        "还没人按「继续」，真窗口/模型那一步就已经跑了：%r" % (rec.explore,)
+
+    app.invoke(Command(resume="continue"), cfg)          # 人说了「继续」
+    assert len(rec.explore) == 1, rec.explore            # 现在它才真的做了
 
 
 def test_the_delivered_py_carries_provenance(tmp_path):
@@ -536,8 +632,8 @@ def test_the_graph_stops_when_exploration_did_not_finish(tmp_path):
     assert rec.explore and len(rec.explore) == 1, "探路不许自动重来（重开窗口是人的事）"
     assert len(rec.write) == 0, "没探完就不许写 py"
     assert "预算" in out["end_note"]
-    # 上面那次停顿是 explore 那道闸；**没有**第二道闸（它没往下走）
-    assert [p["step"] for p in payloads] == ["intake", "explore"]
+    # 上面那次停顿是 explore 那道闸（`intake` 不设闸）；**没有**第二道闸（它没往下走）
+    assert [p["step"] for p in payloads] == ["explore"]
 
 
 def test_a_human_pause_inside_explore_is_a_pause_not_a_failure(tmp_path):
@@ -560,19 +656,24 @@ def test_a_pause_signal_from_the_browser_agent_is_never_swallowed(tmp_path):
     deps, rec = _deps()
     deps.explore = exploded
     app, cfg, _ = _build(deps=deps)
-    app.invoke(_brief(tmp_path), cfg)
-    app.invoke(Command(resume="continue"), cfg)          # intake 做完，停在 explore 前
+    app.invoke(_brief(tmp_path), cfg)                    # 停在第一道闸前（= explore 那道）
     with pytest.raises(browser_agent._Stop):
         app.invoke(Command(resume="continue"), cfg)      # ← explore 那一步喊停
     assert rec.write == [] and rec.selftest == [], "喊停之后一步都不许再做"
 
 
-@pytest.mark.parametrize("gate", ["intake", "explore", "draft", "lint", "selftest", "deliver"])
+@pytest.mark.parametrize("gate", ["explore", "draft", "lint", "selftest", "deliver"])
 def test_the_human_can_stop_the_run_at_any_gate(tmp_path, gate):
     """人在**任意一道闸**上说「停」：图就停在**那一步之前**，那一步没做。
 
-    六个闸挨个停一遍 —— 「每一步都可以被拦住」不是一句设计口号，
-    是六个位置各自都验过。
+    五道闸挨个停一遍 —— 「每一步都可以被拦住」不是一句设计口号，
+    是每个位置各自都验过。
+
+    ⚠️ **`intake` 从这张名单里去掉了**（2026-09-20）：它不再设闸（运营点「开一趟」就是确认），
+    所以「在 intake 上喊停」这个位置**不存在了**。这是**改准了事实**，不是删掉一条覆盖：
+    原先它验的是「刚点完「开一趟」那一下也能停」—— 而那个位置恰恰是出事的那个
+    （2026-09-20 真面板上，运营在这一道闸上把「继续」按成了「停」）。
+    现在最早的停点是 `explore`，而它**照样排在开真窗口之前**（`test_no_browser_and_no_model_before_a_human_confirms`）。
     """
     deps, rec = _deps()
     app, cfg, _ = _build(deps=deps)
@@ -653,12 +754,15 @@ def test_a_revision_is_recorded_so_a_reader_can_tell_it_from_a_kill(tmp_path):
     assert "第二版：按人说的改了" in src
 
 
-@pytest.mark.parametrize("gate", ["intake", "explore", "draft"])
+@pytest.mark.parametrize("gate", ["explore", "draft"])
 def test_the_human_can_say_something_and_it_reaches_the_draft(tmp_path, gate):
     """§6.2：「直接说该点哪」—— 人在闸口留下的那句话，要能跟着进 **draft**。
 
-    三道闸都试：人可能在任何一步之前开口，包括**开工前**那一道 —— 收了却不往下带，
-    等于没听他说话。
+    每道能开口的闸都试：人可能在任何一步之前开口，包括**最早那一处**
+    （现在是 `explore`）—— 收了却不往下带，等于没听他说话。
+
+    ⚠️ `intake` 从名单里去掉了（2026-09-20：它不再设闸）。**最早那一处**那条覆盖没丢，
+    只是那一处从 `intake` 变成了 `explore`。
     """
     deps, rec = _deps()
     app, cfg, _ = _build(deps=deps)
@@ -757,7 +861,11 @@ def test_a_missing_viewport_knob_still_stops_under_the_default_cap(tmp_path):
     for junk in ("挂了", "没通过", "自测没过"):
         assert junk not in out["end_note"], out["end_note"]
     assert "没验到" in out["end_note"], out["end_note"]
-    assert [p["step"] for p in payloads] == ["intake"], payloads
+    # ⚠️ 从 `["intake"]` 改成 `[]`（2026-09-20）：`intake` 不再设闸，而它**就是**停在这里的
+    # 那一步 —— 所以这一趟**一道闸都没停**就结束了。这一条要钉的「别先烧一个窗口再回报」
+    # 一个字没少（上面 `rec.explore == []` / `rec.selftest == []` 两行就是它），
+    # 而且顺带钉住了新行为：**这种「开场白就缺东西」的停法，运营不会被先拉去点一次「继续」**。
+    assert payloads == [], payloads
 
 
 def test_a_round_that_really_cannot_be_reached_does_not_stop_the_run(tmp_path):
@@ -775,8 +883,12 @@ def test_a_round_that_really_cannot_be_reached_does_not_stop_the_run(tmp_path):
 
     assert out["end_reason"] == "delivered", out.get("end_note")
     assert len(rec.selftest) == 1, "自测该照跑"
-    intake = [p for p in payloads if p["step"] == "intake"][0]
-    assert intake["facts"]["还缺的窗口旋钮"] == [], intake["facts"]
+    # ⚠️ 这一格原先从 `intake` 那道闸上读；`intake` 不设闸之后它由**第一道闸**
+    # （`explore`）接手 —— `_brief_facts` 把它摊在同一处（2026-09-20）。
+    # 读的仍是**同一个事实**（连提都不提那根用不上的线），只是换了张闸去看它。
+    first = payloads[0]
+    assert first["step"] == "explore", first
+    assert first["facts"]["还缺的窗口旋钮"] == [], first["facts"]
 
 
 def test_the_reachability_question_reads_the_ladder_not_the_position():
@@ -814,7 +926,8 @@ def test_a_knob_that_disappears_before_the_selftest_is_caught_at_the_selftest(tm
     deps, rec = _deps()
     app, cfg, _ = _build(deps=deps)
     out = app.invoke(_brief(tmp_path), cfg)
-    for _ in range(4):                      # intake 前 → explore → draft → lint → selftest 前
+    # ⚠️ 从 4 次改成 3 次（2026-09-20：`intake` 不设闸，开头少一道）
+    for _ in range(3):                      # explore 前 → draft → lint → selftest 前
         out = app.invoke(Command(resume="continue"), cfg)
     assert out["__interrupt__"][0].value["step"] == "selftest", out["__interrupt__"]
 
@@ -888,7 +1001,7 @@ def test_the_run_resumes_from_the_checkpointer_instead_of_starting_over(tmp_path
     app, cfg, saver = _build(deps=deps)
     out = app.invoke(_brief(tmp_path), cfg)
 
-    for _ in range(2):                     # 开局停在 intake 前 → intake → explore → draft 前
+    for _ in range(1):                     # 开局停在 explore 前 → explore → draft 前
         out = app.invoke(Command(resume="continue"), cfg)
     assert out["__interrupt__"][0].value["step"] == "draft", out["__interrupt__"]
     assert len(rec.explore) == 1
@@ -907,8 +1020,8 @@ def test_another_graph_object_can_pick_up_the_same_run(tmp_path):
     """
     deps, rec = _deps()
     app, cfg, saver = _build(deps=deps)
-    app.invoke(_brief(tmp_path), cfg)
-    app.invoke(Command(resume="continue"), cfg)              # 跑完 intake，停在 explore 前
+    app.invoke(_brief(tmp_path), cfg)                        # 开局就停在 explore 前
+                                                             # （`intake` 不设闸，2026-09-20）
 
     other = graph.build(checkpointer=saver, deps=deps)
     out = other.invoke(Command(resume="continue"), cfg)      # 换一个图对象接着跑
@@ -1281,7 +1394,9 @@ def test_the_gate_shows_what_is_about_to_be_replayed_before_the_node_starts(tmp_
     payloads, _ = _drive(app, cfg, {**_brief(tmp_path), "resume_from": prefix,
                                     "resume_note": why})
 
-    gate = payloads[1]
+    # ⚠️ 从 `payloads[1]` 改成 `payloads[0]`（2026-09-20）：`intake` 不设闸之后，
+    # explore 那道**就是第一道**闸 —— 这条要钉的「节点开工前就有重放摘要」一个字没少。
+    gate = payloads[0]
     assert gate["step"] == "explore", gate
     assert "重放" in gate["facts"], gate["facts"]
     # 没接那根线时 `window_alive` 是 `None`（**不编**一个「窗口活着」的假回调 —— R-31 同款）

@@ -132,17 +132,19 @@ def test_the_graph_fix_path_does_not_explore(tmp_path):
                 # 不是让图自己发明一个默认（R-5/R-31）。这一段验的不是自测，是「不探索」。
                 "allow_skips": ["country", "viewport"]}, cfg)
 
-    # 走到 intake 那道闸：它会说清「读到了什么、改了哪些格」
+    # 走到第一道闸（= explore）：它会说清「读到了什么、改了哪些格」
+    # ⚠️ 2026-09-20 起这就是**第一道闸** —— `intake` 不再设闸（运营点「开一趟」就是确认），
+    # 于是「读到了什么、改了哪些格」这几项由这一道闸接手（`graph._brief_facts` + 修站那一支）。
+    # 「修站这条路不探索」这条判据本身**一个字没变**（下面两处 `explored == []`）。
     state = app.get_state(cfg)
     gate = state.values.get("__interrupt__") or state.tasks[0].interrupts[0].value
-    assert gate["step"] == "intake", gate
+    assert gate["step"] == "explore", gate
     assert gate["facts"].get("模式") == "修站（MODE_FIX）", gate["facts"]
+    assert "改了哪些格" in gate["facts"], gate["facts"]
+    # ⚠️ 这一条原先读的是**第二道闸**（过完 intake 之后那一道，就是现在的第一道）——
+    # 换闸不换事实：修站这条路的闸上要说清「这一步**不探路**」。
+    assert "没有探路" in json.dumps(gate["facts"], ensure_ascii=False), gate["facts"]
     assert explored == [], explored
 
-    app.invoke(Command(resume="continue"), cfg)          # 过 intake
-    stage = app.get_state(cfg)
-    gate2 = stage.tasks[0].interrupts[0].value
-    assert gate2["step"] == "explore", gate2
-    assert "没有探路" in json.dumps(gate2["facts"], ensure_ascii=False), gate2["facts"]
     app.invoke(Command(resume="continue"), cfg)          # 过 explore（**不探索**）
     assert explored == [], "走完 explore 这一步之后仍然一次都不许探索"
