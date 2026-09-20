@@ -205,7 +205,8 @@ def test_budget_exhaustion_stops(tmp_path):
     )
     assert len(journey.steps) == 3, f"预算 3 步，实际走了 {len(journey.steps)} 步"
     assert journey.stop_reason == "budget_steps"
-    assert len(calls) == 3, f"预算只允许 3 步，真发出去的工具调用却是 {len(calls)} 次"
+    assert len(calls) == 4, (
+        f"预算只允许 3 步 + 开跑前那一下站位的 goto，真发出去的却是 {len(calls)} 次")
     assert any("预算" in n for n in journey.notes), f"没告诉人为什么停：{journey.notes}"
     assert len(fake.calls) < 50, "预算到顶之后还在问模型"
 
@@ -220,6 +221,58 @@ def test_budget_counts_the_rounds_too(tmp_path):
     )
     assert len(fake.calls) == 2, f"轮数上限 2，实际问了 {len(fake.calls)} 轮"
     assert journey.stop_reason == "budget_rounds"
+
+
+# ─────────────── 开跑之前先站到目标页上（2026-09-20 真站实测）───────────────
+
+
+def test_explore_stands_on_the_target_page_before_the_first_round(tmp_path):
+    """★ 起点必须是**目标页**，不是 Bit 的工作台页。
+
+    真站实测（2026-09-20，`job-36ab36b56754`）：窗口是 `fresh_open` 新开的 ⇒ 它落在
+    **Bit 的工作台页**（`console.bitbrowser.net/…?id=…&port=…`）；而模型的第一个动作是
+    `observe` —— 它看到的就是那个「**我们碰巧从那儿开始**」的旁枝，20 步预算全烧在上面，
+    目标站一步没探，最后交白卷。
+
+    原先靠「起点那页与后面每页都不同源 ⇒ 撤掉它的 `when`」来**绕**（`_branch_start_states`）——
+    那是绕不是修：撤了判据，起点那组步骤在**重放**时就认不出来了。
+    生产脚本的第一步也是 `goto`，同一个道理：**先站到起点上，再开始看**。
+    """
+    journey, fake, calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]}],
+        budget=browser_agent.Budget(max_steps=99, max_rounds=1),
+    )
+    assert calls, "一次工具调用都没有？"
+    first = calls[0]
+    assert first["name"] == "goto", (
+        "开跑的第一个动作不是 goto 而是 %r —— 起点会落在 Bit 的工作台页上" % first["name"])
+    assert first["args"].get("url") == "https://example.test/funnel", first["args"]
+    # 它**不算模型要的那一步**：模型的第一轮仍然照自己想的走
+    assert [c["name"] for c in calls[1:]] == ["observe"], calls
+    # 它**不算一步**（`journey.steps` 里没有它）—— 它是站位，不是探索
+    assert [s["action"] for s in journey.steps] == ["observe"], journey.steps
+    # 而且**不许静默**：这一下要在账本里说得出话
+    assert any("起点是目标页" in n for n in journey.notes), journey.notes
+
+
+def test_resume_does_not_navigate_first(tmp_path):
+    """**重放那一路不补这一下** —— 账本第一步本来就是 goto，再导航一次是白跑一趟。
+
+    ⚠️ 这一条的**正身不在我这儿**：`test_a_resume_walks_the_ledger_back_before_the_model_gets_a_turn`
+    断言的是完整的 `["goto", "observe", "click", "observe"]` —— 重放那一路要是被多补一次导航，
+    **它当场就红**。所以这里只钉一件事：**重放那一趟，goto 只出现一次**。
+    """
+    rows = _walk_rows()
+    _journey, _fake, calls = _run(
+        tmp_path,
+        {"observe": _pages_for(rows)},
+        [{"content": "我看到了报价页，接着往下走", "calls": []}],
+        resume_from=rows,
+    )
+    assert sum(1 for c in calls if c["name"] == "goto") == 1, (
+        "重放那一路被多补了一次导航：%r" % [c["name"] for c in calls])
 
 
 # ─────────────────────── 人每一步都在（§6.2/D16）───────────────────────
@@ -242,7 +295,8 @@ def test_pause_exits_before_the_next_step(tmp_path):
         should_pause=lambda j: len(j.steps) >= 1,
     )
     assert len(journey.steps) == 1, f"人喊停之后还走了 {len(journey.steps) - 1} 步"
-    assert len(calls) == 1, f"同一轮里剩下的调用照发了（跑了 {len(calls)} 次，跑完才退）"
+    assert len(calls) == 2, (
+        f"同一轮里剩下的调用照发了（跑了 {len(calls)} 次，跑完才退；头一下是开跑前的 goto）")
     assert journey.stop_reason == "paused"
     assert any("喊停" in n for n in journey.notes), f"没告诉人被谁停了：{journey.notes}"
 
@@ -256,7 +310,7 @@ def test_pause_between_rounds_also_stops(tmp_path):
         budget=browser_agent.Budget(max_steps=50, max_rounds=50),
         should_pause=lambda j: len(j.steps) >= 2,
     )
-    assert len(journey.steps) == 2 and len(calls) == 2
+    assert len(journey.steps) == 2 and len(calls) == 3   # +1 = 开跑前那一下 goto
     assert len(fake.calls) == 2, "人都喊停了，还在问模型"
     assert journey.stop_reason == "paused"
 
@@ -302,7 +356,7 @@ def test_a_pause_gate_that_blows_up_stops_instead_of_failing_a_step(tmp_path):
 
     def gate_that_blows_up(journey):
         asked.append(len(journey.steps))
-        if len(asked) == 2:                 # 第 1 次（轮边界）还好好的，第 2 次（步之前）炸了
+        if len(asked) == 3:                 # ① 开跑前站位 ② 轮边界 ③ 步之前 —— 第 3 次炸
             raise RuntimeError("Console 的队列炸了")
         return False
 
@@ -316,7 +370,10 @@ def test_a_pause_gate_that_blows_up_stops_instead_of_failing_a_step(tmp_path):
     assert journey.stop_reason == "paused", f"闸炸了却没停下，反而以 {journey.stop_reason} 收场"
     assert len(fake.calls) == 1, f"闸炸了之后还在问模型（问了 {len(fake.calls)} 轮）"
     assert journey.steps == [], f"闸炸了却还是走了 {len(journey.steps)} 步"
-    assert calls == [], f"闸炸了却还是把工具调用发出去了：{calls}"
+    # ⚠️ 开跑前那一下 `goto` 是**合法发出去的**：它自己过了入口那道闸（`_stop_or_raise`），
+    # 闸是在它**之后**才炸的。这一条钉的性质没变：**炸了之后**一个都不许多发。
+    assert [c["name"] for c in calls] == ["goto"], \
+        f"闸炸了之后还是把工具调用发出去了：{calls}"
     assert any("闸" in n and "Console 的队列炸了" in n for n in journey.notes), (
         f"没把「是那道闸自己坏了」说给人听（不然人以为自己喊停了）：{journey.notes}"
     )
@@ -373,7 +430,7 @@ def test_a_broken_on_step_hook_does_not_break_the_walk_but_says_so(tmp_path):
     assert boom["n"] == 2, "旁路每一步都该被叫到（吞的是它的异常，不是不叫它）"
     # 主路照走：两步都做成了、模型照常收到结果、循环自己收尾
     assert [s["action"] for s in journey.steps] == ["observe", "click"]
-    assert [c["name"] for c in calls] == ["observe", "click"]
+    assert [c["name"] for c in calls] == ["goto", "observe", "click"]
     assert journey.stop_reason == "model_done"
     tool_msgs = [m for m in fake.calls[1]["messages"] if m["role"] == "tool"]
     assert len(tool_msgs) == 2 and "No space left" not in tool_msgs[0]["content"], tool_msgs
@@ -456,7 +513,7 @@ def test_every_step_lands_in_the_journey(tmp_path):
          {"content": "走完了"}],
     )
     assert [s["action"] for s in journey.steps] == ["observe", "click", "scroll"]
-    assert [c["name"] for c in calls] == ["observe", "click", "scroll"]
+    assert [c["name"] for c in calls] == ["goto", "observe", "click", "scroll"]
     for step in journey.steps:
         # ⚠️ `origin` 是 Task 4 加的（跨任务接口 §1）：走 dispatch 的每一步都是模型走出来的
         # ⚠️ 后五个键是 **2026-09-18 契约**加的（`docs/执行事实契约-2026-09-18.md` §二
@@ -556,7 +613,8 @@ def test_all_tool_calls_in_one_turn_reach_the_model(tmp_path):
         [{"calls": [("observe", {}), ("click", {"selector": "#get-started"}), ("diff", {"before": {"url": "x"}})]},
          {"content": "三个都拿到了"}],
     )
-    assert [c["name"] for c in calls] == ["observe", "click", "diff"], "三个调用没按顺序都执行"
+    assert [c["name"] for c in calls] == ["goto", "observe", "click", "diff"], \
+        "开跑前那一下 + 三个调用没按顺序都执行"
     assert len(journey.steps) == 3
 
     tool_msgs = [m for m in fake.calls[1]["messages"] if m["role"] == "tool"]

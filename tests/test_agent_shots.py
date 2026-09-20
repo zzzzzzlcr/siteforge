@@ -973,7 +973,7 @@ def test_no_shots_dir_means_the_shooter_is_never_called(tmp_path):
         budget=browser_agent.Budget(max_steps=10, max_rounds=10),
     )
     assert s.dests == [], f"没给 shots_dir 却拍了 {len(s.dests)} 次"
-    assert [c["name"] for c in calls] == ["observe", "click", "observe"], calls
+    assert [c["name"] for c in calls] == ["goto", "observe", "click", "observe"], calls
 
 
 def test_the_degrade_switch_turns_every_step_shot_off(tmp_path, monkeypatch):

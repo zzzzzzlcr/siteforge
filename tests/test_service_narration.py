@@ -869,8 +869,13 @@ class _StubSession:
         return [{"name": "observe", "description": "看一眼这一页",
                  "inputSchema": {"type": "object", "properties": {}}}]
 
-    def call_tool(self, name, args):                     # pragma: no cover - 这一片用不着
-        raise AssertionError("这一条用例不该走到工具调用")
+    def call_tool(self, name, args):
+        # ⚠️ **`goto` 要放行**（2026-09-20）：`explore` 开跑之前会**先站到目标页上**
+        # （见 `browser_agent._enter_target` —— 不然起点会落在 Bit 的工作台页）。
+        # 别的工具仍然不许被调到：这一片测的是**播报那两根线**，不是工具循环。
+        if name == "goto":
+            return {"ok": True, "note": "打开了 %s" % (args or {}).get("url", "")}
+        raise AssertionError("这一条用例不该走到工具调用：%s" % name)
 
 
 def _reply(content="", calls=None):
@@ -903,6 +908,10 @@ class _FakeLLM:
         self.calls.append(kwargs)
         turn = self.turns[min(len(self.calls) - 1, len(self.turns) - 1)]
         return _reply(turn.get("content", ""), turn.get("calls"))
+
+
+#: 开跑前站位那一条的原话（`browser_agent._enter_target` 写的）—— 与 `on_note` 无关。
+ENTRY_SAY = "探路的**起点是目标页**：开跑之前先导航到「%s」。"
 
 
 def _explore_with_note(on_note):
@@ -1029,7 +1038,9 @@ def test_an_explore_without_the_note_hook_behaves_exactly_as_before():
     而那句话说明行为已经变了。列表比句子严。
     """
     journey = _explore_with_note(None)
-    assert journey.notes == [MODEL_SAID], journey.notes
+    # ⚠️ **开头那一条是开跑前的站位**（2026-09-20 加，与 `on_note` 无关）——
+    # 这一条测的性质没变：**不给 `on_note` 时，账本不多出「模型说的话」以外的东西**。
+    assert journey.notes == [ENTRY_SAY % URL, MODEL_SAID], journey.notes
 
 
 def test_a_selftest_without_the_run_hook_reports_exactly_the_same_thing(

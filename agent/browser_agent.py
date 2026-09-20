@@ -502,6 +502,26 @@ class _Stop(BaseException):
         self.detail = detail
 
 
+def _enter_target(session, url: str, journey) -> None:
+    """开跑之前把这一页导航到目标 url —— **失败不抛**，但要**说出来**。
+
+    为什么失败不抛：导航没成不等于这一趟没救 —— 模型看见「起点不对」之后**可以自己再导航一次**。
+    把它抛出去，就把一条「模型自己能救」的路变成了一趟白跑。
+    ⚠️ 但**不许静默**：没成就要在账本里留下一句人话（否则读账的人以为起点本来就是目标页）。
+
+    ⚠️ **调用方必须先过暂停闸**（`_stop_or_raise`）—— 它自己不查：
+    「停在下一步之前」那条不变量要求这一下也归暂停管。
+    """
+    try:
+        session.call_tool("goto", {"url": url})
+    except Exception as exc:                       # noqa: BLE001 —— 见上面「失败不抛」
+        journey.note("开跑之前先导航到「%s」**没成**：%s: %s —— 探路照常开始，"
+                     "但**起点可能不是目标页**（谁读这份账都要知道这一条）。"
+                     % (url, type(exc).__name__, exc))
+        return
+    journey.note("探路的**起点是目标页**：开跑之前先导航到「%s」。" % url)
+
+
 def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             plan: "plan_module.Plan | None" = None,
             should_pause: Callable | None = None,
@@ -801,6 +821,26 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             # 判据两条都要：**没走完**（数出来的，不是读 `why` 那句话）+ **问接口**说死了。
             if replay_cut_short(journey, resume_from) and _window_is_dead(window_alive):
                 raise _Stop("window_gone", detail="账本还没重放完，窗口就没了")
+
+        # ⚠️ **开跑之前先站到目标页上**（2026-09-20 真站实测的根因，`job-36ab36b56754`）：
+        # 窗口是 `fresh_open` 新开的 ⇒ 它落在 **Bit 的工作台页**
+        # （`console.bitbrowser.net/…?id=…&port=…`）；而模型的第一个动作是 `observe` ——
+        # 它看到的就是那个「**我们碰巧从那儿开始**」的旁枝。那一趟 20 步预算全烧在旁枝上，
+        # 目标站一步没探，最后只能交白卷（它交得对，但**本来不该走到那一步**）。
+        #
+        # 原先靠 `_branch_start_states`「起点那页与后面每页都不同源 ⇒ 撤掉它的 `when`」**绕** ——
+        # 那是绕不是修：判据撤了，起点那组步骤在**重放**时就认不出来了。
+        # 生产脚本的第一步也是 `goto`，同一个道理：**先站到起点上，再开始看**。
+        #
+        # ⚠️ **重放那一路不补**（`resume_from`）：账本第一步本来就是 goto，再导航一次是白跑。
+        # ⚠️ **先过暂停闸**（`_stop_or_raise`）：人已经喊停 / 已经暂停时，
+        # **这一下也不许发生** —— 「停是安全的，它不让任何一步发生」那条不变量。
+        # ⚠️ 它**不走 `dispatch`**（试过，太重）：走 dispatch 就等于把它算成模型的一步，
+        # 还会触发步拍、把后面每一步的编号整体挪一格 —— 而它其实是**站位**，不是探索。
+        # 代价是它不进 `journey.steps`，所以**必须有一句人话说出来**（见 `_enter_target`）。
+        if not resume_from:
+            _stop_or_raise(paused, journey, taken, limits)
+            _enter_target(session, url, journey)
 
         opening = _brief(url, goal, limits, plan)
         if journey.replay:
