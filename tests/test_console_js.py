@@ -809,8 +809,15 @@ def test_the_page_says_it_will_stop_and_ask_before_every_expensive_step(tmp_path
     一次，5 道闸一道没少）⇒ 补的是「**把它说出来**」，不是编一句新的。
 
     量的是**屏幕上此刻的文本**（`#roundsSub`），而且**活过之后三次重画**。
-    ⚠️ 措辞不许写成「每一步」那种**比事实宽**的话：`intake` 不设闸 ⇒ 说「每一步」就是
-    一句假话（与被判「名字太宽」的那条用例同一种病）。所以第三条断言钉的是那句限定语。
+
+    ⚠️ **两个轴都要准**（修复轮 3 补；复审 §5.3 逮到我前两版各错一个轴）：
+      ① **哪几步会问** —— 「每一步」是**放宽**（`intake` 不设闸，它不问）
+         ⇒ 断言钉「从收下开场白起头」那句划界；
+      ② **那时人能做什么** —— 「打回」只在 `REVISABLE`（`lint`/`selftest`/`deliver`）三道闸上
+         开（`graph.py:161`），在 `explore` / `draft` 上页面自己说的是「说一句，接着走」
+         ⇒ 一句**全称**承诺里出现「打回」就是**宽话**（同一个屏上两个口径）。
+         这一条钉的是**「打回」不许出现在这句全称承诺里** —— 不是钉词，是钉
+         「这句承诺说的动作必须每道闸都成立」。
     """
     out = _drive(tmp_path, scenario="gate-facts")
     assert out["paintMarks"]["afterRepaint"] - out["paintMarks"]["afterLoad"] >= 3, \
@@ -820,11 +827,15 @@ def test_the_page_says_it_will_stop_and_ask_before_every_expensive_step(tmp_path
         assert "每一步都会先停下来问你一次" in sub, (
             "%s：那一句承诺不在屏上 —— `intake` 不设闸之后没人说它了（复审 F14）：%r"
             % (where, sub))
-        assert "喊停" in sub and "打回带话" in sub, (
-            "%s：承诺里「随时可以喊停 / 打回带话」那半不见了：%r" % (where, sub))
-        assert "开真窗口 / 动真页面" in sub, (
-            "%s：那句限定语不见了 —— 少了它，「每一步」就是一句比事实宽的话"
-            "（`intake` 不设闸）：%r" % (where, sub))
+        assert "收下你那份开场白之后" in sub, (
+            "%s：少了那句划界（「从收下开场白起头」）—— 「每一步」就是一句比事实宽的"
+            "话：`intake` 是一步、它不问（复审 §5.3 ①）：%r" % (where, sub))
+        assert "喊停" in sub, ("%s：承诺里「随时可以喊停」不见了：%r" % (where, sub))
+        assert "打回" not in sub, (
+            "%s：「打回」只开在 lint / selftest / deliver 三道闸上（`graph.py:161`），"
+            "写进这句**全称**承诺里就是宽话 —— 而同一个屏上按钮按 `gate.revisable` 说的"
+            "是「说一句，接着走」，两句会打架。要用**每道闸都成立**的词"
+            "（「喊停」/「说一句纠正」，见 `HUMAN_CAN`）：%r" % (where, sub))
 
 
 def test_the_operator_can_start_a_new_run_from_the_panel(tmp_path):
