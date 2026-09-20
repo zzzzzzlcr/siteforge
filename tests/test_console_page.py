@@ -102,8 +102,13 @@ def test_the_page_names_every_hop_it_will_call_and_the_three_actions():
         assert 'id="%s"' % btn in page, "页面少了这个动作的 id：%s" % btn
     #: 每一跳的**落点**：逐条钉真字面量（⚠️ 修复轮 1：原来钉的是 `'"say"' in page`，
     #: 而那个子串是被 `ACT` 映射表**自己**满足的 —— 把发出去的载荷改名它**照样通过**，是空钉子）
+    #: ★ Task 12 加的三跳：`/run`（开一趟新的 —— 它**不在某个 job 下面**）、
+    #: `/window/close`（人按的收摊）、`/reopen`（换窗口接着走）。
+    #: ⚠️ 后两个是**相对某一趟**的（`act`/`windowAct` 会拼上 `/job/<id>`），
+    #: 而 `run` 那一跳**不拼** —— 页面自己那一段注释写着这件事（别拿 `act()` 发它）。
     for pair in ('"continue": "/reply"', '"say": "/say"', '"stop": "/stop"',
-                 '"again": "/again"'):
+                 '"again": "/again"', '"run": "/run"',
+                 '"windowClose": "/window/close"', '"reopen": "/reopen"'):
         assert pair in page, "动作到端点的对应不在页面上：%s" % pair
 
 
@@ -665,3 +670,88 @@ def test_the_left_column_warning_cannot_be_wiped_by_a_repaint():
         "`paintRuns` 不知道这一栏坏着 —— 旧列表会照画，把那句话盖掉"
     runs = re.search(r"function fetchRuns\(.*?\n  \}", page, re.S).group(0)
     assert "state.runsBroken = false" in runs, "拿到新列表时没把标记清掉（好了也一直不上屏）"
+
+
+# ═══════════════════ Task 12：开一趟 / 窗口那两下（**标记这一半**）═══════════════════
+#
+# ⚠️ 这一节钉的是**标记**（哪一格在不在、旁边有没有那句人话）。**行为**那一半在
+# `tests/test_console_js.py`（执行夹具）里 —— 按这一片的纪律，新行为不许只靠
+# 源码字符串断言（Task 7 那条「page 只认 mode」的断言正文只有两个 `in` 就是个教训）。
+
+
+def test_the_new_run_form_has_every_cell_and_a_human_sentence_beside_it():
+    """「开一趟」那张表单：**每一格都在**，而且每一格旁边写着**它是干什么的**。
+
+    为什么「旁边那句」也是判据：这一格存在的理由是「运营得知道该往里填什么」——
+    一个只有 placeholder 的输入框，人只能靠猜（placeholder 会被输进去的字盖掉）。
+    """
+    page = _page()
+    markup = page.split("<script>")[0]
+    for fid in ("runUrl", "runGoal", "runSuccess", "runMode", "runEvidence", "btnRun"):
+        assert 'id="%s"' % fid in markup, "表单少了这一格：%s" % fid
+    #: 失败证据那一格**开页是收着的**（新站用不上它）—— 露不露由脚本按选的那一档摆
+    ev = re.search(r'<div class="field" id="runEvidenceField"[^>]*>', markup)
+    assert ev and "hidden" in ev.group(0), "失败证据那一格开页就该是收着的：%r" % (ev and ev.group(0))
+    whys = [re.sub(r"<[^>]+>", "", w).strip()
+            for w in re.findall(r'<p class="why">(.*?)</p>', markup, re.S)]
+    assert len(whys) >= 5, "「每一格旁边那句人话」不够（只有 %d 句）：%r" % (len(whys), whys)
+    for w in whys:
+        assert len(w) >= 24, "这一句太短，说不出「它是干什么的、不填会怎样」：%r" % w
+    #: **这一块里不出现线上那几格的名字**（人话纪律：字段名是给机器的）。
+    #: ⚠️ 射程是**这一块**（`#newRunPanel` 那一段），不是整页 —— 页面上别处本来就有
+    #: 带 `mode` 的 id（`#modeHint`，Task 7 的），拿整页去扫会误杀。
+    block = markup.split('id="newRunPanel"', 1)[1].split("</section>", 1)[0]
+    for wire in ("success_text", "ws_url", "job_id", "evidence", "mode"):
+        assert wire not in block, "给运营看的这一块里出现了线上那一格的名字：%s" % wire
+
+
+def test_the_new_run_form_never_checks_the_required_cells_by_itself():
+    """★ **不许在页面上预先判断哪一格必填** —— 让服务说（它有那张人话单子）。
+
+    这一条只钉得住**标记与声明**（`runPayload()` 里那几行）；真正「空着也照发」的行为
+    由夹具那条量（它读的是**发出去的正文**）。这里钉的是那份**声明**别哪天被删掉。
+    """
+    page = _page()
+    assert "function runPayload()" in page, "找不到「开一趟」那份正文的组装函数"
+    body = re.search(r"function runPayload\(\).*?\n  \}", page, re.S).group(0)
+    for key in ("url", "goal", "success_text", "mode", "evidence"):
+        assert '"%s":' % key in body, "那一格没进正文：%s" % key
+    #: 它**只是取值**：一个 `if` 都不许有（有 `if` 就有「页面先判了一道」）
+    assert "if " not in body, "这一份组装里出现了判断（页面在替服务做决定）：\n%s" % body
+    assert "trim()" in body, "取值时该去掉首尾空白（不然「全是空格」会被当成填了）"
+
+
+def test_the_stop_button_says_what_it_costs():
+    """★ Task 12 第 3 件（**只改措辞**那个最轻的选项）：按钮上写着「撤不回」。
+
+    ⚠️ 两处都钉：**静态标记**里那一句（开页时人先看到的）与**脚本里那一格**
+    （接线时写进按钮的）—— 两处不一样，人看到的就是闪一下换个说法。
+    """
+    page = _page()
+    markup = page.split("<script>")[0]
+    tag = re.search(r'<button[^>]*id="btnStop"[^>]*>(.*?)</button>', markup, re.S)
+    assert tag, "找不到「停」那个按钮"
+    assert tag.group(1).strip() == "停下（撤不回）", tag.group(1)
+    assert 'var STOP_LABEL = "停下（撤不回）";' in page, "脚本里那一格与标记对不上"
+
+
+def test_the_window_block_carries_the_state_cell_and_the_two_buttons():
+    """「这个窗口」那一块：**状态那一格** + **关/重开两个按钮**（默认都不摆）。
+
+    为什么默认不摆：这两下的判据在服务给的那两格里（`can_close` / `can_reopen`）——
+    开页就先摆出来，人在第一次 `/live` 回来之前会看到一个**服务还没说能给**的按钮。
+    """
+    page = _page()
+    markup = page.split("<script>")[0]
+    assert 'id="winState"' in markup, "「这个窗口」那一块没有状态那一格"
+    for bid in ("btnCloseWindow", "btnReopen"):
+        tag = re.search(r'<button[^>]*id="%s"[^>]*>' % bid, markup)
+        assert tag, "少了这个按钮：%s" % bid
+        assert "hidden" in tag.group(0), "这个按钮开页就该是收着的：%r" % tag.group(0)
+    #: 它们在不在**只看服务那两格** —— 页面上不许出现「拿状态自己推一遍」的写法
+    painter = re.search(r"function setWinActions\(win\).*?\n  \}", page, re.S)
+    assert painter, "找不到摆这两个按钮的那一段"
+    body = painter.group(0)
+    assert 'at(win, "can_close"' in body and 'at(win, "can_reopen"' in body, body
+    for wrong in ('at(win, "state"', 'at(live, "status"'):
+        assert wrong not in body, "这两下在拿别的东西推（服务给的那两格才是判据）：%s" % wrong

@@ -132,6 +132,82 @@ WINDOW_WHEN = ("**它正在跑（running）的时候不要动手** —— agent 
                "窗口只活几分钟，去看它**不会让它活更久**；把它**关掉** = 这一趟的窗口没了"
                "（图会停在「自测那一步没有窗口」，那是一条正常的路，不是 bug）。")
 
+# ── 「这个窗口现在是死是活」（Task 12）────────────────────────────────────
+#
+# 需求原话（用户 2026-09-20：「我的意思是希望面板上运营就能操作」）⇒ 口径是
+# **运营全程不碰命令行**。而「窗口」这件事今天有**两下**是命令行的：
+#   ① 派之前核「窗口已关」（`curl /browser/pids/alive`）—— 不核就拿到正在死掉的窗口；
+#   ② 跑完关窗（`bit.sh close`）—— 不关就是资源泄漏（硬规矩）。
+# 这一节把窗口的**状态**变成服务说得出口的一格（页面照抄），**读数只有一份**：
+# 那条已经在跑的探针时间线（`_window_probe_loop` → `window.jsonl`），三态沿用
+# `measure.ALIVE/DEAD/UNKNOWN` —— 别另造一份（这一片的老病就是「两个真相源」）。
+
+#: 「还没量过」那一档：**它不在 `measure` 的三态里**，因为它是「这一屏还不知道」，
+#: 不是「窗口怎么样了」。⚠️ 不许把它并进 `UNKNOWN`：那个说的是「问了，它没答话」。
+WINDOW_UNMEASURED = "unmeasured"
+
+#: 三句人话（服务给的原话，页面照抄）。⚠️ `UNKNOWN` 那句必须说清
+#: **「问不出来 ≠ 死了」** —— 那是这条线上最容易变成谎的一格（`_window_is_gone` 立的就是这条规矩）。
+WINDOW_STATE_SAY = {
+    measure.ALIVE: "窗口**开着**（它现在就是 agent 用的那个浏览器）。",
+    measure.DEAD: "窗口**没了**（关掉了，或者它自己到点了）—— 接着走之前得先重开一个。",
+    measure.UNKNOWN: "窗口**问不出来**：服务问了，窗口服务没答话 —— 这**不等于**它死了"
+                     "（不许拿它当死用）。",
+}
+#: 一次都没量过时那句（`%d` = 探针隔多少秒量一次）。说得出「多久会有下一眼」，
+#: 人才知道该等还是该干别的。
+WINDOW_UNMEASURED_SAY = ("服务**还没问过**这个窗口（它每 %d 秒问一次）—— "
+                         "所以它现在是死是活，这一屏说不出来。")
+
+#: 「关掉这个窗口」这个动作的三句人话。⚠️ 关窗**只由人按**（Task 12 的硬约束）：
+#: 停在闸上是唯一适合人接管的时刻（`WINDOW_WHEN`），**人可能正看着那个窗口** ——
+#: 所以服务**绝不无条件自动关**。
+CLOSE_WINDOW_WHILE_RUNNING_SAY = (
+    "先别关：它现在是「%s」—— agent 正拿着这个窗口干活（点、填、滚都在里面）。"
+    "**在它跑的时候把窗口抽走**，这一步会失败，而失败会被记成产物的问题（那是误导）。"
+    "等它停下来（停在闸上 / 跑完 / 跑挂），再按这个按钮。")
+CLOSE_WINDOW_NO_LAYER_SAY = (
+    "关不了：这个部署**没有接窗口层**（没有 `BIT_WORKER_IP`/`BIT_ID`）—— "
+    "它根本不知道有哪个窗口可关，所以它不会假装关了一下。")
+#: 关窗口没被确认（`BitWindow.close()` 自己那句就是人话：探活说它还活着/问不出来）。
+CLOSE_WINDOW_FAILED_SAY = "关窗口**没被确认**：\n%s"
+#: 关掉了那句（`%s` = 关之后量到的那句状态原话）。
+CLOSE_WINDOW_DONE_SAY = "窗口关掉了 —— 你按的。%s"
+#: 它本来就已经不在了（关窗口这件事没什么可做的）—— **照实说**，不说「关掉了」。
+CLOSE_WINDOW_ALREADY_GONE_SAY = ("这个窗口**本来就已经不在了**（按之前那一问，它答「不在了」）"
+                                  "—— 所以没有关掉什么。%s")
+
+#: 重开窗口那句：没给 `ws_url` 时**服务自己去开**（Task 12：这一下不许再落回命令行）。
+REOPEN_NO_WINDOW_LAYER_SAY = (
+    "开不了新窗口：这个部署**没有接窗口层**（没有 `BIT_WORKER_IP`/`BIT_ID`）—— "
+    "它开不出窗口来。两条路，都摆在明面上：① 把窗口层接上，那这一下就不用人工了；"
+    "② 你自己开一个窗口，把那一串 `ws_url` 跟这次请求一起发过来（老办法）。")
+REOPEN_OPEN_FAILED_SAY = ("服务自己去开一个新窗口**没成**：\n%s\n"
+                          "（它没有把任何一个旧窗口交出去顶替 —— 开不出来就是开不出来。）")
+
+#: 窗口没了、人却按了「继续」时那条 409 的人话（`%s` = job id）。
+#:
+#: ★ Task 12 改的是**顺序与醒目程度**，实质一个字没动（它说的全是真事）：
+#:   原来「重开一个窗口，再从这里接着走」**埋在长文本中间**，运营的体感是
+#:   「**我点继续没任何反应**」（用户 2026-09-20 的原话）。
+#:   ⇒ 人话的顺序是**先说要做什么，再说为什么**：第一行就是那个动作（而且落在面板上，
+#:   不再是一条要他敲的命令 —— 命令那一路降到最后一行，只给没接窗口层的部署留着）。
+#: ⚠️ 「为什么」那一段一个字都不许省：它是这一屏「不编话」的另一半 ——
+#:   不接着说走，是因为**那样跑出来的报告会说错话**，不是因为服务拿不定主意。
+WINDOW_GONE_REPLY_SAY = (
+    "**怎么办 —— 两步，都在下面那一行按钮里：**\n"
+    "  ① 按「停下」：把这一趟收在闸上（这一步不做，页面与文件都保持原样）。\n"
+    "  ② 等它变成「跑完了」，按「重新来一遍」：那个按钮到那一档才出现 —— "
+    "新的一趟会**自己开一个干净窗口**、从零再走（探到的账本还在 checkpoint 里）。\n"
+    "为什么不能就这么接着走：这个窗口**已经不在了**（§4.6：Bit 窗口只活几分钟，"
+    "而这一步可能跑很久）。现在接着走的话，自测会拿着一个死窗口跑，"
+    "报告会把「连不上」说成产物的问题 —— 那是误导。\n"
+    "（**为什么第一步不是「重开一个窗口接着走」**：那条路接得住的是**图已经停下来**的两种停法"
+    "（自测发现窗口没了 / 探路没走完）；**「停在闸口等人回话」这一档它接不住** —— "
+    "给它换窗口就得把闸上那一步推下去，那等于**替你按了「继续」**，服务不做这件事。"
+    "这一档原先那句「重开一个窗口，再从这里接着走」是**做不到的**（2026-09-20 实测："
+    "走到这里再发 `POST /job/%s/reopen` 会被回一句「不用重开」）。）")
+
 #: **降级 B** 那句话（设计注 §5.5）：关掉每步抓拍时，页面上**一直**显示它。
 #: ⚠️ 不许静默降级 —— 运营看到一次「没有逐步图」的运行，必须同时看到「为什么」。
 #: ⚠️ 而且**每一句都得是真的**（修复轮 1 抓到的）：接线补上之前，「去掉开关就恢复」是空话
@@ -1226,9 +1302,15 @@ class SayRequest(_Intake):
 
 
 class ReopenRequest(_Intake):
-    """窗口死了之后重开一个（P6）：把**新窗口**放回状态，从断点接着跑。"""
+    """窗口死了之后重开一个（P6）：把**新窗口**放回状态，从断点接着跑。
 
-    ws_url: str = Field(..., description="新开出来的窗口（bit.sh open 吐的那串）")
+    ★ Task 12：`ws_url` **不给了也行** —— 那样由**服务自己**去开（`fresh_open`）。
+    原先它是必填的（`Field(...)`），于是这一下必须由人在宿主上敲 `bit.sh open` 再把
+    那串贴回来；运营不敲命令行 ⇒ 窗口一死，这一趟就停在面板上没人救得回来。
+    """
+
+    ws_url: str = Field("", description="新开出来的窗口（`bit.sh open` 吐的那串）。"
+                                        "**空着 = 服务自己去开一个**（Task 12）")
     entry_url: Optional[str] = Field(None, description="顺便更新第 2 遍刷新回哪个 URL")
     set_viewport: bool = Field(False, description="顺便把窗口层那根线接上（第 4 遍扰动要用）")
 
@@ -2269,20 +2351,96 @@ class Service:
 
     # ── 两块接线信息（页面不自己编）────────────────────────────────
 
-    def window_public(self) -> Optional[dict]:
+    def window_public(self, job_id: str = "", status: str = "",
+                      values: Optional[dict] = None) -> Optional[dict]:
         """「这个窗口」那一块（设计注 §十）：**只摆事实 + 方法，不编 URL**。
 
         没接窗口层 → `None`（页面据此**明说**「看不到活窗口」，而不是显示一块空表）。
         `how` / `when` 两句写死在这个文件里（`WINDOW_HOW` / `WINDOW_WHEN`）：页面原样显示。
         身份那三样里缺的（桩窗口、或者别的实现没带）给 `None` —— 不知道就说不知道。
+
+        ⚠️ **给了 `job_id` 才多三格**（Task 12）：`state` / `state_say`（这个 job 的窗口
+        现在什么状态，见 `window_state`）+ `can_close`（现在能不能关，**服务说了算**）。
+        为什么挂在同一个函数上而不是另起一块：这就是 `/live` 里**同一个 `window` 格**，
+        页面也只有那一处渲染它 —— 另造一份口径就是这一片最老的那个病。
+        身份那五格是**部署级**的（不随 job 变），状态那三格是**这一趟**的，所以分开取。
         """
         window = self._window
         if window is None:
             return None
-        return {"worker": getattr(window, "worker_ip", None),
-                "bit_id": getattr(window, "bit_id", None),
-                "api_port": getattr(window, "port", BIT_API_PORT),
-                "how": WINDOW_HOW, "when": WINDOW_WHEN}
+        out = {"worker": getattr(window, "worker_ip", None),
+               "bit_id": getattr(window, "bit_id", None),
+               "api_port": getattr(window, "port", BIT_API_PORT),
+               "how": WINDOW_HOW, "when": WINDOW_WHEN}
+        if job_id:
+            out.update(self.window_state(job_id))
+            out["can_close"] = self.window_closable(status)
+            #: 「重开窗口，接着走」那个按钮在不在（`reopen` 接不接得住这一趟）。
+            #: ⚠️ 判据与端点**同一处**（`_resume_point_from`）—— 页面要是自己拿
+            #: `state` / `status` 推一遍，就会出现「按钮在、按下去 409」那种点了没反应的形状。
+            #: ⚠️ 用**调用方已经读过的那份 values**（`live()` 手上就有）：在这儿再
+            #: `_snapshot` 一次会在「跑着」那一档**排队等写锁**（A1 明令不许）。
+            out["can_reopen"] = self._reopenable(values, status)
+        return out
+
+    def _reopenable(self, values: Optional[dict], status: str) -> bool:
+        """这一趟现在能不能「重开窗口接着走」—— `can_reopen` 那格的判据。
+
+        与 `/reopen` 端点**同一个判据**（`_resume_point_from`），差的只是 values 从哪来：
+        端点自己读快照，这里用 `/live` 已经读过的那份。
+        """
+        return self._resume_point_from(values or {}, {"status": str(status)}) is not None
+
+    def window_state(self, job_id: str) -> dict:
+        """这个 job 的窗口**现在什么状态** —— 人话 + 一个机器格（Task 12）。
+
+        ⚠️ **读的是那条已经在跑的时间线**（`runtime/explore/<job>/window.jsonl` 的最近一行，
+        由 `_window_probe_loop` 每 `_probe_seconds` 秒记一行），**不是**当场再问一次 Bit：
+        `/live` 每 3 秒被点一次，当场问等于把「15 秒一眼」改成「每次轮询都打一个接口」。
+        ⇒ **一份读数、一个来源**：这里只把最近那一行翻译成人话 + 说出它是**什么时候**量的
+        （一个不带时刻的状态会被人当成「此刻」，而它可能是 14 秒前的）。
+
+        没接过窗口层 / 一行都还没有 / 那一行读不出来 → `unmeasured`（**不知道就说不知道**）。
+        """
+        row: dict = {}
+        try:
+            row = dict(self._last_window_row(job_id) or {})
+        except Exception:                      # noqa: BLE001 —— 旁路读不动不许带塌这一格
+            traceback.print_exc()
+            row = {}
+        raw = str(row.get("alive") or "")
+        if raw not in WINDOW_STATE_SAY:
+            return {"state": WINDOW_UNMEASURED,
+                    "state_say": WINDOW_UNMEASURED_SAY % int(self._probe_seconds)}
+        # ⚠️ 时刻**并进那句话里**，不另给一格：同一件事两个出口 = 两个真相源
+        # （页面要是把 `at` 自己排一遍，那句话与那一格哪天就会对不上）。
+        return {"state": raw,
+                "state_say": WINDOW_STATE_SAY[raw]
+                             + self._measured_at_say(str(row.get("at") or ""))}
+
+    @staticmethod
+    def _measured_at_say(at: str) -> str:
+        """「这是哪一刻量的」那半句（Task 12）。读不出来就明说读不出来 —— 不印一个空括号。"""
+        try:
+            t = datetime.datetime.fromisoformat(at)
+        except (TypeError, ValueError):
+            return "（这一格是什么时候量的，读不出来。）"
+        return "（这是 %s 问的。）" % t.strftime("%H:%M:%S")
+
+    def window_closable(self, status: str) -> bool:
+        """现在能不能关这个窗口 —— **服务说了算**（页面不猜、也不自己算）。
+
+        两条判据：
+          ① 这个部署真给得了 `close`（没接窗口层就是没有可关的东西）；
+          ② 它**没在跑**（`running` / `queued` 不给关）。
+        ⚠️ 第 ② 条是这一格的**全部意义**：agent 正在那个窗口里点、填、滚，把窗口抽走
+        就是把一次跑到一半的活弄死（`WINDOW_WHEN` 那句写死的规矩说的就是这件事）。
+        ⇒ 闸上（`waiting`）/ 跑完 / 跑挂**都给关** ——「停在闸上是唯一适合人接管的时刻」，
+        而「接管完了，现在可以关了」正是人那个时候会做的下一件事。
+        """
+        if self._window is None or not hasattr(self._window, "close"):
+            return False
+        return str(status) not in (RUNNING, QUEUED)
 
     def shots_note(self) -> str:
         """**降级 B** 那句话（设计注 §5.5）：每步抓拍开着 → `""`；关着 → 一句人话。
@@ -3405,7 +3563,8 @@ class Service:
         proj = rounds.project(
             values, view.get("gate"), job_id=job_id, status=view["status"],
             say=str(view.get("say") or ""), delivered=bool(view.get("delivered")),
-            pauses=pauses, window=self.window_public(), shots_note=self.shots_note(),
+            pauses=pauses, window=self.window_public(job_id, view["status"], values),
+            shots_note=self.shots_note(),
             stage=token)
         note = "\n".join(x for x in (note, events_note, proj["rounds_note"], facts_note) if x)
         return {
@@ -3656,6 +3815,16 @@ class Service:
         # **只在能给 PID 的窗口层上起** —— 桩窗口没有 PID，那样的线判不出「重开了几次」。
         self._active_job = job_id
         self._start_window_probe()
+        # ★ Task 12：**刚交上去就量一眼那个窗口**，让面板上「现在什么状态」那一格有话说。
+        # 不量的话，头 `_probe_seconds` 秒里那一格只能说「服务还没问过」（探针第一眼要等
+        # 一个间隔才响）—— 而人刚刚按的正是「开一趟」，那一刻他最想知道的就是「窗口开出来了吗」。
+        # ⚠️ 这一行**不是新的口径**：它就是那条时间线的第一行（`_probe_window_row`）。
+        # 没接窗口层就不量：那种部署本来就没有窗口可言（`window_public` 整个给 `None`）。
+        if self._window is not None:
+            try:
+                self._probe_window_row(job_id, note="刚交上去，量一眼这个窗口")
+            except Exception:                  # noqa: BLE001 —— 旁路不许把这一趟带塌
+                traceback.print_exc()
         # 目录表第 3 行：先记「收到」，再（前面有东西时）记「排队等窗口」。
         # ⚠️ **先说后交**是有意的：交给队列之后工作线程可能立刻喊「在跑」，顺序就反了。
         # ⚠️ 载荷里换掉的字节要说出来（Task 8 补丁 A）：`/run` 收的**全是外面来的字**
@@ -3711,12 +3880,7 @@ class Service:
             # 那就得**在这儿**说 —— 否则「窗口没了」只有那个 409 知道，
             # 而坐在页面前面的人只看到「回话被拒」：时间线上一片安静（那正是这一片要治的）。
             self._note_window_died(job, values, dead=True)
-            raise HTTPException(status_code=409, detail=
-                                "先别接着走：这个窗口**已经不在了**（§4.6：Bit 窗口只活几分钟，"
-                                "而这一步可能跑很久）。现在接着走的话，自测会拿着一个死窗口跑，"
-                                "报告会把「连不上」说成产物的问题 —— 那是误导。\n"
-                                "重开一个窗口，再从这里接着走（账本和这一步的进展都还在）：\n"
-                                "    POST /job/%s/reopen  {\"ws_url\": \"<新窗口>\"}" % job_id)
+            raise HTTPException(status_code=409, detail=WINDOW_GONE_REPLY_SAY % job_id)
         # ⚠️ 先把 job 从「停住」挪开，**再**交下去。
         # 不挪的话：`_view` 会从 checkpoint 投影（那个中断还在）→ 响应说「在等人」+
         # 旧那道闸 → 调用方再回一次话 → 那一句 resume 落到**下一道闸**上 →
@@ -4163,6 +4327,56 @@ class Service:
         return [w for w in words if w.strip()], unreadable
 
 
+    def close_window(self, job_id: str) -> dict:
+        """人按下「关掉这个窗口」—— **服务去关，并且确认真死了**（Task 12）。
+
+        为什么要有这一下（用户 2026-09-20：「希望面板上运营就能操作」）：
+        「跑完关窗」今天是**硬规矩**，而它落在**命令行**上（`bash bit.sh close …`）——
+        运营不会去敲命令，于是要么窗口泄漏，要么没人关。
+
+        ⚠️ **关的时机只由人给，绝不无条件自动关**（本仓的明文设计）：停在闸上是唯一适合
+        人动手接管的时刻，**人可能正看着那个窗口** —— 服务自己挑时刻关，等于把他的手从
+        键盘下抽走。所以这是一个**按钮**，不是一条自动规则。
+        ⇒ 两档**不给关**（`running` / `queued`，见 `window_closable`）；其余照按。
+
+        ⚠️ 「关掉了」这句话**只在真确认死掉之后才说**：`BitWindow.close()` 自己会探活
+        （SKILL：`close` 返回成功 ≠ 窗口真关了），没确认就抛 —— 那条异常是**人话**，
+        原样端出去（这一屏不许编一句「失败了」）。
+        """
+        job = self._jobs.get(job_id) or self._recover(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        view = self._view(job_id)
+        status = view["status"]
+        if not self.window_closable(status):
+            if self._window is None or not hasattr(self._window, "close"):
+                raise HTTPException(status_code=400, detail=CLOSE_WINDOW_NO_LAYER_SAY)
+            raise HTTPException(status_code=409, detail=(
+                CLOSE_WINDOW_WHILE_RUNNING_SAY % self._status_say(status)))
+        before = None
+        try:
+            probe = (self._window.probe() if hasattr(self._window, "probe")
+                     else {"alive": self._window.alive()})
+            before = (probe or {}).get("alive")
+        except Exception:                      # noqa: BLE001 —— 按之前那一问读不出来 = 不知道
+            traceback.print_exc()
+        try:
+            self._window.close()               # 自己会探活确认真死了（没确认就抛）
+        except Exception as exc:               # noqa: BLE001 —— 外面世界（Bit 的窗口服务）
+            raise HTTPException(status_code=502, detail=CLOSE_WINDOW_FAILED_SAY % exc)
+        # 记一行读数（**同一条口径**：`window.jsonl`），让面板上那一格立刻跟上 ——
+        # 旁路，坏了不许带塌这次动作（它已经成了）。
+        try:
+            self._probe_window_row(job_id, note="人按了「关掉这个窗口」")
+        except Exception:                      # noqa: BLE001
+            traceback.print_exc()
+        state = self.window_state(job_id)
+        say = ((CLOSE_WINDOW_ALREADY_GONE_SAY if before is False else CLOSE_WINDOW_DONE_SAY)
+               % state["state_say"])
+        token, where = self._where_it_stopped(job_id)
+        self.narrate(job, "window_closed", say, where=token)
+        return {"state": state["state"], "state_say": state["state_say"], "say": say}
+
     def reopen(self, job_id: str, body: ReopenRequest) -> dict:
         """窗口没了 → 换一个新窗口，**从 checkpoint 接着跑**（P6）。
 
@@ -4174,6 +4388,12 @@ class Service:
           第二次进 `explore` 时先照它走回去（**0 模型调用**），再从断点接着探。
           那句人话必须说清这件事（重放了几步、停在哪、接着探）—— 它意味着又一次真窗口，
           不许含糊过去。
+
+        ★ Task 12：**没给 `ws_url` 就服务自己开**（`fresh_open`：关掉旧的、开一个干净的）——
+        这一下原先要人在宿主上敲 `bit.sh open` 再把那串贴回来，而那正是「运营全程不碰
+        命令行」上的一步。自己开的窗口与派一趟新活时用的是**同一条路**（同 `fresh_open`，
+        同样清 cookie/缓存），所以「干净会话」这个前提不会因为少了一次人工而变松。
+        开不出来就**照实说开不出来**（400/502 + 人话），绝不拿一个旧窗口顶替。
         """
         job = self._jobs.get(job_id) or self._recover(job_id)
         if job is None:
@@ -4182,8 +4402,17 @@ class Service:
         point = self._resume_point(job_id, view)
         if point is None:
             raise HTTPException(status_code=409, detail=self._cannot_reopen_say(job_id, view))
-        if not (body.ws_url or "").strip():
-            raise HTTPException(status_code=400, detail="`ws_url` 是空的 —— 重开窗口要给出新窗口那串。")
+        ws_url = str(body.ws_url or "").strip()
+        if not ws_url:
+            if self._window is None or not hasattr(self._window, "fresh_open"):
+                raise HTTPException(status_code=400, detail=REOPEN_NO_WINDOW_LAYER_SAY)
+            try:
+                ws_url = str(self._window.fresh_open() or "").strip()
+            except Exception as exc:           # noqa: BLE001 —— 外面世界（Bit 的窗口服务）
+                raise HTTPException(status_code=502, detail=REOPEN_OPEN_FAILED_SAY % exc)
+            if not ws_url:
+                raise HTTPException(status_code=502, detail=(
+                    REOPEN_OPEN_FAILED_SAY % "开窗口没给出新的 `ws_url`（空串）。"))
         if body.set_viewport and not (self._window is not None
                                       and hasattr(self._window, "set_viewport")):
             raise HTTPException(status_code=400, detail=(
@@ -4195,7 +4424,7 @@ class Service:
         # 把新窗口放回状态，并**把上一次那个诚实的停止收掉**（它是上一次的结论，不是这一次的）。
         # `as_node=<上一步>`：图接着跑的正是**停下来的那一步** ——
         # 自测接在 lint 上（探路与起草都不重来）、探路接在 intake 上（探路重跑）。
-        patch = {"ws_url": body.ws_url, "end_reason": "", "end_note": ""}
+        patch = {"ws_url": ws_url, "end_reason": "", "end_note": ""}
         if body.entry_url:
             patch["entry_url"] = body.entry_url
         say = "窗口重开了，从上次停下的地方接着跑（探路那一段不重来）。"
@@ -4219,7 +4448,7 @@ class Service:
         # （`_Intake`），那一句并在这儿 —— 它会进 `job.say`、进时间线（`window_reopened`）。
         say += body.unwritable_say()
         with job.lock:
-            job.brief.update({"ws_url": body.ws_url})
+            job.brief.update({"ws_url": ws_url})
             job.brief.pop("_failed_at", None)
             if body.entry_url:
                 job.brief["entry_url"] = body.entry_url
@@ -4247,7 +4476,7 @@ class Service:
         # ⚠️ 位置有讲究：放在 `update_state` **之后**（状态真写进去了才算「重开了」——
         #    写失败还报一句「重开了」，那句话就是假的），放在 `_submit` **之前**
         #    （交下去之后工作线程会立刻喊「在跑」）。
-        self.narrate(job, "window_reopened", say, where=step, ws_url=str(body.ws_url))
+        self.narrate(job, "window_reopened", say, where=step, ws_url=ws_url)
         self._submit(job, None)                      # None = 「接着跑」，不是新的输入
         return self._view(job_id)
 
@@ -4339,6 +4568,18 @@ class Service:
     def _resume_point(self, job_id: str, view: dict) -> Optional[tuple]:
         """这个 job 能不能用「重开窗口 + 接着跑」接住？能就回 `(接在哪一步, 要重跑哪一步)`。
 
+        ⚠️ 判据**只有一份**（`_resume_point_from`）：`/reopen` 端点与 `/live` 的
+        `can_reopen` 那一格走的是**同一个函数** —— 两处各写一遍，就会出现「按钮在、
+        按下去 409」那种「点了没反应」的形状（Task 12 要治的正是它）。
+        这里只负责**读**那份状态（读法见 `_snapshot`）。
+        """
+        values = dict(getattr(self._snapshot(job_id), "values", None) or {})
+        return self._resume_point_from(values, view)
+
+    @staticmethod
+    def _resume_point_from(values: dict, view: dict) -> Optional[tuple]:
+        """`_resume_point` 的**纯的那一半**：状态已经在手上时走这里（不碰 saver）。
+
         两种「停」，判据不同（这是这一条最容易写错的地方）：
 
         - **DONE**：图是**在那一步里**停下的 —— 那一步的结论已经落进状态了
@@ -4349,8 +4590,7 @@ class Service:
 
         两种情况都只认**窗口那一支**（`WINDOW_STEPS` 里那两步）。
         """
-        values = dict(getattr(self._snapshot(job_id), "values", None) or {})
-        visits = list(values.get("visits") or [])
+        visits = list((values or {}).get("visits") or [])
         last = str(visits[-1]) if visits else ""
         failed = view["status"] == FAILED
         if failed:
@@ -4358,7 +4598,7 @@ class Service:
             return (last, step) if step else None
         if view["status"] != DONE:
             return None
-        reason = str(values.get("end_reason") or "")
+        reason = str((values or {}).get("end_reason") or "")
         if last in WINDOW_STEPS and reason in WINDOW_END_REASONS.get(last, ()):
             return (WINDOW_STEPS[last], last)
         return None
@@ -4622,6 +4862,19 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
     def reopen(job_id: str, body: ReopenRequest) -> dict:
         try:
             return svc.reopen(job_id, body)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="没这个任务：%s。" % job_id)
+
+    @api.post("/job/{job_id}/window/close")
+    def window_close(job_id: str) -> dict:
+        """人按下「关掉这个窗口」（Task 12）→ `{state, state_say, say}`。
+
+        ⚠️ 它**不是**一条自动规则：关的时机只由人给（`window_closable` 只拦「它正在跑」）。
+        `state_say` 是关完之后**量到**的那句状态原话（页面把它摆回那一格 —— 这一下不
+        自己编一句「关掉了」，因为确认死掉是窗口层自己的事）。
+        """
+        try:
+            return svc.close_window(job_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="没这个任务：%s。" % job_id)
 

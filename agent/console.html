@@ -79,6 +79,8 @@
   .notice{margin:12px 0 0; border:1px solid var(--warn-line); background:var(--warn-bg); color:#6a3d00;
           border-radius:var(--radius); padding:9px 12px; font-size:13px; line-height:1.6}
   .notice.err{border-color:#f0c2bb; background:#fdf3f1; color:#8c2f22; white-space:pre-wrap}
+  /* 服务说成了的那句话也走这个框（Task 12）：同一个位置、同一段原话，只换底色。 */
+  .notice.done{border-color:#cfe8e0; background:#f1faf7; color:#0b5f4a; white-space:pre-wrap}
 
   /* ── 滚动区 ───────────────────────────────────── */
   .scroll{flex:1; overflow:auto; padding:14px 16px 20px}
@@ -149,8 +151,24 @@
   .facts b{font-family:var(--mono); font-size:12.5px}
   .kvrow{display:grid; grid-template-columns:132px minmax(0,1fr); gap:8px; font-size:13px; margin-top:8px}
   .kvrow .k{color:var(--ink-3); font-size:12.5px}
+  .winact{display:flex; flex-wrap:wrap; gap:8px; margin-top:12px}
   .hardrule{margin-top:12px; border:1px solid var(--warn-line); background:var(--warn-bg); color:#6a3d00;
             border-radius:8px; padding:9px 11px; font-size:13px; line-height:1.65}
+
+  /* ── 开一趟（新的一趟活）──────────────────────── */
+  /* 两列：左边「这一格是干什么用的」，右边填。窄屏堆成一列（左边那列塌掉）。 */
+  .nrun{display:flex; flex-direction:column; gap:12px}
+  .nrun .field{display:grid; grid-template-columns:132px minmax(0,1fr); gap:4px 12px; align-items:baseline}
+  .nrun .field>label{font-size:13px; color:var(--ink-2)}
+  .nrun .field input, .nrun .field select{
+    font:inherit; font-size:14px; padding:8px 10px; border:1px solid var(--line); border-radius:8px;
+    background:var(--surface-2); color:inherit; min-width:0; width:100%}
+  .nrun .field .why{grid-column:2; font-size:12px; color:var(--ink-3); line-height:1.6}
+  .nrun .go{display:flex; flex-wrap:wrap; gap:10px; align-items:baseline}
+  @media (max-width:640px){
+    .nrun .field{grid-template-columns:minmax(0,1fr)}
+    .nrun .field .why{grid-column:1}
+  }
 
   /* ── 常开的一行输入 ───────────────────────────── */
   .composer{border-top:1px solid var(--line); background:var(--surface); padding:10px 16px 12px;
@@ -207,6 +225,68 @@
     <main class="scroll">
       <div class="wrap">
 
+        <!-- ── 开一趟（新的一趟活）─────────────────────────────
+             ⚠️ 这一块是**唯一**能开新活的地方（Task 12）：在这之前，面板上能发出去的动作
+             只有「继续 / 说一句 / 停 / 重新来一遍」，而「重新来一遍」只在跑完之后才出现、
+             拿的还是**旧那一趟**的开场白 —— 运营在面板上开不了一趟新活。
+             ⚠️ 三条纪律（与这一屏别处同一套）：
+               · **不替人预先判哪一格必填**：按下去就发，缺什么由**服务**说（它有那张人话单子）；
+               · 服务回了错 → **原样**摆出来（一个字不加工、也不自己编一句「失败了」）；
+               · 每一格旁边写清**它是干什么的、不填会怎样**（人话，不出现字段名/选择器/回执）。 -->
+        <section class="panel" id="newRunPanel">
+          <header>
+            <h2>开一趟新的</h2>
+            <span class="sub">填完按一下 —— 窗口它自己去开，你不用先去看窗口还在不在。</span>
+          </header>
+          <div class="body">
+            <div class="nrun">
+              <div class="field">
+                <label for="runUrl">站点网址</label>
+                <input type="text" id="runUrl" autocomplete="off" spellcheck="false"
+                       placeholder="https://… 要摸的那一页">
+                <p class="why">要摸的是哪个站的哪一页 —— 写完整的那一串网址（含开头那截）。
+                  它开工第一件事就是打开这个地址，所以这一格空着，谁也替不了。</p>
+              </div>
+              <div class="field">
+                <label for="runGoal">这一趟要做什么</label>
+                <input type="text" id="runGoal" autocomplete="off"
+                       placeholder="一句话：走到哪一步算完">
+                <p class="why">人给的意图 —— 比如「走到报价那一页，把价拿到」。
+                  选「老站」时这一格可以空着：下面那格失败证据能顶它。</p>
+              </div>
+              <div class="field">
+                <label for="runSuccess">什么算成功</label>
+                <input type="text" id="runSuccess" autocomplete="off"
+                       placeholder="走通之后页面上会出现的那段文字">
+                <p class="why"><b>只有人知道这一条</b> —— 照抄页面上会出现的字（比如 Thank you）。
+                  服务猜出来的成功判据，会让产物「跑到底就报成功」，所以它不猜。</p>
+              </div>
+              <div class="field">
+                <label for="runMode">这是哪种活</label>
+                <select id="runMode">
+                  <option value="build">没跑过的新站 —— 从零摸一条路出来</option>
+                  <option value="fix">挂着的老站 —— 照一份失败证据修</option>
+                </select>
+                <p class="why">新站是从零摸；老站是照着一份失败证据修（选「老站」下面会多出一格）。
+                  两种活做法不一样，所以这一格服务要问清楚。</p>
+              </div>
+              <div class="field" id="runEvidenceField" hidden>
+                <label for="runEvidence">失败证据</label>
+                <input type="text" id="runEvidence" autocomplete="off"
+                       placeholder="上一次挂在哪：哪个站、哪一步、什么错">
+                <p class="why">上一次它挂在哪 —— 把那次失败的记录指过来，服务才修得着地方。
+                  <b>要不要这一格由服务判</b>：缺了它会说，不用你先在心里过一遍。</p>
+              </div>
+              <div class="go">
+                <button class="btn primary" type="button" id="btnRun">开一趟</button>
+                <p class="hint" id="runHint">按下去它会：<b>自己开一个干净的窗口</b> → 探路 →
+                  自测 → 写出一版 py。这一屏<b>不替你检查哪一格必填</b> —— 缺什么、格式哪里不对，
+                  服务会把它那句话原样摆在上面那条红杠里。</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- ── 时间线：主视图 ───────────────────────────────── -->
         <section class="panel" id="timelinePanel">
           <header>
@@ -255,6 +335,23 @@
               <span>控制口 <b id="winPort">…</b></span>
             </div>
             <div id="winHow"></div>
+            <!-- ★ 它现在是什么状态（Task 12）：「开着 / 没了 / 问不出来」那一句**照抄服务**
+                 （服务每 15 秒问一次那个窗口，并把「这是什么时候问的」并进同一句里）。
+                 ⚠️ 页面**不自己算**：它没有窗口那根线，「还在不在」不是它能推出来的事。
+                 ⚠️ 那次读数可能已经过期十几秒 —— 所以服务给的那句话里带着时刻，照抄。 -->
+            <div class="kvrow" id="winStateRow">
+              <span class="k">这个窗口现在</span>
+              <span id="winState">正在问服务…</span>
+            </div>
+            <!-- ★ 窗口的两下动作（Task 12）：**关**（跑完/叫停之后收摊）与
+                 **重开**（窗口没了 → 换一个接着走）。
+                 ⚠️ 两个按钮在不在**由服务说了算**（`can_close` / `can_reopen`）——
+                 页面不知道自己这一趟接不接得住，猜一个就会出现「按钮在、按下去 409」。 -->
+            <div class="winact">
+              <button class="btn primary" type="button" id="btnReopen" hidden>重开窗口，接着走</button>
+              <button class="btn" type="button" id="btnCloseWindow" hidden>关掉这个窗口</button>
+            </div>
+            <p class="hint" id="winHint"></p>
             <p class="hardrule">
               <b>写死的规矩：它正在跑（running）的时候不要动手。</b>
               agent 在同一个窗口里点、填、滚，两边的鼠标会打架：动作落到别处，失败还会被记成产物的问题。
@@ -276,7 +373,9 @@
                  placeholder="写一句它该怎么做">
           <button class="btn primary" type="button" id="btnContinue">继续</button>
           <button class="btn" type="button" id="btnSay">说一句，接着走</button>
-          <button class="btn stop" type="button" id="btnStop">停下，我要说一句</button>
+          <!-- ⚠️ 按钮上的字与脚本里 `STOP_LABEL` **同一句**（那一格是唯一的口径，
+               这里是它上屏之前的样子）—— 两处不一样，人看到的就是闪一下换个说法。 -->
+          <button class="btn stop" type="button" id="btnStop">停下（撤不回）</button>
           <button class="btn" type="button" id="btnAgain" hidden>重新来一遍</button>
         </div>
         <p class="hint" id="modeHint">正在跟服务要这一趟的现状…</p>
@@ -303,12 +402,27 @@
 (function () {
   "use strict";
 
-  // ── 三个动作各自的落点 ─────────────────────────────────────────────
+  // ── 每一跳各自的落点 ───────────────────────────────────────────────
   // 页面**自己声明**它要用的每一跳（`/say` `/stop` `/again` 现在还不存在，是 Task 8 的 ——
   // 写上它们是这一屏的合同：端点落地时页面不用改）。
-  var ACT = { "continue": "/reply", "say": "/say", "stop": "/stop", "again": "/again" };
+  // ⚠️ `run` 那一跳**不在某个 job 下面**（它是 `POST /run`，开的是新的一趟）——
+  //    它进这张表是为了「每一跳都在一处声明」，但**别拿 `act()` 发它**：
+  //    `act()` 会把这一格拼在 `/job/<id>` 后面（`/job//run`），而那不是这条路。
+  //    开新活走 `startRun()`（它自己拼那一跳）。
+  var ACT = { "continue": "/reply", "say": "/say", "stop": "/stop", "again": "/again",
+              "run": "/run",
+              "windowClose": "/window/close", "reopen": "/reopen" };
   var LIVE = "/live";
   var SHOT = "/shot/";
+
+  // ── 「停」那个按钮上写的字（Task 12）────────────────────────────────
+  // ⚠️ 时间线上实测过一次：人以为自己按的是「继续」，服务记下的却是「你按了「停」」
+  //    —— 而那一趟就停在那儿了（记录 append-only，撤不回）。
+  //    这一格**只改措辞**（三个选项里最轻的那个：不动布局、不加二次确认）：
+  //    把「撤不回」写进按钮本身，人按之前看得见它的代价。
+  //    **代价说清**：它不防误点（手滑还是会按下），它只让人**按之前知道代价** ——
+  //    而当初那一次误会的形状正是「不知道这一下意味着什么」。
+  var STOP_LABEL = "停下（撤不回）";
 
   // ── 常开输入的三种语义（**按服务器给的 mode 取，页面不猜**）────────────
   // `/live` 的 `input.mode`：gate（这就是闸的回话）/ steer（探路里，下一轮直达）/ queue（排队）。
@@ -594,6 +708,12 @@
       document.getElementById("winWorker").textContent = "看不到";
       document.getElementById("winId").textContent = "看不到";
       document.getElementById("winPort").textContent = "看不到";
+      // ⚠️ 状态那一格与那两个按钮也要跟着归位：**没窗口层**时它们说的不是「不知道」，
+      //    而是「这个部署给不出这件事」—— 与上面那句同一个意思，别留一个空的「正在问…」。
+      document.getElementById("winState").textContent = "看不到（这个部署没接窗口层）";
+      document.getElementById("btnReopen").hidden = true;
+      document.getElementById("btnCloseWindow").hidden = true;
+      document.getElementById("winHint").textContent = "";
       how.innerHTML = '<p class="hintline">这个部署<b>没接窗口层</b> —— 看不到活窗口，' +
         "所以这一趟是哪个 worker、哪个窗口 id、控制口多少，这一屏都给不出来（不编）。</p>";
       return;
@@ -609,6 +729,36 @@
       out += '<div class="kvrow"><span class="k">什么时候别动（服务原话）</span><span>' + rich(at(win, "when")) + "</span></div>";
     }
     how.innerHTML = out || '<p class="hintline">服务这一次没给「怎么连」与「什么时候别动」那两句原话。</p>';
+    // ★ 它现在是什么状态：**服务给的那句话原样上屏**（连着「这是什么时候问的」）。
+    //   没给那一格（旧版服务 / 这一趟还没量过）→ 明说没给，**不替它编一个「开着」**。
+    var stateSay = at(win, "state_say", "");
+    document.getElementById("winState").innerHTML = stateSay
+      ? rich(stateSay)
+      : '<span class="hintline">服务这一次没说这个窗口现在是死是活（这一格不给就是不给，这一屏不猜）。</span>';
+    setWinActions(win);
+  }
+
+  //: 两下窗口动作的在不在 + 底下那句提示。**判据全在服务给的那两格里**
+  //: （`can_close` / `can_reopen`）—— 页面不拿 `state` / 状态自己推一遍。
+  function setWinActions(win) {
+    var canClose = at(win, "can_close", false) === true;
+    var canReopen = at(win, "can_reopen", false) === true;
+    document.getElementById("btnCloseWindow").hidden = !canClose;
+    document.getElementById("btnReopen").hidden = !canReopen;
+    var bits = [];
+    if (canClose) {
+      bits.push("「关掉这个窗口」= 把它收掉（跑完/叫停之后收摊用）。" +
+                "它现在没在跑，关它不会打断任何人；关了之后要接着走，用左边那个按钮重开一个。");
+    }
+    if (canReopen) {
+      bits.push("「重开窗口，接着走」= 服务自己开一个干净的新窗口，" +
+                "从这一趟停下的地方接着走 —— 不用你去敲命令。");
+    }
+    if (!canClose && !canReopen) {
+      bits.push("现在这两下都不给：它还在跑（或者已经跑完了）—— 按服务给的那一格来，" +
+                "这一屏不替你算什么时候该按。");
+    }
+    document.getElementById("winHint").innerHTML = rich(bits.join(" "));
   }
 
   // ══════════════════ 左边那一栏（`/runs`）══════════════════
@@ -756,11 +906,17 @@
   //: 为什么要分：**重拉不许把刚才那条错误擦掉**（Step 4 实测：点「停」→ 404 的 detail
   //: 刚摆上去，紧接着那次重拉成功了，一句 `setErr("")` 就把它擦了 —— 页面上又变回
   //: 「什么都没发生」，正是这一屏最不许有的形状）。只有它自己那一类好了才收。
-  function setErr(text, from) {
+  //: `ok` 那一格（Task 12）：这个框挂的**不只是坏消息** —— 「窗口关掉了」这种
+  //: **服务说成了的**那句话也走这儿（这一屏只有一个「原样搬服务原话、而且搬完留得住」
+  //: 的位置；另造一个绿框 = 两条规矩、两处维护）。
+  //: ⚠️ 只有**底色**跟着 `ok` 换，**话一个字都不加工** —— 人分得出「这是坏消息」与
+  //: 「这是它说成了的那句话」，而两处的字都是服务自己写的。
+  function setErr(text, from, ok) {
     var box = document.getElementById("errBox");
     if (!box) { return; }
     if (!text) { box.hidden = true; box.textContent = ""; state.errFrom = ""; return; }
     box.hidden = false;
+    box.className = ok ? "notice done" : "notice err";
     box.textContent = text;   // **原样**（textContent：不把服务那句话当 HTML 解释）
     state.errFrom = from || "";
   }
@@ -969,6 +1125,92 @@
     });
   }
 
+  // ══════════════════ 开一趟新的（Task 12）══════════════════
+  //: 「开一趟」那一跳的正文（**字段名是 `POST /run` 的载荷**，服务那张模型说了算）。
+  //: ⚠️ **一个字段都不许在这里先判**：空着也是空着发出去 —— 「缺什么」由服务说
+  //: （它有那张人话单子：缺站点 / 缺意图 / 缺成功判据 各是一句），页面自己先拦一道
+  //: 就会出现「页面说不行、服务说行」两个口径，而运营只信屏幕上那一句。
+  //: ⚠️ `evidence` **按人打的字原样带上**（不管这一趟选的是哪种活）：
+  //: 页面只负责「选老站就把那一格露出来」，**要不要它由服务判** —— 页面顺手丢掉
+  //: 人已经写下的字，那是替服务做了决定（而他写的那些字就白写了）。
+  function runPayload() {
+    return {
+      "url": document.getElementById("runUrl").value.trim(),
+      "goal": document.getElementById("runGoal").value.trim(),
+      "success_text": document.getElementById("runSuccess").value.trim(),
+      "mode": document.getElementById("runMode").value,
+      "evidence": document.getElementById("runEvidence").value.trim()
+    };
+  }
+
+  function startRun() {
+    var btn = document.getElementById("btnRun");
+    setErr("");                          // 上一次那句话先收掉（人又按了一次）
+    btn.disabled = true;                 // 按下先禁用：连按两下不该开出两趟活
+    // ⚠️ 这一跳**不在某个 job 下面**（`POST /run`）：地址就是 `ACT.run` 那一格，
+    //    不许拼 `jobId`（那时候还没有 job id —— 这一跳正是去拿它的）。
+    return fetch(ACT.run, { method: "POST", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(runPayload()) })
+      .then(readJSON)
+      .then(function (res) {
+        btn.disabled = false;
+        if (!res.ok) {
+          // **原样**把服务那句话摆出来（400 那张人话单子 / 409 / 503…）。
+          // 页面**不**自己编一句「开不了」—— 服务那句话里写着到底缺什么。
+          setErr(sayOf(res), "act");
+          return null;
+        }
+        var fresh = at(res.obj, "job_id", "");
+        if (!fresh) {
+          // 收下了、却没给 job id：这一屏不知道新那一趟是哪一个 —— 明说不知道，**不猜**。
+          setErr(at(res.obj, "say", "") ||
+                 "服务收下了这一趟，但它没回新的 job id —— 这一屏不知道新那一趟是哪一个，不替它猜。");
+          return null;
+        }
+        // 拿到 job id 就**切到那一趟**（复用左边那一栏点一趟走的那条路）。
+        // ⚠️ 那句话说清**两件事**：跟着走了（不然屏幕上像是没反应），以及**服务那句话**
+        //    （它自己写的「收到了，排队开跑。」—— 页面不替它编一句）。
+        var said = at(res.obj, "say", "");
+        pickJob(fresh, "刚开的一趟：" + fresh + (said ? "：" + said
+                                                       : "（服务这一次没配一句话）。"));
+        return res.obj;
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        setErr("这一趟没送出去：" + e + " —— 服务可能没在跑。", "act");
+      });
+  }
+
+  // ══════════════════ 窗口那两下（Task 12）══════════════════
+  //: 关窗口 / 重开窗口：都发**当前这一趟**（它们在 `/job/<id>/` 下面）。
+  //: ⚠️ 两下的答复里，服务说的那句话都**原样上屏**（`setErr` 那条红杠是这一屏唯一
+  //: 会原样搬服务原话的地方 —— 别另造一处，那就会出现两种「显示了没有」的读数）。
+  function windowAct(verb, btn) {
+    if (!jobId) { setErr("先挑一趟运行（左边那一栏，或者地址后面带 ?job=<job id>）。"); return; }
+    setErr("");
+    if (btn) { btn.disabled = true; }     // 防连按（关窗口发两遍没有意义，第二遍会说不在了）
+    return fetch("/job/" + encodeURIComponent(jobId) + ACT[verb],
+                 { method: "POST", headers: { "Content-Type": "application/json" },
+                   body: JSON.stringify({}) })
+      .then(readJSON)
+      .then(function (res) {
+        if (btn) { btn.disabled = false; }
+        if (!res.ok) {
+          setErr(sayOf(res), "act");      // **原样**（409「它还在跑」/ 400「没有窗口层」…）
+          fetchLive();
+          return null;
+        }
+        var said = at(res.obj, "say", "");
+        if (said) { setErr(said, "act", true); }   // 成了：那句人话原样上屏（绿底）
+        fetchLive();
+        return res.obj;
+      })
+      .catch(function (e) {
+        if (btn) { btn.disabled = false; }
+        setErr("这一下没送出去：" + e, "act");
+      });
+  }
+
   function pickJob(id, why) {
     setErr("");
     jobId = id;
@@ -1016,6 +1258,29 @@
   });
   document.getElementById("btnSay").addEventListener("click", send);
   document.getElementById("btnStop").addEventListener("click", stopIt);
+  // ★ 「停」那两个字写进按钮本身（Task 12 / `STOP_LABEL` 那段注释记着为什么）：
+  //   **接线时写一次**（不是每画一次都写）—— 它不随服务变，而且这一页在
+  //   「还没挑运行」的时候一次 `paint()` 都不会走：写在画那一头，那一格就一直是空的。
+  document.getElementById("btnStop").textContent = STOP_LABEL;
+  // ★ 开一趟（Task 12）：这一屏原先**只能看、只能在闸上回话、只能停、只能重跑**，
+  //   开一趟新活得有人在别处敲命令 —— 而这一屏是给运营用的。
+  document.getElementById("btnRun").addEventListener("click", startRun);
+  // 选「老站」才把失败证据那一格露出来。⚠️ 只负责**露/收**：
+  // 「要不要它」是服务判的（页面先判一道，就会出现两个口径）。
+  document.getElementById("runMode").addEventListener("change", function () {
+    document.getElementById("runEvidenceField").hidden = (this.value !== "fix");
+  });
+  // 开页先按**当前那一档**摆一次（静态标记里它带着 `hidden`=新站，而这一行让
+  // 「开页时它是什么样」由**同一个判据**算出来 —— 不靠标记、也不靠人的记性）。
+  document.getElementById("runEvidenceField").hidden =
+    (document.getElementById("runMode").value !== "fix");
+  // ★ 窗口那两下（Task 12）：关（跑完/叫停之后收摊）与重开（窗口没了 → 换一个接着走）。
+  document.getElementById("btnCloseWindow").addEventListener("click", function () {
+    windowAct("windowClose", this);
+  });
+  document.getElementById("btnReopen").addEventListener("click", function () {
+    windowAct("reopen", this);
+  });
   document.getElementById("btnAgain").addEventListener("click", function () {
     if (!jobId) { setErr("先挑一趟运行。"); return; }
     // ⚠️ 按下去**必须有反馈**（Task 10 修复轮 1 / N-3）：`/again` 起的是**另一个 job**，

@@ -139,6 +139,7 @@ class StubWindow:
         self.calls: list = []
         self.alive_ = alive
         self.probes = 0
+        self.closed = 0
 
     def set_viewport(self, width, height):
         self.calls.append((width, height))
@@ -146,6 +147,17 @@ class StubWindow:
     def alive(self):
         self.probes += 1
         return self.alive_
+
+    def close(self):
+        """关窗（Task 12）：替身真「关掉」——关完 `alive()` 就答「不在了」。
+
+        ⚠️ **只加这一个方法，不加 `probe()`**：窗口探针那条线程是按「有没有 `probe`」
+        起的（`_start_window_probe`），顺手给它加一个，本份里每个用例后面都会多起一条
+        线程 —— 那不是这条要量的事。
+        """
+        self.closed += 1
+        self.alive_ = False
+        return True
 
 
 def _shot_ok(ws_url, dest, *, timeout=None):
@@ -631,6 +643,7 @@ def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
     | 跑着的时候人按了「停」，它跑完停在闸上 | `stop_landed`（Task 8 加的，⑩） |
     | 人在它探路跑着的时候插了一句话，那句话进了它的下一轮 | `steer_landed`（Task 9 加的，⑪） |
     | 人插的那句话**没送到**（这一趟到头了） | `steer_missed`（Task 9 回归 1 加的，⑫） |
+    | 人按了「关掉这个窗口」（它停在闸上） | `window_closed`（Task 12 加的，⑬） |
 
     **要盯住的名字是「从调用点长出来的」**（`_kinds_the_service_narrates` AST 扫
     `agent/service.py`），不是手抄的：复审 2026-09-18 实测，手抄的名单对「按规矩加一个
@@ -776,6 +789,23 @@ def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
     #     ⚠️ 这一条**只在开关打开时**说得出口（关着的时候没有「直达」那句承诺要收回）——
     #     而这里的场景自己会把开关打开（`_chain` 的 `wired=True`）。
     seen |= steer_missed_over_the_real_chain(tmp_path, monkeypatch)
+
+    # ⑬ 人按了「关掉这个窗口」—— `window_closed`（Task 12 加的，⑬）。
+    #     同一个道理：它也是**从调用点长出来的词**，只有走真链逼得出来。
+    #     ⚠️ 这一条**与 `window_died` 是两回事**（见 `events.KINDS` 那条注释）：
+    #     那个是「窗口自己到点了」被服务撞见，这个是**人按的**（他接管完了，要收摊）。
+    #     场景停在闸上（`waiting`）—— 那一刻才给关（`window_closable`：跑着的不给关）。
+    c13, j13 = _one_job(tmp_path,
+                        FakeGraph(steps=[_Snap(values={"site": SITE, "ws_url": WS_URL,
+                                                       "visits": ["intake"]},
+                                               interrupts=(_gate(step="intake"),))]),
+                        window=StubWindow(alive=True))
+    win13 = c13.app.state.service._window
+    closed = c13.post("/job/%s/window/close" % j13, json={})
+    assert closed.status_code == 200, closed.text
+    assert win13.closed == 1, "端点回了 200，窗口层却一次都没被要求关"
+    assert closed.json()["state"] == "dead", closed.json()
+    seen |= set(_kinds(c13, j13))
 
     # ── 机械断言（三条，名字都从调用点推出来）──────────────────────
     derived = _kinds_the_service_narrates()

@@ -10,6 +10,8 @@
 //   · `again`：开页（这一趟到头了）→ 点「重新来一遍」→ `/again` 回新 job
 //   · `artifact`：开页（**还没有**产物）→ `/live` 里出现产物那一格 → 又三次重画
 //     （量「写进去了」之后**还在不在** —— Task 11 / §十五）
+//   · `run` / `run-refused`：开一趟（Task 12）—— 人把表填了、按一下；`/run` 收下了 / 回了错
+//   · `window`：窗口那两下（Task 12）—— 按「关掉这个窗口」/「重开窗口，接着走」
 // 打完这些之后，把屏幕上**那几个元素此刻的文本**交回去，外加一个数：**重画了几次**。
 //
 // ⚠️ 射程（写在 `tests/test_console_js.py` 的模块 docstring 里，这里只留一句）：
@@ -85,9 +87,13 @@ for (const key of Object.keys(payload.responses || {})) {
   queues[key] = (payload.responses[key] || []).slice();
 }
 const seen = [];
-function fakeFetch(url) {
+//: 每一次请求的**正文**（Task 12）：开一趟那一条判据量的是「发出去的是不是 `/run` 要的那几格」——
+//: 只数 URL 的话，「地址对了、字段名全错」这种改法照绿（而它到了服务那边就是一份空载荷）。
+const sent = [];
+function fakeFetch(url, opts) {
   const q = queues[url];
   seen.push(url);
+  sent.push({ url: url, body: (opts && opts.body) ? String(opts.body) : "" });
   if (!q || !q.length) { return Promise.reject(new Error("夹具没给这个 URL 准备响应：" + url)); }
   const item = q.length > 1 ? q.shift() : q[0];
   return Promise.resolve({
@@ -113,11 +119,20 @@ vm.createContext(sandbox);
 const settle = () => new Promise((r) => setTimeout(r, 0));
 const ticks = async (n) => { for (let i = 0; i < n; i++) { ticker(); await settle(); } };
 
+//: **像浏览器那样**触发一个监听器：`this` 绑到那个元素上。
+//: ⚠️ 别写成 `el(id).listeners.click()` —— 那样 `this` 是那个 `listeners` 对象，
+//: 于是页面里 `this.value` / `this.disabled` 读到的是 `undefined`：
+//: 那不是浏览器里的形状，量出来的东西也就不是这一屏的行为。
+const fire = (id, type) => { el(id).listeners[type].call(el(id)); };
+
 async function repaintScenario(out) {
   out.paintMarks = {};
   out.paintMarks.afterLoad = timelineWrites;        // 开页那一次
   out.afterLoad = { errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
-                    secondHint: el("secondHint").innerHTML, runs: el("runs").innerHTML };
+                    secondHint: el("secondHint").innerHTML, runs: el("runs").innerHTML,
+                    winState: el("winState").textContent,
+                    closeHidden: el("btnCloseWindow").hidden,
+                    reopenHidden: el("btnReopen").hidden };
 
   el("btnStop").listeners.click();                  // 人按「停」（服务回 404）
   await settle();
@@ -134,7 +149,10 @@ async function repaintScenario(out) {
   out.afterRepaint = { runs: el("runs").innerHTML, errBox: el("errBox").textContent,
                        errHidden: el("errBox").hidden, secondHint: el("secondHint").innerHTML,
                        statusPill: el("statePill").textContent,
-                       sayBoxPlaceholder: el("sayBox").placeholder };
+                       sayBoxPlaceholder: el("sayBox").placeholder,
+                       winState: el("winState").textContent,
+                       closeHidden: el("btnCloseWindow").hidden,
+                       reopenHidden: el("btnReopen").hidden };
 }
 
 //: 产物那一趟（Task 11 / §十五）：开页时**还没有**产物 → 跑着跑着 `/live` 里出现了那一格
@@ -149,6 +167,76 @@ async function artifactScenario(out) {
   out.afterArtifact = { timeline: el("timeline").innerHTML };
   await ticks(9);                                   // 之后**又三次重画**（正文每次都在变）
   out.afterRepaint = { timeline: el("timeline").innerHTML };
+}
+
+//: 「开一趟」（Task 12）：**运营在面板上开新活**那条路 —— 原先面板上根本没有这一跳。
+//: 走的是真人那条路：选「老站」→ 那一格露出来 → 把四格填了 → 按「开一趟」。
+//: 量三样：① 那一跳**发到哪**（必须正好是 `POST /run`，不是 `/job/<id>/run`）；
+//: ② 正文**是不是 `/run` 要的那几格**（`sent`，只数 URL 的话字段名全错也照绿）；
+//: ③ 拿到 job id 之后**这一屏跟不跟着走**（`whoJob` + 新那一趟的 `/live`）。
+async function runScenario(out) {
+  out.afterLoad = { who: el("whoJob").textContent,
+                    evidenceHidden: el("runEvidenceField").hidden,
+                    //: 「停」那个按钮上现在写的是什么（Task 12 只改了措辞那一个选项）
+                    stopLabel: el("btnStop").textContent };
+  // ① 选「老站」→ 失败证据那一格**露出来**；再选回「新站」→ 收回去。
+  el("runMode").value = "fix";
+  fire("runMode", "change");
+  out.afterPickFix = { evidenceHidden: el("runEvidenceField").hidden };
+  el("runMode").value = "build";
+  fire("runMode", "change");
+  out.afterPickBuild = { evidenceHidden: el("runEvidenceField").hidden };
+  // ② 人选回「老站」，把四格填上，按「开一趟」
+  el("runMode").value = "fix";
+  fire("runMode", "change");
+  el("runUrl").value = payload.run.url;
+  el("runGoal").value = payload.run.goal;
+  el("runSuccess").value = payload.run.success_text;
+  el("runEvidence").value = payload.run.evidence;
+  fire("btnRun", "click");
+  await settle();
+  await settle();                                   // `pickJob` 里那两次 fetch 也落地
+  out.afterRun = { who: el("whoJob").textContent, notices: el("notices").innerHTML,
+                   errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
+                   timeline: el("timeline").innerHTML };
+  await ticks(3);                                   // 跟着新那一趟：`/live` 每 3 拍拉一次
+  out.afterFollow = { who: el("whoJob").textContent, timeline: el("timeline").innerHTML };
+}
+
+//: 「开一趟」**被服务拒了**（Task 12）：服务回 400 + 一句人话 ⇒ 那句话**原样**上屏、
+//: **活过之后三次重画**，而且这一屏**不许**跟着换趟（它压根没拿到 job id）。
+async function runRefusedScenario(out) {
+  out.afterLoad = { who: el("whoJob").textContent };
+  el("runUrl").value = "";                          // 人什么都没填就按了
+  fire("btnRun", "click");
+  await settle();
+  out.afterRun = { who: el("whoJob").textContent, errBox: el("errBox").textContent,
+                   errHidden: el("errBox").hidden, errClass: el("errBox").className,
+                   disabled: el("btnRun").disabled };
+  await ticks(9);                                   // 三次重画之后那句话还在不在
+  out.afterRepaint = { errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
+                       who: el("whoJob").textContent, timeline: el("timeline").innerHTML };
+}
+
+//: 窗口那两下（Task 12）：人按「关掉这个窗口」→ 服务回 200 + 一句人话（服务说成了）；
+//: 那句话**活过之后三次重画**；再按「重开窗口，接着走」→ 走的是 `/job/<id>/reopen`。
+async function windowScenario(out) {
+  out.afterLoad = { state: el("winState").innerHTML, hint: el("winHint").innerHTML,
+                    closeHidden: el("btnCloseWindow").hidden,
+                    reopenHidden: el("btnReopen").hidden };
+  fire("btnCloseWindow", "click");
+  await settle();
+  out.afterClose = { errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
+                     errClass: el("errBox").className,
+                     disabled: el("btnCloseWindow").disabled };
+  await ticks(9);                                   // 三次重画之后那句话还在不在
+  out.afterRepaint = { errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
+                       state: el("winState").innerHTML,
+                       closeHidden: el("btnCloseWindow").hidden,
+                       reopenHidden: el("btnReopen").hidden };
+  fire("btnReopen", "click");
+  await settle();
+  out.afterReopen = { errBox: el("errBox").textContent, disabled: el("btnReopen").disabled };
 }
 
 //: 「重新来一遍」那一趟（Task 10 修复轮 1 / N-3）：运营**按下去**，屏幕上总得发生点什么。
@@ -170,9 +258,13 @@ async function againScenario(out) {
   const out = {};
   if (payload.scenario === "again") { await againScenario(out); }
   else if (payload.scenario === "artifact") { await artifactScenario(out); }
+  else if (payload.scenario === "run") { await runScenario(out); }
+  else if (payload.scenario === "run-refused") { await runRefusedScenario(out); }
+  else if (payload.scenario === "window") { await windowScenario(out); }
   else { await repaintScenario(out); }
   out.paints = timelineWrites;                      // **重画了几次**（C1：别拿 fetch 数代替）
   if (out.paintMarks) { out.paintMarks.end = timelineWrites; }
   out.urls = seen;
+  out.sent = sent;                                  // 每一次请求的**正文**（Task 12 起）
   process.stdout.write(JSON.stringify(out) + "\n");
 })().catch((e) => { console.error("夹具自己挂了：" + (e && e.stack || e)); process.exit(1); });

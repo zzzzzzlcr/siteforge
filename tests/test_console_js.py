@@ -124,7 +124,8 @@ def _thin(text: str) -> tuple:
 
 
 def _live(status: str, mode: str, *, n: int, stop_requested: bool = False,
-          tag: str = "夹具", artifact: dict = None, delivered: bool = False) -> dict:
+          tag: str = "夹具", artifact: dict = None, delivered: bool = False,
+          window: dict = None) -> dict:
     """一份 `/live` 正文（**只填这一份夹具要读的那几格**，其余按页面「可能不在」的读法留空）。
 
     `tag` 进每一句事件的人话里 —— **两趟用不同的 tag**，好让「时间线里是哪一趟的事件」
@@ -143,7 +144,9 @@ def _live(status: str, mode: str, *, n: int, stop_requested: bool = False,
                  "can": ["让它继续"], "revisable": True},
         "input": {"mode": mode, "draft_note": "", "queued": []},
         "stop": {"requested": stop_requested, "where": "", "will_stop_at": ""},
-        "window": None, "rounds": [], "truncated": False,
+        #: 窗口那一格（Task 12）：`None` = 这个部署没接窗口层（页面明说看不到、两个按钮都不摆）；
+        #: 给了就是服务那一格原样（`state` / `state_say` / `can_close` / `can_reopen`）。
+        "window": window, "rounds": [], "truncated": False,
         "artifact": artifact,
     }
 
@@ -258,6 +261,10 @@ def _artifact_payloads(*, with_artifact: bool) -> dict:
             }}
 
 
+#: `_drive` 的 `scenario` 名字 → 驱动器认识的那个名字（**只差这一对**）。
+_DRIVER_SCENARIO = {"artifact-missing": "artifact"}
+
+
 def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
            page: pathlib.Path = None) -> dict:
     """跑一次夹具，把驱动脚本打回来的那份观测解析出来。"""
@@ -267,8 +274,26 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _artifact_payloads(with_artifact=True)
     elif scenario == "artifact-missing":
         payload = _artifact_payloads(with_artifact=False)
+    #: Task 12 那三个（开一趟 / 被拒 / 窗口那两下）—— ⚠️ 分支名与驱动器里
+    #: `payload.scenario` 认的那几个**必须同名**：不同名就会静默落到 `repaint` 上，
+    #: 而那一条**照样跑得完**（量出来的是一趟完全不同的驱动）—— 实测栽过一次。
+    elif scenario == "run":
+        payload = _run_payloads()
+    elif scenario == "run-refused":
+        payload = _run_refused_payloads()
+    elif scenario == "window":
+        payload = _window_payloads()
     else:
         payload = _payloads(final_mode=final_mode)
+    #: 分支名与载荷自己声明的那一个**同不同名**：不同名 = 上面又漏了一个分支，
+    #: 而它不会红 —— 会静默落到 `repaint` 上。所以在这儿当场地量一次。
+    #: ⚠️ `artifact-missing` 与 `artifact` 在驱动器那边是**同一段**（只差载荷里那一格），
+    #: 所以那一对是同名的 —— 这是**唯一的**例外，别拿它当先例。
+    wanted = _DRIVER_SCENARIO.get(scenario, scenario)
+    assert payload.get("scenario", "repaint") == wanted, (
+        "`_drive(scenario=%r)` 选出来的载荷自称是 %r —— 驱动器会按它自己那一格走，"
+        "而这一条量到的就不是你想驱动的那一趟了"
+        % (scenario, payload.get("scenario", "repaint")))
     data = tmp_path / ("payloads-%s-%s.json" % (scenario, final_mode))
     data.write_text(json.dumps(payload), encoding="utf-8")
     r = subprocess.run([NODE, str(DRIVER), str(page or service.CONSOLE_PATH), str(data)],
@@ -532,3 +557,271 @@ def test_the_console_file_is_not_a_copy_and_was_not_touched(tmp_path):
     _drive(tmp_path, final_mode="gate")
     assert hashlib.md5(service.CONSOLE_PATH.read_bytes()).hexdigest() == before, \
         "跑了一趟夹具之后页面文件的指纹变了"
+
+
+# ═════════════════ Task 12：开一趟 / 窗口那两下（**运营不碰命令行**）═════════════════
+#
+# 病（用户 2026-09-20 在真面板上量的）：
+#   ① 「我自己不能再面板上重派吗？那很不方便啊」—— 页面能发出去的动作只有四个
+#      （`/reply` `/say` `/stop` `/again`），**没有 `/run`**；而「重新来一遍」只在**跑完**
+#      之后才出现、拿的还是**旧那一趟**的 brief ⇒ **面板上开不了一趟新活**（只有人敲 curl）。
+#   ② 「我点继续没任何反应啊」—— `/reply` 先查窗口：窗口没了就 409，而「怎么办」那一步
+#      埋在长文本中间。
+#   ③ 窗口那两下（派之前核「已关」/ 跑完关窗）原先也落在命令行上。
+#
+# 这一节钉的是**页面那一半**（服务那一半在 `test_service_window_hands.py` 里）：
+# 表单发出去的是不是 `/run` 要的那几格、服务回了错页面摆的是不是**它自己那句话**、
+# 窗口那两个按钮在不在**只看服务给的那两格**、以及那些话**写上去之后还在不在**。
+
+#: 页面自己声明的那两跳 + 它自己写的那句按钮文案（**页面侧的常量，服务里没有**）——
+#: 所以这里只能抄一份。⚠️ 抄一份就得有东西把它**钉回页面**：
+#: `tests/test_console_page.py::test_the_page_names_every_hop_it_will_call_...` 钉着
+#: `"run": "/run"` 那几个字面量、`test_the_stop_button_says_it_cannot_be_undone` 那一族
+#: 钉着按钮文案 —— 页面哪天改了名，那几条先红，这一份跟着改。
+RUN_HOP = "/run"
+STOP_LABEL = "停下（撤不回）"
+
+#: 「开一趟」表单里人打进去的那些字（载荷里那份 `run` 就是它们）。
+RUN_FORM = {"url": "https://example-funnel.test/quiz",
+            "goal": "走到报价那一页，把价拿到",
+            "success_text": "Thank you",
+            "mode": "fix",
+            "evidence": "FMR 单 20481：第二步点不动「下一步」"}
+#: 新开出来那一趟的 job id（页面的 `pickJob` 要跟着它走）。
+NEW_JOB = "job-new-one"
+#: 服务对 `/run` 回的那句人话（**从服务自己的常量算出来**，不在这儿手抄一遍）。
+SUBMITTED_SAY = service.SUBMITTED_SAY
+#: `/run` 被拒时那句人话 —— **走服务那条真路算出来**（`_intake_problems` 一张单子 +
+#: `_problems_say` 那句头）。⚠️ 不许手抄：这一份要证明的正是「页面摆的是**服务说的**那一句」，
+#: 手抄一句就变成「页面摆的是一句和它长得一样的字」。
+def _intake_say(**over) -> str:
+    svc = service.Service()
+    body = service.RunRequest(**over)
+    problems = svc._intake_problems(body)
+    assert problems, "这份载荷居然没有可挑的毛病 —— 那这条判据就没东西可量了"
+    return svc._problems_say(problems)
+
+
+RUN_400 = _intake_say()
+#: 窗口那两下的答复（`/live` 里那一格 + 关掉之后服务说的那句）。
+WIN_STATE_SAY = service.WINDOW_STATE_SAY[service.measure.DEAD]
+WIN_STATE_LIVE_SAY = WIN_STATE_SAY + service.Service._measured_at_say("2026-09-20T09:31:02+08:00")
+CLOSE_SAY = service.CLOSE_WINDOW_DONE_SAY % WIN_STATE_LIVE_SAY
+REOPEN_SAY = "窗口重开了，从上次停下的地方接着跑（探路那一段不重来）。"
+
+
+def _window_cell(*, can_close: bool, can_reopen: bool) -> dict:
+    """`/live` 的 `window` 那一格（**服务给的那几格**，页面不许自己推）。"""
+    return {"worker": "192.168.1.222", "bit_id": "8f2c1a90", "api_port": 54345,
+            "how": "连到**那台机器**的桌面……", "when": "**它正在跑（running）的时候不要动手**……",
+            "state": "dead", "state_say": WIN_STATE_LIVE_SAY,
+            "can_close": can_close, "can_reopen": can_reopen}
+
+
+def _run_payloads() -> dict:
+    """「开一趟」：**开页时这一屏还没挑运行**（真实的入口）→ 人填表 → 按一下 → 跟着新那趟走。"""
+    lives = [{"body": _live("running", "queue", n=1 + i, tag="新开的",
+                            window=_window_cell(can_close=False, can_reopen=False))}
+             for i in range(4)]
+    _assert_all_different([x["body"] for x in lives], "`/live` 的正文")
+    return {"scenario": "run", "search": "", "run": RUN_FORM,
+            "responses": {
+                "/runs": [{"body": {"note": "还没有任何运行。", "runs": []}}],
+                "/run": [{"body": {"job_id": NEW_JOB, "say": SUBMITTED_SAY}}],
+                "/job/%s/live" % NEW_JOB: lives,
+            }}
+
+
+def _run_refused_payloads() -> dict:
+    """「开一趟」**被服务拒了**：400 + 服务那张人话单子 ⇒ 原样上屏，而且**不许**跟着换趟。"""
+    lives = [{"body": _live("waiting", "gate", n=1 + i)} for i in range(8)]
+    _assert_all_different([x["body"] for x in lives], "`/live` 的正文")
+    return {"scenario": "run-refused", "search": "?job=job-1",
+            "responses": {
+                "/runs": [{"body": {"note": "", "runs": [
+                    {"job_id": "job-1", "site": "example-funnel", "status": "waiting",
+                     "say": "停下来了，在等你一句话。",
+                     "created_at": "2026-09-19T21:00:00+08:00", "rounds": 1,
+                     "delivered": False}]}}],
+                "/job/job-1/live": lives,
+                "/run": [{"status": 400, "body": {"detail": RUN_400}}],
+            }}
+
+
+def _window_payloads() -> dict:
+    """窗口那两下：开页时服务说**可以关也可以重开** → 之后它改口说**都不给**
+    （量「按钮跟的是服务那两格，不是页面自己算的」）。"""
+    yes = {"body": _live("waiting", "gate", n=1,
+                         window=_window_cell(can_close=True, can_reopen=True))}
+    no = [{"body": _live("waiting", "gate", n=2 + i,
+                         window=_window_cell(can_close=False, can_reopen=False))}
+          for i in range(6)]
+    _assert_all_different([yes] + no, "`/live` 的正文")
+    return {"scenario": "window", "search": "?job=job-1",
+            "responses": {
+                "/runs": [{"body": {"note": "", "runs": [
+                    {"job_id": "job-1", "site": "example-funnel", "status": "waiting",
+                     "say": "停下来了，在等你一句话。",
+                     "created_at": "2026-09-19T21:00:00+08:00", "rounds": 1,
+                     "delivered": False}]}}],
+                "/job/job-1/live": [yes] + no,
+                "/job/job-1/window/close": [{"body": {"state": "dead",
+                                                      "state_say": WIN_STATE_LIVE_SAY,
+                                                      "say": CLOSE_SAY}}],
+                "/job/job-1/reopen": [{"body": {"job_id": "job-1", "say": REOPEN_SAY}}],
+            }}
+
+
+def test_the_operator_can_start_a_new_run_from_the_panel(tmp_path):
+    """★ Task 12 的正身：**面板上开得了一趟新活** —— 而且这一屏**跟着新那一趟走**。
+
+    三样一起量（缺一样这条路就没通）：
+      ① 那一跳**发到哪** —— 必须正好是 `POST /run`（不是 `/job/<id>/run`，那会儿还没有 id）；
+      ② 正文**是 `/run` 要的那几格** —— 从 `sent`（请求正文）读，不是从 URL 猜；
+      ③ 拿到 job id 之后 `whoJob` 换成新的那一个、并且真去拉了新那一趟的 `/live`
+         （不跟着走 = 屏幕上什么都不变 = 运营以为按钮坏了 —— Task 10 修复轮 1 / N-3 同一个坑）。
+    """
+    out = _drive(tmp_path, scenario="run")
+    runs = [x for x in out["sent"] if x["url"] == RUN_HOP]
+    assert len(runs) == 1, "按一下「开一趟」应该正好发一次 `POST /run`：%r" % out["sent"]
+    assert json.loads(runs[0]["body"]) == {
+        "url": RUN_FORM["url"], "goal": RUN_FORM["goal"],
+        "success_text": RUN_FORM["success_text"], "mode": RUN_FORM["mode"],
+        "evidence": RUN_FORM["evidence"]}, runs[0]["body"]
+    # ② 页面上**没有**预先替服务判哪一格必填：四格都填了，正文里就是四条原样（没加没减）
+    assert RUN_HOP not in out["afterLoad"]["who"], out["afterLoad"]
+    # ① 开页时没挑运行；开完**跟着新那一趟走**
+    assert out["afterLoad"]["who"] == "还没挑运行", out["afterLoad"]
+    assert out["afterRun"]["who"] == NEW_JOB, out["afterRun"]
+    assert "/job/%s/live" % NEW_JOB in out["urls"], out["urls"]
+    assert NEW_JOB in out["afterFollow"]["who"], out["afterFollow"]
+    # 服务回的那句话**上了屏**（`pickJob` 的挑法说明；页面不自己编一句）
+    assert SUBMITTED_SAY in out["afterRun"]["notices"], out["afterRun"]["notices"]
+
+
+def test_the_run_form_only_reveals_the_evidence_cell_when_the_mode_is_fix(tmp_path):
+    """`mode` 与 `evidence` 的联动：**选「老站」才把那一格露出来**，选回「新站」就收回去。
+
+    ⚠️ 页面**只负责露/收**，「要不要它」由服务判（它会说）——
+    所以这一条量的是**那一格的隐显**，不是「页面有没有检查它填了没有」。
+    """
+    out = _drive(tmp_path, scenario="run")
+    assert out["afterLoad"]["evidenceHidden"] is True, "开页（新站）时那一格就露着：%r" % out["afterLoad"]
+    assert out["afterPickFix"]["evidenceHidden"] is False, "选了「老站」那一格没露出来"
+    assert out["afterPickBuild"]["evidenceHidden"] is True, "选回「新站」那一格没收回去"
+
+
+def test_a_run_the_service_refused_puts_the_services_own_sentence_on_screen(tmp_path):
+    """服务拒了这一趟（400）→ **它那句话原样上屏**，而且**活过之后三次重画**。
+
+    这是这一屏的老规矩（`errBox` 那条路）：**页面不许自己编一句「失败了」**。
+    它编的那一句会盖掉服务那句话里的**具体是哪一格不对** —— 而那正是运营唯一能照着改的东西。
+    一并量：被拒之后这一屏**不许**跟着换趟（它压根没拿到 job id）。
+    """
+    out = _drive(tmp_path, scenario="run-refused")
+    run_posts = [x for x in out["sent"] if x["url"] == RUN_HOP]
+    assert len(run_posts) == 1, out["sent"]
+    assert out["afterRun"]["errBox"] == RUN_400, out["afterRun"]
+    assert out["afterRun"]["errHidden"] is False, "那句话没上屏"
+    assert "/job/%s/live" % NEW_JOB not in out["urls"], \
+        "被拒了却去拉了「新那一趟」：%r" % out["urls"]
+    assert NEW_JOB not in out["afterRun"]["who"], "被拒了却跟着换趟了：%r" % out["afterRun"]
+    #: **活过三次重画**（「写进去」与「还在不在」是两件事 —— 这一片的老病）
+    assert out["afterRepaint"]["errBox"] == RUN_400, out["afterRepaint"]
+    assert NEW_JOB not in out["afterRepaint"]["who"], out["afterRepaint"]
+    assert out["paints"] >= 4, "重画次数太少（这一条量不到「还在不在」）：%r" % out["paints"]
+
+
+def test_the_window_buttons_are_the_ones_the_service_offered(tmp_path):
+    """窗口那两个按钮在不在，**只看服务给的那两格**（`can_close` / `can_reopen`）。
+
+    ⚠️ 页面**不许**拿 `state` / 任务状态自己推一遍 —— 推出来的那一份与服务那份一旦不一致，
+    就会出现「按钮在、按下去 409」那种**点了没反应**的形状（这一片要治的正是它）。
+    所以这一条把服务那两格**翻一次面**：开页时两个都给，之后它改口说都不给 ⇒
+    同一个页面、同一份 `/live` 结构，按钮必须跟着**收回去**。
+    """
+    out = _drive(tmp_path, scenario="window")
+    assert out["afterLoad"]["closeHidden"] is False, "服务说能关，按钮却没给：%r" % out["afterLoad"]
+    assert out["afterLoad"]["reopenHidden"] is False, "服务说能重开，按钮却没给：%r" % out["afterLoad"]
+    #: 状态那一句**照抄服务**（连「这是什么时候问的」一起）—— 按 `rich()` 会渲染成的样子比：
+    #: 服务那句话里带 `**着重**`（页面把它排成粗体），整句拿去 `in` 是比不中的。
+    bold, rest = _thin(WIN_STATE_LIVE_SAY)
+    assert ("<b>%s</b>" % bold) in out["afterLoad"]["state"], out["afterLoad"]["state"]
+    assert rest.strip()[:20] in out["afterLoad"]["state"], out["afterLoad"]["state"]
+    assert "09:31:02" in out["afterLoad"]["state"], out["afterLoad"]["state"]
+    #: 服务改口（都不给）⇒ 两个按钮都收回去
+    assert out["afterRepaint"]["closeHidden"] is True, out["afterRepaint"]
+    assert out["afterRepaint"]["reopenHidden"] is True, out["afterRepaint"]
+
+
+def test_closing_the_window_says_what_the_service_said_and_it_stays(tmp_path):
+    """按「关掉这个窗口」→ 走 `/job/<id>/window/close`，服务那句话原样上屏、活过三次重画。
+
+    第二半（重开）一并量：它走的是 `/job/<id>/reopen`，而且**不带 `ws_url`**
+    —— 服务自己开窗口（这一下原先要人在宿主上敲命令）。
+    """
+    out = _drive(tmp_path, scenario="window")
+    closed = [x for x in out["sent"] if x["url"].endswith("/window/close")]
+    assert closed == [{"url": "/job/job-1/window/close", "body": "{}"}], out["sent"]
+    assert out["afterClose"]["errBox"] == CLOSE_SAY, out["afterClose"]
+    assert out["afterClose"]["errHidden"] is False, "那句话没上屏"
+    assert out["afterClose"]["disabled"] is False, "做完之后按钮还锁着（再按一下就按不动了）"
+    assert out["afterRepaint"]["errBox"] == CLOSE_SAY, out["afterRepaint"]
+    # 重开：**不带 `ws_url`**（服务自己去开）—— 这一格是「运营不碰命令行」那条路的正身
+    reopened = [x for x in out["sent"] if x["url"].endswith("/reopen")]
+    assert reopened == [{"url": "/job/job-1/reopen", "body": "{}"}], out["sent"]
+    assert out["afterReopen"]["errBox"] == REOPEN_SAY, out["afterReopen"]
+
+
+def test_without_a_window_layer_the_window_buttons_are_not_offered(tmp_path):
+    """没接窗口层（`window` 为 `null`）⇒ 两个按钮**都不摆**，而且那一格**明说看不到**。
+
+    这一条与上面两条是**同一个问题的反面**：`null` 不是「现在不能关」，是「这个部署
+    给不出这件事」—— 摆一个灰按钮在那儿，人会一直点它。
+    """
+    out = _drive(tmp_path, final_mode="gate")
+    assert out["afterLoad"]["closeHidden"] is True, out["afterLoad"]
+    assert out["afterLoad"]["reopenHidden"] is True, out["afterLoad"]
+    assert "看不到" in out["afterLoad"]["winState"], out["afterLoad"]["winState"]
+
+
+def test_the_stop_button_says_it_cannot_be_undone(tmp_path):
+    """★ Task 12 第 3 件（**最轻的那个选项：只改措辞**）：按钮上写着「撤不回」。
+
+    为什么只改措辞：另外两个选项（拉开距离 / 二次确认）都要动布局或加一个阻塞弹窗，
+    而布局一动，Task 7 那 29 条页面断言与这一套夹具一起要重画 —— 代价不成比例。
+    **这一条的代价说清**：它**不防误点**，它只让人**按之前知道这一下的代价**。
+    """
+    out = _drive(tmp_path, scenario="run")
+    label = out["afterLoad"]["stopLabel"]
+    assert label == STOP_LABEL, label
+    assert "撤不回" in label, "「停」的代价没写在按钮上：%r" % label
+
+
+def test_the_run_fixture_can_actually_fire(tmp_path):
+    """**正控**（Task 12 那几条自己的牙）：改坏一处已知会破坏行为的写法 ⇒ 同一批断言必须红。
+
+    改的是 `runPayload()` 里那一格 —— 把 `success_text` 那一栏**发成空的**
+    （「页面觉得服务不会用这一格，就顺手不发」）。这正是这一片最怕的那种改法：
+    源码文本断言照旧全绿（`"success_text"` 那几个字还在那一行上），
+    而到了服务那边，这一趟会因为「没说**什么算成功**」被当场拒 ——
+    **运营填的那一格白填了，而屏幕上没人告诉他为什么**。
+    """
+    original = service.CONSOLE_PATH.read_text(encoding="utf-8")
+    broken = original.replace('"success_text": document.getElementById("runSuccess").value.trim(),',
+                              '"success_text": "",')
+    assert broken != original, "正控没改动任何东西（那一行没找到？）—— 那这条正控是空的"
+    page = tmp_path / "console-broken-run.html"
+    page.write_text(broken, encoding="utf-8")
+
+    good = _drive(tmp_path, scenario="run")
+    bad = _drive(tmp_path, scenario="run", page=page)
+    wanted = {"url": RUN_FORM["url"], "goal": RUN_FORM["goal"],
+              "success_text": RUN_FORM["success_text"], "mode": RUN_FORM["mode"],
+              "evidence": RUN_FORM["evidence"]}
+    got_good = json.loads([x for x in good["sent"] if x["url"] == RUN_HOP][0]["body"])
+    got_bad = json.loads([x for x in bad["sent"] if x["url"] == RUN_HOP][0]["body"])
+    assert got_good == wanted, got_good
+    assert got_bad != wanted, (
+        "把「什么算成功」那一格发成空的之后，这一份夹具**没有响** —— 那说明它量不到正文"
+        "（观测值照旧是 %r）" % got_bad)

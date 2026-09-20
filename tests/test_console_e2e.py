@@ -259,7 +259,15 @@ def test_the_whole_console_loop_from_looking_to_saying_to_stopping(tmp_path):
     assert shot.headers["content-type"] == "image/png", shot.headers
     assert shot.content == blob, "端点回的不是桩里那张字节"
     # 顶层接线信息：窗口三样都在；每步抓拍开着 ⇒ `shots_note` 一句话都不说
-    assert set(live["window"]) == {"worker", "bit_id", "api_port", "how", "when"}, live["window"]
+    #: ⚠️ 这**还是**一条「键集合恰好等于这些」的断言（Task 12 加了后三格：这个 job 的窗口
+    #: 现在是死是活、什么时候量的、现在能不能关）。加格 = 改这一行；**不许**改成 `<=`：
+    #: 那一条读法是「至少要有这些」，于是别人往里多塞一格这一行**再也不响**。
+    assert set(live["window"]) == {"worker", "bit_id", "api_port", "how", "when",
+                                   "state", "state_say", "can_close", "can_reopen"}, live["window"]
+    #: 这个 job 的窗口**刚交上去就量过一眼**（`start()` 里那一行）—— 桩窗口答「活着」。
+    assert live["window"]["state"] == "alive", live["window"]
+    assert "打开" in live["window"]["state_say"] or "开着" in live["window"]["state_say"], \
+        live["window"]
     assert (live["window"]["worker"], live["window"]["bit_id"],
             live["window"]["api_port"]) == ("192.168.1.222", "8f2c1a90", 54345), live["window"]
     assert live["shots_note"] == "", live["shots_note"]
