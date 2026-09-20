@@ -226,6 +226,43 @@ def test_the_gate_is_null_unless_it_is_waiting_and_no_card_borrows_from_it():
     assert waiting["rounds"][-1]["step"] == "lint"
 
 
+def test_the_current_round_carries_the_gates_facts_and_no_other_round_does():
+    """⚠️ **闸口摊开的事实要落到卡片上** —— 卡片才是运营那一屏读的那一层（复审 2026-09-20 §4.2）。
+
+    **为什么钉在卡片上而不是钉在闸上**：页面渲染的是 `rounds[].*`（`at(card, …)`），
+    闸那两格（`gate.ask` / `gate.facts`）只是**载荷**。这个 commit 之前只有 `ask` 落了卡片
+    （进 `card["say"]`），`facts` 没落 —— 于是「**成功判据**」从屏幕上**消失**了：
+    `intake` 不设闸之后，第一道闸（`explore`）摊的那份开场白（`graph._brief_facts`）
+    是屏幕上唯一还能看见它的地方，而它只到得了 `/job/{id}` 与 `/live` 的 `gate.facts`。
+    复审量过：把 `service._project` 里 `"facts": value.get("facts") or {}` 改成 `{}`，
+    **全量 1082 passed / 0 红**（零覆盖）。
+
+    规矩与 `say` **逐字相同**：只有**脚下这一道闸**有（历史轮次的那一份早就不在 state 里了，
+    编一份出来就是假话）⇒ 别的卡上是 `{}`，没闸时全部是 `{}`。
+    """
+    facts = {"url": URL, "goal": GOAL, "成功判据": SUCCESS, "要用的窗口": WS_URL,
+             "允许跳过的扰动": ["换个窗口大小"], "还缺的窗口旋钮": []}
+    proj = _project(_values(visits=["intake", "explore"]), dict(_gate("draft"), facts=facts),
+                    pauses=[_shot(1), _shot(2)], status=service.WAITING)
+    last = proj["rounds"][-1]
+    #: **原样**带上（一个字不加工）—— 页面摆的就是它，页面**不翻译键名**（没有第二张名单）
+    assert last["facts"] == facts, last["facts"]
+    assert last["facts"]["成功判据"] == SUCCESS, last["facts"]
+    for card in proj["rounds"][:-1]:
+        assert card["facts"] == {}, (
+            "第 %d 轮也长出了 facts —— 历史轮次的那一份早就不在 state 里了，"
+            "那是编的" % card["n"])
+    #: 没人等你回话时**一格都不露**（与 `say` / `revisable` 同一条规矩）
+    for status in (service.RUNNING, service.QUEUED, service.DONE, service.FAILED):
+        not_waiting = _project(_values(visits=["intake"]), dict(_gate("explore"), facts=facts),
+                               pauses=[_shot(1)], status=status, stage="explore")
+        assert all(c["facts"] == {} for c in not_waiting["rounds"]), status
+    #: 闸上**没有** `facts` 那一格时，卡片也不许自己编一格出来
+    bare = _project(_values(visits=["intake"]), {"step": "explore", "ask": GATE_ASK},
+                    pauses=[_shot(1)], status=service.WAITING)
+    assert bare["rounds"][-1]["facts"] == {}
+
+
 @pytest.mark.parametrize("step", ["intake", "explore", "draft", "lint", "selftest", "deliver"])
 def test_revisable_is_true_only_on_the_three_gates_that_can_send_it_back(step):
     """「打回」= 这一版不要了、回 `draft` 重写 —— 只有 `lint`/`selftest`/`deliver` 三道闸是这个意思。

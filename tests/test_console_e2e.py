@@ -182,6 +182,12 @@ def _of_kind(live: dict, kind: str) -> list:
     return [e for e in live["events"] if e["kind"] == kind]
 
 
+def _gate_with_facts(step: str, say: str, facts: dict):
+    """一道**摊着原始事实**的闸（`_gate` 那一份的 facts 里是空的 —— 这一份要量的正是那一格）。"""
+    return Interrupt(value={"step": step, "say": say, "facts": dict(facts), "can": ["让它继续"]},
+                     id="i-%s" % step)
+
+
 def _three_steps() -> FakeGraph:
     """这一趟的图：`intake` 停一道闸 → `draft` 停一道闸 → 人在闸上按停，图到头。
 
@@ -344,6 +350,45 @@ def test_the_whole_console_loop_from_looking_to_saying_to_stopping(tmp_path):
     assert capture_calls and len(capture_calls) == 3, capture_calls
     assert g.invokes and len(g.invokes) == 3, (
         "图被推了 %d 次（该推的只有：起跑、人按的「继续」、人按的「停」）" % len(g.invokes))
+
+
+def test_the_gate_facts_reach_the_round_card_the_page_actually_renders(tmp_path):
+    """⚠️ **闸口摊开的事实要真的到运营那一屏** —— 复审 2026-09-20 §4.2 量的那个洞。
+
+    现场（复审逐条量过）：`成功判据` 只到得了 `/job/{id}` 与 `/live` 的 `gate.facts`
+    那两格**载荷**，而 `agent/console.html` 读的是 `card.*`（`at(card, "say")` /
+    `at(card, "step")` / …）—— 它**一格都不读 `gate.facts`**。⇒ `intake` 不设闸之后
+    「成功判据」从屏幕上**消失**了（旧 `intake` 的 `say` 里那句「成功判据是「Z」」
+    经由 `card.say` **直达屏幕**）。而把 `service._project` 里
+    `"facts": value.get("facts") or {}` 改成 `{}`，**全量 1082 passed / 0 红**。
+
+    这一条走**整条 HTTP 链**（真的 `Service._project` → 真的 `rounds.project`），
+    断言 **卡片那一格** —— 页面渲染的就是它。两格都断言：既有形状（`gate.facts`）
+    与新接线（`rounds[-1].facts`）**都要在**，缺哪一个都红。
+    """
+    facts = {"url": URL, "goal": GOAL, "成功判据": SUCCESS, "要用的窗口": WS,
+             "允许跳过的扰动": ["换个窗口大小"], "还缺的窗口旋钮": []}
+    values = {"site": SITE, "ws_url": WS}
+    g = FakeGraph(steps=[
+        _Snap(values={**values, "visits": ["intake"]}, next=("explore",),
+              interrupts=(_gate_with_facts("explore", "接下来要打开真浏览器，把这一页走一遍。",
+                                           facts),)),
+    ])
+    client = _client(tmp_path, graph_factory=lambda brief, deps: g,
+                     capture=_capture(_png(), []))
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    view = _wait(client, job_id)
+    assert view["status"] == "waiting" and view["gate"]["step"] == "explore", view
+
+    live = _live(client, job_id)
+    # ① 既有那一格（载荷）：服务算好的闸上带着它
+    assert live["gate"]["facts"]["成功判据"] == SUCCESS, live["gate"]
+    # ② ★ 运营那一屏读的那一格：**卡片**上的 facts 原样在
+    card = live["rounds"][-1]
+    assert card["facts"] == facts, (
+        "卡片上没有那份开场白 —— 页面渲染的是卡片，不是闸；它只躺在载荷里就等于"
+        "运营看不见它（复审 2026-09-20 §4.2）：%r" % (card["facts"],))
+    assert card["facts"]["成功判据"] == SUCCESS, card["facts"]
 
 
 # ═════════ 2. 「不碰真浏览器、不碰真模型」是量出来的，不是读代码相信的 ═════════

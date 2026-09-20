@@ -12,6 +12,7 @@
 //     （量「写进去了」之后**还在不在** —— Task 11 / §十五）
 //   · `run` / `run-refused`：开一趟（Task 12）—— 人把表填了、按一下；`/run` 收下了 / 回了错
 //   · `window`：窗口那两下（Task 12）—— 按「关掉这个窗口」/「重开窗口，接着走」
+//   · `gate-facts`：闸口摊开的事实（Task 14 修复轮 1）—— `#rounds` 那两块文字上没上屏
 // 打完这些之后，把屏幕上**那几个元素此刻的文本**交回去，外加一个数：**重画了几次**。
 //
 // ⚠️ 射程（写在 `tests/test_console_js.py` 的模块 docstring 里，这里只留一句）：
@@ -289,6 +290,23 @@ async function failuresUnmeasuredScenario(out) {
   out.afterRepaint = { fails: el("fails").innerHTML, actHidden: el("failAct").hidden };
 }
 
+//: 闸口摊开的事实那一趟（Task 14 修复轮 1）：`/live` 停在闸上、`rounds` 里有两张卡 ——
+//: 量的是**屏幕上**看得见什么（`#rounds` 那一块），不是载荷里有什么。
+//: 三样一起量：
+//:   ① 第一道闸那一轮（`done` 是 `null`）说的那句 —— 它原先写的是「第一道闸之前**什么都没跑过**」，
+//:      `intake` 不设闸之后**那句话是假的**（复审 2026-09-20 §4.4 的 M4：改掉它，全量 **0 红**）；
+//:   ② 脚下这一轮摊开的**原始事实**（`card.facts`，`成功判据` 在里面 —— 复审 §4.2：
+//:      它原先只到得了 API 载荷，运营那一屏**一格都不读**，于是从屏幕上消失了）；
+//:   ③ 那两样**活过之后三次重画**（Task 7 那一族：写进去 ≠ 还在）。
+async function gateFactsScenario(out) {
+  out.paintMarks = {};
+  out.paintMarks.afterLoad = timelineWrites;
+  out.afterLoad = { rounds: el("rounds").innerHTML };
+  await ticks(9);                                   // 之后**又三次重画**（正文每次都在变）
+  out.paintMarks.afterRepaint = timelineWrites;
+  out.afterRepaint = { rounds: el("rounds").innerHTML };
+}
+
 //: 「重新来一遍」那一趟（Task 10 修复轮 1 / N-3）：运营**按下去**，屏幕上总得发生点什么。
 async function againScenario(out) {
   out.afterLoad = { who: el("whoJob").textContent, notices: el("notices").innerHTML,
@@ -307,6 +325,7 @@ async function againScenario(out) {
 
   const out = {};
   if (payload.scenario === "again") { await againScenario(out); }
+  else if (payload.scenario === "gate-facts") { await gateFactsScenario(out); }
   else if (payload.scenario === "artifact") { await artifactScenario(out); }
   else if (payload.scenario === "run") { await runScenario(out); }
   else if (payload.scenario === "run-refused") { await runRefusedScenario(out); }

@@ -66,6 +66,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from agent import fmr  # noqa: E402
+from agent import graph  # noqa: E402
 from agent import service  # noqa: E402
 from test_fmr import MEASURED_STEPS  # noqa: E402
 
@@ -286,6 +287,8 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _run_refused_payloads()
     elif scenario == "window":
         payload = _window_payloads()
+    elif scenario == "gate-facts":
+        payload = _gate_facts_payloads()
     elif scenario == "failures":
         payload = _failures_payloads()
     elif scenario == "failures-unmeasured":
@@ -677,6 +680,123 @@ def _window_payloads() -> dict:
                                                       "say": CLOSE_SAY}}],
                 "/job/job-1/reopen": [{"body": {"job_id": "job-1", "say": REOPEN_SAY}}],
             }}
+
+
+# ── Task 14 修复轮 1：闸口摊开的事实要**上屏** ────────────────────────────
+#: 那份开场白里**要害那一格的值** —— 页面上必须看得见它（不是「页面上有『成功判据』
+#: 这三个字」就算过：键名与值**两样都要上屏**，值才是运营要认的东西）。
+SUCCESS_TEXT = "Thank you"
+
+
+def _gate_facts() -> dict:
+    """那道闸摊开的原始事实 —— **从真生产者算出来**（`graph._brief_facts`，
+    与 `_explore` 往 facts 里补「预算」那一步同一个形状）。不手抄的原因与 `RUN_400`
+    同一条：手抄一份就变成「页面摆的是一句和它长得一样的字」。
+
+    ⚠️ `成功判据` 这一格**必须在里面** —— 它就是这份开场白的要害（复审 2026-09-20 §4.2）。
+
+    ⚠️ **这个函数只能在用例里调**（`_gate_facts_payloads()` 是这么用的）：在模块顶上
+    调它、里面又带 `assert` 的话，生产那边一改（开场白少一格）就不是「用例红」而是
+    **整个文件收集失败**（`ERROR collecting tests/test_console_js.py`）—— 实测踩过：
+    量具会把那种 ERROR 读成「红」，而它其实**一条用例都没跑**。
+    """
+    state = {"url": "https://example-funnel.test/quiz",
+             "goal": "走到「Thank you」那一页，把报价拿到",
+             "success_text": SUCCESS_TEXT,
+             "ws_url": "ws://192.168.1.197:55555/devtools/page/ABC",
+             "allow_skips": ["换个窗口大小", "换个时区"]}
+    facts = graph._brief_facts(state, graph.Deps(), [])
+    assert facts["成功判据"] == SUCCESS_TEXT, facts
+    facts["预算"] = "这一趟最多 80 轮、100 步（到顶就停，且说清为什么停）。"
+    return facts
+
+
+def _round_card(n: int, *, step: str = "explore", done: dict = None,
+                facts: dict = None, say: str = "") -> dict:
+    """`/live.rounds[]` 的一张卡（**服务投影出来的那几格**，页面只渲染、不推断）。"""
+    return {"n": n, "step": step, "step_say": graph.STEP_SAY[step],
+            "say": say, "revisable": False,
+            "now": {"n": n, "name": "pause-%d.png" % n, "why": ""},
+            "last_shot": None, "done": done, "facts": facts or {}}
+
+
+def _gate_facts_payloads() -> dict:
+    """闸口摊开的事实那一趟（Task 14 修复轮 1）：停在第 2 道闸上、**两张卡都在屏上**。
+
+    两张卡各钉一件事，一次驱动全量掉：
+      - **第 1 轮**（`done` 是 `null` = 第一道闸）：它那句提示原先写的是
+        「第一道闸之前**什么都没跑过**」—— `intake` 不设闸之后**那句话是假的**
+        （复审 2026-09-20 §4.4 的 M4：改掉它，全量 **0 红**）；
+      - **第 2 轮**（`here`）：闸口摊开的**原始事实**（`成功判据` 在里面）——
+        复审 §4.2：它原先只到得了 API 载荷，这一屏**一格都不读** ⇒ 屏幕上没有它。
+
+    ⚠️ 「每一份正文都不一样」是夹具的牙（页面只在正文变了才重画）—— 事件数在涨。
+    """
+    facts = _gate_facts()                    # ⚠️ **在这儿**算（不在模块顶上）：见那个函数的说明
+    done = {"step": "explore", "step_say": graph.STEP_SAY["explore"],
+            "say": "探路走完了，账本上有 12 步。",
+            "shots": {"before": "pause-1.png", "after": "pause-2.png"},
+            "steps": [], "steps_note": "这一轮没有探路的步子清单：刚才那一步是「开工前的确认」。"}
+    cards = [_round_card(1, done=None), _round_card(2, done=done, facts=facts,
+                                                    say="接下来要打开真浏览器，把这一页走一遍。")]
+    lives = []
+    for i in range(10):
+        body = _live("waiting", "gate", n=1 + i)
+        body["rounds"] = cards
+        body["gate"] = {"step": "explore", "step_say": graph.STEP_SAY["explore"],
+                        "ask": "接下来要打开真浏览器，把这一页走一遍。",
+                        "facts": facts, "can": list(graph.HUMAN_CAN), "revisable": False}
+        lives.append({"body": body})
+    _assert_all_different([x["body"] for x in lives], "`/live` 的正文")
+    return {"scenario": "gate-facts", "search": "?job=job-1",
+            "responses": {
+                "/runs": [{"body": {"note": "", "runs": [
+                    {"job_id": "job-1", "site": "example-funnel", "status": "waiting",
+                     "say": "停下来了，在等你一句话。",
+                     "created_at": "2026-09-19T21:00:00+08:00", "rounds": 2,
+                     "delivered": False}]}}],
+                "/job/job-1/live": lives,
+            }}
+
+
+def test_the_brief_the_operator_is_confirming_is_on_the_screen_not_just_on_the_wire(tmp_path):
+    """★ Task 14 修复轮 1 的正身：那份开场白（**`成功判据` 在里面**）真的印在运营那一屏上。
+
+    复审 2026-09-20 量出来的那个洞：`facts` 只到得了 `/job/{id}` 与 `/live` 的 `gate`
+    那两格**载荷**，而 `agent/console.html` 读的是 `card.*` —— 它**一格都不读 `gate.facts`**。
+    ⇒ `intake` 不设闸之后「成功判据」从屏幕上**消失**了（旧的 `intake` 的 `say` 里那句
+    「成功判据是「Z」」原先经由 `card.say` **直达屏幕**）；把 `service._project` 的 facts
+    清空，**全量 0 红**。这一条钉的就是**运营真看得见的那一层** —— `#rounds`。
+
+    三样一起量（全是「屏幕上此刻是什么」，不是「载荷里有什么」）：
+      ① 键名与**值**都上了屏（`成功判据` / `Thank you`），而且**只有脚下那一轮**有
+         （`data-gate-facts` 恰好一个 —— 历史轮次不许从闸上借这一格）；
+      ② 第一道闸那一轮说的那句**不是**「之前什么都没跑过」（`intake` 跑过，那句话是假的）；
+      ③ 两样都**活过之后三次重画**（Task 7 那一族：写进去 ≠ 还在）。
+    """
+    out = _drive(tmp_path, scenario="gate-facts")
+
+    # 量具不是瞎的：真的重画过（不然 ③ 是空过）
+    assert out["paintMarks"]["afterRepaint"] - out["paintMarks"]["afterLoad"] >= 3, \
+        out["paintMarks"]
+
+    for where in ("afterLoad", "afterRepaint"):
+        html = out[where]["rounds"]
+        # ① 那份开场白在屏幕上（键名 + 值都在），而且**只有脚下那一轮**有
+        assert 'data-gate-facts="1"' in html, (where, html[-600:])
+        assert html.count('data-gate-facts="1"') == 1, (
+            "%s：闸口事实那一块出现了不止一次（历史轮次也从闸上借了这一格？）：%r"
+            % (where, html.count('data-gate-facts="1"')))
+        assert "成功判据" in html, (
+            "%s：屏幕上没有「成功判据」这一格 —— 页面渲染的是卡片，`facts` 只躺在载荷里"
+            "就等于运营看不见它（复审 2026-09-20 §4.2）" % where)
+        assert SUCCESS_TEXT in html, (
+            "%s：「成功判据」的值没上屏 —— 键名在、值不在，运营认不出要确认什么" % where)
+        # ② 第一道闸那一轮那句**不许**是「之前什么都没跑过」
+        assert "没有可显示的" in html, (where, "第一道闸那一轮那句提示不见了")
+        assert "什么都没跑过" not in html, (
+            "%s：屏幕上又出现了「什么都没跑过」—— `intake` 不设闸之后（2026-09-20）"
+            "那句话是假的（它跑过：校验开场白、修站那条路还读了底稿）" % where)
 
 
 def test_the_operator_can_start_a_new_run_from_the_panel(tmp_path):

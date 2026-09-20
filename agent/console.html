@@ -151,6 +151,9 @@
   .facts b{font-family:var(--mono); font-size:12.5px}
   .kvrow{display:grid; grid-template-columns:132px minmax(0,1fr); gap:8px; font-size:13px; margin-top:8px}
   .kvrow .k{color:var(--ink-3); font-size:12.5px}
+  /* ── 闸口摊开的事实（原始那一份，`rounds[].facts`）────────────── */
+  .gatefacts{margin-top:2px}
+  .gatefacts .kvrow:first-child{margin-top:4px}
   .winact{display:flex; flex-wrap:wrap; gap:8px; margin-top:12px}
   .hardrule{margin-top:12px; border:1px solid var(--warn-line); background:var(--warn-bg); color:#6a3d00;
             border-radius:8px; padding:9px 11px; font-size:13px; line-height:1.65}
@@ -642,6 +645,58 @@
   }
 
   // ══════════════════ 轮次卡片 ══════════════════
+  //: 闸口摊开的**原始事实**（D11：给感知不给判断）—— `card.facts` 那一格，**原样摆**。
+  //: ⚠️ 键名也是**服务给的**（`url` / `goal` / `成功判据` / `要用的窗口` …）：另写一张
+  //:    中英对照表就是「第二张手写名单」，键名一改它就漂 —— 所以这里一个键名都不翻译。
+  //: ⚠️ 这一格**不是装饰**：第一道闸（`explore`）上它就是运营点「继续」之前要确认的
+  //:    那份**开场白**（`graph._brief_facts`）。`intake` 不设闸之后，`成功判据` 只在这儿
+  //:    看得见 —— 复审 2026-09-20 §4.2 的现场是：它只到得了 API 载荷，运营那一屏
+  //:    一格都不读（「少问一次」于是变成了「少看一半」）。
+  //: ⚠️ 值的形状**不固定**（字符串 / 一串标量 / 嵌套对象 —— `diagnose` 那道闸的「证据」
+  //:    就是对象）：一律照原样摆，摆不下就摆 JSON。页面**不许**替服务挑哪一格重要。
+  function factValue(v) {
+    if (v === null || v === undefined || v === "") { return "（没给）"; }
+    if (typeof v === "string") { return rich(v); }
+    if (typeof v === "number" || typeof v === "boolean") { return esc(String(v)); }
+    if (Array.isArray(v)) {
+      if (!v.length) { return "（空的）"; }
+      var plain = true, i;
+      for (i = 0; i < v.length; i++) {
+        var t = typeof v[i];
+        if (v[i] !== null && t !== "string" && t !== "number" && t !== "boolean") {
+          plain = false;
+          break;
+        }
+      }
+      //: 一串标量摆成一句话（`允许跳过的扰动` 就是这种）；里面只要有一个不是标量，
+      //: 整串摆 JSON —— 拼一半再截断比原样摆更坏（读的人不知道少了什么）。
+      if (plain) {
+        var parts = [];
+        for (i = 0; i < v.length; i++) { parts.push(String(v[i])); }
+        return rich(parts.join("、"));
+      }
+    }
+    return '<span class="mono">' + esc(JSON.stringify(v)) + "</span>";
+  }
+
+  //: `facts` 那一块（**空的就是空的** —— 什么都不摆，不摆一句「没有事实」占位）。
+  //: `data-gate-facts` 是给执行夹具认的记号（与 `data-shot` / `data-artifact-step` 同一个用法）。
+  function factsBlock(facts) {
+    if (!facts) { return ""; }
+    var keys = [], k;
+    for (k in facts) {
+      if (Object.prototype.hasOwnProperty.call(facts, k)) { keys.push(k); }
+    }
+    if (!keys.length) { return ""; }
+    var rows = "", i;
+    for (i = 0; i < keys.length; i++) {
+      rows += '<div class="kvrow"><span class="k">' + esc(keys[i]) + "</span><span>" +
+        factValue(facts[keys[i]]) + "</span></div>";
+    }
+    return '<h4 class="sec">── 这一道闸摊开的事实（服务给的原始那一份，页面一个字节都不加工）──</h4>' +
+      '<div class="gatefacts" data-gate-facts="1">' + rows + "</div>";
+  }
+
   function paintRounds() {
     var box = document.getElementById("rounds");
     var cards = at(live, "rounds", []) || [];
@@ -674,6 +729,13 @@
     if (here) {
       out += '<p class="lead"><b>它刚要做什么：</b>' +
         (ask ? rich(ask) : "这一轮停下来了，但闸口没说它刚要做什么（原话不在 state 里）。") + "</p>";
+      // ①b 闸口摊开的**原始事实**（D11）—— 与 `say` 同一格来源、同一条规矩（只有脚下这一轮有）。
+      //     ⚠️ 第一道闸上就是那份**开场白**：站点 / 目标 / **成功判据** / 模式 / 窗口 /
+      //     允许跳过的扰动 / 还缺的旋钮 —— 运营点「继续」之前要确认的就是这几项。
+      //     ⚠️ 它**必须在屏幕上**（不是只躺在 `/live` 的载荷里）：复审 2026-09-20 §4.2 量的
+      //     那个形状是「`成功判据` 只在 API 载荷里，运营那一屏一格都不读」—— 那不叫
+      //     「少问一次」，叫「把确认变成走过场」。
+      out += factsBlock(at(card, "facts", null));
     }
 
     // ② 现在窗口里是这样（闸拍）
@@ -683,7 +745,15 @@
     // ③ 刚才那一步做了什么
     var done = at(card, "done", null);
     if (!done) {
-      out += '<p class="hintline">第一道闸之前什么都没跑过 —— 所以这一轮没有「刚才那一步」，也没有成对的图。</p>';
+      // ⚠️ 这句原先写的是「第一道闸之前**什么都没跑过**」—— **2026-09-20 起它是假的**
+      //    （`intake` 不设闸之后它跑过：校验开场白、修站那条路还读了底稿），复审点的名。
+      //    真的理由是**这一格的形状**：`done` 要配一对闸拍 `pause-<k-1>` / `pause-<k>`，
+      //    而第 1 轮要的那一对里**前面那张（`pause-0`）不存在**（清单从第一道闸才开始拍）
+      //    ⇒ 这一格**在这张卡的形状里本来就放不进去**，与「跑没跑过」无关。
+      //    逐条理由（含那两条被说满的）在 `agent/rounds.py` 模块 docstring 的配对规则那一节。
+      out += '<p class="hintline">这一轮是第一道闸 —— 没有「刚才那一步」，也没有成对的图：' +
+        "夹住那一步要的一对闸拍里，前面那张不存在（清单从第一道闸才开始拍）。" +
+        "⚠️ 这一格空着说的是「没有可显示的」，<b>不是</b>「之前那一步没跑过」。</p>";
       return out + "</article>";
     }
     var doneStep = at(done, "step", "");
