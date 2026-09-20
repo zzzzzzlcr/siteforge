@@ -1015,7 +1015,8 @@ def test_legacy_cdp_gaps_are_said_in_human_words(sandbox, form_file, tmp_path, c
     said = _gap_warnings(caplog)
     for command in ("observe", "diff", "screenshot"):
         hits = [m for m in said if command in m]
-        assert len(hits) == 1, (command, said)        # 两条步、每条要 observe 两次 —— 只喊一次
+        # 3 步（含一次重走）、每一步都要 observe —— 每一条缺命令**只喊一次**
+        assert len(hits) == 1, (command, said)
     assert any("SITEFORGE_CDP_BIN" in m for m in said), ("要告诉人怎么换", said)
     assert not [m for m in said if "#" in m], ("给人看的话里不许出现选择器", said)
 
