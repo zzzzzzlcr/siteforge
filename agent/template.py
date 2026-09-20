@@ -513,7 +513,7 @@ def _frames_in_states(states):
 def _wanted_urls(states):
     """这条流程**认得的那几个地址**：各状态 `when.url_contains` 的值（去重、保序）。
 
-    给 `_live_frames_ok` 当尺子用 —— **子串匹配**，与 `_matches` / `_urls` 同一把尺子
+    给 `_frame_table_is_usable` 当尺子用 —— **子串匹配**，与 `_matches` / `_urls` 同一把尺子
     （判据怎么比地址，这里就怎么比）。
 
     为什么来源**不是** `_frames_in_states` 那几个帧号：帧号是**探索期录的**，重放一开始的
@@ -523,7 +523,7 @@ def _wanted_urls(states):
     ⇒ 按地址收。
 
     ⚠️ 收成空集是**合法**的（这条流程没有任何状态报过地址，例如判据全是 `text_contains`）——
-    此时 `_live_frames_ok` 回落到旧口径，理由写在那条 docstring 里。
+    此时 `_frame_table_is_usable` 回落到旧口径，理由写在那条 docstring 里。
     """
     out = []
     for state in states or []:
@@ -692,7 +692,7 @@ class Filler:
     #: 同上（活帧）：不进 `__init__` 的实例上也要有一个空表可读 —— 见 `_read_frames`。
     live_frames = ()
     #: 同上（这条流程认得的地址）：空元组 = **这条流程一个地址都没报过** ——
-    #: 正是 `_live_frames_ok` 里「回落到旧口径」的那一支，所以这里的默认值与原意一致。
+    #: 正是 `_frame_table_is_usable` 里「回落到旧口径」的那一支，所以这里的默认值与原意一致。
     want_urls = ()
     #: 同上（替身）：不进 `__init__` 的实例没有 CDPHelper —— 读帧那几条路靠它判「读不了」，
     #: 而不是抛 AttributeError（单测里那些只 stub 了 `_url`/`page_signature` 的实例）。
@@ -750,7 +750,7 @@ class Filler:
         #: 那两件事量的根本不是同一页。
         self.frames = _frames_in_states(STATES)
         #: 这条流程**认得的那几个地址**（各状态 `when.url_contains`，见 `_wanted_urls`）——
-        #: 「手上这几个活帧里有没有我要读的那一个」这条判据的尺子（`_live_frames_ok`）。
+        #: 「手上这几个活帧里有没有我要读的那一个」这条判据的尺子（`_frame_table_is_usable`）。
         self.want_urls = _wanted_urls(STATES)
         #: **最近一次重新 observe 看见的活帧**（`_note_live_frames`）。账本里的帧号只活在
         #: 录它的那一次会话里，重放时的 `goto` 一重建子帧它们就全死了 —— 读页面要靠这一串。
@@ -805,7 +805,7 @@ class Filler:
         （旁证：`runtime/selftest/` 下几十趟自测，**没有任何一趟报过成功**）。
         **那两个名字在代码里已经没有对应物了** —— 这一段只当教训留着，不是现在的行为。
 
-        现在：**读之前先确认手上那几个活帧里有我要读的那一个** —— 判据见 `_live_frames_ok`
+        现在：**读之前先确认手上那几个活帧里有我要读的那一个** —— 判据见 `_frame_table_is_usable`
         （帧自己的地址命中这条流程认得的 URL / `want_urls`；认得的地址一条都没有时回落旧口径）；
         没有就去找一次（`observe`，节流见 `LIVE_PROBE_EVERY`）。
         ⚠️ 与 `_relocate` 那条路的**取向**相同（能用的帧 = 当场活着的帧），但两条路
@@ -816,7 +816,7 @@ class Filler:
         # 于是再也不去找，读页面只剩主帧 + 广告帧，问卷正文永远读不到。
         # 现在（2026-09-20 补齐这条判据）：帧表必须是**当场那次观测**的
         # （`_model_is_fresh`：手上那份观测还在这一页上），而且**至少有一个帧的地址
-        # 命中这条流程认得的 URL**（`_live_frames_ok` —— 在 2026-09-20 之前，这一格
+        # 命中这条流程认得的 URL**（`_frame_table_is_usable` —— 在 2026-09-20 之前，这一格
         # 只是「有一个帧答得上」，所以上面那句「我真正要读的那个」当时是句空话）；
         # 判不了/不新鲜就去找一次（节流）。
         # 「该去找一次吗」= 手上那份观测**说不清这一页现在有哪些帧**：
@@ -830,7 +830,7 @@ class Filler:
         # 主帧里的流程一次都不找；带帧的流程每换一页找一次（节流见 LIVE_PROBE_EVERY）。
         if self.frames and (not self._model_is_fresh()
                             or not self.live_frames
-                            or not self._live_frames_ok()):
+                            or not self._frame_table_is_usable()):
             self._refresh_live_frames()
         out = []
         for fid in list(self.frames) + list(self.live_frames):
@@ -850,11 +850,12 @@ class Filler:
             return False
         return (self._last_model.get("url") or "") == (self._url() or "")
 
-    def _live_frames_ok(self):
-        """手上这几个活帧里，**有没有我要读的那一个**。
+    def _frame_table_is_usable(self):
+        """手上这张帧表**够不够用来读页面**（够 ⇒ `_read_frames` 就不必再去找一次）。
 
-        判据 = 「帧自己的地址命中这条流程认得的 URL（`want_urls`）」—— 子串匹配，
-        与 `_matches` / `_urls` **同一把尺子**（判据怎么比地址，这里就怎么比）。
+        够 = **我认得的那一帧在表里**：表里有一个帧的地址命中这条流程认得的 URL
+        （`want_urls`）—— 子串匹配，与 `_matches` / `_urls` **同一把尺子**
+        （判据怎么比地址，这里就怎么比）。
 
         为什么不是「某个帧答得上就行」（2026-09-17 第九轮量到、2026-09-20 改过来）：
         **广告帧永远答得上**（R-68 量到的形状：`id-msp.newsbreak.com/sync-nbu…` 那种）。
@@ -862,9 +863,14 @@ class Filler:
         ⇒ 按正文判据的状态**静默跳过**（不出声，看着像「跑完了，一步没走」）。
         真站实测：卡死那几趟里活帧表**从头到尾一次都没换过**（恒为同一个广告帧）。
 
-        ⚠️ **主帧不在这张表里**（`_note_live_frames` 用 `if fid` 滤掉了主帧那个空串），
-        所以「主帧地址命中了 `want_urls`」**不会**把这条判据撑成真 —— `_frame_url("")`
-        也直接返回空串。⚠️ 别把主帧塞进 `live_frames`：那会让判据静默退化成恒真。
+        ⚠️ **主帧地址命中了也不作数**（`url != main` 那道闸）：主帧**本来就不该在**
+        这张表里（`_note_live_frames` 用 `if fid` 滤掉主帧那个空串），可这条判据在这个站上
+        **恰好悬在那个不变量上** —— 真站实测：这条流程的 `want_urls` 三条里有一条
+        `https://www.gowizard.com/auto/` **正是主帧地址的一部分**，主帧一旦进表，
+        判据会**静默恒真**、直接退回修之前那个死锁。
+        所以这里**不依赖**那个不变量：候选帧的地址与**主帧当前地址**逐字相同 ⇒ 跳过。
+        代价说清：主帧地址与某个真帧地址**逐字相同**时会误伤（那种帧会被当成主帧跳过）——
+        现实中不会：帧是**跨源** iframe，它的 `location.href` 与主帧必然不同源地址。
 
         ⚠️ **`want_urls` 为空时回落到旧口径**（「任一帧答得上」）：这条流程**没有任何状态
         报过地址**（判据全是 `text_contains` 那种）⇒ 拿什么去比都不知道。此时
@@ -872,13 +878,16 @@ class Filler:
         （`_read_frames` 每步都要读页面，而读页面就要过这一门）—— 既白花钱，
         又**改掉了这条流程原来的行为**。⇒ 判不了就按旧口径放行：**这条流程的帧判不了，
         不拿一个猜出来的判据去刷它**。
+        ⚠️ **回落那一支没有主帧那道闸**（它就是旧口径本身，旧代码里没有那道闸）——
+        那一支上「主帧进表」仍然会让它答「够」；但它只在这条流程一个地址都没报过时走到。
         """
         if not self.want_urls:
             # 判不了 → 放行（旧口径）。为什么不是「永远刷新」见上面 ⚠️ 那一段。
             return any(self._frame_url(fid) for fid in self.live_frames)
+        main = self._url()      # 主帧此刻的地址：下面那道闸比的就是它
         for fid in self.live_frames:
             url = self._frame_url(fid)
-            if url and any(want in url for want in self.want_urls):
+            if url and url != main and any(want in url for want in self.want_urls):
                 return True
         return False
 
@@ -901,7 +910,8 @@ class Filler:
 
         ⚠️ **是替换，不是累加**（2026-09-17 第七轮量出来的）：累加版本里，
         页面上的**广告帧**（`id-msp.newsbreak.com` 那种）会一直留在表里 ——
-        它们活着、`_live_frames_ok()` 于是永远为真 → **再也不会去找那个真正的问卷帧** →
+        它们活着、当时那道判据（`_live_frames_ok()`，2026-09-20 改名 `_frame_table_is_usable`
+        并换成「地址命中」口径）于是永远为真 → **再也不会去找那个真正的问卷帧** →
         读页面只剩主帧 + 广告帧，而问卷正文（与成功文案）**永远读不到**。
         外部对照实验（同一窗口同一时刻 `cdp eval --frame-id <问卷帧>`）证明那一刻
         「`Progress: 80% … Phone Number: …`」**读得到** —— 读不到是产物自己的事。

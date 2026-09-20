@@ -1158,7 +1158,7 @@ class _State:
         #: **逐帧**的 `location.href`（`{帧号: 地址}`）—— 给了它，`eval(..., frame_id=…)`
         #: 就按那个帧号答；不在表里的帧号仍退回上面那个标量 `frame_url`。
         #: 为什么需要它：真站上**广告帧与问卷帧的地址本来就不一样**，而
-        #: 「活帧表里有没有我要读的那一个」这条判据（`_live_frames_ok`）只有在这种
+        #: 「活帧表里有没有我要读的那一个」这条判据（`_frame_table_is_usable`）只有在这种
         #: 页面上才验得出来 —— 一个标量会把每一帧答成同一个地址，
         #: 于是「表里全是广告帧」与「表里有问卷帧」在替身眼里长得一模一样。
         self.frame_urls = {}
@@ -1978,9 +1978,14 @@ def test_live_frames_are_the_ones_in_the_latest_observation(sandbox, form_file):
     """`live_frames` 是**最近一次观测里出现的帧**（替换，不是累加）。
 
     2026-09-17 第七轮量出来的：累加版本里页面上的**广告帧**会一直留在表里，
-    它们活着 → `_live_frames_ok()` 永远为真 → **再也不会去找真正的问卷帧** →
+    它们活着、当时那道判据（`_live_frames_ok()`，2026-09-20 改名 `_frame_table_is_usable`
+    并换成「地址命中」口径）于是永远为真 → **再也不会去找真正的问卷帧** →
     读页面只剩主帧 + 广告帧，问卷正文（与成功文案）**永远读不到**。
     外部对照实验（同一窗口同一时刻读那个问卷帧）证明那一刻那段文本**读得到**。
+
+    ⚠️ 这里量的是**表本身**（替换 vs 累加）；「凭什么算够用」那条判据在
+    `test_the_frame_gate_asks_for_the_urls_the_flow_knows` 与
+    `test_the_gate_wants_the_quiz_frame_not_just_any_live_frame` 上。
     """
     fill = module_filler = None
     module, _ = _load(
@@ -2020,13 +2025,32 @@ def test_live_frames_are_the_ones_in_the_latest_observation(sandbox, form_file):
 # 那几个地址」（各状态 `when.url_contains`；**子串匹配**，与 `_matches` / `_urls`
 # 同一把尺子）。
 
-#: 真站那三个帧的地址（**转述的 · 出处 plan §2**，逐字抄的）—— 三者**完全分得开**，
-#: 而坏形状（主帧 + 广告帧，问卷帧不在里面）在日志里出现过 32 次。
+#: 真站那三个帧的地址（**转述的 · 出处 plan §2 的 `:163-165`**）—— 三者**完全分得开**，
+#: 而坏形状（主帧 + 广告帧，问卷帧不在里面）在日志里出现过 32 次（**转述的 · plan `:170`**）。
+#: ⚠️ **不是「逐字抄的」**：三条里只有广告帧那条逐字一致（plan `:165`）；
+#: 另两条把 plan 的省略号补成了具体值 —— 主帧 plan 写 `?text=Sedan&touchpointId=…&instance=1#chameleon`，
+#: 这里省掉了 `touchpointId=…`；问卷帧 plan 写 `#iFrameId=mvfFormWidget-…`，这里补成 `…-1`。
+#: 补是**必要**的（plan 那个 `…` 本来不是字面量），但说法得是「补全」不是「逐字」。
 GW_MAIN_URL = "https://www.gowizard.com/auto/?text=Sedan&instance=1#chameleon"
 GW_QUIZ_URL = ("https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard"
                "#iFrameId=mvfFormWidget-1")
 GW_AD_URL = "https://id-msp.newsbreak.com/sync-nbu?source=2&host=www.gowizard.com"
-#: 账本里那 19 个状态中 16 个要的地址（**转述的 · 出处 `agent/template.py:_urls` 的注释**）
+#: 问卷帧那条**判据要的串**，取自产物 `STATES`（**我量的**：部署件 / `gowizard.py` /
+#: `gowizard_fixed.py` / `candidate` 四份的 `want_urls` 里都有它）。
+#:
+#: ⚠️ **这个值不是从 `agent/template.py:_urls` 的注释里来的**：那句注释只写到 `chameleon-…`
+#: （省略号），没有到这个粒度 —— 早先的版本把它标成那个出处，**指错了**（复审 F2）。
+#:
+#: ⚠️ 更要紧的一条：那句注释说「19 个状态里 **16 个** 的 `url_contains` 是 `chameleon-…`」，
+#: 而**我数到的是 14**（【我量的】`ast.literal_eval` 取 `STATES` 逐状态数：
+#: 部署件 / `forms/sites/gowizard.py` / `gowizard_fixed.py` / `candidate` 四份**一致 ——
+#: 19 个状态中 1 个没有 `when`、4 个是别的地址、14 个 chameleon**；复审独立复算同值）。
+#: 那个「16」**我没能证实也没能推翻**（不知道它量于哪一刻、哪一份产物），所以
+#: **不去改那句注释**。复审找到了一个很可能说得通的出处：**19 个状态里恰好 16 个的
+#: `steps` 带 `frame_id`**（且 14 个 chameleon 状态**全部**带），
+#: ⇒「16」极可能是「**带帧号的状态数**」被写成了「url_contains 是 chameleon 的状态数」。
+#: 两个数在两个不同的量上都是真的。**14 与 16 都不影响判据**（都远大于 0）。
+#: ⇒ 这里用 **14**（我自己量得到、且四份产物一致的那个），并把这个可能出处写在旁边。
 GW_QUIZ_WANT = "chameleon-na.www.gowizard.com/forms/7878"
 
 
@@ -2105,13 +2129,13 @@ def test_the_gate_wants_the_quiz_frame_not_just_any_live_frame(sandbox, form_fil
     common.STATE.frame_urls = {"QUIZFRAME": GW_QUIZ_URL, "ADFRAME": GW_AD_URL}
 
     f.live_frames = ["ADFRAME", "QUIZFRAME"]
-    assert f._live_frames_ok() is True, "问卷帧在表里（广告帧排在前面也算）⇒ 不用再去找"
+    assert f._frame_table_is_usable() is True, "问卷帧在表里（广告帧排在前面也算）⇒ 不用再去找"
 
     f.live_frames = ["QUIZFRAME"]
-    assert f._live_frames_ok() is True, "只有问卷帧 ⇒ 当然不用再找"
+    assert f._frame_table_is_usable() is True, "只有问卷帧 ⇒ 当然不用再找"
 
     f.live_frames = ["ADFRAME"]
-    assert f._live_frames_ok() is False, (
+    assert f._frame_table_is_usable() is False, (
         "表里只有广告帧 ⇒ 判据必须说「不行」（这一格是修好的那一格）：广告帧地址是 %s，"
         "要的是含「%s」的" % (GW_AD_URL, GW_QUIZ_WANT))
 
@@ -2176,7 +2200,7 @@ def test_the_deadlock_is_broken(sandbox, form_file):
     common.STATE.frame_urls = {"QUIZFRAME": GW_QUIZ_URL, "ADFRAME": GW_AD_URL}
     f.live_frames = ["ADFRAME"]
     f._last_model = {"url": common.STATE.url}      # 手上那份观测**还是这一页的**（另两门堵死）
-    assert f._live_frames_ok() is False, "摆的正是坏形状：表里只有广告帧"
+    assert f._frame_table_is_usable() is False, "摆的正是坏形状：表里只有广告帧"
     when = {"url_contains": GW_QUIZ_WANT}
     assert f._applies(when) is True, (
         "帧表里只有广告帧时，判据要先去把问卷帧找出来再判，而不是判「不像」整组跳过")
@@ -2185,23 +2209,48 @@ def test_the_deadlock_is_broken(sandbox, form_file):
 def test_the_main_frame_cannot_prop_the_gate_up(sandbox, form_file):
     """主帧**天然不在** `live_frames` 里；而且就算将来有人把它塞进去，判据也不许恒真。
 
-    为什么要钉子：判据比的是「地址命中 `want_urls`」，而**主帧的地址常常就命中它**
-    （判据是从跨帧合并的模型里来的 —— 落地页那几个状态要的正是主帧地址）。
-    主帧一旦混进这张表，`_live_frames_ok()` 会**静默恒真**，于是又回到
-    「永远不去找问卷帧」那个起点。
+    为什么要钉子：判据比的是「地址命中 `want_urls`」，而**主帧的地址常常就命中它** ——
+    这不是假想：【我量的】这条流程的真 `want_urls` 三条里有一条
+    `https://www.gowizard.com/auto/` **正是主帧地址的一部分**（`agent/template.py:865-867`
+    也把这条量过的话写在判据旁边）。主帧一旦混进这张表，判据会**静默恒真**，
+    于是又回到「永远不去找问卷帧」那个起点。
+
+    ⚠️ **两条不同的路会把主帧弄进表里，各钉一半**（第 3 半段是针对第 2 条路的守卫）：
+    ① 有人去掉 `_note_live_frames` 的 `if fid` 过滤 ⇒ 表里出现**空帧号** ⇒ 靠
+       `_frame_url("")` 那个 `if not frame_id` 直接返回空串挡住；
+    ② 再进一步（有人让主帧在表里**带上一个地址** —— 改 `_frame_url` 的兜底、
+       或给主帧一个帧号）⇒ 空串那一道就挡不住了 ⇒ 靠判据里 `url != main` 那道闸挡住。
+    **那道闸不依赖「主帧永不进表」这个不变量** —— 这正是它的价值所在。
     """
-    # 这条流程要的地址**就是主帧那个**（落地页状态那种）
     f = _frame_filler(sandbox, form_file, "run_gate_mainframe", when_url="example.test")
     common = sys.modules["common"]
-    common.STATE.url = "https://example.test/"        # 主帧自己的地址：命中 want
-    common.STATE.frame_url = "https://example.test/"  # 子帧答的也跟主帧一样（最坏情况）
-    f.live_frames = [""]          # 主帧那个空帧号（若将来有人把它塞进表里）
-    assert f._live_frames_ok() is False, (
-        "主帧不许把判据撑成真（`_frame_url('')` 返回空串 —— 主帧根本不在这张表里）")
+    MAIN = "https://example.test/auto/"          # 主帧此刻的地址（**命中 want**）
+    QUIZ = "https://chameleon.example.test/forms/7878"   # 真帧：跨源地址，**也命中 want**
+    common.STATE.url = MAIN
+    common.STATE.frame_url = MAIN                # 帧答的也跟主帧一样（最坏情况）
 
-    # 另一头：**表的来源**也不收主帧 —— `frame_path == ["main"]` ⇒ 空帧号 ⇒ 不进表
+    # ── 第 1 半段：表的**来源**不收主帧 —— `frame_path == ["main"]` ⇒ 空帧号 ⇒ 不进表
     f._note_live_frames({"actions": [{"selector": "#hero", "frame_path": ["main"]}]})
     assert f.live_frames == [], f.live_frames
+
+    # ── 第 2 半段：就算把主帧那个**空帧号**塞进表里，判据也不许恒真（路①）
+    f.live_frames = [""]
+    assert f._frame_table_is_usable() is False, (
+        "主帧不许把判据撑成真（`_frame_url('')` 返回空串 —— 主帧根本不在这张表里）")
+
+    # ── 第 3 半段：**主帧带着地址进了表**（路②，`url != main` 那道闸单独承重）
+    common.STATE.frame_urls = {"MAIN": MAIN}
+    f.live_frames = ["MAIN"]
+    assert f._frame_table_is_usable() is False, (
+        "候选帧地址与主帧当前地址**逐字相同** ⇒ 跳过（这就是那道闸；"
+        "没有它，这条流程的判据在这个站上恒真）")
+
+    # ── 第 4 半段：同一张表里**有真帧**时，判据还得能撑起来（不许矫枉过正成恒假）
+    common.STATE.frame_urls = {"MAIN": MAIN, "QUIZFRAME": QUIZ}
+    f.live_frames = ["MAIN", "QUIZFRAME"]
+    assert f._frame_table_is_usable() is True, (
+        "真帧（地址与主帧不同）在表里 ⇒ 判据必须答「够」；"
+        "否则那道闸就从「挡主帧」变成了「永远说不够」= 每步都去 observe")
 
 
 def test_a_flow_that_reports_no_url_keeps_the_old_ruler(sandbox, form_file):
@@ -2221,14 +2270,14 @@ def test_a_flow_that_reports_no_url_keeps_the_old_ruler(sandbox, form_file):
     f._last_model = {"url": common.STATE.url}
     assert f.want_urls == [], f.want_urls
 
-    assert f._live_frames_ok() is True, (
+    assert f._frame_table_is_usable() is True, (
         "判不了 ⇒ 按旧口径放行（答得上就算数）；判 False 会退化成「每步都去 observe」")
     f._read_frames()
     assert _cdp_calls(sandbox) == [], "回落之后也不许去 observe（旧行为里它本来就不去）"
 
     # 回落 ≠ 恒真：帧答不上（死号 —— `_frame_url` 读不到就空串）时照样要去找
     common.STATE.frame_urls = {"ADFRAME": ""}
-    assert f._live_frames_ok() is False, "旧口径也要求「答得上」"
+    assert f._frame_table_is_usable() is False, "旧口径也要求「答得上」"
 
 
 # ⚠️ 「trace 留尾 + 成功布尔」这一格**没有钉子**：单跑绿、进全量套件红
