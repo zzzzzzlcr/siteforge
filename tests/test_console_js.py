@@ -1247,38 +1247,87 @@ def test_the_failures_fixture_can_actually_fire(tmp_path):
 #
 # ⚠️ 那几行日志**原样**摆（不过 `rich()`）—— 单有一条钉着它（`**` 会被当格式吃掉）。
 
-#: 榜单上那个**干净**的键（`formLog` 认它）。
+# ── 这一块夹具的**来历**（★ 逐条标清楚；复审 F3 把上一版的三处标注打掉了）──
+#
+# 上一版这里写着「脏键那一条**不是编的**」「拿它去查 `formLog` 会**查不到**」——
+# 【复审量的·出处 `task-4-review.md` §三②】把这两句都否了：那条 1430 字符的脏键
+# **查得到**（200 + 6 行），今天真查不到的是**另一条**（榜单上「没有配置」那个键，业务码 404）。
+# 下面的键分五个角色，**每个都注明来历**：
+#   【转述·brief】= 别人引文里的（`…` 是**原文自带的省略**，不是完整键）
+#   【复审量的】= 复审拿真 token 打线上量的　【构造】= 我为驱动某条分支摆的
 RANK_CLEAN = "www.gowizard.com/auto-warranty"
-#: ★ 榜单上那个**脏**键 —— brief §2 R1 里那一条真实样本（同一个站今天在榜单里有**两条**：
-#: 一条干净的，一条整条 URL 带 query、尾巴上还粘着一段 CDP 报错）。
-#: 这一条夹具的**全部意义**就是它：拿它去查 `formLog` 会**查不到**。
-RANK_DIRTY = ('callyourdate.com/land/sp/519015a5/?utm_source=taboola&id_visit_prev=#'
-              'c3RlcDM=" 2026/09/20 03:45:22 ERROR: could not unmarshal event')
-#: 那一单**有原因**。
+#: 【转述的·出处 brief §2 R1】**截断引用**（原文自己带 `…`；完整那条 1430 字符，我没有）。
+#: 它在这一份里的用处：证明**又长又脏、粘着别人报错**的键能被正确转义与摆出来。
+#: 【复审量的·出处 §三②】它**查得到**（200 + 6 行）—— **不是**「查不到」那一条。
+RANK_LONG = ('callyourdate.com/land/sp/519015a5/?utm_source=taboola&id_visit_prev=#'
+             'c3RlcDM=" 2026/09/20 03:45:22 ERROR: could not unmarshal event')
+#: ★【复审量的·出处 §三②】—— **今天真的查不到的那一条**：榜单上那个**没有配置**的键，
+#: 后端对它回**业务码 404**。brief §6.3 的靶子已被控制者改成它（原靶子前提不成立）。
+RANK_NO_CONFIG = "secure.comparethemarket.com.au/ctm/health_quote_v4.jsp"
+#: 【构造】驱动「失败列表比榜单**少**」那一支 —— 复审那一天的真数据里**没有这个方向**。
+RANK_FEWER = "cvrefresh.com/land/sp/constructed-sample"
+#: 【构造】驱动「服务**没给**那个数」那一支（`fail_count` 缺一格）。
+RANK_NO_COUNT = "compareinsulation.io/article-1-c"
+#: 【构造】驱动 F9 那一支：后端的 `note` **真带了 `**`**（数据长成了标记的样子）。
+#: 它要证明的是「这一层不加工它、而页面那两个去处显示的是**同一个字节**」。
+RANK_STARRY = "exitplan.io/land/sp/starred-note-sample"
+#: 那个 note 原样（**后端发的**，不是我们的标记）。
+STARRY_NOTE = "**没有配置**（后端真发了星号）"
+#: 那一单**有原因**。【构造】：复审量过，**今天全网没有真的原因行**
+#: （线上与本地实例的 `fail_diag` 都是空的）—— 所以这一路只能是合成的，
+#: 形状照 `failure-log-shipping-spec.md` 与 brief §1.2。
 DIAG_TASK = "26034602"
 #: 那一单**还没有原因**（brief §2 R2 说的那种：新功能 / 老单 / 机器没发上来）。
 NO_DIAG_TASK = "26033398"
-#: 榜单那一天的正文 —— **三个数对得上**（5 + 1 + 1 == 7），于是那一句里**不会**出现
-#: 「没摆全」；要量「没摆全」那一条得另给一份（见 `test_..._says_when_it_did_not_show_everything`）。
+
+#: 榜单那一天的正文。★ `fail` 那几个数与 `unattributed` **配平过**
+#: （3+1+1+5+4+2 = 16，+2 = **18**）—— 于是抬头那句落在「**与上面那个总数对得上**」那一支上，
+#: 别的用例量别的东西时不被「没摆全 / 还多出来」那句干扰。
+#: ⚠️ **配平这件事本身有用例价值**：上一版我漏了它（18 行加起来 18 却写 `unattributed: 8`），
+#: 夹具自己把「比上面那个总数还多 8」那句**打到了屏幕上** —— 一眼就看见配错了。
 RANK_DATA = {
-    "date": "2026-09-20", "failed_total": 7, "unattributed": 1,
+    "date": "2026-09-20", "failed_total": 18, "unattributed": 2,
     "rank": [
-        {"site": RANK_CLEAN, "fail": 5, "config_id": 66, "config_status": "启用",
+        {"site": RANK_CLEAN, "fail": 3, "config_id": 66, "config_status": "启用",
          "has_script": True},
-        {"site": RANK_DIRTY, "fail": 1, "config_id": None, "config_status": None,
+        {"site": RANK_LONG, "fail": 1, "config_id": 66, "config_status": "启用",
+         "has_script": True},
+        {"site": RANK_NO_CONFIG, "fail": 1, "config_id": None, "config_status": None,
          "has_script": None, "note": "没有配置"},
+        {"site": RANK_FEWER, "fail": 5, "config_id": 7, "config_status": "停用",
+         "has_script": False},
+        {"site": RANK_NO_COUNT, "fail": 4, "config_id": 9, "config_status": "启用",
+         "has_script": True},
+        {"site": RANK_STARRY, "fail": 2, "config_id": None, "config_status": None,
+         "has_script": None, "note": STARRY_NOTE},
     ],
 }
-#: 服务那句抬头 + 每一行的人话 —— **现算**（`fmr.rank_say` / `fmr.rank_row_say`），
-#: 不在这儿手抄一遍：那句话改一个字这一份跟着变，不会两边漂（与 `FAIL_ROW_SAY` 同一个做法）。
-RANK_SAY = fmr.rank_say(RANK_DATA, fmr.DEFAULT_RANK_LIMIT)
-RANK_ROW_SAYS = [fmr.rank_row_say(r) for r in RANK_DATA["rank"]]
+#: 服务那份 `/rank` 投影 —— ★ **每行带 `fail_count`**（复审 F2：上一版服务不留这一格，
+#: 于是页面那条对账**永不触发**）。这里按**服务真正的投影**造，不按后端那份 JSON 造。
+RANK_BODY = {
+    "date": RANK_DATA["date"], "limit": fmr.DEFAULT_RANK_LIMIT,
+    "say": fmr.rank_say(RANK_DATA, fmr.DEFAULT_RANK_LIMIT),
+    "rank": [
+        #: ⚠️ `RANK_NO_COUNT` 那一行**故意**不给 `fail_count`（服务在「后端没给那个数」时
+        #: 就是给 `None` / 缺格）—— 它驱动「对不了账也要说出来」那一支。
+        {"site": r["site"], "say": fmr.rank_row_say(r),
+         "fail_count": (None if r["site"] == RANK_NO_COUNT else r["fail"])}
+        for r in RANK_DATA["rank"]
+    ],
+}
+RANK_SAY = RANK_BODY["say"]
+RANK_ROW_SAYS = [r["say"] for r in RANK_BODY["rank"]]
 #: 那一栏的三跳地址（**从服务自己的常量算出来**，不在这儿手拼一份）。
 RANK_URL = service.RANK_PATH
-FAIL_CLEAN_URL = service.FAILURES_PATH + "?site=" + urllib.parse.quote(RANK_CLEAN, safe="")
-FAIL_DIRTY_URL = service.FAILURES_PATH + "?site=" + urllib.parse.quote(RANK_DIRTY, safe="")
 DIAG_WITH_URL = service.DIAG_PATH % DIAG_TASK
 DIAG_NO_URL = service.DIAG_PATH % NO_DIAG_TASK
+
+
+def _failures_url(site: str) -> str:
+    """`/failures?site=<键>` 那一跳（`quote(..., safe="")` 与页面的 `encodeURIComponent` 同形）。"""
+    return service.FAILURES_PATH + "?site=" + urllib.parse.quote(site, safe="")
+
+
 #: 那两单的失败行（`/failures` 那一栏要摆出来的）—— 人话**现算**。
 RANK_FAIL_ROWS = [
     {"task_id": DIAG_TASK, "site": RANK_CLEAN, "status": "failed",
@@ -1294,6 +1343,7 @@ DIAG_LINES = ("第 18 步**跳过**：这一页不像「gowizard-13」那个状�
               "（正文里没有「Progress: 60% …」）\n"
               "读页面用的帧：账本 ['FCD98757'] ／ 活帧 ['080A7732']")
 #: 有原因那一单的正文（服务那份投影：`say` 人话 + `lines` 原样 + `note` 空）。
+#: 【构造】那一行的时刻/机器名照 brief §1.2 的形状（真表里今天没有行）。
 DIAG_BODY = {
     "task_id": DIAG_TASK,
     "say": "单 %s 有 1 条原因行（最近一次的现场在最前面）。" % DIAG_TASK,
@@ -1316,17 +1366,19 @@ def _refused_404() -> Exception:
 
     ⚠️ 不在这儿手抄一句：这一份要证明的正是「页面上那句是**服务说的**那一句」——
     手抄就变成「页面上是一句与它长得一样的字」（与 `FAIL_502` 同一个做法）。
+    ⚠️ 拿**哪一条键**去抛不重要（404 那一句是按 `params` 里的键拼的），但这里用的是
+    **今天真查不到的那一条**（`RANK_NO_CONFIG`，复审量的）—— 与载荷驱动的那一条**同源**。
     """
-    rec = Recorder(envelope(None, status=404, msg="config not found: " + RANK_DIRTY))
+    rec = Recorder(envelope(None, status=404, msg="config not found: " + RANK_NO_CONFIG))
     try:
-        fmr.FmrClient(token="tok", opener=rec).fetch_failures(RANK_DIRTY)
+        fmr.FmrClient(token="tok", opener=rec).fetch_failures(RANK_NO_CONFIG)
     except fmr.FmrUnmeasured as exc:
         return exc
     raise AssertionError("404 居然没抛 —— 这一份载荷的判据就不成立了")
 
 
-#: 脏键那一下服务那句人话（**它就是服务会说的那一句**）。
-DIRTY_SAY = str(_refused_404())
+#: 「查不到」那一下服务那句人话（**它就是服务会说的那一句**）。
+NO_CONFIG_SAY = str(_refused_404())
 
 
 #: 页面那个 `rich()` **会动的**那些字符：转义 `& < > " '`、把 `**x**` 包成 `<b>`、
@@ -1353,8 +1405,33 @@ def _onscreen(html: str, said: str, what: str) -> None:
         assert c in html, "%s：这一段没上屏：%r\n屏幕上：%r" % (what, c, html)
 
 
+def _failures_body(site: str, n: int, seed=()) -> dict:
+    """`/failures` 的一份正文：这个键查到 `n` 条。
+
+    ⚠️ 行数**必须能独立于榜单那个数**（这是这一份夹具存在的理由）——
+    所以这里按 `n` 造行，不按夹具里那两单的条数。
+    `seed` 是**先摆进去的那两单**（干净那一跳要它们：链路后面两步要拿它们的单号去查原因）。
+    """
+    rows = list(seed) + [dict(RANK_FAIL_ROWS[i % len(RANK_FAIL_ROWS)],
+                              task_id="2600%04d" % (1000 + i))
+                         for i in range(max(0, n - len(seed)))]
+    return {"site": site, "since": "2026-09-19 00:00:00", "limit": fmr.DEFAULT_LIMIT,
+            "say": "这个站从 2026-09-19 00:00 起有 %d 条失败的记录"
+                   "（这一屏最多摆 20 条）。" % n,
+            "failures": [{"task_id": r["task_id"], "say": fmr.failure_say(r)} for r in rows]}
+
+
 def _rank_payloads() -> dict:
-    """那条链那一趟：看榜单 → 挑站（干净 / 脏）→ 挑单（有原因 / 没原因）→ 三次重画。
+    """那条链那一趟：看榜单 → 挑五种站（**四种对账支 + 一种查不到**）→ 挑单 → 三次重画。
+
+    ★ **五个角色是按「对账」造的**（复审 F2 那条死掉的判据就挂在这上面）：
+      · `clean`    榜单 3 / 查到 3 ⇒ **对得上**
+      · `long`     榜单 1 / 查到 6 ⇒ **多出来**（★ 复审量的真形状：脏键 1 → 6）
+      · `fewer`    榜单 5 / 查到 2 ⇒ **少了**（复审那天真数据里**没有**这个方向，构造的）
+      · `noConfig` 后端回业务码 404 ⇒ **按这个键查不到**（★ 今天真查不到的那条）
+      · `noCount`  服务**没给**那个数 ⇒ **对不了账也要说出来**
+    ⚠️ 查得到的那三跳各自回**不同行数**，所以「换一个键」在屏幕上**真的看得见变化**
+    （否则「挑哪一个都一样」—— 那种夹具量不出一条对账有没有触发）。
 
     ⚠️ **开页是挑着某一趟的**（`?job=job-1`）—— 与 `_failures_payloads` 同一条理由：
     不挑运行的话 `paint()` 一次都不跑，「活过三次重画」量的是**没有重画**。
@@ -1362,7 +1439,8 @@ def _rank_payloads() -> dict:
     live_one = [{"body": _live("running", "queue", n=1 + i, tag="这一趟")} for i in range(8)]
     _assert_all_different([x["body"] for x in live_one], "`/live` 的正文")
     return {"scenario": "rank-diag", "search": "?job=job-1",
-            "rank": {"clean": RANK_CLEAN, "dirty": RANK_DIRTY,
+            "rank": {"clean": RANK_CLEAN, "long": RANK_LONG, "fewer": RANK_FEWER,
+                     "noConfig": RANK_NO_CONFIG, "noCount": RANK_NO_COUNT,
                      "withDiag": DIAG_TASK, "noDiag": NO_DIAG_TASK},
             "responses": {
                 "/runs": [{"body": {"note": "", "runs": [
@@ -1370,20 +1448,17 @@ def _rank_payloads() -> dict:
                      "say": "在跑。", "created_at": "2026-09-19T21:00:00+08:00",
                      "rounds": 0, "delivered": False}]}}],
                 "/job/job-1/live": live_one,
-                RANK_URL: [{"body": {
-                    "date": RANK_DATA["date"], "limit": fmr.DEFAULT_RANK_LIMIT,
-                    "say": RANK_SAY,
-                    "rank": [{"site": r["site"], "say": s}
-                             for r, s in zip(RANK_DATA["rank"], RANK_ROW_SAYS)]}}],
-                FAIL_CLEAN_URL: [{"body": {
-                    "site": RANK_CLEAN, "since": "2026-09-19 00:00:00",
-                    "limit": fmr.DEFAULT_LIMIT,
-                    "say": "这个站从 2026-09-19 00:00 起有 2 条失败的记录"
-                           "（这一屏最多摆 20 条）。",
-                    "failures": [{"task_id": r["task_id"], "say": fmr.failure_say(r)}
-                                 for r in RANK_FAIL_ROWS]}}],
-                # ★ 脏键那一下：后端**不认识**这个键（404 那一族）⇒ 服务回 502 + 那句话。
-                FAIL_DIRTY_URL: [{"status": 502, "body": {"detail": DIRTY_SAY}}],
+                RANK_URL: [{"body": RANK_BODY}],
+                #: ★ 三跳「查得到」，**行数各不相同**（3 / 6 / 2）——
+                #: 3 = 对得上、6 = 多出来、2 = 少了（榜单那三行分别是 3 / 1 / 5）。
+                _failures_url(RANK_CLEAN): [{"body": _failures_body(RANK_CLEAN, 3,
+                                                                    seed=RANK_FAIL_ROWS)}],
+                _failures_url(RANK_LONG): [{"body": _failures_body(RANK_LONG, 6)}],
+                _failures_url(RANK_FEWER): [{"body": _failures_body(RANK_FEWER, 2)}],
+                _failures_url(RANK_NO_COUNT): [{"body": _failures_body(RANK_NO_COUNT, 8)}],
+                #: ★ **真的查不到**那一下：后端回业务码 404 ⇒ 服务回 502 + 那句话。
+                _failures_url(RANK_NO_CONFIG): [{"status": 502,
+                                                 "body": {"detail": NO_CONFIG_SAY}}],
                 DIAG_WITH_URL: [{"body": DIAG_BODY}],
                 DIAG_NO_URL: [{"body": NO_DIAG_BODY}],
             }}
@@ -1408,7 +1483,7 @@ def test_clicking_a_site_asks_the_existing_panel_for_that_sites_failures(tmp_pat
     """② 挑一个站 ⇒ **它的失败单**：走的是**既有那一栏**那条路（填 `#failSite` + 查）。"""
     out = _drive(tmp_path, scenario="rank-diag")
     assert out["afterClean"]["siteBox"] == RANK_CLEAN, out["afterClean"]
-    assert FAIL_CLEAN_URL in out["urls"], out["urls"]
+    assert _failures_url(RANK_CLEAN) in out["urls"], out["urls"]
     #: 那一栏里摆出来的就是这两单的人话（既有那条路画的）。
     for row in RANK_FAIL_ROWS:
         assert row["task_id"] in out["afterClean"]["fails"], out["afterClean"]["fails"]
@@ -1416,30 +1491,112 @@ def test_clicking_a_site_asks_the_existing_panel_for_that_sites_failures(tmp_pat
     assert [s for s in out["sent"] if s["url"] == "/run"] == [], out["sent"]
 
 
-def test_a_dirty_key_that_cannot_be_found_says_so_instead_of_looking_healthy(tmp_path):
-    """★★ brief §2 R1 + R2 的**正身**：脏键 ⇒「按这个键查不到」**说出来**。
+def test_a_key_that_cannot_be_found_says_so_instead_of_looking_healthy(tmp_path):
+    """★★ brief §2 R1 + R2 的**正身**：按这个键查不到 ⇒ 那句话**说出来**。
 
-    为什么这条是这一片最贵的形状：拿站点键去 join 原因会**查到 0 行而且不报错** ——
+    为什么这条是这一片最贵的形状：拿站点键去 join 会**查到 0 行而且不报错** ——
     一个查不到的站会被显示成健康的（本仓实测过一次：无效 key 回 404，
     诊断页写成「近 2 天没有失败 ✓」）。
 
+    ⚠️ **靶子换过**（Task 4 修复轮 1）：上一版拿 brief §2 R1 那条**长而脏**的键当靶子，
+    而【复审量的】证明那条**查得到**（200 + 6 行）—— 靶子前提是错的。
+    今天真查不到的是**另一条**：榜单上那个**没有配置**的键（后端回业务码 404）。
+
     这一条量**三下**，缺一条都可以靠改坏另一条过：
-      ① 那句「按这个键查不到」**在**；
+      ① 那句「按这个键查不到」**在**，而且**点名了是哪个键**；
       ② 后端那句**原因**（404 那句）**也在**（不是这一屏自己编了一句「查不到」）；
       ③ 那一栏里**没有**「这个站没有失败的记录」那句假话。
     """
     out = _drive(tmp_path, scenario="rank-diag")
-    note = out["afterDirty"]["rankNote"]
-    fails = out["afterDirty"]["fails"]
+    note = out["afterNoConfig"]["rankNote"]
+    fails = out["afterNoConfig"]["fails"]
     assert "按这个键查不到" in note, note
-    #: ⚠️ 那串键要按**页面上转义之后的样子**比（`&`→`&amp;`、`"`→`&quot;`）——
-    #: 原样那串里有 `&` 和 `"`，直接 `in` 是比不中的。
+    #: ⚠️ 那串键按**页面上转义之后的样子**比（`&`→`&amp;`、`"`→`&quot;`）：
     #: 页面的 `esc()` 与 `html.escape(quote=True)` 转义的是同一组字符，所以这里算得出来。
-    assert html.escape(RANK_DIRTY, quote=True) in note, "没说清是**哪个键**：%r" % note
+    assert html.escape(RANK_NO_CONFIG, quote=True) in note, "没说清是**哪个键**：%r" % note
     #: ② 后端那句原因原样在那儿（这一句是**服务**说的，页面不替它编）。
-    _onscreen(fails, DIRTY_SAY, "脏键那一下后端那句话")
+    _onscreen(fails, NO_CONFIG_SAY, "查不到那一下后端那句话")
     #: ③ 假话不在。
     assert "没有失败的记录" not in fails, "把「查不到」画成了「这个站没有失败」：%r" % fails
+
+
+def test_the_long_dirty_key_is_shown_whole_and_escaped(tmp_path):
+    """★ 那条**又长又脏**的键（带 query、尾巴上粘着别人的报错）要**整个**摆出来、转义正确。
+
+    【复审量的·出处 §三②】它在后端那儿**查得到**（200 + 6 行）—— 所以这条量的**不是**
+    「查不到」，是「一个长成这样的键上屏时不许被截断、不许把 `&`/`"` 漏成标记」：
+    漏了的话，运营照着屏幕上那串字去别处问，问的是**另一个键**。
+    """
+    out = _drive(tmp_path, scenario="rank-diag")
+    shown = out["afterRank"]["rank"]        #: ⚠️ 别叫 `html`（那会遮蔽上面的 `html` 模块）
+    assert html.escape(RANK_LONG, quote=True) in shown, "那一整串没有原样上屏：%r" % shown
+    #: 正控：那一串**确实**带了会被转义的字符（否则上面那条是在量一个没有 `&` 的串）。
+    assert "&" in RANK_LONG and '"' in RANK_LONG
+    assert "&amp;" in shown and "&quot;" in shown, shown
+
+
+def test_the_reconciliation_speaks_in_both_directions(tmp_path):
+    """★★★ 复审 F2 的正身：**那条对账要活过来，而且两个方向都要说话。**
+
+    上一版它是**死的**：服务投影只留 `site`/`say`，页面的 `at(row,"fail_count",null)`
+    恒为 `null` ⇒ 那句永远不上屏。复审量到三件事：0 条用例、变异体全绿、真数据 8/8 走不到。
+    **一条永远不触发的对账比没有对账更坏** —— 它看起来像有守。
+
+    而它**本该天天说话**：【复审量的·出处 §三②】拿榜单 8 个真键逐个打 `formLog`，
+    **多数是 `n > want`**（干净键 `3 → 6`、goldenagesouls 两条 `1 → 6`）。
+
+    ⚠️ 四个方向**一个都不许少** —— 少一个，那条实现就可以退化成「只会说一种」：
+      · 对得上（3/3）　· **多出来**（1/6，真实形状）　· 少了（5/2）　· 服务没给那个数
+    ⚠️ 而且**多出来那一支不许说成「对不上」** —— 那是**正常**的（榜单按站点键数、
+    失败列表按配置捞，一份配置底下可以有好几个键）。把正常说成异常是往屏幕上贴假结论。
+    """
+    out = _drive(tmp_path, scenario="rank-diag")
+    clean, more, fewer, nocount = (out["afterClean"]["rankNote"], out["afterMore"]["rankNote"],
+                                   out["afterFewer"]["rankNote"], out["afterNoCount"]["rankNote"])
+    #: ① 对得上：说「对得上」，而且**不许**出现任何「不一样/对不上」的话。
+    assert "对得上" in clean, clean
+    for bad in ("不一样", "对不上", "没摆出来"):
+        assert bad not in clean, "对得上那一次说了「%s」：%r" % (bad, clean)
+    #: ② 多出来：★ 说**不一样**，而且说清**为什么多出来是正常的**。
+    assert "1" in more and "6" in more, more
+    assert "多出来是正常的" in more, more
+    assert "配置" in more and "键" in more, "没说清那两个数为什么可以不同：%r" % more
+    #: ③ 少了：说**不一样**，但**不编原因**（这一屏分不出是哪种）——
+    #: 判据取的是它**明说分不出**，而不是某个具体猜测。
+    assert "5" in fewer and "2" in fewer, fewer
+    assert "不一样" in fewer, fewer
+    assert "说不清" in fewer or "分不出" in fewer, fewer
+    #: ④ 服务没给那个数：**说出来**（不是静默跳过那条对账 —— 那正是它上一轮的死法）。
+    assert "对不了账" in nocount, nocount
+    #: 正控：四句**互不相同**（否则上面四条可以靠一句万能话同时满足）。
+    assert len({clean, more, fewer, nocount}) == 4, (clean, more, fewer, nocount)
+
+
+def test_the_row_you_read_is_the_row_you_pick(tmp_path):
+    """★ 复审 F9：★ **读的那一行 = 挑的那一格**（同一个字节）。
+
+    榜单那一行同时进 `<li>`（读）与 `<option>`（挑）—— 而 `<option>` **放不了标记**。
+    上一版 `<li>` 走 `rich()`、`<option>` 走 `esc()`，于是只要那一句里**任何一格**
+    （包括**后端原样搬进来**的 `note` / `config_status`）带了 `**`，两个去处显示的就**不一样**。
+    ⇒ 现在两边**都走 `esc()`**。这一条拿一个**带 `**` 的 `note`** 把它量死：
+    那一串星号必须**原样**出现在**两个**去处里。
+    """
+    out = _drive(tmp_path, scenario="rank-diag")
+    row = [r for r in RANK_DATA["rank"] if r["site"] == RANK_STARRY][0]
+    say = fmr.rank_row_say(row)
+    assert row["note"] == STARRY_NOTE, "夹具里那一行不是带星号那条"
+    escaped = html.escape(say, quote=True)
+    #: 两个去处都要有**同一串**（读的那一行 / 挑的那一格）。
+    assert escaped in out["afterRank"]["rank"], "读的那一行里不是那一串：%r" % out["afterRank"]
+    assert escaped in out["afterRank"]["pick"], "挑的那一格与读的那一行不是同一个字节"
+    #: 正控：这一串**真的**带星号（否则上面两条是在量一个没有 `**` 的句子）。
+    assert "**" in say, say
+    #: 而且**那一行里**星号不许被当标记解释掉（上一版 `rich()` 会把它变成 `<b>`）。
+    #: ⚠️ 判据只取**列表那一段**：抬头那句**本来就该**走 `rich()`（它是散文，`**18**` 要加粗）
+    #: —— 拿整个 `#rank` 去量「没有 `<b>`」会把抬头那句的正确渲染也算成错。
+    listed = out["afterRank"]["rank"]
+    listed = listed[listed.index('<ul class="faillist">'):]
+    assert "<b>" not in listed, "那一行里的星号被当标记解释了：%r" % listed
 
 
 def test_the_reason_is_shown_and_the_unknown_exit_is_said_as_not_reported(tmp_path):
@@ -1493,8 +1650,8 @@ def test_what_the_chain_showed_survives_three_repaints(tmp_path):
       · 末尾那一次量的是「最后那一屏整块还在不在」（榜单 + 原因 + 失败单）。
     """
     out = _drive(tmp_path, scenario="rank-diag")
-    assert "按这个键查不到" in out["afterDirtyRepaint"]["rankNote"], out["afterDirtyRepaint"]
-    _onscreen(out["afterDirtyRepaint"]["fails"], DIRTY_SAY, "脏键那句活过三次重画")
+    assert "按这个键查不到" in out["afterNoConfigRepaint"]["rankNote"], out["afterNoConfigRepaint"]
+    _onscreen(out["afterNoConfigRepaint"]["fails"], NO_CONFIG_SAY, "查不到那句活过三次重画")
 
     before, after = out["afterNoDiag"]["diag"], out["afterRepaint"]["diag"]
     assert before and before == after, "重画之后那一栏被擦掉了（%r → %r）" % (before, after)
@@ -1505,7 +1662,7 @@ def test_what_the_chain_showed_survives_three_repaints(tmp_path):
 def test_the_rank_fixture_can_actually_fire(tmp_path):
     """**正控**（这一节自己的牙）：改坏一处已知会破坏行为的写法 ⇒ 同一批断言必须红。
 
-    改的是**脏键那一条路上**那一步：把「按这个键查不到」写成「这个站没有失败」
+    改的是**查不到那一条路上**那一步：把「按这个键查不到」写成「这个站没有失败」
     （「查不到就当没有」—— 这正是这一片从头到尾在治的那个形状的**代码**）。
     """
     original = service.CONSOLE_PATH.read_text(encoding="utf-8")
@@ -1517,9 +1674,9 @@ def test_the_rank_fixture_can_actually_fire(tmp_path):
 
     good = _drive(tmp_path, scenario="rank-diag")
     bad = _drive(tmp_path, scenario="rank-diag", page=page)
-    assert "按这个键查不到" in good["afterDirty"]["rankNote"], good["afterDirty"]
-    assert "按这个键查不到" not in bad["afterDirty"]["rankNote"], (
+    assert "按这个键查不到" in good["afterNoConfig"]["rankNote"], good["afterNoConfig"]
+    assert "按这个键查不到" not in bad["afterNoConfig"]["rankNote"], (
         "把「查不到」写成「没有失败」之后这一份夹具**没有响** —— "
-        "那说明它量不到那一条（观测值照旧是 %r）" % bad["afterDirty"])
+        "那说明它量不到那一条（观测值照旧是 %r）" % bad["afterNoConfig"])
     #: 正控还得**落到那一句假话上**：改坏之后屏幕上出现的正是「没有失败」那句。
-    assert "没有失败的记录" in bad["afterDirty"]["rankNote"], bad["afterDirty"]
+    assert "没有失败的记录" in bad["afterNoConfig"]["rankNote"], bad["afterNoConfig"]

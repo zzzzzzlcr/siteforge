@@ -678,25 +678,78 @@ def test_the_client_says_which_of_the_two_it_is_configured_or_not():
 # | 3 | `has_script` 是**三态** | `False`（有配置没脚本）与 `null`（没有配置）处置相反 |
 # | 4 | 没有配置时**照抄后端的 `note`** | 后端那两种 note 的处置也相反（建配置 vs 修映射） |
 
-#: **线上实测的那一行**（brief §1.1 里那一条，逐字）+ 并列的第二行（脏键那一条，brief §2 R1）。
-#: ⚠️ 脏键那一条**不是编的**：同一个站今天在榜单里**有两条**，一条干净、一条整条 URL 带 query，
-#: 尾巴上还粘着一段 CDP 报错 —— 这就是「原因查询一律走单号」那条纪律的**全部理由**。
-RANK_DIRTY_KEY = ('callyourdate.com/land/sp/519015a5/?utm_source=taboola&id_visit_prev=#'
-                  'c3RlcDM=" 2026/09/20 03:45:22 ERROR: could not unmarshal event')
-MEASURED_RANK = {
-    "date": "2026-09-20", "failed_total": 18, "unattributed": 2,
+# ═══════════════════ 这份夹具的**来历**（★ 逐格标清楚）═══════════════════
+#
+# ⚠️ **Task 4 修复轮 1 把这一块整个重标了一遍**（复审 F3）。上一版这里写的是
+# 「**线上实测的那一行**（brief §1.1 里那一条，**逐字**）」「脏键那一条**不是编的**」——
+# 那两句里**有真有假**，而假的正好在**本任务头号判据的靶子**上。复审量的真值见
+# `task-4-review.md` §三②。下面**每一格都注明它从哪来**：
+#
+#   · 【转述的·出处 brief §1.1】—— 那份 JSON 样例（**转述**：我手里没有线上 200 正文，
+#     线上要 token，我没有；见 `task-4-report.md` 的顾虑）。
+#   · 【转述的·出处 brief §2 R1】—— **截断引用**（brief 原文自己就带 `…`）。
+#   · 【复审量的·出处 `task-4-review.md` §三②】—— 复审拿真 token 打线上量的。
+#   · 【构造】—— 我为**驱动某条分支**摆的值，契约里合法、但**没有人量过它**。
+#
+# ⚠️ **「脏」不等于「查不到」**——这是上一版最大的错（复审 §三②）：
+# 那条 1430 字符、带 query 又粘着报错的键，后端**查得到**（200 + 6 行，归到 config 66）。
+# 今天真查不到的是**另一条**：榜单上那条**没有配置**的键（后端回业务码 404）。
+
+#: 【转述的·出处 brief §1.1】那一行（干净键）—— 逐字。它是这一族里唯一一条
+#: 【转述的】来源，所以下面凡是拿它当输入的人都得知道：**它不是我量的**。
+RANK_KEY_CLEAN = "callyourdate.com/land/sp/519015a5"
+#: 【转述的·出处 brief §2 R1】—— ★ **截断引用，不是完整键**。
+#: brief 原文那一行自己就带着 `…`（`…/?utm_source=taboola&…`），我照抄了它给的那一段。
+#: 【复审量的·出处 同上】完整那条长 **1430 字符**，结尾是
+#: `…unknown IPAddressSpace value: Private`（这一段我**没有**，也不替它编）。
+#: 它在这一份夹具里的用处只有一个：**证明一个又长又脏、粘着别人报错的键能被正确转义与摆出来**。
+RANK_KEY_LONG = ('callyourdate.com/land/sp/519015a5/?utm_source=taboola&id_visit_prev=#'
+                 'c3RlcDM=" 2026/09/20 03:45:22 ERROR: could not unmarshal event')
+#: ★【复审量的·出处 `task-4-review.md` §三②】今天**真的**「按这个键查不到」的那一条：
+#: 榜单上那个**没有配置**的键，后端对它回**业务码 404**（`config not found`）。
+#: ⚠️ 复审量的是「拿这个键去打 `formLog` 会得到什么」；「它在榜单里那一行长什么样」
+#: 是按后端的 `formLogRank` 契约摆的（没有配置 ⇒ `config_id`/`config_status`/`has_script`
+#: 三格 `null` + 一句 `note`）—— 那一部分是【构造】，有 `FormLogRankTest.php:392` 的
+#: `assertSame('没有配置', $row['note'])` 当形状依据。
+RANK_KEY_NO_CONFIG = "secure.comparethemarket.com.au/ctm/health_quote_v4.jsp"
+#: 【构造】只为驱动「失败列表比榜单**少**」那一支的一条键（复审那一天 8 个真键里
+#: **没有**这个方向 —— 全是 `n > want` 或相等）。**没有人量过它**，它是合成的。
+RANK_KEY_FEWER = "cvrefresh.com/land/sp/constructed-sample"
+
+#: 榜单那一天的正文。**每一行都标了来历**（见上）；`failed_total` / `unattributed`
+#: 是【构造】配平出来的（3+1+1+5 = 10，+8 = 18）—— 为的是让抬头那句落在
+#: 「**与上面那个总数对得上**」那一支上，于是别的用例量差额时不会被这一句干扰。
+RANK_FIXTURE = {
+    "date": "2026-09-20", "failed_total": 18, "unattributed": 8,
     "rank": [
-        {"site": "callyourdate.com/land/sp/519015a5", "fail": 3,
+        #: 【转述·brief §1.1】干净那一行，逐字。
+        {"site": RANK_KEY_CLEAN, "fail": 3,
          "config_id": 66, "config_status": "启用", "has_script": True},
-        {"site": RANK_DIRTY_KEY, "fail": 1,
+        #: ⚠️ 上一版这几格编成 `None/None/None/"没有配置"`（复审 F3：**归属整个写反了**）。
+        #: 这一版按【复审量的·出处 §三②】填回去：真那条是 `66 / "启用" / true`。
+        {"site": RANK_KEY_LONG, "fail": 1,
+         "config_id": 66, "config_status": "启用", "has_script": True},
+        #: 【复审量的】键 + 【构造】那几格（见 `RANK_KEY_NO_CONFIG`）。
+        {"site": RANK_KEY_NO_CONFIG, "fail": 1,
          "config_id": None, "config_status": None, "has_script": None, "note": "没有配置"},
+        #: 【构造】驱动「少」那一支。
+        {"site": RANK_KEY_FEWER, "fail": 5,
+         "config_id": 7, "config_status": "停用", "has_script": False},
     ],
 }
 
 
+def _rank_row(site: str) -> dict:
+    """夹具里那一行（按**键**取，不按位置取 —— 位置会随夹具长一截而漂）。"""
+    for row in RANK_FIXTURE["rank"]:
+        if row["site"] == site:
+            return row
+    raise AssertionError("夹具里没有这个键：%r" % site)
+
+
 def test_the_rank_query_is_the_one_that_was_measured():
     """那一跳的**路径与参数**：`/api/quest/formLogRank?date=…&limit=…`，token 走请求头。"""
-    rec = Recorder(envelope(MEASURED_RANK))
+    rec = Recorder(envelope(RANK_FIXTURE))
     client(rec).fetch_rank(date="2026-09-20", limit=7)
     path, params = query_of(rec.urls[0])
     assert path == "/api/quest/formLogRank", rec.urls[0]
@@ -710,7 +763,7 @@ def test_the_rank_leaves_both_cells_out_so_the_backend_picks_the_day():
     发空串不是缺省：后端对 `?limit=` 会回 400（`ConvertEmptyStringsToNull` 那个坑，
     ① 那边的注释里记着同一个形状）。所以这一格**宁可不发**。
     """
-    rec = Recorder(envelope(MEASURED_RANK))
+    rec = Recorder(envelope(RANK_FIXTURE))
     client(rec).fetch_rank()
     path, params = query_of(rec.urls[0])
     assert path == "/api/quest/formLogRank", rec.urls[0]
@@ -719,9 +772,9 @@ def test_the_rank_leaves_both_cells_out_so_the_backend_picks_the_day():
 
 def test_the_rank_answer_is_the_object_the_backend_gave():
     """回给调用方的是**后端那个对象**（四个格子），这一层**不重排、不改写**。"""
-    rec = Recorder(envelope(MEASURED_RANK))
+    rec = Recorder(envelope(RANK_FIXTURE))
     got = client(rec).fetch_rank()
-    assert got == MEASURED_RANK, got
+    assert got == RANK_FIXTURE, got
 
 
 def test_a_rank_answer_that_is_not_an_object_is_unmeasured_not_an_empty_day():
@@ -748,26 +801,42 @@ def test_an_empty_rank_object_is_exactly_how_no_failures_looks():
     assert got["failed_total"] == 0 and got["rank"] == [], got
 
 
-def test_the_rank_says_the_three_numbers_and_the_gap():
-    """★ `say` 里**三个数都要在**，而且**差额要说出来**。
+def test_the_rank_says_the_three_numbers():
+    """★ `say` 里**三个数都要在**（当日总数 / 归不到站的 / 摆出来几个站）。
 
-    实测那一份：一共 18 次、其中 2 次归不到站、摆出来两个站（3+1=4）⇒ 还差 **12** 次。
-    ⇒ 只说「下面摆了 2 个站」，读的人会以为今天就这么两个站坏了。
+    ⚠️ **判据写成带着重号的那个数**（`**18**`），不是裸的 `"18"`/`"2"` ——
+    裸的那种**会被同一句里的日期 `2026-09-20` 保证为真**（复审 F8 实测：
+    `"2" in said` 与 `"0" in said` 两条断言因此**空转**，
+    改坏了那句话它们照样绿）。`rank_say` 给这三个数都上了 `**`，
+    而日期那一段**不带**着重号 —— 于是这样比才是真的在量那几个数。
+    差额那一支另有专门的一条（`test_the_rank_says_when_it_did_not_show_everything`）。
     """
-    said = fmr.rank_say(MEASURED_RANK, 50)
+    said = fmr.rank_say(RANK_FIXTURE, 50)
     assert "2026-09-20" in said, said
-    assert "18" in said, said
-    assert "2" in said, said
-    assert "12" in said, "差额没说：%r" % said
+    assert "**18**" in said, "当日总数那个数没上屏（或没上着重号）：%r" % said
+    assert "**8**" in said, "归不到站那个数没上屏：%r" % said
+    #: 摆出来几个站：这一份是 4 个；加起来那 10 次失败**不带**着重号，所以按字面比。
+    assert "下面摆了 4 个站" in said, said
+    assert "加起来 10 次失败" in said, said
     #: ⚠️ 那两个键**原样的字**不许出现在这一句里：它们是给机器 join 用的，不是给人读的。
     assert "callyourdate" not in said, said
+    assert "secure.comparethemarket" not in said, said
+
+    #: 正控（去掉上面那几个 `**` 判据的空转可能）：**换一个数，那一句就得跟着变** ——
+    #: 不然上面那几条只是在量「这句话里出现过那些字」。
+    other = fmr.rank_say(dict(RANK_FIXTURE, failed_total=99, unattributed=89), 50)
+    assert "**99**" in other, other
+    assert "**18**" not in other, "换了数字那一句没变：%r" % other
 
 
 def test_a_day_with_nothing_failing_is_said_as_measured_not_as_a_blank():
     """「一个站都没有」有两种成因，**必须分得开**：真没有（总数 0）vs 全归不到站。"""
     said = fmr.rank_say({"date": "2026-09-20", "failed_total": 0, "unattributed": 0,
                          "rank": []}, 50)
-    assert "量到" in said and "0" in said, said
+    #: ⚠️ 比的是**带着重号**的那个 0（`**0**`）—— 裸的 `"0" in said` 会被
+    #: 同一句里的日期 `2026-09-20` 保证为真（复审 F8）。
+    assert "量到" in said, said
+    assert "**0**" in said, said
     other = fmr.rank_say({"date": "2026-09-20", "failed_total": 2, "unattributed": 2,
                           "rank": []}, 50)
     assert "归不出来" in other or "归不到" in other, other
@@ -795,7 +864,7 @@ def test_the_rank_says_when_it_did_not_show_everything():
 
 def test_a_rank_row_becomes_one_human_sentence():
     """一行的人话：`失败 3 次 · 配置 66（启用） · 有 py 脚本`（码一个都不许在）。"""
-    said = fmr.rank_row_say(MEASURED_RANK["rank"][0])
+    said = fmr.rank_row_say(RANK_FIXTURE["rank"][0])
     assert said == "失败 3 次 · 配置 66（启用） · 有 py 脚本", said
 
 
@@ -815,9 +884,9 @@ def test_has_script_is_three_states_not_two():
 
 def test_a_rank_row_without_a_config_uses_the_backends_own_note():
     """★ 没有配置时**照抄后端那句 `note`** —— 后端的两种 note 处置相反，合起来就是把两件事变一件。"""
-    said = fmr.rank_row_say(MEASURED_RANK["rank"][1])
+    said = fmr.rank_row_say(_rank_row(RANK_KEY_NO_CONFIG))
     assert "没有配置" in said, said
-    orphan = dict(MEASURED_RANK["rank"][1], note="映射指向的配置行不存在")
+    orphan = dict(_rank_row(RANK_KEY_NO_CONFIG), note="映射指向的配置行不存在")
     other = fmr.rank_row_say(orphan)
     assert "映射指向的配置行不存在" in other, other
     assert other != said, "两种 note 说了同一句话"
@@ -825,7 +894,7 @@ def test_a_rank_row_without_a_config_uses_the_backends_own_note():
 
 def test_a_config_status_this_page_does_not_know_is_said_out_loud():
     """取值是开放的 ⇒ 认不出的一格要**带着原样的字**冒出来（不猜、也不悄悄放行）。"""
-    row = dict(MEASURED_RANK["rank"][0], config_status="archived")
+    row = dict(RANK_FIXTURE["rank"][0], config_status="archived")
     said = fmr.rank_row_say(row)
     assert "archived" in said, said
     assert "不认识" in said, said
@@ -1035,12 +1104,107 @@ def test_the_rank_row_text_carries_no_emphasis_markers():
     有一个放不了标记。所以判据是「这一句的每一个出口都不含 `**`」——
     下面把三种 `has_script` / 两种 `note` 都过一遍，别只测一个样本。
     """
-    samples = [MEASURED_RANK["rank"][0], MEASURED_RANK["rank"][1],
-               dict(MEASURED_RANK["rank"][1], note="映射指向的配置行不存在")]
+    samples = list(RANK_FIXTURE["rank"])          # 四行，四种配置形态
+    samples.append(dict(_rank_row(RANK_KEY_NO_CONFIG), note="映射指向的配置行不存在"))
     for hs in (True, False, None):
-        samples.append(dict(MEASURED_RANK["rank"][0], has_script=hs))
+        samples.append(dict(_rank_row(RANK_KEY_CLEAN), has_script=hs))
     for row in samples:
         said = fmr.rank_row_say(row)
         assert "**" not in said, "这一句带了着重号（它在 <option> 里会显示成两个星号）：%r" % said
     #: 正控：`has_script` 那三态**确实**各有各的说法（否则上面那一圈是空转的）。
     assert len({fmr.has_script_say(v) for v in (True, False, None)}) == 3
+
+
+def test_the_noun_each_reader_actually_prints_is_the_one_for_that_endpoint():
+    """★★ 复审 F1：**读的是「印出来的那句话」，不是那张词表。**
+
+    上一版这条只量了 `_PATH_SAY` 那四条 —— 而 `_call` 里**两处 `raise` 把「读不了失败记录」
+    硬编码**进去了（共享的那两处：正文不是 JSON、正文不是信封）⇒
+    ③④ 两个新读口读不成时，运维在榜单那一栏看到的是「读不了**失败记录**」。
+    **名字说 A、量的是 B** —— 判据量的是词表，不是输出。这一条量**输出**。
+
+    ⚠️ 四个口 **×** 两条失败路 = 八格，一格都不许漏（漏的那几格就是上一版逃掉的那两处）。
+    """
+    cases = [
+        (r"not json at all", "不是 JSON"),
+        ("[1, 2, 3]", "不是一个信封"),
+    ]
+    for body, kind in cases:
+        for path, noun in fmr._PATH_SAY.items():
+            rec = Recorder(body)
+            got = None
+            #: 四个口各自怎么调（参数各给一个合法的，别让「免费的那道闸」先把它挡掉）。
+            call = {
+                "/api/quest/formLog": lambda c: c.fetch_failures("s/"),
+                "/api/quest/formStep": lambda c: c.fetch_steps("1"),
+                "/api/quest/formLogRank": lambda c: c.fetch_rank(),
+                "/api/quest/failDiag": lambda c: c.fetch_diag("1"),
+            }[path]
+            with pytest.raises(fmr.FmrUnmeasured) as e:
+                call(client(rec))
+            said = str(e.value)
+            assert kind in said, "%s（%s）：这一支的说明不见了：%r" % (path, kind, said)
+            assert "读不了%s" % noun in said, (
+                "%s 上这一支顶着别处的名字（应当说「读不了%s」）：%r" % (path, noun, said))
+            got = said
+            #: 正控：**不许**顶着「失败记录」（那正是逃掉的那两处印出来的字）——
+            #: `formLog` 那一格本身就是「失败记录」，所以只在别的三个口上要求。
+            if noun != "失败记录":
+                assert "读不了失败记录" not in got, (
+                    "%s 上印了「失败记录」（共享 `_call` 里那两处硬编码）：%r" % (path, got))
+
+
+def test_a_body_with_no_data_cell_is_not_read_as_no_failures():
+    """★★ 复审 F5：`data: null` / **整个 `data` 那一格不在** —— 都**不是**「没有失败」。
+
+    ⚠️ 这一条钉的是一处**行为变化**（Task 4 加 `shape` 闸时带出来的），
+    报告 §4 那张表上一版把它标成「否」，**是错的**：
+
+    | 输入 | BASE `680529e` | 现在 |
+    |---|---|---|
+    | `{"status":200,"data":[]}` | `[]` | `[]`（**没变**，这才是「真量了、真没有」） |
+    | `{"status":200,"data":null}` | **`[]`** | **抛** |
+    | `{"status":200}`（没有 `data` 那一格） | **`[]`** | **抛** |
+
+    ⇒ 后两行**变了**，而这是**照模块 docstring 那张表修的**：
+    「**唯一能变成空列表的，只有第一行**（`status:200` + `data:[]` 那个**空数组**）——
+    其余一律抛」。BASE 自己那条不变量当时就没做到。
+
+    ⚠️ 这一条**两个读口都过**（`fetch_failures` / `fetch_steps`）——
+    它们走的都是同一个 `_call`，只量一个等于放另一半跑。
+    """
+    for bad in (envelope(None), {"status": 200, "msg": "success"}):
+        for noun, call in (("失败记录", lambda c: c.fetch_failures("s/")),
+                           ("逐步记录", lambda c: c.fetch_steps("1"))):
+            with pytest.raises(fmr.FmrUnmeasured) as e:
+                call(client(Recorder(bad)))
+            said = str(e.value)
+            assert fmr.UNMEASURED_SAY in said, (noun, bad, said)
+            #: ⚠️ 各报**各的名**（这也是 F1 那处硬编码的反面：两个口不许都顶着同一句）。
+            assert "读不了%s" % noun in said, (noun, bad, said)
+    #: ★ 正控：**同一批输入里那个「真空数组」必须照旧回空列表**
+    #: （否则上面两条可以靠「什么都抛」满足 —— 而那就把「真量了、真没有」也杀了）。
+    assert client(Recorder(envelope([]))).fetch_failures("s/") == []
+    assert client(Recorder(envelope([]))).fetch_steps("1") == []
+
+
+def test_a_backend_cell_that_looks_like_markup_comes_through_verbatim():
+    """★ 复审 F9：后端的 `note` / 认不出的 `config_status` **原样过来**，这一层不加工。
+
+    那两格是**数据**（后端搬进来的），不是我们的标记 —— 所以：
+      · 这一层**不剥星号、不改写**（剥了就是把后端说的话改掉）；
+      · 页面那两个去处**都走 `esc()`**（不走 `rich()`）⇒ 「原样」在两个地方是同一个字节
+        （页面那侧：`test_console_js.py::test_the_row_you_read_is_the_row_you_pick`）。
+
+    ⚠️ 上一版的钉子只用**我们自己的词**取样（`没有配置` / `映射指向的配置行不存在`），
+    那两格**没覆盖** —— 而它们同样要进 `<option>`。
+    """
+    note = "**没有配置**（后端真发了星号）"
+    row = dict(_rank_row(RANK_KEY_NO_CONFIG), note=note)
+    said = fmr.rank_row_say(row)
+    assert note in said, "后端那一格被改写了（这一层不许动它）：%r" % said
+    #: 而**我们自己写的话**里仍然不许有标记 —— 两半规矩互不干扰。
+    assert "**" not in said.replace(note, ""), said
+    weird = dict(_rank_row(RANK_KEY_CLEAN), config_status="**archived**")
+    other = fmr.rank_row_say(weird)
+    assert "**archived**" in other, "认不出的那格被吞了/改了：%r" % other

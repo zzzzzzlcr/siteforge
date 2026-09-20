@@ -69,9 +69,14 @@
    ⚠️ `limit`（默认 50、上限 200）**只截断 `rank`**：`failed_total` / `unattributed` 是当日全量
       ⇒ `sum(rank[].fail) + unattributed` 可以**小于** `failed_total`，差额就是没摆出来的部分
       （不是接口漏了数据，但**屏幕上要说出来**）。
-   ⚠️ `rank[].site` 是**展示用的键，不是 join 键**：线上实测过它带 query、带尾斜杠、
-      甚至粘着一段别人的报错 ⇒ 拿它去 `formLog` 查**可能查不到**，而那一次是「量不到」。
-      **要办事一律走 `task_id`**（Task 4 的三条硬要求 R1）。
+   ⚠️ `rank[].site` 是**展示用的键，不是干净的站点键**：线上实测过它带 query、带尾斜杠、
+      甚至粘着一段别人的报错。
+      ⚠️ **但「脏」不等于「查不到」** —— 这一格我原先写宽了（Task 4 复审订正）：
+      【复审量的·出处 `task-4-review.md` §三②】拿榜单里**每一个**真键去打 `formLog`，
+      那条 1430 字符、带 query 又粘着报错的键**查得到**（200 + 6 行，后端把它归到 config 66 上了）；
+      真正查不到的是**另一条** —— 榜单上那条**没有配置**的键（后端回业务码 404）。
+      ⇒ 所以这一层的判据只能是「**查得到就摆，查不到就如实说查不到**」，
+      **不许**替它预设是哪一种；而**要办事一律走 `task_id`**（Task 4 的三条硬要求 R1）。
 ④ GET {base}/api/quest/failDiag?task_id=<单号>                X-Api-Token: 同上
  → {"status":200,"msg":"success","data":[
       {"id":83,"task_id":99999999,"site":"…","machine":"…","exit":"stuck",
@@ -85,11 +90,19 @@
 
 `DEFAULT_BASE` ／ 环境变量 `FMR_BASE_URL`（常量名 `BASE_ENV`）—— **四个读口全走它这一个**，
 在 `FmrClient.__init__` 里读**一次**（构造之后不再看环境）。
-
-⚠️ 今天两边的部署**不同步**（这是 §4 存在的原因）：线上 `fmr.3tkj.cn` **还没有** `failDiag`
-（brief 实测 404），本地 `192.168.1.51:6060` **有**。所以要对着本地实例跑就把这一处换掉：
-`FMR_BASE_URL=http://192.168.1.51:6060`。
 **没有「按接口各配一个基址」这回事** —— 真长出来就是「名字说 A、量的是 B」那个老病的新变种。
+
+⚠️ **这条旋钮的来历，以及它今天的状态（Task 4 修复轮 1 订正）**：
+它当初存在，是因为两边部署**不同步** —— 线上 `fmr.3tkj.cn` 那时**还没有** `failDiag`（brief 实测 404），
+本地 `192.168.1.51:6060` 有。
+**那两个事实今天都过期了**：
+· 【我量的·修复轮 1】`GET https://fmr.3tkj.cn/api/quest/failDiag` → **HTTP 200**
+  （正文是 `{"status":401,"msg":"unauthorized","data":[]}` —— 没带 token；不存在的路由是 **HTTP 404**
+  ⇒ 这不是「404 页面」，**路由在**）；
+· 【复审量的·出处 `task-4-review.md` §三】本地实例那条测试行（`task_id=99999999` / `id=83`）
+  已经**不在了**（五种查法全是 `data: []`）。
+⇒ **旋钮留着**（多机部署仍然要它，而且它现在是四个口唯一的那一个），
+但**别再拿「线上没有」当它存在的理由** —— 那个理由今天不成立。
 
 ⚠️ 这一层**不打真模型、不开浏览器**；`opener` 是注入的口子（测试给它桩）。
 """
@@ -110,7 +123,7 @@ __all__ = [
     "today_midnight", "since_text",
     # Task 4：榜单（③）与原因（④）
     "DEFAULT_RANK_LIMIT", "RANK_MAX_LIMIT", "DIAG_PAGE_SIZE",
-    "EXIT_SAY", "CONFIG_STATUS_SAY", "NO_DIAG_SAY",
+    "EXIT_SAY", "CONFIG_STATUS_SAY", "NO_DIAG_SAY", "int_or_none",
     "exit_say", "has_script_say", "rank_row_say", "rank_say", "diag_head_say",
 ]
 
@@ -548,7 +561,7 @@ def failure_say_tail(row: dict) -> str:
 # ──────────────── ③ 榜单 + ④ 原因：人话（Task 4）────────────────
 
 
-def _int_or_none(value: Any) -> Optional[int]:
+def int_or_none(value: Any) -> Optional[int]:
     """一个数 → `int`；读不出来给 `None`（**不给 0** —— 0 是一个合法的读数，混起来就是编话）。"""
     try:
         return int(value)
@@ -597,16 +610,25 @@ def rank_row_say(row: dict) -> str:
     后端的两种 `note`（`没有配置` / `映射指向的配置行不存在`）处置**完全相反**
     （一个去建、一个去修映射），合起来就是把两件事变成一件。
 
-    ★★ **这一句里一个 `**` 都不许有。** 这一族里**只有它**要同时进 `<li>` 与
-    **`<option>`**（页面上它既是「读的那一行」、也是「挑的那一格」）——
-    而 `<option>` 里放不了标记：带 `**` 的句子在那儿的可见结果就是**两个星号**
-    （本仓修复轮 1 在截图里真看见过这个形状：「漏一处，运营看到的就是两个星号」）。
-    强调靠**措辞**（「可是没有脚本」），不靠标记。
-    `tests/test_fmr.py::test_the_rank_row_text_carries_no_emphasis_markers` 钉着这一条。
+    ★★ **这一句是「数据行」，两个去处必须逐字节一样。**
+
+    这一族里**只有它**要同时进页面的 `<li>`（读的那一行）与 **`<option>`**（挑的那一格），
+    而 `<option>` 里放不了标记 —— 带 `**` 的话，两个去处显示的东西就**不一样**
+    （本仓修复轮 1 在截图里真看见过那个形状：「漏一处，运营看到的就是两个星号」）。
+
+    所以规矩分两半（Task 4 修复轮 1 想清楚；复审 F9 指出上一版只钉了前一半）：
+      · **我们自己写的话里不出现 `**`** —— 强调靠措辞（「可是没有脚本」），不靠标记。
+        钉子：`test_the_rank_row_text_carries_no_emphasis_markers`。
+      · **后端原样搬进来的那两格**（`note` / 认不出的 `config_status`）**原样显示** ——
+        它们是**数据**，不是我们的标记：这一层**不加工、不转义、不剥星号**
+        （剥了就是把后端说的话改掉）。页面那两个去处**都走 `esc()`**（不走 `rich()`），
+        于是「原样」在两个地方是同一个字节。钉子：
+        `test_a_backend_cell_that_looks_like_markup_comes_through_verbatim` +
+        页面那侧的 `test_the_row_you_read_is_the_row_you_pick`。
     """
     row = row if isinstance(row, dict) else {}
     parts = []
-    n = _int_or_none(row.get("fail"))
+    n = int_or_none(row.get("fail"))
     parts.append("失败 %d 次" % n if n is not None
                  else "失败几次它没给（那一格写的是 %r）" % (row.get("fail"),))
     if row.get("config_id") is None:
@@ -633,9 +655,9 @@ def rank_say(data: dict, limit: Any = None) -> str:
     data = data if isinstance(data, dict) else {}
     day = str(data.get("date") or "").strip()
     rows = [r for r in (data.get("rank") or []) if isinstance(r, dict)]
-    total = _int_or_none(data.get("failed_total"))
-    unattr = _int_or_none(data.get("unattributed"))
-    shown = sum(n for n in (_int_or_none(r.get("fail")) for r in rows) if n is not None)
+    total = int_or_none(data.get("failed_total"))
+    unattr = int_or_none(data.get("unattributed"))
+    shown = sum(n for n in (int_or_none(r.get("fail")) for r in rows) if n is not None)
     when = ("%s 这一天" % day) if day else "这一天（它没说是哪一天）"
 
     if total is None:
@@ -657,7 +679,7 @@ def rank_say(data: dict, limit: Any = None) -> str:
         return (head + "可它**一个站都没摆出来** —— 上面那个总数与这一栏对不上，"
                 "照实摆着，别读成「今天没有站在失败」。")
 
-    n = _int_or_none(limit)
+    n = int_or_none(limit)
     cap = ("这一屏一次最多摆 %s 个站。" % n) if n else ""
     tail = "下面摆了 %d 个站" % len(rows)
     gap = None if (total is None or unattr is None) else total - shown - unattr
@@ -793,13 +815,23 @@ class FmrClient:
     def _call(self, path: str, params: dict, *, shape=(list, dict)) -> Any:
         """一次读。**失败一律抛**（`FmrUnmeasured` 的三个子类），**绝不返回空**。
 
-        `shape` 是 `data` 那一格**该长成什么样**（Task 4 加的）。默认 `(list, dict)` = 老行为
-        （`data: null` / 少一格 → 空数组）。
+        `shape` 是 `data` 那一格**该长成什么样**（Task 4 加的）。
 
         ★ 为什么 ③ 榜单要传 `shape=dict`：那个接口**没有失败的那一天回的也是一个对象**
         （`failed_total:0` / `rank:[]`）⇒「回的不是对象」只可能是**这一次没量着**。
         不传的话，一次形状事故会以 `200 {"rank": …}` 的面目变成「今天没有站在失败」——
         而那正是这一层从头到尾在治的那句话。
+
+        ⚠️ **这一道闸改了老两个读口的行为**（Task 4 修复轮 1 被复审量出来，这里补记）：
+        `data: null` 或**整个 `data` 那一格不在**时，
+        · BASE（这道闸之前）：`return data if isinstance(data, (list, dict)) else []` ⇒ 回**空列表**；
+        · 现在：**抛**（`FmrUnreachable`）。
+        ⇒ 老路径上 `fetch_failures` / `fetch_steps` 的这一个输入**行为变了** ——
+        而这是**照模块 docstring 那张表修的**（「**唯一能变成空列表的，只有第一行**」：
+        真量了、真没有 = `status:200` + `data:[]` 那个**空数组**）。
+        `data:null` 与「`data` 那一格都不在」都**不是**那个空数组 ——
+        它们读成「没有失败」正是这一层立身要防的那句话（BASE 自己那条不变量当时就没做到）。
+        `test_a_body_with_no_data_cell_is_not_read_as_no_failures` 钉着这三态。
         """
         if not self.configured:
             raise FmrNoToken(
@@ -816,20 +848,21 @@ class FmrClient:
             body = json.loads(raw)
         except (ValueError, TypeError) as exc:
             raise FmrUnreachable(
-                "读不了失败记录：后端回的正文不是 JSON（读了 %d 个字节）。%s。"
-                % (len(raw or ""), UNMEASURED_SAY)) from exc
+                "读不了%s：后端回的正文不是 JSON（读了 %d 个字节）。%s。"
+                % (self._what(path), len(raw or ""), UNMEASURED_SAY)) from exc
         if not isinstance(body, dict):
             raise FmrUnreachable(
-                "读不了失败记录：后端回的正文不是一个信封（%s…）。%s。"
-                % (str(body)[:60], UNMEASURED_SAY))
+                "读不了%s：后端回的正文不是一个信封（%s…）。%s。"
+                % (self._what(path), str(body)[:60], UNMEASURED_SAY))
         status = body.get("status")
         if status != 200:
             raise FmrRefused(self._refused_say(path, params, body, status), status=int(status or 0))
         data = body.get("data")
         if not isinstance(data, shape):
             raise FmrUnreachable(
-                "读不了 %s：后端回的信封对得上（`status:200`），可 `data` 那一格**不是要的那种"
-                "形状**（读回来的是 %s…）。%s。" % (path, str(data)[:60], UNMEASURED_SAY))
+                "读不了%s：后端回的信封对得上（`status:200`），可 `data` 那一格**不是要的那种"
+                "形状**（读回来的是 %s…）。%s。"
+                % (self._what(path), str(data)[:60], UNMEASURED_SAY))
         return data
 
     @staticmethod

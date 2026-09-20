@@ -300,6 +300,14 @@ async function failuresUnmeasuredScenario(out) {
 //:   ⑤ 没有原因的那一单 ⇒ 服务那句 `note`（「还没有原因」）**上屏**，不许空着；
 //:   ⑥ 上面那些**活过之后三次重画**（Task 7 那一族：写进去 ≠ 还在）。
 async function rankScenario(out) {
+  //: 挑一个键、按一下、把那一栏读回来（每一步都走真人那条路：`#rankPick` → 按钮）。
+  async function pick(key) {
+    el("rankPick").value = key;
+    fire("btnRankGo", "click");
+    await settle();
+    await settle();
+    return { rankNote: el("rankNote").innerHTML, fails: el("fails").innerHTML };
+  }
   out.afterLoad = { rank: el("rank").innerHTML, actHidden: el("rankAct").hidden,
                     note: el("rankNote").innerHTML };
   // ① 看榜单：那一格**空着**（= 看今天）—— 于是那一跳的 URL 上**没有** `date`。
@@ -307,42 +315,42 @@ async function rankScenario(out) {
   await settle();
   await settle();
   out.afterRank = { rank: el("rank").innerHTML, actHidden: el("rankAct").hidden,
-                    disabled: el("btnRank").disabled };
-  // ② 挑那个**干净**的键 ⇒ 它的失败单（这一下会替人按一次「查失败」）
-  el("rankPick").value = payload.rank.clean;
-  fire("btnRankGo", "click");
-  await settle();
-  await settle();
-  out.afterClean = { rankNote: el("rankNote").innerHTML, fails: el("fails").innerHTML,
-                     siteBox: el("failSite").value, disabled: el("btnRankGo").disabled };
-  // ③ ★ 挑那个**脏**键 ⇒ 后端回 502「那个站它不认识」
-  el("rankPick").value = payload.rank.dirty;
-  fire("btnRankGo", "click");
-  await settle();
-  await settle();
-  out.afterDirty = { rankNote: el("rankNote").innerHTML, fails: el("fails").innerHTML };
+                    disabled: el("btnRank").disabled,
+                    //: ★ F9：**读的那一行 = 挑的那一格**（同一个字节）——
+                    //: 两个去处都走 `esc()`，所以这一格是判据的一半。
+                    pick: el("rankPick").innerHTML };
+  // ② 干净键：查得到，两个数**对得上**
+  out.afterClean = await pick(payload.rank.clean);
+  out.afterClean.siteBox = el("failSite").value;
+  out.afterClean.disabled = el("btnRankGo").disabled;
+  // ③ ★ 长而脏的键：后端**查得到**、而且比榜单那个数**多**（复审量的真形状：1 → 6）
+  out.afterMore = await pick(payload.rank.long);
+  // ④ 构造的那个键：比榜单那个数**少**（复审那一天的真数据里没有这个方向）
+  out.afterFewer = await pick(payload.rank.fewer);
+  // ⑤ ★ **真的查不到**的那条：榜单上那个「没有配置」的键（后端回业务码 404）
+  out.afterNoConfig = await pick(payload.rank.noConfig);
   //: ★ 那句「按这个键查不到」**本身就是一条要活过重画的读数**（Task 7 那一族）——
   //: 这一屏栽过的是「写进去了，下一次重画就没了」。就地量一次，别等最后那一次：
   //: 后面那几步会把它换成别的话（那是**对的**：附注说的是**最后那一下**）。
   await ticks(9);
-  out.afterDirtyRepaint = { rankNote: el("rankNote").innerHTML, fails: el("fails").innerHTML };
-  // ④ 回到那条干净的、挑**有原因**的那一单 ⇒ 原因行
-  el("rankPick").value = payload.rank.clean;
-  fire("btnRankGo", "click");
-  await settle();
-  await settle();
+  out.afterNoConfigRepaint = { rankNote: el("rankNote").innerHTML,
+                               fails: el("fails").innerHTML };
+  // ⑥ 服务**没给那个数**的那一行 ⇒ 对不了账也要说出来（不是静默）
+  out.afterNoCount = await pick(payload.rank.noCount);
+  // ⑦ 挑**有原因**的那一单 ⇒ 原因行
+  await pick(payload.rank.clean);
   el("failPick").value = payload.rank.withDiag;
   fire("btnDiag", "click");
   await settle();
   await settle();
   out.afterDiag = { diag: el("diag").innerHTML, disabled: el("btnDiag").disabled };
-  // ⑤ 挑**还没有原因**的那一单 ⇒ 服务那句 `note` 上屏
+  // ⑧ 挑**还没有原因**的那一单 ⇒ 服务那句 `note` 上屏
   el("failPick").value = payload.rank.noDiag;
   fire("btnDiag", "click");
   await settle();
   await settle();
   out.afterNoDiag = { diag: el("diag").innerHTML };
-  // ⑥ 活过之后三次重画
+  // ⑨ 活过之后三次重画
   await ticks(9);
   out.afterRepaint = { rank: el("rank").innerHTML, diag: el("diag").innerHTML,
                        rankNote: el("rankNote").innerHTML, fails: el("fails").innerHTML };

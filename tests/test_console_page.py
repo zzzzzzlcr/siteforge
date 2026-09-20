@@ -871,62 +871,202 @@ def test_the_new_hops_are_the_ones_the_service_declares():
         "页面那一跳的地址与服务给的 `DIAG_PATH` 不一致"
 
 
-def test_the_reason_hop_is_built_from_the_task_id_and_never_from_the_site_key():
-    """★★ brief §2 R1：原因那一跳**只拼单号**。
-
-    榜单那个站点键**不保证干净**（线上实测过：整条 URL 带 query、尾巴上还粘着一段报错）——
-    拿它当 join 键会**查到 0 行而且不报错**。所以这一页里**任何一处**拿站点键去查原因的写法
-    都必须是错的：这一条钉的是**拼法**（`DIAG + encodeURIComponent(id)`），
-    而且钉住「这一页里没有第二个 `/diag` 的去处」。
-    """
-    page = _page()
-    assert "fetch(DIAG + encodeURIComponent(id))" in page, \
-        "原因那一跳不是拿**单号**拼的"
-    #: 那一段代码里**只有一处**真的去发这一跳（注释里提到它不算 —— 所以数的是 `fetch(`）。
-    assert page.count("fetch(DIAG") == 1, \
-        "页面上有不止一处在发原因那一跳（第二处很可能就是拿站点键拼的）"
-    #: 正控：那个「拿站点键拼」的形状**今天真的不在**（写的不是一句空话）。
-    for wrong in ("fetch(DIAG + encodeURIComponent(site))",
-                  "fetch(DIAG + encodeURIComponent(failSite))",
-                  "fetch(DIAG + encodeURIComponent(key))"):
-        assert wrong not in page, "拿站点键去查原因了：%s" % wrong
-
-
 def test_the_three_panels_are_in_the_order_the_chain_is_read():
     """三栏的**先后**就是那条链的顺序（榜单 → 失败单 → 原因）——
-    摆反了人就得从下往上读，而这一屏是给「一屏看完」用的。"""
+    摆反了人就得从下往上读，而这一屏是给「一屏看完」用的。
+
+    ⚠️ 这一条在 Task 4 修复轮 1 里**被我误删过一次**（重写 F6/F7 那两条时把这一段一起切掉了）——
+    是**尺子①（逐行交代删掉的 assert）**把它抓回来的。所以它现在在这儿，
+    而且下面每一条都带一句「它为什么值一条」。
+    """
     page = _page()
     rank_at = page.index('id="rankPanel"')
     fails_at = page.index('id="failsPanel"')
     diag_at = page.index('id="diagPanel"')
     assert rank_at < fails_at < diag_at, (rank_at, fails_at, diag_at)
+    #: 正控：三个地标**真的不同**（否则上面那条比的是同一个下标，恒真）。
+    assert len({rank_at, fails_at, diag_at}) == 3
+
+
+def _js_code(page: str) -> str:
+    """页面里那段脚本 **去掉注释** 之后的正文（字符串字面量里的不算注释）。
+
+    为什么需要它：判据要数的是「**代码里**有几处用到原因那一跳」——
+    注释里提到它（`//: 原因那一跳拼的是 …DIAG + encodeURIComponent(单号)…`）**不算**。
+    不去注释的话，数出来的数会被注释里的提到次数搅乱，「只有一处」就定不死。
+    """
+    out, i, quote = [], 0, ""
+    while i < len(page):
+        ch = page[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and i + 1 < len(page):
+                out.append(page[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in "\"'`":
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if page.startswith("//", i):
+            j = page.find("\n", i)
+            i = len(page) if j < 0 else j
+            continue
+        if page.startswith("/*", i):
+            j = page.find("*/", i)
+            i = len(page) if j < 0 else j + 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _js_fetch_args(page: str) -> list:
+    """页面上**每一处 `fetch(...)` 的第一个实参**（按括号配平切出来，去掉首尾空白）。
+
+    ⚠️ 为什么要这么切，而不是比字面量：**逐字面量的负控换个写法就绕过去了** ——
+    复审 F7 点名的正是这个：`var u = DIAG + key; fetch(u)` 能让
+    「`fetch(DIAG + encodeURIComponent(site))` 不在页面上」那条断言**照样绿**。
+    切出来之后，判据变成「**这一页发出去的每一个地址是怎么拼的**」——
+    那才是「有没有拿站点键去查原因」这件事的正身。
+
+    切法：找 `fetch(`，往后走到配平的 `)`（跳过字符串里的括号），遇到**顶层逗号**就停
+    （`fetch(url, {opts})` 的第二个实参不是地址）。
+    """
+    args, i = [], 0
+    while True:
+        i = page.find("fetch(", i)
+        if i < 0:
+            return args
+        j, depth, quote = i + len("fetch("), 1, ""
+        end = j
+        while j < len(page):
+            ch = page[j]
+            if quote:
+                if ch == quote and page[j - 1] != "\\":
+                    quote = ""
+            elif ch in "\"'`":
+                quote = ch
+            elif ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth -= 1
+                if depth == 0:            #: 这个 `fetch(` 收口了 —— **不含**这个右括号
+                    end = j
+                    break
+            elif ch == "," and depth == 1:
+                end = j                   #: 顶层逗号 = 第一个实参到此为止
+                break
+            j += 1
+        args.append(" ".join(page[i + len("fetch("):end].split()))
+        i = j + 1
+
+
+def test_the_reason_hop_is_built_from_the_task_id_and_never_from_the_site_key():
+    """★★ brief §2 R1：原因那一跳**只拼单号** —— 判据是**页面上发出去的地址**。
+
+    榜单那个站点键**不保证干净**（线上实测过：整条 URL 带 query、尾巴上还粘着一段报错）——
+    拿它当 join 键会**查到 0 行而且不报错**。所以这一页里**任何一处**拿站点键去查原因的写法
+    都必须是错的。
+
+    ⚠️ **复审 F7 之后改的写法**：上一版三条负控是**逐字面量**（`fetch(DIAG + encodeURIComponent(site))`
+    之类）—— 换个写法（`var u = DIAG + key; fetch(u)`）就绕过去了，它证明不了「全页没有」。
+    现在量的是**每一处 `fetch()` 的实参**：那才是这一页真的会发出去的东西。
+    """
+    page = _page()
+    args = _js_fetch_args(page)
+    #: 正控：这一页上确实有一把 `fetch(` 被切出来了（否则下面全是在量一个空列表）。
+    assert len(args) >= 8, "只切出 %d 处 fetch —— 切法或页面形状变了：%r" % (len(args), args)
+    diag = [a for a in args if "DIAG" in a]
+    assert diag == ["DIAG + encodeURIComponent(id)"], \
+        "发原因的那一处不是「拿单号拼」（实际：%r）" % (diag,)
+    #: ★ 正身：**没有任何一处地址同时出现 `DIAG` 与一个站点键变量**。
+    #: （`FAILS` 那一跳**本来就该**带站点键 —— 那是 `formLog` 唯一认的键，所以只查 `DIAG`。）
+    for a in args:
+        if "DIAG" in a:
+            for key_var in ("site", "failSite", "rankPick", "key", "want"):
+                assert key_var not in a, "拿站点键拼了原因那一跳：%r" % a
+    #: ★★ 上面那两条还不够：**它们只看 `fetch(...)` 的实参文本**，
+    #: 于是「先拼好再发」（`var u = DIAG + key; fetch(u)`）**整条滑过去**
+    #: —— 复审 F7 点的正是这个形状。这一条量的是**标识符本身**：
+    #: 去掉注释之后，`DIAG` 在整段脚本里**只许出现两次** ——
+    #: 声明那一处，加上那个**唯一**被许可的用法。
+    code = _js_code(page)
+    decl = 'var DIAG = "%s";' % service.DIAG_PATH.split("%s")[0]
+    assert decl in code, "那一跳的声明不见了：%r" % decl
+    rest = code.replace(decl, "", 1)
+    hits = re.findall(r"\bDIAG\b", rest)
+    assert len(hits) == 1, (
+        "去掉注释之后，`DIAG` 还出现在 %d 处（只许那一处「拿单号拼」）——"
+        "多出来的那些很可能就是「先拼好再发」那种绕过写法" % len(hits))
+    #: 正控：这一条**真的能响** —— 往页面里塞一处「先拼好再发」，它必须数出两处。
+    evil = code.replace(decl, decl + "\n  function evilHop(k) { var u = DIAG + k; return fetch(u); }", 1)
+    assert len(re.findall(r"\bDIAG\b", evil.replace(decl, "", 1))) == 2, \
+        "这条正控自己写错了：塞进去的那一处没被数出来"
+
+
+def _region(page: str, start: str, end: str) -> str:
+    """页面里从 `start` 到 `end`（含）的那一段**原样**文本 —— 用来钉「一个字节没变」。"""
+    i = page.index(start)
+    j = page.index(end, i) + len(end)
+    return page[i:j]
 
 
 def test_the_task_4_panels_are_added_and_the_existing_contract_is_untouched():
-    """★★ brief §3 / §6.5：**既有那一屏一个字节没变** —— 逐条钉那份契约。
+    """★★ brief §3 / §6.5：**既有那一屏一个字节没变** —— 拿**原文**逐字比。
 
-    这四条是 brief 点名不许动的。它们**全都在别处的用例里**（MODES 的文案在
-    `test_the_three_input_semantics_are_on_the_page_and_keyed_by_the_mode`、
-    载荷在 `test_the_payloads_are_the_ones_the_plan_promised`）——
-    这一条不重复那些，它钉的是**同一份契约的边界**：三档就是三档、四条就是四条、
-    那个守卫就是那一句。Task 4 加了两栏界面，这条就是那次改动的**回执**。
+    ⚠️ **复审 F6 之后改的写法**：上一版这条的名字说的是「一个字节没变」，
+    而它实际只量「地标还在」—— 改 `MODES` 里任何一句 `hint`、或者把三档换个顺序，
+    它**照样绿**。契约**确实**没变（复审用 `cmp` 量过），短的是**这条判据**。
+
+    现在四条契约各自按**边界**切出来，与一份**写死的原文**逐字比：
+    改一个字节就红。代价说清：以后**故意**改这几处的文案也要改这一份 ——
+    那正是「冻结」的意思（brief §3 说这几条一个字节都不许动）。
     """
     page = _page()
-    #: ① `MODES` **三档**（多一档 = 这一屏多了一种它其实不会遇到的语义）。
-    for mode in ('"gate": {', '"steer": {', '"queue": {'):
-        assert mode in page, "`MODES` 少了一档：%s" % mode
-    modes = page[page.index("var MODES = {"):page.index("// ── 极少的几张小表")]
-    assert modes.count("short:") == 3, "`MODES` 不是三档了：%d 个" % modes.count("short:")
-    #: ② `ACT` 那四条（外加 Task 11/12 加的三条 —— 它们**本来就在**，这条不重钉）。
-    for pair in ('"continue": "/reply"', '"say": "/say"',
-                 '"stop": "/stop"', '"again": "/again"'):
-        assert pair in page, "`ACT` 少了一条：%s" % pair
-    #: ③ `/say` 的**载荷字段名**（`text` —— 改成别的，Task 8 那条路当场 422）。
-    assert 'act("say", { "text":' in page, "`/say` 的载荷字段名被改了"
-    #: ④ `btnAgain` 那个**守卫**（没有 job 就不许发）。
-    assert 'document.getElementById("btnAgain").addEventListener("click", function () {\n' \
-           '    if (!jobId) { setErr("先挑一趟运行。"); return; }' in page, \
-        "`btnAgain` 那个守卫没了（那一下会对着空的 job id 发出去）"
+    #: ① `MODES` **三档**，整块逐字（改一句 hint、换一次顺序都会红）。
+    assert _region(page, "  var MODES = {", "  };") == (
+        '  var MODES = {\n'
+        '    "gate": {\n'
+        '      short: "闸上的回话",\n'
+        '      placeholder: "写一句它该怎么做，或者按「继续」让它往下走",\n'
+        '      hint: "这一行现在是**这道闸的回话**：按「说一句，接着走」才会送出去。"\n'
+        '    },\n'
+        '    "steer": {\n'
+        '      short: "直达下一轮",\n'
+        '      placeholder: "写一句它该怎么做 —— 会直达它的下一轮",\n'
+        '      hint: "这一行现在是**直达**：你打的字不排队，会进它的下一轮（送到之后时间线上会出现一条「交给它了」）。"\n'
+        '    },\n'
+        '    "queue": {\n'
+        '      short: "排队",\n'
+        '      placeholder: "写一句它该怎么做 —— 它停下来时会进输入框",\n'
+        '      hint: "这一行现在是**排队**：这句话先记下，等它到下一道闸时进到输入框 —— 你按一下才送过去，不会自动发。"\n'
+        '    }\n'
+        '  };'), "`MODES` 那一整块动了（brief §3 点名的契约）"
+    #: ② `ACT`：四条老动作的映射，逐字。
+    assert _region(page, "var ACT = {", "};") == (
+        'var ACT = { "continue": "/reply", "say": "/say", "stop": "/stop", "again": "/again",\n'
+        '              "run": "/run",\n'
+        '              "windowClose": "/window/close", "reopen": "/reopen" };'), \
+        "`ACT` 那一行动了"
+    #: ③ `/say` 的**载荷字段名**（`text` —— 改成别的，Task 8 那条路当场 422），逐字。
+    assert _region(page, 'act("say", {', "});") == 'act("say", { "text": text });', \
+        "`/say` 的载荷字段名被改了"
+    #: ④ `btnAgain` 那个**守卫**（没有 job 就不许发），逐字。
+    assert _region(page, 'document.getElementById("btnAgain").addEventListener("click",',
+                   "return; }") == (
+        'document.getElementById("btnAgain").addEventListener("click", function () {\n'
+        '    if (!jobId) { setErr("先挑一趟运行。"); return; }'), \
+        "`btnAgain` 那个守卫动了"
+    #: 正控：这一条**真的**在比原文（不是「切出来的两段都是空的」那种恒真）——
+    #: 把那一段少切一个字，比对必须不等。
+    assert _region(page, "  var MODES = {", "  };")[:-1] != _region(page, "  var MODES = {", "  };"), \
+        "比对的两边是同一个表达式 —— 这条正控写错了"
     #: ⑤ ★ `STEER_WIRED` **仍是 `False`**（插话通道未上线，等真站演练）。
     assert service.STEER_WIRED is False, "插话通道的开关被翻开了"
 

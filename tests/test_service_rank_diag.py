@@ -42,7 +42,8 @@ from agent import fmr  # noqa: E402
 from agent import graph  # noqa: E402
 from agent import service  # noqa: E402
 from test_fmr import (  # noqa: E402
-    FAKE_TOKEN, MEASURED_DIAG, MEASURED_RANK, RANK_DIRTY_KEY, Recorder, envelope,
+    FAKE_TOKEN, MEASURED_DIAG, RANK_FIXTURE, RANK_KEY_CLEAN, RANK_KEY_LONG,
+    RANK_KEY_NO_CONFIG, Recorder, envelope,
 )
 from test_service_input import StubWindow  # noqa: E402
 
@@ -86,24 +87,57 @@ def _no_code(payload) -> None:
 
 def test_the_rank_comes_back_as_human_rows():
     """每一行是**人话** + 一个站点键（页面拿它去查失败单 —— 那是 `formLog` 认的那个键）。"""
-    rec = Recorder(envelope(MEASURED_RANK))
+    rec = Recorder(envelope(RANK_FIXTURE))
     r = _rank(_client(fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec)))
     assert r.status_code == 200, r.text
     got = r.json()
-    assert [row["site"] for row in got["rank"]] == [
-        "callyourdate.com/land/sp/519015a5", RANK_DIRTY_KEY], got["rank"]
+    assert [row["site"] for row in got["rank"]] == [r["site"] for r in RANK_FIXTURE["rank"]], \
+        got["rank"]
     assert got["rank"][0]["say"] == "失败 3 次 · 配置 66（启用） · 有 py 脚本", got["rank"][0]
     _no_code(got)
 
 
-def test_the_rank_answer_says_the_three_numbers_and_the_gap():
-    """★ 「摆了 2 个站」与「今天失败 18 次」**可以同时为真** —— 差额必须在那一句里。"""
-    rec = Recorder(envelope(MEASURED_RANK))
+def test_the_rank_answer_carries_the_three_numbers_the_page_needs():
+    """★ 「摆了 4 个站」与「今天失败 18 次」**可以同时为真** —— 那一句里三个数都得在。
+
+    ⚠️ 判据比的是**带着重号**的那个数（`**18**`），不是裸的 `"18"`/`"2"` ——
+    裸的那种会被同一句里的日期 `2026-09-20` 保证为真（复审 F8 实测：两条这样的断言**空转**）。
+    差额那一支在 `test_fmr.py::test_the_rank_says_when_it_did_not_show_everything`。
+    """
+    rec = Recorder(envelope(RANK_FIXTURE))
     got = _rank(_client(fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec))).json()
-    for token in ("2026-09-20", "18", "12"):
+    assert "2026-09-20" in got["say"], got["say"]
+    for token in ("**18**", "**8**"):
         assert token in got["say"], "%s 不在那句里：%r" % (token, got["say"])
+    assert "下面摆了 4 个站" in got["say"], got["say"]
     assert got["date"] == "2026-09-20", got
     assert got["limit"] == fmr.DEFAULT_RANK_LIMIT, got
+
+
+def test_the_rank_row_carries_the_count_the_page_reconciles_with():
+    """★★ 复审 F2：★ **`fail_count` 必须真的端出去** —— 它是页面那条对账的**唯一输入**。
+
+    上一版这里只留 `site`/`say`，于是页面的 `at(row, "fail_count", null)` **恒为 null** ⇒
+    那条对账**永不触发**（复审量：0 条用例、变异体全绿、真数据 8/8 走不到）
+    —— **一条永远不触发的对账比没有对账更坏**（它看起来像有守）。
+
+    ⚠️ 这一条钉的是**服务这一侧**（页面那一侧是
+    `test_console_js.py::test_the_reconciliation_speaks_in_both_directions`）——
+    两半都得有，缺一半那条链就是断的（上一版缺的正是这一半）。
+    """
+    rec = Recorder(envelope(RANK_FIXTURE))
+    got = _rank(_client(fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec))).json()
+    want = {r["site"]: r["fail"] for r in RANK_FIXTURE["rank"]}
+    assert [(r["site"], r["fail_count"]) for r in got["rank"]] == list(want.items()), got["rank"]
+    #: ⚠️ 后端的 `fail` 读不出来时给 `None` —— **不给 0**（0 是合法读数，
+    #: 拿它顶替「没给」就是把「对不了账」写成「对上了」）。
+    hurt = dict(RANK_FIXTURE)
+    hurt["rank"] = [dict(RANK_FIXTURE["rank"][0], fail="不知道")]
+    rec2 = Recorder(envelope(hurt))
+    got2 = _rank(_client(fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec2))).json()
+    assert got2["rank"][0]["fail_count"] is None, got2["rank"][0]
+    #: 而那一行的人话也要**照实说它没给**（不是画一个 0）。
+    assert "它没给" in got2["rank"][0]["say"], got2["rank"][0]
 
 
 def test_a_day_with_no_failures_is_a_200_that_says_it_was_measured():
@@ -114,7 +148,10 @@ def test_a_day_with_no_failures_is_a_200_that_says_it_was_measured():
     assert r.status_code == 200, r.text
     got = r.json()
     assert got["rank"] == [], got
-    assert "量到" in got["say"] and "0" in got["say"], got["say"]
+    #: ⚠️ 比的是**带着重号**的那个 0（复审 F8：裸的 `"0" in say` 会被同一句里的
+    #: 日期 `2026-09-20` 保证为真 —— 那条断言是空转的）。
+    assert "量到" in got["say"], got["say"]
+    assert "**0**" in got["say"], got["say"]
 
 
 def test_a_rank_that_cannot_be_measured_is_not_a_200_with_an_empty_list():
@@ -162,7 +199,7 @@ def test_a_rank_answer_of_the_wrong_shape_is_a_502_not_an_empty_day():
 
 def test_a_limit_that_is_not_a_number_is_refused_at_the_door():
     """那一格是**外面来的字** ⇒ 400，而且**一个请求都没发出去**（与 `/failures` 同一条闸）。"""
-    rec = Recorder(envelope(MEASURED_RANK))
+    rec = Recorder(envelope(RANK_FIXTURE))
     r = _rank(_client(fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec)), limit="abc")
     assert r.status_code == 400, r.text
     assert rec.urls == [], "读不出来的 limit 居然发了请求：%r" % (rec.urls,)
@@ -170,7 +207,7 @@ def test_a_limit_that_is_not_a_number_is_refused_at_the_door():
 
 def test_the_day_and_the_limit_travel_through_the_route():
     """那两格**原样透传**（服务不替调用方挑日子、也不改条数）。"""
-    rec = Recorder(envelope(MEASURED_RANK))
+    rec = Recorder(envelope(RANK_FIXTURE))
     _rank(_client(fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec)),
           date="2026-09-19", limit="7")
     from urllib.parse import parse_qs, urlparse
@@ -319,7 +356,7 @@ def test_a_short_page_does_not_claim_anything_about_more():
 def test_health_reports_the_one_reader_that_serves_all_four_reads():
     """`/health` 那一格说的是**这个进程真正会用的那个客户端**配没配 token ——
     四个读口共用它一个（brief §4：**一处旋钮**，没有「按接口各配一个」）。"""
-    rec = Recorder(envelope(MEASURED_RANK))
+    rec = Recorder(envelope(RANK_FIXTURE))
     r = _client(fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec)).get("/health")
     assert r.status_code == 200, r.text
     got = r.json()

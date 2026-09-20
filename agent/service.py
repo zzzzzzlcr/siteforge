@@ -3928,9 +3928,19 @@ class Service:
     def rank(self, date: Any = None, limit: Any = None) -> dict:
         """`GET /rank` 的正文（Task 4 ③）：**这一天哪些站在失败**，一行一句人话。
 
-        ⚠️ 端出去的**不是** FMR 那份 JSON：每一行只留 `site`（页面拿它去查失败单 ——
-        那是 `formLog` 认的那个键）与 `say`（人话）。`config_id` / `config_status` /
+        ⚠️ 端出去的**不是** FMR 那份 JSON：每一行只留
+        `site`（页面拿它去查失败单 —— 那是 `formLog` 认的那个键）、
+        `say`（人话）、以及 `fail_count`（**数字**）。`config_id` / `config_status` /
         `has_script` 那些码在 `agent/fmr.py` 的表里就换成人话了 —— 与 `/failures` 同一条纪律。
+
+        ★ `fail_count` 不是装饰：页面拿它跟「按这个键查回来几条」**对账**
+        （`agent/console.html` 的 `rankWant`）。⚠️ 它**漏过一次**：最初这里只留 `site`/`say`，
+        于是页面那个 `at(row, "fail", null)` **恒为 null** ⇒ 那条对账**永不触发**
+        （Task 4 复审 F2：0 条用例、变异体全绿、真数据 8/8 走不到）。
+        两个数**不一样是常态**（复审量：8 个真键里多数 `n > want`）——
+        榜单按 **站点键** 数、`formLog` 按 **配置** 捞（`QuestDiagnosisController.php`
+        的 `formLogRank` 用 `normalize($key)` 分桶、`formLog` 用 `resolveConfig` 比 `config_id`），
+        一份配置底下可以有好几个键 ⇒ **这里必须给数，页面才说得清那两个数为什么不同**。
 
         ⚠️ 那句 `say` 里带着**三个数**（一共失败多少次 / 其中多少次归不到站 / 摆出来几个站）——
         它们**对不上是正常的**（`limit` 只截断 `rank`），而 `say` 会把差额说出来。
@@ -3948,8 +3958,14 @@ class Service:
             "date": str(data.get("date") or ""),
             "limit": n,
             "say": fmr.rank_say(data, n),
-            "rank": [{"site": str(r.get("site") or ""), "say": fmr.rank_row_say(r)}
-                     for r in rows],
+            "rank": [{
+                "site": str(r.get("site") or ""),
+                "say": fmr.rank_row_say(r),
+                #: ★ 给页面**对账**用的那个数（见 docstring）：后端那一格是 `fail`，
+                #: 读不出来就给 `None` —— **不给 0**（0 是一个合法读数，
+                #: 拿它顶替「没给」就是把「对不了账」写成「对上了」）。
+                "fail_count": fmr.int_or_none(r.get("fail")),
+            } for r in rows],
         }
 
     def diag(self, task_id: Any) -> dict:
