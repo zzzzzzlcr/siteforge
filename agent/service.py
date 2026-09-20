@@ -66,7 +66,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from langgraph.types import Command
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
-from agent import (browser_agent, events, graph, journal, measure, rounds, selftest, shots,
+from agent import (browser_agent, events, fmr, graph, journal, measure, rounds, selftest, shots,
                    tools)
 from agent.graph import NODES, STEP_SAY
 from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_LINT_CAP,
@@ -343,6 +343,63 @@ NO_RUNS_SAY = ("还没有任何运行。这个列表是**这个进程**记得的
 #: 「撞上限」那三种停因（设计注 §3.2 第 4 行）—— 只用来挑 `kind`；
 #: 人话一律照抄快照里的 `end_note`（原话），不在这儿另写一句。
 CAP_END_REASONS = (END_REVISION_CAP, END_LINT_CAP, END_SELFTEST_CAP)
+
+
+# ───────────────── ① 「读」：从 FMR 取失败记录（Task 13）─────────────────────
+# 这一节之前，运营那一屏**不知道哪一趟失败了** —— 要发起修复，得有人从别处
+# 把失败手抄进来。这一节把那条路接上（客户端在 `agent/fmr.py`）。
+#
+# ⚠️ 这一节里**只有一处**能把这四种情形分开（`Service._unmeasured_to_http`）——
+# 「量不到」与「没有失败」在**协议上**必须长得不一样（一个非 2xx、一个 200），
+# 因为一个 200 + `[]` 在屏幕上与「这个站很健康」一模一样。
+# （本仓最贵的那一次实测：无效 key 回 404，诊断页显示成「近 2 天没有失败 ✓」。）
+
+#: 失败列表那一跳。**服务给**（页面不自己拼）：路由换了，页面跟着服务走。
+#: 与 `ARTIFACT_URL` 同一个做法 —— 两份手拼的地址迟早漂。
+FAILURES_PATH = "/failures"
+#: 一条失败的证据那一跳（`{单号}` 是路径上那一格）。
+FAILURE_EVIDENCE_PATH = "/failures/%s/evidence"
+
+#: 量不到时那**三种**各自的 HTTP 码。都不是 200、都不是空列表。
+#: · 503 = 这个部署**干不了这件事**（没配 token）—— 换个人来也一样；
+#: · 502 = 上游**这次给不出可用答复**（连不上 / 非 JSON / 后端自己回了个错码）。
+#:   ⚠️ 后端的 401/404 也落进 502：那是「**它说它给不了**」，不是「它说没有失败」。
+FAILURE_STATUS_NO_TOKEN = 503
+FAILURE_STATUS_UNMEASURED = 502
+
+
+def _count(raw: str) -> Optional[int]:
+    """`?limit=` 那一格 → 一个数（空 = 不给 = 用默认）。**读不出来就在门口响**（400）。
+
+    为什么不在里面 `int()` 了事：那一格是**外面来的字**，`int("abc")` 是一个 500 ——
+    而 500 在页面上只是一条「服务出错了」，看不出是「你那一格写得不对」。
+    """
+    if raw in (None, ""):
+        return None
+    try:
+        n = int(str(raw).strip())
+    except ValueError:
+        raise HTTPException(status_code=400,
+                            detail="`limit` 那一格要的是一个数（读出来的是 %r）—— "
+                                   "这一下**一个请求都没发出去**。" % (raw,))
+    if n < 1:
+        raise HTTPException(status_code=400,
+                            detail="`limit` 那一格要的是**正数**（读出来的是 %d）—— "
+                                   "0 条与「没给」在屏幕上分不开。" % n)
+    return n
+
+
+def _failures_say(site: str, since: str, rows: list, limit: int) -> str:
+    """这一栏顶上那句人话：**量的是什么窗口、量到几条**（「量到的东西要说清量的是什么」）。"""
+    when = since[:16]
+    if rows:
+        said = "这个站从 %s 起有 %d 条失败的记录（这一屏最多摆 %d 条）。" % (when, len(rows), limit)
+        if len(rows) >= limit:
+            # ⚠️ 摆满了**要说**：悄悄截断 = 一条静默的路径（更早的那些看着像不存在）。
+            said += "**摆满了** —— 更早的可能还有，把时间窗缩小一点或者往后翻。"
+        return said
+    return ("这个站从 %s 起**没有**失败的记录 —— 这是**量到的**结果（不是「没量着」）。"
+            % when)
 
 
 # ───────────────── §十五 产物交付（Task 11）─────────────────────────────
@@ -1722,7 +1779,8 @@ class Service:
                  window_probe_seconds: Optional[float] = None,
                  shots_dir: Optional[str] = None, capture: Optional[Callable] = None,
                  shot_timeout: Optional[float] = None, capture_bin: Optional[str] = None,
-                 selftest_dir: Optional[str] = None, mcp_bin: Optional[str] = None):
+                 selftest_dir: Optional[str] = None, mcp_bin: Optional[str] = None,
+                 failures_reader: Any = None):
         self._jobs: dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
         self._queue: "queue.Queue[tuple]" = queue.Queue()
@@ -1779,6 +1837,13 @@ class Service:
         #: 硬的：超过这么多秒就当这张没拍成（旁路线程，见 `_shoot`）。
         self._shot_timeout = float(SHOT_TIMEOUT_SECONDS if shot_timeout is None
                                    else shot_timeout)
+        #: ① 读失败记录的那个客户端（Task 13）。同上：**构造时定死** ——
+        #: 不给就按环境拼一个（`FMR_AGENT_TOKEN` / `FMR_BASE_URL` 在这**一刻**读一次）。
+        #: ⚠️ 为什么不「用的时候再读环境」：那会让一次请求与另一次请求用的是**两个身份**
+        #: （token 轮换的那一刻，同一屏上两条数据来自两个账号），而 `/health` 报的
+        #: 「配没配」也会与真正用的那个对不上 —— 「名字说 A、量的是 B」的老病。
+        self._fmr = (failures_reader if failures_reader is not None
+                     else fmr.FmrClient())
 
     # ── 外面那三层：图、窗口、检查点 ────────────────────────────────
     def _build_graph(self, brief: dict, job_id: str = ""):
@@ -3726,6 +3791,94 @@ class Service:
             })
         return {"note": "" if rows else NO_RUNS_SAY, "runs": rows}
 
+    # ── ① 从 FMR 读失败（Task 13）────────────────────────────────────
+    @staticmethod
+    def _unmeasured_to_http(exc: "fmr.FmrUnmeasured") -> HTTPException:
+        """「量不到」→ **非 2xx + 一句人话**。
+
+        ⚠️ 这一处的判断是这一节的**要害**：`FmrUnmeasured` 一律变成**错误响应**，
+        **永远不变**成一个 `200 {"failures": []}`。后者在屏幕上与「这个站很健康」
+        长得一模一样 —— 那就是「把量不出来读成量出来了」。
+        `FmrNoToken`（这个部署干不了）单列 503；其余（连不上 / 非 JSON / 后端回码）都是 502。
+        """
+        code = (FAILURE_STATUS_NO_TOKEN if isinstance(exc, fmr.FmrNoToken)
+                else FAILURE_STATUS_UNMEASURED)
+        return HTTPException(status_code=code, detail=exc.say)
+
+    def failures(self, site: str, since: Any = None, limit: Any = None) -> dict:
+        """`GET /failures` 的正文（Task 13）：**这个站最近失败的那几趟**，一行一句人话。
+
+        ⚠️ 端出去的**不是** FMR 那份 JSON：每一行只留 `task_id`（机器要用它去取证据）
+        与 `say`（人话）。码（`site_specific` / `US` / `failed`）在 `agent/fmr.py`
+        那几张表里就已经换成人话了 —— 这一层**不再转发**任何原样的格子。
+
+        ⚠️ 三种「量不到」在这儿的形状：**非 2xx**（见 `_unmeasured_to_http`）。
+        **只有真量过、真没有** 才有 `200` + `failures: []`。
+        """
+        key = str(site or "").strip()
+        if not key:
+            # 免费的那道闸（与 `_intake_problems` 同一个做法）：缺什么**在门口**说，
+            # 而不是先发一个注定要失败的请求、再把后端的 400 翻译一遍。
+            raise HTTPException(
+                status_code=400,
+                detail="还没说**是哪个站**：这一栏要的是 FMR 那个站的名字"
+                       "（形如 `主机名/路径`，比如 `www.gowizard.com/auto-warranty/`）。"
+                       "缺它的这一下**一个请求都没发出去**。")
+        try:
+            since_txt = fmr.since_text(since)
+        except fmr.FmrUnmeasured as exc:
+            # 免费的那道闸（与下面「缺 site」同一档）：读不出来的时间窗**在门口**就响 ——
+            # 悄悄改用默认窗口的坏处是「你以为查的是昨天，看到的是今天那份」。
+            raise HTTPException(status_code=400, detail=exc.say)
+        try:
+            rows = self._fmr.fetch_failures(key, since=since, limit=limit)
+        except fmr.FmrUnmeasured as exc:
+            raise self._unmeasured_to_http(exc)
+        n = fmr.DEFAULT_LIMIT if limit in (None, "") else int(limit)
+        return {
+            "site": key,
+            "since": since_txt,
+            "limit": n,
+            "say": _failures_say(key, since_txt, rows, n),
+            "failures": [{"task_id": str(r.get("task_id") or ""), "say": fmr.failure_say(r)}
+                         for r in rows],
+        }
+
+    def failure_evidence(self, task_id: str, *, site: str,
+                         since: Any = None) -> dict:
+        """`GET /failures/{单号}/evidence` 的正文（Task 13）：**一段人话** + 该填的那串网址。
+
+        ⚠️ 三样都**从后端读**（`fmr.FmrClient.evidence_for`）：调用方（页面）一个字都不许塞
+        —— 证据里的每一个字都得是后端说的。页面拿这三样去填「开一趟」那张表（Task 12 那张），
+        **它自己不拼** evidence。
+        """
+        key = str(site or "").strip()
+        if not key:
+            raise HTTPException(
+                status_code=400,
+                detail="还没说**是哪个站**：那一条证据要从这个站的失败列表里找出来。"
+                       "缺它的这一下**一个请求都没发出去**。")
+        try:
+            got = self._fmr.evidence_for(task_id, site=key, since=since)
+        except fmr.FmrUnmeasured as exc:
+            raise self._unmeasured_to_http(exc)
+        except KeyError:                     # 桩/换实现时缺格子 —— 一样**不许**静默
+            raise HTTPException(
+                status_code=FAILURE_STATUS_UNMEASURED,
+                detail=("读不了这一段证据：读回来的东西里少了几格（这一层要的是"
+                        "`task_id`/`row_say`/`url`/`evidence`）。%s。" % fmr.UNMEASURED_SAY))
+        # ⚠️ **这一层做投影**（不是把客户端那份端出去）：留下的四格全是给页面用的 ——
+        #    人话、单号、该填的网址、那段证据。`row` / `steps` 里的**码**
+        #    （`site_specific` / `US` / `failed`）**不进这一份正文**（与 `/failures` 同一条纪律）。
+        return {
+            "task_id": str(got.get("task_id") or ""),
+            "row_say": str(got.get("row_say") or ""),
+            "url": str(got.get("url") or ""),
+            "evidence": str(got.get("evidence") or ""),
+            #: 页面照着这一格决定「站点网址」那一格填不填：**服务说填什么**，页面不自己推。
+            "fill_url": bool(str(got.get("url") or "").strip()),
+        }
+
     @staticmethod
     def _truncated_say(timeline, shown: int) -> str:
         """`truncated` 为真时**说清**丢了什么/回了多少（设计注 §8.2：「并说明」）。"""
@@ -4661,7 +4814,7 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                shot_timeout: Optional[float] = None,
                capture_bin: Optional[str] = None,
                selftest_dir: Optional[str] = None,
-               mcp_bin: Optional[str] = None) -> FastAPI:
+               mcp_bin: Optional[str] = None, failures_reader: Any = None) -> FastAPI:
     """拼一个 app。测试从这里注入桩图 / 桩窗口 / 内存 saver。
 
     `window=None` 是**默认且合法**的：这个部署没接窗口层 —— 于是 `set_viewport` 那根线
@@ -4686,7 +4839,7 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                   viewport_probe=viewport_probe, explore_dir=explore_dir,
                   window_probe_seconds=window_probe_seconds, shots_dir=shots_dir,
                   capture=capture, shot_timeout=shot_timeout, capture_bin=capture_bin,
-                  selftest_dir=selftest_dir, mcp_bin=mcp_bin)
+                  selftest_dir=selftest_dir, mcp_bin=mcp_bin, failures_reader=failures_reader)
     api = FastAPI(title="siteforge", version="0.1",
                   description="看着真页面产出 cdp-first py 脚本的 agent 服务（计划二 Task 8）")
 
@@ -4740,8 +4893,32 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
             "cdp_source": svc._cdp_bin_source,
             "out_dir": svc._out_dir,
             "jobs": len(svc._jobs),
+            #: ① 读失败记录那根线**配没配**（Task 13）。报的是**服务真正会用的那个客户端**
+            #: 的那句人话 —— 一个没配 token 的部署上，「查失败」按下去只会红一次；
+            #: 运维在这儿能先看到「这台机器上没有那个 token」，而不是去查网络。
+            #: ⚠️ **绝不报 token 本身**（它是凭据）。
+            "failures": {"configured": svc._fmr.configured, "say": svc._fmr.say()},
             "steps": {k: STEP_SAY[k] for k in NODES},
         }
+
+    @api.get("/failures")
+    def failures(site: str = "", since: str = "", limit: str = "") -> dict:
+        """**这个站最近失败的那几趟**（Task 13 ②）—— 一行一句人话。
+
+        ⚠️ 它**不是**「把 FMR 那个接口代理一下」：端出去的是人话 + 一个单号。
+        ⚠️ **三种「量不到」一律非 2xx**（503 没配 token / 502 连不上 / 502 后端回码）——
+        一个 `200 {"failures": []}` 在屏幕上与「这个站很健康」一模一样，
+        而这一栏存在的理由正是「别把量不出来读成量出来了」。
+        """
+        return svc.failures(site, since=since or None, limit=_count(limit))
+
+    @api.get("/failures/{task_id}/evidence")
+    def failure_evidence(task_id: str, site: str = "", since: str = "") -> dict:
+        """**这一条失败的证据**（Task 13 ②）—— 那段人话 + 该填进「站点网址」的那一串。
+
+        页面拿它去填「开一趟」那张表（Task 12 那张）—— **页面自己不拼** evidence。
+        """
+        return svc.failure_evidence(task_id, site=site, since=since or None)
 
     @api.post("/run", status_code=202)
     def run(body: RunRequest) -> dict:

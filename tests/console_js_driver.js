@@ -239,6 +239,56 @@ async function windowScenario(out) {
   out.afterReopen = { errBox: el("errBox").textContent, disabled: el("btnReopen").disabled };
 }
 
+//: 失败列表（Task 13 ③）：**看一趟失败 → 把它的证据填进「开一趟」**那条路。
+//: 走的是真人那条路：写站名 → 按「查失败」→ 挑一条 → 按「照这条修」。
+//: 量四样：① 那一栏长出的是**人话**（不是码）；② 那两跳发到哪（`/failures` 与它下面那条）；
+//: ③ **填了三格、没有开跑**（`sent` 里不许有 `POST /run` —— 「什么算成功」只有人知道）；
+//: ④ 填好的那几格**活过之后三次重画**（Task 7 那一族：写进去 ≠ 还在）。
+async function failuresScenario(out) {
+  out.afterLoad = { fails: el("fails").innerHTML, actHidden: el("failAct").hidden,
+                    hint: el("fixHint").innerHTML };
+  el("failSite").value = payload.failures.site;
+  fire("btnFail", "click");
+  await settle();
+  await settle();
+  out.afterQuery = { fails: el("fails").innerHTML, actHidden: el("failAct").hidden,
+                     disabled: el("btnFail").disabled };
+  el("failPick").value = payload.failures.pick;
+  fire("btnFixFrom", "click");
+  await settle();
+  await settle();
+  out.afterFix = { mode: el("runMode").value, url: el("runUrl").value,
+                   evidence: el("runEvidence").value,
+                   evidenceHidden: el("runEvidenceField").hidden,
+                   errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
+                   errClass: el("errBox").className,
+                   disabled: el("btnFixFrom").disabled,
+                   //: ★ 这一趟**开没开**：`POST /run` 发出去过没有（人还没按「开一趟」）
+                   ranAlready: sent.filter((s) => s.url === "/run").length };
+  await ticks(9);                                   // 三次重画之后那几格还在不在
+  out.afterRepaint = { evidence: el("runEvidence").value, mode: el("runMode").value,
+                       url: el("runUrl").value, fails: el("fails").innerHTML,
+                       errBox: el("errBox").textContent, errHidden: el("errBox").hidden };
+  fire("btnRun", "click");                          // ★ 人自己按「开一趟」
+  await settle();
+  await settle();
+  out.afterRun = { who: el("whoJob").textContent };
+}
+
+//: **量不到**那一趟（Task 13）：服务回 502 + 一句人话 ⇒ 那一栏说「这一栏没读到」，
+//: 而且**不许**把「没读到」写成「这个站没有失败」—— 那是这一片从头到尾在治的形状。
+//: 量两样：① 那句话说出来了；② 它**活过之后三次重画**（这一栏不跟着 `paint()` 重画）。
+async function failuresUnmeasuredScenario(out) {
+  el("failSite").value = payload.failures.site;
+  fire("btnFail", "click");
+  await settle();
+  await settle();
+  out.afterQuery = { fails: el("fails").innerHTML, actHidden: el("failAct").hidden,
+                     disabled: el("btnFail").disabled };
+  await ticks(9);
+  out.afterRepaint = { fails: el("fails").innerHTML, actHidden: el("failAct").hidden };
+}
+
 //: 「重新来一遍」那一趟（Task 10 修复轮 1 / N-3）：运营**按下去**，屏幕上总得发生点什么。
 async function againScenario(out) {
   out.afterLoad = { who: el("whoJob").textContent, notices: el("notices").innerHTML,
@@ -261,6 +311,8 @@ async function againScenario(out) {
   else if (payload.scenario === "run") { await runScenario(out); }
   else if (payload.scenario === "run-refused") { await runRefusedScenario(out); }
   else if (payload.scenario === "window") { await windowScenario(out); }
+  else if (payload.scenario === "failures") { await failuresScenario(out); }
+  else if (payload.scenario === "failures-unmeasured") { await failuresUnmeasuredScenario(out); }
   else { await repaintScenario(out); }
   out.paints = timelineWrites;                      // **重画了几次**（C1：别拿 fetch 数代替）
   if (out.paintMarks) { out.paintMarks.end = timelineWrites; }

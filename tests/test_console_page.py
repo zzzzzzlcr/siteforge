@@ -755,3 +755,64 @@ def test_the_window_block_carries_the_state_cell_and_the_two_buttons():
     assert 'at(win, "can_close"' in body and 'at(win, "can_reopen"' in body, body
     for wrong in ('at(win, "state"', 'at(live, "status"'):
         assert wrong not in body, "这两下在拿别的东西推（服务给的那两格才是判据）：%s" % wrong
+
+
+# ═════════════ Task 13 ③：失败列表那一块（**标记层**）═════════════
+#
+# 行为那一半在 `tests/test_console_js.py`（跑起来才看得见）；
+# 这一节钉的是**标记**：那几格在不在、每一格旁边有没有一句人话、
+# 以及**那一块里不出现线上那几格的名字**（人话纪律）。
+
+
+def test_the_failures_block_has_every_cell_and_a_human_sentence_beside_it():
+    """失败列表那一块：**四格都在**（站名 / 查哪一段 / 查 / 照这条修），每一格旁边一句人话。
+
+    为什么「旁边那句」也是判据：这一格存在的理由是「运营得知道该往里填什么」——
+    一个只有 placeholder 的输入框，人只能靠猜（placeholder 会被输进去的字盖掉）。
+    """
+    page = _page()
+    markup = page.split("<script>")[0]
+    for fid in ("failSite", "failSince", "btnFail", "failPick", "btnFixFrom", "fails"):
+        assert 'id="%s"' % fid in markup, "少了这一格：%s" % fid
+    #: 「要修哪一条」那一块**开页是收着的**（还没有任何一条可挑）
+    act = re.search(r'<div class="nrun" id="failAct"[^>]*>', markup)
+    assert act and "hidden" in act.group(0), "那一块开页就该是收着的：%r" % (act and act.group(0))
+    #: 三句「它是干什么的」（与「开一趟」那张表同一条纪律）
+    block = markup.split('id="failsPanel"', 1)[1].split("</section>", 1)[0]
+    whys = [re.sub(r"<[^>]+>", "", w).strip()
+            for w in re.findall(r'<p class="why">(.*?)</p>', block, re.S)]
+    assert len(whys) >= 3, "「每一格旁边那句人话」不够（只有 %d 句）：%r" % (len(whys), whys)
+    for w in whys:
+        assert len(w) >= 24, "这一句太短，说不出「它是干什么的」：%r" % w
+    #: ★ 「只填表、不开跑」这件事**写在按钮旁边**（不然人以为按下去就跑了）
+    assert "不会替你开跑" in block or "不会替你开跑" in page, block
+
+
+def test_the_failures_block_never_shows_a_wire_name_or_a_backend_code():
+    """**人话纪律**：给运营看的这一块里不出现线上那几格的名字，也不出现后端那些代号。
+
+    ⚠️ 射程是**这一块**（`#failsPanel` 那一段标记），不是整页 —— 路由与参数名在
+    `<script>` 那一段里（那是给机器看的那一半），拿整页去扫会误杀。
+    """
+    page = _page()
+    markup = page.split("<script>")[0]
+    block = markup.split('id="failsPanel"', 1)[1].split("</section>", 1)[0]
+    for wire in ("task_id", "created_at", "country", "site_specific", "formLog", "formStep",
+                 "no_success", "failures", "evidence", "since", "limit"):
+        assert wire not in block, "给运营看的这一块里出现了线上那一格的名字：%s" % wire
+
+
+def test_the_page_names_the_two_new_hops():
+    """页面**自己**写着它要用的那两跳（`/failures` 与它下面那条）。
+
+    ⚠️ 与 `test_the_page_names_every_hop_it_will_call_and_the_three_actions` 同一条规矩：
+    地址写在这两个常量里（`FAILS` / `FAIL_EV`），而 `tests/test_console_js.py` 拿
+    **服务那两个常量**算一遍地址去喂假 `fetch` —— 两边不一致时那几条会红。
+    这里钉的是「页面确实点名了这两跳」。
+    """
+    page = _page()
+    assert 'var FAILS = "/failures";' in page, "页面没点名 `/failures` 这一跳"
+    assert 'var FAIL_EV = "/evidence";' in page, "页面没点名那一条证据的尾巴"
+    #: 服务那边的两个常量也钉一下（页面那两个字符串就是照它们写的）
+    assert service.FAILURES_PATH == "/failures", service.FAILURES_PATH
+    assert service.FAILURE_EVIDENCE_PATH == "/failures/%s/evidence", service.FAILURE_EVIDENCE_PATH

@@ -170,6 +170,13 @@
     .nrun .field .why{grid-column:1}
   }
 
+  /* ── 失败列表（Task 13）───────────────────────── */
+  #fails .faillist{margin:8px 0 0; display:flex; flex-direction:column; gap:5px}
+  #fails .faillist li{font-size:13.5px; line-height:1.6; display:flex; flex-wrap:wrap; gap:8px;
+                      align-items:baseline; border-bottom:1px dashed var(--line-soft); padding-bottom:5px}
+  #fails .faillist .mono{color:var(--ink-3)}
+  #failAct{margin-top:12px; border-top:1px dashed var(--line); padding-top:12px}
+
   /* ── 常开的一行输入 ───────────────────────────── */
   .composer{border-top:1px solid var(--line); background:var(--surface); padding:10px 16px 12px;
             position:sticky; bottom:0}
@@ -224,6 +231,59 @@
 
     <main class="scroll">
       <div class="wrap">
+
+        <!-- ── 这个站失败的那些趟（Task 13 ③）─────────────────────
+             病：在这一块之前，运营要在面板上发起一趟修复，得**从别处把失败手抄进来**
+             （失败记录在另一个系统里，这一屏一个字都没有）。
+             ⚠️ 三条纪律（与这一屏别处同一套）：
+               · **读不到就说读不到** —— 那一句**不是**「这个站没有失败」（这一屏最怕的形状）；
+               · **码不上屏** —— 后端那些代号（`site_specific` 这种）在服务那边就换成人话了；
+               · 点一条**只把表填好、不开跑** —— 「什么算成功」那一格只有人知道
+                 （服务自己也是这么说的：猜出来的成功判据会让产物「跑到底再报成功」）。 -->
+        <section class="panel" id="failsPanel">
+          <header>
+            <h2>这个站失败的那些趟</h2>
+            <span class="sub">挑一条，把它的证据直接填进下面那张表 —— 不用再从别处抄。</span>
+          </header>
+          <div class="body">
+            <div class="nrun">
+              <div class="field">
+                <label for="failSite">站点名字</label>
+                <input type="text" id="failSite" autocomplete="off" spellcheck="false"
+                       placeholder="主机名/路径，比如 www.gowizard.com/auto-warranty/">
+                <p class="why">要查哪个站 —— 写它在后台里那个名字（主机名后面带上路径那一截）。
+                  写错了服务会说「那个站它不认识」，那是「量不到」，不是「这个站没有失败」。</p>
+              </div>
+              <div class="field">
+                <label for="failSince">查哪一段</label>
+                <select id="failSince">
+                  <option value="">今天</option>
+                  <option value="back">今天和昨天</option>
+                </select>
+                <p class="why">默认只看今天 00:00 之后的失败。要看昨天的，在这一格挑「今天和昨天」——
+                  这一格不挑，服务就只看今天那一段（而它会把看的是哪一段写在结果那一句里）。</p>
+              </div>
+              <div class="go">
+                <button class="btn primary" type="button" id="btnFail">查失败</button>
+                <p class="hint" id="failHint">按下去它去后端读这个站的失败记录。</p>
+              </div>
+            </div>
+            <div id="fails"></div>
+            <div class="nrun" id="failAct" hidden>
+              <div class="field">
+                <label for="failPick">要修哪一条</label>
+                <select id="failPick"></select>
+                <p class="why">上面列出来的哪一条 —— 挑好再按下面那个按钮：
+                  它会把这一条的网址和失败证据填进「开一趟」那张表。</p>
+              </div>
+              <div class="go">
+                <button class="btn primary" type="button" id="btnFixFrom">照这条修</button>
+                <p class="hint" id="fixHint">按下去只把表填好，<b>不会替你开跑</b> ——
+                  「什么算成功」那一格只有你知道，填完你自己按「开一趟」。</p>
+              </div>
+            </div>
+          </div>
+        </section>
 
         <!-- ── 开一趟（新的一趟活）─────────────────────────────
              ⚠️ 这一块是**唯一**能开新活的地方（Task 12）：在这之前，面板上能发出去的动作
@@ -1181,6 +1241,174 @@
       });
   }
 
+  // ══════════════════ 失败列表（Task 13）══════════════════
+  //: 那两跳的地址。**服务给**（`service.FAILURES_PATH` / `FAILURE_EVIDENCE_PATH`）——
+  //: 页面不自己拼一套（两份手拼的地址迟早漂，而漂了的那一份在页面上看是「后端没数据」）。
+  //: ⚠️ 服务那一份在 `agent/service.py`（`FAILURES_PATH` / `FAILURE_EVIDENCE_PATH`）；
+  //: 这里这两个字面量与它同源，`tests/test_console_js.py` 拿服务那两个常量**算一遍**
+  //: 再去喂假 `fetch` —— 两边不一致时那几条会红。
+  var FAILS = "/failures";
+  var FAIL_EV = "/evidence";
+
+  //: 「查哪一段」那一格 → 那个查询参数。
+  //: ⚠️ 挑「今天」时**不给** `since`（服务那边的默认就是今天 00:00 —— 契约里那一条）。
+  //: 挑「今天和昨天」才给一个日期：**契约明说「要查昨天必须显式给」**，
+  //: 所以这一格是给人拨的，不是页面替他猜的。
+  function failSinceParam() {
+    var pick = document.getElementById("failSince").value;
+    if (!pick) { return ""; }
+    var d = new Date();
+    d.setDate(d.getDate() - 1);
+    var m = d.getMonth() + 1, day = d.getDate();
+    return "&since=" + encodeURIComponent(d.getFullYear() + "-" +
+                                          (m < 10 ? "0" : "") + m + "-" +
+                                          (day < 10 ? "0" : "") + day);
+  }
+
+  //: 这一栏读不到时说的那句话（与 `runsProblem` 同一个做法）。
+  //: ★ 它**必须**把「读不到」与「没有失败」分开说 —— 这一屏从头到尾治的就是
+  //:   「把量不出来读成量出来了」那个形状，而这两件事在屏幕上一模一样。
+  //: ⚠️ 查不到就把「要修哪一条」那块**收回去**：留着上一次那份能点的，
+  //:   人会照着**过期的**一条去开一趟（那比什么都不给更坏）。
+  function failProblem(why) {
+    var box = document.getElementById("fails");
+    document.getElementById("failAct").hidden = true;
+    if (!box) { return; }
+    //: ⚠️ 两段都走 `rich()`（这一节里每一处写进 `innerHTML` 的字都要走它）——
+    //:    漏一处，运营看到的就是两个星号（修复轮 1 在截图里真看见过）。
+    box.innerHTML = '<p class="lead">这一栏现在取不到失败列表：' + rich(why) + "</p>" +
+      '<p class="hintline">' + rich("这不代表「这个站没有失败」—— 只代表**这一栏没读到**。") + "</p>";
+  }
+
+  //: 这一份 `/failures` 的正文里**能当列表画的那些行**；读不到就是 `null`。
+  //: ⚠️ 三种「读不到」都要算读不到（与 `runsRows` 同一族）：`{}`（没有 `failures` 那一格）、
+  //:    `[]`（`typeof [] === "object"` —— 从「是不是对象」那道闸下过）、以及压根不是对象。
+  //:    画成「这个站没有失败」正是这一条要治的那句假话。
+  function failRows(data) {
+    if (!data || typeof data !== "object") { return null; }
+    var rows = at(data, "failures", null);
+    return Array.isArray(rows) ? rows : null;
+  }
+
+  //: 画那一栏。`data` 是服务那份正文（`say` + `failures`）。
+  //: ⚠️ **一行一个单号 + 一句人话**：单号是给机器用的（下面那一跳要它），
+  //:    人话是给运营读的 —— 他挑的那一行和他读到的那一行**是同一句**（同一个来源）。
+  function paintFailures(data) {
+    var box = document.getElementById("fails");
+    var rows = failRows(data);
+    if (!box || rows === null) { return; }   // 读不到：由 `failProblem` 说话，这里闭嘴
+    var html = '<p class="lead">' + rich(at(data, "say", "")) + "</p>";
+    if (!rows.length) {
+      // 「没有失败」——这是**量到**的（服务那句 `say` 说了是量出来的）。
+      // ⚠️ 只有走到这儿才允许出现「没有失败」这句话（那一栏的另一半是 `failProblem`）。
+      box.innerHTML = html;
+      document.getElementById("failAct").hidden = true;
+      return;
+    }
+    var items = [], opts = [], i, id, said;
+    for (i = 0; i < rows.length; i++) {
+      id = at(rows[i], "task_id", "");
+      said = at(rows[i], "say", "");
+      items.push('<li><span class="mono">' + esc(id) + "</span> " + esc(said) + "</li>");
+      opts.push('<option value="' + esc(id) + '">' + esc(said) + "</option>");
+    }
+    box.innerHTML = html + '<ul class="faillist">' + items.join("") + "</ul>";
+    var pick = document.getElementById("failPick");
+    var keep = pick.value;                  // 人已经挑过的那一条别丢（重查一次还在的话）
+    pick.innerHTML = opts.join("");
+    if (keep) { pick.value = keep; }
+    document.getElementById("failAct").hidden = false;
+  }
+
+  function fetchFailures() {
+    var site = document.getElementById("failSite").value.trim();
+    var btn = document.getElementById("btnFail");
+    if (!site) {
+      // 空着按下去**不发**（那一个请求注定回 400）；但**也不许静默**：明说为什么。
+      failProblem("还没写是哪个站 —— 上面那一格是空的，这一下**一个请求都没发出去**。");
+      return;
+    }
+    btn.disabled = true;
+    return fetch(FAILS + "?site=" + encodeURIComponent(site) + failSinceParam())
+      .then(readJSON)
+      .then(function (res) {
+        btn.disabled = false;
+        if (!res.ok) {
+          // **原样**摆服务那句人话（502「量不到」/ 503「没配 token」…）。
+          // ⚠️ 这儿**不许**退回「画一份空列表」—— 那正是这一片要治的形状。
+          failProblem(sayOf(res));
+          return null;
+        }
+        var rows = failRows(res.obj);
+        if (rows === null) {
+          failProblem("服务回了 200，但正文不是一份失败列表（读不出「哪些失败了」）。");
+          return null;
+        }
+        state.fails = res.obj;
+        paintFailures(res.obj);
+        return res.obj;
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        failProblem("这一栏没读到：" + e + " —— 服务可能没在跑。");
+      });
+  }
+
+  //: ★ 点一条 → **只把表填好**（不开跑）。
+  //: 为什么不开跑：`POST /run` 要的「什么算成功」那一格**只有人知道** ——
+  //: 服务自己也是这么说的（「猜出来的成功判据会让产物跑到底再报成功」）。
+  //: 页面替他编一个、或者空着发出去，两种都是替人做决定。
+  //: ⚠️ 服务那句人话**原样**上屏（`setErr` 那条框）：它说了填的是哪一条、哪几格。
+  function fixFrom() {
+    var pick = document.getElementById("failPick");
+    var id = String(pick.value || "").trim();
+    var site = document.getElementById("failSite").value.trim();
+    var btn = document.getElementById("btnFixFrom");
+    if (!id) {
+      setErr("先在「要修哪一条」那一格挑一条 —— 它现在是空的（上面那一栏里有几条就摆几条）。");
+      return;
+    }
+    setErr("");
+    btn.disabled = true;
+    return fetch(FAILS + "/" + encodeURIComponent(id) + FAIL_EV + "?site=" + encodeURIComponent(site))
+      .then(readJSON)
+      .then(function (res) {
+        btn.disabled = false;
+        if (!res.ok) {
+          setErr(sayOf(res), "act");     // **原样**（502 量不到 / 400 缺站名…）
+          return null;
+        }
+        var ev = at(res.obj, "evidence", "");
+        if (!ev) {
+          // 收下了却没给证据：**明说**不知道，**不猜**（也不拿那一行的人话顶替 ——
+          // 那一行只是「什么时候失败的」，不是「它走到哪儿停的」）。
+          setErr("服务收下了这一条，但它没回那段证据 —— 这一屏不替它编一段。");
+          return null;
+        }
+        var said = at(res.obj, "row_say", "");
+        var url = at(res.obj, "url", "");
+        // 拨到「老站」+ 把那一格露出来：与人在那一格上选「老站」时**同一件事**
+        // （只改 value 不动那一格，人看到的是「证据那格还收着」而下面已经有一趟 fix 活等着开）。
+        document.getElementById("runMode").value = "fix";
+        document.getElementById("runEvidenceField").hidden = false;
+        document.getElementById("runEvidence").value = ev;
+        if (at(res.obj, "fill_url", false) && url) {
+          document.getElementById("runUrl").value = url;
+        }
+        //: ⚠️ 这一段进的是 `setErr`（**textContent**，不过 `rich()`）—— 所以这里
+        //:    一个 `**` 都不许写（写了运营看到的就是两个星号）。
+        setErr("已经把这一条填进下面那张表里了：" + (said || ("单 " + id)) +
+               "。站点网址那一格" + (at(res.obj, "fill_url", false) && url ? "也填上了" :
+                                     "没填（这一条的账上没记网址）") +
+               " —— 「什么算成功」那一格只有你知道，填完你按「开一趟」。", "act", true);
+        return res.obj;
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        setErr("这一下没送出去：" + e, "act");
+      });
+  }
+
   // ══════════════════ 窗口那两下（Task 12）══════════════════
   //: 关窗口 / 重开窗口：都发**当前这一趟**（它们在 `/job/<id>/` 下面）。
   //: ⚠️ 两下的答复里，服务说的那句话都**原样上屏**（`setErr` 那条红杠是这一屏唯一
@@ -1265,6 +1493,15 @@
   // ★ 开一趟（Task 12）：这一屏原先**只能看、只能在闸上回话、只能停、只能重跑**，
   //   开一趟新活得有人在别处敲命令 —— 而这一屏是给运营用的。
   document.getElementById("btnRun").addEventListener("click", startRun);
+  // ★ 失败列表那两下（Task 13）：查一趟失败；照一条把表填好。
+  //   ⚠️ 只有**两个**静态按钮 —— 列表里那几行是**画出来的**（一行一个按钮的话，
+  //      「点哪一条」这件事就没有一处是可测的了：动态建出来的元素在这套夹具里点不着）。
+  document.getElementById("btnFail").addEventListener("click", fetchFailures);
+  document.getElementById("btnFixFrom").addEventListener("click", fixFrom);
+  //: 「要修哪一条」那一块开页是**收着**的（还没有任何一条可挑）。
+  //: 与 `runEvidenceField` 同一行规矩：**开页时它是什么样由这一行算出来**，
+  //: 不靠静态标记、也不靠人的记性（标记改了、这行忘了改，两边就分叉了）。
+  document.getElementById("failAct").hidden = true;
   // 选「老站」才把失败证据那一格露出来。⚠️ 只负责**露/收**：
   // 「要不要它」是服务判的（页面先判一道，就会出现两个口径）。
   document.getElementById("runMode").addEventListener("change", function () {

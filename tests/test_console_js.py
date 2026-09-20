@@ -58,13 +58,16 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from agent import fmr  # noqa: E402
 from agent import service  # noqa: E402
+from test_fmr import MEASURED_STEPS  # noqa: E402
 
 DRIVER = pathlib.Path(__file__).with_name("console_js_driver.js")
 NODE = shutil.which("node")
@@ -283,6 +286,10 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _run_refused_payloads()
     elif scenario == "window":
         payload = _window_payloads()
+    elif scenario == "failures":
+        payload = _failures_payloads()
+    elif scenario == "failures-unmeasured":
+        payload = _failures_unmeasured_payloads()
     else:
         payload = _payloads(final_mode=final_mode)
     #: 分支名与载荷自己声明的那一个**同不同名**：不同名 = 上面又漏了一个分支，
@@ -825,3 +832,237 @@ def test_the_run_fixture_can_actually_fire(tmp_path):
     assert got_bad != wanted, (
         "把「什么算成功」那一格发成空的之后，这一份夹具**没有响** —— 那说明它量不到正文"
         "（观测值照旧是 %r）" % got_bad)
+
+
+# ═════════════ Task 13 ③：失败列表 → 一键把证据填进「开一趟」═════════════════
+#
+# 病（用户 2026-09-20 的原话）：
+#   「**面板上要能**：看见某个站的失败列表 → 点一条 → **发起一趟 fix，`evidence` 已经填好**」
+#   —— 在这一段之前，运营要发起修复得**从别处把失败手抄进来**（后端的失败列表
+#   在另一个系统里，页面上一个字都没有）。
+#
+# 这一节钉的是**页面那一半**（服务那一半在 `test_service_failures.py` 里）。
+# 四条判据，都是「只有跑起来才看得见」的那一类：
+#
+# | # | 性质 | 源码文本断言为什么拦不住 |
+# |---|---|---|
+# | 1 | 那一栏长出来的**是人话**（不是 `site_specific` 这种码） | 字面量在不在与**这一刻画上去的是哪一份**无关 |
+# | 2 | 「量不到」与「没有失败」**在屏幕上长得不一样** | 两句都在源码里；哪一句上了屏只有跑一遍才知道 |
+# | 3 | 点一条**只填表、不开跑**（`POST /run` 一次都不许发） | 「有没有发出去」不在源码文本里 |
+# | 4 | 填好的那几格**活过之后三次重画** | 写进去 ≠ 还在（Task 7 那一族，实测栽过） |
+
+#: 那一栏要查的那个站（FMR 那边的名字 —— **与 `POST /run` 的 `site` 不是一回事**）。
+FAIL_SITE = "www.gowizard.com/auto-warranty/"
+#: 三条失败，**人话现算**（`fmr.failure_say`）—— 不在这儿手抄一遍：
+#: 那句话改一个字，这一份跟着变，不会两边漂（与 `AGAIN_SAY` / `ART_URL` 同一个做法）。
+FAIL_ROWS = [
+    {"task_id": "26034602", "site": "www.gowizard.com/auto-warranty", "status": "failed",
+     "type": "site_specific", "country": "US", "created_at": "2026-09-19T10:21:38+08:00"},
+    {"task_id": "26033398", "site": "www.gowizard.com/auto-warranty", "status": "failed",
+     "type": "site_specific", "country": "US", "created_at": "2026-09-19T09:58:02+08:00"},
+]
+#: 页面上要挑的那一条（**挑的不是最上面那条** —— 挑最新那条的话，「挑」这个动作量不出来）。
+FAIL_PICK = "26033398"
+#: 服务那两跳的地址（**从服务自己的常量算出来**，不在这儿手拼一份）。
+FAIL_LIST_URL = service.FAILURES_PATH + "?site=" + urllib.parse.quote(FAIL_SITE, safe="")
+FAIL_EV_URL = (service.FAILURE_EVIDENCE_PATH % FAIL_PICK
+               + "?site=" + urllib.parse.quote(FAIL_SITE, safe=""))
+#: 那一段证据（服务给的那三样）。**它自己就是 `fmr.evidence_text` 算的** —— 同源。
+FAIL_EV = fmr.evidence_text(FAIL_ROWS[1], MEASURED_STEPS)
+FAIL_ENTRY_URL = MEASURED_STEPS[0]["url"]
+FAIL_ROW_SAY = fmr.failure_say(FAIL_ROWS[1])
+def _unmeasured_502() -> Exception:
+    """服务会回的那句「量不到」—— 让 `FmrClient` **真的**在连不上的时候抛一次。
+
+    ⚠️ 不在这儿手抄一句：这一份要证明的正是「页面上那句是**服务说的**那一句」——
+    手抄就变成「页面上是一句与它长得一样的字」（与 `RUN_400` 同一个做法）。
+    """
+    def boom(url, headers):
+        raise RuntimeError("connection refused")
+    try:
+        fmr.FmrClient(token="tok", opener=boom).fetch_failures(FAIL_SITE)
+    except fmr.FmrUnmeasured as exc:
+        return exc
+    raise AssertionError("连不上居然没抛 —— 这一份载荷的判据就不成立了")
+
+
+#: 量不到时服务那句人话。
+FAIL_502 = str(_unmeasured_502())
+
+
+def _failures_payloads() -> dict:
+    """失败列表那一趟：查 → 挑一条 → 填表（**然后人自己按「开一趟」**）。
+
+    ⚠️ **开页是挑着某一趟的**（`?job=job-1`）—— 那不是装饰：这一屏的 `paint()`
+    要有 `/live` 才会跑（`if (!live) return`），不挑运行的话**一次重画都不会发生**，
+    于是「填好的东西活过三次重画」那一条量的是**没有重画**（实测：这一份原先就是
+    `search: ""`，而「重画把那一栏擦掉」那个变异因此**没红**）。
+    """
+    live_one = [{"body": _live("running", "queue", n=1 + i, tag="这一趟")} for i in range(8)]
+    _assert_all_different([x["body"] for x in live_one], "`/live` 的正文")
+    fresh = [{"body": _live("running", "queue", n=1 + i, tag="新开的")} for i in range(4)]
+    _assert_all_different([x["body"] for x in fresh], "新那一趟 `/live` 的正文")
+    return {"scenario": "failures", "search": "?job=job-1",
+            "failures": {"site": FAIL_SITE, "pick": FAIL_PICK},
+            "responses": {
+                "/runs": [{"body": {"note": "", "runs": [
+                    {"job_id": "job-1", "site": "example-funnel", "status": "running",
+                     "say": "在跑。", "created_at": "2026-09-19T21:00:00+08:00",
+                     "rounds": 0, "delivered": False}]}}],
+                "/job/job-1/live": live_one,
+                FAIL_LIST_URL: [{"body": {"site": FAIL_SITE, "since": "2026-09-19 00:00:00",
+                                          "limit": 20,
+                                          "say": "这个站从 2026-09-19 00:00 起有 2 条失败的记录"
+                                                 "（这一屏最多摆 20 条）。",
+                                          "failures": [{"task_id": r["task_id"],
+                                                        "say": fmr.failure_say(r)}
+                                                       for r in FAIL_ROWS]}}],
+                FAIL_EV_URL: [{"body": {"task_id": FAIL_PICK, "row_say": FAIL_ROW_SAY,
+                                        "url": FAIL_ENTRY_URL, "evidence": FAIL_EV,
+                                        "fill_url": True}}],
+                "/run": [{"body": {"job_id": NEW_JOB, "say": SUBMITTED_SAY}}],
+                "/job/%s/live" % NEW_JOB: fresh,
+            }}
+
+
+def _failures_unmeasured_payloads() -> dict:
+    """**量不到**那一趟：服务回 502 + 一句人话（连不上后端）。"""
+    return {"scenario": "failures-unmeasured", "search": "",
+            "failures": {"site": FAIL_SITE, "pick": FAIL_PICK},
+            "responses": {
+                "/runs": [{"body": {"note": "还没有任何运行。", "runs": []}}],
+                FAIL_LIST_URL: [{"status": 502, "body": {"detail": FAIL_502}}],
+            }}
+
+
+def test_the_panel_shows_the_failures_as_human_words(tmp_path):
+    """① 那一栏长出来的**是人话**：服务给的那两句上屏，而且**逐字就是那两句**。
+
+    ⚠️ 断言写成**整行相等**（不是「那句话在里面」）：只比 `in` 的话，
+    「那一行把整条记录 `JSON.stringify` 出来、人话也在里面」这种改法照绿 ——
+    而运营看到的就是一屏括号和引号。
+
+    ⚠️ 「码不上屏」这一半钉在**服务那一侧**（`test_service_failures._no_code`）：
+    页面画的就是服务给的那两格，服务漏了码页面挡不住 —— 在这儿补一条同义断言是假的
+    （这一份的载荷里本来就没有码，量了也是空转）。
+    """
+    out = _drive(tmp_path, scenario="failures")
+    html = out["afterQuery"]["fails"]
+    assert FAIL_ROW_SAY in html, "那一条的人话没上屏：%r" % html
+    assert "9-19 10:21 失败 · 美国 · 站点专属" in html, html
+    assert "有 2 条失败的记录" in html, "服务那句「量到了什么」没上屏：%r" % html
+    #: ★ 每一行的形状：**单号 + 一句人话**，没有第三样东西
+    assert '<li><span class="mono">26033398</span> %s</li>' % FAIL_ROW_SAY in html, \
+        "那一行不是「单号 + 一句人话」（多了或少了东西）：%r" % html
+    assert html.count("<li>") == len(FAIL_ROWS), html
+    for junk in ("{", "}", '"task_id"', "JSON"):
+        assert junk not in html, "那一行把整条记录端上来了（%s）：%r" % (junk, html)
+    #: 查到之后**那一块才露出来**（挑哪一条那个下拉框 + 那个按钮）
+    assert out["afterLoad"]["actHidden"] is True, "还没查就摆出了「照这条修」：%r" % out["afterLoad"]
+    assert out["afterQuery"]["actHidden"] is False, "查到了却没摆出那两格：%r" % out["afterQuery"]
+
+
+def test_clicking_one_fills_the_form_and_does_not_start_anything(tmp_path):
+    """★ ③ 那一条的**正身**：点一条 → **三格填好** + **一趟都没开**。
+
+    为什么「没开」也是判据：`POST /run` 要的是**什么算成功**（`success_text`）——
+    那一格**只有人知道**（服务自己也是这么说的：「猜出来的成功判据会让产物跑到底再报成功」）。
+    页面替他把那格编一个、或者干脆空着发出去，两种都是**替人做决定**。
+    所以：**证据填好、按钮留给人按**。
+    """
+    out = _drive(tmp_path, scenario="failures")
+    assert out["afterFix"]["evidence"] == FAIL_EV, out["afterFix"]
+    assert out["afterFix"]["url"] == FAIL_ENTRY_URL, out["afterFix"]
+    assert out["afterFix"]["mode"] == "fix", "没把「这是哪种活」拨到「老站」：%r" % out["afterFix"]
+    assert out["afterFix"]["evidenceHidden"] is False, \
+        "填了证据却把那格收着（人看不见填了什么）：%r" % out["afterFix"]
+    # ★ **一次 `/run` 都没发**（人还没按那个按钮）
+    assert out["afterFix"]["ranAlready"] == 0, "点一条就把活开了 —— 人还没说「什么算成功」：%r" % out["sent"]
+    # 服务那句话**原样**上屏（`setErr` 那条绿框），页面不自己编一句
+    assert FAIL_ROW_SAY in out["afterFix"]["errBox"], out["afterFix"]
+    assert out["afterFix"]["errHidden"] is False, out["afterFix"]
+    assert out["afterFix"]["errClass"] == "notice done", out["afterFix"]
+
+
+def test_the_human_still_presses_the_button_and_the_evidence_goes_with_it(tmp_path):
+    """★ 填好的证据**真的会跟着那一趟走**：人自己按「开一趟」，`POST /run` 的正文里有它。
+
+    这一条把「填好了」与「发出去时还在」接上 —— 少了它，
+    「页面把那格填上、发的时候又读另一个地方」这种改法量不出来。
+    """
+    out = _drive(tmp_path, scenario="failures")
+    runs = [x for x in out["sent"] if x["url"] == RUN_HOP]
+    assert len(runs) == 1, "按一下「开一趟」应该正好发一次：%r" % out["sent"]
+    body = json.loads(runs[0]["body"])
+    assert body["evidence"] == FAIL_EV, body
+    assert body["url"] == FAIL_ENTRY_URL, body
+    assert body["mode"] == "fix", body
+    #: 人**没填**的那一格照旧原样发出去（页面不替服务判哪格必填 —— Task 12 那条纪律）
+    assert body["success_text"] == "", body
+
+
+def test_what_was_filled_survives_three_repaints(tmp_path):
+    """④ **写进去 ≠ 还在**（Task 7 那一族）：三次重画之后那几格还在。
+
+    为什么这条不是白量的：`#fails` 与那三格都在**会重画的那几个容器之外** ——
+    但那是**今天**的布局；哪天有人把它挪进 `#notices` / `#timeline` 里，
+    这条会红，而源码文本断言不会（它看见的是「赋值那行还在」）。
+    """
+    out = _drive(tmp_path, scenario="failures")
+    assert out["afterRepaint"]["evidence"] == FAIL_EV, out["afterRepaint"]
+    assert out["afterRepaint"]["mode"] == "fix", out["afterRepaint"]
+    assert out["afterRepaint"]["url"] == FAIL_ENTRY_URL, out["afterRepaint"]
+    assert FAIL_ROW_SAY in out["afterRepaint"]["fails"], out["afterRepaint"]
+    assert out["afterRepaint"]["errHidden"] is False, \
+        "填完那句话被后继的重画擦了：%r" % out["afterRepaint"]
+
+
+def test_unmeasured_is_never_drawn_as_no_failures(tmp_path):
+    """★ **这一片从头到尾在治的那个形状**：「量不到」不许画成「没有失败」。
+
+    量的是**屏幕上那一刻**是哪一句：
+      · 服务那句「量不到」上屏了（原样）；
+      · 而**「没有失败的记录」那句没有** —— 那半句只有**真量到、真没有**才许出现。
+
+    为什么两条都要量：只量前一条的话，一个「两句话都画上去」的改法照绿 ——
+    而屏幕上同时写着「量不到」和「没有失败」时，运营信的是**后者**（它更像结论）。
+    """
+    out = _drive(tmp_path, scenario="failures-unmeasured")
+    html = out["afterQuery"]["fails"]
+    #: 服务那句话的**后半截**（`rich()` 会把 `**…**` 渲染成 `<b>`，所以整句比不中 ——
+    #: 与 `_thin()` 同一个理由，这里只比那半截原样上屏的）
+    marker = "是「这一次没量着」"
+    assert marker in FAIL_502, FAIL_502
+    assert marker in html, "服务那句「量不到」没上屏：%r" % html
+    assert "这不代表「这个站没有失败」" in html, html
+    assert "失败的记录" not in html, \
+        "「量不到」被画成了「没有失败」—— 这两件事在屏幕上长得一模一样了：%r" % html
+    #: 那一块**不许**露出来（量不到就没有可挑的一条）
+    assert out["afterQuery"]["actHidden"] is True, out["afterQuery"]
+    assert out["afterQuery"]["disabled"] is False, "红了之后按钮还按不动（人没法重试）：%r" % out["afterQuery"]
+    #: 而且它**活过之后三次重画**（这一栏不跟着 `paint()` 重画 —— 量这一条）
+    assert marker in out["afterRepaint"]["fails"], out["afterRepaint"]
+
+
+def test_the_failures_fixture_can_actually_fire(tmp_path):
+    """**正控**（这一节自己的牙）：改坏一处已知会破坏行为的写法 ⇒ 同一批断言必须红。
+
+    改的是「量不到」那条路上那一步：把服务回的错误正文**当成一份空列表**画出来
+    （「读不到就当没有」—— 这正是这一片要治的那个形状的**代码**）。
+    """
+    original = service.CONSOLE_PATH.read_text(encoding="utf-8")
+    broken = original.replace(
+        "          failProblem(sayOf(res));",
+        "          paintFailures({ \"say\": \"这个站没有失败的记录。\", \"failures\": [] });")
+    assert broken != original, "正控没改动任何东西（那一行没找到？）—— 那这条正控是空的"
+    page = tmp_path / "console-broken-fails.html"
+    page.write_text(broken, encoding="utf-8")
+
+    good = _drive(tmp_path, scenario="failures-unmeasured")
+    bad = _drive(tmp_path, scenario="failures-unmeasured", page=page)
+    assert "是「这一次没量着」" in good["afterQuery"]["fails"], good["afterQuery"]
+    assert "是「这一次没量着」" not in bad["afterQuery"]["fails"], (
+        "把「读不到」写成「没有失败」之后这一份夹具**没有响** —— "
+        "那说明它量不到那一栏（观测值照旧是 %r）" % bad["afterQuery"])
+    #: 正控还得**落到那一句假话上**：改坏之后屏幕上出现的正是「没有失败」那句
+    assert "失败的记录" in bad["afterQuery"]["fails"], bad["afterQuery"]
