@@ -3450,8 +3450,10 @@ def test_the_human_stop_is_still_reported_as_the_human_stop(tmp_path):
 def test_a_budget_stop_that_never_saw_the_line_is_still_a_budget_stop(tmp_path):
     """⚠️ **预算那一条的语义也一个字没动**：没看见成功文案时，停因还是 `budget_steps`。
 
-    （这一条同时是「空判据 / 没给判据**不会**把每一页都算成成功」的对照 ——
-    页面正文与 `MATCHED` 无关时，预算照旧走到顶。）
+    这里传的是**给了判据、但页面上没有**的那一格（`success_text=MATCHED` 非空，
+    而 `PAGE_LANDING` 的正文里没有它）—— 「判据非空但它不匹配」照旧不拦。
+    ⚠️ **空判据那一格不是这一条**：它由 `an_empty_success_text_does_not_stop_the_walk_early`
+    两条参数覆盖（复审 F5：这一条的旧自述把它说成了空判据的对照，名/述与实际断言不符）。
     """
     journey, _fake, _calls = _run(
         tmp_path,
@@ -3465,12 +3467,16 @@ def test_a_budget_stop_that_never_saw_the_line_is_still_a_budget_stop(tmp_path):
 
 
 @pytest.mark.parametrize("extra", [{}, {"success_text": ""}])
-def test_an_empty_success_text_is_a_missing_input_not_a_free_pass(tmp_path, extra):
+def test_an_empty_success_text_does_not_stop_the_walk_early(tmp_path, extra):
     """判据没给 / 给了个空串 ⇒ **判不了就不停**（空**不是**「什么都算成功」）。
 
     空串要是被当成通配，这一趟会在**第 1 步**就停下并自称成功 —— 那是把
     「少给了一个输入」翻译成了一句**假话**。所以：**不猜**（与 `graph._explore_reached_success`
     给空的处置同口径：判不了就是判不了），照常跑到预算顶。
+
+    ⚠️ **名字不许再撞上 `:2280` 那条**（`replayable_prefix` 对空**抛** `ValueError`）——
+    那条老用例是同名的前身，被这一条遮蔽过一次（复审 F1，`f74b585`），
+    而现在这一条覆盖的是**另一件事**（活的探路停不停），两条都得真跑起来。
     """
     journey, _fake, _calls = _run(
         tmp_path,
@@ -3527,18 +3533,74 @@ def test_the_line_the_live_run_stops_on_is_the_same_line_the_graph_settles(tmp_p
 
 
 @pytest.mark.parametrize("raw", ["", "  ", "a\nb", " a\t b ", "a b", "x  y", "甲　乙"])
-def test_the_two_norms_are_one_yardstick(raw):
-    """`browser_agent._norm` 与 `graph._norm_text` 必须是**同一把尺子**。
+def test_the_three_norms_are_one_yardstick(raw):
+    """**三把**归一化必须是同一把尺子（R1 点名的就是三处，复审 F4：原先只跨校了 2 把）。
 
-    两边判的是**同一句话在不在页面上**：一个在活的探路上判（`_stop_reason`），
-    一个在事后结算里判（`_explore_reached_success`）。两边各自的归一化要是漂了，
-    上面那条「同一把尺子」会在**某些字节上**（换行 / 不换行空格 / 全角空格）悄悄裂开 ——
-    而裂开的那一侧是「图上说没见着」⇒ 拒绝写 py。
+    三处判的都是**同一句话在不在页面上**：
+
+    1. `browser_agent._norm` —— 活的探路（`_stop_reason`）与重放前缀 R3
+       （`replayable_prefix`）用的就是它；
+    2. `graph._norm_text` —— 图上**事后**结算用的（`_explore_reached_success`）；
+    3. `template._norm` —— **产物那一侧**（`page_signature()` 脚下那份，`agent/template.py`）。
+
+    前两把要是漂了：活的那一趟停下来说「见着了」、图上说「没见着」⇒ **拒绝写 py**。
+    第一把与第三把要是漂了：**探路看见的那一页**与**脚本重放时判的那一页**不是同一页
+    （规格 §4.3 那句「与 py 里 page_signature() 同口径」）—— 交付出去的那份 py
+    会在真站上认错页。
+    ⚠️ 三处各自的注释都写着「必须与别人一致」，但**只有这条用例**会红。
     """
     from agent import graph as graph_mod
 
-    assert browser_agent._norm(raw) == graph_mod._norm_text(raw)
+    want = browser_agent._norm(raw)
+    assert graph_mod._norm_text(raw) == want, "图上那份（`_norm_text`）与探路那份漂了"
+    assert _artifact_norm()(raw) == want, (
+        "产物那份（`page_signature()` 脚下那个 `_norm`）与探路那份漂了")
 
+
+def _artifact_norm():
+    """产物那一侧的 `_norm` —— **从骨架源码里取出来、真编译一遍**再交给用例。
+
+    ⚠️ 它**不是** `agent/template.py` 的模块级函数：它是**交付出去那份 py** 里的函数
+    （`SKELETON.template` 那段源码，`page_signature()` 就调它）。所以这里把那段源码
+    切下来真跑一遍 —— 跨校的是**真会跑在真站上的那份**，不是另抄的一份
+    （另抄一份 = 又一个「同一个事实两个名字」）。
+    """
+    import re as _re                        # 只在这一处用
+    src = template.SKELETON.template
+    lines = src.splitlines(keepends=True)
+    start = next(i for i, ln in enumerate(lines) if ln.startswith("def _norm(text):"))
+    block = [lines[start]]
+    for ln in lines[start + 1:]:
+        if ln.strip() and not ln[:1].isspace():     # 下一个顶层语句（含顶层注释）= 到头
+            break
+        block.append(ln)
+    ns: dict = {"re": _re}
+    exec(compile("".join(block), "<artifact>", "exec"), ns)
+    return ns["_norm"]
+
+
+def test_only_the_observe_rows_can_carry_the_line():
+    """R1 点名的那条守卫：**只认 `observe` 行给出的 `page_text_head`**（复审 F3）。
+
+    今天它是**冗余**的（正文那一键只有 `_summarize` 的 `observe` 支会写，别的工具带了它
+    会当场抛 `_TextPremiseBroken`）—— 但「今天冗余」不等于「不用钉」：这条判据的**全部力量**
+    就来自那个前提（R3 的整套推导是「窗口里任何一眼看见 ⇔ 最后一眼看见」）。
+    把这一行去掉，判据就变成「**任何**一行带着那段文字都算过了线」—— 那是一个**更宽**的判据，
+    而它不会有任何东西报错。
+
+    ⚠️ 为什么钉判据本身、不走一遍 `explore()`：**端到端造不出这一形**
+    （`_summarize` 那道前提在更早的地方就抛了，见上）—— 与 R3 那边同一个处境，
+    所以这里直接喂**手写的账本行**。
+    """
+    #: 一行**不是** `observe` 却带着正文（今天造不出来，正是要钉的那个「万一」）
+    smuggled = _row("click", "funnel",
+                    result={"url": ENTRY, "page_text_head": "点了之后这一页上写着 " + MATCHED})
+    assert browser_agent._success_hit([smuggled, _look(ENTRY, TEXT_A)], MATCHED) is None, (
+        "非 observe 行上的正文被当成了「看见成功文案」—— 判据比 R3 宽了")
+    #: 正例（同时也是「最早命中的那一步」的钉子）：第 2 行那一眼才是看见的那一眼
+    rows = [_look(ENTRY, TEXT_A), _look(QUOTE, "这一页上写着 " + MATCHED, state="quote")]
+    assert browser_agent._success_hit(rows, MATCHED) == 1, (
+        "判据不是「最早命中那一步」：%r" % browser_agent._success_hit(rows, MATCHED))
 
 def test_a_replay_that_already_crossed_the_line_does_not_walk_on(tmp_path):
     """续跑那一趟：重放回来的那一眼**已经**含着成功文案 ⇒ 重放完就收，**一轮模型都不问**。

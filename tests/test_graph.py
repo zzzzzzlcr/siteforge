@@ -1629,6 +1629,12 @@ def test_a_run_that_saw_the_success_line_goes_on_and_writes_the_py(tmp_path):
     assert len(rec.explore) == 1, (
         "成了的那一趟还重探了 %d 趟 —— 重探就是在真页面上把同一段再撞一遍" % len(rec.explore))
     say = out["explore_say"]
+    #: ⚠️ **正面钉子**（复审 F6）：只写「不含某些词」是**抓空**的 —— 在这句正确抬头
+    #: **前面再拼一句假话**（比如「探路停下了：窗口没了」）照样全绿。
+    #: 抬头是人读这句话的第一眼，所以这里钉**它本身就是那句话**。
+    assert say.startswith(
+        "探路走完了：页面上见到了人给的那句**成功文案**（见到就收摊"
+        "—— 过了那条线之后每一次点击都可能是重复的真实请求）。"), say
     assert "不明不白" not in say, say
     assert "reached_success" not in say, "内部停因的 token 进了人话（M-5）：%s" % say
 

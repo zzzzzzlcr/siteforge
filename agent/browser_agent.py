@@ -1505,8 +1505,9 @@ class _Gate:
         self.chat = _Namespace(completions=_Namespace(create=self._create))
 
     def _create(self, **kwargs):
-        # 顺序：人 / 预算在前，结算上一轮在后（两条都抛 `_Stop`，但**理由要报对**：
-        # 人喊停优先于「它自己卡住了」）。
+        # 顺序：**先问该不该停**、再结算上一轮（两者都会「停」，但**理由要报对**：
+        # 那三条闸（人 / 成功文案 / 预算）优先于「它自己卡住了」；三条之间的先后
+        # 见 `_stop_reason` 的 docstring —— 这里**不是**那张优先级表，它只管这两步的先后）。
         self._check()
         if self._watch is not None:
             self._watch.round_boundary()
