@@ -799,6 +799,34 @@ def test_the_brief_the_operator_is_confirming_is_on_the_screen_not_just_on_the_w
             "那句话是假的（它跑过：校验开场白、修站那条路还读了底稿）" % where)
 
 
+def test_the_page_says_it_will_stop_and_ask_before_every_expensive_step(tmp_path):
+    """★ F14：那句**承诺**要真的在运营那一屏上（复审 2026-09-20 §4③2，修复轮 2 接的）。
+
+    旧 `intake` 的 `say` 里有一句「**开工之后每一步之前都会再问你一次**，随时可以喊停或
+    纠正」—— `intake` 不设闸（2026-09-20）之后**全仓没有一处说它了**：复审量的
+    `grep -c "喊停\\|随时可以\\|纠正" agent/console.html` = **0**。
+    而它说的是一件**真的**事（`graph`：每个花钱 / 动真页面的节点开工之前都 `interrupt()`
+    一次，5 道闸一道没少）⇒ 补的是「**把它说出来**」，不是编一句新的。
+
+    量的是**屏幕上此刻的文本**（`#roundsSub`），而且**活过之后三次重画**。
+    ⚠️ 措辞不许写成「每一步」那种**比事实宽**的话：`intake` 不设闸 ⇒ 说「每一步」就是
+    一句假话（与被判「名字太宽」的那条用例同一种病）。所以第三条断言钉的是那句限定语。
+    """
+    out = _drive(tmp_path, scenario="gate-facts")
+    assert out["paintMarks"]["afterRepaint"] - out["paintMarks"]["afterLoad"] >= 3, \
+        out["paintMarks"]
+    for where in ("afterLoad", "afterRepaint"):
+        sub = out[where]["roundsSub"]
+        assert "每一步都会先停下来问你一次" in sub, (
+            "%s：那一句承诺不在屏上 —— `intake` 不设闸之后没人说它了（复审 F14）：%r"
+            % (where, sub))
+        assert "喊停" in sub and "打回带话" in sub, (
+            "%s：承诺里「随时可以喊停 / 打回带话」那半不见了：%r" % (where, sub))
+        assert "开真窗口 / 动真页面" in sub, (
+            "%s：那句限定语不见了 —— 少了它，「每一步」就是一句比事实宽的话"
+            "（`intake` 不设闸）：%r" % (where, sub))
+
+
 def test_the_operator_can_start_a_new_run_from_the_panel(tmp_path):
     """★ Task 12 的正身：**面板上开得了一趟新活** —— 而且这一屏**跟着新那一趟走**。
 

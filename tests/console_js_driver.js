@@ -298,13 +298,15 @@ async function failuresUnmeasuredScenario(out) {
 //:   ② 脚下这一轮摊开的**原始事实**（`card.facts`，`成功判据` 在里面 —— 复审 §4.2：
 //:      它原先只到得了 API 载荷，运营那一屏**一格都不读**，于是从屏幕上消失了）；
 //:   ③ 那两样**活过之后三次重画**（Task 7 那一族：写进去 ≠ 还在）。
+//: 外加 `#roundsSub` 那一格（修复轮 2 / F14）：那一句**承诺**
+//: （「它要开真窗口 / 动真页面之前，每一步都会先停下来问你一次」）在不在屏上。
 async function gateFactsScenario(out) {
   out.paintMarks = {};
   out.paintMarks.afterLoad = timelineWrites;
-  out.afterLoad = { rounds: el("rounds").innerHTML };
+  out.afterLoad = { rounds: el("rounds").innerHTML, roundsSub: el("roundsSub").innerHTML };
   await ticks(9);                                   // 之后**又三次重画**（正文每次都在变）
   out.paintMarks.afterRepaint = timelineWrites;
-  out.afterRepaint = { rounds: el("rounds").innerHTML };
+  out.afterRepaint = { rounds: el("rounds").innerHTML, roundsSub: el("roundsSub").innerHTML };
 }
 
 //: 「重新来一遍」那一趟（Task 10 修复轮 1 / N-3）：运营**按下去**，屏幕上总得发生点什么。

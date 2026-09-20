@@ -288,11 +288,18 @@ def test_happy_path_walks_every_step_in_order_and_writes_a_py(tmp_path):
     assert rec.tested_src and "SITE = \"example-funnel\"" in rec.tested_src
 
 
-def test_every_node_is_preceded_by_a_pause_that_speaks_human(tmp_path):
+def test_every_expensive_node_is_preceded_by_a_pause_that_speaks_human(tmp_path):
     """**人不是最后一道关**：每个**花钱 / 动真页面**的节点之前都停一次，问的话是人话（D16）。
 
     这是 §6.2 的机器化：`deliver` 之前那次停顿与 `explore` 之前那次**同等重要** ——
     人可以在第 2 步就拦住它，而不是等它带着错走完。
+
+    ⚠️ **名字改过**（2026-09-20，复审 §2 残留那条）：原名叫
+    `test_every_node_is_preceded_by_a_pause_that_speaks_human` —— 它量的是**5 个
+    「花钱 / 动真页面」的节点**（`intake` 不设闸），名字里的「every node（每个节点）」
+    比它量的东西**宽**：下一个人按名字找覆盖会以为 6 个都在里面。改成
+    `every_expensive_node`，与 docstring 与断言里的「5 个会花钱的节点」**同一个口径**。
+    （复审判它只是**命名**问题、不是覆盖缺失 —— 下面那三条断言一条没少。）
 
     ⚠️ **计数从 6 改成 5**（2026-09-20）：`intake` 不再设闸（运营点「开一趟」就是确认）。
     这是**有意改的事实**，不是把断言放松了 —— 这条用例要钉的两件事一件没少，

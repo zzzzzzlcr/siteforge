@@ -15,7 +15,12 @@ GET  /health              活着吗、状态存哪儿了、cdp 在哪
    图里的 `intake` 闸也能拦（`END_NO_SUCCESS_TEXT`），但那要等一次提交 + 一次调度，
    而这条输入是免费的 —— 「先贵后像别的问题」正是 Task 7 修复轮刚拆掉的形状。
 2. **不替图发明默认值**（R-31）。没人给窗口层那根线、也没人点名允许跳过第 4 遍扰动 →
-   **照收**，让图在 `intake` 停下并说清「缺 `set_viewport`，谁给得了」。
+   **照收**，让图在 `intake` 就**结束这一趟**（`end_reason=missing_knob`）并点名
+   「缺 `set_viewport`，谁给得了」。
+   ⚠️ **是「结束这一趟」，不是「停在 `intake` 等人回话」**（2026-09-20 起 `intake`
+   不设闸 —— 复审 2026-09-20 §5① 点名这三处注释写的是旧机制）。差别在**运营能做什么**：
+   这道闸不存在 ⇒ `/reply` 409；而 `missing_knob` 也不在 `WINDOW_END_REASONS` 里
+   ⇒ `/reopen` **也** 409。要接着走只有**重开一个任务**。
    服务在这儿塞一个默认，等于替人**预授权跳过**（R-5 明令不许：
    「没验到」不许读成「验过了」）。所以那条 `missing_knob` **不是**要在服务里糊掉的 bug。
 3. **不许默默丢掉调用方给的约束**：
@@ -2735,8 +2740,10 @@ class Service:
     def _viewport_cb(self, ws_url: Optional[str] = None) -> Optional[Callable]:
         """窗口层那根线（第 4 遍扰动要换窗口大小）。
 
-        - 没人点名要它（载荷里 `set_viewport=false`）→ 返回 `None`：**图会停在 `intake`
-          点名**「缺 `set_viewport`，谁给得了」—— 那是 R-31 要的诚实停止，不是缺陷。
+        - 没人点名要它（载荷里 `set_viewport=false`）→ 返回 `None`：**图会在 `intake`
+          就结束这一趟**并点名「缺 `set_viewport`，谁给得了」—— 那是 R-31 要的诚实停止，
+          不是缺陷。⚠️ 是**结束**不是「停在闸上等人」：`intake` 2026-09-20 起不设闸
+          ⇒ 这条路 `/reply` 与 `/reopen` **都是 409**（见模块 docstring §2）。
         - 要了、但这个部署没接窗口层 → `_intake_problems` 已经在**提交那一刻**拒了。
         - 要了、也接了 → 真回调：**先写配置，再量活窗口**。量出来没变就**抛**
           （`selftest` 会把这一遍记成「没跑」，而「没跑」不算过，R-5）。
@@ -4825,7 +4832,9 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
     """拼一个 app。测试从这里注入桩图 / 桩窗口 / 内存 saver。
 
     `window=None` 是**默认且合法**的：这个部署没接窗口层 —— 于是 `set_viewport` 那根线
-    不存在，图会在 `intake` 停下点名（R-31 要的正是这个，不是要服务糊一个假回调）。
+    不存在，图会在 `intake` 就**结束这一趟**并点名（R-31 要的正是这个，不是要服务糊一个
+    假回调）。⚠️ 那句话走的是 `end_note`（**结束**这一趟），不是「停在闸上等人」——
+    `intake` 2026-09-20 起不设闸。
 
     `explore_dir` 是**运行产物**落哪（`runtime/explore/<job_id>/`，Task 1）。默认给的是
     仓库里那个 `runtime/`（不进 git）；测试一律传自己的 `tmp_path`。
