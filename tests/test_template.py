@@ -2211,7 +2211,7 @@ def test_the_main_frame_cannot_prop_the_gate_up(sandbox, form_file):
 
     为什么要钉子：判据比的是「地址命中 `want_urls`」，而**主帧的地址常常就命中它** ——
     这不是假想：【我量的】这条流程的真 `want_urls` 三条里有一条
-    `https://www.gowizard.com/auto/` **正是主帧地址的一部分**（`agent/template.py:865-867`
+    `https://www.gowizard.com/auto/` **正是主帧地址的一部分**（`agent/template.py:868-870`
     也把这条量过的话写在判据旁边）。主帧一旦混进这张表，判据会**静默恒真**，
     于是又回到「永远不去找问卷帧」那个起点。
 
