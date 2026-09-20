@@ -626,6 +626,34 @@ def test_no_raw_markdown_reaches_the_html():
     assert _raw_markdown_hits('el.innerHTML = "http://x/**着重**";'), "`://` 那一路也不许被抠掉"
 
 
+def test_the_rounds_sub_block_is_not_in_the_scanners_blind_spot():
+    """★ 修复轮 4：`#roundsSub` 那一块**必须留在扫描器看得见的地方**。
+
+    `_strip_js_comments` 有一条**已知的失步区**（它自己的 docstring 里记着）：落在里面时
+    字符串里的裸 `**` **漏报**、注释里的 `**` **误杀**。修复轮 3 复审实测：`#roundsSub`
+    那一块**当时正落在里面**，而且它上面那段注释**被圈进了
+    `innerHTML\\s*=\\s*([^;]+);` 的捕获串** ⇒ 注释自己那堆 `**` 躺在串里，
+    **恰好**被注释正文里的一个 `` `rich(` `` 字样挡住了误杀 —— **两个方向都瞎，今天绿是运气**。
+    ⇒ 修复轮 4 把那段注释**挪到 `innerHTML = …;` 语句外面**，这一块就恢复正常了。
+
+    这条是**回归绊线**：谁把注释挪回语句里（或在这一块里再塞一段注释），它**会红** ——
+    而不是让这一块安安静静地再瞎一次。⚠️ 射程：它只钉**这一块**，
+    不替 `_strip_js_comments` 那段 docstring 里记着的**整片失步区**作证。
+    """
+    page = _page()
+    assert not _raw_markdown_hits(page), _raw_markdown_hits(page)
+    #: ★ 正控：把裸 `**` 塞进**这一块**的字符串里，尺子**必须响**
+    marker = '      " 它收下你那份开场白之后，'
+    assert page.count(marker) == 1, (
+        "`#roundsSub` 那句承诺的起头找不到了（文案改了？）—— 这条绊线的锚要跟着改：%d 次"
+        % page.count(marker))
+    probed = page.replace(marker, '      " **探针** 它收下你那份开场白之后，')
+    assert _raw_markdown_hits(probed), (
+        "把裸 `**` 塞进 `#roundsSub` 那一块的字符串里，这把尺子**没响** —— 这一块又落回"
+        "它的失步区了（多半是那段注释被挪回 `innerHTML = …;` 里面、把捕获串喂饱了）。"
+        "`_strip_js_comments` 的 docstring 记着这个洞。")
+
+
 def test_the_html_helpers_go_through_rich():
     """写进 DOM 的**助手内部**也要过 `rich()`。
 
