@@ -1155,6 +1155,13 @@ class _State:
         self.url = "https://example.test/"
         #: 帧里那份 `location.href`（判据里「要含子帧地址」那一条靠它认）
         self.frame_url = ""
+        #: **逐帧**的 `location.href`（`{帧号: 地址}`）—— 给了它，`eval(..., frame_id=…)`
+        #: 就按那个帧号答；不在表里的帧号仍退回上面那个标量 `frame_url`。
+        #: 为什么需要它：真站上**广告帧与问卷帧的地址本来就不一样**，而
+        #: 「活帧表里有没有我要读的那一个」这条判据（`_live_frames_ok`）只有在这种
+        #: 页面上才验得出来 —— 一个标量会把每一帧答成同一个地址，
+        #: 于是「表里全是广告帧」与「表里有问卷帧」在替身眼里长得一模一样。
+        self.frame_urls = {}
         # 假页面：动作做得越多，页面越往后走。
         # 默认给一段文字是给**子进程**那条测试用的 —— 子进程里没机会配 STATE，
         # 而「按 ad-task 的调法跑起来能拿 0」必须真跑一次才算验过。
@@ -1259,7 +1266,10 @@ class CDPHelper:
             return json.dumps(STATE.current_text())
         if "location.href" in script:
             # 帧里那一份（`frame_url`）与主帧那一份（`url`）可以不一样 ——
-            # 真站上它们本来就不一样（子帧是部件、主帧是壳）
+            # 真站上它们本来就不一样（子帧是部件、主帧是壳）；
+            # 逐帧表 `frame_urls` 给了就先查它（见它的注释：广告帧与问卷帧不同址那一格靠它）
+            if frame_id and frame_id in STATE.frame_urls:
+                return json.dumps(STATE.frame_urls[frame_id])
             return json.dumps(STATE.frame_url if frame_id else STATE.url)
         return "null"
 
@@ -1994,6 +2004,231 @@ def test_live_frames_are_the_ones_in_the_latest_observation(sandbox, form_file):
     f._note_live_frames({"actions": [{"selector": "#q", "frame_path": ["main", "QUIZFRAME"]}]})
     assert f.live_frames == ["QUIZFRAME"], (
         "活帧表要跟着最近一次观测走（累加会让广告帧把真正的问卷帧挡在外面）：%s" % f.live_frames)
+
+
+# ── 帧门槛：活帧表里**有没有我要读的那一个**（线②）─────────────────────────
+#
+# 现场（**转述的 · 出处 `fix-gowizard-three-lines-plan.md` §2**，本文件不重复论证）：
+# 门槛当年是「某个活帧还读得到」，而**广告帧永远读得到** ⇒ 「不新鲜 / 没有活帧 /
+# 判据说不行」三门全假 ⇒ **永远不去找问卷帧** ⇒ 读页面只剩主帧 + 广告帧
+# ⇒ 按正文判据的状态**静默跳过**（不出声，看着像「跑完了、一步没走」）。
+#
+# 死锁闭环（**转述的 · 同上**）：读不到问卷 → `when` 不匹配 → 整组跳过 → 跳过 = 不去找
+# 元素 → 不触发 `_relocate` → 帧表永远不刷新 → 更读不到。
+#
+# 修法：判据改成**比地址** —— 手上这几个活帧里，有没有一个的 URL 命中「这条流程认得的
+# 那几个地址」（各状态 `when.url_contains`；**子串匹配**，与 `_matches` / `_urls`
+# 同一把尺子）。
+
+#: 真站那三个帧的地址（**转述的 · 出处 plan §2**，逐字抄的）—— 三者**完全分得开**，
+#: 而坏形状（主帧 + 广告帧，问卷帧不在里面）在日志里出现过 32 次。
+GW_MAIN_URL = "https://www.gowizard.com/auto/?text=Sedan&instance=1#chameleon"
+GW_QUIZ_URL = ("https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard"
+               "#iFrameId=mvfFormWidget-1")
+GW_AD_URL = "https://id-msp.newsbreak.com/sync-nbu?source=2&host=www.gowizard.com"
+#: 账本里那 19 个状态中 16 个要的地址（**转述的 · 出处 `agent/template.py:_urls` 的注释**）
+GW_QUIZ_WANT = "chameleon-na.www.gowizard.com/forms/7878"
+
+
+def _frame_states(when_url=GW_QUIZ_WANT):
+    """一条**活在帧里**的流程：账本里带 `frame_id` ⇒ `_read_frames` 那道门槛才会开。
+
+    ⚠️ `when_url=None` 时给的是**纯正文判据** —— 「这条流程一个地址都没报过」那一格
+    （`want_urls` 为空 ⇒ 回落旧口径，见 `test_a_flow_that_reports_no_url_keeps_the_old_ruler`）。
+    """
+    when = {"url_contains": when_url} if when_url else {"text_contains": ["Walk"]}
+    return [{"name": "quiz", "when": when,
+             "steps": [{"action": "click", "note": "点「Continue」",
+                        "target": {"text": "Continue", "role": "button", "near": None,
+                                   "selectors": ["#continue"], "frame_id": "LEDGERFRAME"}}]}]
+
+
+def _frame_filler(sandbox, form_file, name, when_url=GW_QUIZ_WANT, observe=None):
+    """渲染一条带帧的流程 → 起一个 Filler（替身已配好，帧表**由调用方自己摆**）。"""
+    module, _ = _load(
+        name,
+        template.render("example-" + name, "Thank you", _frame_states(when_url),
+                        [], SAMPLE_PROVENANCE),
+        sandbox)
+    _stub(sandbox,
+          observe=observe or {"url": "https://example.test/", "actions": [], "fields": []},
+          diff={"actionable": True})
+    return module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))
+
+
+def test_the_frame_gate_asks_for_the_urls_the_flow_knows(sandbox, form_file):
+    """判据要的那串地址来自**各状态的 `when.url_contains`** —— 不是账本里的帧号。
+
+    为什么**必须**是地址（这一格最容易走错，走错了也「看着能跑」）：帧号是探索期录的，
+    重放一开始的 `goto` 一重建子帧就全成死号，而 `_frame_url` 对死号返回空串 ⇒
+    按帧号收的那个集合**恒为空** ⇒ 判据退化成「每 `LIVE_PROBE_EVERY` 秒刷一次」。
+    那条路**碰巧也能把帧刷出来**（刷得够勤总能撞上问卷帧），但它不是判据，
+    而且代码做的事与 docstring 里写的不是一件事 —— 正是这一片反复栽的形状。
+    """
+    step = {"action": "click", "note": "点「Continue」",
+            "target": {"text": "Continue", "role": "button", "near": None,
+                       "selectors": ["#continue"], "frame_id": "LEDGERFRAME"}}
+    states = [
+        {"name": "landing", "when": {"url_contains": "www.gowizard.com/auto",
+                                     "text_contains": ["Get Started"]}, "steps": [step]},
+        {"name": "quiz", "when": {"url_contains": GW_QUIZ_WANT}, "steps": [step]},
+        # 同一个地址报两遍：只要一份（去重、保序）
+        {"name": "quiz-more", "when": {"url_contains": GW_QUIZ_WANT}, "steps": [step]},
+        # 纯正文判据 / 没有 when：一个地址都不贡献
+        {"name": "textonly", "when": {"text_contains": ["Walk"]}, "steps": [step]},
+        {"name": "nwhen", "when": None, "steps": [step]},
+    ]
+    module, _ = _load(
+        "run_want_urls",
+        template.render("example-want", "Thank you", states, [], SAMPLE_PROVENANCE),
+        sandbox)
+    _stub(sandbox,
+          observe={"url": "https://example.test/", "actions": [], "fields": []},
+          diff={"actionable": True})
+    f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))
+    assert f.want_urls == ["www.gowizard.com/auto", GW_QUIZ_WANT], f.want_urls
+    # 反例（这一条才是「来源不是帧号」的钉子）：账本里那个帧号**不在**这把尺子里
+    assert f.frames == ["LEDGERFRAME"], f.frames
+    assert "LEDGERFRAME" not in f.want_urls
+
+
+def test_the_gate_wants_the_quiz_frame_not_just_any_live_frame(sandbox, form_file):
+    """实测的两种形状（**转述的 · 出处 plan §2 的真站日志**）：
+
+    | 形状 | `live_frames` | 判据应当 |
+    |---|---|---|
+    | 好（成功单那一刻） | [问卷帧, 广告帧] | **True**（不刷新） |
+    | 坏（卡死那 6/13 步） | [广告帧] | **False ⇒ 触发刷新** ← 修好的就是这一格 |
+    """
+    f = _frame_filler(sandbox, form_file, "run_gate_shapes")
+    common = sys.modules["common"]
+    common.STATE.frame_urls = {"QUIZFRAME": GW_QUIZ_URL, "ADFRAME": GW_AD_URL}
+
+    f.live_frames = ["ADFRAME", "QUIZFRAME"]
+    assert f._live_frames_ok() is True, "问卷帧在表里（广告帧排在前面也算）⇒ 不用再去找"
+
+    f.live_frames = ["QUIZFRAME"]
+    assert f._live_frames_ok() is True, "只有问卷帧 ⇒ 当然不用再找"
+
+    f.live_frames = ["ADFRAME"]
+    assert f._live_frames_ok() is False, (
+        "表里只有广告帧 ⇒ 判据必须说「不行」（这一格是修好的那一格）：广告帧地址是 %s，"
+        "要的是含「%s」的" % (GW_AD_URL, GW_QUIZ_WANT))
+
+
+def test_a_table_of_ad_frames_really_sends_it_looking(sandbox, form_file):
+    """坏形状走**整条门槛**：真的去 `observe` 一次，帧表换成当场那一份。
+
+    上一条量的是判据本身；这一条量的是「判据说不行**之后**」—— 另两门（`_model_is_fresh`
+    与「活帧表非空」）都堵死，逼这一格单独承重。
+    """
+    model = {"url": "https://example.test/",
+             "actions": [{"selector": "#q", "text": "Continue", "role": "button",
+                          "region": "body", "visible": True, "occluded_by": None,
+                          "above_fold": True, "stability": "high", "alternates": [],
+                          "frame_path": ["main", "QUIZFRAME"]}],
+             "fields": []}
+    f = _frame_filler(sandbox, form_file, "run_gate_refresh", observe=model)
+    common = sys.modules["common"]
+    common.STATE.frame_urls = {"QUIZFRAME": GW_QUIZ_URL, "ADFRAME": GW_AD_URL}
+    f.live_frames = ["ADFRAME"]
+    f._last_model = {"url": common.STATE.url}      # 手上那份观测**还是这一页的**
+    assert f._model_is_fresh() is True, "另两门要先堵死，不然量不出这一格"
+    assert f.live_frames, "同上"
+
+    frames = f._read_frames()
+    assert f.live_frames == ["QUIZFRAME"], (
+        "坏形状必须真的去找一次，把表换成当场那一份：%s" % f.live_frames)
+    assert frames == ["LEDGERFRAME", "QUIZFRAME"], frames
+    assert _cdp_calls(sandbox), "「去找一次」= 起一次 cdp observe，一次都不起就没找"
+
+
+def test_a_table_with_the_quiz_frame_does_not_go_looking(sandbox, form_file):
+    """好形状：问卷帧已经在手上 ⇒ **一次都不去找**（这一条挡「每 3 秒刷一次」那条退化路）。"""
+    f = _frame_filler(sandbox, form_file, "run_gate_quiet")
+    common = sys.modules["common"]
+    common.STATE.frame_urls = {"QUIZFRAME": GW_QUIZ_URL, "ADFRAME": GW_AD_URL}
+    f.live_frames = ["ADFRAME", "QUIZFRAME"]
+    f._last_model = {"url": common.STATE.url}
+    frames = f._read_frames()
+    assert _cdp_calls(sandbox) == [], "问卷帧在手上还去 observe = 白起进程"
+    assert f.live_frames == ["ADFRAME", "QUIZFRAME"], "没去找就不该动这张表"
+    assert frames == ["LEDGERFRAME", "ADFRAME", "QUIZFRAME"], frames
+
+
+def test_the_deadlock_is_broken(sandbox, form_file):
+    """**端到端的那一格**：表里只有广告帧时，判据不再把整组步骤静默跳过。
+
+    摆法就是真站坏形状 + 手上那份观测还是这一页的（另两门堵死）——
+    此时**旧代码**会判「这一页不像 quiz」→ 整组跳过（一步不走，还不出声）；
+    改完会先去找一次，把问卷帧拿到手，再判 ⇒ 成立。
+    """
+    # 这一眼观测里**有**那个问卷帧（`observe` 喂给假 cdp 的那一份 —— 「去找一次」
+    # 找的就是它，不是别的什么内存里的表）
+    model = {"url": "https://example.test/",
+             "actions": [{"selector": "#q", "text": "Continue", "role": "button",
+                          "region": "body", "visible": True, "occluded_by": None,
+                          "above_fold": True, "stability": "high", "alternates": [],
+                          "frame_path": ["main", "QUIZFRAME"]}],
+             "fields": []}
+    f = _frame_filler(sandbox, form_file, "run_gate_deadlock", observe=model)
+    common = sys.modules["common"]
+    common.STATE.frame_urls = {"QUIZFRAME": GW_QUIZ_URL, "ADFRAME": GW_AD_URL}
+    f.live_frames = ["ADFRAME"]
+    f._last_model = {"url": common.STATE.url}      # 手上那份观测**还是这一页的**（另两门堵死）
+    assert f._live_frames_ok() is False, "摆的正是坏形状：表里只有广告帧"
+    when = {"url_contains": GW_QUIZ_WANT}
+    assert f._applies(when) is True, (
+        "帧表里只有广告帧时，判据要先去把问卷帧找出来再判，而不是判「不像」整组跳过")
+
+
+def test_the_main_frame_cannot_prop_the_gate_up(sandbox, form_file):
+    """主帧**天然不在** `live_frames` 里；而且就算将来有人把它塞进去，判据也不许恒真。
+
+    为什么要钉子：判据比的是「地址命中 `want_urls`」，而**主帧的地址常常就命中它**
+    （判据是从跨帧合并的模型里来的 —— 落地页那几个状态要的正是主帧地址）。
+    主帧一旦混进这张表，`_live_frames_ok()` 会**静默恒真**，于是又回到
+    「永远不去找问卷帧」那个起点。
+    """
+    # 这条流程要的地址**就是主帧那个**（落地页状态那种）
+    f = _frame_filler(sandbox, form_file, "run_gate_mainframe", when_url="example.test")
+    common = sys.modules["common"]
+    common.STATE.url = "https://example.test/"        # 主帧自己的地址：命中 want
+    common.STATE.frame_url = "https://example.test/"  # 子帧答的也跟主帧一样（最坏情况）
+    f.live_frames = [""]          # 主帧那个空帧号（若将来有人把它塞进表里）
+    assert f._live_frames_ok() is False, (
+        "主帧不许把判据撑成真（`_frame_url('')` 返回空串 —— 主帧根本不在这张表里）")
+
+    # 另一头：**表的来源**也不收主帧 —— `frame_path == ["main"]` ⇒ 空帧号 ⇒ 不进表
+    f._note_live_frames({"actions": [{"selector": "#hero", "frame_path": ["main"]}]})
+    assert f.live_frames == [], f.live_frames
+
+
+def test_a_flow_that_reports_no_url_keeps_the_old_ruler(sandbox, form_file):
+    """`want_urls` 为空 ⇒ **回落旧口径**（任一帧答得上就放行）—— **不是**「永远刷新」。
+
+    为什么回落：这条流程**没有任何状态报过地址**（判据全是 `text_contains` 那种）⇒
+    拿什么去比都不知道。此时判 False = 每 `LIVE_PROBE_EVERY` 秒起一次 `observe()`
+    （读页面每步都过这一门）—— 既白花钱，又**改掉了这条流程原来的行为**（它以前从不刷新）。
+    ⇒ 判不了就不判：**这条流程的帧判不了，按旧口径放行**。
+
+    ⚠️ 回落**不是恒真**：一个帧都答不上时照样要去找（下半段钉住它）。
+    """
+    f = _frame_filler(sandbox, form_file, "run_gate_no_want", when_url=None)
+    common = sys.modules["common"]
+    common.STATE.frame_urls = {"ADFRAME": GW_AD_URL}
+    f.live_frames = ["ADFRAME"]
+    f._last_model = {"url": common.STATE.url}
+    assert f.want_urls == [], f.want_urls
+
+    assert f._live_frames_ok() is True, (
+        "判不了 ⇒ 按旧口径放行（答得上就算数）；判 False 会退化成「每步都去 observe」")
+    f._read_frames()
+    assert _cdp_calls(sandbox) == [], "回落之后也不许去 observe（旧行为里它本来就不去）"
+
+    # 回落 ≠ 恒真：帧答不上（死号 —— `_frame_url` 读不到就空串）时照样要去找
+    common.STATE.frame_urls = {"ADFRAME": ""}
+    assert f._live_frames_ok() is False, "旧口径也要求「答得上」"
 
 
 # ⚠️ 「trace 留尾 + 成功布尔」这一格**没有钉子**：单跑绿、进全量套件红
