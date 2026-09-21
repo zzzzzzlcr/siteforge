@@ -179,7 +179,7 @@ __all__ = [
     "EXIT_SAY", "CONFIG_STATUS_SAY", "NO_DIAG_SAY", "int_or_none",
     "exit_say", "has_script_say", "rank_row_say", "rank_say", "diag_head_say",
     # Task B1：一份 JSON 配置的读（⑤）与写
-    "FORM_CONFIG_PATH", "FORM_CONFIG_UPDATE_PATH", "CONFIG_TIMEOUT",
+    "FORM_CONFIG_PATH", "FORM_CONFIG_UPDATE_PATH", "FORM_SCRIPT_PATH", "CONFIG_TIMEOUT",
     "FormWriteResult", "WRITE_VERDICTS", "business_status", "looks_like_wrapper",
 ]
 
@@ -219,6 +219,13 @@ DEFAULT_TIMEOUT = 20.0
 FORM_CONFIG_PATH = "/api/quest/formConfig"
 #: 写回一份配置的口（要 `X-Api-Token`）。
 FORM_CONFIG_UPDATE_PATH = "/api/quest/formConfig/update"
+
+# ── ⑥ 一个站的**脚本源码**：读（B 线 py 支，2026-09-21）──────────────────────
+#: 读一个站的脚本源码。**公开，无鉴权** —— 【我量的·2026-09-21】不带任何头去拿它
+#: （`?site=callyourdate.com/land/sp/519015a5`）回 HTTP 200 + 整份源码。
+#: ★ 它是**统一口**：后端一个配置行里要么是 py 源码、要么是 JSON steps
+#: （`QuestDiagnosisController::scriptKind()`），`type` 那一格自己说是哪种。
+FORM_SCRIPT_PATH = "/api/quest/formScript"
 
 #: 这两个口的超时（秒）—— **比别的读口短**（`DEFAULT_TIMEOUT` 是 20）。
 #: brief §2 R4：这是**给面板用的**，不是批量任务：人按了按钮在等一个答复，
@@ -892,6 +899,8 @@ _PATH_SAY = {
     #: 一个说不通的动词，也会让 `test_the_noun_each_reader_actually_prints_…`
     #: 那条「每个读口各报各的名」的循环去量一个不是读口的东西。
     FORM_CONFIG_PATH: "这份 JSON 配置",
+    #: B 线 py 支。同样是**读**口（写那个口 `formScript/update` 照旧不入表，理由同上）。
+    FORM_SCRIPT_PATH: "这个站的脚本",
 }
 
 
@@ -1246,6 +1255,46 @@ class FmrClient:
                 "（`{form_type, site, steps[], success}`）。%s。"
                 % (self._what(FORM_CONFIG_PATH), str(inner)[:60], UNMEASURED_SAY))
         return inner
+
+    # ── ⑥ 一个站的脚本源码：读（B 线 py 支）──────────────────────────
+    def form_script(self, site: str) -> dict:
+        """**这个站的脚本源码**（后端那一份，逐字）→ `{type, source, version, sha256, …}`。
+
+        【我量的·2026-09-21】`GET /api/quest/formScript?site=<键>`：
+
+        - **公开**（不带任何头也回 200）⇒ 走 `need_token=False`，没配 token 的部署也读得动；
+        - 回 `{site, requested_site, type, version, sha256, source}`；
+        - `type` 是 `py` 或 `json` —— **一个口两种**。后端那个判据是
+          `scriptKind()`：`script_source` 非空 ⇒ `py`；否则 `steps` 解得出非空数组
+          ⇒ `json`；都没有 ⇒ 后端回 `status:404 script not found`。
+
+        ★★ **`type: json` 不是「这个站的脚本是空的」。** 它是「**这个站跑的是配置**，
+        不是脚本」—— 两件事处置完全不同：前者该去走 `form_config` 那条路，
+        后者才是「这个站该补一份脚本」。谁把 `source: None` 读成「空脚本」，
+        就会拿一份空脚本去修一个好好的 json 站。（与 B1 那两个口同一条纪律，
+        只是这次的形状换了：不是「查不到 vs 没有」，是「**另一种东西** vs 空的」。）
+
+        ⚠️ `source` 是**逐字节**的 —— 后端原话「首尾换行是源码的一部分」，
+        而且 `formScript/update` 拿它的 sha256 当指纹。这一层**原样带出去**，
+        任何 `strip()` 都算把这份源码改坏了（而且改坏是静默的）。
+        """
+        key = str(site or "").strip()
+        if not key:
+            raise FmrUnmeasured(
+                "读不了这个站的脚本：没说是**哪个站** —— 这是免费的检查"
+                "（一个请求都没发出去）。", kind="no-site")
+        data = self._call(FORM_SCRIPT_PATH, {"site": key}, shape=dict,
+                          need_token=False, opener=self._config_opener)
+        kind = data.get("type")
+        if kind not in ("py", "json"):
+            # ⚠️ **不许默认成 py**：回了一份没有 `type` 的正文时，猜错的代价是
+            # 「拿一份空脚本去修一个 json 站」——而那看起来与「这个站该补脚本」一模一样。
+            raise FmrUnmeasured(
+                "读不了%s：信封对得上（`status:200`），可 `type` 那一格既不是 `py` "
+                "也不是 `json`（读回来的是 %s…）—— 这一格要的是**后端自己说这是哪种**，"
+                "这一层不替它猜。" % (self._what(FORM_SCRIPT_PATH), str(kind)[:40]),
+                kind="no-type")
+        return data
 
     # ── ⑤ 一份 JSON 配置：写（Task B1）──────────────────────────────
     def update_form_config(self, site: str, steps: Any) -> FormWriteResult:

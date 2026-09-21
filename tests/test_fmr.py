@@ -1143,6 +1143,8 @@ def test_the_noun_each_reader_actually_prints_is_the_one_for_that_endpoint():
                 "/api/quest/failDiag": lambda c: c.fetch_diag("1"),
                 #: Task B1 ⑤：它**不带 token 也走得通**（公开口），所以这里不必配 token。
                 fmr.FORM_CONFIG_PATH: lambda c: c.form_config("cvrefresh.com"),
+                #: B 线 py 支（2026-09-21）：同样是**公开**口，不配 token 也走得通。
+                fmr.FORM_SCRIPT_PATH: lambda c: c.form_script("cvrefresh.com"),
             }[path]
             with pytest.raises(fmr.FmrUnmeasured) as e:
                 call(client(rec))
@@ -1633,3 +1635,102 @@ def test_the_config_ports_time_out_sooner_than_the_other_reads():
     assert plain._config_opener.keywords["timeout"] == fmr.CONFIG_TIMEOUT, plain._config_opener
     assert plain._poster.keywords["timeout"] == fmr.CONFIG_TIMEOUT, plain._poster
     assert plain._opener is fmr._default_get, "老四个读口那个传输被动了"
+
+
+# ═══════════════ 读：这个站的**脚本源码**（B 线 py 支，2026-09-21）═══════════════
+#
+# 后端一个配置行里**要么是 py 源码、要么是 JSON steps**（`QuestDiagnosisController::scriptKind()`：
+# `script_source` 非空 ⇒ `py`；否则 `steps` 解得出非空数组 ⇒ `json`；都没有 ⇒ 没有脚本）。
+# `formScript` 是**统一读口**：两种都认，`type` 那一格自己说这一行是哪种。
+#
+# ★ 这一族的重心与 B1 那两个口**同源**：「量不到」不许被读成「量到了、是空的」。
+#   这里那个形状换成了：**`type: json` 不等于「这个站的脚本是空的」** ——
+#   它是「这个站跑的是配置，不是脚本」。两者处置完全不同。
+
+#: 【我量的·2026-09-21】py 那一支的真回执（`GET /api/quest/formScript?site=<那个键>`，
+#: **不带任何 token**，HTTP 200）。`source` 真身 14220 字节，这里留个短样本。
+MEASURED_SCRIPT_PY_BODY = {
+    "status": 200, "msg": "ok",
+    "data": {"site": "callyourdate.com/land/sp/519015a5",
+             "requested_site": "callyourdate.com/land/sp/519015a5",
+             "type": "py", "version": "20260918",
+             "sha256": "b7e3fc041f7c" + "0" * 52,
+             "source": "#!/usr/bin/env python3\nSTATES = []\n"},
+}
+#: 【我量的·2026-09-21】json 那一支（`…?site=cvrefresh.com`）：同一个口，**不带 source**。
+MEASURED_SCRIPT_JSON_BODY = {
+    "status": 200, "msg": "ok",
+    "data": {"site": "cvrefresh.com", "requested_site": "cvrefresh.com",
+             "type": "json", "version": None, "sha256": None, "source": None},
+}
+#: 【我量的·2026-09-21】没这个站（`…?site=www.gowizard.com/auto-warranty/`）→ 这一份，**HTTP 也是 200**。
+MEASURED_SCRIPT_NOT_FOUND_BODY = {"status": 404, "msg": "script not found", "data": []}
+
+
+def test_the_script_query_is_the_one_that_was_measured():
+    """请求形状 + py 那一支带源码。
+
+    ★ 这个口**公开**：与 `form_config` 同理（worker 在读，不能要求带 token）。
+    所以 token 传空也要读得动 —— 这一条就把「公开」钉住了。
+    """
+    rec = Recorder(MEASURED_SCRIPT_PY_BODY)
+
+    got = fmr.FmrClient(token="", opener=rec).form_script("callyourdate.com/land/sp/519015a5")
+
+    path, params = query_of(rec.urls[0])
+    assert path == "/api/quest/formScript", path
+    #: ⚠️ 站点键带斜杠 —— 必须编码进查询参数（走路径参数会被切成好几段）。
+    assert params["site"] == "callyourdate.com/land/sp/519015a5", params
+    assert got["type"] == "py", got
+    assert got["source"].startswith("#!/usr/bin/env python3"), got["source"]
+    assert got["sha256"], got
+    assert got["version"] == "20260918", got
+
+
+def test_the_json_branch_is_not_an_empty_script():
+    """★ **`type: json` 不是「这个站的脚本是空的」。**
+
+    它是「这个站跑的是配置，不是脚本」—— 两件事处置完全不同：
+    前者该去走配置那条路（`form_config`），后者才是「这个站该补一份脚本」。
+    谁把 `source: None` 读成「空脚本」，就会拿一份空脚本去修一个好好的 json 站。
+    """
+    got = fmr.FmrClient(token="", opener=Recorder(MEASURED_SCRIPT_JSON_BODY)
+                        ).form_script("cvrefresh.com")
+
+    assert got["type"] == "json", got
+    assert got["source"] is None, got
+
+
+def test_the_script_type_is_never_guessed():
+    """`type` 只有后端说了才算 —— 回了一份**没有 type** 的正文时**抛**，不许默认成 py。"""
+    body = {"status": 200, "msg": "ok",
+            "data": {"site": "x", "type": None, "source": "x = 1\n"}}
+    with pytest.raises(fmr.FmrUnmeasured) as exc:
+        fmr.FmrClient(token="", opener=Recorder(body)).form_script("x")
+
+    said = str(exc.value)
+    assert "type" in said or "哪种" in said, said
+
+
+def test_a_site_without_a_script_raises():
+    """后端回 `status:404 script not found` ⇒ **抛**（这个站它不认识 / 没有配置）。
+
+    ⚠️ 不许退化成「一份空脚本」：那是把「查不到」读成「查到了、是空的」——
+    这一族最贵的那个形状。
+    """
+    with pytest.raises(fmr.FmrUnmeasured) as exc:
+        fmr.FmrClient(token="", opener=Recorder(MEASURED_SCRIPT_NOT_FOUND_BODY)
+                      ).form_script("www.gowizard.com/auto-warranty/")
+
+    assert "script not found" in str(exc.value), str(exc.value)
+
+
+def test_no_site_key_reading_a_script_is_a_free_check():
+    """没给站点键 ⇒ **抛**，而且**一个请求都不发**。"""
+    rec = Recorder(MEASURED_SCRIPT_PY_BODY)
+
+    with pytest.raises(fmr.FmrUnmeasured) as exc:
+        fmr.FmrClient(token="", opener=rec).form_script("   ")
+
+    assert rec.urls == [], "没站点键却发了请求：%s" % rec.urls
+    assert "哪个站" in str(exc.value) or "site" in str(exc.value), str(exc.value)
