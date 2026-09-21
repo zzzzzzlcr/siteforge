@@ -306,6 +306,49 @@ def test_a_legacy_script_becomes_a_patch_run_instead_of_being_refused(tmp_path):
     assert rec.selftest[0].get("legacy") is True, rec.selftest[0]
 
 
+def _replace_block(old: str, *, needle: str, new_lines: list) -> str:
+    """造一块 `<<<REPLACE a-b 锚点`（行号与锚点都是从旧源码**取**的，不是抄的）。"""
+    lines = old.splitlines()
+    at = next(i for i, ln in enumerate(lines) if needle in ln) + 1
+    body = "\n".join(new_lines)
+    #: ⚠️ 空 `new_lines` = **删掉这一段**（头下一行就是 `>>>`）——
+    #: 中间空一行的话，那是一个**空行**（替换成空行），不是删。
+    return "<<<REPLACE %d-%d %s\n%s%s>>>\n" % (at, at, lines[at - 1].strip()[:16],
+                                               body, "\n" if body else "")
+
+
+def test_a_line_range_reply_is_applied_by_number_and_checked_by_its_anchor():
+    """★ 行号 + 短锚点（用户 2026-09-21 挑的那根杠杆）：**不用模型抄原文**。
+
+    为什么换这个形状：让它抄 diff 的上下文行，它时不时抄错（抄错就整趟白跑）。
+    这里只让它说**行号** + 那一段第一行开头的**几个字**，原文我们自己取。
+    """
+    block = _replace_block(LEGACY_PY, needle="MAX_STEPS = 40", new_lines=["MAX_STEPS = 90"])
+    applied = fix.source_from_reply(LEGACY_PY, "改好了：\n```\n%s```" % block)
+    assert "MAX_STEPS = 90" in applied
+    assert applied.replace("MAX_STEPS = 90", "MAX_STEPS = 40") == LEGACY_PY, "别的行被动了"
+
+    #: 删（把这一段换成空）/ 多块（从后往前套，行号不互相挪）
+    drop = _replace_block(LEGACY_PY, needle="MAX_STEPS = 40", new_lines=[])
+    assert len(fix.apply_edits(LEGACY_PY, drop).splitlines()) == len(LEGACY_PY.splitlines()) - 1
+    two = _replace_block(LEGACY_PY, needle="#!/usr/bin/env python3", new_lines=["#!/usr/bin/env python3", "# 注"]) \
+        + block
+    got = fix.apply_edits(LEGACY_PY, two)
+    assert "# 注" in got and "MAX_STEPS = 90" in got, "多块没套对"
+
+    #: 三条闸逐条：锚点对不上 / 行号越界 / 没给锚点 —— **一个字都不改**
+    cases = {
+        "锚点对不上": _replace_block(LEGACY_PY, needle="MAX_STEPS = 40", new_lines=["x"]).replace(
+            "MAX_STEPS = 40", "别的什么东西", 1),
+        "行号越界": "<<<REPLACE 999999-999999 随便\nx\n>>>\n",
+        "没给锚点": "<<<REPLACE 1-1\nx\n>>>\n",
+    }
+    for label, bad in cases.items():
+        with pytest.raises(ValueError) as caught:
+            fix.apply_edits(LEGACY_PY, bad)
+        assert "一个字都没改" in str(caught.value) or "不套" in str(caught.value), (label, caught.value)
+
+
 def test_the_gates_show_what_the_patch_changed(tmp_path):
     """★ 人要在**放它去跑真页面**之前看见它动了什么 —— 那两格的 diff 就是为这件事。
 

@@ -43,7 +43,7 @@ from agent import plan as plan_mod
 
 __all__ = ["from_py", "repair_states", "REQUIRED_CLI_FLAGS",
            "PATCH_SYSTEM", "shape_of", "check_patch", "patch_user", "extract_source",
-           "patch_from_rounds", "apply_diff", "source_from_reply"]
+           "patch_from_rounds", "apply_diff", "apply_edits", "source_from_reply"]
 
 #: 取站方配置的超时（秒）。**短** —— 它是可选层，拿不到就往下走，不能把整趟拖住。
 CONFIG_TIMEOUT = 8.0
@@ -333,11 +333,16 @@ PATCH_SYSTEM = """\
 4. 不许加新的第三方依赖，不许改目录结构，不许把逻辑搬去别的文件。
 5. 只改**该改的那一处**：其余的行尽量原样留着（改错别的地方比不修更坏）。
 
-怎么答：交回一段 **unified diff**（`@@ -旧起点,行数 +新起点,行数 @@` 那种）——
-只含**你要改的那几处**，放在一个 ```diff 围栏里，围栏外**一个字都不要写**。
+怎么答：**一处一块**，写成这样（放在围栏里，围栏外**一个字都不要写**）：
 
-⚠️ diff 里的**上下文行与 `-` 行必须与旧源码逐字一致**：这一侧拿它们对位，对不上就整份退回、
-**一个字都不改**。所以别凭记忆写原文 —— 照着上面贴给你的那份抄。
+<<<REPLACE 340-352 def _option_index
+（这里是替换上去的行 —— 把旧源码第 340 行到第 352 行**整段换成**它们）
+>>>
+
+⚠️ 头一行三个东西：**起行 止行 锚点**。行号用上面那份清单**左边那一列**（别自己数）；
+锚点写那一段**第一行开头**的几个字（我们拿它核对位置）。
+⚠️ 行号或锚点**任一对不上，就整份退回、一个字都不改** —— 所以别猜行号，也**不用**抄原文的其它行。
+⚠️ 要改几处就写几块，各自一对 `<<<REPLACE …` / `>>>`。
 ⚠️ **别把整份源码交回来**：这份文件很长，整份重写会失败（实测：预算会被思考吃满）。"""
 
 
@@ -365,8 +370,8 @@ def patch_user(old_src: str, *, evidence: str = "", success_text: str = "",
     numbered = "\n".join("%5d| %s" % (i, ln) for i, ln in enumerate(old_src.splitlines(), 1))
     parts.append("## 旧源码（生产里正在跑的那一份，逐字；**左边那个数是行号**）\n```\n%s\n```"
                  % numbered)
-    parts.append("照上面那些约束交一段 **diff**：`@@ -旧起点,行数 +新起点,行数 @@` 里那两个数"
-                 "**就用左边那一列**（别自己数）；上下文行与 `-` 行**照着上面抄**。")
+    parts.append("照上面那个形状交：每一处一块 `<<<REPLACE 起行-止行 锚点`，末尾单独一行 `>>>`。"
+                 "行号用清单左边那一列，锚点写那一段第一行开头的几个字。")
     return "\n\n".join(parts)
 
 
@@ -460,16 +465,70 @@ def apply_diff(old: str, diff: str) -> str:
     return "".join(out)
 
 
+#: 「第 a–b 行换成 …」那一块的头：`<<<REPLACE 340-352 def _option_index`（锚点不给就核对不了）
+_EDIT = re.compile(r"^<<<\s*REPLACE\s+(\d+)\s*-\s*(\d+)\s*(.*)$", re.M)
+_EDIT_END = re.compile(r"^(>>>\s*$|<<<\s*END.*$)", re.M)
+
+
+def apply_edits(old: str, text: str) -> str:
+    """把「第 a–b 行换成 …」那几块套上去 → 新源码。**严格**（与 `apply_diff` 同一条规矩）。
+
+    为什么要这个形状（2026-09-21 量的）：让模型**抄原文**（unified diff 的上下文行），
+    它时不时**抄错**（抄错就套不上 ⇒ 整趟白跑；实测同一个站两次里撞一次）。这个形状
+    只让它说**行号** + 那一段**开头那几个字**（锚点），原文由我们这边自己取 ——
+    「抄错」这一条路直接没了。
+
+    头：`<<<REPLACE <a>-<b> <锚点>`；正文是替换上去的行；尾：单独一行 `>>>`。
+    **多块**照收（从后往前套，行号才不会互相挪动）。
+    ⚠️ 三条闸，一条不过就**一个字都不改**：行号落在范围内 · 给了锚点 · 锚点对得上第 a 行。
+    """
+    lines = str(old).splitlines(keepends=True)
+    body = str(text or "").splitlines()
+    blocks = []
+    i = 0
+    while i < len(body):
+        m = _EDIT.match(body[i])
+        if not m:
+            i += 1
+            continue
+        a, b, anchor = int(m.group(1)), int(m.group(2)), m.group(3).strip()
+        i += 1
+        chunk = []
+        while i < len(body) and not (_EDIT.match(body[i]) or _EDIT_END.match(body[i])):
+            chunk.append(body[i])
+            i += 1
+        blocks.append((a, b, anchor, chunk))
+    if not blocks:
+        raise ValueError("这段回话里**一处 `<<<REPLACE` 都没有** —— 那就没有改动可套。")
+    for a, b, anchor, _ in blocks:
+        if not (1 <= a <= b <= len(lines)):
+            raise ValueError("有一块说「第 %d–%d 行」，可旧源码只有 %d 行 —— 对不上，一个字都没改。"
+                             % (a, b, len(lines)))
+        if not anchor:
+            raise ValueError("有一块（第 %d–%d 行）**没给锚点** —— 光有行号我们核对不了，不套。"
+                             "锚点就是那一段**第一行开头那几个字**。" % (a, b))
+        if anchor not in lines[a - 1]:
+            raise ValueError("有一块的锚点对不上：它说第 %d 行是「%s」，可实际是「%s」"
+                             " —— 一个字都没改。"
+                             % (a, anchor[:40], lines[a - 1].rstrip("\n")[:40]))
+    for a, b, _, chunk in sorted(blocks, key=lambda x: -x[0]):     # 从后往前，行号不互相挪
+        lines[a - 1:b] = [ln + "\n" for ln in chunk]
+    return "".join(lines)
+
+
 def source_from_reply(old: str, reply: str) -> str:
     """模型的原话 → **这一版的新源码**：先剥围栏，再看它是 diff 还是整份。
 
-    - 有 `@@` ⇒ 走 `apply_diff`（**首选**，也是提示词要的形状）；
+    - 有 `<<<REPLACE` ⇒ 走 `apply_edits`（**首选**：不用它抄原文，也就没有「抄错」这个失败源）；
+    - 有 `@@` ⇒ 走 `apply_diff`（老形状，仍然收）；
     - 整份 py（`_looks_like_source`：`ast.parse` 过且有 `def`/`class`/`import`）⇒ **照收**（模型偶尔直接交源码）；
     - 都不是 ⇒ 抛，说清读出的是什么（不许把一段散文当补丁）。
       ⚠️ 「合不合契约」不在这儿判（那是 `check_patch`），不然「丢了 `--log-level`」会被
       说成「这不是一份 py」—— 两层混起来，读的人就查错方向了。
     """
     block = extract_source(reply)
+    if _EDIT.search(block or "") or _EDIT_END.search(block or ""):
+        return apply_edits(old, block)
     if _HUNK.search(block or ""):
         return apply_diff(old, block)
     if _looks_like_source(block):
