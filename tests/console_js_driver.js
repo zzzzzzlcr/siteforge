@@ -210,6 +210,30 @@ async function runScenario(out) {
   out.afterFollow = { who: el("whoJob").textContent, timeline: el("timeline").innerHTML };
 }
 
+//: 「步骤表」（2026-09-21）：人给了顺序 —— 一行一步 —— 要**并进 `note`、原样**进提示词。
+//: ⚠️ 量的是**发出去的正文**（`sent` 里最后那一跳 `/run`），不是输入框里那几个字：
+//: 「填了但没发出去」这种改法照旧绿是这一片最怕的形状。
+async function runStepsScenario(out) {
+  el("runMode").value = "fix";
+  fire("runMode", "change");
+  el("runUrl").value = payload.run.url;
+  el("runGoal").value = payload.run.goal;
+  el("runSuccess").value = payload.run.success_text;
+  el("runEvidence").value = payload.run.evidence;
+  el("runNote").value = payload.run.note;
+  el("runSteps").value = payload.run.steps_text;
+  //: 与 `run` 那条场景同一格（夹具要求载荷里必须是 `true`）。⚠️ 这一格**不是**这一步的主角，
+  //: 但它在这一趟里也得是对的 —— 少勾一格就等于量了另一份载荷。
+  el("runAllowDisabled").checked = true;
+  fire("btnRun", "click");
+  await settle();
+  await settle();
+  const lastRun = [...sent].reverse().find((s) => s.url === "/run");
+  out.runBody = lastRun ? lastRun.body : "";
+  out.noteBox = el("runNote").value;
+  out.stepsBox = el("runSteps").value;
+}
+
 //: 「开一趟」**被服务拒了**（Task 12）：服务回 400 + 一句人话 ⇒ 那句话**原样**上屏、
 //: **活过之后三次重画**，而且这一屏**不许**跟着换趟（它压根没拿到 job id）。
 async function runRefusedScenario(out) {
@@ -508,6 +532,7 @@ async function againScenario(out) {
   else if (payload.scenario === "gate-facts") { await gateFactsScenario(out); }
   else if (payload.scenario === "artifact") { await artifactScenario(out); }
   else if (payload.scenario === "run") { await runScenario(out); }
+  else if (payload.scenario === "run-steps") { await runStepsScenario(out); }
   else if (payload.scenario === "run-refused") { await runRefusedScenario(out); }
   else if (payload.scenario === "window") { await windowScenario(out); }
   else if (payload.scenario === "page-view") { await pageViewScenario(out); }

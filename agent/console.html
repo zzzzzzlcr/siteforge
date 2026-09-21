@@ -561,6 +561,16 @@
                   跑起来之后每道闸上也还能再说。</p>
               </div>
               <div class="field">
+                <label for="runSteps">步骤表（可空，一行一步）</label>
+                <textarea id="runSteps" rows="4" spellcheck="false"
+                          placeholder="点 #cookiescript_accept ｜ 等 2-5 秒 ｜ 出现 #fname 才算这一步成了&#10;填 #fname ｜ 等 ｜ 出现 #postcode"></textarea>
+                <p class="why">你知道顺序就写这儿 —— 一行一步：
+                  <b>动作 + 选择器 ｜ 等多久 ｜ 出现哪个元素才算这一步成了</b>。
+                  它会<b>原样</b>进提示词，模型照它发号施令、不再自己设计流程；失败时也能直接报
+                  「<b>第几步</b>没等到哪个元素」。选择器不确定就写人话（「点那个 Accept all」），
+                  或者用「页面现场」里的<b>指它</b>把工具算出来的选择器填进来。</p>
+              </div>
+              <div class="field">
                 <label for="runForm">表单数据（可空）</label>
                 <input type="text" id="runForm" autocomplete="off" spellcheck="false"
                        placeholder="{&quot;email&quot;: &quot;…&quot;} —— 走通这条路过一遍要填的那些值">
@@ -1702,6 +1712,15 @@
   //: ⚠️ `evidence` **按人打的字原样带上**（不管这一趟选的是哪种活）：
   //: 页面只负责「选老站就把那一格露出来」，**要不要它由服务判** —— 页面顺手丢掉
   //: 人已经写下的字，那是替服务做了决定（而他写的那些字就白写了）。
+  //: 「开工前那一句」+「步骤表」拼成一段（步骤表非空时带一个抬头 —— 让模型一眼分得开
+  //: 「人给的话」与「人给的顺序」）。⚠️ 两边都 `trim()`：「全是空格」不算填了。
+  function noteWithSteps() {
+    var note = document.getElementById("runNote").value.trim();
+    var steps = document.getElementById("runSteps").value.trim();
+    if (!steps) { return note; }              // 没写步骤表 ⇒ 正文与从前**一字不差**
+    return (note ? note + "\n\n" : "") + "【步骤表（人给的，照它走）】\n" + steps;
+  }
+
   function runPayload() {
     var url = document.getElementById("runUrl").value.trim();
     return {
@@ -1721,7 +1740,10 @@
       //: ⚠️ 同样是**只取值**（`trim()` 去掉首尾空白，「全是空格」不该被当成「填了」）。
       "form_data": document.getElementById("runForm").value.trim(),
       //: ★ 开工前那一句（2026-09-21）：服务把它放进 `hints`，逐字进模型的提示词。
-      "note": document.getElementById("runNote").value.trim(),
+      //: ★ 步骤表（2026-09-21）：**并进同一格**（`noteWithSteps`）—— 服务那一格本来就是
+      //:   `hints`（逐字进提示词），多开一个载荷字段就要服务/状态/提示词三处跟着改，
+      //:   而它到达的地方**一模一样**。
+      "note": noteWithSteps(),
       //: ★ 停用的站照修（2026-09-21）：勾了才让服务拿 `type=debug` 那一份当底稿。
       //: ⚠️ 发的是**布尔**（不是 "on"）：服务那一格是 `bool`，发字符串会被 pydantic 当成真值，
       //: 「没勾」与「勾了」就分不出来了（闸门形同虚设）。

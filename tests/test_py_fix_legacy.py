@@ -385,7 +385,9 @@ def test_the_patch_prompt_teaches_the_tool_habits_that_already_exist():
     said = fix.patch_user(LEGACY_PY)
     for want in ("人插的话", "照他给的那个写", "同意弹层", "cookie|consent|gdpr|privacy",
                  "下一步的关键元素", "最多 3 次", "如实报失败", "scroll", "covered_by",
-                 "self.cdp"):
+                 "self.cdp",
+                 #: ★ 步骤表那一段（2026-09-21 用户：「假如我固定描述步骤会不会好点」）
+                 "步骤表", "照那张表发号施令", "等待区间", "第 N 步", "self._rpt"):
         assert want in said, (want, said[:300])
     assert "cdp observe" not in said and "cdp diff" not in said, "生产那个 cdp 没有这两样"
 

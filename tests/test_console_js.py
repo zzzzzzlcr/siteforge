@@ -323,6 +323,8 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
     #: 而那一条**照样跑得完**（量出来的是一趟完全不同的驱动）—— 实测栽过一次。
     elif scenario == "run":
         payload = _run_payloads()
+    elif scenario == "run-steps":
+        payload = _run_steps_payloads()
     elif scenario == "run-refused":
         payload = _run_refused_payloads()
     elif scenario == "window":
@@ -710,6 +712,30 @@ def _run_payloads() -> dict:
             }}
 
 
+#: 「步骤表」那一趟（2026-09-21）：人把**顺序**也写下来了。
+RUN_STEPS_NOTE = "先点掉那层同意横幅"
+RUN_STEPS_TEXT = "点 #cookiescript_accept ｜ 等 2-5 秒 ｜ 出现 #fname 才算这一步成了"
+
+
+def _run_steps_payloads() -> dict:
+    """★ 「步骤表」并进 `note`（2026-09-21）：量的是**发出去的 `/run` 正文**里那一格。
+
+    为什么另开一条场景（而不是塞进 `run`）：那一条的断言是「按一下**正好**发一次」——
+    在同一条里再按一次会把它改红，而那条断言本身是对的。
+    """
+    lives = [{"body": _live("running", "queue", n=1 + i, tag="新开的",
+                            window=_window_cell(can_close=False, can_reopen=False))}
+             for i in range(3)]
+    _assert_all_different([x["body"] for x in lives], "`/live` 的正文")
+    return {"scenario": "run-steps", "search": "",
+            "run": dict(RUN_FORM, note=RUN_STEPS_NOTE, steps_text=RUN_STEPS_TEXT),
+            "responses": {
+                "/runs": [{"body": {"note": "还没有任何运行。", "runs": []}}],
+                "/run": [{"body": {"job_id": NEW_JOB, "say": SUBMITTED_SAY}}],
+                "/job/%s/live" % NEW_JOB: lives,
+            }}
+
+
 def _run_refused_payloads() -> dict:
     """「开一趟」**被服务拒了**：400 + 服务那张人话单子 ⇒ 原样上屏，而且**不许**跟着换趟。"""
     lives = [{"body": _live("waiting", "gate", n=1 + i)} for i in range(8)]
@@ -1040,6 +1066,30 @@ def test_the_operator_can_start_a_new_run_from_the_panel(tmp_path):
     assert NEW_JOB in out["afterFollow"]["who"], out["afterFollow"]
     # 服务回的那句话**上了屏**（`pickJob` 的挑法说明；页面不自己编一句）
     assert SUBMITTED_SAY in out["afterRun"]["notices"], out["afterRun"]["notices"]
+
+
+def test_the_step_table_rides_into_the_prompt_verbatim(tmp_path):
+    """★ 「步骤表」（2026-09-21 用户那句「假如我固定描述步骤会不会好点」+ 他 JSON 线本来就是步骤表）。
+
+    为什么这一格承重：这条线原来难，难在**猜三件事** —— 点哪个元素 / 什么时候算好了 /
+    做成了没有。而这三件都是「人 + 工具」一句话能定死的：人给顺序与「下一步的关键元素」，
+    工具给选择器（`cdp observe` + 「指它」）。定死之后：失败能报「**第几步**没等到哪个元素」
+    （老写法不认 `--trace`，这一行是唯一的定位），等待用**人的区间**（30-50 秒）而不是模型拍的值。
+
+    ⚠️ 这一格**不另开载荷字段**：并进 `note` —— 服务那一格本来就是 `hints`（逐字进提示词），
+    多开一格就要服务 / 状态 / 提示词三处跟着改，而它到达的地方**一模一样**。
+    ⚠️ 另一半（没写步骤表 ⇒ 正文与从前**一字不差**）由
+    `test_the_operator_can_start_a_new_run_from_the_panel` 钉着（那一条量的是空步骤表那一趟）。
+    """
+    out = _drive(tmp_path, scenario="run-steps")
+    body = json.loads(out["runBody"])
+    assert body["note"] == (RUN_STEPS_NOTE + "\n\n【步骤表（人给的，照它走）】\n" + RUN_STEPS_TEXT), body["note"]
+    #: 别的格子一个都不许被这一格带歪
+    assert body["success_text"] == RUN_FORM["success_text"], body
+    assert body["evidence"] == RUN_FORM["evidence"], body
+    assert body["allow_disabled"] is True, body
+    #: 两个框里那两段字**发完还在**（没被清掉 —— 「送出去了」才是要清的那种）
+    assert out["noteBox"] == RUN_STEPS_NOTE and out["stepsBox"] == RUN_STEPS_TEXT, out
 
 
 def test_the_run_form_only_reveals_the_evidence_cell_when_the_mode_is_fix(tmp_path):
