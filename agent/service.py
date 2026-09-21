@@ -2033,8 +2033,7 @@ class Service:
 
         def patch(old_src: str, feedback: dict) -> str:
             fb = feedback or {}
-            vios = ["第 %s 行 —— %s" % (v.get("line"), v.get("message"))
-                    for v in (fb.get("violations") or [])]
+            vios = fix.violations_for_prompt(fb.get("violations"))
             diag = fb.get("diagnosis") if isinstance(fb.get("diagnosis"), dict) else {}
             #: 模型不调工具直接答（`tool_specs=[]`）—— 这是**一次问答**，不是工具循环。
             rounds = llm.run_tool_loop(

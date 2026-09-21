@@ -107,6 +107,8 @@ from __future__ import annotations
 
 import datetime
 import pathlib
+import copy
+import difflib
 import re
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -742,6 +744,33 @@ def _spent_after(spent: dict, journeys: list) -> dict:
     return out
 
 
+#: 补丁最多试几次：第一次没过闸 / 没套上，把**逐条**原因回灌再补一次。
+#: ⚠️ 【我量的·2026-09-21】这个数是拿实测定的：非思考模型答一次 **4 秒 / 583 token**，
+#: 所以「再补一次」比「停下等人重发起」便宜得多；而它第一次**抄错了上下文那一行**
+#: （套用那层严格拒了 —— 拒得对）。两次都过不了就停下，把原因摆出来。
+PATCH_ATTEMPTS = 2
+
+
+#: 老写法那一版的改动最多摆多少字（给人看的，见 `_patch_diff`）。
+PATCH_DIFF_CHARS = 4000
+
+
+def _patch_diff(old: str, new: str) -> str:
+    """这一版**改了哪里**（unified diff 形状，人看）—— 摆在自测 / 交付那两道闸的事实里。
+
+    为什么要有它（2026-09-21 真跑时看见的缺口）：老写法那一版是**模型整段改**出来的，
+    而闸上那几格只说「第几版 / 几行」—— 人要在**放它去跑真页面**之前看见**它动了什么**，
+    不然那一道「继续」是按在一句概括上点的。
+    ⚠️ **截断**并说清截断（人看的东西不怕长，怕的是**看不完还不知道没看完**）。
+    """
+    text = "\n".join(difflib.unified_diff(old.splitlines(), new.splitlines(),
+                                          fromfile="改前", tofile="改后", lineterm="", n=2))
+    if len(text) > PATCH_DIFF_CHARS:
+        text = (text[:PATCH_DIFF_CHARS]
+                + "\n…（后面还有 %d 字没摆出来）" % (len(text) - PATCH_DIFF_CHARS))
+    return text or "（这一版与旧脚本**逐字一样** —— 一处都没改）"
+
+
 def _patch_draft(state, deps: Deps, feedback: dict) -> tuple:
     """**老写法那份 py 的这一次稿**：整份源码交给 `deps.patch_source`，交回来的过闸。
 
@@ -759,13 +788,28 @@ def _patch_draft(state, deps: Deps, feedback: dict) -> tuple:
                     "接上一个会出补丁的模型再发起；没接上就停在这儿，"
                     "**不许**把它写成「这份 py 修不了」（那是另一件事）。"]
     old = str(state.get("fix_src") or "")
-    try:
-        reply = deps.patch_source(old, feedback)
-    except Exception as exc:                      # noqa: BLE001 —— 那一路任何一种炸法都在这儿
-        return "", ["改稿那一步炸了：`%s: %s`" % (type(exc).__name__, str(exc)[:400])]
-    src = fix_mod.extract_source(reply)
-    bad = fix_mod.check_patch(old, src)
-    return ("" if bad else src), bad
+    said: list = []
+    fb = dict(feedback or {})
+    for attempt in range(1, PATCH_ATTEMPTS + 1):
+        try:
+            reply = deps.patch_source(old, fb)
+        except Exception as exc:                  # noqa: BLE001 —— 那一路任何一种炸法都在这儿
+            return "", ["改稿那一步炸了：`%s: %s`" % (type(exc).__name__, str(exc)[:400])]
+        #: 回话 → 新源码：**有 `@@` 就机械套 diff**（严格，对不上就抛），整份 py 照收，
+        #: 都不是就红 —— 不许把一段散文当补丁（`source_from_reply`）。
+        try:
+            src = fix_mod.source_from_reply(old, reply)
+        except ValueError as exc:
+            said = [str(exc)]
+        else:
+            said = fix_mod.check_patch(old, src)
+            if not said:
+                return src, []
+        if attempt < PATCH_ATTEMPTS:
+            #: 原因**逐条**走 `feedback["violations"]` 回灌（那是模型看得到的线）——
+            #: `hints` / `diagnosis` 原样留着，只换这一格。
+            fb = dict(fb, violations=[str(x) for x in said])
+    return "", said
 
 
 def _patch_failed_say(bad: list) -> str:
@@ -801,6 +845,7 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
             return out
         out.update({"states": [], "fills": {}, "success_text": state.get("success_text"),
                     "src": src, "violations": [],
+                    "src_diff": _patch_diff(str(state.get("fix_src") or ""), src),
                     # 这一版就是为那次打回写的（与模板那条同一个道理，见下面那段注释）。
                     "revised_at": "", "diagnosis": None})
         return out
@@ -902,6 +947,9 @@ def _selftest(state, deps: Deps, caps: Caps) -> dict:
                   "再换个窗口大小跑一遍。**自测通过 ≠ 生产一定过** —— 工具侧跑的浏览器与生产 "
                   "worker 的代理出口/指纹/时序不是一套（规格 §10）。"),
                  facts={"窗口": state.get("ws_url"), "表单数据": state.get("form_file"),
+                        # ★ 老写法那一版：人在这儿才第一次能看见「它到底改了什么」——
+                        # 这一道「继续」是**放它去跑真页面**的那一下（见 `_patch_diff`）。
+                        "这一版改了什么": state.get("src_diff"),
                         "第 2 遍刷新回哪个 URL": state.get("entry_url"),
                         "允许跳过的扰动": list(state.get("allow_skips") or []),
                         "窗口旋钮": "set_viewport=接上了" if deps.set_viewport else "没接上",
@@ -975,6 +1023,7 @@ def _deliver(state, deps: Deps, caps: Caps) -> dict:
                  facts={"自测": _selftest_block(state.get("report"),
                                                 datetime.datetime.now().astimezone()
                                                 .isoformat(timespec="seconds")),
+                        "这一版改了什么": state.get("src_diff"),
                         "要写进哪": str(_delivery_path(state))})
     if _held(out):
         return out

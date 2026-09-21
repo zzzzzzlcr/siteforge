@@ -43,7 +43,7 @@ from agent import plan as plan_mod
 
 __all__ = ["from_py", "repair_states", "REQUIRED_CLI_FLAGS",
            "PATCH_SYSTEM", "shape_of", "check_patch", "patch_user", "extract_source",
-           "patch_from_rounds"]
+           "patch_from_rounds", "apply_diff", "source_from_reply"]
 
 #: 取站方配置的超时（秒）。**短** —— 它是可选层，拿不到就往下走，不能把整趟拖住。
 CONFIG_TIMEOUT = 8.0
@@ -333,7 +333,12 @@ PATCH_SYSTEM = """\
 4. 不许加新的第三方依赖，不许改目录结构，不许把逻辑搬去别的文件。
 5. 只改**该改的那一处**：其余的行尽量原样留着（改错别的地方比不修更坏）。
 
-怎么答：把整份新源码放在一个 ```python 围栏里，围栏外**一个字都不要写**。"""
+怎么答：交回一段 **unified diff**（`@@ -旧起点,行数 +新起点,行数 @@` 那种）——
+只含**你要改的那几处**，放在一个 ```diff 围栏里，围栏外**一个字都不要写**。
+
+⚠️ diff 里的**上下文行与 `-` 行必须与旧源码逐字一致**：这一侧拿它们对位，对不上就整份退回、
+**一个字都不改**。所以别凭记忆写原文 —— 照着上面贴给你的那份抄。
+⚠️ **别把整份源码交回来**：这份文件很长，整份重写会失败（实测：预算会被思考吃满）。"""
 
 
 def patch_user(old_src: str, *, evidence: str = "", success_text: str = "",
@@ -357,12 +362,139 @@ def patch_user(old_src: str, *, evidence: str = "", success_text: str = "",
         parts.append("## 上一版自测没过：诊断（逐字）\n%s" % str(diagnosis).strip())
     for bad in (violations or []):
         parts.append("## 上一版被打回的原因（逐条改掉）\n%s" % bad)
-    parts.append("## 旧源码（生产里正在跑的那一份，逐字）\n```python\n%s\n```" % old_src)
-    parts.append("照上面那些约束，交回**整份新源码**。")
+    numbered = "\n".join("%5d| %s" % (i, ln) for i, ln in enumerate(old_src.splitlines(), 1))
+    parts.append("## 旧源码（生产里正在跑的那一份，逐字；**左边那个数是行号**）\n```\n%s\n```"
+                 % numbered)
+    parts.append("照上面那些约束交一段 **diff**：`@@ -旧起点,行数 +新起点,行数 @@` 里那两个数"
+                 "**就用左边那一列**（别自己数）；上下文行与 `-` 行**照着上面抄**。")
     return "\n\n".join(parts)
 
 
-_CODE_FENCE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.S)
+_CODE_FENCE = re.compile(r"```(?:python|py|diff)?\s*\n(.*?)```", re.S)
+
+#: unified diff 的段落头：`@@ -旧起点[,行数] +新起点[,行数] @@`
+_HUNK = re.compile(r"^@@\s*-(\d+)(?:,(\d+))?\s*\+(\d+)(?:,(\d+))?\s*@@", re.M)
+
+
+def _looks_like_source(text: str) -> bool:
+    """这段回话**像一份 py 源码**吗：`ast.parse` 过，且有 `def`/`class`/`import`。
+
+    ⚠️ 这一条**故意比 `shape_of` 松**（2026-09-21 改）：这里的活只有一个 ——
+    「这段回话是**源码**还是散文/别的东西」。而「这份源码**合不合契约**」是
+    `check_patch` 的活。两层混起来，报出来的原因就不准：一份**丢了 `--log-level`**
+    的源码会被说成「这不是一份 py」，读的人会去查模型交了什么东西，
+    而不是去看它**到底破坏了哪一条契约**。
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    return any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                              ast.Import, ast.ImportFrom))
+               for n in ast.walk(tree))
+
+
+def apply_diff(old: str, diff: str) -> str:
+    """把一段 **unified diff** 套到旧源码上 → 新源码。**严格**：对不上就抛。
+
+    ⚠️ 为什么要有这一层（2026-09-21 量的）：「整份源码进、整份源码出」对**大文件**不成立 ——
+    `qualify.lastingpowerofattorney.io` 那份 21916 字节 / 459 行，模型把 12000 / 32000 /
+    64000 三档预算**全花在思考上**（`finish_reason=length`、`content` 空），
+    而同一形状对小文件是成的。所以改成「只交改动的那几段」，套用这一侧机械做。
+
+    ⚠️ **不做模糊匹配**（fuzz / 偏移搜索）：那种「差不多就贴上」正是这一族最贵的坏法 ——
+    贴错地方**不报错**，产出一份语法合法、行为不对的脚本。所以判据只有一条：
+    **diff 里每一行 `-`/上下文，与旧源码那一段逐字一致**；不一致就抛，并把
+    那一行两边各是什么摆出来。
+
+    ⚠️ 行数那两格（`@@ -a,b +c,d @@`）**只当路标**（拿旧起点定位），不当判据 ——
+    模型数错行数很常见，而数错起点会**当场**撞上逐字校验（比信它更早发现）。
+    """
+    old_lines = str(old).splitlines(keepends=True)
+    out: list = []
+    pos = 0                      # 旧源码里**还没搬过去**的第一行
+    hunks = 0
+    body = [ln for ln in str(diff or "").splitlines()]
+    i = 0
+    while i < len(body):
+        line = body[i]
+        m = _HUNK.match(line)
+        if not m:
+            i += 1
+            continue
+        start = int(m.group(1)) - 1          # 1-based → 0-based
+        if start < pos or start > len(old_lines):
+            raise ValueError(
+                "这段 diff 的第 %d 行说它从旧源码第 %s 行开始改，可那一行不在还没搬过去的范围里"
+                "（这一段之前已经搬到第 %d 行了）。" % (i + 1, m.group(1), pos + 1))
+        out.extend(old_lines[pos:start])
+        pos = start
+        hunks += 1
+        i += 1
+        while i < len(body) and not _HUNK.match(body[i]):
+            cur = body[i]
+            if cur.startswith("\\"):         # `\ No newline at end of file` 之类，跳过
+                i += 1
+                continue
+            tag, text = (cur[:1], cur[1:]) if cur[:1] in (" ", "-", "+") else (" ", cur)
+            if tag in (" ", "-"):
+                if pos >= len(old_lines):
+                    raise ValueError("这段 diff 要删/改的第 %d 行，可旧源码已经到底了 —— "
+                                     "对不上，一个字都没改。" % (i + 1))
+                want = text + "\n"
+                got = old_lines[pos]
+                if got.rstrip("\n") != text:
+                    raise ValueError(
+                        "这段 diff 对不上：它说旧源码那一行是「%s」，可实际是「%s」"
+                        "（在 diff 的第 %d 行附近）。一个字都没改。"
+                        % (text, got.rstrip("\n"), i + 1))
+                if tag == " ":
+                    out.append(got)
+                pos += 1
+            else:                            # `+`：新加的行
+                out.append(text + "\n")
+            i += 1
+    if not hunks:
+        raise ValueError("这段回话里**一处 diff 都没有**（一个 `@@` 都没有）—— 那就没有改动可套。")
+    out.extend(old_lines[pos:])
+    return "".join(out)
+
+
+def source_from_reply(old: str, reply: str) -> str:
+    """模型的原话 → **这一版的新源码**：先剥围栏，再看它是 diff 还是整份。
+
+    - 有 `@@` ⇒ 走 `apply_diff`（**首选**，也是提示词要的形状）；
+    - 整份 py（`_looks_like_source`：`ast.parse` 过且有 `def`/`class`/`import`）⇒ **照收**（模型偶尔直接交源码）；
+    - 都不是 ⇒ 抛，说清读出的是什么（不许把一段散文当补丁）。
+      ⚠️ 「合不合契约」不在这儿判（那是 `check_patch`），不然「丢了 `--log-level`」会被
+      说成「这不是一份 py」—— 两层混起来，读的人就查错方向了。
+    """
+    block = extract_source(reply)
+    if _HUNK.search(block or ""):
+        return apply_diff(old, block)
+    if _looks_like_source(block):
+        return block
+    head = (block or "").strip().splitlines()[:1]
+    raise ValueError("这段回话既不是 diff（一个 `@@` 都没有）也不是一份读得通的 py"
+                     "（开头是：%s）—— 不猜它想干什么。" % (head[0][:60] if head else "（空的）"))
+
+
+def violations_for_prompt(violations) -> list:
+    """回灌给模型的那几条原因 → 一行一句。
+
+    ⚠️ **两种形状都收**（2026-09-21 真跑撞出来的）：`lint` 那一侧给的是**字典**
+    （`{"line": 12, "message": …}`），而**我们自己**在重试时回灌的是**人话字符串**
+    （`_patch_draft` 里 `said` 那些）。只按字典读 ⇒ 重试那一次当场
+    `AttributeError: 'str' object has no attribute 'get'`（而那是**第二次**才炸的形状，
+    桩测里 stub 不看 feedback，一路没现形）。
+    """
+    out = []
+    for v in (violations or []):
+        if isinstance(v, dict):
+            out.append("第 %s 行 —— %s" % (v.get("line"), v.get("message")))
+        elif isinstance(v, str) and v.strip():
+            out.append(str(v))
+    return out
 
 
 def patch_from_rounds(rounds, *, max_tokens=None) -> str:

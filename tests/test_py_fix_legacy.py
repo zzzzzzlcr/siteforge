@@ -28,7 +28,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from agent import fix, runtime, selftest  # noqa: E402
+from agent import fix, graph, runtime, selftest  # noqa: E402
 from test_graph import SITE, SUCCESS, URL, _brief, _build, _deps, _drive  # noqa: E402
 
 #: 一份**老写法**的产物（照着线上那一族的记号写：`from common import … report_url`、
@@ -142,6 +142,80 @@ def test_check_patch_blocks_each_way_a_patch_could_break_production():
         assert any(want in b for b in bad), (label, bad)
 
 
+def _hunk_diff(old: str, *, needle: str, new_line: str, context: int = 2) -> str:
+    """造一段**行号正确**的 unified diff（把 `needle` 那一行换成 `new_line`）。
+
+    ⚠️ 行号是**算出来的**（`index`），不是手数的 —— 手数那一次正好把这一层的严格校验
+    验了一遍（它当场指出「它说原文是 X，实际是 Y」）。
+    """
+    lines = old.splitlines()
+    at = next(i for i, ln in enumerate(lines) if needle in ln)
+    lo = max(0, at - context)
+    hi = min(len(lines), at + context + 1)
+    body = ["--- a/x.py", "+++ b/x.py",
+            "@@ -%d,%d +%d,%d @@" % (lo + 1, hi - lo, lo + 1, hi - lo)]
+    for i in range(lo, hi):
+        if i == at:
+            body += ["-" + lines[i], "+" + new_line]
+        else:
+            body.append(" " + lines[i])
+    return "\n".join(body) + "\n"
+
+
+def test_a_diff_reply_is_applied_strictly_and_a_wrong_one_is_refused():
+    """★★ 甲那条路：模型只交 diff，**套用由我们机械做**（严格：对不上就一个字都不改）。
+
+    为什么要这个形状（2026-09-21 量的）：「整份源码进出」对 21916 字节 / 459 行那份
+    不成立 —— 三档预算全被思考吃满、`content` 空。
+    """
+    good = _hunk_diff(LEGACY_PY, needle="MAX_STEPS = 40", new_line="MAX_STEPS = 70")
+    applied = fix.source_from_reply(LEGACY_PY, "改好了：\n```diff\n%s```\n" % good)
+    assert "MAX_STEPS = 70" in applied
+    assert "MAX_STEPS = 40" not in applied
+    #: 别的行**一字未动**（套用只动那一处）
+    assert applied.replace("MAX_STEPS = 70", "MAX_STEPS = 40") == LEGACY_PY
+
+    #: 删一行 / 加一行也认（同一段 hunk 里）
+    lines = LEGACY_PY.splitlines()
+    at = next(i for i, ln in enumerate(lines) if "MAX_STEPS = 40" in ln)
+    lo, hi = at - 1, at + 2
+    drop = ["--- a/x.py", "+++ b/x.py",
+            "@@ -%d,%d +%d,%d @@" % (lo + 1, hi - lo, lo + 1, hi - lo - 1)]
+    for i in range(lo, hi):
+        drop.append(("-" if i == at else " ") + lines[i])
+    dropped = fix.apply_diff(LEGACY_PY, "\n".join(drop) + "\n")
+    assert "MAX_STEPS = 40" not in dropped, "该删的那一行还在"
+    assert len(dropped.splitlines()) == len(lines) - 1, "行数不对：只该少一行"
+
+    #: **对不上** ⇒ 抛（不许模糊贴上 —— 贴错地方不报错才是最贵的坏法）
+    wrong = good.replace("-MAX_STEPS = 40", "-MAX_STEPS = 999")
+    with pytest.raises(ValueError) as caught:
+        fix.apply_diff(LEGACY_PY, wrong)
+    assert "对不上" in str(caught.value), str(caught.value)
+
+    #: 一处 diff 都没有 / 一段散文 ⇒ 都不许当补丁
+    with pytest.raises(ValueError):
+        fix.apply_diff(LEGACY_PY, "我把这一行改了。\n")
+    with pytest.raises(ValueError) as caught:
+        fix.source_from_reply(LEGACY_PY, "问题多半在等待那一步，你再看看。")
+    assert "不是 diff" in str(caught.value), str(caught.value)
+
+    #: 整份源码照收（模型偶尔直接交源码）—— 但**必须**是一份读得通的 py
+    assert fix.source_from_reply(LEGACY_PY, "```python\n%s```" % LEGACY_PY) == LEGACY_PY
+
+
+def test_the_feedback_both_shapes_are_read_the_same_way():
+    """★ 回灌的两种形状都要认：`lint` 给字典、我们自己重试给人话字符串。
+
+    （真跑撞出来的：只按字典读 ⇒ 重试那一次当场 `AttributeError` —— 而那是
+    **第二次**才炸的形状，桩不看 feedback 就一路没现形。）
+    """
+    got = fix.violations_for_prompt([{"line": 12, "message": "手拼 JS"},
+                                     "这段 diff 对不上：…一个字都没改。", "", None])
+    assert got == ["第 12 行 —— 手拼 JS", "这段 diff 对不上：…一个字都没改。"], got
+    assert fix.violations_for_prompt(None) == []
+
+
 def test_an_empty_model_reply_says_why_instead_of_just_being_empty():
     """★ 空回话**不是**「补丁是空的」—— 要把那一次调用的账摆出来。
 
@@ -187,7 +261,7 @@ def test_the_patch_prompt_carries_the_evidence_and_the_people_words_verbatim():
 
 # ── ② 图：老写法那条路 ───────────────────────────────────────────
 
-def _legacy_fix(tmp_path, *, patch=None, **over):
+def _legacy_fix(tmp_path, *, patch=None, wrap=None, **over):
     """把一份老写法的 py 摆好，返回 `(brief, deps, rec)`。"""
     out = tmp_path / "forms" / "sites"
     out.mkdir(parents=True, exist_ok=True)
@@ -203,7 +277,7 @@ def _legacy_fix(tmp_path, *, patch=None, **over):
     def patch_source(old_src, feedback):
         calls.append({"old": old_src, "feedback": feedback})
         src = patch(calls[-1]) if patch else LEGACY_PY.replace("MAX_STEPS = 40", "MAX_STEPS = 60")
-        return "```python\n%s\n```" % src
+        return wrap(src) if wrap else "```python\n%s\n```" % src
 
     deps, rec = _deps(patch_source=patch_source, **over)
     deps.patch_source = patch_source
@@ -232,7 +306,78 @@ def test_a_legacy_script_becomes_a_patch_run_instead_of_being_refused(tmp_path):
     assert rec.selftest[0].get("legacy") is True, rec.selftest[0]
 
 
-def test_without_the_patch_hand_the_run_stops_and_names_the_missing_wire(tmp_path):
+def test_the_gates_show_what_the_patch_changed(tmp_path):
+    """★ 人要在**放它去跑真页面**之前看见它动了什么 —— 那两格的 diff 就是为这件事。
+
+    （2026-09-21 真跑时看见的缺口：老写法那一版的闸上只有「第几版 / 几行」，
+    按「继续」是按在一句概括上点的。）
+    """
+    brief, deps, rec, _ = _legacy_fix(tmp_path)
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, brief)
+
+    assert out.get("end_reason") == "delivered", out.get("end_note")
+    diff = out.get("src_diff") or ""
+    assert "MAX_STEPS" in diff and "-" in diff and "+" in diff, diff[:200]
+    for gate in ("selftest", "deliver"):
+        facts = next((p["facts"] for p in payloads if p["step"] == gate), {})
+        assert facts.get("这一版改了什么") == diff, (gate, facts.keys())
+    #: 一处都没改时**也**要说清（不许留白让上一版的 diff 冒充这一版）
+    assert graph._patch_diff("a\n", "a\n").startswith("（这一版与旧脚本")
+    """★ 甲那条路的**接线**：模型交 diff ⇒ 我们机械套上 ⇒ 图表里那一版就是套好的。
+
+    （`test_a_diff_reply_is_applied_strictly_and_a_wrong_one_is_refused` 量的是套用本身；
+    这一条量的是「图上跑的那条路真的用了它」。）
+    """
+    diff = _hunk_diff(LEGACY_PY, needle="MAX_STEPS = 40", new_line="MAX_STEPS = 70")
+    brief, deps, rec, calls = _legacy_fix(tmp_path, patch=lambda c: diff,
+                                          wrap=lambda text: "```diff\n%s```" % text)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, brief)
+
+    assert out.get("end_reason") == "delivered", out.get("end_note")
+    delivered = (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).read_text(encoding="utf-8")
+    assert "MAX_STEPS = 70" in delivered, delivered[:200]
+    assert delivered.replace("MAX_STEPS = 70", "MAX_STEPS = 40") == LEGACY_PY, "除了那一处，别的行被动了"
+
+
+def test_a_patch_that_did_not_apply_is_retried_once_with_the_reason_fed_back(tmp_path):
+    """★ 套不上就**把原因回灌再补一次**（不是停下等人）—— 实测非思考模型答一次只要 4 秒。
+
+    【我量的·2026-09-21】它第一次会把上下文那一行抄错（`括号`/结尾少一截），
+    套用那层严格拒掉并说清「它说原文是 X、实际是 Y」；那句话正好是下一轮的输入。
+    """
+    good = _hunk_diff(LEGACY_PY, needle="MAX_STEPS = 40", new_line="MAX_STEPS = 70")
+    bad = good.replace("-MAX_STEPS = 40", "-MAX_STEPS = 999")
+    replies = [bad, good]
+
+    brief, deps, rec, calls = _legacy_fix(
+        tmp_path, patch=lambda c: replies.pop(0), wrap=lambda t: "```diff\n%s```" % t)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, brief)
+
+    assert out.get("end_reason") == "delivered", out.get("end_note")
+    assert len(calls) == 2, "该试两次（第一次套不上、第二次套上）"
+    #: 第二次那一次，模型**看得到**第一次为什么没成
+    fed = calls[1]["feedback"].get("violations") or []
+    assert fed and "对不上" in " ".join(fed), fed
+    delivered = (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).read_text(encoding="utf-8")
+    assert "MAX_STEPS = 70" in delivered
+
+
+def test_two_bad_patches_stop_and_say_why(tmp_path):
+    """两次都套不上/过不了闸 ⇒ 停下（**不许**无限重试，也不许静默）。"""
+    bad = _hunk_diff(LEGACY_PY, needle="MAX_STEPS = 40", new_line="MAX_STEPS = 70") \
+        .replace("-MAX_STEPS = 40", "-MAX_STEPS = 999")
+    brief, deps, rec, calls = _legacy_fix(tmp_path, patch=lambda c: bad,
+                                          wrap=lambda t: "```diff\n%s```" % t)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, brief)
+
+    assert out.get("end_reason") == "draft_failed", out.get("end_note")
+    assert "对不上" in (out.get("end_note") or ""), out.get("end_note")
+    assert len(calls) == 2, "上限就是两次 —— 不许一直试"
+    assert rec.selftest == []
     """★ 没接「改稿那双手」⇒ **停下并点名**，不许写成「这份 py 修不了」（那是两件事）。"""
     brief, deps, rec, _ = _legacy_fix(tmp_path)
     deps.patch_source = None
