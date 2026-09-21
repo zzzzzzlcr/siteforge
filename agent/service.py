@@ -4076,9 +4076,13 @@ class Service:
         """
         key = str(site or "").strip()
         if not key:
-            raise self._unmeasured_to_http(fmr.FmrUnmeasured(
-                "看不了这份 JSON 配置：没说是**哪个站** —— 这是免费的检查"
-                "（一个请求都没发出去）。", kind="no-site"))
+            # ★ **400，不是 502**：没给站点键是**调用方自己的毛病**（一个请求都没发出去），
+            # 与「量不到」是两件事。写成 502 的话运维会去查后端与网络，
+            # 而他真正该做的是**把那一格填上**。与 `failures()` 门口那道闸同一个码。
+            raise HTTPException(
+                status_code=400,
+                detail="看不了这份 JSON 配置：没说是**哪个站** —— 这是免费的检查"
+                       "（一个请求都没发出去）。")
 
         try:
             config = self._fmr.form_config(key)

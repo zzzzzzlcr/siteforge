@@ -169,12 +169,21 @@ def test_这个站没有配置_非2xx而不是一份空diff():
     assert r.status_code in (404, 502, 503), r.status_code
 
 
-def test_没说是哪个站_非2xx():
+def test_没说是哪个站_是400而不是502():
+    """★ **400 与 502 不是一回事**，而这一条**差点写成 502**。
+
+    · 没给站点键 = **调用方自己的毛病**（一个请求都没发出去）⇒ `400`；
+    · 量不到（连不上 / 后端回码 / 没配 token）⇒ `502` / `503`。
+
+    把前者写成后者，运维会去查后端与网络 —— 而他真正该做的是**把那一格填上**。
+    这与 `failures()` 门口那道闸同一个码（`service.py` 那个 400）。
+    """
     app = _client(fmr_client=_fmr_stub(envelope({"site": SITE_KEY, "steps": CONFIG})))
 
     r = app.get("/jsondiff", params={"site": "   "})
 
-    assert not (200 <= r.status_code < 300), r.text
+    assert r.status_code == 400, r.text
+    assert "免费" in r.text or "哪个站" in r.text, r.text
 
 
 def test_复跑没量着_非2xx而不是一份空diff():
