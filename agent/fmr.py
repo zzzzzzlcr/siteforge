@@ -1261,6 +1261,28 @@ class FmrClient:
         data = self._call(FORM_CONFIG_PATH, {"site": key}, shape=dict,
                           need_token=False, opener=self._config_opener)
         inner = data.get("steps")
+        if isinstance(inner, list) and not inner:
+            # ★★【我量的·2026-09-21】**空数组不是坏信封** —— 它是后端在说
+            # 「**这个站没有 JSON 配置**」（py 站那一支）：
+            #
+            # | 站 | 是什么 | `formConfig` 回什么 |
+            # |---|---|---|
+            # | `lastingpowerofattorney.io` | py 站 | `200` + `data.steps = []` |
+            # | `goldenagesouls.com` | py 站 | `200` + `data.steps = []` |
+            # | `cvrefresh.com` | json 站 | `200` + `data.steps = {…}`（一个对象） |
+            #
+            # ⚠️ 这一格从前跟「少了一格」一起被报成「**不是一个对象**」——
+            # 用户 2026-09-21 在面板上按「查配置」时撞的正是这个：那句话把人引到
+            # 「后端坏了」上去，而那个站跑的是**脚本**。这与 `form_script` 那边
+            # `type: json` 是**一对镜像**（那边是「跑的是配置、不是脚本」）。
+            # ⚠️ 照样**抛**（不许读成「一份空配置」）：与下面那一条同一个性质，
+            # 变的是**说法与处置** —— 这一种该去走**脚本**那条路。
+            raise FmrRefused(
+                "读不了%s：**这个站没有 JSON 配置**（后端回的 `data.steps` 是个"
+                "**空数组**）—— 它跑的应该是**脚本**（py）那条路，该去那边看。"
+                "⚠️ 「没有配置」**不是**「配置是空的」：这一格要的是一份配置，"
+                "而它这儿根本没有。" % self._what(FORM_CONFIG_PATH),
+                status=404)
         if not isinstance(inner, dict):
             # ⚠️ 这一格**要的是里面那份配置**。形状不对**只能抛**（不许猜、不许把它当空配置）：
             # 与 `_call(shape=…)` 那条闸同一个道理，只是这一层在信封里面。

@@ -123,6 +123,27 @@ def test_a_config_that_cannot_be_read_is_never_drawn_as_compliant():
     assert "没有要改的" not in r.text, r.text
 
 
+def test_a_script_station_is_said_as_no_config_not_as_a_broken_envelope():
+    """★【我量的·2026-09-21】py 站（`data.steps` 是**空数组**）⇒ 非 2xx + 「没有 JSON 配置」。
+
+    用户 2026-09-21 在面板上按「查配置」时撞的就是这一下：他查的是
+    `lastingpowerofattorney.io`（**py 站**），屏幕上却出来一句「`data.steps` 不是一个对象」
+    —— 那句话把人引到「后端坏了」上去，而实情是**那个站跑的是脚本**。
+    这一条钉的就是那句说法。
+
+    ⚠️ 两条一起量：**不是 2xx**（读不回来 ⇒ 不许画成「合规」）＋ **那句话对**。
+    """
+    body = envelope({"site": "lastingpowerofattorney.io", "steps": []})
+    app = _client(fmr_client=_fmr_stub(body))
+
+    r = app.get(service.CONFIGCHECK_PATH, params={"site": "lastingpowerofattorney.io"})
+
+    assert not (200 <= r.status_code < 300), r.text
+    assert "没有 JSON 配置" in r.text, r.text
+    assert "不是一个对象" not in r.text, \
+        "还是那句把人引到「后端坏了」的话：%r" % r.text
+
+
 def test_the_answer_says_which_executor_version_the_rules_came_from():
     """★ 判据是**现量**的 ⇒ 答案里要带**量的是哪一版**（漂了才看得见）。
 

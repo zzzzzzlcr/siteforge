@@ -1389,19 +1389,53 @@ def test_a_config_read_that_came_back_as_something_other_than_json_is_unmeasured
 
 
 def test_a_config_answer_that_lost_its_inner_config_is_unmeasured_not_an_empty_config():
-    """信封对得上、可 `data.steps` **不是一个对象** → **抛**（不许读成「配置是空的」）。
+    """信封对得上、可 `data.steps` **那一格不在** → **抛**（不许读成「配置是空的」）。
 
-    两个输入（`steps` 整格不在 / `steps` 是个数组 —— 后者正是「读错层」反着来的那种）。
-    ⚠️ 正控在最后：**真那份形状照旧交得出来**（否则「什么都抛」也能满足上面两条）。
+    ⚠️⚠️ **这条用例 2026-09-21 被实测推翻了一半，逐行交代**：
+
+    原先它拿**两个**输入（`steps` 整格不在 / `steps` 是个**空数组**）都要同一句
+    「不是一个对象」。【我量的·2026-09-21】线上量出来：`data.steps: []` **不是**坏信封 ——
+    它是后端在说「**这个站没有 JSON 配置**」：
+
+    | 站 | 是什么 | `formConfig` 回什么 |
+    |---|---|---|
+    | `lastingpowerofattorney.io` | py 站 | `200` + `data.steps = **[]**` |
+    | `goldenagesouls.com` | py 站 | `200` + `data.steps = **[]**` |
+    | `cvrefresh.com` | json 站 | `200` + `data.steps = {…}`（一个对象） |
+
+    用户 2026-09-21 在面板上按「查配置」时撞的正是这个：一句「`data.steps` 不是一个对象」
+    把人引到「后端坏了」上去，而那个站跑的是**脚本**。
+
+    ⇒ `[]` 那一格**搬走了**（它现在有自己那句话，见下一条用例）；
+    「`steps` 整格不在」**照旧**是「不是一个对象」（那才是真的少了一格）。
+    ★ 这一条护着的那个性质**一个字没改**：两种都**抛**，都不许读成「空的配置」。
+    ⚠️ 正控在最后：**真那份形状照旧交得出来**（否则「什么都抛」也能满足上面那条）。
     """
-    for bad in ({"site": "cvrefresh.com"}, {"site": "cvrefresh.com", "steps": []}):
-        with pytest.raises(fmr.FmrUnreachable) as e:
-            client(Recorder(envelope(bad))).form_config("cvrefresh.com")
-        said = str(e.value)
-        assert "不是一个对象" in said, (bad, said)
-        assert fmr.UNMEASURED_SAY in said, said
+    with pytest.raises(fmr.FmrUnreachable) as e:
+        client(Recorder(envelope({"site": "cvrefresh.com"}))).form_config("cvrefresh.com")
+    said = str(e.value)
+    assert "不是一个对象" in said, said
+    assert fmr.UNMEASURED_SAY in said, said
     assert client(Recorder(MEASURED_CONFIG_BODY)).form_config(
         "cvrefresh.com") == MEASURED_CONFIG
+
+
+def test_a_script_station_is_said_as_no_config_not_as_a_broken_envelope():
+    """★【我量的·2026-09-21】`data.steps` 是**空数组** ⇒ 「这个站**没有 JSON 配置**」。
+
+    它是 **py 站**那一支（见上一条用例那张表）。⚠️ 与上一条**同样是抛** ——
+    变的是**说法与处置**：这一种该去走**脚本**那条路，不是去查后端、也不是去改键。
+    ⚠️ 不许说成「配置是空的」：那会让人以为「这里有一份空配置」，而它**根本没有配置**。
+    """
+    body = envelope({"site": "lastingpowerofattorney.io", "steps": []})
+
+    with pytest.raises(fmr.FmrUnmeasured) as e:
+        client(Recorder(body)).form_config("lastingpowerofattorney.io")
+
+    said = str(e.value)
+    assert "没有 JSON 配置" in said, said
+    assert "脚本" in said, said
+    assert "不是一个对象" not in said, "还是那句把人引到「后端坏了」的话：%r" % said
 
 
 def test_a_config_read_without_a_site_is_refused_for_free():
