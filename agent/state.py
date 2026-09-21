@@ -191,6 +191,9 @@ class SiteState(TypedDict, total=False):
     #: 老写法那一版的**改动**（unified diff 形状，人看；`graph._patch_diff` 产的）——
     #: 摆在自测 / 交付那两道闸的事实里，让人在放它去跑真页面之前看见它动了什么。
     src_diff: Optional[str]
+    #: **旧脚本现在停在哪儿**（真页面跑一遍拿的，`selftest.evidence_say` 那段人话）——
+    #: 它是给**模型**看的证据（走 `feedback` 递进 `patch_source`），也是闸上给人看的。
+    fix_evidence: Optional[str]
     site: str                     # 站点短名（不给就从 URL 推）
     success_text: Any             # **成功判据**（页面上出现哪段文字）—— 只有人知道（§6.1）
     evidence: str                 # fix 模式：失败证据的引用（FMR formLog / formStep）

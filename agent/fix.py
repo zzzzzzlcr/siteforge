@@ -292,6 +292,7 @@ def check_patch(old: str, new: str) -> list:
     | `sys.exit(0 if … else 1)` 还在 | 换成无条件 `exit(0)` 就是「跑到底再谎报成功」 |
     | 还 import 且**真调** `report_url` | 没它 ⇒ 自测那一路**没有证据**（判据是「没证据不算过」） |
     | 不是空文件 | 空补丁被当成「修好了」是这套系统里最贵的形状 |
+    | **与原稿不一样** | 「一处都没改」的稿**不是修** —— 它照样过 lint、过自测，然后被当成修好的交出去 |
 
     ⚠️ 这一层**只判结构**，不判「改得对不对」—— 那件事只有自测（真浏览器）与人说了算。
     """
@@ -302,6 +303,12 @@ def check_patch(old: str, new: str) -> list:
     except SyntaxError as exc:
         return ["补丁过不了 `ast.parse`（第 %s 行：%s）—— 这一版落盘，生产里那个站就是跑 0 次。"
                 % (exc.lineno, exc.msg)]
+    #: ⚠️ 【我量的·2026-09-21】真跑里出现过「一处都没改」的稿（模型交回的 `<<<REPLACE` 块
+    #: 里放的还是原来那段）—— 那种稿会长得**跟修好了一模一样**（lint 过、自测过），
+    #: 而它一个字节都没动。所以这一条也算过不了闸（试两次里给它一次改口的机会）。
+    if str(new) == str(old):
+        return ["这一版与旧脚本**逐字一样** —— 一处都没改。那不是修：要么找出真正该改的那一处，"
+                "要么说清「这份稿我看不出该改什么」。"]
     bad = []
     missing = [f for f in REQUIRED_CLI_FLAGS if f not in _cli_flags(tree)]
     if missing:
@@ -347,7 +354,7 @@ PATCH_SYSTEM = """\
 
 
 def patch_user(old_src: str, *, evidence: str = "", success_text: str = "",
-               diagnosis: str = "",
+               diagnosis: str = "", page_evidence: str = "",
                violations: Optional[list] = None, hints: Optional[list] = None) -> str:
     """给模型的**这一轮**输入：旧源码全文 + 失败证据 + 人给的成功判据 + 上一轮被打回的原因。
 
@@ -360,6 +367,9 @@ def patch_user(old_src: str, *, evidence: str = "", success_text: str = "",
     if str(success_text or "").strip():
         parts.append("## 人给的成功判据（走通之后页面上会出现哪段文字）\n%s"
                      % success_text.strip())
+    if str(page_evidence or "").strip():
+        parts.append("## 这一趟**真跑了一遍旧脚本**（真页面、一次提交；下面是它自己打的）\n%s"
+                     % page_evidence.strip())
     for hint in (hints or []):
         if str(hint or "").strip():
             parts.append("## 人插的话（逐字）\n%s" % str(hint).strip())

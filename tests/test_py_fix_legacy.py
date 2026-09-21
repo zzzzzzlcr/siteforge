@@ -121,6 +121,17 @@ def test_importing_report_url_without_calling_it_is_not_a_legacy_script():
 
 # ── ① 补丁过闸：每一条闸对应一种真会出事的坏法 ─────────────────────
 
+def test_a_patch_that_changes_nothing_is_not_a_fix():
+    """★ 「一处都没改」的稿**不是修** —— 它会长得跟修好了一模一样（lint 过、自测过）。
+
+    【我量的·2026-09-21】真跑里出过两次：一次把一行注释少了个空格、一次逐字一样。
+    """
+    bad = fix.check_patch(LEGACY_PY, LEGACY_PY)
+    assert bad and "逐字一样" in bad[0], bad
+    #: 正控：真改了东西就过（否则这条闸会把好稿也拦下）
+    assert fix.check_patch(LEGACY_PY, LEGACY_PY.replace("MAX_STEPS = 40", "MAX_STEPS = 60")) == []
+
+
 def test_check_patch_blocks_each_way_a_patch_could_break_production():
     """五条闸逐条量一遍：**过不了就是过不了**，一条都不许软。"""
     good = LEGACY_PY.replace("MAX_STEPS = 40", "MAX_STEPS = 60")
@@ -244,6 +255,83 @@ def test_extract_source_prefers_the_fence_and_falls_back_to_the_whole_reply():
     assert fix.extract_source(wrapped) == "print(1)\n"
     assert fix.extract_source("print(2)\n") == "print(2)\n"
     assert fix.extract_source("") == ""
+
+
+def test_the_patch_prompt_carries_the_page_evidence_as_its_own_section():
+    """★ 那一份「真跑一遍」的证据要单独一段进提示词（它是【我量的】里最值钱的那块）。"""
+    said = fix.patch_user(LEGACY_PY, evidence="失败那一行",
+                          page_evidence="step 1: nothing actionable (1) []\n屏幕 7s 没变",
+                          success_text="thank-you")
+    assert "真跑了一遍旧脚本" in said and "nothing actionable" in said, said[-300:]
+    #: 没给就不许留一段空标题（空的东西看起来像「给了」）
+    assert "真跑了一遍旧脚本" not in fix.patch_user(LEGACY_PY, evidence="x")
+
+
+def test_the_evidence_say_only_puts_what_was_measured():
+    """`evidence_say` **只摆量到的**：退出码 / 上报过哪些步 / 最后停在哪 / 日志尾巴。**纯函数**。"""
+    said = selftest.evidence_say({
+        "rc": 1, "timed_out": False, "bad_lines": 0, "timeout": 600,
+        "trace": [{"step": "started", "url": "https://x/a.html", "ok": None},
+                  {"step": "form_filled", "url": "https://x/b.html", "ok": None}],
+        "tail": "step 6: nothing actionable (6) []\n屏幕 7s 没变"})
+    for want in ("退出码", "1", "form_filled", "https://x/b.html", "nothing actionable", "2 步"):
+        assert want in said, (want, said)
+    #: 超时 / 起不来 / 一步都没上报 —— 三种都各有说法，不许长成一个样
+    assert "超时" in selftest.evidence_say({"timed_out": True, "timeout": 60})
+    assert "没起来" in selftest.evidence_say({"rc": None})
+    assert "一步都没上报" in selftest.evidence_say({"rc": 0, "trace": []})
+
+
+def test_the_run_uses_the_evidence_it_fetched_and_says_when_there_is_none(tmp_path):
+    """★ 出稿之前那一趟拿证据：接上了就走（且那段证据进状态 + 进闸），没接就**说清**。"""
+    calls = []
+
+    def fake_evidence(**kw):
+        calls.append(kw)
+        return {"rc": 1, "timed_out": False, "bad_lines": 0, "timeout": 600,
+                "trace": [{"step": "started", "url": "https://x/a", "ok": None}],
+                "tail": "step 6: nothing actionable (6) []"}
+
+    brief, deps, rec, _ = _legacy_fix(tmp_path, evidence_run=fake_evidence)
+    deps.evidence_run = fake_evidence
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, brief)
+
+    assert out.get("end_reason") == "delivered", out.get("end_note")
+    assert calls and calls[0]["site"] == SITE, calls
+    assert "nothing actionable" in (out.get("fix_evidence") or ""), out.get("fix_evidence")
+    facts = next((p["facts"] for p in payloads if p["step"] == "draft"), {})
+    assert "nothing actionable" in str(facts.get("给模型的证据（旧脚本停在哪儿）")), facts.keys()
+
+    #: 没接那根线 ⇒ 状态里留一句**说清**的话（不许让「没有证据」看起来像「有证据」）
+    brief2, deps2, _rec2, _ = _legacy_fix(tmp_path / "b")
+    deps2.evidence_run = None
+    app2, cfg2, _ = _build(deps=deps2)
+    _, out2 = _drive(app2, cfg2, brief2)
+    assert "没接" in (out2.get("fix_evidence") or ""), out2.get("fix_evidence")
+
+
+def test_a_real_evidence_run_returns_rc_trace_and_the_script_own_log(tmp_path, monkeypatch):
+    """`selftest.run_once`：跑一遍产物 → 退出码 + 它上报过的步 + 它自己打的日志尾巴。"""
+    py, _ = _live_legacy(tmp_path, monkeypatch)
+    monkeypatch.setenv("STUB_RC", "1")
+    ev = selftest.run_once(str(py), "ws://127.0.0.1:9222/devtools/browser/x",
+                           str(tmp_path / "form.json"), SITE, legacy=True,
+                           run_dir=tmp_path / "ev", cdp_bin="/bin/true", timeout=60,
+                           entry_url="https://example.test/entry")
+    assert ev["rc"] == 1 and ev["timed_out"] is False, ev
+    assert [ln["step"] for ln in ev["trace"]] == ["started"], ev["trace"]
+    assert "--trace" not in ev["cmd"] and "--no-report" not in ev["cmd"], ev["cmd"]
+    assert "退出码" in selftest.evidence_say(ev)
+    #: ⚠️ **导航那一步**：不给入口网址的话，脚本是在浏览器自己的控制台页上跑（实测过）——
+    #: 所以这一条钉的是「跑了导航」与「没导航时证据里说清」
+    assert ev["navi"] is None, ev["navi"]          # `/bin/true` 永远成功
+    assert ev["entry_url"] == "https://example.test/entry"
+    no_navi = selftest.run_once(str(py), "ws://127.0.0.1:9222/devtools/browser/x",
+                                str(tmp_path / "form.json"), SITE, legacy=True,
+                                run_dir=tmp_path / "ev2", cdp_bin="/bin/true", timeout=60)
+    assert no_navi["navi"], "没给入口网址时**必须**说一句"
+    assert "没导航" in selftest.evidence_say(no_navi), selftest.evidence_say(no_navi)
 
 
 def test_the_patch_prompt_carries_the_evidence_and_the_people_words_verbatim():

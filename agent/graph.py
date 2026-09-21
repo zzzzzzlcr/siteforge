@@ -244,6 +244,13 @@ class Deps:
     #: 「窗口还活着吗」（§1.8）。⚠️ **可调用的东西不进 checkpoint** —— 与 `should_pause`
     #: 同一条规矩（状态里只放数据，回调一律挂在 `Deps` 上）。
     window_alive: Optional[Callable] = None
+    #: **跑一遍旧脚本拿证据**（修站那条路，2026-09-21）：`(py, ws_url, form_file, site) -> dict`，
+    #: 形状见 `selftest.run_once`，人话见 `selftest.evidence_say`。
+    #: ⚠️ 它**动真页面 + 一次真提交** ⇒ 排在 `explore` 那道闸**之后**，不是顺手就跑的。
+    #: 没接上 = 这一趟没有真证据（照常出稿，但要在事实里说清）——
+    #: 【我量的·2026-09-21】没有证据时模型交回来的是「只改掉一个空格」或「一处都没改」；
+    #: 把那份失败日志给它之后，它交出的是一份**有推理、过闸**的补丁（交接 §3.6c）。
+    evidence_run: Optional[Callable] = None
 
 
 # ───────────────────────────── 人的那道闸 ─────────────────────────────
@@ -460,8 +467,14 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
         if legacy:
             say = ("这次是**修站**，不重新探索：拿的是**线上正在跑的那一份 py**（%s）—— "
                    "它是**老写法**（里面没有 `STATES/FILLS` 那张数据表），所以这一趟是"
-                   "**整份源码出补丁**：交给模型只改该改的那一处，过闸之后才往下走。"
-                   % state.get("fix_py"))
+                   "**出补丁**：交给模型只改该改的那一处，过闸之后才往下走。" % state.get("fix_py"))
+            if deps.evidence_run is not None:
+                say += ("\n⚠️ 这一步会**先跑一遍那份旧脚本**（真页面 + **一次真实提交**）："
+                        "拿到「它停在哪儿、它自己打了什么」，作为**给模型的证据** —— "
+                        "没有这份证据，模型只能瞎改。")
+            else:
+                say += ("\n⚠️ 这个部署**没接「跑一遍拿证据」那根线**：模型手上只有失败那一行，"
+                        "改出来的稿很可能只是瞎改（实测过：只改掉一个空格 / 一处没改）。")
             fixed = ["（老写法：这一趟不改数据表，改的是源码本身）"]
         else:
             say = ("这次是**修站**，不重新探索：拿的是现成的那份 py（%s，%d 步），"
@@ -482,7 +495,13 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
                                    "探路": "**没有探路**（修站这条路不探索：账本/产物已经有了）"}))
         if _held(out):
             return out
-        out["explore_say"] = say
+        if legacy:
+            #: ★ 跑一遍旧脚本拿证据（**闸之后**才做：它动真页面 + 一次真提交）。
+            ev = _evidence_run(state, deps)
+            out["fix_evidence"] = ev
+            out["explore_say"] = say + "\n\n—— 旧脚本现在停在哪儿（这一段是要给模型的证据）：\n" + ev
+        else:
+            out["explore_say"] = say
         out["explore_reached_success"] = None      # 没探路 ⇒ **量不到**，不是「没走到」
         return out
 
@@ -789,7 +808,10 @@ def _patch_draft(state, deps: Deps, feedback: dict) -> tuple:
                     "**不许**把它写成「这份 py 修不了」（那是另一件事）。"]
     old = str(state.get("fix_src") or "")
     said: list = []
-    fb = dict(feedback or {})
+    #: ★ 证据走 `feedback` 递进 `patch_source`（那根线是「模型看得到的输入」那条）——
+    #: 【我量的·2026-09-21】有没有它，出稿是两个东西：没有 ⇒ 只改一个空格 / 一处没改；
+    #: 有 ⇒ 一份有推理、过闸的补丁（交接 §3.6c）。
+    fb = dict(feedback or {}, fix_evidence=str(state.get("fix_evidence") or ""))
     for attempt in range(1, PATCH_ATTEMPTS + 1):
         try:
             reply = deps.patch_source(old, fb)
@@ -828,7 +850,9 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     was = _feedback(state)
     out = _enter(state, caps, "draft", _draft_say(state, was),
                  facts={"violations": was["violations"], "diagnosis": was["diagnosis"],
-                        "第几版": list(state.get("visits") or []).count("draft") + 1})
+                        "第几版": list(state.get("visits") or []).count("draft") + 1,
+                        # ★ 给模型的那份证据，人也看得见（不然闸上判不了「这稿有没有依据」）
+                        "给模型的证据（旧脚本停在哪儿）": state.get("fix_evidence")})
     if out.get("end_reason"):
         return out
     # 人在**这一道闸**上说的话，属于**这一版**稿（所以 feedback 在闸之后组装）
@@ -904,6 +928,33 @@ def _lint(state, deps: Deps, caps: Caps) -> dict:
         out.update({"end_reason": END_LINT_CAP,
                     "end_note": _lint_cap_note(out["lint_bounces"], violations)})
     return out
+
+
+def _evidence_run(state, deps: Deps) -> str:
+    """跑一遍旧脚本 → 那段**人话证据**（没接那根线 / 起不来 / 没窗口，都如实说）。
+
+    ⚠️ **任何一种失败都不许静默**：模型手上的证据少一份、出稿就低一档 ——
+    而「这一趟到底有没有证据」必须留在状态里给人看（`fix_evidence`）。
+    """
+    if deps.evidence_run is None:
+        return ("这个部署**没接「跑一遍拿证据」那根线** —— 这一趟模型手上只有失败那一行，"
+                "没有「旧脚本停在哪儿」。")
+    if not state.get("ws_url") or not state.get("form_file"):
+        return ("跑不了那一遍拿证据：**没有可用的窗口或表单数据** —— 这一趟模型手上"
+                "只有失败那一行。（没有证据的稿，闸上要按「没验到」读。）")
+    try:
+        #: ⚠️ `entry_url` 是**承重**的：不给它，那一趟就是在浏览器自己的控制台页上跑
+        #: （2026-09-21 实测），拿回来的证据全是废的。给人的选择只有失败证据里那串网址。
+        ev = deps.evidence_run(py=state.get("fix_py"), ws_url=state.get("ws_url"),
+                               form_file=state.get("form_file"), site=state.get("site"),
+                               entry_url=(state.get("entry_url") or state.get("url") or ""))
+    except Exception as exc:                      # noqa: BLE001 —— 外面世界
+        return ("跑那一遍旧脚本的时候炸了：`%s: %s`（这一趟模型手上没有真证据）"
+                % (type(exc).__name__, str(exc)[:200]))
+    try:
+        return selftest_mod.evidence_say(ev)
+    except Exception as exc:                      # noqa: BLE001 —— 证据的形状对不上
+        return "那一遍跑了，可证据读不出来：`%s: %s`" % (type(exc).__name__, str(exc)[:200])
 
 
 def _fresh_session(state, deps: Deps) -> tuple:

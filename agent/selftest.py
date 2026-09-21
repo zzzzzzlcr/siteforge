@@ -349,6 +349,127 @@ def _read_trace(path) -> tuple:
     return lines, bad
 
 
+def _navigate(cdp_bin, ws_url, entry_url, env) -> Optional[str]:
+    """把窗口**导航到 `entry_url`** → `None` 成了 / 一句人话为什么没成。
+
+    ⚠️ 【我量的·2026-09-21】**不导航就白跑**：证据那一趟跑到最后，脚本报的最后地址是
+    `https://console.bitbrowser.net/?id=…`（**Bit 浏览器自己的控制台页**）——
+    也就是说脚本是在**控制台页**上找元素的，什么都没找到、当场报 `max_steps`。
+    生产那边是 ad-task 先开好页面才调脚本的，所以这一步在自测这条路里必须自己做
+    （第二遍 `rerun` 的「刷新后重跑」本来就是这么做的，这里把它抽出来共用）。
+    """
+    if not cdp_bin or not entry_url:
+        return "（没导航：%s）" % ("没有可用的 cdp 二进制" if not cdp_bin else "没给入口网址")
+    host, port = _host_port(ws_url)
+    try:
+        done = subprocess.run([str(cdp_bin), "navi", entry_url, "--host", host, "--port", port],
+                              capture_output=True, text=True, timeout=60, env=env)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "导航失败：%s" % exc
+    if done.returncode != 0:
+        return "导航没成（退出码 %d，它说：%s）" % (done.returncode,
+                                                 _tail(done.stderr or done.stdout, 3) or "什么都没说")
+    return None
+
+
+def run_once(py_path, ws_url, form_file, site, *, legacy: bool = False, run_dir=None,
+             cdp_bin: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT,
+             task_id: Optional[str] = None, log_level: str = "INFO",
+             entry_url: Optional[str] = None) -> dict:
+    """**跑一遍**产物（不是扰动序列）→ 证据：`{"rc", "timed_out", "trace", "tail", …}`。
+
+    修站那条路要的第一样东西**不是**「这一版值不值得交出去」（那是 `run()` 的活，
+    五遍扰动 + 判据），而是「**这份旧脚本现在停在哪儿、那一页什么样**」——
+    模型手上没有这个，就只能瞎改（【我量的·2026-09-21】真跑两趟：一趟只把一个空格改掉了、
+    一趟一处都没改）。
+
+    ⚠️ 这是**真页面 + 一次真提交**（运营口径「刷太多不太好」）—— 所以调用方必须把它排在
+    **一道闸之后**（见 `graph._explore` 的老写法那一支），不是顺手就跑。
+    ⚠️ `legacy=True` 时走那一套：argv 不给 `--trace`/`--no-report`，证据由运行时写
+    （与 `_execute` 同一条规矩，见它那段注释）。
+    """
+    py = pathlib.Path(py_path)
+    run_dir = pathlib.Path(run_dir) if run_dir else _default_run_dir(site)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    trace = run_dir / ("%s.evidence.trace.jsonl" % site)
+    cid = "evidence-%s_%s" % (site, time.strftime("%Y%m%d-%H%M%S"))
+    task_id = task_id or ("selftest-%s" % site)
+
+    env = os.environ.copy()
+    cdp_bin = cdp_bin or os.environ.get("SITEFORGE_CDP_BIN") or _default_cdp_bin()
+    if cdp_bin:
+        env["SITEFORGE_CDP_BIN"] = str(cdp_bin)
+    cmd = _artifact_cmd(py, ws_url, form_file, cid, log_level,
+                        (None if legacy else trace), task_id, None)
+    if legacy:
+        env = dict(env, SITEFORGE_TRACE=str(trace), SITEFORGE_NO_REPORT="1")
+    #: ⚠️ **先导航到入口网址**（见 `_navigate` 那段：不导航就是在浏览器的控制台页上跑）
+    navi_why = _navigate(cdp_bin, ws_url, entry_url, env)
+
+    rc, timed_out, out, err = None, False, "", ""
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        rc, out, err = done.returncode, done.stdout, done.stderr
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        out, err = _as_text(exc.stdout), _as_text(exc.stderr)
+    except OSError as exc:
+        err = "起不来：%s" % exc
+
+    #: ⚠️ **原样落盘**（2026-09-21）：证据这一趟的 stdout/stderr 是**唯一**能看到
+    #: 「它在页面上说了什么」的东西（生产日志里那几行 `step N: nothing actionable …`
+    #: 就是它）—— 只把尾巴塞进一个 dict，事后**查不动**（想复核「它到底看到了什么」
+    #: 就只能再跑一趟，而每一趟都是一次真提交）。
+    log_path = run_dir / ("%s.evidence.log" % site)
+    try:
+        log_path.write_text((out or "") + (err or ""), encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+
+    lines, bad_lines = _read_trace(trace)
+    return {"rc": rc, "timed_out": timed_out, "trace": lines, "bad_lines": bad_lines,
+            "tail": _tail((out or "") + (err or ""), 60), "cmd": cmd,
+            "trace_path": str(trace), "log_path": str(log_path),
+            "legacy": bool(legacy), "timeout": timeout,
+            "navi": navi_why, "entry_url": entry_url or ""}
+
+
+def evidence_say(ev: dict) -> str:
+    """那次证据跑 → **一段人话**（同时是给模型看的那份证据）。**纯函数**。
+
+    ⚠️ 只摆**量到的东西**：退出码、它自己上报过的那几步、最后停在哪、日志尾巴。
+    「为什么没走通」这一层**不许**替它下结论 —— 那是模型/人看着这些原料要说的话
+    （D11：给感知不给判断）。
+    """
+    ev = ev if isinstance(ev, dict) else {}
+    rc, trace = ev.get("rc"), list(ev.get("trace") or [])
+    if ev.get("timed_out"):
+        head = "跑了一遍旧脚本（真页面，一次真实提交）：**没跑完就超时了**（>%s 秒）。" % ev.get("timeout")
+    elif rc is None:
+        head = "跑了一遍旧脚本（真页面，一次真实提交）：**它没起来**。"
+    else:
+        head = ("跑了一遍旧脚本（真页面，一次真实提交）：进程退出码 **%s**"
+                "（这份脚本的约定是 0 = 它自己说走通了）。" % rc)
+    parts = [head]
+    if ev.get("navi"):
+        parts.append("⚠️ %s —— 也就是说这一趟**可能是在别的页面上找元素**，"
+                     "它自己打的那些行要按这个前提读。" % ev["navi"])
+    if trace:
+        steps = "、".join(str(ln.get("step") or "?") for ln in trace[-12:])
+        parts.append("它自己上报过的步（倒着数，共 %d 步）：%s" % (len(trace), steps))
+        last_url = next((ln.get("url") for ln in reversed(trace) if ln.get("url")), "")
+        if last_url:
+            parts.append("最后停在：%s" % last_url)
+    else:
+        parts.append("它**一步都没上报** —— 连第一个动作都没走成（或这一趟是截图之外的写法）。")
+    tail = str(ev.get("tail") or "").strip()
+    if tail:
+        parts.append("它自己打出来的最后几行：\n%s" % tail[-1200:])
+    if ev.get("bad_lines"):
+        parts.append("（它写的证据里有 %d 行读不动）" % ev["bad_lines"])
+    return "\n".join(parts)
+
+
 def _artifact_cmd(py, ws_url, form_file, correlation_id, log_level, trace_path,
                   task_id=None, delay=None) -> list:
     """起产物的命令行。

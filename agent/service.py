@@ -1961,6 +1961,8 @@ class Service:
         生产走 `graph_factory=None` 那条：全是真接线。
         """
         deps = graph.Deps(explore=self._explore_for(brief, job_id),
+                          # ★ 修站那条路：出稿之前先跑一遍旧脚本，把「它停在哪儿」给模型。
+                          evidence_run=self._evidence_run_cb(brief, job_id),
                           # B 线 ③（乙）：老写法那份 py 的**改稿那双手**（没接上就在 draft 停下点名）。
                           patch_source=self._patch_cb(brief),
                           selftest=self._selftest_cb(job_id),
@@ -2014,6 +2016,24 @@ class Service:
     #: 这份活要的是「整份源码进、整份源码出」+ 推理，所以给足。
     PATCH_MAX_TOKENS = 32000
 
+    def _evidence_run_cb(self, brief: dict, job_id: str = "") -> Optional[Callable]:
+        """`Deps.evidence_run`（修站那条路）：**跑一遍旧脚本**拿证据。
+
+        ⚠️ 这一下**动真页面 + 一次真实提交**（运营口径「刷太多不太好」）—— 所以它挂在
+        `explore` 那道闸**之后**（图那一侧管的），不是顺手就跑。
+        ⚠️ 接不上窗口层就没有这一根线（`None`）—— 图会在事实里说清「这一趟没有真证据」。
+        """
+        if self._window is None:
+            return None
+
+        def run_evidence(py, ws_url, form_file, site, entry_url=""):
+            return selftest.run_once(py, ws_url, form_file, site, legacy=True,
+                                     run_dir=pathlib.Path(self._selftest_root) / ("evidence-%s" % site),
+                                     cdp_bin=self._cdp_bin, timeout=selftest.DEFAULT_TIMEOUT,
+                                     entry_url=entry_url)
+
+        return run_evidence
+
     def _patch_cb(self, brief: dict) -> Optional[Callable]:
         """`Deps.patch_source`（B 线 ③ 乙）：**老写法那份 py 的改稿那双手**。
 
@@ -2034,12 +2054,14 @@ class Service:
         def patch(old_src: str, feedback: dict) -> str:
             fb = feedback or {}
             vios = fix.violations_for_prompt(fb.get("violations"))
+            page_ev = str(fb.get("fix_evidence") or "")
             diag = fb.get("diagnosis") if isinstance(fb.get("diagnosis"), dict) else {}
             #: 模型不调工具直接答（`tool_specs=[]`）—— 这是**一次问答**，不是工具循环。
             rounds = llm.run_tool_loop(
                 fix.PATCH_SYSTEM,
                 fix.patch_user(old_src, evidence=evidence, success_text=success_text,
-                               diagnosis=str((diag or {}).get("say") or ""), violations=vios,
+                               diagnosis=str((diag or {}).get("say") or ""),
+                               page_evidence=page_ev, violations=vios,
                                hints=list(fb.get("hints") or [])),
                 [], lambda name, args: None, max_rounds=1,
                 max_tokens=self.PATCH_MAX_TOKENS)
