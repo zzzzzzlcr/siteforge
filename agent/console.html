@@ -1436,7 +1436,16 @@
   }
   function sayLiveProblem(res) {
     // 503 / 404 都是**一句人话**（服务写好的），照抄。
-    setErr(sayOf(res), "live");
+    var said = sayOf(res);
+    if (res.status === 404) {
+      // ★ 2026-09-21（用户实测撞到）：只说「没这个任务」不够 —— 人不知道该干什么，
+      //   而这一格每 3 秒轮询一次，屏幕上就一直是一片红（控制台里一串 404）。
+      //   **把下一步说清**（不猜原因，只给两条路）。这两句是这一屏自己的话，
+      //   所以走 `textContent` 的**纯文本**：不写 `**`（那会原样显示成星号）。
+      said += " —— 这一趟不在这个服务里了（服务重启过？）。把地址里 ?job= 那一截去掉，" +
+              "或者从左边「运行」里挑一趟（那一栏列的是这个进程记得的那些）。";
+    }
+    setErr(said, "live");
     var pill = document.getElementById("statePill");
     pill.className = "pill bad";
     pill.textContent = res.status === 404 ? "没这个任务" : "这一屏少了几格（服务说读不回来）";

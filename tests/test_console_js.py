@@ -197,6 +197,40 @@ def _payloads(*, final_mode: str) -> dict:
     }
 
 
+def _live_404_payloads() -> dict:
+    """`/live` 回 404：那一趟不在这个服务里了（**服务重启过**就会这样）。
+
+    2026-09-21 用户实测撞到：地址里带着一个旧 job id ⇒ 每 3 秒一次 404，
+    屏幕上只有「没这个任务」，**不知道该干什么**。这一条钉的就是「那句话里有没有下一步」。
+    """
+    gone = [{"status": 404, "body": {"detail": "没这个任务：job-gone。"}}]
+    return {"scenario": "live-404", "search": "?job=job-gone",
+            "responses": {
+                "/runs": [{"body": {"note": "", "runs": [
+                    {"job_id": "job-2", "site": "example-funnel", "status": "waiting",
+                     "say": "停下来了，在等你一句话。",
+                     "created_at": "2026-09-21T19:40:00+08:00", "rounds": 1,
+                     "delivered": False}]}}],
+                "/job/job-gone/live": gone,
+            }}
+
+
+def test_a_dead_job_id_in_the_url_says_what_to_do(tmp_path):
+    """★ 地址里带着一个这个服务已经没有的 job：**服务那句话 + 下一步**，两样都要在屏上。
+
+    2026-09-21 用户实测撞到（我重启过两次服务，内存里那张表清了）：那一格每 3 秒轮询一次
+    404，屏幕上一片红，人不知道该干什么。这一条钉的就是「说了没这个任务之后，还说下一步」。
+    """
+    out = _drive(tmp_path, scenario="live-404")
+    box = out["afterLoad"]["errBox"]
+    assert "没这个任务" in box, box                      # 服务那句**原样**
+    assert "?job=" in box and "运行" in box, box         # 下一步（两条路）也在
+    assert out["afterLoad"]["errHidden"] is False, out["afterLoad"]
+    assert out["afterLoad"]["pill"] == "没这个任务", out["afterLoad"]
+    #: 那句话得**活过重画**（每 3 秒一次轮询，擦掉就变成「按下去什么都没发生」）
+    assert out["afterRepaint"]["errBox"] == box, out["afterRepaint"]
+
+
 def _again_payloads() -> dict:
     """「重新来一遍」那一趟的响应（Task 10 修复轮 1 / C3 = N-3）。
 
@@ -294,6 +328,8 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _window_payloads()
     elif scenario == "page-view":
         payload = _page_view_payloads()
+    elif scenario == "live-404":
+        payload = _live_404_payloads()
     elif scenario == "gate-facts":
         payload = _gate_facts_payloads()
     elif scenario == "failures":

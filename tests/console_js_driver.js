@@ -240,6 +240,16 @@ async function windowScenario(out) {
   out.afterReopen = { errBox: el("errBox").textContent, disabled: el("btnReopen").disabled };
 }
 
+//: `/live` 回 404（地址里带的是这个服务已经没有的 job）—— 2026-09-21 用户实测撞到。
+//: 钉两件：① 服务那句人话**原样**在；② **下一步**也在（「把 ?job= 去掉 / 从左栏挑一趟」），
+//: 而且这句话活过之后三次重画（不许被下一次轮询擦掉）。
+async function live404Scenario(out) {
+  out.afterLoad = { errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
+                    pill: el("statePill").textContent };
+  await ticks(3);
+  out.afterRepaint = { errBox: el("errBox").textContent, pill: el("statePill").textContent };
+}
+
 //: 页面现场那一栏（2026-09-21）：三份正文各画一次 —— **有读数 / 读不到 / 这一趟还没跑过**。
 //: 量的就是「三种在屏幕上长不长成一个样」（这一栏存在的全部理由：读不到 ≠ 页面上没有）。
 async function pageViewScenario(out) {
@@ -445,6 +455,7 @@ async function againScenario(out) {
   else if (payload.scenario === "run-refused") { await runRefusedScenario(out); }
   else if (payload.scenario === "window") { await windowScenario(out); }
   else if (payload.scenario === "page-view") { await pageViewScenario(out); }
+  else if (payload.scenario === "live-404") { await live404Scenario(out); }
   else if (payload.scenario === "failures") { await failuresScenario(out); }
   else if (payload.scenario === "failures-url-edited") { await failuresUrlEditedScenario(out); }
   //: 服务没给那个站键那一趟 —— **同一段驱动**（差别只在载荷里那条证据少了 `site`）：
