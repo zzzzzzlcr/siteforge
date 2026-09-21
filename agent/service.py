@@ -73,7 +73,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from agent import (browser_agent, configcheck, events, fix, fmr, graph, journal, jsondiag,
-                   llm, measure, rounds, selftest, shots, tools)
+                   llm, manual, measure, rounds, selftest, shots, tools)
 from agent.graph import NODES, STEP_SAY
 from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_LINT_CAP,
                          END_NO_WINDOW, END_PAUSED, END_REVISION_CAP,
@@ -5396,6 +5396,19 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
             raise HTTPException(status_code=500,
                                 detail=CONSOLE_UNREADABLE_SAY % (exc, CONSOLE_PATH))
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+    #: ★ 运营手册（2026-09-21）：用户要一个**能直接打开**的地址（文档不该只有 `.md`）。
+    #: 渲染的是 `docs/运营手册-面板修站.md` **那一份**（现读盘、每次请求都读）——
+    #: 再写一份 HTML 就是两个来源，改一份忘一份，运营看到的就是旧那份。
+    @api.get(manual.MANUAL_PATH, response_class=HTMLResponse)
+    def manual_page() -> HTMLResponse:
+        try:
+            text = manual.OPERATOR_MANUAL.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise HTTPException(status_code=500,
+                                detail="读不了那份手册（%s）：%s" % (exc, manual.OPERATOR_MANUAL))
+        return HTMLResponse(manual.page(manual.render(text), title="运营手册：用面板修一个坏掉的站"),
+                            headers={"Cache-Control": "no-store"})
 
     @api.get("/")
     def root() -> RedirectResponse:
