@@ -71,8 +71,8 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from langgraph.types import Command
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
-from agent import (browser_agent, events, fmr, graph, journal, measure, rounds, selftest, shots,
-                   tools)
+from agent import (browser_agent, events, fmr, graph, journal, jsondiag, measure, rounds,
+                   selftest, shots, tools)
 from agent.graph import NODES, STEP_SAY
 from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_LINT_CAP,
                          END_NO_WINDOW, END_PAUSED, END_REVISION_CAP,
@@ -377,6 +377,13 @@ FAILURE_EVIDENCE_PATH = "/failures/%s/evidence"
 RANK_PATH = "/rank"
 #: 一单的原因那一跳（`{单号}` 是路径上那一格）。
 DIAG_PATH = "/diag/%s"
+#: 「这份 JSON 配置差在哪一格」那一跳（Task B2/B3）。
+#: ⚠️ 站点键走**查询参数**、不走路径：真键长这样 `www.gowizard.com/auto-warranty/`
+#: —— 带斜杠，塞进路径会被切成好几段（`/diag` 那边没这问题，它走的是单号）。
+JSODIFF_PATH = "/jsondiff"
+#: 复跑用哪个浏览器（`ws://…`）。没配 = 这个部署**跑不了复跑** —— 那是合法状态，
+#: 面板照样读得到配置，只是「复跑」那一步会明确说「没量着」。
+JSON_WS_URL_ENV = "SITEFORGE_JSON_WS_URL"
 
 #: 量不到时那**三种**各自的 HTTP 码。都不是 200、都不是空列表。
 #: · 503 = 这个部署**干不了这件事**（没配 token）—— 换个人来也一样；
@@ -418,6 +425,29 @@ def _failures_say(site: str, since: str, rows: list, limit: int) -> str:
         return said
     return ("这个站从 %s 起**没有**失败的记录 —— 这是**量到的**结果（不是「没量着」）。"
             % when)
+
+
+def _jsondiff_say(diff: dict, summary: dict) -> str:
+    """复跑**跑完之后**那一句人话。
+
+    ★ 它与「还没复跑」那一句（`Service.jsondiff` 里那段字面量）**必须分得开**：
+    两句话在屏幕上都是「没东西可看」，而一件事是「这份配置是好的」，
+    另一件是「它还没被跑过」。把后者说成前者，就是本仓最贵的那个形状。
+
+    ⚠️ 这一句里**不许出现「没有差异」** —— 那是「跑过了、量过了、确实没问题」
+    才配说的话（用例钉着）。这里说的是「每一格都能在页面上量到」，
+    而「量到」与「跑通」仍然是两件事：复跑自己成没成，看 `summary`。
+    """
+    n_un = len(diff.get("unresolved") or [])
+    n_ch = len(diff.get("changes") or [])
+    failed = summary.get("failed_step") or 0
+    tail = ("复跑自己报的：失败在第 %s 步（%s）。" % (failed, summary.get("error") or "没说原因")
+            if failed else "复跑自己报的是跑通了。")
+    if not n_un and not n_ch:
+        return ("复跑跑完了：配置里**每一格**都能在页面上量到，没有对不上的。%s" % tail)
+    return ("复跑跑完了：**%d** 格对不上 —— 其中 **%d** 格提得出建议（值出自页面上量到的），"
+            "**%d** 格提不出（页面上量到的东西里没有能顶替的，那一格没动）。%s"
+            % (n_un + n_ch, n_ch, n_un, tail))
 
 
 def _diag_say(task_id: str, rows: list) -> str:
@@ -1816,7 +1846,9 @@ class Service:
                  shots_dir: Optional[str] = None, capture: Optional[Callable] = None,
                  shot_timeout: Optional[float] = None, capture_bin: Optional[str] = None,
                  selftest_dir: Optional[str] = None, mcp_bin: Optional[str] = None,
-                 failures_reader: Any = None):
+                 failures_reader: Any = None,
+                 json_ws_url: Optional[str] = None,
+                 json_rerun: Optional[Callable] = None):
         self._jobs: dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
         self._queue: "queue.Queue[tuple]" = queue.Queue()
@@ -1880,6 +1912,15 @@ class Service:
         #: 「配没配」也会与真正用的那个对不上 —— 「名字说 A、量的是 B」的老病。
         self._fmr = (failures_reader if failures_reader is not None
                      else fmr.FmrClient())
+        #: ② 复跑那份 JSON 配置：**用哪个浏览器** + **起子进程那一手**（Task B2/B3）。
+        #: `ws_url` 同上：**构造时定死**。不给就按环境拼一个
+        #: （`SITEFORGE_JSON_WS_URL` 在**这一刻**读一次）—— 「用的时候再读环境」
+        #: 会让同一屏上两条数据取自两个部署，那正是 `/health` 那条老病。
+        #: ⚠️ **没配是合法的**：面板照样能读那份配置、照样能摆出来，只是
+        #: 「复跑」那一步会明确说「没量着」，**不是**回一份假的空 diff。
+        self._json_ws_url = (json_ws_url if json_ws_url is not None
+                             else os.environ.get(JSON_WS_URL_ENV) or "").strip()
+        self._json_rerun = json_rerun or jsondiag.rerun
 
     # ── 外面那三层：图、窗口、检查点 ────────────────────────────────
     def _build_graph(self, brief: dict, job_id: str = ""):
@@ -4003,6 +4044,78 @@ class Service:
             "note": "" if rows else fmr.NO_DIAG_SAY,
         }
 
+    def jsondiff(self, site: Any) -> dict:
+        """`GET /jsondiff?site=<站点键>` 的正文（Task B2/B3）：**这份配置差在哪一格**。
+
+        ```
+        读那份配置（B1 的 form_config）
+              ↓ 复跑（B2 的 rerun）—— 真页面 + 生产那个执行器，★ 一次模型都不调
+              ↓ 逐格对照（B2 的 diff_config，纯函数）
+        端给页面：配置 + 复跑自己的结论 + diff
+        ```
+        ⚠️ **这一版没有写回**（控制者 2026-09-21 按下）：写接口的语义没验过
+        （「按 site 更新已有那条」还是「每次都插一条新的」），猜错会在生产库里
+        堆重复配置。所以这里**只读不写**。
+
+        ★★ **四种「空」必须分得开**（见 `tests/test_service_jsondiff.py`）：
+
+        | 情形 | 给什么 |
+        |---|---|
+        | 配置读回来了、**还没复跑** | `200` + `diff: None` + 一句说清是**还没跑** |
+        | 复跑了、哪一格都对得上 | `200` + 空的两条清单 + 另一句 |
+        | 复跑了、有对不上的 | `200` + 那两条清单 |
+        | **配置读不回来** / **复跑没量着** | **非 2xx**（走 `_unmeasured_to_http`） |
+
+        ⚠️ 头两行**在数据上都是「没有 changes」** —— 分开它们的**只有那句 `say`**。
+        把「还没跑」说成「没有差异」，就是在告诉运营「这份配置是好的」，
+        而它**只是还没被跑过**。这是本仓最贵的那个形状（无效 key 被显示成「没有失败 ✓」）。
+
+        ⚠️ 复跑**没量着**（窗口没了 / 执行器 import 失败 / 超时）走**非 2xx**，
+        不许退化回「还没复跑」那一格：两者在屏幕上都是「没东西可看」，
+        而处置完全不同（一个去开窗口，一个去点按钮）。
+        """
+        key = str(site or "").strip()
+        if not key:
+            raise self._unmeasured_to_http(fmr.FmrUnmeasured(
+                "看不了这份 JSON 配置：没说是**哪个站** —— 这是免费的检查"
+                "（一个请求都没发出去）。", kind="no-site"))
+
+        try:
+            config = self._fmr.form_config(key)
+        except fmr.FmrUnmeasured as exc:
+            # 读不回来（这个站没有配置 / 后端连不上）⇒ **非 2xx**。
+            # ⚠️ 不许退化成「没东西可看」：那会被读成「这个站的配置没问题」。
+            raise self._unmeasured_to_http(exc)
+        base = {"site": key, "config": config,
+                "can_rerun": bool(self._json_ws_url)}
+
+        if not self._json_ws_url:
+            # ★ 这一格**不是错误**（没配窗口照样能看配置），但**必须说清是「还没跑」**。
+            return dict(base, diff=None, summary=None,
+                        say="这份配置读回来了，**还没复跑** —— 这个部署没配"
+                            "复跑用的浏览器地址（`%s`），所以「差在哪一格」还是未知。"
+                            "⚠️ 这一格**不是**「配置是好的」那个结论：它只是**还没跑**。"
+                            % JSON_WS_URL_ENV)
+
+        try:
+            got = self._json_rerun(config, ws_url=self._json_ws_url)
+        except jsondiag.RerunUnmeasured as exc:
+            # 「没量着」—— 与「还没跑」是两件事，所以**非 2xx**。
+            # ⚠️ 它**不是** `fmr.FmrUnmeasured`（没有 `.say`），所以不能借
+            # `_unmeasured_to_http` —— 借了会 AttributeError、最后变成 500，
+            # 而那会把「复跑挂了」显示成「服务坏了」。
+            raise HTTPException(status_code=FAILURE_STATUS_UNMEASURED, detail=str(exc))
+
+        came_back = jsondiag.diff_config(config, got.get("facts") or {})
+        summary = got.get("summary") or {}
+        return dict(
+            base, summary=summary,
+            diff={"changes": came_back["changes"],
+                  "unresolved": came_back["unresolved"],
+                  "suggested": came_back["suggested"]},
+            say=_jsondiff_say(came_back, summary),
+        )
+
     @staticmethod
     def _truncated_say(timeline, shown: int) -> str:
         """`truncated` 为真时**说清**丢了什么/回了多少（设计注 §8.2：「并说明」）。"""
@@ -4938,7 +5051,9 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                shot_timeout: Optional[float] = None,
                capture_bin: Optional[str] = None,
                selftest_dir: Optional[str] = None,
-               mcp_bin: Optional[str] = None, failures_reader: Any = None) -> FastAPI:
+               mcp_bin: Optional[str] = None, failures_reader: Any = None,
+               json_ws_url: Optional[str] = None,
+               json_rerun: Optional[Callable] = None) -> FastAPI:
     """拼一个 app。测试从这里注入桩图 / 桩窗口 / 内存 saver。
 
     `window=None` 是**默认且合法**的：这个部署没接窗口层 —— 于是 `set_viewport` 那根线
@@ -4965,7 +5080,8 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                   viewport_probe=viewport_probe, explore_dir=explore_dir,
                   window_probe_seconds=window_probe_seconds, shots_dir=shots_dir,
                   capture=capture, shot_timeout=shot_timeout, capture_bin=capture_bin,
-                  selftest_dir=selftest_dir, mcp_bin=mcp_bin, failures_reader=failures_reader)
+                  selftest_dir=selftest_dir, mcp_bin=mcp_bin, failures_reader=failures_reader,
+                  json_ws_url=json_ws_url, json_rerun=json_rerun)
     api = FastAPI(title="siteforge", version="0.1",
                   description="看着真页面产出 cdp-first py 脚本的 agent 服务（计划二 Task 8）")
 
@@ -5065,6 +5181,17 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
         （页面照着 `note` 说「还没有原因」，不许留白）。
         """
         return svc.diag(task_id)
+
+    @api.get(JSODIFF_PATH)
+    def jsondiff(site: str = "") -> dict:
+        """**这份 JSON 配置差在哪一格**（Task B2/B3）—— 读配置 → 复跑 → 逐格对照。
+
+        ⚠️ 站点键走**查询参数**（真键带斜杠，见 `JSODIFF_PATH` 那段）。
+        ⚠️ 「还没复跑」是 `200` + 一句说清的话；**「配置读不回来」与「复跑没量着」
+        都是非 2xx** —— 四种空各有各的样子，页面照着 `say` 说，不自己编。
+        ⚠️ **这一版没有写回**（只读）：写接口的语义没验过，见 `Service.jsondiff`。
+        """
+        return svc.jsondiff(site)
 
     @api.post("/run", status_code=202)
     def run(body: RunRequest) -> dict:

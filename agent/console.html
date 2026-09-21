@@ -383,6 +383,44 @@
           </div>
         </section>
 
+        <!-- ── 这份 JSON 配置差在哪一格（Task B2/B3，**只读**）──────────
+             治的是：后端 174 个站跑的是 **JSON 配置**，而面板只产 py ——
+             那一多半的站，面板一点都够不着（`plan.md` §1）。
+             ⚠️ 四条纪律（与这一屏别处同一套）：
+               · ★★ **「还没复跑」与「没有差异」必须分得开**：两者在屏幕上都是
+                 「没东西可看」，而一件事是「这份配置是好的」，另一件是「它还没被跑过」。
+                 这是本仓最贵的那个形状（无效 key 被显示成「近 2 天没有失败 ✓」）
+                 ⇒ 页面**照抄服务那句 `say`**，一个字都不自己编；
+               · 读不回来 / 复跑没量着 ⇒ 服务回**非 2xx**，原样摆出来（不编「失败了」）；
+               · 「提不出建议」那一栏**把量到的候选原样摆着** —— 页面**不许**替它挑一个
+                 （挑一个就是编话：那个值不在证据里）；
+               · ⚠️ **这一版没有「写回」**：写接口的语义没验过（按 site 更新 vs 每次插一条），
+                 猜错会在生产库里堆重复配置。所以这一栏**只读**，一个字都不写回去。 -->
+        <section class="panel" id="jsonPanel">
+          <header>
+            <h2>这份 JSON 配置差在哪一格</h2>
+            <span class="sub">读一份后端配置，在真页面上复跑一遍，逐格对照。**只读，不写回。**</span>
+          </header>
+          <div class="body">
+            <div class="nrun">
+              <div class="field">
+                <label for="jsonSite">哪个站</label>
+                <input type="text" id="jsonSite" autocomplete="off" spellcheck="false"
+                       placeholder="站点键，例如 cvrefresh.com">
+                <p class="why">后端那份配置认的那个键（与上面「查失败」用的是同一个）。
+                  它**不是**整条 URL —— 拿 URL 去查会查不到，那一下会直说。</p>
+              </div>
+              <div class="go">
+                <button class="btn primary" type="button" id="btnJson">看差在哪一格</button>
+                <p class="hint" id="jsonHint">按下去它读配置、复跑、逐格对照。
+                  **只读**：一个字都不写回后端。</p>
+              </div>
+            </div>
+            <div id="json"></div>
+            <p class="hintline" id="jsonNote"></p>
+          </div>
+        </section>
+
         <!-- ── 开一趟（新的一趟活）─────────────────────────────
              ⚠️ 这一块是**唯一**能开新活的地方（Task 12）：在这之前，面板上能发出去的动作
              只有「继续 / 说一句 / 停 / 重新来一遍」，而「重新来一遍」只在跑完之后才出现、
@@ -1455,6 +1493,9 @@
   //:   这一页里**没有任何一处**拿站点键去查原因（那个键实测脏过，见 `goRank` 那段）。
   var RANK = "/rank";
   var DIAG = "/diag/";
+  //: 那份 JSON 配置那一跳（Task B2/B3）。⚠️ 站点键走**查询参数**：
+  //: 真键长这样 `www.gowizard.com/auto-warranty/`（带斜杠），塞进路径会被切成好几段。
+  var JSONDIFF = "/jsondiff";
 
   //: 「查哪一段」那一格 → 那个查询参数。
   //: ⚠️ 挑「今天」时**不给** `since`（服务那边的默认就是今天 00:00 —— 契约里那一条）。
@@ -1865,6 +1906,106 @@
       });
   }
 
+  // ══════════════ 这份 JSON 配置差在哪一格（Task B2/B3，只读）══════════════
+  function jsonNote(said) {
+    var el = document.getElementById("jsonNote");
+    if (el) { el.innerHTML = said ? rich(said) : ""; }
+  }
+
+  //: 复跑那一栏 —— ⚠️ **只摆服务说的话**，页面一个字都不替它下判。
+  function jsonProblem(said) {
+    var box = document.getElementById("json");
+    if (box) {
+      box.innerHTML = '<p class="none">' + esc(said) + "</p>";
+    }
+  }
+
+  function jsonDiff(data) {
+    var d = at(data, "diff", null);
+    if (!d || d === null) { return null; }
+    if (typeof d !== "object") { return null; }
+    return d;
+  }
+
+  function paintJson(data) {
+    var box = document.getElementById("json");
+    var d = jsonDiff(data);
+    if (!box || d === null) { return; }   // 还没复跑 / 读不到：由 say 那句话说话，这里闭嘴
+    var changes = at(d, "changes", null);
+    var unresolved = at(d, "unresolved", null);
+    if (!changes || !unresolved) {
+      jsonProblem("服务回了一份 diff，但读不出「对得上的」与「提不出的」那两条清单。");
+      return;
+    }
+    var html = '<p class="lead">' + rich(at(data, "say", "")) + "</p>";
+    //: ★ 「提得出建议」那一栏 —— 每条都必须带着**它凭什么**（`why` 说清了值出自哪一格证据）。
+    if (changes.length) {
+      html += "<h4 class=\"sec\">提得出建议（值出自页面上量到的）</h4><ul class=\"faillist\">";
+      for (var i = 0; i < changes.length; i++) {
+        html += "<li><span class=\"mono\">" + esc(at(changes[i], "path", "")) + "</span> "
+              + esc(at(changes[i], "was", "")) + " → <b>" + esc(at(changes[i], "now", "")) + "</b>"
+              + '<br><span class="hint">' + esc(at(changes[i], "why", "")) + "</span></li>";
+      }
+      html += "</ul>";
+    }
+    //: ★★ 「提不出建议」那一栏 —— **把量到的候选原样摆着**，页面不许替它挑一个。
+    //:    挑一个就是编话：那个值不在证据里（D2 的另一半）。
+    if (unresolved.length) {
+      html += "<h4 class=\"sec\">提不出建议（那一格没动）</h4><ul class=\"faillist\">";
+      for (var j = 0; j < unresolved.length; j++) {
+        html += "<li><span class=\"mono\">" + esc(at(unresolved[j], "path", "")) + "</span> "
+              + esc(at(unresolved[j], "was", "")) + '<br><span class="hint">'
+              + esc(at(unresolved[j], "why", "")) + "</span>";
+        var saw = at(unresolved[j], "saw", null);
+        if (saw && saw.length) {
+          html += '<br><span class="hint">页面上量到的是：' + esc(saw.join(" ｜ ")) + "</span>";
+        }
+        html += "</li>";
+      }
+      html += "</ul>";
+    }
+    if (!changes.length && !unresolved.length) {
+      html += '<p class="hint">配置里每一格都能在页面上量到 —— 对不上的一个都没有。</p>';
+    }
+    box.innerHTML = html;
+  }
+
+  function fetchJson() {
+    var site = document.getElementById("jsonSite").value.trim();
+    var btn = document.getElementById("btnJson");
+    btn.disabled = true;
+    jsonNote("");
+    //: ⚠️ 空着也发（让**服务**说「没说是哪个站」那个人话）—— 与这一屏别处同一条纪律：
+    //:    不替人预先判哪一格必填，缺什么由服务说（它有那张人话单子）。
+    return fetch(JSONDIFF + "?site=" + encodeURIComponent(site))
+      .then(readJSON)
+      .then(function (res) {
+        btn.disabled = false;
+        if (!res.ok) {
+          // **原样**摆服务那句人话（404「这个站没有配置」/ 502「复跑没量着」…）——
+          // ⚠️ 绝不写成「这个站的配置没问题」，那是这一屏最怕的形状。
+          jsonProblem(sayOf(res) || "没读到（服务没说为什么）。");
+          return null;
+        }
+        var d = jsonDiff(res.obj);
+        if (d === null) {
+          // ★★ 「还没复跑」这一格：**服务那句 `say` 原样上屏**（它说清了是还没跑，
+          //    不是「没有差异」）。页面**不自己编**「没有差异」这种话。
+          jsonNote(at(res.obj, "say", ""));
+          var box = document.getElementById("json");
+          if (box) { box.innerHTML = ""; }
+          return res.obj;
+        }
+        jsonNote("");
+        paintJson(res.obj);
+        return res.obj;
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        jsonProblem("这一栏没读到：" + e + " —— 服务可能没在跑。");
+      });
+  }
+
   // ══════════════════ 窗口那两下（Task 12）══════════════════
   //: 关窗口 / 重开窗口：都发**当前这一趟**（它们在 `/job/<id>/` 下面）。
   //: ⚠️ 两下的答复里，服务说的那句话都**原样上屏**（`setErr` 那条红杠是这一屏唯一
@@ -1961,6 +2102,7 @@
   document.getElementById("btnRank").addEventListener("click", fetchRank);
   document.getElementById("btnRankGo").addEventListener("click", goRank);
   document.getElementById("btnDiag").addEventListener("click", fetchDiag);
+  document.getElementById("btnJson").addEventListener("click", fetchJson);
   //: 「看哪个站的失败单」那一块开页是**收着**的（还没有任何一份榜单）。
   //: 与 `failAct` 同一行规矩：**开页时它是什么样由这一行算出来**，不靠静态标记。
   document.getElementById("rankAct").hidden = true;
