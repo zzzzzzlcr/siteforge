@@ -1751,3 +1751,127 @@ def test_no_site_key_reading_a_script_is_a_free_check():
 
     assert rec.urls == [], "没站点键却发了请求：%s" % rec.urls
     assert "哪个站" in str(exc.value) or "site" in str(exc.value), str(exc.value)
+
+
+# ── ★ ② 404 之后**再拿 `type=debug` 问一次**：只为说清是哪一种 ──────────────
+#
+#: 【我量的·2026-09-21】`&type=debug` 那一遍的形状：它**绕过 `where('status',1)`**，
+#: 所以**停用**的配置在这一遍是 200（正常那一遍是 404），而且**多一格 `status`**
+#: （1 = 启用，0 = 停用；正常那一遍**根本没有这一格**）。
+#: 实测：`japansdates.com` 正常 404 / debug 200+`status:0`；裸 `compareinsulation.io`
+#: 两边都 404（那才是真的「这个键后端不认识」）。
+MEASURED_SCRIPT_DISABLED_PY_BODY = {
+    "status": 200, "msg": "ok",
+    "data": {"site": "japansdates.com", "requested_site": "japansdates.com/land/sp/d7ead55b",
+             "type": "py", "status": 0, "version": "20260918",
+             "sha256": "c" * 64, "source": "#!/usr/bin/env python3\nSTATES = []\n"},
+}
+
+
+def test_a_disabled_config_is_said_as_disabled_not_as_a_wrong_name():
+    """★ ② 的正身：正常那一遍 404 之后**再拿 `type=debug` 问一次**，把原因说出来。
+
+    病：404 那一句现在**只**会说「那个站它不认识，多半是名字给错了」——
+    可【我量的·2026-09-21】真实原因常常不是名字错，是那份配置**停用**了：
+    `japansdates` / `warthunder` / `compareinsulation` 三个站都是这样，
+    而且它们**今天还在失败**（japansdates 今天 6 条）。照着「名字给错了」去改名字，
+    改到天亮也没用 —— 那正是这一片要治的「把一种可能说成唯一一种」。
+    """
+    rec = Recorder(MEASURED_SCRIPT_NOT_FOUND_BODY, MEASURED_SCRIPT_DISABLED_PY_BODY)
+
+    with pytest.raises(fmr.FmrUnmeasured) as exc:
+        fmr.FmrClient(token="", opener=rec).form_script("japansdates.com")
+
+    said = str(exc.value)
+    #: ① 问法对：第二个请求是**同一个键** + `type=debug`
+    assert len(rec.urls) == 2, "没有拿 debug 再问一次：%r" % rec.urls
+    _, params = query_of(rec.urls[1])
+    assert params.get("type") == "debug", params
+    assert params.get("site") == "japansdates.com", params
+    #: ② 说出来了：是「停用」，**不是**「那个站它不认识」
+    assert "停用" in said, said
+    assert "不认识" not in said, "还是把那句「名字给错了」顶上来了：%r" % said
+
+
+def test_the_debug_read_never_becomes_the_draft():
+    """★★ 纪律：**debug 只用来出话，不用来取底稿。**
+
+    这一条是整件事的关键：拿一份**停用**的配置去「修」，等于在一个**没在跑**的东西上
+    改半天；写回更是会写到一份生产不读的记录上。所以那一遍问出来的 `source`
+    **一个字都不许**从 `form_script` 出去 —— 它照旧**抛**，调用方拿不到底稿。
+    """
+    rec = Recorder(MEASURED_SCRIPT_NOT_FOUND_BODY, MEASURED_SCRIPT_DISABLED_PY_BODY)
+
+    with pytest.raises(fmr.FmrUnmeasured) as exc:
+        fmr.FmrClient(token="", opener=rec).form_script("japansdates.com")
+
+    assert "STATES = []" not in str(exc.value), \
+        "把 debug 那一遍的源码端出来了（那会是「拿停用的配置去修」）：%r" % str(exc.value)
+
+
+def test_a_debug_read_that_also_fails_says_what_it_can_not_tell_apart():
+    """两边都 404 ⇒ 「这个键后端不认识」，**并且如实说还有一种分不出**。
+
+    ⚠️「分不出」那一半是**量出来的**，不是客气话：后端那句 `script not found`
+    有三个来源（匹配器不认这个键 / 被 `where('status',1)` 滤掉 / 两列都空），
+    debug **只绕过中间那一个** ⇒ 剩下两个在接口上长得**一模一样**。
+    所以这里不许写成「就是名字给错了」。
+    """
+    rec = Recorder(MEASURED_SCRIPT_NOT_FOUND_BODY, MEASURED_SCRIPT_NOT_FOUND_BODY)
+
+    with pytest.raises(fmr.FmrUnmeasured) as exc:
+        fmr.FmrClient(token="", opener=rec).form_script("www.gowizard.com/auto-warranty/")
+
+    said = str(exc.value)
+    assert "不认识" in said, said
+    assert "分不出" in said, said
+
+
+def test_when_the_debug_read_cannot_be_made_the_reason_is_not_invented():
+    """debug 那一遍**自己读不成** ⇒ 如实说「没问成」，**不许**退回旧那句、也不许编个原因。
+
+    这一格最容易写成静默：再问一次失败了，就悄悄把原来那句端出去 ——
+    于是「不知道」与「名字给错了」在屏幕上长得一样。
+    """
+    rec = Recorder(MEASURED_SCRIPT_NOT_FOUND_BODY, RuntimeError("boom"))
+
+    with pytest.raises(fmr.FmrUnmeasured) as exc:
+        fmr.FmrClient(token="", opener=rec).form_script("x.com")
+
+    said = str(exc.value)
+    assert "停用" not in said, "没问成却说了「停用」：%r" % said
+    assert ("没问成" in said) or ("问不出来" in said), \
+        "没说清「想再问一遍为什么也没问成」：%r" % said
+
+
+def test_a_contradiction_between_the_two_reads_is_not_papered_over():
+    """debug 说有、而且是**启用**的 ⇒ 与正常那一遍的 404 **对不上** —— 如实报，别替它挑一句。"""
+    live = {"status": 200, "msg": "ok",
+            "data": {"site": "x.com", "requested_site": "x.com", "type": "py", "status": 1,
+                     "version": None, "sha256": "d" * 64, "source": "x = 1\n"}}
+    rec = Recorder(MEASURED_SCRIPT_NOT_FOUND_BODY, live)
+
+    with pytest.raises(fmr.FmrUnmeasured) as exc:
+        fmr.FmrClient(token="", opener=rec).form_script("x.com")
+
+    assert "对不上" in str(exc.value), str(exc.value)
+
+
+def test_a_script_that_reads_is_never_re_read_with_debug():
+    """读得成的时候**一个多余的请求都不发** —— debug 那一遍只在 404 之后。"""
+    rec = Recorder(MEASURED_SCRIPT_PY_BODY)
+
+    fmr.FmrClient(token="", opener=rec).form_script("callyourdate.com/land/sp/519015a5")
+
+    assert len(rec.urls) == 1, rec.urls
+
+
+def test_only_a_404_triggers_the_debug_read():
+    """别的码（401…）**不**触发那一遍：它们的原因不是「哪一份配置」那件事。"""
+    rec = Recorder({"status": 401, "msg": "unauthorized", "data": []})
+
+    with pytest.raises(fmr.FmrUnmeasured) as exc:
+        fmr.FmrClient(token="", opener=rec).form_script("x.com")
+
+    assert len(rec.urls) == 1, rec.urls
+    assert "401" in str(exc.value), str(exc.value)

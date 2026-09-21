@@ -459,9 +459,13 @@ class FmrRefused(FmrUnmeasured):
     ⚠️ 它照样是「量不到」，**不是**「没有失败」—— 404 的语义是「这个站它不认识」。
     """
 
-    def __init__(self, say: str, *, status: int):
+    def __init__(self, say: str, *, status: int, msg: str = ""):
         super().__init__(say, kind="refused")
         self.status = status
+        #: 后端**原话**（信封里那一格 `msg`），与 `say`（这一层拼的人话）分开存。
+        #: ⚠️ 分开是为了**别把复述记在后端账上**：谁要引「后端自己那句」，
+        #: 得引这一格；引 `say` 就是在引我们自己写的那句话。
+        self.msg = msg
 
 
 class FmrNoToken(FmrUnmeasured):
@@ -1067,7 +1071,9 @@ class FmrClient:
                 % (self._what(path), str(body)[:60], UNMEASURED_SAY))
         status = body.get("status")
         if status != 200:
-            raise FmrRefused(self._refused_say(path, params, body, status), status=int(status or 0))
+            raise FmrRefused(self._refused_say(path, params, body, status),
+                             status=int(status or 0),
+                             msg=str(body.get("msg") or "").strip())
         data = body.get("data")
         if not isinstance(data, shape):
             raise FmrUnreachable(
@@ -1292,8 +1298,15 @@ class FmrClient:
             raise FmrUnmeasured(
                 "读不了这个站的脚本：没说是**哪个站** —— 这是免费的检查"
                 "（一个请求都没发出去）。", kind="no-site")
-        data = self._call(FORM_SCRIPT_PATH, {"site": key}, shape=dict,
-                          need_token=False, opener=self._config_opener)
+        try:
+            data = self._call(FORM_SCRIPT_PATH, {"site": key}, shape=dict,
+                              need_token=False, opener=self._config_opener)
+        except FmrRefused as exc:
+            #: ★ ②（2026-09-21）：404 之后**再拿 `type=debug` 问一次**，只为说清是哪一种。
+            #: ⚠️ **只有 404 触发**：别的码（401/400…）的原因不是「哪一份配置」那件事。
+            if int(getattr(exc, "status", 0) or 0) != 404:
+                raise
+            raise FmrRefused(self._script_404_say(key, exc), status=404) from exc
         kind = data.get("type")
         if kind not in ("py", "json"):
             # ⚠️ **不许默认成 py**：回了一份没有 `type` 的正文时，猜错的代价是
@@ -1304,6 +1317,74 @@ class FmrClient:
                 "这一层不替它猜。" % (self._what(FORM_SCRIPT_PATH), str(kind)[:40]),
                 kind="no-type")
         return data
+
+    def _script_404_say(self, key: str, first: "FmrRefused") -> str:
+        """★ ②（2026-09-21）脚本读口 404 那一句：**再拿 `type=debug` 问一次**才说。
+
+        【我量的·2026-09-21】后端那句 `script not found` 有**三个来源**
+        （匹配器不认这个键 / 被 `where('status',1)` 滤掉 / `script_source` 与 `steps`
+        两列都空）。`&type=debug` **绕过中间那一个**，而且多回一格 `status`
+        （1 = 启用、0 = 停用；**正常那一遍根本没有这一格**）。
+
+        实测那四个落点：
+
+        | debug 那一遍 | 说的是 |
+        |---|---|
+        | 200 + `status: 0` | 配置在，**停用**了（正常那一遍只认启用的那一份） |
+        | 200 + `status: 1` | 两边**对不上** —— 这一层不替它挑一句 |
+        | 404 | 这个键后端不认识；⚠️ 与「两列都空」**这一次分不出** |
+        | 读不成 | 「想再问一遍为什么，也没问成」—— **不许**退回第一句了事 |
+
+        ★★ **这一遍问出来的东西只用来出话**：那份**停用**的配置**不是**能拿去修的底稿
+        （在没在跑的东西上改半天，写回还会写到一份生产不读的记录上）。
+        所以它**只**变成这句话 —— `form_script` 照旧抛，调用方拿不到底稿。
+
+        ⚠️ 「停用」那一句**不许**写成「启用之前修它没意义」：这句话的前提是
+        「停用 = 没在跑」，而【我量的·2026-09-21】**数据不支持它** ——
+        配置停用的 `japansdates` 今天还在失败 6 条、`warthunder` 今天 2 条、
+        `compareinsulation` 9-01 到 9-20 failed 122 条。所以这里只说**事实**
+        （停用了 + 它还在失败），「要不要动它」交给人。
+        """
+        noun = self._what(FORM_SCRIPT_PATH)
+        try:
+            got = self._call(FORM_SCRIPT_PATH, {"site": key, "type": "debug"},
+                             shape=dict, need_token=False, opener=self._config_opener)
+        except FmrRefused as again:
+            if int(getattr(again, "status", 0) or 0) == 404:
+                return ("读不了%s：**这个键后端不认识**（debug 那一遍也回 404）—— "
+                        "多半是这一串名字给错了：%r（真实的名字形如 `主机名/路径`，"
+                        "带上路径那一截）。⚠️ 这一次**分不出**是「这个键给错了」还是"
+                        "「那一份配置两列都是空的」—— 这两种在后端**长得一样**，"
+                        "这一层不替它挑一种。后端自己那句是：「%s」。"
+                        % (noun, key, str(getattr(again, "msg", "") or "")))
+            #: ⚠️ 这儿引的是**这一层自己那句话**（`again.say` 是我们拼的），
+            #: 不许写成「后端自己那句是」—— 那是把我们的复述记在后端账上。
+            return ("读不了%s：后端回 404。★ 想再问一遍**为什么**，它回的是别的码 —— "
+                    "这一层自己那句话是：「%s」。这一句**不替它编原因**。"
+                    % (noun, str(again.say or "")))
+        except FmrUnmeasured as again:
+            return ("读不了%s：后端回 404。★ 想再问一遍**为什么**，**也没问成** —— "
+                    "这一层自己那句话是：「%s」。这一句**不替它编原因**。"
+                    % (noun, str(again.say or "")))
+        state = got.get("status")
+        kind = str(got.get("type") or "").strip()
+        branch = ("`%s` 那一支" % kind) if kind else "`type` 那一格读不出来"
+        if state == 0:
+            return ("读不了%s：**这份配置在，但后端把它标成「停用」**（`status: 0`，%s）—— "
+                    "正常那一遍只认启用的那一份，所以读不到它。"
+                    "⚠️ 「停用」**不等于**「没在跑」：【我量的·2026-09-21】配置停用的站"
+                    "照样在失败（`japansdates` 今天 6 条、`warthunder` 今天 2 条）。"
+                    "要动它，先把「它跑的到底是不是这一份」弄明白 —— "
+                    "debug 这一遍**只用来出话**，它那份源码不当底稿用。"
+                    % (noun, branch))
+        if state == 1:
+            return ("读不了%s：后端正常那一遍说**没有**（404），可 debug 这一遍说有、"
+                    "而且是**启用**的（`status: 1`，%s）—— **这两句对不上**。"
+                    "这一层不替它挑一句，先把这件事报出来。"
+                    % (noun, branch))
+        return ("读不了%s：debug 这一遍说有（%s），可 `status` 那一格既不是 1 也不是 0"
+                "（读回来的是 %s）—— 这一层不替它猜那是什么意思。"
+                % (noun, branch, str(state)[:30]))
 
     # ── ⑤ 一份 JSON 配置：写（Task B1）──────────────────────────────
     def update_form_config(self, site: str, steps: Any) -> FormWriteResult:
