@@ -375,9 +375,18 @@ def test_the_live_view_has_every_field_the_brief_pins(tmp_path):
     #    也就是说新那一格现在是**必须**在的（少一格、多一格都红）。
     #    不是放宽：这一条要的正是「字段一个都不能少」，而 `/live` 多了一格就得在这里说清。
     #    那一格的性质由 `tests/test_service_artifact.py` 钉（这里只钉「它在」）。
+    # ⚠️ **2026-09-21 又收紧了这一条**（加一格 `page_view`）：仍然是**精确相等** ——
+    #    新增那一格现在是**必须**在的（少一格、多一格都红）。理由与 `artifact` 那次同一条：
+    #    这一条要的就是「字段一个都不能少」，多了一格就得在这儿说清它是什么。
+    #    那一格的性质（三态：有读数 / 读不到 / 这一趟还没跑过）由
+    #    `tests/test_service_narration.py::test_the_page_view_rides_the_live_payload_in_three_states`
+    #    与面板那一条（`tests/test_console_js.py`）钉，这里只钉「它在」。
     assert set(live) == {"job_id", "status", "say", "delivered", "stage", "stage_say", "note",
                          "events", "gate", "input", "stop", "shots_note", "window", "rounds",
-                         "truncated", "artifact"}
+                         "truncated", "artifact", "page_view"}
+    #: 这个 job 停在 intake 闸上 —— 那一趟跑证据的活**还没发生过** ⇒ 缺这一格（**不是** `{}`：
+    #: 空 dict 与「读到了、页面上什么都没有」在屏幕上长得一样）。
+    assert live["page_view"] is None, live["page_view"]
     assert live["artifact"] is None, "这个 job 停在 intake 闸上 —— 那个位置还不该存在（§15.4）"
     assert live["job_id"] == job_id
     assert live["status"] == "waiting"
