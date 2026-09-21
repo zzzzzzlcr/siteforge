@@ -4327,7 +4327,7 @@ class Service:
                        "（`type: json`）。⚠️ 拿一份空脚本去修一个 json 站，"
                        "下游看起来与「这个站该补一份脚本」**一模一样** —— "
                        "所以在这儿停。这一类该走配置那条路。")
-        site = str(getattr(body, "site", "") or "").strip() or graph.site_name(body["url"])
+        site = str(getattr(body, "site", "") or "").strip() or graph.site_name(getattr(body, "url", "") or "")
         out_dir = pathlib.Path(str(brief.get("out_dir") or self._out_dir))
         out_dir.mkdir(parents=True, exist_ok=True)
         staged = out_dir / ("%s.before.py" % site)

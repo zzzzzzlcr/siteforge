@@ -115,6 +115,25 @@ def test_fix_mode_stages_the_backend_script_as_the_draft(tmp_path):
     assert params["site"] == URL, params
 
 
+def test_the_draft_stages_when_the_page_sends_no_site_key(tmp_path):
+    """★★ 面板那一趟**不发 `site`**（`console.html` 的 `runPayload()` 只有那七格）。
+
+    短名是**服务自己**从 `url` 推的。这一条钉的是一个**真的会 500** 的形状：
+    上一版 `_stage_fix_source` 在这儿拿 `body["url"]` 去读那个载荷对象 ——
+    它是 pydantic 模型，**不可下标** ⇒ `TypeError`（2026-09-21 实测）。
+    ⚠️ 为什么一路没抓到：这一份夹具的 `_brief()` **一直塞着 `site`**，
+    于是「面板的真实形状」这一格从来没被走过 —— 而只有它在线上会 500。
+    """
+    rec = Recorder(_script_body())
+    app = _client(tmp_path, fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec))
+
+    brief = _brief(tmp_path)
+    del brief["site"]                       # ← 面板的真实形状（它不发这一格）
+    r = app.post("/run", json=brief)
+
+    assert r.status_code == 202, r.text
+    assert (tmp_path / "sites" / ("%s.before.py" % SITE)).read_text(encoding="utf-8") == SCRIPT_SRC
+
 # ── ★ 第 ① 件事：拿**失败记录里那个键**去问，不拿人填的入口网址 ──────────────
 #
 #: 【我量的·2026-09-21】`formLog` 每一行都带一格 `site`，那是**后端自己存的键**；

@@ -880,23 +880,32 @@ def test_the_rank_says_when_it_did_not_show_everything():
 
 
 def test_a_rank_row_becomes_one_human_sentence():
-    """一行的人话：`失败 3 次 · 配置 66（启用） · 有 py 脚本`（码一个都不许在）。"""
+    """一行的人话：`失败 3 次 · 配置 66（启用） · 有脚本或配置`（码一个都不许在）。"""
     said = fmr.rank_row_say(RANK_FIXTURE["rank"][0])
-    assert said == "失败 3 次 · 配置 66（启用） · 有 py 脚本", said
+    assert said == "失败 3 次 · 配置 66（启用） · 有脚本或配置", said
+    #: ★ 2026-09-21：这一行**不许说 py** —— 后端那一格（`scriptKind() !== null`）
+    #: **py 与 json 都算「有」**，所以它对一个 json 站也说「有」。
+    #: 【我量的·2026-09-21】`cvrefresh.com`（json 站、`/configcheck` 读得到真配置）
+    #: 的榜单那一行当时写的就是「配置 34（启用）· 有 py 脚本」—— 那句是假话。
+    assert "py" not in said, said
 
 
 def test_has_script_is_three_states_not_two():
     """★ `True` / `False` / `None` **三态三句话** —— 后两种的处置**正好相反**。
 
-    `False` = 有配置但脚本那一格是空的（**去写脚本**）；
+    `False` = 有配置但里面是空的（**去补内容**）；
     `None` = 连配置都没有（**去建配置**）。
-    合成一句「没有脚本」，运营就会拿着「没配置」的站去改脚本（那一步根本无处可改）。
+    合成一句「没有脚本」，运营就会拿着「没配置」的站去补内容（那一步根本无处可补）。
     """
     yes, no, absent = (fmr.has_script_say(True), fmr.has_script_say(False),
                        fmr.has_script_say(None))
     assert len({yes, no, absent}) == 3, (yes, no, absent)
-    assert "配置" in absent, absent
-    assert "脚本" in no and "配置" not in no.split("没有脚本")[0][-4:], no
+    #: 后两种的处置**正好相反**：`False` 是「有配置行」那一支、`None` 是「连配置都没有」
+    #: —— 合成一句，运营就会拿着「没配置」的站去补内容（那一步根本无处可补）。
+    assert "没有配置" in absent and "没有配置" not in no, (no, absent)
+    assert "空的" in no, no
+    #: 与 `test_a_rank_row_becomes_one_human_sentence` 同一条：三态里哪一句都不许说 py。
+    assert "py" not in yes, yes
 
 
 def test_a_rank_row_without_a_config_uses_the_backends_own_note():

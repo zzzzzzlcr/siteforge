@@ -93,7 +93,7 @@ def test_the_rank_comes_back_as_human_rows():
     got = r.json()
     assert [row["site"] for row in got["rank"]] == [r["site"] for r in RANK_FIXTURE["rank"]], \
         got["rank"]
-    assert got["rank"][0]["say"] == "失败 3 次 · 配置 66（启用） · 有 py 脚本", got["rank"][0]
+    assert got["rank"][0]["say"] == "失败 3 次 · 配置 66（启用） · 有脚本或配置", got["rank"][0]
     _no_code(got)
 
 
