@@ -76,7 +76,7 @@ from agent import (browser_agent, events, fmr, graph, journal, jsondiag, measure
 from agent.graph import NODES, STEP_SAY
 from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_LINT_CAP,
                          END_NO_WINDOW, END_PAUSED, END_REVISION_CAP,
-                         END_SELFTEST_CAP, END_WINDOW_GONE)
+                         END_SELFTEST_CAP, END_WINDOW_GONE, MODE_FIX)
 
 __all__ = ["create_app", "app", "BitWindow", "Service", "Checkpointer",
            "QUEUED", "RUNNING", "WAITING", "DONE", "FAILED"]
@@ -4175,6 +4175,52 @@ class Service:
         return problems
 
     # ── 三个动作 ──────────────────────────────────────────────────
+    def _stage_fix_source(self, body: "RunRequest", brief: dict) -> Optional[str]:
+        """修站那条路的**底稿**：把后端那份 py 落成一个文件，返回它的路径。
+
+        `mode != fix` ⇒ `None`（**build 那条路一个字都不动**）。
+
+        ★ 底稿从**后端**来（用户 2026-09-21 点破的）：`GET /api/quest/formScript`
+        就能拿到那个站的脚本源码，而**后端那份才是生产在跑的那一份**。
+        所以这里**不**读本地 `forms/sites/<短名>.py` —— 那是本地的另一份，
+        可能早就不是线上那份了（修错版本比不修更坏：改半天改的是别人手上的旧稿）。
+
+        ★★ 三种「拿不到底稿」都**在门口抛**（非 2xx + 人话）：
+
+        | 情形 | 放它过去的后果 |
+        |---|---|
+        | 后端说这是 `type: json` | 拿一份空脚本去修一个好好的 json 站 |
+        | 后端没有这个站（404） | 同上：「查不到」被读成「没有可修的」 |
+        | 后端读不到（超时/非 JSON） | 「没量着」被读成「跑一趟试试」 |
+
+        **三者的共同后果是同一个**：`fix_py` 空着 ⇒ `graph._intake` 不设 `fix_states`
+        ⇒ `_explore` 走**非修站**那一支 ⇒ **悄悄退化成从头重新探索**
+        （开真窗口、跑模型、把已有的证据丢掉重买一次）—— 而它在日志上与修站**长得一样**。
+        这正是这个仓库最贵的那类形状，所以挡在门口、挡在**一个 job 都没开**的时候。
+        """
+        if str(getattr(body, "mode", "") or "") != MODE_FIX:
+            return None
+        try:
+            script = self._fmr.form_script(str(getattr(body, "url", "") or "").strip())
+        except fmr.FmrUnmeasured as exc:
+            # 读不到 / 没这个站 / 没给 url —— 全走既有的「量不到」那张表（非 2xx + 原话）。
+            raise self._unmeasured_to_http(exc)
+        if str(script.get("type") or "") != "py":
+            raise HTTPException(
+                status_code=400,
+                detail="修不了这个站：后端说它跑的是 **JSON 配置**，不是脚本"
+                       "（`type: json`）。⚠️ 拿一份空脚本去修一个 json 站，"
+                       "下游看起来与「这个站该补一份脚本」**一模一样** —— "
+                       "所以在这儿停。这一类该走配置那条路。")
+        site = str(getattr(body, "site", "") or "").strip() or graph.site_name(body["url"])
+        out_dir = pathlib.Path(str(brief.get("out_dir") or self._out_dir))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        staged = out_dir / ("%s.before.py" % site)
+        #: ⚠️ **逐字节**写下去：后端原话「首尾换行是源码的一部分」，
+        #: 写口又拿 sha256 当指纹 —— 在这儿 strip 一下，后面写回去的就是另一份文件了。
+        staged.write_text(str(script.get("source") or ""), encoding="utf-8")
+        return str(staged)
+
     def start(self, body: RunRequest) -> dict:
         problems = self._intake_problems(body)
         if problems:
@@ -4187,6 +4233,11 @@ class Service:
         # 判那一步的是 `_note_step`（在图上跑），门口换掉之后它手上只剩换好的值
         # —— 不把个数带过去，那条静默路径就又回来了。
         brief[EXPECTS_UNWRITABLE] = list(body.unwritable_items("expects"))
+        # ★ B 线 py 支：修站那条路的底稿从**后端**读、落成一份文件再喂给图。
+        # ⚠️ 排在这儿是为了「拿不到底稿」**在开 job 之前**就红掉 —— 见那个方法。
+        staged = self._stage_fix_source(body, brief)
+        if staged:
+            brief["fix_py"] = staged
         self._clean_window_for_explore(brief)     # R-F1 的另一半：**探路也要干净会话**
         job_id = "job-%s" % uuid.uuid4().hex[:12]
         job = Job(job_id=job_id, brief=brief, status=QUEUED, say=SUBMITTED_SAY,
@@ -4251,7 +4302,12 @@ class Service:
         """
         keep = ("url", "goal", "mode", "success_text", "evidence", "site", "ws_url",
                 "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url",
-                "hints")
+                "hints",
+                #: ★ B 线 py 支（2026-09-21）：修站那条路的**底稿路径**。
+                #: ⚠️ 少了它，服务算出来、也落了盘，却**发不到图里** ——
+                #: `graph.py:346` 那个 `if fix_py:` 恒为假，那条路「接上了但不响」
+                #: （`state.py:176` 记的正是上一次这么栽的）。
+                "fix_py")
         return {k: brief[k] for k in keep if k in brief}
 
     def reply(self, job_id: str, body: ReplyRequest) -> dict:

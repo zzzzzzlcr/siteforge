@@ -35,7 +35,8 @@ from langgraph.types import Interrupt
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import browser_agent, graph, journal, measure, selftest, service  # noqa: E402
+from agent import browser_agent, fmr, graph, journal, measure, selftest, service  # noqa: E402
+from test_fmr import FAKE_TOKEN, Recorder  # noqa: E402  ← 桩 `opener`（与别处同一套）
 
 SITE = "example-funnel"
 URL = "https://example-funnel.test/quiz"
@@ -694,7 +695,17 @@ def test_the_service_wires_the_brief_onto_the_graph_as_is(tmp_path):
         fg.invoke = invoke
         return fg
 
-    client = _client(graph_factory=factory)
+    #: ⚠️ 2026-09-21 起 `mode=fix` **要一份底稿**（服务从后端读那个站的脚本，
+    #: 读不到就在门口红掉 —— 见 `Service._stage_fix_source`：放它过去的后果是
+    #: **悄悄退化成从头重新探索**）。这一条钉的**不是**修站那条路，
+    #: 是「开场白原样落到图里」—— 所以给它一份底稿，让它走得过去。
+    #: 三处断言一个字没动。
+    rec = Recorder({"status": 200, "msg": "ok",
+                    "data": {"site": "example-funnel", "requested_site": URL,
+                             "type": "py", "version": "20260918",
+                             "sha256": "0" * 64, "source": "STATES = []\n"}})
+    client = _client(graph_factory=factory,
+                     failures_reader=fmr.FmrClient(token=FAKE_TOKEN, opener=rec))
     client.post("/run", json=_brief(tmp_path, mode="fix",
                                     env={"proxy_country": "US", "dpr": 1},
                                     platform={"guess": "quiz", "confidence": 0.7}))
