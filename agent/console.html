@@ -435,7 +435,9 @@
               <label for="jsonEditor">待写配置</label>
               <textarea id="jsonEditor" rows="14" spellcheck="false"
                         placeholder="先点“看差在哪一格”，这里会装入后端原配置"></textarea>
-              <p class="why">可以编辑整份 JSON。预检不会写；只有预检通过后，“确认写回”才会启用。</p>
+              <p class="why">可以编辑整份 JSON。预检不会写；只有预检通过后，“确认写回”才会启用。
+                <b>⚠️ 预检里的「真页面复跑」会往那个站真走一遍、真提交一次</b>（跟生产是同一件事）——
+                别拿一个正在跑的站乱按；它一次预检就是一笔真实流量。</p>
             </div>
             <div class="nrun">
               <div class="field">

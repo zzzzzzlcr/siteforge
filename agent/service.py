@@ -1484,17 +1484,23 @@ class ReopenRequest(_Intake):
     set_viewport: bool = Field(False, description="顺便把窗口层那根线接上（第 4 遍扰动要用）")
 
 
-class JsonWritePrepareRequest(BaseModel):
+#: ⚠️ 这三格必须挂在 `_Intake` 上（**不是** `BaseModel`）：它们是**外面来的字**，
+#: 而门口那道消毒在 `_Intake` 上（见它那段「为什么消毒必须挂在这一层」）。少挂一层 =
+#: 带坏字节的载荷被原样收下 ⇒ `/live` 最后那次 `.encode("utf-8")` 500、**整条时间线读不出来**。
+#: 【2026-09-21】这三格最初就是挂在 `BaseModel` 上的，是**全量**那条机器守
+#: （`tests/test_service_intake.py`，逐个模型的逐个文本字段塞坏字节）把它们拦下来的 ——
+#: 它存在的理由正是「新加一个载荷模型，一个字节都不用记得」。
+class JsonWritePrepareRequest(_Intake):
     site: str
     config: dict
     operator: str
 
 
-class JsonWriteCommitRequest(BaseModel):
+class JsonWriteCommitRequest(_Intake):
     ticket: str
 
 
-class JsonWriteRollbackRequest(BaseModel):
+class JsonWriteRollbackRequest(_Intake):
     backup_id: str
     operator: str
 
