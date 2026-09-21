@@ -298,6 +298,18 @@ async function failuresUrlEditedScenario(out) {
   out.afterRun = { who: el("whoJob").textContent };
 }
 
+//: 合规闸那一栏（2026-09-21）：写站名 → 按「查配置」→ 摆结果。
+//: 量两样：① 服务那句 `say` **原样**上屏；② 那一栏**读不到**时不许被画成「合规」
+//:（这一屏最怕的形状：读不回来 = 「这份配置没问题」）。
+async function configcheckScenario(out) {
+  out.afterLoad = { box: el("check").innerHTML };
+  el("checkSite").value = payload.check.site;
+  fire("btnCheck", "click");
+  await settle();
+  await settle();
+  out.afterCheck = { box: el("check").innerHTML, disabled: el("btnCheck").disabled };
+}
+
 //: **量不到**那一趟（Task 13）：服务回 502 + 一句人话 ⇒ 那一栏说「这一栏没读到」，
 //: 而且**不许**把「没读到」写成「这个站没有失败」—— 那是这一片从头到尾在治的形状。
 //: 量两样：① 那句话说出来了；② 它**活过之后三次重画**（这一栏不跟着 `paint()` 重画）。
@@ -426,6 +438,10 @@ async function againScenario(out) {
   //: 走的路一个字不差，量的就是「页面会不会自己编一个键出来」。
   else if (payload.scenario === "failures-no-key") { await failuresScenario(out); }
   else if (payload.scenario === "failures-unmeasured") { await failuresUnmeasuredScenario(out); }
+  //: 这三趟走**同一段驱动**，差别只在载荷里那份答复（干净 / 不合规 / 读不到）。
+  else if (payload.scenario === "configcheck") { await configcheckScenario(out); }
+  else if (payload.scenario === "configcheck-unclean") { await configcheckScenario(out); }
+  else if (payload.scenario === "configcheck-unreadable") { await configcheckScenario(out); }
   else if (payload.scenario === "rank-diag") { await rankScenario(out); }
   else { await repaintScenario(out); }
   out.paints = timelineWrites;                      // **重画了几次**（C1：别拿 fetch 数代替）

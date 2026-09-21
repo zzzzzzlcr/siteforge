@@ -421,6 +421,41 @@
           </div>
         </section>
 
+        <!-- ── 这份配置执行器认不认（合规闸，2026-09-21）───────────
+             病：执行器碰到**不认的动作**时**不报错** —— 它只 warning 一句就当那一步
+             失败了、然后接着往下跑（`json_executor.py:3041`）。于是配置里打错一个
+             动作名、或者模型编一个新动作出来，那份配置**照样跑得完**，而它在屏幕上
+             与「这一步没效果」**一模一样**。这一栏把「跑完了」与「跑对了」分开。
+             ⚠️ 三条纪律（与这一屏别处同一套）：
+               · 判据**从执行器现量**（那个目录别人在改）⇒ 结果里带着「量的是哪一版」；
+               · **读不回来**（没配置 / 连不上）是**非 2xx** —— **绝不**画成「合规」，
+                 那与「无效 key 被标成没有失败 ✓」是同一个形状；
+               · 「我没量到那个键」只算**提醒**、不拦 —— 没量到不等于就是错的。 -->
+        <section class="panel" id="checkPanel">
+          <header>
+            <h2>这份配置执行器认不认</h2>
+            <span class="sub">读一份后端配置，逐格看动作和参数执行器认不认。**只读，不写回。**</span>
+          </header>
+          <div class="body">
+            <div class="nrun">
+              <div class="field">
+                <label for="checkSite">哪个站</label>
+                <input type="text" id="checkSite" autocomplete="off" spellcheck="false"
+                       placeholder="站点键，例如 cvrefresh.com">
+                <p class="why">后端那份配置认的那个键（与上面「查失败」用的是同一个）。
+                  它**不是**整条 URL —— 拿 URL 去查会查不到，那一下会直说。</p>
+              </div>
+              <div class="go">
+                <button class="btn primary" type="button" id="btnCheck">查配置</button>
+                <p class="hint" id="checkHint">按下去它读那份配置、逐格对照执行器认不认。
+                  这一下**不跑页面、不调模型**。</p>
+              </div>
+            </div>
+            <div id="check"></div>
+            <p class="hintline" id="checkNote"></p>
+          </div>
+        </section>
+
         <!-- ── 开一趟（新的一趟活）─────────────────────────────
              ⚠️ 这一块是**唯一**能开新活的地方（Task 12）：在这之前，面板上能发出去的动作
              只有「继续 / 说一句 / 停 / 重新来一遍」，而「重新来一遍」只在跑完之后才出现、
@@ -2026,6 +2061,78 @@
       });
   }
 
+  // ══════════════════ 这份配置执行器认不认（合规闸，2026-09-21）══════════
+  //: 只读：读那份配置 + 逐格对照。**不跑页面、不调模型、不写回**。
+  var CONFIGCHECK = "/configcheck";
+
+  function checkNote(said) {
+    var el = document.getElementById("checkNote");
+    if (el) { el.innerHTML = said ? rich(said) : ""; }
+  }
+
+  //: ★★ 这一栏读不到时说的话 —— **绝不**写成「这份配置没问题」。
+  //: 「读不回来」与「合规」在屏幕上都可能长得像「没东西可看」，而它们处置完全不同；
+  //: 这一格画的**只有服务那句话**（它说清了是哪一种），页面不自己下判。
+  function checkProblem(said) {
+    var box = document.getElementById("check");
+    if (box) { box.innerHTML = '<p class="none">' + rich(said) + "</p>"; }
+  }
+
+  function checkList(title, rows) {
+    if (!rows || !rows.length) { return ""; }
+    var items = rows.map(function (p) {
+      return "<li><span class=\"mono\">" + esc(at(p, "where", "")) + "</span> " +
+             rich(at(p, "say", "")) + "</li>";
+    });
+    return "<h3>" + esc(title) + "（" + rows.length + "）</h3><ul>" + items.join("") + "</ul>";
+  }
+
+  //: 摆结果：抬头那句**原样**是服务说的；两条清单分开摆（要改的 / 只是提醒）。
+  //: ⚠️ 提醒那一档**不拦**（「我没量到那个键」≠「它就是错的」）—— 别把它画成错误，
+  //:    那会把一份好好的配置吓得没人敢用。
+  function paintCheck(data) {
+    var box = document.getElementById("check");
+    if (!box) { return; }
+    var html = '<p class="lead">' + rich(at(data, "say", "")) + "</p>";
+    html += checkList("执行器一定处理不了的", at(data, "errors", []));
+    html += checkList("提醒（不拦）", at(data, "notes", []));
+    var rules = at(data, "rules", null);
+    if (rules) {
+      //: ★ 判据是**现量**的 ⇒ 说清量的是哪一版（那个执行器别人在改）。
+      html += '<p class="hintline">判据是**现量**的：拿 ' + esc(at(rules, "path", "")) +
+              " 那一版量的（sha256 " + esc(String(at(rules, "sha256", "")).slice(0, 12)) +
+              "…，文件时间 " + esc(at(rules, "mtime", "")) + "）。</p>";
+    }
+    box.innerHTML = html;
+  }
+
+  function fetchCheck() {
+    var site = document.getElementById("checkSite").value.trim();
+    var btn = document.getElementById("btnCheck");
+    btn.disabled = true;
+    checkNote("");
+    //: ⚠️ 空着也发（让**服务**说「没说是哪个站」那句人话）—— 与这一屏别处同一条纪律：
+    //:    不替人预先判哪一格必填，缺什么由服务说（它有那张人话单子）。
+    return fetch(CONFIGCHECK + "?site=" + encodeURIComponent(site))
+      .then(readJSON)
+      .then(function (res) {
+        btn.disabled = false;
+        if (!res.ok) {
+          // **原样**摆服务那句人话（400「没说是哪个站」/ 502「这个站没有配置」…）。
+          checkProblem(sayOf(res) || "没读到（服务没说为什么）。");
+          return null;
+        }
+        var box = document.getElementById("check");
+        if (box) { box.innerHTML = ""; }
+        paintCheck(res.obj);
+        return res.obj;
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        checkProblem("这一栏没读到：" + e + " —— 服务可能没在跑。");
+      });
+  }
+
   // ══════════════════ 窗口那两下（Task 12）══════════════════
   //: 关窗口 / 重开窗口：都发**当前这一趟**（它们在 `/job/<id>/` 下面）。
   //: ⚠️ 两下的答复里，服务说的那句话都**原样上屏**（`setErr` 那条红杠是这一屏唯一
@@ -2129,6 +2236,7 @@
   document.getElementById("btnRankGo").addEventListener("click", goRank);
   document.getElementById("btnDiag").addEventListener("click", fetchDiag);
   document.getElementById("btnJson").addEventListener("click", fetchJson);
+  document.getElementById("btnCheck").addEventListener("click", fetchCheck);
   //: 「看哪个站的失败单」那一块开页是**收着**的（还没有任何一份榜单）。
   //: 与 `failAct` 同一行规矩：**开页时它是什么样由这一行算出来**，不靠静态标记。
   document.getElementById("rankAct").hidden = true;

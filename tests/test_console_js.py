@@ -66,9 +66,13 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from agent import configcheck  # noqa: E402
 from agent import fmr  # noqa: E402
 from agent import graph  # noqa: E402
 from agent import service  # noqa: E402
+#: 那份**真形状**的配置（cvrefresh，实测原件）—— 与 `test_configcheck` 是同一份，
+#: 不在这儿再抄一遍：抄一份就会两边漂。
+from test_configcheck import CLEAN as CHECK_CLEAN  # noqa: E402
 from test_fmr import MEASURED_STEPS, Recorder, envelope  # noqa: E402
 
 DRIVER = pathlib.Path(__file__).with_name("console_js_driver.js")
@@ -296,6 +300,12 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _failures_edited_payloads()
     elif scenario == "failures-no-key":
         payload = _failures_no_key_payloads()
+    elif scenario == "configcheck":
+        payload = _configcheck_payloads(clean=True)
+    elif scenario == "configcheck-unclean":
+        payload = _configcheck_payloads(clean=False)
+    elif scenario == "configcheck-unreadable":
+        payload = _configcheck_unreadable_payloads()
     elif scenario == "failures-unmeasured":
         payload = _failures_unmeasured_payloads()
     elif scenario == "rank-diag":
@@ -1130,6 +1140,62 @@ def _failures_no_key_payloads() -> dict:
     return p
 
 
+#: ── 合规闸那一栏（2026-09-21）─────────────────────────────────────
+CHECK_SITE = "cvrefresh.com"
+CHECK_URL = service.CONFIGCHECK_PATH + "?site=" + urllib.parse.quote(CHECK_SITE, safe="")
+
+
+def _check_body(config, *, site=CHECK_SITE) -> dict:
+    """**服务会回的那份正文** —— 从服务自己的代码算出来（不在这儿手抄一句）。
+
+    与 `AGAIN_SAY` / `FAIL_502` 同一个做法：那句话改一个字，这一份跟着变，不会两边漂。
+    """
+    rules = configcheck.load_rules()
+    problems = configcheck.check_config(config, rules)
+    errors = [p for p in problems if p["level"] == "error"]
+    notes = [p for p in problems if p["level"] == "note"]
+    return {"site": site, "say": service._configcheck_say(errors, notes),
+            "errors": errors, "notes": notes,
+            "rules": {"path": rules["path"], "sha256": rules["sha256"],
+                      "mtime": rules["mtime"]}}
+
+
+def _check_502() -> str:
+    """服务会回的那句「量不到」—— 让 `FmrClient` **真的**在连不上的时候抛一次。
+
+    ⚠️ 不在这儿手抄一句：这一条要证明的正是「屏幕上那句是**服务说的**那一句」——
+    手抄就变成「屏幕上是一句与它长得一样的字」（与 `_unmeasured_502` 同一做法）。
+    """
+    def boom(url, headers):
+        raise RuntimeError("connection refused")
+    try:
+        fmr.FmrClient(token="tok", opener=boom).form_config(CHECK_SITE)
+    except fmr.FmrUnmeasured as exc:
+        return str(exc)
+    raise AssertionError("桩居然没抛 —— 这一条夹具没东西可量")
+
+
+CHECK_502 = _check_502()
+
+
+def _configcheck_payloads(*, clean: bool) -> dict:
+    """合规那一栏：干净那份 / **不合规**那份。两份都走同一段驱动。"""
+    cfg = dict(CHECK_CLEAN)
+    name = "configcheck"
+    if not clean:
+        cfg = dict(CHECK_CLEAN, steps=[{"action": "clik", "find": {"text": "x"}}])
+        name = "configcheck-unclean"
+    return {"scenario": name, "check": {"site": CHECK_SITE},
+            "responses": {CHECK_URL: [{"body": _check_body(cfg)}]}}
+
+
+def _configcheck_unreadable_payloads() -> dict:
+    """★ 那一栏**读不到**（502：这个站没有配置 / 连不上）—— **绝不**画成「合规」。"""
+    return {"scenario": "configcheck-unreadable",
+            "check": {"site": CHECK_SITE},
+            "responses": {CHECK_URL: [{"status": 502, "body": {"detail": CHECK_502}}]}}
+
+
 def _failures_unmeasured_payloads() -> dict:
     """**量不到**那一趟：服务回 502 + 一句人话（连不上后端）。"""
     return {"scenario": "failures-unmeasured", "search": "",
@@ -1741,6 +1807,52 @@ def test_a_task_with_no_reason_yet_says_so_and_is_not_left_blank(tmp_path):
     assert "还没有原因行" in html, html
     #: ③ 与「有原因」那一屏**不是同一份**（正控：这一条量的是「换了一单」）。
     assert html != out["afterDiag"]["diag"], "换了一单，屏幕上一个字都没变"
+
+
+# ── 合规闸那一栏（2026-09-21）─────────────────────────────────────
+
+def test_clicking_check_shows_the_services_own_sentence(tmp_path):
+    """★ 那一栏长出来的**是服务说的那句**（干净那份 ⇒ 说「没有要改的」）。
+
+    ⚠️ 用 `_onscreen` 逐段比：`rich()` 会把 `**着重**` 变成标签，整句 `in` 比不中。
+    """
+    out = _drive(tmp_path, scenario="configcheck")
+    box = out["afterCheck"]["box"]
+
+    _onscreen(box, _check_body(CHECK_CLEAN)["say"], "合规那一句")
+    assert out["afterCheck"]["disabled"] is False, out["afterCheck"]
+    #: ★ 判据是**现量**的 ⇒ 「量的是哪一版」也要摆出来（那个执行器别人在改）
+    assert "json_executor.py" in box, box
+
+
+def test_an_unclean_config_lists_each_problem_with_where(tmp_path):
+    """★ 不合规 ⇒ **逐条摆出来**（哪一步 + 哪句话），而不是干说一句「有问题」。
+
+    「有问题但没有下文」在这一屏上等于没有：运营拿到它不知道该改哪儿。
+    """
+    out = _drive(tmp_path, scenario="configcheck-unclean")
+    box = out["afterCheck"]["box"]
+
+    assert "clik" in box, box                  #: 哪个动作不认
+    assert "第 1 步" in box, box               #: 哪一步
+    assert "执行器一定处理不了的" in box, box   #: 那一档的标题（要改的那一档）
+
+
+def test_a_config_that_cannot_be_read_is_never_drawn_as_compliant(tmp_path):
+    """★★ 那一栏**读不到** ⇒ 摆服务那句人话，**绝不**画成「合规」。
+
+    「读不回来」与「合规」在屏幕上都可能长得像「没东西可看」，而它真正的意思是
+    「我根本没读到」—— 与「无效 key 被标成没有失败 ✓」是同一个形状的下一站。
+
+    两条一起量：**不许出现「没有要改的」**，而且那一栏**不是空的**（留白与「合规」
+    在这一屏上分不开 —— 这一片从头到尾治的就是这个）。
+    """
+    out = _drive(tmp_path, scenario="configcheck-unreadable")
+    box = out["afterCheck"]["box"]
+
+    assert "没有要改的" not in box, "读不回来却被画成了「合规」：%r" % box
+    assert box.strip(), "读不回来时那一栏是空的 —— 留白与「合规」在这一屏上分不开"
+    _onscreen(box, CHECK_502, "「读不回来」那一句")
 
 
 def test_what_the_chain_showed_survives_three_repaints(tmp_path):

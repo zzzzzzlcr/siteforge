@@ -71,8 +71,8 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from langgraph.types import Command
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
-from agent import (browser_agent, events, fmr, graph, journal, jsondiag, measure, rounds,
-                   selftest, shots, tools)
+from agent import (browser_agent, configcheck, events, fmr, graph, journal, jsondiag,
+                   measure, rounds, selftest, shots, tools)
 from agent.graph import NODES, STEP_SAY
 from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_LINT_CAP,
                          END_NO_WINDOW, END_PAUSED, END_REVISION_CAP,
@@ -381,6 +381,9 @@ DIAG_PATH = "/diag/%s"
 #: ⚠️ 站点键走**查询参数**、不走路径：真键长这样 `www.gowizard.com/auto-warranty/`
 #: —— 带斜杠，塞进路径会被切成好几段（`/diag` 那边没这问题，它走的是单号）。
 JSODIFF_PATH = "/jsondiff"
+#: 「这份配置执行器认不认」那一跳（合规闸的入口，2026-09-21）。
+#: ⚠️ 与 `JSODIFF_PATH` 同一个理由走**查询参数**（真站点键带斜杠）。
+CONFIGCHECK_PATH = "/configcheck"
 #: 复跑用哪个浏览器（`ws://…`）。没配 = 这个部署**跑不了复跑** —— 那是合法状态，
 #: 面板照样读得到配置，只是「复跑」那一步会明确说「没量着」。
 JSON_WS_URL_ENV = "SITEFORGE_JSON_WS_URL"
@@ -425,6 +428,28 @@ def _failures_say(site: str, since: str, rows: list, limit: int) -> str:
         return said
     return ("这个站从 %s 起**没有**失败的记录 —— 这是**量到的**结果（不是「没量着」）。"
             % when)
+
+
+def _configcheck_say(errors: list, notes: list) -> str:
+    """合规闸那一句抬头：**这回量到的是什么**。
+
+    ★ 三种要说得分得开：
+      · 有 `error` ⇒ 说清**几处**、并且把后果说出来（执行器**不报错**，它只 warning
+        一句就当那一步失败了）—— 光说「有问题」读的人会以为闸太严；
+      · 只有 `note` ⇒ **仍然说「没有要改的」**，再把提醒单独讲清楚：
+        那一档是「我没量到」，不是「它就是错的」（见 `configcheck` 模块 docstring）；
+      · 都空 ⇒ 干净。
+    """
+    if errors:
+        return ("这份配置有 **%d 处**执行器一定处理不了（下面列着）。"
+                "⚠️ **别写回、也别指望跑了就知道**：执行器碰到不认的动作**不报错** —— "
+                "它只 warning 一句就当那一步失败了、然后接着往下跑，"
+                "屏幕上与「这一步没效果」一模一样。" % len(errors))
+    if notes:
+        return ("这份配置**执行器都认**，没有要改的。另有 **%d 处**只是**提醒** —— "
+                "那几个键我在执行器那一支里没量到它读：可能是别处要的元数据，"
+                "也可能是打错了字，你扫一眼。" % len(notes))
+    return "这份配置**执行器都认**，没有要改的。"
 
 
 def _jsondiff_say(diff: dict, summary: dict) -> str:
@@ -4062,6 +4087,55 @@ class Service:
             "note": "" if rows else fmr.NO_DIAG_SAY,
         }
 
+    def configcheck(self, site: Any) -> dict:
+        """`GET /configcheck?site=<站点键>` 的正文（合规闸，用户 2026-09-21 定）。
+
+        ```
+        读那份配置（B1 的 form_config）
+              ↓ 逐格对照「执行器认不认」（`agent/configcheck`，判据**现量**）
+        端给页面：逐条人话 + 量的是哪一版执行器
+        ```
+
+        ## ★ 这一条路上最贵的那一格
+
+        **读不回来 ⇒ 非 2xx**。一个 `200 {"errors": []}` 在屏幕上与「这份配置没问题」
+        **一模一样**，而它真正的意思是「我根本没读到」—— 与「无效 key 被标成
+        没有失败 ✓」是同一个形状的下一站。
+
+        ⚠️ 反过来：**「不合规」是 `200`**（读回来了、也逐格看过了）。
+        把它做成非 2xx 的话，屏幕上与「读不回来」分不开，而两件事的处置完全不同
+        （一个去改配置，一个去查后端/网络）。
+
+        ⚠️ 判据**不在这一层**：`configcheck.load_rules()` 每次**从执行器源码现量**
+        （那个目录别人在改）。这一层**不许**自己抄一份动作表。
+        """
+        key = str(site or "").strip()
+        if not key:
+            # ★ 400（与 `failures()` / `jsondiff()` 门口同一道免费的闸）：没给站点键是
+            # **调用方自己的毛病**，一个请求都没发出去 —— 写成 502 的话运维会去查后端。
+            raise HTTPException(
+                status_code=400,
+                detail="看不了这份配置合不合规：没说是**哪个站** —— 这是免费的检查"
+                       "（一个请求都没发出去）。")
+        try:
+            config = self._fmr.form_config(key)
+        except fmr.FmrUnmeasured as exc:
+            raise self._unmeasured_to_http(exc)
+        rules = configcheck.load_rules()
+        problems = configcheck.check_config(config, rules)
+        errors = [p for p in problems if p["level"] == "error"]
+        notes = [p for p in problems if p["level"] == "note"]
+        return {
+            "site": key,
+            "say": _configcheck_say(errors, notes),
+            "errors": errors,
+            "notes": notes,
+            #: ★ 判据是现量的 ⇒ 得说清**量的是哪一版**（那个执行器别人在改）。
+            #: 少了这一格，闸就会在无声中拿旧规矩卡新执行器。
+            "rules": {"path": rules["path"], "sha256": rules["sha256"],
+                      "mtime": rules["mtime"]},
+        }
+
     def jsondiff(self, site: Any) -> dict:
         """`GET /jsondiff?site=<站点键>` 的正文（Task B2/B3）：**这份配置差在哪一格**。
 
@@ -5282,6 +5356,16 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
         （页面照着 `note` 说「还没有原因」，不许留白）。
         """
         return svc.diag(task_id)
+
+    @api.get(CONFIGCHECK_PATH)
+    def configcheck_route(site: str = "") -> dict:
+        """**这份配置执行器认不认**（合规闸，2026-09-21）—— 只读，一个字都不写。
+
+        ⚠️ 站点键走**查询参数**（真键带斜杠，见 `CONFIGCHECK_PATH` 那段）。
+        ⚠️ **不合规是 `200`**（读回来了、也看过了）；**读不回来才是非 2xx** ——
+        两者在屏幕上都是「没东西可看」，而处置完全不同。
+        """
+        return svc.configcheck(site)
 
     @api.get(JSODIFF_PATH)
     def jsondiff(site: str = "") -> dict:
