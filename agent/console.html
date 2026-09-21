@@ -501,6 +501,23 @@
                 <p class="why">新站是从零摸；老站是照着一份失败证据修（选「老站」下面会多出一格）。
                   两种活做法不一样，所以这一格服务要问清楚。</p>
               </div>
+              <div class="field">
+                <label for="runNote">开工前先说一句（可空）</label>
+                <input type="text" id="runNote" autocomplete="off" spellcheck="false"
+                       placeholder="要点的那个东西长什么样 —— 选择器 / 那段 HTML / 一句人话都行">
+                <p class="why">你已经知道答案的那种话，直接写这儿：比如
+                  <code>点 a.btn（那个 Get A Free Quote）</code>。
+                  它会<b>原样</b>进模型这一次的提示词（不走任何加工）—— 它就不用猜了。
+                  跑起来之后每道闸上也还能再说。</p>
+              </div>
+              <div class="field">
+                <label for="runForm">表单数据（可空）</label>
+                <input type="text" id="runForm" autocomplete="off" spellcheck="false"
+                       placeholder="{&quot;email&quot;: &quot;…&quot;} —— 走通这条路过一遍要填的那些值">
+                <p class="why">自测要在真页面上把这一趟走一遍，所以它得知道<b>往那些格子里填什么</b>。
+                  写一段 <code>{字段名: 值}</code> 就行；<b>空着也行</b> —— 空着就等于「没给值」，
+                  脚本自己的兜底值会生效（这一格不是让你编数据）。</p>
+              </div>
               <div class="field" id="runEvidenceField" hidden>
                 <label for="runEvidence">失败证据</label>
                 <input type="text" id="runEvidence" autocomplete="off"
@@ -1478,7 +1495,12 @@
       //:    这一份组装的纪律是「一个判断都不许有」（`test_console_page` 那条同名用例）；
       //:    没挑过失败时这两格是 `undefined` ⇒ **根本不在正文里**，见 `state` 那段注释。
       "fix_site": state.fixSite,
-      "fix_site_url": state.fixSiteUrl
+      "fix_site_url": state.fixSiteUrl,
+      //: ★ 表单数据那一格（2026-09-21）：人糊的一段 JSON ⇒ 服务落成文件喂给自测。
+      //: ⚠️ 同样是**只取值**（`trim()` 去掉首尾空白，「全是空格」不该被当成「填了」）。
+      "form_data": document.getElementById("runForm").value.trim(),
+      //: ★ 开工前那一句（2026-09-21）：服务把它放进 `hints`，逐字进模型的提示词。
+      "note": document.getElementById("runNote").value.trim()
     };
   }
 

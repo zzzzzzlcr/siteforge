@@ -76,6 +76,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import subprocess
 import time
 from dataclasses import dataclass
@@ -349,6 +350,73 @@ def _read_trace(path) -> tuple:
     return lines, bad
 
 
+#: 脚本自己那套读页面的 JS（`READ_PAGE_JS = r"""…"""`）—— 拿来**现读一遍**它看到了什么。
+_READER_JS = re.compile(r'READ_PAGE_JS\s*=\s*r?"""(.*?)"""', re.S)
+
+#: 通用的「谁看着像可点的」探针（**与脚本无关**）：短文字的链接/按钮类元素。
+#: 为什么要它（2026-09-21 实测，站 `qualify.lastingpowerofattorney.io`）：那一页的
+#: **「Get A Free Quote」是个 `<a href="https://qualify.lastingpowerofattorney.io//?…">`**，
+#: 而脚本只收 `button, [role=button], label` ⇒ `buttons: 0` ⇒ 它连看都看不见那个按钮。
+#: 把「页面上有、它没收到的」摆出来，模型/人才不用猜。
+_PROBE_JS = r"""(function(){
+  function vis(e){var n=e;while(n&&n.nodeType===1){var cs=getComputedStyle(n);
+    if(cs.visibility==='hidden'||cs.display==='none'||cs.opacity==='0')return false;n=n.parentElement;}return true;}
+  function onScreen(e){var r=e.getBoundingClientRect();
+    return r.width>0&&r.height>0&&r.top<window.innerHeight&&r.bottom>0;}
+  var out={url:location.href,cands:[]};
+  var els=document.querySelectorAll('a[href],[onclick],[class*="btn"],[class*="button"],[role="link"]');
+  for(var i=0;i<els.length&&out.cands.length<12;i++){var e=els[i];
+    if(!vis(e)||!onScreen(e))continue;
+    var t=(e.textContent||'').replace(/\s+/g,' ').trim();
+    if(!t||t.length>40)continue;
+    var r=e.getBoundingClientRect();
+    out.cands.push({tag:e.tagName,txt:t,cls:String(e.className||'').slice(0,40),
+                    href:(e.getAttribute('href')||'').slice(0,90),
+                    box:[Math.round(r.width),Math.round(r.height)]});}
+  return JSON.stringify(out);
+})()"""
+
+
+def _cdp_eval(cdp_bin, ws_url, js, env, timeout: float = 60):
+    """在那一页上跑一段 JS（`cdp eval`）→ 解出来的对象；跑不了给 `None`（**不抛**）。
+
+    ⚠️ `cdp eval` 吐的是**被 JSON 包了一层的字符串**（脚本那头就是 `json.loads` 两次）——
+    这里替调用方拆掉那一层。
+    """
+    if not cdp_bin:
+        return None
+    host, port = _host_port(ws_url)
+    try:
+        done = subprocess.run([str(cdp_bin), "eval", js, "--host", host, "--port", port],
+                              capture_output=True, text=True, timeout=timeout, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if done.returncode != 0:
+        return None
+    try:
+        got = json.loads((done.stdout or "").strip())
+        return json.loads(got) if isinstance(got, str) else got
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _dom_view(py, cdp_bin, ws_url, env) -> dict:
+    """跑完那一遍之后，**现读一遍那一页**：脚本自己看到了什么 + 页面上还有什么可点的。
+
+    `None` = 读不到（不是「没有」）—— 那两个字在这一层不许混。
+    """
+    view: dict = {}
+    try:
+        src = pathlib.Path(py).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        src = ""
+    m = _READER_JS.search(src)
+    if m:
+        view["reader"] = _cdp_eval(cdp_bin, ws_url, m.group(1), env)
+    view["clickable"] = _cdp_eval(cdp_bin, ws_url, _PROBE_JS, env)
+    return view
+
+
 def _navigate(cdp_bin, ws_url, entry_url, env) -> Optional[str]:
     """把窗口**导航到 `entry_url`** → `None` 成了 / 一句人话为什么没成。
 
@@ -431,7 +499,11 @@ def run_once(py_path, ws_url, form_file, site, *, legacy: bool = False, run_dir=
             "tail": _tail((out or "") + (err or ""), 60), "cmd": cmd,
             "trace_path": str(trace), "log_path": str(log_path),
             "legacy": bool(legacy), "timeout": timeout,
-            "navi": navi_why, "entry_url": entry_url or ""}
+            "navi": navi_why, "entry_url": entry_url or "",
+            #: ★ 现场读到了什么（跑完**再读一遍那一页**）：模型手上没有这一块时只能猜
+            #: 「它看到的和它没收到的」—— 实测：那一页的 CTA 是个 `<a href>`，脚本的
+            #: 选择器里根本没有 `a`，于是 `buttons: 0`，一直「nothing actionable」。
+            "dom": _dom_view(py, cdp_bin, ws_url, env)}
 
 
 def evidence_say(ev: dict) -> str:
@@ -465,6 +537,26 @@ def evidence_say(ev: dict) -> str:
     tail = str(ev.get("tail") or "").strip()
     if tail:
         parts.append("它自己打出来的最后几行：\n%s" % tail[-1200:])
+    dom = ev.get("dom") if isinstance(ev.get("dom"), dict) else {}
+    reader = dom.get("reader") if isinstance(dom.get("reader"), dict) else None
+    if reader:
+        bs = reader.get("buttons") or []
+        parts.append("跑完之后**现读那一页**：脚本自己收到的是 —— buttons: %d 个%s、fields: %d 个、"
+                     "progress: %r。\n它收到的那些可点元素：%s"
+                     % (len(bs), "（" + "、".join(str(b.get("txt"))[:24] for b in bs[:6]) + "）" if bs else "",
+                        len(reader.get("fields") or []), reader.get("progress") or "",
+                        "、".join(str(b.get("txt"))[:24] for b in bs[:6]) or "（一个都没有）"))
+    cands = (dom.get("clickable") or {}).get("cands") if isinstance(dom.get("clickable"), dict) else None
+    if cands:
+        known = {(b.get("txt") or "") for b in (reader.get("buttons") or [])} if reader else set()
+        missed = [c for c in cands if (c.get("txt") or "") not in known]
+        if missed:
+            lines = ["- `<%s class=%r>%s</%s>`%s" % (c.get("tag"), c.get("cls"), c.get("txt"),
+                                                     c.get("tag"),
+                                                     (" href=%s" % c.get("href")) if c.get("href") else "")
+                     for c in missed[:8]]
+            parts.append("⚠️ **页面上有、它却没收到**（短文字的链接/按钮类；它点不到的东西多半在这里）：\n"
+                         + "\n".join(lines))
     if ev.get("bad_lines"):
         parts.append("（它写的证据里有 %d 行读不动）" % ev["bad_lines"])
     return "\n".join(parts)
@@ -675,6 +767,8 @@ def _judge(runs: Sequence[Run], allowed_skips: Sequence[str]) -> bool:
 
 def run(py_path, ws_url, form_file, site, *,
         legacy: bool = False,
+        start_url: Optional[str] = None,
+        allow_navigation_skip: bool = True,
         entry_url: Optional[str] = None,
         set_viewport: Optional[Callable] = None,
         viewport: Sequence[int] = DEFAULT_VIEWPORT,
@@ -705,6 +799,13 @@ def run(py_path, ws_url, form_file, site, *,
         set_viewport   窗口层回调：`set_viewport(width, height)`（R-5，第 4 遍用）
         set_country    代理层回调：`set_country(country)`（第 5 遍用，不给就跳过）
         run_dir        每一遍的 trace 放哪（默认 `runtime/selftest/<site>-<时刻>/`）
+        start_url      **先导航到这个地址再跑第一遍**（2026-09-21）。⚠️ 不给的话跑的就是
+                       窗口当时停的那个页 —— 而 `fresh_open` 开出来的窗口停在 **Bit 自己的
+                       控制台页**上（实测），于是「自测没过」会变成一句**对跑法**的判定，
+                       而不是对产物的判定。给了但导航不了 ⇒ **不跑**（在错的页面上跑出来的
+                       结论比没有结论更坏：它长得像结论）。
+        allow_navigation_skip  没给 `start_url` 时**照跑**（老调用方的行为），但那一遍的结论里
+                       会写清「这一趟没导航」。给 `False` = 没导航就不许跑（严一格，供新调用方用）。
         legacy         **这一版是不是老写法**（B 线 ③ 乙，默认 `False`）。`True` ⇒
                        argv **不给** `--trace` / `--no-report` / `--delay`（老写法那一族
                        ——线上 66 份 py 全是——的 `main()` 里没有这三个开关，硬传就是
@@ -762,6 +863,28 @@ def run(py_path, ws_url, form_file, site, *,
         legacy_why = ("⚠️ 这一版是**老写法**（不认 `--trace` / `--no-report` / `--delay`）—— "
                       "所以按老写法跑：证据是**它自己上报过的那些步**（由运行时写）+ 退出码，"
                       "**定位不到卡在第几步**。")
+
+    #: ★ **跑之前先导航到那个站**（2026-09-21 真跑撞出来的）：`fresh_open` 开出来的窗口停在
+    #: **Bit 自己的控制台页**上，而生产那边是 ad-task 先开好页面才调脚本的 —— 我们这条工具路
+    #: 没人做这一步，于是脚本是在 `console.bitbrowser.net` 上找元素的：它当然什么都没找到。
+    #: 【我量的·2026-09-21】那一趟自测的 trace 两遍都写着
+    #: `url=https://console.bitbrowser.net/?id=812b7d60…` —— 也就是说那份「自测没过」
+    #: **不是对产物的判定**，是对跑法的判定。
+    #: ⚠️ 导航不了就**别跑**：在错的页面上跑出来的结论比没有结论更坏（它长得像结论）。
+    navi_why = ""
+    navi_block = False
+    if start_url:
+        navi_why = _navigate(cdp_bin, ws_url, start_url, env) or ""
+        navi_block = bool(navi_why)      # 给了地址却去不了 ⇒ **一遍都不许跑**
+    elif allow_navigation_skip:                      # 老调用方：不导航，但**要说清**
+        navi_why = "没给要导航到哪个页面（`start_url`）"
+    if navi_block:
+        return Report(runs=(_skipped("baseline", (
+            "这一遍没跑：**没能先导航到那个页面**（%s）—— 在错的页面上跑出来的结论"
+            "**不是对产物的判定**（实测：窗口开出来停在 Bit 自己的控制台页上，"
+            "那种「自测没过」是对跑法说的）。先把窗口/地址弄对再来自测。" % navi_why)),),
+            passed=False, allowed_skips=allowed, cdp_bin=cdp_bin, site=site,
+            py_path=str(py))
 
     def _once(name, **kw):
         return _execute(name, py, ws_url, form_file, correlation_id, log_level, env,

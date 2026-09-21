@@ -749,7 +749,7 @@ def test_the_new_run_form_never_checks_the_required_cells_by_itself():
     page = _page()
     assert "function runPayload()" in page, "找不到「开一趟」那份正文的组装函数"
     body = re.search(r"function runPayload\(\).*?\n  \}", page, re.S).group(0)
-    for key in ("url", "goal", "success_text", "mode", "evidence"):
+    for key in ("url", "goal", "success_text", "mode", "evidence", "form_data"):
         assert '"%s":' % key in body, "那一格没进正文：%s" % key
     #: 它**只是取值**：一个 `if` 都不许有（有 `if` 就有「页面先判了一道」）
     assert "if " not in body, "这一份组装里出现了判断（页面在替服务做决定）：\n%s" % body

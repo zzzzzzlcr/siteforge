@@ -392,6 +392,8 @@ def test_a_legacy_script_becomes_a_patch_run_instead_of_being_refused(tmp_path):
     assert "MAX_STEPS = 60" in delivered
     # ⚠️ 自测那一步必须**知道**这是老写法（argv 要换一套调法）
     assert rec.selftest[0].get("legacy") is True, rec.selftest[0]
+    #: ⚠️ 自测那一趟**必须先导航到那个站** —— 不导航就是在 Bit 自己的控制台页上跑（实测过）
+    assert rec.selftest[0].get("start_url") == URL, rec.selftest[0]
 
 
 def _replace_block(old: str, *, needle: str, new_lines: list) -> str:
@@ -488,7 +490,7 @@ def test_a_patch_that_did_not_apply_is_retried_once_with_the_reason_fed_back(tmp
     _, out = _drive(app, cfg, brief)
 
     assert out.get("end_reason") == "delivered", out.get("end_note")
-    assert len(calls) == 2, "该试两次（第一次套不上、第二次套上）"
+    assert len(calls) == 2, "第一次就套上了？那这一条量不到「回灌再补」"
     #: 第二次那一次，模型**看得到**第一次为什么没成
     fed = calls[1]["feedback"].get("violations") or []
     assert fed and "对不上" in " ".join(fed), fed
@@ -507,7 +509,8 @@ def test_two_bad_patches_stop_and_say_why(tmp_path):
 
     assert out.get("end_reason") == "draft_failed", out.get("end_note")
     assert "对不上" in (out.get("end_note") or ""), out.get("end_note")
-    assert len(calls) == 2, "上限就是两次 —— 不许一直试"
+    assert len(calls) == graph.PATCH_ATTEMPTS, "上限就是 PATCH_ATTEMPTS —— 不许一直试"
+    assert graph.PATCH_ATTEMPTS >= 2, "至少要能回灌一次（第一次没过就把原因给它）"
     assert rec.selftest == []
     """★ 没接「改稿那双手」⇒ **停下并点名**，不许写成「这份 py 修不了」（那是两件事）。"""
     brief, deps, rec, _ = _legacy_fix(tmp_path)

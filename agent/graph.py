@@ -763,11 +763,11 @@ def _spent_after(spent: dict, journeys: list) -> dict:
     return out
 
 
-#: 补丁最多试几次：第一次没过闸 / 没套上，把**逐条**原因回灌再补一次。
+#: 补丁最多试几次：没过闸 / 没套上 / 交回「逐字一样」的稿，都把**逐条**原因回灌再补一次。
 #: ⚠️ 【我量的·2026-09-21】这个数是拿实测定的：非思考模型答一次 **4 秒 / 583 token**，
 #: 所以「再补一次」比「停下等人重发起」便宜得多；而它第一次**抄错了上下文那一行**
 #: （套用那层严格拒了 —— 拒得对）。两次都过不了就停下，把原因摆出来。
-PATCH_ATTEMPTS = 2
+PATCH_ATTEMPTS = 3
 
 
 #: 老写法那一版的改动最多摆多少字（给人看的，见 `_patch_diff`）。
@@ -1476,6 +1476,12 @@ def _selftest_kwargs(state, deps: Deps) -> dict:
     #: 这里只是把它带下去。⚠️ 只在**是**老写法时才给这一格：别的路一个字节不变。
     if state.get("fix_style") == "legacy":
         kw["legacy"] = True
+    #: ★ **自测之前先导航到那个站**（2026-09-21 真跑撞出来的）：`fresh_open` 开出来的窗口
+    #: 停在 **Bit 自己的控制台页**上（实测：trace 里两遍都写着 `console.bitbrowser.net`）——
+    #: 于是那一趟「自测没过」是对**跑法**说的，不是对产物说的。
+    #: 修站那条路的入口网址就是 `state["url"]`（失败证据里那串）。
+    if str(state.get("mode") or "") == MODE_FIX and state.get("url"):
+        kw["start_url"] = str(state["url"])
     if state.get("allow_skips"):
         kw["allow_skips"] = tuple(state["allow_skips"])
     if state.get("entry_url"):

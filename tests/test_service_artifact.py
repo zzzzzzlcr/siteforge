@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import pathlib
 import re
 import sys
@@ -64,6 +65,39 @@ def _py_bytes(site: str) -> bytes:
     return (PY % (site, site, site)).encode("utf-8")
 
 
+def test_the_form_data_cell_becomes_a_file_the_self_test_can_read(tmp_path):
+    """★ 面板上那一格「表单数据」（2026-09-21）：人糊一段 JSON ⇒ 服务落成一份文件。
+
+    为什么非有不可：面板上**没有**「表单数据文件」那一格，而自测缺它就当场停
+    （「没有可用的浏览器窗口**或没给表单数据**」）—— 人在那儿无路可走。
+    ⚠️ 空着也对：写一份 `{}` = 「**没给值**」（产物自己的兜底值生效），不是替它编数据。
+    """
+    box: list = []
+    app = _client(tmp_path, _capturing(box))
+    body = {"url": URL, "goal": GOAL, "success_text": SUCCESS, "site": SITE,
+            "out_dir": str(_out_dir(tmp_path)), "form_data": '{"email": "a@b.test"}'}
+    r = app.post("/run", json=body)
+    assert r.status_code == 202, r.text
+    brief = box[-1]
+    path = pathlib.Path(brief["form_file"])
+    assert path.is_file(), brief
+    assert json.loads(path.read_text(encoding="utf-8")) == {"email": "a@b.test"}, path
+    assert brief.get("form_data_given") is True, brief
+    #: 空着 ⇒ 一份 `{}`（「没给值」），且**说清**它是空的
+    box2: list = []
+    app2 = _client(tmp_path / "b", _capturing(box2))
+    body2 = dict(body, out_dir=str(pathlib.Path(tmp_path / "b") / "forms" / "sites"), form_data="")
+    r2 = app2.post("/run", json=body2)
+    assert r2.status_code == 202, r2.text
+    brief2 = box2[-1]
+    assert pathlib.Path(brief2["form_file"]).read_text(encoding="utf-8").strip() == "{}"
+    assert brief2.get("form_data_given") is False, brief2
+    #: 不是 JSON ⇒ 当场 400（不是带着一段糊的东西跑到自测那一步才炸）
+    r3 = app2.post("/run", json=dict(body2, form_data="{不是 json"))
+    assert r3.status_code == 400, r3.text
+    assert "JSON" in r3.text, r3.text
+
+
 def _brief(tmp_path, **over) -> dict:
     brief = {"url": URL, "goal": GOAL, "success_text": SUCCESS, "site": SITE,
              "ws_url": WS_URL, "form_file": str(tmp_path / "form.json"),
@@ -81,6 +115,44 @@ def _client(tmp_path, factory, **kw) -> TestClient:
     kw.setdefault("checkpointer", InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
     return TestClient(service.create_app(
         graph_factory=factory, out_dir=str(_out_dir(tmp_path)), **kw))
+
+
+def test_the_note_cell_reaches_the_graph_as_hints(tmp_path):
+    """★ 人开工前说的那一句 → `hints`（一路到 `patch_user(hints=…)`，**逐字**）。
+
+    用户 2026-09-21 提的那条路：「运营来给 selector」。它走的就是 `hints` 那根线 ——
+    与闸上那个「说一句」**同一条**，只是不必非等到某道闸才说得上。
+    ⚠️ `note` 这一格**不许留在载荷里**：图那份 schema 里没有它，留着会被 langgraph
+    静默丢掉（与 `fix_py` 当年那个坑同一族）—— 所以「它没留在 brief 里」也一起量。
+    """
+    box: list = []
+    app = _client(tmp_path, _capturing(box))
+    said = "点 a.btn（那个 Get A Free Quote）—— 它不是 button，是 <a href>"
+    body = {"url": URL, "goal": GOAL, "success_text": SUCCESS, "site": SITE,
+            "out_dir": str(_out_dir(tmp_path)), "note": said}
+    r = app.post("/run", json=body)
+    assert r.status_code == 202, r.text
+    brief = box[-1]
+    assert brief.get("hints") == [said], brief
+    assert "note" not in brief, brief
+    #: 空着 ⇒ 一个 `hints` 都不给（不许凭空塞一句空话进去）
+    box2: list = []
+    app2 = _client(tmp_path / "b", _capturing(box2))
+    r2 = app2.post("/run", json=dict(body, out_dir=str(pathlib.Path(tmp_path / "b") / "forms" / "sites"),
+                                     note=""))
+    assert r2.status_code == 202, r2.text
+    assert "hints" not in box2[-1], box2[-1]
+
+
+def _capturing(box: list, **kw):
+    """把「这一趟收到的 brief」记下来的那张假图（原样包一层，别的都不动）。"""
+    inner = _factory(**kw)
+
+    def factory(brief, deps):
+        box.append(dict(brief))
+        return inner(brief, deps)
+
+    return factory
 
 
 def _wrote(brief, *, path=None, body=None) -> pathlib.Path:

@@ -59,6 +59,7 @@ import pathlib
 import queue
 import re
 import threading
+import tempfile
 import time
 import traceback
 import urllib.error
@@ -1405,6 +1406,18 @@ class RunRequest(_Intake):
         None, description="上面那个键**跟着来的那一串网址** —— 只在 `url` 还是这一串时算数")
     ws_url: Optional[str] = Field(None, description="§4.6 前提层开出来的窗口（bit.sh open 吐的那串）")
     form_file: Optional[str] = Field(None, description="表单数据文件（自测用）")
+    #: ★ 面板上那一格（2026-09-21）：人糊一段 JSON 就行 —— 服务把它落成一份文件，
+    #: `form_file` 那条线一个字没变。**空着也对**（写一份 `{}` = 「没给值」，
+    #: 产物自己的兜底值会生效；不是替它编数据）。
+    #: ⚠️ 为什么非有不可：面板上**没有**「表单数据文件」这一格，而自测那一步缺它就当场停
+    #: （「没有可用的浏览器窗口**或没给表单数据**」）—— 人在那儿无路可走。
+    form_data: str = Field("", description="表单数据（一段 JSON，可空；空 = 没给值）")
+    #: ★ **开工前就说的一句话**（2026-09-21，用户提的「运营来给 selector」那条路）：
+    #: 进 `hints` —— 那条线一路走到 `fix.patch_user(hints=…)`，**逐字**进模型的提示词。
+    #: 运营最常给的就是「要点的那个东西长什么样」：一个选择器、一段 outerHTML、或一句人话
+    #: （例：`点 a.btn（那个 Get A Free Quote）`）。
+    #: ⚠️ 与闸上那个「说一句」是**同一条线**，只是不必非等到某道闸才说得上。
+    note: str = Field("", description="开工前要说的一句话（可选；原样进提示词）")
     env: Optional[dict] = Field(None, description='{"proxy_country","dpr","ua","viewport"}；没人给就不带')
     platform: Optional[dict] = Field(None, description='{"guess","confidence"}；平台分类不在这张图里')
     out_dir: Optional[str] = Field(None, description="产物落在哪个目录（默认 forms/sites/）")
@@ -2033,6 +2046,29 @@ class Service:
                                      entry_url=entry_url)
 
         return run_evidence
+
+    def _materialize_form_data(self, brief: dict) -> dict:
+        """`form_data`（人糊的一段 JSON）→ `form_file`（一份文件）。**只在没给文件时做**。
+
+        ⚠️ 空着也给：写一份 `{}` —— 那是「**没给值**」（产物自己的兜底值会生效），
+        **不是**替它编数据。不给这一步的后果是自测那一步当场停，而人在面板上没有别的格子。
+        """
+        if str(brief.get("form_file") or "").strip():
+            return brief
+        text = str(brief.get("form_data") or "").strip() or "{}"
+        try:
+            json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="「表单数据」那一格不是一段合法的 JSON：%s（第 %s 行第 %s 列）。"
+                       "要的是一份 `{...}`（字段名 → 值）；**空着也行** —— 空着就按「没给值」算。"
+                       % (exc.msg, exc.lineno, exc.colno))
+        path = pathlib.Path(tempfile.mkdtemp(prefix="siteforge-form-")) / "form.json"
+        path.write_text(text, encoding="utf-8")
+        brief["form_file"] = str(path)
+        brief["form_data_given"] = bool(str(brief.get("form_data") or "").strip())
+        return brief
 
     def _patch_cb(self, brief: dict) -> Optional[Callable]:
         """`Deps.patch_source`（B 线 ③ 乙）：**老写法那份 py 的改稿那双手**。
@@ -4408,6 +4444,12 @@ class Service:
             raise HTTPException(status_code=400, detail=self._problems_say(problems))
 
         brief = body.model_dump(exclude_none=True)
+        brief = self._materialize_form_data(brief)
+        #: 人在开工前说的那句 → `hints`（`note` 这一格**不留在载荷里**：图那份 schema 里
+        #: 没有 `note`，留着会被 langgraph **静默丢掉** —— 与 `fix_py` 当年那个坑同一族）。
+        said = str(brief.pop("note", "") or "").strip()
+        if said:
+            brief["hints"] = [said]
         brief.setdefault("out_dir", self._out_dir)
         brief["success_text"] = body.success_text
         # ⚠️ `expects` 也在门口换了（修复轮 1），所以「第几项换了几个」要**跟着这条载荷走**：
