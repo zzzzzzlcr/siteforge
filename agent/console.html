@@ -166,6 +166,11 @@
   .nrun .field input, .nrun .field select{
     font:inherit; font-size:14px; padding:8px 10px; border:1px solid var(--line); border-radius:8px;
     background:var(--surface-2); color:inherit; min-width:0; width:100%}
+  #jsonEditor{
+    width:100%; box-sizing:border-box; resize:vertical; min-height:220px;
+    border:1px solid var(--line); border-radius:8px; padding:10px 12px;
+    background:#fff; color:var(--ink); font:12px/1.55 ui-monospace,Consolas,monospace;
+  }
   .nrun .field .why{grid-column:2; font-size:12px; color:var(--ink-3); line-height:1.6}
   .nrun .go{display:flex; flex-wrap:wrap; gap:10px; align-items:baseline}
   @media (max-width:640px){
@@ -394,7 +399,7 @@
           </div>
         </section>
 
-        <!-- ── 这份 JSON 配置差在哪一格（Task B2/B3，**只读**）──────────
+        <!-- ── JSON 配置：诊断 + 双确认安全写回 ──────────
              治的是：后端 174 个站跑的是 **JSON 配置**，而面板只产 py ——
              那一多半的站，面板一点都够不着（`plan.md` §1）。
              ⚠️ 四条纪律（与这一屏别处同一套）：
@@ -405,12 +410,11 @@
                · 读不回来 / 复跑没量着 ⇒ 服务回**非 2xx**，原样摆出来（不编「失败了」）；
                · 「提不出建议」那一栏**把量到的候选原样摆着** —— 页面**不许**替它挑一个
                  （挑一个就是编话：那个值不在证据里）；
-               · ⚠️ **这一版没有「写回」**：写接口的语义没验过（按 site 更新 vs 每次插一条），
-                 猜错会在生产库里堆重复配置。所以这一栏**只读**，一个字都不写回去。 -->
+               · 写回分两步：预检（合规 + 真页面复跑）→ 再确认；写后回读，不一致自动回滚。 -->
         <section class="panel" id="jsonPanel">
           <header>
             <h2>这份 JSON 配置差在哪一格</h2>
-            <span class="sub">读一份后端配置，在真页面上复跑一遍，逐格对照。**只读，不写回。**</span>
+            <span class="sub">读、编辑、合规检查、真页面复跑；再次确认后才写回。</span>
           </header>
           <div class="body">
             <div class="nrun">
@@ -424,7 +428,24 @@
               <div class="go">
                 <button class="btn primary" type="button" id="btnJson">看差在哪一格</button>
                 <p class="hint" id="jsonHint">按下去它读配置、复跑、逐格对照。
-                  **只读**：一个字都不写回后端。</p>
+                  这一步只读；写回要再经过下方“预检写回”和“确认写回”两步。</p>
+              </div>
+            </div>
+            <div class="field">
+              <label for="jsonEditor">待写配置</label>
+              <textarea id="jsonEditor" rows="14" spellcheck="false"
+                        placeholder="先点“看差在哪一格”，这里会装入后端原配置"></textarea>
+              <p class="why">可以编辑整份 JSON。预检不会写；只有预检通过后，“确认写回”才会启用。</p>
+            </div>
+            <div class="nrun">
+              <div class="field">
+                <label for="jsonOperator">谁确认的</label>
+                <input type="text" id="jsonOperator" autocomplete="off"
+                       placeholder="姓名或可追溯的值班标识">
+              </div>
+              <div class="go">
+                <button class="btn" type="button" id="btnJsonPrepare">预检写回</button>
+                <button class="btn primary" type="button" id="btnJsonCommit" disabled>确认写回</button>
               </div>
             </div>
             <div id="json"></div>
@@ -445,7 +466,7 @@
         <section class="panel" id="checkPanel">
           <header>
             <h2>这份配置执行器认不认</h2>
-            <span class="sub">读一份后端配置，逐格看动作和参数执行器认不认。**只读，不写回。**</span>
+            <span class="sub">读一份后端配置，逐格看动作和参数执行器认不认；写回前也会强制经过同一道闸。</span>
           </header>
           <div class="body">
             <div class="nrun">
@@ -1653,6 +1674,9 @@
   //: 那份 JSON 配置那一跳（Task B2/B3）。⚠️ 站点键走**查询参数**：
   //: 真键长这样 `www.gowizard.com/auto-warranty/`（带斜杠），塞进路径会被切成好几段。
   var JSONDIFF = "/jsondiff";
+  var JSONWRITE_PREPARE = "/jsonwrite/prepare";
+  var JSONWRITE_COMMIT = "/jsonwrite/commit";
+  var jsonWriteTicket = "";
 
   //: 「查哪一段」那一格 → 那个查询参数。
   //: ⚠️ 挑「今天」时**不给** `since`（服务那边的默认就是今天 00:00 —— 契约里那一条）。
@@ -2163,16 +2187,65 @@
           jsonNote(at(res.obj, "say", ""));
           var box = document.getElementById("json");
           if (box) { box.innerHTML = ""; }
+          var editor0 = document.getElementById("jsonEditor");
+          if (editor0 && at(res.obj, "config", null)) {
+            editor0.value = JSON.stringify(res.obj.config, null, 2);
+          }
           return res.obj;
         }
         jsonNote("");
         paintJson(res.obj);
+        var editor = document.getElementById("jsonEditor");
+        var suggested = at(at(res.obj, "diff", {}), "suggested", null);
+        if (editor && suggested) { editor.value = JSON.stringify(suggested, null, 2); }
         return res.obj;
       })
       .catch(function (e) {
         btn.disabled = false;
         jsonProblem("这一栏没读到：" + e + " —— 服务可能没在跑。");
       });
+  }
+  function prepareJsonWrite() {
+    var btn = document.getElementById("btnJsonPrepare");
+    var commit = document.getElementById("btnJsonCommit");
+    var site = document.getElementById("jsonSite").value.trim();
+    var operator = document.getElementById("jsonOperator").value.trim();
+    var config;
+    jsonWriteTicket = "";
+    commit.disabled = true;
+    try { config = JSON.parse(document.getElementById("jsonEditor").value); }
+    catch (e) { jsonProblem("待写配置不是合法 JSON：" + e.message); return; }
+    btn.disabled = true;
+    return fetch(JSONWRITE_PREPARE, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({site: site, config: config, operator: operator})
+    }).then(readJSON).then(function (res) {
+      btn.disabled = false;
+      if (!res.ok) { jsonProblem(sayOf(res)); return null; }
+      jsonWriteTicket = at(res.obj, "ticket", "");
+      commit.disabled = !jsonWriteTicket;
+      jsonNote(at(res.obj, "say", ""));
+      return res.obj;
+    }).catch(function (e) {
+      btn.disabled = false;
+      jsonProblem("预检没读到：" + e);
+    });
+  }
+
+  function commitJsonWrite() {
+    var btn = document.getElementById("btnJsonCommit");
+    if (!jsonWriteTicket) { return; }
+    btn.disabled = true;
+    var ticket = jsonWriteTicket;
+    jsonWriteTicket = ""; // 票据一次性；双击也只会发一次
+    return fetch(JSONWRITE_COMMIT, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ticket: ticket})
+    }).then(readJSON).then(function (res) {
+      if (!res.ok) { jsonProblem(sayOf(res)); return null; }
+      jsonNote(at(res.obj, "say", ""));
+      return fetchJson();
+    }).catch(function (e) { jsonProblem("写回结果没读到：" + e); });
   }
 
   // ══════════════════ 这份配置执行器认不认（合规闸，2026-09-21）══════════
@@ -2350,6 +2423,8 @@
   document.getElementById("btnRankGo").addEventListener("click", goRank);
   document.getElementById("btnDiag").addEventListener("click", fetchDiag);
   document.getElementById("btnJson").addEventListener("click", fetchJson);
+  document.getElementById("btnJsonPrepare").addEventListener("click", prepareJsonWrite);
+  document.getElementById("btnJsonCommit").addEventListener("click", commitJsonWrite);
   document.getElementById("btnCheck").addEventListener("click", fetchCheck);
   //: 「看哪个站的失败单」那一块开页是**收着**的（还没有任何一份榜单）。
   //: 与 `failAct` 同一行规矩：**开页时它是什么样由这一行算出来**，不靠静态标记。

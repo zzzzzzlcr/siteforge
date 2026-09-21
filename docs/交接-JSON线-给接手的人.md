@@ -1,8 +1,13 @@
 # 交接：JSON 配置那条线（给来接手的人）
 
-**你要做的**：把 JSON 配置从「**只读**」变成「**可写回**」。
-现在面板上那两栏（「这份 JSON 配置差在哪一格」→ `GET /jsondiff`、「这份配置执行器认不认」→
-`GET /configcheck`）都写着**只读，不写回** —— 代码里已经有写口，**但没有一条路从面板走到它**。
+**状态（2026-09-21 后续）**：JSON 配置已从「**只读**」变成双阶段安全写回。
+入口为 `POST /jsonwrite/prepare`（合规检查 + 真页面复跑，不写）和
+`POST /jsonwrite/commit`（一次性票据确认写入）；写前重读防覆盖、写后回读核对，原件落本地备份。
+`POST /jsonwrite/rollback` 可显式恢复。当前只更新已有配置，不开放未实测的创建分支。
+
+【我量的·2026-09-21】真实写口使用表单编码，不是 JSON request body：`site`、JSON 字符串
+`steps`、审计字段 `operator` 三格必填。对 `cvrefresh.com` 原样写回得到业务码 200，写前/写后
+SHA-256 一致；用 JSON body 会得到业务码 400。客户端已按实测契约修正。
 
 ---
 
@@ -14,7 +19,7 @@
 | 回的信封长这样：`{"status":200,"msg":"success","data":{"steps":{…}}}` | 同上 |
 | ⚠️ **`data.steps` 是个对象**（里面那份才是配置），**不是数组** —— 这个形状坑过一次 | `fmr.py:97`，案底在 `/opt/skills/auto-farm-skill/scripts/ad-task.py:2157` |
 | `form_config()` 交出来的**就是** `update_form_config()` 要的那份 `steps` ⇒ 读回来能原样写回去 | `fmr.py:1241` / `fmr.py:1420` |
-| 写口 `POST /api/quest/formConfig/update`，头 `X-Api-Token: <token>`，体 `{"site","steps"}` | `fmr.py:105` |
+| 写口 `POST /api/quest/formConfig/update`，头 `X-Api-Token: <token>`，表单字段 `site` / JSON 字符串 `steps` / `operator` | 2026-09-21 原样写回实测；`fmr.py` 模块说明 |
 | ⚠️ **这一族一律 HTTP 200，业务码写在 body 里**：不带 token → `200 + {"status":401}`；缺参 → `200 + {"status":400}`；查不到 → `200 + {"status":404}` | `fmr.py:116`（【我量的·B1】） |
 | ⇒ **判据只有 body 那一格 `status`**。按 HTTP 码验收会把成功/失败**全部判反** | `fmr.py:126` 那段案底：老代码就是这么「说假话」的（注释原话「说假话比不打日志更坏」） |
 | 读口**抛**（`FmrUnmeasured` 子类：查不到 = `FmrRefused`、后端挂了 = `FmrUnreachable`）；写口**不抛**，回一个 `FormWriteResult` | `fmr.py:129` 起那段「这一对不对称」 |
