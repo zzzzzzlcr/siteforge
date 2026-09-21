@@ -276,6 +276,28 @@ async function failuresScenario(out) {
   out.afterRun = { who: el("whoJob").textContent };
 }
 
+//: ★ 第 ① 件事的另一半：**照这条修之后人又改了「站点网址」那一格**。
+//: 走的是与 `failuresScenario` 一样的那条路，只在最后多一步「人改网址」。
+//: 量的是**发出去的 `/run` 正文**（`sent`）：页面**照旧把两格原样发出去**
+//: （人填的网址没被改回去、那个键连着它对账用的那一格一起在）——
+//: 「这个键还算不算数」判在**服务**那一层（见 `test_service_fixsource` 同名那两条）。
+async function failuresUrlEditedScenario(out) {
+  el("failSite").value = payload.failures.site;
+  fire("btnFail", "click");
+  await settle();
+  await settle();
+  el("failPick").value = payload.failures.pick;
+  fire("btnFixFrom", "click");
+  await settle();
+  await settle();
+  out.afterFix = { url: el("runUrl").value };
+  el("runUrl").value = payload.editedUrl;          // ★ 人把那格改了
+  fire("btnRun", "click");
+  await settle();
+  await settle();
+  out.afterRun = { who: el("whoJob").textContent };
+}
+
 //: **量不到**那一趟（Task 13）：服务回 502 + 一句人话 ⇒ 那一栏说「这一栏没读到」，
 //: 而且**不许**把「没读到」写成「这个站没有失败」—— 那是这一片从头到尾在治的形状。
 //: 量两样：① 那句话说出来了；② 它**活过之后三次重画**（这一栏不跟着 `paint()` 重画）。
@@ -399,6 +421,10 @@ async function againScenario(out) {
   else if (payload.scenario === "run-refused") { await runRefusedScenario(out); }
   else if (payload.scenario === "window") { await windowScenario(out); }
   else if (payload.scenario === "failures") { await failuresScenario(out); }
+  else if (payload.scenario === "failures-url-edited") { await failuresUrlEditedScenario(out); }
+  //: 服务没给那个站键那一趟 —— **同一段驱动**（差别只在载荷里那条证据少了 `site`）：
+  //: 走的路一个字不差，量的就是「页面会不会自己编一个键出来」。
+  else if (payload.scenario === "failures-no-key") { await failuresScenario(out); }
   else if (payload.scenario === "failures-unmeasured") { await failuresUnmeasuredScenario(out); }
   else if (payload.scenario === "rank-diag") { await rankScenario(out); }
   else { await repaintScenario(out); }

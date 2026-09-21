@@ -1212,6 +1212,15 @@ class FmrClient:
             "steps": steps,
             "url": entry_url(steps),
             "evidence": evidence_text(row, steps),
+            #: ★ **后端自己存的那个站键**（行里那一格 `site`）—— 不是调用方问的那个。
+            #: 【我量的·2026-09-21】`formLog` 行里带 `site`：按
+            #: `goldenagesouls.com/land/sp/9ae19fba` 问，回的是 `goldenagesouls.com`；
+            #: 按 `compareinsulation.io/article-1-c` 问，回的是 `compareinsulation.io/article-1-c`
+            #: —— 与 `formScript` 那边 `data.site` 那一格**逐字相同**。
+            #: 它承重在哪：那个读口的匹配规则是「**存的 site 必须是请求值的 host+path 前缀**」，
+            #: 拿人填的**入口网址**（`entry_url`）去问常常浅了 ⇒ 明明有这个站却回 404；
+            #: 而**存的键自己是自己的前缀**，从根上绕开那条规则。
+            "site": str(row.get("site") or "").strip(),
         }
 
     # ── ⑤ 一份 JSON 配置：读（Task B1）──────────────────────────────

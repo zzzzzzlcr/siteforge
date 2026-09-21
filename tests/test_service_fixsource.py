@@ -115,6 +115,113 @@ def test_fix_mode_stages_the_backend_script_as_the_draft(tmp_path):
     assert params["site"] == URL, params
 
 
+# ── ★ 第 ① 件事：拿**失败记录里那个键**去问，不拿人填的入口网址 ──────────────
+#
+#: 【我量的·2026-09-21】`formLog` 每一行都带一格 `site`，那是**后端自己存的键**；
+#: 而证据里那个 `url` 是「这一趟真从哪儿进去的」（`entry_url`）。**两者不是一回事**：
+#: 后端的匹配规则是「存的 site 必须是请求值的 host+path 前缀」——
+#: 存的键比入口网址**深**时，拿入口网址去问就是 404（明明有这个站）。
+FAIL_KEY = "compareinsulation.io/article-1-c"      # 后端自己存的那个键（深）
+ENTRY_URL = "https://compareinsulation.io"         # 入口网址（浅）—— 拿它问必 404
+
+
+def test_the_backend_read_uses_the_failure_key_not_the_shallow_entry_url(tmp_path):
+    """★ 给了失败记录那个键（且网址还是它跟着来的那一串）⇒ `formScript` **拿它**去问。
+
+    这一条钉的是第 ① 件事的正身：**键对了，404 就少一大半**。
+    拿入口网址去问的后果不是「报错」，是**静默地少修一个站**
+    （`_stage_fix_source` 读不到 ⇒ 门口红掉一整趟本该能修的活）。
+    """
+    rec = Recorder(_script_body())
+    app = _client(tmp_path, fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec))
+
+    r = app.post("/run", json=_brief(tmp_path, url=ENTRY_URL, fix_site=FAIL_KEY,
+                                     fix_site_url=ENTRY_URL))
+
+    assert r.status_code == 202, r.text
+    path, params = query_of(rec.urls[0])
+    assert path == "/api/quest/formScript", path
+    assert params["site"] == FAIL_KEY, params
+
+
+def test_the_failure_key_stops_counting_once_the_url_moved(tmp_path):
+    """★ 人把「站点网址」那一格改了 ⇒ 那个键**作废**，照旧拿网址去问。
+
+    为什么这条比「键一直带着」更对：键说的是「**修哪个站**」，网址说的是「**从哪儿进去**」。
+    两格对不上时，键继续用就是**静默修错站** —— 面板上开的是另一个站，
+    服务拿这条失败记录的键去读配置、去修，中间没有一处会响。
+    落地这一格是**服务**判的（页面只是两格原样发上来）——
+    所以判据写在这里，不写成「页面自己删了」。
+    """
+    rec = Recorder(_script_body())
+    app = _client(tmp_path, fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec))
+
+    r = app.post("/run", json=_brief(tmp_path, url="https://another-funnel.test/quiz",
+                                     fix_site=FAIL_KEY, fix_site_url=ENTRY_URL))
+
+    assert r.status_code == 202, r.text
+    path, params = query_of(rec.urls[0])
+    assert path == "/api/quest/formScript", path
+    assert params["site"] == "https://another-funnel.test/quiz", params
+
+
+def test_a_failure_key_with_no_url_to_ride_on_is_not_used(tmp_path):
+    """★ 光有键、没有「它跟着来的那一串网址」⇒ **不算数**（照旧拿 `url` 去问）。
+
+    ⚠️ 少了这一条，「只要给了键就用」这种改法照绿 —— 而那正是上一条要挡的
+    「页面把键和网址拆开送」的形状：拆开之后服务手上没有能对账的那一格，
+    就只能盲信这个键。所以缺那一格时**宁可不认它**（退回老行为，不猜）。
+    """
+    rec = Recorder(_script_body())
+    app = _client(tmp_path, fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec))
+
+    r = app.post("/run", json=_brief(tmp_path, url=ENTRY_URL, fix_site=FAIL_KEY))
+
+    assert r.status_code == 202, r.text
+    path, params = query_of(rec.urls[0])
+    assert params["site"] == ENTRY_URL, params
+
+
+def test_the_failure_key_never_becomes_the_output_path(tmp_path):
+    """★ 那个键**是带着斜杠的**（`主机/路径`）—— 它**不许**变成落盘的路径。
+
+    拿它拼 `<out_dir>/<键>.before.py` 的后果：产物落到一个**没建过的子目录**里
+    （`<out_dir>/compareinsulation.io/article-1-c.before.py`）—— 这一下直接写盘失败。
+    就算哪天有人补一个 `mkdir`，产物也就散进子目录里了，而后面几步是按**短名**
+    去认那一份底稿的（`graph` 那一侧的 `fix_py` 只认路径，交付那一步认短名）。
+    所以：**键归键，路径归路径**（`site` / `url` 推出来的短名照旧，一个字不动）。
+    """
+    rec = Recorder(_script_body())
+    app = _client(tmp_path, fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec))
+
+    r = app.post("/run", json=_brief(tmp_path, url=ENTRY_URL, fix_site=FAIL_KEY))
+
+    assert r.status_code == 202, r.text
+    staged = tmp_path / "sites" / ("%s.before.py" % SITE)
+    assert staged.exists(), "底稿没落在短名那个位置上：%s" % sorted(
+        p.name for p in (tmp_path / "sites").glob("*"))
+    assert staged.read_text(encoding="utf-8") == SCRIPT_SRC, "底稿被改过了（逐字节！）"
+    assert not (tmp_path / "sites" / "compareinsulation.io").exists(), \
+        "那个键变成了子目录：%s" % sorted(p.name for p in (tmp_path / "sites").glob("*"))
+
+
+def test_without_a_failure_key_the_entry_url_is_still_what_we_ask_with(tmp_path):
+    """没给那个键 ⇒ **照旧拿 `url` 去问**（老那一趟一个字不变）。
+
+    ⚠️ 这一条与上面那条是**一对**：少了它，「干脆不读 `url` 了、只认新键」
+    这种改法照绿 —— 而那会把所有**没走失败列表**的修站活全打回 404。
+    """
+    rec = Recorder(_script_body())
+    app = _client(tmp_path, fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec))
+
+    r = app.post("/run", json=_brief(tmp_path))
+
+    assert r.status_code == 202, r.text
+    path, params = query_of(rec.urls[0])
+    assert path == "/api/quest/formScript", path
+    assert params["site"] == URL, params
+
+
 def test_build_mode_does_not_touch_the_backend_script(tmp_path):
     """**不修站就不去读脚本** —— build 那条路一个字都不许变。"""
     rec = Recorder()

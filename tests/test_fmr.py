@@ -606,6 +606,23 @@ def test_evidence_for_reads_the_row_from_the_backend_and_the_steps_from_the_back
         assert junk not in got["evidence"], "码漏进 evidence 了（%s）：%s" % (junk, got["evidence"])
 
 
+def test_evidence_for_hands_back_the_rows_own_site_key_not_the_callers():
+    """★ **这一趟的站键**要原样带出来 —— 那是**后端自己存的那个键**，不是调用方问的那个。
+
+    它为什么承重（第 ① 件事）：`formScript` 那个读口的匹配规则是
+    「**存的 site 必须是请求值的 host+path 前缀**」—— 拿一个人填的**入口网址**去问，
+    常常比存的那个键**浅**，于是明明有这个站却回 404。行里这一格是后端自己的键，
+    **它自己是自己的前缀**，从根上绕开那条规则。
+
+    ⚠️ 这一份里两个值**故意差一个斜杠**（行里是 `…/auto-warranty`，问的是
+    `…/auto-warranty/`）：写得一模一样的话，「拿的是行里那一格」与
+    「拿的是调用方传进来那个」这两种改法**都绿**，这条就白量了。
+    """
+    rec = Recorder(envelope(MEASURED_ROWS), envelope(MEASURED_STEPS))
+    got = client(rec).evidence_for("26033398", site="www.gowizard.com/auto-warranty/")
+    assert got["site"] == "www.gowizard.com/auto-warranty", got["site"]
+
+
 def test_evidence_for_a_task_that_is_not_in_the_window_says_so():
     """给了一个**不在这个时间窗里**的 task_id → **明说**（不拿第一条顶替）。
 

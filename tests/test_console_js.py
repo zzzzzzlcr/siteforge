@@ -292,6 +292,10 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _gate_facts_payloads()
     elif scenario == "failures":
         payload = _failures_payloads()
+    elif scenario == "failures-url-edited":
+        payload = _failures_edited_payloads()
+    elif scenario == "failures-no-key":
+        payload = _failures_no_key_payloads()
     elif scenario == "failures-unmeasured":
         payload = _failures_unmeasured_payloads()
     elif scenario == "rank-diag":
@@ -1025,6 +1029,10 @@ FAIL_ROWS = [
 ]
 #: 页面上要挑的那一条（**挑的不是最上面那条** —— 挑最新那条的话，「挑」这个动作量不出来）。
 FAIL_PICK = "26033398"
+#: ★ **后端自己那个站键**（第 ① 件事）：失败记录行里那一格 `site`。
+#: ⚠️ 与 `FAIL_SITE`（人填进「站点名字」那一格的）**故意差一个斜杠** ——
+#: 两个值写得一样的话，「页面把 `#failSite` 那个值当作站点键发出去」这种改法照绿。
+FAIL_ROW_KEY = "www.gowizard.com/auto-warranty"
 #: 服务那两跳的地址（**从服务自己的常量算出来**，不在这儿手拼一份）。
 FAIL_LIST_URL = service.FAILURES_PATH + "?site=" + urllib.parse.quote(FAIL_SITE, safe="")
 FAIL_EV_URL = (service.FAILURE_EVIDENCE_PATH % FAIL_PICK
@@ -1081,10 +1089,45 @@ def _failures_payloads() -> dict:
                                                        for r in FAIL_ROWS]}}],
                 FAIL_EV_URL: [{"body": {"task_id": FAIL_PICK, "row_say": FAIL_ROW_SAY,
                                         "url": FAIL_ENTRY_URL, "evidence": FAIL_EV,
-                                        "fill_url": True}}],
+                                        "fill_url": True,
+                                        "site": FAIL_ROW_KEY, "fill_site": True}}],
                 "/run": [{"body": {"job_id": NEW_JOB, "say": SUBMITTED_SAY}}],
                 "/job/%s/live" % NEW_JOB: fresh,
             }}
+
+
+def _failures_edited_payloads() -> dict:
+    """★ 第 ① 件事的另一半：**照这条修之后，人又去改了「站点网址」那一格**。
+
+    那一格改了 ⇒ 这一趟要修的**已经不是那条失败记录那个站了**（至少没法确定还是），
+    所以那个站键**该作废**。⚠️ 作废这一下判在**服务**那一层
+    （`_stage_fix_source`：网址与「键跟着来的那一串」对不上就不用它）——
+    页面把两格原样发上去，不自己删（`test_console_page` 那条「一个判断都不许有」）。
+
+    与 `_failures_payloads()` 同一套夹具（同一条证据、同一条失败记录），
+    只多一步「人改网址」。
+    """
+    p = _failures_payloads()
+    p["scenario"] = "failures-url-edited"
+    p["editedUrl"] = "https://another-funnel.test/quiz"
+    return p
+
+
+def _failures_no_key_payloads() -> dict:
+    """★ 服务**没给**那个站键（老行 / 后端那一格空着）⇒ 页面**不许自己编一个**。
+
+    最容易走上的那条岔路：拿人在「站点名字」那一格填的 `#failSite` 顶替。
+    它**看起来一模一样**（都是个站名），但那一栏的键**脏过**（这一屏自己写着：
+    「走单号，不走站点键 —— 上一栏那个键脏过」），拿它当另一个读口的键，
+    轻则 404、重则读到**另一个站的配置**：两条都在屏幕上长得像「正常修了一趟」。
+    所以：服务说没有，就是没有。
+    """
+    p = _failures_payloads()
+    p["scenario"] = "failures-no-key"
+    p["responses"][FAIL_EV_URL] = [{"body": {
+        "task_id": FAIL_PICK, "row_say": FAIL_ROW_SAY, "url": FAIL_ENTRY_URL,
+        "evidence": FAIL_EV, "fill_url": True}}]
+    return p
 
 
 def _failures_unmeasured_payloads() -> dict:
@@ -1161,6 +1204,65 @@ def test_the_human_still_presses_the_button_and_the_evidence_goes_with_it(tmp_pa
     assert body["mode"] == "fix", body
     #: 人**没填**的那一格照旧原样发出去（页面不替服务判哪格必填 —— Task 12 那条纪律）
     assert body["success_text"] == "", body
+
+
+def test_the_failures_own_site_key_rides_along_into_the_run_payload(tmp_path):
+    """★ 第 ① 件事：**失败记录里那个站键**跟着那一趟走（`POST /run` 的正文里有它）。
+
+    病：服务拿「站点网址」那一格去问后端的脚本读口，而后端要的是
+    「存的 site 必须是请求值的 host+path 前缀」—— 入口网址常常比存的键**浅**，
+    于是明明有这个站也回 404。行里那个键是**后端自己存的**，从根上绕开那条规则。
+
+    ⚠️ 断言的是**发出去的那一份正文**（不是页面上某个变量）：只量变量的话，
+    「存下来了、发的时候又读另一个地方」这种改法照绿。
+    """
+    out = _drive(tmp_path, scenario="failures")
+    runs = [x for x in out["sent"] if x["url"] == RUN_HOP]
+    assert len(runs) == 1, "按一下「开一趟」应该正好发一次：%r" % out["sent"]
+    body = json.loads(runs[0]["body"])
+    assert body.get("fix_site") == FAIL_ROW_KEY, body
+    #: ★ 还有**它跟着来的那一串网址** —— 服务拿它对账（网址改过这个键就作废）。
+    #: 少了这一格，服务手上没有能对账的东西，只能盲信这个键。
+    assert body.get("fix_site_url") == FAIL_ENTRY_URL, body
+    #: ⚠️ 两个值**不是一回事**：`url` 照旧是人填的那一格（后端拿它当入口网址用）。
+    assert body["url"] == FAIL_ENTRY_URL, body
+
+
+def test_a_failure_key_the_service_did_not_give_is_never_invented(tmp_path):
+    """★ 服务没给那个键 ⇒ 发出去的正文里**一个字都没有**。
+
+    最容易走上的岔路是「拿人填的 `#failSite` 顶替」—— 顶替出来的东西看起来
+    一模一样（都是个站名），可那一栏的键**脏过**（这一屏自己写着「走单号，不走站点键」）。
+    拿它当另一个读口的键：轻则 404，重则读到**另一个站的配置** —— 两条在屏幕上都像
+    「正常修了一趟」。
+    """
+    out = _drive(tmp_path, scenario="failures-no-key")
+    runs = [x for x in out["sent"] if x["url"] == RUN_HOP]
+    assert len(runs) == 1, out["sent"]
+    body = json.loads(runs[0]["body"])
+    #: 页面**恒发**这一格（它只是取值，一个判断都不许有）—— 服务没给时它就是空的。
+    assert not body.get("fix_site"), \
+        "服务没给键，页面自己编了一个（很可能就是 `#failSite` 那个脏键）：%r" % body
+
+
+def test_editing_the_entry_url_does_not_make_the_page_decide_by_itself(tmp_path):
+    """★ 人改了「站点网址」那一格 ⇒ 页面**照旧把两格原样发出去**，判的是**服务**。
+
+    ⚠️ 这条**故意不钉「键被丢掉了」**：丢不丢是服务判的（`_stage_fix_source`：
+    网址与「键跟着来的那一串」对不上就作废）。页面自己删，就是**页面替服务做决定** ——
+    与 `runPayload` 那条「一个判断都不许有」的纪律、以及「服务说填什么，页面不自己推」
+    是同一条。所以这里钉的是页面那半边：**人填的网址没被动过**，
+    而那个键**连着它对账用的那一格**一起照发了。
+    """
+    out = _drive(tmp_path, scenario="failures-url-edited")
+    assert out["afterFix"]["url"] == FAIL_ENTRY_URL, out["afterFix"]
+    runs = [x for x in out["sent"] if x["url"] == RUN_HOP]
+    assert len(runs) == 1, "按一下「开一趟」应该正好发一次：%r" % out["sent"]
+    body = json.loads(runs[0]["body"])
+    assert body["url"] == "https://another-funnel.test/quiz", \
+        "页面把人改过的网址又改回去了：%r" % body
+    assert body.get("fix_site") == FAIL_ROW_KEY, body
+    assert body.get("fix_site_url") == FAIL_ENTRY_URL, body
 
 
 def test_what_was_filled_survives_three_repaints(tmp_path):

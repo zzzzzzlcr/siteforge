@@ -1430,12 +1430,20 @@
   //: 页面只负责「选老站就把那一格露出来」，**要不要它由服务判** —— 页面顺手丢掉
   //: 人已经写下的字，那是替服务做了决定（而他写的那些字就白写了）。
   function runPayload() {
+    var url = document.getElementById("runUrl").value.trim();
     return {
-      "url": document.getElementById("runUrl").value.trim(),
+      "url": url,
       "goal": document.getElementById("runGoal").value.trim(),
       "success_text": document.getElementById("runSuccess").value.trim(),
       "mode": document.getElementById("runMode").value,
-      "evidence": document.getElementById("runEvidence").value.trim()
+      "evidence": document.getElementById("runEvidence").value.trim(),
+      //: ★ 第 ① 件事：**失败记录里那个站键** + 它**跟着来的那一串网址**，两格原样发出去。
+      //: ⚠️ 判它还算不算数的是**服务**（`_stage_fix_source` 那段注释）——
+      //:    这一格只是取值：页面不自己删、也不自己编一个。
+      //:    这一份组装的纪律是「一个判断都不许有」（`test_console_page` 那条同名用例）；
+      //:    没挑过失败时这两格是 `undefined` ⇒ **根本不在正文里**，见 `state` 那段注释。
+      "fix_site": state.fixSite,
+      "fix_site_url": state.fixSiteUrl
     };
   }
 
@@ -1639,8 +1647,20 @@
         document.getElementById("runMode").value = "fix";
         document.getElementById("runEvidenceField").hidden = false;
         document.getElementById("runEvidence").value = ev;
+        //: ★ 第 ① 件事：**这一条的站键**（后端自己存的那个）跟着这一串网址一起记下来。
+        //: ⚠️ 先作废上一条（置回 `undefined` ⇒ `runPayload` 里那两格**不在正文里**）：
+        //: 这一条没给键的时候，**不许**留着上一条那个 —— 那会去修**上一个站**。
+        state.fixSite = undefined;
+        state.fixSiteUrl = undefined;
         if (at(res.obj, "fill_url", false) && url) {
           document.getElementById("runUrl").value = url;
+          //: 两个一起记（键 + 它跟着来的那一串网址）：判它还算不算数的是**服务**，
+          //: 它拿这两格对账（见 `_stage_fix_source`）—— 网址改过，键就作废。
+          var siteKey = at(res.obj, "site", "");
+          if (at(res.obj, "fill_site", false) && siteKey) {
+            state.fixSite = siteKey;
+            state.fixSiteUrl = url;
+          }
         }
         //: ⚠️ 这一段进的是 `setErr`（**textContent**，不过 `rich()`）—— 所以这里
         //:    一个 `**` 都不许写（写了运营看到的就是两个星号）。
@@ -2061,6 +2081,12 @@
   //: 加上「开跑时刻」与「页面自己要说的一句话」。它不是状态机 ——
   //: 里面没有一个是页面**算**出来的事实，全是「上一次取回来的 JSON」里抄下来的。
   var state = { runs: null, startedAt: "", pickNote: "", runsBroken: false, rank: null };
+  //: ★ 第 ① 件事：**失败记录里那个站键**（`state.fixSite`）+ **它跟着来的那一串网址**
+  //:（`state.fixSiteUrl`）—— 两个**只在人从失败列表挑过一条之后才存在**（`fixFrom` 里落）。
+  //: ⚠️ 故意**不给初值**（值就是 `undefined`）：`JSON.stringify` 会把 undefined 的那一格
+  //: **整个丢掉**，于是「没挑过失败」的那一趟，`POST /run` 的正文里**根本没有这两格** ——
+  //: `test_the_operator_can_start_a_new_run_from_the_panel` 那条「没加没减」照旧成立
+  //:（它是拿**整份正文相等**量的）。给成 `""` 就不成立了：那等于页面恒发两格空值。
 
   // ══════════════════ 一个定时器 ══════════════════
   function tickOnce() {

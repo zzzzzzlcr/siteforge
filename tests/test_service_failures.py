@@ -258,6 +258,46 @@ def test_the_evidence_route_gives_the_three_things_the_page_needs():
         assert junk not in got["evidence"], "码漏进证据里了（%s）：%s" % (junk, got["evidence"])
 
 
+def test_the_evidence_route_hands_back_the_backends_own_site_key():
+    """★ **后端自己那个站键**跟着那一段证据一起端出去（第 ① 件事的接口那一半）。
+
+    病：`_stage_fix_source` 拿的是「站点网址」那一格（人填的入口网址），
+    而后端的匹配规则是「**存的 site 必须是请求值的 host+path 前缀**」——
+    入口网址常常比存的那个键**浅**（`compareinsulation.io` vs
+    `compareinsulation.io/article-1-c`），于是明明有这个站、也回了 404。
+
+    药：这一格给的是**失败记录里那个键**（后端自己存的那个）。
+
+    ⚠️ 两个值**故意差一个斜杠**（行里 `…/auto-warranty`、问的 `…/auto-warranty/`）：
+    写得一样的话，「服务把调用方问的那个键回传了一遍」这种改法照绿。
+    """
+    rec = Recorder(envelope(MEASURED_ROWS), envelope(MEASURED_STEPS))
+    r = _client(fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec)).get(
+        "/failures/26033398/evidence", params={"site": SITE_KEY})
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["site"] == "www.gowizard.com/auto-warranty", got["site"]
+    assert got["fill_site"] is True, got
+    _no_code({k: v for k, v in got.items() if k != "evidence"})
+
+
+def test_a_row_without_a_site_key_gets_none_invented():
+    """行里**没有**那一格 ⇒ 交出去空串 + `fill_site: False`（页面据此不塞）。
+
+    ⚠️ 这一条治的是「服务顺手拿**问的那个键**顶替」—— 顶替出来的东西**看起来一模一样**
+    （都是个站名），可它不是后端说的那一格。与 `url`/`fill_url` 同一把尺子：
+    页面那格填不填，是**服务说**的，不是页面自己推的。
+    """
+    rows = [{k: v for k, v in MEASURED_ROWS[0].items() if k != "site"}]
+    rec = Recorder(envelope(rows), envelope(MEASURED_STEPS))
+    r = _client(fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec)).get(
+        "/failures/26034602/evidence", params={"site": SITE_KEY})
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["site"] == "", got["site"]
+    assert got["fill_site"] is False, got
+
+
 def test_the_evidence_is_exactly_what_the_backend_said_and_nothing_from_the_caller():
     """★ **调用方一个字都塞不进去**：端出去的那段证据与服务**算出来的那一段逐字相同**。
 

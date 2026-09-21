@@ -1373,6 +1373,11 @@ class RunRequest(_Intake):
     success_text: str = Field("", description="成功判据：走通之后页面上会出现哪段文字（**只有人知道**）")
     evidence: str = Field("", description="fix 模式：失败证据的引用（FMR formLog / formStep）")
     site: str = Field("", description="站点短名（不给就从 URL 推）")
+    fix_site: Optional[str] = Field(
+        None, description="修站用的**后端站键**（失败记录行里那一格 `site`）—— "
+                          "见 `_stage_fix_source`；不给就拿 `url` 去问")
+    fix_site_url: Optional[str] = Field(
+        None, description="上面那个键**跟着来的那一串网址** —— 只在 `url` 还是这一串时算数")
     ws_url: Optional[str] = Field(None, description="§4.6 前提层开出来的窗口（bit.sh open 吐的那串）")
     form_file: Optional[str] = Field(None, description="表单数据文件（自测用）")
     env: Optional[dict] = Field(None, description='{"proxy_country","dpr","ua","viewport"}；没人给就不带')
@@ -3934,9 +3939,16 @@ class Service:
                          since: Any = None) -> dict:
         """`GET /failures/{单号}/evidence` 的正文（Task 13）：**一段人话** + 该填的那串网址。
 
-        ⚠️ 三样都**从后端读**（`fmr.FmrClient.evidence_for`）：调用方（页面）一个字都不许塞
-        —— 证据里的每一个字都得是后端说的。页面拿这三样去填「开一趟」那张表（Task 12 那张），
+        ⚠️ 都**从后端读**（`fmr.FmrClient.evidence_for`）：调用方（页面）一个字都不许塞
+        —— 证据里的每一个字都得是后端说的。页面拿这几样去填「开一趟」那张表（Task 12 那张），
         **它自己不拼** evidence。
+
+        ★ 第 ① 件事（2026-09-21）：多端一格 `site` —— **后端自己存的那个站键**
+        （失败记录行里那一格），外加 `fill_site`（服务说这一格用不用，页面不自己推）。
+        它治的是：服务原先拿「站点网址」那一格（人填的入口网址）去问 `formScript`，
+        而那个读口要的是「**存的 site 必须是请求值的 host+path 前缀**」——
+        入口网址比存的键**浅**时就回 404，明明有这个站。
+        ⚠️ 它是**另一件事**，不是 `url` 的别名：`url` 是「这一趟真从哪儿进去的」。
         """
         key = str(site or "").strip()
         if not key:
@@ -3963,6 +3975,12 @@ class Service:
             "evidence": str(got.get("evidence") or ""),
             #: 页面照着这一格决定「站点网址」那一格填不填：**服务说填什么**，页面不自己推。
             "fill_url": bool(str(got.get("url") or "").strip()),
+            #: ★ 第 ① 件事：后端自己那个站键（行里那一格）。页面把它跟着那一趟发回去，
+            #: `_stage_fix_source` 拿它去读脚本 —— 见那一格自己的注释。
+            #: ⚠️ 行里没有就是**空串 + False**，**不拿问的那个键顶替**（那是另一件事：
+            #: 顶替出来的东西看起来一模一样，可它不是后端说的那一格）。
+            "site": str(got.get("site") or ""),
+            "fill_site": bool(str(got.get("site") or "").strip()),
         }
 
     # ── ③ 榜单（哪个站坏了）+ ④ 原因（为什么）（Task 4）──────────────
@@ -4185,6 +4203,20 @@ class Service:
         所以这里**不**读本地 `forms/sites/<短名>.py` —— 那是本地的另一份，
         可能早就不是线上那份了（修错版本比不修更坏：改半天改的是别人手上的旧稿）。
 
+        ★★ **拿哪个键去问**（第 ① 件事，2026-09-21）：那个读口的匹配规则是
+        「**存的 site 必须是请求值的 host+path 前缀**」——
+        存的键比请求值**深**时它就是 404（明明有这个站）。而人填的那一格
+        （`body.url` = 失败证据里那条**入口网址**）常常比存的键**浅**
+        （【我量的·2026-09-21】裸 `compareinsulation.io` 404，而
+        `compareinsulation.io/article-1-c` 在）。所以**失败记录里那个键优先**
+        （`body.fix_site`，面板从 `/failures/{单号}/evidence` 带下来的那一格）——
+        那个键是**后端自己存的**，它自己是自己的前缀，从根上绕开那条规则。
+        没给就照旧拿 `url` 去问（老那一趟一个字不变）。
+
+        ⚠️ **键归键、路径归路径**：那个键是 `主机/路径` 的形状（**带斜杠**），
+        所以它**只**用来问后端 —— 落盘的路径照旧走 `site` / `url` 推出来的短名，
+        拿键去拼路径会得到一个没建过的子目录。
+
         ★★ 三种「拿不到底稿」都**在门口抛**（非 2xx + 人话）：
 
         | 情形 | 放它过去的后果 |
@@ -4200,8 +4232,17 @@ class Service:
         """
         if str(getattr(body, "mode", "") or "") != MODE_FIX:
             return None
+        #: ★ 失败记录里那个键优先（后端自己存的），没给才拿人填的入口网址去问。
+        #: ⚠️ 它只在**还跟着它来的时候那一串网址**时才算数：人把「站点网址」那一格改了，
+        #: 这趟活要修的**就不是那条失败记录那个站**了 —— 键继续用会**静默修错站**
+        #: （面板上开的是 B 站，服务拿 A 站的键去读配置、去修，中间没有一处会响）。
+        #: 判在**服务这一层**（不是页面）：页面只是把两格原样发上来，见 `runPayload`。
+        url = str(getattr(body, "url", "") or "").strip()
+        key = str(getattr(body, "fix_site", "") or "").strip()
+        came_with = str(getattr(body, "fix_site_url", "") or "").strip()
+        ask_with = key if (key and came_with and url == came_with) else url
         try:
-            script = self._fmr.form_script(str(getattr(body, "url", "") or "").strip())
+            script = self._fmr.form_script(ask_with)
         except fmr.FmrUnmeasured as exc:
             # 读不到 / 没这个站 / 没给 url —— 全走既有的「量不到」那张表（非 2xx + 原话）。
             raise self._unmeasured_to_http(exc)
