@@ -173,6 +173,13 @@
     .nrun .field .why{grid-column:1}
   }
 
+  /* ── 页面现场（2026-09-21）──────────────────────
+     「页面上有、它却没收到」那几条：照抄 `#fails .faillist` 那三条（同一个形状不另起一套）。 */
+  #pagePanel .misslist{margin:8px 0 0; display:flex; flex-direction:column; gap:5px}
+  #pagePanel .misslist li{font-size:13.5px; line-height:1.6; display:flex; flex-wrap:wrap; gap:8px;
+                          align-items:baseline; border-bottom:1px dashed var(--line-soft); padding-bottom:5px}
+  #pagePanel .misslist .href{color:var(--ink-3); font-size:12.5px; word-break:break-all}
+
   /* ── 失败列表（Task 13）───────────────────────── */
   #fails .faillist{margin:8px 0 0; display:flex; flex-direction:column; gap:5px}
   #fails .faillist li{font-size:13.5px; line-height:1.6; display:flex; flex-wrap:wrap; gap:8px;
@@ -567,6 +574,27 @@
               每跑一遍叫一轮）。两个「轮」指的是两件事，卡片上带「（闸拍）」的就是上面这个。
             </p>
             <div id="rounds"></div>
+          </div>
+        </section>
+
+        <!-- ── 页面现场（那一趟自己看到的那一眼）────────────── -->
+        <section class="panel" id="pagePanel">
+          <header>
+            <h2>页面现场</h2>
+            <span class="sub">跑证据那一趟<b>跑完再读一遍</b>的那一页：脚本自己收到了什么、
+              页面上有什么<b>它没收到</b>。</span>
+          </header>
+          <div class="body">
+            <div class="facts" id="pageFacts"></div>
+            <div id="pageMissed"></div>
+            <p class="hint" id="pageHint"></p>
+            <p class="hardrule">
+              <b>这一栏是「读回来的」，不是「推出来的」。</b>
+              脚本自己收到几个可点元素、页面上还有哪些它没收到的 —— 都是<b>跑完在那一页上现读</b>的。
+              读不到就写「读不到」，绝不写成「一个都没有」：<b>那两个字在这一行里是两件事</b>，
+              混起来人就会拿「页面没问题」去解释一次失败。
+              <b>它没收到的那几个，多半就是你该指给它的那个东西</b>（在下面「说一句」里写清：选择器 / 那段 HTML / 一句人话都行）。
+            </p>
           </div>
         </section>
 
@@ -1048,6 +1076,56 @@
     return '<button class="chip" type="button" data-shot="' + esc(name) + '">' + esc(label) + "</button>";
   }
 
+  // ══════════════════ 页面现场 ══════════════════
+  //: 服务给的那一格 `page_view`（跑证据那一趟**跑完现读那一页**拿的）。**三态分开画**：
+  //:   ① 有读数；② 漏掉的那几个（「页面上有、它却没收到」）一条条摆出来；
+  //:   ③ 读不到 / 这一趟还没跑过 —— 各说各的，**不画一张空表格**
+  //:   （空表格与「页面上什么都没有」长得一模一样，那正是这一栏要拆穿的形状）。
+  function paintPageView() {
+    var pv = at(live, "page_view", null);
+    var facts = document.getElementById("pageFacts");
+    var missed = document.getElementById("pageMissed");
+    var hint = document.getElementById("pageHint");
+    if (!pv || typeof pv !== "object") {
+      facts.innerHTML = "";
+      missed.innerHTML = "";
+      hint.innerHTML = '<span class="hintline">这一趟还没有页面读数 —— 它是<b>跑证据那一趟跑完之后</b>' +
+        "现读那一页拿回来的；没跑那一趟就没有，这一屏不拿别的凑。</span>";
+      return;
+    }
+    var reader = (pv.reader && typeof pv.reader === "object") ? pv.reader : null;
+    var cl = (pv.clickable && typeof pv.clickable === "object") ? pv.clickable : null;
+    var bs = reader ? (reader.buttons || []) : [];
+    var fs = reader ? (reader.fields || []) : [];
+    var said = bs.slice(0, 6).map(function (b) { return String((b && b.txt) || "").slice(0, 20); })
+      .filter(function (x) { return x; }).join("、");
+    facts.innerHTML = reader
+      ? ("<span>脚本自己收到 <b>" + bs.length + "</b> 个可点元素" + (said ? "：" + esc(said) : "") + "</span>" +
+         "<span>输入框 <b>" + fs.length + "</b> 个</span>" +
+         "<span>它看到的进度 <b>" + esc(String(reader.progress || "（空）")) + "</b></span>")
+      : "<span>脚本自己收到了什么：<b>读不到</b></span>";
+    if (!cl) {
+      missed.innerHTML = '<p class="hintline">这一页上有哪些可点元素：<b>读不到</b> —— ' +
+        "这与「一个都没有」<b>不是一件事</b>（读不到就不许写成没有）。</p>";
+    } else {
+      var known = {};
+      bs.forEach(function (b) { known[String((b && b.txt) || "")] = true; });
+      var miss = (cl.cands || []).filter(function (c) { return !known[String((c && c.txt) || "")]; });
+      missed.innerHTML = miss.length
+        ? ('<div class="kvrow"><span class="k">页面上有、它却没收到</span><span><ul class="misslist">' +
+           miss.slice(0, 8).map(function (c) {
+             return "<li><code>&lt;" + esc(String(c.tag || "?")) +
+               (c.cls ? ' class="' + esc(String(c.cls)) + '"' : "") + "&gt;</code> " +
+               "<b>" + esc(String(c.txt || "").slice(0, 40)) + "</b>" +
+               (c.href ? ' <span class="href">' + esc(String(c.href).slice(0, 90)) + "</span>" : "") + "</li>";
+           }).join("") + "</ul></span></div>")
+        : '<p class="hintline">页面上那些短文字的可点元素，脚本<b>都收到了</b> —— 这一趟没有「漏掉的那个」。</p>';
+    }
+    hint.innerHTML = (cl && cl.url)
+      ? '<span class="hintline">读的时候那一页在：<code>' + esc(String(cl.url).slice(0, 200)) + "</code></span>"
+      : "";
+  }
+
   // ══════════════════ 这个窗口 ══════════════════
   function paintWindow() {
     var win = at(live, "window", null);
@@ -1284,6 +1362,7 @@
     paintRuns(state.runs);
     paintTimeline();
     paintRounds();
+    paintPageView();
     paintWindow();
     paintComposer();
   }

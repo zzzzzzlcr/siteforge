@@ -290,7 +290,11 @@ def test_the_run_uses_the_evidence_it_fetched_and_says_when_there_is_none(tmp_pa
         calls.append(kw)
         return {"rc": 1, "timed_out": False, "bad_lines": 0, "timeout": 600,
                 "trace": [{"step": "started", "url": "https://x/a", "ok": None}],
-                "tail": "step 6: nothing actionable (6) []"}
+                "tail": "step 6: nothing actionable (6) []",
+                "dom": {"reader": {"buttons": [], "fields": [], "progress": ""},
+                        "clickable": {"url": "https://x/a",
+                                      "cands": [{"tag": "A", "txt": "Get A Free Quote",
+                                                 "cls": "btn", "href": "https://q/x", "box": [120, 40]}]}}}
 
     brief, deps, rec, _ = _legacy_fix(tmp_path, evidence_run=fake_evidence)
     deps.evidence_run = fake_evidence
@@ -302,6 +306,11 @@ def test_the_run_uses_the_evidence_it_fetched_and_says_when_there_is_none(tmp_pa
     assert "nothing actionable" in (out.get("fix_evidence") or ""), out.get("fix_evidence")
     facts = next((p["facts"] for p in payloads if p["step"] == "draft"), {})
     assert "nothing actionable" in str(facts.get("给模型的证据（旧脚本停在哪儿）")), facts.keys()
+    #: ★ **现读那一页的原始读数要留在状态里**（面板那一栏就靠它）——
+    #: 「页面上有、它却没收到」那一条是运营最需要的那一眼，不许只煮成一段正文。
+    page = out.get("fix_page_view") or {}
+    assert [c["txt"] for c in (page.get("clickable") or {}).get("cands", [])] == ["Get A Free Quote"], page
+    assert (page.get("reader") or {}).get("buttons") == [], page
 
     #: 没接那根线 ⇒ 状态里留一句**说清**的话（不许让「没有证据」看起来像「有证据」）
     brief2, deps2, _rec2, _ = _legacy_fix(tmp_path / "b")
@@ -309,6 +318,49 @@ def test_the_run_uses_the_evidence_it_fetched_and_says_when_there_is_none(tmp_pa
     app2, cfg2, _ = _build(deps=deps2)
     _, out2 = _drive(app2, cfg2, brief2)
     assert "没接" in (out2.get("fix_evidence") or ""), out2.get("fix_evidence")
+
+
+def test_the_old_script_passing_on_its_own_stops_the_trip_without_touching_it(tmp_path):
+    """★★ 证据那一趟**旧脚本自己就走通了** ⇒ 就此停住（用户 2026-09-21 的裁断）。
+
+    为什么这条承重：手上的证据只说「它跑通了」，**没有一个可复现的失败条件**。
+    拿它去出补丁 = 拿一个跑得通的脚本去赌，而改坏了**没有任何地方会响** ——
+    它照样跑，只是偶尔挂。运营 2026-09-21 看到的正是这个形状（`callyourdate` 实测：
+    旧脚本自己退出码 0、自己报 `success`，而那个站今天「在失败」）。
+    """
+    calls = []
+
+    def fake_evidence(**kw):
+        calls.append(kw)
+        return {"rc": 0, "timed_out": False, "bad_lines": 0, "timeout": 600,
+                "trace": [{"step": "success", "url": "https://x/wizard", "ok": True}],
+                "tail": "SUCCESS: https://x/wizard?referrer=..."}
+
+    brief, deps, rec, sources = _legacy_fix(tmp_path, evidence_run=fake_evidence)
+    deps.evidence_run = fake_evidence
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, brief)
+
+    assert out.get("end_reason") == "fix_old_passes", (out.get("end_reason"), out.get("end_note"))
+    assert out.get("fix_evidence_ok") is True, out.get("fix_evidence_ok")
+    assert "没有可修" in (out.get("end_note") or ""), out.get("end_note")
+    assert calls and calls[0]["entry_url"] == URL, calls
+    #: **一步都不往下走**：没叫模型、没开自测、没落盘（那个站一个字节都没被动过）
+    assert sources == [], "旧脚本自己就走通了，不该再叫模型出补丁"
+    assert rec.selftest == [], rec.selftest
+    assert [p["step"] for p in payloads] == ["explore"], [p["step"] for p in payloads]
+    assert "退出码 **0**" in (out.get("fix_evidence") or ""), out.get("fix_evidence")
+    assert "它自己就走通了" in (out.get("end_note") or ""), out.get("end_note")
+    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+
+    #: 判据本身（三态）：**导航没成**那一趟的退出码不算数 —— 它是在别的页面上跑的，
+    #: 读成「没走通」会去改一个可能根本没坏的脚本。
+    for ev, want in (({"rc": 0, "navi": "导航没成（退出码 1）"}, None),
+                     ({"rc": 1, "navi": None}, False),
+                     ({"rc": 0, "navi": None, "timed_out": True}, False),
+                     ({"rc": None}, None),
+                     ({"rc": 0}, True)):
+        assert graph._old_ran_ok(ev) is want, (ev, graph._old_ran_ok(ev))
 
 
 def test_a_real_evidence_run_returns_rc_trace_and_the_script_own_log(tmp_path, monkeypatch):

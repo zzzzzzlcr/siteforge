@@ -292,6 +292,8 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _run_refused_payloads()
     elif scenario == "window":
         payload = _window_payloads()
+    elif scenario == "page-view":
+        payload = _page_view_payloads()
     elif scenario == "gate-facts":
         payload = _gate_facts_payloads()
     elif scenario == "failures":
@@ -702,6 +704,64 @@ def _window_payloads() -> dict:
                                                       "say": CLOSE_SAY}}],
                 "/job/job-1/reopen": [{"body": {"job_id": "job-1", "say": REOPEN_SAY}}],
             }}
+
+
+# ── 页面现场那一栏（2026-09-21）────────────────────────────────────────
+def _page_view_payloads() -> dict:
+    """**三份正文**：有读数 → 两块都读不到 → 这一趟还没跑过那一趟。
+
+    ⚠️ 三种在屏幕上**不许长成一个样** —— 这一栏存在的全部理由就是
+    「**读不到**」与「页面上一个都没有」是两件事（混起来人就会拿「页面没问题」去解释一次失败）。
+    """
+    page = {"reader": {"buttons": [], "fields": [], "progress": ""},
+            "clickable": {"url": "https://lastingpowerofattorney.io/article-1/",
+                          "cands": [
+                              {"tag": "A", "txt": "Get A Free Quote", "cls": "btn",
+                               "href": "https://qualify.lastingpowerofattorney.io//?utm_source=taboola"},
+                              {"tag": "A", "txt": "Privacy", "cls": "link", "href": "/privacy"}]}}
+    bodies = []
+    for i, pv in enumerate((page, {"reader": None, "clickable": None}, None)):
+        body = _live("waiting", "gate", n=1 + i)
+        if pv is not None:                           # 第三份**不给这一格**（还没跑过那一趟）
+            body["page_view"] = pv
+        bodies.append({"body": body})
+    _assert_all_different([x["body"] for x in bodies], "`/live` 的正文")
+    return {"scenario": "page-view", "search": "?job=job-1",
+            "responses": {
+                "/runs": [{"body": {"note": "", "runs": [
+                    {"job_id": "job-1", "site": "lastingpowerofattorney", "status": "waiting",
+                     "say": "停下来了，在等你一句话。",
+                     "created_at": "2026-09-21T18:00:00+08:00", "rounds": 1,
+                     "delivered": False}]}}],
+                "/job/job-1/live": bodies,
+            }}
+
+
+def test_the_page_view_panel_shows_what_the_script_missed(tmp_path):
+    """★ 页面现场那一栏：「**页面上有、它却没收到**」要一条条摆出来，三态分得开。
+
+    为什么这一栏承重（2026-09-21 真跑，`lastingpowerofattorney`）：那一页的 CTA 是
+    `<a class='btn' href=…>Get A Free Quote</A>`，而脚本的读法只收 `button,[role=button],label`
+    ⇒ `buttons: 0` ⇒ 它**连看都看不见**那个按钮（不是「点了没反应」）。
+    这一栏就是把那一条指给运营看 —— 「该点哪个」正是他要说的那句话。
+    """
+    out = _drive(tmp_path, scenario="page-view")
+
+    d = out["withData"]
+    assert "Get A Free Quote" in d["missed"], d["missed"]
+    assert "qualify.lastingpowerofattorney.io" in d["missed"], d["missed"]
+    assert "0</b> 个可点元素" in d["facts"], d["facts"]
+    assert "article-1" in d["hint"], d["hint"]
+    assert "读不到" not in d["facts"] and "读不到" not in d["missed"], d
+
+    #: **读不到 ≠ 一个都没有**（这一栏存在的理由；两处都要说「读不到」）
+    u = out["unreadable"]
+    assert "读不到" in u["facts"] and "读不到" in u["missed"], u
+
+    #: 还没跑过那一趟 ⇒ 明说没有，**不画一张空表格**（空表格与「页面上什么都没有」长得一样）
+    n = out["notYet"]
+    assert "还没有页面读数" in n["hint"], n
+    assert n["facts"] == "" and n["missed"] == "", n
 
 
 # ── Task 14 修复轮 1：闸口摊开的事实要**上屏** ────────────────────────────

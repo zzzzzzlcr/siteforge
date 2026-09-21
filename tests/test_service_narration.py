@@ -1015,6 +1015,30 @@ def test_every_run_is_broadcast_in_order_including_the_ones_that_did_not_run(
 # ═══════════ 7. 铁律二：`on_*` 不给 → 今天的行为一个字节不变 ══════════
 
 
+def test_the_page_view_rides_the_live_payload_in_three_states(tmp_path):
+    """★ 页面现场那一格（2026-09-21）：跑证据那一趟**现读那一页**拿的读数 → `/live` → 面板那栏。
+
+    ⚠️ 三态在**服务这一层**就要分得开（面板只照抄，不许自己推）：
+      - 有读数 ⇒ 那一格是那份 dict（里面 `reader` / `clickable` 各自可能是 `None` = **读不到**）；
+      - 这一趟**还没跑过那一趟** ⇒ `None`（**不是** `{}`）——
+        `{}` 与「读到了、页面上什么都没有」在屏幕上长得一样，那正是这一栏要拆穿的形状。
+    """
+    page = {"reader": {"buttons": [], "fields": [], "progress": ""},
+            "clickable": {"url": URL, "cands": [
+                {"tag": "A", "txt": "Get A Free Quote", "cls": "btn", "href": "https://q.test/x"}]}}
+    client, job_id = _one_job(tmp_path, _narrating(values={"fix_page_view": page}))
+    assert _live(client, job_id)["page_view"] == page
+
+    #: 还没跑过那一趟 ⇒ 缺这一格
+    client2, job2 = _one_job(tmp_path / "b", _narrating(values={}))
+    assert _live(client2, job2)["page_view"] is None
+
+    #: 两块都读不到 ⇒ **原样**带上去（服务不许把它抹成一个空 dict 或一句「没有」）
+    unread = {"reader": None, "clickable": None}
+    client3, job3 = _one_job(tmp_path / "c", _narrating(values={"fix_page_view": unread}))
+    assert _live(client3, job3)["page_view"] == unread
+
+
 def test_nothing_is_wired_when_no_reader_is_given():
     """**Task 4 那条 `on_step` 线的形状**：没有读者 = 这条线压根不接（不是接个空钩子）。
 

@@ -240,6 +240,18 @@ async function windowScenario(out) {
   out.afterReopen = { errBox: el("errBox").textContent, disabled: el("btnReopen").disabled };
 }
 
+//: 页面现场那一栏（2026-09-21）：三份正文各画一次 —— **有读数 / 读不到 / 这一趟还没跑过**。
+//: 量的就是「三种在屏幕上长不长成一个样」（这一栏存在的全部理由：读不到 ≠ 页面上没有）。
+async function pageViewScenario(out) {
+  out.withData = { facts: el("pageFacts").innerHTML, missed: el("pageMissed").innerHTML,
+                   hint: el("pageHint").innerHTML };
+  await ticks(2);                                   // 第二份正文：两块都读不到
+  out.unreadable = { facts: el("pageFacts").innerHTML, missed: el("pageMissed").innerHTML };
+  await ticks(2);                                   // 第三份：这一趟还没跑过那一趟
+  out.notYet = { facts: el("pageFacts").innerHTML, missed: el("pageMissed").innerHTML,
+                 hint: el("pageHint").innerHTML };
+}
+
 //: 失败列表（Task 13 ③）：**看一趟失败 → 把它的证据填进「开一趟」**那条路。
 //: 走的是真人那条路：写站名 → 按「查失败」→ 挑一条 → 按「照这条修」。
 //: 量四样：① 那一栏长出的是**人话**（不是码）；② 那两跳发到哪（`/failures` 与它下面那条）；
@@ -432,6 +444,7 @@ async function againScenario(out) {
   else if (payload.scenario === "run") { await runScenario(out); }
   else if (payload.scenario === "run-refused") { await runRefusedScenario(out); }
   else if (payload.scenario === "window") { await windowScenario(out); }
+  else if (payload.scenario === "page-view") { await pageViewScenario(out); }
   else if (payload.scenario === "failures") { await failuresScenario(out); }
   else if (payload.scenario === "failures-url-edited") { await failuresUrlEditedScenario(out); }
   //: 服务没给那个站键那一趟 —— **同一段驱动**（差别只在载荷里那条证据少了 `site`）：

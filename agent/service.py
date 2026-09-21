@@ -3864,6 +3864,13 @@ class Service:
             #: 那道闸的 `step` / `step_say` 同一个形状）。
             "stage": token,
             "stage_say": where,
+            #: ★ **页面现场**（2026-09-21）：跑证据那一趟**跑完现读那一页**拿回来的原始读数
+            #: （`selftest._dom_view`）：脚本自己收到了什么 + **页面上有、它却没收到**什么。
+            #: 运营最需要看的就是后半块 —— 它直接指出「该点哪个」（今天实测：那一页的 CTA 是
+            #: 个 `<a href>`，脚本的选择器里没有 `a` ⇒ `buttons: 0`）。
+            #: ⚠️ 里面每个 `None` 都是**「读不到」**（窗格没接 / 那一趟没跑）—— 页面不许画成
+            #: 「页面上一个都没有」；`None` 这一格本身 = 这一趟还没有读数。
+            "page_view": (values or {}).get("fix_page_view"),
             "note": note,
             "events": shown,                      # 旧 → 新；最多最近 500 条（`Timeline.all` 的默认）
             #: 闸口投影（**只在 `waiting` 时非 null**）。原话照抄 `_view` 算好的那道闸，

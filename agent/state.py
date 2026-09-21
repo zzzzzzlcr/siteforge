@@ -28,7 +28,7 @@ from agent.selftest import Report
 __all__ = ["SiteState", "Caps", "GENERATOR", "MODE_BUILD", "MODE_FIX",
            "CONTINUE", "STOP", "REVISE", "human_reply",
            "END_DELIVERED", "END_HUMAN_STOP", "END_NO_BRIEF", "END_NO_SUCCESS_TEXT",
-           "END_MISSING_KNOB", "END_REVISION_CAP", "END_EXPLORE_UNFINISHED",
+           "END_MISSING_KNOB", "END_REVISION_CAP", "END_EXPLORE_UNFINISHED", "END_FIX_OLD_PASSES",
            "END_WINDOW_GONE", "END_PAUSED", "END_DRAFT_FAILED", "END_LINT_CAP",
            "END_SELFTEST_CAP",
            "END_NO_WINDOW", "END_DELIVER_LINT", "FINISHED_EXPLORATION"]
@@ -107,6 +107,11 @@ END_WINDOW_GONE = "window_gone"
 END_PAUSED = "paused"
 #: 写不出 py（最常见的一种：没人说「什么算成功」—— 成功判据只有人知道，§6.1）
 END_DRAFT_FAILED = "draft_failed"
+#: 修站那条路上**跑了一遍旧脚本，它自己就走通了** —— 于是**没有可修的东西**，
+#: 就此停住（不写 py、不碰那个站）。用户 2026-09-21 的口径：「那个是因为失败了才被我
+#: 停用的…我认为它是脚本没问题得偶发性」—— 拿一个跑得通的脚本去赌，只会把它改坏。
+#: ⚠️ 与 `END_DELIVERED` **分开**：这一趟什么都没落盘，它不是一个成功结局。
+END_FIX_OLD_PASSES = "fix_old_passes"
 #: lint 打回次数到顶（§6.5：上限的目的是「别写出跑不完也不停的图」）
 END_LINT_CAP = "lint_cap"
 #: 自测挂了、修的次数到顶
@@ -194,6 +199,17 @@ class SiteState(TypedDict, total=False):
     #: **旧脚本现在停在哪儿**（真页面跑一遍拿的，`selftest.evidence_say` 那段人话）——
     #: 它是给**模型**看的证据（走 `feedback` 递进 `patch_source`），也是闸上给人看的。
     fix_evidence: Optional[str]
+    #: 那一趟证据跑完，**旧脚本自己说走通了没有**（三态：True / False / None=量不到）。
+    #: ⚠️ 它与 `explore_reached_success` **不是一件事**：那一格说的是「这一趟探路有没有
+    #: 见到成功文案」，修站这条路**根本不探路**；这一格说的是「线上那份旧脚本自己那一趟
+    #: 的结果」—— 修站这条路的第一判据（用户 2026-09-21：跑得通的脚本不许改）。
+    fix_evidence_ok: Optional[bool]
+    #: 那一趟**现读那一页**拿回来的原始读数（`selftest._dom_view` 的产物）：
+    #: `{"reader": 脚本自己收到了什么 | None, "clickable": {"url", "cands"} | None}`。
+    #: ⚠️ 里面每一个 `None` 都是**「读不到」**（不是「页面上没有」）—— 面板按这个口径画。
+    #: 为什么它单独占一格（而不是只留 `fix_evidence` 那段人话）：运营最需要的那一眼是
+    #: 「**页面上有、它却没收到**」，那要在屏上摆成一条条，而不是埋在证据正文里。
+    fix_page_view: Optional[dict]
     site: str                     # 站点短名（不给就从 URL 推）
     success_text: Any             # **成功判据**（页面上出现哪段文字）—— 只有人知道（§6.1）
     evidence: str                 # fix 模式：失败证据的引用（FMR formLog / formStep）

@@ -121,7 +121,7 @@ from agent import fix as fix_mod, lint as lint_mod, runtime
 from agent import selftest as selftest_mod
 from agent import template
 from agent.state import (
-    END_DELIVERED, END_DELIVER_LINT, END_DRAFT_FAILED, END_EXPLORE_UNFINISHED,
+    END_DELIVERED, END_DELIVER_LINT, END_DRAFT_FAILED, END_EXPLORE_UNFINISHED, END_FIX_OLD_PASSES,
     END_HUMAN_STOP, END_LINT_CAP, END_MISSING_KNOB, END_NO_BRIEF, END_NO_SUCCESS_TEXT,
     END_NO_WINDOW, END_PAUSED, END_REVISION_CAP, END_SELFTEST_CAP, END_WINDOW_GONE,
     FINISHED_EXPLORATION, GENERATOR, MODE_BUILD, MODE_FIX, REVISE, STOP, Caps, SiteState,
@@ -497,9 +497,24 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
             return out
         if legacy:
             #: ★ 跑一遍旧脚本拿证据（**闸之后**才做：它动真页面 + 一次真提交）。
-            ev = _evidence_run(state, deps)
+            ev, raw = _evidence_run(state, deps)
             out["fix_evidence"] = ev
+            out["fix_evidence_ok"] = _old_ran_ok(raw)
+            #: 现读那一页的原始读数（`None` = 那一趟压根没读成；读成的那一份里
+            #: `reader`/`clickable` 各自也可能是 `None` = 那一块读不到）。
+            page = (raw or {}).get("dom") if isinstance(raw, dict) else None
+            out["fix_page_view"] = page if isinstance(page, dict) else None
             out["explore_say"] = say + "\n\n—— 旧脚本现在停在哪儿（这一段是要给模型的证据）：\n" + ev
+            if out["fix_evidence_ok"] is True:
+                #: ★★ **旧脚本这一趟自己就走通了** ⇒ 没有可修的（用户 2026-09-21 的裁断：
+                #: 「那个是因为失败了才被我停用的…我认为它是脚本没问题得偶发性」）。
+                #: 这里**就地停**，一步都不往下走：不写 py、不开自测、不碰那个站。
+                #: 为什么不是「让模型看着办」：手上的证据只说「它跑通了」，没有一个可复现的
+                #: 失败条件 —— 拿它去改，等于拿一个跑得通的脚本去赌（改坏了**没有任何东西会响**：
+                #: 它照样跑，只是偶尔挂，而这正是运营今天看到的形状）。
+                out.update({"end_reason": END_FIX_OLD_PASSES,
+                            "end_note": _old_passes_say(state)})
+                return out
         else:
             out["explore_say"] = say
         out["explore_reached_success"] = None      # 没探路 ⇒ **量不到**，不是「没走到」
@@ -930,18 +945,22 @@ def _lint(state, deps: Deps, caps: Caps) -> dict:
     return out
 
 
-def _evidence_run(state, deps: Deps) -> str:
-    """跑一遍旧脚本 → 那段**人话证据**（没接那根线 / 起不来 / 没窗口，都如实说）。
+def _evidence_run(state, deps: Deps) -> tuple:
+    """跑一遍旧脚本 → `(那段人话证据, 那一趟的原始读数 | None)`。**纯读**。
+
+    原始读数**一起带出来**（不只留那段人话）：里面的 `dom`（跑完现读那一页）是运营最需要
+    的那一眼 —— 「页面上有、它却没收到」要有地方摆成一条条（面板那一栏），而埋在一段正文里
+    就只能靠人一行行读。量不到时回 `None`（**不是**一个空 dict：那两个东西在这一层不许混）。
 
     ⚠️ **任何一种失败都不许静默**：模型手上的证据少一份、出稿就低一档 ——
     而「这一趟到底有没有证据」必须留在状态里给人看（`fix_evidence`）。
     """
     if deps.evidence_run is None:
         return ("这个部署**没接「跑一遍拿证据」那根线** —— 这一趟模型手上只有失败那一行，"
-                "没有「旧脚本停在哪儿」。")
+                "没有「旧脚本停在哪儿」。", None)
     if not state.get("ws_url") or not state.get("form_file"):
         return ("跑不了那一遍拿证据：**没有可用的窗口或表单数据** —— 这一趟模型手上"
-                "只有失败那一行。（没有证据的稿，闸上要按「没验到」读。）")
+                "只有失败那一行。（没有证据的稿，闸上要按「没验到」读。）", None)
     try:
         #: ⚠️ `entry_url` 是**承重**的：不给它，那一趟就是在浏览器自己的控制台页上跑
         #: （2026-09-21 实测），拿回来的证据全是废的。给人的选择只有失败证据里那串网址。
@@ -950,11 +969,43 @@ def _evidence_run(state, deps: Deps) -> str:
                                entry_url=(state.get("entry_url") or state.get("url") or ""))
     except Exception as exc:                      # noqa: BLE001 —— 外面世界
         return ("跑那一遍旧脚本的时候炸了：`%s: %s`（这一趟模型手上没有真证据）"
-                % (type(exc).__name__, str(exc)[:200]))
+                % (type(exc).__name__, str(exc)[:200]), None)
     try:
-        return selftest_mod.evidence_say(ev)
+        return selftest_mod.evidence_say(ev), ev
     except Exception as exc:                      # noqa: BLE001 —— 证据的形状对不上
-        return "那一遍跑了，可证据读不出来：`%s: %s`" % (type(exc).__name__, str(exc)[:200])
+        return ("那一遍跑了，可证据读不出来：`%s: %s`" % (type(exc).__name__, str(exc)[:200]), None)
+
+
+def _old_ran_ok(ev: Any) -> Optional[bool]:
+    """旧脚本那一趟**它自己说走通了没有** —— `True` / `False` / `None`（量不到）。**纯函数**。
+
+    判据就是**产物自己的约定**（`form_fill_lpa` 那一族：`sys.exit(0 if 走通 else 1)`，
+    见 `fix.PATCH_SYSTEM` 那份契约），不另立一套：
+
+    | 情形 | 结果 |
+    |---|---|
+    | 退出码 0、没超时、**导航成了** | `True`（它自己说走通了） |
+    | 退出码非 0 / 超时 | `False`（它自己说没走通） |
+    | 没起来（`rc is None`）、**导航没成** | `None` —— **量不到**，不是「没走通」 |
+
+    ⚠️ 导航没成那一支必须回 `None`（不是 `False`）：那一趟是在**别的页面**上跑的
+    （2026-09-21 实测：窗口停在 Bit 自己的控制台页），它的退出码说什么都不算数 ——
+    把它读成「没走通」会去改一个可能根本没坏的脚本。
+    """
+    ev = ev if isinstance(ev, dict) else {}
+    if ev.get("navi") or ev.get("rc") is None:
+        return None
+    return not ev.get("timed_out") and int(ev.get("rc")) == 0
+
+
+def _old_passes_say(state) -> str:
+    """旧脚本自己走通了 ⇒ 这一趟**没什么可修**的那段人话（闸上/报告里读的就是它）。"""
+    return ("跑了一遍线上那份旧脚本（真页面、一次真实提交）：**它自己就走通了**"
+            "（退出码 0 —— 这份脚本的约定是 0 = 它自己说走通了）。\n"
+            "所以这一趟**没有可修的东西**，就此停住：没写 py、没开自测、没碰那个站。\n"
+            "⚠️ 它要是偶尔才失败，那是**偶发**（地区 / 设备 / 时序），不是脚本里那一处坏了 —— "
+            "要把这种偶发修掉，得先说清**在什么条件下它会挂**（哪个地区、哪台设备、卡在哪一步）；"
+            "没有那个条件就动手，等于拿一个跑得通的脚本去赌，而改坏了**没有任何地方会响**。")
 
 
 def _fresh_session(state, deps: Deps) -> tuple:
