@@ -465,9 +465,16 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
         legacy = state.get("fix_style") == "legacy"
         notes = list(state.get("fix_notes") or [])
         if legacy:
-            say = ("这次是**修站**，不重新探索：拿的是**线上正在跑的那一份 py**（%s）—— "
+            #: ⚠️【2026-09-21 实测·真闸上印出来过的一句假话】这一句原来**写死**成
+            #:   「拿的是**线上正在跑的那一份 py**」—— 而停用那些站（`allow_disabled`）拿的
+            #:   是 `?type=debug` 那一份、**不是**生产在跑的那一份。屏幕上「底稿是哪一份」
+            #:   这一件事只有一处算得出来（服务放在 `state.fix_base` 里）⇒ 这儿照它说。
+            #:   ⚠️ 算不出来时**不许替它猜「线上的那一份」**：那是拿一句看着挺有底气的话
+            #:   把「不知道」盖掉（这份稿也可能是从停用那份改的）。
+            base = state.get("fix_base") or "**手上这份 py**（哪一份：没说）"
+            say = ("这次是**修站**，不重新探索：底稿是%s（%s）—— "
                    "它是**老写法**（里面没有 `STATES/FILLS` 那张数据表），所以这一趟是"
-                   "**出补丁**：交给模型只改该改的那一处，过闸之后才往下走。" % state.get("fix_py"))
+                   "**出补丁**：交给模型只改该改的那一处，过闸之后才往下走。" % (base, state.get("fix_py")))
             if deps.evidence_run is not None:
                 say += ("\n⚠️ 这一步会**先跑一遍那份旧脚本**（真页面 + **一次真实提交**）："
                         "拿到「它停在哪儿、它自己打了什么」，作为**给模型的证据** —— "
@@ -1556,7 +1563,8 @@ def _draft_say(state, feedback: dict) -> str:
     """draft 那道闸上问的话：**先把它为什么被叫回来**说清楚（人话，不是 code）。"""
     version = list(state.get("visits") or []).count("draft") + 1
     head = (
-        ("接下来写第 %d 版：把**线上正在跑的那一份 py** 整个交给模型出一版补丁"
+        #: ⚠️ 同 §上一条：不许写死成「线上正在跑的那一份」（可能是停用那份改的）。
+        ("接下来写第 %d 版：把**这一版的底稿**整个交给模型出一版补丁"
          "（老写法里没有 states/fills 可改），过闸之后才往下走。" % version)
         if state.get("fix_style") == "legacy"
         else "接下来写第 %d 版 py（按账本里的「怎么走」填骨架）。" % version)

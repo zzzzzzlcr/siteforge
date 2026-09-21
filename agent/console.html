@@ -184,6 +184,8 @@
   #pagePanel .misslist li{font-size:13.5px; line-height:1.6; display:flex; flex-wrap:wrap; gap:8px;
                           align-items:baseline; border-bottom:1px dashed var(--line-soft); padding-bottom:5px}
   #pagePanel .misslist .href{color:var(--ink-3); font-size:12.5px; word-break:break-all}
+  /*: 「指它」—— 人看得见的那一眼，点一下变成一句话（只预填，不替人发）。 */
+  #pagePanel .misslist .point{padding:2px 8px; font-size:12.5px}
 
   /* ── 失败列表（Task 13）───────────────────────── */
   #fails .faillist{margin:8px 0 0; display:flex; flex-direction:column; gap:5px}
@@ -628,6 +630,8 @@
           <div class="body">
             <div class="facts" id="pageFacts"></div>
             <div id="pageMissed"></div>
+            <!--: ★ 工具自己的读数（`cdp observe`）：选择器能直接用，尤其是「挡着的东西点哪个」。 -->
+            <div id="pageTool"></div>
             <p class="hint" id="pageHint"></p>
             <p class="hardrule">
               <b>这一栏是「读回来的」，不是「推出来的」。</b>
@@ -1126,10 +1130,12 @@
     var pv = at(live, "page_view", null);
     var facts = document.getElementById("pageFacts");
     var missed = document.getElementById("pageMissed");
+    var toolBox = document.getElementById("pageTool");
     var hint = document.getElementById("pageHint");
     if (!pv || typeof pv !== "object") {
       facts.innerHTML = "";
       missed.innerHTML = "";
+      if (toolBox) { toolBox.innerHTML = ""; }
       hint.innerHTML = '<span class="hintline">这一趟还没有页面读数 —— 它是<b>跑证据那一趟跑完之后</b>' +
         "现读那一页拿回来的；没跑那一趟就没有，这一屏不拿别的凑。</span>";
       return;
@@ -1138,10 +1144,21 @@
     var cl = (pv.clickable && typeof pv.clickable === "object") ? pv.clickable : null;
     var bs = reader ? (reader.buttons || []) : [];
     var fs = reader ? (reader.fields || []) : [];
-    var said = bs.slice(0, 6).map(function (b) { return String((b && b.txt) || "").slice(0, 20); })
-      .filter(function (x) { return x; }).join("、");
+    //: ⚠️【2026-09-21 实测·那个站】这一栏原来把「它读到的」**串成一整句话**（`Get Results、×、
+    //:   Accept all、Decline all`）—— 于是**点不了其中任何一条**。而那一天卡住整趟的正是这里
+    //:   面的一条：cookie 横幅上的 `Accept all`（脚本**读到了**、**没点**⇒ 横幅盖着页面⇒
+    //:   「动作都做了、页面没动」）。运营看得见的那一条，必须**也能一指**。
+    //: ⚠️ 只列前 8 条、只取文字（这一段是给**人**看的，不是给机器解析的）。
+    var got = bs.slice(0, 8).map(function (b) {
+      var t = String((b && b.txt) || "").slice(0, 40);
+      var c = String((b && b.cls) || "").slice(0, 60);
+      return "<li>" + (t ? "<b>" + esc(t) + "</b> " : "") + (c ? "<code>" + esc(c) + "</code>" : "") +
+        ' <button class="btn point" type="button" data-tag="BUTTON" data-cls="' + esc(c) +
+        '" data-txt="' + esc(t) + '">指它</button></li>';
+    }).join("");
     facts.innerHTML = reader
-      ? ("<span>脚本自己收到 <b>" + bs.length + "</b> 个可点元素" + (said ? "：" + esc(said) : "") + "</span>" +
+      ? ("<span>脚本自己收到 <b>" + bs.length + "</b> 个可点元素</span>" +
+         (got ? '<ul class="misslist">' + got + "</ul>" : "") +
          "<span>输入框 <b>" + fs.length + "</b> 个</span>" +
          "<span>它看到的进度 <b>" + esc(String(reader.progress || "（空）")) + "</b></span>")
       : "<span>脚本自己收到了什么：<b>读不到</b></span>";
@@ -1155,16 +1172,75 @@
       missed.innerHTML = miss.length
         ? ('<div class="kvrow"><span class="k">页面上有、它却没收到</span><span><ul class="misslist">' +
            miss.slice(0, 8).map(function (c) {
+             //: ★ 人看得见的那一眼，**点一下就变成一句话**（2026-09-21 用户提的：
+             //: 「人也可以最好把关键元素提供给 ai」）。这一下**只预填**输入框，
+             //: 发不发还是人按那个键（服务可以替人「停」，绝不替人「走」）。
+             //: 那几格原样挂在 `data-*` 上，拼句子时就按这几个数拼（不必再去翻 DOM）。
              return "<li><code>&lt;" + esc(String(c.tag || "?")) +
                (c.cls ? ' class="' + esc(String(c.cls)) + '"' : "") + "&gt;</code> " +
                "<b>" + esc(String(c.txt || "").slice(0, 40)) + "</b>" +
-               (c.href ? ' <span class="href">' + esc(String(c.href).slice(0, 90)) + "</span>" : "") + "</li>";
+               (c.href ? ' <span class="href">' + esc(String(c.href).slice(0, 90)) + "</span>" : "") +
+               ' <button class="btn point" type="button" data-tag="' + esc(String(c.tag || "")) +
+               '" data-cls="' + esc(String(c.cls || "")) + '" data-txt="' + esc(String(c.txt || "")) +
+               '" data-href="' + esc(String(c.href || "")) + '">指它</button></li>';
            }).join("") + "</ul></span></div>")
         : '<p class="hintline">页面上那些短文字的可点元素，脚本<b>都收到了</b> —— 这一趟没有「漏掉的那个」。</p>';
+    }
+    //: ★ **只摆一条**：页面上**挡着的东西**，以及「点掉它该点哪个地址」（`cdp observe` 算的，
+    //: 2026-09-21）。为什么只留这一条（用户的话：「不用获取全部啊」）：这一栏是给**人**看的，
+    //: 人看得见元素、也说得出来；他真正看不见的是「有一层东西挡着，而我不知道它叫什么、
+    //: 该点哪里」—— 那一站白跑一趟栽的就是这个（cookie 横幅盖着整页）。
+    //: ⚠️ 拉不到（没接 cdp / 那台没 observe）时**明说拉不到**，不画成「页面上干干净净」。
+    var tool = (pv.page && typeof pv.page === "object") ? pv.page : null;
+    if (toolBox) {
+      if (!tool) {
+        toolBox.innerHTML = '<p class="hintline">页面上挡着什么（<code>cdp observe</code>）：' +
+          "<b>读不到</b> —— 这与「页面上没有东西挡着」<b>不是一件事</b>。</p>";
+      } else {
+        var obs = (tool.obstructions || []).filter(function (o) { return o && typeof o === "object"; });
+        toolBox.innerHTML = obs.length
+          ? ('<p class="warn">⚠️ <b>页面上有东西挡着</b>（' + obs.length + " 个）—— 脚本开跑前、" +
+             "以及每次导航之后，都得先把它点掉（挡着的时候，点在别处的点击会被它吃掉，" +
+             "屏幕上就成了「做了、页面没动」）：" +
+             "<ul class='misslist'>" + obs.slice(0, 4).map(function (o) {
+               var dis = String(o.dismiss_selector || "");
+               return "<li>挡着的是 <b>" + esc(String(o.text || "").slice(0, 40)) + "</b>（" +
+                 esc(String(o.kind || "?")) + "）—— 点掉它的地址：" +
+                 (dis ? "<code>" + esc(dis.slice(0, 90)) + "</code>" : "<b>没给</b>（这一条它没算出来）") +
+                 (dis ? ' <button class="btn point" type="button" data-sel="' + esc(dis) +
+                         '" data-txt="' + esc(String(o.text || "")) + '">指它</button>' : "") +
+                 (o.dismiss_selector_unique === false ? " ⚠️ 那条地址**没验证过唯一**" : "") + "</li>";
+             }).join("") + "</ul></p>")
+          : '<p class="hintline">工具看过了：<b>页面上没有东西挡着</b>（`obstructions` 是空的）—— ' +
+            "可动作元素 " + (tool.actions || []).length + " 个。</p>";
+      }
     }
     hint.innerHTML = (cl && cl.url)
       ? '<span class="hintline">读的时候那一页在：<code>' + esc(String(cl.url).slice(0, 200)) + "</code></span>"
       : "";
+  }
+
+  //: 「指它」（2026-09-21）：把**页面上那一条**拼成一句人话，**预填**进底下那个输入框。
+  //: ⚠️ 只预填、不发：这一屏**没有**替人按任何键（服务可以替人「停」，绝不替人「走」）。
+  //: 用事件委托（`#pageMissed` 上挂一个）：那一栏每 3 秒重画一次，逐条挂监听会被重画抹掉。
+  function pointAtElement(ev) {
+    var b = ev && ev.target;
+    if (!b || !b.getAttribute || !b.getAttribute("data-txt")) { return; }
+    var tag = b.getAttribute("data-tag") || "", cls = b.getAttribute("data-cls") || "";
+    var txt = b.getAttribute("data-txt") || "", href = b.getAttribute("data-href") || "";
+    var sel = b.getAttribute("data-sel") || "";
+    //: 工具算出来的那一条（`cdp observe`）：**选择器**才是能直接拿去用的东西 ⇒ 那句话里给它。
+    var piece = sel
+      ? ("`" + sel + "`" + (txt ? "（文字「" + txt.slice(0, 30) + "」）" : ""))
+      : ("<" + tag.toLowerCase() + (cls ? ' class="' + cls + '"' : "") + ">" + txt + "</" +
+         tag.toLowerCase() + ">");
+    var box = document.getElementById("sayBox");
+    if (!box) { return; }
+    var said = "要点的那个是页面上这一条：" + piece + (href ? "（href=" + href + "）" : "");
+    //: ⚠️ **接着写、不覆盖**：运营可能已经打了一半（覆盖掉他打的那半句是最坏的一种「帮忙」）。
+    //: 输入框空着才带那个「要点的那个是……」的开头；已经有字就只把这一条续在后面。
+    box.value = box.value ? (box.value.replace(/\s+$/, "") + " " + said) : (said + " —— ");
+    if (box.focus) { box.focus(); }
   }
 
   // ══════════════════ 这个窗口 ══════════════════
@@ -2471,6 +2547,11 @@
   //   ⚠️ 「看这一单的原因」读的是**上面「要修哪一条」那一格** —— 这一屏里「哪一单」只此一处。
   document.getElementById("btnRank").addEventListener("click", fetchRank);
   document.getElementById("btnRankGo").addEventListener("click", goRank);
+  //: 「指它」那一按钮是**动态长出来**的 ⇒ 用委托，别逐条挂。
+  //: ⚠️【2026-09-21 真鼠标实测】原来挂在 `#pageMissed` 上 —— 而这两栏里**有一半长在
+  //:   `#pageFacts` 里**（「它收到了却没点」那几条，cookie 横幅那条就在那儿）⇒ 那一半
+  //:   **点不动**（屏幕上看着一样，点了什么都不发生）。挂到两栏共同的父亲上。
+  document.getElementById("pagePanel").addEventListener("click", pointAtElement);
   document.getElementById("btnDiag").addEventListener("click", fetchDiag);
   document.getElementById("btnJson").addEventListener("click", fetchJson);
   document.getElementById("btnJsonPrepare").addEventListener("click", prepareJsonWrite);

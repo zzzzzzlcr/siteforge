@@ -757,12 +757,29 @@ def _page_view_payloads() -> dict:
     ⚠️ 三种在屏幕上**不许长成一个样** —— 这一栏存在的全部理由就是
     「**读不到**」与「页面上一个都没有」是两件事（混起来人就会拿「页面没问题」去解释一次失败）。
     """
-    page = {"reader": {"buttons": [], "fields": [], "progress": ""},
+    #: ⚠️ 这份 `reader` 是**那一页真读数**（2026-09-21 我从线上 `/job/<id>/live` 抄回来的）：
+    #:   脚本**读到了** cookie 横幅上的 `Accept all`/`Decline all`/`×` —— 它**没点**，
+    #:   于是横幅盖着页面、后面每一步都「做成了但页面没动」。这一栏的第二半（「它收到的」）
+    #:   就是为这一条长的：运营看得见的那一条，必须**也能一指**。
+    page = {"reader": {"buttons": [{"txt": "Get Results", "cls": "btn-primary"},
+                                   {"txt": "×", "cls": ""},
+                                   {"txt": "Accept all", "cls": ""},
+                                   {"txt": "Decline all", "cls": ""}],
+                       "fields": [], "progress": ""},
             "clickable": {"url": "https://lastingpowerofattorney.io/article-1/",
                           "cands": [
                               {"tag": "A", "txt": "Get A Free Quote", "cls": "btn",
                                "href": "https://qualify.lastingpowerofattorney.io//?utm_source=taboola"},
-                              {"tag": "A", "txt": "Privacy", "cls": "link", "href": "/privacy"}]}}
+                              {"tag": "A", "txt": "Privacy", "cls": "link", "href": "/privacy"}]},
+            #: ★ **工具自己**那份读数（`cdp observe`）：这一栏只摆一条 —— **挡着的东西**
+            #: 以及「点掉它该点哪个地址」（2026-09-21 用户的话：「不用获取全部啊」）。
+            "page": {"obstructions": [{"kind": "consent-overlay", "text": "We value your privacy",
+                                       "selector": "div#onetrust",
+                                       "dismiss_selector": "button#onetrust-accept-btn-handler",
+                                       "dismiss_selector_unique": True}],
+                     "actions": [{"selector": "body > main > button:nth-of-type(1)",
+                                  "text": "Get Results"}],
+                     "fields": [], "honeypots": [], "diagnostics": []}}
     bodies = []
     for i, pv in enumerate((page, {"reader": None, "clickable": None}, None)):
         body = _live("waiting", "gate", n=1 + i)
@@ -794,7 +811,21 @@ def test_the_page_view_panel_shows_what_the_script_missed(tmp_path):
     d = out["withData"]
     assert "Get A Free Quote" in d["missed"], d["missed"]
     assert "qualify.lastingpowerofattorney.io" in d["missed"], d["missed"]
-    assert "0</b> 个可点元素" in d["facts"], d["facts"]
+    assert "4</b> 个可点元素" in d["facts"], d["facts"]
+    #: ★ 它**收到了**、却没点的那一条（cookie 横幅）：也要在屏上、也要能一指
+    #:   （2026-09-21 真跑：这就是卡住整趟的那一条）。
+    assert "Accept all" in d["facts"], d["facts"]
+
+    #: ★ **挡着的东西**（`cdp observe` 的 `obstructions`）：这一条要在屏上吵一点 ——
+    #: 它挡着时，点在别处的点击会被吃掉，屏幕上就成了「做了、页面没动」（那一站白跑一趟的根因）。
+    #: ⚠️ 并且要给**点掉它的地址**，还要能一指（`data-sel` 那一支拼出来的句子里是选择器）。
+    assert "页面上有东西挡着" in d["tool"], d["tool"]
+    assert "button#onetrust-accept-btn-handler" in d["tool"], d["tool"]
+    assert 'data-sel="button#onetrust-accept-btn-handler"' in d["tool"], d["tool"]
+    s = out["afterSel"]["sayBox"]
+    assert "要点的那个是页面上这一条" in s, s
+    assert "`button#onetrust-accept-btn-handler`" in s, s
+    assert "（文字「Accept all」）" in s, s
     assert "article-1" in d["hint"], d["hint"]
     assert "读不到" not in d["facts"] and "读不到" not in d["missed"], d
 
@@ -806,6 +837,20 @@ def test_the_page_view_panel_shows_what_the_script_missed(tmp_path):
     n = out["notYet"]
     assert "还没有页面读数" in n["hint"], n
     assert n["facts"] == "" and n["missed"] == "", n
+
+    #: ★「指它」（2026-09-21 用户提的「人也可以最好把关键元素提供给 ai」）：人看得见的那一眼，
+    #: 点一下 ⇒ **那一句话预填进输入框**（他再按「说一句」发出去）。
+    #: ⚠️ 三件事一起卡：① 那句话里要有**元素本身**（tag/class/文字）与它的 href ——
+    #:    只写「页面上有个东西」等于没说；② 它必须落进 `sayBox`（运营看得见、能改）；
+    #:    ③ 这一下**不许替人发**（这一屏的纪律：服务可以替人「停」，绝不替人「走」）。
+    p = out["afterPoint"]["sayBox"]
+    assert "要点的那个是页面上这一条" in p, p
+    assert "<button>Accept all</button>" in p, p
+    #: 没有 href 的那一支：**不许**拼出一个空的 `href=`（那会让人以为它是个链接）。
+    assert "href=" not in p, p
+    #:    ⚠️ 卡的是**这一下的前后差**（这一屏本来就在轮询 `live`，请求数本来就不为零）。
+    pt = out["afterPoint"]
+    assert pt["afterPoint"] == pt["beforePoint"], pt
 
 
 # ── Task 14 修复轮 1：闸口摊开的事实要**上屏** ────────────────────────────

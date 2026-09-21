@@ -282,6 +282,50 @@ def test_the_evidence_say_only_puts_what_was_measured():
     assert "一步都没上报" in selftest.evidence_say({"rc": 0, "trace": []})
 
 
+def test_the_evidence_carries_what_the_tool_saw_including_what_blocks_the_page():
+    """★ 工具自己那份读数（`cdp observe`）要进证据 —— 尤其「**挡着的东西 + 点掉它的地址**」。
+
+    为什么这条承重（2026-09-21 真跑）：那一站的 cookie 横幅盖着整页，脚本**读到了它、没点它**
+    （它自己那串写死的选择器一个都不匹配，还被 `except: pass` 吞掉），于是后面每一步的点击
+    都被浮层吃掉 —— 而当时那段证据里**一个字都没提「有东西挡着」**。
+    """
+    said = selftest.evidence_say({
+        "rc": 1, "timed_out": False, "bad_lines": 0, "timeout": 600, "trace": [],
+        "dom": {"page": {
+            "obstructions": [{"kind": "consent-overlay", "text": "We value your privacy",
+                              "selector": "div#onetrust",
+                              "dismiss_selector": "button#onetrust-accept-btn-handler",
+                              "dismiss_selector_unique": True}],
+            "actions": [{"selector": "body > main > button:nth-of-type(1)",
+                         "text": "Get Results", "stability": "stable"}],
+            "fields": [], "honeypots": [], "diagnostics": []}}})
+    assert "挡着" in said, said
+    assert "button#onetrust-accept-btn-handler" in said, said
+    assert "body > main > button:nth-of-type(1)" in said, said
+    #: ⚠️ 没拿工具看过（老版 cdp / 拉不到）⇒ **不许**提「挡着」或「没挡着」：
+    #: 「读不到」与「没有」是两件事，在这一层混起来，人就会拿「页面没问题」去解释一次失败。
+    quiet = selftest.evidence_say({"rc": 1, "trace": [], "dom": {}})
+    assert "挡着" not in quiet and "obstructions" not in quiet, quiet
+
+
+def test_the_patch_prompt_teaches_the_tool_habits_that_already_exist():
+    """★ 改稿提示词要把「这套工具本身的用法」摆到模型面前（用户 2026-09-21 指的方向）。
+
+    为什么：那一站改稿时，提示词里只有「证据 / 判据 / 人的话 / 上一版为什么打回 / 旧源码」——
+    关于「这一页上怎么等元素、怎么清弹层、怎么做成了才算做成」**一个字都没有**，
+    于是模型自己造（写死一串同意弹层选择器 + `except: pass`）。
+
+    ⚠️ 只说**生产那个 cdp 真有的**那几只手：`observe` / `diff` 它没有（`diff` 要 observe 的快照）
+    —— 在提示词里承诺它们，等于让模型写一份生产跑不起来的稿。
+    """
+    said = fix.patch_user(LEGACY_PY)
+    for want in ("人插的话", "照他给的那个写", "同意弹层", "cookie|consent|gdpr|privacy",
+                 "下一步的关键元素", "最多 3 次", "如实报失败", "scroll", "covered_by",
+                 "self.cdp"):
+        assert want in said, (want, said[:300])
+    assert "cdp observe" not in said and "cdp diff" not in said, "生产那个 cdp 没有这两样"
+
+
 def test_the_run_uses_the_evidence_it_fetched_and_says_when_there_is_none(tmp_path):
     """★ 出稿之前那一趟拿证据：接上了就走（且那段证据进状态 + 进闸），没接就**说清**。"""
     calls = []
@@ -446,6 +490,42 @@ def test_a_legacy_script_becomes_a_patch_run_instead_of_being_refused(tmp_path):
     assert rec.selftest[0].get("legacy") is True, rec.selftest[0]
     #: ⚠️ 自测那一趟**必须先导航到那个站** —— 不导航就是在 Bit 自己的控制台页上跑（实测过）
     assert rec.selftest[0].get("start_url") == URL, rec.selftest[0]
+
+
+def test_the_gate_says_which_copy_the_draft_came_from(tmp_path):
+    """★ 闸上「**底稿是哪一份**」只许照 `state.fix_base` 说（2026-09-21 真闸上印过一句假话）。
+
+    为什么这条承重：停用那些站（`allow_disabled`）拿的是 `?type=debug` 那一份、
+    **不是**生产在跑的那一份；而原来那句开头**写死**成「拿的是**线上正在跑的那一份 py**」
+    ⇒ 运营在屏幕上读到的是「这份补丁是照线上那份改的」，而它其实是从停用那份改的 ——
+    这两件事的后果不一样（一个是改生产，一个是改一份可能早已作废的稿）。
+
+    ⚠️ 反面一起卡住：**算不出来时不许替它猜「线上的那一份」**（那是拿一句看着有底气的话
+    把「不知道」盖掉）。判据句是「哪一份：没说」。
+    """
+    STAMP = ("**停用那一份**（`type=debug` 读回来的，后端 `status: 0`，sha256 deadbeef1234 —— "
+             "⚠️ 这一份**可能不是生产在跑的那一份**）")
+
+    brief, deps, rec, _ = _legacy_fix(tmp_path)
+    brief = dict(brief, fix_base=STAMP)
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, brief)
+
+    gate = payloads[0]
+    assert gate["step"] == "explore", gate
+    assert "停用那一份" in gate["say"], gate["say"]
+    assert "线上正在跑的那一份" not in gate["say"], gate["say"]
+    assert gate["facts"].get("底稿来源") == STAMP, gate["facts"].get("底稿来源")
+    assert out.get("end_reason") == "delivered", out.get("end_note")
+
+    #: 没说 ⇒ **明说没说**，不许猜成「线上那一份」
+    (tmp_path / "b").mkdir(exist_ok=True)
+    brief2, deps2, _rec2, _c2 = _legacy_fix(tmp_path / "b")
+    app2, cfg2, _ = _build(deps=deps2)
+    payloads2, _out2 = _drive(app2, cfg2, brief2)
+    assert "哪一份：没说" in payloads2[0]["say"], payloads2[0]["say"]
+    assert "线上正在跑的那一份" not in payloads2[0]["say"], payloads2[0]["say"]
+    assert payloads2[0]["facts"].get("底稿来源") == "（没说）", payloads2[0]["facts"]
 
 
 def _replace_block(old: str, *, needle: str, new_lines: list) -> str:

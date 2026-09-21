@@ -400,6 +400,45 @@ def _cdp_eval(cdp_bin, ws_url, js, env, timeout: float = 60):
         return None
 
 
+def _cdp_observe(cdp_bin, ws_url, env, timeout: float = 90):
+    """`cdp observe` 的那一份 **PageModel**（**工具自己的读数**）→ `dict`；读不到给 `None`。
+
+    ★ 为什么有它（2026-09-21，用户指的方向：「为什么不根据 cdp 工具来完善」）：
+    「这一页上哪个元素能点、它的选择器是什么、**有没有东西挡着**、挡着的话点哪个地址才能清掉」
+    —— `cdp observe` **本来就全算好了**（`actions[].selector/alternates/stability/occluded_by`、
+    `obstructions[].dismiss_selector`、`honeypots`、`fields`、`option_groups`）。而这条路上
+    原来**自己手搓 JS** 去找「像可点的元素」（`_PROBE_JS`）—— 于是屏幕上只看得见「短文字的
+    链接/按钮」，看不见「**挡着的那一层**」：那一站真跑栽的就是这个（cookie 横幅盖着整页，
+    脚本读到了它、没点它，后面每一步的点击都被浮层吃掉）。
+
+    ⚠️ 与 `reader` / `clickable` 那两块**不是一件事**，三块都要：
+      · `reader`    = **脚本自己**收到的（它自己的读法）
+      · `clickable` = 页面上「像可点的」短文字元素（**手搓的**那一套判据）
+      · `page`      = **工具**看到的那份模型（选择器候选 / 稳定性 / 遮挡物 / 陷阱元素）
+    三块不一致的地方，正是要指给人看的那一条。
+
+    ⚠️ 读不到 ⇒ `None`（**不许**画成「页面上什么都没有」）。⚠️ 生产那个 cdp **没有 observe**
+    （能力边界见 `agent/template.py::_clear_obstructions`）⇒ 这一块只在**我们这边**
+    （证据 / 闸上）用，**不塞进产物脚本**。
+    """
+    if not cdp_bin:
+        return None
+    host, port = _host_port(ws_url)
+    try:
+        done = subprocess.run([str(cdp_bin), "observe", "--host", host, "--port", port],
+                              capture_output=True, text=True, timeout=timeout, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if done.returncode != 0:
+        return None
+    try:
+        got = json.loads((done.stdout or "").strip())
+        got = json.loads(got) if isinstance(got, str) else got
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return got if isinstance(got, dict) else None
+
+
 def _dom_view(py, cdp_bin, ws_url, env) -> dict:
     """跑完那一遍之后，**现读一遍那一页**：脚本自己看到了什么 + 页面上还有什么可点的。
 
@@ -414,6 +453,9 @@ def _dom_view(py, cdp_bin, ws_url, env) -> dict:
     if m:
         view["reader"] = _cdp_eval(cdp_bin, ws_url, m.group(1), env)
     view["clickable"] = _cdp_eval(cdp_bin, ws_url, _PROBE_JS, env)
+    #: ★ **工具自己**的那一份读数（选择器候选 / 稳定性 / **遮挡物 + dismiss_selector** /
+    #: 陷阱元素 / 字段）。这是 2026-09-21 用户指的方向：别手搓，用工具。
+    view["page"] = _cdp_observe(cdp_bin, ws_url, env)
     return view
 
 
@@ -557,6 +599,42 @@ def evidence_say(ev: dict) -> str:
                      for c in missed[:8]]
             parts.append("⚠️ **页面上有、它却没收到**（短文字的链接/按钮类；它点不到的东西多半在这里）：\n"
                          + "\n".join(lines))
+    #: ★ **工具自己**看那一页（`cdp observe`）—— 2026-09-21 用户指的方向：别手搓，用工具。
+    #: 这一块是「**选择器能直接用**」的那一份，尤其是「**挡着的东西该点哪个地址**」。
+    page = dom.get("page") if isinstance(dom.get("page"), dict) else None
+    if page:
+        obs = [o for o in (page.get("obstructions") or []) if isinstance(o, dict)]
+        parts.append("**工具自己看那一页**（`cdp observe`）：可动作元素 %d 个、表单字段 %d 个、"
+                     "陷阱元素 %d 个、遮挡物 %d 个、诊断 %d 条。"
+                     % (len(page.get("actions") or []), len(page.get("fields") or []),
+                        len(page.get("honeypots") or []), len(obs),
+                        len(page.get("diagnostics") or [])))
+        if obs:
+            lines = []
+            for o in obs[:4]:
+                sel, dis = str(o.get("selector") or ""), str(o.get("dismiss_selector") or "")
+                lines.append("- `%s`（%s）：挡着的是 %r%s"
+                             % (dis or "（没给点掉它的地址）", o.get("kind") or "?",
+                                str(o.get("text") or "")[:50],
+                                "" if o.get("dismiss_selector_unique") is not False
+                                else " ⚠️ 那条地址**没验证过唯一**"))
+            parts.append("⚠️⚠️ **页面上有东西挡着**（`obstructions`）—— 生产**每一单都是新窗口、"
+                         "每单都会遇到它**，而脚本开跑前/每次导航之后都得先把它点掉；"
+                         "挡着的时候点在别处的点击会被它吃掉（页面上看着「做了、没动」）：\n"
+                         + "\n".join(lines))
+        acts = [a for a in (page.get("actions") or []) if isinstance(a, dict)]
+        if acts:
+            said = []
+            for a in acts[:8]:
+                said.append("- `%s`「%s」%s%s%s"
+                            % (str(a.get("selector") or "")[:90],
+                               str(a.get("text") or a.get("aria_label") or "")[:28],
+                               "（稳定：%s）" % a.get("stability") if a.get("stability") else "",
+                               " ⚠️禁用" if a.get("disabled") else "",
+                               " ⚠️被 %s 压住" % str(a.get("occluded_by"))[:40]
+                               if a.get("occluded_by") else ""))
+            parts.append("工具给的可动作元素（**这些选择器是它算出来的、能直接拿去点**）：\n"
+                         + "\n".join(said))
     if ev.get("bad_lines"):
         parts.append("（它写的证据里有 %d 行读不动）" % ev["bad_lines"])
     return "\n".join(parts)

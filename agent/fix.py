@@ -353,6 +353,49 @@ PATCH_SYSTEM = """\
 ⚠️ **别把整份源码交回来**：这份文件很长，整份重写会失败（实测：预算会被思考吃满）。"""
 
 
+#: ★ 改老脚本时**摆在模型面前的那几条纪律**（2026-09-21 用户指的方向：
+#: 「为啥不根据 cdp 工具来完善呢 …… 增加等待时间滚动、点击等方法，还有下一步的关键元素，
+#: 检测到就下一步，没有就重试，3 次就失败」）。
+#:
+#: ⚠️ 这里只写**生产那个 cdp 真有的**那几只手（`forms/common.py::CDPHelper` 上的：
+#: `eval` / `click` / `form` / `navigate` / `scroll` / `snapshot` / `screenshot` /
+#: `get_page_info`）。**不许写 `observe` / `diff`** —— 生产那个 cdp 没有 `observe`
+#: （能力边界见 `agent/template.py::_clear_obstructions` 的注释），而 `diff` 要 observe 的快照。
+#:
+#: 为什么要有这一段（**实测的**）：那一站第一次修不成，根因不是脚本「不会点」，
+#: 而是它开跑时**一串写死的同意弹层选择器全不匹配、还被 `except: pass` 吞掉**，
+#: 于是横幅一直盖着页面，后面每一步的点击都被浮层吃掉 —— 它自己只看到「屏幕上没变」。
+#: 这一段就是把「先清遮挡 → 等下一步的关键元素 → 没等到就重试 → 3 次就如实失败」摆到明面上。
+PATCH_DISCIPLINE = """## 改这份脚本时的纪律（这几条是这套工具本身的用法，别自己造轮子）
+
+**先看人说了什么**：人插的那些话（上面「人插的话」那几段）里如果**点名了元素/选择器/步骤**
+（比如「第一步点那个 `Accept all`」），就**照他给的那个写** —— 他正看着那一页，比任何猜测都准。
+人没说、页面证据也没给的东西，**不要编**；宁可写「找不到就如实报失败」。
+
+**手上这几只手（都是 `self.cdp.<名字>`，生产那份 `common.py` 里就有）**：
+`eval(js)` 读页面（判据只能这么读）、`click(selector)` 点、`form(selector, value=/check=/select=)` 填、
+`navigate(url)` 导航、`scroll(pixels)` 滚、`snapshot()` 拿结构化快照（**它自己会重试 3 次**）。
+
+**每一步照这个顺序做**（这是这份脚本该有的形状）：
+1. **开跑前、以及每次 `navigate` 之后**：先清掉挡路的同意弹层 —— 判据是文字/id/class 里
+   有没有 `cookie|consent|gdpr|privacy`（与 `template.py::_clear_obstructions` **同一套词汇**）。
+   ⚠️ 生产**每一单都是新窗口、每单都会遇到它**，而它挡着的时候点在别处的点击**会被它吃掉**
+   （`cdp click` 照样回 ok —— `match_count: 1` 说的是「选择器命中 1 个」，不是「点到的就是它」）。
+   点了之后**要复读一遍确认它不在**；不在就继续，还在就换一条地址再试。
+2. **等「下一步的关键元素」出现**：用 `eval` 判它在不在（可见 + 在视口里），**等到**再动手。
+   没等到就重试 —— **同一件事最多 3 次**，3 次还没等到 ⇒ **如实报失败**（`_rpt(...)` 写清
+   「等的哪个元素、等了多少秒、重试了几次」），**不许** continue 空转、也不许把失败说成做成了。
+3. **动手之前**：那个元素如果不在视口里（`bbox` 那一类读数说它在屏幕外），先 `scroll` 把它
+   滚进来再点 —— 老脚本点不到「屏幕外的按钮」是常事。
+4. **每一次动作之后验推进**：URL 变了 / 可见正文变了 / 该出现的元素出现了。
+   **没推进 = 这一次没做成**（不是「做成了但页面慢」），把这一步重做（≤3 次）；
+   3 次都没推进 ⇒ 如实报失败。⚠️ 原来那份脚本是靠「屏幕签名不变」间接发现的
+   （`same_sig` / `STUCK_LIMIT`），那条路太晚 —— 改成**每步当场验**。
+5. **点到浮层上不算做成**：`cdp click` 的 stderr 里有落点取证（`covered_by` / `release_withheld`），
+   `self.click()` 的回执里也带着 —— 点到盖上来那一层的时候，这一步**没做成**。
+"""
+
+
 def patch_user(old_src: str, *, evidence: str = "", success_text: str = "",
                diagnosis: str = "", page_evidence: str = "",
                violations: Optional[list] = None, hints: Optional[list] = None) -> str:
@@ -377,6 +420,7 @@ def patch_user(old_src: str, *, evidence: str = "", success_text: str = "",
         parts.append("## 上一版自测没过：诊断（逐字）\n%s" % str(diagnosis).strip())
     for bad in (violations or []):
         parts.append("## 上一版被打回的原因（逐条改掉）\n%s" % bad)
+    parts.append(PATCH_DISCIPLINE)
     numbered = "\n".join("%5d| %s" % (i, ln) for i, ln in enumerate(old_src.splitlines(), 1))
     parts.append("## 旧源码（生产里正在跑的那一份，逐字；**左边那个数是行号**）\n```\n%s\n```"
                  % numbered)

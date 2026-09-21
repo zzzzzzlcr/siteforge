@@ -56,6 +56,9 @@ function el(id) {
         this.innerHTML += node.innerHTML || node.textContent || "";
       },
       getAttribute: function () { return null; },
+      //: 真浏览器上每个元素都有它（面板会 `box.focus()`）—— 假 DOM 少了这一嘴就是假 DOM 的缺，
+      //: 不是生产的缺（2026-09-21：少了它这条用例报的是 `box.focus is not a function`）。
+      focus: function () {},
     };
     if (id === "timeline") {
       //: `#timeline` 的 `innerHTML` 换成一对带计数的取值器（见 `timelineWrites`）
@@ -257,12 +260,36 @@ async function live404Scenario(out) {
 //: 量的就是「三种在屏幕上长不长成一个样」（这一栏存在的全部理由：读不到 ≠ 页面上没有）。
 async function pageViewScenario(out) {
   out.withData = { facts: el("pageFacts").innerHTML, missed: el("pageMissed").innerHTML,
-                   hint: el("pageHint").innerHTML };
+                   hint: el("pageHint").innerHTML, tool: el("pageTool").innerHTML };
   await ticks(2);                                   // 第二份正文：两块都读不到
   out.unreadable = { facts: el("pageFacts").innerHTML, missed: el("pageMissed").innerHTML };
   await ticks(2);                                   // 第三份：这一趟还没跑过那一趟
   out.notYet = { facts: el("pageFacts").innerHTML, missed: el("pageMissed").innerHTML,
-                 hint: el("pageHint").innerHTML };
+                 hint: el("pageHint").innerHTML, tool: el("pageTool").innerHTML };
+  //: ★「指它」（2026-09-21）：人看得见的那一眼，点一下 ⇒ **预填**进底下那个输入框。
+  //: ⚠️ 只预填、**不发**：这一下**没有**替人按任何键（服务可以替人「停」，绝不替人「走」）。
+  //: 那一按钮是**动态长出来**的，而假 DOM 不建子节点 ⇒ 拿一个带 `getAttribute` 的假元素
+  //: 直接喂给委托在 `#pageMissed` 上的那个监听器（与 `fire` 同一个做法：`this` 绑到宿主上）。
+  //: 点的这一条是**它读到了却没点**的那种（cookie 横幅上的 `Accept all`，没有 href）——
+  //: 正是卡住那一趟的那一条；没有 href 的那一支也要走通。
+  const fakeBtn = { getAttribute: (k) => ({"data-tag": "BUTTON", "data-cls": "",
+                                          "data-txt": "Accept all",
+                                          "data-href": ""})[k] || "" };
+  //: ⚠️ 还要记**它有没有发东西**：这一下只预填 ⇒ 请求数**一个都不许多**。
+  //: 比的是**点之前与点之后的差**（这一屏本来就在轮询 `live`，拿「一个请求都没有」去卡是错的）。
+  const beforePoint = sent.length;
+  //: ⚠️ 监听的宿主**必须是两栏共同的父亲**（`#pagePanel`）：挂在其中一栏上，另一栏那几条
+  //:   就点不动（真鼠标实测栽过）。宿主写错 ⇒ 这里 `listeners.click` 是 undefined ⇒ 崩 ⇒ 红。
+  el("pagePanel").listeners.click.call(el("pagePanel"), {target: fakeBtn});
+  out.afterPoint = { sayBox: el("sayBox").value,
+                     beforePoint: beforePoint, afterPoint: sent.length };
+  //: ★ 工具算出来的那一条（`cdp observe` 的 `dismiss_selector`）：`data-sel` 那一支，
+  //: 拼出来的句子里要**给选择器**（那才是能直接拿去点/拿去写进脚本的东西）。
+  const fakeSel = { getAttribute: (k) => ({"data-sel": "button#onetrust-accept-btn-handler",
+                                          "data-txt": "Accept all"})[k] || "" };
+  el("sayBox").value = "";
+  el("pagePanel").listeners.click.call(el("pagePanel"), {target: fakeSel});
+  out.afterSel = { sayBox: el("sayBox").value };
 }
 
 //: 失败列表（Task 13 ③）：**看一趟失败 → 把它的证据填进「开一趟」**那条路。
