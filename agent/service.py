@@ -73,7 +73,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from agent import (browser_agent, configcheck, events, fix, fmr, graph, journal, jsondiag,
-                   llm, manual, measure, rounds, selftest, shots, tools)
+                   jsonwrite, llm, manual, measure, rounds, selftest, shots, tools)
 from agent.graph import NODES, STEP_SAY
 from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_LINT_CAP,
                          END_NO_WINDOW, END_PAUSED, END_REVISION_CAP,
@@ -385,6 +385,9 @@ JSODIFF_PATH = "/jsondiff"
 #: 「这份配置执行器认不认」那一跳（合规闸的入口，2026-09-21）。
 #: ⚠️ 与 `JSODIFF_PATH` 同一个理由走**查询参数**（真站点键带斜杠）。
 CONFIGCHECK_PATH = "/configcheck"
+JSONWRITE_PREPARE_PATH = "/jsonwrite/prepare"
+JSONWRITE_COMMIT_PATH = "/jsonwrite/commit"
+JSONWRITE_ROLLBACK_PATH = "/jsonwrite/rollback"
 #: 复跑用哪个浏览器（`ws://…`）。没配 = 这个部署**跑不了复跑** —— 那是合法状态，
 #: 面板照样读得到配置，只是「复跑」那一步会明确说「没量着」。
 JSON_WS_URL_ENV = "SITEFORGE_JSON_WS_URL"
@@ -1481,6 +1484,21 @@ class ReopenRequest(_Intake):
     set_viewport: bool = Field(False, description="顺便把窗口层那根线接上（第 4 遍扰动要用）")
 
 
+class JsonWritePrepareRequest(BaseModel):
+    site: str
+    config: dict
+    operator: str
+
+
+class JsonWriteCommitRequest(BaseModel):
+    ticket: str
+
+
+class JsonWriteRollbackRequest(BaseModel):
+    backup_id: str
+    operator: str
+
+
 # ───────── 执行事实：运营写的期望、服务算的判（契约 §二 / §四 / §六）─────────
 #
 # 这一节是**换裁判**那件事在代码里的样子。契约 §一：病根不是「字段不够」，是
@@ -1891,7 +1909,9 @@ class Service:
                  selftest_dir: Optional[str] = None, mcp_bin: Optional[str] = None,
                  failures_reader: Any = None,
                  json_ws_url: Optional[str] = None,
-                 json_rerun: Optional[Callable] = None):
+                 json_rerun: Optional[Callable] = None,
+                 json_backup_dir: Optional[str] = None,
+                 json_ticket_store: Any = None):
         self._jobs: dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
         self._queue: "queue.Queue[tuple]" = queue.Queue()
@@ -1964,6 +1984,10 @@ class Service:
         self._json_ws_url = (json_ws_url if json_ws_url is not None
                              else os.environ.get(JSON_WS_URL_ENV) or "").strip()
         self._json_rerun = json_rerun or jsondiag.rerun
+        self._json_tickets = json_ticket_store or jsonwrite.TicketStore()
+        backup_root = (json_backup_dir or os.environ.get("SITEFORGE_JSON_BACKUP_DIR")
+                       or str(pathlib.Path(self._explore_root).parent / "json-backups"))
+        self._json_backups = jsonwrite.BackupStore(backup_root)
 
     # ── 外面那三层：图、窗口、检查点 ────────────────────────────────
     def _build_graph(self, brief: dict, job_id: str = ""):
@@ -4321,6 +4345,128 @@ class Service:
             say=_jsondiff_say(came_back, summary),
         )
 
+    def jsonwrite_prepare(self, site: Any, proposed: Any, operator: Any) -> dict:
+        """只做预检并发一次性票据；这一阶段绝不调用写口。"""
+        key = str(site or "").strip()
+        who = str(operator or "").strip()
+        if not key or not who:
+            raise HTTPException(status_code=400,
+                                detail="写回前必须填写站点键和 operator（谁确认的）。")
+        if not isinstance(proposed, dict) or not proposed:
+            raise HTTPException(status_code=400, detail="待写内容必须是一份非空 JSON 对象。")
+        cfg_site = str(proposed.get("site") or "").strip()
+        if cfg_site and cfg_site != key:
+            raise HTTPException(status_code=400,
+                                detail="配置里的 site 与要写回的站点键不一致。")
+        try:
+            original = self._fmr.form_config(key)
+        except fmr.FmrUnmeasured as exc:
+            # 当前只允许更新已存在记录；未实测的 create/upsert 不开放。
+            raise self._unmeasured_to_http(exc)
+        rules = configcheck.load_rules()
+        problems = configcheck.check_config(proposed, rules)
+        errors = [p for p in problems if p.get("level") == "error"]
+        if errors:
+            raise HTTPException(status_code=409, detail={
+                "say": "配置不合规，写口没有被调用。", "errors": errors})
+        if not self._json_ws_url:
+            raise HTTPException(status_code=409,
+                                detail="没有复跑浏览器地址，不能证明这份配置能跑，未写回。")
+        try:
+            got = self._json_rerun(proposed, ws_url=self._json_ws_url)
+        except jsondiag.RerunUnmeasured as exc:
+            raise HTTPException(status_code=FAILURE_STATUS_UNMEASURED, detail=str(exc))
+        summary = got.get("summary") or {}
+        if not jsonwrite.rerun_passed(summary):
+            raise HTTPException(status_code=409, detail={
+                "say": "复跑没有明确判成 success，写口没有被调用。", "summary": summary})
+        item = self._json_tickets.issue(
+            site=key, original=original, proposed=proposed, summary=summary,
+            rules={"path": rules["path"], "sha256": rules["sha256"],
+                   "mtime": rules["mtime"], "operator": who})
+        return {
+            "ready": True, "ticket": item.token, "site": key,
+            "original_sha256": item.original_sha256,
+            "proposed_sha256": item.proposed_sha256,
+            "expires_at": item.expires_at.isoformat(), "summary": summary,
+            "say": "预检通过：执行器合规检查与真页面复跑都通过。再次确认才会写回。",
+        }
+
+    def jsonwrite_commit(self, token: Any) -> dict:
+        """消费票据，写前防并发覆盖，写后回读；不一致则立刻回滚并复核。"""
+        item, reason = self._json_tickets.take(str(token or ""))
+        if item is None:
+            word = "已过期" if reason == "expired" else "不存在或已经用过"
+            raise HTTPException(status_code=409, detail="写回确认票据%s，请重新预检。" % word)
+        try:
+            current = self._fmr.form_config(item.site)
+        except fmr.FmrUnmeasured as exc:
+            raise self._unmeasured_to_http(exc)
+        if jsonwrite.fingerprint(current) != item.original_sha256:
+            raise HTTPException(status_code=409,
+                                detail="后端配置在预检后被别人改过；未写回，请重新读取。")
+        backup_id = self._json_backups.save(
+            site=item.site, original=current, replacement=item.proposed)
+        operator = str(item.rules.get("operator") or "")
+        result = self._fmr.update_form_config(item.site, item.proposed, operator=operator)
+        try:
+            after = self._fmr.form_config(item.site)
+        except fmr.FmrUnmeasured as exc:
+            raise HTTPException(status_code=502, detail={
+                "say": result.say + " 写后回读失败，不能宣称完成；备份已保留。",
+                "backup_id": backup_id, "cause": exc.say})
+        after_sha = jsonwrite.fingerprint(after)
+        if after_sha == item.proposed_sha256:
+            return {"ok": True, "site": item.site, "backup_id": backup_id,
+                    "sha256": item.proposed_sha256,
+                    "say": "写回并回读核对完成；原配置已保存，可用备份编号回滚。"}
+        if after_sha == item.original_sha256 and not result.ok:
+            # 明确拒绝/鉴权失败，或回执未知但回读证明仍是原件：没有需要回滚的变化。
+            raise HTTPException(status_code=409, detail={
+                "say": result.say + " 回读确认后端仍是写前原配置。",
+                "backup_id": backup_id, "write": result.as_dict()})
+        # 后端说成功但回读不一致，或回执未知且实际不是目标值：恢复原件。
+        rollback = self._fmr.update_form_config(item.site, item.original,
+                                                operator=operator + "（自动回滚）")
+        try:
+            restored = self._fmr.form_config(item.site)
+            restored_ok = jsonwrite.fingerprint(restored) == item.original_sha256
+        except fmr.FmrUnmeasured:
+            restored_ok = False
+        raise HTTPException(status_code=502, detail={
+            "say": "写后回读与目标不一致；已尝试自动回滚。",
+            "backup_id": backup_id, "write": result.as_dict(),
+            "rollback": rollback.as_dict(), "restored": restored_ok})
+
+    def jsonwrite_rollback(self, backup_id: Any, operator: Any) -> dict:
+        who = str(operator or "").strip()
+        if not who:
+            raise HTTPException(status_code=400, detail="回滚必须填写 operator（谁确认的）。")
+        try:
+            saved = self._json_backups.load(str(backup_id or ""))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=404, detail="读不到这份备份：%s" % exc)
+        site = str(saved.get("site") or "")
+        try:
+            current = self._fmr.form_config(site)
+        except fmr.FmrUnmeasured as exc:
+            raise self._unmeasured_to_http(exc)
+        if jsonwrite.fingerprint(current) != saved.get("replacement_sha256"):
+            raise HTTPException(status_code=409,
+                                detail="当前配置已不是这份备份对应的替换版本；拒绝覆盖更新。")
+        result = self._fmr.update_form_config(site, saved["original"],
+                                              operator=who + "（人工回滚）")
+        try:
+            after = self._fmr.form_config(site)
+        except fmr.FmrUnmeasured as exc:
+            raise self._unmeasured_to_http(exc)
+        ok = result.ok and jsonwrite.fingerprint(after) == saved.get("original_sha256")
+        if not ok:
+            raise HTTPException(status_code=502, detail={
+                "say": "回滚没有通过回读核对。", "write": result.as_dict()})
+        return {"ok": True, "site": site, "sha256": saved["original_sha256"],
+                "say": "已回滚到写前原配置，并通过回读核对。"}
+
     @staticmethod
     def _truncated_say(timeline, shown: int) -> str:
         """`truncated` 为真时**说清**丢了什么/回了多少（设计注 §8.2：「并说明」）。"""
@@ -5343,7 +5489,9 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                selftest_dir: Optional[str] = None,
                mcp_bin: Optional[str] = None, failures_reader: Any = None,
                json_ws_url: Optional[str] = None,
-               json_rerun: Optional[Callable] = None) -> FastAPI:
+               json_rerun: Optional[Callable] = None,
+               json_backup_dir: Optional[str] = None,
+               json_ticket_store: Any = None) -> FastAPI:
     """拼一个 app。测试从这里注入桩图 / 桩窗口 / 内存 saver。
 
     `window=None` 是**默认且合法**的：这个部署没接窗口层 —— 于是 `set_viewport` 那根线
@@ -5371,7 +5519,8 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                   window_probe_seconds=window_probe_seconds, shots_dir=shots_dir,
                   capture=capture, shot_timeout=shot_timeout, capture_bin=capture_bin,
                   selftest_dir=selftest_dir, mcp_bin=mcp_bin, failures_reader=failures_reader,
-                  json_ws_url=json_ws_url, json_rerun=json_rerun)
+                  json_ws_url=json_ws_url, json_rerun=json_rerun,
+                  json_backup_dir=json_backup_dir, json_ticket_store=json_ticket_store)
     api = FastAPI(title="siteforge", version="0.1",
                   description="看着真页面产出 cdp-first py 脚本的 agent 服务（计划二 Task 8）")
 
@@ -5505,6 +5654,18 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
         ⚠️ **这一版没有写回**（只读）：写接口的语义没验过，见 `Service.jsondiff`。
         """
         return svc.jsondiff(site)
+
+    @api.post(JSONWRITE_PREPARE_PATH)
+    def jsonwrite_prepare(body: JsonWritePrepareRequest) -> dict:
+        return svc.jsonwrite_prepare(body.site, body.config, body.operator)
+
+    @api.post(JSONWRITE_COMMIT_PATH)
+    def jsonwrite_commit(body: JsonWriteCommitRequest) -> dict:
+        return svc.jsonwrite_commit(body.ticket)
+
+    @api.post(JSONWRITE_ROLLBACK_PATH)
+    def jsonwrite_rollback(body: JsonWriteRollbackRequest) -> dict:
+        return svc.jsonwrite_rollback(body.backup_id, body.operator)
 
     @api.post("/run", status_code=202)
     def run(body: RunRequest) -> dict:

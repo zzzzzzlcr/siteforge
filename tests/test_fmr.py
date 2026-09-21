@@ -46,6 +46,7 @@ import datetime
 import json
 import pathlib
 import sys
+import urllib.parse
 
 import pytest
 
@@ -1466,13 +1467,15 @@ def test_the_write_goes_to_the_update_route_with_the_token_and_the_whole_config(
     assert got.ok is True, got
     assert rec.urls[0] == "https://fmr.3tkj.cn/api/quest/formConfig/update", rec.urls[0]
     assert rec.headers[0].get("X-Api-Token") == FAKE_TOKEN, rec.headers[0]
-    assert rec.headers[0].get("Content-Type") == "application/json", rec.headers[0]
+    assert rec.headers[0].get("Content-Type").startswith("application/x-www-form-urlencoded"), rec.headers[0]
     assert FAKE_TOKEN not in rec.urls[0], "token 进了 URL：%r" % rec.urls[0]
-    sent = json.loads(rec.sent[0].decode("utf-8"))
+    sent = {k: v[0] for k, v in urllib.parse.parse_qs(
+        rec.sent[0].decode("utf-8")).items()}
     assert sent["site"] == "cvrefresh.com", sent
     #: ★ **整份**：`form_type` / `site` / `steps[]` / `success` 四个键一个都不能少。
-    assert sent["steps"] == MEASURED_CONFIG, sent["steps"]
-    assert set(sent["steps"]) == {"form_type", "site", "steps", "success"}, sent["steps"]
+    assert json.loads(sent["steps"]) == MEASURED_CONFIG, sent["steps"]
+    assert sent["operator"] == "siteforge-client", sent
+    assert set(json.loads(sent["steps"])) == {"form_type", "site", "steps", "success"}, sent["steps"]
 
 
 def test_a_200_http_answer_with_status_401_is_not_success():
@@ -1628,7 +1631,8 @@ def test_the_read_result_round_trips_straight_into_the_write():
     write_rec = PostRecorder({"status": 200, "msg": "success", "data": []})
     got = writer(write_rec).update_form_config("cvrefresh.com", cfg)
     assert got.ok is True, got
-    assert json.loads(write_rec.sent[0].decode("utf-8"))["steps"] == MEASURED_CONFIG
+    sent = urllib.parse.parse_qs(write_rec.sent[0].decode("utf-8"))
+    assert json.loads(sent["steps"][0]) == MEASURED_CONFIG
 
 
 def test_a_business_status_that_is_not_a_number_is_not_success():

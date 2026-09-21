@@ -107,10 +107,15 @@
    ⚠️ 查不到时：`{"status":404,"msg":"config not found","data":[]}`（**HTTP 也是 200**）。
 写  POST {base}/api/quest/formConfig/update
       Header: X-Api-Token: <token>
-      Body:   {"site":"<站点键>","steps":<那份 {form_type,site,steps[],success}>}
- → 缺 site / 缺 steps：{"status":400,"msg":"参数错误: site 与 steps 必填"}
+      Content-Type: application/x-www-form-urlencoded
+      Form: site=<站点键>&steps=<整份配置的 JSON 字符串>&operator=<谁确认的>
+ → JSON request body：{"status":400,"msg":"参数错误: steps 必须是合法的 JSON 对象或数组"}
+   缺 operator：{"status":400,"msg":"参数错误: operator 必填（谁确认的）"}
    不带 token：        {"status":401,"msg":"unauthorized"}
 ```
+
+【我量的·2026-09-21】对 `cvrefresh.com` 原样写回：业务码 200，随后回读的 SHA-256
+与写前一致。上面的表单编码和 `operator` 是这次实测补齐的真实契约。
 
 ★★ **这一族一律 HTTP 200 + 业务码写在 body 里。** 【我量的·B1】
 `POST {base}/api/quest/formConfig/update` **不带 token** →
@@ -1417,7 +1422,8 @@ class FmrClient:
                 % (noun, branch, str(state)[:30]))
 
     # ── ⑤ 一份 JSON 配置：写（Task B1）──────────────────────────────
-    def update_form_config(self, site: str, steps: Any) -> FormWriteResult:
+    def update_form_config(self, site: str, steps: Any, *,
+                           operator: str = "siteforge-client") -> FormWriteResult:
         """**把一份 JSON 配置写回后端**（`POST /api/quest/formConfig/update`）。
 
         契约（**转述的·出处 `task-b1-brief.md` §1**，控制者探测得到的那两行：
@@ -1463,6 +1469,12 @@ class FmrClient:
                 "⚠️ 原样写回去的话，后端那份配置的 `steps` 会变成一个对象"
                 "（这一族踩过的「读错层」坑，`ad-task.py:2157`）。一个请求都没发出去。",
                 kind="wrong-layer")
+        who = str(operator or "").strip()
+        if not who:
+            raise FmrUnmeasured(
+                "写不回这份 JSON 配置：没说 **operator（谁确认的）**。"
+                "这是后端实测的必填审计字段；一个请求都没发出去。",
+                kind="no-operator")
         if not self.configured:
             # ⚠️ 这里回**值**、不抛：这是一个**已知**的结局（一个请求都没发出去 ⇒
             # **确定没写**），调用方（面板）对它有话说。与读口那个「没配 token 就抛」
@@ -1474,12 +1486,18 @@ class FmrClient:
                      "配法：给服务进程一个 `%s` 环境变量（与 `DATABASE_URL` 同一层）。"
                      % (key, TOKEN_ENV, TOKEN_ENV)))
         url = "%s%s" % (self.base, FORM_CONFIG_UPDATE_PATH)
-        headers = {"Content-Type": "application/json"}
+        # 【我量的·2026-09-21】这个控制器从表单参数取值，不读 JSON request body：
+        # JSON body 会回业务码 400「steps 必须是合法的 JSON 对象或数组」。`steps`
+        # 自身则是一串 JSON；另有必填审计字段 operator（「谁确认的」）。
+        headers = {"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}
         # ⚠️ token 走**请求头**，绝不进 URL（与四个读口同一条纪律）。
         if self.token:
             headers["X-Api-Token"] = self.token
-        body = json.dumps({"site": key, "steps": steps},
-                          ensure_ascii=False).encode("utf-8")
+        body = urllib.parse.urlencode({
+            "site": key,
+            "steps": json.dumps(steps, ensure_ascii=False),
+            "operator": who,
+        }).encode("utf-8")
         try:
             raw = self._poster(url, headers, body)
         except Exception as exc:                       # noqa: BLE001 —— 什么都算「不知道成没成」
