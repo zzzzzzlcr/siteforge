@@ -267,10 +267,36 @@ async function pageViewScenario(out) {
 //: 量四样：① 那一栏长出的是**人话**（不是码）；② 那两跳发到哪（`/failures` 与它下面那条）；
 //: ③ **填了三格、没有开跑**（`sent` 里不许有 `POST /run` —— 「什么算成功」只有人知道）；
 //: ④ 填好的那几格**活过之后三次重画**（Task 7 那一族：写进去 ≠ 还在）。
+//: 失败列表**量到真没有**（默认只查今天）—— 2026-09-21 用户实测撞到的那一格。
+//: 钉：① 那一栏照样说「这一段没有」（量到的），② **怎么让它不空**，
+//: ③ 空下拉上按「照这条修」时那句话里有没有「为什么空」。
+async function failuresEmptyScenario(out) {
+  out.afterLoad = { fails: el("fails").innerHTML, actHidden: el("failAct").hidden };
+  el("failSite").value = payload.failures.site;      // 与 `failuresScenario` 同一条路：先写站名再查
+  fire("btnFail", "click");
+  await settle();
+  await settle();
+  out.afterQuery = { fails: el("fails").innerHTML, actHidden: el("failAct").hidden };
+  //: 把窗**真的**拉开一次（「近 30 天」）—— 钉的是「这一格不是摆设」：
+  //: 原先它只有「今天 / 今天和昨天」⇒ 运营最多往回看一天，翻不到要修的那条失败记录。
+  el("failSince").value = "d30";
+  fire("btnFail", "click");
+  await settle();
+  await settle();
+  out.afterWiden = { fails: el("fails").innerHTML };
+  el("failSince").value = "";
+  fire("btnFixFrom", "click");
+  await settle();
+  out.afterFixFrom = { errBox: el("errBox").textContent };
+}
+
 async function failuresScenario(out) {
   out.afterLoad = { fails: el("fails").innerHTML, actHidden: el("failAct").hidden,
                     hint: el("fixHint").innerHTML };
   el("failSite").value = payload.failures.site;
+  //: 夹具说了挑哪一档时间窗就挑哪一档（不说 = 今天那一档，一个参数都不带）。
+  //: `failures-wide` 那一趟靠这一行把窗拉开，量「查列表」与「照这条修」是不是**同一段窗**。
+  if (payload.failures.since) { el("failSince").value = payload.failures.since; }
   fire("btnFail", "click");
   await settle();
   await settle();
@@ -457,10 +483,13 @@ async function againScenario(out) {
   else if (payload.scenario === "page-view") { await pageViewScenario(out); }
   else if (payload.scenario === "live-404") { await live404Scenario(out); }
   else if (payload.scenario === "failures") { await failuresScenario(out); }
+  else if (payload.scenario === "failures-empty") { await failuresEmptyScenario(out); }
   else if (payload.scenario === "failures-url-edited") { await failuresUrlEditedScenario(out); }
   //: 服务没给那个站键那一趟 —— **同一段驱动**（差别只在载荷里那条证据少了 `site`）：
   //: 走的路一个字不差，量的就是「页面会不会自己编一个键出来」。
   else if (payload.scenario === "failures-no-key") { await failuresScenario(out); }
+  //: 拉宽时间窗那一趟 —— **同一段驱动**（差别只在载荷里那些 URL 带了 `&since=`）。
+  else if (payload.scenario === "failures-wide") { await failuresScenario(out); }
   else if (payload.scenario === "failures-unmeasured") { await failuresUnmeasuredScenario(out); }
   //: 这三趟走**同一段驱动**，差别只在载荷里那份答复（干净 / 不合规 / 读不到）。
   else if (payload.scenario === "configcheck") { await configcheckScenario(out); }

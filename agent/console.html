@@ -346,9 +346,13 @@
                 <select id="failSince">
                   <option value="">今天</option>
                   <option value="back">今天和昨天</option>
+                  <option value="d7">近 7 天</option>
+                  <option value="d30">近 30 天</option>
                 </select>
-                <p class="why">默认只看今天 00:00 之后的失败。要看昨天的，在这一格挑「今天和昨天」——
-                  这一格不挑，服务就只看今天那一段（而它会把看的是哪一段写在结果那一句里）。</p>
+                <p class="why">默认只看今天 00:00 之后的失败；服务会把看的是哪一段写在结果那一句里。
+                  <b>⚠️ 站上的失败常常不是今天的</b>（一个站的失败可以散在一周里，而这一格原先
+                  最多只能往回看一天 ⇒ 运营连那条要修的失败记录都翻不出来，2026-09-21 实测撞到）
+                  —— 所以这儿有「近 7 天 / 近 30 天」。挑哪一段只看这一格，服务照它查。</p>
               </div>
               <div class="go">
                 <button class="btn primary" type="button" id="btnFail">查失败</button>
@@ -1687,8 +1691,13 @@
   function failSinceParam() {
     var pick = document.getElementById("failSince").value;
     if (!pick) { return ""; }
+    //: `back` = 今天和昨天（1 天前）；`d7` / `d30` = 近 7 / 近 30 天。
+    //: ⚠️ 只认这一张表：认不出的值**当 1 天**用（不是当 0、也不是当 30 —— 猜一个更大的窗
+    //: 会让「查不到」变成「查了一大片还是没有」这种看不出错的结论）。
+    var days = pick === "back" ? 1 : Number(String(pick).replace(/^d/, ""));
+    if (!(days >= 1)) { days = 1; }
     var d = new Date();
-    d.setDate(d.getDate() - 1);
+    d.setDate(d.getDate() - days);
     var m = d.getMonth() + 1, day = d.getDate();
     return "&since=" + encodeURIComponent(d.getFullYear() + "-" +
                                           (m < 10 ? "0" : "") + m + "-" +
@@ -1731,7 +1740,13 @@
     if (!rows.length) {
       // 「没有失败」——这是**量到**的（服务那句 `say` 说了是量出来的）。
       // ⚠️ 只有走到这儿才允许出现「没有失败」这句话（那一栏的另一半是 `failProblem`）。
-      box.innerHTML = html;
+      // ★ 2026-09-21（用户实测撞到）：那句话说清了「这一段没有」，**却没给下一步** ——
+      //   运营最自然的反应是「那就没有失败咯」然后卡在这里（实测：那个站的失败是 9-17，
+      //   而这一格默认只看**今天**）。这一段归**这一屏**说：`查哪一段` 那一格是它自己的。
+      box.innerHTML = html +
+        '<p class="hintline">这一栏只看<b>「查哪一段」那一格挑的那一段</b>（留空 = 只看今天）。' +
+        '那个站的失败常常不在今天 —— 挑「近 7 天」或「近 30 天」再按一次「查失败」' +
+        '（榜单上写的是哪一天，这儿<b>不会</b>自动跟着变）。</p>';
       document.getElementById("failAct").hidden = true;
       return;
     }
@@ -1795,12 +1810,20 @@
     var site = document.getElementById("failSite").value.trim();
     var btn = document.getElementById("btnFixFrom");
     if (!id) {
-      setErr("先在「要修哪一条」那一格挑一条 —— 它现在是空的（上面那一栏里有几条就摆几条）。");
+      //: ⚠️ 补第二句（2026-09-21）：那一栏**空着**是最常见的一种（默认只查今天），
+      //: 而只说「挑一条」等于让运营对着一个空下拉发呆 —— 得把「为什么空、怎么让它不空」说清。
+      setErr("先在「要修哪一条」那一格挑一条 —— 它现在是空的（上面那一栏里有几条就摆几条）。" +
+             "要是上面那一栏也是空的：「查哪一段」那一格现在只挑了**今天** —— " +
+             "挑「近 7 天」或「近 30 天」再按「查失败」。");
       return;
     }
     setErr("");
     btn.disabled = true;
-    return fetch(FAILS + "/" + encodeURIComponent(id) + FAIL_EV + "?site=" + encodeURIComponent(site))
+    //: ★ 必须带上**同一个时间窗**（2026-09-21 用户实测撞到）：查列表时挑了「近 30 天」，
+    //: 这一跳不带的话服务按默认（**今天**）去找这一条 ⇒ 「单号不在你量的那个时间窗里」⇒
+    //: **只要失败不是今天的，这一步永远走不过去**（而站上的失败常常散在一周里）。
+    return fetch(FAILS + "/" + encodeURIComponent(id) + FAIL_EV +
+                 "?site=" + encodeURIComponent(site) + failSinceParam())
       .then(readJSON)
       .then(function (res) {
         btn.disabled = false;
@@ -2021,6 +2044,17 @@
         rankNote("⚠️ **按这个键查不到**：" + site + " —— 上面那一栏里那句就是**后端自己**说的原因。" +
                  "榜单这个键**不保证是干净的站点键**（实测过带 query、带尾斜杠的），" +
                  "所以这一下是**量不到**，不是「这个站没有失败」。");
+        // ★ 2026-09-21（用户实测撞到）：上面那句只说「查不到」，**没给下一步** ⇒ 运营就死在这一格。
+        //   实测：榜单那一串（`主机/路径`，按**跑单时记下来的站名**归的）与查失败单要的
+        //   那一串（**后端配置里那个 `site`**）**不是同一套键**（同一个站：榜单给
+        //   `lastingpowerofattorney.io/article-1` 查不到，而配置键能查到）。
+        //   所以这里把两条路说清 —— **不猜、不替他造一个键**。
+        rankNote("⚠️ **按这个键查不到**：" + site + " —— 上面那一栏里那句就是**后端自己**说的原因。\n" +
+                 "**下一步（两条路）**：① 换个站；② 把**后端配置里那一串 `site`** 原样填进" +
+                 "下面「这个站失败的那些趟」的「站点名字」那一格，再按「查失败」—— " +
+                 "榜单这一串是按**跑单时记下来的站名**归的，与后端配置里那一栏**不一定是同一个**" +
+                 "（实测过：同一个站，榜单那一串在后端查不到，配置里那一串查得到）。\n" +
+                 "这一下**不是**「这个站没有失败」—— 是**这一次没量着**。");
         return null;
       }
       var n = (failRows(got) || []).length;

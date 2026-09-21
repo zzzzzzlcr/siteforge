@@ -51,6 +51,7 @@ Task 7 那一轮的复审发现：「**只有浏览器看得见**」的缺陷**�
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import html
 import json
@@ -334,6 +335,10 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _gate_facts_payloads()
     elif scenario == "failures":
         payload = _failures_payloads()
+    elif scenario == "failures-empty":
+        payload = _failures_empty_payloads()
+    elif scenario == "failures-wide":
+        payload = _failures_wide_payloads()
     elif scenario == "failures-url-edited":
         payload = _failures_edited_payloads()
     elif scenario == "failures-no-key":
@@ -1213,6 +1218,95 @@ def _failures_payloads() -> dict:
             }}
 
 
+def _failures_empty_payloads() -> dict:
+    """失败列表**量到真没有**那一种 —— 默认「查哪一段」留空 ⇒ **只查今天**。
+
+    ★ 2026-09-21 用户实测撞到：他那个站的失败在 9-17，而这一格默认只看今天 ⇒
+    屏幕上写着「这一段没有失败的记录」，他就在这儿停住了（**下一步没人告诉他**）。
+    这一条钉两样：① 那句「这一段没有」照样在（量到的就是量到的）；② **怎么让它不空**也在。
+    """
+    empty = [{"body": {"site": FAIL_SITE, "since": "2026-09-21T00:00:00+08:00", "limit": 20,
+                       "say": "这个站从 2026-09-21 00:00 起**没有**失败的记录 —— "
+                              "这是**量到的**结果（不是「没量着」）。",
+                       "failures": []}}]
+    live_one = [{"body": _live("running", "queue", n=1 + i, tag="这一趟")} for i in range(6)]
+    _assert_all_different([x["body"] for x in live_one], "`/live` 的正文")
+    return {"scenario": "failures-empty", "search": "?job=job-1",
+            "failures": {"site": FAIL_SITE, "pick": ""},
+            "responses": {
+                "/runs": [{"body": {"note": "", "runs": [
+                    {"job_id": "job-1", "site": "example-funnel", "status": "running",
+                     "say": "在跑。", "created_at": "2026-09-19T21:00:00+08:00",
+                     "rounds": 0, "delivered": False}]}}],
+                "/job/job-1/live": live_one,
+                FAIL_LIST_URL: empty,
+            }}
+
+
+def test_a_measured_empty_failure_list_says_how_to_widen_the_window(tmp_path):
+    """★ 「这一段没有失败」之后**必须给下一步**（2026-09-21 用户实测撞到的那一格）。
+
+    这一条量三下：① 量到真没有那句话在（不许被改写成「查不到」）；
+    ② **把「查哪一段」往前推**这句在（原来没有 ⇒ 运营对着空下拉发呆）；
+    ③ 空下拉上按「照这条修」时，那句话里也要有「为什么空」（不许只留一句「挑一条」）。
+    """
+    out = _drive(tmp_path, scenario="failures-empty")
+    fails = out["afterQuery"]["fails"]
+    assert "没有" in fails and "量到" in fails, fails
+    assert "查哪一段" in fails and "近 7 天" in fails, fails
+    assert out["afterQuery"]["actHidden"] is True, out["afterQuery"]
+    #: ③ 「照这条修」在那时候按下去，也要说清为什么空
+    box = out["afterFixFrom"]["errBox"]
+    assert "挑一条" in box and "近 7 天" in box, box
+    #: ④ **窗真的能拉开**（不是只有文案）：挑「近 30 天」再查一次，发出去的那一跳要带上
+    #:    `since=<30 天前>` —— 原先那一格最多只能往回一天（翻不到 9-17 那条失败记录）。
+    wide = [s["url"] for s in out["sent"] if s["url"].startswith("/failures?")]
+    want = (dt.date.today() - dt.timedelta(days=30)).isoformat()
+    assert any("since=" + want in urllib.parse.unquote(u) for u in wide), (wide, want)
+    #: 正控：不许「反正都带 since」—— 第一下（今天那一档）**不许**带
+    assert len(wide) >= 2 and "since=" not in urllib.parse.unquote(wide[0]), wide
+
+
+def _failures_wide_payloads() -> dict:
+    """★ **拉开时间窗**那一趟（`近 30 天`）：查列表与照这条修**必须走同一段窗**。
+
+    2026-09-21 用户实测撞到：列表挑「近 30 天」列得出来（20 条），可是按「照这条修」，
+    页面发的那一跳**没带窗** ⇒ 服务按默认（今天）去找那一条 ⇒ 「单号不在你量的那个时间窗里」。
+    站上的失败常常散在一周里 ⇒ **只要不是今天的失败，这一步永远走不过去**。
+    """
+    p = _failures_payloads()
+    p["scenario"] = "failures-wide"          # 同一段驱动（见驱动器那条别名），只是把窗拉开
+    p["failures"] = dict(p["failures"], since="d30")
+    #: 与服务 `failSinceParam()` 同一个算法：30 天前那一天（`&since=YYYY-MM-DD`）。
+    since = (dt.date.today() - dt.timedelta(days=30)).isoformat()
+    p["responses"] = dict(p["responses"])
+    p["responses"][FAIL_LIST_URL + "&since=" + since] = p["responses"][FAIL_LIST_URL]
+    p["responses"][FAIL_EV_URL + "&since=" + since] = p["responses"][FAIL_EV_URL]
+    return p
+
+
+def test_the_evidence_hop_carries_the_same_window_as_the_list(tmp_path):
+    """★★ 那两跳必须是**同一段窗**：列表挑了半天，照这条修却按「今天」去查 ⇒ 死路。
+
+    ⚠️ 靶子是**真撞到的那一次**：那个站的失败是 9-17（不是今天），而列表一拉开就有 20 条。
+    这一条量两下：① 证据那一跳**带上了 `since`**；② 那一跳**成了**（表被填上了）——
+    只量 ① 的话，「带了 but 后端回 502」这种改法照绿。
+    """
+    out = _drive(tmp_path, scenario="failures")             # 今天那一档（正控：不许带窗）
+    (tmp_path / "wide").mkdir()
+    got = _drive(tmp_path / "wide", scenario="failures-wide")
+    since = (dt.date.today() - dt.timedelta(days=30)).isoformat()
+    hops = [urllib.parse.unquote(s["url"]) for s in got["sent"] if "/evidence" in s["url"]]
+    assert hops and all("since=" + since in u for u in hops), hops
+    #: ② 成了：表被填上（证据有值 = 服务给了那一段、页面填进去了），
+    #:    而且**那一句死路的话不在**（「单号不在你量的那个时间窗里」）—— 这一条要治的就是它。
+    assert got["afterFix"]["evidence"], got["afterFix"]
+    assert "不在" not in got["afterFix"]["errBox"], got["afterFix"]["errBox"]
+    #: 正控：今天那一档**不许**带 `since`（不然就是「反正都带」，量不出接线有没有断）
+    plain = [urllib.parse.unquote(s["url"]) for s in out["sent"] if "/evidence" in s["url"]]
+    assert plain and all("since=" not in u for u in plain), plain
+
+
 def _failures_edited_payloads() -> dict:
     """★ 第 ① 件事的另一半：**照这条修之后，人又去改了「站点网址」那一格**。
 
@@ -1793,6 +1887,10 @@ def test_a_key_that_cannot_be_found_says_so_instead_of_looking_healthy(tmp_path)
     _onscreen(fails, NO_CONFIG_SAY, "查不到那一下后端那句话")
     #: ③ 假话不在。
     assert "没有失败的记录" not in fails, "把「查不到」画成了「这个站没有失败」：%r" % fails
+    #: ④ ★ **下一步**要在（2026-09-21 用户实测撞到：只有前面那三句的时候，运营死在这一格 ——
+    #:    屏幕上说了「查不到」，却没说**那该填哪一串**。榜单的键按「跑单时记下的站名」归，
+    #:    与后端配置里那一栏不是同一套；实测同一个站：榜单那一串查不到、配置那一串查得到）。
+    assert "站点名字" in note and "site" in note, note
 
 
 def test_the_long_dirty_key_is_shown_whole_and_escaped(tmp_path):
