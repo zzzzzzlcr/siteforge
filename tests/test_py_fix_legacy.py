@@ -308,6 +308,70 @@ def test_the_evidence_carries_what_the_tool_saw_including_what_blocks_the_page()
     assert "挡着" not in quiet and "obstructions" not in quiet, quiet
 
 
+def test_a_blank_tool_reading_is_not_painted_as_nothing_blocking_the_page():
+    """★ 空页 ≠ 「页面上没有东西挡着」（2026-09-21 真跑换来的）。
+
+    实测：证据那趟跑完**那一刻**去读，`cdp observe` 读到的是「title 空、`page_text` 0 字、
+    `actions` 0 个」（三个读法全空 —— 页面正在跳转/白屏）。把那读成「页面上干净」，
+    就等于拿一句看着有底气的话把「不知道」盖掉 —— 这正是这一整条线最贵的那类形状。
+    """
+    blank = {"title": "", "page_text": "", "actions": [], "fields": [],
+             "obstructions": [], "honeypots": []}
+    said = selftest.evidence_say({"rc": 1, "trace": [], "dom": {"page": blank}})
+    assert "读到的是一张空页" in said, said
+    #: ⚠️ 卡的是**那句正常读数的话没出现**（不是卡「没有东西挡着」这几个字：那一句本身
+    #:   就是「这**不是**『页面上没有东西挡着』」—— 拿它当判据会把自己卡死，实测踩到）。
+    assert "工具自己看那一页（`cdp observe`）：可动作元素" not in said, said
+    assert "页面上有东西挡着" not in said, said
+
+    #: 非空页（有正文/有元素）照旧按真读数说
+    ok = {"title": "x", "page_text": "hello", "actions": [], "fields": [], "obstructions": [],
+          "honeypots": []}
+    said2 = selftest.evidence_say({"rc": 1, "trace": [], "dom": {"page": ok}})
+    assert "空页" not in said2 and "工具自己看那一页" in said2, said2
+
+    #: `_blank_page` 的三条判据：标题 / 正文 / 元素，任一条有东西就不是空页
+    assert selftest._blank_page(blank) is True
+    assert selftest._blank_page({"title": "t", "page_text": "", "actions": []}) is False
+    assert selftest._blank_page({"title": "", "page_text": "文字", "actions": []}) is False
+    assert selftest._blank_page({"title": "", "page_text": "", "actions": [{"selector": "a"}]}) is False
+    assert selftest._blank_page(None) is False
+
+
+def test_a_blank_read_is_retried_after_re_navigating_to_the_entry_url(monkeypatch):
+    """★ 读到空页 ⇒ **导航回入口再读一遍** —— 要的是**漏斗第一屏**，不是跑完那一刻的白屏。
+
+    ⚠️ 只在**空页**时才导航：跑成了的那一趟，页面本身就是证据 —— 导航走 = 把证据毁了。
+    """
+    good = {"title": "Get A Free Quote", "page_text": "Compare Competitive Quotes",
+            "actions": [{"selector": "body > main > button:nth-of-type(1)", "text": "Get Results"}],
+            "fields": [], "obstructions": [], "honeypots": []}
+    blank = {"title": "", "page_text": "", "actions": [], "fields": []}
+    seen = {"observe": 0, "navi": []}
+    seq = [blank, good]
+
+    def fake_observe(*a, **k):
+        seen["observe"] += 1
+        return seq.pop(0) if seq else None
+
+    monkeypatch.setattr(selftest, "_cdp_observe", fake_observe)
+    monkeypatch.setattr(selftest, "_cdp_eval", lambda *a, **k: None)
+    monkeypatch.setattr(selftest, "_navigate",
+                        lambda bin_, ws, url, env: seen["navi"].append(url) or None)
+
+    view = selftest._dom_view("/nonexistent.py", "cdp", "ws://h:1/x", {}, "https://entry.test/")
+    assert seen["observe"] == 2, seen
+    assert seen["navi"] == ["https://entry.test/"], seen
+    assert view["page"]["title"] == "Get A Free Quote", view["page"]
+    assert "空页" in view["page_retried"], view["page_retried"]
+
+    #: 一读就是好的 ⇒ **不许**多导航一次（把跑完的现场留着）
+    seen["observe"], seen["navi"], seq[:] = 0, [], [good]
+    view2 = selftest._dom_view("/nonexistent.py", "cdp", "ws://h:1/x", {}, "https://entry.test/")
+    assert seen["observe"] == 1 and seen["navi"] == [], seen
+    assert "page_retried" not in view2, view2
+
+
 def test_the_patch_prompt_teaches_the_tool_habits_that_already_exist():
     """★ 改稿提示词要把「这套工具本身的用法」摆到模型面前（用户 2026-09-21 指的方向）。
 

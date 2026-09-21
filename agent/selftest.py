@@ -439,10 +439,42 @@ def _cdp_observe(cdp_bin, ws_url, env, timeout: float = 90):
     return got if isinstance(got, dict) else None
 
 
-def _dom_view(py, cdp_bin, ws_url, env) -> dict:
+def _blank_page(page) -> bool:
+    """这份 PageModel 读到的**是不是一张空页**（标题空 + 正文 0 字 + 0 个可动作元素）。
+
+    ⚠️ 为什么要有这一格（2026-09-21 实测）：证据那一趟跑完的**那一刻**去读，页面可能正在
+    跳转/白屏 —— 实测读到的是「title 空、`page_text` 0 字、`actions` 0 个」，而**三个读法
+    全是空的**（脚本自己的、手搓判据的、工具的）。那不是「页面上干净」，是**这一读没读到
+    那一页**；把它画成「页面上没有东西挡着」正好是最贵的那种假话。
+    """
+    if not isinstance(page, dict):
+        return False
+    return (not str(page.get("title") or "").strip()
+            and not str(page.get("page_text") or "").strip()
+            and not (page.get("actions") or [])
+            and not (page.get("fields") or []))
+
+
+def _dom_view(py, cdp_bin, ws_url, env, entry_url: str = "") -> dict:
     """跑完那一遍之后，**现读一遍那一页**：脚本自己看到了什么 + 页面上还有什么可点的。
 
     `None` = 读不到（不是「没有」）—— 那两个字在这一层不许混。
+
+    ★ 读到**空页**时（见 `_blank_page`）：**先导航回入口网址再读一遍** —— 我们要的那一页
+    是**漏斗的第一屏**（脚本卡住的那一屏），不是跑完之后那一刻的空白状态。
+    """
+    view = _dom_view_raw(py, cdp_bin, ws_url, env)
+    if _blank_page(view.get("page")) and entry_url:
+        why = _navigate(cdp_bin, ws_url, entry_url, env)
+        view["page_retried"] = ("导航没过：%s" % why) if why else "读到了空页，导航回入口再读了一遍"
+        again = _cdp_observe(cdp_bin, ws_url, env)
+        if isinstance(again, dict):
+            view["page"] = again
+    return view
+
+
+def _dom_view_raw(py, cdp_bin, ws_url, env) -> dict:
+    """`_dom_view` 的那一趟读（**不做空页重试**，见上面那一层）。
     """
     view: dict = {}
     try:
@@ -545,7 +577,7 @@ def run_once(py_path, ws_url, form_file, site, *, legacy: bool = False, run_dir=
             #: ★ 现场读到了什么（跑完**再读一遍那一页**）：模型手上没有这一块时只能猜
             #: 「它看到的和它没收到的」—— 实测：那一页的 CTA 是个 `<a href>`，脚本的
             #: 选择器里根本没有 `a`，于是 `buttons: 0`，一直「nothing actionable」。
-            "dom": _dom_view(py, cdp_bin, ws_url, env)}
+            "dom": _dom_view(py, cdp_bin, ws_url, env, entry_url or "")}
 
 
 def evidence_say(ev: dict) -> str:
@@ -602,6 +634,14 @@ def evidence_say(ev: dict) -> str:
     #: ★ **工具自己**看那一页（`cdp observe`）—— 2026-09-21 用户指的方向：别手搓，用工具。
     #: 这一块是「**选择器能直接用**」的那一份，尤其是「**挡着的东西该点哪个地址**」。
     page = dom.get("page") if isinstance(dom.get("page"), dict) else None
+    if _blank_page(page):
+        #: ⚠️ 读到的是空页 ⇒ **不许**说成「页面上没有东西挡着」（这一条是拿真跑换来的）：
+        #: 那是「这一读没读到那一页」，不是「页面上干净」。
+        parts.append("工具看那一页（`cdp observe`）：**读到的是一张空页**"
+                     "（标题空、正文 0 字、可动作元素 0 个）—— 这**不是**「页面上没有东西挡着」，"
+                     "是**这一读没读到那一页**（多半是跑完那一刻页面正在跳转/白屏）"
+                     "%s。" % ("；%s" % dom.get("page_retried") if dom.get("page_retried") else ""))
+        page = None
     if page:
         obs = [o for o in (page.get("obstructions") or []) if isinstance(o, dict)]
         parts.append("**工具自己看那一页**（`cdp observe`）：可动作元素 %d 个、表单字段 %d 个、"

@@ -1196,6 +1196,13 @@
       if (!tool) {
         toolBox.innerHTML = '<p class="hintline">页面上挡着什么（<code>cdp observe</code>）：' +
           "<b>读不到</b> —— 这与「页面上没有东西挡着」<b>不是一件事</b>。</p>";
+      } else if (blankPage(tool)) {
+        //: ⚠️ 空页**不是**「页面上干净」（2026-09-21 实测：跑完那一刻读到 title 空、正文 0 字、
+        //: 可动作 0 个 —— 三个读法全空）。画成「没有东西挡着」正好是最贵的那种假话。
+        toolBox.innerHTML = '<p class="hintline">页面上挡着什么（<code>cdp observe</code>）：' +
+          "<b>读到的是一张空页</b>（标题空、正文 0 字、可动作 0 个）—— 这不是「页面上没有东西挡着」，" +
+          "是<b>这一读没读到那一页</b>（多半是跑完那一刻页面正在跳转/白屏）。" +
+          (pv.page_retried ? " 服务试过：" + esc(String(pv.page_retried)) : "") + "</p>";
       } else {
         var obs = (tool.obstructions || []).filter(function (o) { return o && typeof o === "object"; });
         toolBox.innerHTML = obs.length
@@ -1218,6 +1225,15 @@
     hint.innerHTML = (cl && cl.url)
       ? '<span class="hintline">读的时候那一页在：<code>' + esc(String(cl.url).slice(0, 200)) + "</code></span>"
       : "";
+  }
+
+  //: 那一份 PageModel 读到的**是不是一张空页**（`selftest._blank_page` 的页面侧同一判据）。
+  //: ⚠️ 空页 ⇒ 明说「这一读没读到那一页」，**不许**画成「页面上干净」。
+  function blankPage(t) {
+    if (!t || typeof t !== "object") { return false; }
+    if (t.title || t.page_text) { return false; }
+    if ((t.actions || []).length || (t.fields || []).length) { return false; }
+    return true;
   }
 
   //: 「指它」（2026-09-21）：把**页面上那一条**拼成一句人话，**预填**进底下那个输入框。
