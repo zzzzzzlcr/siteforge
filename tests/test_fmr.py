@@ -1124,6 +1124,8 @@ def test_the_noun_each_reader_actually_prints_is_the_one_for_that_endpoint():
     **名字说 A、量的是 B** —— 判据量的是词表，不是输出。这一条量**输出**。
 
     ⚠️ 四个口 **×** 两条失败路 = 八格，一格都不许漏（漏的那几格就是上一版逃掉的那两处）。
+    ⚠️ Task B1：这一圈**遍历 `_PATH_SAY`**，所以新加的那个读口（⑤ 配置）**自动**进来了
+    —— 下面那张表也补了它（不补就是 `KeyError`：这张表与那张词表必须一起长）。
     """
     cases = [
         (r"not json at all", "不是 JSON"),
@@ -1139,6 +1141,8 @@ def test_the_noun_each_reader_actually_prints_is_the_one_for_that_endpoint():
                 "/api/quest/formStep": lambda c: c.fetch_steps("1"),
                 "/api/quest/formLogRank": lambda c: c.fetch_rank(),
                 "/api/quest/failDiag": lambda c: c.fetch_diag("1"),
+                #: Task B1 ⑤：它**不带 token 也走得通**（公开口），所以这里不必配 token。
+                fmr.FORM_CONFIG_PATH: lambda c: c.form_config("cvrefresh.com"),
             }[path]
             with pytest.raises(fmr.FmrUnmeasured) as e:
                 call(client(rec))
@@ -1208,3 +1212,424 @@ def test_a_backend_cell_that_looks_like_markup_comes_through_verbatim():
     weird = dict(_rank_row(RANK_KEY_CLEAN), config_status="**archived**")
     other = fmr.rank_row_say(weird)
     assert "**archived**" in other, "认不出的那格被吞了/改了：%r" % other
+
+
+# ═══════ Task B1 ⑤：一份 JSON 配置 —— 读（`formConfig`）与写（`formConfig/update`）═══════
+#
+# 这一份钉两件事，按重要性排：
+#
+# 1. ★★ **判据在 body 的 `status` 上，不在 HTTP 码上。** 这一族**一律 HTTP 200 +
+#    业务码写在 body 里**。【我量的·B1】不带 token 打
+#    `POST https://fmr.3tkj.cn/api/quest/formConfig/update` →
+#    **HTTP 200** + `{"status":401,"msg":"unauthorized","data":[]}`。
+#    案底（`ad-task.py` 的 `_fail_diag_verdict()` 那段注释）：按 HTTP 码判的那版
+#    failDiag 客户端把这条读成了成功、打了一行「已上传」，而日志一条都没进库。
+#    ⇒ 下面第 8 / 12 / 13 条钉的就是这个：**HTTP 200 不算成功**、**HTTP 500 不算「没写」**。
+#
+# 2. ★ **「查不到」「后端挂了」「不知道成没成」是三件事**，不许合成一句：
+#    读那一侧前两种分得开（`FmrRefused` vs `FmrUnreachable`）；写那一侧多一种最坏的 ——
+#    **超时 / 非 JSON / HTTP≥400 都不许写成「没写进去」**（那份配置可能已经动了）。
+#
+# ⚠️ 桩打在**传输**那一格（`opener` / `poster`），**不是**打在判据上 ⇒
+#    `business_status` / 那几个 `say` / 那两个函数**都是真跑的**。
+#    （今天在这个仓库里抓出过「桩把被测代码一起桩掉了 ⇒ 断言什么都没钉」的假钉子。）
+
+#: 【我量的·B1】线上读回来的那一份 —— `GET https://fmr.3tkj.cn/api/quest/formConfig?site=cvrefresh.com`
+#: 的 `data.steps`，**逐字**（5 个动作、`success` 那一格都在）。这一份里**只有这一格是真的**。
+MEASURED_CONFIG = {
+    "form_type": "magic_link",
+    "site": "cvrefresh.com",
+    "steps": [
+        {"action": "wait", "max": 10, "min": 5},
+        {"action": "click", "find": {"text": "Refresh my resume"}},
+        {"action": "form", "field": {"label": "Email", "placeholder": "your@email.com",
+                                     "type": "email"}, "value": "{{random.email}}"},
+        {"action": "click", "find": {"text": "Send magic link"}},
+        {"action": "wait", "max": 10, "min": 5},
+    ],
+    "success": {"any": [{"body_contains": ["Check your email"]}]},
+}
+#: 【我量的·B1】同一个响应里**包着它的那一层**（`data` 本身）—— 读错层就是把它当配置。
+MEASURED_WRAPPER = {"site": "cvrefresh.com", "steps": MEASURED_CONFIG}
+#: 【我量的·B1】那个响应的整个信封。
+MEASURED_CONFIG_BODY = {"status": 200, "msg": "success", "data": MEASURED_WRAPPER}
+#: 【我量的·B1】查不到时的那一个（`?...site=definitely-not-a-site-b1probe.example`）——
+#: **HTTP 也是 200**。
+MEASURED_NOT_FOUND_BODY = {"status": 404, "msg": "config not found", "data": []}
+#: 【我量的·B1】不带 token 写那一次的回执 —— **HTTP 200** + 这一份。
+MEASURED_WRITE_401_BODY = {"status": 401, "msg": "unauthorized", "data": []}
+#: 【转述的·出处 `task-b1-brief.md` §1】—— 这一句**我没量过**（量它要真写生产配置，
+#: brief 与 plan §7 都点名不许）。它只在「后端拒了」那一支当输入用。
+MEASURED_WRITE_400_BODY = {"status": 400, "msg": "参数错误: site 与 steps 必填"}
+
+
+class PostRecorder:
+    """一个记下「发了什么」的桩 `poster`（协议比 `Recorder` 多一格：正文）。"""
+
+    def __init__(self, *bodies):
+        self.bodies = list(bodies)
+        self.urls = []
+        self.headers = []
+        self.sent = []
+
+    def __call__(self, url, headers, body):
+        self.urls.append(url)
+        self.headers.append(dict(headers or {}))
+        self.sent.append(body)
+        if not self.bodies:
+            raise AssertionError("桩没给这个请求准备响应：%s" % url)
+        out = self.bodies.pop(0) if len(self.bodies) > 1 else self.bodies[0]
+        if isinstance(out, Exception):
+            raise out
+        return out if isinstance(out, str) else json.dumps(out)
+
+
+def writer(rec, token=FAKE_TOKEN, **kw):
+    """一个**只**注入了 `poster` 的客户端（读那一侧的口没接 —— 写回不许碰它）。"""
+    return fmr.FmrClient(token=token, poster=rec, **kw)
+
+
+# ─────────────────────── 读：这个站的 JSON 配置 ───────────────────────
+
+
+def test_the_config_query_is_the_one_that_was_measured():
+    """请求的形状（路径 + 参数 + 头）+ **交回来的是里面那一份**。
+
+    ★ 这一条同时钉「读回来的 = 能写回去的」：交出去的是 `data.steps`**里面**那份配置，
+    **不是**包着它的信封 —— 读错层是这一族踩过的坑（`ad-task.py:2157`）。
+    """
+    rec = Recorder(MEASURED_CONFIG_BODY)
+    got = client(rec).form_config("cvrefresh.com")
+    assert got == MEASURED_CONFIG, got
+    assert got != MEASURED_WRAPPER, "把包装层当成配置交出去了：%r" % got
+    path, params = query_of(rec.urls[0])
+    assert path == "/api/quest/formConfig", path
+    assert params["site"] == "cvrefresh.com", params
+    #: token 走请求头（与四个读口同一条纪律）。
+    assert rec.headers[0].get("X-Api-Token") == FAKE_TOKEN, rec.headers[0]
+    assert FAKE_TOKEN not in rec.urls[0], "token 进了 URL：%r" % rec.urls[0]
+
+
+def test_the_config_read_works_without_a_token_because_the_backend_does_not_ask_for_one():
+    """★ 这个口**公开、无鉴权**（【我量的·B1】不带任何头也回 200 + 整份配置）。
+
+    为什么单钉：四个老读口**没配 token 就抛**（`FmrNoToken`）—— 那个行为是对的
+    （它们要鉴权），但**照抄到这一个口上就是错的**：没配 token 的部署会读不动一份
+    本来就公开的配置。（今天这台机器就没配 —— `FMR_AGENT_TOKEN` / `FARMER_API_TOKEN`
+    在环境里都是空的。）
+    """
+    rec = Recorder(MEASURED_CONFIG_BODY)
+    got = fmr.FmrClient(token="", opener=rec).form_config("cvrefresh.com")
+    assert got == MEASURED_CONFIG, got
+    assert "X-Api-Token" not in rec.headers[0], (
+        "没配 token 还是发了个头出去：%r" % rec.headers[0])
+    #: 正控：配了的时候**照旧发**（上面那条不许靠「永远不发头」满足）。
+    rec2 = Recorder(MEASURED_CONFIG_BODY)
+    client(rec2).form_config("cvrefresh.com")
+    assert rec2.headers[0].get("X-Api-Token") == FAKE_TOKEN, rec2.headers[0]
+
+
+def test_a_site_without_a_config_is_a_refusal_not_an_unreachable():
+    """★★ 「这个站没有 JSON 配置」与「后端挂了」是**两件事**（处置完全不同）。
+
+    ⚠️ 这一条量的是**两个**输入（少一个就成了「只量了一个形状」）：
+    · 后端回 404（**HTTP 200**）→ `FmrRefused`、`kind="refused"`、`status=404`；
+    · 连不上 / 超时 → `FmrUnreachable`、`kind="unreachable"`。
+    ⇒ 断言里必须出现「**两个类型不一样**」+「两句人话不一样」——
+    合成一句话的坏处就是本仓那个老病：**一个查不到的站被标成健康的**。
+    """
+    with pytest.raises(fmr.FmrRefused) as e404:
+        client(Recorder(MEASURED_NOT_FOUND_BODY)).form_config("cvrefresh.com")
+    refused = e404.value
+    assert refused.kind == "refused", refused.kind
+    assert refused.status == 404, refused.status
+    assert "没有 JSON 配置" in refused.say, refused.say
+    assert "config not found" in refused.say, "后端原话没带上：%r" % refused.say
+    #: ⚠️ 这一句**不许**说成「那串名字给错了」——那是把两种可能说成了唯一一种。
+    assert "分不出" in refused.say, refused.say
+
+    with pytest.raises(fmr.FmrUnmeasured) as e_down:
+        client(Recorder(TimeoutError("timed out"))).form_config("cvrefresh.com")
+    down = e_down.value
+    assert isinstance(down, fmr.FmrUnreachable), type(down).__name__
+    assert down.kind == "unreachable", down.kind
+    assert type(down) is not type(refused), "两种情形落到了同一个类型上"
+    assert "连不上" in down.say, down.say
+    assert "没有 JSON 配置" not in down.say, down.say
+    assert fmr.UNMEASURED_SAY in refused.say and fmr.UNMEASURED_SAY in down.say
+
+
+def test_a_config_read_that_came_back_as_something_other_than_json_is_unmeasured():
+    """正文不是 JSON → **抛**（不是「这个站没有配置」）。名词要是它自己的那一个。"""
+    with pytest.raises(fmr.FmrUnreachable) as e:
+        client(Recorder("<html>502 Bad Gateway</html>")).form_config("cvrefresh.com")
+    said = str(e.value)
+    assert "不是 JSON" in said, said
+    assert "读不了这份 JSON 配置" in said, said
+    assert "读不了失败记录" not in said, "顶着别处的名字：%r" % said
+
+
+def test_a_config_answer_that_lost_its_inner_config_is_unmeasured_not_an_empty_config():
+    """信封对得上、可 `data.steps` **不是一个对象** → **抛**（不许读成「配置是空的」）。
+
+    两个输入（`steps` 整格不在 / `steps` 是个数组 —— 后者正是「读错层」反着来的那种）。
+    ⚠️ 正控在最后：**真那份形状照旧交得出来**（否则「什么都抛」也能满足上面两条）。
+    """
+    for bad in ({"site": "cvrefresh.com"}, {"site": "cvrefresh.com", "steps": []}):
+        with pytest.raises(fmr.FmrUnreachable) as e:
+            client(Recorder(envelope(bad))).form_config("cvrefresh.com")
+        said = str(e.value)
+        assert "不是一个对象" in said, (bad, said)
+        assert fmr.UNMEASURED_SAY in said, said
+    assert client(Recorder(MEASURED_CONFIG_BODY)).form_config(
+        "cvrefresh.com") == MEASURED_CONFIG
+
+
+def test_a_config_read_without_a_site_is_refused_for_free():
+    """没说哪个站 → 门口就响（**一个请求都没发出去**）。"""
+    rec = Recorder(MEASURED_CONFIG_BODY)
+    with pytest.raises(fmr.FmrUnmeasured) as e:
+        client(rec).form_config("   ")
+    assert e.value.kind == "no-site", e.value.kind
+    assert rec.urls == [], "免费的那道闸没挡住：%r" % rec.urls
+
+
+# ─────────────────────── 写：把一份配置写回去 ───────────────────────
+
+
+def test_the_write_goes_to_the_update_route_with_the_token_and_the_whole_config():
+    """请求的形状：**路由 + 头里那串 token + 正文里整份配置**（D4：少带一个键就是弄丢）。"""
+    rec = PostRecorder({"status": 200, "msg": "success", "data": []})
+    got = writer(rec).update_form_config("cvrefresh.com", MEASURED_CONFIG)
+    assert got.ok is True, got
+    assert rec.urls[0] == "https://fmr.3tkj.cn/api/quest/formConfig/update", rec.urls[0]
+    assert rec.headers[0].get("X-Api-Token") == FAKE_TOKEN, rec.headers[0]
+    assert rec.headers[0].get("Content-Type") == "application/json", rec.headers[0]
+    assert FAKE_TOKEN not in rec.urls[0], "token 进了 URL：%r" % rec.urls[0]
+    sent = json.loads(rec.sent[0].decode("utf-8"))
+    assert sent["site"] == "cvrefresh.com", sent
+    #: ★ **整份**：`form_type` / `site` / `steps[]` / `success` 四个键一个都不能少。
+    assert sent["steps"] == MEASURED_CONFIG, sent["steps"]
+    assert set(sent["steps"]) == {"form_type", "site", "steps", "success"}, sent["steps"]
+
+
+def test_a_200_http_answer_with_status_401_is_not_success():
+    """★★ **案底那一条**：HTTP 200 + body `status:401` —— 判据在 body 上，不是 HTTP 码。
+
+    【我量的·B1】不带 token 写那一次回来的就是这一份（HTTP 200）。
+    按 HTTP 码判的客户端把这一条读成了成功、打了一行「已上传」——
+    ⇒ 这里量三下：`ok` 不为真、`verdict` 是 `auth`、人话里**不许**出现成功那半句。
+    ⚠️ 正控：body 说 200 时 `ok` 必须为真（否则「永远不 ok」也能满足上面）。
+    """
+    got = writer(PostRecorder(MEASURED_WRITE_401_BODY)).update_form_config(
+        "cvrefresh.com", MEASURED_CONFIG)
+    assert got.ok is False, got
+    assert got.verdict == fmr.WRITE_AUTH, got
+    assert got.status == 401, got
+    assert "鉴权没过" in got.say, got.say
+    assert "unauthorized" in got.say, "后端原话没带上：%r" % got.say
+    assert "写回去了" not in got.say, "鉴权失败被打成了成功：%r" % got.say
+    ok = writer(PostRecorder({"status": 200, "msg": "success", "data": []})).update_form_config(
+        "cvrefresh.com", MEASURED_CONFIG)
+    assert ok.ok is True and ok.verdict == fmr.WRITE_OK, ok
+
+
+def test_a_write_the_backend_refused_is_a_value_not_an_exception():
+    """后端说这请求不对（400）→ **回值、不抛**（brief §2 R3），人话带它自己那句。"""
+    got = writer(PostRecorder(MEASURED_WRITE_400_BODY)).update_form_config(
+        "cvrefresh.com", MEASURED_CONFIG)
+    assert got.ok is False, got
+    assert got.verdict == fmr.WRITE_REFUSED, got
+    assert got.status == 400, got
+    assert got.msg == "参数错误: site 与 steps 必填", got.msg
+    assert "参数错误: site 与 steps 必填" in got.say, got.say
+
+
+def test_a_write_that_timed_out_is_unknown_not_a_failure():
+    """★★ **「不知道成没成」不许写成「没写进去」。**
+
+    超时的那一刻，那份配置**可能已经动了** —— 说成「写失败」会让人以为没事、
+    或者照着它去重发。这一条量三下：`verdict` 是 `unknown`、人话里有「不知道写没写成」、
+    而且**没有**任何一句「配置没被改动」（那是确定没写时才敢说的话）。
+    """
+    got = writer(PostRecorder(TimeoutError("timed out"))).update_form_config(
+        "cvrefresh.com", MEASURED_CONFIG)
+    assert got.ok is False, got
+    assert got.verdict == fmr.WRITE_UNKNOWN, got
+    assert got.status is None, got
+    assert "不知道写没写成" in got.say, got.say
+    assert "没有被改动" not in got.say, "把「不知道」说成了「没写」：%r" % got.say
+    assert "TimeoutError" in got.say, "真因没带上：%r" % got.say
+
+
+def test_a_write_whose_body_is_not_json_is_unknown_too():
+    """正文不是 JSON → **也是「不知道」**（brief §2 R3 那句「非 JSON body 当失败」：
+    它**一定不是成功**；而它也**不是**「没写进去」—— 回执没读成而已）。"""
+    got = writer(PostRecorder("<html>502 Bad Gateway</html>")).update_form_config(
+        "cvrefresh.com", MEASURED_CONFIG)
+    assert got.ok is False, got
+    assert got.verdict == fmr.WRITE_UNKNOWN, got
+    assert "不知道写没写成" in got.say, got.say
+    assert "不是 JSON" in got.say, got.say
+    assert "没有被改动" not in got.say, got.say
+
+
+def test_an_http_500_on_the_write_is_unknown_and_says_why():
+    """HTTP ≥400（网关那一层回的，**不是**这个接口的话）→ 照旧要处理，且**不许当成功**。"""
+    import urllib.error
+
+    def boom(url, headers, body):
+        raise urllib.error.HTTPError(url, 500, "Internal Server Error", {}, None)
+
+    got = fmr.FmrClient(token=FAKE_TOKEN, poster=boom).update_form_config(
+        "cvrefresh.com", MEASURED_CONFIG)
+    assert got.ok is False, got
+    assert got.verdict == fmr.WRITE_UNKNOWN, got
+    assert "HTTP 500" in got.say, got.say
+    assert "不知道写没写成" in got.say, got.say
+    assert "没有被改动" not in got.say, got.say
+
+
+def test_an_http_401_on_the_write_is_auth_and_says_the_config_was_not_touched():
+    """网关层按 **HTTP** 回 401/403（它不看 body）→ 同样算鉴权失败，且**确定没写**。
+
+    出处：`ad-task.py` 那两条路「网关 / 代理层仍可能给 4xx5xx（那一层不看 body）——
+    两条路都要走」。
+    """
+    import urllib.error
+
+    def boom(url, headers, body):
+        raise urllib.error.HTTPError(url, 401, "Unauthorized", {}, None)
+
+    got = fmr.FmrClient(token=FAKE_TOKEN, poster=boom).update_form_config(
+        "cvrefresh.com", MEASURED_CONFIG)
+    assert got.verdict == fmr.WRITE_AUTH, got
+    assert got.ok is False, got
+    assert "鉴权没过" in got.say and "401" in got.say, got.say
+    assert "没有被改动" in got.say, got.say
+
+
+def test_a_write_refuses_a_wrapper_for_free():
+    """★ 传了**包装层**（`data` 那一层）→ 门口就抛，**一个请求都不发**。
+
+    为什么这条值得单钉：原样写回去会把后端那份配置的 `steps` 变成一个对象
+    —— 这就是「读错层」那个坑的写回版本。它是**免费的**检查：不花一次真写。
+    """
+    rec = PostRecorder({"status": 200, "msg": "success", "data": []})
+    with pytest.raises(fmr.FmrUnmeasured) as e:
+        writer(rec).update_form_config("cvrefresh.com", MEASURED_WRAPPER)
+    assert e.value.kind == "wrong-layer", e.value.kind
+    assert "包装层" in e.value.say, e.value.say
+    assert rec.urls == [], "免费的那道闸没挡住，真发出去了：%r" % rec.urls
+
+
+def test_a_write_refuses_a_missing_or_empty_config_for_free():
+    """`steps` 不是一份配置（缺了 / 空的 / 是串文本）→ 门口就响，一个请求都不发。"""
+    for bad in (None, {}, "", "{\"form_type\": \"x\"}", []):
+        rec = PostRecorder({"status": 200, "msg": "success", "data": []})
+        with pytest.raises(fmr.FmrUnmeasured) as e:
+            writer(rec).update_form_config("cvrefresh.com", bad)
+        assert e.value.kind == "no-steps", (bad, e.value.kind)
+        assert rec.urls == [], (bad, rec.urls)
+    rec = PostRecorder({"status": 200, "msg": "success", "data": []})
+    with pytest.raises(fmr.FmrUnmeasured) as e:
+        writer(rec).update_form_config("  ", MEASURED_CONFIG)
+    assert e.value.kind == "no-site", e.value.kind
+    assert rec.urls == [], rec.urls
+
+
+def test_a_deployment_without_a_token_does_not_write_and_says_so():
+    """没配 token → **一个字都没写**（一个请求都没发出去），而且这是**回值**不是抛。
+
+    ⚠️ 与读那个口（`fetch_*` 没配就抛）不同是有意的：读是「量不到」，
+    写是「确定没写」—— 前者要人去查后端，后者只要人去配那个环境变量。
+    """
+    rec = PostRecorder({"status": 200, "msg": "success", "data": []})
+    got = fmr.FmrClient(token="", poster=rec).update_form_config(
+        "cvrefresh.com", MEASURED_CONFIG)
+    assert got.ok is False, got
+    assert got.verdict == fmr.WRITE_NO_TOKEN, got
+    assert fmr.TOKEN_ENV in got.say, got.say
+    assert "一个字都没写" in got.say and "没有被改动" in got.say, got.say
+    assert rec.urls == [], "没配 token 还发出去了：%r" % rec.urls
+
+
+def test_the_read_result_round_trips_straight_into_the_write():
+    """★★ 读回来的那一份**原样喂给写**，出去的就是后端原来那份（没有改动）。
+
+    这条把「读错层」按死在一个性质上：**两个口收发的必须是同一个东西**。
+    真拿它跑一趟往返（读一次、写一次），断言写出去的正文里那份配置**逐字等于**
+    读回来的那一份 —— 中间没有被拆开重装过。
+    """
+    read_rec = Recorder(MEASURED_CONFIG_BODY)
+    cfg = client(read_rec).form_config("cvrefresh.com")
+    write_rec = PostRecorder({"status": 200, "msg": "success", "data": []})
+    got = writer(write_rec).update_form_config("cvrefresh.com", cfg)
+    assert got.ok is True, got
+    assert json.loads(write_rec.sent[0].decode("utf-8"))["steps"] == MEASURED_CONFIG
+
+
+def test_a_business_status_that_is_not_a_number_is_not_success():
+    """`status` 那一格读不出业务码 → **不知道**（不是成功、也不是「没写」）。
+
+    三种（照 `ad-task.py` 的 `_fail_diag_verdict()` 那两条来）：
+    · `{"status": true}` —— Python 里 `True == 1`，不挡它就会读成别的什么东西；
+    · `{"status": "401"}` —— **字符串数字也算**（原话：「别指望服务端一定发数字」）；
+    · `{"msg": "success"}`（整格不在）—— 没有码，就是没读到答复。
+    """
+    unknown = writer(PostRecorder({"status": True, "msg": "?", "data": []})).update_form_config(
+        "cvrefresh.com", MEASURED_CONFIG)
+    assert unknown.ok is False and unknown.verdict == fmr.WRITE_UNKNOWN, unknown
+    missing = writer(PostRecorder({"msg": "success", "data": []})).update_form_config(
+        "cvrefresh.com", MEASURED_CONFIG)
+    assert missing.ok is False and missing.verdict == fmr.WRITE_UNKNOWN, missing
+    assert missing.status is None, missing
+    #: 字符串那个码**照旧按它判**（它是 401 ⇒ 鉴权失败，不是 unknown）。
+    stringy = writer(PostRecorder({"status": "401", "msg": "unauthorized",
+                                   "data": []})).update_form_config(
+        "cvrefresh.com", MEASURED_CONFIG)
+    assert stringy.verdict == fmr.WRITE_AUTH and stringy.status == 401, stringy
+
+
+def test_every_write_verdict_is_one_of_the_five_and_ok_is_only_the_first():
+    """五态是个**封闭**的集合（写死的表），`ok` **只**在 `ok` 那一态为真。
+
+    为什么单钉：面板会拿 `verdict` 分流（哪一条要人配 token、哪一条要人去核对后端），
+    多出一个没人认得的态就会掉进某个 `else` —— 而那种分支正是「静默路径」的入口。
+    """
+    assert len(set(fmr.WRITE_VERDICTS)) == 5, fmr.WRITE_VERDICTS
+    for verdict in fmr.WRITE_VERDICTS:
+        got = fmr.FormWriteResult(verdict=verdict, status=None, msg="", say="x")
+        assert got.ok is (verdict == fmr.WRITE_OK), verdict
+    assert fmr.FormWriteResult(verdict=fmr.WRITE_OK, status=200, msg="success",
+                               say="x").as_dict()["ok"] is True
+
+
+def test_the_two_config_ports_walk_the_one_base_knob():
+    """★ 那两个口**也**走 `FMR_BASE_URL` 那一个旋钮（读与写各量一次）。"""
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setenv(fmr.BASE_ENV, "http://192.168.1.51:6060")
+        read_rec = Recorder(MEASURED_CONFIG_BODY)
+        write_rec = PostRecorder({"status": 200, "msg": "success", "data": []})
+        got = fmr.FmrClient(token=FAKE_TOKEN, opener=read_rec, poster=write_rec)
+        got.form_config("cvrefresh.com")
+        got.update_form_config("cvrefresh.com", MEASURED_CONFIG)
+        assert read_rec.urls[0].startswith("http://192.168.1.51:6060/api/quest/"), read_rec.urls
+        assert write_rec.urls[0].startswith("http://192.168.1.51:6060/api/quest/"), write_rec.urls
+    finally:
+        monkey.undo()
+
+
+def test_the_config_ports_time_out_sooner_than_the_other_reads():
+    """★ brief §2 R4「超时要短」：这两个口比别的读口短，且**绑在真的传输上**。
+
+    量两下：常量本身的关系；以及那两个默认传输**确实**带着这个值
+    （光有个常量、传输没绑上就是「名字说 A、量的是 B」）。
+    """
+    assert fmr.CONFIG_TIMEOUT < fmr.DEFAULT_TIMEOUT, (
+        fmr.CONFIG_TIMEOUT, fmr.DEFAULT_TIMEOUT)
+    plain = fmr.FmrClient(token=FAKE_TOKEN)
+    assert plain._config_opener.keywords["timeout"] == fmr.CONFIG_TIMEOUT, plain._config_opener
+    assert plain._poster.keywords["timeout"] == fmr.CONFIG_TIMEOUT, plain._poster
+    assert plain._opener is fmr._default_get, "老四个读口那个传输被动了"

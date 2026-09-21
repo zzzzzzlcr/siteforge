@@ -48,7 +48,7 @@
   `_cdp_bin` / `_shots_dir` / `_selftest_root` 同一条不变量 —— 服务跑起来之后
   环境再变，不该悄悄换一个身份（那是「名字说 A、量的是 B」）。
 
-## 这一层现在有四个读口（Task 4 起）
+## 这一层现在有五个读口 + 一个写口
 
 | 口 | 答的是 |
 |---|---|
@@ -56,6 +56,8 @@
 | `fetch_steps(task_id)` | 那一趟报过哪几步 |
 | `fetch_rank(date)` | **今天哪些站**在失败（榜单）—— Task 4 加的 |
 | `fetch_diag(task_id)` | **这一单为什么**失败（原因行）—— Task 4 加的 |
+| `form_config(site)` | **这个站的 JSON 配置**长什么样 —— Task B1 加的 |
+| `update_form_config(site, steps)` | **把一份 JSON 配置写回去** —— Task B1 加的（唯一一个写口） |
 
 ```
 ③ GET {base}/api/quest/formLogRank?date=<YYYY-MM-DD>&limit=<n>   X-Api-Token: <token>
@@ -86,11 +88,60 @@
       它不是「量不到」，但屏幕上**也不许留白**（要明说「还没有原因」，Task 4 R2）。
    ⚠️ `exit` 的取值**有意是开放的**（后端刻意不校验），实测客户端会报 `unknown` ⇒ 见 `EXIT_SAY`。
 
+## ⑤ 一份 JSON 配置：**读**（`form_config`）与**写**（`update_form_config`）—— Task B1
+
+后端有 174 个站在跑 JSON 配置（`plan.md` §1 量的），而这一屏原先只认 py。
+这两个口把那条路接上：`form_config` 拿回来一份配置、`update_form_config` 写回去一份。
+
+```
+读  GET  {base}/api/quest/formConfig?site=<站点键>          （**公开，无鉴权**）
+ → {"status":200,"msg":"success","data":{
+      "site":"cvrefresh.com",
+      "steps":{"form_type":"magic_link","site":"cvrefresh.com",
+               "steps":[{"action":"wait","max":10,"min":5}, …],
+               "success":{"any":[{"body_contains":["Check your email"]}]}}}}
+   ⚠️ **`data.steps` 是个对象**（**里面那份**才是配置），不是数组 —— 这个形状坑过一次
+      （`ad-task.py:2157` 那一段注释记着「读错层，把包装层当配置」）。
+   ⚠️ `form_config()` 交出去的是**里面那一份**，与 `update_form_config()` 要的 `steps`
+      **是同一个东西** ⇒ 读回来就能原样写回去（`update_form_config(k, form_config(k))`）。
+   ⚠️ 查不到时：`{"status":404,"msg":"config not found","data":[]}`（**HTTP 也是 200**）。
+写  POST {base}/api/quest/formConfig/update
+      Header: X-Api-Token: <token>
+      Body:   {"site":"<站点键>","steps":<那份 {form_type,site,steps[],success}>}
+ → 缺 site / 缺 steps：{"status":400,"msg":"参数错误: site 与 steps 必填"}
+   不带 token：        {"status":401,"msg":"unauthorized"}
+```
+
+★★ **这一族一律 HTTP 200 + 业务码写在 body 里。** 【我量的·B1】
+`POST {base}/api/quest/formConfig/update` **不带 token** →
+**HTTP 200** + `{"status":401,"msg":"unauthorized","data":[]}`；
+`GET {base}/api/quest/formConfig?site=definitely-not-a-site-b1probe.example` →
+**HTTP 200** + `{"status":404,"msg":"config not found","data":[]}`。
+⇒ **按 HTTP 码做验收会全部误判成失败**；判据只能是 body 那一格 `status`。
+
+⚠️ **这个坑在本仓有案底**（这条是**出处**，不是我的经历）：
+`/opt/skills/auto-farm-skill/scripts/ad-task.py` 的 `_fail_diag_verdict()` 段注释记着
+老代码按 HTTP 码判的后果 —— token 不对时服务端回 `HTTP 200 + {"status":401}`，
+`urlopen` **不抛**，于是走进成功那一支、打一行「已上传」，而日志一条都没进库；
+注释的原话是「**说假话比不打日志更坏**」。
+⇒ `update_form_config` 的判据**只有** body 的 `status`，`ok` 只在它等于 200 时为真。
+
+⚠️ **这一对不对称，是照 brief §2 R3 定的**（写「不抛」、读照旧抛）：
+- **读**：**抛**（`FmrUnmeasured` 那三个子类 —— 与 ①②③④ 同一个形状）。
+  「查不到」= `FmrRefused`（`status` 是 404，`kind="refused"`）；
+  「后端挂了」= `FmrUnreachable`（`kind="unreachable"`）—— **两件处置完全不同的事**，
+  在这一层是一条**类型**上的区分（与模块开头那张表同源）。
+- **写**：**回一个值**（`FormWriteResult`，五态 `verdict`）。
+  最要紧的那一态是 **`unknown`（不知道成没成）**：超时 / 正文不是 JSON / HTTP ≥400
+  **都不许**写成「没写进去」—— 那份配置**可能已经动了**，这是写与读最不一样的地方。
+
 ## ★ 后端地址：**一处旋钮**（Task 4 §4）
 
 `DEFAULT_BASE` ／ 环境变量 `FMR_BASE_URL`（常量名 `BASE_ENV`）—— **四个读口全走它这一个**，
 在 `FmrClient.__init__` 里读**一次**（构造之后不再看环境）。
 **没有「按接口各配一个基址」这回事** —— 真长出来就是「名字说 A、量的是 B」那个老病的新变种。
+（Task B1 的两个口**也走这一个**：读配置是同一个 `self.base`，写回的 URL 是
+`self.base + FORM_CONFIG_UPDATE_PATH` —— 没有第二个基址旋钮。）
 
 ⚠️ **这条旋钮的来历，以及它今天的状态（Task 4 修复轮 1 订正）**：
 它当初存在，是因为两边部署**不同步** —— 线上 `fmr.3tkj.cn` 那时**还没有** `failDiag`（brief 实测 404），
@@ -109,11 +160,13 @@
 from __future__ import annotations
 
 import datetime
+import functools
 import json
 import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from typing import Any, Callable, List, Optional
 
 __all__ = [
@@ -125,6 +178,9 @@ __all__ = [
     "DEFAULT_RANK_LIMIT", "RANK_MAX_LIMIT", "DIAG_PAGE_SIZE",
     "EXIT_SAY", "CONFIG_STATUS_SAY", "NO_DIAG_SAY", "int_or_none",
     "exit_say", "has_script_say", "rank_row_say", "rank_say", "diag_head_say",
+    # Task B1：一份 JSON 配置的读（⑤）与写
+    "FORM_CONFIG_PATH", "FORM_CONFIG_UPDATE_PATH", "CONFIG_TIMEOUT",
+    "FormWriteResult", "WRITE_VERDICTS", "business_status", "looks_like_wrapper",
 ]
 
 #: 线上实测过的那一个。`FMR_BASE_URL` 只是给测试/灰度留的口子 —— **默认值就是它**。
@@ -155,6 +211,109 @@ RANK_MAX_LIMIT = 200
 DIAG_PAGE_SIZE = 100
 #: 读这两个接口的超时（秒）。它们是只读的旁路，慢一点可以等，但**不许无限等**。
 DEFAULT_TIMEOUT = 20.0
+
+# ── ⑤ 一份 JSON 配置：读与写（Task B1）────────────────────────────────────
+#: 读一份配置的口（**公开，无鉴权** —— 【我量的·B1】不带任何头去拿它回 200 + 整份配置）。
+#: ⚠️ 正因为它是公开的，`form_config` 走 `_call(need_token=False)`：
+#: 这个部署**没配 token 也读得动**（写不动 —— 写那个口要鉴权）。
+FORM_CONFIG_PATH = "/api/quest/formConfig"
+#: 写回一份配置的口（要 `X-Api-Token`）。
+FORM_CONFIG_UPDATE_PATH = "/api/quest/formConfig/update"
+
+#: 这两个口的超时（秒）—— **比别的读口短**（`DEFAULT_TIMEOUT` 是 20）。
+#: brief §2 R4：这是**给面板用的**，不是批量任务：人按了按钮在等一个答复，
+#: 让它挂 20 秒不如早一点说「还没读成」。旋钮在 `FmrClient(config_timeout=…)`。
+CONFIG_TIMEOUT = 10.0
+
+#: 写回那一次的**五种结局**（`FormWriteResult.verdict`）。**只有第一种是成功。**
+#: ⚠️ 名字与 `ad-task.py` 的 `_fail_diag_verdict()` 那三个（`ok` / `auth` / `fail`）
+#: 是一套话：这里把最后那个叫 `refused`（与本模块 `FmrRefused` 同源），
+#: 另外多出两态 —— `unknown`（**不知道成没成**）与 `no-token`（**一个请求都没发出去**）。
+WRITE_OK = "ok"
+WRITE_AUTH = "auth"
+WRITE_REFUSED = "refused"
+WRITE_UNKNOWN = "unknown"
+WRITE_NO_TOKEN = "no-token"
+WRITE_VERDICTS = (WRITE_OK, WRITE_AUTH, WRITE_REFUSED, WRITE_UNKNOWN, WRITE_NO_TOKEN)
+
+
+@dataclass(frozen=True)
+class FormWriteResult:
+    """写回一份 JSON 配置之后的样子。**`ok` 只在后端说 200 时为真。**
+
+    ⚠️ **为什么这个口回值、而读那个口抛**（brief §2 R3）：写的调用方（面板）要对
+    **每一种**结局都有话说，而五态里最要紧的是 `unknown` ——
+    「请求发出去了、回执没读成」**既不是成功、也不是「没写进去」**：
+    那份配置**可能已经动了**。把它写成「写失败了」就是在编一句没人量过的话，
+    而写的人会照着它去重发（或者更坏：以为没事）。
+
+    `say` 是**给面板原样摆出来的那一句**（brief §2 R4）：后端自己那句 `msg`
+    一定在里面（有的话），不加工、不改写。
+
+    ⚠️ 它是 `frozen` 的（本仓 `lint.py` / `selftest.py` 那一族同款）：
+    调用方**不许**在拿到之后把 `ok` 改掉。
+    """
+
+    #: 五态之一（见上面那组常量）。**判成功只认 `WRITE_OK`。**
+    verdict: str
+    #: 后端信封里那一格 `status`（读不出数字就是 `None`）。
+    #: ⚠️ **`None` 不是 200**：它意味着「回的不是这一个接口的信」（见 `say`）。
+    status: Optional[int]
+    #: 后端**原话**（`msg` 那一格，逐字；它没给就是空串）。
+    msg: str
+    #: 一句人话（含后端原话），面板原样摆。
+    say: str
+
+    @property
+    def ok(self) -> bool:
+        """**只有后端说 200 才是真。** 其余四态一律 `False`（包括 `unknown`）。"""
+        return self.verdict == WRITE_OK
+
+    def as_dict(self) -> dict:
+        return {"ok": self.ok, "verdict": self.verdict, "status": self.status,
+                "msg": self.msg, "say": self.say}
+
+
+def business_status(body: Any) -> Optional[int]:
+    """信封里那一格 `status` → 数字；**读不出数字就回 `None`（不是 200）**。
+
+    这一段的形状是照 `ad-task.py` 的 `_fail_diag_verdict()` 抄的两条：
+    · **`True`/`False` 不是业务码**（Python 里 `True == 1`，不挡它就会把
+      `{"status":true}` 读成别的什么东西）；
+    · **字符串数字也算**（原话：「别指望服务端一定发数字」）。
+
+    ⚠️ 回 `None` 的那些（没有 `status` 这一格 / 它不是数字 / 正文不是对象）
+    **一律按「没读到答复」办** —— 绝不按「成了」办（老代码那个错就是反着来的）。
+    """
+    if not isinstance(body, dict):
+        return None
+    biz = body.get("status")
+    if isinstance(biz, bool):
+        return None
+    if isinstance(biz, str) and biz.strip().isdigit():
+        return int(biz.strip())
+    if isinstance(biz, int):
+        return biz
+    return None
+
+
+def looks_like_wrapper(steps: Any) -> bool:
+    """这一格是不是**包装层**（`data` 那一层）而不是配置本身。
+
+    实测过的两种形状（【我量的·B1】读回来的正文）：
+    · **包装层**：`{"site": "cvrefresh.com", "steps": {"form_type": …}}` —— `steps` 是**对象**
+    · **配置**：  `{"form_type": …, "site": …, "steps": [{"action": …}], "success": {…}}`
+      —— `steps` 是**数组**
+
+    ⇒ 判据就这一条：**`steps` 那一格存在、而且它是个对象**。
+    ⚠️ 故意**只**认这一种：不去猜「配置一定得有 `form_type` / `success`」
+    （那是替后端定 schema，这一层没资格），也不去猜别的形状。
+    撞上它的后果是把包装层原样写进生产配置（那份配置就废了），
+    所以这一处**宁可红一次**（`update_form_config` 直接抛，一个请求都不发）。
+    """
+    if not isinstance(steps, dict):
+        return False
+    return isinstance(steps.get("steps"), dict)
 
 #: 每一句「量不到」里都带这一句 —— 它是**给读的人**的：这一条不是「没有失败」。
 #: ⚠️ 用同一个常量，别在四处各写一句（那样「说了没有」就成了四件事）。
@@ -727,6 +886,12 @@ _PATH_SAY = {
     "/api/quest/formStep": "逐步记录",
     "/api/quest/formLogRank": "失败榜单",
     "/api/quest/failDiag": "失败原因",
+    #: Task B1。⚠️ **写那个口（`FORM_CONFIG_UPDATE_PATH`）有意不在这一张表里**：
+    #: 表里每一条都会被读成「**读不了**<名词>」那句话的头，而写那个口说的是
+    #: 「**写不回**…」（`update_form_config` 自己起头）—— 塞进来会让它顶着
+    #: 一个说不通的动词，也会让 `test_the_noun_each_reader_actually_prints_…`
+    #: 那条「每个读口各报各的名」的循环去量一个不是读口的东西。
+    FORM_CONFIG_PATH: "这份 JSON 配置",
 }
 
 
@@ -737,6 +902,19 @@ def _default_get(url: str, headers: dict, timeout: float = DEFAULT_TIMEOUT) -> s
     响应会以 `JSONDecodeError` 的面目冒出来，看不出是「被限速了」。
     """
     req = urllib.request.Request(url, headers=dict(headers or {}), method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:   # noqa: S310 —— 地址是配置里定的
+        return resp.read().decode("utf-8", "replace")
+
+
+def _default_post(url: str, headers: dict, body: bytes,
+                  timeout: float = CONFIG_TIMEOUT) -> str:
+    """写回那一个请求（返回正文）。与 `_default_get` 同一条路，只多了正文与那个动词。
+
+    ⚠️ 正文按 **UTF-8 字节**发、**不转义非 ASCII**（`update_form_config` 里
+    `json.dumps(..., ensure_ascii=False)`）：配置里的 `find.text` 有中文
+    （生产配置里真有），转义会把体量放大几倍 —— `ad-task.py` 发日志那条也是这么写的。
+    """
+    req = urllib.request.Request(url, data=body, headers=dict(headers or {}), method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:   # noqa: S310 —— 地址是配置里定的
         return resp.read().decode("utf-8", "replace")
 
@@ -753,12 +931,24 @@ class FmrClient:
 
     def __init__(self, token: Optional[str] = None, *, base: Optional[str] = None,
                  opener: Optional[Callable] = None, timeout: float = DEFAULT_TIMEOUT,
-                 now: Optional[Callable] = None):
+                 now: Optional[Callable] = None,
+                 poster: Optional[Callable] = None,
+                 config_timeout: float = CONFIG_TIMEOUT):
         self.token = (os.environ.get(TOKEN_ENV) or "") if token is None else str(token or "")
         self.base = str(base if base is not None else
                         (os.environ.get(BASE_ENV) or DEFAULT_BASE)).rstrip("/")
         self.timeout = float(timeout)
         self._opener = opener or _default_get
+        #: ★ Task B1：那两个配置口**共用**这个超时（比 `self.timeout` 短，见 `CONFIG_TIMEOUT`）。
+        #: 注入的桩照旧只收它自己那几个参数 —— 超时**只绑在真的传输上**，
+        #: 所以注入 `opener` / `poster` 时这一格不影响桩（桩不睡觉）。
+        self.config_timeout = float(config_timeout)
+        self._config_opener = opener or functools.partial(_default_get,
+                                                          timeout=self.config_timeout)
+        #: 写回的注入点。协议与 `opener` 差一格：`(url, headers, body) -> 正文`。
+        #: ⚠️ 单开一个口（不把 `opener` 改成收三个参数）是因为 `opener` 那个协议
+        #: 已经被四个读口和一堆测试桩用着 —— 改它就是「牵一发动全身」。
+        self._poster = poster or functools.partial(_default_post, timeout=self.config_timeout)
         #: 「现在」怎么取（测试注入一个固定的时钟 —— 默认那条 `since` 是量得出的）。
         self._now = now or datetime.datetime.now
 
@@ -812,10 +1002,16 @@ class FmrClient:
                 "%s%s（真因：%s: %s）"
                 % (noun, status, extra, UNMEASURED_SAY, type(exc).__name__, exc))
 
-    def _call(self, path: str, params: dict, *, shape=(list, dict)) -> Any:
+    def _call(self, path: str, params: dict, *, shape=(list, dict),
+              need_token: bool = True, opener: Optional[Callable] = None) -> Any:
         """一次读。**失败一律抛**（`FmrUnmeasured` 的三个子类），**绝不返回空**。
 
         `shape` 是 `data` 那一格**该长成什么样**（Task 4 加的）。
+
+        `need_token` / `opener` 是 Task B1 加的两个口子（默认值 = 老四个读口的老行为）：
+        · `need_token=False` —— 那个口**公开、无鉴权**（【我量的·B1】不带任何头也回
+          200 + 整份配置）⇒ 没配 token 的部署**也读得动**它，不该在门口被挡下；
+        · `opener=…` —— 换一个传输（配置口用它绑**更短**的超时，见 `CONFIG_TIMEOUT`）。
 
         ★ 为什么 ③ 榜单要传 `shape=dict`：那个接口**没有失败的那一天回的也是一个对象**
         （`failed_total:0` / `rank:[]`）⇒「回的不是对象」只可能是**这一次没量着**。
@@ -833,15 +1029,18 @@ class FmrClient:
         它们读成「没有失败」正是这一层立身要防的那句话（BASE 自己那条不变量当时就没做到）。
         `test_a_body_with_no_data_cell_is_not_read_as_no_failures` 钉着这三态。
         """
-        if not self.configured:
+        if need_token and not self.configured:
             raise FmrNoToken(
                 "读不了%s：这个部署**没配 %s**（一个请求都没发出去）。"
                 "%s。" % (self._what(path), TOKEN_ENV, UNMEASURED_SAY))
         url = "%s%s?%s" % (self.base, path, urllib.parse.urlencode(params))
         # ⚠️ token 走**请求头**，绝不进 URL（URL 会进日志、进 `ps`）。
-        headers = {"X-Api-Token": self.token}
+        # ⚠️ 没配 token 时**整个头都不发**（不去发一个空值）：这一条只在
+        # `need_token=False` 那条路上够得着（老四个口在上面就抛了）——
+        # 那个口是公开的，带一个空头去没有意义。
+        headers = {"X-Api-Token": self.token} if self.token else {}
         try:
-            raw = self._opener(url, headers)
+            raw = (opener or self._opener)(url, headers)
         except Exception as exc:                       # noqa: BLE001 —— 什么都算「量不到」
             raise FmrUnreachable(self._unreadable_say(path, exc)) from exc
         try:
@@ -876,6 +1075,17 @@ class FmrClient:
         noun = _PATH_SAY.get(path, path)
         msg = str(body.get("msg") or "").strip()
         tail = ("后端自己那句是：「%s」。" % msg) if msg else "后端没给它那句说明。"
+        if int(status or 0) == 404 and path == FORM_CONFIG_PATH:
+            # ⚠️ **同一个 404，第三个语义**（Task B1）：这里它不是「这个站它不认识」，
+            # 是「**这个站没有 JSON 配置**」（后端原话就是 `config not found`）。
+            # 说成「那串名字给错了」是把一种可能说成了唯一一种 —— 而这两种
+            # （键给错了 / 它本来就没配置）**这一次分不出**（Task 4 复审那条纪律：
+            # 「不许替它预设是哪一种」）。分开写，是因为**下一步不是一件事**。
+            return ("读不了%s：**这个站在后端没有 JSON 配置**（后端回 404）。%s %s"
+                    "⚠️ 这一次**分不出**是哪一种：那串键给错了，"
+                    "还是它本来就没有 JSON 配置（只有 py 脚本）—— "
+                    "榜单（③）上那些键是后端自己给的，可以拿去对一眼。"
+                    % (noun, UNMEASURED_SAY, tail))
         if int(status or 0) == 404:
             # ⚠️ 404 的语义**按查的是什么分岔**：按站查时它是「这个站它不认识」，
             # 按单号查时它是「这个单它那儿没有」。合成一句就会让按单号那次
@@ -991,3 +1201,188 @@ class FmrClient:
             "url": entry_url(steps),
             "evidence": evidence_text(row, steps),
         }
+
+    # ── ⑤ 一份 JSON 配置：读（Task B1）──────────────────────────────
+    def form_config(self, site: str) -> dict:
+        """**这个站的 JSON 配置**（后端那一份，逐字；这一层不加工任何一个格）。
+
+        交出去的是**里面那一份** —— `{form_type, site, steps[], success}`，
+        不是包着它的那层信封（`{"site":…,"steps":{…}}`）。
+        【我量的·B1】`GET /api/quest/formConfig?site=cvrefresh.com` →
+        `{"status":200,"msg":"success","data":{"site":…,"steps":{"form_type":"magic_link",…}}}`。
+
+        ★ **读回来的就是能原样写回去的那一份**：`update_form_config(site, form_config(site))`
+        是一趟**没有改动**的往返。这不是顺手定的 —— 「读错层」是这一族踩过的坑
+        （`ad-task.py:2157`：把包装层当配置），所以两个口收发的**必须是同一个东西**。
+
+        ⚠️ **这个口公开、不要 token**（【我量的·B1】不带任何头发出去也回 200）——
+        所以这里走 `need_token=False`：没配 token 的部署**也读得动**它。
+        （写那个口要 token —— 见 `update_form_config`。）
+
+        ⚠️ **「查不到」与「后端挂了」是两件事**（这一层的老纪律，这里也照办）：
+        · 这个站**没有 JSON 配置** → `FmrRefused`，`status` 是 404、`kind="refused"`
+          （后端原话 `config not found`；正文 `data` 是 `[]`）；
+        · **没量着**（连不上 / 超时 / 正文不是 JSON / HTTP 不是 200）→ `FmrUnreachable`。
+        两件**处置完全不同**：前者去改那串键（或去建配置），后者去查后端/网络。
+        谁把这两条合成一条，就是「一个查不到的站被标成健康的」那个老病的下一站。
+        """
+        key = str(site or "").strip()
+        if not key:
+            raise FmrUnmeasured(
+                "读不了这份 JSON 配置：没说是**哪个站** —— 这是免费的检查"
+                "（一个请求都没发出去）。", kind="no-site")
+        data = self._call(FORM_CONFIG_PATH, {"site": key}, shape=dict,
+                          need_token=False, opener=self._config_opener)
+        inner = data.get("steps")
+        if not isinstance(inner, dict):
+            # ⚠️ 这一格**要的是里面那份配置**。形状不对**只能抛**（不许猜、不许把它当空配置）：
+            # 与 `_call(shape=…)` 那条闸同一个道理，只是这一层在信封里面。
+            raise FmrUnreachable(
+                "读不了%s：信封对得上（`status:200`），可 `data.steps` 那一格"
+                "**不是一个对象**（读回来的是 %s…）—— 这一格要的是**里面那份配置**"
+                "（`{form_type, site, steps[], success}`）。%s。"
+                % (self._what(FORM_CONFIG_PATH), str(inner)[:60], UNMEASURED_SAY))
+        return inner
+
+    # ── ⑤ 一份 JSON 配置：写（Task B1）──────────────────────────────
+    def update_form_config(self, site: str, steps: Any) -> FormWriteResult:
+        """**把一份 JSON 配置写回后端**（`POST /api/quest/formConfig/update`）。
+
+        契约（**转述的·出处 `task-b1-brief.md` §1**，控制者探测得到的那两行：
+        缺 `site`/`steps` → `{"status":400,…}`、不带 token → `{"status":401,…}`）。
+        【我量的·B1】不带 token 发出去那一次：**HTTP 200** +
+        `{"status":401,"msg":"unauthorized","data":[]}` —— **按 HTTP 码判会读成成功**。
+
+        ★★ **判据只有 body 的 `status` 那一格**（`ok` 只在它等于 200 时为真）。
+        这不是风格问题：本仓有案底（`ad-task.py` 的 `_fail_diag_verdict()` 注释）——
+        按 HTTP 码判的那版客户端把鉴权失败当成了成功、打了一行「已上传」。
+
+        `steps` 要的是**整份配置**（`{form_type, site, steps[], success}`）——
+        与 `form_config()` 交出来的是同一个东西（D4：整条读回、只改该改的、整条写回；
+        **少带一个键就是把配置弄丢**）。
+
+        ⚠️ **这个口不拋**（brief §2 R3）：每一种结局都回一个 `FormWriteResult`，
+        `verdict` 五态见 `FormWriteResult` 的 docstring。**只有下面两件是例外**，
+        它们都是**调用方自己的毛病**、而且**一个请求都不会发出去**（所以它们不影响
+        「有没有写进去」这个判断）：
+        · 没说是哪个站 → `FmrUnmeasured(kind="no-site")`；
+        · `steps` 不是一份配置（空的 / 不是对象 / **是包装层**）→
+          `FmrUnmeasured(kind="no-steps"|"wrong-layer")`。
+        """
+        key = str(site or "").strip()
+        if not key:
+            raise FmrUnmeasured(
+                "写不回这份 JSON 配置：没说是**哪个站** —— 这是免费的检查"
+                "（一个请求都没发出去）。", kind="no-site")
+        if not isinstance(steps, dict) or not steps:
+            raise FmrUnmeasured(
+                "写不回这份 JSON 配置：`steps` 那一格得是**整份配置**"
+                "（`{form_type, site, steps[], success}`），给的是一个 %s。"
+                "⚠️ 这一格**少带一个键就是把那份配置弄丢**，所以宁可在这儿红一次 —— "
+                "一个请求都没发出去。（手里若是那串 JSON 文本，先 `json.loads` 成对象。）"
+                % ("空对象" if isinstance(steps, dict) else type(steps).__name__),
+                kind="no-steps")
+        if looks_like_wrapper(steps):
+            raise FmrUnmeasured(
+                "写不回这份 JSON 配置：这一格是**包装层**（`data` 那一层："
+                "`{\"site\":…,\"steps\":{…}}`），不是配置本身。"
+                "要传的是**里面那份**（`steps` 那一格是**数组**的那一份）—— "
+                "`form_config()` 交出来的就是它。"
+                "⚠️ 原样写回去的话，后端那份配置的 `steps` 会变成一个对象"
+                "（这一族踩过的「读错层」坑，`ad-task.py:2157`）。一个请求都没发出去。",
+                kind="wrong-layer")
+        if not self.configured:
+            # ⚠️ 这里回**值**、不抛：这是一个**已知**的结局（一个请求都没发出去 ⇒
+            # **确定没写**），调用方（面板）对它有话说。与读口那个「没配 token 就抛」
+            # 不冲突：读那次是「量不到」，这一次是「没写」——两句话，不是一个形状。
+            return FormWriteResult(
+                verdict=WRITE_NO_TOKEN, status=None, msg="",
+                say=("**一个字都没写**：`%s` 的配置**没有被改动** —— 这个部署"
+                     "**没配 %s**，请求一个都没发出去。"
+                     "配法：给服务进程一个 `%s` 环境变量（与 `DATABASE_URL` 同一层）。"
+                     % (key, TOKEN_ENV, TOKEN_ENV)))
+        url = "%s%s" % (self.base, FORM_CONFIG_UPDATE_PATH)
+        headers = {"Content-Type": "application/json"}
+        # ⚠️ token 走**请求头**，绝不进 URL（与四个读口同一条纪律）。
+        if self.token:
+            headers["X-Api-Token"] = self.token
+        body = json.dumps({"site": key, "steps": steps},
+                          ensure_ascii=False).encode("utf-8")
+        try:
+            raw = self._poster(url, headers, body)
+        except Exception as exc:                       # noqa: BLE001 —— 什么都算「不知道成没成」
+            return self._write_unread_result(key, exc)
+        try:
+            payload = json.loads(raw)
+        except (ValueError, TypeError):
+            return FormWriteResult(
+                verdict=WRITE_UNKNOWN, status=None, msg="",
+                say=("**不知道写没写成**：请求发出去了，可后端回的正文不是 JSON"
+                     "（读了 %d 个字节）—— 既不能当成功，也**不能当「没写进去」**："
+                     "那份配置可能已经动了。去后端核对一眼"
+                     "（`%s%s?site=%s`）再决定要不要重发。"
+                     % (len(raw or ""), self.base, FORM_CONFIG_PATH,
+                        urllib.parse.quote(key, safe=""))))
+        status = business_status(payload)
+        msg = str(payload.get("msg") or "").strip() if isinstance(payload, dict) else ""
+        tail = ("后端自己那句是：「%s」。" % msg) if msg else "后端没给它那句说明。"
+        if status == 200:
+            return FormWriteResult(
+                verdict=WRITE_OK, status=200, msg=msg,
+                say=("写回去了：`%s` 的 JSON 配置**已经在后端更新**"
+                     "（后端回的 `status` 是 200）。%s" % (key, tail)))
+        if status == 401:
+            return FormWriteResult(
+                verdict=WRITE_AUTH, status=401, msg=msg,
+                say=("**没写回去 —— 鉴权没过**（后端回的 `status` 是 401）。%s"
+                     "⚠️ 这一族**一律 HTTP 200**，所以这一条**不是**「网络出问题」—— "
+                     "是这台机器上那个 `%s` 不对或过期了。"
+                     "这一趟卡在鉴权那一层，**没进到改配置的那段代码** ⇒ "
+                     "`%s` 的配置**没有被改动**。" % (tail, TOKEN_ENV, key)))
+        if status is None:
+            return FormWriteResult(
+                verdict=WRITE_UNKNOWN, status=None, msg=msg,
+                say=("**不知道写没写成**：后端回的正文**不是一个带业务码的信封**"
+                     "（`status` 那一格读不出 200/401 这种码，读回来的是 %s…）。%s"
+                     "⚠️ 这**不是**「没写进去」—— 那份配置可能已经动了，"
+                     "去后端核对一眼再说。"
+                     % (str(payload)[:60], tail)))
+        return FormWriteResult(
+            verdict=WRITE_REFUSED, status=status, msg=msg,
+            say=("**没写回去 —— 后端说这请求不对**（后端回的 `status` 是 %s）。%s"
+                 "⚠️ 这一条是**它明确拒了**（不是「不知道」）—— `%s` 的配置"
+                 "**没有被改动**。"
+                 % (status, tail, key)))
+
+    def _write_unread_result(self, site: str, exc: Exception) -> FormWriteResult:
+        """**请求发出去了、回执没读成** → `unknown`。★ 这一支**不许**说成「没写进去」。
+
+        三种都进这儿：连不上 / 超时 / **HTTP ≥ 400**（网关那一层先回了码 ——
+        这一族的正常形状是 HTTP 恒 200，见模块 docstring）。
+        ⚠️ 写与读在这里**正好相反**：读那一次「没读成」= 量不到（无害），
+        这一次「没读成」= **那份配置可能已经动了**（有害，且不可猜）。
+        """
+        code = getattr(exc, "code", None)
+        if code is not None and int(code) in (401, 403):
+            # 与 `ad-task.py` 那两条路同源：网关/代理层仍可能按 HTTP 回 4xx
+            # （那一层不看 body）—— 这一支照样是「没写」：它在业务层之前就拦下了。
+            return FormWriteResult(
+                verdict=WRITE_AUTH, status=None, msg="",
+                say=("**没写回去 —— 鉴权没过**（后端按 **HTTP %s** 回的话，"
+                     "不是在写这件事上给了答复）。⚠️ 这一族正常是 HTTP 恒 200，"
+                     "按 HTTP 回码说明是它**前面那一层**拦的（网关 / 路由）："
+                     "那串 `%s` 对不上，或者根本没到业务层 ⇒ "
+                     "`%s` 的配置**没有被改动**。（真因：%s: %s）"
+                     % (code, TOKEN_ENV, site, type(exc).__name__, exc)))
+        if code is None:
+            why = "连不上那个后端（%s）" % self.base
+        else:
+            why = "后端按 **HTTP %s** 回了话（不是在写这件事上给了答复）" % code
+        return FormWriteResult(
+            verdict=WRITE_UNKNOWN, status=None, msg="",
+            say=("**不知道写没写成**：请求发出去了，可回执没读成 —— %s。"
+                 "⚠️ 这**不是**「没写进去」：那份配置**可能已经动了**。"
+                 "去后端核对一眼（`%s%s?site=%s`）再决定要不要重发。"
+                 "（真因：%s: %s）"
+                 % (why, self.base, FORM_CONFIG_PATH,
+                    urllib.parse.quote(site, safe=""), type(exc).__name__, exc)))
