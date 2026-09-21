@@ -920,13 +920,16 @@ def _default_post(url: str, headers: dict, body: bytes,
 
 
 class FmrClient:
-    """走 FMR 那两个只读接口的那个客户端。
+    """走 FMR 那一族接口的客户端（①–④ 四个读口、Task B1 的「读/写一份 JSON 配置」）。
 
     `token` / `base` 在**构造那一刻**读一次环境（`None` ⇒ 读环境；`""` ⇒ 明确「没有」）——
     与 `Service.__init__` 里 `_cdp_bin` / `_shots_dir` / `_selftest_root` 同一条不变量：
     **构造时定死，之后不再看环境**（不然同一个进程里会出现两个不同的后端/身份）。
 
-    `opener` 是注入点：`(url, headers) -> 正文`。测试给它桩，于是这一层不打真网络。
+    **两个注入点**（测试给桩，于是这一层不打真网络）：
+    · `opener` —— `(url, headers) -> 正文`：①–④ 那四个读口走它；
+    · `poster` —— `(url, headers, body) -> 正文`（Task B1 加的）：**只有写那个口**走它
+      （单开一格的理由写在 `__init__` 里：改 `opener` 那个协议牵一发动全身）。
     """
 
     def __init__(self, token: Optional[str] = None, *, base: Optional[str] = None,
@@ -945,7 +948,7 @@ class FmrClient:
         self.config_timeout = float(config_timeout)
         self._config_opener = opener or functools.partial(_default_get,
                                                           timeout=self.config_timeout)
-        #: 写回的注入点。协议与 `opener` 差一格：`(url, headers, body) -> 正文`。
+        #: 写回的注入点。协议比 `opener` 多一格：`(url, headers, body) -> 正文`。
         #: ⚠️ 单开一个口（不把 `opener` 改成收三个参数）是因为 `opener` 那个协议
         #: 已经被四个读口和一堆测试桩用着 —— 改它就是「牵一发动全身」。
         self._poster = poster or functools.partial(_default_post, timeout=self.config_timeout)
