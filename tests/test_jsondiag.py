@@ -415,7 +415,109 @@ def test_页面事实从原始量测里归一出来():
                               "type": "email"}]
 
 
-def test_页面事实量不出来_抛而不是给一份空的():
+def test_the_result_marker_is_one_thing_the_two_sides_agree_on():
+    """★ 子进程**打**的记号与调用方**捞**的记号必须是同一个（一处定义）。
+
+    【2026-09-21 实测】`jsonrerun.py` 里那个名字**根本没定义** ⇒ 它在**成功那一刻**炸
+    （`NameError`）⇒ 一趟**量着了的**复跑被读成「没量着」（退出码 1、结果行压根没打出来）。
+    这一条走一遍**真的**：按子进程那样拼出那一行 → 交给调用方那条解析路。
+    """
+    import json as _json
+
+    from agent import jsondiag, jsonrerun
+
+    assert jsonrerun.RESULT_MARK == jsondiag.RESULT_MARK, "记号两处定义、已经漂开了"
+    line = jsonrerun.RESULT_MARK + _json.dumps(
+        {"summary": {"status": "success"}, "facts": {"url": "https://x/"}}, ensure_ascii=False)
+    got = jsondiag.parse_rerun(line)
+    assert got["summary"]["status"] == "success" and got["facts"]["url"] == "https://x/", got
+
+
+def test_the_executor_own_helper_wins_the_path_race():
+    """★ 两个目录里各有一个 `common.py`，执行器要的是**它自己那个**。
+
+    【2026-09-21 实测】顺序反了 ⇒ `AttributeError: no attribute 'wait_page_stable'` ⇒
+    复跑退出码 3，而执行器记下的那几句（`click: element not found` / `deferred unfilled`）
+    **全是假账**。⚠️ 在**子进程**里量：`import common` 会进 `sys.modules`，
+    在本进程里量会把后面所有用例的环境弄脏。
+    """
+    import pathlib
+    import subprocess
+
+    code = (
+        "import sys; sys.path.insert(0, '/company/siteforge')\n"
+        "from agent import jsonrerun\n"
+        "jsonrerun._prepare_paths()\n"
+        "from common import CDPHelper\n"
+        "print(sys.path[0])\n"
+        "print(sys.modules['common'].__file__)\n"   #: ⚠️ 比**文件路径**（类自己不带 `__file__`，两边模块名都叫 `common`）
+        "print(hasattr(CDPHelper, 'wait_page_stable'))\n")
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr[-600:]
+    first, where, has = proc.stdout.strip().splitlines()
+    assert first.rstrip("/").endswith("form_executor"), "执行器目录没排在 sys.path[0]：%r" % first
+    assert where.endswith("form_executor/common.py"), "from common 捡到的不是执行器那个：%r" % where
+    assert has.strip() == "True", proc.stdout
+
+
+def test_the_facts_payload_that_is_wrapped_twice_still_decodes():
+    """`cdp.eval` 吐的被包**两层**（与 `selftest._cdp_eval` 同一个坑）。
+
+    【2026-09-21 实测】只解一层 ⇒ 复跑退出码 3 + 「页面事实不是一份对象（是 str）」，
+    而那一趟**其实量着了**（事实就在那层字符串里）。
+    """
+    import json as _json
+
+    from agent import jsonrerun
+
+    inner = {"url": "https://x/", "body_text": "hi", "actions": [], "fields": []}
+    wrapped = _json.dumps(_json.dumps(inner))          # 包两层：外层是字符串、内层才是那份对象
+    got = jsonrerun.facts_from(wrapped)
+    assert got["url"] == "https://x/" and got["body_text"] == "hi", got
+    #: ★ **生产那条路给的是对象**（`CDPHelper.eval` 自己解过一层了）——
+    #: 【2026-09-21 实测】原先这里第一句 `str(raw)` 把 dict 变成 Python repr ⇒ 当场炸：
+    got = jsonrerun.facts_from(inner)
+    assert got["url"] == "https://x/" and got["body_text"] == "hi", got
+    #: 一层（没包）也照旧要认；空串 / 半句照旧要**抛**（不许回一份空事实）
+    assert jsonrerun.facts_from(_json.dumps(inner))["url"] == "https://x/"
+    for bad in ("", "null", '{"url": "https://x/"'):
+        try:
+            jsonrerun.facts_from(bad)
+        except jsonrerun.FactsUnmeasured:
+            continue
+        raise AssertionError("这个输入该抛没抛：%r" % bad)
+
+
+def test_the_rerun_subprocess_really_starts(tmp_path):
+    """★ **真起一次那个子进程**（不是 stub）—— 这类 bug 只有真跑才抓得到。
+
+    2026-09-21 实测：`agent/jsonrerun.py` 里 `sys` 没 import ⇒ `main()` 第一句
+    （`logging.basicConfig(stream=sys.stderr)`）就 NameError ⇒ 复跑子进程退出码 1 ⇒
+    `/jsondiff` 与「预检写回」**全废**（502 / 409），而**用例全绿**：
+    服务那一层的用例把复跑那根线 stub 掉了，从没真起过这个进程。
+
+    这一条给一个**注定连不上**的窗口：要的是「**干净的失败**」（一句人话 + 非 0 退出码），
+    不是 Traceback —— 有 Traceback 就说明它连门都没进去。
+    """
+    import json
+    import pathlib
+    import subprocess
+
+    from agent import jsonrerun
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"form_type": "magic_link", "site": "example.test",
+                               "steps": [], "success": {"any": [{"body_contains": ["x"]}]}}),
+                   encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(pathlib.Path(jsonrerun.__file__)),
+         "--config", str(cfg), "--ws-url", "ws://127.0.0.1:1/devtools/browser/dead"],
+        capture_output=True, text=True, timeout=120)
+    assert proc.returncode != 0, "连不上的窗口居然报了成功：%r" % proc.stdout[-300:]
+    assert "Traceback" not in proc.stderr, proc.stderr[-800:]
+    assert "NameError" not in proc.stderr, proc.stderr[-800:]
+    #: 它得**说清**是没量着（而不是一声不吭地挂掉）
+    assert ("没量着" in proc.stderr) or ("量不到" in proc.stderr), proc.stderr[-500:]
     """`cdp.eval` 回了空串 / 半句 JSON（页面正在导航、执行上下文没了）——
     **这是「没量着」**，与「页面上什么都没有」是两件事。"""
     from agent import jsonrerun

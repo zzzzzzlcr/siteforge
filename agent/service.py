@@ -400,6 +400,28 @@ FAILURE_STATUS_NO_TOKEN = 503
 FAILURE_STATUS_UNMEASURED = 502
 
 
+def _json_entry_url(config: Any) -> str:
+    """JSON 配置要跑的那一页 —— `https://<配置里的 site>`；没有 `site` 就回空串。
+
+    ⚠️ **承重**（2026-09-21 实测）：复跑**不导航**的话，它是在**浏览器自己的控制台页**上跑的
+    （那一趟的窗口停在 `https://console.bitbrowser.net/?id=…`），于是执行器记下的每一句
+    （`click: element not found` / `deferred unfilled`）**全是假账**，页面事实也量不到 ——
+    而屏幕上看起来只是「这份配置跑不起来」。这与 py 那条路今天修的是**同一件事**：
+    生产起脚本之前先 `cdp navi <入口网址>`（`ad-task.py:2673`）。
+
+    回空串（没 `site`）时：**不导航**，让那一趟如实报它量到的（而不是编一个网址出来 ——
+    编一个就跑错页，比不跑更坏）。
+    """
+    site = ""
+    if isinstance(config, dict):
+        site = str(config.get("site") or "").strip()
+    if not site:
+        return ""
+    if site.startswith(("http://", "https://")):
+        return site
+    return "https://" + site.strip("/") + "/"
+
+
 def _count(raw: str) -> Optional[int]:
     """`?limit=` 那一格 → 一个数（空 = 不给 = 用默认）。**读不出来就在门口响**（400）。
 
@@ -4333,7 +4355,13 @@ class Service:
                             % JSON_WS_URL_ENV)
 
         try:
-            got = self._json_rerun(config, ws_url=self._json_ws_url)
+            #: ⚠️ **必须先把那一页打开**（2026-09-21 实测）：不给 `entry_url`，复跑就是在
+            #: **浏览器自己的控制台页**上跑（实测那一趟：窗口停在
+            #: `https://console.bitbrowser.net/?id=…`，执行器记下的全是 `deferred unfilled`、
+            #: 页面事实也量不到）—— 与 py 那条路今天修的是**同一件事**
+            #: （`selftest._navigate`：生产起脚本之前先 `cdp navi`）。
+            got = self._json_rerun(config, ws_url=self._json_ws_url,
+                                   entry_url=_json_entry_url(config))
         except jsondiag.RerunUnmeasured as exc:
             # 「没量着」—— 与「还没跑」是两件事，所以**非 2xx**。
             # ⚠️ 它**不是** `fmr.FmrUnmeasured`（没有 `.say`），所以不能借
@@ -4379,7 +4407,8 @@ class Service:
             raise HTTPException(status_code=409,
                                 detail="没有复跑浏览器地址，不能证明这份配置能跑，未写回。")
         try:
-            got = self._json_rerun(proposed, ws_url=self._json_ws_url)
+            got = self._json_rerun(proposed, ws_url=self._json_ws_url,
+                                   entry_url=_json_entry_url(proposed))
         except jsondiag.RerunUnmeasured as exc:
             raise HTTPException(status_code=FAILURE_STATUS_UNMEASURED, detail=str(exc))
         summary = got.get("summary") or {}

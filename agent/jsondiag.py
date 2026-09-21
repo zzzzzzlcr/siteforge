@@ -44,7 +44,11 @@ __all__ = ["RESULT_MARK", "RerunUnmeasured", "diff_config", "parse_rerun"]
 #: 子进程把复跑结果打在**这一行**上（它自己的日志照旧随便打，这一层只捞这一行）。
 #: 单开一个标记而不是「stdout 最后一行」：日志尾巴会跟着结果跑，
 #: 而「取最后一行」在子进程被中途杀掉时会取到半句日志。
-RESULT_MARK = "JSONDIAG_RESULT "
+#: ⚠️ **记号只有一处定义**（在子进程那个模块里，因为它要能当独立脚本跑）——
+#: 这里引过来，不另抄一份：抄两份迟早漂开（子进程打 A、这一层捞 B ⇒ 每趟都「没量着」，
+#: 而且看不出来为什么）。【2026-09-21 实测】子进程原先引用的就是**没定义的那个名字**，
+#: 于是它在**成功那一刻**炸（`NameError: RESULT_MARK`）⇒ 那一趟量着了的复跑被读成没量着。
+from agent.jsonrerun import RESULT_MARK  # noqa: E402  （纯常量，不带任何副作用）
 
 
 class RerunUnmeasured(Exception):

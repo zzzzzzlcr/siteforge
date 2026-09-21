@@ -19,10 +19,21 @@ from __future__ import annotations
 import copy
 import json
 import os
+import sys                     #: ⚠️ 少了这一行，`main()` 里第一句 `stream=sys.stderr` 就 NameError ——
+                              #: 【2026-09-21 实测】复跑子进程退出码 1、`/jsondiff` 与「预检写回」全 502/409，
+                              #: 而**用例全绿**（它们把复跑那根线 stub 掉了，从没真起过这个子进程）。
 from typing import Any, Optional
 
-__all__ = ["EXECUTOR_DIR", "FACTS_JS", "FactsUnmeasured", "build_executor",
+__all__ = ["EXECUTOR_DIR", "FACTS_JS", "RESULT_MARK", "FactsUnmeasured", "build_executor",
            "facts_from"]
+
+#: 结果行的**记号**（调用方 `jsondiag.parse_rerun` 按它从 stdout 里捞那一行）。
+#: ⚠️ **只定义在这一处**（`jsondiag` 从这儿引过去）：它是子进程与调用方之间的**一根绳**，
+#: 抄成两份迟早漂开（子进程打 A、调用方捞 B ⇒ 每一趟都「没量着」，而且看不出为什么）。
+#: ⚠️【2026-09-21 实测】原先这个模块**从头到尾没被真跑过**：`RESULT_MARK` 与 `sys` 两个名字
+#: 都没定义（前一个炸在**成功那一刻**、后一个炸在第一句），而用例全绿
+#: （服务那一层的用例把复跑那根线 stub 掉了）。现在有一条真起进程的用例钉着这件事。
+RESULT_MARK = "JSONDIAG_RESULT "
 
 #: 生产执行器所在目录（**只读**，挂到 `sys.path` 上 import 用）。
 EXECUTOR_DIR = os.environ.get("SITEFORGE_JSON_EXECUTOR_DIR") or (
@@ -108,11 +119,47 @@ def _clean_rows(rows: Any, keys: tuple) -> list:
     return out
 
 
-def facts_from(raw: str) -> dict:
-    """浏览器里量回来的那条字符串 → `diff_config` 要的那份**页面事实**。
+def _prepare_paths() -> list:
+    """把执行器那两个目录挂上 `sys.path`（**只读**，一个文件都不改）。
+
+    ⚠️ **顺序有讲究，而且是承重的**：两个目录里**各有一个 `common.py`**
+    （`form_executor/common.py` 与 `forms/common.py`），而执行器要的是**它自己那个**
+    —— 只有那个有 `wait_page_stable`（`json_executor.py:2749` 要调它）。
+
+    【2026-09-21 实测】原先两个都是 `sys.path.insert(0, …)`：后插的那个排在更前 ⇒
+    `from common import CDPHelper` 捡到了 `forms/` 那个 ⇒ 复跑退出码 3、
+    `AttributeError: 'CDPHelper' object has no attribute 'wait_page_stable'`，
+    而执行器记下的那几句（`click: element not found` / `deferred unfilled`）**全是假账**。
+    所以这里**先挂兄弟目录、再挂执行器目录**（后者最后插 ⇒ 排在 `[0]`）。
+    """
+    sibling = os.path.join(os.path.dirname(EXECUTOR_DIR), "forms")
+    for path in (sibling, EXECUTOR_DIR):
+        if path in sys.path:
+            sys.path.remove(path)
+        sys.path.insert(0, path)
+    return [EXECUTOR_DIR, sibling]
+
+
+def facts_from(raw: Any) -> dict:
+    """浏览器里量回来的东西 → `diff_config` 要的那份**页面事实**。
 
     取不到 ⇒ 抛 `FactsUnmeasured`（**不是**回一份空事实）。
+
+    ★ **两种形状都要认**（2026-09-21 实测，两条路给的不是同一样东西）：
+      - **一份对象**：生产那个 `CDPHelper.eval` 直接回 `dict`（它自己解过一层了）——
+        ⚠️ 原先这里第一句是 `str(raw)`，于是它把那份 dict 变成 **Python repr**
+        （`{'url': …}`，单引号）⇒ `json.loads` 当场炸在 char 1 上 ⇒ 复跑退出码 3、
+        「页面事实读不成 JSON」—— 而那一趟**其实量着了**（配置 4 步跑完、判据还 matched）；
+      - **一段字符串**：`tools/cdp` 那条路吐的是被 JSON 包了**一或两层**的字符串。
     """
+    if isinstance(raw, dict):
+        got = raw                       #: 已经是对象了，别再 `str()` 一遍（那就是上面那个坑）
+        return {
+            "url": str(got.get("url") or ""),
+            "body_text": str(got.get("body_text") or "").strip(),
+            "actions": _clean_rows(got.get("actions"), ("text",)),
+            "fields": _clean_rows(got.get("fields"), ("label", "placeholder", "type")),
+        }
     text = str(raw or "").strip()
     if not text:
         raise FactsUnmeasured(
@@ -124,6 +171,15 @@ def facts_from(raw: str) -> dict:
         raise FactsUnmeasured(
             "页面事实读不成 JSON（很可能是执行上下文中途没了、只写了半句）：%s。"
             "这与「空串」是同一件事 —— **没量着**。" % exc)
+    #: ⚠️ **`cdp.eval` 吐出来的东西被包了两层**（仓里 `selftest._cdp_eval` 那段写着同一件事：
+    #: 「脚本那头就是 `json.loads` 两次」）—— 只解一层会拿到一个 str。
+    #: 【2026-09-21 实测】原先只解一层 ⇒ 复跑退出码 3 + 「页面事实不是一份对象（是 str）」，
+    #: 而那一趟**其实量着了**（页面上的事实就在那层字符串里）。所以再解一层。
+    if isinstance(got, str):
+        try:
+            got = json.loads(got)
+        except Exception as exc:
+            raise FactsUnmeasured("页面事实里那一层字符串也读不成 JSON：%s。" % exc)
     if not isinstance(got, dict):
         raise FactsUnmeasured(
             "页面事实不是一份对象（是 %s）。" % type(got).__name__)
@@ -186,10 +242,7 @@ def main(argv: Optional[list] = None) -> int:
 
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 
-    # 只读地挂 path：执行器在 form_executor/，CDPHelper 在 forms/。
-    for path in (EXECUTOR_DIR, os.path.join(os.path.dirname(EXECUTOR_DIR), "forms")):
-        if path not in sys.path:
-            sys.path.insert(0, path)
+    _prepare_paths()
 
     from common import CDPHelper  # noqa: E402  ← 生产那份，只读 import
 
