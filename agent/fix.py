@@ -41,8 +41,9 @@ from typing import Any, Callable, Optional
 from agent import browser_agent
 from agent import plan as plan_mod
 
-__all__ = ["from_py", "repair_states", "REQUIRED_CLI_FLAGS", "PATCH_SYSTEM",
-           "shape_of", "check_patch", "patch_user", "extract_source"]
+__all__ = ["from_py", "repair_states", "REQUIRED_CLI_FLAGS",
+           "PATCH_SYSTEM", "shape_of", "check_patch", "patch_user", "extract_source",
+           "patch_from_rounds"]
 
 #: 取站方配置的超时（秒）。**短** —— 它是可选层，拿不到就往下走，不能把整趟拖住。
 CONFIG_TIMEOUT = 8.0
@@ -362,6 +363,32 @@ def patch_user(old_src: str, *, evidence: str = "", success_text: str = "",
 
 
 _CODE_FENCE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.S)
+
+
+def patch_from_rounds(rounds, *, max_tokens=None) -> str:
+    """一次模型回话 → 原话；**空回话要说清为什么**（不许只说「补丁是空的」）。
+
+    ⚠️ 2026-09-21 **实测**（真跑一趟修站，站 `qualify.lastingpowerofattorney.io`）：
+    `finish_reason="length"`、`reasoning_tokens = 12000 = max_tokens`、`content` 是**空串**
+    —— 思考把预算吃满了（`agent/llm.py` 头里写着这个坑：「reasoning 模型思考 token
+    也算在 max_tokens 里」）。这时说「补丁是空的」是把**我们自己的预算不够**记成
+    **模型没给东西** —— 两种处置完全相反（一个加预算，一个换模型/换提示词）。
+
+    所以这里把**那一次调用的账**（`finish_reason` / 思考 token / 完成 token / 预算）
+    一起抛出来，让它跟着结论上屏。
+    """
+    last = list(rounds)[-1] if rounds else {}
+    text = str(last.get("content") or "")
+    if text.strip():
+        return text
+    usage = last.get("usage") or {}
+    det = usage.get("completion_tokens_details") or {}
+    raise ValueError(
+        "模型这一轮**一个字都没给**（`finish_reason=%s`）：思考 token %s、完成 token %s%s"
+        " —— 多半是预算被思考吃满（文件太大 / `max_tokens` 太小）。"
+        % (last.get("finish_reason"), det.get("reasoning_tokens"),
+           usage.get("completion_tokens"),
+           ("，这一次的预算是 %s" % max_tokens) if max_tokens else ""))
 
 
 def extract_source(reply: str) -> str:

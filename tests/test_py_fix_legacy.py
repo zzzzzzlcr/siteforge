@@ -142,6 +142,28 @@ def test_check_patch_blocks_each_way_a_patch_could_break_production():
         assert any(want in b for b in bad), (label, bad)
 
 
+def test_an_empty_model_reply_says_why_instead_of_just_being_empty():
+    """★ 空回话**不是**「补丁是空的」—— 要把那一次调用的账摆出来。
+
+    【我量的·2026-09-21】真跑一趟修站时撞到的：`finish_reason="length"`、
+    `reasoning_tokens = 12000 = max_tokens`、`content` 空（思考把预算吃满）。
+    「预算不够」与「模型没给东西」是两件事，处置相反（加预算 vs 换模型/换提示词）。
+    """
+    empty = [{"content": "", "finish_reason": "length",
+              "usage": {"completion_tokens": 12000,
+                        "completion_tokens_details": {"reasoning_tokens": 12000}}}]
+    with pytest.raises(ValueError) as caught:
+        fix.patch_from_rounds(empty, max_tokens=32000)
+    said = str(caught.value)
+    for want in ("length", "12000", "32000"):
+        assert want in said, said
+    #: 有回话就原样交出去（围栏那一圈由 `extract_source` 管，不在这儿动）
+    assert fix.patch_from_rounds([{"content": "print(1)"}]) == "print(1)"
+    #: 一轮都没有（模型那边连一条记录都没留下）也不许静默
+    with pytest.raises(ValueError):
+        fix.patch_from_rounds([])
+
+
 def test_extract_source_prefers_the_fence_and_falls_back_to_the_whole_reply():
     """先认围栏；一处都没有才退回整段原话 —— 退回之后照样要过闸（不猜）。"""
     wrapped = "这是改好的：\n```python\nprint(1)\n```\n以上。"

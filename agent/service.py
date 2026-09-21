@@ -2007,6 +2007,13 @@ class Service:
 
         return run_selftest
 
+    #: 改稿那一次调用的 **token 预算**。⚠️ 这个数是**量出来的**，不是拍的：
+    #: 2026-09-21 真跑一趟修站（站 `qualify.lastingpowerofattorney.io`，旧脚本 21916 字节 /
+    #: 459 行）时，`llm.DEFAULT_MAX_TOKENS`（12000）被**思考 token 吃满** ⇒
+    #: `finish_reason="length"`、`content` 空 ⇒ 那一版补丁是空的，钱白花。
+    #: 这份活要的是「整份源码进、整份源码出」+ 推理，所以给足。
+    PATCH_MAX_TOKENS = 32000
+
     def _patch_cb(self, brief: dict) -> Optional[Callable]:
         """`Deps.patch_source`（B 线 ③ 乙）：**老写法那份 py 的改稿那双手**。
 
@@ -2035,8 +2042,11 @@ class Service:
                 fix.patch_user(old_src, evidence=evidence, success_text=success_text,
                                diagnosis=str((diag or {}).get("say") or ""), violations=vios,
                                hints=list(fb.get("hints") or [])),
-                [], lambda name, args: None, max_rounds=1)
-            return rounds[-1]["content"] if rounds else ""
+                [], lambda name, args: None, max_rounds=1,
+                max_tokens=self.PATCH_MAX_TOKENS)
+            #: 空回话在这儿**抛**（带那一次的账）—— 图那一侧会把它原样摆到闸上，
+            #: 不许只说「补丁是空的」（见 `fix.patch_from_rounds` 的 docstring）。
+            return fix.patch_from_rounds(rounds, max_tokens=self.PATCH_MAX_TOKENS)
 
         return patch
 
