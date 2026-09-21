@@ -661,7 +661,10 @@ RUN_FORM = {"url": "https://example-funnel.test/quiz",
             #: ⚠️ 空着也照发（「页面不预判哪格必填」那条纪律），服务把它落成一份 `{}`。
             "form_data": "",
             #: 开工前那一句（2026-09-21）：人没写 ⇒ 空串，照样发（同一条纪律）。
-            "note": ""}
+            "note": "",
+            #: 停用站照修那一格（2026-09-21）：驱动器**真勾上**了它 ⇒ 载荷里必须是 `True`
+            #: （布尔，不是 "on" —— 字符串会被 pydantic 当真值，「没勾」与「勾了」就分不出来）
+            "allow_disabled": True}
 #: 新开出来那一趟的 job id（页面的 `pickJob` 要跟着它走）。
 NEW_JOB = "job-new-one"
 #: 服务对 `/run` 回的那句人话（**从服务自己的常量算出来**，不在这儿手抄一遍）。
@@ -980,7 +983,9 @@ def test_the_operator_can_start_a_new_run_from_the_panel(tmp_path):
         #: 表单数据那一格（2026-09-21）：人没填 ⇒ 空串，但**照发**（页面不预判必填）
         "form_data": RUN_FORM["form_data"],
         #: 开工前那一句（同一条纪律）
-        "note": RUN_FORM["note"]}, runs[0]["body"]
+        "note": RUN_FORM["note"],
+        #: 停用站照修那一格（同一条纪律）
+        "allow_disabled": RUN_FORM["allow_disabled"]}, runs[0]["body"]
     # ② 页面上**没有**预先替服务判哪一格必填：四格都填了，正文里就是四条原样（没加没减）
     assert RUN_HOP not in out["afterLoad"]["who"], out["afterLoad"]
     # ① 开页时没挑运行；开完**跟着新那一趟走**
@@ -1113,7 +1118,8 @@ def test_the_run_fixture_can_actually_fire(tmp_path):
               "success_text": RUN_FORM["success_text"], "mode": RUN_FORM["mode"],
               "evidence": RUN_FORM["evidence"],
               "form_data": RUN_FORM["form_data"],
-              "note": RUN_FORM["note"]}
+              "note": RUN_FORM["note"],
+              "allow_disabled": RUN_FORM["allow_disabled"]}
     got_good = json.loads([x for x in good["sent"] if x["url"] == RUN_HOP][0]["body"])
     got_bad = json.loads([x for x in bad["sent"] if x["url"] == RUN_HOP][0]["body"])
     assert got_good == wanted, got_good

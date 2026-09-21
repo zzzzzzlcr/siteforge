@@ -1307,7 +1307,38 @@ class FmrClient:
         return inner
 
     # ── ⑥ 一个站的脚本源码：读（B 线 py 支）──────────────────────────
-    def form_script(self, site: str) -> dict:
+    def _disabled_py_source(self, key: str) -> Optional[dict]:
+        """`?type=debug` 问一遍：**停用的、py 的**那一份，连源码一起回；否则 `None`。
+
+        ★ 这是「把 debug 那一遍当底稿用」的**唯一入口**（用户 2026-09-21 提的：
+        「停用带上 type 等于 debug 不就行了？」）—— 所以它只在**运营显式要求**时走
+        （`allow_disabled`）。闸的理由（不是取消，是收窄）：那份配置**可能不是生产在跑的那一份**
+        （「停用 ≠ 没在跑」是量过的：`japansdates` 今天还失败 6 条）。所以调用方**必须**
+        把「这一版底稿来自**停用那份**」记进状态、摆在闸上（`fix_base`）——
+        不许让它长得跟「线上启用那份」一模一样。
+
+        【我量的·2026-09-21】`formScript?site=<停用的 py 键>&type=debug` →
+        `status: 0` + `type: py` + **`source` 18936 字节**（源码真在里面）。
+        `cvrefresh.com`（启用的 json）→ `status: 1`、`type: json`、`source: None` ⇒ 这里回 `None`。
+
+        ⚠️ 只认「停用 **且** py **且** 有源码」这三条同时成立：启用的那一份不该走这条路
+        （那是正常那一遍的活），json 的走了会把「配置」当脚本改。
+        """
+        try:
+            got = self._call(FORM_SCRIPT_PATH, {"site": key, "type": "debug"},
+                             shape=dict, need_token=False, opener=self._config_opener)
+        except FmrUnmeasured:
+            return None
+        if got.get("status") != 0 or str(got.get("type") or "").strip() != "py":
+            return None
+        source = got.get("source")
+        if not isinstance(source, str) or not source:
+            return None
+        out = dict(got)
+        out.update({"debug_read": True, "disabled": True})
+        return out
+
+    def form_script(self, site: str, *, allow_disabled: bool = False) -> dict:
         """**这个站的脚本源码**（后端那一份，逐字）→ `{type, source, version, sha256, …}`。
 
         【我量的·2026-09-21】`GET /api/quest/formScript?site=<键>`：
@@ -1341,6 +1372,12 @@ class FmrClient:
             #: ⚠️ **只有 404 触发**：别的码（401/400…）的原因不是「哪一份配置」那件事。
             if int(getattr(exc, "status", 0) or 0) != 404:
                 raise
+            #: ★ 运营**显式**说要动一个停用的站（2026-09-21）：只有这一格为真时，
+            #: debug 那一份才**可以**当底稿。默认照旧抛 —— 一个字都不变。
+            if allow_disabled:
+                forced = self._disabled_py_source(key)
+                if forced is not None:
+                    return forced
             raise FmrRefused(self._script_404_say(key, exc), status=404) from exc
         kind = data.get("type")
         if kind not in ("py", "json"):

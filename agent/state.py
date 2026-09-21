@@ -193,6 +193,11 @@ class SiteState(TypedDict, total=False):
     #: （没有 `STATES/FILLS` 那张数据表，改稿走整份源码出补丁）。模板形这一格是空的。
     #: ⚠️ 必须**在这里声明**：langgraph 按字段名过滤，没声明的键进不了状态、**而且不报错**。
     fix_style: Optional[str]
+    #: **这一版的底稿是哪一份**（2026-09-21）：线上启用那份 / **停用那份**（走 debug 读回来的，
+    #: 也就是 `allow_disabled` 那条路）。它必须上闸 —— 「拿停用那份改出来的补丁」与
+    #: 「拿线上那份改的」在屏幕上长得一样，而它们是两件不同的事（前者可能改的是一个
+    #: 生产**不读**的副本）。
+    fix_base: Optional[str]
     #: 老写法那一版的**改动**（unified diff 形状，人看；`graph._patch_diff` 产的）——
     #: 摆在自测 / 交付那两道闸的事实里，让人在放它去跑真页面之前看见它动了什么。
     src_diff: Optional[str]

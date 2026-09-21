@@ -486,6 +486,7 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
         out = _enter(state, caps, "explore", say,
                      facts=dict(_brief_facts(state, deps, _missing_knobs(state, deps)),
                                 **{"模式": "修站（MODE_FIX）", "底稿": state.get("fix_py"),
+                                   "底稿来源": state.get("fix_base") or "（没说）",
                                    "写法": ("老写法（线上那一族）" if legacy
                                             else "模板形（STATES/FILLS）"),
                                    "改法": ("整份源码出补丁" if legacy

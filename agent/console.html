@@ -540,6 +540,16 @@
                   两种活做法不一样，所以这一格服务要问清楚。</p>
               </div>
               <div class="field">
+                <label for="runAllowDisabled">这个站在后端是「停用」的，也照修</label>
+                <label><input type="checkbox" id="runAllowDisabled">
+                  用 <code>type=debug</code> 把那一份读回来当底稿</label>
+                <p class="why">默认<b>不勾</b>：停用的站在门口会被拦住（那份配置可能<b>不是生产在跑的那一份</b>，
+                  拿它当底稿改出来的补丁可能改错了版本）。<b>你确认要动它</b>就勾上 ——
+                  服务会把那一份（含源码）读回来当底稿，并在<b>每一道闸上写明</b>
+                  「这一版的底稿来自<b>停用</b>那一份」，不让它长得跟线上那份一样。
+                  ⚠️ 「停用」不等于「没在跑」：停用的站照样在失败（量过），所以要不要动它由你定。</p>
+              </div>
+              <div class="field">
                 <label for="runNote">开工前先说一句（可空）</label>
                 <input type="text" id="runNote" autocomplete="off" spellcheck="false"
                        placeholder="要点的那个东西长什么样 —— 选择器 / 那段 HTML / 一句人话都行">
@@ -1619,7 +1629,11 @@
       //: ⚠️ 同样是**只取值**（`trim()` 去掉首尾空白，「全是空格」不该被当成「填了」）。
       "form_data": document.getElementById("runForm").value.trim(),
       //: ★ 开工前那一句（2026-09-21）：服务把它放进 `hints`，逐字进模型的提示词。
-      "note": document.getElementById("runNote").value.trim()
+      "note": document.getElementById("runNote").value.trim(),
+      //: ★ 停用的站照修（2026-09-21）：勾了才让服务拿 `type=debug` 那一份当底稿。
+      //: ⚠️ 发的是**布尔**（不是 "on"）：服务那一格是 `bool`，发字符串会被 pydantic 当成真值，
+      //: 「没勾」与「勾了」就分不出来了（闸门形同虚设）。
+      "allow_disabled": document.getElementById("runAllowDisabled").checked === true
     };
   }
 

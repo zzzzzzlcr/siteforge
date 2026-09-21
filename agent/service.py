@@ -1437,6 +1437,10 @@ class RunRequest(_Intake):
     #: ⚠️ 为什么非有不可：面板上**没有**「表单数据文件」这一格，而自测那一步缺它就当场停
     #: （「没有可用的浏览器窗口**或没给表单数据**」）—— 人在那儿无路可走。
     form_data: str = Field("", description="表单数据（一段 JSON，可空；空 = 没给值）")
+    #: ★ 停用的站要不要照修（2026-09-21，用户提的「停用 + type=py 就是 debug」）：
+    #: 默认 `False` = 门口照旧拒（那份配置可能不是生产在跑的那一份）。勾上之后才拿
+    #: `type=debug` 那一份当底稿，**并且**把「底稿来自停用那份」记进状态、摆在闸上。
+    allow_disabled: bool = Field(False, description="照修一个**停用**的站（拿 debug 那一份当底稿）")
     #: ★ **开工前就说的一句话**（2026-09-21，用户提的「运营来给 selector」那条路）：
     #: 进 `hints` —— 那条线一路走到 `fix.patch_user(hints=…)`，**逐字**进模型的提示词。
     #: 运营最常给的就是「要点的那个东西长什么样」：一个选择器、一段 outerHTML、或一句人话
@@ -4606,7 +4610,10 @@ class Service:
         came_with = str(getattr(body, "fix_site_url", "") or "").strip()
         ask_with = key if (key and came_with and url == came_with) else url
         try:
-            script = self._fmr.form_script(ask_with)
+            #: ★ 停用的站要不要照修，**运营说了算**（2026-09-21）：勾了才把 debug 那一份
+            #: 当底稿（见 `fmr._disabled_py_source`）。默认 False ⇒ 门口那句人话一个字不变。
+            script = self._fmr.form_script(ask_with,
+                                           allow_disabled=bool(getattr(body, "allow_disabled", False)))
         except fmr.FmrUnmeasured as exc:
             # 读不到 / 没这个站 / 没给 url —— 全走既有的「量不到」那张表（非 2xx + 原话）。
             raise self._unmeasured_to_http(exc)
@@ -4623,6 +4630,14 @@ class Service:
         staged = out_dir / ("%s.before.py" % site)
         #: ⚠️ **逐字节**写下去：后端原话「首尾换行是源码的一部分」，
         #: 写口又拿 sha256 当指纹 —— 在这儿 strip 一下，后面写回去的就是另一份文件了。
+        #: ★ **这一版的底稿是哪一份**（2026-09-21）：走 debug 那条路时它是**停用**那份 ——
+        #: 必须一路带出去（闸上、报告里都要看得见）。不带的话，「拿停用那份改出来的补丁」
+        #: 与「拿线上启用那份改出来的」在屏幕上**一模一样**，而它们是两件不同的事。
+        brief["fix_base"] = (
+            "**停用那一份**（`type=debug` 读回来的，后端 `status: 0`，sha256 %s —— "
+            "⚠️ 这一份**可能不是生产在跑的那一份**）" % str(script.get("sha256") or "?")[:12]
+            if script.get("debug_read") else
+            "线上**启用**的那一份（sha256 %s）" % str(script.get("sha256") or "?")[:12])
         staged.write_text(str(script.get("source") or ""), encoding="utf-8")
         return str(staged)
 
@@ -4718,7 +4733,12 @@ class Service:
                 #: ⚠️ 少了它，服务算出来、也落了盘，却**发不到图里** ——
                 #: `graph.py:346` 那个 `if fix_py:` 恒为假，那条路「接上了但不响」
                 #: （`state.py:176` 记的正是上一次这么栽的）。
-                "fix_py")
+                "fix_py",
+                #: ★ **这一版的底稿是哪一份**（2026-09-21）：线上启用那份 / 停用那份。
+                #: ⚠️【同一天实测】加 `fix_base` 那一次**又栽在同一个地方** —— 服务把它算出来了、
+                #: 状态里也声明了，可它不在这张白名单里 ⇒ 发不进图 ⇒ 闸上印的是「（没说）」。
+                #: 所以这一格与 `fix_py` 是**一件事的两半**：谁改了其中一个，另一个一起改。
+                "fix_base")
         return {k: brief[k] for k in keep if k in brief}
 
     def reply(self, job_id: str, body: ReplyRequest) -> dict:

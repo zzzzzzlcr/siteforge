@@ -194,6 +194,9 @@ async function runScenario(out) {
   el("runGoal").value = payload.run.goal;
   el("runSuccess").value = payload.run.success_text;
   el("runEvidence").value = payload.run.evidence;
+  //: ★ 「停用站也照修」那一格**真勾上**（2026-09-21）：夹具那边因此要求载荷里是 `true` ——
+  //: 只钉「那一格在载荷里」的话，页面把它**写死 False** 这种改法照绿（而闸就形同虚设）。
+  el("runAllowDisabled").checked = true;
   fire("btnRun", "click");
   await settle();
   await settle();                                   // `pickJob` 里那两次 fetch 也落地

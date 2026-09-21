@@ -115,6 +115,54 @@ def test_fix_mode_stages_the_backend_script_as_the_draft(tmp_path):
     assert params["site"] == URL, params
 
 
+def test_a_disabled_site_can_be_staged_when_the_operator_asks_for_it(tmp_path):
+    """★★ 停用的站照修（2026-09-21，用户裁断：「停用带上 type 等于 debug 不就行了？」）。
+
+    默认（不勾 `allow_disabled`）照旧拒 —— 那扇门一个字没动；勾了才走 `type=debug` 那一份。
+    ⚠️ 而 **`fix_base` 必须写明「这一版底稿来自停用那一份」**：不写的话，
+    拿停用那份改出来的补丁与拿线上那份改的**在屏幕上一样**，而它们是两件不同的事。
+    """
+    disabled = {"status": 200, "msg": "ok", "data": {
+        "site": "japansdates.com", "requested_site": URL, "type": "py", "status": 0,
+        "version": "20260920", "sha256": "a" * 64, "source": SCRIPT_SRC}}
+
+    # ① 不勾：门口拒（还是那句「停用」），一份底稿都不落
+    rec = Recorder(_not_found_body(), disabled)
+    app = _client(tmp_path, fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec))
+    r = app.post("/run", json=_brief(tmp_path))
+    assert r.status_code != 202, r.text
+    assert "停用" in r.text, r.text
+    assert not (tmp_path / "sites").exists(), "拒了却落了底稿"
+
+    # ② 勾了：底稿落盘（逐字节）+ 状态里写明底稿是哪一份
+    seen = {}
+
+    def factory(brief, deps):
+        seen.update(brief)
+        return None
+
+    rec2 = Recorder(_not_found_body(), disabled)
+    app2 = TestClient(                                  # 自己拼：`_client` 已经把 `graph_factory` 占了
+        service.create_app(graph_factory=factory,
+                           checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST),
+                           failures_reader=fmr.FmrClient(token=FAKE_TOKEN, opener=rec2),
+                           window=StubWindow()),
+        raise_server_exceptions=False)
+    r2 = app2.post("/run", json=_brief(tmp_path / "b", allow_disabled=True))
+    assert r2.status_code == 202, r2.text
+    staged = tmp_path / "b" / "sites" / ("%s.before.py" % SITE)
+    assert staged.read_text(encoding="utf-8") == SCRIPT_SRC, "底稿被改过了（逐字节！）"
+    assert "停用" in str(seen.get("fix_base")), seen.get("fix_base")
+    assert "a" * 12 in str(seen.get("fix_base")), seen.get("fix_base")
+    #: ★★ 而且它**要发得进图**（2026-09-21 实测栽过）：`_payload` 有一张白名单，
+    #: 服务把 `fix_base` 算出来了、状态里也声明了，可它不在白名单里 ⇒ 图里没有它
+    #: ⇒ 闸上印「（没说）」。**闸上印不出来 = 运营看不到这一版底稿是哪一份**
+    #: （而「拿停用那份改的」与「拿线上那份改的」在屏幕上长得一样，那正是这条要治的形状）。
+    sent = service.Service._payload(seen)
+    assert sent.get("fix_base") == seen["fix_base"], sent.keys()
+    assert "fix_py" in sent, "底稿路径那一格还在（同一个白名单）"
+
+
 def test_the_draft_stages_when_the_page_sends_no_site_key(tmp_path):
     """★★ 面板那一趟**不发 `site`**（`console.html` 的 `runPayload()` 只有那七格）。
 

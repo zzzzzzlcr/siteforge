@@ -1840,20 +1840,38 @@ def test_a_disabled_config_is_said_as_disabled_not_as_a_wrong_name():
     assert "不认识" not in said, "还是把那句「名字给错了」顶上来了：%r" % said
 
 
-def test_the_debug_read_never_becomes_the_draft():
-    """★★ 纪律：**debug 只用来出话，不用来取底稿。**
+def test_the_debug_read_never_becomes_the_draft_unless_the_operator_says_so():
+    """★★ 纪律（**2026-09-21 收窄过**）：debug 那一份**不勾就绝不当底稿**；勾了才给，而且带标记。
 
-    这一条是整件事的关键：拿一份**停用**的配置去「修」，等于在一个**没在跑**的东西上
-    改半天；写回更是会写到一份生产不读的记录上。所以那一遍问出来的 `source`
-    **一个字都不许**从 `form_script` 出去 —— 它照旧**抛**，调用方拿不到底稿。
+    ⚠️ 原先这一条钉的是「debug **绝不**当底稿」。用户 2026-09-21 的裁断把它收窄成
+    「**没勾就绝不**」：这个 `type=debug` 口子**本来就是为这条需求开的**
+    （停用的站也要能修），原件理由（「那份可能不是生产在跑的那一份」）没有被推翻 ——
+    它变成了**运营要显式承担**的那一件事，代价是：底稿是哪一份必须**说得出**
+    （所以这里还钉 `debug_read` / `disabled` 两个标记 —— 没有它们，
+    「拿停用那份改的」与「拿线上那份改的」在屏幕上长得一模一样）。
+
+    两个方向都量：① 没勾 ⇒ 抛，而且**源码一个字都不许出去**；② 勾了 ⇒ 给，且带标记。
     """
+    # ① 没勾（默认）：照旧抛、源码不出去
     rec = Recorder(MEASURED_SCRIPT_NOT_FOUND_BODY, MEASURED_SCRIPT_DISABLED_PY_BODY)
-
     with pytest.raises(fmr.FmrUnmeasured) as exc:
         fmr.FmrClient(token="", opener=rec).form_script("japansdates.com")
-
     assert "STATES = []" not in str(exc.value), \
-        "把 debug 那一遍的源码端出来了（那会是「拿停用的配置去修」）：%r" % str(exc.value)
+        "没勾也把 debug 那一遍的源码端出来了：%r" % str(exc.value)
+    # ② 勾了：给那份源码，并且**标明**它是停用那一份（debug 读回来的）
+    rec2 = Recorder(MEASURED_SCRIPT_NOT_FOUND_BODY, MEASURED_SCRIPT_DISABLED_PY_BODY)
+    got = fmr.FmrClient(token="", opener=rec2).form_script("japansdates.com", allow_disabled=True)
+    assert got["source"] and "STATES = []" in got["source"], got
+    assert got["debug_read"] is True and got["disabled"] is True, got
+    #: ⚠️ **只认「停用 + py + 有源码」三条同时成立**：下面两种勾了也**照旧抛**
+    enabled = {"status": 200, "msg": "ok", "data": {
+        "type": "py", "status": 1, "source": "x = 1\n", "sha256": "d" * 64}}
+    as_json = {"status": 200, "msg": "ok", "data": {
+        "type": "json", "status": 0, "source": None, "sha256": None}}
+    for bad in (enabled, as_json):
+        with pytest.raises(fmr.FmrUnmeasured):
+            fmr.FmrClient(token="", opener=Recorder(MEASURED_SCRIPT_NOT_FOUND_BODY, bad)).form_script(
+                "x.com", allow_disabled=True)
 
 
 def test_a_debug_read_that_also_fails_says_what_it_can_not_tell_apart():
