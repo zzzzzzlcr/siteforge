@@ -229,6 +229,10 @@ class Deps:
 
     explore: Callable = browser_agent.explore
     write: Callable = _writer_from_journey
+    #: **老写法那份 py 的改稿那双手**（B 线 ③ 乙）：`(old_src, feedback) -> 模型原话`。
+    #: 与 `should_pause` / `set_viewport` 同一条规矩：**没接上就停下并点名** ——
+    #: 「这一族今天修不了」不许被写成「读不出 STATES/FILLS」（那是两件事）。
+    patch_source: Optional[Callable] = None
     lint: Callable = lint_mod.check
     selftest: Callable = selftest_mod.run
     provenance: Callable = runtime.provenance
@@ -353,14 +357,26 @@ def _intake(state, deps: Deps, caps: Caps) -> dict:
             fix_failed = "修不了：读不到那份 py（%s）。给一个能读的路径再发起。" % exc
         else:
             plan, fix_states, fix_fills, fix_notes = fix_mod.from_py(src_before)
-            if not fix_states:
-                fix_failed = ("修不了：%s\n（修站这条路要的是**读得出 STATES/FILLS** 的旧 py；"
-                              "读不出来就只能当新站从零探索 —— 那是另一条路。）"
-                              % (fix_notes[0] if fix_notes else "那份 py 读不出来"))
-            else:
+            shape = ({"kind": "template", "why": []} if fix_states
+                     else fix_mod.shape_of(src_before))
+            if fix_states:
                 fix_read = {"mode": MODE_FIX, "fix_py": fix_py, "fix_src": src_before,
                             "fix_states": fix_states, "fix_fills": fix_fills,
                             "fix_notes": fix_notes, "fix_plan_steps": len(plan.steps)}
+            elif shape["kind"] == "legacy":
+                # ★ B 线 ③（用户 2026-09-21 拍板的「乙」）：线上那一族写法里**没有**
+                # `STATES/FILLS` 那张数据表 —— 所以底稿就是它**本身**，改稿走
+                # `deps.patch_source`（整份源码出补丁，过闸才往下走）。
+                # ⚠️ 仍然**不探索**：修站那条路的判据是「不重新探索」。
+                fix_read = {"mode": MODE_FIX, "fix_py": fix_py, "fix_src": src_before,
+                            "fix_style": "legacy",
+                            "fix_states": None, "fix_fills": None, "fix_notes": fix_notes}
+            else:
+                why = "；".join(shape["why"]) or (fix_notes[0] if fix_notes else "那份 py 读不出来")
+                fix_failed = ("修不了：%s\n（修站这条路要的是**读得出 STATES/FILLS** 的旧 py，"
+                              "或者线上那一族**老写法**的完整 py（走 report_url、认生产那四个"
+                              "开关、`sys.exit(0 if … else 1)`）；这一份两样都不是 —— "
+                              "读不出来就只能当新站从零探索，那是另一条路。）" % why)
     # ⚠️ **`intake` 不设闸**（2026-09-20 真面板实测逼出来的）。
     #
     # 运营点「开一趟」那一下**就是**「开工前的确认」。在这儿再停一次 = **同一件事问两遍**，
@@ -436,18 +452,31 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
     # 手上已经有一份读得出的旧 py（intake 那一步读进来的），它的每一步、每一格
     # 都录在那份产物里。再开一个浏览器重走一遍 = 把已有的证据丢掉重买一次。
     # 所以这一步**原样跳过**，并把「跳过了什么、凭什么是它」写进 facts 让人看得见。
-    if state.get("fix_states"):
+    if state.get("fix_states") or state.get("fix_style") == "legacy":
+        legacy = state.get("fix_style") == "legacy"
         notes = list(state.get("fix_notes") or [])
-        say = ("这次是**修站**，不重新探索：拿的是现成的那份 py（%s，%d 步），"
-               "按当前的识别代码把每一格的身份重判了一遍。" % (
-                   state.get("fix_py"), int(state.get("fix_plan_steps") or 0)))
-        if notes:
-            say += " 改动：" + "；".join(notes)
+        if legacy:
+            say = ("这次是**修站**，不重新探索：拿的是**线上正在跑的那一份 py**（%s）—— "
+                   "它是**老写法**（里面没有 `STATES/FILLS` 那张数据表），所以这一趟是"
+                   "**整份源码出补丁**：交给模型只改该改的那一处，过闸之后才往下走。"
+                   % state.get("fix_py"))
+            fixed = ["（老写法：这一趟不改数据表，改的是源码本身）"]
+        else:
+            say = ("这次是**修站**，不重新探索：拿的是现成的那份 py（%s，%d 步），"
+                   "按当前的识别代码把每一格的身份重判了一遍。" % (
+                       state.get("fix_py"), int(state.get("fix_plan_steps") or 0)))
+            fixed = notes
+            if notes:
+                say += " 改动：" + "；".join(notes)
         out = _enter(state, caps, "explore", say,
                      facts=dict(_brief_facts(state, deps, _missing_knobs(state, deps)),
                                 **{"模式": "修站（MODE_FIX）", "底稿": state.get("fix_py"),
+                                   "写法": ("老写法（线上那一族）" if legacy
+                                            else "模板形（STATES/FILLS）"),
+                                   "改法": ("整份源码出补丁" if legacy
+                                            else "按当前识别代码重判每一格的身份"),
                                    "底稿步数": int(state.get("fix_plan_steps") or 0),
-                                   "改了哪些格": notes,
+                                   "改了哪些格": fixed,
                                    "探路": "**没有探路**（修站这条路不探索：账本/产物已经有了）"}))
         if _held(out):
             return out
@@ -713,6 +742,39 @@ def _spent_after(spent: dict, journeys: list) -> dict:
     return out
 
 
+def _patch_draft(state, deps: Deps, feedback: dict) -> tuple:
+    """**老写法那份 py 的这一次稿**：整份源码交给 `deps.patch_source`，交回来的过闸。
+
+    返回 `(src, bad)`：`bad` 非空 = 这一版**没有出来**（逐条人话），此时 `src` 是空串。
+
+    ⚠️ **没接上那根线**（`deps.patch_source is None`）时**停下并点名** —— 与
+    `should_pause` / `set_viewport` 同一条规矩：「这个部署没接改稿的手」与
+    「这份 py 修不了」是两件事，写成一件就是编话。
+    ⚠️ 打回的原因**逐条**回灌（`fix.check_patch` 的原文），不概括 ——
+    概括一次，模型就看不到「到底是哪一条没过」。
+    """
+    if deps.patch_source is None:
+        return "", ["这个部署**没接「改稿」那根线**（`Deps.patch_source`）—— "
+                    "老写法那一族（线上那 66 份 py 全是这一族）只能靠它改。"
+                    "接上一个会出补丁的模型再发起；没接上就停在这儿，"
+                    "**不许**把它写成「这份 py 修不了」（那是另一件事）。"]
+    old = str(state.get("fix_src") or "")
+    try:
+        reply = deps.patch_source(old, feedback)
+    except Exception as exc:                      # noqa: BLE001 —— 那一路任何一种炸法都在这儿
+        return "", ["改稿那一步炸了：`%s: %s`" % (type(exc).__name__, str(exc)[:400])]
+    src = fix_mod.extract_source(reply)
+    bad = fix_mod.check_patch(old, src)
+    return ("" if bad else src), bad
+
+
+def _patch_failed_say(bad: list) -> str:
+    """这一版补丁没出来时，摆在闸上的那句话 —— **逐条**列出没过闸的原因。"""
+    return ("这一版补丁**没出来**（没过闸，一份都没落盘、也没往下走）：\n· "
+            + "\n· ".join(str(b) for b in bad)
+            + "\n（重发起一次就带着这些原因再补一版；闸只判结构，改得对不对由自测和人说了算。）")
+
+
 def _draft(state, deps: Deps, caps: Caps) -> dict:
     """把账本翻译成 py 源码（`template.render`），**带上回灌的证据**。
 
@@ -727,6 +789,21 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
         return out
     # 人在**这一道闸**上说的话，属于**这一版**稿（所以 feedback 在闸之后组装）
     feedback = _feedback(state, hints=out.get("hints"))
+    # ── 底稿从哪来，三种走法 ──────────────────────────────────────────
+    #
+    #  · **老写法**（`fix_style == "legacy"`，B 线 ③ 乙）：线上那一族 py 里**没有**
+    #    `STATES/FILLS` 那张数据表可改 —— 所以整份源码交给 `deps.patch_source` 出补丁，
+    #    过闸（`fix.check_patch`）才许往下走。⚠️ 这条支**排在模板那条之前**。
+    if state.get("fix_style") == "legacy":
+        src, bad = _patch_draft(state, deps, feedback)
+        if bad:
+            out.update({"end_reason": END_DRAFT_FAILED, "end_note": _patch_failed_say(bad)})
+            return out
+        out.update({"states": [], "fills": {}, "success_text": state.get("success_text"),
+                    "src": src, "violations": [],
+                    # 这一版就是为那次打回写的（与模板那条同一个道理，见下面那段注释）。
+                    "revised_at": "", "diagnosis": None})
+        return out
 
     # ── 底稿从哪来：探索的账本，**或者**修站那条路读进来的旧 py ────────────────
     #
@@ -906,8 +983,17 @@ def _deliver(state, deps: Deps, caps: Caps) -> dict:
     # 不是「他还没说话的那一刻」。
     prov = _provenance(state, deps, report=state.get("report"))
     try:
-        src = template.render(state["site"], state.get("success_text"), state.get("states"),
-                              state.get("fills"), provenance=prov)
+        legacy = state.get("fix_style") == "legacy"
+        if legacy:
+            #: ⚠️ 老写法（B 线 ③ 乙）：**没有 states/fills 可渲** —— 要落盘的就是 `draft`
+            #: 那一版源码本身（模型出的补丁，过闸之后**一字未改**）。
+            #: 也**不往里塞 PROVENANCE**：那一块是 siteforge 自己产物的惯例，线上那一族
+            #: 没有它 —— 往别人的脚本里加东西就不是「只改该改的那一处」了。这一次的
+            #: 出身记在运行记录里（`state["provenance"]`），不在产物文件里。
+            src = str(state.get("src") or "")
+        else:
+            src = template.render(state["site"], state.get("success_text"),
+                                  state.get("states"), state.get("fills"), provenance=prov)
     except ValueError as exc:                                  # spec 里少了东西（不该到这）
         out.update({"end_reason": END_DRAFT_FAILED, "end_note": "交付前重渲失败：%s" % exc})
         return out
@@ -915,12 +1001,15 @@ def _deliver(state, deps: Deps, caps: Caps) -> dict:
     dirty = [_violation_dict(v) for v in (deps.lint(src) or [])]
     if dirty:
         _drop_candidate(state)
+        #: 那句「多半是 PROVENANCE…」只对**模板形**成立：老写法那一版没有 PROVENANCE
+        #: 那一段，脏了就是模型那一版本身带着手拼 JS（B 线 ③ 乙）。
+        hint = ("PROVENANCE 里的自由文本撞上了写模式" if state.get("fix_style") != "legacy"
+                else "模型交回来的那一版本身就带着手拼 JS")
         out.update({"end_reason": END_DELIVER_LINT,
-                    "end_note": ("**没有落盘**：要写出去的那串字节自己没过契约检查（多半是 "
-                                 "PROVENANCE 里的自由文本撞上了写模式）：%s\n"
+                    "end_note": ("**没有落盘**：要写出去的那串字节自己没过契约检查（多半是 %s）：%s\n"
                                  "一个字节都没写 —— 宁可没有，也不交一份自己都没过检查的产物。"
-                                 % "；".join("第 %s 行：%s" % (v["line"], v["message"])
-                                             for v in dirty))})
+                                 % (hint, "；".join("第 %s 行：%s" % (v["line"], v["message"])
+                                                    for v in dirty)))})
         return out
 
     path = _delivery_path(state)
@@ -1282,6 +1371,11 @@ def _selftest_kwargs(state, deps: Deps) -> dict:
     kw = {}
     if deps.set_viewport is not None:
         kw["set_viewport"] = deps.set_viewport
+    #: ★ 老写法那一族（B 线 ③ 乙）：自测那条路要换一套调法（argv 不给 `--trace` 那几个
+    #: 开关，证据从运行时进）—— 形状是 intake 那一步**量过**的（`fix.shape_of`），
+    #: 这里只是把它带下去。⚠️ 只在**是**老写法时才给这一格：别的路一个字节不变。
+    if state.get("fix_style") == "legacy":
+        kw["legacy"] = True
     if state.get("allow_skips"):
         kw["allow_skips"] = tuple(state["allow_skips"])
     if state.get("entry_url"):
@@ -1303,7 +1397,11 @@ def _feedback(state, hints=None) -> dict:
 def _draft_say(state, feedback: dict) -> str:
     """draft 那道闸上问的话：**先把它为什么被叫回来**说清楚（人话，不是 code）。"""
     version = list(state.get("visits") or []).count("draft") + 1
-    head = "接下来写第 %d 版 py（按账本里的「怎么走」填骨架）。" % version
+    head = (
+        ("接下来写第 %d 版：把**线上正在跑的那一份 py** 整个交给模型出一版补丁"
+         "（老写法里没有 states/fills 可改），过闸之后才往下走。" % version)
+        if state.get("fix_style") == "legacy"
+        else "接下来写第 %d 版 py（按账本里的「怎么走」填骨架）。" % version)
     if state.get("revised_at"):
         # 人否掉了上一版（§6「人否 → 回 draft 带人的纠正」）——闸口上得把他的话摆出来，
         # 不然这一版看上去像是自己决定重写的

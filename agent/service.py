@@ -71,8 +71,8 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from langgraph.types import Command
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
-from agent import (browser_agent, configcheck, events, fmr, graph, journal, jsondiag,
-                   measure, rounds, selftest, shots, tools)
+from agent import (browser_agent, configcheck, events, fix, fmr, graph, journal, jsondiag,
+                   llm, measure, rounds, selftest, shots, tools)
 from agent.graph import NODES, STEP_SAY
 from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_LINT_CAP,
                          END_NO_WINDOW, END_PAUSED, END_REVISION_CAP,
@@ -1961,6 +1961,8 @@ class Service:
         生产走 `graph_factory=None` 那条：全是真接线。
         """
         deps = graph.Deps(explore=self._explore_for(brief, job_id),
+                          # B 线 ③（乙）：老写法那份 py 的**改稿那双手**（没接上就在 draft 停下点名）。
+                          patch_source=self._patch_cb(brief),
                           selftest=self._selftest_cb(job_id),
                           set_viewport=(self._viewport_cb(brief.get("ws_url"))
                                         if brief.get("set_viewport") else None),
@@ -2004,6 +2006,39 @@ class Service:
             return selftest.run(py_path, ws_url, form_file, site, cdp_bin=self._cdp_bin, **kw)
 
         return run_selftest
+
+    def _patch_cb(self, brief: dict) -> Optional[Callable]:
+        """`Deps.patch_source`（B 线 ③ 乙）：**老写法那份 py 的改稿那双手**。
+
+        形状 `(old_src, feedback) -> 模型原话`：图那一侧负责过闸（`fix.check_patch`），
+        这里只负责「把提示词拼好、把模型叫醒」。
+
+        ⚠️ **没有模型 key（`OPENAI_API_KEY`）就返回 `None`**（不接这根线）—— 图会在
+        `draft` 那一步**停下并点名**（「这个部署没接改稿的手」）。**不编一个假的改稿器**：
+        那会让「改不了」看起来像「改过了」。
+        ⚠️ 失败证据 / 成功判据 / 违规行 / 人说的话**逐字**交给 `fix.patch_user` 组装 ——
+        这一层**不概括**它们（概括一次，模型就再也看不到原文里那些细节）。
+        """
+        if not os.environ.get("OPENAI_API_KEY"):
+            return None
+        evidence = str(brief.get("evidence") or "")
+        success_text = str(brief.get("success_text") or "")
+
+        def patch(old_src: str, feedback: dict) -> str:
+            fb = feedback or {}
+            vios = ["第 %s 行 —— %s" % (v.get("line"), v.get("message"))
+                    for v in (fb.get("violations") or [])]
+            diag = fb.get("diagnosis") if isinstance(fb.get("diagnosis"), dict) else {}
+            #: 模型不调工具直接答（`tool_specs=[]`）—— 这是**一次问答**，不是工具循环。
+            rounds = llm.run_tool_loop(
+                fix.PATCH_SYSTEM,
+                fix.patch_user(old_src, evidence=evidence, success_text=success_text,
+                               diagnosis=str((diag or {}).get("say") or ""), violations=vios,
+                               hints=list(fb.get("hints") or [])),
+                [], lambda name, args: None, max_rounds=1)
+            return rounds[-1]["content"] if rounds else ""
+
+        return patch
 
     def _explore_for(self, brief: dict, job_id: str = "") -> Optional[Callable]:
         """探路要朝**载荷里那个窗口**去（服务是知道窗口的那一层）。

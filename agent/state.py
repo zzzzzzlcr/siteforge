@@ -184,6 +184,10 @@ class SiteState(TypedDict, total=False):
     fix_fills: Optional[dict]
     fix_notes: Optional[list]
     fix_plan_steps: Optional[int]
+    #: **底稿是哪一种写法**（`fix.shape_of()` 量出来的）：`"legacy"` = 线上那一族
+    #: （没有 `STATES/FILLS` 那张数据表，改稿走整份源码出补丁）。模板形这一格是空的。
+    #: ⚠️ 必须**在这里声明**：langgraph 按字段名过滤，没声明的键进不了状态、**而且不报错**。
+    fix_style: Optional[str]
     site: str                     # 站点短名（不给就从 URL 推）
     success_text: Any             # **成功判据**（页面上出现哪段文字）—— 只有人知道（§6.1）
     evidence: str                 # fix 模式：失败证据的引用（FMR formLog / formStep）

@@ -478,7 +478,7 @@ def test_a_selftest_that_runs_after_the_fixtures_are_gone_cannot_touch_the_real_
     seen: dict = {}
 
     def fake_execute(name, py, ws_url, form_file, correlation_id, log_level, env,
-                     run_dir, site, timeout, task_id=None, delay=None):
+                     run_dir, site, timeout, task_id=None, delay=None, legacy_why=None):
         seen.setdefault("env", dict(env))
         return selftest.Run(name=name, label=selftest.RUN_LABELS[name], status="failed",
                             ok=False, failed_step=None, trace_path=None, note="桩")
@@ -589,7 +589,7 @@ def test_a_selftest_that_runs_after_the_fixtures_are_gone_writes_its_traces_in_t
     seen: dict = {}
 
     def fake_execute(name, py, ws_url, form_file, correlation_id, log_level, env,
-                     run_dir, site, timeout, task_id=None, delay=None):
+                     run_dir, site, timeout, task_id=None, delay=None, legacy_why=None):
         seen.setdefault("run_dir", str(run_dir))
         return selftest.Run(name=name, label=selftest.RUN_LABELS[name], status="failed",
                             ok=False, failed_step=None, trace_path=None, note="桩")

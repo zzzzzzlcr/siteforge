@@ -365,11 +365,18 @@ def _artifact_cmd(py, ws_url, form_file, correlation_id, log_level, trace_path,
            "--ws-url", ws_url,
            "--form-file", str(form_file),
            "--correlation-id", correlation_id,
-           "--log-level", log_level,
-           "--trace", str(trace_path)]
+           "--log-level", log_level]
+    #: `--trace` / `--no-report` / `--delay` 是**产物自己要有的**（`ARTIFACT_FLAGS`）。
+    #: ⚠️ **老写法那一族**（线上 66 份 py）的 `main()` 里没有它们 —— 硬传就是 argparse
+    #: 报错，每一遍都红（那不是「产物不行」，是「自测用错了调法」）。所以
+    #: `trace_path is None` 时一个都不传；那一条路的证据与「不上报」由**环境**给，
+    #: 见 `_execute` 里 `SITEFORGE_TRACE` / `SITEFORGE_NO_REPORT` 那两个旋钮。
+    if trace_path is not None:
+        cmd += ["--trace", str(trace_path)]
     if task_id:
         cmd += ["--task-id", task_id]
-    cmd.append(NO_REPORT_FLAG)      # 自测**永远**不上报（见那个常量上面的注释）
+    if trace_path is not None:
+        cmd.append(NO_REPORT_FLAG)  # 自测**永远**不上报（见那个常量上面的注释）
     if delay is not None:
         cmd += ["--delay", ("%g" % float(delay))]
     return cmd
@@ -471,16 +478,28 @@ def _default_cdp_bin() -> Optional[str]:
 
 def _execute(name: str, py, ws_url, form_file, correlation_id, log_level, env,
              run_dir: pathlib.Path, site: str, timeout: float, task_id=None,
-             delay=None) -> Run:
-    """跑一遍产物，按 trace + 退出码下结论。"""
+             delay=None, legacy_why: str = "") -> Run:
+    """跑一遍产物，按 trace + 退出码下结论。
+
+    `legacy_why` 非空 = 这一版是**老写法**（不认 `--trace` / `--no-report` / `--delay`，
+    见 `_artifact_flags`）：argv 那三个开关**一个都不传**，改由环境把那两条线接上
+    （`SITEFORGE_TRACE` / `SITEFORGE_NO_REPORT`，siteforge 那份 `forms/common.py` 认）。
+    ⚠️ 这样证据**弱一档**（定位不到卡在第几步）—— 那句话必须跟着结论一起摆出来，
+    所以 `legacy_why` 会追加到这一遍的 `note` 上。
+    """
     # ⚠️ **每一遍一个子目录**：三遍共用一个目录时截图会撞名（`11-before.png` 只有一份，
     # 分不清是哪一遍的 —— 2026-09-17 真站排查时正是被这个绊了一下）。
     # trace 落进子目录，截图跟着它走（`Filler._shot` 用的是 trace 那一层）。
     run_dir = pathlib.Path(run_dir) / name
     run_dir.mkdir(parents=True, exist_ok=True)
     trace = run_dir / ("%s.%s.trace.jsonl" % (site, name))
-    cmd = _artifact_cmd(py, ws_url, form_file, correlation_id, log_level, trace,
-                        task_id, delay)
+    cmd = _artifact_cmd(py, ws_url, form_file, correlation_id, log_level,
+                        (None if legacy_why else trace), task_id,
+                        (None if legacy_why else delay))
+    if legacy_why:
+        #: 老写法：证据线与「不上报」都从**运行时**进 —— 产物在 `<root>/forms/sites/` 时，
+        #: 它 `from common import …` 解析到的就是 siteforge 那一份 `forms/common.py`。
+        env = dict(env, SITEFORGE_TRACE=str(trace), SITEFORGE_NO_REPORT="1")
     rc, timed_out, out, err = None, False, "", ""
     try:
         done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
@@ -493,6 +512,8 @@ def _execute(name: str, py, ws_url, form_file, correlation_id, log_level, env,
 
     lines, bad_lines = _read_trace(trace)
     ok, failed_step, note = _verdict(rc, timed_out, lines, bad_lines, err, out, timeout)
+    if legacy_why:
+        note = (note + " " + legacy_why) if note else legacy_why
     return Run(
         name=name,
         label=RUN_LABELS[name],
@@ -532,6 +553,7 @@ def _judge(runs: Sequence[Run], allowed_skips: Sequence[str]) -> bool:
 
 
 def run(py_path, ws_url, form_file, site, *,
+        legacy: bool = False,
         entry_url: Optional[str] = None,
         set_viewport: Optional[Callable] = None,
         viewport: Sequence[int] = DEFAULT_VIEWPORT,
@@ -562,6 +584,14 @@ def run(py_path, ws_url, form_file, site, *,
         set_viewport   窗口层回调：`set_viewport(width, height)`（R-5，第 4 遍用）
         set_country    代理层回调：`set_country(country)`（第 5 遍用，不给就跳过）
         run_dir        每一遍的 trace 放哪（默认 `runtime/selftest/<site>-<时刻>/`）
+        legacy         **这一版是不是老写法**（B 线 ③ 乙，默认 `False`）。`True` ⇒
+                       argv **不给** `--trace` / `--no-report` / `--delay`（老写法那一族
+                       ——线上 66 份 py 全是——的 `main()` 里没有这三个开关，硬传就是
+                       argparse 报错），改由环境把证据线接上（`SITEFORGE_TRACE` /
+                       `SITEFORGE_NO_REPORT`，siteforge 那份 `forms/common.py` 认）；
+                       放慢那一遍记 `not_needed`（没那个开关）。
+                       ⚠️ 判据**一个字不改**（仍然要退出码 0 + 有证据行）—— 弱的只是
+                       「定位不到卡在第几步」，那句话跟着结论上屏。
         cdp_bin        产物与 cdp 命令都用哪一个 cdp（默认见 `_default_cdp_bin`）
         delay          第 3 遍的固定每步延迟（秒）
         allow_skips    明确允许不跑的那几遍（默认只有 `country`）
@@ -598,10 +628,23 @@ def run(py_path, ws_url, form_file, site, *,
     env = os.environ.copy()
     if cdp_bin:
         env["SITEFORGE_CDP_BIN"] = str(cdp_bin)
+    #: ★ 这一版是**老写法**吗（B 线 ③ 乙）：**上面量过**（`fix.shape_of` 走 ast 判的），
+    #: 这里只是把它带下来 —— **不再另探一次**。为什么不做 argv 探测（跑 `--help` 数开关）：
+    #: ① 形状在 intake 已经量过了，第二次量是重复；② 每次自测多起一个子进程；
+    #: ③ 实测：带探测那一版把 19 条既有断言打红了（它们的假产物不认 `--help`）——
+    #: 那是拿一个**新**的不确定性去换一个**已经量过**的事实。
+    #: ⚠️ 不认 `--trace` 的那一族（线上 66 份 py 全是）：argv 不给那三个开关，证据与
+    #: 「不上报」由环境接上；`legacy_why` 那句话会跟着结论上屏 —— **证据弱一档那件事
+    #: 必须看得见**（定位不到卡在第几步）。
+    legacy_why = ""
+    if legacy:
+        legacy_why = ("⚠️ 这一版是**老写法**（不认 `--trace` / `--no-report` / `--delay`）—— "
+                      "所以按老写法跑：证据是**它自己上报过的那些步**（由运行时写）+ 退出码，"
+                      "**定位不到卡在第几步**。")
 
     def _once(name, **kw):
         return _execute(name, py, ws_url, form_file, correlation_id, log_level, env,
-                        run_dir, site, timeout, task_id=task_id, **kw)
+                        run_dir, site, timeout, task_id=task_id, legacy_why=legacy_why, **kw)
 
     runs: list = []
     submissions = 0
@@ -678,7 +721,13 @@ def run(py_path, ws_url, form_file, site, *,
             continue
 
         if name == "delay":
-            _tell(_spend("delay", delay=delay))
+            if legacy_why:
+                _tell(_not_needed("delay", (
+                    "这一遍没跑：这份产物**不认 `--delay`**（老写法的 main() 里没有那个"
+                    "开关），放慢那一遍就做不成 —— 「填完立刻点」这一类时序竞争这次"
+                    "**没验到**。")))
+            else:
+                _tell(_spend("delay", delay=delay))
             continue
 
         if name == "viewport":

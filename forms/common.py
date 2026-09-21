@@ -46,6 +46,9 @@ RUNTIME_PROVENANCE = {
         "文件头加了这段出身说明与 RUNTIME_PROVENANCE",
         "CDP_PATH 改环境变量优先（默认值一个字没改：/opt/skills/auto-farm-skill/cdp）",
         "CDPHelper.screenshot() 失败时可归因（新增 last_screenshot_error；成功路径返回值不变）",
+        "report_url() 认两个**环境**旋钮（SITEFORGE_TRACE / SITEFORGE_NO_REPORT）——"
+        "B 线 ③ 乙：老写法那一族（66 份）的 main() 里没有 --trace/--no-report，"
+        "自测那条线只能从运行时这一处进；两个都没设时**行为逐字节不变**",
     ),
 }
 
@@ -400,6 +403,35 @@ def report_screenshot(task_id: str, step: str, screenshot_b64: str, url: str = "
     return False
 
 
+#: 自测那条线的两个**环境**旋钮（哪个产物都认，见 `report_url` 里那段注释）。
+TRACE_ENV = "SITEFORGE_TRACE"
+NO_REPORT_ENV = "SITEFORGE_NO_REPORT"
+
+
+def _trace_step(step: str, url: str, *, note: str = "") -> None:
+    """把这一步追一行到 `SITEFORGE_TRACE` 指的文件（没设就什么都不做）。
+
+    形状与 siteforge 模板那份 trace **同一套**（`selftest._read_trace` 读的就是它）：
+    一行一个 JSON 对象。`ok` 是 **`null`** —— 老写法只在「上报这一步」留痕，
+    它没做成也会报一次，所以**这一步成没成这一层判不出来**；判据是退出码。
+    把它写死成 `true` 就是替外部世界下结论（本项目最贵的那类谎）。
+
+    ⚠️ 写不进去只当没写成（`OSError` 吞掉）：trace 是自测要的东西，
+    不该把正在跑的任务搞挂。
+    """
+    path = os.environ.get(TRACE_ENV)
+    if not path:
+        return
+    line = {"step": step, "ok": None,
+            "ok_why": "老写法的 report_url 只说明「这一步上报过」，成没成要退出码说了算",
+            "url": url, "note": note}
+    try:
+        with open(path, "a", encoding="utf-8") as fp:
+            fp.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 def report_url(cdp_helper: CDPHelper, task_id: str, step: str,
                log: logging.Logger = None, base64_content: str = "") -> bool:
     """
@@ -426,6 +458,21 @@ def report_url(cdp_helper: CDPHelper, task_id: str, step: str,
             log.info(f"[URL Report] step={step}, URL: {current_url[:100] if current_url else 'NO URL'}")
             if base64_content:
                 log.info(f"[URL Report] base64_content: {base64_content[:100]}")
+        # ── 自测那条线（B 线 ③ 乙）：两个**环境**旋钮，argv 一个字节都不改 ──────────
+        #
+        # 老写法那一族（线上 66 份 py）的 `main()` 里**没有** `--trace` / `--no-report`，
+        # 硬传就是 argparse 报错（那会把自测变成「每一遍都红」）。而它们的进度**全部**
+        # 走这一个函数 —— 所以旋钮放在这儿：自测用环境把这条线打开，**产物一个字不用改**。
+        #
+        #   SITEFORGE_TRACE=<path>   每调一次追一行 JSON（形状与模板那份 trace 同一套）
+        #   SITEFORGE_NO_REPORT=1    这一下**不往生产的记录接口写**（自测不是生产任务）
+        #
+        # ⚠️ 两个都没设 = 生产那条路，逐字节不变（下面的代码原样执行）。
+        _trace_step(step, current_url, note=base64_content)
+        if os.environ.get(NO_REPORT_ENV):
+            if log:
+                log.info("[URL Report] SITEFORGE_NO_REPORT 设了 —— 这一次不往生产发（自测那条路）")
+            return True
 
         # Prepare request
         data = {

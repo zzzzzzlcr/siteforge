@@ -34,13 +34,15 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import urllib.request
 from typing import Any, Callable, Optional
 
 from agent import browser_agent
 from agent import plan as plan_mod
 
-__all__ = ["from_py", "repair_states"]
+__all__ = ["from_py", "repair_states", "REQUIRED_CLI_FLAGS", "PATCH_SYSTEM",
+           "shape_of", "check_patch", "patch_user", "extract_source"]
 
 #: 取站方配置的超时（秒）。**短** —— 它是可选层，拿不到就往下走，不能把整趟拖住。
 CONFIG_TIMEOUT = 8.0
@@ -100,7 +102,6 @@ def site_schema(url_get: Callable[[str], str], label: str) -> Optional[dict]:
         return None
     try:
         raw = url_get("https://chameleon-na.www.gowizard.com/forms/7878/default/gowizard")
-        import re
         m = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
                       raw, re.S)
         if not m:
@@ -194,6 +195,186 @@ def from_py(src: str, *, url_get: Optional[Callable[[str], str]] = None):
         return plan, None, None, ["这份 py 里的 STATES/FILLS 读不出来（坏 py 或动态构造）—— 修不了"]
     states, fills, notes = repair_states(states, fills, url_get=url_get)
     return plan, states, fills, notes
+
+
+def _imports_report_url(tree) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "") == "common":
+            if any(al.name == "report_url" for al in node.names):
+                return True
+    return False
+
+
+def _calls_report_url(tree) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "report_url":
+                return True
+    return False
+
+
+def _cli_flags(tree) -> set:
+    """这份 py 的 `add_argument("--x")` 表 —— **量出来的**（不是拿 "--trace" 去搜文本）。"""
+    flags = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr == "add_argument":
+                for arg in node.args:
+                    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                        if arg.value.startswith("--"):
+                            flags.add(arg.value)
+    return flags
+
+
+def _exit_criterion(tree) -> bool:
+    """`sys.exit(0 if f.run() else 1)` 那一下还在吗 —— 退出码就是生产的成功判据。"""
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr != "exit" or not isinstance(node.func.value, ast.Name):
+            continue
+        if node.func.value.id == "sys" and any(isinstance(a, ast.IfExp) for a in node.args):
+            return True
+    return False
+
+
+#: 生产 `ad-task.py` 就这么调产物（与 `selftest.ARTIFACT_FLAGS` 同一个口径）。
+#: 补丁**不许**把这四条弄丢 —— 少一条，那个站从这一单起每一单都是一上来 argparse 报错。
+REQUIRED_CLI_FLAGS = ("--ws-url", "--form-file", "--correlation-id", "--log-level")
+
+
+def shape_of(src: str) -> dict:
+    """这份 py 是**哪一种写法** → `{"kind": "template"|"legacy"|"unknown", "why": [...]}`。
+
+    **判据全是量出来的记号**（`ast` 走一遍），不看文件名、不看目录、更不看类名叫什么：
+
+      · `template` —— 里面有 `STATES` / `FILLS` 两个字面量（siteforge 自己的产物）；
+      · `legacy`   —— 线上那一族：走 `common.report_url` 上报进度、`main()` 里认生产那四个
+                       开关、收尾是 `sys.exit(0 if … else 1)`；
+      · `unknown`  —— 都不是，`why` 里**逐条**说缺什么（人话，给运营看）。
+
+    ⚠️ 顺序要紧：`STATES/FILLS` **先判** —— 模板形是今天那条路，逐字节不许变。
+    ⚠️ 类名（`LpaFiller` 之类）**不是判据**：叫什么名字与能不能修没有关系。
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError as exc:
+        return {"kind": "unknown",
+                "why": ["`ast.parse` 都过不了（第 %s 行：%s）—— 这不是一份能跑的 py"
+                        % (exc.lineno, exc.msg)]}
+    states, fills = _literals(src)
+    if states is not None and fills is not None:
+        return {"kind": "template", "why": []}
+    why = []
+    if not _imports_report_url(tree):
+        why.append("没有 `from common import … report_url`（进度上报那条线，自测的证据靠它）")
+    elif not _calls_report_url(tree):
+        why.append("import 了 `report_url` 却**一处都没调** —— 这样的脚本跑到哪儿，外面看不见")
+    missing = [f for f in REQUIRED_CLI_FLAGS if f not in _cli_flags(tree)]
+    if missing:
+        why.append("`main()` 里缺这些开关：%s（生产就按这四个调它）" % "、".join(missing))
+    if not _exit_criterion(tree):
+        why.append("没有 `sys.exit(0 if … else 1)` 那个收尾 —— 退出码就是生产的成功判据，"
+                   "少了它这一趟就没有判据了")
+    return {"kind": "legacy" if not why else "unknown", "why": why}
+
+
+def check_patch(old: str, new: str) -> list:
+    """补丁过闸 → 违规清单（**人话**，每条说清「哪一条、为什么、会怎样」）。**纯函数**。
+
+    五条闸，逐条对应一种**真会出事**的坏法：
+
+    | 闸 | 少它会发生什么 |
+    |---|---|
+    | `ast.parse` 过 | 坏语法落盘 = 生产里那个站**跑 0 次** |
+    | 生产那四个开关一个不少 | `ad-task.py` 一调就 argparse 报错 ⇒ 那个站**从这一单起全废** |
+    | `sys.exit(0 if … else 1)` 还在 | 换成无条件 `exit(0)` 就是「跑到底再谎报成功」 |
+    | 还 import 且**真调** `report_url` | 没它 ⇒ 自测那一路**没有证据**（判据是「没证据不算过」） |
+    | 不是空文件 | 空补丁被当成「修好了」是这套系统里最贵的形状 |
+
+    ⚠️ 这一层**只判结构**，不判「改得对不对」—— 那件事只有自测（真浏览器）与人说了算。
+    """
+    if not str(new or "").strip():
+        return ["补丁是**空的** —— 没给源码。空的东西被当成「修好了」，比没修更坏。"]
+    try:
+        tree = ast.parse(new)
+    except SyntaxError as exc:
+        return ["补丁过不了 `ast.parse`（第 %s 行：%s）—— 这一版落盘，生产里那个站就是跑 0 次。"
+                % (exc.lineno, exc.msg)]
+    bad = []
+    missing = [f for f in REQUIRED_CLI_FLAGS if f not in _cli_flags(tree)]
+    if missing:
+        bad.append("补丁把生产要的开关弄丢了：%s —— `ad-task.py` 就按这四个调它，少一个那一单直接报错。"
+                   % "、".join(missing))
+    if not _exit_criterion(tree):
+        bad.append("补丁把 `sys.exit(0 if … else 1)` 那个收尾改掉了 —— 退出码是生产的成功判据，"
+                   "换成无条件 `exit(0)` 就是「跑到底再谎报成功」。")
+    if not _imports_report_url(tree):
+        bad.append("补丁不再 `from common import … report_url` —— 进度上报那条线断了，"
+                   "自测就没有证据可读（「没有证据就不算过」）。")
+    elif not _calls_report_url(tree):
+        bad.append("补丁 import 了 `report_url` 却一处都没调 —— 外面看不见它跑到哪儿，"
+                   "自测同样没有证据。")
+    return bad
+
+
+#: 修站那条路给模型的**系统提示**：这是一件「改一份正在生产里跑的脚本」的活，不是从零写。
+PATCH_SYSTEM = """\
+你在修一份**正在生产环境里跑**的站点脚本（Python）。它由 ad-task.py 那个执行器调起，
+成功与否只看**退出码**（0 = 成功）。你要交回**整份新源码**，不是 diff、不是补丁片段。
+
+硬约束（少一条这份稿就不能用）：
+1. `main()` 里这几条开关一个都不许少、一个都不许改名：
+   --ws-url / --form-file / --correlation-id / --log-level
+2. 收尾必须是 `sys.exit(0 if f.run() else 1)` 这个形状 —— 不许改成无条件 `sys.exit(0)`，
+   也不许把成功判据放松（那等于「跑到底再谎报成功」）。
+3. 必须继续 `from common import … report_url`，并且在每一步真的调它（那是外面看进度的唯一一条线）。
+4. 不许加新的第三方依赖，不许改目录结构，不许把逻辑搬去别的文件。
+5. 只改**该改的那一处**：其余的行尽量原样留着（改错别的地方比不修更坏）。
+
+怎么答：把整份新源码放在一个 ```python 围栏里，围栏外**一个字都不要写**。"""
+
+
+def patch_user(old_src: str, *, evidence: str = "", success_text: str = "",
+               diagnosis: str = "",
+               violations: Optional[list] = None, hints: Optional[list] = None) -> str:
+    """给模型的**这一轮**输入：旧源码全文 + 失败证据 + 人给的成功判据 + 上一轮被打回的原因。
+
+    ⚠️ 失败证据与人说的话**逐字**贴进去（不加工、不概括）—— 那是外部世界给的东西；
+    这一层替它总结一次，模型就再也看不到原文里那些细节了。
+    """
+    parts = []
+    if str(evidence or "").strip():
+        parts.append("## 这一单为什么失败（证据，逐字）\n%s" % evidence.strip())
+    if str(success_text or "").strip():
+        parts.append("## 人给的成功判据（走通之后页面上会出现哪段文字）\n%s"
+                     % success_text.strip())
+    for hint in (hints or []):
+        if str(hint or "").strip():
+            parts.append("## 人插的话（逐字）\n%s" % str(hint).strip())
+    if str(diagnosis or "").strip():
+        parts.append("## 上一版自测没过：诊断（逐字）\n%s" % str(diagnosis).strip())
+    for bad in (violations or []):
+        parts.append("## 上一版被打回的原因（逐条改掉）\n%s" % bad)
+    parts.append("## 旧源码（生产里正在跑的那一份，逐字）\n```python\n%s\n```" % old_src)
+    parts.append("照上面那些约束，交回**整份新源码**。")
+    return "\n\n".join(parts)
+
+
+_CODE_FENCE = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.S)
+
+
+def extract_source(reply: str) -> str:
+    """模型的原话 → 源码。**先认围栏**；一处围栏都没有才退回「整段原话」。
+
+    ⚠️ 退回那一条是**刻意的**（模型偶尔不套围栏），但退回之后照样要过 `check_patch` ——
+    是源码就留下、不是就红，**不猜**。
+    """
+    text = str(reply or "")
+    blocks = _CODE_FENCE.findall(text)
+    if blocks:
+        return max(blocks, key=len).strip() + "\n"
+    return text.strip() + ("\n" if text.strip() else "")
 
 
 def http_get(url: str, timeout: float = CONFIG_TIMEOUT) -> str:
