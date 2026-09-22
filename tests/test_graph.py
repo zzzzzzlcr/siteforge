@@ -1703,6 +1703,29 @@ def test_the_success_words_are_matched_without_case():
     assert graph._explore_reached_success(browser_agent.Journey(steps=[]), "check") is None
 
 
+def test_the_selftest_is_told_which_page_to_start_on(tmp_path):
+    """★ 2026-09-22 真事（`job-ffa2f5165669`，**新站**那条路）：自测三遍全挂在第 1 步，
+    而 self-test 的 trace 里三遍的 url 都写着 `console.bitbrowser.net`
+    —— 也就是说三遍都跑在**浏览器自己的控制台页**上，不是那个站。
+
+    为什么：`selftest.run` 拿 `start_url` 导航（导航不了就**一遍都不跑** ✓ 那条规矩在那边），
+    而 `_selftest_kwargs` 原先**只在 `MODE_FIX` 下才给这一格** ⇒ **build 那一路从来没导航过**。
+    修站那条路的钉子一直在（`tests/test_py_fix_legacy.py`）—— **新站这条路没人钉**，所以漏了。
+    这一条钉 build：`start_url` 必须等于这一趟的入口网址。
+    """
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    _drive(app, cfg, _brief(tmp_path))
+
+    assert rec.selftest, "这一趟没走到自测"
+    assert rec.selftest[0].get("start_url") == URL, rec.selftest[0]
+    #: `entry_url` 给了就用它（那是运营指的那一页），没给才是 `url`
+    deps2, rec2 = _deps()
+    app2, cfg2, _ = _build(deps=deps2)
+    _drive(app2, cfg2, _brief(tmp_path, entry_url="https://deep.example.test/step-1"))
+    assert rec2.selftest[0].get("start_url") == "https://deep.example.test/step-1", rec2.selftest[0]
+
+
 def test_a_run_without_a_window_ends_honestly_instead_of_crashing(tmp_path):
     """★ 2026-09-22 真事（`job-82547a95ba34`）：载荷里没挑窗口 ⇒ 服务那侧塞进 `Deps` 的
     `explore` 就是 `None`（`service.py:2074`）—— 探路那一格原先**直接调它**，运营在面板上

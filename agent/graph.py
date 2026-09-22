@@ -1595,8 +1595,17 @@ def _selftest_kwargs(state, deps: Deps) -> dict:
     #: 停在 **Bit 自己的控制台页**上（实测：trace 里两遍都写着 `console.bitbrowser.net`）——
     #: 于是那一趟「自测没过」是对**跑法**说的，不是对产物说的。
     #: 修站那条路的入口网址就是 `state["url"]`（失败证据里那串）。
-    if str(state.get("mode") or "") == MODE_FIX and state.get("url"):
-        kw["start_url"] = str(state["url"])
+    #: ★ 2026-09-22 **对 build 补齐**：这一格原先**只在 `MODE_FIX` 下给**，而
+    #: `selftest.run` 是拿 `start_url` 导航的（导航不了就一遍都不跑 —— 那条规矩在那儿写得很好）
+    #: ⇒ **新站那一路从来没导航过** ⇒ 三遍全跑在 **Bit 自己的控制台页**上：
+    #: 真事 `job-ffa2f5165669`（build，Disney 那条），self-test 的 trace 里三遍的 url 都写着
+    #: `console.bitbrowser.net`，于是三遍**全挂在第 1 步**（「滚不动 LEARN MORE」）——
+    #: 那份「自测没过」是对**跑法**说的，不是对产物说的（用户当场就问了「你没有导航到对应页面吧」）。
+    #: 入口网址：`entry_url` 给了就用它，否则就是这一趟的 `url`（**探路也是从那儿开始的** ——
+    #: 两边必须是同一个地址，否则自测验的是另一条路）。
+    _start = str(state.get("entry_url") or state.get("url") or "").strip()
+    if _start:
+        kw["start_url"] = _start
     if state.get("allow_skips"):
         kw["allow_skips"] = tuple(state["allow_skips"])
     if state.get("entry_url"):
