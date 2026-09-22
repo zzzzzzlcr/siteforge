@@ -126,8 +126,12 @@ def client():
     key = os.environ.get("OPENAI_API_KEY")
     if not key:
         raise RuntimeError(
-            "OPENAI_API_KEY 没设。spike 里从容器借："
-            "export OPENAI_API_KEY=$(docker exec auto-llm-script printenv OPENAI_API_KEY)"
+            "OPENAI_API_KEY 没设 —— **花钱的就是这把 key**，它只在**服务进程的环境**里配：\n"
+            "  ① 给启动命令加一句 `OPENAI_API_KEY=<你的 key>`（要换线路再加 `OPENAI_BASE_URL`、"
+            "要换模型加 `SPIKE_MODEL`）；\n"
+            "  ② **重启服务**（key 每次调用现读，但进程的 env 只有重启才变）；\n"
+            "  ③ 核对：`sha256(<key>)` 的前 12 位 —— 与你要用的那把对得上才算换成了。\n"
+            "⚠️ 值别打进命令行 / 别贴对话：从环境变量或 `read -rs` 里给它（见运营手册 §8）。"
         )
     return OpenAI(base_url=DEFAULT_BASE_URL, api_key=key)
 
