@@ -1461,6 +1461,59 @@ def test_a_tel_field_with_no_words_or_shapes_is_decided_by_what_the_explore_type
     assert got["fallback"] == [{"random": "full_name"}], got
 
 
+def test_the_system_looks_at_the_page_before_wrapping_up(tmp_path):
+    """★ 2026-09-22 真事（用户原话：「**明明成功了但是却不知道，一直没产物空转**」）。
+
+    判据**只认 `observe` 读到的正文** ⇒ 模型提交之后没再看 ⇒ 系统永远不知道成了 ⇒
+    自动重探 ×3、空转、最后没有产物（真事 `job-76fe990d4d62`：24 步只看 **5 眼**）。
+    修法：**收摊前系统自己看一眼** —— 走与模型同一条 `dispatch("observe")`，判据用那一眼的
+    **真读数**（一个字不放宽），并把这一步标成 `origin="final_check"`（读账的人看得出是谁加的）。
+
+    判据三条：① 那一趟记下了这一眼；② 这一眼里真有成功文案；③ **已经见到过的那一趟不再多看**
+    （正控 —— 别把这条做成「每次都看」，别的路一个字节不变）。
+    """
+    success = "Thank you."
+    page_ok = dict(PAGE_LANDING, page_text="… Assessment request received! Thank you. …")
+    journey, _, _ = _run(tmp_path,
+                         {"click": [{"structured": PAGE_LANDING}],
+                          "observe": [{"structured": page_ok}]},
+                         [{"calls": [("click", {"selector": "#go"})]}, {"content": "走完了"}],
+                         success_text=success)
+    finals = [s for s in journey.steps if s.get("origin") == "final_check"]
+    assert len(finals) == 1, journey.steps
+    head = str((finals[0].get("result") or {}).get("page_text_head") or "")
+    assert "Thank you." in head, finals[0]
+    assert browser_agent._success_hit(journey.steps, success) is not None
+
+    #: ③ 模型自己已经看到过 ⇒ **不多看这一眼**
+    seen, _, _ = _run(tmp_path,
+                      {"observe": [{"structured": page_ok}]},
+                      [{"calls": [("observe", {})]}, {"content": "看见了"}],
+                      success_text=success)
+    assert [s for s in seen.steps if s.get("origin") == "final_check"] == [], seen.steps
+    assert browser_agent._success_hit(seen.steps, success) is not None
+
+
+def test_the_explorer_is_told_what_counts_as_success(tmp_path):
+    """★ 2026-09-22 TDD 探针（用户问「**给的信息是否不足**」）：模型真收到的那份开场白里，
+    有没有「**什么算成功**」这一条？
+
+    为什么它承重：判据是**人去页面上找那串字**、而系统只在 `observe` 读到的正文里找 ——
+    开场白里**根本没提它**（本次量出来的）⇒ 模型既不知道要找什么，也不知道**要找**。
+    真事下游：`job-76fe990d4d62`（24 步只看 **5 眼**）、两次「判据写成说明句」。
+    """
+    success = "Thank you."
+    _journey, fake, _ = _run(tmp_path,
+                             {"observe": [{"structured": PAGE_LANDING}]},
+                             [{"calls": [("observe", {})]}, {"content": "看完了"}],
+                             success_text=success)
+    msgs = fake.calls[0]["messages"]
+    opening = msgs[1]["content"]
+    assert success in opening, (
+        "开场白里没有那串成功文案 —— 模型不知道要找什么：\n%s" % opening)
+    assert "看一眼" in opening, "开场白里没有「要再看一眼」这条规矩：\n%s" % opening
+
+
 def test_the_state_field_is_read_from_the_question_text_the_page_shows():
     """「州」那一格：题目正文就写在页面上，靠它判（简报第 3 层，真站量过）。
 
@@ -1632,12 +1685,20 @@ GAPPED_DESC = "操作:\n1. 点 A\n3. 点 C\n"
 #: 而预算原来那个 20 挡不住一条已知要走完的路（真站实测 `job-62b192d2aca4`）。
 #: 换的**只是这两个数**，周围那几句措辞**一个字节没动** —— 这条钉子钉的是措辞，
 #: 所以它照旧逐字节写死（没有改成插值：插值会让措辞也跟着代码漂）。
+#:
+#: ⚠️ **2026-09-22 又改过一次（这次是加一句规矩）**：真事 `job-76fe990d4d62` ——
+#: 24 步里只看了 **5 眼**，提交之后没再看，而判据**只在 `observe` 读到的正文里找**
+#: ⇒ 那一趟被判「没见到成功文案」（**字面为真、根因是没看**）。加的那两句就是写清
+#: 「**每一次提交/继续/换页之后都要再看一眼**」。这次改的是**措辞本身**（不是插值数），
+#: 所以照旧逐字节钉着 —— 下次再改，也请连同理由一起写在这儿。
 TODAY_BRIEF = (
     "目标站点：https://example.test/funnel\n"
     "要做的事：看看这一页怎么走到报价\n"
     "（你最多走 100 步、80 轮。现在这个浏览器窗口可能停在别的页上，先确认自己在哪。\n"
     "⚠️ **能回答了就直接停下来说**（不调工具就是结束）—— 一直调工具会把预算耗光，"
-    "那一次你的结论一个字都留不下来。）"
+    "那一次你的结论一个字都留不下来。\n"
+    "⚠️ **每一次「提交 / 继续 / 换页」之后，都要再看一眼那一页**："
+    "系统只认**你「看一眼」（observe）读到的正文** —— 不看，这一趟就按「没走到成功」算。)"
 )
 
 
@@ -3079,9 +3140,9 @@ def test_the_human_words_reach_the_explorer_and_nobody_elses_bytes_move(tmp_path
     seen = []
     real = browser_agent._brief
 
-    def spy_brief(url, goal, budget, plan=None, hints=None):
+    def spy_brief(url, goal, budget, plan=None, hints=None, success_text=""):
         seen.append(list(hints or []))
-        return real(url, goal, budget, plan, hints=hints)
+        return real(url, goal, budget, plan, hints=hints, success_text=success_text)
 
     browser_agent._brief = spy_brief
     try:

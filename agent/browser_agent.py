@@ -987,7 +987,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             _stop_or_raise(paused, journey, taken, limits, success_text)
             _enter_target(session, url, journey)
 
-        opening = _brief(url, goal, limits, plan, hints=hints)
+        opening = _brief(url, goal, limits, plan, hints=hints, success_text=success_text)
         if journey.replay:
             opening = _with_resume(opening, resume_from, journey.replay)
         rounds = llm.run_tool_loop(
@@ -996,6 +996,10 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             steer=steer, _client=gate,
         )
         _wrap_up(journey, rounds, limits)
+        #: ★ 2026-09-22 真事（用户原话：「**明明成功了但是却不知道，一直没产物空转**」）：
+        #: 判据**只认 `observe` 读到的正文** ⇒ 模型提交之后没再看 ⇒ 系统**永远不知道成了**
+        #: ⇒ 自动重探 ×3、空转、最后没有产物。⇒ **收摊前系统自己看一眼**（浏览器就在手边）。
+        _final_success_check(journey, dispatch, limits, success_text)
     except _Stop as stop:
         journey.stop_reason = stop.reason
         # 被停下来这一路**拿不到轮数**：`rounds` 是 `run_tool_loop` 的局部变量，
@@ -1133,6 +1137,30 @@ def _with_resume(opening: str, rows: list, result: dict) -> str:
 #: 「拿半份账本写 py」是 R0 那条禁忌，而这里账本是**全的**（通向成功的那条路就在里面）。
 #: 名字与图上事后结算的 `_explore_reached_success` **同一个事实**（同一个词，别再造一个）。
 STOP_REACHED_SUCCESS = "reached_success"
+
+
+def _final_success_check(journey, dispatch, limits, success_text: str) -> None:
+    """收摊前**系统自己**看一眼那一页 —— 判据用**这一眼**（真读数），而不是「模型看没看」。
+
+    ⚠️ 只在**还没见到成功文案**时才看（真见到了就不多花这一步，别的路一个字节不变）。
+    ⚠️ 这一眼是**真的**：走的是与模型同一条 `dispatch("observe", {})` ⇒ 读到的正文原样进账本，
+    判据一个字不放宽 —— 它**不是**「补一个假的成功」，只是**不让「没人看」被读成「没成功」**。
+    ⚠️ 看一眼不成就**照实不算**（不编），也不许把这一趟带塌。
+    """
+    if not success_text or _success_hit(journey.steps, success_text) is not None:
+        return
+    before = len(journey.steps)
+    try:
+        dispatch("observe", {})
+    except BaseException:                      # noqa: BLE001 —— 旁路不许带塌这一趟
+        return
+    if len(journey.steps) == before:
+        return                                 # 它连一步都没记上（被闸拦住等）⇒ 不假装
+    step = journey.steps[-1]
+    #: 它是**系统**看的，不是模型看的（`origin` 要让读账的人一眼看出来）——
+    #: 顺带把这一步的来由说清楚（账本里不许有来路不明的一步）。
+    step["origin"] = "final_check"
+    step["note"] = "收摊前**系统自己**看了一眼（模型这一趟没看它）：拿这一眼的正文判成功文案"
 
 
 def _success_hit(steps: list, success_text: str) -> int | None:
@@ -3660,7 +3688,7 @@ def _hints_block(hints) -> str:
 
 
 def _brief(url: str, goal: str, budget: Budget, plan: "plan_module.Plan | None" = None,
-           hints=None) -> str:
+           hints=None, success_text: str = "") -> str:
     """开场白（模型的 user 消息）。**有计划 / 没计划是两版**（§2.2）。
 
     ⚠️ 没计划那一版**与今天逐字节相同** —— 它是 B4 那条判据钉的东西，
@@ -3672,10 +3700,32 @@ def _brief(url: str, goal: str, budget: Budget, plan: "plan_module.Plan | None" 
             f"（你最多走 {budget.max_steps} 步、{budget.max_rounds} 轮。"
             f"现在这个浏览器窗口可能停在别的页上，先确认自己在哪。\n"
             f"⚠️ **能回答了就直接停下来说**（不调工具就是结束）—— 一直调工具会把预算耗光，"
-            f"那一次你的结论一个字都留不下来。）")
+            f"那一次你的结论一个字都留不下来。\n"
+            #: ★ 2026-09-22 真事（`job-76fe990d4d62`）：24 步里只看了 **5 眼**，提交之后
+            #: 没再看 ⇒ 判据**只在「看一眼」（observe）读到的正文里找** ⇒ 那一趟被判
+            #: 「没见到成功文案」（字面为真、但根因是**没看**）。这一句就是让模型知道
+            #: 「看」不是可选项。
+            f"⚠️ **每一次「提交 / 继续 / 换页」之后，都要再看一眼那一页**："
+            f"系统只认**你「看一眼」（observe）读到的正文** —— 不看，这一趟就按「没走到成功」算。)")
     if plan is None or not plan.actionable():
-        return free + _hints_block(hints)
-    return _planned_brief(url, goal, plan, budget) + _hints_block(hints)
+        return free + _success_block(success_text) + _hints_block(hints)
+    return _planned_brief(url, goal, plan, budget) + _success_block(success_text) + _hints_block(hints)
+
+
+def _success_block(success_text: str) -> str:
+    """**「什么算成功」那串字本身**（TDD 探针量出来的缺项，2026-09-22）。
+
+    为什么它必须进开场白：判据是**人去页面上找那串字**、而系统只在 `observe` 读到的正文里找。
+    开场白里原来**一个字都没提它** ⇒ 模型既不知道要找什么、也不知道**找到就能收摊** ——
+    真事 `job-76fe990d4d62`（24 步只看 5 眼 ⇒ 判据扑空 ⇒ 自动重探 ⇒ 空转、没产物）。
+
+    ⚠️ 没人给判据（空串）⇒ **一个字节都不加**（那份「没计划那一版逐字节相同」的钉子因此不动 ✓）。
+    """
+    text = str(success_text or "").strip()
+    if not text:
+        return ""
+    return ("\n⚠️ **什么算成功**：页面上出现这串字就算成 —— 『%s』。"
+            "**见到它就可以收摊**（那之后每一次点击都可能是重复提交）。" % text)
 
 
 def _planned_brief(url: str, goal: str, plan, budget: Budget) -> str:

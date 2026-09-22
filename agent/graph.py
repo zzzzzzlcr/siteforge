@@ -332,6 +332,11 @@ def _brief_facts(state, deps: Deps, missing: list) -> dict:
     return {"url": str(state.get("url") or "").strip(),
             "goal": str(state.get("goal") or state.get("evidence") or "").strip(),
             "成功判据": state.get("success_text"),
+            #: ★ 2026-09-22：**判据那格写成了「说明句」时，在第一道闸上就说清**（不拦）。
+            #: 真事连着三次：`出现文字 check your email`、`出现Thank you.` —— 判据是**子串**，
+            #: 多出来的那两三个字让它**永远找不到**，屏幕上只表现为「没见到成功文案」+ 自动重探 3 趟。
+            #: ⚠️ 只是提醒，**不是判据**：页面上真可能写着「出现」两个字（那就该这么填）⇒ 不拦人。
+            "成功判据（提醒）": _criterion_advice(state.get("success_text")),
             "mode": state.get("mode") or MODE_BUILD,
             "要用的窗口": state.get("ws_url"),
             "允许跳过的扰动": list(state.get("allow_skips") or []),
@@ -611,6 +616,13 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
         attempts.append({"n": n,
                          "reached": _explore_reached_success(book, state.get("success_text")),
                          "steps": len(book.steps), "stop": getattr(book, "stop_reason", ""),
+                         #: ★ 2026-09-22：**这一趟「看了几眼」**（`observe` 的次数）。
+                         #: 为什么必须报：判据**只在 observe 读到的正文里找** ⇒ 「没见到成功文案」
+                         #: 有两种完全不同的根因 —— **真没有** 与 **它根本没看**（真事
+                         #: `job-76fe990d4d62`：24 步只看 5 眼，提交之后没再看 ⇒ 判据扑空）。
+                         #: 缺了这个数，屏幕上读不出是哪一种。
+                         "eyes": sum(1 for s in (book.steps or [])
+                                     if (s or {}).get("action") == "observe"),
                          "answers": _explore_answers(book)})
         return book
 
@@ -1400,11 +1412,14 @@ def _attempts_note(attempts: list) -> str:
     lines = ["这一次探路跑了 %d 趟（判据是「页面上见到你给的成功文案」；每一趟见没见到见下面每一行）："
              % len(attempts)]
     for a in attempts:
-        lines.append("  · 第 %d 趟：%s，%d 步，停止原因「%s」；填过：%s"
+        #: ⚠️ 「只看过几眼」要报出来（见 `pass_once` 里那一格的说明）：**没见到**有两种根因 ——
+        #: 真没有，与**它根本没看**（判据只在 `observe` 读到的正文里找）。
+        lines.append("  · 第 %d 趟：%s，%d 步（其中「看一眼」%d 次），停止原因「%s」；填过：%s"
                      % (a["n"],
                         {True: "**见到了成功文案**", False: "没见到成功文案",
                          None: "判不了（没给判据/没观测）"}[a["reached"]],
-                        a["steps"], a["stop"] or "?", "、".join(a["answers"][:6]) or "（没填过）"))
+                        a["steps"], int(a.get("eyes") or 0), a["stop"] or "?",
+                        "、".join(a["answers"][:6]) or "（没填过）"))
     return "\n".join(lines)
 
 
@@ -1435,6 +1450,28 @@ def _explore_reached_success(journey, success_text) -> Optional[bool]:
         if head and any(w in head for w in wants):
             return True
     return False if seen_any else None
+
+
+#: 判据那格**写成了说明句**的开头（真事三次都是这一类）：这些词是「我要它出现」的意思，
+#: 而判据是**照抄页面上那串字**。
+DESCRIPTIVE_CRITERION_HEADS = ("出现", "显示", "看到", "页面上", "出现文字", "出现文字:",
+                               "shows", "show ", "contains", "页面出现")
+
+
+def _criterion_advice(success_text) -> str:
+    """判据看着像「说明句」时给一句提醒（**空串 = 没什么可提醒的**）。
+
+    ⚠️ 它**不是**判据、也不拦人：页面上真可能写着「出现」两个字 —— 那种时候这么填是**对的**。
+    """
+    words = [success_text] if isinstance(success_text, str) else list(success_text or [])
+    bad = [w for w in words if str(w or "").strip().lower().startswith(
+        tuple(h.lower() for h in DESCRIPTIVE_CRITERION_HEADS))]
+    if not bad:
+        return ""
+    return ("⚠️ 这一格是**照抄页面上会出现的那串字**（子串判据），不是写「我要它出现」："
+            "%s 里那个**说明词也要一模一样出现在页面上**才成立 —— 真事：有人填 `出现Thank you.`，"
+            "而页面上是 `Thank you.` ⇒ **三趟探路都没认出来**（只表现为「没见到成功文案」）。"
+            % "、".join("『%s』" % w for w in bad))
 
 
 def _criterion_say(success_text) -> str:

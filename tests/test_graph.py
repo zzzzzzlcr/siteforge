@@ -1377,6 +1377,29 @@ def test_a_plan_that_stalled_still_gets_its_bounded_retries(tmp_path):
     assert out["explore_spent"]["attempts"] == 3, out["explore_spent"]
 
 
+def test_a_criterion_written_as_a_sentence_is_flagged_on_the_first_gate(tmp_path):
+    """★ 2026-09-22 **真事连着三次**：判据被写成**说明句** ⇒ 子串永远找不到 ⇒
+    屏幕上只表现成「没见到成功文案」+ 自动重探 3 趟（`出现文字 check your email`、
+    `出现Thank you.` —— 后者页面上就是 `Thank you.`，只差「出现」两个字）。
+
+    判据：第一道闸的事实里**多一格提醒**（原始那一格 `成功判据` **一个字不动** ——
+    facts 是给感知的 ✓）；⚠️ 它只是提醒：页面上真可能写着「出现」两个字（那就该这么填）
+    ⇒ **不许拦人**（拦了就是把「我知道得比你多」写在门口）。
+    """
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    payloads, _ = _drive(app, cfg, _brief(tmp_path, success_text="出现Thank you."))
+    facts = payloads[0]["facts"]
+    assert facts["成功判据"] == "出现Thank you.", facts        # 原值一个字没动
+    assert "说明词" in facts["成功判据（提醒）"], facts
+
+    #: 干净的那串 ⇒ 不提醒（别把这条钉子做成恒有）
+    deps2, _rec2 = _deps()
+    app2, cfg2, _ = _build(deps=deps2)
+    payloads2, _ = _drive(app2, cfg2, _brief(tmp_path))
+    assert payloads2[0]["facts"]["成功判据（提醒）"] == "", payloads2[0]["facts"]
+
+
 def test_the_explore_gets_the_prefix_that_the_service_put_in_the_state(tmp_path):
     """`reopen` 之后第二次进 `explore`：那段前缀**真的交到了探路手里**。
 
