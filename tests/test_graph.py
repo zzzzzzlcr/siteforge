@@ -1203,6 +1203,12 @@ def test_an_explore_that_never_sees_the_success_text_stops_after_the_bounded_ret
     assert "重探了 2 趟" in (out.get("end_note") or ""), out.get("end_note")
     assert len(out.get("explore_attempts") or []) == 3, out.get("explore_attempts")
     assert not rec.selftest, "没走到成功文案就不该进入定稿+自测"
+    #: ★ 2026-09-22 真事：抬头原先写「（走到成功文案就停）」，下面三行全是「没见到成功文案」
+    #: —— 读的人（运营）当场就问「一边成功了为啥不生成脚本」。**规则不许写成结论**。
+    note = out.get("explore_attempts_note") or ""
+    assert "走到成功文案就停" not in note, (
+        "抬头把**规则**说成了**结论**（三趟都没见到，读起来却像「见到所以停了」）：%s" % note)
+    assert "判据是" in note and "见到你给的成功文案" in note, note
 
 
 def test_a_retry_that_sees_the_success_text_wins(tmp_path):
