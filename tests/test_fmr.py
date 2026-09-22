@@ -1337,21 +1337,25 @@ def test_the_script_upload_goes_to_the_update_route_with_the_token():
     assert got.ok is True, got
     assert rec.urls[0] == "https://fmr.3tkj.cn/api/quest/formScript/update", rec.urls[0]
     assert rec.headers[0].get("X-Api-Token") == FAKE_TOKEN, rec.headers[0]
-    assert rec.headers[0].get("Content-Type").startswith(
-        "application/x-www-form-urlencoded"), rec.headers[0]
+    #: ⚠️ **正文必须是 JSON**（与配置那个口**相反**）：【我量的·2026-09-22】拿
+    #: form-urlencoded 发这个口 ⇒ `{"status":400,"msg":"参数错误: 请求体必须是 application/json"}`。
+    assert rec.headers[0].get("Content-Type").startswith("application/json"), rec.headers[0]
     assert FAKE_TOKEN not in rec.urls[0], "token 进了 URL：%r" % rec.urls[0]
-    sent = {k: v[0] for k, v in urllib.parse.parse_qs(
-        rec.sent[0].decode("utf-8")).items()}
+    sent = json.loads(rec.sent[0].decode("utf-8"))
+    #: 三个字段**一个都不能少**（少一个它回 400「site、source 与 operator 必填」，写之前就拒）；
+    #: 也**不多带**（`sha256` 不是这个口的参数：那是它**回**给你的）。
+    assert set(sent) == {"site", "source", "operator"}, sent
     assert sent["site"] == "qualify.lastingpowerofattorney.io", sent
+    assert sent["operator"] == "siteforge-client", sent
     #: ★ **逐字节**：尾换行也必须在（后端原话「首尾换行是源码的一部分」）——
     #:   在这儿 strip 一下，写上去的就是另一份文件（而且**静默**改坏）。
     assert sent["source"] == SCRIPT_SRC, repr(sent["source"][-40:])
-    assert sent["operator"] == "siteforge-client", sent
-    #: 没给指纹就**不许替后端编一个**（`sha256` 是旧那份还是新那份，我没量过）
-    assert "sha256" not in sent, sent
-    rec2 = PostRecorder({"status": 200, "msg": "success"})
-    writer(rec2).update_form_script("x", SCRIPT_SRC, operator="who", sha256="abc123")
-    assert urllib.parse.parse_qs(rec2.sent[0].decode())["sha256"] == ["abc123"]
+    #: 回执里那个新指纹要摆进人话里（校验就一眼：拿它跟本地 `sha256sum` 比）
+    said = writer(PostRecorder({"status": 200, "msg": "success",
+                                "data": {"config_id": 74, "created": False,
+                                         "sha256": "3d1617c6" + "0" * 56}})).update_form_script(
+        "x", SCRIPT_SRC, operator="who")
+    assert said.ok is True and "3d1617c6" in said.say, said.say
 
 
 def test_a_script_upload_with_an_empty_source_never_leaves_the_machine():
@@ -1373,7 +1377,7 @@ def test_a_script_upload_with_an_empty_source_never_leaves_the_machine():
     assert rec.urls == [], "免费那几道闸没挡住：%r" % rec.urls
 
 
-def test_the_upload_uses_the_write_token_when_the_deployment_has_one():
+def test_the_upload_uses_the_write_token_when_the_deployment_has_one(monkeypatch):
     """★ 写那个 token 与读那个**是两串**（2026-09-22 实测：拿读 token 去写 ⇒ 后端 401
     `unauthorized`，换遍头名都一样 ⇒ 是值不对）。
 
@@ -1387,6 +1391,23 @@ def test_the_upload_uses_the_write_token_when_the_deployment_has_one():
     assert got.ok is True, got
     assert rec.headers[0].get("X-Api-Token") == "WRITE-TOKEN-1", rec.headers[0]
     assert FAKE_TOKEN not in rec.urls[0] and "WRITE-TOKEN-1" not in rec.urls[0], rec.urls[0]
+
+    #: ★ 环境变量那一路（2026-09-22 实测栽过）：`FORM_SCRIPT_WRITE_TOKEN` **主名字**
+    #: 必须被读到 —— 当时那一格只查了别名 `AGENT_WRITE_TOKEN` ⇒ 客户端一路退回读 token
+    #: ⇒ 写口 401，而台面上看起来「token 明明配了」（`token == write_token` 为真）。
+    monkeypatch.setenv("FORM_SCRIPT_WRITE_TOKEN", "FROM-ENV-TOKEN")
+    rec_env = PostRecorder({"status": 200, "msg": "success"})
+    fmr.FmrClient(token=FAKE_TOKEN, poster=rec_env).update_form_script(
+        "x", SCRIPT_SRC, operator="who")
+    assert rec_env.headers[0].get("X-Api-Token") == "FROM-ENV-TOKEN", rec_env.headers[0]
+    #: 别名那一支照旧（主名字不在时才退到它）
+    monkeypatch.delenv("FORM_SCRIPT_WRITE_TOKEN")
+    monkeypatch.setenv("AGENT_WRITE_TOKEN", "FROM-ALIAS")
+    rec_alias = PostRecorder({"status": 200, "msg": "success"})
+    fmr.FmrClient(token=FAKE_TOKEN, poster=rec_alias).update_form_script(
+        "x", SCRIPT_SRC, operator="who")
+    assert rec_alias.headers[0].get("X-Api-Token") == "FROM-ALIAS", rec_alias.headers[0]
+    monkeypatch.delenv("AGENT_WRITE_TOKEN")
 
     #: 没给写 token ⇒ 退回读 token（与从前一字不差）
     rec2 = PostRecorder({"status": 200, "msg": "success"})

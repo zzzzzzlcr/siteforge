@@ -240,10 +240,22 @@ FORM_CONFIG_UPDATE_PATH = "/api/quest/formConfig/update"
 #: ★ 它是**统一口**：后端一个配置行里要么是 py 源码、要么是 JSON steps
 #: （`QuestDiagnosisController::scriptKind()`），`type` 那一格自己说是哪种。
 FORM_SCRIPT_PATH = "/api/quest/formScript"
-#: ★ 写那个口（py）：`POST /api/quest/formScript/update`（与配置那个口同族：**有就更新**）。
-#: 【转述的·出处 `docs/交接-2026-09-21-B线.md:36`】「已探到存在（`api.php:89`，带
-#: `agent.token`）」——⚠️ 参数名与 sha256 指纹那两件**我没量过**（写它要真动生产那份脚本）。
-#: 所以第一次接触是**拿原样内容**发（零风险），量到契约之后再发改过的那份。
+#: ★ 写那个口（py）：`POST /api/quest/formScript/update`（**有就更新** —— 实测回执 `created:false`）。
+#:
+#: 【我量的·2026-09-22，零风险探针（发的都是原样内容 + 回读逐字节）】这个口与**配置那个口
+#: 正好相反**，别照抄：
+#:   · 正文**必须是 `application/json`** —— 拿 form-urlencoded 发 ⇒
+#:     `{"status":400,"msg":"参数错误: 请求体必须是 application/json"}`；
+#:   · 三个字段**必填**：`site` / `source` / `operator`（缺一个 ⇒
+#:     `{"status":400,"msg":"参数错误: site、source 与 operator 必填"}`，**写之前**就拒）；
+#:   · 鉴权同在**头** `X-Api-Token`（换 `agent.token` / `Agent-Token` ⇒ 401）；
+#:   · 路径名写错 ⇒ 404（所以 401 只可能是 token 不对，不是路径不对）；
+#:   · 回执：`{"status":200,"msg":"success","data":{"config_id":74,
+#:     "sha256":"<写进去那份的指纹>","created":false,"linked":0}}`
+#:     ⇒ **成功判据 = body 的 `status` 是 200**，而且它把**新指纹**回给你（正好当校验用）。
+#:   ⚠️ **不需要**传 sha256 —— 那不是这个口的参数（我先前照配置那个口猜「拿 sha256 当指纹」，
+#:   量下来是错的：`sha256` 是它**回**给你的，不是你**给它**的）。
+#:   ⚠️ token 与配置那个口用的是**同一串写 token**（读 token 在这两个口上都是 401）。
 FORM_SCRIPT_UPDATE_PATH = "/api/quest/formScript/update"
 
 #: 这两个口的超时（秒）—— **比别的读口短**（`DEFAULT_TIMEOUT` 是 20）。
@@ -982,9 +994,14 @@ class FmrClient:
         #: 写那一族用的 token（**优先**这个）：没配就退回上面那个读 token —— 今天的行为
         #: 一个字不变，配上之后读/写各走各的（2026-09-22 实测：写口不认读 token）。
         if write_token is None:
-            alias = next((os.environ.get(n) for n in WRITE_TOKEN_ALIASES
-                          if os.environ.get(n)), "")
-            self.write_token = str(alias or self.token)
+            #: ⚠️【2026-09-22 实测栽过】这里原来只查了**别名**、**没查主名字**
+            #: `FORM_SCRIPT_WRITE_TOKEN` ⇒ 客户端一路退回读 token ⇒ 写口 401，
+            #: 而台面上看起来「token 配了呀」（`token == write_token` 为真）。
+            #: 顺序：主名字 → 别名 → 退回读 token（= 没配时的老行为）。
+            self.write_token = str(os.environ.get(WRITE_TOKEN_ENV)
+                                   or next((os.environ.get(n) for n in WRITE_TOKEN_ALIASES
+                                            if os.environ.get(n)), "")
+                                   or self.token)
         else:
             self.write_token = str(write_token or "")
         self.base = str(base if base is not None else
@@ -1605,20 +1622,19 @@ class FmrClient:
                  "**没有被改动**。"
                  % (status, tail, key)))
 
-    def update_form_script(self, key: str, source: str, *, operator: str,
-                           sha256: str = "") -> FormWriteResult:
+    def update_form_script(self, key: str, source: str, *, operator: str) -> FormWriteResult:
         """把一份 **py 源码**写回后端 → `FormWriteResult`（`POST /api/quest/formScript/update`）。
 
         这是「修好的脚本怎么上线」那一步：上传之后**生产按接口下载**（用户 2026-09-22 的口径）。
-        ⚠️ 与配置那个口同族的四条纪律，一条不少：
-          · **有就更新**（用户口径）；
-          · 参数走 **form-urlencoded**（那一族的控制器不读 JSON body）；
-          · token 走**请求头** `X-Api-Token`，**绝不进 URL**；
-          · **判成功只认 body 里的 `status` 是 200**（这一族 HTTP 恒 200）。
-        ⚠️ `source` 是**逐字节**的：后端原话「首尾换行是源码的一部分」，写口又拿 sha256 当指纹
+        ⚠️ 与配置那个口**相反**的三条 + 相同的一条（见 `FORM_SCRIPT_UPDATE_PATH` 上面那段【我量的】）：
+          · 正文是 **`application/json`**（不是 form-urlencoded）；
+          · 三个字段**必填**：`site` / `source` / `operator`；
+          · 路径名写错是 404 ⇒ 401 只可能是 token 不对；
+          · token 走**请求头** `X-Api-Token`、**绝不进 URL**；判成功只认 body 里 `status` 是 200。
+        ⚠️ `source` 是**逐字节**的：后端原话「首尾换行是源码的一部分」，写口拿它算指纹
         —— 在这儿 strip 一下，写上去的就是另一份文件（而且是**静默**改坏）。
-        ⚠️ **空源码 / 没给 operator** 都在**本地**拦住（一个请求都不发）：把线上那份脚本写空，
-        比不写坏一万倍，而这两种都是「免费就能查出来」的。
+        ⚠️ **空源码 / 没给 operator / 没说是哪个站** 都在**本地**拦住（一个请求都不发）：
+        把线上那份脚本写空，比不写坏一万倍，而这三样都是「免费就能查出来」的。
         """
         k = str(key or "").strip()
         if not k:
@@ -1641,16 +1657,13 @@ class FmrClient:
                      "**没配写用的 token**（`%s`，没配就退回 `%s`），请求一个都没发出去。"
                      % (k, WRITE_TOKEN_ENV, TOKEN_ENV)))
         url = "%s%s" % (self.base, FORM_SCRIPT_UPDATE_PATH)
-        headers = {"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}
+        #: ⚠️ **JSON**（与配置那个口相反）—— 发 form-urlencoded 会被它回 400
+        #: 「请求体必须是 application/json」（实测）。
+        headers = {"Content-Type": "application/json; charset=utf-8"}
         if self.write_token:
             headers["X-Api-Token"] = self.write_token
-        fields = {"site": k, "source": str(source), "operator": who}
-        if str(sha256 or "").strip():
-            #: 【转述的】读口那边写着「`formScript/update` 拿它的 sha256 当指纹」——
-            #: 但它是**旧那份**的指纹还是**新那份**的，我没量过 ⇒ 由调用方显式给，
-            #: 没给就不带（不替后端猜一个值）。
-            fields["sha256"] = str(sha256).strip()
-        body = urllib.parse.urlencode(fields).encode("utf-8")
+        body = json.dumps({"site": k, "source": str(source), "operator": who},
+                          ensure_ascii=False).encode("utf-8")
         try:
             raw = self._poster(url, headers, body)
         except Exception as exc:                       # noqa: BLE001 —— 什么都算「不知道成没成」
@@ -1667,11 +1680,17 @@ class FmrClient:
         msg = str(payload.get("msg") or "").strip() if isinstance(payload, dict) else ""
         tail = ("后端自己那句是：「%s」。" % msg) if msg else "后端没给它那句说明。"
         if status == 200:
+            #: ★ 回执里带着**写进去那份的指纹**（实测）—— 摆进人话里，校验就一眼：
+            #: 拿它跟本地那份 `sha256sum` 比，一致才算「真上去了」（不是「接口回 200」就算）。
+            data = payload.get("data") if isinstance(payload, dict) else None
+            new_sha = str((data or {}).get("sha256") or "").strip() if isinstance(data, dict) else ""
             return FormWriteResult(
                 verdict=WRITE_OK, status=200, msg=msg,
                 say=("**上传好了**：`%s` 的 py 脚本已经在后端更新（后端回的 `status` 是 200）。%s"
-                     "接下去生产按接口下载就是这一份（写进去的是 %d 字节）。"
-                     % (k, tail, len(str(source).encode("utf-8")))))
+                     "写进去的是 %d 字节%s。接下去生产按接口下载就是这一份。"
+                     % (k, tail, len(str(source).encode("utf-8")),
+                        ("，后端回的新指纹是 `%s` —— 拿它跟本地那份 `sha256sum` 比，一致才算真上去了"
+                         % new_sha[:16]) if new_sha else "")))
         if status == 401:
             return FormWriteResult(
                 verdict=WRITE_AUTH, status=401, msg=msg,
