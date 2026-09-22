@@ -280,6 +280,33 @@ def shape_of(src: str) -> dict:
     return {"kind": "legacy" if not why else "unknown", "why": why}
 
 
+def _undefined_self_calls(tree) -> list:
+    """`self.<名字>(…)` 里那些**整份源码都没有定义**的名字（按出现顺序、去重）。
+
+    ⚠️【我量的·2026-09-21 真跑】那一版补丁把清同意弹层那一整段（点 `COOKIE_BTN_ALT` 那个 for）
+    换成了 **`self._clear_cookies()`** —— 而**整份源码里没有这个方法**（模型只留了一个
+    「给那个站用的方法名」，没把方法写出来）⇒ 一开跑就是 `AttributeError`，横幅**一次都没点掉**，
+    后面每一步的点击都被那层浮层吃掉 ⇒ 整趟白跑（运营在屏幕上看到的就是「cookie 没点」）。
+    判据是死的：**每一个一级 `self.名字(` 调用，源码里得有一个 `def 名字(`**。
+
+    ⚠️ 只收**一级**：`self.cdp.click(…)` 那种是「属性上的方法」（属于 `common.CDPHelper`），
+    不在这一层判 —— 判了会把每一份老脚本都拦下。
+    ⚠️ 已知的假阳性（宁严不松是这一层的立场，代价是重试一次）：`self.x = lambda: …` 之后再
+    `self.x()` 这种；这一族在老脚本里没见过。
+    """
+    defined = {n.name for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    out: list = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if (isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name)
+                and fn.value.id == "self" and fn.attr not in defined and fn.attr not in out):
+            out.append(fn.attr)
+    return out
+
+
 def check_patch(old: str, new: str) -> list:
     """补丁过闸 → 违规清单（**人话**，每条说清「哪一条、为什么、会怎样」）。**纯函数**。
 
@@ -306,6 +333,14 @@ def check_patch(old: str, new: str) -> list:
     #: ⚠️ 【我量的·2026-09-21】真跑里出现过「一处都没改」的稿（模型交回的 `<<<REPLACE` 块
     #: 里放的还是原来那段）—— 那种稿会长得**跟修好了一模一样**（lint 过、自测过），
     #: 而它一个字节都没动。所以这一条也算过不了闸（试两次里给它一次改口的机会）。
+    #: ⚠️ 见 `_undefined_self_calls` 上面那段：调一个源码里没有的方法 = 一开跑就崩，
+    #: 而它**长得像改好了**（语法过、lint 过、闸上那句「改了什么」也摆着一段看着挺对的代码）。
+    ghost = _undefined_self_calls(tree)
+    if ghost:
+        return ["这一版**调了源码里没有的方法**：%s —— 一开跑就是 `AttributeError`，那一句之后"
+                "全都不会发生（实测：那一版就是因为这个，清同意弹层那一段一次都没跑到，"
+                "横幅一直盖着页面）。要么把那个方法**写出来**（`def 名字(self, …):`），要么别调它。"
+                % "、".join("`self.%s()`" % n for n in ghost)]
     if str(new) == str(old):
         return ["这一版与旧脚本**逐字一样** —— 一处都没改。那不是修：要么找出真正该改的那一处，"
                 "要么说清「这份稿我看不出该改什么」。"]
@@ -384,6 +419,13 @@ PATCH_DISCIPLINE = """## 改这份脚本时的纪律（这几条是这套工具�
 - 每一步开头**上报一行**：`self._rpt("step", "第 N 步 <这一步在做什么>")` ——
   ⚠️ 老写法**不认 `--trace`**（自测里明说了「定位不到卡在第几步」），所以**这一行就是唯一的
   定位**：自测、闸上、证据里读到的就是它。没有它，一趟失败只能看到「max_steps」四个字。
+
+⚠️ **不许多调一个源码里没有的方法**：要新写一个 `self.xxx(…)`，就**把它定义出来**
+（`def xxx(self, …):`，写在类里）—— 只写调用、不写函数体，一开跑就是 `AttributeError`，
+那一句之后**全都不会发生**（实测：清同意弹层那一段被换成一个没定义的方法 ⇒ 横幅一次都没点掉，
+运营在屏幕上看到的就是「cookie 没点」，整趟白跑；这一条现在**过不了闸**）。
+⚠️ 同样：**不许只删一半** —— 那次改动还删掉了空转保护那一句的判据（`sig = …` / `if sig == last_sig:`）
+却留着它的函数体。改一段就把那一段**整段重述**出来。
 
 **手上这几只手（都是 `self.cdp.<名字>`，生产那份 `common.py` 里就有）**：
 `eval(js)` 读页面（判据只能这么读）、`click(selector)` 点、`form(selector, value=/check=/select=)` 填、

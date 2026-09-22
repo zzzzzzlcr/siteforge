@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import pathlib
 import shutil
@@ -151,6 +152,27 @@ def test_check_patch_blocks_each_way_a_patch_could_break_production():
         bad = fix.check_patch(LEGACY_PY, src)
         assert bad, "「%s」这一版居然过了闸" % label
         assert any(want in b for b in bad), (label, bad)
+
+    #: ★ 第六条（2026-09-21 真跑加的）：**调了源码里没有的方法**。
+    #: 【我量的】那一版把清同意弹层那一整段换成了 `self._clear_cookies()`，而整份源码里
+    #: **没有这个方法** ⇒ 一开跑 `AttributeError`、横幅一次都没点掉 ⇒ 运营看到的就是「cookie 没点」、
+    #: 后面每一步都被浮层吃掉。它**长得像改好了**（语法过、闸上那段「改了什么」看着挺对）⇒
+    #: 只在真跑里才现形 —— 所以这一条现在摆到闸上（纯 `ast`，免费）。
+    ghost = good.replace("    def run(self, max_steps=MAX_STEPS):",
+                         "    def run(self, max_steps=MAX_STEPS):\n        self._clear_cookies()")
+    assert ghost != good, "插桩没生效（`def run` 那一行变了？）"
+    bad = fix.check_patch(LEGACY_PY, ghost)
+    assert bad and any("没有的方法" in b for b in bad), bad
+    #: 正控：把它**写出来**就过 —— 否则这条闸会把「自己加了个方法」的好稿也拦下
+    defined = ghost.replace("    def run(self, max_steps=MAX_STEPS):",
+                            "    def _clear_cookies(self):\n        return None\n\n"
+                            "    def run(self, max_steps=MAX_STEPS):")
+    assert fix.check_patch(LEGACY_PY, defined) == [], fix.check_patch(LEGACY_PY, defined)
+    #: ⚠️ 只收**一级** `self.名字(`：`self.cdp.click(…)` 是「属性上的方法」（`common.CDPHelper` 的）
+    #: —— 把它也算进去，每一份老脚本都会被这条闸拦下（实测：那才是**误伤**）。
+    assert fix._undefined_self_calls(ast.parse(
+        "class A:\n    def go(self, c):\n        self.helper.click('x')\n        self.own()\n"
+        "    def own(self):\n        pass\n")) == []
 
 
 def _hunk_diff(old: str, *, needle: str, new_line: str, context: int = 2) -> str:
