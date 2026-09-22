@@ -327,6 +327,8 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _run_steps_payloads()
     elif scenario == "py-upload":
         payload = _py_upload_payloads()
+    elif scenario == "py-upload-nothing":
+        payload = _py_upload_payloads(with_nothing=True)
     elif scenario == "run-refused":
         payload = _run_refused_payloads()
     elif scenario == "window":
@@ -728,11 +730,28 @@ PY_COMMIT_SAY = ("**上传好了，而且回读核对过**：后端那份现在 
 PY_ROLLBACK_SAY = "已回滚到上传前那份，并通过回读核对。"
 
 
-def _py_upload_payloads() -> dict:
-    """那一栏的三下：地址 + 载荷 + 服务那三句话上屏。"""
-    lives = [{"body": _live("done", "over", n=1 + i, tag="这一趟")} for i in range(6)]
+#: 「这一趟落了盘」那一格（`/live.artifact`）—— 上传那三下**只在它非空之后**才按得动。
+ART_DELIVERED = {"url": "/job/job-py/artifact", "filename": "qualify.py",
+                 "path": "/company/siteforge/forms/sites/qualify.py",
+                 "say": "这一趟写下的那串字节拿到了。"}
+#: 「没有 py」那一格：`url` 空 + 服务自己交代的那句话（**为什么没有 py**）——
+#: 这正是运营撞到的形状：自测没带 url ⇒ 没落盘 ⇒ 面板上什么也不说。
+ART_NOTHING = {"url": None, "filename": None, "path": None,
+               "say": "**为什么没有 py**：探路**没走完** —— 规矩是不许拿半份账本写 py。"}
+
+
+def _py_upload_payloads(*, with_nothing: bool = False) -> dict:
+    """那一栏的三下：地址 + 载荷 + 服务那三句话上屏。
+
+    `with_nothing=True`：这一趟**没有 py**（`artifact.url` 空）—— 那一栏必须**说清为什么**，
+    而不是继续摆三个按不动的按钮（2026-09-22 用户原话：「到底能不能上传 py 的我不知道」）。
+    """
+    art = ART_NOTHING if with_nothing else ART_DELIVERED
+    lives = [{"body": _live("done", "over", n=1 + i, tag="这一趟", artifact=art)}
+             for i in range(6)]
     _assert_all_different([x["body"] for x in lives], "`/live` 的正文")
-    return {"scenario": "py-upload", "search": "?job=%s" % PY_JOB,
+    return {"scenario": "py-upload-nothing" if with_nothing else "py-upload",
+            "search": "?job=%s" % PY_JOB,
             "py_job": PY_JOB,
             "responses": {
                 "/runs": [{"body": {"note": "", "runs": [
@@ -1106,6 +1125,22 @@ def test_the_operator_can_start_a_new_run_from_the_panel(tmp_path):
     assert SUBMITTED_SAY in out["afterRun"]["notices"], out["afterRun"]["notices"]
 
 
+def test_the_upload_panel_says_why_there_is_nothing_to_upload(tmp_path):
+    """★ 2026-09-22 用户撞到的形状：**这一趟没有 py**（自测没带 url ⇒ 没落盘）——
+    面板上却一句话都不说，三个按钮按不动、人不知道该干什么（原话：「到底能不能上传 py
+    的我不知道 …上一步生成/验证没有带 url 导致我这边是经过你传的」）。
+
+    判据：那一栏**开页就把原因摆出来**，而且**原样照抄服务那一格的话**（`artifact.say`
+    里写着「为什么没有 py」+ 下一步）—— 页面**不自己编**一句「不能上传」。
+    """
+    out = _drive(tmp_path, scenario="py-upload-nothing")
+    why = out["beforeAny"]["why"]
+    assert "没有 py 可传" in why, why
+    assert "半份账本" in why, "服务那句原因没原样上屏：%s" % why
+    #: 页面**自己不许**编原因（那是编话）：它那句外壳之外，原因必须来自服务
+    assert "为什么没有 py" in why, why
+
+
 def test_the_panel_can_upload_the_fixed_script_three_clicks(tmp_path):
     """★ 用户问的那一格：「现在面板能上传？就是测通后得新脚本/生成得新脚本」（2026-09-22）。
 
@@ -1120,6 +1155,9 @@ def test_the_panel_can_upload_the_fixed_script_three_clicks(tmp_path):
     html = service.CONSOLE_PATH.read_text(encoding="utf-8")
     assert 'id="btnPyCommit" disabled' in html, "「确认上传」不是开页就按不动的"
     assert 'id="btnPyRollback" disabled' in html, "「回滚」不是开页就按不动的"
+    #: ★ 2026-09-22（用户原话：「我到底能不能上传 py，我不知道」）：**开页那一刻就要说清
+    #: 这一栏现在能不能按** —— 判据是服务那一格 `live.artifact`，页面不自己推。
+    assert "落了盘" in out["beforeAny"]["why"], out["beforeAny"]["why"]
     #: 票到手那一刻 JS 要把「确认」放开 —— 这一格是 JS 自己的活，从假 DOM 量
     assert out["afterPrepare"]["commitDisabled"] is False, out["afterPrepare"]
     #: 预检那段事实：本地/后端两个指纹都要摆出来（人要能自己比）

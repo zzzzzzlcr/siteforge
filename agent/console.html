@@ -491,6 +491,7 @@
                 <button class="btn" type="button" id="btnPyRollback" disabled>回滚到上传前</button>
               </div>
             </div>
+            <p class="hintline" id="pyUploadWhy"></p>
             <div class="facts" id="pyUploadFacts"></div>
             <p class="hintline" id="pyUploadNote"></p>
             <p class="hardrule">
@@ -1536,6 +1537,31 @@
   }
 
   // ══════════════════ 画一屏（只有这一处写 DOM）══════════════════
+  //: ★ 2026-09-22（用户原话：「我到底能不能上传 py，我不知道 —— 上一步生成/验证没带 url，
+  //: 所以我这边是经过别人传的」）：**这一栏现在能不能按，先说清**。
+  //: 判据**只有一处**：`/live.artifact`（服务那一格）—— 页面**不自己推**（它没有产物那条线）：
+  //:   · 没有那一格 ⇒ 还没到「写下 py」那一步（在跑 / 排队 / 停在闸上）；
+  //:   · 有格子、`url` 空 ⇒ 这一趟**没有 py 可传**，把它自己交代的那句**原样**摆出来
+  //:     （服务在那一格里写着「为什么没有 py」+ 下一步）；
+  //:   · 有 `url` ⇒ 落了盘，可以按「预检上传」。
+  //: ⚠️ 单独一个元素（不是 `#pyUploadNote`）—— 那个是预检/确认/回滚**结果**的落点，
+  //: 每 3 秒的重画去写它会**把结果擦掉**（这一片踩过的那种形状）。
+  function paintPyUploadWhy() {
+    var box = document.getElementById("pyUploadWhy");
+    if (!box) { return; }
+    if (!has(live, "artifact")) {
+      box.innerHTML = rich("这一趟**还没到「写下 py」那一步**（在跑 / 排队 / 停在闸上）—— " +
+                           "落盘之后这一栏才按得动。");
+      return;
+    }
+    var said = at(live, "artifact.say", "");
+    if (at(live, "artifact.url", "")) {
+      box.innerHTML = rich("这一趟**落了盘** ✓ 可以「预检上传」了。");
+      return;
+    }
+    box.innerHTML = rich("这一趟**没有 py 可传** —— " + (said || "服务没给原因。"));
+  }
+
   function paint() {
     if (!live) { return; }
     var status = at(live, "status", "");
@@ -1553,6 +1579,7 @@
     paintPageView();
     paintWindow();
     paintComposer();
+    paintPyUploadWhy();
   }
 
   // ══════════════════ 取数据 ══════════════════

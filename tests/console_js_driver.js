@@ -216,6 +216,7 @@ async function runScenario(out) {
 async function pyUploadScenario(out) {
   out.beforeAny = { commitDisabled: el("btnPyCommit").disabled,
                     rollbackDisabled: el("btnPyRollback").disabled,
+                    why: el("pyUploadWhy").innerHTML,
                     facts: el("pyUploadFacts").innerHTML,
                     note: el("pyUploadNote").innerHTML };
   el("pyUploadOperator").value = payload.operator || "值班员 A";
@@ -560,7 +561,8 @@ async function againScenario(out) {
   else if (payload.scenario === "artifact") { await artifactScenario(out); }
   else if (payload.scenario === "run") { await runScenario(out); }
   else if (payload.scenario === "run-steps") { await runStepsScenario(out); }
-  else if (payload.scenario === "py-upload") { await pyUploadScenario(out); }
+  else if (payload.scenario === "py-upload" ||
+           payload.scenario === "py-upload-nothing") { await pyUploadScenario(out); }
   else if (payload.scenario === "run-refused") { await runRefusedScenario(out); }
   else if (payload.scenario === "window") { await windowScenario(out); }
   else if (payload.scenario === "page-view") { await pageViewScenario(out); }
