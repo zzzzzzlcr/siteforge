@@ -487,6 +487,33 @@ def test_run_two_reruns_the_same_page_and_only_navigates_when_asked(env):
     assert order == ["artifact", "cdp", "artifact"], order
 
 
+def test_every_full_funnel_round_starts_from_the_top_again(env):
+    """★ 2026-09-22 真事（`job-968a5382f7b4` 的自测 trace）：`delay` 与 `rerun` 两遍
+    **第 1 步就挂**（「页面上没找到「Get a Quote」」）——原因不是产物，是**跑法**：
+    原先只有整条阶梯开跑之前导航了一次，后面每一遍都从**上一遍停下来的那一页**起步；
+    而产物第一个状态的 `when` 是 `None`（起点那页与后面每页都不同源 ⇒ 生成侧按规矩撤了它）
+    ⇒ 它照样匹配 ⇒ 拿「报价结果页」去做「点 Get a Quote」⇒ 找不到元素 ⇒ 整遍作废
+    （运营看到的就是「两遍白跑 + 报错」）。
+
+    这一条钉：**每一遍整条漏斗的轮次**（放慢 / 换窗口 / 换国家）起跑前都 `cdp navi` 回起点；
+    而且 `rerun` **没给 `entry_url`** 时用 `start_url` 当刷新目标（不给的话它也是从别人
+    停下的那页起步 —— 同一条病）。
+    """
+    bad = _Script(rc=1, oks=(True, False))
+    stub = env["install"](_scripts(baseline=bad, rerun=bad, delay=bad, viewport=bad))
+    selftest.run(str(env["py"]), WS, env["form"], SITE, run_dir=env["dir"], cdp_bin=env["cdp"],
+                 start_url=ENTRY, set_viewport=lambda w, h: None, max_submissions=4)
+
+    navis = [c for c in stub.cdp_calls if c[1:2] == ["navi"]]
+    assert navis, "整条漏斗那几遍一遍都没站回起点 —— 跑法还是「拿别人停下的那页起步」"
+    assert all(c[2] == ENTRY for c in navis), navis
+    #: 而且**每一遍各按一次**（不是一次导航管好几遍）：4 遍 = 开跑前 1 次 + 后 3 遍各 1 次
+    assert len(navis) == 4, [(c[1], c[2]) for c in stub.cdp_calls]
+    #: 顺序：每一遍的 navi 在**那遍的产物**之前（不然就是导完航又被人踩回起点）
+    kinds = [kind for kind, _, _ in stub.calls]
+    assert kinds[:2] == ["cdp", "artifact"], kinds
+
+
 def test_a_round_that_costs_nothing_shifts_the_whole_ladder_up(env):
     """**I-2 的事实**：不花提交次数的那一遍，会把后面**整个阶梯前移一位**。
 

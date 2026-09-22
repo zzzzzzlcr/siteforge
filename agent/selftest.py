@@ -8,10 +8,10 @@
 | 遍 | 扰动 | 打的是什么 | 怎么落地 |
 |---|---|---|---|
 | 1 | 正常 | 基线 | 直接跑 |
-| 2 | 页面上**接着再跑一遍** | 状态残留 / 首次加载假设 | 同一个 `ws_url`、**不重置页面**（R-6）；给了 `entry_url` 就先 `cdp navi` 过去，覆盖「刷新后重跑」的字面读法 |
-| 3 | 注入延迟 | 时序竞争 / 没等就点 | 走产物自带的 `--delay`（R-4），**不改写产物源码** —— 改写过的源码测的是另一个产物 |
-| 4 | 换 viewport | 折叠 / 遮挡 / 坐标假设 | 注入式回调 `set_viewport`（R-5）：viewport 是**窗口层**的事（`POST /browser/update`），产物和 cdp 内核都够不着 |
-| 5 | 换代理国家 | 地区内容差异（规格 §10 说这是 R1 的主要来源） | 注入式回调 `set_country`；不给就跳过（这条要重拉 gost 链，单遍成本高，计划里就标了**可选**）|
+| 2 | 页面上**接着再跑一遍** | 状态残留 / 首次加载假设 | 同一个 `ws_url`、**不重置页面**（R-6）；给了 `entry_url` 就先 `cdp navi` 过去；★ 没给但知道 `start_url` 时**用它**（否则这一遍是从**上一遍停下的那一页**起步的 —— 产物第一个状态的 `when` 是 `None`（起点与别页不同源时生成侧会撤掉它）⇒ 拿错页找元素，第 1 步就挂） |
+| 3 | 注入延迟 | 时序竞争 / 没等就点 | 走产物自带的 `--delay`（R-4），**不改写产物源码** —— 改写过的源码测的是另一个产物。★ 起跑前先 `cdp navi` **站回起点**（这一遍跑的是整条漏斗） |
+| 4 | 换 viewport | 折叠 / 遮挡 / 坐标假设 | 注入式回调 `set_viewport`（R-5）：viewport 是**窗口层**的事（`POST /browser/update`），产物和 cdp 内核都够不着。★ 起跑前先站回起点 |
+| 5 | 换代理国家 | 地区内容差异（规格 §10 说这是 R1 的主要来源） | 注入式回调 `set_country`；不给就跳过（这条要重拉 gost 链，单遍成本高，计划里就标了**可选**）。★ 起跑前先站回起点 |
 
 ## R-84（2026-09-17，**用户裁定**）：不再固定跑三遍 —— **每一遍都是一次真实提交**
 
@@ -1065,6 +1065,21 @@ def run(py_path, ws_url, form_file, site, *,
             passed=False, allowed_skips=allowed, cdp_bin=cdp_bin, site=site,
             py_path=str(py))
 
+    def _navi_back(what: str) -> str:
+        """**每一遍整条漏斗再跑之前**，先站回起点（`start_url`）。返回空串 = 成了。
+
+        ★ 2026-09-22 真事（`job-968a5382f7b4` 那趟的自测 trace）：`delay` 与 `rerun` 两遍
+        **第 1 步就挂**（「页面上没找到「Get a Quote」」）—— 因为原先只有**整条阶梯开跑之前**
+        导航了一次，后面每一遍都是从**上一遍停下来的那一页**起来；而产物第一个状态的 `when`
+        是 `None`（起点那页与后面每页都不同源 ⇒ 生成侧按规矩把它撤了）⇒ 它照样匹配 ⇒
+        于是拿「报价结果页」去执行「点 Get a Quote」这一步 ⇒ 找不到 ⇒ 那一遍整段作废
+        （运营看到的就是「两遍白跑 + 报错」）。
+        ⚠️ 不给 `start_url` 的调用方（老调用方）**行为一个字不变**：照旧不导航。
+        """
+        if not start_url:
+            return ""
+        return _navigate(cdp_bin, ws_url, start_url, env) or ""
+
     def _once(name, **kw):
         return _execute(name, py, ws_url, form_file, correlation_id, log_level, env,
                         run_dir, site, timeout, task_id=task_id, legacy_why=legacy_why, **kw)
@@ -1116,17 +1131,22 @@ def run(py_path, ws_url, form_file, site, *,
             continue
 
         if name == "rerun":
-            # 第 2 遍（R-6）：同一个 ws_url、同一个已经走到的页面，**接着**再跑一遍 ——
-            # 这才是「状态残留 / 首次加载假设」真正要打的东西。给了 entry_url 就先导航过去，
-            # 覆盖「刷新后重跑」的字面读法；导航本身也是一次动作，所以走 cdp 命令（不手拼 JS）。
+            # 第 2 遍（R-6）：同一个 ws_url、**刷新一下**再跑一遍 ——
+            # 这才是「状态残留 / 首次加载假设」真正要打的东西。导航本身是一次动作，
+            # 所以走 cdp 命令（不手拼 JS）。
+            # ★ 2026-09-22：**没给 `entry_url` 就用 `start_url`**（用户那趟两遍白跑的现场：
+            # 不给的话这一遍是从**上一遍停下来的那一页**起步的，而产物的第一个状态 `when`
+            # 是 `None` ⇒ 它照样匹配 ⇒ 拿「报价结果页」去做「点 Get a Quote」⇒ 第 1 步就
+            # 找不到元素，整遍作废）。两样都没有 ⇒ 照旧「接着再跑」（老行为不变）。
+            target = entry_url or start_url
             navi_failed = None
-            if entry_url:
+            if target:
                 if not cdp_bin:
                     navi_failed = "没有可用的 cdp 二进制，刷新这一步做不了"
                 else:
                     host, port = _host_port(ws_url)
                     try:
-                        done = subprocess.run([str(cdp_bin), "navi", entry_url,
+                        done = subprocess.run([str(cdp_bin), "navi", target,
                                                "--host", host, "--port", port],
                                               capture_output=True, text=True, timeout=60, env=env)
                         if done.returncode != 0:
@@ -1150,7 +1170,14 @@ def run(py_path, ws_url, form_file, site, *,
                     "开关），放慢那一遍就做不成 —— 「填完立刻点」这一类时序竞争这次"
                     "**没验到**。")))
             else:
-                _tell(_spend("delay", delay=delay))
+                bad = _navi_back("放慢那一遍")
+                if bad:
+                    _tell(_skipped("delay", (
+                        "这一遍没跑成：**起跑前站不回起点**（%s）—— 在别人停下的那一页上"
+                        "起步，第一步就会拿错页去找元素（实测：两遍都挂在第 1 步）。"
+                        "这一类失败这次**没验到**。" % bad)))
+                else:
+                    _tell(_spend("delay", delay=delay))
             continue
 
         if name == "viewport":
@@ -1169,7 +1196,14 @@ def run(py_path, ws_url, form_file, site, *,
                         "这一遍没跑成：换窗口大小的时候出错了（%s）。这一类失败这次**没验到** —— "
                         "不算过。" % exc)))
                 else:
-                    _tell(_spend("viewport"))
+                    bad = _navi_back("换窗口大小那一遍")
+                    if bad:
+                        _tell(_skipped("viewport", (
+                            "这一遍没跑成：**起跑前站不回起点**（%s）—— 在别人停下的那一页上"
+                            "起步，第一步就会拿错页去找元素。折叠 / 遮挡 / 坐标假设这类"
+                            "失败这次**没验到**。" % bad)))
+                    else:
+                        _tell(_spend("viewport"))
             continue
 
         # country（第 5 遍）：换代理国家（重拉 gost 链，成本高）。不给回调就跳过 —— 默认允许。
@@ -1185,7 +1219,14 @@ def run(py_path, ws_url, form_file, site, *,
                     "这一遍没跑成：换代理国家的时候出错了（%s）。地区内容差异这次**没验到**。"
                     % exc)))
             else:
-                _tell(_spend("country"))
+                bad = _navi_back("换代理国家那一遍")
+                if bad:
+                    _tell(_skipped("country", (
+                        "这一遍没跑成：**起跑前站不回起点**（%s）—— 在别人停下的那一页上"
+                        "起步，第一步就会拿错页去找元素。地区内容差异这次**没验到**。"
+                        % bad)))
+                else:
+                    _tell(_spend("country"))
 
     runs = tuple(runs)
     return Report(runs=runs, passed=_judge(runs, allowed), allowed_skips=allowed,
