@@ -64,6 +64,7 @@ import tempfile
 import time
 import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from typing import Any, Callable, Optional
@@ -424,7 +425,26 @@ def _backend_key(url: Any, fix_site: Any, fix_site_url: Any) -> str:
     u = str(url or "").strip()
     key = str(fix_site or "").strip()
     came_with = str(fix_site_url or "").strip()
-    return key if (key and came_with and u == came_with) else u
+    return key if (key and came_with and u == came_with) else _key_from_url(u)
+
+
+def _key_from_url(url: Any) -> str:
+    """`https://host/path?q#f` → `host/path` —— 后端认的键是**主机名 + 路径**。
+
+    ★ 2026-09-22（**真上传之后**发现的）：面板那条 py 上传路对新站取的是**原样 URL**
+    （带 `https://`、带查询串），而后端认的键是 `主机名/路径`（`fmr.py` 里自己写着
+    「真实 key 形如 `主机名/路径`」，`formLog` 行里那个 `site` 也是这个形状）。
+    同一个站**两个键** = 后端建出**两条行** ⇒ 生产按其中一个键下载，拿到的可能不是这一份
+    （静默 —— 这正是这一族最贵的那种失败）。
+    ✅ 同一天实测：拿 `www.parents.com/featured/premium/…`（host+path）去写，后端
+    **新建了**那一行、回读逐字节一致（sha256 `5f68a17f…`）。
+    ⚠️ 失败记录里那个键（`fix_site`）**原样用** —— 它本来就是后端给的（见上面那条判据）。
+    """
+    raw = str(url or "").strip()
+    parts = urllib.parse.urlsplit(raw)
+    if not parts.netloc:
+        return raw                      # 没有主机名（人填的可能就是个键）⇒ 一个字不动
+    return (parts.netloc + parts.path).rstrip("/") or parts.netloc
 
 
 def _artifact_say(values: dict, state: dict) -> str:

@@ -2252,6 +2252,25 @@ def test_the_explore_the_service_builds_carries_the_success_text(monkeypatch):
         "服务那层把成功判据丢了（探路拿到的关键字：%r）" % sorted(seen))
 
 
+def test_the_backend_key_is_the_host_and_path():
+    """★ 2026-09-22（**真上传之后**发现）：后端认的键是 `主机名/路径`。
+
+    实测那次（新建一个键）用的是 `www.parents.com/featured/premium/…`（host+path）✓；
+    而面板那条上传路原先对新站取的是**原样 URL**（带 `https://`、带查询串）⇒ 同一个站
+    **两个键** = 后端两条行 ⇒ 生产按其中一个下载，拿到的可能不是这一份（静默）。
+    """
+    assert service._backend_key("https://www.parents.com/a/b?x=1#f", "", "") == "www.parents.com/a/b"
+    assert service._backend_key("https://x.test/", "", "") == "x.test"
+    assert service._backend_key("https://x.test/", "", "") == "x.test"
+    #: 失败记录里那个键**原样用**（它本来就是后端给的形状）
+    assert (service._backend_key("https://x.test/a", "x.test/land/sp/abc", "https://x.test/a")
+            == "x.test/land/sp/abc")
+    #: 网址被人改过 ⇒ 那个键不再属于这一趟 ⇒ 退回（规范化后的）网址
+    assert service._backend_key("https://x.test/b", "x.test/land/sp/abc", "https://x.test/a") == "x.test/b"
+    #: 人填的可能本来就是个键（没有主机名）⇒ 一个字不动
+    assert service._backend_key("x.test/a/b", "", "") == "x.test/a/b"
+
+
 def test_a_run_without_a_py_says_why_in_one_line():
     """★ 2026-09-22（用户原话：「那产出不了py你要说下原因啊」）。
 

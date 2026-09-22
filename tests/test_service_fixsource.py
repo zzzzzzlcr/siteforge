@@ -109,10 +109,14 @@ def test_fix_mode_stages_the_backend_script_as_the_draft(tmp_path):
     assert staged.exists(), "没落底稿：%s" % sorted(
         p.name for p in (tmp_path / "sites").glob("*")) if (tmp_path / "sites").exists() else []
     assert staged.read_text(encoding="utf-8") == SCRIPT_SRC, "底稿被改过了（逐字节！）"
-    #: 走的是那个读口，且带的是 **URL**（后端自己解析成它认的键）。
+    #: 走的是那个读口，带的是**后端认的那个键形状**：`主机名/路径`。
+    #: ⚠️ 2026-09-22 **真上传之后**才统一到这一形状：读口**也**认整条 URL（仓里量过），
+    #: 但**写口只认 / 存这个形状**（我拿 `www.parents.com/featured/…` 真建过一行 ✓，
+    #: 回读 sha 逐字节一致 ✓）；两个形状混用 = 同一个站在后端**两条行**（生产按哪个键
+    #: 下载都可能拿到的不是这一份 —— 静默）。见 `service._key_from_url`。
     path, params = query_of(rec.urls[0])
     assert path == "/api/quest/formScript", path
-    assert params["site"] == URL, params
+    assert params["site"] == "callyourdate.com/land/sp/519015a5", params
 
 
 def test_a_disabled_site_can_be_staged_when_the_operator_asks_for_it(tmp_path):
@@ -229,7 +233,8 @@ def test_the_failure_key_stops_counting_once_the_url_moved(tmp_path):
     assert r.status_code == 202, r.text
     path, params = query_of(rec.urls[0])
     assert path == "/api/quest/formScript", path
-    assert params["site"] == "https://another-funnel.test/quiz", params
+    #: ⚠️ 网址被人改过 ⇒ 退回**规范化后**的网址（`主机名/路径` = 后端认的键形状）
+    assert params["site"] == "another-funnel.test/quiz", params
 
 
 def test_a_failure_key_with_no_url_to_ride_on_is_not_used(tmp_path):
@@ -246,7 +251,8 @@ def test_a_failure_key_with_no_url_to_ride_on_is_not_used(tmp_path):
 
     assert r.status_code == 202, r.text
     path, params = query_of(rec.urls[0])
-    assert params["site"] == ENTRY_URL, params
+    #: ⚠️ 没给失败记录的键 ⇒ 问的是入口那串**规范化后**的键（`主机名/路径`）
+    assert params["site"] == "compareinsulation.io", params
 
 
 def test_the_failure_key_never_becomes_the_output_path(tmp_path):
@@ -286,7 +292,8 @@ def test_without_a_failure_key_the_entry_url_is_still_what_we_ask_with(tmp_path)
     assert r.status_code == 202, r.text
     path, params = query_of(rec.urls[0])
     assert path == "/api/quest/formScript", path
-    assert params["site"] == URL, params
+    #: ⚠️ 同一条口径：问后端时带的是**规范化后的键**（`主机名/路径`）
+    assert params["site"] == "callyourdate.com/land/sp/519015a5", params
 
 
 def test_build_mode_does_not_touch_the_backend_script(tmp_path):

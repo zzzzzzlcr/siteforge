@@ -2957,6 +2957,44 @@ def test_a_goto_with_no_address_on_the_ledger_is_not_replayed():
     assert "没记下要去的是哪" in why, why
 
 
+def test_the_same_field_filled_twice_keeps_only_the_last_one():
+    """★ 2026-09-22 真事（用户原话：「第一次生日填过了，为啥还会消掉填第二次。这个比较关键」）。
+
+    探索期模型为了试出掩码/校验的脾气，把同一格**反复填**（真账本里 `#InputDOB` 出现了
+    4 次 `form` + 1 次 `click` + 1 次 `scroll`）；这些步在账上**每一步都是「做成了」**
+    （回执说下发成功、页面也变了 ⇒ 掩码确实动了）⇒ `_replay_step` 那道 `ok` 筛**筛不掉** ✗。
+    而重放时前面那几次毫无意义，还会把后填的值**覆盖掉** —— 用户看到的正是这个。
+
+    判据四条：同一格只留**最后一次** ✓ / 别的字段与别的动作**一步不删** ✓ / **顺序不动** ✓ /
+    ⚠️ **跨状态不去重**（流程里第二次问同一格是另一件事）。
+    """
+    def _fill(name, value, state="form"):
+        return {"state": state, "action": "form",
+                "target": {"selectors": ["#%s" % name]},
+                "result": {"ok": True, "fill": {"name": name, "label": name,
+                                                "value": value, "kind": "value",
+                                                "source": name, "fallback": []}},
+                "note": "填好了「%s」" % name}
+
+    book = browser_agent.Journey(steps=[
+        _fill("dob", "1990-01-15"),                       # 第一次（ISO ✗，掩码会吃掉）
+        {"state": "form", "action": "click", "target": {"selectors": ["#ok"]},
+         "result": {"ok": True}, "note": "点了「继续」"},
+        _fill("dob", "15051990"),                         # 试第二次
+        _fill("name", "Dana"),
+        _fill("dob", "15/05/1990"),                       # 试出来的那一次 ⇒ 留它
+    ])
+    got = [s for st in book.states() if st["name"] == "form" for s in st["steps"]]
+    assert [s["action"] for s in got] == ["click", "form", "form"], got
+    assert [s.get("fill") for s in got if s["action"] == "form"] == ["name", "dob"], got
+    assert len(got) == 3, "别的动作被删了：%s" % got
+
+    #: ⚠️ 跨状态**不去重**
+    book2 = browser_agent.Journey(steps=[_fill("dob", "1"), _fill("dob", "2", state="again")])
+    both = [s for st in book2.states() for s in st["steps"]]
+    assert len([s for s in both if s["action"] == "form"]) == 2, both
+
+
 def test_the_human_words_reach_the_explorer_and_nobody_elses_bytes_move(tmp_path) -> None:
     """★ 2026-09-22 真事：运营把步骤写得**很细**，新站那条路上模型**一个字都没收到**。
 

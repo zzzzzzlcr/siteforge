@@ -552,6 +552,9 @@ class Journey:
 
         步骤按**状态**分组（同一个状态里的是连续发生的），没有可重放步骤的状态整组丢掉
         （骨架里空 steps 的状态等于没写，留着只会让人以为那儿本来有东西）。
+
+        ★ 2026-09-22（真事）**同一个字段被反复填 ⇒ 只留最后一次**（见 `_last_fill_wins`）：
+        用户看到的现象是「第一次生日填过了，为啥还会消掉填第二次」。
         """
         order: list[str] = []
         groups: dict[str, list] = {}
@@ -563,6 +566,7 @@ class Journey:
             replay = _replay_step(step)
             if replay is not None:
                 groups[name].append(replay)
+        groups = {name: _last_fill_wins(steps) for name, steps in groups.items()}
         whens = {page.get("name"): page.get("when") for page in self.pages}
         return [
             {"name": name, "when": whens.get(name), "steps": groups[name]}
@@ -2145,6 +2149,28 @@ def _label_of(target) -> str:
     # （账本上没丢），排查时对得回页面；端进句子里是**多此一举地把实现细节摆上主视图**。
     # 与 `template.py` 渲染进产物那份同一个说法（那边写着「不把选择器端给人看」）。
     return "没写名字的元素"
+
+
+def _last_fill_wins(steps: list) -> list:
+    """同一个状态里**同一个字段被填过多次** ⇒ 只留**最后一次**（顺序不动，别的步一步不删）。
+
+    ★ 2026-09-22 真事（用户原话：「第一次生日填过了，为啥还会消掉填第二次。这个比较关键」）：
+    探索期模型为了试出掩码/校验的脾气，会把同一格**反复填**（真账本里 `#InputDOB` 出现了
+    4 次 `form` + 1 次 `click` + 1 次 `scroll`）。这些步在账上**每一步都是「做成了」**
+    （回执说动作下发成功、页面也变了 —— 掩码确实动了），所以 `_replay_step` 那道 `ok` 筛
+    **筛不掉它们** ✗。而重放时前面那几次**毫无意义**，还会把后填的那个值**覆盖掉** ——
+    用户看到的「填了又被消掉」正是这个。
+
+    ⇒ 留最后一次：探索者最后停下的那个形态，才是它**试出来**的那个（值由 `fills()`
+    那一跳给 —— 它本来就取最后一条）。
+    ⚠️ 只按**同一个状态内**去重：跨状态填同一格是**另一件事**（那是流程里第二次问它）。
+    """
+    last: dict = {}
+    for i, s in enumerate(steps or []):
+        if s.get("action") == "form" and s.get("fill"):
+            last[s["fill"]] = i
+    return [s for i, s in enumerate(steps or [])
+            if not (s.get("action") == "form" and last.get(s.get("fill")) != i)]
 
 
 def _replay_step(step: dict):
