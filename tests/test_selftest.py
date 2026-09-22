@@ -1023,3 +1023,60 @@ def test_selftest_and_the_template_agree_on_the_artifact_cli():
     for flag in selftest.ARTIFACT_FLAGS:
         assert '"%s"' % flag in src, flag
     assert "--delay" in src, "第 3 遍的旋钮要真的在产物 CLI 上"
+
+
+def test_the_cdproto_noise_does_not_drown_the_real_error():
+    """★ 2026-09-22 现场：`navi`/`observe` **每跑一次往 stderr 刷十几行**
+
+        could not unmarshal event: json: cannot unmarshal … unknown IPAddressSpace value: Private
+
+    （Chrome 136 的枚举，二进制里那份 cdproto 不认识。）退出码仍是 0、stdout 完整 ⇒
+    它**不是**失败 —— 但我们的失败人话取的是 stderr 的尾巴 ⇒ **真错误会被这十几行淹掉**。
+
+    判据两条：全是噪音 ⇒ 滤成空；**有用的那些行必须活下来**（`cdp click` 的落点取证
+    `covered_by` 就在 stderr 上，提示词里明确要靠它 —— 见 `fix.py` 的纪律 ⑤）。
+    """
+    noise = "\n".join(["could not unmarshal event: json: cannot unmarshal … Private"] * 12)
+    assert selftest._noise_free(noise) == ""
+    assert selftest._noise_free("") == ""
+    mixed = noise + "\ncovered_by=iframe#mvfFormWidget-1790050856157\nrelease_withheld=true"
+    assert selftest._noise_free(mixed) == (
+        "covered_by=iframe#mvfFormWidget-1790050856157\nrelease_withheld=true")
+
+
+def test_a_navi_that_fails_while_the_window_is_still_starting_is_retried(monkeypatch):
+    """★ 2026-09-22 现场：**开窗之后调试端口要过几秒才通**（第一次探测全超时，等一会儿再探就通了）。
+
+    不重试的后果：那一趟以一句「**导航没成**」结账 —— 而它其实只是**窗口还没起来**
+    （一句假结论，还看不出是假话）。所以 `navi` 重试几次；⚠️ 它只是导航、不提交任何东西，
+    重试是安全的（不是重复一次真流量）。
+    """
+    calls = []
+
+    class _Done:
+        def __init__(self, rc, err=""):
+            self.returncode, self.stdout, self.stderr = rc, "", err
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return _Done(1, "连接超时：Debug port not up yet") if len(calls) < 3 else _Done(0)
+
+    monkeypatch.setattr(selftest.subprocess, "run", fake_run)
+    monkeypatch.setattr(selftest.time, "sleep", lambda s: None)
+    why = selftest._navigate("/bin/true", "ws://1.2.3.4:9222/devtools/browser/x",
+                             "https://x.test/", {})
+    assert why is None, why
+    assert len(calls) == 3, "第 3 次才通 —— 前两次该重试（真跑了几次：%d）" % len(calls)
+
+    #: 一直不通 ⇒ 说清「说不上是哪一次失败」，但仍然**只报一次**那最后一句
+    calls.clear()
+
+    def always_bad(cmd, **kw):
+        calls.append(cmd)
+        return _Done(1, "could not unmarshal event: json: cannot unmarshal … Private\n连不上")
+
+    monkeypatch.setattr(selftest.subprocess, "run", always_bad)
+    said = selftest._navigate("/bin/true", "ws://1.2.3.4:9222/devtools/browser/x",
+                              "https://x.test/", {})
+    assert len(calls) == selftest.NAVI_TRIES, len(calls)
+    assert "连不上" in said and "could not unmarshal" not in said, said

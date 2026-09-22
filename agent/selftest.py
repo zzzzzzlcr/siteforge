@@ -491,6 +491,29 @@ def _dom_view_raw(py, cdp_bin, ws_url, env) -> dict:
     return view
 
 
+#: cdp 往 stderr 刷的**已知噪音**：`could not unmarshal event: json: cannot unmarshal …
+#: unknown IPAddressSpace value: Private`（Chrome 136 的枚举，二进制里那份 cdproto 不认识）。
+#: 【现场·2026-09-22】它**每跑一次 `navi`/`observe` 就刷十几行**；退出码仍是 0、stdout 完整
+#: ⇒ 它**不是**失败，但它会把有用的那几行（`cdp click` 的落点取证 `covered_by` / 脚本自己的
+#: 报错）淹掉。所以**只给人看的那几处**按前缀丢掉它。
+#: ⚠️ 「原样落盘」那一份（`<run>.log`）**一个字都不动** —— 那是这一趟的原始证据。
+STDERR_NOISE_PREFIXES = ("could not unmarshal event:",)
+
+#: 开窗之后**调试端口要过几秒才通**（【现场·2026-09-22】另一台机器实测：第一次 TCP 探测
+#: 全超时，等一会儿再探就通了 —— 窗口还在启动）。所以第一次接触（`navi`）**重试几次**：
+#: 不重试的话，那一趟会以一句「导航没成」结账，而它其实只是**窗口还没起来**（假结论）。
+#: ⚠️ `navi` 只是导航、不会提交任何东西 ⇒ 重试是安全的（不是重复一次真流量）。
+NAVI_TRIES = 4
+NAVI_GAP_SECONDS = 2.0
+
+
+def _noise_free(text: str) -> str:
+    """滤掉已知噪音行（**只按前缀** ✓ —— 别误伤 `click` 的落点取证那种有用的 stderr）。"""
+    lines = [ln for ln in str(text or "").splitlines()
+             if not ln.lstrip().startswith(STDERR_NOISE_PREFIXES)]
+    return "\n".join(lines).strip()
+
+
 def _navigate(cdp_bin, ws_url, entry_url, env) -> Optional[str]:
     """把窗口**导航到 `entry_url`** → `None` 成了 / 一句人话为什么没成。
 
@@ -503,15 +526,22 @@ def _navigate(cdp_bin, ws_url, entry_url, env) -> Optional[str]:
     if not cdp_bin or not entry_url:
         return "（没导航：%s）" % ("没有可用的 cdp 二进制" if not cdp_bin else "没给入口网址")
     host, port = _host_port(ws_url)
-    try:
-        done = subprocess.run([str(cdp_bin), "navi", entry_url, "--host", host, "--port", port],
-                              capture_output=True, text=True, timeout=60, env=env)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return "导航失败：%s" % exc
-    if done.returncode != 0:
-        return "导航没成（退出码 %d，它说：%s）" % (done.returncode,
-                                                 _tail(done.stderr or done.stdout, 3) or "什么都没说")
-    return None
+    said = ""
+    for attempt in range(NAVI_TRIES):
+        try:
+            done = subprocess.run([str(cdp_bin), "navi", entry_url, "--host", host, "--port", port],
+                                  capture_output=True, text=True, timeout=60, env=env)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            said = "导航失败：%s" % exc
+        else:
+            if done.returncode == 0:
+                return None
+            said = "导航没成（退出码 %d，它说：%s）" % (
+                done.returncode,
+                _tail(_noise_free(done.stderr) or done.stdout, 3) or "什么都没说")
+        if attempt < NAVI_TRIES - 1:
+            time.sleep(NAVI_GAP_SECONDS)      # 端口还没通 ⇒ 等一下再试（见上面那条实测）
+    return said
 
 
 def run_once(py_path, ws_url, form_file, site, *, legacy: bool = False, run_dir=None,
@@ -741,7 +771,7 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
     elif lines:
         note = "每一步都做成了，但页面上一直没出现成功文案（退出码 %s）—— 不是卡在哪一步，是没走到成功" % rc
     else:
-        why = _tail(err) or _tail(out)
+        why = _tail(_noise_free(err)) or _tail(out)
         note = "它一步都没走成：进程退了（退出码 %s）%s" % (
             rc if rc is not None else "起不来", "，它最后说：%s" % why if why else "")
     if bad_lines:
@@ -1071,7 +1101,7 @@ def run(py_path, ws_url, form_file, site, *,
                         if done.returncode != 0:
                             navi_failed = "cdp navi 没成（退出码 %d，它说：%s）" % (
                                 done.returncode,
-                                _tail(done.stderr or done.stdout) or "什么都没说")
+                                _tail(_noise_free(done.stderr) or done.stdout) or "什么都没说")
                     except (OSError, subprocess.TimeoutExpired) as exc:
                         navi_failed = "cdp navi 没成（%s）" % exc
             if navi_failed:
