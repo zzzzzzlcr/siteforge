@@ -192,6 +192,15 @@ __all__ = [
 DEFAULT_BASE = "https://fmr.3tkj.cn"
 #: token 从哪儿来。**绝不写死在代码里、绝不进 git**（没配就明说，见 `FmrClient`）。
 TOKEN_ENV = "FMR_AGENT_TOKEN"
+#: ★ 写口那一族**另有一个 token**（2026-09-22 实测：拿读 token 去写 ⇒ 后端回
+#: `{"status":401,"msg":"unauthorized"}`，换遍头名（`X-Api-Token` / `agent.token` /
+#: `Agent-Token` / `AgentToken` / `token`）都是 401 ⇒ **是值不对，不是头名不对**）。
+#: 【转述的·出处 `docs/交接-2026-09-21-B线.md:36` + 旧实验报告】后端那边它叫
+#: `configs.agentWriteToken`，**只走环境变量、没落盘、不进 git** —— 所以这一格是
+#: 部署方给的：给它一个 `FORM_SCRIPT_WRITE_TOKEN`（或 `AGENT_WRITE_TOKEN`），没给就
+#: 退回读 token（= 今天的行为，一个字不变）。
+WRITE_TOKEN_ENV = "FORM_SCRIPT_WRITE_TOKEN"
+WRITE_TOKEN_ALIASES = ("AGENT_WRITE_TOKEN",)
 #: 改后端地址的口子（默认值不变）。
 BASE_ENV = "FMR_BASE_URL"
 
@@ -231,6 +240,11 @@ FORM_CONFIG_UPDATE_PATH = "/api/quest/formConfig/update"
 #: ★ 它是**统一口**：后端一个配置行里要么是 py 源码、要么是 JSON steps
 #: （`QuestDiagnosisController::scriptKind()`），`type` 那一格自己说是哪种。
 FORM_SCRIPT_PATH = "/api/quest/formScript"
+#: ★ 写那个口（py）：`POST /api/quest/formScript/update`（与配置那个口同族：**有就更新**）。
+#: 【转述的·出处 `docs/交接-2026-09-21-B线.md:36`】「已探到存在（`api.php:89`，带
+#: `agent.token`）」——⚠️ 参数名与 sha256 指纹那两件**我没量过**（写它要真动生产那份脚本）。
+#: 所以第一次接触是**拿原样内容**发（零风险），量到契约之后再发改过的那份。
+FORM_SCRIPT_UPDATE_PATH = "/api/quest/formScript/update"
 
 #: 这两个口的超时（秒）—— **比别的读口短**（`DEFAULT_TIMEOUT` 是 20）。
 #: brief §2 R4：这是**给面板用的**，不是批量任务：人按了按钮在等一个答复，
@@ -962,8 +976,17 @@ class FmrClient:
                  opener: Optional[Callable] = None, timeout: float = DEFAULT_TIMEOUT,
                  now: Optional[Callable] = None,
                  poster: Optional[Callable] = None,
-                 config_timeout: float = CONFIG_TIMEOUT):
+                 config_timeout: float = CONFIG_TIMEOUT,
+                 write_token: Optional[str] = None):
         self.token = (os.environ.get(TOKEN_ENV) or "") if token is None else str(token or "")
+        #: 写那一族用的 token（**优先**这个）：没配就退回上面那个读 token —— 今天的行为
+        #: 一个字不变，配上之后读/写各走各的（2026-09-22 实测：写口不认读 token）。
+        if write_token is None:
+            alias = next((os.environ.get(n) for n in WRITE_TOKEN_ALIASES
+                          if os.environ.get(n)), "")
+            self.write_token = str(alias or self.token)
+        else:
+            self.write_token = str(write_token or "")
         self.base = str(base if base is not None else
                         (os.environ.get(BASE_ENV) or DEFAULT_BASE)).rstrip("/")
         self.timeout = float(timeout)
@@ -1512,24 +1535,25 @@ class FmrClient:
                 "写不回这份 JSON 配置：没说 **operator（谁确认的）**。"
                 "这是后端实测的必填审计字段；一个请求都没发出去。",
                 kind="no-operator")
-        if not self.configured:
+        if not self.write_token:
             # ⚠️ 这里回**值**、不抛：这是一个**已知**的结局（一个请求都没发出去 ⇒
             # **确定没写**），调用方（面板）对它有话说。与读口那个「没配 token 就抛」
             # 不冲突：读那次是「量不到」，这一次是「没写」——两句话，不是一个形状。
+            #: ⚠️ 判的是**写那个 token**（2026-09-22）：写口不认读 token（实测 401），
+            #: 拿一个注定被拒的请求去打后端，只会让运营读到一句看不懂的「鉴权没过」。
             return FormWriteResult(
                 verdict=WRITE_NO_TOKEN, status=None, msg="",
                 say=("**一个字都没写**：`%s` 的配置**没有被改动** —— 这个部署"
-                     "**没配 %s**，请求一个都没发出去。"
-                     "配法：给服务进程一个 `%s` 环境变量（与 `DATABASE_URL` 同一层）。"
-                     % (key, TOKEN_ENV, TOKEN_ENV)))
+                     "**没配写用的 token**（`%s`，没配就退回 `%s`），请求一个都没发出去。"
+                     % (key, WRITE_TOKEN_ENV, TOKEN_ENV)))
         url = "%s%s" % (self.base, FORM_CONFIG_UPDATE_PATH)
         # 【我量的·2026-09-21】这个控制器从表单参数取值，不读 JSON request body：
         # JSON body 会回业务码 400「steps 必须是合法的 JSON 对象或数组」。`steps`
         # 自身则是一串 JSON；另有必填审计字段 operator（「谁确认的」）。
         headers = {"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}
         # ⚠️ token 走**请求头**，绝不进 URL（与四个读口同一条纪律）。
-        if self.token:
-            headers["X-Api-Token"] = self.token
+        if self.write_token:
+            headers["X-Api-Token"] = self.write_token
         body = urllib.parse.urlencode({
             "site": key,
             "steps": json.dumps(steps, ensure_ascii=False),
@@ -1581,7 +1605,93 @@ class FmrClient:
                  "**没有被改动**。"
                  % (status, tail, key)))
 
-    def _write_unread_result(self, site: str, exc: Exception) -> FormWriteResult:
+    def update_form_script(self, key: str, source: str, *, operator: str,
+                           sha256: str = "") -> FormWriteResult:
+        """把一份 **py 源码**写回后端 → `FormWriteResult`（`POST /api/quest/formScript/update`）。
+
+        这是「修好的脚本怎么上线」那一步：上传之后**生产按接口下载**（用户 2026-09-22 的口径）。
+        ⚠️ 与配置那个口同族的四条纪律，一条不少：
+          · **有就更新**（用户口径）；
+          · 参数走 **form-urlencoded**（那一族的控制器不读 JSON body）；
+          · token 走**请求头** `X-Api-Token`，**绝不进 URL**；
+          · **判成功只认 body 里的 `status` 是 200**（这一族 HTTP 恒 200）。
+        ⚠️ `source` 是**逐字节**的：后端原话「首尾换行是源码的一部分」，写口又拿 sha256 当指纹
+        —— 在这儿 strip 一下，写上去的就是另一份文件（而且是**静默**改坏）。
+        ⚠️ **空源码 / 没给 operator** 都在**本地**拦住（一个请求都不发）：把线上那份脚本写空，
+        比不写坏一万倍，而这两种都是「免费就能查出来」的。
+        """
+        k = str(key or "").strip()
+        if not k:
+            raise FmrUnmeasured("写不回这份脚本：没说是**哪个站** —— 一个请求都没发出去。",
+                                kind="no-site")
+        if not str(source or ""):
+            raise FmrUnmeasured(
+                "写不回这份脚本：**源码是空的** —— 这一格每一字节都会变成线上那份脚本，"
+                "写空等于把那个站弄死。一个请求都没发出去。",
+                kind="empty-source")
+        who = str(operator or "").strip()
+        if not who:
+            raise FmrUnmeasured("写不回这份脚本：没说 **operator（谁确认的）**，"
+                                "后端实测的必填审计字段。一个请求都没发出去。",
+                                kind="no-operator")
+        if not self.write_token:
+            return FormWriteResult(
+                verdict=WRITE_NO_TOKEN, status=None, msg="",
+                say=("**一个字都没写**：`%s` 的脚本**没有被改动** —— 这个部署"
+                     "**没配写用的 token**（`%s`，没配就退回 `%s`），请求一个都没发出去。"
+                     % (k, WRITE_TOKEN_ENV, TOKEN_ENV)))
+        url = "%s%s" % (self.base, FORM_SCRIPT_UPDATE_PATH)
+        headers = {"Content-Type": "application/x-www-form-urlencoded; charset=utf-8"}
+        if self.write_token:
+            headers["X-Api-Token"] = self.write_token
+        fields = {"site": k, "source": str(source), "operator": who}
+        if str(sha256 or "").strip():
+            #: 【转述的】读口那边写着「`formScript/update` 拿它的 sha256 当指纹」——
+            #: 但它是**旧那份**的指纹还是**新那份**的，我没量过 ⇒ 由调用方显式给，
+            #: 没给就不带（不替后端猜一个值）。
+            fields["sha256"] = str(sha256).strip()
+        body = urllib.parse.urlencode(fields).encode("utf-8")
+        try:
+            raw = self._poster(url, headers, body)
+        except Exception as exc:                       # noqa: BLE001 —— 什么都算「不知道成没成」
+            return self._write_unread_result(k, exc, path=FORM_SCRIPT_PATH)
+        try:
+            payload = json.loads(raw)
+        except (ValueError, TypeError):
+            return FormWriteResult(
+                verdict=WRITE_UNKNOWN, status=None, msg="",
+                say=("**不知道写没写成**：请求发出去了，可后端回的正文不是 JSON"
+                     "（读了 %d 个字节）—— 那份脚本可能已经动了，去后端核对一眼再决定要不要重发。"
+                     % len(raw or "")))
+        status = business_status(payload)
+        msg = str(payload.get("msg") or "").strip() if isinstance(payload, dict) else ""
+        tail = ("后端自己那句是：「%s」。" % msg) if msg else "后端没给它那句说明。"
+        if status == 200:
+            return FormWriteResult(
+                verdict=WRITE_OK, status=200, msg=msg,
+                say=("**上传好了**：`%s` 的 py 脚本已经在后端更新（后端回的 `status` 是 200）。%s"
+                     "接下去生产按接口下载就是这一份（写进去的是 %d 字节）。"
+                     % (k, tail, len(str(source).encode("utf-8")))))
+        if status == 401:
+            return FormWriteResult(
+                verdict=WRITE_AUTH, status=401, msg=msg,
+                say=("**没传上去 —— 鉴权没过**（后端回的 `status` 是 401）。%s"
+                     "⚠️ 这一族一律 HTTP 200 ⇒ 这不是「网络出问题」，是那串写 token"
+                     "（`%s`，没配就退回 `%s`）不对或过期了；"
+                     "`%s` 的脚本**没有被改动**。" % (tail, WRITE_TOKEN_ENV, TOKEN_ENV, k)))
+        if status is None:
+            return FormWriteResult(
+                verdict=WRITE_UNKNOWN, status=None, msg=msg,
+                say=("**不知道写没写成**：后端回的正文不是一个带业务码的信封（读回来的是 %s…）。%s"
+                     "⚠️ 这不是「没写进去」—— 去后端核对一眼再说。" % (str(payload)[:60], tail)))
+        return FormWriteResult(
+            verdict=WRITE_REFUSED, status=status, msg=msg,
+            say=("**没传上去 —— 后端说这请求不对**（后端回的 `status` 是 %s）。%s"
+                 "⚠️ 这一条是它**明确拒了**（不是「不知道」）⇒ `%s` 的脚本**没有被改动**。"
+                 % (status, tail, k)))
+
+    def _write_unread_result(self, site: str, exc: Exception,
+                             path: str = FORM_CONFIG_PATH) -> FormWriteResult:
         """**请求发出去了、回执没读成** → `unknown`。★ 这一支**不许**说成「没写进去」。
 
         三种都进这儿：连不上 / 超时 / **HTTP ≥ 400**（网关那一层先回了码 ——
@@ -1608,8 +1718,8 @@ class FmrClient:
         return FormWriteResult(
             verdict=WRITE_UNKNOWN, status=None, msg="",
             say=("**不知道写没写成**：请求发出去了，可回执没读成 —— %s。"
-                 "⚠️ 这**不是**「没写进去」：那份配置**可能已经动了**。"
+                 "⚠️ 这**不是**「没写进去」：那份内容**可能已经动了**。"
                  "去后端核对一眼（`%s%s?site=%s`）再决定要不要重发。"
                  "（真因：%s: %s）"
-                 % (why, self.base, FORM_CONFIG_PATH,
+                 % (why, self.base, path,
                     urllib.parse.quote(site, safe=""), type(exc).__name__, exc)))

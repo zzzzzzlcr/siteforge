@@ -1318,6 +1318,105 @@ def writer(rec, token=FAKE_TOKEN, **kw):
     return fmr.FmrClient(token=token, poster=rec, **kw)
 
 
+#: 一份「像 py 的」源码：**尾换行也在**（写口逐字节，strip 一下就是另一份文件）。
+SCRIPT_SRC = ("#!/usr/bin/env python3\n"
+              "def main():\n"
+              "    return 0\n\n"
+              "THANK_YOU_MARK = 'thank-you'\n")
+
+
+def test_the_script_upload_goes_to_the_update_route_with_the_token():
+    """★ 「修好的脚本怎么上线」（用户 2026-09-22：「上传到后台就能通过接口下载」）。
+
+    请求的形状与配置那个口**同族**：路由 + 头里那串 token + form-urlencoded 正文
+    （`site` / `source` / `operator`），token 绝不进 URL，判成功只认 body 里 `status` 是 200。
+    """
+    rec = PostRecorder({"status": 200, "msg": "success"})
+    got = writer(rec).update_form_script("qualify.lastingpowerofattorney.io", SCRIPT_SRC,
+                                         operator="siteforge-client")
+    assert got.ok is True, got
+    assert rec.urls[0] == "https://fmr.3tkj.cn/api/quest/formScript/update", rec.urls[0]
+    assert rec.headers[0].get("X-Api-Token") == FAKE_TOKEN, rec.headers[0]
+    assert rec.headers[0].get("Content-Type").startswith(
+        "application/x-www-form-urlencoded"), rec.headers[0]
+    assert FAKE_TOKEN not in rec.urls[0], "token 进了 URL：%r" % rec.urls[0]
+    sent = {k: v[0] for k, v in urllib.parse.parse_qs(
+        rec.sent[0].decode("utf-8")).items()}
+    assert sent["site"] == "qualify.lastingpowerofattorney.io", sent
+    #: ★ **逐字节**：尾换行也必须在（后端原话「首尾换行是源码的一部分」）——
+    #:   在这儿 strip 一下，写上去的就是另一份文件（而且**静默**改坏）。
+    assert sent["source"] == SCRIPT_SRC, repr(sent["source"][-40:])
+    assert sent["operator"] == "siteforge-client", sent
+    #: 没给指纹就**不许替后端编一个**（`sha256` 是旧那份还是新那份，我没量过）
+    assert "sha256" not in sent, sent
+    rec2 = PostRecorder({"status": 200, "msg": "success"})
+    writer(rec2).update_form_script("x", SCRIPT_SRC, operator="who", sha256="abc123")
+    assert urllib.parse.parse_qs(rec2.sent[0].decode())["sha256"] == ["abc123"]
+
+
+def test_a_script_upload_with_an_empty_source_never_leaves_the_machine():
+    """★★ 最贵的那一格：**源码空着** ⇒ 一个请求都不发。
+
+    写空 = 把线上那个站的脚本清掉（比「没写」坏一万倍），而它在**本地**就查得出来。
+    没给 `operator` 也一样（后端必填的审计字段，量过）；没说是哪个站也一样。
+    """
+    rec = PostRecorder({"status": 200, "msg": "success"})
+    with pytest.raises(fmr.FmrUnmeasured) as e:
+        writer(rec).update_form_script("x", "", operator="who")
+    assert e.value.kind == "empty-source", e.value.kind
+    with pytest.raises(fmr.FmrUnmeasured) as e2:
+        writer(rec).update_form_script("x", SCRIPT_SRC, operator="   ")
+    assert e2.value.kind == "no-operator", e2.value.kind
+    with pytest.raises(fmr.FmrUnmeasured) as e3:
+        writer(rec).update_form_script("   ", SCRIPT_SRC, operator="who")
+    assert e3.value.kind == "no-site", e3.value.kind
+    assert rec.urls == [], "免费那几道闸没挡住：%r" % rec.urls
+
+
+def test_the_upload_uses_the_write_token_when_the_deployment_has_one():
+    """★ 写那个 token 与读那个**是两串**（2026-09-22 实测：拿读 token 去写 ⇒ 后端 401
+    `unauthorized`，换遍头名都一样 ⇒ 是值不对）。
+
+    所以：**给了写 token 就用它**（读 token 不进这个请求）；**没给就退回读 token**
+    —— 那一半是「今天的行为一个字不变」（部署没配写 token 时，谁都不许因为这条改动而变）。
+    ⚠️ token 一律走**请求头**：URL 里出现它，等于把它写进每一层访问日志。
+    """
+    rec = PostRecorder({"status": 200, "msg": "success"})
+    got = fmr.FmrClient(token=FAKE_TOKEN, write_token="WRITE-TOKEN-1",
+                        poster=rec).update_form_script("x", SCRIPT_SRC, operator="who")
+    assert got.ok is True, got
+    assert rec.headers[0].get("X-Api-Token") == "WRITE-TOKEN-1", rec.headers[0]
+    assert FAKE_TOKEN not in rec.urls[0] and "WRITE-TOKEN-1" not in rec.urls[0], rec.urls[0]
+
+    #: 没给写 token ⇒ 退回读 token（与从前一字不差）
+    rec2 = PostRecorder({"status": 200, "msg": "success"})
+    fmr.FmrClient(token=FAKE_TOKEN, poster=rec2).update_form_script(
+        "x", SCRIPT_SRC, operator="who")
+    assert rec2.headers[0].get("X-Api-Token") == FAKE_TOKEN, rec2.headers[0]
+
+    #: 两串都没配 ⇒ **一个请求都不发**，也不许说成功
+    rec3 = PostRecorder()
+    none = fmr.FmrClient(token="", poster=rec3).update_form_script(
+        "x", SCRIPT_SRC, operator="who")
+    assert none.verdict == fmr.WRITE_NO_TOKEN and rec3.urls == [], none
+
+
+def test_an_unauthorised_script_upload_is_not_success():
+    """HTTP 200 + body `status:401` ⇒ **不许读成成功**（与配置那边同一条案底）。"""
+    got = writer(PostRecorder(MEASURED_WRITE_401_BODY)).update_form_script(
+        "qualify.lastingpowerofattorney.io", SCRIPT_SRC, operator="siteforge-client")
+    assert got.ok is False and got.verdict == fmr.WRITE_AUTH, got
+    assert "上传好了" not in got.say, got.say
+    #: 后端明确拒了 ⇒ 「没被改动」，且**不许**说成「不知道」
+    refused = writer(PostRecorder(MEASURED_WRITE_400_BODY)).update_form_script(
+        "x", SCRIPT_SRC, operator="who")
+    assert refused.verdict == fmr.WRITE_REFUSED and "没有被改动" in refused.say, refused
+    #: 没配 token ⇒ 一个请求都不发，也不许说成功
+    rec = PostRecorder()
+    notoken = writer(rec, token="").update_form_script("x", SCRIPT_SRC, operator="who")
+    assert notoken.verdict == fmr.WRITE_NO_TOKEN and rec.urls == [], notoken
+
+
 # ─────────────────────── 读：这个站的 JSON 配置 ───────────────────────
 
 
