@@ -438,6 +438,13 @@ def test_a_sentence_the_service_said_stays_on_screen_through_the_repaints(tmp_pa
     """
     out = _drive(tmp_path, final_mode="gate")
 
+    #: ★ 2026-09-22（用户原话：「最好更明显一点，不然运营不知道啥情况」）：那一格
+    #: （`#statePill`）**要带着它在哪一步** —— `stage_say` 是服务给的人话，载荷里本来就有；
+    #: 负载里也有结局那两格（交付了 ✓ / 没交付 ✗）。这一条钉的就是「运营一眼看的那一格」。
+    assert "探路" in out["afterRepaint"]["statusPill"], out["afterRepaint"]
+    #: 停在闸上那一档还要**说到动作**（不然运营只看到「在等人」，不知道要他按什么）
+    assert "继续" in out["afterRepaint"]["statusPill"], out["afterRepaint"]
+
     # 量具**不是瞎的**：这几跳真的被走过了（不然下面几条是空过）
     urls = out["urls"]
     assert urls.count("/runs") >= 2, urls

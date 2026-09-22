@@ -66,7 +66,10 @@
        display:flex; flex-wrap:wrap; gap:6px 14px; align-items:baseline}
   .brand{font-size:14px; font-weight:600}
   .who-job{font-family:var(--mono); font-size:12px; color:var(--ink-2)}
-  .pill{display:inline-flex; align-items:center; gap:6px; font-size:12.5px; border:1px solid var(--line);
+  /* ★ 2026-09-22（用户：「最好更明显一点，不然运营不知道啥情况」）：这一格是运营一眼要看的那一格
+     —— 字号提一档、字重加一点（**只动这一个**，别的地方一个像素不动）。 */
+  .pill{display:inline-flex; align-items:center; gap:6px; font-size:13.5px; font-weight:600;
+        border:1px solid var(--line);
         border-radius:999px; padding:2px 10px; color:var(--ink-2); background:var(--surface-2); white-space:nowrap}
   .pill::before{content:""; width:7px; height:7px; border-radius:50%; background:var(--ink-3)}
   .pill.live::before{background:var(--accent)}
@@ -1432,7 +1435,17 @@
   function statusText() {
     var status = at(live, "status", "");
     var out = STATUS_WORD[status] || status || "状态读不出来";
-    if (status === "done") { out += at(live, "delivered", false) ? " · 交付了" : " · 没交付"; }
+    //: ★ 2026-09-22（用户原话：「最好更明显一点，不然运营不知道啥情况」）：
+    //: **它在哪一步**要并进这一格 —— 运营最想知道的就两件：「现在在干什么 / 卡在哪一步」
+    //: 与「成没成」，而这两样**载荷里本来就有**（`stage_say` 是服务给的人话，
+    //: `delivered` 是那趟的结局），页面只是没读它。
+    var where = at(live, "stage_say", "");
+    if (where && (status === "running" || status === "waiting" || status === "queued")) {
+      out += " · " + where;
+    }
+    if (status === "waiting") { out += " —— 在等你按「继续」或说一句"; }
+    if (status === "done") { out += at(live, "delivered", false) ? " · 交付了 ✓" : " · 没交付 ✗"; }
+    if (status === "failed") { out += " · 没跑完"; }
     return out;
   }
   function elapsedText() {

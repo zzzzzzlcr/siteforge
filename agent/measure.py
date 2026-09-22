@@ -222,7 +222,7 @@ def window_lifetimes(rows: list) -> list:
 
 def record_attempt(path: Any, *, started_at: Any, ended_at: Any, rounds: Any = None,
                    steps: Any = None, stop_reason: str = "", notes: Optional[list] = None,
-                   path_shape: Optional[dict] = None) -> dict:
+                   path_shape: Optional[dict] = None, usage: Optional[dict] = None) -> dict:
     """一次探路 = 一行（**追加**）。返回的那份**就是**落盘的那份。
 
     - `rounds` 给 `None` = **没记到**（比如被人打断：`rounds` 是工具循环的局部变量，
@@ -232,6 +232,11 @@ def record_attempt(path: Any, *, started_at: Any, ended_at: Any, rounds: Any = N
     - `path_shape`（M9 的载体，关键字参数带默认值 = **对在飞实现是加法**）：`path_shape(rows)`
       的产物。**一次样本一存**：分支站的两次跑长度不同（§2.2），只有存下每趟的形状，
       M10 的跨度才算得出来。
+    - `usage`（★ 2026-09-22，用户问「能不能统计从认路到出稿花了多少」）：这一趟的
+      **token 账**（`llm.summarize` 的产物：`prompt_tokens` / `completion_tokens` /
+      `reasoning_tokens` / `rounds` / `tool_calls` / `elapsed_ms`）。
+      ⚠️ 它原先**只活在内存**（`journey.usage` 进 checkpoint）⇒ 服务一重启就**再也读不回来**
+      （真事：那一趟跑完我就凑不出它的消耗）。**成本必须落盘**，不然「这一趟贵不贵」只能靠记忆。
     """
     secs, why = _seconds(started_at, ended_at)
     row = {
@@ -244,6 +249,8 @@ def record_attempt(path: Any, *, started_at: Any, ended_at: Any, rounds: Any = N
         "stop_reason": str(stop_reason or ""),
         "notes": [str(n) for n in (notes or [])],
         "path_shape": dict(path_shape) if isinstance(path_shape, dict) else None,
+        #: ⚠️ 没量到就**不放这一格**（不是放一个 `{}`：那会被读成「花了 0」）。
+        **({"usage": dict(usage)} if isinstance(usage, dict) and usage else {}),
     }
     _append_line(pathlib.Path(path), row)
     return row

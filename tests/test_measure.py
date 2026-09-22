@@ -173,6 +173,33 @@ def test_record_attempt_appends_one_line_and_never_fakes_the_wall_clock(tmp_path
     assert len(p.read_text(encoding="utf-8").strip().splitlines()) == 2, "第二次是追加"
 
 
+def test_the_token_account_lands_on_disk_with_the_attempt(tmp_path):
+    """★ 2026-09-22（用户问「**大概生成一个脚本多少钱**」）：那一趟的 token 账要**落盘**。
+
+    为什么单钉这一条：`journey.usage`（`llm.summarize` 的产物：prompt / completion /
+    reasoning tokens + rounds / tool_calls / 用时）原先**只活在内存**（进 checkpoint）——
+    服务一重启就**再也读不回来**（真事：那一趟跑完、我重启之后它的消耗就凑不出来了 ✗）。
+    ⇒ 成本必须跟着那一行一起落盘，不然「这一趟贵不贵」只能靠记忆。
+
+    ⚠️ **没量到就不放这一格**（不是放 `{}`：那会被读成「花了 0」，与 `rounds=None` 同一条规矩）。
+    """
+    path = tmp_path / "attempts.jsonl"
+    usage = {"rounds": 12, "tool_calls": 23, "prompt_tokens": 41000,
+             "completion_tokens": 7300, "reasoning_tokens": 7100, "elapsed_ms": 68000}
+    row = measure.record_attempt(path, started_at="2026-09-22 16:46:08",
+                                 ended_at="2026-09-22 16:47:16", steps=23,
+                                 stop_reason="reached_success", usage=usage)
+    assert row["usage"] == usage, row
+    assert measure.read_rows(path)[0]["usage"] == usage, measure.read_rows(path)
+
+    #: 没量到 ⇒ **整格不在**（不是 0）
+    bare = measure.record_attempt(path, started_at="2026-09-22 17:00:00",
+                                  ended_at="2026-09-22 17:00:10", steps=1,
+                                  stop_reason="model_done")
+    assert "usage" not in bare, bare
+    assert "usage" not in measure.read_rows(path)[-1]
+
+
 def test_record_attempt_says_none_instead_of_zero_when_it_cannot_tell(tmp_path):
     """时间戳读不出来 / 轮数没记到 → `None` + 一句为什么。**绝不是 0。**
 

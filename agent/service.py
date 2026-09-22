@@ -2971,6 +2971,13 @@ class Service:
                 # M9 的载体（**一次样本一存**）：分支站的两次跑长度不同，只有存下每趟的形状，
                 # M10 的跨度才算得出来（§2.2）。
                 path_shape=measure.path_shape(steps),
+                #: ★ 2026-09-22（用户问「大概生成一个脚本多少钱」）：**这一趟的 token 账落盘**。
+                #: `journey.usage` = `llm.summarize` 的产物（`prompt_tokens` / `completion_tokens`
+                #: / `reasoning_tokens` / `rounds` / `tool_calls` / `elapsed_ms`）。
+                #: ⚠️ 它原先**只活在内存**（进 checkpoint）⇒ 服务一重启就**再也读不回来**
+                #: （真事：那一趟跑完、我重启之后，它的消耗就凑不出来了 ✗）——
+                #: **成本必须落盘**，不然「这一趟贵不贵」只能靠记忆。
+                usage=dict(getattr(journey, "usage", None) or {}),
                 notes=list(getattr(journey, "notes", []) or [])[-6:])
         except Exception:                      # noqa: BLE001
             traceback.print_exc()
