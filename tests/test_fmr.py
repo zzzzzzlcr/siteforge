@@ -1325,6 +1325,27 @@ SCRIPT_SRC = ("#!/usr/bin/env python3\n"
               "THANK_YOU_MARK = 'thank-you'\n")
 
 
+def test_uploading_the_script_also_enables_it():
+    """★ 2026-09-22（用户口径：「上传直接改成 status:1 就行」）：**上传 = 顺手启用**。
+
+    【实测】`status` 这一格**回执里不回显**（`data` 只有 config_id/version/sha256/…），
+    但它**生效**：带它写完，**正常读（不加 debug）回 200**；不带它时读回来是
+    「这份配置在，但后端把它标成「停用」」⇒ 判「有没有生效」要看**另一个读口**，
+    不是看写回执（我按回执判过一次「被忽略」，判错了 —— 交接 §9.4 记着）。
+    ⚠️ `enable=False` ⇒ **整格不发**（绝不发 `status: 0`：这个口不该替人**停用**一个站）。
+    """
+    rec = PostRecorder({"status": 200, "msg": "success"})
+    writer(rec).update_form_script("x.test/a", SCRIPT_SRC, operator="值班员")
+    sent = json.loads(rec.sent[0].decode("utf-8"))
+    assert sent.get("status") == 1, sent
+    assert sent.get("site") == "x.test/a" and sent.get("operator") == "值班员", sent
+
+    rec2 = PostRecorder({"status": 200, "msg": "success"})
+    writer(rec2).update_form_script("x.test/a", SCRIPT_SRC, operator="值班员", enable=False)
+    sent2 = json.loads(rec2.sent[0].decode("utf-8"))
+    assert "status" not in sent2, sent2
+
+
 def test_the_script_upload_goes_to_the_update_route_with_the_token():
     """★ 「修好的脚本怎么上线」（用户 2026-09-22：「上传到后台就能通过接口下载」）。
 
@@ -1342,9 +1363,12 @@ def test_the_script_upload_goes_to_the_update_route_with_the_token():
     assert rec.headers[0].get("Content-Type").startswith("application/json"), rec.headers[0]
     assert FAKE_TOKEN not in rec.urls[0], "token 进了 URL：%r" % rec.urls[0]
     sent = json.loads(rec.sent[0].decode("utf-8"))
-    #: 三个字段**一个都不能少**（少一个它回 400「site、source 与 operator 必填」，写之前就拒）；
-    #: 也**不多带**（`sha256` 不是这个口的参数：那是它**回**给你的）。
-    assert set(sent) == {"site", "source", "operator"}, sent
+    #: 三个必填字段**一个都不能少**（少一个它回 400「site、source 与 operator 必填」）；
+    #: ⚠️ 2026-09-22 起**多一格** `status: 1`（用户口径：「上传直接改成 status:1 就行」）——
+    #:   上传顺手启用，见 `test_uploading_the_script_also_enables_it`。
+    #: 也**不多带别的**（`sha256` 不是这个口的参数：那是它**回**给你的）。
+    assert set(sent) == {"site", "source", "operator", "status"}, sent
+    assert sent["status"] == 1, sent
     assert sent["site"] == "qualify.lastingpowerofattorney.io", sent
     assert sent["operator"] == "siteforge-client", sent
     #: ★ **逐字节**：尾换行也必须在（后端原话「首尾换行是源码的一部分」）——

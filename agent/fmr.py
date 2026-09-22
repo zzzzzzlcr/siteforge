@@ -1622,7 +1622,8 @@ class FmrClient:
                  "**没有被改动**。"
                  % (status, tail, key)))
 
-    def update_form_script(self, key: str, source: str, *, operator: str) -> FormWriteResult:
+    def update_form_script(self, key: str, source: str, *, operator: str,
+                           enable: bool = True) -> FormWriteResult:
         """把一份 **py 源码**写回后端 → `FormWriteResult`（`POST /api/quest/formScript/update`）。
 
         这是「修好的脚本怎么上线」那一步：上传之后**生产按接口下载**（用户 2026-09-22 的口径）。
@@ -1662,8 +1663,18 @@ class FmrClient:
         headers = {"Content-Type": "application/json; charset=utf-8"}
         if self.write_token:
             headers["X-Api-Token"] = self.write_token
-        body = json.dumps({"site": k, "source": str(source), "operator": who},
-                          ensure_ascii=False).encode("utf-8")
+        body_in: dict = {"site": k, "source": str(source), "operator": who}
+        if enable:
+            #: ★ 2026-09-22（用户口径：「上传直接改成 status:1 就行」）：**上传 = 顺手启用**。
+            #: 【实测】这一格**回执里不回显**（`data` 只有 config_id/version/sha256/batch_id/
+            #: created/linked），但它**生效**：带 `status: 1` 写完，**正常读（不加 debug）回 200**；
+            #: 不带它时读回来是「这份配置在，但后端把它标成「停用」」。
+            #: ⚠️ 判「有没有生效」要看**另一个读口**，不是看写回执 —— 我按回执判过一次「被忽略」，
+            #: 判错了（交接 §9.4 记着这次教训）。
+            #: ⚠️ `enable=False` ⇒ **整格不发**（绝不发 `status: 0`）：这个口是「写脚本」的，
+            #: 不该顺手替人**停用**一个站。
+            body_in["status"] = 1
+        body = json.dumps(body_in, ensure_ascii=False).encode("utf-8")
         try:
             raw = self._poster(url, headers, body)
         except Exception as exc:                       # noqa: BLE001 —— 什么都算「不知道成没成」
