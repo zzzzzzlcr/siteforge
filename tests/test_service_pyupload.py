@@ -83,6 +83,54 @@ def _prepare(app, operator="值班员 A"):
                     json={"operator": operator})
 
 
+def test_a_brand_new_site_can_be_uploaded_too(tmp_path, monkeypatch):
+    """★ 2026-09-22 真事（用户：「**能下载 py 了但是好像不能直接上传**」）。
+
+    后端**没有这个键**（新站第一次传）时，那个读口回 404 ⇒ 原来预检直接 502 ⇒
+    「新建」这条路被「先读一遍现值」挡住（面板上就表现为「不能上传」）。
+    修法：404 = **「后端还没有这一份」**（不是失败）：现值按空算、票照发，
+    确认那一下走 `created: true` 那条路**新建**（今天实测过）。
+
+    判据五条：预检 200 ✓；`backend_sha256` 是**空串**（没有可保护的东西）✓；
+    那句话**只说新建、不说「后端现在那份 sha」**（说成后者是假话）✓；
+    确认之后**真写了**（写的是新那份）✓；全程**一个字节都没在预检那一步写出去**✓。
+    """
+    class Nova(Backend):
+        """后端不认识这个键（**第一次传**）：还没写过之前，读那一下回 404。
+
+        ⚠️ 写**之后**必须能读到新那份 —— 否则量到的就不是「新建」，而是「回读对不上 ⇒
+        自动回滚」（我第一版就是这么写的，结果那条安全网当场把我拦下来了 ✓ 它是对的）。
+        """
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.content = None                     # ← 「后端还没有这一行」
+
+        def form_script(self, site, *, allow_disabled: bool = False):
+            assert site == KEY, site
+            if self.content is None:
+                raise fmr.FmrRefused("后端回 404：这个键不认识", status=404, msg="script not found")
+            return {"type": "py", "source": self.content,
+                    "sha256": pywrite.sha256_text(self.content)}
+
+    backend = Nova()
+    app, _svc, _path = _app(tmp_path, backend, monkeypatch)
+
+    prepared = _prepare(app)
+    assert prepared.status_code == 200, prepared.text
+    body = prepared.json()
+    #: ⚠️ 空值也有指纹（`sha256("")`）—— 那就是「防覆盖」在预检/确认之间要比的东西：
+    #: 两次读都「不认识」⇒ 两次都是这个值 ⇒ 那道闸照旧成立 ✓（不是「没有指纹可比」）。
+    assert body["backend_sha256"] == pywrite.sha256_text(""), body
+    assert "还不认识这个键" in body["say"] and "新建" in body["say"], body["say"]
+    assert "后端现在那份 sha" not in body["say"], body["say"]
+    assert backend.writes == [], "预检那一步写了：%r" % backend.writes
+
+    done = app.post(service.PYWRITE_COMMIT_PATH.format(job_id=JOB),
+                    json={"ticket": body["ticket"]})
+    assert done.status_code == 200, done.text
+    assert backend.writes and backend.writes[-1][1] == SOURCE, backend.writes
+
+
 def test_prepare_never_writes_and_commit_uploads_with_a_readback(tmp_path, monkeypatch):
     backend = Backend()
     app, _svc, path = _app(tmp_path, backend, monkeypatch)

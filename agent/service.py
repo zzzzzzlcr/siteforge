@@ -4695,6 +4695,28 @@ class Service:
                                        "—— 不知道往哪儿传。没上传。")
         return {"path": str(path), "source": source, "key": key}
 
+    def _backend_script(self, key: str) -> tuple:
+        """`(后端那份源码, 这个键后端不认识吗)` —— 404 当「**还没有这一份**」，别的错照样抛。
+
+        ★ 2026-09-22 真事（用户：「**能下载 py 了但是好像不能直接上传**」）：新站第一次传时，
+        那个读口回 404（后端没有这一行）—— 原来预检/确认都会把它当失败 ⇒ 面板上就是
+        「不能上传」。⇒ 404 = **「还没有这一份」**：现值按**空**算，票照发，写那一下
+        走 `created: true` 那条路**新建**（实测：带 `status: 1` 写一个不存在的键，
+        后端建了一行、回读 sha 逐字节一致 ✓）。
+        ⚠️ 404 也可能是「那一行两列都是空的」—— 两种在后端长得一样，这一层**不分**
+        （对「要不要传」这件事，两种的处置本来就同一个：没有可保护的东西 ⇒ 直接写）。
+        ⚠️ **空串也是一种现值**：预检与确认各读一次，两次都「不认识」⇒ 前后一致 ⇒
+        「写前防覆盖」那道闸照旧成立 ✓（它比的是两次读的 sha，不是「有没有那一行」）。
+        """
+        try:
+            return str(self._fmr.form_script(key, allow_disabled=True).get("source") or ""), False
+        except fmr.FmrRefused as exc:
+            if int(getattr(exc, "status", 0) or 0) == 404:
+                return "", True
+            raise self._unmeasured_to_http(exc)
+        except fmr.FmrUnmeasured as exc:
+            raise self._unmeasured_to_http(exc)
+
     def py_upload_prepare(self, job_id: str, operator: Any) -> dict:
         """预检：把「要传什么 / 后端现在是什么」摆出来，发一张一次性票据。**这一阶段绝不写。**"""
         what = self._what_to_upload(job_id)
@@ -4709,11 +4731,7 @@ class Service:
                 status_code=503,
                 detail="**一个字都没写**：这个部署**没配写用的 token**（`%s`，没配就退回 `%s`）"
                        "—— 请求一个都没发出去。" % (fmr.WRITE_TOKEN_ENV, fmr.TOKEN_ENV))
-        try:
-            now = self._fmr.form_script(what["key"], allow_disabled=True)
-        except fmr.FmrUnmeasured as exc:
-            raise self._unmeasured_to_http(exc)
-        original = str(now.get("source") or "")
+        original, fresh = self._backend_script(what["key"])
         same = pywrite.sha256_text(original) == pywrite.sha256_text(what["source"])
         if same:
             raise HTTPException(
@@ -4722,17 +4740,24 @@ class Service:
                        % pywrite.sha256_text(original)[:16])
         item = self._py_tickets.issue(key=what["key"], path=what["path"],
                                       source=what["source"], original=original, operator=who)
+        n_bytes = len(item.source.encode("utf-8"))
+        #: ⚠️ 两句**必须分开**：新键说成「后端现在那份 sha …」是假话（它压根没有那一行）；
+        #: 反过来，已有的那一份说成「新建」也是假话（那是**换掉**它）。
+        if fresh:
+            said = ("预检过了：本地那份 **%d 字节 / sha `%s`**；后端**还不认识这个键**"
+                    "（或那一行是空的）—— 确认之后是**新建/写满**一份（实测过：带 `status: 1` "
+                    "写一个新键，后端建了一行、回读 sha 逐字节一致 ✓）。**再确认一次才会上传**；"
+                    "⚠️ 传上去它会真跑（`status: 1`）。" % (n_bytes, item.source_sha256[:16]))
+        else:
+            said = ("预检过了：本地那份 **%d 字节 / sha `%s`**；后端现在那份 sha `%s`。"
+                    "**再确认一次才会上传**（上传会换掉后台那份，生产按接口下载就变成新这一份）。"
+                    "⚠️ 这一下**也带着启用**（`status: 1`）—— 传上去它就会真跑；"
+                    "⚠️ 那一行若是**被人停用**的，会被**重新启用**。后端回执不回显这一格，"
+                    "要确认就再读一次（正常读、不加 debug）✓。"
+                    % (n_bytes, item.source_sha256[:16], item.original_sha256[:16]))
         return {"ticket": item.ticket, "site": item.key, "path": item.path,
-                "bytes": len(item.source.encode("utf-8")),
-                "local_sha256": item.source_sha256,
-                "backend_sha256": item.original_sha256,
-                "say": ("预检过了：本地那份 **%d 字节 / sha `%s`**；后端现在那份 sha `%s`。"
-                        "**再确认一次才会上传**（上传会换掉后台那份，生产按接口下载就变成新这一份）。"
-                        "⚠️ 这一下**也带着启用**（`status: 1`）—— 传上去它就会真跑；"
-                        "⚠️ 那一行若是**被人停用**的，会被**重新启用**。后端回执不回显这一格，"
-                        "要确认就再读一次（正常读、不加 debug）✓。"
-                        % (len(item.source.encode("utf-8")), item.source_sha256[:16],
-                           item.original_sha256[:16]))}
+                "bytes": n_bytes, "local_sha256": item.source_sha256,
+                "backend_sha256": item.original_sha256, "say": said}
 
     def py_upload_commit(self, job_id: str, ticket: Any) -> dict:
         """消费票据 → 写前防覆盖 → 上传 → **回读校验**；不一致就传回原来那份。"""
@@ -4740,10 +4765,7 @@ class Service:
         if item is None:
             word = "已过期" if reason == "expired" else "不存在或已经用过"
             raise HTTPException(status_code=409, detail="上传确认票据%s，请重新预检。" % word)
-        try:
-            current = str(self._fmr.form_script(item.key, allow_disabled=True).get("source") or "")
-        except fmr.FmrUnmeasured as exc:
-            raise self._unmeasured_to_http(exc)
+        current, _missing = self._backend_script(item.key)
         if pywrite.sha256_text(current) != item.original_sha256:
             raise HTTPException(
                 status_code=409,
@@ -4758,7 +4780,7 @@ class Service:
                                                          "backup_id": backup_id,
                                                          "verdict": result.verdict})
         try:
-            after = str(self._fmr.form_script(item.key, allow_disabled=True).get("source") or "")
+            after, _missing = self._backend_script(item.key)
         except fmr.FmrUnmeasured as exc:
             raise HTTPException(status_code=502, detail={
                 "say": result.say + " 但**写后回读失败** —— 不能宣称传成功了。"
