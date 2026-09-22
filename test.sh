@@ -1,76 +1,57 @@
-#!/usr/bin/env bash
-# siteforge —— 一条命令把服务起起来（默认**容器**里跑，和宿主那套二选一）。
+#!/bin/bash
+# siteforge —— 一条命令起容器（照 auto-farm 的 `test.sh` 那套写法：**值全写在这个文件里**）。
 #
-#   ./test.sh                         # 起容器（publish 到 $PORT，默认 8099）
-#   ./test.sh host                    # 不起容器，直接宿主起（改一行就生效，开发用）
-#   AI_BASE=… AI_KEY=… AI_MODEL=… ./test.sh      # 三格直接写在前面（出口 / key / 模型）
-#   PORT=8098 ./test.sh host          # 换端口
-#   NO_BUILD=1 ./test.sh              # 不重建镜像（已经 build 过、只想重开）
+#   改 key / 出口 / 模型：就改下面「要传进去的环境」那几行。
+#   跑：  ./test.sh
+#   只想重开（不重建镜像）：把 `docker build` 那行注释掉。
 #
-# 环境变量怎么「带过去」：**只有下面 PASS 列的那几格**会进 `./siteforge.env`（600），
-# 容器用 `--env-file` 读它；宿主那一条直接 export。
-# ⚠️ key 只在那个文件里，别写进仓（`.gitignore` 已挡住它）、别贴进对话。
+# ⚠️ 这个文件填了真 key 之后**别 commit**（`git status` 会显示它被改过）。
+#    想让它不再提示：`git update-index --assume-unchanged test.sh`
+#    或者把值挪到一个 `.gitignore` 掉的文件里（仓里那份 `siteforge.env` 已经被 ignore ✓）。
 set -euo pipefail
 cd "$(dirname "$0")"
 
-MODE="${1:-docker}"
-PORT="${PORT:-8099}"
-IMAGE="${IMAGE:-siteforge:latest}"
-ENVFILE="${ENVFILE:-./siteforge.env}"
+# ═══ 要传进去的环境（改这几行）═══════════════════════════════════════════
+PORT=8099
+BIT_WORKER_IP=192.168.1.197
+BIT_ID="<agent 专用那个 32 位；本机真值在 ./siteforge.env 里，别 commit 进仓>"
+OPENAI_API_KEY="<把 key 贴这儿>"
+OPENAI_BASE_URL="https://llm.3tkj.cn/v1"
+SPIKE_MODEL="deepseek-v4-flash"
+SPIKE_MAX_TOKENS="12000"          # ⚠️ 别调小：flash 思考重，小预算 content 会回空
+FMR_AGENT_TOKEN="<读 token>"
+FORM_SCRIPT_WRITE_TOKEN="<写 token>"
+# DATABASE_URL=postgresql://user:pass@host:5432/siteforge   # 可选：设了状态就不随重启丢
+# ═══════════════════════════════════════════════════════════════════════
 
-#: 要带到容器里去的变量（**就这几格**；没设的不会写进 env 文件）
-PASS=(OPENAI_API_KEY OPENAI_BASE_URL SPIKE_MODEL SPIKE_MAX_TOKENS
-      BIT_WORKER_IP BIT_ID BIT_API_PORT
-      FMR_AGENT_TOKEN FORM_SCRIPT_WRITE_TOKEN AGENT_WRITE_TOKEN DATABASE_URL)
+NAME=siteforge
+IMAGE=siteforge:latest
+# ⚠️ 值不进命令行：`-e NAME="$VAR"` 只是把**这个脚本自己**的环境变量传进去，
+#    `ps`/history 里看不到值（写 `-e OPENAI_API_KEY=sk-…` 那种才有那个问题）。
+export BIT_WORKER_IP BIT_ID OPENAI_API_KEY OPENAI_BASE_URL SPIKE_MODEL
+export SPIKE_MAX_TOKENS FMR_AGENT_TOKEN FORM_SCRIPT_WRITE_TOKEN
 
-# ── ① 出口 / key / 模型：给了就用，没给就从当前环境或 env 文件里取 ─────────────
-if [ -f "${ENVFILE}" ]; then
-  # shellcheck disable=SC1090
-  set -a; . "${ENVFILE}"; set +a
-fi
-export OPENAI_BASE_URL="${AI_BASE:-${OPENAI_BASE_URL:-https://llm.3tkj.cn/v1}}"
-export SPIKE_MODEL="${AI_MODEL:-${SPIKE_MODEL:-deepseek-v4-flash}}"
-if [ -n "${AI_KEY:-}" ]; then export OPENAI_API_KEY="$AI_KEY"; fi
+echo "[test.sh] 出口=${OPENAI_BASE_URL}  模型=${SPIKE_MODEL}  端口=${PORT}"
+[ -n "${OPENAI_API_KEY}" ] && [ "${OPENAI_API_KEY}" != "<把 key 贴这儿>" ] \
+  || { echo "[test.sh] ✗ OPENAI_API_KEY 还没填（改这个文件顶上那几行）" >&2; exit 1; }
 
-# ── ② env 文件：没有就按当前环境造一份（以后改 key 就改它）─────────────────────
-if [ ! -f "${ENVFILE}" ]; then
-  echo "[test.sh] 没有 ${ENVFILE} —— 按当前环境的这几格造一份（chmod 600）"
-  : > "${ENVFILE}"; chmod 600 "${ENVFILE}"
-  for k in "${PASS[@]}"; do
-    v="${!k:-}"
-    [ -n "$v" ] && printf '%s=%s\n' "$k" "$v" >> "${ENVFILE}"
-  done
-fi
-if [ ! -s "${ENVFILE}" ] || ! grep -q '^OPENAI_API_KEY=' "${ENVFILE}"; then
-  echo "[test.sh] ✗ ${ENVFILE} 里没有 OPENAI_API_KEY —— 把 key 写进去，或先 export OPENAI_API_KEY" >&2
-  exit 1
-fi
-echo "[test.sh] 出口=${OPENAI_BASE_URL}  模型=${SPIKE_MODEL}  端口=${PORT}  env=${ENVFILE}"
+# ── 构建（已经 build 过就注释掉这一行；⚠️ 改过代码必须重建，容器不像宿主那样重启就生效）──
+docker build -t "$IMAGE" .
 
-# ── ③ 起来 ────────────────────────────────────────────────────────────────
-case "$MODE" in
-  host)
-    echo "[test.sh] 宿主模式：前台跑（Ctrl-C 停）。⚠️ 会和容器抢同一个端口，二选一。"
-    exec .venv/bin/python -m uvicorn agent.service:app --host 0.0.0.0 --port "${PORT}"
-    ;;
-  docker)
-    command -v docker >/dev/null 2>&1 || { echo "[test.sh] ✗ 这台机器没有 docker" >&2; exit 1; }
-    if [ "${NO_BUILD:-0}" != "1" ]; then
-      echo "[test.sh] 构建镜像 ${IMAGE}（几分钟；只想重开就 NO_BUILD=1）"
-      docker build -t "${IMAGE}" .
-    fi
-    #: ⚠️ 同名的旧容器先停掉：两条服务同时连**同一个 Bit 窗口**会互相踩（规格 D6/R8）
-    docker rm -f siteforge >/dev/null 2>&1 || true
-    docker run -d --name siteforge --restart unless-stopped \
-      -p "${PORT}:8080" --env-file "${ENVFILE}" "${IMAGE}" >/dev/null
-    echo "[test.sh] 起来了：http://127.0.0.1:${PORT}/console   手册 /manual"
-    #: 容器里的日志落到文件（entrypoint `>>` 进 /opt/siteforge/logs/agent.log），`docker logs` 看不到
-    echo "[test.sh] 跟日志（Ctrl-C 只退出这个 tail，容器继续跑）："
-    exec docker exec siteforge tail -f /opt/siteforge/logs/agent.log
-    ;;
-  *)
-    echo "[test.sh] 用法：./test.sh [docker|host]" >&2
-    echo "  环境变量：AI_BASE / AI_KEY / AI_MODEL（出口 / key / 模型）、PORT、ENVFILE、IMAGE、NO_BUILD=1" >&2
-    exit 2
-    ;;
-esac
+# ── 同名的旧容器先停掉：两条服务连**同一个 Bit 窗口**会互相踩（规格 D6/R8）─────────
+docker rm -f "$NAME" >/dev/null 2>&1 || true
+
+# ── 起（`--dns` 照你们别的容器；挂两处：产物与运行账）──────────────────────────
+docker run -d --name "$NAME" --restart unless-stopped \
+  --dns 192.168.1.1 \
+  -p "${PORT}:8080" \
+  -e BIT_WORKER_IP -e BIT_ID -e OPENAI_API_KEY -e OPENAI_BASE_URL -e SPIKE_MODEL \
+  -e SPIKE_MAX_TOKENS -e FMR_AGENT_TOKEN -e FORM_SCRIPT_WRITE_TOKEN \
+  ${DATABASE_URL:+-e DATABASE_URL} \
+  -v /company/siteforge/forms:/opt/siteforge/forms \
+  -v /company/siteforge/runtime:/opt/siteforge/runtime \
+  "$IMAGE"
+
+echo "[test.sh] 起来了：http://127.0.0.1:${PORT}/console   手册 /manual"
+#: 容器里的日志落到文件（entrypoint `>>` 进 /opt/siteforge/logs/agent.log），`docker logs` 看不到
+exec docker exec "$NAME" tail -f /opt/siteforge/logs/agent.log
