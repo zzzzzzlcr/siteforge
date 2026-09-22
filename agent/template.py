@@ -227,6 +227,11 @@ LIVE_PROBE_EVERY = 3.0
 #: 等不到也照旧往下走（一句人话说明），**不许**把它当成失败。
 WAIT_READY_SECONDS = 10.0
 
+#: ★ 2026-09-22（生成侧建议第 2 条）：**有界等「when 成立」**最多等几秒。
+#: 为什么是 5~8：真不成立的状态组多花这几秒，换来「不是没等就判」；而这类失败
+#: **跑完全程不报错**（只表现为「没走到成功」），花这几秒比事后排一遍便宜得多。
+WAIT_WHEN_SECONDS = 7.0
+
 #: 目标**被别的东西盖着**时，最多等它多久（秒）—— 等的是**加载蒙版**。
 #:
 #: 为什么是「先等」而不是「一看盖着就不点」（2026-09-18 真站实测 + 用户原话
@@ -1434,6 +1439,30 @@ class Filler:
             return "Test%d!" % random.randint(1000, 9999)
         raise ValueError("产物写错了：不认识这个随机值类型「%s」" % kind)
 
+    def _wait_when(self, when, timeout=None) -> bool:
+        """**有界等这条 `when` 成立**：每 0.5 秒重判一次，最多 `timeout` 秒。
+
+        与 `_wait_ready` 的分工：那个等的是**文档加载完**（`readyState=complete`，对外层页
+        恒真 ⇒ 等于没等），这个等的是**判据自己成立**（地址/正文对得上）—— 后者才是
+        「这一组步骤该不该做」的门。两个都留着：先等判据（能成就立刻往下），
+        再等文档（判据成了但正文还在长的时候，让它在稳定下来之后再判一次）。
+        ⚠️ 返回 `timeout` 内成没成，**调用方照旧自己再判一次**（不许拿这个返回值当结论 ——
+        判的那一下必须和说 why 的那一下是同一刻）。
+        """
+        limit = float(WAIT_WHEN_SECONDS if timeout is None else timeout)
+        step = 0.5
+        waited = 0.0
+        while True:
+            try:
+                if self._matches(when):
+                    return True
+            except Exception:                          # noqa: BLE001 —— 判据读不动就当没成立
+                pass
+            if waited >= limit:
+                return False
+            time.sleep(step)
+            waited += step
+
     def _wait_ready(self, timeout=None):
         """等这一页**加载完**（`document.readyState === 'complete'`），最多等 `timeout` 秒。
 
@@ -1869,6 +1898,12 @@ class Filler:
         # 读到的是已经加载完的页面，于是诚实地说「url 与正文都对上了却判成不像」——
         # **结论与解释自相矛盾，而且是它自己指出来的**。
         # 现在：等完**无论 readyState 说什么，都重判一次**。
+        #: ★ 2026-09-22（生成侧建议第 2 条）：**有界等「when 成立」** —— 而不是只等 `readyState`。
+        #: 为什么：**外层页永远 `complete`** ⇒ 等 `readyState` 等于没等（真产物里那一步的实测：
+        #: 第 19 步照样被跳过）。而这类失败**跑完全程不报错**，只表现为「没走到成功」，
+        #: 最容易被当成站点问题糊过去 —— 所以窗口给 5~8 秒（`WAIT_WHEN_SECONDS`），
+        #: 真不成立的状态组多花那几秒，换来「不是没等就判」。
+        self._wait_when(when, timeout=WAIT_WHEN_SECONDS)
         self._wait_ready(timeout=WAIT_READY_SECONDS)
         ok = self._matches(when)
         #: ⚠️ why 必须在**判的这一刻**算死，不许事后重算 ——

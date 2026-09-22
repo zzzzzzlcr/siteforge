@@ -2957,7 +2957,64 @@ def test_a_goto_with_no_address_on_the_ledger_is_not_replayed():
     assert "没记下要去的是哪" in why, why
 
 
-def test_the_same_field_filled_twice_keeps_only_the_last_one():
+def test_two_pages_behind_the_same_gate_become_one_state():
+    """★ 2026-09-22（生成侧建议第 1 条，真产物里量到的）：**相邻两页 `when` 相同 ⇒ 合并成一个状态**。
+
+    为什么必须合并：`when` 是产物重放时**唯一的门** ⇒ 两个状态同门，就会演出
+    「同一页上填做了、点却被跳过」—— 真产物 `gowizard-14/-15` 就是这么**半执行**的 ✗；
+    合并之后那两步**同生共死**。
+
+    判据就是建议里那句话：**产物里不许出现两条相邻且 `when` 相等的状态**。
+    ⚠️ 造夹具的关键：两页要**同 `when`、不同 key**（`key` 只看去掉 `#` 的 url + title + 正文前 400 字，
+    而 `when` 的地址用的是**去 query/fragment 的稳定前缀**）⇒ 用**只有 query 不同**的两页最干净。
+    ⚠️ 另外：`when` 为空的两个页面**不算相等** —— 拿它们合并会把两页不相干的步揉进一组。
+    """
+    pages = browser_agent._Pages(site_url="https://x.test/", journey=None)
+    #: ⚠️ 第一次的返回值是「**上一页**的名字」—— 这里还没有上一页 ⇒ 它是 `None`（不是失败）
+    assert pages.note_page({"url": "https://x.test/a?step=1", "title": "A 页",
+                            "page_text": "第一页的正文，够长就行"}) is None
+    first_name = pages.current_name
+    #: 第二页：**同 when、不同 key**（只有 query 不同）⇒ 名字复用 ⇒ 两页的步落进**同一组**
+    again = pages.note_page({"url": "https://x.test/a?step=2", "title": "A 页",
+                             "page_text": "第一页的正文，够长就行"})
+    assert again == first_name, "同一个 when 的两页该合成一个状态：%r vs %r" % (again, first_name)
+    #: 真正的保证在这里：`states()` 按**名字**分组 ⇒ 两页的步落在**同一个状态**里
+    book = browser_agent.Journey()
+    book.pages = list(pages.pages)
+    #: ⚠️ 夹具要用**可重放的**动作（`click`/`form`/`scroll`/`goto`）—— `observe` 不进产物，
+    #: 拿它当步，`states()` 会把它滤掉、这条钉子就量的是空气。
+    book.steps = [
+        {"state": first_name, "action": "click", "target": {"selectors": ["#fill"]},
+         "result": {"ok": True}, "note": "先填"},
+        {"state": again, "action": "click", "target": {"selectors": ["#go"]},
+         "result": {"ok": True}, "note": "再点"},
+    ]
+    got = book.states()
+    assert len(got) == 1 and len(got[0]["steps"]) == 2, got
+    #: 正控：把 when 拉开 ⇒ 必须是**两个**状态（别把这条钉子做成恒真）。
+    #: ⚠️ 杠杆要用**换路径** —— `_when_for` 不看 title（它看 url 稳定前缀 + 正文原文），
+    #: 我第一次拿 title 当杠杆，结果 when 没变、页面照样合并 ⇒ 那条正控是空转的。
+    pages.note_page({"url": "https://x.test/b", "title": "B 页",
+                     "page_text": "另一页的正文，够长就行"})
+    assert pages.current_name != first_name, "换了一页却还复用同一个状态名：%s" % pages.current_name
+
+
+def test_no_two_adjacent_states_share_the_same_gate():
+    """★ 建议第 1 条那句断言，钉在**产物那一侧**：`states()` 里不许有相邻且 `when` 相等的状态。"""
+    pages = browser_agent._Pages(site_url="https://x.test/", journey=None)
+    for i in (1, 2, 3):
+        pages.note_page({"url": "https://x.test/f?q=%d" % i, "title": "同一页",
+                         "page_text": "同一页的正文，够长就行"})
+    pages.note_page({"url": "https://x.test/g", "title": "另一页",
+                     "page_text": "另一页的正文，够长就行"})
+    #: 判据取**产物那一侧**：名字 → when 的映射（`states()` 就是按名字分组的）
+    whens = {}
+    for p in pages.pages:
+        whens[p["name"]] = p.get("when")
+    got = [n for n, w in whens.items() if w]
+    assert len(got) == 2, "同一页那 3 次该合成一个状态（只剩两组）：%s" % list(whens)
+    pairs = [(a, b) for a, b in zip(got, got[1:]) if whens[a] == whens[b]]
+    assert pairs == [], "产物里出现了相邻且 when 相等的状态：%s" % pairs
     """★ 2026-09-22 真事（用户原话：「第一次生日填过了，为啥还会消掉填第二次。这个比较关键」）。
 
     探索期模型为了试出掩码/校验的脾气，把同一格**反复填**（真账本里 `#InputDOB` 出现了

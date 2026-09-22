@@ -743,6 +743,25 @@ def _artifact_cmd(py, ws_url, form_file, correlation_id, log_level, trace_path,
     return cmd
 
 
+def _half_executed_states(lines: list) -> list:
+    """哪些状态**既执行过、又有步因为「这一页不像这个状态」被跳过**。
+
+    trace 里跳过的那些行长这样：`{"skipped": true, "state": name, "why": "这一页不像「X」那个状态…"}`
+    ⇒ 判据是 `why` 里**点着这个状态的名字**（别把「期望没满足」那种跳过算进来 —— 那是另一回事）。
+    """
+    ran, skipped = set(), set()
+    for ln in lines or []:
+        name = str((ln or {}).get("state") or "")
+        if not name:
+            continue
+        if (ln or {}).get("skipped"):
+            if name in str((ln or {}).get("why") or ""):
+                skipped.add(name)
+        else:
+            ran.add(name)
+    return sorted(ran & skipped)
+
+
 def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
              err: str, out: str, timeout: float) -> tuple:
     """一遍的证据 → (ok, failed_step, note)。**这一处就是「诚实」本身**，别把它做软。"""
@@ -752,6 +771,18 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
     # `lines` 非空是承重的一环（R-27）：一行 trace 都没有时，「trace 里没有没做成的步」
     # 这句话是**空口白话** —— 没有证据的东西不许被读成「过了」。
     ok = (rc == 0) and bool(lines) and first_bad is None and not timed_out
+
+    #: ★ 2026-09-22（生成侧建议第 5 条）：**同一组状态里「有的步做了、有的步被跳过」** ——
+    #: 那条路**跑完全程不报错**，只表现为「没走到成功」，最容易被当成**站点**问题糊过去。
+    #: 真因在**生成侧**：两个状态用了同一个 `when` 闸门（该合并成一个状态）。
+    #: ⇒ 这里点名是**产物的问题**、并且**判不过** —— 别让下一个人去改站。
+    halved = _half_executed_states(lines)
+    if halved:
+        ok = False
+        return (ok, failed_step,
+                "⚠️ **产物生成侧的问题**（不是这个站）：同一组状态里有的步做了、有的步被跳过：%s —— "
+                "两个状态用了同一个 `when` 闸门，生成侧该把它们**合并**成一个状态（生成侧建议第 1 条）。"
+                % "、".join(halved))
 
     if timed_out:
         note = "这一遍没跑完就超时了（>%s 秒）—— 卡在第 %s 步" % (

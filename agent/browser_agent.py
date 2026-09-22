@@ -3436,9 +3436,19 @@ class _Pages:
         if self._current is not None and self._current["key"] == key:
             return None
         previous = self._current["name"] if self._current else None
+        when = _when_for(model)
+        #: ★ 2026-09-22（生成侧建议第 1 条，真产物里量到的）：**相邻两页 `when` 完全相等 ⇒
+        #: 合并成一个状态**（复用上一页的名字）。
+        #: 为什么必须合并：`when` 是产物重放时**唯一的门** ⇒ 两个状态同门，就会演出
+        #: 「同一页上填做了、点却被跳过」（真产物 `gowizard-14/-15` 就是这么**半执行**的 ✗）；
+        #: 合并之后那两步**同生共死**，绝不会一半做一半不做。
+        #: ⚠️ 只在 `when` **非空且完全相等**时合并：`None`/空判据那两个（「这一页不设门」）
+        #: 不许拿它们当相等的钥匙 —— 那会把两页不相干的步揉进一组。
+        same_gate = (self._current is not None and bool(when)
+                     and self._current.get("when") == when)
         entry = {
-            "name": self._unique(_slug(model)),
-            "when": _when_for(model),
+            "name": self._current["name"] if same_gate else self._unique(_slug(model)),
+            "when": when,
             "key": key,
             "model": model,
             "url": model.get("url") or "",
