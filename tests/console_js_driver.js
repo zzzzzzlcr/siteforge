@@ -210,7 +210,34 @@ async function runScenario(out) {
   out.afterFollow = { who: el("whoJob").textContent, timeline: el("timeline").innerHTML };
 }
 
-//: 「步骤表」（2026-09-21）：人给了顺序 —— 一行一步 —— 要**并进 `note`、原样**进提示词。
+//: 「上传到后台」那三下（2026-09-22）：预检（绝不写）→ 确认 → 回滚。**按这一趟**。
+//: ⚠️ 量的是**发出去的正文**（`sent`）：只钉「按钮在」的话，按钮发错地方/发空照绿。
+//: ⚠️ 也量「确认」在预检之前是**按不动**的（票没到手就传 = 没防覆盖那道闸）。
+async function pyUploadScenario(out) {
+  out.beforeAny = { commitDisabled: el("btnPyCommit").disabled,
+                    rollbackDisabled: el("btnPyRollback").disabled,
+                    facts: el("pyUploadFacts").innerHTML,
+                    note: el("pyUploadNote").innerHTML };
+  el("pyUploadOperator").value = payload.operator || "值班员 A";
+  fire("btnPyPrepare", "click");
+  await settle(); await settle();
+  out.afterPrepare = { commitDisabled: el("btnPyCommit").disabled,
+                       rollbackDisabled: el("btnPyRollback").disabled,
+                       facts: el("pyUploadFacts").innerHTML,
+                       note: el("pyUploadNote").innerHTML,
+                       errBox: el("errBox").textContent };
+  fire("btnPyCommit", "click");
+  await settle(); await settle();
+  out.afterCommit = { rollbackDisabled: el("btnPyRollback").disabled,
+                      note: el("pyUploadNote").innerHTML,
+                      errBox: el("errBox").textContent };
+  fire("btnPyRollback", "click");
+  await settle(); await settle();
+  out.afterRollback = { note: el("pyUploadNote").innerHTML,
+                        errBox: el("errBox").textContent };
+  out.uploads = sent.filter((s) => s.url.indexOf("/upload/") >= 0)
+                    .map((s) => ({url: s.url, body: s.body}));
+}
 //: ⚠️ 量的是**发出去的正文**（`sent` 里最后那一跳 `/run`），不是输入框里那几个字：
 //: 「填了但没发出去」这种改法照旧绿是这一片最怕的形状。
 async function runStepsScenario(out) {
@@ -533,6 +560,7 @@ async function againScenario(out) {
   else if (payload.scenario === "artifact") { await artifactScenario(out); }
   else if (payload.scenario === "run") { await runScenario(out); }
   else if (payload.scenario === "run-steps") { await runStepsScenario(out); }
+  else if (payload.scenario === "py-upload") { await pyUploadScenario(out); }
   else if (payload.scenario === "run-refused") { await runRefusedScenario(out); }
   else if (payload.scenario === "window") { await windowScenario(out); }
   else if (payload.scenario === "page-view") { await pageViewScenario(out); }

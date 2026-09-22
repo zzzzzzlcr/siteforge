@@ -325,6 +325,8 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _run_payloads()
     elif scenario == "run-steps":
         payload = _run_steps_payloads()
+    elif scenario == "py-upload":
+        payload = _py_upload_payloads()
     elif scenario == "run-refused":
         payload = _run_refused_payloads()
     elif scenario == "window":
@@ -717,6 +719,42 @@ RUN_STEPS_NOTE = "先点掉那层同意横幅"
 RUN_STEPS_TEXT = "点 #cookiescript_accept ｜ 等 2-5 秒 ｜ 出现 #fname 才算这一步成了"
 
 
+#: 「上传到后台」那三下（2026-09-22）：预检 → 确认 → 回滚。**按这一趟**（job id 在地址里）。
+PY_JOB = "job-py-1"
+PY_PREPARE_SAY = ("预检过了：本地那份 **28575 字节 / sha `3d1617c6645fb428`**；后端现在那份 "
+                  "sha `11634d97283ae557`。**再确认一次才会上传**。")
+PY_COMMIT_SAY = ("**上传好了，而且回读核对过**：后端那份现在 sha `3d1617c6645fb428`，与本地那份"
+                 "逐字节一致。写前那份备份在 `py-abc`。")
+PY_ROLLBACK_SAY = "已回滚到上传前那份，并通过回读核对。"
+
+
+def _py_upload_payloads() -> dict:
+    """那一栏的三下：地址 + 载荷 + 服务那三句话上屏。"""
+    lives = [{"body": _live("done", "over", n=1 + i, tag="这一趟")} for i in range(6)]
+    _assert_all_different([x["body"] for x in lives], "`/live` 的正文")
+    return {"scenario": "py-upload", "search": "?job=%s" % PY_JOB,
+            "py_job": PY_JOB,
+            "responses": {
+                "/runs": [{"body": {"note": "", "runs": [
+                    {"job_id": PY_JOB, "site": "qualify", "status": "done",
+                     "say": "落盘了", "created_at": "2026-09-22T10:00:00+08:00",
+                     "rounds": 6, "delivered": True}]}}],
+                "/job/%s/live" % PY_JOB: lives,
+                "/job/%s/upload/prepare" % PY_JOB: [{"body": {
+                    "ticket": "ticket-1", "site": "qualify.example.io",
+                    "path": "/company/siteforge/forms/sites/qualify.py", "bytes": 28575,
+                    "local_sha256": "3d1617c6645fb428" + "0" * 48,
+                    "backend_sha256": "11634d97283ae557" + "0" * 48, "say": PY_PREPARE_SAY}}],
+                "/job/%s/upload/commit" % PY_JOB: [{"body": {
+                    "ok": True, "site": "qualify.example.io",
+                    "sha256": "3d1617c6" + "0" * 56, "bytes": 28575,
+                    "backup_id": "py-abc", "say": PY_COMMIT_SAY}}],
+                "/job/%s/upload/rollback" % PY_JOB: [{"body": {
+                    "ok": True, "site": "qualify.example.io", "sha256": "11634d97" + "0" * 56,
+                    "say": PY_ROLLBACK_SAY}}],
+            }}
+
+
 def _run_steps_payloads() -> dict:
     """★ 「步骤表」并进 `note`（2026-09-21）：量的是**发出去的 `/run` 正文**里那一格。
 
@@ -1066,6 +1104,44 @@ def test_the_operator_can_start_a_new_run_from_the_panel(tmp_path):
     assert NEW_JOB in out["afterFollow"]["who"], out["afterFollow"]
     # 服务回的那句话**上了屏**（`pickJob` 的挑法说明；页面不自己编一句）
     assert SUBMITTED_SAY in out["afterRun"]["notices"], out["afterRun"]["notices"]
+
+
+def test_the_panel_can_upload_the_fixed_script_three_clicks(tmp_path):
+    """★ 用户问的那一格：「现在面板能上传？就是测通后得新脚本/生成得新脚本」（2026-09-22）。
+
+    三下：**预检（绝不写）→ 确认 → 回滚**，全部**按这一趟**（job id 在地址里，
+    ⚠️ **不让运营填后端那个键** —— 手打一个键打错就是静默传到别的站）。
+    钉四件：① 「确认」在预检之前按不动（票没到手就传 = 没有防覆盖那道闸）；
+    ② 三个请求打到哪、正文是什么；③ 服务那三句话**上屏**；④ 预检那段事实里有两个指纹。
+    """
+    out = _drive(tmp_path, scenario="py-upload")
+    #: ⚠️ 「开页时那两颗按不动」是**标记属性**（`disabled`）—— 假 DOM 不模拟标记属性，
+    #:    所以这一格**从源码上量**（拿它当页面行为量的话，量的是假 DOM 的短处）。
+    html = service.CONSOLE_PATH.read_text(encoding="utf-8")
+    assert 'id="btnPyCommit" disabled' in html, "「确认上传」不是开页就按不动的"
+    assert 'id="btnPyRollback" disabled' in html, "「回滚」不是开页就按不动的"
+    #: 票到手那一刻 JS 要把「确认」放开 —— 这一格是 JS 自己的活，从假 DOM 量
+    assert out["afterPrepare"]["commitDisabled"] is False, out["afterPrepare"]
+    #: 预检那段事实：本地/后端两个指纹都要摆出来（人要能自己比）
+    assert "3d1617c6645fb428" in out["afterPrepare"]["facts"], out["afterPrepare"]["facts"]
+    assert "11634d97283ae557" in out["afterPrepare"]["facts"], out["afterPrepare"]["facts"]
+    assert "预检过了" in out["afterPrepare"]["note"], out["afterPrepare"]["note"]
+    assert out["afterPrepare"]["errBox"] == "", out["afterPrepare"]
+
+    urls = [u["url"] for u in out["uploads"]]
+    assert urls == ["/job/%s/upload/prepare" % PY_JOB,
+                    "/job/%s/upload/commit" % PY_JOB,
+                    "/job/%s/upload/rollback" % PY_JOB], urls
+    bodies = [json.loads(u["body"]) for u in out["uploads"]]
+    assert bodies[0] == {"operator": "值班员 A"}, bodies[0]
+    assert bodies[1] == {"ticket": "ticket-1"}, bodies[1]
+    assert bodies[2] == {"backup_id": "py-abc", "operator": "值班员 A"}, bodies[2]
+
+    assert "上传好了" in out["afterCommit"]["note"], out["afterCommit"]
+    assert out["afterCommit"]["rollbackDisabled"] is False, out["afterCommit"]
+    assert "已回滚" in out["afterRollback"]["note"], out["afterRollback"]
+    #: 三下都不许把错误杠点亮（服务三句都是好话）
+    assert out["afterCommit"]["errBox"] == "" and out["afterRollback"]["errBox"] == "", out
 
 
 def test_the_step_table_rides_into_the_prompt_verbatim(tmp_path):

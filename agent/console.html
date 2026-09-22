@@ -461,6 +461,46 @@
           </div>
         </section>
 
+        <!-- ── 把这一趟修好的脚本传到后台（2026-09-22）─────────────
+             病：脚本修好了、自测也过了、也落盘了，**但从面板上传不上去** ——
+             上线那一步得找研发手工跑一次（用户问「现在面板能上传？」就是这一格）。
+             这一栏照上面 JSON 写回那三下同一个形状：**预检（绝不写）→ 确认 → 人工回滚**。
+             ⚠️ 六条纪律：
+               · 要传的是**这一趟落盘的那份 py**（按 job，不按人填的站名/键）；
+               · 后端那个键**由服务从这一趟的 brief 取** —— 让人手打键 = 静默传到别的站；
+               · **上传 ≠ 启用**：站是停用的，传上去也还是停用（另一格）；
+               · 判据是**回读一致**（sha256 对得上），不是接口回 200；
+               · 写前拿预检时的指纹**防覆盖**（别人改过就拒，不硬压）；
+               · 不一致就**把原来那份传回去**，并且把「回滚成没成」如实说出来。 -->
+        <section class="panel" id="pyUploadPanel">
+          <header>
+            <h2>把这一趟修好的脚本传到后台</h2>
+            <span class="sub">自测过了、落盘了之后才按得动。<b>会上传 = 换掉后台那份</b>，
+              生产按接口下载就变成这一份。</span>
+          </header>
+          <div class="body">
+            <div class="nrun">
+              <div class="field">
+                <label for="pyUploadOperator">谁确认的</label>
+                <input type="text" id="pyUploadOperator" autocomplete="off"
+                       placeholder="姓名或可追溯的值班标识">
+              </div>
+              <div class="go">
+                <button class="btn" type="button" id="btnPyPrepare">预检上传</button>
+                <button class="btn primary" type="button" id="btnPyCommit" disabled>确认上传</button>
+                <button class="btn" type="button" id="btnPyRollback" disabled>回滚到上传前</button>
+              </div>
+            </div>
+            <div class="facts" id="pyUploadFacts"></div>
+            <p class="hintline" id="pyUploadNote"></p>
+            <p class="hardrule">
+              <b>判据是「回读一致」</b>：传完之后服务会<b>自己再读一遍</b>后台那份，
+              sha256 与本地这份对得上才算成功；对不上它会<b>立刻把原来那份传回去</b>并说清。
+              <b>上传 ≠ 启用</b>：站是停用的，传上去也还是停用。
+            </p>
+          </div>
+        </section>
+
         <!-- ── 这份配置执行器认不认（合规闸，2026-09-21）───────────
              病：执行器碰到**不认的动作**时**不报错** —— 它只 warning 一句就当那一步
              失败了、然后接着往下跑（`json_executor.py:3041`）。于是配置里打错一个
@@ -1810,6 +1850,90 @@
   var JSONDIFF = "/jsondiff";
   var JSONWRITE_PREPARE = "/jsonwrite/prepare";
   var JSONWRITE_COMMIT = "/jsonwrite/commit";
+  //: ★ py 上传那三下（2026-09-22）：**按这一趟**（要传的是「这一趟落盘的那份 py」）。
+  //: ⚠️ 后端那个键**不让运营填**：服务从这一趟的 brief 里取 —— 手打一个键打错，
+  //:    就是**静默传到别的站**（那正是这一栏最怕的形状）。
+  var PYUPLOAD_PREPARE = "/job/{job_id}/upload/prepare";
+  var PYUPLOAD_COMMIT = "/job/{job_id}/upload/commit";
+  var PYUPLOAD_ROLLBACK = "/job/{job_id}/upload/rollback";
+  var pyUploadTicket = "", pyUploadBackup = "";
+
+  function pyUploadURL(tpl) {
+    return tpl.replace("{job_id}", encodeURIComponent(jobId || ""));
+  }
+
+  function pyUploadNote(said) {
+    var el = document.getElementById("pyUploadNote");
+    if (el) { el.innerHTML = said ? rich(said) : ""; }
+  }
+
+  //: 预检：**绝不写**。它只把「要传什么 / 后端现在是什么」摆出来 + 发一张票据。
+  function preparePyUpload() {
+    if (!jobId) {
+      setErr("先挑一趟运行（左边那一栏，或者地址后面带 ?job=<job id>）—— 上传是**按这一趟**的："
+             + "要传的是这一趟落盘的那份 py。", "act");
+      return;
+    }
+    var btn = document.getElementById("btnPyPrepare");
+    btn.disabled = true;
+    pyUploadTicket = "";
+    pyUploadBackup = "";
+    document.getElementById("btnPyCommit").disabled = true;
+    document.getElementById("btnPyRollback").disabled = true;
+    document.getElementById("pyUploadFacts").innerHTML = "";
+    return fetch(pyUploadURL(PYUPLOAD_PREPARE), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operator: document.getElementById("pyUploadOperator").value.trim() })
+    }).then(readJSON).then(function (res) {
+      btn.disabled = false;
+      if (!res.ok) { setErr(sayOf(res), "act"); return null; }
+      pyUploadTicket = at(res.obj, "ticket", "");
+      document.getElementById("btnPyCommit").disabled = !pyUploadTicket;
+      document.getElementById("pyUploadFacts").innerHTML =
+        "<span>本地那份 <b>" + esc(String(at(res.obj, "bytes", ""))) + "</b> 字节 · sha <code>" +
+        esc(String(at(res.obj, "local_sha256", "")).slice(0, 16)) + "</code></span>" +
+        "<span>后端现在那份 sha <code>" +
+        esc(String(at(res.obj, "backend_sha256", "")).slice(0, 16)) + "</code></span>";
+      pyUploadNote(at(res.obj, "say", ""));
+      return res.obj;
+    }).catch(function (e) {
+      btn.disabled = false;
+      setErr("预检没读到：" + e + " —— 服务可能没在跑。", "act");
+    });
+  }
+
+  function commitPyUpload() {
+    var btn = document.getElementById("btnPyCommit");
+    if (!pyUploadTicket) { return; }
+    btn.disabled = true;
+    var ticket = pyUploadTicket;
+    pyUploadTicket = "";                 // 票据一次性：双击也只发一次
+    return fetch(pyUploadURL(PYUPLOAD_COMMIT), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticket: ticket })
+    }).then(readJSON).then(function (res) {
+      if (!res.ok) { setErr(sayOf(res), "act"); return null; }
+      pyUploadBackup = at(res.obj, "backup_id", "");
+      document.getElementById("btnPyRollback").disabled = !pyUploadBackup;
+      pyUploadNote(at(res.obj, "say", ""));
+      return res.obj;
+    }).catch(function (e) { setErr("上传结果没读到：" + e, "act"); });
+  }
+
+  function rollbackPyUpload() {
+    if (!pyUploadBackup) { return; }
+    var btn = document.getElementById("btnPyRollback");
+    btn.disabled = true;
+    return fetch(pyUploadURL(PYUPLOAD_ROLLBACK), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ backup_id: pyUploadBackup,
+                             operator: document.getElementById("pyUploadOperator").value.trim() })
+    }).then(readJSON).then(function (res) {
+      if (!res.ok) { setErr(sayOf(res), "act"); return null; }
+      pyUploadNote(at(res.obj, "say", ""));
+      return res.obj;
+    }).catch(function (e) { setErr("回滚结果没读到：" + e, "act"); });
+  }
   var jsonWriteTicket = "";
 
   //: 「查哪一段」那一格 → 那个查询参数。
@@ -2574,6 +2698,10 @@
   // ★ 开一趟（Task 12）：这一屏原先**只能看、只能在闸上回话、只能停、只能重跑**，
   //   开一趟新活得有人在别处敲命令 —— 而这一屏是给运营用的。
   document.getElementById("btnRun").addEventListener("click", startRun);
+  //: 把这一趟修好的脚本传到后台（2026-09-22）那三下。
+  document.getElementById("btnPyPrepare").addEventListener("click", preparePyUpload);
+  document.getElementById("btnPyCommit").addEventListener("click", commitPyUpload);
+  document.getElementById("btnPyRollback").addEventListener("click", rollbackPyUpload);
   // ★ 失败列表那两下（Task 13）：查一趟失败；照一条把表填好。
   //   ⚠️ 只有**两个**静态按钮 —— 列表里那几行是**画出来的**（一行一个按钮的话，
   //      「点哪一条」这件事就没有一处是可测的了：动态建出来的元素在这套夹具里点不着）。

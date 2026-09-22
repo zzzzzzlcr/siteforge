@@ -49,6 +49,7 @@ agent 只有**一个** Bit 窗口（外加一个自己的 gost 端口）。两�
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import datetime
 import functools
@@ -73,7 +74,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from agent import (browser_agent, configcheck, events, fix, fmr, graph, journal, jsondiag,
-                   jsonwrite, llm, manual, measure, rounds, selftest, shots, tools)
+                   jsonwrite, llm, manual, measure, pywrite, rounds, selftest, shots, tools)
 from agent.graph import NODES, STEP_SAY
 from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_LINT_CAP,
                          END_NO_WINDOW, END_PAUSED, END_REVISION_CAP,
@@ -388,6 +389,25 @@ CONFIGCHECK_PATH = "/configcheck"
 JSONWRITE_PREPARE_PATH = "/jsonwrite/prepare"
 JSONWRITE_COMMIT_PATH = "/jsonwrite/commit"
 JSONWRITE_ROLLBACK_PATH = "/jsonwrite/rollback"
+#: ★ py 上传那三下（2026-09-22）：与 JSON 写回**同形状**（预检票 → 确认 → 人工回滚），
+#: 差别是它们**按 job**：要传的是「**这一趟**落盘的那份 py」，后端那个键由这一趟的 brief 定
+#: （页面不填键 —— 让运营手打一个键，打错就是**静默传到别的站**）。
+PYWRITE_PREPARE_PATH = "/job/{job_id}/upload/prepare"
+PYWRITE_COMMIT_PATH = "/job/{job_id}/upload/commit"
+PYWRITE_ROLLBACK_PATH = "/job/{job_id}/upload/rollback"
+
+
+def _backend_key(url: Any, fix_site: Any, fix_site_url: Any) -> str:
+    """「这一次要动的**后端键**」那一条判据（`_stage_fix_source` 与 py 上传**共用一处**）。
+
+    ⚠️ 失败记录里那个键优先，但它只在**还跟着它来的时候那一串网址**时才算数：
+    人把「站点网址」那一格改了，这趟活要修的**就不是那条失败记录那个站**了 —— 键继续用会
+    **静默改错站**（面板上开的是 B 站，服务拿 A 站的键去读、去传，中间没有一处会响）。
+    """
+    u = str(url or "").strip()
+    key = str(fix_site or "").strip()
+    came_with = str(fix_site_url or "").strip()
+    return key if (key and came_with and u == came_with) else u
 #: 复跑用哪个浏览器（`ws://…`）。没配 = 这个部署**跑不了复跑** —— 那是合法状态，
 #: 面板照样读得到配置，只是「复跑」那一步会明确说「没量着」。
 JSON_WS_URL_ENV = "SITEFORGE_JSON_WS_URL"
@@ -1526,6 +1546,20 @@ class JsonWriteCommitRequest(_Intake):
     ticket: str
 
 
+class PyWritePrepareRequest(_Intake):
+    """`/job/{id}/upload/prepare` 的载荷（2026-09-22）。"""
+    operator: str = ""
+
+
+class PyWriteCommitRequest(_Intake):
+    ticket: str = ""
+
+
+class PyWriteRollbackRequest(_Intake):
+    backup_id: str = ""
+    operator: str = ""
+
+
 class JsonWriteRollbackRequest(_Intake):
     backup_id: str
     operator: str
@@ -2020,6 +2054,10 @@ class Service:
         backup_root = (json_backup_dir or os.environ.get("SITEFORGE_JSON_BACKUP_DIR")
                        or str(pathlib.Path(self._explore_root).parent / "json-backups"))
         self._json_backups = jsonwrite.BackupStore(backup_root)
+        #: ★ py 上传那三下的状态（2026-09-22）：一次性票据（纯内存）+ 原件备份（落盘）。
+        #: 备份与 JSON 那条**同一个根目录**（文件名前缀不同：`json-` / `py-`，不会撞）。
+        self._py_tickets = pywrite.UploadTickets()
+        self._py_backups = pywrite.TextBackupStore(backup_root)
 
     # ── 外面那三层：图、窗口、检查点 ────────────────────────────────
     def _build_graph(self, brief: dict, job_id: str = ""):
@@ -4506,6 +4544,173 @@ class Service:
         return {"ok": True, "site": site, "sha256": saved["original_sha256"],
                 "say": "已回滚到写前原配置，并通过回读核对。"}
 
+    # ── py 上传（2026-09-22）：把**这一趟落盘的那份脚本**传到后台 ─────────────
+
+    def _what_to_upload(self, job_id: str) -> dict:
+        """这一趟「要传什么」：那份源码 + 后端那个键。**免费**（只看本地状态）。
+
+        ⚠️ 走 `_artifact_state` —— 仓里**唯一**判「这一趟的产物」的那一处，而且它给的正是
+        我们要的东西：**这一趟自己写下的那串字节**（`state["src"]`），不是盘上现在那份
+        （同站点的后一趟把文件盖掉了，也不影响这一趟该传什么）。
+        ⚠️ 因此这里**不许**从 `view`/`result` 上读 `delivered`：那是 `inbox` 判据的**同名不同物**，
+        `tests/test_service_input.py::test_the_inbox_criteria_live_in_exactly_one_place` 当场逮过我一次。
+        """
+        view = self._view(job_id)
+        soon = str(view.get("status") or "") in (QUEUED, RUNNING)
+        snap = None if soon else self._snapshot(job_id)
+        values = dict(getattr(snap, "values", None) or {}) if snap is not None else {}
+        art = self._artifact_state(view, values)
+        blob = art.get("bytes")
+        if not blob:
+            raise HTTPException(status_code=409,
+                                detail=art.get("say") or "这一趟还没有产物。")
+        try:
+            source = bytes(blob).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(status_code=400,
+                                detail="产物不是 UTF-8 的文本（%s）—— 传上去就是一份坏脚本，"
+                                       "没上传。" % exc)
+        path = pathlib.Path(str(art.get("path") or ""))
+        if not source.strip():
+            raise HTTPException(status_code=400,
+                                detail="产物是**空文件** —— 传上去等于把那个站弄死。没上传。")
+        try:
+            ast.parse(source)
+        except SyntaxError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="产物过不了 `ast.parse`（第 %s 行：%s）—— 这一版落盘，生产里那个站"
+                       "就是跑 0 次。没上传。" % (exc.lineno, exc.msg))
+        job = self._jobs.get(str(job_id))
+        brief = dict(getattr(job, "brief", {}) or {})
+        key = _backend_key(brief.get("url"), brief.get("fix_site"), brief.get("fix_site_url"))
+        if not key:
+            raise HTTPException(status_code=400,
+                                detail="这一趟**没说是哪个站**（brief 里没有 url/fix_site）"
+                                       "—— 不知道往哪儿传。没上传。")
+        return {"path": str(path), "source": source, "key": key}
+
+    def py_upload_prepare(self, job_id: str, operator: Any) -> dict:
+        """预检：把「要传什么 / 后端现在是什么」摆出来，发一张一次性票据。**这一阶段绝不写。**"""
+        what = self._what_to_upload(job_id)
+        who = str(operator or "").strip()
+        if not who:
+            raise HTTPException(
+                status_code=400,
+                detail="没说**谁确认的**（`operator`）—— 那是后端实测的必填审计字段，"
+                       "一个请求都不会发出去。")
+        if not self._fmr.write_token:
+            raise HTTPException(
+                status_code=503,
+                detail="**一个字都没写**：这个部署**没配写用的 token**（`%s`，没配就退回 `%s`）"
+                       "—— 请求一个都没发出去。" % (fmr.WRITE_TOKEN_ENV, fmr.TOKEN_ENV))
+        try:
+            now = self._fmr.form_script(what["key"], allow_disabled=True)
+        except fmr.FmrUnmeasured as exc:
+            raise self._unmeasured_to_http(exc)
+        original = str(now.get("source") or "")
+        same = pywrite.sha256_text(original) == pywrite.sha256_text(what["source"])
+        if same:
+            raise HTTPException(
+                status_code=409,
+                detail="后端那份**已经是**这一份了（指纹一样：`%s…`）—— 不用传。"
+                       % pywrite.sha256_text(original)[:16])
+        item = self._py_tickets.issue(key=what["key"], path=what["path"],
+                                      source=what["source"], original=original, operator=who)
+        return {"ticket": item.ticket, "site": item.key, "path": item.path,
+                "bytes": len(item.source.encode("utf-8")),
+                "local_sha256": item.source_sha256,
+                "backend_sha256": item.original_sha256,
+                "say": ("预检过了：本地那份 **%d 字节 / sha `%s`**；后端现在那份 sha `%s`。"
+                        "**再确认一次才会上传**（上传会换掉后台那份，生产按接口下载就变成新这一份）。"
+                        "⚠️ 上传 ≠ 启用：站是停用的，传上去也还是停用。"
+                        % (len(item.source.encode("utf-8")), item.source_sha256[:16],
+                           item.original_sha256[:16]))}
+
+    def py_upload_commit(self, job_id: str, ticket: Any) -> dict:
+        """消费票据 → 写前防覆盖 → 上传 → **回读校验**；不一致就传回原来那份。"""
+        item, reason = self._py_tickets.take(str(ticket or ""))
+        if item is None:
+            word = "已过期" if reason == "expired" else "不存在或已经用过"
+            raise HTTPException(status_code=409, detail="上传确认票据%s，请重新预检。" % word)
+        try:
+            current = str(self._fmr.form_script(item.key, allow_disabled=True).get("source") or "")
+        except fmr.FmrUnmeasured as exc:
+            raise self._unmeasured_to_http(exc)
+        if pywrite.sha256_text(current) != item.original_sha256:
+            raise HTTPException(
+                status_code=409,
+                detail="**后端那份在预检之后被改过过**（现在 sha `%s`，预检时 `%s`）—— "
+                       "没上传，请重新预检。" % (pywrite.sha256_text(current)[:16],
+                                                item.original_sha256[:16]))
+        backup_id = self._py_backups.save(key=item.key, original=item.original,
+                                          replacement_sha256=item.source_sha256)
+        result = self._fmr.update_form_script(item.key, item.source, operator=item.operator)
+        if not result.ok:
+            raise HTTPException(status_code=502, detail={"say": result.say,
+                                                         "backup_id": backup_id,
+                                                         "verdict": result.verdict})
+        try:
+            after = str(self._fmr.form_script(item.key, allow_disabled=True).get("source") or "")
+        except fmr.FmrUnmeasured as exc:
+            raise HTTPException(status_code=502, detail={
+                "say": result.say + " 但**写后回读失败** —— 不能宣称传成功了。"
+                       "备案：`%s`。" % backup_id,
+                "backup_id": backup_id, "cause": exc.say})
+        if pywrite.sha256_text(after) != item.source_sha256:
+            back = self._fmr.update_form_script(item.key, item.original,
+                                               operator=item.operator + "（自动回滚）")
+            try:
+                restored = str(self._fmr.form_script(
+                    item.key, allow_disabled=True).get("source") or "")
+            except fmr.FmrUnmeasured:
+                restored = ""
+            raise HTTPException(status_code=502, detail={
+                "say": "**写后回读对不上**（后端那份的 sha 不是我们要传的那个）—— 已经把它"
+                       "**传回原来那份**（%s）。备案：`%s`。"
+                       % ("回读核对通过 ✓" if pywrite.sha256_text(restored) == item.original_sha256
+                          else "⚠️ 回滚也没核对上，**去后端看一眼**", backup_id),
+                "backup_id": backup_id, "rollback": back.as_dict()})
+        return {"ok": True, "site": item.key, "sha256": item.source_sha256,
+                "bytes": len(item.source.encode("utf-8")), "backup_id": backup_id,
+                "say": ("**上传好了，而且回读核对过**：后端那份现在 sha `%s`，与本地那份"
+                        "逐字节一致。写前那份备份在 `%s`（要回滚就按「回滚」。）"
+                        % (item.source_sha256[:16], backup_id))}
+
+    def py_upload_rollback(self, job_id: str, backup_id: Any, operator: Any) -> dict:
+        """人工回滚：把**上传前那份**传回去（先核对「后端现在是不是我们传上去的那一份」）。"""
+        who = str(operator or "").strip()
+        if not who:
+            raise HTTPException(status_code=400,
+                                detail="没说**谁确认的**（`operator`）—— 一个请求都不会发出去。")
+        try:
+            original, saved = self._py_backups.load(str(backup_id or ""))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="这份备份读不出来：%s" % exc)
+        key = str(saved.get("site") or "")
+        try:
+            current = str(self._fmr.form_script(key, allow_disabled=True).get("source") or "")
+        except fmr.FmrUnmeasured as exc:
+            raise self._unmeasured_to_http(exc)
+        if pywrite.sha256_text(current) != str(saved.get("replacement_sha256") or ""):
+            raise HTTPException(
+                status_code=409,
+                detail="后端那份**已经不是**这份备份对应的替换版本了（别人又改过？）"
+                       "—— 拒绝覆盖，没回滚。")
+        result = self._fmr.update_form_script(key, original, operator=who + "（人工回滚）")
+        try:
+            after = str(self._fmr.form_script(key, allow_disabled=True).get("source") or "")
+        except fmr.FmrUnmeasured as exc:
+            raise HTTPException(status_code=502, detail={
+                "say": result.say + " 但**回滚后回读失败** —— 不能宣称回滚成功，"
+                       "去后端看一眼那份现在是什么。",
+                "cause": exc.say})
+        if not (result.ok and pywrite.sha256_text(after) == str(saved.get("original_sha256") or "")):
+            raise HTTPException(status_code=502,
+                                detail={"say": "回滚没有通过回读核对。", "write": result.as_dict()})
+        return {"ok": True, "site": key, "sha256": saved.get("original_sha256"),
+                "say": "已回滚到上传前那份，并通过回读核对。"}
+
     @staticmethod
     def _truncated_say(timeline, shown: int) -> str:
         """`truncated` 为真时**说清**丢了什么/回了多少（设计注 §8.2：「并说明」）。"""
@@ -4605,10 +4810,8 @@ class Service:
         #: 这趟活要修的**就不是那条失败记录那个站**了 —— 键继续用会**静默修错站**
         #: （面板上开的是 B 站，服务拿 A 站的键去读配置、去修，中间没有一处会响）。
         #: 判在**服务这一层**（不是页面）：页面只是把两格原样发上来，见 `runPayload`。
-        url = str(getattr(body, "url", "") or "").strip()
-        key = str(getattr(body, "fix_site", "") or "").strip()
-        came_with = str(getattr(body, "fix_site_url", "") or "").strip()
-        ask_with = key if (key and came_with and url == came_with) else url
+        ask_with = _backend_key(getattr(body, "url", ""), getattr(body, "fix_site", ""),
+                                getattr(body, "fix_site_url", ""))
         try:
             #: ★ 停用的站要不要照修，**运营说了算**（2026-09-21）：勾了才把 debug 那一份
             #: 当底稿（见 `fmr._disabled_py_source`）。默认 False ⇒ 门口那句人话一个字不变。
@@ -5721,6 +5924,18 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
     @api.post(JSONWRITE_ROLLBACK_PATH)
     def jsonwrite_rollback(body: JsonWriteRollbackRequest) -> dict:
         return svc.jsonwrite_rollback(body.backup_id, body.operator)
+
+    @api.post(PYWRITE_PREPARE_PATH)
+    def py_upload_prepare(job_id: str, body: PyWritePrepareRequest) -> dict:
+        return svc.py_upload_prepare(job_id, body.operator)
+
+    @api.post(PYWRITE_COMMIT_PATH)
+    def py_upload_commit(job_id: str, body: PyWriteCommitRequest) -> dict:
+        return svc.py_upload_commit(job_id, body.ticket)
+
+    @api.post(PYWRITE_ROLLBACK_PATH)
+    def py_upload_rollback(job_id: str, body: PyWriteRollbackRequest) -> dict:
+        return svc.py_upload_rollback(job_id, body.backup_id, body.operator)
 
     @api.post("/run", status_code=202)
     def run(body: RunRequest) -> dict:
