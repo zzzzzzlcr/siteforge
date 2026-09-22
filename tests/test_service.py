@@ -1897,6 +1897,39 @@ def test_a_window_that_cannot_be_refreshed_keeps_the_original_and_says_so(capsys
     assert brief2["ws_url"] == "ws://x/y"
 
 
+def test_a_run_whose_window_could_not_be_opened_is_refused_at_the_door():
+    """★ 2026-09-22 真事：窗口是**服务自己**开的（面板没有挑窗口那一栏），而开窗口那一下失败时
+    原先只往日志打一行、然后带着**空窗口**往下走 ⇒ 开出一趟**注定死**的活：屏幕上先是
+    「收到了，排队开跑」、再是「探不了路：这一趟没有窗口」，而**外面为什么开不出来**
+    （实测那两行：bit 回 `{'success': False, 'msg': '浏览器正在打开中'}`；`/browser/open` 超时）
+    他看不到。
+
+    现在按「拿不到底稿就不开 job」同一条规矩（`_stage_fix_source`）：**门口红掉**。
+    判据四条：502、那句话里带着外面的原话、**一个 job 都没开**、连图都没拼（拼图=已经晚了）。
+    ⚠️ 调用方**给了** `ws_url` 时照旧往下跑 —— 上面那条
+    `test_a_window_that_cannot_be_refreshed_keeps_the_original_and_says_so` 钉的就是那条意图
+    （「换不了」是**条件更差**，不是「这一单不能跑」）；这一条管的是**手上一个都没有**的情形。
+    """
+    class _Boom:
+        """窗口层：开窗口那一下抛（只看服务真用到的那一格）。"""
+        def fresh_open(self):
+            raise RuntimeError("窗口服务连不上（/browser/open）：timed out")
+
+    def _never(brief, deps):
+        raise AssertionError("门口就该挡住：连图都不该拼")
+
+    client = _client(graph_factory=_never, window=_Boom())
+    r = client.post("/run", json={"url": "https://x.test/", "goal": "走通",
+                                  "success_text": "谢谢"})
+
+    assert r.status_code == 502, r.text
+    said = r.json()["detail"]
+    assert "开不了这一趟" in said and "timed out" in said, said
+    assert "再按一次" in said, said
+    assert client.get("/runs").json()["runs"] == [], "没开成的那一下却开出了 job"
+    assert client.app.state.service._jobs == {}, "job 已经登记进去了"
+
+
 # ═══════════ Task 6：接续跑（`reopen` 读账本 → 重放前缀）+ 窗口死的一等停因 ═══════════
 #
 # 三条（设计注 §1.8 / §1.9），全用桩（**不开浏览器**）：

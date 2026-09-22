@@ -444,12 +444,18 @@ def test_reopen_says_it_cannot_open_one_instead_of_pretending(tmp_path):
         def fresh_open(self):
             raise RuntimeError("窗口服务连不上")
 
+    #: ⚠️ 2026-09-22：这个窗口桩**从第一下起就坏**，所以这一趟得**由调用方把窗口交进来**
+    #: 才开得起来 —— 服务自己开的那一下会失败，而 `start()` 现在**门口就 502**
+    #: （那条判据在 `tests/test_service.py::test_a_run_whose_window_could_not_be_opened_…`）。
+    #: 这里要量的仍然只有 **`reopen`** 那一档：开不出来就照实说，而且**不许**动状态里那个窗口。
     client2 = _client(tmp_path, window=_Broken(), snap=_unfinished_explore())
-    job_id2 = client2.post("/run", json=_brief()).json()["job_id"]
+    job_id2 = client2.post("/run", json=_brief(ws_url=CALLER_WS)).json()["job_id"]
     _wait(client2, job_id2, until=("done",))
     r2 = client2.post("/job/%s/reopen" % job_id2, json={})
     assert r2.status_code != 200, r2.text
     assert "窗口服务连不上" in r2.json()["detail"], r2.json()
+    #: ⚠️ 状态里那一格是**快照桩**给的（`_unfinished_explore()`），不是上面交进去那个 ——
+    #: 要量的正是「`reopen` 失败之后这一格**一格没动**」。
     assert client2.app.state.service._snapshot(job_id2).values["ws_url"] == "ws://old/DEAD", \
         "开不出来却把状态里的窗口换掉了（换成了什么？）"
 

@@ -192,6 +192,22 @@ REOPEN_NO_WINDOW_LAYER_SAY = (
 REOPEN_OPEN_FAILED_SAY = ("服务自己去开一个新窗口**没成**：\n%s\n"
                           "（它没有把任何一个旧窗口交出去顶替 —— 开不出来就是开不出来。）")
 
+#: ★ **开一趟**时服务自己去开窗口、没开成（2026-09-22 真事）。
+#: 运营按「开一趟」看到的是一条「收到了，排队开跑」+ 一条「探不了路：这一趟没有窗口」——
+#: 而**外面为什么开不出来**（`/tmp/svc.log`：一次是 bit 回「浏览器正在打开中」的竞态、
+#: 一次是 `/browser/open` 超时）只在服务日志里，他手上没有任何可做的动作。
+#: 现在按 `_stage_fix_source` 同一条规矩办：**拿不到前提，就在开 job 之前红掉**。
+RUN_OPEN_FAILED_SAY = ("开不了这一趟：服务自己去开窗口**没成** ——\n%s\n"
+                       "（窗口是**服务**开的：面板上没有挑窗口那一栏。这一趟**没有**交出去，"
+                       "浏览器、页面、文件都是原样，也没花钱问模型。）\n"
+                       "多半是外面那层窗口服务晃了一下（两种都实测过：①上一个窗口**还在开**；"
+                       "②`/browser/open` **超时**）。**等几秒再按一次「开一趟」**；"
+                       "连着几趟都开不出来，那就是 bit 那头的事了，不是这一趟的问题。")
+
+#: `brief` 上记录「开窗口那一下为什么没成」的那一格（给 `start()` 门口用）。
+#: ⚠️ 下划线开头 ⇒ **进不了图**（`_payload` 是白名单，只认列出来的那些键）。
+WINDOW_OPEN_FAILED = "_window_open_failed"
+
 #: 窗口没了、人却按了「继续」时那条 409 的人话（`%s` = job id）。
 #:
 #: ★ Task 12 改的是**顺序与醒目程度**，实质一个字没动（它说的全是真事）：
@@ -3013,17 +3029,25 @@ class Service:
         把新 ws_url 写进 brief（探路与后面所有步骤都用它）。
         ⚠️ 换不了（没接窗口层 / 窗口服务抖了）时**照旧用调用方给的那个**，
         把原因记在日志里 —— 那是「条件更差」，不是「这一单不能跑」。
+        ★ 2026-09-22 补的那一半：**调用方一个都没给，而这里又没换成** —— 那就**没有**窗口
+        可用（上面那句「条件更差」管辖的是「手上还有一个」的情形）。原因同时记进
+        `brief[WINDOW_OPEN_FAILED]`，由 `start()` **在开 job 之前**用 502 挡下来 ——
+        不这么办的话，那一趟会**注定死**（探路那格现在会如实停，但人看不到外面那句原话、
+        也没有可做的动作）。
         """
         if self._window is None or not hasattr(self._window, "fresh_open"):
             return
         try:
             ws = self._window.fresh_open()
         except Exception as exc:                     # noqa: BLE001 —— 外面世界
+            brief[WINDOW_OPEN_FAILED] = str(exc)
             print("[siteforge] 探路前换干净窗口没成（%s）—— 用调用方给的那个窗口接着跑"
                   "（账本学的路径可能带着「弹层已经点过」的前提）" % exc)
             return
         if ws:
             brief["ws_url"] = str(ws)
+        else:
+            brief[WINDOW_OPEN_FAILED] = "开窗口没给出新的 `ws_url`（空串）"
 
     def _fresh_session_cb(self) -> Optional[Callable]:
         """R-F1 那根线：自测之前换一个**干净会话**（关旧窗 → 开新窗，返回新的 ws_url）。
@@ -4877,6 +4901,12 @@ class Service:
         if staged:
             brief["fix_py"] = staged
         self._clean_window_for_explore(brief)     # R-F1 的另一半：**探路也要干净会话**
+        #: ★ 2026-09-22：窗口是**服务自己**开的（面板没有挑窗口那一栏）⇒ 开不出来时这一趟
+        #: **必死**。按「拿不到底稿就不开 job」同一条规矩（`_stage_fix_source`）：门口红掉，
+        #: 并把外面那句原话摆出来（调用方**给了** `ws_url` 的照旧往下跑 —— 见那个方法的 docstring）。
+        opened_badly = str(brief.get(WINDOW_OPEN_FAILED) or "")
+        if opened_badly and not str(brief.get("ws_url") or "").strip():
+            raise HTTPException(status_code=502, detail=RUN_OPEN_FAILED_SAY % opened_badly)
         job_id = "job-%s" % uuid.uuid4().hex[:12]
         job = Job(job_id=job_id, brief=brief, status=QUEUED, say=SUBMITTED_SAY,
                   created_at=datetime.datetime.now().astimezone().isoformat(timespec="seconds"))
