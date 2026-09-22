@@ -1134,6 +1134,39 @@ def test_production_rerun_never_probes_the_binary(sandbox, form_file):
     assert _cdp_calls(sandbox) == [], _cdp_calls(sandbox)
 
 
+def test_the_product_gets_the_criterion_without_the_descriptive_shell():
+    """★ 2026-09-22 真事（`lp.candidate.py` 第 36 行）：判据那格写「**出现** Tailor Your Cover」，
+    产物里就原样写成了 `SUCCESS_TEXTS = ['出现 Tailor Your Cover']` —— 而产物自己的
+    `_succeeded()` 是**字面子串**比 ⇒ **永远匹配不上** ⇒ 真站上明明成了却报「没走到成功」。
+
+    这一格钉「塞进产物的是**剥过壳**的那串」（与判据那一侧**同一个实现**）。
+    ⚠️ 剥壳更严不更松：页面上真带那个动词时，剥完的那串照样在它里面。
+    """
+    assert template._success_texts("出现 Tailor Your Cover") == ["Tailor Your Cover"]
+    assert template._success_texts("Tailor Your Cover") == ["Tailor Your Cover"]
+    assert template._success_texts(["出现 A", "显示 B"]) == ["A", "B"]
+    #: 只写了那个动词 ⇒ 剥完什么都不剩 ⇒ **照旧抛**（那是「没有判据」，不是「什么都算成功」）
+    try:
+        template._success_texts("出现")
+    except ValueError as exc:
+        assert "不能空" in str(exc), exc
+    else:
+        raise AssertionError("判据剥完是空的却没有拦 —— 那样产物会「跑到底再说自己成功」")
+
+
+def test_the_product_waits_for_the_success_page_before_saying_it_failed():
+    """★ 2026-09-22（用户原话：「是不是**等待时间不够**啥的」）：提交之后成功页常常是**异步**
+    渲染出来的 —— 脚本立刻判 `_succeeded()` 判不到，然后就报「没走到成功」。
+
+    这一格钉产物里那笔**有界**的等待还在（它是收尾那一次才花的钱；每一步之后仍然是立刻判）。
+    """
+    src = render_sample()
+    assert "SUCCESS_WAIT_SECONDS" in src, "产物里没有那笔等待 ⇒ 异步成功页又会判不到"
+    assert "def _wait_success(" in src, src[:200]
+    assert "if self._wait_success():" in src, "有那个方法却没人调 —— 等于没等"
+    assert "SUCCESS_POLL_SECONDS" in src, src[:200]
+
+
 # ── 参考产物（Task 4 拿它跑 lint）─────────────────────────────────
 
 def test_reference_fixture_is_current():

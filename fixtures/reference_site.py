@@ -95,6 +95,14 @@ WAIT_READY_SECONDS = 10.0
 #: **跑完全程不报错**（只表现为「没走到成功」），花这几秒比事后排一遍便宜得多。
 WAIT_WHEN_SECONDS = 7.0
 
+#: 收尾**等成功文案**最多几秒（2026-09-22）。为什么要有这一笔：提交之后成功页常常是
+#: **异步**渲染出来的，脚本立刻判 `_succeeded()` 判不到 ⇒ 真站上明明成了却报「没走到成功」
+#: （用户原话「是不是等待时间不够啥的」）。⚠️ 它只在**收尾**那一次用 ——
+#: 每一步之后那次仍然是**立刻判**（见到了就停，不等）。
+SUCCESS_WAIT_SECONDS = 12.0
+#: 上面那一笔的轮询间隔（秒）。**它决定「多久发现成功页」**：越短越灵，代价是每轮一次读页面。
+SUCCESS_POLL_SECONDS = 1.0
+
 #: 目标**被别的东西盖着**时，最多等它多久（秒）—— 等的是**加载蒙版**。
 #:
 #: 为什么是「先等」而不是「一看盖着就不点」（2026-09-18 真站实测 + 用户原话
@@ -1399,6 +1407,29 @@ class Filler:
             time.sleep(step)
             waited += step
 
+    def _wait_success(self, timeout=None):
+        """等**页面上出现成功文案**，最多 `SUCCESS_WAIT_SECONDS` 秒；见到了立刻回 `True`。
+
+        为什么不是「每步之后都等」：那样每一步都要白等（而绝大多数步之后不会有成功页）。
+        收尾这一笔只花在**该等的那一次**上 —— 走完了、还没见到 ⇒ 再给它这几秒。
+        ⚠️ 每一次轮询都是**真读一次页面**（`page_signature()`），所以间隔写在
+        `SUCCESS_POLL_SECONDS` 上、而且**有界**（不许在这里无限等：它是产物，跑在生产上）。
+        """
+        limit = float(SUCCESS_WAIT_SECONDS if timeout is None else timeout)
+        if self._succeeded():
+            return True
+        if limit <= 0:
+            return False
+        self.log.info("[%s] 还没见到成功文案 —— 再等最多 %.0f 秒（成功页常常是异步渲染出来的）",
+                      self.cid, limit)
+        deadline = time.monotonic() + limit
+        while time.monotonic() < deadline:
+            time.sleep(float(SUCCESS_POLL_SECONDS))
+            if self._succeeded():
+                self.log.info("[%s] 等到了：成功文案出现了", self.cid)
+                return True
+        return False
+
     def _wait_ready(self, timeout=None):
         """等这一页**加载完**（`document.readyState === 'complete'`），最多等 `timeout` 秒。
 
@@ -2119,7 +2150,11 @@ class Filler:
                         continue
                     cursor += 1
 
-            if self._succeeded():
+            # ★ 收尾那一下要**等一等**（2026-09-22 真事）：提交之后成功页往往是**异步渲染**出来的
+            # （真站实测：提交那一下点完，脚本立刻判 `_succeeded()` 判不到，然后就走完了 ⇒
+            # 报「没走到成功」）。用户原话：「是不是**等待时间不够**啥的」—— 这一半他说对了。
+            # ⚠️ 有界：最多 `SUCCESS_WAIT_SECONDS` 秒，见到了**立刻**返回（happy path 一秒不等）。
+            if self._wait_success():
                 self._rpt("success")
                 return True
             # **没见到成功文案就必须大声说「我没到」**，并说清停在哪、跳过了多少 ——

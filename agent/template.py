@@ -78,13 +78,26 @@ def _lit(obj) -> str:
 
 
 def _success_texts(success_text) -> list:
-    if isinstance(success_text, str):
-        texts = [success_text] if success_text.strip() else []
-    else:
-        texts = [t for t in (success_text or []) if isinstance(t, str) and t.strip()]
+    """成功判据 → 产物里那份 `SUCCESS_TEXTS`（**剥掉「出现 / 显示」这类说明壳**）。
+
+    ★ 2026-09-22 真事（`lp.candidate.py` 第 36 行）：判据那格写的是「**出现** Tailor Your Cover」，
+    产物里就**原样**写成了 `SUCCESS_TEXTS = ['出现 Tailor Your Cover']` —— 而产物自己的
+    `_succeeded()` 是**字面子串**比 ⇒ **永远匹配不上** ⇒ 真站上明明成了却报「没走到成功」
+    （自测 trace 里第 12 步之后就没有成功那行，用户看到的正是这个）。
+
+    ⚠️ **剥壳的那一处实现只有一份**（`browser_agent.strip_criterion_head` / `wanted_texts`，
+    判据那一侧用的是同一份）—— 两处各写一遍，就是「判据说见着了、产物说不认识」那对老病。
+    为什么在**函数里**导入：这个模块在 import 期要尽量轻（`service` 也只是在函数里导入重家伙），
+    而 `browser_agent` 会拉起 llm/tools —— 那是**渲染那一刻**才需要的东西。
+    """
+    from agent.browser_agent import wanted_texts     # noqa: PLC0415 —— 见 docstring
+
+    texts = wanted_texts(success_text)
     if not texts:
-        # 没有成功判据的产物会「跑到底然后说成功」—— 本项目最忌讳的那类谎
-        raise ValueError("success_text 不能空：没有成功判据的产物会跑到底再说自己成功")
+        # 没有成功判据的产物会「跑到底然后说成功」—— 本项目最忌讳的那类谎。
+        # ⚠️ 说完就走那条也在这儿：判据只写了「出现」两个字 ⇒ 剥完什么都不剩 ⇒ 一样是「没有判据」。
+        raise ValueError("success_text 不能空（也不能只写「出现 / 显示」这种动词）："
+                         "没有成功判据的产物会跑到底再说自己成功")
     return texts
 
 
@@ -231,6 +244,14 @@ WAIT_READY_SECONDS = 10.0
 #: 为什么是 5~8：真不成立的状态组多花这几秒，换来「不是没等就判」；而这类失败
 #: **跑完全程不报错**（只表现为「没走到成功」），花这几秒比事后排一遍便宜得多。
 WAIT_WHEN_SECONDS = 7.0
+
+#: 收尾**等成功文案**最多几秒（2026-09-22）。为什么要有这一笔：提交之后成功页常常是
+#: **异步**渲染出来的，脚本立刻判 `_succeeded()` 判不到 ⇒ 真站上明明成了却报「没走到成功」
+#: （用户原话「是不是等待时间不够啥的」）。⚠️ 它只在**收尾**那一次用 ——
+#: 每一步之后那次仍然是**立刻判**（见到了就停，不等）。
+SUCCESS_WAIT_SECONDS = 12.0
+#: 上面那一笔的轮询间隔（秒）。**它决定「多久发现成功页」**：越短越灵，代价是每轮一次读页面。
+SUCCESS_POLL_SECONDS = 1.0
 
 #: 目标**被别的东西盖着**时，最多等它多久（秒）—— 等的是**加载蒙版**。
 #:
@@ -1463,6 +1484,29 @@ class Filler:
             time.sleep(step)
             waited += step
 
+    def _wait_success(self, timeout=None):
+        """等**页面上出现成功文案**，最多 `SUCCESS_WAIT_SECONDS` 秒；见到了立刻回 `True`。
+
+        为什么不是「每步之后都等」：那样每一步都要白等（而绝大多数步之后不会有成功页）。
+        收尾这一笔只花在**该等的那一次**上 —— 走完了、还没见到 ⇒ 再给它这几秒。
+        ⚠️ 每一次轮询都是**真读一次页面**（`page_signature()`），所以间隔写在
+        `SUCCESS_POLL_SECONDS` 上、而且**有界**（不许在这里无限等：它是产物，跑在生产上）。
+        """
+        limit = float(SUCCESS_WAIT_SECONDS if timeout is None else timeout)
+        if self._succeeded():
+            return True
+        if limit <= 0:
+            return False
+        self.log.info("[%s] 还没见到成功文案 —— 再等最多 %.0f 秒（成功页常常是异步渲染出来的）",
+                      self.cid, limit)
+        deadline = time.monotonic() + limit
+        while time.monotonic() < deadline:
+            time.sleep(float(SUCCESS_POLL_SECONDS))
+            if self._succeeded():
+                self.log.info("[%s] 等到了：成功文案出现了", self.cid)
+                return True
+        return False
+
     def _wait_ready(self, timeout=None):
         """等这一页**加载完**（`document.readyState === 'complete'`），最多等 `timeout` 秒。
 
@@ -2183,7 +2227,11 @@ class Filler:
                         continue
                     cursor += 1
 
-            if self._succeeded():
+            # ★ 收尾那一下要**等一等**（2026-09-22 真事）：提交之后成功页往往是**异步渲染**出来的
+            # （真站实测：提交那一下点完，脚本立刻判 `_succeeded()` 判不到，然后就走完了 ⇒
+            # 报「没走到成功」）。用户原话：「是不是**等待时间不够**啥的」—— 这一半他说对了。
+            # ⚠️ 有界：最多 `SUCCESS_WAIT_SECONDS` 秒，见到了**立刻**返回（happy path 一秒不等）。
+            if self._wait_success():
                 self._rpt("success")
                 return True
             # **没见到成功文案就必须大声说「我没到」**，并说清停在哪、跳过了多少 ——
