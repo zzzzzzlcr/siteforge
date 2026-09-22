@@ -1088,3 +1088,20 @@ def test_the_rank_panel_does_not_offer_anything_that_changes_anything():
         assert "POST" not in block, "%s 里有写请求 —— 这一任务只加「读」" % panel
     #: 正控：这一条得**真的能响** —— 页面别处**有** `POST`（证明上面那个判据不是恒真）。
     assert 'method: "POST"' in page, "这一页上根本没有 POST —— 那上面那条判据是空转的"
+
+
+def test_the_success_cell_says_the_string_is_matched_as_a_whole():
+    """★ 2026-09-22 真事：运营在「什么算成功」那格里填的是 `出现文字 check your email` ——
+    而判据是拿**这一格的整串**去页面上找 ⇒ 多出来的那四个字让它永远找不到，
+    屏幕上只说「没见到成功文案」，于是三趟重探 + 每趟真提交一遍（`job-65f5c40b2816`）。
+
+    那一格的说明必须写清三件：**只填那串字本身** / **整串去找（多一个字就找不到）** /
+    **大小写不算区别**。判据取的是那一格自己的说明块（不是整页 —— 整页里别处也有这几个词）。
+    """
+    page = _page()
+    start = page.index('id="runSuccess"')
+    block = page[start:page.index("</div>", start)]
+    assert "只填那串字本身" in block, block[-500:]
+    assert "整串" in block, block[-500:]
+    assert "多一个字就永远找不到" in block, block[-500:]
+    assert "大小写不算区别" in block, block[-500:]

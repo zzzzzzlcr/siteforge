@@ -2252,6 +2252,29 @@ def test_the_explore_the_service_builds_carries_the_success_text(monkeypatch):
         "服务那层把成功判据丢了（探路拿到的关键字：%r）" % sorted(seen))
 
 
+def test_a_run_without_a_py_says_why_in_one_line():
+    """★ 2026-09-22（用户原话：「那产出不了py你要说下原因啊」）。
+
+    产物那一格原来只引 `end_note` —— 它说的是**发生了什么事**（「重探了 2 趟都没在页面上见到
+    成功文案」），读的人还得自己把它翻成「所以为什么没有产物、我下一步做什么」。
+    `_no_py_say` 就是那句翻过来的话，摆在那一块的**第一行**。
+
+    这一条钉：五种停因各有一句（为什么 + 下一步）；**叫不出名字的停因给空串** ——
+    硬塞一个类别比不说更坏。
+    """
+    for reason, needle in (("explore_unfinished", "半份账本"),
+                           ("no_window", "没有窗口"),
+                           ("paused", "人喊停"),
+                           ("human_stop", "人喊停"),
+                           ("draft_failed", "过得了闸")):
+        said = service._no_py_say({"end_reason": reason})
+        assert said.startswith("**为什么没有 py**"), (reason, said)
+        assert needle in said, (reason, said)
+        assert "下一步" in said, (reason, said)
+    assert service._no_py_say({"end_reason": "something_new"}) == "", "叫不出名字的停因不许硬塞"
+    assert service._no_py_say({}) == ""
+
+
 def test_the_human_words_ride_into_the_explore_call(monkeypatch):
     """★ 2026-09-22 真事：运营把步骤写得**很细**，新站那条路上模型**一个字都没收到**。
 

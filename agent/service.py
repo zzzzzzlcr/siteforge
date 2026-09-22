@@ -76,7 +76,8 @@ from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from agent import (browser_agent, configcheck, events, fix, fmr, graph, journal, jsondiag,
                    jsonwrite, llm, manual, measure, pywrite, rounds, selftest, shots, tools)
 from agent.graph import NODES, STEP_SAY
-from agent.state import (END_DELIVERED, END_EXPLORE_UNFINISHED, END_LINT_CAP,
+from agent.state import (END_DELIVERED, END_DRAFT_FAILED, END_EXPLORE_UNFINISHED,
+                         END_HUMAN_STOP, END_LINT_CAP,
                          END_NO_WINDOW, END_PAUSED, END_REVISION_CAP,
                          END_SELFTEST_CAP, END_WINDOW_GONE, MODE_FIX)
 
@@ -424,6 +425,54 @@ def _backend_key(url: Any, fix_site: Any, fix_site_url: Any) -> str:
     key = str(fix_site or "").strip()
     came_with = str(fix_site_url or "").strip()
     return key if (key and came_with and u == came_with) else u
+
+
+def _artifact_say(values: dict, state: dict) -> str:
+    """产物那句话**说给人听的那一份**：没有字节时，**第一行先给「为什么没有 py」**。
+
+    ⚠️ 只在**没有字节**时加那一行 —— 有字节时这一块讲的是「它写到哪了」（另一件事）。
+    ⚠️ 两处必须**同一句**（`/live` 的产物那一格 与 `/job/{id}/artifact` 那条 409）：
+    `tests/test_service_artifact.py::test_the_live_cell_and_the_endpoint_say_the_very_same_thing`
+    钉着它。所以那句话的拼法只有这一处 —— 别再各拼一份。
+    """
+    if state.get("bytes"):
+        return state["say"]
+    why = _no_py_say(values)
+    return ("%s\n%s" % (why, state["say"])) if why else state["say"]
+
+
+def _no_py_say(values: dict) -> str:
+    """**「为什么这一趟没有 py」** —— 按停因分一句话（★ 2026-09-22，用户原话：
+    「那产出不了py你要说下原因啊」）。
+
+    为什么要有它：产物那一格原来只引 `end_note`，而 `end_note` 说的是**发生了什么事**
+    （「重探了 2 趟都没在页面上见到成功文案」）—— 读的人得自己把它翻成「所以为什么没有产物、
+    我下一步做什么」。这一句就是从停因翻过来的那一句，摆在产物那一块的**第一行**。
+
+    ⚠️ 叫不出名字的停因**不硬塞**：返回空串（只摆原来那句）—— 编一个类别比不说更坏。
+    ⚠️ 与 `_no_artifact_say` **不是两套答案**：那个说的是「这一趟是哪种没有」（照抄它自己的话），
+    这一句说的是「**所以为什么没有 py、下一步做什么**」（把停因翻成人能照做的一句）。
+    两句一起摆在产物那一块里 —— 它们的拼法只有 `_artifact_say` 一处。
+    """
+    reason = str((values or {}).get("end_reason") or "")
+    return {
+        END_EXPLORE_UNFINISHED: (
+            "**为什么没有 py**：探路**没走完** —— 规矩是**不许拿半份账本写 py**"
+            "（那样写出来的稿看着挺像，到了真站上走不通）。下一步看下面那句说的是哪一种："
+            "窗口没了就「重开窗口，接着走」；判据没在页面上见到就改「什么算成功」那一格。"),
+        END_NO_WINDOW: (
+            "**为什么没有 py**：这一趟**没有窗口**（浏览器没开起来）—— 探路没有地方可走。"
+            "下一步：**再发起一趟**（窗口是服务自己开的）。"),
+        END_PAUSED: (
+            "**为什么没有 py**：**人喊停**了（探路被人从浏览器那一侧叫停）—— "
+            "停下就是停下，页面与文件保持原样。下一步：要接着做就「重新来一遍」。"),
+        END_HUMAN_STOP: (
+            "**为什么没有 py**：**人喊停**了（服务记的是「停」）—— 那一步没有做，"
+            "页面与文件保持原样。下一步：要接着做就「重新来一遍」（你说过的话会带过去）。"),
+        END_DRAFT_FAILED: (
+            "**为什么没有 py**：**写这一版 py** 那一步没能产出一份过得了闸的稿 —— "
+            "原因写在它自己那句话里。下一步：看那句话，缺什么补什么（判据 / 步骤表 / 证据）。"),
+    }.get(reason, "")
 #: 复跑用哪个浏览器（`ws://…`）。没配 = 这个部署**跑不了复跑** —— 那是合法状态，
 #: 面板照样读得到配置，只是「复跑」那一步会明确说「没量着」。
 JSON_WS_URL_ENV = "SITEFORGE_JSON_WS_URL"
@@ -2649,7 +2698,8 @@ class Service:
         values = dict(getattr(snap, "values", None) or {}) if snap is not None else {}
         state = self._artifact_state(view, values)
         if not state["bytes"]:
-            raise HTTPException(status_code=409, detail=state["say"])
+            #: ★ 与 `/live` 那一格**同一句**（`_artifact_say`）—— 「为什么没有 py」那行也在。
+            raise HTTPException(status_code=409, detail=_artifact_say(values, state))
         return state
 
     def _artifact_state(self, view: dict, values: Optional[dict] = None) -> dict:
@@ -2745,7 +2795,9 @@ class Service:
             return None
         state = self._artifact_state(view, values)
         if not state["bytes"]:
-            return {"url": None, "filename": None, "path": None, "say": state["say"]}
+            #: ★ 「为什么没有 py」那一句摆在**第一行**（按停因分类）—— 见 `_no_py_say`。
+            return {"url": None, "filename": None, "path": None,
+                    "say": _artifact_say(values, state)}
         return {"url": ARTIFACT_URL % job_id, "filename": state["filename"],
                 "path": state["path"], "say": state["say"]}
 

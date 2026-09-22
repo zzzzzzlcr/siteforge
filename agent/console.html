@@ -570,7 +570,12 @@
                 <input type="text" id="runSuccess" autocomplete="off"
                        placeholder="走通之后页面上会出现的那段文字">
                 <p class="why"><b>只有人知道这一条</b> —— 照抄页面上会出现的字（比如 Thank you）。
-                  服务猜出来的成功判据，会让产物「跑到底就报成功」，所以它不猜。</p>
+                  服务猜出来的成功判据，会让产物「跑到底就报成功」，所以它不猜。
+                  ⚠️ <b>只填那串字本身，前后什么都别加</b>（别写「出现文字 …」「目标是 …」这种说明）——
+                  它是拿你这一格<b>整串</b>去页面上找的：<b>多一个字就永远找不到</b>，
+                  而它只会报「没见到成功文案」（2026-09-22 真事：有人填了
+                  <code>出现文字 check your email</code>，页面上只有 <code>Check your email</code> ⇒
+                  三趟都没认出来）。<b>大小写不算区别</b>（<code>Check</code> / <code>check</code> 都算）。</p>
               </div>
               <div class="field">
                 <label for="runMode">这是哪种活</label>
