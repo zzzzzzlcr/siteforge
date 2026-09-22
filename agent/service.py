@@ -414,6 +414,69 @@ PYWRITE_PREPARE_PATH = "/job/{job_id}/upload/prepare"
 PYWRITE_COMMIT_PATH = "/job/{job_id}/upload/commit"
 PYWRITE_ROLLBACK_PATH = "/job/{job_id}/upload/rollback"
 
+#: ★ 换代理国家（2026-09-22）：**面板上直接按**的那一格 + 自测第 5 遍那根线。
+#:
+#: ⚠️ 它动的是**这台机器上 agent 那条出口链**（宿主 `:1081`，链文件
+#: `config/gost1081.chain`）—— 生产那条 `:1080` **一个字都不碰**（那是**单例热换**的，
+#: 碰了会把正在跑的生产任务一起换掉，2026-09-14 实测过；规矩写在仓里
+#: `skills/bit-window/SKILL.md` 那张表上，也写在 `gost-watch.sh` 的开头）。
+#: 干这件事的是仓库里的 `tools/set-country.py`（拉链 → 写链文件 → 等 watcher 重启 → 
+#: **核到出口国家真变了才 exit 0**）—— 所以这儿**没有再算一遍判据**：认它的退出码。
+COUNTRY_PATH = "/country"
+#: 那个脚本（本仓 `tools/`）；`SITEFORGE_SET_COUNTRY_TOOL` 可以换掉它（测试/运维）。
+SET_COUNTRY_TOOL = str(pathlib.Path(__file__).resolve().parents[1] / "tools" / "set-country.py")
+#: 换一次最多等它多久（它自己核到再返回，通常十几秒）。**构造时定死**。
+SET_COUNTRY_SECONDS = 180.0
+
+#: 换成功的答复（`%s` = 那个国家）。⚠️ 说清**换的是哪一条链** —— 运营按的是一个按钮，
+#: 而这件事影响的是整台机器的 agent 出口（下一趟自测、下一趟探路都走新出口）。
+COUNTRY_DONE_SAY = ("出口换成 %s 了 —— **核过**：经 :1081 问到的国家就是它。"
+                    "这一下换的是**这台机器上 agent 那条链**（生产那条 :1080 一个字没动）。")
+#: 没核到（`%s` = 要的国家，`%s` = 脚本自己的原话）。**不许说「换好了」**。
+COUNTRY_NOT_VERIFIED_SAY = ("**没换成**：要的是 %s，链写下去了，可出口**核不出来**是它 —— "
+                            "所以不能说换好了。它自己说的话：\n%s")
+#: 国家码不成形状
+COUNTRY_BAD_CODE_SAY = "国家码写成两个字母（比如 `US` / `CA`）—— 你给的是「%s」。"
+#: 有任务在跑时不许换（`%s` = 「job id（它现在在哪一步的人话）」那一整串）
+COUNTRY_BUSY_SAY = ("现在**不能换**：任务 %s 还在跑 —— 换链要把 gost 重启，"
+                    "它正用着的那些连接会被掐断。等它停下来（停在闸上 / 跑完）再按，"
+                    "或者先按「停」。")
+#: 问不出来现在的出口是哪国（`%s` = 原话）。⚠️ 「问不出来」≠「没换」。
+COUNTRY_UNREADABLE_SAY = ("问不出来这个出口现在是哪国：%s\n"
+                          "（⚠️「问不出来」**不是**「没换」—— `:1081` 那个实例没在跑的"
+                          "时候就是这样。）")
+#: 问到了（`%s` = 国家）
+COUNTRY_SHOW_SAY = "现在这个出口问到的国家是 %s（经 :1081 实测）。"
+
+
+def _country_code(raw: Any) -> str:
+    """国家码 → 两字母大写；**不成形状就返回空串**（由调用方去说人话，这里不编）。"""
+    got = str(raw or "").strip().upper()
+    return got if re.fullmatch(r"[A-Z]{2}", got) else ""
+
+
+def _run_country_tool(*, tool: str, timeout: float, country: str = "", url: str = "") -> tuple:
+    """换国家那条路的**默认实现**：起 `tools/set-country.py`。
+
+    返回 `(成没成, 它自己说的话)`。⚠️ 判据**只有**它那一个：那个脚本只有在「经 :1081 问到的
+    国家 == 要的那个」时才回 0 —— 所以这里不重算、不猜、也不拿「命令跑完了」当成功
+    （`subprocess` 回 0 与「出口真变了」是两件事）。
+    `country` 空 = 只读（问一句现在哪国，**一个字节都不写**）。
+    """
+    #: 与本文件那一处同一条风格：**子进程那两样在函数内导入**（`service.py` 不为它多背两个
+    #: 顶层名字；`subprocess` 在 `_cdp_bin_source` 那条路上也是这么导的）。
+    import subprocess
+    import sys
+
+    argv = [sys.executable, str(tool)]
+    argv += ["--show"] if not country else ["--country", country, "--url", url]
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, "起不来：%s" % exc
+    said = "\n".join(x for x in (done.stdout or "", done.stderr or "") if str(x).strip()).strip()
+    return done.returncode == 0, said
+
 
 def _backend_key(url: Any, fix_site: Any, fix_site_url: Any) -> str:
     """「这一次要动的**后端键**」那一条判据（`_stage_fix_source` 与 py 上传**共用一处**）。
@@ -1654,6 +1717,15 @@ class JsonWriteRollbackRequest(_Intake):
     operator: str
 
 
+class CountryRequest(_Intake):
+    """`POST /country` 的载荷（2026-09-22）：**换成这个国家的出口**。
+
+    `url` 只是「按哪个目标站挑链」（那条接口按它选出口）——不给就用上一次那个。
+    """
+    country: str = Field("", description="两字母国家码，如 US / CA")
+    url: str = Field("", description="按哪个目标站挑链（可空）")
+
+
 # ───────── 执行事实：运营写的期望、服务算的判（契约 §二 / §四 / §六）─────────
 #
 # 这一节是**换裁判**那件事在代码里的样子。契约 §一：病根不是「字段不够」，是
@@ -2066,7 +2138,9 @@ class Service:
                  json_ws_url: Optional[str] = None,
                  json_rerun: Optional[Callable] = None,
                  json_backup_dir: Optional[str] = None,
-                 json_ticket_store: Any = None):
+                 json_ticket_store: Any = None,
+                 country_runner: Optional[Callable] = None,
+                 country_tool: Optional[str] = None):
         self._jobs: dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
         self._queue: "queue.Queue[tuple]" = queue.Queue()
@@ -2147,6 +2221,22 @@ class Service:
         #: 备份与 JSON 那条**同一个根目录**（文件名前缀不同：`json-` / `py-`，不会撞）。
         self._py_tickets = pywrite.UploadTickets()
         self._py_backups = pywrite.TextBackupStore(backup_root)
+        #: ★ 换代理国家那条路（2026-09-22）。与别的那几根线同一条不变量：**构造时定死**
+        #: （用哪个脚本、最多等多久），之后不再看环境 —— 「调用时再读环境」会让同一屏上
+        #: 两下按的其实是两个部署（`shots` / `selftest` / `viewport` 那几处都吃过这个亏）。
+        self._country_tool = str(country_tool or os.environ.get("SITEFORGE_SET_COUNTRY_TOOL")
+                                 or SET_COUNTRY_TOOL)
+        self._country_runner = (country_runner
+                                or functools.partial(_run_country_tool, tool=self._country_tool,
+                                                     timeout=SET_COUNTRY_SECONDS))
+        #: 运营**按过**的那个国家（`POST /country` 核成功才记）。它只给自测的第 5 遍用：
+        #: 没按过 = 空串 = 那根线不接 ⇒ 行为与从前**一个字节不差**。
+        #: ⚠️ 它是 process-local 的（服务重启就没了）——**故意的**：它记的是「这一次会话里
+        #: 人明确要过哪个国家」，不是「gost 现在恰好是哪国」（后者问 `GET /country`，那是
+        #: 实测读数）。按「恰好是哪国」去接这根线，就等于**替人决定**要跑第 5 遍。
+        self._country = ""
+        #: 换链时用哪个目标站（接口按它挑链）。上一次成功那次用的是什么就还用那个。
+        self._country_url = ""
 
     # ── 外面那三层：图、窗口、检查点 ────────────────────────────────
     def _build_graph(self, brief: dict, job_id: str = ""):
@@ -2164,6 +2254,11 @@ class Service:
                           selftest=self._selftest_cb(job_id),
                           set_viewport=(self._viewport_cb(brief.get("ws_url"))
                                         if brief.get("set_viewport") else None),
+                          # ★ 第 5 遍（换代理国家）：只有运营在面板上按过「换成 X 国」才接得上
+                          # （`_country_cb` 里那道判）；接上 = 那一遍真跑（换链 + 再跑一遍产物
+                          # = 一次提交），没接上 = 照旧跳过（`allow_skips` 的默认值没改）。
+                          set_country=self._country_cb(),
+                          country=self._country,
                           fresh_session=self._fresh_session_cb(),
                           window_alive=self._window_alive_cb(),
                           # Task 8：「停下，我要说一句」伸进浏览器的那根线（设计注 §4.1 第 1 行）。
@@ -2204,6 +2299,90 @@ class Service:
             return selftest.run(py_path, ws_url, form_file, site, cdp_bin=self._cdp_bin, **kw)
 
         return run_selftest
+
+    # ── ★ 换代理国家（2026-09-22）────────────────────────────────────────
+    def _country_cb(self) -> Optional[Callable]:
+        """`Deps.set_country`：**只有运营按过「换成 X 国」才接得上**。
+
+        为什么不是无条件接：`_missing_knobs` 只认「这根线在不在」—— 接上它，第 5 遍
+        （换链 + **再跑一遍产物** = 一次提交）就变成**要跑的**。而「换了哪个国家」是人的
+        决定，不是服务能替他决定的（R-5：没验到不许说验过了，可**没让人要过的扰动**
+        也不该自己跑起来 —— 那会拿真站去换一个没人要的出口 + 多花一次提交）。
+        ⚠️ 回调里**没验到就抛**：`selftest` 会把那一遍记成 `skipped` 并把理由原样带上
+        （那一遍这次就是**没验到**，报告里看得见 —— 这才是诚实的落点）。
+        """
+        if not self._country:
+            return None
+
+        def set_country(country: str) -> None:
+            want = _country_code(country)
+            if not want:
+                raise ValueError(COUNTRY_BAD_CODE_SAY % country)
+            ok, said = self._switch_country(want)
+            if not ok:
+                raise RuntimeError(COUNTRY_NOT_VERIFIED_SAY % (want, said))
+            self._country = want
+
+        return set_country
+
+    def _switch_country(self, want: str, url: str = "") -> tuple:
+        """真去换（`(成没成, 它说的话)`）。**判据只有脚本那一个**（见 `_run_country_tool`）。"""
+        target = str(url or "").strip() or self._country_url or "https://example.com"
+        try:
+            ok, said = self._country_runner(country=want, url=target)
+        except Exception as exc:               # noqa: BLE001 —— 外部世界，什么都可能抛
+            return False, "换链那一下抛了 %s：%s" % (type(exc).__name__, exc)
+        if ok:
+            self._country_url = target
+        return bool(ok), said
+
+    def country_now(self) -> dict:
+        """`GET /country`：**现在这个出口是哪国** —— 实测（经 :1081 问一句），不是记忆。"""
+        try:
+            ok, said = self._country_runner()
+        except Exception as exc:               # noqa: BLE001
+            raise HTTPException(status_code=503,
+                                detail=COUNTRY_UNREADABLE_SAY % ("%s：%s" % (type(exc).__name__, exc)))
+        got = _country_code(said.strip().splitlines()[0] if said.strip() else "")
+        if not ok or not got:
+            raise HTTPException(status_code=503, detail=COUNTRY_UNREADABLE_SAY % (said or "（它什么都没说）"))
+        return {"country": got, "say": COUNTRY_SHOW_SAY % got,
+                "chosen": self._country}
+
+    def switch_country(self, country: str, url: str = "") -> dict:
+        """`POST /country`：**换成这个国家** —— 核到了才算成。
+
+        ⚠️ 两条前置：① 国家码要成形状；② **没有任务在跑** —— 换链要把 gost 重启，
+        正在跑的那一趟的连接会被掐断（那是**破坏**一个真运行，不是「影响一点」）。
+        这两条都是**拦在动作之前**（不是做完再说一句「哦它其实在跑」）。
+        """
+        want = _country_code(country)
+        if not want:
+            raise HTTPException(status_code=400, detail=COUNTRY_BAD_CODE_SAY % country)
+        busy = self._busy_job()
+        if busy is not None:
+            raise HTTPException(status_code=409, detail=COUNTRY_BUSY_SAY % busy)
+        ok, said = self._switch_country(want, url)
+        if not ok:
+            raise HTTPException(status_code=502, detail=COUNTRY_NOT_VERIFIED_SAY % (want, said))
+        #: 核到了才记（这是**自测第 5 遍**那根线的开关）。
+        self._country = want
+        return {"ok": True, "country": want, "say": COUNTRY_DONE_SAY % want, "output": said}
+
+    def _busy_job(self) -> Optional[str]:
+        """有任务**正在跑 / 排着队**就返回「它 id（在哪一步的人话）」，没有就 `None`。
+
+        ⚠️ 判据是「跑着/排队」这两档，**不是**「有没有 job 登记」（停在闸上的不算在跑）。
+        停留在闸上的那一趟不碰浏览器，换链不会伤到它 —— 所以它不该拦这一下。
+        """
+        for job_id, job in list(self._jobs.items()):
+            with job.lock:
+                status = job.status
+            if status not in (QUEUED, RUNNING):
+                continue
+            token = str(getattr(job, "running_step", "") or "")
+            return "%s（%s）" % (job_id, STEP_SAY.get(token, token) if token else UNKNOWN_STEP_SAY)
+        return None
 
     #: 改稿那一次调用的 **token 预算**。⚠️ 这个数是**量出来的**，不是拍的：
     #: 2026-09-21 真跑一趟修站（站 `qualify.lastingpowerofattorney.io`，旧脚本 21916 字节 /
@@ -5891,7 +6070,9 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                json_ws_url: Optional[str] = None,
                json_rerun: Optional[Callable] = None,
                json_backup_dir: Optional[str] = None,
-               json_ticket_store: Any = None) -> FastAPI:
+               json_ticket_store: Any = None,
+               country_runner: Optional[Callable] = None,
+               country_tool: Optional[str] = None) -> FastAPI:
     """拼一个 app。测试从这里注入桩图 / 桩窗口 / 内存 saver。
 
     `window=None` 是**默认且合法**的：这个部署没接窗口层 —— 于是 `set_viewport` 那根线
@@ -5920,7 +6101,8 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                   capture=capture, shot_timeout=shot_timeout, capture_bin=capture_bin,
                   selftest_dir=selftest_dir, mcp_bin=mcp_bin, failures_reader=failures_reader,
                   json_ws_url=json_ws_url, json_rerun=json_rerun,
-                  json_backup_dir=json_backup_dir, json_ticket_store=json_ticket_store)
+                  json_backup_dir=json_backup_dir, json_ticket_store=json_ticket_store,
+                  country_runner=country_runner, country_tool=country_tool)
     api = FastAPI(title="siteforge", version="0.1",
                   description="看着真页面产出 cdp-first py 脚本的 agent 服务（计划二 Task 8）")
 
@@ -6213,6 +6395,25 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
             return svc.close_window(job_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="没这个任务：%s。" % job_id)
+
+    @api.get(COUNTRY_PATH)
+    def country_now() -> dict:
+        """**现在这个出口是哪国**（2026-09-22）—— 实测读数（经 :1081 问一句），**只读**。
+
+        ⚠️ 问不出来就 **503 + 一句人话**（不是回一个空国家）：这条路上最容易变成谎的一格是
+        「问不出来」被读成「没换」—— 它们不是一件事（`COUNTRY_UNREADABLE_SAY`）。
+        """
+        return svc.country_now()
+
+    @api.post(COUNTRY_PATH)
+    def country_switch(body: CountryRequest) -> dict:
+        """**换成这个国家**（面板上那个按钮）→ `{ok, country, say, output}`。
+
+        ⚠️ 同步等它核完（通常十几秒）—— 这一下**要么核到、要么说没核到**，没有第三态
+        （后台跑着、页面显示「换好了」而其实没换，正是这一格绝不许长成的形状）。
+        两条前置（400 国家码不成形状 / 409 有任务在跑）都**拦在动作之前**。
+        """
+        return svc.switch_country(body.country, body.url)
 
     api.state.service = svc
     return api

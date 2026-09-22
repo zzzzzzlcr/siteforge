@@ -325,6 +325,10 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _run_payloads()
     elif scenario == "run-steps":
         payload = _run_steps_payloads()
+    elif scenario == "country":
+        payload = _country_payloads()
+    elif scenario == "country-refused":
+        payload = _country_payloads(verified=False)
     elif scenario == "py-upload":
         payload = _py_upload_payloads()
     elif scenario == "py-upload-nothing":
@@ -2321,3 +2325,79 @@ def test_the_rank_fixture_can_actually_fire(tmp_path):
         "那说明它量不到那一条（观测值照旧是 %r）" % bad["afterNoConfig"])
     #: 正控还得**落到那一句假话上**：改坏之后屏幕上出现的正是「没有失败」那句。
     assert "没有失败的记录" in bad["afterNoConfig"]["rankNote"], bad["afterNoConfig"]
+
+
+# ══════════════════ 换代理国家（2026-09-22）══════════════════
+#
+# 用户原话：「面板上要能直接换」。这一格钉三件事：
+#   ① **开页那一问**（只读）读到的，是**服务回的那句**（「现在这个出口是哪国」）；
+#   ② 按一下之后，屏上那句是 `/country` 回的**哪一句** —— 成了说成了，**没核到就说没换成**；
+#   ③ 那一问**不跟着每 3 秒的重画重来**（它要经 `:1081` 打一次外网，重画挂上去就是白烧）。
+# ⚠️ ② 是这一格的要害：页面自己编一句「换好了」，在这套夹具下当场露馅
+# （那条串根本不在响应里）。
+
+COUNTRY_SHOW = "现在这个出口问到的国家是 US（经 :1081 实测）。"
+COUNTRY_DONE = "出口换成 CA 了 —— **核过**：经 :1081 问到的国家就是它。"
+COUNTRY_REFUSED = ("**没换成**：要的是 CA，链写下去了，可出口**核不出来**是它 —— "
+                   "所以不能说换好了。")
+
+
+def _country_payloads(*, verified: bool = True) -> dict:
+    """换国家那一格的响应：开页那一问（GET）+ 按一下（POST）。
+
+    ⚠️ 两下打的是**同一个 URL**（`/country`，方法不同）⇒ 队列里就是**两份**：
+    第一份给开页那一问，第二份给按那一下（驱动脚本的假 fetch 取完就重复最后一条）。
+    """
+    lives = [{"body": _live("running", "queue", n=1 + i)} for i in range(6)]
+    post = ({"body": {"ok": True, "country": "CA", "say": COUNTRY_DONE, "output": ""}}
+            if verified else {"status": 502, "body": {"detail": COUNTRY_REFUSED}})
+    return {"scenario": "country" if verified else "country-refused",
+            "code": "ca",
+            "search": "?job=job-1",
+            "responses": {
+                "/runs": [{"body": {"note": "", "runs": [{
+                    "job_id": "job-1", "site": "example-funnel", "status": "running",
+                    "say": "在跑。", "created_at": "2026-09-22T10:00:00+08:00",
+                    "rounds": 0, "delivered": False}]}}],
+                "/job/job-1/live": lives,
+                "/country": [{"body": {"country": "US", "say": COUNTRY_SHOW, "chosen": ""}}, post],
+            }}
+
+
+def test_the_country_row_reads_it_on_load_and_switches_it_on_press(tmp_path):
+    """开页读到「现在是哪国」（服务那句原话）；按一下换成 CA：那句话是**服务回的**那句。"""
+    out = _drive(tmp_path, scenario="country")
+    assert COUNTRY_SHOW in out["before"]["now"], out["before"]
+    assert out["before"]["note"] == "", out["before"]        # 还没按，结果那一行是空的
+    #: ⚠️ `rich()` 会把 `**…**` 渲染成 `<b>…</b>` ⇒ 判**渲染后**的文本（不是 markdown 原文）
+    assert "核过" in out["afterPress"]["note"], out["afterPress"]
+    assert "换成 CA" in out["afterPress"]["note"], out["afterPress"]
+    #: 三下、两种：开页那一问（GET，正文空）/ 按那一下（POST）/ **换成之后重新问一遍**
+    #: （GET —— 那一行是**实测读数**，不是把要的那个国家抄回去）。
+    #: 国家码**大写**发出去（小写也认 —— 归一化在服务那一侧，可页面不该发一个它自己都不认的形状）
+    assert [c["body"] for c in out["calls"]] == ['', '{"country":"CA","url":""}', ''], out["calls"]
+    assert out["afterPress"]["btnDisabled"] is False, out["afterPress"]
+
+
+def test_a_switch_that_was_not_verified_says_so_on_the_panel(tmp_path):
+    """**没核到就说没换成**（服务那句 502 原话），而且**不许**把「现状」那一行改成新国家。"""
+    out = _drive(tmp_path, scenario="country-refused")
+    assert "没换成" in out["afterPress"]["note"], out["afterPress"]
+    assert "核不出来" in out["afterPress"]["note"], out["afterPress"]
+    assert COUNTRY_SHOW in out["afterPress"]["now"], (
+        "没换成却把现状那一行改成新国家了 —— 那是这一格最坏的一种谎：%r"
+        % out["afterPress"])
+    assert out["afterPress"]["btnDisabled"] is False, out["afterPress"]
+
+
+def test_the_country_row_does_not_re_ask_on_every_repaint(tmp_path):
+    """**不每拍重问**：开页 1 问 + 按一下 1 问 = 2 次；**再过 4 拍也还是 2 次**。
+
+    ⚠️ 「2 次」那一半只是过程读数，判在「4 拍之后没涨」那一半上 —— 问一次要经 `:1081`
+    打一次外网（十几秒的活），挂在每 3 秒的重画上就是把那条出口白烧掉。
+    """
+    out = _drive(tmp_path, scenario="country")
+    assert out["afterTicks"]["asks"] == 1, out["afterTicks"]   # 开页那一问过后，4 拍不许再问
+    #: 按完是 **3**：开页那一问 + 按那一下 + 换成之后重新问一遍（成功才有第三下）。
+    assert out["afterPress"]["asks"] == 3, out["afterPress"]
+    assert len(out["calls"]) == 3, out["calls"]

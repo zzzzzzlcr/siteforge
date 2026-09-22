@@ -167,9 +167,11 @@ REVISABLE = ("lint", "selftest", "deliver")
 #: （写进 `allow_skips`），两者都不成立时图**停**并把旋钮点出来（R-31）——
 #: 不许自己发明一个默认让它跳过去（R-5：跳过不算过），也不许转到自测上限假装是产物不行。
 #:
-#: `(旋钮名, 这一遍在打什么, 谁给得了)`。⚠️ 第 5 遍（换代理国家）这张图**故意没接**
-#: （计划里它是可选的，要重拉 gost 链）—— 所以它必须留在 `allow_skips` 里（Task 6 的默认
-#: 正是如此）。要真跑第 5 遍，加 `Deps.set_country` + `Deps.country` 两处即可。
+#: `(旋钮名, 这一遍在打什么, 谁给得了)`。⚠️ 第 5 遍（换代理国家）：**2026-09-22 起真接了**
+#: （`Deps.set_country` + `Deps.country`，服务按运营在面板上按过的那次给）—— 所以它**不再**
+#: 靠「没接上就跳过」活着。⚠️ 但 `allow_skips` 的默认值**一个字没改**（`selftest` 那边仍是
+#: 只允许跳 country）：**接了 ≠ 一定要跑**，跑不跑由 `selftest` 那条阶梯按可达与否决定
+#: （R-84：前面过了就不补跑、提交次数到顶就不跑）。
 ROUND_NEEDS = {
     "viewport": ("set_viewport", "换个窗口大小再跑一遍（打折叠 / 遮挡 / 坐标假设）",
                  "调用方在**窗口层**动手（换窗口大小就是 `POST /browser/update`）——"
@@ -240,6 +242,16 @@ class Deps:
     provenance: Callable = runtime.provenance
     should_pause: Optional[Callable] = None
     set_viewport: Optional[Callable] = None
+    #: **代理层**那根线（第 5 遍「换代理国家」）：`set_country(country) -> None`。
+    #: 与 `set_viewport` 同一条规矩：**可调用的东西不进 checkpoint**，回调一律挂在 `Deps` 上。
+    #: ⚠️ 它动的是**这台机器上 agent 那条出口链**（`:1081`；生产那条 `:1080` 绝不碰 ——
+    #: 见仓库里 `skills/bit-window/SKILL.md` 那张表）⇒ 只在**运营明确按过「换成 X 国」**时
+    #: 才接得上（服务那一侧给的），没按过就还是 `None` ⇒ 行为与从前一个字节不差。
+    set_country: Optional[Callable] = None
+    #: 第 5 遍要换到哪个国家（两字母，如 `US`）。⚠️ **光有回调没有它** = 「接上了但不响」：
+    #: `selftest.run` 会当场 `ValueError`（「给了 set_country 就要说清换到哪个国家」）
+    #: ⇒ 两者要么一起给、要么都不给（`_selftest_kwargs` 就是这么判的）。
+    country: str = ""
     fresh_session: Optional[Callable] = None
     #: 「窗口还活着吗」（§1.8）。⚠️ **可调用的东西不进 checkpoint** —— 与 `should_pause`
     #: 同一条规矩（状态里只放数据，回调一律挂在 `Deps` 上）。
@@ -1623,6 +1635,11 @@ def _selftest_kwargs(state, deps: Deps) -> dict:
     kw = {}
     if deps.set_viewport is not None:
         kw["set_viewport"] = deps.set_viewport
+    #: ★ 第 5 遍（换代理国家）：**两样一起给**（回调 + 换到哪国）—— 只给回调会当场
+    #: `ValueError`（见 `Deps.country` 那一格），只给国家没有回调则是「没接上」。
+    if deps.set_country is not None and deps.country:
+        kw["set_country"] = deps.set_country
+        kw["country"] = deps.country
     #: ★ 老写法那一族（B 线 ③ 乙）：自测那条路要换一套调法（argv 不给 `--trace` 那几个
     #: 开关，证据从运行时进）—— 形状是 intake 那一步**量过**的（`fix.shape_of`），
     #: 这里只是把它带下去。⚠️ 只在**是**老写法时才给这一格：别的路一个字节不变。

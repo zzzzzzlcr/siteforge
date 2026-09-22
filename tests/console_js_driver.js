@@ -13,6 +13,8 @@
 //   · `run` / `run-refused`：开一趟（Task 12）—— 人把表填了、按一下；`/run` 收下了 / 回了错
 //   · `window`：窗口那两下（Task 12）—— 按「关掉这个窗口」/「重开窗口，接着走」
 //   · `gate-facts`：闸口摊开的事实（Task 14 修复轮 1）—— `#rounds` 那两块文字上没上屏
+//   · `country`：换代理国家（2026-09-22）—— 开页那一问（只读）读到了什么；按一下「换成这个国家」
+//     之后，屏上那句是服务回的哪一句（`/country` 那两条：成了 / **没换成**）
 // 打完这些之后，把屏幕上**那几个元素此刻的文本**交回去，外加一个数：**重画了几次**。
 //
 // ⚠️ 射程（写在 `tests/test_console_js.py` 的模块 docstring 里，这里只留一句）：
@@ -213,6 +215,27 @@ async function runScenario(out) {
 //: 「上传到后台」那三下（2026-09-22）：预检（绝不写）→ 确认 → 回滚。**按这一趟**。
 //: ⚠️ 量的是**发出去的正文**（`sent`）：只钉「按钮在」的话，按钮发错地方/发空照绿。
 //: ⚠️ 也量「确认」在预检之前是**按不动**的（票没到手就传 = 没防覆盖那道闸）。
+//: 换代理国家（2026-09-22）：开页 → 按一下「换成这个国家」。
+//: ⚠️ 量的是**屏上那句话是不是服务回的那句**（`say` / `detail`）—— 页面自己编一句
+//: 「换好了」在这一套夹具下当场露馅（那条串根本不在响应里）。
+async function countryScenario(out) {
+  function asks() { return sent.filter(function (s) { return s.url === "/country"; }).length; }
+  out.before = { now: el("countryNow").innerHTML, note: el("countryNote").innerHTML, asks: asks() };
+  //: 先走 4 拍（每 3 秒那一次重画）—— 量的是「只读那一问**不跟着每拍重来**」：
+  //: 问一次要经 `:1081` 打一次外网，挂在重画上就是白烧一条出口。
+  await ticks(4);
+  out.afterTicks = { asks: asks(), now: el("countryNow").innerHTML };
+  el("countryCode").value = payload.code === undefined ? "ca" : payload.code;
+  fire("btnCountry", "click");
+  await settle(); await settle(); await settle();
+  await ticks(4);                        //: 按完再走 4 拍（那一问也不该被重画带出来）
+  out.afterPress = { now: el("countryNow").innerHTML, note: el("countryNote").innerHTML,
+                     btnDisabled: el("btnCountry").disabled, codeBox: el("countryCode").value,
+                     asks: asks() };
+  out.calls = sent.filter(function (s) { return s.url === "/country"; })
+                  .map(function (s) { return { url: s.url, body: s.body }; });
+}
+
 async function pyUploadScenario(out) {
   out.beforeAny = { commitDisabled: el("btnPyCommit").disabled,
                     rollbackDisabled: el("btnPyRollback").disabled,
@@ -566,6 +589,8 @@ async function againScenario(out) {
   else if (payload.scenario === "run-refused") { await runRefusedScenario(out); }
   else if (payload.scenario === "window") { await windowScenario(out); }
   else if (payload.scenario === "page-view") { await pageViewScenario(out); }
+  else if (payload.scenario === "country" ||
+           payload.scenario === "country-refused") { await countryScenario(out); }
   else if (payload.scenario === "live-404") { await live404Scenario(out); }
   else if (payload.scenario === "failures") { await failuresScenario(out); }
   else if (payload.scenario === "failures-empty") { await failuresEmptyScenario(out); }

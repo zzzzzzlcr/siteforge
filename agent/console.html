@@ -507,6 +507,44 @@
           </div>
         </section>
 
+        <!-- ── 换代理国家（2026-09-22）───────────────────────────
+             用户原话：「面板上要能直接换」。这一格就是那一下 ——
+             换的是**这台机器上 agent 那条出口链**（`:1081`），生产那条（`:1080`）一个字不动。
+             ⚠️ 四条纪律：
+               · 判据是「**核到了**」：服务换完要经 `:1081` 问一句「这个出口是哪国」，
+                 问到的就是要的那个才算成；问不到它会说「没换成」——**它不会说换好了**；
+               · 这一格**不每 3 秒重问**（问一次要经 gost 打一次外网）—— 开页问一次、
+                 按完再问一次（`paintPyUploadWhy` 那种每拍重画的那一套在这儿是浪费）；
+               · 它正在跑的时候**服务会拦**（409 人话：换链会掐断那一趟的连接）；
+               · 「问不出来」≠「没换」（服务那句原话里就写着）。 -->
+        <section class="panel" id="countryPanel">
+          <header>
+            <h2>换个代理国家</h2>
+            <span class="sub">换的是<b>这台机器上 agent 那条出口</b>（<code>:1081</code>）——
+              生产那条（<code>:1080</code>）一个字不动。<b>核到了才算成</b>。</span>
+          </header>
+          <div class="body">
+            <div class="nrun">
+              <div class="field">
+                <label for="countryCode">换成哪国</label>
+                <input type="text" id="countryCode" autocomplete="off" spellcheck="false"
+                       maxlength="2" placeholder="US / CA">
+              </div>
+              <div class="go">
+                <button class="btn primary" type="button" id="btnCountry">换成这个国家</button>
+              </div>
+            </div>
+            <p class="hintline" id="countryNow">正在问这个出口是哪国…</p>
+            <p class="hintline" id="countryNote"></p>
+            <p class="hardrule">
+              <b>判据是「核到了」</b>：换完服务会经 <code>:1081</code> 问一句「这个出口是哪国」，
+              问到的<b>就是</b>要的那个才算成；问不到它会说<b>没换成</b>，不会说换好了。
+              ⚠️ <b>它正在跑的时候按不动</b>（服务会拦）：换链要把 gost 重启，
+              那一趟正用着的连接会被掐断。
+            </p>
+          </div>
+        </section>
+
         <!-- ── 这份配置执行器认不认（合规闸，2026-09-21）───────────
              病：执行器碰到**不认的动作**时**不报错** —— 它只 warning 一句就当那一步
              失败了、然后接着往下跑（`json_executor.py:3041`）。于是配置里打错一个
@@ -1981,6 +2019,56 @@
       return res.obj;
     }).catch(function (e) { setErr("回滚结果没读到：" + e, "act"); });
   }
+
+  // ══════════════════ 换代理国家（2026-09-22）══════════════════
+  //: 面板上那两下：看一眼现在哪国（只读）/ 换成某国（**核到了才算成**）。
+  //: ⚠️ 这一格**一个字都不自己编**：判据在服务那一侧（它经 :1081 实测），页面把响应里的
+  //: `say` / `detail` **原样**摆出来 —— 编一句「换好了」就等于这一屏开始说假话。
+  var COUNTRY_PATH = "/country";
+  var countryBusy = false;
+
+  function countryNote(said) {
+    var el = document.getElementById("countryNote");
+    if (el) { el.innerHTML = said ? rich(said) : ""; }
+  }
+
+  function showCountry() {
+    var el = document.getElementById("countryNow");
+    if (!el) { return; }
+    el.innerHTML = rich("正在问这个出口是哪国…");
+    fetch(COUNTRY_PATH).then(readJSON).then(function (res) {
+      //: 问不出来（503）也是**服务那句原话**：它写着「问不出来 ≠ 没换」。
+      el.innerHTML = rich(res.ok ? at(res.obj, "say", "") : sayOf(res));
+    }).catch(function (e) {
+      el.innerHTML = rich("问不出来现在这个出口是哪国：" + e);
+    });
+  }
+
+  function switchCountry() {
+    var btn = document.getElementById("btnCountry");
+    var box = document.getElementById("countryCode");
+    var code = (box && box.value ? box.value : "").trim().toUpperCase();
+    if (!code || countryBusy) { return; }
+    //: 「按了」当场有反馈（这一片的老规矩）：按下去就写一句，别让人对着不动的屏幕等十几秒。
+    countryBusy = true;
+    if (btn) { btn.disabled = true; }
+    countryNote("在换…（要重拉 gost 链，通常十几秒）");
+    var site = document.getElementById("runUrl");
+    fetch(COUNTRY_PATH, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ country: code, url: (site && site.value ? site.value.trim() : "") })
+    }).then(readJSON).then(function (res) {
+      countryBusy = false;
+      if (btn) { btn.disabled = false; }
+      countryNote(res.ok ? at(res.obj, "say", "") : sayOf(res));
+      //: 换成了就把上面那一行**重新问一遍**（那一行是实测读数，不是把要的那个抄回去）。
+      if (res.ok) { showCountry(); }
+    }).catch(function (e) {
+      countryBusy = false;
+      if (btn) { btn.disabled = false; }
+      countryNote("换国家那一下没读到结果：" + e);
+    });
+  }
   var jsonWriteTicket = "";
 
   //: 「查哪一段」那一格 → 那个查询参数。
@@ -2749,6 +2837,11 @@
   document.getElementById("btnPyPrepare").addEventListener("click", preparePyUpload);
   document.getElementById("btnPyCommit").addEventListener("click", commitPyUpload);
   document.getElementById("btnPyRollback").addEventListener("click", rollbackPyUpload);
+  //: ★ 换代理国家（2026-09-22）：面板上直接按的那一下。
+  document.getElementById("btnCountry").addEventListener("click", switchCountry);
+  //: ⚠️ 开页那一问**只在这里问一次**（接线段只跑一次）——**不许**挂进 `paint()`：
+  //: 那是每 3 秒一次的接口，而问一次要经 `:1081` 打一次外网（夹具量过：挂上去 4 拍就多问 3 次）。
+  showCountry();
   // ★ 失败列表那两下（Task 13）：查一趟失败；照一条把表填好。
   //   ⚠️ 只有**两个**静态按钮 —— 列表里那几行是**画出来的**（一行一个按钮的话，
   //      「点哪一条」这件事就没有一处是可测的了：动态建出来的元素在这套夹具里点不着）。
