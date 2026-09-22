@@ -1398,12 +1398,19 @@ def _attempts_note(attempts: list) -> str:
 def _explore_reached_success(journey, success_text) -> Optional[bool]:
     """这一趟探路**在页面上见到过成功文案吗**。三态：True / False / **None = 判不了**。
 
-    - `True`：某一步 observe 的正文里含成功文案（与产物的判据**同一口径**：归一化后子串）；
+    - `True`：某一步 observe 的正文里含成功文案（与产物的判据**同一口径**：压空白 + **小写**）；
     - `False`：每一步都看过了，一次都没见着 → 账本里很可能没有那条路（见调用处的注释）；
     - `None`：没给成功判据、或这一趟一次 observe 都没有（判不了就**不猜**）。
+
+    ★ 2026-09-22 **大小写**这一条是真事逼出来的：运营把「什么算成功」写成
+    `check your email`，页面上是 `Check your email …` ⇒ 这里判「一次都没见到」⇒
+    **自动重探 2 趟**（每趟真提交一遍表单）。而**产物那边一直是不区分大小写的**
+    （`template.py` 的 `_succeeded()`：`page_signature().lower()` 与 `_norm(t).lower()` 比）——
+    同一个判据两边口径不一样，这一句注释说「同一口径」就成了假的。
+    ⚠️ 用 `.lower()` **不是** `.casefold()`：要和产物那一侧**逐字一致**（口径分家比大小写更贵）。
     """
     wants = [success_text] if isinstance(success_text, str) else list(success_text or [])
-    wants = [_norm_text(w) for w in wants if str(w or "").strip()]
+    wants = [_norm_text(w).lower() for w in wants if str(w or "").strip()]
     if not wants:
         return None
     seen_any = False
@@ -1411,7 +1418,7 @@ def _explore_reached_success(journey, success_text) -> Optional[bool]:
         if (step or {}).get("action") != "observe":
             continue
         seen_any = True
-        head = _norm_text((step.get("result") or {}).get("page_text_head") or "")
+        head = _norm_text((step.get("result") or {}).get("page_text_head") or "").lower()
         if head and any(w in head for w in wants):
             return True
     return False if seen_any else None

@@ -2603,3 +2603,20 @@ def test_the_group_retry_is_written_into_the_trace(sandbox, form_file, tmp_path)
     # ⚠️ trace 的每一行都是「一步」，`ok` 这个键**不许**因为加了重试就不写了
     for line in lines:
         assert "ok" in line, line
+
+
+def test_the_product_matches_the_success_words_without_case(rendered):
+    """★ 2026-09-22：产物这一侧的「算不算成功」**一直**是不区分大小写的 —— 把它钉住。
+
+    为什么值得单钉：探路那一侧（`graph._explore_reached_success`）原先**不是**，
+    于是同一个判据给出两个答案：模型在账本里写「按人给的判据已经走通」，
+    而服务判「一次都没见到」⇒ 自动重探 2 趟、每趟真提交一遍（真事：`job-f9adaede5503`）。
+    两处口径分家比大小写本身贵得多，所以**两头各钉一条**（那边在 `tests/test_graph.py`）。
+    判据取 `_succeeded` 的**源码段**：页那一侧（`page_signature().lower()`）与
+    文案那一侧（`_norm(t).lower()`）**两边都要转** —— 少一边就是「一边小写一边原样」。
+    """
+    tree = ast.parse(rendered)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_succeeded")
+    src = ast.get_source_segment(rendered, fn) or ""
+    assert src.count(".lower()") >= 2, src

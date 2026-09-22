@@ -1662,6 +1662,32 @@ def test_the_graph_hands_explore_the_success_text_the_human_gave(tmp_path):
         "图上没把成功判据交给探路（拿到的关键字：%r）" % sorted(rec.explore[0]["kw"]))
 
 
+def test_the_success_words_are_matched_without_case():
+    """★ 2026-09-22 真事（`job-f9adaede5503`）：运营把「什么算成功」写成 `check your email`，
+    页面上是 `Check your email …` ⇒ 这一格判「一次都没见到」⇒ **自动重探 2 趟**，
+    而每一趟都**真提交**了一遍表单（`attempts.jsonl` 里三趟各有一次提交）。
+
+    ⚠️ 判据**没有放宽**，是**修一处不一致**：产物那边一直是不区分大小写的
+    （`template.py` 的 `_succeeded()`：页那一侧与文案那一侧都 `.lower()`），而这一格原先
+    连注释都写着「与产物的判据**同一口径**」—— 同一个判据两个答案，比大小写本身贵得多。
+    ⚠️ 负例一起钉：页面上没有那句话 ⇒ 仍然是 `False`（「都转小写」不许被写成「什么都算见到了」）。
+    """
+    def _book(head):
+        return browser_agent.Journey(steps=[
+            {"state": "s", "action": "observe", "target": {},
+             "result": {"ok": True, "url": "https://x.test/", "page_text_head": head}}])
+
+    head = ("Check your email We've sent a code to sit****@gmail.com. "
+            "Enter the code here to continue.")
+    assert graph._explore_reached_success(_book(head), "check your email") is True
+    assert graph._explore_reached_success(_book(head), "Check your email") is True
+    assert graph._explore_reached_success(_book(head), ["谢谢", "CHECK YOUR EMAIL"]) is True
+    assert graph._explore_reached_success(_book(head), "thank-you") is False
+    #: 没给判据 / 一次 observe 都没有 ⇒ **判不了**（`None`，不是「没走到」）
+    assert graph._explore_reached_success(_book(head), "") is None
+    assert graph._explore_reached_success(browser_agent.Journey(steps=[]), "check") is None
+
+
 def test_a_run_without_a_window_ends_honestly_instead_of_crashing(tmp_path):
     """★ 2026-09-22 真事（`job-82547a95ba34`）：载荷里没挑窗口 ⇒ 服务那侧塞进 `Deps` 的
     `explore` 就是 `None`（`service.py:2074`）—— 探路那一格原先**直接调它**，运营在面板上
