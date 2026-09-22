@@ -663,6 +663,12 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
                     "所以不重探：这一趟不算对这条路的一次干净观察，"
                     "重探只会把同一段在真页面上再撞一遍。停下，如实报，"
                     "**不进入定稿 + 自测**（拿一条走不通的账本去定稿+自测是必然白跑）。")
+        #: ★ 2026-09-22：**把判据原话写进这句话里**。连着三次「明明到了却不认」都卡在同一处：
+        #: 屏幕上只说「没在页面上见到成功文案」，**不说它拿哪串字在比** —— 运营只能猜，
+        #: 而这三件事（我填的是哪串 / 它比的是一串 / 它比的是页面的哪一部分）少一样都判不出来。
+        note += ("\n判据（原话）：%s —— 它拿这串字去比**每一步「看一眼」读到的正文头**"
+                 "（大小写不算区别；判据一个字没放宽，要不要改得人点头）。"
+                 % _criterion_say(state.get("success_text")))
         journey.note(note)
         out["end_reason"] = END_EXPLORE_UNFINISHED
         out["end_note"] = note
@@ -1429,6 +1435,20 @@ def _explore_reached_success(journey, success_text) -> Optional[bool]:
         if head and any(w in head for w in wants):
             return True
     return False if seen_any else None
+
+
+def _criterion_say(success_text) -> str:
+    """成功判据的**原话**摆成人话（一串 / 一串列表 / 没给，三种都说得出）。
+
+    为什么它值得单独一句：连着三次「明明到了却不认」（`job-f9adaede5503`、`job-0180c1aa93ee`、
+    `job-65f5c40b2816`）里，屏幕上那句「没在页面上见到成功文案」**从来没说比的是哪串字** ——
+    于是只能靠人猜「是判据写错了还是代码判错了」。这一句就是那个答案。
+    """
+    if isinstance(success_text, (list, tuple)):
+        want = [str(w) for w in success_text if str(w or "").strip()]
+    else:
+        want = [str(success_text)] if str(success_text or "").strip() else []
+    return "、".join("『%s』" % w for w in want) if want else "（**没给**）"
 
 
 def _norm_text(text) -> str:

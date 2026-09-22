@@ -1209,6 +1209,15 @@ def test_an_explore_that_never_sees_the_success_text_stops_after_the_bounded_ret
     assert "走到成功文案就停" not in note, (
         "抬头把**规则**说成了**结论**（三趟都没见到，读起来却像「见到所以停了」）：%s" % note)
     assert "判据是" in note and "见到你给的成功文案" in note, note
+    #: ★ 2026-09-22：**判据的原话要在这句话里**（屏幕上只说「没见到」而不说比的是哪串字，
+    #: 运营只能猜 —— 连着三次「明明到了却不认」都卡在这儿）。这句话落在 `end_note` 里，
+    #: 也就是屏幕上、时间线上那一句。
+    end_note = out.get("end_note") or ""
+    assert "判据（原话）" in end_note, end_note
+    assert "『%s』" % SUCCESS in end_note, end_note
+    #: 没给判据时也要说得出（那一支是 `None` = 判不了，不是「没见到」）
+    assert graph._criterion_say(None) == "（**没给**）", graph._criterion_say(None)
+    assert graph._criterion_say(["a", " "]) == "『a』", graph._criterion_say(["a", " "])
 
 
 def test_a_retry_that_sees_the_success_text_wins(tmp_path):
