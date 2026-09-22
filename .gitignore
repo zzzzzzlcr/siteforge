@@ -19,3 +19,4 @@ config/*.local.*
 # 工具层构建产物(源码在 tools/cdp/)
 tools/cdp/cdp
 tools/cdp/cdp-mcp
+siteforge.env
