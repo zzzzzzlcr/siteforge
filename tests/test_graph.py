@@ -1723,6 +1723,38 @@ def test_the_success_words_are_matched_without_case():
     assert graph._explore_reached_success(_book(head), "thank-you") is False
     #: 没给判据 / 一次 observe 都没有 ⇒ **判不了**（`None`，不是「没走到」）
     assert graph._explore_reached_success(_book(head), "") is None
+
+
+def test_a_descriptive_criterion_does_not_buy_another_real_submission():
+    """★ 2026-09-22 真事（`job-9b48f2b513ec`）：判据那格写成「出现 Thank you.」这种**说明句**时，
+    判据永远匹配不上（它是照抄页面那串字的**子串**判据）⇒ 每趟都判「没见到」⇒ 自动重探 ⇒
+    **每一趟都是一次真提交**。运营在面板上看到的就是「明明成功了一直在重复」（他手动关窗止住）。
+
+    这一格钉的是**钱**：判据像说明句 ⇒ **不重探**（把原话摆出来让人改那一格）；
+    判据像正常的一串字 ⇒ 照旧（重探那条路一个字节没动）。
+    ⚠️ 它是启发式 ⇒ 它**只拦重探**：判据本身一个字不改，也判不了成没成。
+    """
+    said = graph._retry_wont_help("出现Thank you.")
+    assert "没有自动重探" in said and "出现Thank you." in said, said
+    assert graph._retry_wont_help("显示 Thank you") != ""
+    #: 负例：正常的一串字（页面上真会出现的那串）⇒ 一个字都不说、照旧走 `_worth_retrying`
+    assert graph._retry_wont_help("Thank you for your request") == ""
+    assert graph._retry_wont_help("Thank you") == ""
+    assert graph._retry_wont_help("") == ""
+
+
+def test_the_outcome_line_says_which_words_it_compared():
+    """结局那句要**说出比的是哪串字**（连着四次「明明到了却不认」都栽在这一格上：
+
+    屏幕上只写「没见到成功文案」，人没法分清是判据写错了还是代码判错了）。
+    """
+    one = [{"n": 1, "reached": False, "steps": 30, "eyes": 14, "stop": "model_done",
+            "answers": ["firstName=James"]}]
+    said = graph._attempts_note(one, "Check your email")
+    assert "『Check your email』" in said, said
+    assert "没见到成功文案" in said, said
+    #: 没给判据时照旧说得出「没给」（不印一个空括号）
+    assert "（**没给**）" in graph._attempts_note(one, ""), graph._attempts_note(one, "")
     assert graph._explore_reached_success(browser_agent.Journey(steps=[]), "check") is None
 
 

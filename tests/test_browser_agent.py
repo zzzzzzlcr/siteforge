@@ -50,7 +50,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import browser_agent, journal, lint, llm, plan, template, tools  # noqa: E402
+from agent import browser_agent, graph, journal, lint, llm, plan, template, tools  # noqa: E402
 
 STUB_SERVER = ROOT / "tests" / "stub_mcp_server.py"
 
@@ -3577,6 +3577,137 @@ def test_the_journal_line_on_disk_keeps_which_frame_and_why(tmp_path):
     assert diags[0]["frame_path"] == REAL_FRAME_BLIND["frame_path"], diags
     # 长的那条（真报错那一档，160 上限）也要原样过一遍盘 —— 半路被截就红在这儿
     assert diags[1]["detail"] == FRAME_ERROR_160["detail"], diags[1]
+
+
+def test_the_final_look_waits_and_reads_every_frame_this_run_touched(monkeypatch):
+    """★ 用户要求（2026-09-22）：「到最后一步执行完之后**等待页面完毕**了就截图分析下」。
+
+    ① **等**：`FINAL_SETTLE_SECONDS` 那一段（这里钉成 0，别让用例真等）；
+    ② **搜索更多文本**：主帧 **+ 这一趟动手用过的每一帧**各看一眼 —— 真站的表单常挂在
+       **跨源 iframe** 里（`job-9b48f2b513ec` 的模型原话：「对表单的一切操作必须带 frame_id」），
+       成功文案写在子帧里时，只读主帧永远搜不到。
+    """
+    slept = []
+    monkeypatch.setattr(browser_agent.time, "sleep", lambda s: slept.append(s))
+    seen = []
+    journey = browser_agent.Journey(steps=[
+        {"state": "s", "action": "click", "step_no": 1, "target": {"frame_id": "F1"},
+         "result": {"ok": True}}])
+
+    def dispatch(name, args):
+        #: ⚠️ **桩也要记账**（真那个 `dispatch` 就是记账的那一手）——不记的话账本长度不变，
+        #: 而这一眼对账本的态度是「一步都没记上 ⇒ **不假装**」（那是**对**的行为：读账的人
+        #: 不该看见一步来路不明的东西）。桩不记，量到的就只是桩的毛病。
+        seen.append((name, dict(args or {})))
+        frame = (args or {}).get("frame_id") or ""
+        text = ("Privacy Policy Cookie Policy © Company registration number: 6046754 " * 6)
+        if frame == "F1":
+            text += " Thank you for your request — we will be in touch."
+        journey.steps.append({
+            "state": "s", "action": name, "step_no": len(journey.steps) + 1,
+            "target": ({"frame_id": frame} if frame else {}),
+            "result": {"ok": True, "url": "https://x.test/thanks", "title": "Thanks",
+                       "page_text_head": text}})
+        return {"url": "https://x.test/thanks", "title": "Thanks", "page_text": text}
+    browser_agent._final_success_check(journey, dispatch, None, "Thank you for your request",
+                                       specs=[], gate=None)
+    assert slept and slept[0] == browser_agent.FINAL_SETTLE_SECONDS, slept
+    assert ("observe", {}) in [(n, a) for n, a in seen], seen
+    assert ("observe", {"frame_id": "F1"}) in [(n, a) for n, a in seen], seen
+    looks = [s for s in journey.steps if s.get("action") == "observe"]
+    assert looks and all(s.get("origin") == "final_check" for s in looks), looks
+    #: 子帧里那串字 → 判据**在正文里**就见到了（不用再看图）
+    assert browser_agent._success_hit(journey.steps, "Thank you for your request") is not None
+    assert journey.vision_hit is False, "正文里见着了就不该再麻烦模型看图"
+
+
+def test_the_final_look_asks_the_model_to_read_the_picture(monkeypatch):
+    """③ 正文里都没有 ⇒ **截图 + 让模型照着图找**；它照抄到了就**算见到**。
+
+    ⚠️ 判据没有放宽：还是「那串字出现在读到的文字里」，只是这份文字来自**图**。
+    所以账上必须留着**它的原话**（`vision_say`），而且人话里要写明**是在图上**。
+    """
+    monkeypatch.setattr(browser_agent.time, "sleep", lambda s: None)
+
+    journey = browser_agent.Journey(steps=[])
+
+    def dispatch(name, args):
+        journey.steps.append({
+            "state": "s", "action": name, "step_no": len(journey.steps) + 1, "target": {},
+            "result": {"ok": True, "url": "https://x.test/thanks", "title": "Thanks",
+                       "page_text_head": "Privacy Policy Cookie Policy © " * 8}})
+        return {"url": "https://x.test/thanks", "title": "Thanks",
+                "page_text": "Privacy Policy Cookie Policy © " * 8}
+
+    shot_spec = {"type": "function", "function": {"name": "screenshot", "parameters": {}}}
+    asked = {}
+
+    def fake_loop(system, user, specs, disp, **kw):
+        asked["user"] = user
+        asked["specs"] = [s["function"]["name"] for s in specs]
+        return [{"round": 1, "content": "有的，图上写着：Thank you for your request",
+                 "tool_calls": []}]
+
+    monkeypatch.setattr(browser_agent.llm, "run_tool_loop", fake_loop)
+    browser_agent._final_success_check(journey, dispatch, None, "Thank you for your request",
+                                       specs=[shot_spec, {"type": "function",
+                                                          "function": {"name": "click"}}],
+                                       gate=object())
+    assert asked["specs"] == ["screenshot"], asked      # 只让它截图，不许顺手点东西
+    assert "Thank you for your request" in asked["user"], asked
+    assert journey.vision_hit is True, journey.vision_say
+    assert "Thank you" in journey.vision_say, journey.vision_say
+    #: 人话必须写明**是在图上**（机器的两种读法不许混成一句）
+    assert any("在图上见到了" in n and "看图" in n for n in journey.notes), journey.notes
+    #: 判据那一侧也认它（否则「它说成了、图上说没成」又是一对打架的话）
+    assert graph._explore_reached_success(journey, "Thank you for your request") is True
+    #: ⚠️ base64 **不许进账本**（那条硬规矩）
+    assert "base64" not in json.dumps(journey.vision_say)
+
+
+def test_the_final_look_does_not_fake_a_success_when_the_picture_says_no(monkeypatch):
+    """图上也没有 ⇒ **照实算没见到**（不许把「它看过图了」写成「成功了」）。"""
+    monkeypatch.setattr(browser_agent.time, "sleep", lambda s: None)
+    monkeypatch.setattr(browser_agent.llm, "run_tool_loop",
+                        lambda *a, **kw: [{"round": 1, "content": "没有，图上没有这串字。",
+                                           "tool_calls": []}])
+    journey = browser_agent.Journey(steps=[])
+
+    def dispatch(name, args):
+        journey.steps.append({
+            "state": "s", "action": name, "step_no": len(journey.steps) + 1, "target": {},
+            "result": {"ok": True, "page_text_head": "Privacy Policy Cookie Policy © " * 8}})
+        return {"page_text": "Privacy Policy Cookie Policy © " * 8}
+
+    browser_agent._final_success_check(
+        journey, dispatch,
+        None, "Thank you for your request",
+        specs=[{"type": "function", "function": {"name": "screenshot", "parameters": {}}}],
+        gate=object())
+    assert journey.vision_hit is False
+    assert any("没在图上找到" in n for n in journey.notes), journey.notes
+    assert graph._explore_reached_success(journey, "Thank you for your request") is False
+
+
+def test_the_recorded_page_text_is_long_enough_to_hold_the_criterion():
+    """★ 2026-09-22 真事（`job-9b48f2b513ec`）：账本里那格 `page_text_head` 只留了 **200 字**，
+    而那 200 字恰好是**页脚**（`Privacy Policy Cookie Policy … Company registration number`）
+    ⇒ 运营给的判据（对的）一个字都进不去 ⇒ 判「没见到成功文案」⇒ **自动重探** ⇒ 又真提交一次。
+
+    ⚠️ 它是**判据唯一的取材处**（`graph._explore_reached_success` / `_success_line` 都只读这一格），
+    所以「留多少字」不是显示上的讲究 —— 是判得准不准。
+    """
+    footer = ("Privacy Policy Cookie Policy *Best Price Guarantee © Registered in England "
+              "& Wales. Company registration number: 6046754 Registered address: C/O Sobell "
+              "Rhodes Llp The Kinetic Centre, Theobald Street, Borehamwood, WD6 4PJ. "
+              "CookieYes | Terms of Use | Sitemap | Contact Us | ") * 6
+    raw = {"page_text": footer + "Thank you for your request — we will be in touch."}
+    out = browser_agent._summarize("observe", {}, raw, 12, None)
+    head = out["page_text_head"]
+    assert "Thank you for your request" in head, (
+        "判据落在页脚后面就找不到了 —— 这一格只有 %d 字（`PAGE_HEAD_CHARS=%d`）"
+        % (len(head), browser_agent.PAGE_HEAD_CHARS))
+    assert len(footer) > 200, "这条用例的页脚得真的超过 200 字（不然它量不到那个毛病）"
 
 
 def test_a_diagnostic_row_does_not_drag_the_rest_of_the_tool_return_in(tmp_path):

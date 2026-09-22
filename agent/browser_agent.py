@@ -278,8 +278,16 @@ WHEN_TEXT_UNVERIFIED_WHY = "照这一次观测取出来的那段正文，在这�
 #: 见 `_id_like`）。`cr640` / `gt1791-1` / `a3f9c2` / `12345` 都算，`checkout` 不算。
 _ID_LIKE_RE = re.compile(r"[0-9a-z]+(?:[-_.][0-9a-z]+)*")
 
-#: `result["page_text_head"]` 留多少字（给人核对「模型那一眼看到了什么」）。
-PAGE_HEAD_CHARS = 200
+#: `result["page_text_head"]` 留多少字。
+#:
+#: ⚠️ **它不只给人看 —— 它是「有没有见到成功文案」这个判据唯一的取材处**
+#: （`graph._explore_reached_success` 与 `_success_line` 都只读这一格）。
+#: 2026-09-22 真事（`job-9b48f2b513ec`）：运营给的判据是对的，可这一格当时只留 **200 字**，
+#: 而那 200 字恰好是**页脚**（`Privacy Policy Cookie Policy … Company registration number`）
+#: ⇒ 判据一个字都进不去 ⇒ 两趟都判「没见到成功文案」⇒ **自动重探** ⇒
+#: **又真提交一次表单**（运营在面板上看见的就是「明明成功了一直在重复」，最后他手动关窗止住）。
+#: 8000 字：够装下一整页正文（含挂在跨源 iframe 里的那句成功文案），落盘还是 KB 级。
+PAGE_HEAD_CHARS = 8000
 
 #: `receipt`（契约 §二第 3 格）**逐字转抄的上限**：超过它就不抄了，只记下它有多大。
 #:
@@ -295,8 +303,11 @@ PAGE_HEAD_CHARS = 200
 RECEIPT_MAX_CHARS = 800
 
 #: **单格**里一个字符串超过多少字符就不抄了（换成「有多大、没抄」）。
-#: 200 与 `PAGE_HEAD_CHARS` 同一个量级：一个值超过两百字，它就不是「回执」而是「内容」了
-#: —— 而内容有它自己的去处（`_summarize` 的摘要、`_raw_sig` 的指纹）。
+#: 一个值超过两百字，它就不是「回执」而是「内容」了 —— 而内容有它自己的去处
+#: （`_summarize` 的摘要、`_raw_sig` 的指纹）。
+#: ⚠️ **别拿 `PAGE_HEAD_CHARS` 当它的参照**（2026-09-22 起两者不再同一个量级）：
+#: 这一格管的是**回执**里那些值（长了就是内容），而 `page_text_head` 是**正文摘要**，
+#: 它**必须**留得够长 —— 成功判据就是在它里面找的（见那一格自己的注释）。
 RECEIPT_STR_CHARS = 200
 
 #: 状态名/字段名的兜底（页面 slug 取不出来时）
@@ -469,6 +480,14 @@ class Journey:
     #: ⚠️ 判「停没停滞」只看 `stop_reason == "plan_stalled"`（那个值只在实际抛停时才写上）；
     #: 这个数是**计数**，不是布尔量 —— 不许当布尔量用。
     stall_rounds: int = 0
+    #: ★ 收尾那一眼**照着图**看的结果（2026-09-22，用户要求：「到最后一步执行完之后等待页面
+    #: 完毕了就截图分析下」）。
+    #: `vision_say` = 模型照着截图的原话（⚠️ **base64 不许进账本** —— 只留它说的话）；
+    #: `vision_hit` = 那句话里**照抄到了**成功文案。判据还是**子串**那一把尺子（没放宽），
+    #: 只是这一次读的是**图** ⇒ 谁引用它都必须写明**是在图上见到的**（`_journey_say` /
+    #: `_attempts_note` 的任务）。
+    vision_say: str = ""
+    vision_hit: bool = False
 
     #: 这一趟开头**照账本重放**了的那一段（`explore(resume_from=…)`）——
     #: 记的是**当时真发生的那件事**：`{done, landed, why}`（`replay` 的原样产物），
@@ -999,7 +1018,8 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         #: ★ 2026-09-22 真事（用户原话：「**明明成功了但是却不知道，一直没产物空转**」）：
         #: 判据**只认 `observe` 读到的正文** ⇒ 模型提交之后没再看 ⇒ 系统**永远不知道成了**
         #: ⇒ 自动重探 ×3、空转、最后没有产物。⇒ **收摊前系统自己看一眼**（浏览器就在手边）。
-        _final_success_check(journey, dispatch, limits, success_text)
+        _final_success_check(journey, dispatch, limits, success_text,
+                             specs=specs, gate=gate)
     except _Stop as stop:
         journey.stop_reason = stop.reason
         # 被停下来这一路**拿不到轮数**：`rounds` 是 `run_tool_loop` 的局部变量，
@@ -1139,28 +1159,125 @@ def _with_resume(opening: str, rows: list, result: dict) -> str:
 STOP_REACHED_SUCCESS = "reached_success"
 
 
-def _final_success_check(journey, dispatch, limits, success_text: str) -> None:
+#: 收尾那一眼之前**等页面静下来**多久（秒）—— 用户原话：「到最后一步执行完之后**等待页面
+#: 完毕**了就截图分析下」。真站上提交之后那一页常常还在换（跳转 / 异步回填），
+#: 立刻读会读到一半的页面（`job-46ed69c04b5c` 那类「差一步没认出来」里就有这个影子）。
+FINAL_SETTLE_SECONDS = 3.0
+
+#: 收尾那一眼最多问模型几轮（1 = 叫它截图，2 = 它照着图回答）。⚠️ 这是**旁路**，
+#: 绝不许多问（它跑在收摊那一刻，人正等着）。
+FINAL_LOOK_ROUNDS = 2
+
+#: 收尾「照着图找那串字」那句的 system（**只问这一件事**：别让它顺手改页面）。
+_FINAL_LOOK_SYSTEM = (
+    "你只做一件事：看一眼当前页面的**截图**，回答「下面这串字有没有出现」。"
+    "先调一次 `screenshot`，然后**照抄**你在图上看到的那串字；确实没有就说「没有」。"
+    "**不要**点任何东西、不要填任何东西 —— 页面已经走完了，你只看。"
+)
+
+
+def _frames_used(journey) -> list:
+    """这一趟**动手用过**的那几个 `frame_id`（去重、保序、最多 4 个）。
+
+    ⚠️ 为什么要它们：真站的表单常挂在**跨源 iframe** 里（`job-9b48f2b513ec` 的模型原话：
+    「真正的表单在另一个域的应用里……所以对表单的一切操作必须带 frame_id」）——
+    只读主帧的正文，成功文案写在子帧里就永远搜不到。
+    """
+    out: list = []
+    for step in getattr(journey, "steps", None) or []:
+        got = str(((step or {}).get("target") or {}).get("frame_id") or "").strip()
+        if got and got not in out:
+            out.append(got)
+    return out[:4]
+
+
+def _final_success_check(journey, dispatch, limits, success_text: str, *,
+                         specs=(), gate=None) -> None:
     """收摊前**系统自己**看一眼那一页 —— 判据用**这一眼**（真读数），而不是「模型看没看」。
 
     ⚠️ 只在**还没见到成功文案**时才看（真见到了就不多花这一步，别的路一个字节不变）。
-    ⚠️ 这一眼是**真的**：走的是与模型同一条 `dispatch("observe", {})` ⇒ 读到的正文原样进账本，
+    ⚠️ 这一眼是**真的**：走的是与模型同一条 `dispatch("observe", …)` ⇒ 读到的正文原样进账本，
     判据一个字不放宽 —— 它**不是**「补一个假的成功」，只是**不让「没人看」被读成「没成功」**。
     ⚠️ 看一眼不成就**照实不算**（不编），也不许把这一趟带塌。
+
+    ★ 2026-09-22 按用户要求做实（原话：「成功条件应该要允许他搜索更多文本**或者他能理解图片**吗？
+    到最后一步执行完之后**等待页面完毕**了就**截图分析**下」）：三件事按顺序来 ——
+
+    ① **等页面静下来**（`FINAL_SETTLE_SECONDS`）：提交之后那一页还在换，立刻读会读到一半；
+    ② **搜索更多文本**：主帧 + **这一趟动手用过的每一帧**各看一眼
+       （`_frames_used`：真站的表单常挂在跨源 iframe 里，只读主帧永远搜不到子帧里的那串字）；
+    ③ 两者都没有 ⇒ **截图 + 让模型照着图找**（`_vision_look`）——
+       判据仍是子串那一把，只是这次读的是**图**；见了就记 `journey.vision_hit`，
+       并且**必须写明是在图上**（`vision_say` 原样留着，人自己看）。
     """
     if not success_text or _success_hit(journey.steps, success_text) is not None:
         return
+    #: ① 等页面静下来（用户原话里的「等待页面完毕」）
+    time.sleep(FINAL_SETTLE_SECONDS)
     before = len(journey.steps)
-    try:
-        dispatch("observe", {})
-    except BaseException:                      # noqa: BLE001 —— 旁路不许带塌这一趟
-        return
+    #: ② 主帧 + 用过的每一帧（正文全记进来 ⇒ 判据能搜到更多文本）
+    for frame_id in ["", *_frames_used(journey)]:
+        try:
+            dispatch("observe", {"frame_id": frame_id} if frame_id else {})
+        except BaseException:                  # noqa: BLE001 —— 旁路不许带塌这一趟
+            continue
     if len(journey.steps) == before:
-        return                                 # 它连一步都没记上（被闸拦住等）⇒ 不假装
-    step = journey.steps[-1]
-    #: 它是**系统**看的，不是模型看的（`origin` 要让读账的人一眼看出来）——
-    #: 顺带把这一步的来由说清楚（账本里不许有来路不明的一步）。
-    step["origin"] = "final_check"
-    step["note"] = "收摊前**系统自己**看了一眼（模型这一趟没看它）：拿这一眼的正文判成功文案"
+        return                                 # 一步都没记上（被闸拦住等）⇒ 不假装
+    for step in journey.steps[before:]:
+        #: 它们是**系统**看的，不是模型看的（`origin` 要让读账的人一眼看出来）——
+        #: 顺带把来由说清楚（账本里不许有来路不明的一步）。
+        step["origin"] = "final_check"
+        step["note"] = ("收摊前**系统自己**看了一眼（模型这一趟没看它）："
+                        "拿这一眼的正文判成功文案")
+    if _success_hit(journey.steps, success_text) is not None:
+        return                                 # 正文里就见到了 ⇒ 收工，不必再麻烦模型看图
+    #: ③ 正文里没有 ⇒ 照图再找一遍
+    _vision_look(journey, dispatch, success_text, specs, gate)
+
+
+def _vision_look(journey, dispatch, success_text: str, specs, gate) -> None:
+    """③ **照着图**再找一遍那串字（用户要求：「截图分析下」）。
+
+    ⚠️ 三条纪律：
+      · **给不了就直说给不了**：没有 `screenshot` 这个工具、或者问不了模型 ⇒ 什么都不做
+        （正文里没见到就照实算没见到 —— **不许**补一个假的成功）；
+      · **base64 不进账本**（那条硬规矩）：账上只留它说的话（`vision_say`）；
+      · 它说的话是**证据**，不是判据：判据仍然是「那串字出现在读到的文字里」，
+        只是这一次那份文字来自**图**。
+    """
+    shot_specs = [s for s in (specs or []) if _spec_name(s) == "screenshot"]
+    if not shot_specs or gate is None:
+        return
+    ask = ("这一趟走完了。请**调一次 `screenshot`** 把当前页面截下来，然后照着图回答："
+           "页面上**有没有出现**下面这串字（原样照抄你看到的；确实没有就说「没有」）：\n"
+           "  「%s」" % success_text)
+    try:
+        rounds = llm.run_tool_loop(_FINAL_LOOK_SYSTEM, ask, shot_specs, dispatch,
+                                   max_rounds=FINAL_LOOK_ROUNDS, max_tokens=MAX_TOKENS,
+                                   _client=gate)
+    except BaseException as exc:               # noqa: BLE001 —— 旁路不许带塌这一趟
+        journey.note("收尾照图那一眼**没做成**（%s: %s）—— 正文里没见到成功文案，"
+                     "这一条照实算「没见到」。" % (type(exc).__name__, exc))
+        return
+    said = str((rounds[-1].get("content") or "") if rounds else "").strip()
+    journey.vision_say = said
+    want = _norm(str(success_text or ""))
+    journey.vision_hit = bool(want) and want in _norm(said)
+    if journey.vision_hit:
+        journey.note("✅ 收尾照图那一眼**在图上见到了**那句成功文案 —— 模型照着截图的原话是："
+                     "「%s」（⚠️ 这是**看图**读到的，不是正文里搜到的；判据仍是子串那一把尺子。）"
+                     % said)
+    else:
+        journey.note("收尾照图那一眼**没在图上找到**那句成功文案 —— 模型的原话是：「%s」"
+                     "（正文里也没有 ⇒ 这一趟**没见到**成功文案，照实算。）" % (said or "（它什么都没说）"))
+
+
+def _spec_name(spec) -> str:
+    """一个工具 spec 里那个**名字**（形状由 MCP/OpenAI 那一侧定）。"""
+    try:
+        return str(((spec or {}).get("function") or {}).get("name") or (spec or {}).get("name") or "")
+    except AttributeError:
+        return ""
 
 
 def _success_hit(steps: list, success_text: str) -> int | None:
@@ -2320,7 +2437,8 @@ def replayable_prefix(steps: list, success_text: str, *,
     几处**读法**（都是判断，摆在这里，不当默认）：
 
     - **R2 认不认 `screenshot`**：不认。见 `_SEEN_ACTIONS`。
-    - **R3 读哪份文字**：账上**按顺序**记下的 `observe` 的正文（`page_text_head`，头 200 字）。
+    - **R3 读哪份文字**：账上**按顺序**记下的 `observe` 的正文（`page_text_head`，
+      `PAGE_HEAD_CHARS` 那么长 —— ⚠️ 别在这儿写死一个数：它改过一次，写死就成假的了）。
       两个刻意的选择：① 用**有序**的步骤，不用 `pages[]`（那份没有位置 —— 拿它判
       「这条线是什么时候过的」只能得到「一过就整段作废」，而设计只要「过线之后的动作不许重放」）；
       ② 只看得见**头 200 字**（`_summarize` 的截断）—— 比这更长的成功文案 R3 看不见。

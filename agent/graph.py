@@ -639,7 +639,14 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
         return book
 
     journey = pass_once(1)
+    #: ★ **重探的价钱**（2026-09-22 `job-9b48f2b513ec`）：每一趟重探 = 产物把整个漏斗**真跑一遍**
+    #: = **一次真实提交**到站方。判据那一格写成「我要它出现」的说明句时，重探**永远**不会成功
+    #: （判据是照抄页面上那串字的子串判据）⇒ 白花两次提交（运营原话「不要重复执行」
+    #: 「明明成功了一直在重复」）。所以这一档**先不重探**，把原话摆出来让人改那一格。
+    wont_help = _retry_wont_help(state.get("success_text"))
     for n in range(2, EXPLORE_ATTEMPTS + 1):
+        if wont_help:
+            break
         if not _worth_retrying(attempts[-1]["reached"], journey, resume_from):
             break
         note = ("⚠️ 第 %d 趟探路**没有在页面上见到成功文案** —— 账本里很可能没有那条通向"
@@ -658,8 +665,12 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
     out["explore_spent"] = _spent_after(spent, journeys)
     if len(attempts) > 1:
         # **两次账本的差异**（问题 2/3 的答案顺手就有）：各自填了什么、哪一趟没走通
-        out["explore_attempts_note"] = _attempts_note(attempts)
+        out["explore_attempts_note"] = _attempts_note(attempts, state.get("success_text"))
         journey.note(out["explore_attempts_note"])
+    if wont_help:
+        #: ⚠️ **要说出来**（没有静默的路径）：少了这一句，「这次只探了一趟」看起来就像
+        #: 「它只探了一趟就没走通」，而真相是「那一格填错了，重探救不了」。
+        journey.note(wont_help)
     stop = str(getattr(journey, "stop_reason", "") or "")
     if stop not in FINISHED_EXPLORATION:
         # **停因排在「没见到成功文案」前面**（顺序有讲究）：这一趟**根本没走完**的时候，
@@ -697,6 +708,25 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
         out["end_reason"] = END_EXPLORE_UNFINISHED
         out["end_note"] = note
     return out
+
+
+def _retry_wont_help(success_text) -> str:
+    """**重探不可能帮上忙**时说清为什么（空串 = 照旧按 `_worth_retrying` 判）。
+
+    判据那一格写成「我要它出现」的说明句（`出现Thank you.`）时，判据那一侧的匹配
+    （照抄页面那串字的**子串**判据）**永远**找不到它 ⇒ 再探几趟也白探，而每趟都是
+    **一次真实提交**。⇒ 这一档停下来，把原话摆给人（他会把那一格改成照抄页面上的字）。
+
+    ⚠️ 它是**启发式**（与 `_criterion_advice` 同一套词），所以它只拦「重探」这一件事：
+    **判据一个字都不改、也判不了成没成** —— 页面上真写着「出现」两个字时那一格就是对的，
+    这时少的只是「本来还会再白花的那一趟」。
+    """
+    if not _criterion_advice(success_text):
+        return ""
+    return ("⚠️ **没有自动重探**：判据那一格看着像「我要它出现」的说明句（%s），"
+            "而判据是**照抄页面上会出现的那串字**（子串判据）⇒ 再探几趟也找不到它。"
+            "改法：把那一格换成页面上真会出现的那串字（照抄），再按「重新来一遍」。"
+            % _criterion_say(success_text))
 
 
 def _worth_retrying(reached, journey, resume_from) -> bool:
@@ -1413,16 +1443,20 @@ def _explore_answers(journey) -> list:
     return out
 
 
-def _attempts_note(attempts: list) -> str:
+def _attempts_note(attempts: list, success_text=None) -> str:
     """把几趟探路的差异说成人话（哪一趟走到成功、答案哪里不一样）。
 
     ⚠️ 抬头**只说规则，不说结论**（2026-09-22 真事）：原先写的是
     「这一次探路跑了 %d 趟（**走到成功文案就停**）：」，而下面是三行「**没见到**成功文案」——
     读起来就成了「它见到了所以停了」，而它恰恰是**没见到**才停的。规则一句话说清，
     每一趟的结论交给每一行（那三行已经是三态各一个说法）。
+
+    ★ 2026-09-22 补上**比的那串字**（`_criterion_say`）：连着四次「明明到了却不认」
+    （`job-f9adaede5503` / `job-0180c1aa93ee` / `job-65f5c40b2816` / `job-9b48f2b513ec`）里，
+    屏幕上那句「没见到成功文案」**从来不说比的是哪串字** ⇒ 人只能猜「判据写错了还是代码判错了」。
     """
-    lines = ["这一次探路跑了 %d 趟（判据是「页面上见到你给的成功文案」；每一趟见没见到见下面每一行）："
-             % len(attempts)]
+    lines = ["这一次探路跑了 %d 趟（判据是「页面上见到你给的成功文案」＝%s；"
+             "每一趟见没见到见下面每一行）：" % (len(attempts), _criterion_say(success_text))]
     for a in attempts:
         #: ⚠️ 「只看过几眼」要报出来（见 `pass_once` 里那一格的说明）：**没见到**有两种根因 ——
         #: 真没有，与**它根本没看**（判据只在 `observe` 读到的正文里找）。
@@ -1438,8 +1472,9 @@ def _attempts_note(attempts: list) -> str:
 def _explore_reached_success(journey, success_text) -> Optional[bool]:
     """这一趟探路**在页面上见到过成功文案吗**。三态：True / False / **None = 判不了**。
 
-    - `True`：某一步 observe 的正文里含成功文案（与产物的判据**同一口径**：压空白 + **小写**）；
-    - `False`：每一步都看过了，一次都没见着 → 账本里很可能没有那条路（见调用处的注释）；
+    - `True`：某一步 observe 的正文里含成功文案（与产物的判据**同一口径**：压空白 + **小写**），
+      **或者**收尾那一眼是照着**截图**问出来的（`journey.vision_hit`，2026-09-22）；
+    - `False`：每一步都看过了、图也看过了，一次都没见着 → 账本里很可能没有那条路；
     - `None`：没给成功判据、或这一趟一次 observe 都没有（判不了就**不猜**）。
 
     ★ 2026-09-22 **大小写**这一条是真事逼出来的：运营把「什么算成功」写成
@@ -1461,6 +1496,13 @@ def _explore_reached_success(journey, success_text) -> Optional[bool]:
         head = _norm_text((step.get("result") or {}).get("page_text_head") or "").lower()
         if head and any(w in head for w in wants):
             return True
+    #: ★ 图上那一半（2026-09-22，用户要求「截图分析下」）：收尾那一眼是**照着截图**问的
+    #: （`browser_agent._vision_look`）⇒ 它说「照抄到了」就**算见到**。
+    #: ⚠️ 判据**没有放宽**（还是子串）：变的只是那份文字**从哪来**（图）。
+    #: ⚠️ 所以**谁引用它都必须写明是在图上** —— 原话留在 `journey.vision_say` 上，
+    #: 人自己看一眼（机器不许把「图里读到的」说成「页面上搜到的」）。
+    if getattr(journey, "vision_hit", False):
+        return True
     return False if seen_any else None
 
 
