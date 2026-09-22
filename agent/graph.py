@@ -528,6 +528,28 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
         out["explore_reached_success"] = None      # 没探路 ⇒ **量不到**，不是「没走到」
         return out
 
+    if deps.explore is None:
+        #: ★ 2026-09-22（真事 `job-82547a95ba34`）：载荷里**没挑窗口** ⇒ 服务那侧
+        #: `_explore_for(brief, job_id)` 回 `None`（`service.py:2074` 把它原样塞进 `Deps`），
+        #: 而这一格原先**直接调它** ⇒ `'NoneType' object is not callable` —— 运营在面板上
+        #: 看到的就是这一句，它**一点信息都没有**（那一趟 `stage` 就停在 explore）。
+        #: **没有那双手就是没有**：如实停下、把缺的东西点出来。不过 `_enter`：这一趟连
+        #: 浏览器都没开，没有什么要人点头的；也不许往下走去写 py（没探过路的稿是猜的）。
+        return {"visits": _visited(state, "explore"),
+                "explore_reached_success": None,        # 没探路 ⇒ **量不到**，不是「没走到」
+                #: 每一条出口都要写这一格（下面那条注释的要求）—— 这里没探 ⇒ 就是没花
+                "explore_spent": _explore_spent(state),
+                "end_reason": END_NO_WINDOW,
+                "end_note": ("探不了路：这一趟**没有窗口** —— 探路要在一个真浏览器里走，"
+                             "没窗口就没得走。为什么没有（面板**没有**挑窗口那一栏，窗口是服务"
+                             "自己开的 —— `_clean_window_for_explore` → `fresh_open`）：\n"
+                             "  · 要么**开窗口那一下没成**（外面那层窗口服务抖了 —— 那时它只"
+                             "打一行日志，然后带着空窗口往下走，于是走到了这儿）；\n"
+                             "  · 要么这个部署**压根没接窗口层**（`BIT_WORKER_IP`/`BIT_ID` 没配）。\n"
+                             "**再发起一趟**就行（它会重新开一个干净窗口）；要是连着几趟都开不出来，"
+                             "那是窗口层（bit）那头的问题，不是这一趟的产物问题。\n"
+                             "这一趟什么都没做：浏览器没开、页面与文件都是原样、也没花钱问模型。")}
+
     spent = _explore_spent(state)
     budget = _budget_left(caps, spent)
     resume_from = list(state.get("resume_from") or [])

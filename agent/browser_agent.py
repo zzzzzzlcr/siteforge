@@ -657,11 +657,16 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             window_alive: Callable | None = None,
             shots_dir=None, shooter: Callable | None = None,
             steer: Callable[[], str | None] | None = None,
-            success_text: str = "") -> Journey:
+            success_text: str = "",
+            hints=None) -> Journey:
     """在真浏览器里为 `goal` 探 `url` 这条路，返回 `Journey`。
 
     参数：
       - `url` / `goal`：探哪一页、要摸清什么
+      - `hints`：**人另外交代的话**（面板上「开工前先说一句」/「步骤表」那一格，逐字）。
+        ★ 2026-09-22 加的（真事）：新站那条路的稿是「账本 → 模板」算出来的，模型在这条路上
+        **只有探路这一处有判断力**；人的话原来只进「修站出补丁」那条路 ⇒ 运营把步骤写得再细
+        也**一个字都到不了这儿**，屏幕上就成了「它完全没按我的来」。现在进 `_brief` ✓。
       - `success_text`：**人给的成功判据**（「走通之后页面上会出现哪段文字」）。
         给了它，这一趟就多一条停因（`STOP_REACHED_SUCCESS`）：**页面上出现了这句话就
         当场收摊**，不再往下点。为什么非加不可（2026-09-20 真站 `job-a4d100addd25`）：
@@ -978,7 +983,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             _stop_or_raise(paused, journey, taken, limits, success_text)
             _enter_target(session, url, journey)
 
-        opening = _brief(url, goal, limits, plan)
+        opening = _brief(url, goal, limits, plan, hints=hints)
         if journey.replay:
             opening = _with_resume(opening, resume_from, journey.replay)
         rounds = llm.run_tool_loop(
@@ -3598,12 +3603,34 @@ def _title_of(model: dict) -> str:
     return (model or {}).get("title") or (model or {}).get("url") or "没标题的页面"
 
 
-def _brief(url: str, goal: str, budget: Budget, plan: "plan_module.Plan | None" = None) -> str:
+def _hints_block(hints) -> str:
+    """人另外交代的那几句 —— **只在有人说了话时才是一段**（没人说 ⇒ 空串，一个字节都不多）。
+
+    ★ 为什么要有它（2026-09-22 真事）：运营在面板上把步骤**写得很细**，可新站那条路
+    **一个字都没收到** —— 那条路的稿是「账本 → `template.render`」**算**出来的，
+    而模型在那条路上**只有探路这一处有判断力**；人的话原来只喂给「修站出补丁」那条路
+    （`fix.patch_user` 那一路）。运营看到的就是「它完全没按我的来」。
+    接到这儿之后：探路**照人说的走** ⇒ 账本记的就是那套 ⇒ 渲染出来的稿自然也照那套。
+
+    ⚠️ 措辞是**命令式**（「这就是规格，照它来」）：这几句是**规格**，不是背景资料。
+    ⚠️ 改这一段没关系（它不在那条「逐字节钉死」的断言里 —— 只有**没人说话**那一条才钉）；
+    但**别**把它掺进没计划那一版的固定部分，那会把 B4 那颗钉子撞掉。
+    """
+    said = [str(h).strip() for h in (hints or []) if str(h or "").strip()]
+    if not said:
+        return ""
+    return ("\n**人另外交代的（这就是规格，照它来 —— 顺序、选择器、等待都按他写的）**：\n"
+            + "\n".join("- " + one.replace("\n", "\n  ") for one in said))
+
+
+def _brief(url: str, goal: str, budget: Budget, plan: "plan_module.Plan | None" = None,
+           hints=None) -> str:
     """开场白（模型的 user 消息）。**有计划 / 没计划是两版**（§2.2）。
 
     ⚠️ 没计划那一版**与今天逐字节相同** —— 它是 B4 那条判据钉的东西，
     `tests/test_browser_agent.py` 把**今天那串字节硬编码**在断言里。
     所以这一支**不许**顺手改措辞：想改就先去改那颗钉子（偷偷漂 = 自由模式的行为悄悄变了）。
+    ⚠️ `hints`（人说的话）是**追加**的：没人说 ⇒ `_hints_block` 回空串 ⇒ 上面那句一字不差。
     """
     free = (f"目标站点：{url}\n要做的事：{goal}\n"
             f"（你最多走 {budget.max_steps} 步、{budget.max_rounds} 轮。"
@@ -3611,8 +3638,8 @@ def _brief(url: str, goal: str, budget: Budget, plan: "plan_module.Plan | None" 
             f"⚠️ **能回答了就直接停下来说**（不调工具就是结束）—— 一直调工具会把预算耗光，"
             f"那一次你的结论一个字都留不下来。）")
     if plan is None or not plan.actionable():
-        return free
-    return _planned_brief(url, goal, plan, budget)
+        return free + _hints_block(hints)
+    return _planned_brief(url, goal, plan, budget) + _hints_block(hints)
 
 
 def _planned_brief(url: str, goal: str, plan, budget: Budget) -> str:

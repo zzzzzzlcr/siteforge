@@ -2957,6 +2957,47 @@ def test_a_goto_with_no_address_on_the_ledger_is_not_replayed():
     assert "没记下要去的是哪" in why, why
 
 
+def test_the_human_words_reach_the_explorer_and_nobody_elses_bytes_move(tmp_path) -> None:
+    """★ 2026-09-22 真事：运营把步骤写得**很细**，新站那条路上模型**一个字都没收到**。
+
+    为什么：那条路的稿是「账本 → `template.render`」**算**出来的，模型在那条路上**只有探路
+    这一处有判断力**；而人的话原来只喂给「修站出补丁」那条路（`fix.patch_user`）——
+    屏幕上于是成了「它完全没按我的来」。
+    这条钉三件：① 说话时那段**追加**进开场白、并且是**命令式**（规格，不是背景资料）；
+    ② **没人说话时逐字节与从前相同**（B4 那颗钉子就在同一支里，别撞它）；
+    ③ `explore` 真把 `hints` 递给了 `_brief`（只测纯函数的话，「接上没接上」照旧可能没接 ✗）。
+    """
+    class _B:
+        max_steps, max_rounds = 12, 3
+
+    plain = browser_agent._brief("https://x.test/", "走通", _B())
+    said = browser_agent._brief("https://x.test/", "走通", _B(),
+                                hints=["点 #a ｜ 等 2-5 秒 ｜ 出现 #b"])
+    assert said.startswith(plain), "追加的东西不许动原来那一段"
+    extra = said[len(plain):]
+    assert "#a" in extra and "这就是规格" in extra and "照它来" in extra, extra
+    #: 空白/空串**不算话**（「全是空格」不该冒出一段空标题）
+    assert browser_agent._brief("https://x.test/", "走通", _B(), hints=["", "   "]) == plain
+
+    #: ③ 接线：`explore` 把 hints 递下去了没有 —— 用这一支现成的桩跑法（桩 MCP + 假模型）。
+    #: ⚠️ 只量纯函数的话，「接上没接上」照旧可能没接（第一版就是这么写的，一跑就红 ✗）。
+    seen = []
+    real = browser_agent._brief
+
+    def spy_brief(url, goal, budget, plan=None, hints=None):
+        seen.append(list(hints or []))
+        return real(url, goal, budget, plan, hints=hints)
+
+    browser_agent._brief = spy_brief
+    try:
+        #: 桩跑法：桩 MCP + 假模型；模型**不说话也不调工具**（一回合就收）⇒ 只为走到拼开场白那儿。
+        _run(tmp_path, {"observe": [{"structured": PAGE_LANDING}]},
+             [{"content": "看完了，没有要做的。"}], hints=["人的话"])
+    finally:
+        browser_agent._brief = real
+    assert seen == [["人的话"]], seen
+
+
 def test_the_ledger_keeps_the_address_we_asked_for(tmp_path):
     """**R-E7 ①的哨兵**：账上 `target.url` 记的是**要去**的那串，落地地址在 `result.url`。
 

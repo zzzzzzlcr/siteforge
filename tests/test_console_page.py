@@ -1067,8 +1067,10 @@ def test_the_task_4_panels_are_added_and_the_existing_contract_is_untouched():
     #: 把那一段少切一个字，比对必须不等。
     assert _region(page, "  var MODES = {", "  };")[:-1] != _region(page, "  var MODES = {", "  };"), \
         "比对的两边是同一个表达式 —— 这条正控写错了"
-    #: ⑤ ★ `STEER_WIRED` **仍是 `False`**（插话通道未上线，等真站演练）。
-    assert service.STEER_WIRED is False, "插话通道的开关被翻开了"
+    #: ⑤ ★ `STEER_WIRED` —— **2026-09-22 翻成 `True`**（用户：「他在执行的时候我没办法插话」）。
+    #: 上一版是 `False`（「插话通道未上线，等真站演练」）；这一条与面板上那三档文案
+    #: （`MODES` 的 `steer` / `queue` / `gate`）是同一件事的两面：开关在，页面那一行才敢说「直达」。
+    assert service.STEER_WIRED is True, "插话通道的开关被关回去了？（真站演练没过就翻回去）"
 
 
 def test_the_rank_panel_does_not_offer_anything_that_changes_anything():

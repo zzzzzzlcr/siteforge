@@ -2217,3 +2217,25 @@ def test_the_explore_the_service_builds_carries_the_success_text(monkeypatch):
     dep("https://example-funnel.test/quiz", "走通", success_text=SUCCESS)
     assert seen.get("success_text") == SUCCESS, (
         "服务那层把成功判据丢了（探路拿到的关键字：%r）" % sorted(seen))
+
+
+def test_the_human_words_ride_into_the_explore_call(monkeypatch):
+    """★ 2026-09-22 真事：运营把步骤写得**很细**，新站那条路上模型**一个字都没收到**。
+
+    为什么钉这一条：新站那条路的稿是「账本 → `template.render`」**算**出来的，
+    模型在那条路上**只有探路这一处有判断力**；而载荷里的 `hints`（面板上「开工前先说一句」/
+    「步骤表」）原来只喂给「修站出补丁」那条路（`fix.patch_user`）⇒ 运营看到的正是
+    「它完全没按我的来」。这一条量的是**服务那半**：载荷里的 `hints` 要真交到探路手上
+    （探路 → `browser_agent._brief` 那半在同名的另一条用例里钉着）。
+    """
+    seen = {}
+    monkeypatch.setattr(browser_agent, "explore",
+                        lambda url, goal, budget=None, should_pause=None, **kw:
+                        seen.update(kw) or _journey(url))
+    svc = service.Service()
+    dep = svc._explore_for({"ws_url": NEW_WS_URL,
+                            "hints": ["点 #a ｜ 等 2-5 秒 ｜ 出现 #b"]})
+    assert dep is not None, "载荷里给了窗口，探路那一步就得朝它去"
+    dep("https://example-funnel.test/quiz", "走通")
+    assert seen.get("hints") == ["点 #a ｜ 等 2-5 秒 ｜ 出现 #b"], (
+        "服务那层把**人说的话**丢了（探路拿到的关键字：%r）" % sorted(seen))

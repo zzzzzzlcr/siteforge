@@ -222,23 +222,6 @@ def test_the_route_decision_and_the_input_mode_are_pure_functions_with_both_bran
     assert service.input_mode(service.FAILED, "draft", steer=True) == "queue"
 
 
-def test_the_steer_channel_is_not_wired_yet_so_no_path_returns_delivered(tmp_path):
-    """R1：**今天任何路径都不许回 `delivered`** —— 「一半的插话比不做更坏」。
-
-    这一条钉的是那个**实参**（Task 9 把它翻成 True 时要连通道一起接上；它翻了这条就该改）。
-    """
-    assert service.STEER_WIRED is False
-    g = FakeGraph(steps=[_Snap(values={"site": SITE, "visits": ["intake"]})])
-    client = _client(graph_factory=_factory(g))
-    svc = client.app.state.service
-    _running_job(svc, stage="explore")          # 正在探路里跑 —— 那正是 steer 唯一有用的一档
-
-    r = client.post("/job/job-running/say", json={"text": "不是那个按钮，是下面那个"})
-    assert r.status_code == 202, r.text
-    body = r.json()
-    assert body["delivered"] is False, body
-    assert body["queued"] is True, body
-
 
 def test_say_while_it_explores_goes_straight_in_instead_of_queuing(tmp_path, monkeypatch):
     """探路里跑着的时候说一句 → 回 `delivered`（计划 Task 8 Step 1 里「之后回 delivered」那半）。
@@ -641,25 +624,32 @@ def test_again_does_not_carry_a_word_that_was_already_sent(tmp_path):
     assert svc._jobs[r.json()["job_id"]].brief["hints"] == [text]
 
 
-def test_saying_something_while_it_runs_queues_it_and_the_input_stays_queue_mode(tmp_path):
-    """`running` 且 `stage=="explore"` 时 `/say` → **今天回 `queued`**（R1：Task 9 之前）。
+def test_saying_something_while_it_explores_goes_in_directly(tmp_path):
+    """★ **2026-09-22 翻了开关之后**：`running` 且 `stage=="explore"` 时 `/say` → 回 **`delivered`**。
 
-    A4 的另一半也在这儿：`input.mode` 今天只能是 `gate` / `queue` 两档 ——
-    探路里跑**还没有**「直达」这条通道，所以页面那一行说的是「排队」。
+    这一条**就是**原来那条的另一时态（原文：「`/say` → **今天回 `queued`**（R1：Task 9 之前）」；
+    隔壁 `test_say_while_it_explores_goes_straight_in_instead_of_queuing` 的 docstring 早就写明
+    「Task 9 **之后**回 `delivered`」）。**逐字段翻过来**，判据一个字没放宽：
+    A4 那一半（`input.mode`）从「排队」翻成「直达」—— 页面那一行跟 `mode` 走 ⇒ **两处一起开**。
+    ⚠️ `delivered` 说的是**它会走哪条路**（此刻只是排进队里等下一轮），**不是「它已经看到了」** ——
+    那一句仍在 `input.queued` 里、它自己的 `delivered` 还是 False（真正兑现是 `steer_landed`）。
     """
+    assert service.STEER_WIRED is True, "这一格现在是开的（真站验过才留：见 test_steer.py 那两条）"
     g = FakeGraph(steps=[_Snap(values={"site": SITE, "visits": ["intake"]})])
     client = _client(graph_factory=_factory(g))
     svc = client.app.state.service
-    _running_job(svc, stage="explore")
+    _running_job(svc, stage="explore")          # 正在探路里跑 —— 那正是 steer 唯一有用的一档
 
     r = client.post("/job/job-running/say", json={"text": "先点 cookie 那个同意"})
     assert r.status_code == 202, r.text
-    assert r.json()["queued"] is True, r.json()
+    assert r.json()["delivered"] is True, r.json()
+    assert r.json()["queued"] is False, r.json()
+    #: 页面那句说的是**直达**（它的下一轮就会看到）—— 与 `delivered` 同一个事实，两个说法不许分家
+    assert "直达" in r.json()["say"] and "下一轮" in r.json()["say"], r.json()["say"]
 
     live = _live(client, "job-running")
-    assert live["input"]["mode"] == "queue", live["input"]
+    assert live["input"]["mode"] == "steer", live["input"]
     assert [x["text"] for x in live["input"]["queued"]] == ["先点 cookie 那个同意"]
-    assert "不会自动发" in r.json()["say"], r.json()["say"]
 
 
 def test_the_input_mode_is_gate_exactly_when_it_is_waiting(tmp_path):

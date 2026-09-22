@@ -461,13 +461,33 @@ def test_the_pure_route_functions_know_the_one_case_we_already_know():
     assert service.say_route(service.RUNNING, "selftest", steer=True, held=True) == "queued"
 
 
+def test_the_channel_is_a_wire_when_the_switch_is_on(tmp_path, monkeypatch):
+    """★ **2026-09-22 翻了**：`STEER_WIRED = True`（用户：「他在执行的时候我没办法插话」）。
+
+    判据与下面那条**同一个**（喂的那根线本身 ✓），只是时态从「关着」翻成「开着」：
+    `_steer_cb` 得回一个**能调的**东西 —— 探路于是每一次模型调用之前都会问它一句。
+    ⚠️ 语料一个字没删：**关着**那一支仍由 `wired=False` 那条钉着（两个分支都在 ✓）。
+    """
+    assert service.STEER_WIRED is True, "这一格现在是开的（真站验过才留）"
+    _client, svc = _wired_client(tmp_path, monkeypatch, wired=True)
+    job = _registered_job(svc)
+    _queued(job, SAID)
+
+    cb = svc._steer_cb(job.job_id)
+    assert cb is not None, "开关打开了却没那根线 —— 那正是「说了没送到」那种坏事"
+    assert cb() == SAID, "喂下去的应该是队里那句原话（%r）" % (cb(),)
+    #: ⚠️ 只是「问得到」不算送出去：**这一句此刻还没兑现**（`delivered` 要等那一轮真发出去）
+    assert job.inbox[0]["delivered"] is False, job.inbox
+
+
 def test_the_channel_stays_shut_while_the_switch_is_off(tmp_path, monkeypatch):
-    """**R1 的正身**：`STEER_WIRED` 是 `False` ⇒ 这条线**根本不存在**（探路走今天那条路）。
+    """**R1 的另一半**：开关**关着**时这条线根本不存在（探路走今天那条路）。
 
     判据是**喂的那根线本身**（`explore` 收到的是 `None`），不是「有没有翻那一格」——
     后者换个坏实现（喂了但忘了翻）也会绿。
+    ⚠️ 生产那一格现在是**开着**的；这一条用 `wired=False` **显式**把开关关回去量那一支
+    （两处都留着，翻开关不会把这一支的语料带走）。
     """
-    assert service.STEER_WIRED is False, "这一版写死 False（真站演练推迟到 Task 10 那趟窗口）"
     _client, svc = _wired_client(tmp_path, monkeypatch, wired=False)
     job = _registered_job(svc)
     _queued(job, SAID)

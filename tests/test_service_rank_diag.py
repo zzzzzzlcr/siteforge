@@ -375,4 +375,7 @@ def test_the_new_routes_are_the_ones_the_page_is_told_about():
     page = _client(fmr_client=fmr.FmrClient(token="")).get("/console").text
     assert '"' + service.RANK_PATH + '"' in page, "页面里没有榜单那一跳的地址"
     assert '"' + service.DIAG_PATH.split("%s")[0] + '"' in page, "页面里没有原因那一跳的地址"
-    assert service.STEER_WIRED is False, "这一版写死 False（插话通道还没上线）"
+    #: ⚠️ 这一格（插话通道那个开关）**2026-09-22 翻了**（用户：「他在执行的时候我没办法插话」）。
+    #: 它现在由 `tests/test_steer.py` 那两条钉着（**开、关两个分支都留着**）；
+    #: 留在这儿的那一句是从前「别忘了开」的记号，值跟着翻，免得它变成一句假话。
+    assert service.STEER_WIRED is True, "插话通道的开关被关回去了？（真站演练没过就翻回去）"

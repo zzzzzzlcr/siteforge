@@ -1660,3 +1660,26 @@ def test_the_graph_hands_explore_the_success_text_the_human_gave(tmp_path):
     assert rec.explore, "探路一次都没被调"
     assert rec.explore[0]["kw"].get("success_text") == SUCCESS, (
         "图上没把成功判据交给探路（拿到的关键字：%r）" % sorted(rec.explore[0]["kw"]))
+
+
+def test_a_run_without_a_window_ends_honestly_instead_of_crashing(tmp_path):
+    """★ 2026-09-22 真事（`job-82547a95ba34`）：载荷里没挑窗口 ⇒ 服务那侧塞进 `Deps` 的
+    `explore` 就是 `None`（`service.py:2074`）—— 探路那一格原先**直接调它**，运营在面板上
+    看到的是 `'NoneType' object is not callable`，**一点信息都没有**（既没说缺什么、
+    也没说下一步点哪儿），而这一趟其实**免费、立刻能重来**：挑一个窗口就行。
+
+    判据五条：停因是 `no_window`、`explore_reached_success` 是 `None`（**量不到**，
+    不是「没走到」）、人话里点到「窗口」、**一次探路都没调**（没有手就别伸手）、
+    以及**没有拦人点「继续」**（连浏览器都没开，没有任何要人点头的东西 —— 这也是
+    「免费重来」那句话的依据）。⚠️ 不许抛异常：那正是这条用例存在的理由。
+    """
+    deps, rec = _deps()
+    deps.explore = None          # ← 服务那侧 `_explore_for` 没窗口时回的就是这个（`Deps` 上那格）
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path, ws_url=""))
+
+    assert out["end_reason"] == "no_window", out
+    assert out["explore_reached_success"] is None, out
+    assert "窗口" in out["end_note"], out
+    assert rec.explore == [], rec.explore
+    assert payloads == [], "这一趟连浏览器都没开，不该再拦人点一次「继续」"
