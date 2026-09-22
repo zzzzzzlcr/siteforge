@@ -1725,22 +1725,53 @@ def test_the_success_words_are_matched_without_case():
     assert graph._explore_reached_success(_book(head), "") is None
 
 
-def test_a_descriptive_criterion_does_not_buy_another_real_submission():
-    """★ 2026-09-22 真事（`job-9b48f2b513ec`）：判据那格写成「出现 Thank you.」这种**说明句**时，
-    判据永远匹配不上（它是照抄页面那串字的**子串**判据）⇒ 每趟都判「没见到」⇒ 自动重探 ⇒
-    **每一趟都是一次真提交**。运营在面板上看到的就是「明明成功了一直在重复」（他手动关窗止住）。
+def test_a_criterion_that_strips_to_nothing_does_not_buy_another_real_submission():
+    """钉的是**钱**：只剩真正没救的那一档才拦重探。
 
-    这一格钉的是**钱**：判据像说明句 ⇒ **不重探**（把原话摆出来让人改那一格）；
-    判据像正常的一串字 ⇒ 照旧（重探那条路一个字节没动）。
-    ⚠️ 它是启发式 ⇒ 它**只拦重探**：判据本身一个字不改，也判不了成没成。
+    ⚠️ **这一条 2026-09-22 改过口径，逐行为证**：原先它钉的是「判据像说明句 ⇒ 不重探」——
+    理由是`出现Thank you.` 这种**永远匹配不上**。同一批事后（用户贴出的那趟：模型在图上照抄到
+    `Tailor Your Cover`，系统却说「没在页面上见到」——「言行不一致」）改的是**匹配那一侧**：
+    说明词的壳**被剥掉了**（`browser_agent.strip_criterion_head`）⇒ `出现 Tailor Your Cover`
+    现在按 `Tailor Your Cover` 去找，**可匹配了** ⇒ 重探是有意义的 ⇒ **不再拦**。
+    留下的只有真正没救的：**剥完什么都不剩**（那一格只写了「出现」）。
     """
-    said = graph._retry_wont_help("出现Thank you.")
-    assert "没有自动重探" in said and "出现Thank you." in said, said
-    assert graph._retry_wont_help("显示 Thank you") != ""
-    #: 负例：正常的一串字（页面上真会出现的那串）⇒ 一个字都不说、照旧走 `_worth_retrying`
-    assert graph._retry_wont_help("Thank you for your request") == ""
+    told = graph._retry_wont_help("出现")
+    assert "没有自动重探" in told and "什么都不剩" in told, told
+    assert graph._retry_wont_help("显示：") != ""
+    #: 负例：说明句 —— **壳会被剥掉** ⇒ 有可以拿去比的字 ⇒ 照旧走 `_worth_retrying`
+    assert graph._retry_wont_help("出现Thank you.") == ""
+    assert graph._retry_wont_help("出现 Tailor Your Cover") == ""
     assert graph._retry_wont_help("Thank you") == ""
     assert graph._retry_wont_help("") == ""
+
+
+def test_the_descriptive_head_is_stripped_before_comparing():
+    """★ 用户 2026-09-22 贴出的那一对真话：模型（照图）说「有，出现了……`Tailor Your Cover`」，
+    系统同一屏说「没在页面上见到成功文案」+ 判据原话 `出现 Tailor Your Cover`。
+
+    病根就是那个壳：比的是字面串「出现 Tailor Your Cover」，而页面上真正的字是
+    `Tailor Your Cover` ⇒ 永远匹配不上。这一格钉「壳被剥掉」，而且钉的是**三处同一把尺子**。
+    ⚠️ 剥壳**更严不更松**：负例在下面（页面上真没有那串字 ⇒ 仍然是 False）。
+    """
+    def _book(head):
+        return browser_agent.Journey(steps=[
+            {"state": "s", "action": "observe", "target": {},
+             "result": {"ok": True, "page_text_head": head}}])
+
+    page = "John Smith, here's a summary of your cover… Tailor Your Cover ▸ Get a Quote"
+    #: ① 活的探路那一侧（`browser_agent._success_hit`）
+    assert browser_agent._success_hit(_book(page).steps, "出现 Tailor Your Cover") == 0
+    #: ② 图上结算那一侧（`graph._explore_reached_success`）
+    assert graph._explore_reached_success(_book(page), "出现 Tailor Your Cover") is True
+    #: ③ 那句人话要说得出「比的时候按哪串」
+    said = graph._criterion_say("出现 Tailor Your Cover")
+    assert "『出现 Tailor Your Cover』" in said and "『Tailor Your Cover』" in said, said
+    assert "比的时候按" in said, said
+    #: 剥壳更严不更松：页面上没有那串字 ⇒ 还是 False（不许被写成「什么都算见到」）
+    assert graph._explore_reached_success(_book("Thank you for your request"), "出现 X") is False
+    #: 一句话里有好几串（列表）时逐串剥（认得出的壳才剥：`显示 Thanks!` → `Thanks!`）
+    assert graph._explore_reached_success(
+        _book("Thanks! Your request was received."), ["出现 Nope", "显示 Thanks!"]) is True
 
 
 def test_the_outcome_line_says_which_words_it_compared():

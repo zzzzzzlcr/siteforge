@@ -1168,6 +1168,17 @@ FINAL_SETTLE_SECONDS = 3.0
 #: 绝不许多问（它跑在收摊那一刻，人正等着）。
 FINAL_LOOK_ROUNDS = 2
 
+#: 收尾取**整页正文**时最多留多少字（`eval` 那一手）。⚠️ 按用户口径（「让**代码**判断」），
+#: 判据要能在**足够长**的正文里找 —— cdp 的 `observe` 只给前 600 字，
+#: 而真站的成功文案常在 600 字之后（2026-09-22 那趟就是这样：模型在图上看见了，
+#: 代码在 600 字里找不到 ⇒ 屏幕上「言行不一致」）。
+FINAL_TEXT_CHARS = 20000
+#: 取整页正文的那段 JS —— ⚠️ **只读**（不点、不填、不选元素）。
+#: 为什么还是得写这一段：`observe` 的正文被它自己截到 600 字（`internal/observe.go`），
+#: 而这里要的是**整页**；shadow 那条坑由**同一轮紧挨着的 `observe`** 兜着（两处一起读）。
+_FULL_TEXT_JS = ("(function(){try{return (document.body && document.body.innerText || '')"
+                 ".replace(/\\s+/g,' ').trim().slice(0, %d);}catch(e){return '';}})()")
+
 #: 收尾「照着图找那串字」那句的 system（**只问这一件事**：别让它顺手改页面）。
 _FINAL_LOOK_SYSTEM = (
     "你只做一件事：看一眼当前页面的**截图**，回答「下面这串字有没有出现」。"
@@ -1221,36 +1232,56 @@ def _final_success_check(journey, dispatch, limits, success_text: str, *,
             dispatch("observe", {"frame_id": frame_id} if frame_id else {})
         except BaseException:                  # noqa: BLE001 —— 旁路不许带塌这一趟
             continue
+    #: ②b **整页正文**（`eval`，只读）—— ⚠️ **判据要读的正文就在这儿**：
+    #: `observe` 那一手自己把正文截到 600 字（`tools/cdp/internal/observe.go` 的
+    #: `pageText.slice(0, 600)`），而真站的成功文案常在 600 字之后
+    #: ⇒ 2026-09-22 那趟屏幕上「言行不一致」就是这么来的（模型在图上看见了、代码在 600 字里找不着）。
+    #: 用户口径：**这一步让代码判断**（图只是给人看的证据）。
+    eval_raw = None
+    try:
+        eval_raw = dispatch("eval", {"code": _FULL_TEXT_JS % FINAL_TEXT_CHARS})
+    except BaseException:                      # noqa: BLE001 —— 旁路不许带塌这一趟
+        eval_raw = None
+    if len(journey.steps) > before and eval_raw is not None:
+        got = _norm(eval_raw if isinstance(eval_raw, str)
+                    else ((eval_raw or {}).get("result") or (eval_raw or {}).get("value") or ""))
+        if got:
+            journey.steps[-1]["result"]["page_text_full"] = got[:FINAL_TEXT_CHARS]
+            journey.steps[-1]["note"] = ("收摊前**系统自己**取的**整页正文**（只读；"
+                                         "`observe` 那份只有前 600 字）：判据就在这份里找")
     if len(journey.steps) == before:
         return                                 # 一步都没记上（被闸拦住等）⇒ 不假装
     for step in journey.steps[before:]:
         #: 它们是**系统**看的，不是模型看的（`origin` 要让读账的人一眼看出来）——
         #: 顺带把来由说清楚（账本里不许有来路不明的一步）。
         step["origin"] = "final_check"
-        step["note"] = ("收摊前**系统自己**看了一眼（模型这一趟没看它）："
-                        "拿这一眼的正文判成功文案")
+        step.setdefault("note", ("收摊前**系统自己**看了一眼（模型这一趟没看它）："
+                                 "拿这一眼的正文判成功文案"))
     if _success_hit(journey.steps, success_text) is not None:
-        return                                 # 正文里就见到了 ⇒ 收工，不必再麻烦模型看图
-    #: ③ 正文里没有 ⇒ 照图再找一遍
+        return                                 # 代码在正文里见着了 ⇒ 收工
+    #: ③ 正文里还是没有 ⇒ 照一张图存成**证据**（⚠️ **判据不由它定** —— 用户口径：代码判断）
     _vision_look(journey, dispatch, success_text, specs, gate)
 
 
 def _vision_look(journey, dispatch, success_text: str, specs, gate) -> None:
     """③ **照着图**再找一遍那串字（用户要求：「截图分析下」）。
 
-    ⚠️ 三条纪律：
-      · **给不了就直说给不了**：没有 `screenshot` 这个工具、或者问不了模型 ⇒ 什么都不做
-        （正文里没见到就照实算没见到 —— **不许**补一个假的成功）；
+    ★ 2026-09-22 口径（用户后一句更明确的话）：「**不然这一步就让代码判断而不是让AI判断**
+    我记得有个可以提取文字的」⇒ 这一步**只当证据**：
+
+      · **判据不由它定** —— `graph._explore_reached_success` **不看** `vision_hit`
+        （它只认代码读到的正文）；图上见到的消息**摆到人面前**，由人按「继续」决定；
+      · 它**同时是「不许再自动重探」的判据**（`graph._retry_wont_help`）：图上都见着了，
+        再拿真站试一趟只是又交一次表单（用户原话「不要重复执行」）；
       · **base64 不进账本**（那条硬规矩）：账上只留它说的话（`vision_say`）；
-      · 它说的话是**证据**，不是判据：判据仍然是「那串字出现在读到的文字里」，
-        只是这一次那份文字来自**图**。
+      · 给不了图 / 问不了模型 ⇒ 什么都不做（照实算没见到，**不许**补一个假的成功）。
     """
     shot_specs = [s for s in (specs or []) if _spec_name(s) == "screenshot"]
     if not shot_specs or gate is None:
         return
     ask = ("这一趟走完了。请**调一次 `screenshot`** 把当前页面截下来，然后照着图回答："
            "页面上**有没有出现**下面这串字（原样照抄你看到的；确实没有就说「没有」）：\n"
-           "  「%s」" % success_text)
+           "  「%s」" % "」、「".join(wanted_texts(success_text)))
     try:
         rounds = llm.run_tool_loop(_FINAL_LOOK_SYSTEM, ask, shot_specs, dispatch,
                                    max_rounds=FINAL_LOOK_ROUNDS, max_tokens=MAX_TOKENS,
@@ -1261,12 +1292,15 @@ def _vision_look(journey, dispatch, success_text: str, specs, gate) -> None:
         return
     said = str((rounds[-1].get("content") or "") if rounds else "").strip()
     journey.vision_say = said
-    want = _norm(str(success_text or ""))
-    journey.vision_hit = bool(want) and want in _norm(said)
+    wants = [w.lower() for w in wanted_texts(success_text)]
+    journey.vision_hit = bool(wants) and any(w in _norm(said).lower() for w in wants)
     if journey.vision_hit:
-        journey.note("✅ 收尾照图那一眼**在图上见到了**那句成功文案 —— 模型照着截图的原话是："
-                     "「%s」（⚠️ 这是**看图**读到的，不是正文里搜到的；判据仍是子串那一把尺子。）"
-                     % said)
+        journey.note("👁 收尾照图那一眼**在图上见到了**那句成功文案 —— 模型照着截图的原话是："
+                     "「%s」。（⚠️ 这是**证据**，不是判据：判据只认**代码读到的那份正文**"
+                     "（`page_text_head` + `page_text_full`）。图上见着了、正文里没有 ⇒ "
+                     "这一趟照实算「没在正文里见到」，**由你定**：按「继续」就往下走，"
+                     "改「什么算成功」那一格就重新来一遍。另外它也是一条止损："
+                     "图上都见着了，就**不再自动重探**（重探 = 再交一次表单）。）" % said)
     else:
         journey.note("收尾照图那一眼**没在图上找到**那句成功文案 —— 模型的原话是：「%s」"
                      "（正文里也没有 ⇒ 这一趟**没见到**成功文案，照实算。）" % (said or "（它什么都没说）"))
@@ -1278,6 +1312,77 @@ def _spec_name(spec) -> str:
         return str(((spec or {}).get("function") or {}).get("name") or (spec or {}).get("name") or "")
     except AttributeError:
         return ""
+
+
+#: 判据那一格写成**说明句**时的开头（「我要它出现」的意思）—— 这些词是**壳**，
+#: 不是页面上会有的字。长的排前面（`出现文字` 先于 `出现`）。
+DESCRIPTIVE_CRITERION_HEADS = ("出现文字:", "出现文字：", "出现文字", "页面上出现", "页面出现",
+                               "出现", "显示", "看到", "页面上", "shows", "show ", "contains")
+
+
+def strip_criterion_head(word: str) -> str:
+    """判据里的一句 → **真要去找的那串字**（剥掉「出现 / 显示 / 页面上…」这种说明壳）。
+
+    ★ 2026-09-22 用户贴出的一趟真事（模型刚说完「有，出现了。图上那行紫色条里的字是：
+    `Tailor Your Cover`」，系统下一句就是「**没在页面上见到成功文案**」——
+    用户的原话：「为啥会这样言行不一致」）：
+    那一格写的是「**出现 Tailor Your Cover**」，而页面上真正的字是 `Tailor Your Cover`
+    ⇒ 字面比「出现 Tailor Your Cover」**永远**匹配不上 ⇒ 屏幕上一句真话、模型一句真话，
+    两句互相打架。**病根就是没有剥这个壳。**
+
+    ⚠️ 剥壳**更严不更松**：页面上真写着「出现 Tailor Your Cover」时，它也含 `Tailor Your Cover`
+    ⇒ 照样算见到（剥了只是不可能**更**容易匹配）。
+    ⚠️ 壳剥完什么都不剩（那一格只写了「出现」）⇒ 返回**空串** —— 由调用方去说人话，不编。
+    """
+    text = _norm(str(word or ""))
+    for head in sorted(DESCRIPTIVE_CRITERION_HEADS, key=len, reverse=True):
+        if text.lower().startswith(head.lower()):
+            return _norm(text[len(head):]).lstrip(" :：,，。;；-—").strip()
+    return text
+
+
+def wanted_texts(success_text) -> list:
+    """判据 → **真要去找的那几串字**（剥掉说明壳；空的不留）。一处实现，三处共用。
+
+    谁用它：`_success_hit`（这一趟读过的正文）、`_vision_look`（图里读到的原话）、
+    `graph._explore_reached_success`（图上结算）。⚠️ **三处必须是同一把尺子** ——
+    活的探路说「见着了」、图上说「没见到」，人读到的就是两句打架的话（这一格出过真事）。
+    """
+    words = [success_text] if isinstance(success_text, str) else list(success_text or [])
+    out: list = []
+    for word in words:
+        got = strip_criterion_head(word)
+        if got and got not in out:
+            out.append(got)
+    return out
+
+
+def row_text(row) -> str:
+    """一行账**读到的正文**（`observe` 的摘要 或 收尾那次**全文**读）。
+
+    ⚠️ 两处必须是同一个函数：`page_text_head` 是 `observe` 那一手的（cdp 自己**截到 600 字**，
+    `tools/cdp/internal/observe.go` 的 `pageText.slice(0, 600)`），`page_text_full` 是收尾
+    那次 `eval` 取的**整页正文**（2026-09-22：用户要求「让**代码**判断……有个可以提取文字的」
+    —— 600 字装不下很多真实页面，判据就是在这上面栽的）。
+    判据读的是**加起来**的那份文字，所以两处都算。
+    """
+    result = (row or {}).get("result") or {}
+    return _norm("%s %s" % (result.get("page_text_head") or "",
+                            result.get("page_text_full") or ""))
+
+
+def is_look(row) -> bool:
+    """这一行**算不算「一眼」**（判据只在「看过」的行里找）。
+
+    两条都算：`observe`（模型或系统看的）与**任何带着 `page_text_full` 的行**
+    （收尾那次 `eval` 读的整页正文 —— ⚠️ 它读的**也是正文**，只是那一手比 `observe`
+    取的多；把它排除在外，就等于判据看不见自己刚读回来的那两万字）。
+    ⚠️ `page_text_head` 仍然只有 `observe` 行才写（R3 的前提，`_only_looks_carry_the_text`
+    会当场抛）—— 这一条判的是「算不算一眼」，不是「谁写了哪个键」。
+    """
+    if str((row or {}).get("action") or "") == "observe":
+        return True
+    return bool((((row or {}).get("result") or {}).get("page_text_full") or "").strip())
 
 
 def _success_hit(steps: list, success_text: str) -> int | None:
@@ -1302,14 +1407,14 @@ def _success_hit(steps: list, success_text: str) -> int | None:
     `service.reopen` 一处掌控；而这一格的输入来自**每一次** `explore()` 调用
     （`success_text` 是个可选参数），直接抛会把「调用方没传」变成异常 —— 判据的松紧搞反了。
     """
-    want = _norm(str(success_text or ""))
-    if not want:
-        return None
+    wants = [w.lower() for w in wanted_texts(success_text)]
+    if not wants:
+        return None                       # 没给判据 / 剥完什么也不剩 ⇒ **判不了就不猜**
     for i, row in enumerate(steps or []):
-        if str((row or {}).get("action") or "") != "observe":
-            continue                      # R3 的前提：正文只跟着 `observe` 进来
-        head = _norm(((row or {}).get("result") or {}).get("page_text_head") or "")
-        if head and want in head:
+        if not is_look(row):
+            continue                      # 没看过页面的一行（动作类）⇒ 判据不该在它身上找
+        head = row_text(row).lower()
+        if head and any(w in head for w in wants):
             return i
     return None
 

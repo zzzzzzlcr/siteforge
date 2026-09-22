@@ -3622,10 +3622,13 @@ def test_the_final_look_waits_and_reads_every_frame_this_run_touched(monkeypatch
 
 
 def test_the_final_look_asks_the_model_to_read_the_picture(monkeypatch):
-    """③ 正文里都没有 ⇒ **截图 + 让模型照着图找**；它照抄到了就**算见到**。
+    """③ 代码在正文里找不着 ⇒ 截一张图**存成证据**（⭐ **判据不由它定**）。
 
-    ⚠️ 判据没有放宽：还是「那串字出现在读到的文字里」，只是这份文字来自**图**。
-    所以账上必须留着**它的原话**（`vision_say`），而且人话里要写明**是在图上**。
+    ★ 2026-09-22 口径（用户原话：「**不然这一步就让代码判断而不是让AI判断** 我记得有个可以
+    提取文字的」）：模型照着截图说的话是**证据**（`vision_say` 原样留着），
+    而**判据只认代码读到的那份正文** ⇒ 图上见着了、正文里没有 ⇒ 照实算「没在正文里见到」，
+    那句话摆到人面前，**由人按「继续」定**。
+    它同时是**止损**：图上都见着了 ⇒ **不再自动重探**（重探 = 再往真站交一次表单）。
     """
     monkeypatch.setattr(browser_agent.time, "sleep", lambda s: None)
 
@@ -3658,11 +3661,58 @@ def test_the_final_look_asks_the_model_to_read_the_picture(monkeypatch):
     assert journey.vision_hit is True, journey.vision_say
     assert "Thank you" in journey.vision_say, journey.vision_say
     #: 人话必须写明**是在图上**（机器的两种读法不许混成一句）
-    assert any("在图上见到了" in n and "看图" in n for n in journey.notes), journey.notes
-    #: 判据那一侧也认它（否则「它说成了、图上说没成」又是一对打架的话）
-    assert graph._explore_reached_success(journey, "Thank you for your request") is True
+    #: ⚠️ 那段话里带 `**` 标记 ⇒ 判**不带标记**的那几段（别拿渲染结果去比 markdown 原文）
+    assert any("在图上见到了" in n and "证据" in n and "不是判据" in n
+               and "由你定" in n for n in journey.notes), journey.notes
+    #: ⭐ **图不是判据**：代码读的正文里没有 ⇒ 照实 False（那句话摆给人看，由人定）
+    assert graph._explore_reached_success(journey, "Thank you for your request") is False
+    #: ⭐ 而它**拦住重探**（图上都见着了，再探只是又交一次表单）
+    told = graph._retry_wont_help("Thank you for your request", journey)
+    assert "在图上见到了" in told and "没有自动重探" in told, told
     #: ⚠️ base64 **不许进账本**（那条硬规矩）
     assert "base64" not in json.dumps(journey.vision_say)
+
+
+def test_the_final_look_reads_the_whole_page_with_code_and_never_asks_the_model(monkeypatch):
+    """⭐⭐ 2026-09-22 的要点（用户原话：「**让代码判断而不是让AI判断**」）：
+
+    判据要在**代码读到的正文**里找 —— 而 cdp 的 `observe` 只给前 600 字
+    （`tools/cdp/internal/observe.go` 的 `pageText.slice(0, 600)`），真站的成功文案常在它之后。
+    所以收尾那次要**自己取整页正文**（`eval`，只读）；**代码见到了就一个字都不问模型**。
+    """
+    monkeypatch.setattr(browser_agent.time, "sleep", lambda s: None)
+    long_tail = ("Get a Quote " * 200) + " Tailor Your Cover ▸ Get a Quote"
+    asked = []
+
+    def dispatch(name, args):
+        row = {"state": "s", "action": name, "step_no": len(journey.steps) + 1, "target": {},
+               "result": {"ok": True, "url": "https://x.test/", "title": "t"}}
+        journey.steps.append(row)
+        if name == "observe":
+            #: cdp 那一手只给前 600 字（这一份里**没有**判据 —— 真事就是这样）
+            row["result"]["page_text_head"] = ("Privacy Policy Cookie Policy © " * 20)[:600]
+            return {"page_text": "Privacy Policy Cookie Policy © " * 20}
+        #: `eval` 取整页正文（这里假装它比 600 字长得多，判据就在里头）
+        row["result"]["page_text_full"] = long_tail
+        return long_tail
+
+    journey = browser_agent.Journey(steps=[])
+    def fake_loop(*a, **kw):
+        asked.append(a)
+        return [{"round": 1, "content": "没有", "tool_calls": []}]
+
+    monkeypatch.setattr(browser_agent.llm, "run_tool_loop", fake_loop)
+    browser_agent._final_success_check(
+        journey, dispatch, None, "出现 Tailor Your Cover",
+        specs=[{"type": "function", "function": {"name": "screenshot"}}], gate=object())
+    assert [s["action"] for s in journey.steps][-1] == "eval", [s["action"] for s in journey.steps]
+    #: ⚠️ 落账时按 `_norm` 压过空白 ⇒ 比**那串字在不在**，不比逐字节相同
+    assert "Tailor Your Cover" in journey.steps[-1]["result"]["page_text_full"]
+    assert len(journey.steps[-1]["result"]["page_text_full"]) > 600
+    assert browser_agent._success_hit(journey.steps, "出现 Tailor Your Cover") is not None, \
+        "代码读到的整页正文里就有那串字（壳还剥了）—— 判据必须认它"
+    assert graph._explore_reached_success(journey, "出现 Tailor Your Cover") is True
+    assert asked == [], "代码已经见着了，还去问模型看图 = 白花一次模型调用"
 
 
 def test_the_final_look_does_not_fake_a_success_when_the_picture_says_no(monkeypatch):
@@ -3687,6 +3737,28 @@ def test_the_final_look_does_not_fake_a_success_when_the_picture_says_no(monkeyp
     assert journey.vision_hit is False
     assert any("没在图上找到" in n for n in journey.notes), journey.notes
     assert graph._explore_reached_success(journey, "Thank you for your request") is False
+
+
+def test_the_descriptive_head_is_stripped_and_never_loosens_the_rule():
+    """剥壳那一步：`出现 Tailor Your Cover` → `Tailor Your Cover`（真事见 `_success_hit` 旁边那段）。
+
+    ⚠️ 剥壳**更严不更松**：① 页面上真写着「出现 …」时照样匹配（剥了只会更不容易匹配）；
+    ② 壳剥完什么都不剩 ⇒ **空**（调用方据此说人话，判不了就不猜）。
+    """
+    assert browser_agent.strip_criterion_head("出现 Tailor Your Cover") == "Tailor Your Cover"
+    assert browser_agent.strip_criterion_head("出现文字：check your email") == "check your email"
+    assert browser_agent.strip_criterion_head("shows:  Thank you") == "Thank you"
+    assert browser_agent.strip_criterion_head("Tailor Your Cover") == "Tailor Your Cover"
+    assert browser_agent.strip_criterion_head("出现") == ""
+    assert browser_agent.wanted_texts("出现 Tailor Your Cover") == ["Tailor Your Cover"]
+    assert browser_agent.wanted_texts(["出现 A", "出现 A", "B"]) == ["A", "B"]
+    assert browser_agent.wanted_texts("") == []
+    #: ① 更严不更松：页面上真带着那个动词时，剥完的那串**照样**在它里面
+    page = "出现 Tailor Your Cover"
+    assert browser_agent._success_hit(
+        browser_agent.Journey(steps=[{"action": "observe", "target": {},
+                                      "result": {"page_text_head": page}}]).steps,
+        "出现 Tailor Your Cover") == 0
 
 
 def test_the_recorded_page_text_is_long_enough_to_hold_the_criterion():

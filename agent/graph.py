@@ -643,7 +643,7 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
     #: = **一次真实提交**到站方。判据那一格写成「我要它出现」的说明句时，重探**永远**不会成功
     #: （判据是照抄页面上那串字的子串判据）⇒ 白花两次提交（运营原话「不要重复执行」
     #: 「明明成功了一直在重复」）。所以这一档**先不重探**，把原话摆出来让人改那一格。
-    wont_help = _retry_wont_help(state.get("success_text"))
+    wont_help = _retry_wont_help(state.get("success_text"), journey)
     for n in range(2, EXPLORE_ATTEMPTS + 1):
         if wont_help:
             break
@@ -710,23 +710,33 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
     return out
 
 
-def _retry_wont_help(success_text) -> str:
+def _retry_wont_help(success_text, journey=None) -> str:
     """**重探不可能帮上忙**时说清为什么（空串 = 照旧按 `_worth_retrying` 判）。
 
-    判据那一格写成「我要它出现」的说明句（`出现Thank you.`）时，判据那一侧的匹配
-    （照抄页面那串字的**子串**判据）**永远**找不到它 ⇒ 再探几趟也白探，而每趟都是
-    **一次真实提交**。⇒ 这一档停下来，把原话摆给人（他会把那一格改成照抄页面上的字）。
-
-    ⚠️ 它是**启发式**（与 `_criterion_advice` 同一套词），所以它只拦「重探」这一件事：
-    **判据一个字都不改、也判不了成没成** —— 页面上真写着「出现」两个字时那一格就是对的，
-    这时少的只是「本来还会再白花的那一趟」。
+    ★ 2026-09-22 **收窄**（用户贴出的那趟把它逼出来的）：说明句的壳**现在会被剥掉**
+    ⇒ 那一档**可匹配了**（「出现 Tailor Your Cover」按 `Tailor Your Cover` 去找），
+    重探是有意义的 ⇒ **不再拦**。留下的只有真正没救的那一种：**剥完什么都不剩**
+    （那一格只写了「出现」）—— 没有可以拿去比的字，再探几趟也永远落空，
+    而每趟都是一次**真提交**（运营原话「不要重复执行」）。
     """
-    if not _criterion_advice(success_text):
+    if not success_text:
         return ""
-    return ("⚠️ **没有自动重探**：判据那一格看着像「我要它出现」的说明句（%s），"
-            "而判据是**照抄页面上会出现的那串字**（子串判据）⇒ 再探几趟也找不到它。"
-            "改法：把那一格换成页面上真会出现的那串字（照抄），再按「重新来一遍」。"
-            % _criterion_say(success_text))
+    words = [success_text] if isinstance(success_text, str) else list(success_text or [])
+    given = [str(w or "").strip() for w in words if str(w or "").strip()]
+    if getattr(journey, "vision_hit", False):
+        #: ★ 图上都见着了 ⇒ 别再拿真站试（用户原话「不要重复执行」）——
+        #: 这一步该由人定（那句话就摆在闸上）。
+        return ("⚠️ **没有自动重探**：收尾照图那一眼**在图上见到了**那句成功文案"
+                "（模型照着截图的原话见账本）—— 但**判据只认代码读到的正文**，"
+                "所以这一趟照实算「没在正文里见到」。**由你定**：按「继续」就往下走，"
+                "或者改「什么算成功」那一格再「重新来一遍」。"
+                "重探不再发生：重探 = 再往真站交一次表单，而它已经看着像成了。")
+    if not given or any(browser_agent.strip_criterion_head(w) for w in given):
+        return ""
+    return ("⚠️ **没有自动重探**：判据那一格（%s）剥掉「出现 / 显示」这类说明词之后"
+            "**什么都不剩** —— 没有可以拿去比的字，再探几趟也永远落空，而每一趟都是"
+            "一次**真提交**。改法：把那一格换成**照抄页面上真会出现的那串字**，"
+            "再按「重新来一遍」。" % _criterion_say(success_text))
 
 
 def _worth_retrying(reached, journey, resume_from) -> bool:
@@ -1484,44 +1494,59 @@ def _explore_reached_success(journey, success_text) -> Optional[bool]:
     同一个判据两边口径不一样，这一句注释说「同一口径」就成了假的。
     ⚠️ 用 `.lower()` **不是** `.casefold()`：要和产物那一侧**逐字一致**（口径分家比大小写更贵）。
     """
-    wants = [success_text] if isinstance(success_text, str) else list(success_text or [])
-    wants = [_norm_text(w).lower() for w in wants if str(w or "").strip()]
+    #: ★ **同一把尺子**（2026-09-22）：剥掉「出现 / 显示」这类说明壳、压空白、小写 ——
+    #: 与活着那一趟的 `browser_agent._success_hit` 用的是**同一个函数**（`wanted_texts`），
+    #: 免得出现「活的探路说见着了、图上结算说没见到」那对打架的话。
+    wants = [w.lower() for w in browser_agent.wanted_texts(success_text)]
     if not wants:
         return None
     seen_any = False
     for step in getattr(journey, "steps", None) or []:
-        if (step or {}).get("action") != "observe":
+        if not browser_agent.is_look(step):
             continue
         seen_any = True
-        head = _norm_text((step.get("result") or {}).get("page_text_head") or "").lower()
+        #: ⚠️ 读的是**这一行读到的正文**（`browser_agent.row_text`：`observe` 那份摘要
+        #: **加上**收尾那次 `eval` 取的整页正文）—— `observe` 的正文被 cdp 自己截到 600 字，
+        #: 而成功文案常在 600 字之后（2026-09-22 真事）。一处实现，与活着那一趟同一把尺子。
+        head = browser_agent.row_text(step).lower()
         if head and any(w in head for w in wants):
             return True
-    #: ★ 图上那一半（2026-09-22，用户要求「截图分析下」）：收尾那一眼是**照着截图**问的
-    #: （`browser_agent._vision_look`）⇒ 它说「照抄到了」就**算见到**。
-    #: ⚠️ 判据**没有放宽**（还是子串）：变的只是那份文字**从哪来**（图）。
-    #: ⚠️ 所以**谁引用它都必须写明是在图上** —— 原话留在 `journey.vision_say` 上，
-    #: 人自己看一眼（机器不许把「图里读到的」说成「页面上搜到的」）。
-    if getattr(journey, "vision_hit", False):
-        return True
+    #: ★ **图不是判据**（2026-09-22，用户后一句更明确的话：「不然这一步就让代码判断而不是让AI判断」）：
+    #: `journey.vision_hit` 是**证据**（`browser_agent._vision_look` 把模型照着截图的原话
+    #: 留在 `vision_say` 上，账里也会写一句），**判据只认代码读到的那份正文**。
+    #: 图上见着了而正文里没有 ⇒ 这里照实返回 `False`，那句话摆到人面前，**由人按「继续」定**。
     return False if seen_any else None
 
 
-#: 判据那格**写成了说明句**的开头（真事三次都是这一类）：这些词是「我要它出现」的意思，
-#: 而判据是**照抄页面上那串字**。
-DESCRIPTIVE_CRITERION_HEADS = ("出现", "显示", "看到", "页面上", "出现文字", "出现文字:",
-                               "shows", "show ", "contains", "页面出现")
+#: 判据那格**写成了说明句**的开头。★ 2026-09-22 起**只有一处实现**
+#: （`browser_agent.DESCRIPTIVE_CRITERION_HEADS`）—— 「剥壳」与「提醒」必须是同一张表，
+#: 不然就会出现「提醒说这格不对、判的时候又没剥」这种两种口径（真事，见那一格的注释）。
+DESCRIPTIVE_CRITERION_HEADS = browser_agent.DESCRIPTIVE_CRITERION_HEADS
 
 
 def _criterion_advice(success_text) -> str:
-    """判据看着像「说明句」时给一句提醒（**空串 = 没什么可提醒的**）。
+    """判据那格写成说明句时，**说清比的时候按哪串字**（空串 = 没什么可提醒的）。
 
-    ⚠️ 它**不是**判据、也不拦人：页面上真可能写着「出现」两个字 —— 那种时候这么填是**对的**。
+    ★ 2026-09-22 改口径（用户贴出的那趟把这件事摆到了台面上）：壳**会被剥掉**
+    （`browser_agent.strip_criterion_head`）—— 那一格写「出现 Tailor Your Cover」时，
+    真正拿去比的是 `Tailor Your Cover`。所以这句话不再是「你这格可能有问题」，
+    而是「**我按这个去找**」（说得出就说清）。
+    ⚠️ 只剩真正没救的那一种要吵：**剥完什么都不剩**（那一格只写了「出现」）。
     """
     words = [success_text] if isinstance(success_text, str) else list(success_text or [])
-    bad = [w for w in words if str(w or "").strip().lower().startswith(
-        tuple(h.lower() for h in DESCRIPTIVE_CRITERION_HEADS))]
-    if not bad:
+    given = [str(w or "").strip() for w in words if str(w or "").strip()]
+    if not given:
         return ""
+    wanted = browser_agent.wanted_texts(success_text)
+    said = []
+    if wanted and wanted != given:
+        said.append("⚠️ 那一格写成了说明句（%s）—— **比的时候按「%s」去找**"
+                    "（「出现 / 显示」这类词是**说明词**，不是页面上真会有的字）。"
+                    % ("、".join("『%s』" % w for w in given), "」、「".join(wanted)))
+    if any(not browser_agent.strip_criterion_head(w) for w in given):
+        said.append("⚠️ 这一格剥掉那个动词之后**什么都不剩** —— 没有可以拿去比的字，"
+                    "一比就永远落空。改成**照抄页面上真会出现的那串字**再跑。")
+    return "\n".join(said)
     return ("⚠️ 这一格是**照抄页面上会出现的那串字**（子串判据），不是写「我要它出现」："
             "%s 里那个**说明词也要一模一样出现在页面上**才成立 —— 真事：有人填 `出现Thank you.`，"
             "而页面上是 `Thank you.` ⇒ **三趟探路都没认出来**（只表现为「没见到成功文案」）。"
@@ -1539,7 +1564,16 @@ def _criterion_say(success_text) -> str:
         want = [str(w) for w in success_text if str(w or "").strip()]
     else:
         want = [str(success_text)] if str(success_text or "").strip() else []
-    return "、".join("『%s』" % w for w in want) if want else "（**没给**）"
+    if not want:
+        return "（**没给**）"
+    line = "、".join("『%s』" % w for w in want)
+    #: ★ 剥过壳就说清**真正拿去比的是哪串**（2026-09-22）：屏幕上那句「没见到成功文案」
+    #: 必须能让人自己看出来「它到底在比什么」—— 不然就是又一次靠猜。
+    got = browser_agent.wanted_texts(success_text)
+    if got != want:
+        line += "（**比的时候按**%s）" % (
+            "、".join("『%s』" % w for w in got) if got else "**空**（剥完什么都不剩）")
+    return line
 
 
 def _norm_text(text) -> str:
