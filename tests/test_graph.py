@@ -1845,43 +1845,30 @@ def _states_in(src: str) -> list:
     raise AssertionError("产物里没有 STATES")
 
 
-def test_the_generated_script_starts_by_navigating_to_the_entry_page(tmp_path):
-    """★ 2026-09-22（用户问「**不能通过修脚本吗**」）：能 —— 而且这一步就该在**产物里**。
+def test_the_generated_script_does_not_navigate_to_the_entry_itself(tmp_path):
+    """★★ 2026-09-23（用户实测点名）：产物里**不许**有「先站到入口」那一步。
 
-    产物第一个状态的 `when` 是 `None`（起点那页与后面每页都不同源时，生成侧按规矩把它撤了，
-    重放那条路要靠这个）⇒ **任何一页都匹配第一个状态** ⇒ 从别处起步就会拿错的页去找元素
-    （实测：自测的 `delay`/`rerun` 两遍都挂在第 1 步「页面上没找到「Get a Quote」」）。
-    ⇒ 生成侧给第一个状态**塞一步 `goto`**，先把页面放回这一趟的入口 —— 与探路里
-    `_enter_target` 是同一条道理。
+    用户原话：「我发现现在是不是我们的脚本在 auto-farm 也会重新导航一遍？那不对吧。
+    在那边应该是匹配上直接做了而不用再打开一次吧」—— 他说对了，而且**自测那条路自己
+    早就写着**（`selftest._navigate` 的 docstring）：「生产那边是 ad-task **先开好页面**
+    才调脚本的，所以这一步在自测这条路里必须自己做」。
+
+    ⇒ 起跑归**开页面的那个人**：生产是平台开好的（它按状态匹配把窗口停在目标页上），
+    自测是我们自己 `navi` 过去的。产物再自己导航一遍 = 白跑一趟，还会把页面状态与
+    账本里那一串帧重来一次（帧一重建，账本里的号全成死号）。
+
+    ⚠️ 这一条**顶掉**了 2026-09-22 那两条（「产物开头先站到入口」+ `_prepend_entry_goto`
+    的边界用例）：那两版量的是**反过来**的行为，那个函数已经删了 ——
+    要再把它加回来的话，先回答「生产那边凭什么要再导航一遍」。
     """
     deps, rec = _deps()
     app, cfg, _ = _build(deps=deps)
     _drive(app, cfg, _brief(tmp_path))
     states = _states_in(rec.lint[-1])
-    first = states[0]["steps"][0]
-    assert first.get("action") == "goto", first
-    assert first.get("url") == URL, first
-    #: 入口**人指的优先**（与给自测的 `start_url` 同一个口径 —— 两处不一致就是一对打架的话）
-    deps2, rec2 = _deps()
-    app2, cfg2, _ = _build(deps=deps2)
-    _drive(app2, cfg2, _brief(tmp_path, entry_url="https://deep.example.test/step-1"))
-    assert _states_in(rec2.lint[-1])[0]["steps"][0].get("url") == "https://deep.example.test/step-1"
-
-
-def test_the_entry_goto_is_not_added_twice_and_never_to_an_old_account():
-    """`_prepend_entry_goto` 的三条边界（**别把账本自己那一步挤掉、别补两遍、形状不对不做**）。"""
-    #: ① 账本第一步本来就是 goto ⇒ **不补**（补了就是同一个动作做两遍）
-    book = [{"name": "landing", "when": None,
-             "steps": [{"action": "goto", "url": URL, "target": {"url": URL}}]}]
-    graph._prepend_entry_goto(book, URL)
-    assert len(book[0]["steps"]) == 1, book
-    #: ② 没给网址 / 空账本 ⇒ 什么都不做（生成这一步不许把整趟带塌）
-    book2 = [{"name": "landing", "when": None, "steps": [{"action": "click"}]}]
-    graph._prepend_entry_goto(book2, "")
-    graph._prepend_entry_goto([], URL)
-    graph._prepend_entry_goto(None, URL)
-    assert len(book2[0]["steps"]) == 1, book2
-    #: ③ 正常那一路：塞在最前面，而且**排在账本原来那一步之前**
-    book3 = [{"name": "landing", "when": None, "steps": [{"action": "click"}]}]
-    graph._prepend_entry_goto(book3, URL)
-    assert [s["action"] for s in book3[0]["steps"]] == ["goto", "click"], book3
+    #: ① 第一组的第一步**不是** goto（这一步是账本自己的那一步 —— 它是 click）。
+    actions = [s.get("action") for s in states[0]["steps"]]
+    assert actions and actions[0] != "goto", states[0]
+    #: ② 整份产物里都不许有**指向入口**的那一步（账本自己带的除外 —— 这条账本里没有）。
+    entries = [s for st in states for s in st["steps"]
+               if s.get("action") == "goto" and s.get("url") == URL]
+    assert not entries, entries

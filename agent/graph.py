@@ -207,37 +207,6 @@ def _entry_url_of(state) -> str:
     return str(state.get("entry_url") or state.get("url") or "").strip()
 
 
-def _prepend_entry_goto(states, url: str) -> None:
-    """把「先站到入口」那一步塞进**第一个状态的最前面**（原地改 `states`）。
-
-    ★ 2026-09-22（用户问「不能通过修脚本吗」）：可以，而且**这一步就该在产物里** ——
-    产物第一个状态的 `when` 是 `None`（起点那页与后面每页都不同源时生成侧按规矩撤掉了它，
-    重放那条路要靠这个）⇒ **任何一页都匹配第一个状态** ⇒ 从别处起步就会拿错的页去找元素
-    （实测：自测的 `delay`/`rerun` 两遍都挂在第 1 步「页面上没找到「Get a Quote」」）。
-    补这一步之后，**不管谁从哪一页调它**（自测的第二/三遍、生产重跑、人手动跑），
-    它都先回到这一趟的入口再开始 —— 与探路里 `_enter_target` 是同一条道理。
-
-    ⚠️ 账本第一步本来就是 `goto` 时不补（那一趟的账里已经有了）：补了就是同一件事做两遍。
-    ⚠️ 形状不对（不该有）⇒ 什么都不做：生成这一步不许把整趟带塌。
-    """
-    if not url or not states:
-        return
-    try:
-        first = states[0]
-        steps = first.setdefault("steps", [])
-        if (str((first or {}).get("action") or "") == "goto"
-                or (steps and str((steps[0] or {}).get("action") or "") == "goto")):
-            return
-        steps.insert(0, {
-            "action": "goto",
-            "url": url,
-            "target": {"url": url},
-            "note": ("先站到入口：%s —— 产物第一步就把页面放到这一趟的起点上，"
-                     "不靠调用方先导航（不然从别处起步会拿错的页去找元素）" % url)})
-    except (AttributeError, IndexError, TypeError):
-        return
-
-
 def _writer_from_journey(spec: dict, feedback: dict) -> dict:
     """默认的「写 py」：**确定性的翻译**（账本 → `states` / `fills`），恒等，不改东西。
 
@@ -1047,15 +1016,15 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
         spec = {"site": state["site"], "success_text": state.get("success_text"),
                 "states": journey.states(), "fills": journey.fills()}
     spec = deps.write(spec, feedback)
-    #: ★ **产物开头先站到入口**（2026-09-22；用户问「不能通过修脚本吗」—— 能，这就是那一处）。
-    #: 为什么必须补：产物第一个状态的 `when` 是 `None`（起点那页与后面每页都不同源时，生成侧
-    #: 按规矩把它撤掉 —— 重放那条路要靠这个）⇒ **任何一页都匹配第一个状态** ⇒ 从别处起步
-    #: 就会拿错的页去找元素（实测：`delay`/`rerun` 两遍都挂在第 1 步「页面上没找到「Get a Quote」」）。
-    #: 补一步 `goto` 之后，**不管谁从哪一页调它**（自测的第二/三遍、生产的重跑、人手动跑），
-    #: 它都先回到这一趟的入口再开始走 —— 与探路里 `_enter_target` 是同一条道理。
-    #: ⚠️ **只补新生成的产物**：修站那条路（`journey is None`）用的是线上老稿，一个字都不许动。
-    if journey is not None:
-        _prepend_entry_goto(spec.get("states"), _entry_url_of(state))
+    # ⚠️ **产物里不许有「先站到入口」那一步**（2026-09-23 用户实测点名，作废了 2026-09-22 那一版）。
+    # 用户原话：「我发现现在是不是我们的脚本在 auto-farm 也会重新导航一遍？那不对吧。
+    # 在那边应该是匹配上直接做了而不用再打开一次吧」—— 他说对了，而且这一点**自测那条路
+    # 自己早就写着**：`selftest._navigate` 的 docstring —— 「生产那边是 ad-task **先开好页面**
+    # 才调脚本的，所以这一步在自测这条路里必须自己做」。
+    # ⇒ 起跑该由**谁开页面谁负责**：生产是平台开好的（它按状态匹配把窗口停在目标页上），
+    #   自测是我们自己 `navi` 过去的。产物再自己导航一遍是白跑一趟，还会把页面状态与
+    #   账本里那一串帧重来一次（帧一重建，账本里的号全成死号）。
+    # 修站那条路本来就不补（`journey is None`）—— 现在**两条路一致**：都不补。
     try:
         src = template.render(spec["site"], spec["success_text"], spec["states"], spec["fills"],
                               provenance=_provenance(state, deps, report=None))

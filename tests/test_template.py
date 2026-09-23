@@ -763,6 +763,8 @@ def test_goto_and_wait_are_supported(sandbox, form_file):
     assert ("click", "#go-a") in [(a[0], a[1]) for a in common.STATE.actions], common.STATE.actions
 
 
+
+
 def test_a_goto_that_never_saw_load_still_says_so_in_the_trace(sandbox, form_file):
     """★ 2026-09-18 记的那笔账：`navi` 的「成功」现在有两种 —— 真等到 load 了，
     和「导航发出去了、但没等到 load / 没取到 frame tree」。**后者只有 stderr 说得出来**。
