@@ -24,6 +24,7 @@ import importlib.util
 import json
 import logging
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -2697,3 +2698,17 @@ def test_the_order_of_human_written_selectors_is_not_touched():
     src = _render_with(states, [])
     got = _literal_of(src, "STATES")[0]["steps"][0]["target"]["selectors"]
     assert got == ["#nvmct", "a.nav-cta"], got
+
+
+def test_a_page_change_is_rechecked_for_a_bounded_while(rendered):
+    """★ 2026-09-23 用户实测（原话「**等待时间短了**，我看他重新填了后成功了」）。
+
+    每步做完只 diff **一次** ⇒ 提交之后那一屏还在**异步**换，当场判成「页面没有变化」
+    （trace 第 12 步实测如此，而那一下其实成了）。产物里必须有**有界**重试：
+    最多 `DIFF_POLL_SECONDS` 秒、每 `DIFF_POLL_STEP` 秒重算一次，**一变立刻停**
+    （只有真没变的那一步才付这几秒 —— 不许在这里无限等：它是产物，跑在生产上）。
+    """
+    for const in ("DIFF_POLL_SECONDS", "DIFF_POLL_STEP"):
+        assert re.search(r"^%s = " % const, rendered, re.M), "%s 不在产物的常量里" % const
+    assert "while waited < float(DIFF_POLL_SECONDS)" in rendered, \
+        "产物没有「页面变了没有」的有界重试 —— 异步换页会被判成「页面没有变化」"
