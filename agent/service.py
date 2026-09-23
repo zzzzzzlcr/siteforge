@@ -75,7 +75,8 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from agent import (browser_agent, configcheck, events, fix, fmr, graph, journal, jsondiag,
-                   jsonwrite, llm, manual, measure, pywrite, rounds, selftest, shots, tools)
+                   jsonwrite, llm, manual, measure, pywrite, rounds, selftest, shots, steps,
+                   tools)
 from agent.graph import NODES, STEP_SAY
 from agent.state import (END_DELIVERED, END_DRAFT_FAILED, END_EXPLORE_UNFINISHED,
                          END_HUMAN_STOP, END_LINT_CAP,
@@ -2876,6 +2877,33 @@ class Service:
     #     ⚠️ 复审判 M9 实测：拿掉它，那一档的话会从「**不去看**」翻成「不是这一趟写下的」
     #     —— 翻的这一下就是「服务真的读了」的证据。
     #   ⇒ 两个理由都要这道闸，**别因为「它不再挡端错字节」就去掉它**。
+
+    def steps(self, job_id: str) -> dict:
+        """这一趟**运行**（自测 / 扰动）那本 trace 的**每一步**：三层 + 诊断。**只读**。
+
+        取哪一本：`_selftest_root` 下这个 site **最新**的一本 `*.trace.jsonl`
+        （自测会落好几本：baseline / country / delay）。取不到就**照实说** ——
+        「这一趟还没跑过」与「跑过但没留下 trace」是两件事，别都回一个空数组
+        （那会让人把「没跑」读成「跑了、没问题」）。
+
+        判据**只有一处**（`agent/steps.py`）：页面只搬字，不自己推「这算失败」。
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        site = str((job.brief or {}).get("site") or "")
+        root = pathlib.Path(self._selftest_root)
+        cands = sorted(root.glob("%s-*/*.trace.jsonl" % site),
+                       key=lambda p: p.stat().st_mtime, reverse=True) if site else []
+        if not cands:
+            return {"steps": [], "broken": 0, "trace": "",
+                    "say": "这一趟还没跑过（没有可读的运行 trace）"}
+        rows, broken = steps.read_trace(cands[0])
+        return {"steps": [steps.step_view(r) for r in rows], "broken": broken,
+                "trace": str(cands[0].relative_to(root)),
+                "say": "这是 %s 那一趟的每一步（%d 步%s）"
+                       % (cands[0].name, len(rows),
+                          "；另有 %d 行读不动" % broken if broken else "")}
 
     def artifact_file(self, job_id: str) -> dict:
         """`/job/{id}/artifact` → **这一趟写下的那串字节** + 它下下来叫什么、落在哪；拿不出来就 409。
@@ -6291,6 +6319,18 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
         """
         try:
             return svc.live(job_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=NO_SUCH_JOB_SAY % job_id)
+
+    @api.get("/job/{job_id}/steps")
+    def steps_view(job_id: str) -> dict:
+        """运行那趟的**每一步**（三层 + 诊断）。与 `/live` 的分工：那个说「探路走到哪」，
+        这个说「产物自己跑的时候，每一步成不成、为什么」。**只读**，一个字节都不写。
+
+        ★ 2026-09-23 P0：运营要能自己看出「为什么失败」，而不是截图发群里找人。
+        """
+        try:
+            return svc.steps(job_id)
         except KeyError:
             raise HTTPException(status_code=404, detail=NO_SUCH_JOB_SAY % job_id)
 
