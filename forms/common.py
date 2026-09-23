@@ -65,6 +65,23 @@ CDP_PATH = (os.environ.get("SITEFORGE_CDP_BIN")
             or os.environ.get("CDP_PATH")
             or "/opt/skills/auto-farm-skill/cdp")
 
+
+def _clean_value(result) -> str:
+    """命令成功了就只认 stdout —— cdp 的 stderr 里有**诊断行**，不能混进返回值。
+
+    2026-09-23 真站事故：Chrome 发 `clientSecurityState.initiatorIPAddressSpace =
+    "Private"` 时 cdp 解不了这个 CDP 事件，往 stderr 刷
+    `ERROR: could not unmarshal event … unknown IPAddressSpace value: Private`。
+    原先这里返回 `stdout + stderr`，产物把这段**当成了页面正文**去判 when ⇒
+    七个状态全判「这页不像」，一步没做、白跑一趟。
+
+    命令没成（非 0、或者 stdout 是空的）时仍旧 `stdout + stderr`：
+    出错要说得出为什么（R-16）。
+    """
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout
+    return result.stdout + result.stderr
+
 # API endpoints
 SCREENSHOT_API_URL = os.environ.get("SCREENSHOT_API_URL", "https://fmr.3tkj.cn/api/quest/screenshot")
 FORM_API_URL = os.environ.get("FORM_API_URL", "https://fmr.3tkj.cn/api/quest/formMessage")
@@ -94,6 +111,9 @@ class CDPHelper:
         #: 最近一次 screenshot() 失败的原因（人话）；成功是 None。
         #: 加法式新增：老代码把「命令不存在」与「这一页是白的」压成同一个空字符串（R-16）。
         self.last_screenshot_error = None
+        #: 最近一次 eval() 的 stderr（诊断行、报错）；没有就是 None。
+        #: eval 是取值的，值只认 stdout —— 见 eval() 里那段 2026-09-23 真站事故的注释。
+        self.last_eval_error = None
 
     def _parse_ws_url(self, ws_url: str) -> tuple:
         """Parse WebSocket URL to extract host and port."""
@@ -169,7 +189,7 @@ class CDPHelper:
             text=True,
             timeout=30
         )
-        return result.stdout + result.stderr
+        return _clean_value(result)
 
     def eval(self, script: str, frame_id: str = "") -> str:
         """
@@ -194,10 +214,23 @@ class CDPHelper:
             text=True,
             timeout=30
         )
-        output = result.stdout + result.stderr
+        # ⚠️ **取值**的地方绝不能把 stderr 混进返回值：cdp 的诊断行（比如
+        # `ERROR: could not unmarshal event … unknown IPAddressSpace value: Private`）
+        # 一旦落进返回值，调用方会把它当**页面正文**去判判据。2026-09-23 真站事故：
+        # eval 的 stdout 恰好空的那一下，产物拿这段报错当正文 ⇒ 七个状态全判「这页不像」、
+        # 一步没做、白跑一趟。所以：值只认 stdout；诊断与退出码另存 last_eval_error。
+        output = result.stdout
+        err = (result.stderr or "").strip()
+        if err:
+            self.last_eval_error = err
+        elif result.returncode:
+            self.last_eval_error = "cdp eval 退出码 %d（它没在 stderr 里说为什么）" % result.returncode
+        else:
+            self.last_eval_error = None
 
-        # Check for browser closed error
-        if "failed to create client" in output or "no page target" in output or "BugError" in output:
+        # Check for browser closed error（这句话 stdout / stderr 两边都可能出现）
+        if any(w in output or w in err for w in
+               ("failed to create client", "no page target", "BugError")):
             return "ERROR: Browser or page was closed"
 
         return output
@@ -248,7 +281,7 @@ class CDPHelper:
             text=True,
             timeout=30
         )
-        output = result.stdout + result.stderr
+        output = _clean_value(result)
 
         # Check for browser closed error
         if "failed to create client" in output or "no page target" in output or "BugError" in output:
@@ -274,7 +307,7 @@ class CDPHelper:
             text=True,
             timeout=30
         )
-        return result.stdout + result.stderr
+        return _clean_value(result)
 
     def scroll(self, pixels: str = "300") -> str:
         """
@@ -293,7 +326,7 @@ class CDPHelper:
             text=True,
             timeout=30
         )
-        return result.stdout + result.stderr
+        return _clean_value(result)
 
     def screenshot(self) -> str:
         """

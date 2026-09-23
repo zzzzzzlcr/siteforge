@@ -441,11 +441,19 @@ def _norm(text):
 
 # 读页面正文（**只读**）。shadow DOM 要逐 root 收：body.innerText 不穿 shadow，
 # 而生产站点里 shadow 页越来越多（实测遇过整页正文只剩 10 个字符）。
-# 遍历用 getElementsByTagName —— 动作一律走 cdp，这里只是「看」。
+# 遍历用 getElementsByTagName / querySelectorAll —— 动作一律走 cdp，这里只是「看」。
+#
+# ⚠️ **ShadowRoot 没有 `getElementsByTagName`**（那是 Document / Element 才有的，
+# ShadowRoot 只是 DocumentFragment）。一个网站只要用了 web component，老写法就当场
+# 抛 `TypeError: r.getElementsByTagName is not a function` ⇒ 正文永远读成空 ⇒
+# 每个 `when` 判据都不成立、整份产物**一步不做**。2026-09-23 afrotech 真站复现：
+# 20/20 次抛异常、7 步全跳，日志却只说「这页不像」——真正的原因一个字都不提。
+# 所以按 root 的类型挑遍历方式（Document / Element 走老路，ShadowRoot 走 querySelectorAll）。
 _PAGE_TEXT_JS = (
     "return (function(){"
     "var roots=[document],i=0;"
-    "while(i<roots.length){var r=roots[i++];var els=r.getElementsByTagName('*');"
+    "while(i<roots.length){var r=roots[i++];"
+    "var els=(r.getElementsByTagName?r.getElementsByTagName('*'):r.querySelectorAll('*'));"
     "for(var j=0;j<els.length;j++){if(els[j].shadowRoot){roots.push(els[j].shadowRoot);}}}"
     "var parts=[];"
     "for(var k=0;k<roots.length;k++){var rt=roots[k];"
