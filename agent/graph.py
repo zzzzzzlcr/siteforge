@@ -198,6 +198,46 @@ def allowlisted(saver):
 # ─────────────────────────── 依赖（测试从这里注入桩）───────────────────────────
 
 
+def _entry_url_of(state) -> str:
+    """这一趟的**入口网址**：人指的 `entry_url` 优先，否则就是那趟的 `url`。
+
+    ⚠️ 与 `_selftest_kwargs` 给自测的 `start_url` **是同一个口径**（那一处也是 `entry_url or url`）——
+    两处一旦不一致，自测从 A 起步、产物却往 B 走，屏幕上又是一对打架的话。
+    """
+    return str(state.get("entry_url") or state.get("url") or "").strip()
+
+
+def _prepend_entry_goto(states, url: str) -> None:
+    """把「先站到入口」那一步塞进**第一个状态的最前面**（原地改 `states`）。
+
+    ★ 2026-09-22（用户问「不能通过修脚本吗」）：可以，而且**这一步就该在产物里** ——
+    产物第一个状态的 `when` 是 `None`（起点那页与后面每页都不同源时生成侧按规矩撤掉了它，
+    重放那条路要靠这个）⇒ **任何一页都匹配第一个状态** ⇒ 从别处起步就会拿错的页去找元素
+    （实测：自测的 `delay`/`rerun` 两遍都挂在第 1 步「页面上没找到「Get a Quote」」）。
+    补这一步之后，**不管谁从哪一页调它**（自测的第二/三遍、生产重跑、人手动跑），
+    它都先回到这一趟的入口再开始 —— 与探路里 `_enter_target` 是同一条道理。
+
+    ⚠️ 账本第一步本来就是 `goto` 时不补（那一趟的账里已经有了）：补了就是同一件事做两遍。
+    ⚠️ 形状不对（不该有）⇒ 什么都不做：生成这一步不许把整趟带塌。
+    """
+    if not url or not states:
+        return
+    try:
+        first = states[0]
+        steps = first.setdefault("steps", [])
+        if (str((first or {}).get("action") or "") == "goto"
+                or (steps and str((steps[0] or {}).get("action") or "") == "goto")):
+            return
+        steps.insert(0, {
+            "action": "goto",
+            "url": url,
+            "target": {"url": url},
+            "note": ("先站到入口：%s —— 产物第一步就把页面放到这一趟的起点上，"
+                     "不靠调用方先导航（不然从别处起步会拿错的页去找元素）" % url)})
+    except (AttributeError, IndexError, TypeError):
+        return
+
+
 def _writer_from_journey(spec: dict, feedback: dict) -> dict:
     """默认的「写 py」：**确定性的翻译**（账本 → `states` / `fills`），恒等，不改东西。
 
@@ -1007,6 +1047,15 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
         spec = {"site": state["site"], "success_text": state.get("success_text"),
                 "states": journey.states(), "fills": journey.fills()}
     spec = deps.write(spec, feedback)
+    #: ★ **产物开头先站到入口**（2026-09-22；用户问「不能通过修脚本吗」—— 能，这就是那一处）。
+    #: 为什么必须补：产物第一个状态的 `when` 是 `None`（起点那页与后面每页都不同源时，生成侧
+    #: 按规矩把它撤掉 —— 重放那条路要靠这个）⇒ **任何一页都匹配第一个状态** ⇒ 从别处起步
+    #: 就会拿错的页去找元素（实测：`delay`/`rerun` 两遍都挂在第 1 步「页面上没找到「Get a Quote」」）。
+    #: 补一步 `goto` 之后，**不管谁从哪一页调它**（自测的第二/三遍、生产的重跑、人手动跑），
+    #: 它都先回到这一趟的入口再开始走 —— 与探路里 `_enter_target` 是同一条道理。
+    #: ⚠️ **只补新生成的产物**：修站那条路（`journey is None`）用的是线上老稿，一个字都不许动。
+    if journey is not None:
+        _prepend_entry_goto(spec.get("states"), _entry_url_of(state))
     try:
         src = template.render(spec["site"], spec["success_text"], spec["states"], spec["fills"],
                               provenance=_provenance(state, deps, report=None))
@@ -1733,7 +1782,7 @@ def _selftest_kwargs(state, deps: Deps) -> dict:
     #: 那份「自测没过」是对**跑法**说的，不是对产物说的（用户当场就问了「你没有导航到对应页面吧」）。
     #: 入口网址：`entry_url` 给了就用它，否则就是这一趟的 `url`（**探路也是从那儿开始的** ——
     #: 两边必须是同一个地址，否则自测验的是另一条路）。
-    _start = str(state.get("entry_url") or state.get("url") or "").strip()
+    _start = _entry_url_of(state)      # ← 与产物开头那一步 `goto` **同一个口径**（别各写一份）
     if _start:
         kw["start_url"] = _start
     if state.get("allow_skips"):

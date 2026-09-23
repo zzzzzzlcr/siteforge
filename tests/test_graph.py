@@ -1833,3 +1833,55 @@ def test_a_run_without_a_window_ends_honestly_instead_of_crashing(tmp_path):
     assert "窗口" in out["end_note"], out
     assert rec.explore == [], rec.explore
     assert payloads == [], "这一趟连浏览器都没开，不该再拦人点一次「继续」"
+
+
+def _states_in(src: str) -> list:
+    """从产物源码里把 `STATES` 抠出来（`ast.literal_eval`，不 exec 它）。"""
+    tree = ast.parse(src)
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", "") == "STATES" for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError("产物里没有 STATES")
+
+
+def test_the_generated_script_starts_by_navigating_to_the_entry_page(tmp_path):
+    """★ 2026-09-22（用户问「**不能通过修脚本吗**」）：能 —— 而且这一步就该在**产物里**。
+
+    产物第一个状态的 `when` 是 `None`（起点那页与后面每页都不同源时，生成侧按规矩把它撤了，
+    重放那条路要靠这个）⇒ **任何一页都匹配第一个状态** ⇒ 从别处起步就会拿错的页去找元素
+    （实测：自测的 `delay`/`rerun` 两遍都挂在第 1 步「页面上没找到「Get a Quote」」）。
+    ⇒ 生成侧给第一个状态**塞一步 `goto`**，先把页面放回这一趟的入口 —— 与探路里
+    `_enter_target` 是同一条道理。
+    """
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    _drive(app, cfg, _brief(tmp_path))
+    states = _states_in(rec.lint[-1])
+    first = states[0]["steps"][0]
+    assert first.get("action") == "goto", first
+    assert first.get("url") == URL, first
+    #: 入口**人指的优先**（与给自测的 `start_url` 同一个口径 —— 两处不一致就是一对打架的话）
+    deps2, rec2 = _deps()
+    app2, cfg2, _ = _build(deps=deps2)
+    _drive(app2, cfg2, _brief(tmp_path, entry_url="https://deep.example.test/step-1"))
+    assert _states_in(rec2.lint[-1])[0]["steps"][0].get("url") == "https://deep.example.test/step-1"
+
+
+def test_the_entry_goto_is_not_added_twice_and_never_to_an_old_account():
+    """`_prepend_entry_goto` 的三条边界（**别把账本自己那一步挤掉、别补两遍、形状不对不做**）。"""
+    #: ① 账本第一步本来就是 goto ⇒ **不补**（补了就是同一个动作做两遍）
+    book = [{"name": "landing", "when": None,
+             "steps": [{"action": "goto", "url": URL, "target": {"url": URL}}]}]
+    graph._prepend_entry_goto(book, URL)
+    assert len(book[0]["steps"]) == 1, book
+    #: ② 没给网址 / 空账本 ⇒ 什么都不做（生成这一步不许把整趟带塌）
+    book2 = [{"name": "landing", "when": None, "steps": [{"action": "click"}]}]
+    graph._prepend_entry_goto(book2, "")
+    graph._prepend_entry_goto([], URL)
+    graph._prepend_entry_goto(None, URL)
+    assert len(book2[0]["steps"]) == 1, book2
+    #: ③ 正常那一路：塞在最前面，而且**排在账本原来那一步之前**
+    book3 = [{"name": "landing", "when": None, "steps": [{"action": "click"}]}]
+    graph._prepend_entry_goto(book3, URL)
+    assert [s["action"] for s in book3[0]["steps"]] == ["goto", "click"], book3
