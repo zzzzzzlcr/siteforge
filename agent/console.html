@@ -144,6 +144,19 @@
   .steplist{margin:8px 0 2px; display:flex; flex-direction:column; gap:5px}
   .steplist li{display:flex; flex-wrap:wrap; gap:6px; align-items:baseline; font-size:13px}
   .steplist .k{font-family:var(--mono); font-size:11.5px; color:var(--ink-3); min-width:60px}
+  // 运行步骤（P0 运行诊断面板）：每步三个 chip —— 三层各一个。颜色只说服务说的那三档，
+  // 页面不自己加第四种判断（判据只有一处：agent/steps.py）。
+  .runsteps .say{color:var(--ink-2); font-size:12.5px}
+  .chip3{font:inherit; font-size:11.5px; border:1px solid var(--line-soft); border-radius:999px;
+         padding:1px 7px; background:#fff; color:var(--ink-2); white-space:nowrap}
+  .chip3.ok{color:#1b6b3a; background:#f0fbf3; border-color:#cbe9d6}
+  .chip3.bad{color:#8c2b2b; background:#fdf3f3; border-color:#f0cfcf}
+  .chip3.warn{color:#8a5a00; background:#fffaf0; border-color:#f0e0bd}
+  .chip3.skip{color:var(--ink-3); background:#f7f7f9}
+  .runsteps .raw{font:11.5px/1.5 var(--mono); color:var(--ink-3); background:#fafafc;
+                 border:1px solid var(--line-soft); border-radius:6px; padding:6px 8px;
+                 max-height:220px; overflow:auto; white-space:pre-wrap}
+  .runsteps .shot{max-width:220px; border:1px solid var(--line-soft); border-radius:6px; margin:2px 4px 0 0}
   .chip{font:inherit; font-size:11.5px; color:var(--accent); background:#f2f6ff; border:1px solid #d6e2fb;
         border-radius:999px; padding:0 7px; cursor:zoom-in}
   .hintline{font-size:12px; color:var(--ink-3); line-height:1.6; margin-top:6px}
@@ -253,6 +266,12 @@
       （状态还在 checkpoint 里，知道 job id 就还能看）。<br><br>
       也可以在地址后面带 <span class="mono">?job=&lt;job id&gt;</span> 直接打开某一趟。
     </p>
+
+    <!-- P0（2026-09-23）：产物**自己跑**的那一趟，每一步成不成、为什么。
+        与时间线（探路）分工不同：那个说「agent 走到哪」，这个说「脚本跑起来什么样」。
+         判据全来自服务 `/job/<id>/steps`（agent/steps.py）—— 这一块**只搬字**。 -->
+    <h2>运行步骤</h2>
+    <div id="runsteps"></div>
   </aside>
 
   <div class="main">
@@ -1628,6 +1647,13 @@
     //    拿不到就传 `null`，让 `paintRuns` 自己闭嘴（左边那一栏由 `runsProblem` 说话）。
     paintRuns(state.runs);
     paintTimeline();
+    // ⚠️ 运行步骤与 `/live` **同一个节拍**（3 秒）—— **不另起 setInterval**：
+    //    两个节拍会让「时间线」与「运行步骤」在屏幕上对不上，而它们说的是同一趟。
+    if (!state.stepsNext || Date.now() >= state.stepsNext) {
+      state.stepsNext = Date.now() + 3000;
+      refreshSteps();
+    }
+    paintSteps(document.getElementById("runsteps"));
     paintRounds();
     paintPageView();
     paintWindow();
@@ -2949,6 +2975,64 @@
                "这一页只做一件事 —— 一个人盯一趟运行。");
       }
     });
+  }
+  // ══════════════════ 运行步骤（P0 / `/job/<id>/steps`）══════════════════
+  // 与 `/live` 的分工：`/live` 说「探路走到哪了」，这一块说「产物自己跑的那一趟，
+  // 每一步成不成、为什么」。判据**只有服务那一处**（`agent/steps.py`）——
+  // 页面只搬字，不自己推「这算失败」（同一件事两套判据是本仓最贵的失败之一）。
+  var runSteps = null;              // 最近一次 `/steps` 的正文；拿不到就是 null
+
+  function refreshSteps() {
+    var box = document.getElementById("runsteps");
+    if (!jobId) { runSteps = null; return; }
+    return fetch("/job/" + encodeURIComponent(jobId) + "/steps")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      // ⚠️ **拿到就自己画**，不靠 `paint()`：`/live` 读不回来的时候（恰恰是最需要
+      //    看清运行步骤的时候）`paint()` 会提前 return，挂在它里面的东西一起看不成。
+      .then(function (data) { runSteps = data; paintSteps(box); })
+      // 拿不到也画一次（把上一趟的残留擦掉）—— 留着旧数据比空着更坏（那是假证据）。
+      .catch(function () { runSteps = null; if (box) { box.innerHTML = ""; } });
+  }
+
+  //: 三层 chip。颜色只看**服务说的**那三种形状 —— 不在这里加第四种判断。
+  function chip3(name, value) {
+    var v = String(value == null ? "" : value);
+    var kind = /跳过/.test(v) ? "skip"
+             : /没做成|没有变化|没算出|都没对|没记下/.test(v) ? "bad"
+             : /恢复|换到第/.test(v) ? "warn" : "ok";
+    return '<span class="chip3 ' + kind + '">' + esc(name) + "：" + rich(v) + "</span>";
+  }
+
+  function paintSteps(box) {
+    if (!box) { return; }
+    if (!runSteps) { return; }      // 还没拿到**不画** —— 画出来会是「没有步骤」（那是假话）
+    var rows = runSteps.steps || [];
+    var out = '<p class="hintline">' + rich(runSteps.say || "") + "</p>";
+    if (!rows.length) { box.innerHTML = out; return; }
+    out += '<ol class="steplist runsteps">';
+    rows.forEach(function (r) {
+      var L = r.layers || {};
+      out += "<li><span class=\"k\">第 " + esc(String(r.n)) + " 步</span>" +
+        '<span class="act">' + esc(r.action) + "</span>" +
+        (r.target ? '<span class="tgt">' + rich(r.target) + "</span>" : "") +
+        chip3("动作", L.act) + chip3("元素", L.elem) + chip3("业务", L.biz) +
+        (r.note ? '<span class="say">' + rich(r.note) + "</span>" : "") +
+        '<details class="fold"><summary>点开看：为什么 / 用过的地址 / 截图 / 原始那一行</summary>' +
+        ((r.why || []).length
+          ? "<ul>" + r.why.map(function (w) { return "<li>" + rich(w) + "</li>"; }).join("") + "</ul>"
+          : '<p class="hintline">服务没给出原因（这一格不替它编）。</p>') +
+        '<p class="mono">用过的地址：' + esc(r.selector_used || "（没记）") +
+        "　帧：" + esc(r.frame_id || "主帧") + "</p>" +
+        ((r.shots && (r.shots.before || r.shots.after))
+          ? "<p>" + [r.shots.before, r.shots.after].filter(Boolean).map(function (n) {
+              return '<img class="shot" src="' + shotURL(n) + '" alt="' + esc(n) + '">';
+            }).join("") + "</p>"
+          : "") +
+        '<pre class="raw">' + esc(JSON.stringify(r.raw || {}, null, 1)) + "</pre>" +
+        "</details></li>";
+    });
+    out += "</ol>";
+    box.innerHTML = out;
   }
   setInterval(tickOnce, 1000);
 })();
