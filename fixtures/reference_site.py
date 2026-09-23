@@ -700,6 +700,15 @@ class Filler:
     #: 类默认值同上：`object.__new__(Filler)` 的实例够得着这一格。
     goto_echo = ""
 
+    #: ★ 2026-09-23：最近一次「靠意图重找」的结论（命中哪几样身份 / 把握 0~1）；
+    #: 没走那条路、或者没救回来 —— 都是 None。
+    #: **类默认值**：`object.__new__(Filler)` 那种实例（单测直接拿它问「这一页算不算
+    #: 那个状态」）也要够得着 —— 与 `goto_echo` / `_last_model` / `_stuck_covers`
+    #: 同一条规矩。这一格漏掉会当场 AttributeError，而它发生在 `run()` 的主循环里 ⇒
+    #: **整趟挂**（2026-09-23 实测：模板用例 6 条就是这么红的）。
+    resolve_why = None
+    resolve_score = None
+
     #: 「这一组要重来一遍」那句话 / 这一趟重试过几次（见 `__init__`）。
     #: 类默认值同上：`object.__new__(Filler)` 那种实例也要够得着（它是 `_run_step` 读的）。
     retry_why = None
@@ -1216,6 +1225,11 @@ class Filler:
         3 步就早停）；换来的是**不静默点错**。若有一天要省这一次 observe，先想清楚
         「帧号漂了谁来救」再动。
         """
+        #: ★ 2026-09-23：这一跳的结论（**只属于触发它的那一步**，与 observe_why 同规矩）。
+        #: `resolve_why` = 命中了哪几样身份，`resolve_score` = 把握（0~1）。
+        #: 这两个格子进 trace，是 Repair Agent 以后的素材：**哪些脚本已经靠恢复在苟活**。
+        self.resolve_why = None
+        self.resolve_score = None
         model = self._observe()
         if not model:
             return []
@@ -1265,14 +1279,21 @@ class Filler:
                 if want_near and not relax:
                     if (element.get("region") or "").strip().lower() != want_near:
                         continue
-                hits.append(element)
+                score, why = self._intent_score(element, target, kind)
+                hits.append((score, why, element))
             if hits:
                 break
 
-        # 稳定性评级（D3）高的先试；同样稳的里面，**首屏看得见的**先试 ——
-        # 折线下那个能用（见 _usable），但先试它可能白滚一屏。
+        # 排序：**先按「像不像」**（命中了几样身份），再按稳定性评级（D3），
+        # 最后「首屏看得见的先试」（折线下那个能用，见 _usable，但先试它可能白滚一屏）。
+        # ⚠️ 为什么把语义分排在稳定性前面：稳定性说的是**这条地址**抗不抗改名，
+        # 而这里是「**这个元素**是不是账本里那个」—— 认错元素的代价（点到别的框/别的按钮）
+        # 比地址脆得多。地址脆还有 alternates 与下一次重找兜着。
         rank = {"high": 0, "medium": 1, "low": 2}
-        hits.sort(key=lambda el: (rank.get((el.get("stability") or "").lower(), 3), _below_fold(el)))
+        hits.sort(key=lambda t: (-t[0], rank.get((t[2].get("stability") or "").lower(), 3),
+                                 _below_fold(t[2])))
+        if hits:
+            self.resolve_score, self.resolve_why = hits[0][0], hits[0][1]
         out = []
         # ① **声明里的选择器 × 活着的帧**（只在这条 target 本来就带帧时）。
         #    为什么排在最前：帧号漂了，**页面结构没变** —— 声明里那条 nth-of-type 路径
@@ -1287,12 +1308,55 @@ class Filler:
                 for selector in [s for s in (target.get("selectors") or []) if s]:
                     if (selector, frame) not in out:
                         out.append((selector, frame))
-        for element in hits:
+        for _, _, element in hits:
             frame = _frame_of_element(element, fallback)
             for selector in [element.get("selector")] + list(element.get("alternates") or []):
                 if selector and (selector, frame) not in out:
                     out.append((selector, frame))
         return out
+
+    def _intent_score(self, element, target, kind):
+        """这个候选**像不像**账本里记的那一个：命中的身份信号越多，分越高（0~1）。
+
+        ★ 2026-09-23（用户与同事定的路线）：产物手里那几格（text / label / role /
+        placeholder / near / nearby_text）**本来就写着意图** —— 是运行期只按 selectors
+        找，地址一失效整步作废。这一格把「当初为什么是它」变成**可评分的证据**，
+        让回退链按分数试，而不是按 observe 返回的顺序试（顺序 = 页面上谁在前，
+        与「当初点的是哪一个」没关系）。
+
+        返回 `(分数, 命中了哪几样)`。后者进 trace（`resolved_by`），前者的用途**只有排序**：
+        这里**不做**「低于阈值就不用」的闸 —— 那种闸会在「几个孪生控件语义分不开」的站上
+        直接把候选清空（真站实测：三个组合框的 text 都是零宽空格），而那时
+        「按语义都像」本身就说明**不该由分数来否决**。
+        """
+        want = {
+            "text": (_norm(target.get("text") or "").lower(),
+                     _norm(element.get("text") or "").lower()),
+            "label": (_norm(target.get("label") or "").lower(),
+                      _norm(element.get("label") or element.get("aria_label") or "").lower()),
+            "placeholder": (_norm(target.get("placeholder") or "").lower(),
+                            _norm(element.get("placeholder") or "").lower()),
+            "role": ((target.get("role") or "").strip().lower(),
+                     (element.get("role") or "").strip().lower()),
+            "near": ((target.get("near") or "").strip().lower(),
+                     (element.get("region") or "").strip().lower()),
+        }
+        consider = [k for k, (w, _) in want.items() if w]
+        hit = [k for k in consider if want[k][0] in want[k][1]]
+        # nearby_text 是**一列**短句（探索时从控件周围收上来的），它算一样。
+        near_want = [_norm(str(x)).lower() for x in (target.get("nearby_text") or [])
+                     if str(x).strip()]
+        if near_want:
+            consider.append("nearby_text")
+            have = " ".join(_norm(str(x)).lower() for x in (element.get("nearby_text") or []))
+            if any(w in have for w in near_want):
+                hit.append("nearby_text")
+        if not consider:
+            # 账本里这一格一条可比的身份都没有（老产物 / 只记了选择器）—— 交 0.5 当
+            # 「说不上像也不像」，让它靠稳定性与首屏去排，别凭空判它不像。
+            return 0.5, "账本里没有可比的身份信号"
+        return len(hit) / float(len(consider)), "+".join(hit) or "一条身份都没对上"
+
 
     # ── 动作 ────────────────────────────────────────────────
 
@@ -1781,9 +1845,15 @@ class Filler:
                 continue
             out = self._do(action, selector, value, kind, cand_frame)
             if _ok(out):
-                return (True, selector, level,
-                        _say(action, label, True, level, landing=_landing_say(out)),
-                        cand_frame)
+                note = _say(action, label, True, level, landing=_landing_say(out))
+                # ★ 2026-09-23 Recovery Trace（人话那一半）：这一步**声明里的地址全失效了**，
+                # 是靠意图重找救回来的 —— 必须说出来，别让它长得像「本来就成了」。
+                # 结构化的那一半（primary_selector / resolved_by / confidence）在 trace 里。
+                if extra == 0 and self.resolve_why:
+                    note += ("【恢复】声明里的地址全失效，按意图重找到了它"
+                             "（命中：%s，把握 %.2f）" % (self.resolve_why,
+                                                         self.resolve_score or 0.0))
+                return (True, selector, level, note, cand_frame)
         # 都试完了还是没找到 —— 「点掉同意弹层」这一步是**软**的（见那个 docstring）：
         # 弹层已经不在了就等于这件事已经办完了，不该记成没做成。
         if action == "click":
@@ -2018,6 +2088,15 @@ class Filler:
                 "target": label,
                 "selector_used": selector,
                 "fallback_level": level,
+                # ★ Recovery Trace（同事 2026-09-23 定的路线：Resolver 上线后必须记下
+                # 「这一步是**靠恢复在苟活**」—— 否则将来不知道哪些脚本已经脆到要修）。
+                # primary_selector = 账本里原本要用的第一条地址（它失败了）；
+                # resolved_by = 重找时命中了哪几样身份；confidence = 把握（0~1）。
+                "recovery": (None if not self.resolve_why else {
+                    "primary_selector": ((target.get("selectors") or [""]) or [""])[0],
+                    "resolved_by": self.resolve_why,
+                    "confidence": self.resolve_score,
+                }),
                 # 这一步真在哪一帧里做的（主帧 = ""）——「帧内的点击有没有带上帧号」
                 # 这件事，读 trace 就能看见，不用去读产物源码。
                 "frame_id": frame,
