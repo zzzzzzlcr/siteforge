@@ -703,7 +703,6 @@ func observeJS() string {
     }
     var cls = (el.className && typeof el.className === 'string' ? el.className : '')
       .split(/\s+/).filter(function (c) { return c && !looksRandom(c); }).slice(0, 2);
-    if (cls.length) out.push(el.tagName.toLowerCase() + '.' + cls.join('.'));
     // 关系型候选（★ 2026-09-23 用户点名：「找一个关键的元素」）。
     //
     // 真站实证（afrotech 文章页的 footer 订阅按钮）：它**什么身份都没有** ——
@@ -716,8 +715,13 @@ func observeJS() string {
     // 的 placeholder/name 是页面作者写的字面量。用「含那个字段的表单里的按钮」
     // 表达它，比位置路径抗改版得多：外面包几层 div、改几个 class 都不断。
     //
-    // 位置：class 之后、位置路径之前 —— 不动任何现有首选（id/name/data/placeholder
-    // 那四条仍然排在它前面），只是把位置路径从唯一退路降成最后一条。
+    // 位置：placeholder 之后、class 之前 —— 排在它前面的只有**页面作者写的身份**
+    // （id / name / data-* / placeholder 四条，不动），而 class 是框架生成物、
+    // 位置路径更是改一版就断，两条都该排在关系型后面。
+    // 真站实证（2026-09-23，/newsletter 的 SEND）：class 那条在这页上**恰好唯一**，
+    // 于是它抢在关系型前面当首选 —— 而真站上点它报
+    // 「scroll mouse wheel failed: element not found」。关系型提前之后，
+    // 那个按钮的首选才变成表单相对的地址。
     // 只在**确实在 <form> 里**、且表单里确实有一个带身份字段时才加。
     if ((el.tagName === 'BUTTON' || el.tagName === 'INPUT') && el.form) {
       var flds = el.form.querySelectorAll('input,select,textarea'), fld = '';
@@ -738,6 +742,7 @@ func observeJS() string {
                  + (el.type ? '[type=' + el.type + ']' : ''));
       }
     }
+    if (cls.length) out.push(el.tagName.toLowerCase() + '.' + cls.join('.'));
     out.push(pathSel(el));
     return out.filter(function (s, i, a) { return s && a.indexOf(s) === i; });
   }
