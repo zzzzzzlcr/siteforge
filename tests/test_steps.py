@@ -85,3 +85,20 @@ def test_read_trace_survives_a_broken_line(tmp_path: Path):
     rows, broken = steps.read_trace(p)
     assert len(rows) == 2 and broken == 1
     assert [r["step"] for r in rows] == [1, 2]
+
+
+def test_the_scene_block_becomes_human_sentences():
+    """★ 2026-09-23（用户：「最后画面的截图不好分析，运营懵、我们 AI 也懵」）：
+    产物在**没做成**那一步录下的**现场**（`scene`）翻成人话 ——
+    这几句就是「不用看截图也读得懂」的那一半（视觉模型今天没配）。
+    """
+    row = _row(ok=False, progress=None, note="页面上没找到「发送」，这一步没做成",
+               scene={"ready": "loading", "overlay": "div#onetrust-banner",
+                      "at_point": "div.cookie-banner", "texts": ["接受", "更 多", "关闭"]})
+    why = steps.diagnose(row)
+    assert any("点到的其实是 `div.cookie-banner`" in w for w in why), why
+    assert any("同意类容器" in w and "onetrust" in w for w in why), why
+    assert any("还没加载完" in w and "loading" in w for w in why), why
+    assert any("最显眼" in w and "接受" in w for w in why), why
+    # 没有现场时**一个字都不许编**（「没有现场」与「现场一切正常」不是一件事）
+    assert not any("点到的其实是" in w for w in steps.diagnose(_row())), steps.diagnose(_row())

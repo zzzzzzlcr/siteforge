@@ -90,6 +90,20 @@ def diagnose(row):
     if row.get("ok") is False:
         out.append("动作没做成：%s" % str(row.get("note") or "")[:200])
         out.append("账本里的地址都试过了（含重新 observe 重找）；`selector_used` 是最后一条")
+    # ★ 2026-09-23（用户点的那件事：截图不好分析 ⇒ 运营懵、AI 也懵）：**现场**那一段
+    # 是产物在没做成时录下来的（`agent/template.py` 的 `_SCENE_JS`），这里只搬字。
+    # 这几句的价值在于「不需要看截图」（视觉模型今天没配）—— 页面当时什么样，写成字。
+    sc = row.get("scene") or {}
+    if sc.get("at_point"):
+        out.append("**点到的其实是 `%s`**（不是账本里那个元素）—— 多半有东西压在它上面"
+                   % str(sc["at_point"])[:80])
+    if sc.get("overlay"):
+        out.append("页面上还有**同意类容器**：`%s`" % str(sc["overlay"])[:80])
+    if sc.get("ready") and str(sc["ready"]) != "complete":
+        out.append("这一页**还没加载完**（readyState=%s）" % sc["ready"])
+    if sc.get("texts"):
+        out.append("当时视口里最显眼的三段字：%s"
+                   % " ｜ ".join(str(t)[:30] for t in list(sc["texts"])[:3]))
     rec = row.get("recovery") or {}
     if rec:
         out.append("**原本那条地址失效了**：「%s」⇒ 靠 %s 救回来（把握 %.2f）"

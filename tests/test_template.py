@@ -1263,6 +1263,9 @@ class _State:
         #: 遮挡判据的答复（`"COVER|tag#id.class"`，空串 = 没被盖着）——
         #: 产物 `_covered_by` **只认带 `COVER|` 前缀**的答复。
         self.cover = ""
+        #: ★ 2026-09-23 现场探针的答复（`_SCENE_JS` 那段 JSON 原样）——
+        #: 与 `cover` / `consent` 一样，**替身里声明过才算数**（这些开关都在这儿列着）。
+        self.scene = ""
         #: 遮挡判据的**逐次**答复：量一次弹一个，弹空了才退回上面那个固定值。
         #: **加载蒙版**那条判据要靠它 —— 「第一次量还盖着、再量就没了」正是蒙版走掉的样子；
         #: 用固定值只能演「一直盖着」，演不出「等一等就好了」。
@@ -1344,9 +1347,15 @@ class CDPHelper:
     def navigate(self, url):
         STATE.actions.append(("goto", url))
         return '{"ok": true}'
-
     def eval(self, script, frame_id=""):
         STATE.evals.append(script)
+        # ★ 2026-09-23 现场探针（`_SCENE_JS`）。⚠️ **必须排在 `privacy` 那条之前** ——
+        # 它那段 JS 里为了判「有没有同意类容器」也带着 `privacy` 这个词，排后面会被
+        # consent 那条截走、回一个空串 ⇒ `scene` 永远是空（2026-09-23 实测：新用例报
+        # `{'unreadable': ''}`，白追半小时）。**更具体的标记先判** —— 与下面
+        # `pageLoaderRe` / `elementFromPoint` 那条顺序规矩是同一件事。
+        if "at_point" in script:
+            return json.dumps(getattr(STATE, "scene", "") or "")
         if "privacy" in script:              # 同意弹层那个探针（它按 cookie|consent|gdpr|privacy 判）
             return json.dumps(STATE.consent)
         # ⚠️ 顺序要紧：`_PAGE_LOADER_JS` 里**也用 `elementFromPoint`**
@@ -1613,6 +1622,57 @@ def test_a_covered_element_is_not_clicked_and_does_not_report_ok(sandbox, form_f
         "被盖着就不该点下去：%s" % common.STATE.actions)
     line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
     assert line["ok"] is False, line
+
+
+def test_a_failed_step_records_the_scene_and_a_successful_one_does_not(sandbox, form_file):
+    """★ 2026-09-23（用户：「最后画面的截图不好分析，运营懵、我们 AI 也懵」）：
+    **没做成**的那一步把现场录进 trace —— 「**点到的其实是 X**」这句话的全部证据。
+
+    两半都钉，缺一半这条就白写：
+      · 失败那步 ⇒ `scene` 在（`ready` / `overlay` / `at_point` / `texts`）；
+      · 成功那步 ⇒ **一次都不探**（§13：重跑必须便宜 —— 现场只在要解释失败时才值这笔钱）。
+    """
+    scene = json.dumps({"ready": "loading", "overlay": "div#onetrust-banner",
+                        "at_point": "div.cookie-banner", "texts": ["接受", "更 多"]})
+    states = _one_click_states(selectors=["#go"])
+    # ① 失败那一步：现场要在（fail_actions ⇒ 连重找都没候选 ⇒ 一定判没做成）
+    # ⚠️ 顺序是 `_load` → `_stub` → 再设开关（全文件都这么写，别改）：
+    #   `_load` 负责把产物 import 起来（`common` 那一步就是它做的），
+    #   `_stub` 开头会 `STATE.reset()` —— **所以开关必须设在 `_stub` 之后**，
+    #   而 `scene` 也必须在 `reset()` 里声明过（像我这样新加一个开关时）。
+    module, _ = _load("run_scene_bad",
+                      template.render("example-scene-bad", "Thank you", states, [],
+                                      SAMPLE_PROVENANCE), sandbox)
+    common = _stub(sandbox, diff={"actionable": True},
+                   observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common.STATE.texts = ["Walk"]
+    common.STATE.fail_actions = True
+    common.STATE.scene = scene
+    assert common.STATE.scene == scene, "开关设上了吗（设不上说明 STATE 不是同一个对象）"
+    trace = sandbox / "scene_bad.jsonl"
+    assert module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                         trace=str(trace)).run() is False
+    assert common.STATE.scene == scene, "跑的过程中被别人 reset 了吗"
+    line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert line["ok"] is False, line
+    assert line["scene"].get("at_point") == "div.cookie-banner", line["scene"]
+    assert line["scene"]["overlay"] == "div#onetrust-banner", line
+    assert line["scene"]["ready"] == "loading", line
+
+    # ② 成功那一步：**一次都不许探**（§13：重跑便宜）
+    module2, _ = _load("run_scene_ok",
+                       template.render("example-scene-ok", "Thank you", states, [],
+                                       SAMPLE_PROVENANCE), sandbox)
+    common2 = _stub(sandbox, diff={"actionable": True},
+                    observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common2.STATE.texts = ["Walk"]
+    common2.STATE.scene = scene
+    trace2 = sandbox / "scene_ok.jsonl"
+    module2.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                   trace=str(trace2)).run()
+    line2 = json.loads(trace2.read_text(encoding="utf-8").splitlines()[0])
+    assert line2["ok"] is True, line2
+    assert line2["scene"] is None, "成功的步不许探现场（§13：重跑必须便宜）"
 
 
 def test_an_uncovered_element_is_clicked_as_usual(sandbox, form_file):

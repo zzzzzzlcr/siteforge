@@ -422,6 +422,44 @@ _CONSENT_BOX_JS = (
     "return '';"
 )
 
+
+#: ★ 2026-09-23（用户点的那件事：「最后画面的截图不好分析，运营懵、我们 AI 也懵」）——
+#: **失败那一步的现场**，变成机器读得懂的一段字。为什么是字而不是图：视觉模型今天**没配**
+#: （`modelRoles.vision` 空 ⇒ `inspect_image` 直接报「不支持图像输入」），而图本身也只是
+#: 「给人看」；真正缺的是**没人把现场写成字** ⇒ 运营在图前发呆、AI（探路 / 以后的 Repair）
+#: 也只能猜。这一格把四样摆出来：
+#:   `ready`    这一页加载完了吗（`loading` ≠ 「页面不对」）
+#:   `overlay`  页面上现在还有没有同意类容器（与 `_CONSENT_BOX_JS` 同一条判据）
+#:   `at_point` 动作那个坐标上**站着的是谁** —— 「点到的其实是弹层」这句话的全部证据
+#:   `texts`    视口里最显眼的三段短文字（一眼认出「这是哪一页」）
+#: 判据与 `_cover_once` 同源（`elementFromPoint` + 自己/后代/祖先都算同一个东西）。
+#: ⚠️ 只在**没做成**那一步探一次（§13：重跑必须便宜），而且**一次 eval 全给**（不是四次）。
+_SCENE_JS = (
+    "var out={ready:String(document.readyState||''),overlay:'',at_point:'',texts:[]};"
+    "var boxW=/(cookie|consent|gdpr|privacy)/i;"
+    "var vis=function(e){var r=e.getBoundingClientRect();"
+    "return r.width>0&&r.height>0&&r.bottom>0&&r.top<window.innerHeight;};"
+    "var all=document.getElementsByTagName('*');"
+    "for(var i=0;i<all.length;i++){var b=all[i];"
+    "var lab=String(b.id||'')+' '+String(b.className||'')+' '"
+    "+String(b.getAttribute&&b.getAttribute('aria-label')||'');"
+    "if(boxW.test(lab)&&vis(b)){out.overlay=String(b.tagName||'').toLowerCase()"
+    "+(b.id?('#'+b.id):'');break;}}"
+    "var want=%s;"
+    "if(want){var el=null;"
+    "for(var k=0;k<all.length;k++){try{if(all[k].matches(want)){el=all[k];break;}}catch(e){}}"
+    "if(el){var r=el.getBoundingClientRect();var x=r.left+r.width/2,y=r.top+r.height/2;"
+    "var hit=(x>=0&&y>=0&&x<=window.innerWidth&&y<=window.innerHeight)"
+    "?document.elementFromPoint(x,y):null;"
+    "if(hit&&hit!==el&&!el.contains(hit)&&!hit.contains(el)){"
+    "out.at_point=String(hit.tagName||'').toLowerCase()+(hit.id?('#'+hit.id):'')"
+    "+'.'+String(hit.className||'').split(' ')[0];}}}"
+    "for(var m=0;m<all.length&&out.texts.length<3;m++){var t=all[m];"
+    "if(!vis(t))continue;var s=String(t.innerText||'').trim();"
+    "if(s&&s.length>=2&&s.length<=40&&t.children.length===0)out.texts.push(s);}"
+    "return JSON.stringify(out);"
+)
+
 #: 「这一段是同意弹层那一步」认哪几个词（**只认动作词**，不认 `close`）。
 #:
 #: 为什么另有一套词、而不复用上面那两段 JS 的 `btnW`：这里的用途完全不同 ——
@@ -2178,6 +2216,25 @@ class Filler:
             self.log.error("[%s] 产物自己在第 %d 步出错了：%s: %s",
                            self.cid, index, type(exc).__name__, exc)
             raise
+        # ★ 2026-09-23（用户点的那件事）：**没做成的那一步**，把现场录下来（见 `_SCENE_JS`）。
+        # 为什么只在这一档探：§13 要求重跑便宜 —— 成功的步不探；一次 eval 给全四样 ✓。
+        # 探不动就交 None（**不许**编一个现场出来）—— 读的人要能分清「没有现场」与
+        # 「现场一切正常」。
+        scene = None
+        if not ok and getattr(self, "cdp", None) is not None:
+            try:
+                # ⚠️ 走 `_clean_eval`：真 cdp 的 `eval` 回来的是**带引号的 JSON 字符串**
+                # （`_clean_eval` 的 docstring 写着这件事）。少了这道剥壳，`startswith("{")`
+                # 判不过 ⇒ 现场永远记成 None（2026-09-23 实测：新用例当场红）。
+                raw = _clean_eval(self._ev(_SCENE_JS % json.dumps(str(selector or "")), frame))
+                if raw and raw.strip().startswith("{"):
+                    scene = json.loads(raw)
+                else:
+                    # ⚠️ 探不到**不许静默** —— 交一句「探不到 + 它回了什么」，
+                    # 读 trace 的人要能分清「没有现场」与「现场一切正常」。
+                    scene = {"unreadable": str(raw or "")[:80]}
+            except Exception as exc:               # noqa: BLE001 —— 探现场不许带塌这一步
+                scene = {"unreadable": "%s: %s" % (type(exc).__name__, str(exc)[:60])}
         try:
             self._dly()
             progress = self._diff(before_path) if before_path else None
@@ -2250,6 +2307,9 @@ class Filler:
                 "shot_before": shot_before,
                 "shot_after": shot_after,
                 "shots_why": self.shots_why,     # 没落成图时说明原因
+                # ★ 现场（只有没做成那一步才有）：点到的其实是谁 / 页面加载完没 / 有没有
+                # 同意类容器 / 视口里最显眼的三段字。**机器读得懂**，不依赖视觉模型。
+                "scene": scene,
                 "note": note,
             })
         self.log.info("[%s] 第 %d 步：%s", self.cid, index, note)
