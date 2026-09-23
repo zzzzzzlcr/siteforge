@@ -1701,13 +1701,18 @@ class Filler:
         **`cdp scroll` 的位置参数是选择器，不是像素**（`scroll [selector]`）——
         所以这一步重放的是「把**那个元素**滚进视口」，与探索时那次是同一件事。
 
-        三条路各自说清为什么：
+        四条路各自说清为什么：
 
         - **主帧的元素** → `self.cdp.scroll(选择器)`：与 click / form 走同一类助手，
           生产重跑那条路「一次 cdp CLI 都不额外起进程」的性质不受影响。
         - **子帧的元素** → 自己起进程带 `--frame-id`。为什么不用助手：`CDPHelper.scroll`
           收不了帧号（它的签名只有 pixels），而**跨源 iframe 里的元素在主帧里根本找不到**
           （那正是这一整族 bug 的样子）。
+        - **地址全失效了** → 重新 observe 当前页、**按意图重找**（`_relocate`，
+          与 click / form 的最后一跳**是同一跳**）★ 2026-09-23 补。
+          为什么必须有（vogue 真站实测）：这一步原先**到这儿就死了** —— 滚动这条路上
+          没有重找，于是一份**实际能跑通**的产物白赔一次「滚不动」+ 一次整组重试
+          （那趟第 3、4 步就是这么来的）。地址是深结构路径时它一改版就指不到元素。
         - **连元素都没有**（老产物 / 手写产物只写了 `pixels`）→ 退回老行为并在 note 里
           **说出来**：那是一条注定跑不通的命令（像素被当选择器），不许它静默地像「滚过了」。
         """
@@ -1744,6 +1749,23 @@ class Filler:
                         return (True, selector, len(selectors) + extra,
                                 _say("scroll", label, True, len(selectors) + extra,
                                      landing=_landing_say(out)), live)
+
+        # ★ 2026-09-23：**最后一跳与 click / form 是同一跳**（vogue 真站案例）——
+        # 重新 observe，按意图（text / role / near / label / nearby_text）重找那个元素。
+        # 上面那两条路用的都是**账本里的地址**；地址一失效（深结构路径最典型）它们
+        # 一个都指不到，而滚动这条路上原先没有这一跳 ⇒ 直接判「滚不动」。
+        for extra, (selector, cand_frame) in enumerate(self._relocate(target, "action")):
+            out = attempt(selector, cand_frame)
+            if _ok(out):
+                level = len(selectors) + extra
+                note = _say("scroll", label, True, level, landing=_landing_say(out))
+                if extra == 0 and self.resolve_why:
+                    # 与 click / form 同一条人话规矩：靠恢复救回来的必须说出来
+                    # （结构化的那一半在 trace 的 `recovery` 里）。
+                    note += ("【恢复】声明里的地址全失效，按意图重找到了它"
+                             "（命中：%s，把握 %.2f）" % (self.resolve_why,
+                                                         self.resolve_score or 0.0))
+                return (True, selector, level, note, cand_frame)
 
         pixels = step.get("pixels")
         if pixels is None:

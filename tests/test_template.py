@@ -520,10 +520,47 @@ def test_successful_run_returns_true(rendered, sandbox, form_file):
     assert "success" in common.STATE.reports, common.STATE.reports
     assert common.STATE.actions[-1][1] == "button[type=submit]"  # 最后一步是提交
 
-    # §13：「重跑时不做调试动作」—— 不给 --trace 就不截图、不快照、不 observe。
-    # （回退链那一跳的 observe 只在**选择器真挂了**的时候才会发生，正常路径一次都不该有。）
+    # §13：「重跑时不做调试动作」—— 不给 --trace 就不截图、不快照。
+    # ⚠️ 2026-09-23 改（逐行交代）：这一条**原先**断言「一次 cdp 都不额外起」，
+    # 依据是「回退链那一跳的 observe 只在选择器真挂了的时候才会发生，正常路径一次都不该有」。
+    # 而样本里那一步 `scroll` 的选择器在**本夹具的页面**里本来就是挂的 ⇒ 现在它会走
+    # 「重新 observe + 按意图重找」那一跳（`_scroll` 与 click / form **同一跳**，
+    # vogue 真站案例补的）⇒ 多这一次 observe 是**该花的**，不是调试动作。
+    # 钉的仍然是原意：**截图 0 张、快照 0 次，而且除了那一跳之外没有任何额外 cdp 调用**。
     assert common.STATE.shots == 0, "生产重跑路径不该截图"
-    assert _cdp_calls(sandbox) == [], _cdp_calls(sandbox)
+    extra = [c for c in _cdp_calls(sandbox) if not c.startswith("observe")]
+    assert extra == [], _cdp_calls(sandbox)
+    assert len(_cdp_calls(sandbox)) == 1, _cdp_calls(sandbox)   # 只有那一跳的 observe
+
+
+def test_scroll_falls_back_to_relocate_when_its_selectors_are_dead(sandbox, form_file):
+    """★ 2026-09-23（vogue 真站案例）：`scroll` 的地址全失效时，**与 click / form 走同一跳** ——
+    重新 observe，按意图（text / role / near）把那个元素找回来，再滚它。
+
+    为什么这条必须有：滚动这条路上原先**没有**这一跳 ⇒ 地址一失效（深结构路径最典型）
+    就直接判「滚不动」⇒ 一份实际能跑通的产物白赔一次失败 + 一次整组重试。
+    真站形状（vogue baseline 第 3、4 步）：`滚不动「GET DIGITAL ACCESS」`，
+    而同一个元素在页面上好好地在。
+    """
+    steps = [{"action": "scroll", "note": "把「GET DIGITAL ACCESS」滚进视口",
+              "target": {"text": "GET DIGITAL ACCESS", "role": "button", "near": "main",
+                         "selectors": ["#__next > div:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(9)"],
+                         "frame_id": ""}}]
+    src = template.render("example-scroll-ladder", "Thank you",
+                          [{"name": "w", "when": None, "steps": steps}], [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_scroll_ladder", src, sandbox)
+    common = _stub(sandbox, diff={"actionable": True}, observe={
+        "url": "https://example.test/", "fields": [],
+        "actions": [{"selector": "#hero-cta", "text": "GET DIGITAL ACCESS", "role": "button",
+                     "region": "main", "visible": True, "occluded_by": None,
+                     "above_fold": True, "alternates": []}]})
+    common.STATE.texts = ["Walk"]
+    common.STATE.fail_selectors = ("#__next > div:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(9)",)
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    scrolls = [a for a in common.STATE.actions if a[0] == "scroll"]
+    assert ("scroll", "#hero-cta") in scrolls, common.STATE.actions
+    assert any(c.startswith("observe") for c in _cdp_calls(sandbox)), _cdp_calls(sandbox)
 
 
 def _walk_states(n_steps, spec):
@@ -1295,7 +1332,11 @@ class CDPHelper:
         return '{"filled": true}'
 
     def scroll(self, pixels="300"):
-        if STATE.fail_actions:
+        # ⚠️ 2026-09-23：滚动这条原先**只认** `fail_actions`（一刀切），于是「某一个地址挂了、
+        # 别的地址还能用」这种真站形状在桩里造不出来 —— 而 `_scroll` 的回退链正是冲它来的。
+        # 补上 `fail_selectors`（同一个开关，别的命令早就认它了）；只影响**点名**了
+        # 那个选择器的用例，既有用例一个都不动。
+        if STATE.fail_actions or pixels in STATE.fail_selectors:
             return '{"error": "element not found"}'
         STATE.actions.append(("scroll", pixels))
         return '{"scrolled": true}'
