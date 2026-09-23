@@ -704,6 +704,40 @@ func observeJS() string {
     var cls = (el.className && typeof el.className === 'string' ? el.className : '')
       .split(/\s+/).filter(function (c) { return c && !looksRandom(c); }).slice(0, 2);
     if (cls.length) out.push(el.tagName.toLowerCase() + '.' + cls.join('.'));
+    // 关系型候选（★ 2026-09-23 用户点名：「找一个关键的元素」）。
+    //
+    // 真站实证（afrotech 文章页的 footer 订阅按钮）：它**什么身份都没有** ——
+    // 没有 id、没有 name、没有 data-*、没有 placeholder、没有 aria-label
+    // （那个 aria-label 只在另一个页面 /newsletter 的 footer 上才有）。于是候选表
+    // 只剩两条：class（border.border-white 这种框架生成、多元素共用的）
+    // 与一条 8 跳的位置路径。位置路径的代价是真站量出来的：点它直接报
+    // 「scroll mouse wheel failed: element not found」（那一趟 SEND 就是这么没点上的）。
+    // 而「它所在的表单里有一个**有身份**的字段」这件事通常成立 —— 那个邮箱输入框
+    // 的 placeholder/name 是页面作者写的字面量。用「含那个字段的表单里的按钮」
+    // 表达它，比位置路径抗改版得多：外面包几层 div、改几个 class 都不断。
+    //
+    // 位置：class 之后、位置路径之前 —— 不动任何现有首选（id/name/data/placeholder
+    // 那四条仍然排在它前面），只是把位置路径从唯一退路降成最后一条。
+    // 只在**确实在 <form> 里**、且表单里确实有一个带身份字段时才加。
+    if ((el.tagName === 'BUTTON' || el.tagName === 'INPUT') && el.form) {
+      var flds = el.form.querySelectorAll('input,select,textarea'), fld = '';
+      for (var fi = 0; fi < flds.length; fi++) {
+        var ff = flds[fi], fkey = '';
+        if (ff.name && !looksRandom(ff.name)) {
+          fkey = '[name="' + ff.name + '"]';
+        } else {
+          var fph = ff.getAttribute && ff.getAttribute('placeholder');
+          if (fph && fph.length <= 60 && !looksRandom(fph)) {
+            fkey = '[placeholder="' + fph.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]';
+          }
+        }
+        if (fkey) { fld = 'form:has(' + ff.tagName.toLowerCase() + fkey + ')'; break; }
+      }
+      if (fld) {
+        out.push(fld + ' ' + el.tagName.toLowerCase()
+                 + (el.type ? '[type=' + el.type + ']' : ''));
+      }
+    }
     out.push(pathSel(el));
     return out.filter(function (s, i, a) { return s && a.indexOf(s) === i; });
   }
