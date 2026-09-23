@@ -35,6 +35,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import shutil
 import signal
 import socket
@@ -3715,6 +3716,58 @@ def test_the_final_look_reads_the_whole_page_with_code_and_never_asks_the_model(
     assert asked == [], "代码已经见着了，还去问模型看图 = 白花一次模型调用"
 
 
+def test_the_whole_page_read_runs_in_every_frame_the_run_touched(monkeypatch):
+    """★ 2026-09-23 真站实测（`job-968a5382f7b4` 那个站）：只读**主帧**拿回来 **357 字**
+    —— 这站的正文挂在**跨源 iframe** 里，光读主帧等于没读，判据照样什么也搜不到。
+    读正文必须和 ② 里 `observe` 走**同一串帧**（主帧 + 这一趟动手用过的每一帧）。
+    """
+    monkeypatch.setattr(browser_agent.time, "sleep", lambda s: None)
+    journey = browser_agent.Journey(steps=[
+        {"state": "s", "action": "click", "step_no": 1, "target": {"frame_id": "F1"},
+         "result": {"ok": True}}])
+    evals = []
+
+    def dispatch(name, args):
+        frame = (args or {}).get("frame_id") or ""
+        text = "Privacy Policy Cookie Policy © Company registration number: 6046754"
+        if frame == "F1":
+            text = "Tailor Your Cover"
+        journey.steps.append({
+            "state": "s", "action": name, "step_no": len(journey.steps) + 1,
+            "target": ({"frame_id": frame} if frame else {}),
+            "result": {"ok": True, "page_text_head": text}})
+        if name == "eval":
+            evals.append(frame)
+        return text
+
+    browser_agent._final_success_check(journey, dispatch, None, "出现 Tailor Your Cover",
+                                       specs=[], gate=None)
+    assert evals == ["", "F1"], evals          # 主帧 **和** 这一趟用过的帧都要读
+    blob = " ".join(str((s.get("result") or {}).get("page_text_full") or "")
+                    for s in journey.steps)
+    assert "Tailor Your Cover" in blob, blob
+    assert browser_agent._success_hit(journey.steps, "出现 Tailor Your Cover") is not None
+
+
+def test_every_tool_the_agent_dispatches_exists_in_the_cdp_mcp_table():
+    """★ 2026-09-23：`dispatch("eval", …)` 打了**好几天**空气。
+
+    `cdp` 的 MCP 那张表里原先只有 7 个工具（`eval` 只有 CLI 有），而 agent 那侧的
+    `except BaseException` 把「没有这个工具」**静静吞掉**了 —— 于是「让代码判断」
+    那条路上的整页正文**从来没读到过**，谁也不知道（真站上的表现是「明明成功报没成功」）。
+    「接上了但不响」比没接更坏：它让一条修好的路**看起来存在**。
+
+    这条用例把**两个各自写各的**清单钉在一起：agent 会调的 vs cdp 真有的。
+    """
+    root = pathlib.Path(__file__).resolve().parents[1]
+    src = (root / "agent" / "browser_agent.py").read_text(encoding="utf-8")
+    used = set(re.findall(r'dispatch\(\s*"([a-z_]+)"', src))
+    reg = (root / "tools" / "cdp" / "internal" / "mcp" / "registry.go").read_text(encoding="utf-8")
+    have = set(re.findall(r'newTool\(\s*"([a-z_]+)"', reg))
+    assert used, "一个 dispatch 都没扫到 —— 正则坏了，这条用例就成了摆设"
+    assert used <= have, ("agent 会调、而 cdp 的 MCP 那张表里没有这些工具：%s"
+                          "（调的时候会报 unknown tool，被 except 吞掉）" % sorted(used - have))
+
 def test_the_final_look_does_not_fake_a_success_when_the_picture_says_no(monkeypatch):
     """图上也没有 ⇒ **照实算没见到**（不许把「它看过图了」写成「成功了」）。"""
     monkeypatch.setattr(browser_agent.time, "sleep", lambda s: None)
@@ -4111,3 +4164,45 @@ def test_the_line_wins_over_the_budget_when_both_are_true(tmp_path):
     assert journey.stop_reason == "reached_success", (
         "预算与成功线同时为真时报了 %r —— 那一趟会被判成「没走完」，于是不写 py"
         % journey.stop_reason)
+
+
+# ─────────────── 还没走到成功文案 ⇒ 就地接着走（★ 2026-09-23）───────────────
+
+
+def test_the_run_continues_in_place_when_the_criterion_is_still_unseen(tmp_path):
+    """★ 2026-09-23 真站实测（用户把那一屏的原文贴回来）：模型**在提交之后就收工**了，
+    而回来的那一页**还在漏斗里**（「It's important that you answer the questions
+    truthfully…」那一屏，上面还有 12 组选择题 + 两个空格子没答）⇒ 判据要的那串字
+    要到更后面才出现 ⇒ 结算说「没走到成功」⇒ 图那边就**重探**，而重探 = 把整条漏斗
+    **再交一遍表单**（用户口径「不要重复执行」）。
+
+    这一手要的正是**反过来的那件事**：就地接着走几轮（不重开窗口、不重交表单）。
+    """
+    journey, fake, calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]},            # 第一段：看一眼就收工
+         {"content": "接着答剩下的题"}],           # 补的那一段（剧本用完会重复最后一条）
+        success_text="出现 Tailor Your Cover",
+    )
+    #: 轮数**接着数**（`_wrap_up` 是覆盖：两次各叫一次会把这一趟写成「后半段那个数」）
+    assert journey.rounds == len(fake.calls), (
+        "记下来的轮数 %r 与真发出去的模型调用 %r 对不上 —— 后半段的覆盖了整趟的"
+        % (journey.rounds, len(fake.calls)))
+    assert any("就地接着走" in n for n in journey.notes), journey.notes
+    #: 补的那一轮，开场白必须点明「交出去了 ≠ 走到了」（原话里有这句）
+    asked = [m["content"] for c in fake.calls for m in c["messages"] if m["role"] == "user"]
+    assert any("还没走到" in str(c) for c in asked), asked
+    assert any("当前这一页" in str(c) for c in asked), asked
+
+
+def test_a_run_that_already_saw_the_criterion_does_not_walk_again(tmp_path):
+    """判据在**收尾那一读**里就见到了 ⇒ 一个字都不多走（不白花模型钱、不白动真站）。"""
+    journey, fake, calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_MATCHED}]},
+        [{"calls": [("observe", {})]}, {"content": "讲完了"}],
+        success_text=MATCHED,
+    )
+    assert journey.rounds == len(fake.calls), (journey.rounds, len(fake.calls))
+    assert not any("就地接着走" in n for n in journey.notes), journey.notes

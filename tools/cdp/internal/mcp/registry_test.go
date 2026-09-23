@@ -15,11 +15,11 @@ import (
 
 // TestToolsCoverTheSpecList 钉住**工具清单本身**（规格 §4.2 / 计划 Task 2 Step 1）。
 //
-// 为什么用具名列表而不是 `len(Tools()) == 7`：数量对不上时数量会告诉你
+// 为什么用具名列表而不是 `len(Tools()) == 8`：数量对不上时数量会告诉你
 // 「少了/多了」，但不会告诉你少的是哪个；而这个清单是 agent 的能力边界 ——
 // 少一个工具，agent 就有一整类动作做不了，而它**不会报错**，只会绕路或瞎猜。
 func TestToolsCoverTheSpecList(t *testing.T) {
-	want := []string{"observe", "diff", "screenshot", "click", "form", "scroll", "goto"}
+	want := []string{"observe", "diff", "screenshot", "click", "form", "scroll", "goto", "eval"}
 
 	got := make([]string, 0, len(Tools()))
 	for _, tool := range Tools() {
@@ -47,7 +47,7 @@ func TestLookupUnknownToolErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("unreachable")
 	}
-	for _, name := range []string{"observe", "diff", "screenshot", "click", "form", "scroll", "goto"} {
+	for _, name := range []string{"observe", "diff", "screenshot", "click", "form", "scroll", "goto", "eval"} {
 		if !strings.Contains(err.Error(), name) {
 			t.Errorf("未知工具的报错里没列出 %q，agent 无从纠正：%v", name, err)
 		}
@@ -222,9 +222,9 @@ func TestPrepareDropsNullOptionals(t *testing.T) {
 // 与 CLI 的 validateFormFlags 同一套判据：三选一，且 --check 只能是布尔。
 func TestFormRequiresExactlyOneOfValueCheckSelect(t *testing.T) {
 	reject := []string{
-		`{"selector":"#a"}`,                                  // 一个都没给
-		`{"selector":"#a","value":"x","check":true}`,         // 两个
-		`{"selector":"#a","value":"x","select":"y"}`,         // 两个
+		`{"selector":"#a"}`,                                       // 一个都没给
+		`{"selector":"#a","value":"x","check":true}`,              // 两个
+		`{"selector":"#a","value":"x","select":"y"}`,              // 两个
 		`{"selector":"#a","value":"x","check":true,"select":"y"}`, // 三个
 	}
 	for _, raw := range reject {
@@ -310,6 +310,8 @@ type stubBrowser struct {
 	landingDiags []internal.Diagnostic
 	// clickResult 让用例决定 click 回执长什么样（默认给一个普通的成功回执）
 	clickResult *internal.ClickResult
+	// evalRaw 是桩替 `EvalInFrame` 写回的那段 JSON（原样，连引号一起）
+	evalRaw string
 }
 
 func (s *stubBrowser) rec(call string) { s.calls = append(s.calls, call) }
@@ -388,6 +390,19 @@ func (s *stubBrowser) ResolveIframeSelector(frameID string) (string, error) {
 func (s *stubBrowser) Navigate(url, frameID string) (*page.FrameTree, error) {
 	s.rec(callf("Navigate", url, frameID))
 	return s.tree, s.err
+}
+
+// EvalInFrame 是**给系统自己读正文**那一手（2026-09-23 接进 MCP：原先只有 CLI 有，
+// agent 的 `dispatch("eval", …)` 一直打在空气上）。桩只把 `evalRaw` 原样写回。
+func (s *stubBrowser) EvalInFrame(frameID, js string, result any) error {
+	s.rec(callf("EvalInFrame", frameID, js))
+	if s.err != nil {
+		return s.err
+	}
+	if p, ok := result.(*json.RawMessage); ok && s.evalRaw != "" {
+		*p = json.RawMessage(s.evalRaw)
+	}
+	return nil
 }
 
 func callf(name string, args ...any) string {

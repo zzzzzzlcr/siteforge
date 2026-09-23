@@ -1020,6 +1020,31 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         #: ⇒ 自动重探 ×3、空转、最后没有产物。⇒ **收摊前系统自己看一眼**（浏览器就在手边）。
         _final_success_check(journey, dispatch, limits, success_text,
                              specs=specs, gate=gate)
+        #: ★ 2026-09-23 真站实测（用户把那一屏贴回来）：模型**在提交之后就收工**了，而回来
+        #: 的那一页还在漏斗中间（「answer the questions truthfully…」那一屏，上面还有
+        #: 12 组选择题 + 两个空格子没答）⇒ 判据要的那串字要到**更后面**才出现 ⇒
+        #: 结算说「没走到成功」⇒ 图那边就**重探**，而重探 = 把整条漏斗**再交一遍表单**
+        #: （用户口径「不要重复执行」）。⇒ 这里补一手：**还没见到、页面还在漏斗里，
+        #: 就地接着走几轮**（有上限，不重开窗口、不重交）。
+        #:
+        #: ⚠️ 排在**收尾那一读之后**：先让代码真读一遍页面（整页正文），读出来有就不折腾模型。
+        #: ⚠️ 只在「还没见到成功文案」时发生；`_Stop`（预算/暂停/窗口没了）照旧穿出去。
+        #: ⚠️ 轮数**接着数**：`_wrap_up` 是**覆盖**（`journey.rounds = len(rounds)`），
+        #: 两次各叫一次会把这一趟的轮数写成**后半段**那个数 —— 读账的人会以为它才问了三轮。
+        if success_text and _success_hit(journey.steps, success_text) is None:
+            room = min(CONTINUE_ROUNDS, max(0, int(limits.max_rounds or 0)))
+            if room > 0:
+                journey.note("还没见到成功文案，而页面还在漏斗里 ⇒ **就地接着走**"
+                             "（最多再 %d 轮；不重开窗口、不重交表单）" % room)
+                rounds2 = llm.run_tool_loop(
+                    _SYSTEM, _unfinished_brief(success_text), specs, dispatch,
+                    max_rounds=room, max_tokens=MAX_TOKENS, steer=steer, _client=gate,
+                )
+                if rounds2:
+                    _wrap_up(journey, list(rounds) + list(rounds2), limits)
+                    #: 走完**再读一遍**（`specs=()` ⇒ 只读正文，不再叫模型看图：
+                    #: 图那一眼是**证据**，上一遍已经存过一份了，别为同一件事再花一次）。
+                    _final_success_check(journey, dispatch, limits, success_text)
     except _Stop as stop:
         journey.stop_reason = stop.reason
         # 被停下来这一路**拿不到轮数**：`rounds` 是 `run_tool_loop` 的局部变量，
@@ -1186,6 +1211,35 @@ _FINAL_LOOK_SYSTEM = (
     "**不要**点任何东西、不要填任何东西 —— 页面已经走完了，你只看。"
 )
 
+#: 「还没见到成功文案 ⇒ 就地再走几轮」的上限（★ 2026-09-23）。
+#:
+#: 真站实测（用户把那一屏贴回来）：提交之后回来的页面**还在漏斗里**
+#: （正文是「It's important that you answer the questions truthfully…」那一屏，
+#: 上面还有 12 组选择题 + 两个空格子没答），而模型**已经收工了** ⇒ 结算说「没走到成功」
+#: ⇒ 图那边就**重探**（= 把整条漏斗**再交一遍表单**）。这里补一手：**就地接着走**。
+#: ⚠️ 它只在「还没见到成功文案」时发生，而且**有上限** —— 不点第二次提交、不重开窗口。
+CONTINUE_ROUNDS = 6
+
+
+def _unfinished_brief(success_text: str) -> str:
+    """「还没走到，接着走」那句（只在这种时候发，见 `CONTINUE_ROUNDS`）。
+
+    两句话是**这一手的关键**，都不能省：
+      · 「交出去了」**不等于**「走到了」—— 上一趟就是在这儿栽的；
+      · 就在**当前这一页**上接着做（别导航回入口、别重交）。
+    """
+    wants = wanted_texts(success_text)
+    #: ⚠️ 先算好再插：`"…%s…" % x if cond else y` 里 `%` 比条件表达式**紧**，
+    #: 写成一行会变成「(格式化) if cond else y」—— 剥完什么都不剩时整句话会没掉。
+    shown = "」、「".join(wants) if wants else success_text
+    return ("你刚才收工了，但这一趟**还没走到**：页面上**还没有**出现"
+            "「%s」。⚠️ 「把表单交出去了」不等于「走到了」—— 交完之后回来的那一屏\n"
+            "常常**还在漏斗里**（上面还有没答的问题、没点完的按钮）。\n"
+            "就在**当前这一页**上接着做（不要导航回入口、不要重点提交按钮）：\n"
+            "先把页面上还没答的问题答完、该点的按钮点掉，一步一步往下走，\n"
+            "直到页面上**真的出现**那串字为止。确实走不下去（元素找不到 / 页面报错 /\n"
+            "卡住了）就照实说走不下去，别硬凑。" % shown)
+
 
 def _frames_used(journey) -> list:
     """这一趟**动手用过**的那几个 `frame_id`（去重、保序、最多 4 个）。
@@ -1232,23 +1286,36 @@ def _final_success_check(journey, dispatch, limits, success_text: str, *,
             dispatch("observe", {"frame_id": frame_id} if frame_id else {})
         except BaseException:                  # noqa: BLE001 —— 旁路不许带塌这一趟
             continue
-    #: ②b **整页正文**（`eval`，只读）—— ⚠️ **判据要读的正文就在这儿**：
+    #: ②c **逐帧取整页正文**（`eval`，只读）—— ⚠️ **判据要读的正文就在这儿**：
     #: `observe` 那一手自己把正文截到 600 字（`tools/cdp/internal/observe.go` 的
     #: `pageText.slice(0, 600)`），而真站的成功文案常在 600 字之后
     #: ⇒ 2026-09-22 那趟屏幕上「言行不一致」就是这么来的（模型在图上看见了、代码在 600 字里找不着）。
     #: 用户口径：**这一步让代码判断**（图只是给人看的证据）。
-    eval_raw = None
-    try:
-        eval_raw = dispatch("eval", {"code": _FULL_TEXT_JS % FINAL_TEXT_CHARS})
-    except BaseException:                      # noqa: BLE001 —— 旁路不许带塌这一趟
-        eval_raw = None
-    if len(journey.steps) > before and eval_raw is not None:
-        got = _norm(eval_raw if isinstance(eval_raw, str)
-                    else ((eval_raw or {}).get("result") or (eval_raw or {}).get("value") or ""))
+    #:
+    #: ⚠️ **必须逐帧**（2026-09-23 真站实测）：先只读主帧，拿回来 **357 字**
+    #: （主帧常常只是个壳，正文挂在**跨源 iframe** 里 —— 这个站的表单就是），
+    #: 判据照样什么也搜不到。读的是 ② 里 `observe` 走过的那同一串帧。
+    #:
+    #: ⚠️ 两条**曾经**让它整条都没跑起来（同一趟里查出来的）：`cdp` 的 MCP 那张表里
+    #: **原先根本没有 `eval`**（只有 CLI 有）⇒ 每一次调用都被这里的 `except` 吞掉，
+    #: 「接上了但不响」比没接更坏。现在表里有它了；下面这个 `except` 留着，
+    #: 但**每帧都试**、只要有一帧拿到正文就算数。
+    texts: list = []
+    for frame_id in ["", *_frames_used(journey)]:
+        try:
+            raw = dispatch("eval", dict({"code": _FULL_TEXT_JS % FINAL_TEXT_CHARS},
+                                        **({"frame_id": frame_id} if frame_id else {})))
+        except BaseException:                  # noqa: BLE001 —— 旁路不许带塌这一趟
+            continue
+        got = _norm(raw if isinstance(raw, str)
+                    else ((raw or {}).get("result") or (raw or {}).get("value") or ""))
         if got:
-            journey.steps[-1]["result"]["page_text_full"] = got[:FINAL_TEXT_CHARS]
-            journey.steps[-1]["note"] = ("收摊前**系统自己**取的**整页正文**（只读；"
-                                         "`observe` 那份只有前 600 字）：判据就在这份里找")
+            texts.append(got)
+    full = _norm(" ".join(texts))[:FINAL_TEXT_CHARS]
+    if len(journey.steps) > before and full:
+        journey.steps[-1]["result"]["page_text_full"] = full
+        journey.steps[-1]["note"] = ("收摊前**系统自己**取的**整页正文**（只读、逐帧；"
+                                     "`observe` 那份只有前 600 字）：判据就在这份里找")
     if len(journey.steps) == before:
         return                                 # 一步都没记上（被闸拦住等）⇒ 不假装
     for step in journey.steps[before:]:

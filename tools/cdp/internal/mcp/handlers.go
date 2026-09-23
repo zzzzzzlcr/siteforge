@@ -88,8 +88,8 @@ func snapshotBefore(raw any) (*internal.PageModel, error) {
 			"（要把上一次 observe 的结果**整个对象**原样传回来）", err)
 	}
 	if m.URL == "" && len(m.Actions)+len(m.Fields)+len(m.OptionGroups) == 0 {
-		return nil, fmt.Errorf("diff 的 before 里没有 URL 也没有任何元素 —— 这不是一份 observe 结果"+
-			"（{} / 别的 JSON 都能解析成功，但拿来比会把整页元素误报成「新出现」）。"+
+		return nil, fmt.Errorf("diff 的 before 里没有 URL 也没有任何元素 —— 这不是一份 observe 结果" +
+			"（{} / 别的 JSON 都能解析成功，但拿来比会把整页元素误报成「新出现」）。" +
 			"把上一次 observe 返回的对象整个传回来")
 	}
 	return &m, nil
@@ -203,6 +203,31 @@ func handleGoto(_ context.Context, b Browser, args map[string]any) (any, error) 
 		res["frame_id"] = string(tree.Frame.ID)
 	}
 	return res, nil
+}
+
+// handleEval 是**系统自己**读正文那一手（`browser_agent._final_success_check`）。
+//
+// ★ 2026-09-23 真事：agent 那边早就写着 `dispatch("eval", …)` 读整页正文，而**这张表里
+// 没有它** —— CLI 有（`cmd/eval.go`）、MCP 没有 ⇒ 每一次调用都被那侧的 `except` 悄悄
+// 吞掉，判据实际只看到 `observe` 给的那一段；真站上「明明成功却报没成功」的一半原因
+// 就在这儿。「接上了但不响」比没接更坏：它让那条修好的路**看起来存在**。
+//
+// ⚠️ 结果只解最外层那一次 JSON：`Runtime.evaluate` 回的是一段 JSON 文本，
+// 整段当字符串递出去，页面正文两侧会多一对引号 —— 子串匹配照样命中，但读账的人
+// 会以为自己拿到的是页面原文。
+func handleEval(_ context.Context, b Browser, args map[string]any) (any, error) {
+	var raw json.RawMessage
+	if err := b.EvalInFrame(strArg(args, "frame_id"), strArg(args, "code"), &raw); err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return "", nil
+	}
+	var out any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return string(raw), nil
+	}
+	return out, nil
 }
 
 // performed 是「写类」动作（click/form/scroll）的返回。

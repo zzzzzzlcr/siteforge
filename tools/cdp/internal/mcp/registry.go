@@ -46,6 +46,13 @@ type Browser interface {
 	ScrollIntoView(selector, frameID string) error
 	ResolveIframeSelector(frameID string) (string, error)
 	Navigate(url, frameID string) (*page.FrameTree, error)
+	// EvalInFrame 在一帧里跑一段 JS，结果解成 JSON 递回来（空 frameID = 主帧）。
+	//
+	// ★ 2026-09-23：这一手是**给系统自己读正文用的**（`browser_agent._final_success_check`
+	// 拿它读整页正文）。在这之前它只有 CLI 有（`cmd/eval.go`）、MCP 这张表里没有 ⇒
+	// agent 每一次调用都被那侧的 `except` 悄悄吞掉，判据实际只看到 `observe` 那一段
+	// （真站上「明明成功却报没成功」的一半原因就在这儿）。**「接上了但不响」比没接更坏。**
+	EvalInFrame(frameID string, js string, result any) error
 	// LandingDiags 是**落点判据**（click 的 G1）攒下的诊断：抬起被扣下、
 	// 或者判据在这一点上根本跑不了（跨站子帧）。
 	//
@@ -427,6 +434,16 @@ var toolTable = []Tool{
 			{Name: "url", Type: "string", Required: true, Description: "目标 URL（带 scheme，如 https://example.com/）。"},
 			{Name: "frame_id", Type: "string", Description: "要导航的帧；不给就导航主帧（常规用法）。"},
 		}, nil, handleGoto),
+
+	newTool("eval",
+		"在某一帧里执行一段 JavaScript，把结果原样返回。\n"+
+			"**这是给系统自己读正文用的**（收尾那一眼读整页文字），不是主视角 —— 主视角是 observe。\n"+
+			"⚠️ 它**不做只读校验**：给什么跑什么。调用方自己保证只拿它读（`document.body.innerText` 那类），\n"+
+			"别在这里改页面 —— 改了就没有第二个人知道你改过。",
+		[]Param{
+			{Name: "code", Type: "string", Required: true, Description: "要执行的 JS 源码。"},
+			{Name: "frame_id", Type: "string", Description: "哪一帧（CDP frameID）。不给就主帧。"},
+		}, nil, handleEval),
 }
 
 // formMode 是 form 的跨参数约束：value / check / select 恰好给一个。

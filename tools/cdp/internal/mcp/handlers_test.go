@@ -94,12 +94,12 @@ func TestDiffHandlerRejectsBeforeThatIsNotASnapshot(t *testing.T) {
 	// 解析成一份**全零** PageModel，拿它比 → 整页元素「新出现」→ actionable=true。
 	// 那是「before 给错了」被读成「有进展」，且完全不报错。
 	bads := []string{
-		`null`,               // before 是 null
-		`{}`,                 // 全零对象
-		`"x"`,                // 根本不是对象
-		`[]`,                 // 也不是对象
-		`{"hello":"world"}`,  // 别的 JSON
-		`{"url":""}`,         // 有一半形状，但没有 URL 也没有元素
+		`null`,              // before 是 null
+		`{}`,                // 全零对象
+		`"x"`,               // 根本不是对象
+		`[]`,                // 也不是对象
+		`{"hello":"world"}`, // 别的 JSON
+		`{"url":""}`,        // 有一半形状，但没有 URL 也没有元素
 		`{"url":"","actions":null,"fields":null,"option_groups":null}`,
 	}
 	for _, bad := range bads {
@@ -231,8 +231,8 @@ func TestFormHandlerSurfacesLandingFacts(t *testing.T) {
 
 	// ③
 	b3 := &stubBrowser{landingDiags: []internal.Diagnostic{{
-		Kind: internal.DiagKindLandingBlind,
-		Detail: "落点判据在这一点不可用：命中栈停在 <iframe> 上（跨站子帧）……",
+		Kind:      internal.DiagKindLandingBlind,
+		Detail:    "落点判据在这一点不可用：命中栈停在 <iframe> 上（跨站子帧）……",
 		FramePath: []string{"main"},
 	}}}
 	out3, err := runHandler(t, "form", `{"selector":"#s","select":"CA"}`, b3)
@@ -343,7 +343,7 @@ func TestScreenshotHandlerReturnsCoordinatesEvidence(t *testing.T) {
 // 吞掉它的后果：工具报告「成功」，而浏览器那边什么都没发生。
 func TestHandlersSurfaceKernelErrors(t *testing.T) {
 	boom := errors.New("selector not found: #nope")
-	for _, name := range []string{"observe", "screenshot", "click", "form", "scroll", "goto", "diff"} {
+	for _, name := range []string{"observe", "screenshot", "click", "form", "scroll", "goto", "diff", "eval"} {
 		args := map[string]string{
 			"observe":    `{}`,
 			"diff":       `{"before":{"url":"https://x.example/","actions":[]}}`,
@@ -352,6 +352,7 @@ func TestHandlersSurfaceKernelErrors(t *testing.T) {
 			"form":       `{"selector":"#a","value":"x"}`,
 			"scroll":     `{"selector":"#a"}`,
 			"goto":       `{"url":"https://x.example/"}`,
+			"eval":       `{"code":"document.title"}`,
 		}[name]
 		b := &stubBrowser{err: boom}
 		_, err := runHandler(t, name, args, b)
@@ -362,5 +363,24 @@ func TestHandlersSurfaceKernelErrors(t *testing.T) {
 		if !errors.Is(err, boom) && !strings.Contains(err.Error(), boom.Error()) {
 			t.Errorf("%s 报的错丢了内核的原话: %v", name, err)
 		}
+	}
+}
+
+// TestEvalHandlerPassesCodeThroughAndUnwrapsJSON 钉住 eval 这条路的两件事。
+//
+// ★ 它为什么存在（2026-09-23 真事）：agent 那侧早就写着 `dispatch("eval", …)` 读整页
+// 正文，而这张表里**没有这个工具** ⇒ 每一次调用都被吞掉，判据只能看到 observe 那一段。
+// 一个工具名对不上，整条「让代码判断」的路就是空的，而且**它不报错**。
+func TestEvalHandlerPassesCodeThroughAndUnwrapsJSON(t *testing.T) {
+	b := &stubBrowser{evalRaw: `"正文：Hello 世界"`}
+	out, err := runHandler(t, "eval", `{"code":"document.body.innerText"}`, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := out.(string); !ok || got != "正文：Hello 世界" {
+		t.Errorf("递回来的不是正文本身（套着引号的 JSON 会让读账的人以为拿到了页面原文）: %#v", out)
+	}
+	if b.lastCall() != "EvalInFrame(,document.body.innerText)" {
+		t.Errorf("内核调用不对（代码要原样下去，不许在这层拼 JS）: %s", b.lastCall())
 	}
 }
