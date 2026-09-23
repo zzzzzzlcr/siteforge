@@ -876,13 +876,22 @@ func observeJS() string {
   // ⚠️ 判据的**单位**从「> 的个数」换成了「:nth-of-type 的个数」：后者更准
   //   （div:nth-of-type(1) span:nth-of-type(1) 一个 > 都没有，却同样依赖两次位置）。
   //   pathSel 吐出来的永远是 > 连接的链，两种数法在那条路上相等。
+  // ⚠️ 框架**生成的** id 不算锚点（★ 2026-09-23 用户实测指出「感觉这种 ID 随时会变」）。
+  //   「#__BVID__408」这种带的是**渲染序号**：重渲染就换号（真站上同一个框这一趟 408、
+  //   下一趟 512）。把它当身份评 high，消费侧就会把它排在真正稳定的「[name=…]」
+  //   **前面先试** —— 与上面那段「#inputAreaParentContainer > 9 跳」是同一个坑的
+  //   另一种形状：**看起来是身份，其实是位置**。评回 medium/low 之后，
+  //   「input[name="firstName"]」（锚点 + 0 跳 = high）才会排在它前面
+  //   （template.py 的回退梯子 rank = {high:0, medium:1, low:2}）。
+  var GENERATED_ID = /^#(?:__[A-Za-z]+__\d+$|:r[0-9a-z]+:|mui-\d|radix-|headlessui-|downshift-|react-select-)/i;
   function stability(el, cands) {
     var c = cands[0] || '';
     var hops = (c.match(/:nth-of-type/g) || []).length;
     // 锚点：「[id=…]」与「#id」是**同一件事**（idSel 把不是合法 CSS ident 的 id 写成
     // 前者的形式）—— 只认「#」会让那类元素的稳定性**凭空掉一档**：
     // 一条独一无二的稳定 id 被评成 low，消费侧会以为它脆（少报也是一种不实）。
-    var anchored = /^#/.test(c) || /^\[id=/.test(c) || /\[(name|data-)/.test(c);
+    var anchored = (/^#/.test(c) || /^\[id=/.test(c) || /\[(name|data-)/.test(c))
+                   && !GENERATED_ID.test(c);
     if (anchored && hops === 0) return 'high';
     // 只有 class（框架生成物）：没有身份，但也不是位置 —— 与从前同档。
     if (hops === 0 && /^[a-z]+\.[a-z]/.test(c)) return 'medium';
