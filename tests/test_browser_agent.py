@@ -4185,10 +4185,13 @@ def test_the_run_continues_in_place_when_the_criterion_is_still_unseen(tmp_path)
          {"content": "接着答剩下的题"}],           # 补的那一段（剧本用完会重复最后一条）
         success_text="出现 Tailor Your Cover",
     )
-    #: 轮数**接着数**（`_wrap_up` 是覆盖：两次各叫一次会把这一趟写成「后半段那个数」）
-    assert journey.rounds == len(fake.calls), (
-        "记下来的轮数 %r 与真发出去的模型调用 %r 对不上 —— 后半段的覆盖了整趟的"
-        % (journey.rounds, len(fake.calls)))
+    #: 轮数**接着数**（`_wrap_up` 是覆盖：两次各叫一次会把这一趟写成「后半段那个数」）。
+    #: ⚠️ 只数**探路那两段**：收尾照图那一眼也是一次模型调用（`_FINAL_LOOK_SYSTEM`），
+    #: 它不进轮数 —— 拿 `len(fake.calls)` 去比会把那条旁路算成轮数（这条用例第一版
+    #: 就是这么红的：3 vs 4）。
+    loops = [c for c in fake.calls
+             if (c.get("messages") or [{}])[0].get("content") == browser_agent._SYSTEM]
+    assert journey.rounds == len(loops) == 3, (journey.rounds, len(loops))
     assert any("就地接着走" in n for n in journey.notes), journey.notes
     #: 补的那一轮，开场白必须点明「交出去了 ≠ 走到了」（原话里有这句）
     asked = [m["content"] for c in fake.calls for m in c["messages"] if m["role"] == "user"]
@@ -4204,5 +4207,9 @@ def test_a_run_that_already_saw_the_criterion_does_not_walk_again(tmp_path):
         [{"calls": [("observe", {})]}, {"content": "讲完了"}],
         success_text=MATCHED,
     )
-    assert journey.rounds == len(fake.calls), (journey.rounds, len(fake.calls))
+    #: ⚠️ 这一趟是**见到就早停**（`_Stop("reached_success")`）⇒ 轮数按设计就是 0
+    #: （`journey.rounds_measured is False`：那条路拿不到轮数，代码里不编一个数）。
+    #: 所以要钉的不是轮数，而是「**没有再问一次**」——模型调用正好一次。
+    assert journey.rounds_measured is False, journey.rounds
+    assert len(fake.calls) == 1, len(fake.calls)
     assert not any("就地接着走" in n for n in journey.notes), journey.notes
