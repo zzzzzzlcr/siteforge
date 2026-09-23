@@ -236,6 +236,27 @@ def test_the_diag_comes_back_as_a_head_and_the_raw_lines():
     _no_code(got)
 
 
+def test_the_diag_row_carries_the_failure_screenshot_when_the_backend_has_one():
+    """★ 后端那格 `fail_img`（失败截图的 OSS 地址）要**原样带出来** —— 面板上那张图就是它。
+
+    ⚠️ 后端**没给**这一格（老单 / 那台机器没发上来）⇒ 空串 —— **不许编**一个地址，
+    也不许在页面上留个空框（空框会被读成「这一趟没截图」，而真相是「后端没给这一格」）。
+
+    ⚠️ 这一格在**我们这层**叫 `shot`（页面画的是**图**，不是一份 `fail_img` 的转储）——
+    与「后端那几格原样的字段名不许上屏」同一条规矩（`_no_code` 那一族）。
+    """
+    shot = "https://oss.example.com/fail/26033398.png"
+    with_shot = [dict(MEASURED_DIAG[0], fail_img=shot)]
+    got = _diag(_client(fmr_client=fmr.FmrClient(
+        token=FAKE_TOKEN, opener=Recorder(envelope(with_shot)))), TASK_ID).json()
+    assert got["diag"][0]["shot"] == shot, got["diag"][0]
+    #: 后端不给 ⇒ 空串（**不是** `None`、**不是**一句「没有截图」——那两种都是我们在编）。
+    bare = _diag(_client(fmr_client=fmr.FmrClient(
+        token=FAKE_TOKEN, opener=Recorder(envelope(MEASURED_DIAG)))), TASK_ID).json()
+    assert bare["diag"][0]["shot"] == "", bare["diag"][0]
+    assert "fail_img" not in str(bare), bare
+
+
 def test_the_diag_asks_by_task_id_only_never_by_the_site_key():
     """★ brief §2 R1 的可判形状：那一跳**只发单号**，这一层也**没有**站点键这个入口。
 

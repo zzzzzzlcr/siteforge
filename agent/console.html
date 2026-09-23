@@ -2505,15 +2505,25 @@
     var note = at(data, "note", "");
     if (note) { html += '<p class="hintline">' + rich(note) + "</p>"; }
     if (!rows.length) { box.innerHTML = html; return; }
-    var items = [], i, head, lines;
+    var items = [], i, head, lines, shot;
     for (i = 0; i < rows.length; i++) {
       head = at(rows[i], "say", "");
       //: ⚠️ 那几行是**日志原文**：只转义，**不过 `rich()`** ——
       //: 过了的话，日志里成对的星号/反引号会被当格式吃掉，那几行就不是机器报的那几行了。
       lines = esc(at(rows[i], "lines", ""));
+      //: ★ 失败截图（服务把后端那格 `fail_img` 端成 `shot`）：**有就摆出来**。
+      //: ⚠️ 没有 ⇒ **什么都不摆** —— 不摆空框、也不写「没有截图」（那两种都是我们在编：
+      //: 真话只是「后端没给这一格」，而页面没资格替它下这个判）。
+      //: 点开看大图 —— `href` 就是后端那个地址，**字节不进我们的 JSON**。
+      shot = at(rows[i], "shot", "");
       items.push('<div class="diagitem"><p class="diaghead">' + rich(head) + "</p>" +
                  (lines ? '<pre class="diaglines">' + lines + "</pre>"
-                        : '<p class="hintline">这一条回复里没有那几行日志。</p>') + "</div>");
+                        : '<p class="hintline">这一条回复里没有那几行日志。</p>') +
+                 (shot ? '<figure class="shot"><a href="' + esc(shot) +
+                         '" target="_blank" rel="noopener"><img src="' + esc(shot) +
+                         '" alt="失败时的页面截图" loading="lazy"></a>' +
+                         '<figcaption>失败时的页面截图（点开放大）</figcaption></figure>'
+                       : "") + "</div>");
     }
     box.innerHTML = html + '<div class="diaglist">' + items.join("") + "</div>";
   }

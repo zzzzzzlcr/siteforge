@@ -1939,12 +1939,16 @@ DIAG_LINES = ("第 18 步**跳过**：这一页不像「gowizard-13」那个状�
               "读页面用的帧：账本 ['FCD98757'] ／ 活帧 ['080A7732']")
 #: 有原因那一单的正文（服务那份投影：`say` 人话 + `lines` 原样 + `note` 空）。
 #: 【构造】那一行的时刻/机器名照 brief §1.2 的形状（真表里今天没有行）。
+#: ★ 失败截图那一格（服务把后端 `fail_img` 端成 `shot`）—— 有就摆出来。
+#: ⚠️ 这一串是**后端会给的形状**（OSS 地址）；`NO_DIAG_BODY` 那边**没有**这一格，
+#: 于是那一条路同时是对照组：没有 ⇒ 屏幕上**什么都不许有**。
+SHOT_URL = "https://oss.example.com/fail/26034602.png"
 DIAG_BODY = {
     "task_id": DIAG_TASK,
     "say": "单 %s 有 1 条原因行（最近一次的现场在最前面）。" % DIAG_TASK,
     "diag": [{"say": fmr.diag_head_say({"machine": "worker-07", "exit": "unknown",
                                         "at": "2026-09-20T14:32:11+08:00"}),
-              "lines": DIAG_LINES}],
+              "lines": DIAG_LINES, "shot": SHOT_URL}],
     "note": "",
 }
 #: 还没有原因那一单的正文 —— ★ `note` 就是 `fmr.NO_DIAG_SAY`（**服务给的**，页面不自己编一句）。
@@ -2223,6 +2227,24 @@ def test_the_log_lines_are_shown_verbatim_and_not_through_the_rich_renderer(tmp_
     assert "<b>跳过</b>" not in html, "星号被当格式吃掉了：%r" % html
     #: 另一行也得在（不是只留了第一行那种「摘要」）。
     assert "读页面用的帧" in html, html
+
+
+def test_the_failure_screenshot_is_shown_when_there_is_one(tmp_path):
+    """★★ 有失败截图 ⇒ **摆出来**（后端那个地址原样进 `<img src>`，字节不进我们的 JSON）。
+
+    量两下：
+      ① 那一单的 `shot` 地址在 `<img src="…">` 上（不是只印成一串字）；
+      ② 那张图**点得开**（`<a href="…">`）—— 图小的时候人要看原图（与 `cursor:zoom-in`
+         那个光标**对得上**：这一屏不许有假的「能点」）。
+    ⚠️ **对照组在服务那一层**（`tests/test_service_rank_diag.py`：后端不给 `fail_img`
+    ⇒ 端出来是空串）。这里另量一条下限：**没有原因行**那一单的正文里不许出现 `<img`
+    （那一栏是空的，空了也不许凭空长出一个框 —— 空框会被读成「这一趟没截图」）。
+    """
+    out = _drive(tmp_path, scenario="rank-diag")
+    html = out["afterDiag"]["diag"]
+    assert '<img src="%s"' % SHOT_URL in html, "那张失败截图没摆出来：%r" % html
+    assert '<a href="%s"' % SHOT_URL in html, "那张图点不开（没有原图入口）：%r" % html
+    assert "<img" not in out["afterNoDiag"]["diag"], out["afterNoDiag"]["diag"]
 
 
 def test_a_task_with_no_reason_yet_says_so_and_is_not_left_blank(tmp_path):

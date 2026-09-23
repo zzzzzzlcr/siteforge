@@ -4603,7 +4603,13 @@ class Service:
             "task_id": key,
             "say": _diag_say(key, rows),
             #: 页面拿 `say` 当抬头（人话）、`lines` 当正文（原样摆）。
-            "diag": [{"say": fmr.diag_head_say(r), "lines": str(r.get("lines") or "")}
+            #: ★ `shot` = 后端那格 `fail_img`（失败截图的 OSS 地址）—— **面板上那张图就是它**。
+            #: ⚠️ 后端没给 ⇒ **空串**（页面于是**什么都不摆**）：不许编一个地址，
+            #: 也不许摆一个空框（空框会被读成「这一趟没截图」，而真相是「后端没给这一格」）。
+            #: 名字叫 `shot` 不叫 `fail_img`：页面画的是**图**，不是一份后端的字段转储
+            #:（`_no_code` 那一族的规矩 —— 后端的字段名不许上屏）。
+            "diag": [{"say": fmr.diag_head_say(r), "lines": str(r.get("lines") or ""),
+                      "shot": str(r.get("fail_img") or "")}
                      for r in rows],
             #: 空 = 没有话要说；非空 = 这一单还没有原因行（**不是**错误，但必须说出来）。
             "note": "" if rows else fmr.NO_DIAG_SAY,
