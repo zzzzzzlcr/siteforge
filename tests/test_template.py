@@ -2653,3 +2653,47 @@ def test_the_product_matches_the_success_words_without_case(rendered):
               if isinstance(n, ast.FunctionDef) and n.name == "_succeeded")
     src = ast.get_source_segment(rendered, fn) or ""
     assert src.count(".lower()") >= 2, src
+
+
+# ── 候选顺序：框架生成的 id 排最后（★ 2026-09-23 用户实测）──────────────
+
+
+def _literal_of(src, name):
+    """从渲染出来的源码里抠一个模块级字面量（`STATES` / `FILLS`）。"""
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == name
+                                                for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError("渲染出来的源码里没有 %s" % name)
+
+
+def _render_with(states, fills):
+    return template.render(SAMPLE_SITE, SAMPLE_SUCCESS, states, fills, SAMPLE_PROVENANCE)
+
+
+def test_a_framework_generated_id_goes_last_in_the_declared_selectors():
+    """★ 用户实测指出的那条（原话：「用的这个 id？会有问题吧，感觉这种 ID 随时会变」）。
+
+    `#__BVID__38` 是 Vue 的**渲染序号**：同一个框重渲染就换号（真站实测
+    `#__BVID__42` → `#__BVID__429`）。产物按声明顺序一条条试 ⇒ 会**先用**它 ✗
+    ⇒ 声明里把它排到最后，人写的地址（`input[name="firstName"]`）先试。
+    ⚠️ 它仍然**留着**（实测有一格只有它一个候选），只是不再排第一。
+    """
+    states = [{"name": "s", "when": None,
+               "steps": [{"action": "form",
+                          "target": {"selectors": ['#__BVID__38', 'input[name="firstName"]']}}]}]
+    fills = [{"name": "first_name",
+              "target": {"selectors": ['#__BVID__38', 'input[name="firstName"]']}}]
+    src = _render_with(states, fills)
+    got = _literal_of(src, "STATES")[0]["steps"][0]["target"]["selectors"]
+    assert got == ['input[name="firstName"]', '#__BVID__38'], got
+    assert _literal_of(src, "FILLS")["first_name"]["target"]["selectors"] == got
+
+
+def test_the_order_of_human_written_selectors_is_not_touched():
+    """人写的地址**一个都不许重排** —— 那个顺序是探索那一趟量的（`sorted` 是稳定的）。"""
+    states = [{"name": "s", "when": None,
+               "steps": [{"action": "click", "target": {"selectors": ["#nvmct", "a.nav-cta"]}}]}]
+    src = _render_with(states, [])
+    got = _literal_of(src, "STATES")[0]["steps"][0]["target"]["selectors"]
+    assert got == ["#nvmct", "a.nav-cta"], got

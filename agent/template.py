@@ -56,6 +56,7 @@
 from __future__ import annotations
 
 import pprint
+import re
 from string import Template
 
 __all__ = ["render", "PROVENANCE_KEYS"]
@@ -101,6 +102,41 @@ def _success_texts(success_text) -> list:
     return texts
 
 
+#: 框架**生成的** id —— 带渲染序号，重渲染就换号（★ 2026-09-23 用户实测指出）。
+#: ⚠️ 与 cdp 那边是**同一份判据**（`tools/cdp/internal/observe.go` 的 `GENERATED_ID`，
+#: 它管的是稳定性评级；这里管的是产物里候选的先后）。两处对不上就会出现
+#: 「评级说它不稳、产物还是先试它」——那种不一致正是要躲的东西。
+_GENERATED_ID = re.compile(r"^#(?:__[A-Za-z]+__\d+$|:r[0-9a-z]+:|mui-\d|radix-"
+                           r"|headlessui-|downshift-|react-select-)", re.I)
+
+
+def _stable_first(obj):
+    """每处 `selectors` 重排一遍：**框架生成的 id 放最后**（人写的地址优先）。
+
+    ★ 2026-09-23，用户实测指出的那条（原话：「用的这个 id？会有问题吧，感觉这种 ID
+    随时会变」）：`#__BVID__408` 是 Vue 的**渲染序号** —— 同一个框重渲染就换号
+    （真站实测：这一趟 `#__BVID__42`、下一趟 `#__BVID__429`）。产物按声明顺序一条条试，
+    于是**先用**它；而「第 408 个渲染出来的控件」不是这个元素的身份，它是**位置**。
+    人写的地址（`input[name="firstName"]`、class、精确的 nth-of-type 路径）留在前面。
+
+    ⚠️ `sorted` 是**稳定**的：不是生成 id 的那些，相对顺序一个都不动 ——
+    那个顺序是探索那一趟量的，别顺手重排它。
+    ⚠️ 生成 id 仍然**留着**（排在最后）：页面真没给别的地址时，它是唯一够得着的路
+    —— 实测有一格（`telephoneNumber`）就只有它一个候选。
+    """
+    if isinstance(obj, dict):
+        out = {}
+        for key, value in obj.items():
+            if key == "selectors" and isinstance(value, list):
+                out[key] = sorted(value, key=lambda s: bool(_GENERATED_ID.match(str(s or ""))))
+            else:
+                out[key] = _stable_first(value)
+        return out
+    if isinstance(obj, list):
+        return [_stable_first(x) for x in obj]
+    return obj
+
+
 def _fills_map(fills) -> dict:
     """`fills` 收 list（带 name）或 dict，产物里一律是 dict（按名字查）。"""
     if isinstance(fills, dict):
@@ -138,8 +174,8 @@ def render(site, success_text, states, fills, provenance) -> str:
         site=site,
         summary=summary,
         success_texts=_lit(_success_texts(success_text)),
-        states=_lit(list(states)),
-        fills=_lit(_fills_map(fills)),
+        states=_lit(_stable_first(list(states))),
+        fills=_lit(_stable_first(_fills_map(fills))),
         provenance=_provenance_literal(provenance),
         stuck_limit=DEFAULT_STUCK_LIMIT,
     )
