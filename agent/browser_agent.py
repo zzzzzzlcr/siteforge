@@ -133,7 +133,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import events, llm, plan as plan_module, shots, tools
+from . import events, lessons, llm, plan as plan_module, shots, tools
 
 #: **C1**：`deepseek-v4-*` 把思考 token 算进 `max_tokens`。给 4000 时最终答案会**静默变空**
 #: （spike 实测 1/8，提到 12000 后 5/5 正常）。别往下调 —— 那不是省钱，是把能力削掉。
@@ -360,6 +360,13 @@ _SYSTEM = """你是 siteforge 的探路 agent：在一个**真的浏览器**里�
 7. **人给了步骤清单就照着走**（没给就按目标自由探）。清单是**一条走法的样子**，不是站点的
    结构：**这一趟少走几步、多走几步都是正常的**，别为了凑步数去点清单和原文里都没有的东西。
    **与页面矛盾时说出来再决定**，不要闷头按清单点下去。"""
+
+#: ★ **经验库**（2026-09-23，用户提的：「把我们写的成功案例整理成知识库，给生成脚本的 AI 参考」）。
+#: 接在**稳定层**（`_SYSTEM`）而**不是**简报（`_brief`）里：简报那条没计划的路被
+#: B4 那条钉子**逐字节**钉死（`tests/test_browser_agent.py:1778`）—— 往里加东西就是
+#: 偷偷把自由模式的行为改了；而 `_SYSTEM` 那边是**子串**断言，追加是安全的。
+#: 两条纪律（有出处、短）写在 `agent/lessons.py` 的模块 docstring 里，改之前先读它。
+_SYSTEM += lessons.block()
 
 
 @dataclass
