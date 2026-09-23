@@ -46,9 +46,16 @@
 不许把「某遍挂」吞成「部分通过」）。落地成两条：
 
 1. **判据是证据，不是愿望**：一遍算过，必须是「退出码 0」**且**「trace 里没有
-   `ok=false` 的行」。产物自己谎报成功（退出码 0 但那步没做成）也**按没做成算**。
-   「卡在第几步」= trace 里第一条 `ok == false` 的行的 `step` ——
+   **承重步**的 `ok=false` 行」。产物自己谎报成功（退出码 0 但那步没做成）也**按没做成算**。
+   「卡在第几步」= trace 里第一条**承重步** `ok == false` 的行的 `step` ——
    **不读 `progress`**（老 cdp 上它恒 `null`，旁边有 `progress_why`）。
+   ★ 2026-09-23（用户裁定，拿 vogue 那趟当案子）：**辅助步**（`AUXILIARY_ACTIONS`：
+   `scroll` / `wait`）的失败**不否决**这一遍 —— 它们只做「把元素滚进视口 / 等一下」，
+   没成时**后面那一步自己也会滚到位**（真站：`滚不动「GET DIGITAL ACCESS」`，
+   而流程照样推到成功页、退出码 0）。把它判成「没过」的代价是**一个实际成功的脚本
+   卡住上传按钮**，运营只能回来问人 —— 那正是这个模块要消灭的形状。
+   ⚠️ 另一半不许丢：辅助步的失败**照样点名报出来**（`note` 里写清第几步因为什么），
+   只是不拦 `passed`。**承重步失败一律算没过**（谎报成功与成了却判没过，是同一个病的两面）。
 2. **「跳过」不许长得像「过了」**：跳过的那遍 `status="skipped"`、`ok=None`
    （**不是 True**），而且默认**不算通过** —— 只有调用方**点名**允许的那几遍
    （`allow_skips`，默认只有第 5 遍）才不拦 `passed`。第 4 遍没给回调时
@@ -762,15 +769,30 @@ def _half_executed_states(lines: list) -> list:
     return sorted(ran & skipped)
 
 
+#: 辅助步：它们**不为「做成某件事」负责**，只为「把它弄到能做成的位置」——
+#: 所以它们没做成时，不许拿它们否决整遍（见 `_verdict` 与模块 docstring 第 1 条）。
+#: ★ 2026-09-23 用户裁定：判据要能分开「某一步没做成」与「这一趟没成」。
+AUXILIARY_ACTIONS = ("scroll", "wait")
+
+
 def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
              err: str, out: str, timeout: float) -> tuple:
-    """一遍的证据 → (ok, failed_step, note)。**这一处就是「诚实」本身**，别把它做软。"""
-    first_bad = next((ln for ln in lines if ln.get("ok") is False), None)
-    failed_step = first_bad.get("step") if first_bad else None
+    """一遍的证据 → (ok, failed_step, note)。**这一处就是「诚实」本身**，别把它做软。
+
+    ★ 2026-09-23：`ok=false` 分两档（模块 docstring 第 1 条写全了理由）——
+    **辅助步**（`AUXILIARY_ACTIONS`）失败 ⇒ 这一遍仍算过，但**必须点名**；
+    **承重步**失败 ⇒ 照旧否决。两档都进 `note`，不点名就是把失败藏起来。
+    """
+    bad_rows = [ln for ln in lines if ln.get("ok") is False]
+    hard_rows = [ln for ln in bad_rows
+                 if str(ln.get("action") or "").strip().lower() not in AUXILIARY_ACTIONS]
+    first_bad = bad_rows[0] if bad_rows else None
+    first_hard = hard_rows[0] if hard_rows else None
+    failed_step = first_hard.get("step") if first_hard else None
     step_said = (first_bad or {}).get("note") or "trace 里那一步没写为什么"
     # `lines` 非空是承重的一环（R-27）：一行 trace 都没有时，「trace 里没有没做成的步」
     # 这句话是**空口白话** —— 没有证据的东西不许被读成「过了」。
-    ok = (rc == 0) and bool(lines) and first_bad is None and not timed_out
+    ok = (rc == 0) and bool(lines) and first_hard is None and not timed_out
 
     #: ★ 2026-09-22（生成侧建议第 5 条）：**同一组状态里「有的步做了、有的步被跳过」** ——
     #: 那条路**跑完全程不报错**，只表现为「没走到成功」，最容易被当成**站点**问题糊过去。
@@ -788,9 +810,16 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
         note = "这一遍没跑完就超时了（>%s 秒）—— 卡在第 %s 步" % (
             ("%g" % timeout), failed_step) if failed_step else \
             "这一遍没跑完就超时了（>%s 秒）" % ("%g" % timeout)
+    elif rc == 0 and first_hard is not None:
+        note = ("退出码说成功，但 trace 里第 %s 步（**承重步** %s）没做成（%s）—— 按没做成算"
+                % (failed_step, str((first_hard or {}).get("action") or "?"), step_said))
     elif rc == 0 and first_bad is not None:
-        note = ("退出码说成功，但 trace 里第 %s 步没做成（%s）—— 按没做成算"
-                % (failed_step, step_said))
+        # 只有辅助步没做成 ⇒ **过了**，但按上面那条规矩点名（不点名就是把失败藏起来）。
+        note = ("**跑通了**（退出码 0）；但有 %d 步是**带瑕疵**过的 —— %s"
+                % (len(bad_rows), "；".join(
+                    "第 %s 步（%s）没做成：%s" % (ln.get("step"), str(ln.get("action") or "?"),
+                                                str(ln.get("note") or "")[:80])
+                    for ln in bad_rows)))
     elif rc == 0 and not lines:
         note = ("退出码说成功，但这一遍**一行 trace 都没有** —— 没有证据就不算过。"
                 "两种可能：trace 没写进去（产物会警告一句再接着跑），或者一步都没走到"

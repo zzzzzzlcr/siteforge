@@ -596,6 +596,31 @@ def test_the_trace_outranks_a_success_exit_code(env):
     assert "trace" in first.note, first.note
 
 
+def test_a_soft_step_failing_does_not_take_a_successful_run_down():
+    """★ 2026-09-23（用户裁定，vogue 那趟当案子）：**辅助步**（scroll / wait）没做成、
+    而这一遍**真的走到了成功**（退出码 0）⇒ 算**过了**（带瑕疵），不当挂。
+
+    为什么（真站形状）：`scroll` 只做「把那个元素滚进视口」—— 它没成，紧接着的
+    click / form 自己也会滚到位，流程照样推到成功页。把它判成没过 ⇒ **一个实际成功的
+    脚本卡住上传按钮**，运营只能回来问人（那正是要消灭的形状）。
+    ⚠️ 另一半不许丢：**带瑕疵这件事必须点名**；而**承重步**失败照旧否决。
+    这一条直接量 `_verdict`（纯函数）—— 不经桩，尺子本身在这里。
+    """
+    soft = [{"step": 1, "action": "click", "ok": True},
+            {"step": 2, "action": "form", "ok": True},
+            {"step": 3, "action": "scroll", "ok": False, "note": "滚不动「GET DIGITAL ACCESS」"}]
+    ok, failed_step, note = selftest._verdict(0, False, soft, 0, "", "", 600)
+    assert ok is True, note
+    assert failed_step is None, "带瑕疵过 ≠ 卡在第几步"
+    assert "带瑕疵" in note and "scroll" in note and "3" in note, note
+
+    # 同一把尺子的另一半：承重步失败照旧算没过（谎报成功不许放过）
+    hard = [dict(soft[0], ok=False, note="页面上没找到「Get Started」，这一步没做成")]
+    ok2, step2, note2 = selftest._verdict(0, False, hard, 0, "", "", 600)
+    assert ok2 is False and step2 == 1, (ok2, step2, note2)
+    assert "按没做成算" in note2 and "承重步" in note2, note2
+
+
 def test_a_run_that_walked_everything_but_never_saw_success_is_a_failure(env):
     """每一步都做成了、退出码 1、trace 里没有 `ok=false` 的行 —— 是「没见到成功文案」，
     不是「卡在第几步」。两种说法要分开，别拿 None 冒充一个步号。"""
