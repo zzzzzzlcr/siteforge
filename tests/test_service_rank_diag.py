@@ -93,7 +93,9 @@ def test_the_rank_comes_back_as_human_rows():
     got = r.json()
     assert [row["site"] for row in got["rank"]] == [r["site"] for r in RANK_FIXTURE["rank"]], \
         got["rank"]
-    assert got["rank"][0]["say"] == "失败 3 次 · 配置 66（启用） · 有脚本或配置", got["rank"][0]
+    #: v2 起那一行多一格**连续失败次数**：榜单是按连败筛出来的，只说当日失败数
+    #: 会把「为什么它在榜上」这一半丢掉（`fail=3 / streak=9` 比 `fail=5` 那个更急）。
+    assert got["rank"][0]["say"] == "失败 3 次 · 连续失败 9 次 · 配置 66（启用） · 有脚本或配置", got["rank"][0]
     _no_code(got)
 
 

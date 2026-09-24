@@ -739,19 +739,27 @@ RANK_KEY_FEWER = "cvrefresh.com/land/sp/constructed-sample"
 #: 「**与上面那个总数对得上**」那一支上，于是别的用例量差额时不会被这一句干扰。
 RANK_FIXTURE = {
     "date": "2026-09-20", "failed_total": 18, "unattributed": 8,
+    #: 【构造·2026-09-24 v2】三道闸门挡掉的条数与它们的参数。填 0/0 是**配平**用的
+    #: （18 = Σfail 10 + unattributed 8 + settling 0 + below_streak 0）——
+    #: 与上一版同一个目的：让抬头那句落在「**与上面那个总数对得上**」那一支上，
+    #: 于是别的用例量差额时不会被那一句干扰。
+    "settling": 0, "below_streak": 0,
+    "min_streak": 5, "days": 7, "settle": 30,
     "rank": [
-        #: 【转述·brief §1.1】干净那一行，逐字。
-        {"site": RANK_KEY_CLEAN, "fail": 3,
+        #: 【转述·brief §1.1】干净那一行，逐字；`streak` 是【构造·v2】。
+        #: ⚠️ `streak` 比 `fail` **大**是常态：`fail` 是**这一天**的量，
+        #: `streak` 是**跨天累计**的连败 —— 一个站可能今天只败 3 次、却已经连败 9 次。
+        {"site": RANK_KEY_CLEAN, "fail": 3, "streak": 9,
          "config_id": 66, "config_status": "启用", "has_script": True},
         #: ⚠️ 上一版这几格编成 `None/None/None/"没有配置"`（复审 F3：**归属整个写反了**）。
         #: 这一版按【复审量的·出处 §三②】填回去：真那条是 `66 / "启用" / true`。
-        {"site": RANK_KEY_LONG, "fail": 1,
+        {"site": RANK_KEY_LONG, "fail": 1, "streak": 6,
          "config_id": 66, "config_status": "启用", "has_script": True},
         #: 【复审量的】键 + 【构造】那几格（见 `RANK_KEY_NO_CONFIG`）。
-        {"site": RANK_KEY_NO_CONFIG, "fail": 1,
+        {"site": RANK_KEY_NO_CONFIG, "fail": 1, "streak": 5,
          "config_id": None, "config_status": None, "has_script": None, "note": "没有配置"},
         #: 【构造】驱动「少」那一支。
-        {"site": RANK_KEY_FEWER, "fail": 5,
+        {"site": RANK_KEY_FEWER, "fail": 5, "streak": 5,
          "config_id": 7, "config_status": "停用", "has_script": False},
     ],
 }
@@ -880,15 +888,100 @@ def test_the_rank_says_when_it_did_not_show_everything():
     assert "没摆全" not in fmr.rank_say(whole, 50), fmr.rank_say(whole, 50)
 
 
+def test_the_gate_is_named_so_few_sites_is_not_read_as_few_failures():
+    """★ v2：**闸门要在抬头里点名**，否则「只摆了 2 个站」会被读成「今天只坏了 2 个站」。
+
+    【我量的·2026-09-24】线上 7 天：每天 8~9 行里有一半是「当日失败 ≤2 次」，
+    而它们只占当天失败的 ~10% —— 也就是说**滤掉一半的行，几乎不损失覆盖率**。
+    所以「站少」在新口径下是**正常**的，得让读的人一眼知道这是闸门筛的。
+    """
+    said = fmr.rank_say(RANK_FIXTURE, 50)
+    assert "连续失败" in said, said
+    assert "5" in said, said
+
+
+def test_an_empty_rank_with_failures_is_the_gate_not_a_lost_answer():
+    """★★ 空榜 + 有失败 = **闸门筛的**，不是「接口在丢数据」。
+
+    v2 之前这条形状只会出现在「归不到站」那种日子里，所以旧的那句写的是
+    「可它一个站都没摆出来 —— 照实摆着，别读成今天没有站在失败」。v2 起这形状**天天有**
+    （每个站都只败了一两次的日子），再这么说就是天天喊狼来了 —— 而真正对不上的时候
+    那句话也就不值钱了。
+    """
+    day = {"date": "2026-09-24", "failed_total": 24, "unattributed": 2,
+           "settling": 1, "below_streak": 21, "min_streak": 5, "days": 7, "settle": 30,
+           "rank": []}
+    said = fmr.rank_say(day, 50)
+    assert "24" in said, said
+    assert "连败" in said or "连续" in said, said
+    #: ⚠️ 不许再说「对不上」（这一份是配平过的：24 = 0 + 2 + 1 + 21）
+    assert "对不上" not in said, said
+
+    #: 正控：**真对不上**的时候那句话还在（少了它，上面那条可以靠「永远不说」满足）
+    broken = dict(day, below_streak=3)          # 24 ≠ 0 + 2 + 1 + 3
+    other = fmr.rank_say(broken, 50)
+    assert other != said, "对不上与闸门筛的两份说了同一句话"
+    assert "对不上" in other or "没摆" in other, other
+
+
+def test_the_gap_is_split_between_the_limit_and_the_gates():
+    """差额有**两个**来源（v2）：`limit` 截掉的 + 闸门挡掉的。混成一句就永远算不清。"""
+    data = {"date": "2026-09-24", "failed_total": 100, "unattributed": 5,
+            "settling": 10, "below_streak": 60, "min_streak": 5,
+            "rank": [{"site": "a.com/x", "fail": 3, "streak": 7,
+                      "config_id": 1, "config_status": "启用", "has_script": True}]}
+    said = fmr.rank_say(data, 1)
+    #: 100 = 3（摆出来的）+ 5（归不到站）+ 10 + 60 + **22**（没摆出来的）
+    assert "没摆全" in said, said
+    assert "22" in said, "没摆出来的那一截没算对：%r" % said
+    assert "10" in said and "60" in said, "两道闸挡掉的量要分别说出来：%r" % said
+
+    #: 配平的那一份：差额恰好全是闸门挡的 ⇒ 说「对得上」，而不是「没摆全」
+    whole = dict(data, failed_total=78)
+    ok = fmr.rank_say(whole, 50)
+    assert "对得上" in ok, ok
+    assert "没摆全" not in ok, ok
+
+
 def test_a_rank_row_becomes_one_human_sentence():
-    """一行的人话：`失败 3 次 · 配置 66（启用） · 有脚本或配置`（码一个都不许在）。"""
+    """一行的人话：`失败 3 次 · 连续失败 9 次 · 配置 66（启用） · 有脚本或配置`（码一个都不许在）。"""
     said = fmr.rank_row_say(RANK_FIXTURE["rank"][0])
-    assert said == "失败 3 次 · 配置 66（启用） · 有脚本或配置", said
+    assert said == "失败 3 次 · 连续失败 9 次 · 配置 66（启用） · 有脚本或配置", said
     #: ★ 2026-09-21：这一行**不许说 py** —— 后端那一格（`scriptKind() !== null`）
     #: **py 与 json 都算「有」**，所以它对一个 json 站也说「有」。
     #: 【我量的·2026-09-21】`cvrefresh.com`（json 站、`/configcheck` 读得到真配置）
     #: 的榜单那一行当时写的就是「配置 34（启用）· 有 py 脚本」—— 那句是假话。
     assert "py" not in said, said
+
+
+def test_the_row_says_the_streak_because_that_is_why_it_is_listed():
+    """★ v2：**这一行凭什么在榜上，是 `streak` 说的，不是 `fail`。**
+
+    榜单从「今天谁失败过」改成了「谁还在**连续**失败」（后端 `min_streak` 闸门），
+    所以两格对不上是常态：`fail=3 / streak=9` 的那个站，今天只败 3 次、却连败了 9 次 ——
+    只说 `fail` 的话，读的人会以为它比 `fail=5` 那个站轻（排序恰恰相反）。
+    """
+    row = {"site": "a.com/x", "fail": 3, "streak": 9,
+           "config_id": 1, "config_status": "启用", "has_script": True}
+    said = fmr.rank_row_say(row)
+    assert "连续失败 9 次" in said, said
+    #: 两个数**都在**（只留一个就是把另一件事盖掉）
+    assert "失败 3 次" in said, said
+    #: ⚠️ `<option>` 那一格放不下标记：这一句是两个去处逐字节一样的那一句
+    assert "**" not in said, said
+
+
+def test_a_row_without_a_streak_says_so_instead_of_implying_zero():
+    """后端还没上 v2 时那一格是**没有**（不是 0）—— 要说出来，不许拿 0 顶替。
+
+    `0` 是一个合法读数（连败刚被打断），拿它顶替「没给」就是把「这一屏量不出连败」
+    写成了「它没在连败」—— 方向正好反过来。
+    """
+    old = {"site": "a.com/x", "fail": 3, "config_id": 1,
+           "config_status": "启用", "has_script": True}
+    said = fmr.rank_row_say(old)
+    assert "连续失败 0 次" not in said, said
+    assert "没给" in said, said
 
 
 def test_has_script_is_three_states_not_two():

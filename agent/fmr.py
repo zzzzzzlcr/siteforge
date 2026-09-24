@@ -840,6 +840,14 @@ def rank_row_say(row: dict) -> str:
     n = int_or_none(row.get("fail"))
     parts.append("失败 %d 次" % n if n is not None
                  else "失败几次它没给（那一格写的是 %r）" % (row.get("fail"),))
+    #: ★ v2：**这一行凭什么在榜上，是这一格说的**。榜单按「连续失败」筛（后端 `min_streak`），
+    #: 不按当日失败数 —— `fail=3 / streak=9` 的站比 `fail=5 / streak=5` 那个更急，
+    #: 只看 `fail` 会把顺序读反。
+    #: ⚠️ 缺格（后端还没上 v2）时说「没给」，**不拿 0 顶替**：`0` 是合法读数
+    #: （连败刚被一次成功打断），顶替就把「这一屏量不出连败」写成了「它没在连败」——
+    #: 方向正好反过来（与 `fail` 那一格的收法同一条纪律）。
+    streak = int_or_none(row.get("streak"))
+    parts.append("连续失败 %d 次" % streak if streak is not None else "连败几次它没给")
     if row.get("config_id") is None:
         note = str(row.get("note") or "").strip()
         parts.append(note if note else "配置它没给，也没说为什么不给")
@@ -854,18 +862,26 @@ def rank_row_say(row: dict) -> str:
 def rank_say(data: dict, limit: Any = None) -> str:
     """③ 榜单顶上那句人话：**量的是哪一天、量到多少、摆出来的占多少**。
 
-    ⚠️ 三个数都得在，因为**它们对不上是正常的**（后端自己的注释点名过）：
+    ⚠️ 数字**对不上是正常的**，而且 v2 起有**两个**来源，必须分开说：
       · `failed_total` = 那一天**全部**失败的行数；
       · `unattributed` = 其中**归不到任何一个站**的（没有匹配键）；
-      · `rank` = 按站聚合后**摆出来的**那几个 —— 而 `limit` **只截断它**。
+      · `settling` / `below_streak` = 被**结算窗口** / **连败闸门**挡掉的（后端 v2 的格子）；
+      · `rank` = 只摆**当前连败够 `min_streak`** 的站，`limit` 还在它上面再截一刀。
     ⇒ 「摆了 3 个站」与「今天失败了 18 次」**可以同时为真**。只说前者，
       读的人会以为今天就这么几个站坏了；**差额必须说出来**（「没有静默的路径」）。
+
+    ⚠️ **后端 v2 那几格缺失时退回旧口径**（差额一把算成「没摆出来的」），
+    **不拿 0 顶替** —— `0` 是合法读数，顶替会把「后端没报」写成「没有站被闸门挡掉」，
+    而那正好是相反的话。
     """
     data = data if isinstance(data, dict) else {}
     day = str(data.get("date") or "").strip()
     rows = [r for r in (data.get("rank") or []) if isinstance(r, dict)]
     total = int_or_none(data.get("failed_total"))
     unattr = int_or_none(data.get("unattributed"))
+    settling = int_or_none(data.get("settling"))
+    below = int_or_none(data.get("below_streak"))
+    min_streak = int_or_none(data.get("min_streak"))
     shown = sum(n for n in (int_or_none(r.get("fail")) for r in rows) if n is not None)
     when = ("%s 这一天" % day) if day else "这一天（它没说是哪一天）"
 
@@ -879,12 +895,22 @@ def rank_say(data: dict, limit: Any = None) -> str:
         elif unattr:
             head += "（其中 **%d** 次归不到任何一个站 —— 没有匹配键）" % unattr
         head += "。"
+        if min_streak is not None:
+            # ★ **站少是闸门筛的**，不是「今天只坏了这几个站」—— 不点名，这一屏就会
+            # 被读成「失败变少了」，而它其实只是把偶发的那些滤掉了
+            head += "榜单按**连续失败**筛：只列还在连败、而且连败 ≥ **%d** 次的站。" % min_streak
 
     if not rows:
         if total == 0:
             return head + "一个站都没有 —— 这是**量到的**结果（不是「没量着」）。"
         if unattr is not None and unattr == total:
             return head + "**一个站都归不出来** —— 全部归不到任何一个站。"
+        # ★ v2：空榜 + 有失败**天天有**（每个站都只败了一两次的日子）—— 只要差额能被
+        # 那两格解释掉，它就不是「对不上」。还按旧话喊「对不上」，真正的对不上就不值钱了。
+        if total is not None and unattr is not None and settling is not None and below is not None:
+            if total - unattr - settling - below == 0:
+                return (head + "**没有站连败够** —— 这 %d 次失败全落在闸门底下"
+                        "（不是「没量着」，也不是接口在丢数据）。" % total)
         return (head + "可它**一个站都没摆出来** —— 上面那个总数与这一栏对不上，"
                 "照实摆着，别读成「今天没有站在失败」。")
 
@@ -892,16 +918,35 @@ def rank_say(data: dict, limit: Any = None) -> str:
     cap = ("这一屏一次最多摆 %s 个站。" % n) if n else ""
     tail = "下面摆了 %d 个站" % len(rows)
     gap = None if (total is None or unattr is None) else total - shown - unattr
+    #: 闸门挡掉的总量。**只有两格都在**才算得出来（缺一格就说「推不出」，
+    #: 不许把缺的那格当 0 —— 那会把「后端没报」算进「没摆出来」里）
+    gated = None if (settling is None or below is None) else settling + below
+
     if gap is None:
         tail += "（这几个站加起来 %d 次失败）—— 与上面那个总数差多少，这一份算不出来。%s" % (shown, cap)
-    elif gap > 0:
-        tail += ("（这几个站加起来 %d 次失败）—— ⚠️ **没摆全**：还差 **%d** 次属于没摆出来的站，"
-                 "把 `limit` 放大再查（后端上限 %d）。%s" % (shown, gap, RANK_MAX_LIMIT, cap))
-    elif gap == 0:
-        tail += "（这几个站加起来 %d 次失败，**与上面那个总数对得上**）。" % shown
+    elif gated is None:
+        # 旧口径（后端还没上 v2）：差额只有一个来源
+        if gap > 0:
+            tail += ("（这几个站加起来 %d 次失败）—— ⚠️ **没摆全**：还差 **%d** 次属于没摆出来的站，"
+                     "把 `limit` 放大再查（后端上限 %d）。%s" % (shown, gap, RANK_MAX_LIMIT, cap))
+        elif gap == 0:
+            tail += "（这几个站加起来 %d 次失败，**与上面那个总数对得上**）。" % shown
+        else:
+            tail += ("（这几个站加起来 %d 次失败 —— ⚠️ 比上面那个总数还多 %d，这两格对不上，"
+                     "照实摆着）。" % (shown, -gap))
     else:
-        tail += ("（这几个站加起来 %d 次失败 —— ⚠️ 比上面那个总数还多 %d，这两格对不上，"
-                 "照实摆着）。" % (shown, -gap))
+        rest = gap - gated
+        tail += "（这几个站加起来 %d 次失败" % shown
+        if settling or below:
+            tail += "，另有 **%d** 次还在结算窗口内、**%d** 次没到连败闸门" % (settling, below)
+        if rest > 0:
+            tail += ("）—— ⚠️ **没摆全**：还差 **%d** 次属于没摆出来的站，"
+                     "把 `limit` 放大再查（后端上限 %d）。%s" % (rest, RANK_MAX_LIMIT, cap))
+        elif rest == 0:
+            tail += "，**与上面那个总数对得上**）。%s" % cap
+        else:
+            tail += (" —— ⚠️ 比上面那个总数还多 %d，这两格对不上，照实摆着）。%s" % (-rest, cap))
+
     return head + tail
 
 
