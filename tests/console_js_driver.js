@@ -535,6 +535,8 @@ async function rankScenario(out) {
   await settle();
   out.afterDiag = { diag: el("diag").innerHTML, disabled: el("btnDiag").disabled };
   // ⑦b ★ 2026-09-23（用户问「点击看这单的原因不能点立即修复吗」）：看完原因**当场修**。
+  //: 先把「我猜它为什么失败」那一格填上 —— 这一下量的是**它带不带得上**（原样进 `note`）。
+  el("fixNote").value = payload.fixGuess || "";
   //: 这一下走的是**页面上既有**的那条路：`fixFrom`（把证据 + 站键 + 网址填进下面那张表）
   //: → `startRun`（既有的「开一趟」）。⚠️ 「什么算成功」那一格**没填**（那一格只有人知道）——
   //: 页面**不许**自己先拦：请求照发，缺什么由**服务**那句话说了算（红杠上摆的就是它）。

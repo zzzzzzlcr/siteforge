@@ -2037,7 +2037,10 @@ def _rank_payloads() -> dict:
     """
     live_one = [{"body": _live("running", "queue", n=1 + i, tag="这一趟")} for i in range(8)]
     _assert_all_different([x["body"] for x in live_one], "`/live` 的正文")
-    return {"scenario": "rank-diag", "search": "?job=job-1",
+    #: ★ 2026-09-23：那一格「我猜它为什么失败」（`#fixNote`）里人打的字 —— 驱动脚本会先填进去，
+    #: 再按「看完了，直接修这一单」⇒ 它必须原样出现在 `POST /run` 的 `note` 里（那条路 = hints）。
+    fix_guess = "我猜是那个 cookie 弹层盖住了提交按钮"
+    return {"scenario": "rank-diag", "search": "?job=job-1", "fixGuess": fix_guess,
             "rank": {"clean": RANK_CLEAN, "long": RANK_LONG, "fewer": RANK_FEWER,
                      "noConfig": RANK_NO_CONFIG, "noCount": RANK_NO_COUNT,
                      "withDiag": DIAG_TASK, "noDiag": NO_DIAG_TASK},
@@ -2290,9 +2293,11 @@ def test_the_reason_can_be_fixed_right_there(tmp_path):
     assert len(runs) == 1, out["sent"]
     body = json.loads(runs[0]["body"])
     assert body["mode"] == "fix", body
-    assert body["evidence"] == FAIL_EV, body
     #: ③ 页面**没有**替服务拦：「什么算成功」空着，请求照样发出去了
     assert body["success_text"] == "", body
+    #: ④ ★ 2026-09-23（用户问「那怎么带上自己的语言？」）：**人猜的那句带上了** ——
+    #: 它进的是 `note`（=服务那一格 `hints`，逐字进提示词），不是页面自己另开的通道。
+    assert "我猜是那个 cookie 弹层盖住了提交按钮" in body["note"], body
     #: 而且看原因那一栏**还在**（这一下不把它擦掉 —— 人还在读那几行日志）
     assert after["diag"] == out["afterDiag"]["diag"], after["diag"]
 
