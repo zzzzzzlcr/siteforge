@@ -555,6 +555,40 @@ async function rankScenario(out) {
                       mode: el("runMode").value, evidence: el("runEvidence").value,
                       evidenceHidden: el("runEvidenceField").hidden,
                       whoJob: el("whoJob").textContent, diag: el("diag").innerHTML };
+  // ⑦c ★ 2026-09-24（用户实测：按这一颗 ⇒ 400「还没说什么算成功」）：那一格原本只长在
+  //: **下面那张表**里，而这一颗按钮的承诺是「一按就走」⇒ 现在**这一栏也有**（`#fixSuccess`）。
+  //: 量两件，缺一条这条就能靠改坏另一条过：
+  //:   ① 人填的那句**原样**进 `POST /run` 的 `success_text`（真正发出去的就是那一格）；
+  //:   ② 表里已经写了一句、跟这一栏的不一样 ⇒ **一个请求都不发**，把两句都摆出来（不替人挑）。
+  //: ⚠️ 只在 `payload.fixSuccess` 有值时跑（**单独一趟**）：这两下会多发 / 不发 `/run`，
+  //:    而上面那一趟有一条判据量的是「整趟只发了一次 `/run`」—— 混在一趟里就把它量坏了。
+  if (payload.fixSuccess) {
+    var c0 = sent.length;
+    el("fixSuccess").value = payload.fixSuccess;
+    fire("btnFixNow", "click");
+    await settle();
+    await settle();
+    await settle();
+    out.afterFixSuccess = {
+      runSuccess: el("runSuccess").value,
+      sentRun: sent.slice(c0).filter(function (s) { return s.url === "/run"; })
+                   .map(function (s) { return JSON.parse(s.body).success_text; }),
+      errBox: el("errBox").textContent,
+      errHidden: el("errBox").hidden
+    };
+    //: ⑦d 冲突那一趟：表里那一格已经写了别的 ⇒ **不覆盖、也不硬发**。
+    var c1 = sent.length;
+    el("runSuccess").value = payload.fixSuccessTable || "";
+    el("fixSuccess").value = payload.fixSuccess;
+    fire("btnFixNow", "click");
+    await settle();
+    await settle();
+    out.afterFixConflict = {
+      sentRunCount: sent.slice(c1).filter(function (s) { return s.url === "/run"; }).length,
+      errBox: el("errBox").textContent,
+      runSuccess: el("runSuccess").value
+    };
+  }
   // ⑧ 挑**还没有原因**的那一单 ⇒ 服务那句 `note` 上屏
   el("failPick").value = payload.rank.noDiag;
   fire("btnDiag", "click");
@@ -629,7 +663,10 @@ async function againScenario(out) {
   else if (payload.scenario === "configcheck") { await configcheckScenario(out); }
   else if (payload.scenario === "configcheck-unclean") { await configcheckScenario(out); }
   else if (payload.scenario === "configcheck-unreadable") { await configcheckScenario(out); }
-  else if (payload.scenario === "rank-diag") { await rankScenario(out); }
+  //: `rank-diag-success` 与 `rank-diag` 走**同一段**驱动 —— 差别只在载荷里那一格
+  //: （`fixSuccess` 有值 ⇒ 多跑 ⑦c/⑦d 那两下）。与 `artifact` / `artifact-missing` 同款约定。
+  else if (payload.scenario === "rank-diag" ||
+           payload.scenario === "rank-diag-success") { await rankScenario(out); }
   else { await repaintScenario(out); }
   out.paints = timelineWrites;                      // **重画了几次**（C1：别拿 fetch 数代替）
   if (out.paintMarks) { out.paintMarks.end = timelineWrites; }

@@ -363,6 +363,8 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _failures_unmeasured_payloads()
     elif scenario == "rank-diag":
         payload = _rank_payloads()
+    elif scenario == "rank-diag-success":
+        payload = _rank_success_payloads()
     else:
         payload = _payloads(final_mode=final_mode)
     #: 分支名与载荷自己声明的那一个**同不同名**：不同名 = 上面又漏了一个分支，
@@ -2084,6 +2086,62 @@ def _rank_payloads() -> dict:
                 #: 不给这一条的话，夹具会在屏幕上留一句「夹具没给这个 URL 准备响应」的假错。
                 "/job/job-fix-1/live": [{"body": _live("running", "queue", n=1)}],
             }}
+
+
+#: ★ 2026-09-24（用户实测：按「看完了，直接修这一单」⇒ 400「还没说什么算成功」）：
+#: 人在这两格里写的那两串 —— 一个并进 `#runSuccess`，一个**已经**写在那儿（量「不替人挑」）。
+FIX_SUCCESS = "Thank you for subscribing!"
+FIX_SUCCESS_TABLE = "Check your email"
+
+
+def _rank_success_payloads() -> dict:
+    """⑦c/⑦d 那一趟：**同一段驱动**，只多给这一栏那一格（`fixSuccess`）。
+
+    ⚠️ **单开一趟**，不塞进 `rank-diag`：那两下会多发一次 / 一次都不发 `/run`，
+    而 `rank-diag` 有一条判据量的是「整趟只发了一次 `/run`」—— 混在一趟里会把它量坏。
+    """
+    p = _rank_payloads()
+    p["scenario"] = "rank-diag-success"
+    p["fixSuccess"] = FIX_SUCCESS
+    p["fixSuccessTable"] = FIX_SUCCESS_TABLE
+    return p
+
+
+def test_the_fix_now_button_carries_the_success_criterion_you_typed(tmp_path):
+    """★★ 2026-09-24（用户实测：一按就 400）：「直接修这一单」要的那一格，现在**就在那一栏里**。
+
+    病灶（在真面板上量出来的）：那一格只长在**下面那张表**里（`#runSuccess`），
+    而这一颗按钮的承诺是「一按就走」⇒ 按下去**必然** 400
+    （`_intake_problems`：还没说什么算成功）—— 人卡死在那儿。
+    修法照**既有**那一套（`#fixNote` → `#runNote`）：并进**同一个**格子，**不新开口径**。
+
+    量两件：
+      ① 人填的那句**原样**进 `POST /run` 的 `success_text`（服务收到的就是它）；
+      ② 它同时也落在表里那一格上 —— 一个判据只有一个去处，发出去的是那一格。
+    """
+    out = _drive(tmp_path, scenario="rank-diag-success")
+    after = out["afterFixSuccess"]
+    #: 正控：这一趟**确实**发了一次 `/run`（否则下面那条是在量一个空列表）。
+    assert len(after["sentRun"]) == 1, after
+    assert after["sentRun"] == [FIX_SUCCESS], (
+        "那一格填了却没带上（发出去的 `success_text` 是 %r）" % after["sentRun"])
+    assert after["runSuccess"] == FIX_SUCCESS, after
+
+
+def test_two_different_criteria_are_both_shown_instead_of_picked(tmp_path):
+    """★ 两处都写了、又不一样 ⇒ **一个请求都不发**，两句都摆出来（**不替人挑**）。
+
+    为什么单钉一条：挑错的那一下**要真花一趟活**（真窗口 + 一次模型跑），
+    而「挑错了」在屏幕上与「你会心地填对了」长得**一模一样** —— 页面没资格在这儿选一个。
+    所以：两句都摆出来，表里那一格**不被覆盖**（人已经填过的那句不许被静默改掉）。
+    """
+    out = _drive(tmp_path, scenario="rank-diag-success")
+    after = out["afterFixConflict"]
+    assert after["sentRunCount"] == 0, "两句话不一样，页面还是硬发了一趟：%r" % after
+    assert FIX_SUCCESS in after["errBox"], after
+    assert FIX_SUCCESS_TABLE in after["errBox"], after
+    assert "不替你挑" in after["errBox"], after
+    assert after["runSuccess"] == FIX_SUCCESS_TABLE, after
 
 
 def test_the_rank_panel_shows_the_rank_as_human_words(tmp_path):
