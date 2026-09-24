@@ -375,8 +375,9 @@ LIVE_STATE_UNREADABLE_503 = ("读不回这个任务的状态（%s）—— 它�
                              "运行本身的进展还在 checkpoint 里。")
 #: `GET /runs` 空列表时的 `note`：这个列表是 **process-local** 的，
 #: 不说的话人会把「空」读成「什么都没提交过」。
-NO_RUNS_SAY = ("还没有任何运行。这个列表是**这个进程**记得的那些 —— 服务重启过的话，"
-               "之前提交的就不在这儿了（它们的状态还在 checkpoint 里，知道 job id 就还能看）。")
+NO_RUNS_SAY = ("还没有任何运行。**这一句只在这个部署还认不出任何账本时出现** —— "
+               "列表是从**盘上的账本**（`runtime/explore/job-*/`）重建的，重启不会把它清空；"
+               "真看到这一句，说明这些目录也不在（或者读不动），去看服务日志。")
 #: 「撞上限」那三种停因（设计注 §3.2 第 4 行）—— 只用来挑 `kind`；
 #: 人话一律照抄快照里的 `end_note`（原话），不在这儿另写一句。
 CAP_END_REASONS = (END_REVISION_CAP, END_LINT_CAP, END_SELFTEST_CAP)
@@ -4609,7 +4610,15 @@ class Service:
         """
         with self._jobs_lock:
             jobs = list(self._jobs.values())
-        jobs.sort(key=lambda j: j.created_at, reverse=True)
+        #: ★ 2026-09-24：盘上认得、登记表里没有的 job ⇒ **从 checkpoint 捡回来**（`_recover` 本来
+        #: 就有 —— R-19 的正身：状态住在 saver 里，不在进程里的对象里）⇒ 重启不再等于清空面板。
+        known = {j.job_id for j in jobs}
+        for job_id in self._disk_job_ids()[:self.RECOVER_LOOKBACK]:
+            if job_id in known:
+                continue
+            back = self._recover(job_id)
+            if back is not None:
+                jobs.append(back)
         rows = []
         for job in jobs:
             view = self._view(job.job_id)         # 登记表里的 job 读得回来（读不回来是 500，不是少一行）
@@ -4625,6 +4634,32 @@ class Service:
                 "delivered": bool(view.get("delivered")),
             })
         return {"note": "" if rows else NO_RUNS_SAY, "runs": rows}
+
+    #: `/runs` 从盘上捡回几个（每一个都要读一次 checkpoint ⇒ 给个上限）。
+    #: ⚠️ `ponytail`：够用就好（面板那一栏是「最近的那些」）；真嫌少再加缓存，别现在就上。
+    RECOVER_LOOKBACK = 20
+
+    def _disk_job_ids(self) -> list:
+        """盘上认得哪些 job（`<explore 根>/job-*/`）—— **最近的在前**。
+
+        ★ 2026-09-24（用户拍的口径：一切都走容器 ⇒ 重启是常态）：活是**内存**里的 ✗，
+        容器一重启面板上就什么都不剩（当天真出过两次：一条活开在容器里、人刷新找不到它 ✓）；
+        而 checkpoint **一直在盘上** ✓ ⇒ 列表得会自己重建 ✓。
+
+        ⚠️ 名字只认 `job-` 前缀（与 `_explore_dir` 同一口径 ✓）；这一条链是**旁路**：
+        盘读不动 ⇒ 空列表，不许把 `/runs` 带塌（与 `_resume_for` 那条同源 ✓）。
+        """
+        root = pathlib.Path(self._explore_root)
+        try:
+            names = [p.name for p in root.iterdir()
+                     if p.is_dir() and p.name.startswith("job-")]
+        except OSError:
+            return []
+        try:
+            names.sort(key=lambda n: (root / n).stat().st_mtime, reverse=True)
+        except OSError:
+            pass
+        return names
 
     # ── ① 从 FMR 读失败（Task 13）────────────────────────────────────
     @staticmethod
