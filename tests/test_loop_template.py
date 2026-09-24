@@ -18,11 +18,14 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
+import logging
 import pathlib
 import shutil
 import subprocess
 import sys
+import types
 
 import pytest
 
@@ -142,3 +145,74 @@ def test_the_shape_rule_refuses_to_guess_without_pages():
     #: 有页但**没有 url_contains**（账本记不下地址那一格）⇒ 一样不猜
     blind = template_loop.funnel_states(_book([{"name": "a", "when": {"text_contains": ["x"]}}]))
     assert not blind["states"] and "判不出" in blind["why"], blind
+
+
+def _fake_common(monkeypatch, page, calls):
+    """一个够用的假 `common`：产物 import 的就是它（只记调用，不碰真浏览器）。"""
+    mod = types.ModuleType("common")
+
+    class CDPHelper:
+        def __init__(self, ws_url, *a, **kw):
+            calls["ws"] = ws_url
+
+        def eval(self, js, *a, **kw):
+            if "data-sf-pick" in js or "data-sf-fill" in js:
+                return "marked"
+            return json.dumps(page)
+
+        def click(self, sel, *a, **kw):
+            calls["click"].append(sel)
+
+        def form(self, sel, **kw):
+            calls["form"].append((sel, kw))
+
+        def navigate(self, url, *a, **kw):
+            calls["nav"].append(url)
+
+        def scroll(self, sel, *a, **kw):
+            calls["scroll"].append(sel)
+
+    mod.CDPHelper = CDPHelper
+    mod.setup_logger = lambda name: logging.getLogger(name)
+    mod.report_url = lambda cdp, tid, step, log, reason="": calls["report"].append((step, reason))
+    monkeypatch.setitem(sys.modules, "common", mod)
+    return mod
+
+
+def test_a_product_without_an_entry_url_runs_on_the_current_page(tmp_path, monkeypatch):
+    """★ 2026-09-24 真站上**当场**逼出来的：入口网址空**不是错**，产物照样该开干。
+
+    现场：生成器产出的第一份一上来就退（`EXIT=1` + 日志「这一版**没有入口网址** ——
+    不知道从哪儿开始，如实报失败」），而它明明能干活。生产那份样本（`goldenagesouls.py`
+    的 `run()`）里**一句导航都没有** ⇒ 这一族本来就在「平台开好的那一页」上开干
+    （2026-09-23 用户定的规矩：产物不自己导航一遍）。
+
+    这条钉两件：① **不导航**；② 照样往下做（不是一上来就退）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/quiz", "head": "Question 1", "progress": "",
+            "inputs": [], "options": ["\u0001No"], "nextVisible": False, "nextTxt": ""}
+    _fake_common(monkeypatch, page, calls)
+
+    src = template_loop.render_loop("noentry", "Thank you", "thank-you",
+                                    {"email": {"kind": "email"}},
+                                    dict(PROV, entry_url=""))
+    path = tmp_path / "product.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("noentry_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    trace = tmp_path / "t.jsonl"
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    filler = module.Filler("ws://x/1", str(form), "cid",
+                           trace_path=str(trace), no_report=True)
+    filler.run(max_steps=2)
+
+    assert calls["nav"] == [], "产物自己导航了 —— 那是 2026-09-23 点名不许的那一下"
+    assert calls["click"], "一上来就退场，一步都没做"
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert any(r.get("action") == "goto" and r.get("ok") is None for r in rows), rows[:3]
+    assert any(r.get("action") == "click" for r in rows), rows
+    assert all("没有入口网址" not in str(r) for r in rows), "退场那条还在：%r" % (rows[:3],)
