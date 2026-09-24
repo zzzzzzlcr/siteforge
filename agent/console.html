@@ -591,6 +591,11 @@
             <p class="hintline" id="autoNow">正在问值班那一格…</p>
             <ul class="hintline" id="autoNeeds"></ul>
           </div>
+            <div class="go">
+              <button class="btn primary" type="button" id="btnAutoOn">打开自动值班</button>
+              <button class="btn" type="button" id="btnAutoOff">停（不再开新的）</button>
+            </div>
+            <p class="hintline" id="autoNote"></p>
         </section>
 
         <!-- ── 换代理国家（2026-09-22）───────────────────────────
@@ -1776,6 +1781,23 @@
       ul.innerHTML = items.join("");
     }).catch(function (e) {
       box.innerHTML = rich("自动值班那一格没读到结果：" + e);
+    });
+  }
+
+  //: 「开 / 停」那两下：**只拨开关**（服务写 flags.json）—— 判据与话都在服务那侧，
+  //: 这儿把回话**原样**摆出来，再问一遍那一行（不把「要开」抄回屏上当作现状）。
+  //: ⚠️ 「停」停的是「还开不开新的」：**正在跑的那一趟不受影响**（服务那句话里写着）。
+  function switchAuto(on) {
+    fetch(AUTO_PATH, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on: !!on, note: "" })
+    }).then(readJSON).then(function (res) {
+      var el = document.getElementById("autoNote");
+      if (el) { el.innerHTML = rich(res.ok ? at(res.obj, "say", "") : sayOf(res)); }
+      paintAuto();
+    }).catch(function (e) {
+      var el = document.getElementById("autoNote");
+      if (el) { el.innerHTML = rich("拨开关那一下没读到结果：" + e); }
     });
   }
 
@@ -3075,6 +3097,9 @@
   //: （`if (!live) { return; }`）—— 2026-09-24 真浏览器里量到的：那一栏一直停在
   //: 「正在问值班那一格…」。挑着 job 时 `paint()` 里那次照旧，心跳跟着每拍刷。
   paintAuto();
+  //: ★ 总开关那两下（T6）：静态按钮（与上面换国家那格同一套写法）。
+  document.getElementById("btnAutoOn").addEventListener("click", function () { switchAuto(true); });
+  document.getElementById("btnAutoOff").addEventListener("click", function () { switchAuto(false); });
   // ★ 失败列表那两下（Task 13）：查一趟失败；照一条把表填好。
   //   ⚠️ 只有**两个**静态按钮 —— 列表里那几行是**画出来的**（一行一个按钮的话，
   //      「点哪一条」这件事就没有一处是可测的了：动态建出来的元素在这套夹具里点不着）。
