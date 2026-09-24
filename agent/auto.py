@@ -316,14 +316,28 @@ def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
         if not ok:
             skipped.append(why)
             continue
-        #: ★ **对账**（2026-09-24 用户点到的存量条目）：榜单给的键**不一定读得出单** ——
-        #: 那些连败可能是在「失败记录这条线还没上线」之前攒下的（后端根本没有可对账的单）。
-        #: ⇒ 读不出来就**跳过这一行、看下一行**：别让一条存量行把整圈卡住（后面够格的永远轮不到）。
+        #: ⚠️ 读不出来就**跳过这一行、看下一行**：别让一条读不出单的行把整圈卡住
+        #: （2026-09-24 实测：榜上真有读不出来的行 —— 缺配置的那一条，带不带 `type=debug` 都 404）。
+        #: ★ 窗口要**够宽**（2026-09-24 实测）：这个读口不给 `since` 时默认「**今天 00:00**」，
+        #: 而榜单是按**跨天连败**筛的 ⇒ 拿「今天」去对账 ⇒ **一条都读不到**
+        #: （实测：三行里两行的最新失败是 9-23 / 9-20，用今天查就是 0 条 —— 那不是「没有」）。
+        #: 窗口照**后端自己那道闸**的实测取值（榜单回显的 `days: 7`）。
+        since = time.strftime("%Y-%m-%d", time.localtime(now - 7 * 86400))
         try:
-            fails = list(fmr.fetch_failures(site) or [])
+            fails = list(fmr.fetch_failures(site, since=since) or [])
         except Exception as exc:                      # noqa: BLE001 —— 读不到就说读不到
-            skipped.append("对账读不到「%s」的失败记录：%s" % (site, exc))
-            continue
+            #: 第二跳：**带上 `type=debug` 再问一次**（只有 404 才值得 —— 与 `form_script` 同源）。
+            #: ⚠️ 实测边界：它救的是「被 `where('status',1)` 滤掉」那一支；**缺配置**那一条
+            #: 带不带都是 404 ⇒ 第二跳之后还是读不到，就照实报人（不猜）。
+            if int(getattr(exc, "status", 0) or 0) != 404:
+                skipped.append("对账读不到「%s」的失败记录：%s" % (site, exc))
+                continue
+            try:
+                fails = list(fmr.fetch_failures(site, since=since, debug=True) or [])
+            except Exception as exc2:                 # noqa: BLE001
+                skipped.append("对账读不到「%s」的失败记录（带 type=debug 也没读到）：%s"
+                               % (site, exc2))
+                continue
         if not fails:
             skipped.append("「%s」有连败记录、却读不到失败行（存量条目？）—— 对不上账" % site)
             continue

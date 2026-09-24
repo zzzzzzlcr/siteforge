@@ -1221,10 +1221,18 @@ class FmrClient:
                 % (noun, status, UNMEASURED_SAY, tail))
 
     # ── ① 失败列表 ─────────────────────────────────────────────────
-    def fetch_failures(self, site: str, since: Any = None, limit: Any = None) -> List[dict]:
+    def fetch_failures(self, site: str, since: Any = None, limit: Any = None,
+                       debug: bool = False) -> List[dict]:
         """这个站在 `since` 之后失败的每一趟。**倒序**（后端给的顺序，不重排）。
 
         ⚠️ **空 list = 真量了、真没有**。任何一种「没量着」都抛（见模块 docstring 那张表）。
+
+        ★ `debug=True` ⇒ 多带一格 `type=debug`（与 `form_script` 那条同一个做法）。**实测的边界**
+        （2026-09-24，拿真榜单三行各问两次）：`www.parents.com/…` 与
+        `compareinsulation.io/article-1-c` **带不带都一样读得到**；而
+        `lastingpowerofattorney.io/article-1` **带不带都 404** ⇒
+        **它不是「查不到」的万能钥匙**：它救的是**被 `where('status',1)` 滤掉**的那一支。
+        ⚠️ 与 `form_script` 那条一样：**只有 404 才值得重试**（别的码的原因不是「哪一份配置」）。
         """
         key = str(site or "").strip()
         if not key:
@@ -1232,12 +1240,15 @@ class FmrClient:
                 "读不了失败记录：没说是**哪个站** —— 这是免费的检查（一个请求都没发出去）。",
                 kind="no-site")
         n = DEFAULT_LIMIT if limit in (None, "") else int(limit)
-        data = self._call("/api/quest/formLog", {
+        params = {
             "site": key,
             "status": "failed",
             "since": since_text(since, now=self._now()),
             "limit": n,
-        })
+        }
+        if debug:
+            params["type"] = "debug"
+        data = self._call("/api/quest/formLog", params)
         return [r for r in (data or []) if isinstance(r, dict)]
 
     # ── ② 逐步记录 ─────────────────────────────────────────────────

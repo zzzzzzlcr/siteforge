@@ -22,10 +22,22 @@ FAILS_ONE = {"a.com/x": [{"task_id": "26034602", "site": "a.com/x", "country": "
                           "status": "failed"}]}
 
 
+class _Refused(Exception):
+    """一个「后端 404」的替身（`run_once` 只看 `.status` ⇒ 只备那一格）。"""
+
+    status = 404
+
+
 class FakeFmr:
-    def __init__(self, *, rank=RANK_ONE, fails=FAILS_ONE, raises=None):
+    def __init__(self, *, rank=RANK_ONE, fails=FAILS_ONE, raises=None, refuse_once=False,
+                 fail_raises=None):
         self.rank, self.fails, self.raises = rank, fails, raises
+        #: **对账那一步**抛什么（`raises` 是「看榜就抛」—— 两者不是一回事，别混）。
+        self.fail_raises = fail_raises
+        #: 模拟「默认查询 404、带 `type=debug` 才读得到」那一支（后端默认只看启用那份）。
+        self.refuse_once = refuse_once
         self.calls = []
+        self.since_seen = []                 #: 每次对账的 `(site, since, debug)`
 
     def fetch_rank(self, *, date, limit):
         self.calls.append(("rank", date, limit))
@@ -33,8 +45,13 @@ class FakeFmr:
             raise self.raises
         return self.rank
 
-    def fetch_failures(self, site):
+    def fetch_failures(self, site, since=None, debug=False):
         self.calls.append(("fails", site))
+        self.since_seen.append((site, since, debug))
+        if self.fail_raises is not None:
+            raise self.fail_raises
+        if self.refuse_once and not debug:
+            raise _Refused("config not found")
         return self.fails.get(site, [])
 
 
@@ -201,3 +218,38 @@ def test_a_stale_row_does_not_block_the_whole_round(tmp_path):
     got = _run(tmp_path, fmr, poster)
     assert got["did"] == "开了" and got["site"] == "a.com/x", got
     assert poster.calls[0][1]["fix_site"] == "a.com/x", poster.calls[0][1]
+
+
+def test_the_reconciliation_window_is_wider_than_today(tmp_path):
+    """★ 窗口要够宽（2026-09-24 实测）：不给 `since` 时默认「今天 00:00」，而榜单按**跨天连败**筛
+    ⇒ 拿今天去对账一条都读不到（实测两行最新失败是 9-23 / 9-20）⇒ 这里要明显**早于今天**。"""
+    _on(tmp_path)
+    fmr = FakeFmr()
+    assert _run(tmp_path, fmr, Poster())["did"] == "开了"
+    site, since, debug = fmr.since_seen[0]
+    assert site == "a.com/x" and debug is False, fmr.since_seen
+    #: 期望值用 `auto` 里那个 `time`（这份用例没 import 它 —— 只为算一个日期，不值当加一行 import）
+    want = auto.time.strftime("%Y-%m-%d", auto.time.localtime(1000.0 - 7 * 86400))
+    assert since == want, (since, want)          # 用例里的 now=1000.0 ⇒ 窗口就是往前 7 天
+
+
+def test_a_404_gets_one_retry_with_type_debug(tmp_path):
+    """★ 默认查询 404（停用的站在后端默认只看启用那份）⇒ **带 `type=debug` 再问一次**。"""
+    _on(tmp_path)
+    fmr = FakeFmr(refuse_once=True)
+    poster = Poster()
+    got = _run(tmp_path, fmr, poster)
+    assert got["did"] == "开了", got
+    assert [(c[1], c[2]) for c in fmr.since_seen][-1][1] is True, fmr.since_seen
+    assert poster.calls, "第二跳读到了却没开"
+
+
+def test_anything_that_is_not_a_404_is_not_retried(tmp_path):
+    """别的码的原因**不是**「哪一份配置」⇒ 不许拿 `type=debug` 去撞（与 `form_script` 同一条）。"""
+    _on(tmp_path)
+    fmr = FakeFmr(fail_raises=RuntimeError("connection refused"))   #: 抛在**对账**那一步
+    poster = Poster()
+    got = _run(tmp_path, fmr, poster)
+    assert got["did"] == "没动" and "对账读不到" in got["why"], got
+    assert all(c[2] is False for c in fmr.since_seen), fmr.since_seen
+    assert poster.calls == []
