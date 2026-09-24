@@ -565,14 +565,19 @@ async function rankScenario(out) {
   if (payload.fixSuccess) {
     var c0 = sent.length;
     el("fixSuccess").value = payload.fixSuccess;
+    //: ★ 2026-09-24：判据是**两格** —— 网址那一格也走同一条路（并进 `#runSuccessUrl`）。
+    el("fixSuccessUrl").value = payload.fixSuccessUrl || "";
     fire("btnFixNow", "click");
     await settle();
     await settle();
     await settle();
     out.afterFixSuccess = {
       runSuccess: el("runSuccess").value,
+      runSuccessUrl: el("runSuccessUrl").value,
       sentRun: sent.slice(c0).filter(function (s) { return s.url === "/run"; })
                    .map(function (s) { return JSON.parse(s.body).success_text; }),
+      sentRunUrls: sent.slice(c0).filter(function (s) { return s.url === "/run"; })
+                       .map(function (s) { return JSON.parse(s.body).success_urls; }),
       errBox: el("errBox").textContent,
       errHidden: el("errBox").hidden
     };

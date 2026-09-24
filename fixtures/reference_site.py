@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """example-funnel —— siteforge 产出的站点脚本。
 
-siteforge 从真页面探索出来的重放脚本：按 STATES 走一遍，见到成功文案就算成功。
+siteforge 从真页面探索出来的重放脚本：按 STATES 走一遍，见到成功判据（页面上的那串字，或网址里的那一截）就算成功。
 
 骨架固定（agent 只填 STATES / FILLS），调试契约见规格 §5.1c：
 
@@ -32,8 +32,13 @@ from common import CDPHelper, setup_logger, report_url
 
 
 SITE = "example-funnel"
-# 成功判据：页面上出现其中任意一段文字就算走通了（人话，不是选择器）
+# 成功判据之一：页面上出现其中任意一段文字就算走通了（人话，不是选择器）
 SUCCESS_TEXTS = ['Thank you', 'Your quote is ready']
+# 成功判据之二：**当前网址**里出现其中任意一截也算走通了（★ 2026-09-24 用户点名加的那一格）。
+# 为什么要有它：老脚本本来就常判网址（`japansdates` 的 `/wizard`、`warthunder` 的 `#/confirm`），
+# 而那种站换页时**正文可能一个字都不变** —— 只认文字就等于永远认不出成功。
+# ⚠️ 两格是**或**的关系，都在收尾时判；**空的那格不参与**（没放宽任何东西）。
+SUCCESS_URLS = []
 # 早停：连续这么多步没做成，收摊（规格 §13 —— 重跑不许磨完全程）。
 # 生产 JSON 执行器的早停有**已知未修**的 bug（form_executor/json_executor.py:373 的
 # bool(_cur_tab) 恒真 → 连续失败计数每步被清零 → 失败任务必磨完全程），
@@ -1547,7 +1552,7 @@ class Filler:
         while time.monotonic() < deadline:
             time.sleep(float(SUCCESS_POLL_SECONDS))
             if self._succeeded():
-                self.log.info("[%s] 等到了：成功文案出现了", self.cid)
+                self.log.info("[%s] 等到了：成功判据成立了", self.cid)
                 return True
         return False
 
@@ -2060,7 +2065,14 @@ class Filler:
 
     def _succeeded(self):
         signature = self.page_signature().lower()
-        return any(_norm(t).lower() in signature for t in SUCCESS_TEXTS if t)
+        if any(_norm(t).lower() in signature for t in SUCCESS_TEXTS if t):
+            return True
+        #: ★ 2026-09-24（用户点名「那不能一样加个 success_url」）：**网址那一格**。
+        #: 判「成功」的两条路并列：页面上见到了那串字，**或者**现在这个地址里出现了那一截。
+        #: `_url()` 拿的是 `window.location.href` —— **含 fragment**（`#/confirm` 那种
+        #: 判据就在 fragment 里，`warthunder` 那份老脚本正是这么判的）。
+        url = str(self._url() or "").lower()
+        return any(_norm(u).lower() in url for u in SUCCESS_URLS if u)
 
     def _run_step(self, index, step):
         """走一步，返回 (ok, progress)。trace 的一行也在这一步里落。"""
@@ -2284,7 +2296,7 @@ class Filler:
                     ok, progress = self._run_step(index, step)
 
                     if self._succeeded():
-                        self.log.info("[%s] 成功：页面上见到了成功文案", self.cid)
+                        self.log.info("[%s] 成功：判据成立了（页面上那串字 / 网址那一截）", self.cid)
                         self._rpt("success")
                         return True
                     if ok:
@@ -2352,10 +2364,10 @@ class Filler:
             # 「走完了 N 步」这句话本身**不是**一个结论（它听着像「跑完了」）。
             self.log.error(
                 "[%s] **没走到成功**：%d 步里真做了 %d 步、被 when 判据跳过 %d 步%s；"
-                "页面上**从头到尾没有出现过成功文案**（要认的那段：%s）……",
+                "页面上**从头到尾没有出现过成功判据**（要认的那段：%s）……",
                 self.cid, total, total - self.skipped, self.skipped,
                 ("（跳过最多的那个状态是「%s」）" % self._skip_peak()) if self.skipped else "",
-                " / ".join(SUCCESS_TEXTS[:2]))
+                " / ".join(SUCCESS_TEXTS[:2]) or ("网址 " + " / ".join(SUCCESS_URLS[:2])))
             # ⚠️ 这一句**只进日志、不进 trace**：trace 的每一行都是「一步」
             # （下游按 `line["ok"]` 读它，加一行没有 ok 的会把它读崩 ——
             # `tests/test_template.py` 的截图那条就是这么读的）。

@@ -95,8 +95,12 @@ def _literals(src: str):
 #: 老脚本**自己声明**成功文案时用的名字（模块级字面量；`_` 前缀一样认 ——
 #: 手写的脚本常写成 `_SUCCESS_TEXT`，`warthunder` 那份就是）。
 SUCCESS_NAMES = ("SUCCESS_TEXT", "SUCCESS_TEXTS")
-#: 判成功**只看网址**的那几个名字 —— 只在「读不出文案」时用来**说清它靠什么判**。
-URL_JUDGE_NAMES = ("SUCCESS_URL_MARKERS", "SUCCESS_URL_MARK", "HASH_SUCCESS_STATES")
+#: 判成功**只看网址**的那几个名字 —— 那两个 `MARK` 是**网址原文里的一截**（能照搬）；
+#: `HASH_SUCCESS_STATES` **不在**这一族（见 `success_clue_from_source` 那段）。
+URL_JUDGE_NAMES = ("SUCCESS_URL_MARKERS", "SUCCESS_URL_MARK")
+#: 判的是**hash 里解出来的状态名**（`japansdates` 的 `wizard2` 那种）——
+#: 那一串在网址原文里**没有**（它是 base64 解出来的），所以**搬不了**，只能说出来。
+HASH_JUDGE_NAMES = ("HASH_SUCCESS_STATES",)
 
 
 def _module_literals(src: str) -> dict:
@@ -119,7 +123,7 @@ def _module_literals(src: str) -> dict:
             continue
         for name in names:
             key = name.lstrip("_")
-            if key in out or key not in SUCCESS_NAMES + URL_JUDGE_NAMES:
+            if key in out or key not in SUCCESS_NAMES + URL_JUDGE_NAMES + HASH_JUDGE_NAMES:
                 continue
             try:
                 out[key] = ast.literal_eval(node.value)
@@ -156,24 +160,73 @@ def success_texts_from_source(src: str) -> list:
     return out
 
 
-def success_clue_from_source(src: str) -> str:
-    """底稿里**读不出**可搬的文案时，说清它靠什么判成功（空串 = 说不出，**不编**）。"""
+def success_urls_from_source(src: str) -> list:
+    """底稿**自己声明**的**网址判据**（`SUCCESS_URL_MARKERS` / `SUCCESS_URL_MARK`），逐字。
+
+    ★ 2026-09-24（用户点名「那不能一样加个 success_url」）：老脚本常常判**网址**
+    （`japansdates` 是 `/wizard` 那一族、`warthunder` 是 `#/confirm` 那一截），
+    而文字那一格装不下它（网址那一截**不在页面正文里**）⇒ 得**有第二格**接住它。
+
+    ⚠️ **整族搬**（不是挑一个）：老脚本自己写的就是「这几个里**任意一个**」（`any(...)`）——
+    搬一个就等于替它改窄判据，而那是「判据不许动」那条口径的反面。
+    ⚠️ `HASH_SUCCESS_STATES` **不进来**：那几个名字是**解过 base64 的 hash 状态**，
+    网址原文里根本没有那一串（照搬过去就是永远不匹配）—— 那件事由 `success_clue_from_source`
+    **说出来**。
+    """
     table = _module_literals(src)
-    urlish: list = []
+    values: list = []
     for key in URL_JUDGE_NAMES:
         got = table.get(key)
         if isinstance(got, str):
-            urlish.append(got)
+            values.append(got)
         elif isinstance(got, (list, tuple)):
-            urlish.extend(v for v in got if isinstance(v, str))
-    if urlish:
-        return ("⚠️ 这一份底稿判成功**只看网址**（它自己那几行是：%s）—— "
-                "产物那边是在**页面正文**里找那串字的，搬过去会**永远认不出**成功，"
-                "所以不能替你搬。" % "、".join("`%s`" % u for u in urlish[:6]))
+            values.extend(v for v in got if isinstance(v, str))
+    out: list = []
+    for url in values:
+        if url.strip() and url not in out:
+            out.append(url)
+    return out
+
+
+def success_clue_from_source(src: str) -> str:
+    """底稿里**两样都读不出可搬的**时，说清它靠什么判成功（空串 = 说不出，**不编**）。
+
+    ★ 2026-09-24 改口径（加了 `success_urls` 那一格之后）：网址那一族**现在搬得动**了，
+    所以这句话只剩下**真搬不了**的两种 —— 「判据写在函数里」与「判的是解出来的 hash 状态」。
+    留一句准话在这里，比让人对着两个空格猜自己缺什么强。
+    """
+    table = _module_literals(src)
+    hashed: list = []
+    for key in HASH_JUDGE_NAMES:
+        got = table.get(key)
+        if isinstance(got, str):
+            hashed.append(got)
+        elif isinstance(got, (list, tuple)):
+            hashed.extend(v for v in got if isinstance(v, str))
+    if hashed:
+        return ("⚠️ 这一份底稿判的是 **hash 里解出来的状态名**（%s）—— 那一串是"
+                "**解过 base64 的**，网址原文里没有它，服务**没法照搬**；"
+                "照抄一页上真会出现的字、或者网址里真会出现的那一截填一格。"
+                % "、".join("`%s`" % h for h in hashed[:6]))
     if re.search(r"def _?is_success\s*\(", str(src or "")):
         return ("⚠️ 这一份底稿有自己的 `is_success(...)` —— 判据写在代码里（不是一格字面量），"
                 "服务**不替它猜**那一格该填什么。")
     return ""
+
+
+def taken_say(texts: list, urls: list) -> str:
+    """**搬过来的是哪一条**（人话，给时间线那句用）。两样都空 ⇒ 空串。
+
+    ★ 2026-09-24：修站那一趟的两格判据都可以从底稿搬 ⇒ 那件事**必须说出来**
+    （不说的话，运营以为判据是自己填的那条，而它其实是老脚本那条 —— 两条不一样时
+    屏幕上没有任何地方看得出来）。
+    """
+    parts = []
+    if texts:
+        parts.append("页面上的「%s」" % "」、「".join(str(t) for t in texts))
+    if urls:
+        parts.append("网址里的「%s」" % "」、「".join(str(u) for u in urls))
+    return "；".join(parts)
 
 
 def site_schema(url_get: Callable[[str], str], label: str) -> Optional[dict]:

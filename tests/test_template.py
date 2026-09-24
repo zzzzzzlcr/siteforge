@@ -1477,6 +1477,85 @@ sys.exit(1)
 '''
 
 
+# ─────────── ★ 判据的第二格：**网址里出现哪一截**（2026-09-24，用户点名）───────────
+#
+# 用户原话：「那不能一样加个 success_url 吗」。为什么非有它不可：老脚本本来就常判网址
+# （`japansdates` 的 `/wizard`、`warthunder` 的 `#/confirm`），而那种站**换页时正文可能一个字
+# 都不变**（SPA）—— 只认正文那格就等于永远认不出成功（搬不动那半老脚本）。
+# ⚠️ 它是**另外一格**，不是把文字那格放宽成「正文 + 网址」：判据一个字没放宽。
+
+def test_the_product_can_judge_success_by_the_url_grid(sandbox, form_file):
+    """★★ 产物**按网址判成功**：那一格进得了产物、判得动、而且**不松**。
+
+    量三件（缺一条这条就能靠改坏另一条过）：
+      ① 那一格真的进了产物（`SUCCESS_URLS == ["/wizard"]`，而文字那格是**空的**）；
+      ② **正文里没有那串字、地址里有那一截** ⇒ 这一趟算**成了**（`run()` 返回 True）；
+      ③ 反例：地址里**也没有**那一截 ⇒ **不算成**（判据一个字没放宽）。
+    """
+    module, _ = _load(
+        "run_url_criterion",
+        template.render("example-url", "", _one_click_states(selectors=["#go"]), [],
+                        SAMPLE_PROVENANCE, success_urls=["/wizard"]),
+        sandbox,
+    )
+    assert list(module.SUCCESS_TEXTS) == [], module.SUCCESS_TEXTS
+    assert list(module.SUCCESS_URLS) == ["/wizard"], module.SUCCESS_URLS
+
+    #: ② 正文里没有那串字（也没有任何成功文案），可地址里带着 `/wizard` ⇒ 成了
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.url = "https://example.test/wizard#step8"
+    assert module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run() is True
+
+    #: ③ 反例：同一份产物、地址里**没有**那一截 ⇒ 不算成。
+    #: ⚠️ 收尾那 30 秒的等待把它关掉（`SUCCESS_WAIT_SECONDS = 0`）—— 这一条量的是**判据**，
+    #: 不是「它愿意等多久」；等着它，只是把这条用例变成 30 秒。
+    miss, _ = _load(
+        "run_url_criterion_miss",
+        template.render("example-url-miss", "", _one_click_states(selectors=["#go"]), [],
+                        SAMPLE_PROVENANCE, success_urls=["/wizard"]),
+        sandbox,
+    )
+    miss.SUCCESS_WAIT_SECONDS = 0
+    common2 = _stub(sandbox,
+                    observe={"url": "https://example.test/", "actions": [], "fields": []},
+                    diff={"actionable": True})
+    common2.STATE.texts = ["Walk"]
+    common2.STATE.url = "https://example.test/other-page"
+    assert miss.Filler(WS, form_file, "cid_2", "task_2", delay=(0, 0)).run() is False, (
+        "地址里没有那一截，产物也说自己成了 —— 那就是把判据放宽了")
+
+
+def test_a_product_with_no_criterion_at_all_is_refused(sandbox):
+    """两格**都空** ⇒ 照旧抛（没有判据的产物会「跑到底再说自己成功」—— 本项目最忌讳的那类谎）。
+
+    ⚠️ 这一条钉的是「加网址那格时**没有**把老那条闸顺手拆掉」：`success_urls` 只能是
+    **第二**个条件，不能变成「有它就不管文字那格」或者「两格都空也放行」。
+    """
+    try:
+        template.render("example-empty", "", _one_click_states(selectors=["#go"]), [],
+                        SAMPLE_PROVENANCE)
+    except ValueError as exc:
+        assert "不能空" in str(exc), exc
+    else:
+        raise AssertionError("两格都空竟然渲染出了一份产物")
+    #: 文字那格**只写了说明词**（剥完什么都不剩）时也一样 —— 而且**不许**拿网址那格去顶它
+    #: （那是「两件事混成一件」：那一格本来就是坏的，该让人看见）。
+    try:
+        template.render("example-empty2", "出现", _one_click_states(selectors=["#go"]), [],
+                        SAMPLE_PROVENANCE, success_urls=["/wizard"])
+    except ValueError as exc:
+        assert "不能空" in str(exc), exc
+    else:
+        raise AssertionError("文字那格剥完什么都不剩，竟然放行了")
+    #: ⚠️ 但**纯空白**不算「写了那一格」（人没填就是没填）⇒ 有网址那格就该照常渲染 ——
+    #: 这不是放宽：那一格里本来一个字节的内容都没有。
+    assert template.render("example-empty3", " ", _one_click_states(selectors=["#go"]), [],
+                           SAMPLE_PROVENANCE, success_urls=["/wizard"])
+
+
 if __name__ == "__main__":
     REFERENCE.parent.mkdir(parents=True, exist_ok=True)
     REFERENCE.write_text(render_sample(), encoding="utf-8")
@@ -1968,7 +2047,11 @@ def test_the_end_says_out_loud_that_it_did_not_arrive(sandbox, form_file, caplog
     hit = [m for m in records if "没走到成功" in m]
     assert hit, records
     assert "真做了 1 步" in hit[0] and "跳过 1 步" in hit[0], hit[0]
-    assert "没有出现过成功文案" in hit[0], hit[0]
+    #: ⚠️ 逐行交代（2026-09-24 改的，与加网址那格同一天）：那行日志原来说的是
+    #: 「页面上**从头到尾没有出现过成功文案**」—— 加了网址那格之后那句话在
+    #: **只给网址**的产物上是**假的**（判据根本不是「文案」）。改成「成功判据」，
+    #: 这条断言跟着改（量的还是同一件事：**它大声说了「没到」**）。
+    assert "没有出现过成功判据" in hit[0], hit[0]
 
 
 def test_the_url_judgement_reads_the_frames_own_location(sandbox, form_file):

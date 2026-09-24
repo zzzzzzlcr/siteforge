@@ -171,17 +171,33 @@ def test_the_draft_own_criteria_are_read_verbatim():
 
 
 def test_a_draft_with_no_readable_criterion_is_not_guessed():
-    """① 函数体里那串字**不读**（捞它就是猜）；② 判网址的那种要说清**它看的是网址**。"""
+    """① 函数体里那串字**不读**（捞它就是猜）；② **网址那一格**现在搬得动了。
+
+    ⚠️ 逐行交代（2026-09-24 改的，加 `success_urls` 那一格时）：这一条原先量的是
+    「判网址那种 ⇒ 回空 + 说清它看的是网址」—— 那是**当时**的事实（网址搬不过去）。
+    现在有了第二格 ⇒ 那几行**照搬**（`success_urls_from_source`），
+    而这句话只剩**真搬不了**的两种（判据写在函数里 / 判的是解出来的 hash 状态）。
+    """
     #: ⚠️ 写在函数里 —— `entyrecare` 的真形状（`".../auth/verify"` 那种）
     inside = ('def run(self):\n'
               '    if "thank-you" in page:\n'
               '        self._rpt("success")\n')
     assert fix.success_texts_from_source(inside) == [], "从函数体里捞字符串了（那是猜）"
-    #: 判网址那一种（`japansdates` 的真形状）⇒ 空 + 一句**说清它靠什么判**
+    assert fix.success_urls_from_source(inside) == [], "同上：捞字符串就是猜"
+    #: 判网址那一种（`japansdates` 的真形状）⇒ **照搬它那几行**（不是挑一个）
     url_only = ('SUCCESS_URL_MARKERS = ("/wizard", "/main-page")\n'
                 'def is_success(url):\n    return any(m in url for m in SUCCESS_URL_MARKERS)\n')
     assert fix.success_texts_from_source(url_only) == []
-    clue = fix.success_clue_from_source(url_only)
-    assert "/wizard" in clue and "只看网址" in clue, clue
+    assert fix.success_urls_from_source(url_only) == ["/wizard", "/main-page"]
+    #: 判的是**解出来的 hash 状态**（`japansdates` 的 `wizard2` 那种）⇒ 搬不了，**说清为什么**
+    hashed = ('HASH_SUCCESS_STATES = ("wizard", "wizard2")\n'
+              'def is_success(url):\n    return True\n')
+    assert fix.success_urls_from_source(hashed) == []
+    clue = fix.success_clue_from_source(hashed)
+    assert "wizard2" in clue and "base64" in clue, clue
+    #: 判据写在函数里那一支（有 `is_success`，但没有可搬的字面量）也要说得出 ——
+    #: ⚠️ 不许写成「或 True」那种白送的断言：那看起来像有守，实际什么都没量。
+    func_only = 'def is_success(url):\n    return "/done" in url\n'
+    assert "is_success" in fix.success_clue_from_source(func_only)
     #: 说不出靠什么判时**回空串**（调用方那边有兜底那句话）—— 不编一句。
     assert fix.success_clue_from_source("x = 1\n") == ""

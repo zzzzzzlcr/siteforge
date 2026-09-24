@@ -90,7 +90,8 @@ END_DELIVERED = "delivered"
 END_HUMAN_STOP = "human_stop"
 #: 开场白里连站点/目标都没有 —— 不开浏览器
 END_NO_BRIEF = "no_brief"
-#: 没人说「什么算成功」（`success_text`）—— 在 intake 就停，**不许猜**（§6.1）
+#: 没人说「什么算成功」（`success_text` **和** `success_urls` 两格都空）—— 在 intake 就停，
+#: **不许猜**（§6.1）
 END_NO_SUCCESS_TEXT = "no_success_text"
 #: 窗口层缺一根线（`set_viewport` 之类）—— 那几遍扰动跑不了，而没人允许跳过它（R-31）
 END_MISSING_KNOB = "missing_knob"
@@ -216,7 +217,11 @@ class SiteState(TypedDict, total=False):
     #: 「**页面上有、它却没收到**」，那要在屏上摆成一条条，而不是埋在证据正文里。
     fix_page_view: Optional[dict]
     site: str                     # 站点短名（不给就从 URL 推）
-    success_text: Any             # **成功判据**（页面上出现哪段文字）—— 只有人知道（§6.1）
+    success_text: Any             # **成功判据·文字那格**（页面上出现哪段文字）—— 只有人知道（§6.1）
+    #: ★ 2026-09-24（用户点名「那不能一样加个 success_url 吗」）：**成功判据·网址那格** ——
+    #: 「走通之后网址里会出现哪一截」（`/wizard` 那种）。与上面那格并列、**或**的关系；
+    #: 老脚本本来就常这么判（`japansdates` / `warthunder`），而正文那格搬不过来它们。
+    success_urls: Any
     evidence: str                 # fix 模式：失败证据的引用（FMR formLog / formStep）
     #: §4.6 前提层的产物：窗口、代理指纹、表单数据。都是**外面**给的，图不自己弄
     ws_url: Optional[str]

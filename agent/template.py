@@ -102,6 +102,24 @@ def _success_texts(success_text) -> list:
     return texts
 
 
+def _success_urls(success_urls) -> list:
+    """判据的**网址那一格** → 产物里那份 `SUCCESS_URLS`（去空、去重、保序）。
+
+    ★ 2026-09-24（用户点名「那不能一样加个 success_url」）：老脚本本来就常判**网址**
+    （`japansdates` 的 `/wizard`、`warthunder` 的 `#/confirm`），而 `SUCCESS_TEXTS` 那一格
+    是「页面上出现的**文字**」—— 网址里那一截**不在正文里**（那族站换页时正文可能一个字不变）
+    ⇒ 把 `/wizard` 塞进文字那格就是「**永远认不出成功**」。
+
+    ⚠️ **不剥说明壳**（`strip_criterion_head` 那一套是给「页面上会出现哪段文字」那格用的）：
+    这里要的就是网址里的一截，`/wizard` 本来就该是它那个样子。
+    ⚠️ 剥壳那一处实现仍然只有一份（`browser_agent.wanted_urls`）—— 判据那一侧用的是它，
+    产物这一侧也用它：两处各写一遍就会出现「判据说见着了、产物说不认识」那对老病。
+    """
+    from agent.browser_agent import wanted_urls     # noqa: PLC0415 —— 与上面同一个理由
+
+    return wanted_urls(success_urls)
+
+
 #: 框架**生成的** id —— 带渲染序号，重渲染就换号（★ 2026-09-23 用户实测指出）。
 #: ⚠️ 与 cdp 那边是**同一份判据**（`tools/cdp/internal/observe.go` 的 `GENERATED_ID`，
 #: 它管的是稳定性评级；这里管的是产物里候选的先后）。两处对不上就会出现
@@ -162,18 +180,33 @@ def _provenance_literal(provenance) -> str:
     return _lit(prov)
 
 
-def render(site, success_text, states, fills, provenance) -> str:
-    """把「怎么走」渲染成一条完整的 py 源码（文件级，可直接落盘进 `forms/sites/`）。"""
+def render(site, success_text, states, fills, provenance, success_urls=None) -> str:
+    """把「怎么走」渲染成一条完整的 py 源码（文件级，可直接落盘进 `forms/sites/`）。
+
+    ★ 2026-09-24：`success_urls`（判据的**第二格** —— 网址里出现哪一截）可有可无；
+    **两格都空**时照旧抛（没有判据的产物会「跑到底再说自己成功」，本项目最忌讳的那类谎）。
+    ⚠️ 它**不是**把文字那格放宽成「正文+网址」—— 是**另外一格**
+    （「判据一个字没放宽，要不要改得人点头」是这条链上的老口径）。
+    """
     if not site or not str(site).strip():
         raise ValueError("site 不能空")
     site = str(site).strip()
     if not states:
         raise ValueError("states 不能空：没有「怎么走」的产物跑起来只会站在那儿")
-    summary = "siteforge 从真页面探索出来的重放脚本：按 STATES 走一遍，见到成功文案就算成功。"
+    #: ⚠️ 文字那格**只在人/底稿真给了字**时才走 `_success_texts`：它自己会在「剥完什么都不剩」
+    #: 时抛（只写「出现」那种）—— 那一抛是对的，**别为了网址那格把它吞掉**。
+    urls = _success_urls(success_urls)
+    texts = _success_texts(success_text) if str(success_text or "").strip() else []
+    if not texts and not urls:
+        raise ValueError("成功判据不能空：文字那一格剥完什么都不剩（只写了「出现」这种说明词）、"
+                         "网址那一格也没给 —— 没有判据的产物会跑到底再说自己成功")
+    summary = ("siteforge 从真页面探索出来的重放脚本：按 STATES 走一遍，"
+               "见到成功判据（页面上的那串字，或网址里的那一截）就算成功。")
     return SKELETON.substitute(
         site=site,
         summary=summary,
-        success_texts=_lit(_success_texts(success_text)),
+        success_texts=_lit(texts),
+        success_urls=_lit(urls),
         states=_lit(_stable_first(list(states))),
         fills=_lit(_stable_first(_fills_map(fills))),
         provenance=_provenance_literal(provenance),
@@ -181,8 +214,8 @@ def render(site, success_text, states, fills, provenance) -> str:
     )
 
 
-# ⚠️ 骨架里的 $ 只有 `render()` 填的那七个（site / summary / success_texts / states /
-#    fills / provenance / stuck_limit）—— `string.Template` 会把任何别的 $ 也当占位符。
+# ⚠️ 骨架里的 $ 只有 `render()` 填的那八个（site / summary / success_texts / **success_urls** /
+#    states / fills / provenance / stuck_limit）—— `string.Template` 会把任何别的 $ 也当占位符。
 #    其余部分请当作「生成出来的源码」读：注释是给将来读产物的人看的（D16：人话）。
 SKELETON = Template(r'''#!/usr/bin/env python3
 """$site —— siteforge 产出的站点脚本。
@@ -218,8 +251,13 @@ from common import CDPHelper, setup_logger, report_url
 
 
 SITE = "$site"
-# 成功判据：页面上出现其中任意一段文字就算走通了（人话，不是选择器）
+# 成功判据之一：页面上出现其中任意一段文字就算走通了（人话，不是选择器）
 SUCCESS_TEXTS = $success_texts
+# 成功判据之二：**当前网址**里出现其中任意一截也算走通了（★ 2026-09-24 用户点名加的那一格）。
+# 为什么要有它：老脚本本来就常判网址（`japansdates` 的 `/wizard`、`warthunder` 的 `#/confirm`），
+# 而那种站换页时**正文可能一个字都不变** —— 只认文字就等于永远认不出成功。
+# ⚠️ 两格是**或**的关系，都在收尾时判；**空的那格不参与**（没放宽任何东西）。
+SUCCESS_URLS = $success_urls
 # 早停：连续这么多步没做成，收摊（规格 §13 —— 重跑不许磨完全程）。
 # 生产 JSON 执行器的早停有**已知未修**的 bug（form_executor/json_executor.py:373 的
 # bool(_cur_tab) 恒真 → 连续失败计数每步被清零 → 失败任务必磨完全程），
@@ -1660,7 +1698,7 @@ class Filler:
         while time.monotonic() < deadline:
             time.sleep(float(SUCCESS_POLL_SECONDS))
             if self._succeeded():
-                self.log.info("[%s] 等到了：成功文案出现了", self.cid)
+                self.log.info("[%s] 等到了：成功判据成立了", self.cid)
                 return True
         return False
 
@@ -2173,7 +2211,14 @@ class Filler:
 
     def _succeeded(self):
         signature = self.page_signature().lower()
-        return any(_norm(t).lower() in signature for t in SUCCESS_TEXTS if t)
+        if any(_norm(t).lower() in signature for t in SUCCESS_TEXTS if t):
+            return True
+        #: ★ 2026-09-24（用户点名「那不能一样加个 success_url」）：**网址那一格**。
+        #: 判「成功」的两条路并列：页面上见到了那串字，**或者**现在这个地址里出现了那一截。
+        #: `_url()` 拿的是 `window.location.href` —— **含 fragment**（`#/confirm` 那种
+        #: 判据就在 fragment 里，`warthunder` 那份老脚本正是这么判的）。
+        url = str(self._url() or "").lower()
+        return any(_norm(u).lower() in url for u in SUCCESS_URLS if u)
 
     def _run_step(self, index, step):
         """走一步，返回 (ok, progress)。trace 的一行也在这一步里落。"""
@@ -2397,7 +2442,7 @@ class Filler:
                     ok, progress = self._run_step(index, step)
 
                     if self._succeeded():
-                        self.log.info("[%s] 成功：页面上见到了成功文案", self.cid)
+                        self.log.info("[%s] 成功：判据成立了（页面上那串字 / 网址那一截）", self.cid)
                         self._rpt("success")
                         return True
                     if ok:
@@ -2465,10 +2510,10 @@ class Filler:
             # 「走完了 N 步」这句话本身**不是**一个结论（它听着像「跑完了」）。
             self.log.error(
                 "[%s] **没走到成功**：%d 步里真做了 %d 步、被 when 判据跳过 %d 步%s；"
-                "页面上**从头到尾没有出现过成功文案**（要认的那段：%s）……",
+                "页面上**从头到尾没有出现过成功判据**（要认的那段：%s）……",
                 self.cid, total, total - self.skipped, self.skipped,
                 ("（跳过最多的那个状态是「%s」）" % self._skip_peak()) if self.skipped else "",
-                " / ".join(SUCCESS_TEXTS[:2]))
+                " / ".join(SUCCESS_TEXTS[:2]) or ("网址 " + " / ".join(SUCCESS_URLS[:2])))
             # ⚠️ 这一句**只进日志、不进 trace**：trace 的每一行都是「一步」
             # （下游按 `line["ok"]` 读它，加一行没有 ok 的会把它读崩 ——
             # `tests/test_template.py` 的截图那条就是这么读的）。

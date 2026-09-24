@@ -3141,9 +3141,14 @@ def test_the_human_words_reach_the_explorer_and_nobody_elses_bytes_move(tmp_path
     seen = []
     real = browser_agent._brief
 
-    def spy_brief(url, goal, budget, plan=None, hints=None, success_text=""):
+    #: ⚠️ 逐行交代（2026-09-24 加 `success_urls` 那一格时改的）：这个间谍**照抄了
+    #: `_brief` 的参数表**，于是 `explore()` 多传一格它当场 `TypeError`（这一条就是这么红的）。
+    #: 两根线都接上：收下 `success_urls` 并**原样转给真的那个** `_brief`（判据一个字没动，
+    #: 量到的还是「人的话进没进开场白」）。
+    def spy_brief(url, goal, budget, plan=None, hints=None, success_text="", success_urls=""):
         seen.append(list(hints or []))
-        return real(url, goal, budget, plan, hints=hints, success_text=success_text)
+        return real(url, goal, budget, plan, hints=hints, success_text=success_text,
+                    success_urls=success_urls)
 
     browser_agent._brief = spy_brief
     try:
@@ -4213,3 +4218,28 @@ def test_a_run_that_already_saw_the_criterion_does_not_walk_again(tmp_path):
     assert journey.rounds_measured is False, journey.rounds
     assert len(fake.calls) == 1, len(fake.calls)
     assert not any("就地接着走" in n for n in journey.notes), journey.notes
+
+
+# ── ★ 判据的第二格：**网址里出现哪一截**（2026-09-24，用户点名「那不能一样加个 success_url 吗」）
+#
+# 为什么非有它：老脚本本来就常判网址（`japansdates` 的 `/wizard`、`warthunder` 的 `#/confirm`），
+# 而那种站**换页时正文可能一个字都不变**（SPA）⇒ 只认正文那格就等于永远认不出成功。
+# ⚠️ 它是**另外一格**，不是把文字那格放宽成「正文 + 网址」—— 判据一个字没放宽。
+
+def test_the_url_criterion_is_found_in_the_row_urls():
+    """`_success_hit` 认**网址那一格**：在**同一行**记下的地址里找（两格是**或**）。
+
+    量三件，缺一条这条就能靠改坏另一条过：
+      ① 正文里没有那串字、地址里有那一截 ⇒ 判**这一行**命中（号对得上）；
+      ② 地址里也没有 ⇒ `None`（**不是**「什么都算成功」）；
+      ③ 两格都空 ⇒ `None`（判不了就不猜 —— 与文字那格同一个三态）。
+    """
+    rows = [{"action": "observe", "step_no": 1,
+             "result": {"ok": True, "page_text_head": "页面上什么也没有",
+                        "url": "https://example.test/wizard#step8"}}]
+    assert browser_agent._success_hit(rows, "", ["/wizard"]) == 0
+    assert browser_agent._success_hit(rows, "", ["/nope"]) is None
+    assert browser_agent._success_hit(rows, "", "") is None
+    #: 正控：**正文那格没被顺手放宽**（它是另一条路，量在另一个字段上）
+    assert browser_agent._success_hit(rows, "页面上什么", []) == 0
+    assert browser_agent._success_hit(rows, "不在页面上", []) is None

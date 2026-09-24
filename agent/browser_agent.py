@@ -688,6 +688,12 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             shots_dir=None, shooter: Callable | None = None,
             steer: Callable[[], str | None] | None = None,
             success_text: str = "",
+            #: ★ 2026-09-24（用户点名「那不能一样加个 success_url 吗」）：判据的**第二格** ——
+            #: 「走通之后**网址**里会出现哪一截」。老脚本本来就常这么判（`japansdates` 的
+            #: `/wizard`、`warthunder` 的 `#/confirm`），而正文那格搬不过来它们。
+            #: ⚠️ 它是**另外一格**，**不是**把正文那格放宽成「正文+网址」——
+            #: 「判据一个字没放宽，要不要改得人点头」（`graph._criterion_say` 那一族的口径）。
+            success_urls: str = "",
             hints=None) -> Journey:
     """在真浏览器里为 `goal` 探 `url` 这条路，返回 `Journey`。
 
@@ -780,7 +786,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             raise RuntimeError("MCP 门上一个工具都没有 —— 工具循环没法开始")
         inner = client if client is not None else llm.client()
         gate = _Gate(inner, lambda: _stop_or_raise(paused, journey, taken, limits,
-                                                   success_text),
+                                                   success_text, success_urls),
                      journey, watch, on_note=on_note)
 
         #: 旁路的故障**只记一次**（别每步刷一条）—— 见 `emit` 的 docstring。
@@ -829,7 +835,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             nonlocal taken, fails
             # ← 每一步之前（§6.2）。⚠️ 三条闸（人 / 成功文案 / 预算）都在这一个出口上：
             # 模型一轮里丢了五个动作时，**过线之后的那些一个都不许发**。
-            _stop_or_raise(paused, journey, taken, limits, success_text)
+            _stop_or_raise(paused, journey, taken, limits, success_text, success_urls)
             taken += 1
             step, fill = _describe(name, args, pages, journey)
             # ── 契约七格里的**前五格**：脚本只填这五格（契约 §二①）──────────────
@@ -1010,10 +1016,11 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         # 还会触发步拍、把后面每一步的编号整体挪一格 —— 而它其实是**站位**，不是探索。
         # 代价是它不进 `journey.steps`，所以**必须有一句人话说出来**（见 `_enter_target`）。
         if not resume_from:
-            _stop_or_raise(paused, journey, taken, limits, success_text)
+            _stop_or_raise(paused, journey, taken, limits, success_text, success_urls)
             _enter_target(session, url, journey)
 
-        opening = _brief(url, goal, limits, plan, hints=hints, success_text=success_text)
+        opening = _brief(url, goal, limits, plan, hints=hints, success_text=success_text,
+                         success_urls=success_urls)
         if journey.replay:
             opening = _with_resume(opening, resume_from, journey.replay)
         rounds = llm.run_tool_loop(
@@ -1025,7 +1032,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         #: ★ 2026-09-22 真事（用户原话：「**明明成功了但是却不知道，一直没产物空转**」）：
         #: 判据**只认 `observe` 读到的正文** ⇒ 模型提交之后没再看 ⇒ 系统**永远不知道成了**
         #: ⇒ 自动重探 ×3、空转、最后没有产物。⇒ **收摊前系统自己看一眼**（浏览器就在手边）。
-        _final_success_check(journey, dispatch, limits, success_text,
+        _final_success_check(journey, dispatch, limits, success_text, success_urls,
                              specs=specs, gate=gate)
         #: ★ 2026-09-23 真站实测（用户把那一屏贴回来）：模型**在提交之后就收工**了，而回来
         #: 的那一页还在漏斗中间（「answer the questions truthfully…」那一屏，上面还有
@@ -1038,20 +1045,21 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         #: ⚠️ 只在「还没见到成功文案」时发生；`_Stop`（预算/暂停/窗口没了）照旧穿出去。
         #: ⚠️ 轮数**接着数**：`_wrap_up` 是**覆盖**（`journey.rounds = len(rounds)`），
         #: 两次各叫一次会把这一趟的轮数写成**后半段**那个数 —— 读账的人会以为它才问了三轮。
-        if success_text and _success_hit(journey.steps, success_text) is None:
+        if (success_text or success_urls) and _success_hit(
+                journey.steps, success_text, success_urls) is None:
             room = min(CONTINUE_ROUNDS, max(0, int(limits.max_rounds or 0)))
             if room > 0:
                 journey.note("还没见到成功文案，而页面还在漏斗里 ⇒ **就地接着走**"
                              "（最多再 %d 轮；不重开窗口、不重交表单）" % room)
                 rounds2 = llm.run_tool_loop(
-                    _SYSTEM, _unfinished_brief(success_text), specs, dispatch,
+                    _SYSTEM, _unfinished_brief(success_text, success_urls), specs, dispatch,
                     max_rounds=room, max_tokens=MAX_TOKENS, steer=steer, _client=gate,
                 )
                 if rounds2:
                     _wrap_up(journey, list(rounds) + list(rounds2), limits)
                     #: 走完**再读一遍**（`specs=()` ⇒ 只读正文，不再叫模型看图：
                     #: 图那一眼是**证据**，上一遍已经存过一份了，别为同一件事再花一次）。
-                    _final_success_check(journey, dispatch, limits, success_text)
+                    _final_success_check(journey, dispatch, limits, success_text, success_urls)
     except _Stop as stop:
         journey.stop_reason = stop.reason
         # 被停下来这一路**拿不到轮数**：`rounds` 是 `run_tool_loop` 的局部变量，
@@ -1228,7 +1236,7 @@ _FINAL_LOOK_SYSTEM = (
 CONTINUE_ROUNDS = 6
 
 
-def _unfinished_brief(success_text: str) -> str:
+def _unfinished_brief(success_text: str, success_urls: str = "") -> str:
     """「还没走到，接着走」那句（只在这种时候发，见 `CONTINUE_ROUNDS`）。
 
     两句话是**这一手的关键**，都不能省：
@@ -1236,9 +1244,15 @@ def _unfinished_brief(success_text: str) -> str:
       · 就在**当前这一页**上接着做（别导航回入口、别重交）。
     """
     wants = wanted_texts(success_text)
+    urls = wanted_urls(success_urls)
     #: ⚠️ 先算好再插：`"…%s…" % x if cond else y` 里 `%` 比条件表达式**紧**，
     #: 写成一行会变成「(格式化) if cond else y」—— 剥完什么都不剩时整句话会没掉。
     shown = "」、「".join(wants) if wants else success_text
+    #: ★ 2026-09-24：判据也可能是**网址**那一格（`success_urls`）—— 那句话里两格都要说清，
+    #: 不然模型收到的是「页面上还没出现『』」（网址判据时文字那格是空的）。
+    if urls:
+        shown = ("%s；或者网址里出现「%s」" % (shown, "」、「".join(urls))
+                 if shown else "网址里出现「%s」" % "」、「".join(urls))
     return ("你刚才收工了，但这一趟**还没走到**：页面上**还没有**出现"
             "「%s」。⚠️ 「把表单交出去了」不等于「走到了」—— 交完之后回来的那一屏\n"
             "常常**还在漏斗里**（上面还有没答的问题、没点完的按钮）。\n"
@@ -1263,8 +1277,8 @@ def _frames_used(journey) -> list:
     return out[:4]
 
 
-def _final_success_check(journey, dispatch, limits, success_text: str, *,
-                         specs=(), gate=None) -> None:
+def _final_success_check(journey, dispatch, limits, success_text: str,
+                         success_urls: str = "", *, specs=(), gate=None) -> None:
     """收摊前**系统自己**看一眼那一页 —— 判据用**这一眼**（真读数），而不是「模型看没看」。
 
     ⚠️ 只在**还没见到成功文案**时才看（真见到了就不多花这一步，别的路一个字节不变）。
@@ -1282,7 +1296,8 @@ def _final_success_check(journey, dispatch, limits, success_text: str, *,
        判据仍是子串那一把，只是这次读的是**图**；见了就记 `journey.vision_hit`，
        并且**必须写明是在图上**（`vision_say` 原样留着，人自己看）。
     """
-    if not success_text or _success_hit(journey.steps, success_text) is not None:
+    if (not success_text and not success_urls) \
+            or _success_hit(journey.steps, success_text, success_urls) is not None:
         return
     #: ① 等页面静下来（用户原话里的「等待页面完毕」）
     time.sleep(FINAL_SETTLE_SECONDS)
@@ -1331,9 +1346,16 @@ def _final_success_check(journey, dispatch, limits, success_text: str, *,
         step["origin"] = "final_check"
         step.setdefault("note", ("收摊前**系统自己**看了一眼（模型这一趟没看它）："
                                  "拿这一眼的正文判成功文案"))
-    if _success_hit(journey.steps, success_text) is not None:
+    if _success_hit(journey.steps, success_text, success_urls) is not None:
         return                                 # 代码在正文里见着了 ⇒ 收工
     #: ③ 正文里还是没有 ⇒ 照一张图存成**证据**（⚠️ **判据不由它定** —— 用户口径：代码判断）
+    #: ★ 2026-09-24：**图那一眼只看文字那一条** —— 网址不是「图上的一串字」。
+    #: 只给了网址判据时**不照那个图**（拿一个空判据去问模型，等于让它随便回一句「没有」）；
+    #: 这件事**说出来**（不静默），人自己知道收尾那一眼这回帮不上忙。
+    if not wanted_texts(success_text):
+        journey.note("收尾那一眼（照图找那串字）**没有做**：这一趟的判据只有**网址**那一条，"
+                     "而图上看不出网址 —— 代码已经按网址判过了。")
+        return
     _vision_look(journey, dispatch, success_text, specs, gate)
 
 
@@ -1431,6 +1453,25 @@ def wanted_texts(success_text) -> list:
     return out
 
 
+def wanted_urls(success_urls) -> list:
+    """判据的**网址那一格** → 真要去找的那几截（去空、去重、保序）。
+
+    ★ 2026-09-24（用户点名「那不能一样加个 success_url 吗」）：老脚本本来就常判网址
+    （`japansdates` 的 `/wizard`、`warthunder` 的 `#/confirm`），而正文那格搬不过来它们。
+
+    ⚠️ **不剥说明壳**（`strip_criterion_head` 那一套是给「页面上会出现哪段文字」那格用的）：
+    这里要的是**网址里的一截**，`/wizard` 这种本来就是它该有的样子。
+    ⚠️ 与 `wanted_texts` 一样：**空的不留**、判不出来的不猜 —— 空列表 = 这一格没内容。
+    """
+    words = [success_urls] if isinstance(success_urls, str) else list(success_urls or [])
+    out: list = []
+    for word in words:
+        got = str(word or "").strip()
+        if got and got not in out:
+            out.append(got)
+    return out
+
+
 def row_text(row) -> str:
     """一行账**读到的正文**（`observe` 的摘要 或 收尾那次**全文**读）。
 
@@ -1443,6 +1484,16 @@ def row_text(row) -> str:
     result = (row or {}).get("result") or {}
     return _norm("%s %s" % (result.get("page_text_head") or "",
                             result.get("page_text_full") or ""))
+
+
+def row_url(row) -> str:
+    """一行账**在哪一页上**（`observe`／动作行都把当时的地址记在 `result.url`）。
+
+    ★ 2026-09-24：网址判据（`success_urls`）要它 —— 与 `row_text` 并列，
+    同一个「从这一行里读什么」的口子，别在调用方各写一遍。
+    读不出来回空串（**不猜一个地址**）。
+    """
+    return _norm(str(((row or {}).get("result") or {}).get("url") or ""))
 
 
 def is_look(row) -> bool:
@@ -1459,7 +1510,7 @@ def is_look(row) -> bool:
     return bool((((row or {}).get("result") or {}).get("page_text_full") or "").strip())
 
 
-def _success_hit(steps: list, success_text: str) -> int | None:
+def _success_hit(steps: list, success_text: str, success_urls: str = "") -> int | None:
     """那句成功文案**最早**出现在第几步那一眼里（`None` = 没出现过 / 判不了）。
 
     判据与 `replayable_prefix` 的 **R3** 是**同一把尺子**：同一个 `_norm` + 子串，
@@ -1482,19 +1533,24 @@ def _success_hit(steps: list, success_text: str) -> int | None:
     （`success_text` 是个可选参数），直接抛会把「调用方没传」变成异常 —— 判据的松紧搞反了。
     """
     wants = [w.lower() for w in wanted_texts(success_text)]
-    if not wants:
-        return None                       # 没给判据 / 剥完什么也不剩 ⇒ **判不了就不猜**
+    urls = [u.lower() for u in wanted_urls(success_urls)]
+    if not wants and not urls:
+        return None                       # 两格都没给 / 剥完什么都不剩 ⇒ **判不了就不猜**
     for i, row in enumerate(steps or []):
         if not is_look(row):
             continue                      # 没看过页面的一行（动作类）⇒ 判据不该在它身上找
         head = row_text(row).lower()
-        if head and any(w in head for w in wants):
+        if head and wants and any(w in head for w in wants):
+            return i
+        #: ★ 2026-09-24：网址那一格在**同一行的地址**上找（与正文同一把尺子：小写 + 子串）。
+        page_url = row_url(row).lower()
+        if page_url and urls and any(u in page_url for u in urls):
             return i
     return None
 
 
 def _stop_reason(paused, journey, taken: int, budget: Budget,
-                 success_text: str = "") -> str | None:
+                 success_text: str = "", success_urls: str = "") -> str | None:
     """该不该停下？返回理由或 None。**只看，不做**（做由调用方决定）。
 
     三条闸，**顺序就是优先级**（同时为真时报哪个，全看这里）：
@@ -1516,7 +1572,7 @@ def _stop_reason(paused, journey, taken: int, budget: Budget,
     """
     if paused is not None and paused(journey):
         return "paused"
-    if _success_hit(journey.steps, success_text) is not None:
+    if _success_hit(journey.steps, success_text, success_urls) is not None:
         return STOP_REACHED_SUCCESS
     if taken >= budget.max_steps:
         return "budget_steps"
@@ -1524,7 +1580,7 @@ def _stop_reason(paused, journey, taken: int, budget: Budget,
 
 
 def _stop_or_raise(paused, journey, taken: int, budget: Budget,
-                   success_text: str = "") -> None:
+                   success_text: str = "", success_urls: str = "") -> None:
     """该停就抛 `_Stop` —— **两道闸共用这一个出口**（每步之前 / 每轮之前）。
 
     ⚠️ 人那道闸**自己抛异常**时，这里把它**归一成「暂停」**。不这么做的话，闸的错误
@@ -1534,7 +1590,7 @@ def _stop_or_raise(paused, journey, taken: int, budget: Budget,
     闸坏了要**停下来**（带上它坏在哪），不能带着一个坏掉的闸往下跑。
     """
     try:
-        reason = _stop_reason(paused, journey, taken, budget, success_text)
+        reason = _stop_reason(paused, journey, taken, budget, success_text, success_urls)
     except _Stop:
         raise
     except Exception as exc:                           # noqa: BLE001
@@ -2595,6 +2651,7 @@ def _only_looks_carry_the_text(rows: list) -> None:
 
 
 def replayable_prefix(steps: list, success_text: str, *,
+                      success_urls: str = "",
                       entry_url: str = "", pages: list | None = None) -> tuple:
     """账本里**能照着重放**的那一段，以及「为什么停在这」（人话）。设计注 §1.4.3。
 
@@ -2636,23 +2693,36 @@ def replayable_prefix(steps: list, success_text: str, *,
     `success_text` 为空**抛**：它不是「没有约束」，是**少给了一个输入**
     （R3 唯一的输入就是它；`intake` 本来就该拦住这种载荷）。
     """
-    want = _norm(str(success_text or ""))
-    if not want:
+    wants = [w.lower() for w in wanted_texts(success_text)]
+    urls = [u.lower() for u in wanted_urls(success_urls)]
+    if not wants and not urls:
         raise ValueError(
-            "重放前缀要一个成功判据（`success_text`）—— 空的不算「没有约束」，是**少给了一个输入**"
+            "重放前缀要一个成功判据（`success_text` 或 `success_urls`）—— "
+            "两格都空不算「没有约束」，是**少给了一个输入**"
             "（R3 唯一的输入就是它，而 R3 管的是「过了成功线之后不许再动真页面」）")
+    #: ★ 2026-09-24：判据**两格都算**（用户点名「那不能一样加个 success_url 吗」）——
+    #: R3 与活着那一趟的 `_success_hit` 必须**一直是同一把尺子**（同一个 `_norm` + 小写 + 子串），
+    #: 两边口径分家的后果是「活的探路说见着了、重放这边说没见着」⇒ 重放敢往成功线之后走
+    #: ⇒ 真的再交一次表。
 
     rows = list(steps or [])
     #: R3 的**前提**先验（破了就抛，不静默）—— 下面每一行的推导都压在它上面。
     _only_looks_carry_the_text(rows)
     #: 走到每一行时「观测到的页面文字」累计到哪儿了（**按顺序**累，R3 要的就是这个顺序）。
     seen_text: list = []
+    #: ★ 2026-09-24：**每一行落在哪一页**（网址那一格判据在这上面找）—— 同样按顺序累。
+    #: ⚠️ 别叫 `seen_urls`：下面那个是给 R4 用的**去重集合**，两个名字撞在一起读不出来。
+    seen_at: list = []
     blob = ""
     for row in rows:
         blob = (blob + " " + _norm((row.get("result") or {}).get("page_text_head") or "")).strip()
         seen_text.append(blob)
-    #: 成功文案**最早**在第几行那次观察里出现（None = 这一趟压根没出现过）。
-    first_hit = next((j for j, text in enumerate(seen_text) if want in text), None)
+        seen_at.append(row_url(row).lower())
+    #: 判据**最早**在第几行那次观察里出现（None = 这一趟压根没出现过）。
+    #: ⚠️ 两格是**或**的关系（文字见着了、或网址对上了，都算过了那条线）。
+    first_hit = next((j for j in range(len(seen_text))
+                      if (wants and any(w in seen_text[j].lower() for w in wants))
+                      or (urls and any(u in seen_at[j] for u in urls))), None)
 
     seen_urls = set()
     for page in (pages or []):
@@ -2670,7 +2740,8 @@ def replayable_prefix(steps: list, success_text: str, *,
         # ── R3：它**所到的那一页**上有没有那条成功文案 ─────────────────────────
         landing = _landing_index(rows, i)
         if first_hit is not None and first_hit <= landing:
-            return prefix, _crossed_line_why(i, row, success_text, first_hit)
+            return prefix, _crossed_line_why(i, row, _criterion_why(success_text, success_urls),
+                                             first_hit)
         # ── R1 / R2 / R4：只对**会改页面**的那几个动作判 ──────────────────────
         if action in _ACTIONS:
             if not _did_work(row):
@@ -2779,7 +2850,23 @@ def _landing_index(rows: list, i: int) -> int:
     return max(last, first)
 
 
-def _crossed_line_why(i: int, row: dict, success_text: str, hit: int) -> str:
+def _criterion_why(success_text, success_urls) -> str:
+    """判据在**人话**里怎么写（`_crossed_line_why` 那句要用）。
+
+    ⚠️ 之前这里直接把 `success_text` 塞进 `%s`：判据是一个**列表**时，那句人话会印成
+    `['a', 'b']`（本仓判据本来就允许列表 —— `wanted_texts` 就是按列表写的）。
+    """
+    texts = wanted_texts(success_text)
+    urls = wanted_urls(success_urls)
+    parts = []
+    if texts:
+        parts.append("页面上的「%s」" % "」、「".join(texts))
+    if urls:
+        parts.append("网址里的「%s」" % "」、「".join(urls))
+    return "、".join(parts)
+
+
+def _crossed_line_why(i: int, row: dict, criterion: str, hit: int) -> str:
     """R3 那句人话。**两种形状分开说**（处置相同，但读账的人要能看出是哪一种）。
 
     ⚠️ **只有两种真会出现**：记下那句话的那一行**自己**也会被拦下（它是 observe ⇒ 落点就是它自己），
@@ -2800,16 +2887,16 @@ def _crossed_line_why(i: int, row: dict, success_text: str, hit: int) -> str:
     后者是一步动作。复审裁定②要的正是夹具能把这俩摆出来。）
     """
     if hit <= i:
-        return ("第 %d 步「%s」不能重放：成功文案「%s」是在**没有动作的那一眼**上出现的"
+        return ("第 %d 步「%s」不能重放：成功判据（%s）是在**没有动作的那一眼**上出现的"
                 "（第 %d 行那次观察；它前面那条账也是一次观察）—— 可能是页面上本来就有的一句"
                 "普通话**撞**了，也可能是更早某一步把页面带到这儿、那句话这一刻才渲染出来；"
                 "**这两种系统分不出**，所以保守到底：这一步之前的前缀照重放，"
                 "这里之后一步都不走（R3）。"
-                % (i + 1, _step_label(row), success_text, hit + 1))
+                % (i + 1, _step_label(row), criterion, hit + 1))
     return ("第 %d 步「%s」不能重放：它**落到的那一页**（第 %d 行那次观察）上已经出现了"
-            "成功文案「%s」—— 过了那条线之后的每一个动作都可能是**重复的真实请求**（R3），"
+            "成功判据（%s）—— 过了那条线之后的每一个动作都可能是**重复的真实请求**（R3），"
             "前缀停在它前面。"
-            % (i + 1, _step_label(row), hit + 1, success_text))
+            % (i + 1, _step_label(row), hit + 1, criterion))
 
 
 def _step_label(row: dict) -> str:
@@ -3985,7 +4072,7 @@ def _hints_block(hints) -> str:
 
 
 def _brief(url: str, goal: str, budget: Budget, plan: "plan_module.Plan | None" = None,
-           hints=None, success_text: str = "") -> str:
+           hints=None, success_text: str = "", success_urls: str = "") -> str:
     """开场白（模型的 user 消息）。**有计划 / 没计划是两版**（§2.2）。
 
     ⚠️ 没计划那一版**与今天逐字节相同** —— 它是 B4 那条判据钉的东西，
@@ -4005,24 +4092,34 @@ def _brief(url: str, goal: str, budget: Budget, plan: "plan_module.Plan | None" 
             f"⚠️ **每一次「提交 / 继续 / 换页」之后，都要再看一眼那一页**："
             f"系统只认**你「看一眼」（observe）读到的正文** —— 不看，这一趟就按「没走到成功」算。)")
     if plan is None or not plan.actionable():
-        return free + _success_block(success_text) + _hints_block(hints)
-    return _planned_brief(url, goal, plan, budget) + _success_block(success_text) + _hints_block(hints)
+        return free + _success_block(success_text, success_urls) + _hints_block(hints)
+    return (_planned_brief(url, goal, plan, budget) + _success_block(success_text, success_urls)
+            + _hints_block(hints))
 
 
-def _success_block(success_text: str) -> str:
-    """**「什么算成功」那串字本身**（TDD 探针量出来的缺项，2026-09-22）。
+def _success_block(success_text: str, success_urls: str = "") -> str:
+    """**「什么算成功」那两格本身**（TDD 探针量出来的缺项，2026-09-22）。
 
     为什么它必须进开场白：判据是**人去页面上找那串字**、而系统只在 `observe` 读到的正文里找。
     开场白里原来**一个字都没提它** ⇒ 模型既不知道要找什么、也不知道**找到就能收摊** ——
     真事 `job-76fe990d4d62`（24 步只看 5 眼 ⇒ 判据扑空 ⇒ 自动重探 ⇒ 空转、没产物）。
 
-    ⚠️ 没人给判据（空串）⇒ **一个字节都不加**（那份「没计划那一版逐字节相同」的钉子因此不动 ✓）。
+    ⚠️ 没人给判据（两格都空）⇒ **一个字节都不加**（那份「没计划那一版逐字节相同」的钉子因此不动 ✓）。
+    ★ 2026-09-24：**网址那一格也进开场白**（两格一起说）—— 只给网址时原来会拼出一句
+    「出现『』」的空话。
     """
     text = str(success_text or "").strip()
-    if not text:
+    urls = wanted_urls(success_urls)
+    said = []
+    if text:
+        said.append("页面上出现这串字就算成 —— 『%s』。" % text)
+    if urls:
+        said.append("**或者网址里出现这一截也算成** —— 『%s』（老站常常这么判：SPA 换页时"
+                    "正文可能一个字都不变，而地址变了）。" % "』『".join(urls))
+    if not said:
         return ""
-    return ("\n⚠️ **什么算成功**：页面上出现这串字就算成 —— 『%s』。"
-            "**见到它就可以收摊**（那之后每一次点击都可能是重复提交）。" % text)
+    return ("\n⚠️ **什么算成功**：%s"
+            "**见到它就可以收摊**（那之后每一次点击都可能是重复提交）。" % "".join(said))
 
 
 def _planned_brief(url: str, goal: str, plan, budget: Budget) -> str:

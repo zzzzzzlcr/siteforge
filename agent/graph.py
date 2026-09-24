@@ -56,7 +56,7 @@ START → intake → explore → draft → lint → selftest → deliver → END
 
 | 输入 | 谁给 | 不给会怎样 |
 |---|---|---|
-| `success_text`（什么算成功） | 人（`POST /run` 的载荷） | **在 `intake` 就结束这一趟**（`end_reason=no_success_text`）—— 不猜，也不先烧一个窗口。成功判据只有人知道（§6.1） |
+| `success_text` / `success_urls`（什么算成功） | 人（`POST /run` 的载荷）；修站那趟也可以**从底稿搬**（服务那侧） | **在 `intake` 就结束这一趟**（`end_reason=no_success_text`）—— 不猜，也不先烧一个窗口。成功判据只有人知道（§6.1） |
 | `ws_url` / `form_file` | §4.6 前提层（Task 8：拉链 → 下发指纹 → `bit.sh open`） | `selftest` 停（`no_window`），**不许跳过自测当通过** |
 | `Deps.set_viewport`（**窗口层**那根线） | Task 8 的服务（换窗口大小 = `POST /browser/update`） | 停（`missing_knob`）并点名 —— 因为第 4 遍扰动跳过了就**不算过**（R-5），而图不许自己放过它 |
 | `allow_skips`（点名放弃哪几遍） | 人（载荷） | 不给 = 用 Task 6 的默认（只允许跳 country） |
@@ -353,6 +353,9 @@ def _brief_facts(state, deps: Deps, missing: list) -> dict:
     return {"url": str(state.get("url") or "").strip(),
             "goal": str(state.get("goal") or state.get("evidence") or "").strip(),
             "成功判据": state.get("success_text"),
+            #: ★ 2026-09-24：判据的**第二格**（网址那一截）—— 与上面那格并列摆出来，
+            #: 空串就是「人没给、底稿里也没有」，不编。
+            "成功判据（网址）": state.get("success_urls"),
             #: ★ 2026-09-22：**判据那格写成了「说明句」时，在第一道闸上就说清**（不拦）。
             #: 真事连着三次：`出现文字 check your email`、`出现Thank you.` —— 判据是**子串**，
             #: 多出来的那两三个字让它**永远找不到**，屏幕上只表现为「没见到成功文案」+ 自动重探 3 趟。
@@ -439,12 +442,15 @@ def _intake(state, deps: Deps, caps: Caps) -> dict:
                     "end_note": ("开不了工：得先说清**哪个站点**（url）和**要做什么**（goal 或失败证据）。"
                                  "没有这两样，探路会去开一个浏览器、然后在空页面上乱走。")})
         return out
-    if not state.get("success_text"):
+    if not state.get("success_text") and not state.get("success_urls"):
         # 成功判据只有人知道（§6.1：页面能告诉 agent **机制**，只有人能告诉它**意图**）。
         # 猜一个 = 产出「跑到底再谎报成功」的东西 —— 本计划最忌讳的那类谎。
+        #: ★ 2026-09-24：**两格都空**才算没有判据 —— 「网址里出现 /wizard」也是一种判据
+        #:（老脚本本来就常那么判），它单独在位时**不许**在这儿被拦下。
         out.update({"end_reason": END_NO_SUCCESS_TEXT,
                     "end_note": ("开不了工：还没说**什么算成功**（`success_text`：走通之后页面上会出现"
-                                 "哪段文字）。这一条只有人知道，猜不得 —— 猜出来的成功判据会让产物"
+                                 "哪段文字；`success_urls`：走通之后**网址**里会出现哪一截）。"
+                                 "这一条只有人知道，猜不得 —— 猜出来的成功判据会让产物"
                                  "「跑到底再报成功」。\n"
                                  "补上它再发起：它就在开场白里，不用等探完路。")})
         return out
@@ -632,10 +638,12 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
                             # —— 它活在 state 里（载荷 → intake → state），而 `explore()`
                             # 原先收不到。少传这一个参数：这一趟会照旧在成功之后继续点下去
                             # （2026-09-20 真站那一趟的形状），而且**没有任何地方会响**。
-                            success_text=state.get("success_text"))
+                            success_text=state.get("success_text"),
+                            success_urls=state.get("success_urls") or "")
         journeys.append(book)
         attempts.append({"n": n,
-                         "reached": _explore_reached_success(book, state.get("success_text")),
+                         "reached": _explore_reached_success(book, state.get("success_text"),
+                                                             state.get("success_urls")),
                          "steps": len(book.steps), "stop": getattr(book, "stop_reason", ""),
                          #: ★ 2026-09-22：**这一趟「看了几眼」**（`observe` 的次数）。
                          #: 为什么必须报：判据**只在 observe 读到的正文里找** ⇒ 「没见到成功文案」
@@ -652,7 +660,8 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
     #: = **一次真实提交**到站方。判据那一格写成「我要它出现」的说明句时，重探**永远**不会成功
     #: （判据是照抄页面上那串字的子串判据）⇒ 白花两次提交（运营原话「不要重复执行」
     #: 「明明成功了一直在重复」）。所以这一档**先不重探**，把原话摆出来让人改那一格。
-    wont_help = _retry_wont_help(state.get("success_text"), journey)
+    wont_help = _retry_wont_help(state.get("success_text"), journey,
+                                 state.get("success_urls"))
     for n in range(2, EXPLORE_ATTEMPTS + 1):
         if wont_help:
             break
@@ -674,7 +683,8 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
     out["explore_spent"] = _spent_after(spent, journeys)
     if len(attempts) > 1:
         # **两次账本的差异**（问题 2/3 的答案顺手就有）：各自填了什么、哪一趟没走通
-        out["explore_attempts_note"] = _attempts_note(attempts, state.get("success_text"))
+        out["explore_attempts_note"] = _attempts_note(attempts, state.get("success_text"),
+                                                     state.get("success_urls"))
         journey.note(out["explore_attempts_note"])
     if wont_help:
         #: ⚠️ **要说出来**（没有静默的路径）：少了这一句，「这次只探了一趟」看起来就像
@@ -712,14 +722,14 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
         #: 而这三件事（我填的是哪串 / 它比的是一串 / 它比的是页面的哪一部分）少一样都判不出来。
         note += ("\n判据（原话）：%s —— 它拿这串字去比**每一步「看一眼」读到的正文头**"
                  "（大小写不算区别；判据一个字没放宽，要不要改得人点头）。"
-                 % _criterion_say(state.get("success_text")))
+                 % _criterion_say(state.get("success_text"), state.get("success_urls")))
         journey.note(note)
         out["end_reason"] = END_EXPLORE_UNFINISHED
         out["end_note"] = note
     return out
 
 
-def _retry_wont_help(success_text, journey=None) -> str:
+def _retry_wont_help(success_text, journey=None, success_urls="") -> str:
     """**重探不可能帮上忙**时说清为什么（空串 = 照旧按 `_worth_retrying` 判）。
 
     ★ 2026-09-22 **收窄**（用户贴出的那趟把它逼出来的）：说明句的壳**现在会被剥掉**
@@ -728,7 +738,13 @@ def _retry_wont_help(success_text, journey=None) -> str:
     （那一格只写了「出现」）—— 没有可以拿去比的字，再探几趟也永远落空，
     而每趟都是一次**真提交**（运营原话「不要重复执行」）。
     """
-    if not success_text:
+    urls = browser_agent.wanted_urls(success_urls)
+    if not success_text and not urls:
+        return ""
+    #: ★ 2026-09-24：**网址那一格在位 ⇒ 这一趟有可用的判据**（那一格没有「剥壳」那回事，
+    #: 也不存在「剥完什么都不剩」）⇒ 「重探不可能帮上忙」这一档不成立，照旧按
+    #: `_worth_retrying` 判（别拿文字那格的毛病去拦一个网址判据的活）。
+    if urls:
         return ""
     words = [success_text] if isinstance(success_text, str) else list(success_text or [])
     given = [str(w or "").strip() for w in words if str(w or "").strip()]
@@ -745,7 +761,7 @@ def _retry_wont_help(success_text, journey=None) -> str:
     return ("⚠️ **没有自动重探**：判据那一格（%s）剥掉「出现 / 显示」这类说明词之后"
             "**什么都不剩** —— 没有可以拿去比的字，再探几趟也永远落空，而每一趟都是"
             "一次**真提交**。改法：把那一格换成**照抄页面上真会出现的那串字**，"
-            "再按「重新来一遍」。" % _criterion_say(success_text))
+            "再按「重新来一遍」。" % _criterion_say(success_text, success_urls))
 
 
 def _worth_retrying(reached, journey, resume_from) -> bool:
@@ -992,7 +1008,7 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
             out.update({"end_reason": END_DRAFT_FAILED, "end_note": _patch_failed_say(bad)})
             return out
         out.update({"states": [], "fills": {}, "success_text": state.get("success_text"),
-                    "src": src, "violations": [],
+                    "success_urls": state.get("success_urls"), "src": src, "violations": [],
                     "src_diff": _patch_diff(str(state.get("fix_src") or ""), src),
                     # 这一版就是为那次打回写的（与模板那条同一个道理，见下面那段注释）。
                     "revised_at": "", "diagnosis": None})
@@ -1005,6 +1021,7 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     # 差别只在「那份 states/fills 是从哪来的」。
     if state.get("fix_states"):
         spec = {"site": state["site"], "success_text": state.get("success_text"),
+                "success_urls": state.get("success_urls"),
                 "states": state.get("fix_states"), "fills": state.get("fix_fills") or {}}
         journey = None
     else:
@@ -1014,6 +1031,7 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
                         "end_note": "写不了：这次没有探路账本（没有账本就没有「怎么走」）。"})
             return out
         spec = {"site": state["site"], "success_text": state.get("success_text"),
+                "success_urls": state.get("success_urls"),
                 "states": journey.states(), "fills": journey.fills()}
     spec = deps.write(spec, feedback)
     # ⚠️ **产物里不许有「先站到入口」那一步**（2026-09-23 用户实测点名，作废了 2026-09-22 那一版）。
@@ -1027,7 +1045,8 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     # 修站那条路本来就不补（`journey is None`）—— 现在**两条路一致**：都不补。
     try:
         src = template.render(spec["site"], spec["success_text"], spec["states"], spec["fills"],
-                              provenance=_provenance(state, deps, report=None))
+                              provenance=_provenance(state, deps, report=None),
+                              success_urls=spec.get("success_urls") or "")
     except ValueError as exc:
         # 最常见的一种：没人说「什么算成功」。**不猜** —— 猜出来的成功判据就是
         # 「跑到底再谎报成功」的入口（template.py 也拒这种产物）。
@@ -1037,7 +1056,8 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
         return out
 
     out.update({"states": spec["states"], "fills": spec["fills"],
-                "success_text": spec["success_text"], "src": src, "violations": [],
+                "success_text": spec["success_text"],
+                "success_urls": spec.get("success_urls") or "", "src": src, "violations": [],
                 # 这一版就是为那次打回写的 → 把路上的那个标记收掉（`revisions` 留着当记录）。
                 # 不清的话路由会一直把它往回送（`_after_lint` 会以为「刚被人否过」）。
                 "revised_at": "", "diagnosis": None})
@@ -1471,7 +1491,7 @@ def _explore_answers(journey) -> list:
     return out
 
 
-def _attempts_note(attempts: list, success_text=None) -> str:
+def _attempts_note(attempts: list, success_text=None, success_urls=None) -> str:
     """把几趟探路的差异说成人话（哪一趟走到成功、答案哪里不一样）。
 
     ⚠️ 抬头**只说规则，不说结论**（2026-09-22 真事）：原先写的是
@@ -1484,7 +1504,8 @@ def _attempts_note(attempts: list, success_text=None) -> str:
     屏幕上那句「没见到成功文案」**从来不说比的是哪串字** ⇒ 人只能猜「判据写错了还是代码判错了」。
     """
     lines = ["这一次探路跑了 %d 趟（判据是「页面上见到你给的成功文案」＝%s；"
-             "每一趟见没见到见下面每一行）：" % (len(attempts), _criterion_say(success_text))]
+             "每一趟见没见到见下面每一行）："
+             % (len(attempts), _criterion_say(success_text, success_urls))]
     for a in attempts:
         #: ⚠️ 「只看过几眼」要报出来（见 `pass_once` 里那一格的说明）：**没见到**有两种根因 ——
         #: 真没有，与**它根本没看**（判据只在 `observe` 读到的正文里找）。
@@ -1497,7 +1518,7 @@ def _attempts_note(attempts: list, success_text=None) -> str:
     return "\n".join(lines)
 
 
-def _explore_reached_success(journey, success_text) -> Optional[bool]:
+def _explore_reached_success(journey, success_text, success_urls="") -> Optional[bool]:
     """这一趟探路**在页面上见到过成功文案吗**。三态：True / False / **None = 判不了**。
 
     - `True`：某一步 observe 的正文里含成功文案（与产物的判据**同一口径**：压空白 + **小写**），
@@ -1516,7 +1537,8 @@ def _explore_reached_success(journey, success_text) -> Optional[bool]:
     #: 与活着那一趟的 `browser_agent._success_hit` 用的是**同一个函数**（`wanted_texts`），
     #: 免得出现「活的探路说见着了、图上结算说没见到」那对打架的话。
     wants = [w.lower() for w in browser_agent.wanted_texts(success_text)]
-    if not wants:
+    urls = [u.lower() for u in browser_agent.wanted_urls(success_urls)]
+    if not wants and not urls:
         return None
     seen_any = False
     for step in getattr(journey, "steps", None) or []:
@@ -1527,7 +1549,12 @@ def _explore_reached_success(journey, success_text) -> Optional[bool]:
         #: **加上**收尾那次 `eval` 取的整页正文）—— `observe` 的正文被 cdp 自己截到 600 字，
         #: 而成功文案常在 600 字之后（2026-09-22 真事）。一处实现，与活着那一趟同一把尺子。
         head = browser_agent.row_text(step).lower()
-        if head and any(w in head for w in wants):
+        if head and wants and any(w in head for w in wants):
+            return True
+        #: ★ 2026-09-24：**网址那一格**在同一行的地址上找（与活着那一趟**同一把尺子**：
+        #: `_norm` + 小写 + 子串）—— 两边分家的后果是「活的探路说见着了、图上说没见到」。
+        at = browser_agent.row_url(step).lower()
+        if at and urls and any(u in at for u in urls):
             return True
     #: ★ **图不是判据**（2026-09-22，用户后一句更明确的话：「不然这一步就让代码判断而不是让AI判断」）：
     #: `journey.vision_hit` 是**证据**（`browser_agent._vision_look` 把模型照着截图的原话
@@ -1571,7 +1598,7 @@ def _criterion_advice(success_text) -> str:
             % "、".join("『%s』" % w for w in bad))
 
 
-def _criterion_say(success_text) -> str:
+def _criterion_say(success_text, success_urls=None) -> str:
     """成功判据的**原话**摆成人话（一串 / 一串列表 / 没给，三种都说得出）。
 
     为什么它值得单独一句：连着三次「明明到了却不认」（`job-f9adaede5503`、`job-0180c1aa93ee`、
@@ -1582,8 +1609,10 @@ def _criterion_say(success_text) -> str:
         want = [str(w) for w in success_text if str(w or "").strip()]
     else:
         want = [str(success_text)] if str(success_text or "").strip() else []
+    urls = browser_agent.wanted_urls(success_urls)
     if not want:
-        return "（**没给**）"
+        return ("（**没给文字那一格**；网址那一格＝%s）" % "、".join("『%s』" % u for u in urls)
+                if urls else "（**没给**）")
     line = "、".join("『%s』" % w for w in want)
     #: ★ 剥过壳就说清**真正拿去比的是哪串**（2026-09-22）：屏幕上那句「没见到成功文案」
     #: 必须能让人自己看出来「它到底在比什么」—— 不然就是又一次靠猜。
@@ -1591,6 +1620,10 @@ def _criterion_say(success_text) -> str:
     if got != want:
         line += "（**比的时候按**%s）" % (
             "、".join("『%s』" % w for w in got) if got else "**空**（剥完什么都不剩）")
+    #: ★ 2026-09-24：**网址那一格也要摆出来**（用户点名「那不能一样加个 success_url 吗」）——
+    #: 只给网址时，上面那句「没给」是**假话**（判据其实在，在另一格）。
+    if urls:
+        line += "；网址那一格＝" + "、".join("『%s』" % u for u in urls)
     return line
 
 

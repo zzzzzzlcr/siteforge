@@ -1600,6 +1600,11 @@ class RunRequest(_Intake):
     goal: str = Field("", description="人给的意图：要摸清什么 / 什么算完成")
     mode: str = Field("build", description="build（没跑过的站）或 fix（挂着的老站）")
     success_text: str = Field("", description="成功判据：走通之后页面上会出现哪段文字（**只有人知道**）")
+    #: ★ 2026-09-24（用户点名「那不能一样加个 success_url 吗」）：判据的**第二格** ——
+    #: 走通之后**网址**里会出现哪一截（`/wizard` 那种）。老脚本本来就常这么判
+    #: （`japansdates` / `warthunder`），而正文那格**接不住**它 —— 网址那一截不在正文里。
+    #: ⚠️ 载荷里通常是一格字符串（面板一格）；底稿搬过来的那种可能是**列表**（见 `_stage_fix_source`）。
+    success_urls: str = Field("", description="成功判据（网址那格）：走通之后网址里会出现哪一截")
     evidence: str = Field("", description="fix 模式：失败证据的引用（FMR formLog / formStep）")
     site: str = Field("", description="站点短名（不给就从 URL 推）")
     fix_site: Optional[str] = Field(
@@ -2521,7 +2526,7 @@ class Service:
         timeline_broken: list = []
 
         def run(url, goal, budget=None, should_pause=None, resume_from=None,
-                resume_note="", window_alive=None, success_text=""):
+                resume_note="", window_alive=None, success_text="", success_urls=""):
             started = measure._now()
             # ⚠️ **每一趟取一次号**（I-1）：`deps.explore` 在一次节点执行里最多被调
             # `graph.EXPLORE_ATTEMPTS`(=3) 趟（重探），而「一趟 = 一个 `attempt-<n>.jsonl`」。
@@ -2558,6 +2563,7 @@ class Service:
                                                 # 每一处看起来都接好了）。图的默认 `deps.explore`
                                                 # 是 `browser_agent.explore`，这条是服务那一条。
                                                 success_text=success_text or "",
+                                                success_urls=success_urls or "",
                                                 shots_dir=shots_where,
                                                 binary=self._mcp_bin,
                                                 # Task 9：人的话「直达下一轮」那条线
@@ -4118,8 +4124,8 @@ class Service:
         values = dict(getattr(snap, "values", None) or {})
         if not values:
             return None
-        keep = ("url", "goal", "mode", "success_text", "evidence", "site", "ws_url",
-                "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url")
+        keep = ("url", "goal", "mode", "success_text", "success_urls", "evidence", "site",
+                "ws_url", "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url")
         brief = {k: values[k] for k in keep if values.get(k) is not None}
         brief["set_viewport"] = bool(self._window is not None
                                      and hasattr(self._window, "set_viewport"))
@@ -5086,11 +5092,13 @@ class Service:
         if not (body.goal or body.evidence or "").strip():
             problems.append("还没说**这次要做什么**：`goal`（或者 fix 模式下的失败证据 `evidence`）。")
         if (not (body.success_text or "").strip()
+                and not (body.success_urls or "").strip()
                 and str(getattr(body, "mode", "") or "") != MODE_FIX):
-            problems.append("还没说**什么算成功**：`success_text` —— 走通之后页面上会出现哪段文字。"
+            problems.append("还没说**什么算成功**：`success_text`（走通之后页面上会出现哪段文字）"
+                            "或者 `success_urls`（走通之后**网址**里会出现哪一截）。"
                             "这一条只有人知道，猜不得（猜出来的成功判据会让产物「跑到底再报成功」）。")
             #: ★ 2026-09-24（用户点名：「失败的日志和取原配不是已经有成功条件了吗？为何还要再填……
-            #: 没说成功啥的就按之前那个脚本来」）：**修站那条路上这一格改成选填** —— 人没说时按
+            #: 没说成功啥的就按之前那个脚本来」）：**修站那条路上两格都改成选填** —— 人没说时按
             #: **底稿自己那一条**来（`_stage_fix_source` 手上就有那份源码）。所以这儿只拦 **build**。
             #: ⚠️ 底稿里也读不出来时**照旧拦**，只是那句话挪到了拿到底稿之后 —— 那条路
             #: **一个 job 都不开、一个字节都不落盘**，所以「不碰浏览器、不跑模型、不花钱」没变。
@@ -5193,17 +5201,23 @@ class Service:
         #: 服务不替人挑；一串都读不出来（判据写在函数里 / 它只判网址）时**照旧拦**，
         #: 并把「这一份底稿靠什么判成功」说清楚。
         #: ⚠️ 排在这儿（**写盘之前**、开 job 之前）：所以下面那句话里敢写「没有写任何文件」。
-        if not str(getattr(body, "success_text", "") or "").strip():
+        if (not str(getattr(body, "success_text", "") or "").strip()
+                and not str(getattr(body, "success_urls", "") or "").strip()):
             source = str(script.get("source") or "")
             texts = fix.success_texts_from_source(source)
-            if len(texts) == 1:
-                brief["success_text"] = texts[0]
-                brief[SUCCESS_TAKEN] = texts[0]
-            else:
+            urls = fix.success_urls_from_source(source)
+            if not texts and not urls:
                 raise HTTPException(
                     status_code=400,
-                    detail=self._fix_success_say(
-                        texts, fix.success_clue_from_source(source)))
+                    detail=self._fix_success_say(fix.success_clue_from_source(source)))
+            #: ★ **整族搬**（不是挑一个）：老脚本自己写的就是「这几个里**任意一个**」
+            #: （`any(...)`）—— 搬一个就是替它把判据**改窄**了，而「判据一个字没放宽」
+            #: 是这条链上的老口径（改窄同样不许）。
+            #: 恰好一条 ⇒ 存**字符串**（与面板那两格同形，别处印出来也不难看）；
+            #: 多条 ⇒ 存**列表**（产物那两格本来就是列表，`wanted_texts` / `wanted_urls` 都认）。
+            brief["success_text"] = texts[0] if len(texts) == 1 else (texts or "")
+            brief["success_urls"] = urls[0] if len(urls) == 1 else (urls or "")
+            brief[SUCCESS_TAKEN] = fix.taken_say(texts, urls)
         site = str(getattr(body, "site", "") or "").strip() or graph.site_name(getattr(body, "url", "") or "")
         out_dir = pathlib.Path(str(brief.get("out_dir") or self._out_dir))
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -5222,24 +5236,20 @@ class Service:
         return str(staged)
 
     @staticmethod
-    def _fix_success_say(taken: list, clue: str) -> str:
-        """「修不了这一趟：没给判据、底稿里也读不出来」那句人话（门口那句之一）。
+    def _fix_success_say(clue: str) -> str:
+        """「修不了这一趟：两格都没给、底稿里也读不出来」那句人话（门口那句之一）。
 
-        两种不搬的情形**分成两句话**（处置不同：一种是**你挑一串**，一种是**你补一句话**）——
-        合成一句的话，读的人不知道自己是缺一串字还是缺一条完全不同的判据。
+        ⚠️ ★ 2026-09-24 改口径（加了网址那一格之后）：网址那一族**现在搬得动了** ⇒
+        这句话只剩「真搬不了」的两种（判据写在函数里 / 判的是解出来的 hash 状态）——
+        哪一种都说清，别让人对着两个空格猜自己缺什么。
         """
-        if len(taken) > 1:
-            why = ("底稿里**有**这一格，可是它写着**不止一串**：%s —— "
-                   "产物那一格一次只认**一串**，而「挑哪一串」是**你的意图**"
-                   "（它决定什么算成了），服务不替人挑。"
-                   % "、".join("`%s`" % t for t in taken))
-        else:
-            why = str(clue or "").strip() or (
-                "这一份底稿里**没有**可读的成功文案（判据可能写在函数里，或者它压根不判这一格）。")
-        return ("修不了这一趟：**没给成功判据**（走通之后页面上会出现哪段文字），"
-                "而**底稿里也读不出来** —— 服务不猜一个（猜出来的判据会让产物「跑到底再报成功」）。\n"
+        why = str(clue or "").strip() or (
+            "这一份底稿里**没有**可读的成功判据（它可能压根不判这一格）。")
+        return ("修不了这一趟：**没给成功判据**（走通之后页面上会出现哪段文字，"
+                "或者网址里会出现哪一截），而**底稿里也读不出来** —— 服务不猜一个"
+                "（猜出来的判据会让产物「跑到底再报成功」）。\n"
                 + why +
-                "\n补一句再发起：那一格就是「什么算成功」。"
+                "\n补一句再发起：那两格就是「什么算成功」。"
                 "⚠️ 这一趟**没有**开浏览器、没有跑模型、也没有写任何文件（只读了后端那份底稿）。")
 
     def start(self, body: RunRequest) -> dict:
@@ -5256,6 +5266,7 @@ class Service:
             brief["hints"] = [said]
         brief.setdefault("out_dir", self._out_dir)
         brief["success_text"] = body.success_text
+        brief["success_urls"] = body.success_urls
         # ⚠️ `expects` 也在门口换了（修复轮 1），所以「第几项换了几个」要**跟着这条载荷走**：
         # 判那一步的是 `_note_step`（在图上跑），门口换掉之后它手上只剩换好的值
         # —— 不把个数带过去，那条静默路径就又回来了。
@@ -5333,7 +5344,7 @@ class Service:
 
     @staticmethod
     def _took_success_say(taken: str) -> str:
-        """「这一格你没填，服务按底稿自己那一条走」那句（空串 = 没有这回事）。
+        """「这两格你没填，服务按底稿自己那一条走」那句（空串 = 没有这回事）。
 
         ★ 2026-09-24（用户点名「没说就按之前那个脚本来」）：搬了就得**说出来** ——
         不说的话，运营以为判据是**自己**填的那条，而它其实是**老脚本**那条；
@@ -5342,8 +5353,8 @@ class Service:
         if not taken:
             return ""
         return ("\n「什么算成功」这一趟**你没填** —— 服务按**这一趟的底稿**（后端那份 py）里"
-                "老脚本自己那一条走：「%s」。⚠️ 要换成别的，就在下一次发起之前填上那一格；"
-                "这一趟已经按这一条在判了。" % taken)
+                "老脚本自己声明的那一条走：%s。⚠️ 要换成别的，就在下一次发起之前填上那两格；"
+                "这一趟已经按它判了。" % taken)
 
     @staticmethod
     def _payload(brief: dict) -> dict:
@@ -5352,8 +5363,8 @@ class Service:
         ⚠️ `hints` 进得来、`again_from` 不进：前者是**图的状态**（`state.hints`，一路带进
         draft），后者是**服务自己的一句话**（「这是从哪一趟重来的」）—— 图不需要知道它的上一世。
         """
-        keep = ("url", "goal", "mode", "success_text", "evidence", "site", "ws_url",
-                "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url",
+        keep = ("url", "goal", "mode", "success_text", "success_urls", "evidence", "site",
+                "ws_url", "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url",
                 "hints",
                 #: ★ B 线 py 支（2026-09-21）：修站那条路的**底稿路径**。
                 #: ⚠️ 少了它，服务算出来、也落了盘，却**发不到图里** ——
@@ -6012,6 +6023,7 @@ class Service:
             journey = dict(getattr(self._snapshot(job_id), "values", None) or {}).get("journey")
             prefix, why = browser_agent.replayable_prefix(
                 rows, brief.get("success_text") or "",
+                success_urls=brief.get("success_urls") or "",
                 entry_url=str(brief.get("url") or ""),
                 pages=list(getattr(journey, "pages", None) or []))
             if skipped:

@@ -674,6 +674,10 @@ STOP_LABEL = "停下（撤不回）"
 RUN_FORM = {"url": "https://example-funnel.test/quiz",
             "goal": "走到报价那一页，把价拿到",
             "success_text": "Thank you",
+            #: ★ 2026-09-24（用户点名「那不能一样加个 success_url」）：判据的**第二格** ——
+            #: 人**没填** ⇒ 空串，照样发（同一条纪律）。这一份是**逐字比**的期望载荷，
+            #: 少一格就红 —— 那是对的（页面多发了/少发了一格，这一条就该响）。
+            "success_urls": "",
             "mode": "fix",
             "evidence": "FMR 单 20481：第二步点不动「下一步」",
             #: 表单数据那一格（2026-09-21 加的）：人**没填** ⇒ 空串。
@@ -1120,6 +1124,10 @@ def test_the_operator_can_start_a_new_run_from_the_panel(tmp_path):
     assert json.loads(runs[0]["body"]) == {
         "url": RUN_FORM["url"], "goal": RUN_FORM["goal"],
         "success_text": RUN_FORM["success_text"], "mode": RUN_FORM["mode"],
+        #: ★ 2026-09-24（用户点名「那不能一样加个 success_url」）：判据的**第二格**也照发
+        #: （人没填 ⇒ 空串）。⚠️ 这份期望是**逐字比**的 ⇒ 加一格就得在这儿加一行，
+        #: 否则这条会红 —— 而那是对的（页面多发/少发一格，这一条就该响）。
+        "success_urls": RUN_FORM["success_urls"],
         "evidence": RUN_FORM["evidence"],
         #: 表单数据那一格（2026-09-21）：人没填 ⇒ 空串，但**照发**（页面不预判必填）
         "form_data": RUN_FORM["form_data"],
@@ -1347,6 +1355,8 @@ def test_the_run_fixture_can_actually_fire(tmp_path):
               "evidence": RUN_FORM["evidence"],
               "form_data": RUN_FORM["form_data"],
               "note": RUN_FORM["note"],
+              #: ★ 2026-09-24 加的第二格（同上：期望是逐字比的，加一格就得加一行）
+              "success_urls": RUN_FORM["success_urls"],
               "allow_disabled": RUN_FORM["allow_disabled"]}
     got_good = json.loads([x for x in good["sent"] if x["url"] == RUN_HOP][0]["body"])
     got_bad = json.loads([x for x in bad["sent"] if x["url"] == RUN_HOP][0]["body"])
@@ -2092,6 +2102,9 @@ def _rank_payloads() -> dict:
 #: 人在这两格里写的那两串 —— 一个并进 `#runSuccess`，一个**已经**写在那儿（量「不替人挑」）。
 FIX_SUCCESS = "Thank you for subscribing!"
 FIX_SUCCESS_TABLE = "Check your email"
+#: ★ 2026-09-24（用户点名「那不能一样加个 success_url」）：判据的**第二格**（网址那一截）——
+#: 它走的是**同一条路**（这一栏那一格 → 并进表里那一格 → `POST /run` 的 `success_urls`）。
+FIX_SUCCESS_URL = "/wizard"
 
 
 def _rank_success_payloads() -> dict:
@@ -2104,6 +2117,7 @@ def _rank_success_payloads() -> dict:
     p["scenario"] = "rank-diag-success"
     p["fixSuccess"] = FIX_SUCCESS
     p["fixSuccessTable"] = FIX_SUCCESS_TABLE
+    p["fixSuccessUrl"] = FIX_SUCCESS_URL
     return p
 
 
@@ -2126,6 +2140,10 @@ def test_the_fix_now_button_carries_the_success_criterion_you_typed(tmp_path):
     assert after["sentRun"] == [FIX_SUCCESS], (
         "那一格填了却没带上（发出去的 `success_text` 是 %r）" % after["sentRun"])
     assert after["runSuccess"] == FIX_SUCCESS, after
+    #: ★ 网址那一格也并进去了、也发出去了（两格是判据的两半，缺一半就是「一半的判据」）。
+    assert after["runSuccessUrl"] == FIX_SUCCESS_URL, after
+    assert after["sentRunUrls"] == [FIX_SUCCESS_URL], (
+        "网址那一格填了却没带上（发出去的 `success_urls` 是 %r）" % after["sentRunUrls"])
 
 
 def test_two_different_criteria_are_both_shown_instead_of_picked(tmp_path):

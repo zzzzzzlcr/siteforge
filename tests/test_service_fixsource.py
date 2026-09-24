@@ -381,14 +381,21 @@ def test_the_payload_carries_fix_py_down_to_the_graph():
 #: 声明了**恰好一串** —— 能搬的那一半。
 SRC_WITH_ONE = ('#!/usr/bin/env python3\nSTATES = []\nFILLS = {}\n'
                 'SUCCESS_TEXTS = ["Thank you for subscribing!"]\n')
-#: 声明了**两串** —— 「挑哪一串」是**人的意图**（它决定什么算成了），服务不替人挑。
+#: 声明了**两串** ⇒ **整族搬**（老脚本自己写的就是「这几个里任意一个」= `any(...)`）——
+#: 搬一个就是替它把判据**改窄**，而「判据一个字没放宽」是这条链上的老口径。
 SRC_WITH_TWO = ('#!/usr/bin/env python3\nSTATES = []\nFILLS = {}\n'
                 'SUCCESS_TEXTS = ["Thank you", "Check your email"]\n')
-#: 手写那一种的真形状（照 `japansdates` 抄）：判据是**网址**。
+#: 手写那一种的真形状（照 `japansdates` 抄）：判据是**网址** ⇒ 进**第二格**（`success_urls`）。
 SRC_URL_ONLY = ('#!/usr/bin/env python3\n'
                 'SUCCESS_URL_MARKERS = ("/wizard", "/main-page")\n'
                 'def is_success(url):\n'
                 '    return any(m in (url or "") for m in SUCCESS_URL_MARKERS)\n')
+#: 判的是**解出来的 hash 状态**（`japansdates` 的 `wizard2` 那种）：网址原文里没有那一串
+#: ⇒ **真搬不了** ⇒ 门口拦下并说清为什么（这一种是「搬不了」的**正身**）。
+SRC_HASH_ONLY = ('#!/usr/bin/env python3\n'
+                 'HASH_SUCCESS_STATES = ("wizard", "wizard2")\n'
+                 'def is_success(url):\n'
+                 '    return True\n')
 
 
 def _brief_no_success(tmp_path, **over):
@@ -451,43 +458,69 @@ def test_what_the_human_typed_still_wins_over_the_draft(tmp_path):
     assert seen.get("success_text") == "Check your email", seen.get("success_text")
 
 
-def test_a_draft_with_two_criteria_is_refused_and_both_are_named(tmp_path):
-    """底稿里写着**不止一串** ⇒ 门口拦住，而且把两串都摆出来。
+def test_a_draft_with_several_criteria_carries_them_all(tmp_path):
+    """底稿里写着**不止一串** ⇒ **整族搬**（不是挑一个、也不拦人）。
 
-    为什么不替人挑：那一格**决定什么算成了** —— 挑错的那一下就产出一个「跑到那一句就
-    自认成功」的假判据，而它在屏幕上与「挑对了」长得一模一样。所以「挑哪一串」是人的活，
-    服务只负责把选项**原样**摆出来（两串都在那句话里）。
+    ⚠️ 逐行交代（2026-09-24 改的，与加 `success_urls` 那一格同一天）：这一条原先量的是
+    「两串 ⇒ 门口拦住，让人挑一串」—— 那是**当时**的写法，理由是「挑哪一串决定什么算成了」。
+    可它其实**不成立**：老脚本写的就是「这几个里**任意一个**」（产物那两格本来就是 `any(...)`），
+    所以搬一串 = 替它把判据**改窄**了，而「判据一个字没放宽」（改窄同样不许）是这条链上的老口径。
+    ⇒ 现在两串都搬（`success_text` 存**列表**），量的是「两串都在、一条不少」。
     """
     seen: dict = {}
     app = _app_with_script(tmp_path, SRC_WITH_TWO, seen)
 
     r = app.post("/run", json=_brief_no_success(tmp_path))
 
-    assert r.status_code == 400, r.text
-    assert "Thank you" in r.text and "Check your email" in r.text, r.text
-    assert "不止一串" in r.text, r.text
-    assert "job_id" not in r.text, "开了 job：%s" % r.text
-    assert not (tmp_path / "sites").exists(), "拒了却落了底稿"
+    assert r.status_code == 202, r.text
+    assert seen.get("success_text") == ["Thank you", "Check your email"], seen.get("success_text")
+    #: ★ 而且**说出来**（时间线上那句要点到两条，不是只说第一条）
+    events = app.get("/job/%s/live" % r.json()["job_id"]).json()["events"]
+    told = " ".join(str(e.get("say") or "") for e in events if e.get("kind") == "submitted")
+    assert "Thank you" in told and "Check your email" in told, told
+def test_a_draft_that_judges_by_url_carries_it_into_the_url_grid(tmp_path):
+    """★★ 底稿判的是**网址** ⇒ 搬进**第二格**（`success_urls`），**不塞进文字那格**。
 
-
-def test_a_draft_that_judges_by_url_says_so_instead_of_moving_it_over(tmp_path):
-    """★★ 底稿判的是**网址** ⇒ **不动它**，但把「它靠什么判」说出来。
-
-    这是这一片最要紧的一条：`SUCCESS_URL_MARKERS` 那种判据搬进产物就是**永远认不出成功**
-    （产物只在**页面正文**里找那串字，`template.page_signature()` 不含网址）——
-    「搬过来了」在屏幕上与「搬对了」**一模一样**，而它是这一仓最贵的那种谎。
+    ⚠️ 逐行交代（2026-09-24 改的）：这一条原先量的是「判网址 ⇒ 门口拦下、说清它靠什么判」——
+    那是**当时**的事实（服务只有文字一格，而网址那一截**不在页面正文里** ⇒ 塞进文字格就是
+    「永远认不出成功」，比不拦更坏）。现在有了第二格（用户点名「那不能一样加个 success_url」）
+    ⇒ 该拦的只剩**真搬不了**的那两种（见下一条）。这里量的变成：
+      · `success_urls` 收下**整族**（两截都在）；
+      · **文字那一格不被污染**（还是空的 —— 网址那一截不属于它）。
     """
     seen: dict = {}
     app = _app_with_script(tmp_path, SRC_URL_ONLY, seen)
 
     r = app.post("/run", json=_brief_no_success(tmp_path))
 
+    assert r.status_code == 202, r.text
+    assert seen.get("success_urls") == ["/wizard", "/main-page"], seen.get("success_urls")
+    assert not str(seen.get("success_text") or "").strip(), (
+        "网址那一截被塞进**文字**那一格了（产物那边会在正文里找一个永远找不到的串）：%r"
+        % seen.get("success_text"))
+    events = app.get("/job/%s/live" % r.json()["job_id"]).json()["events"]
+    told = " ".join(str(e.get("say") or "") for e in events if e.get("kind") == "submitted")
+    assert "/wizard" in told, told
+
+
+def test_a_draft_whose_criterion_cannot_be_read_is_refused_and_says_why(tmp_path):
+    """★ 底稿里**真搬不了** ⇒ 门口拦下，而且说清**它靠什么判**（不让人对着空格猜）。
+
+    这一种的正身：`HASH_SUCCESS_STATES` —— 那几个名字是**解过 base64 的 hash 状态**
+    （`japansdates` 的 `wizard2`），网址原文里根本没有那一串 ⇒ 照搬过去就是永远不匹配。
+    """
+    seen: dict = {}
+    app = _app_with_script(tmp_path, SRC_HASH_ONLY, seen)
+
+    r = app.post("/run", json=_brief_no_success(tmp_path))
+
     assert r.status_code == 400, r.text
-    assert "/wizard" in r.text, "没把底稿自己那几行摆出来：%s" % r.text
-    assert "只看网址" in r.text, r.text
+    assert "wizard2" in r.text, "没把底稿自己那几行摆出来：%s" % r.text
+    assert "base64" in r.text, r.text
     #: ⚠️ 那句话里敢写「没有开浏览器」—— 这一趟**真的**没开：拦在**读完之后、写盘之前**
     #: （回复里那几个星号是 markdown 的着重，逐字比会差一格，所以按**整段**比）。
     assert "**没有**开浏览器、没有跑模型、也没有写任何文件" in r.text, r.text
+    assert "job_id" not in r.text, "开了 job：%s" % r.text
     assert not (tmp_path / "sites").exists(), "拒了却落了底稿"
     assert not seen, "门口拒了却把它发进图了：%s" % seen
 

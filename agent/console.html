@@ -456,6 +456,18 @@
                   并把「这一份底稿靠什么判」摆给你。<b>只填那串字本身</b>，前后别加说明；
                   填了就按你的来（底稿那条只是兜底）。</p>
               </div>
+              <!-- ★ 2026-09-24（用户点名「那不能一样加个 success_url 吗」）：判据的**第二格** ——
+                   老脚本本来就常判网址（`/wizard` 那种），而文字那格接不住它。
+                   与上面那一格同一套：按下时并进「开一趟新的」那张表里的同一格，不新开口径。 -->
+              <div class="field">
+                <label for="fixSuccessUrl">网址里会出现哪一截（可空）</label>
+                <input type="text" id="fixSuccessUrl" autocomplete="off" spellcheck="false"
+                       placeholder="比如 /wizard、#/confirm">
+                <p class="why">走通之后<b>地址里</b>会出现的那一截（等于下面那张表里的
+                  <b>「网址里会出现哪一截」</b>）。⚠️ <b>不是整条网址</b>：只写那一截。
+                  修站那一趟也可以空着 —— 服务会读<b>底稿里老脚本声明过的网址判据</b>来用
+                  （`SUCCESS_URL_MARKERS` 那一族），并在时间线上说清「你没填，用的是它」。</p>
+              </div>
               <p class="hint" id="diagHint">原因由**跑那一趟的机器**自己报上来 ——
                 还没报上来的单，这里会直说，不会空着。</p>
             </div>
@@ -678,6 +690,20 @@
                   而它只会报「没见到成功文案」（2026-09-22 真事：有人填了
                   <code>出现文字 check your email</code>，页面上只有 <code>Check your email</code> ⇒
                   三趟都没认出来）。<b>大小写不算区别</b>（<code>Check</code> / <code>check</code> 都算）。</p>
+              </div>
+              <div class="field">
+                <label for="runSuccessUrl">网址里会出现哪一截（可空）</label>
+                <input type="text" id="runSuccessUrl" autocomplete="off" spellcheck="false"
+                       placeholder="比如 /wizard、#/confirm">
+                <p class="why">★ 2026-09-24 加的<b>第二格</b>（用户点名「那不能一样加个 success_url」）：
+                  走通之后<b>地址里</b>会出现的那一截。老脚本本来就常这么判（SPA 换页时
+                  <b>正文可能一个字都不变</b>，而地址变了）—— 那一截<b>不在页面上</b>，
+                  所以文字那格装不下它，得写在这儿。
+                  ⚠️ <b>不是整条网址</b>：只写那一截（<code>/wizard</code>），
+                  它是拿这串去<b>当前地址</b>里找（<b>大小写不算区别</b>）。
+                  ⚠️ 两格是<b>或</b>的关系：哪一格成立都算走通了；<b>空的那格不参与</b>。
+                  <b>修站那一趟两格都可以空着</b>（服务从底稿搬老脚本声明的那一条）；
+                  <b>新站那一趟两格里必须至少给一格</b>。</p>
               </div>
               <div class="field">
                 <label for="runMode">这是哪种活</label>
@@ -1925,6 +1951,9 @@
       "url": url,
       "goal": document.getElementById("runGoal").value.trim(),
       "success_text": document.getElementById("runSuccess").value.trim(),
+      //: ★ 2026-09-24（用户点名「那不能一样加个 success_url 吗」）：判据的**第二格** ——
+      //: 走通之后网址里会出现哪一截。与上面那格并列发出去（服务那边两格都是判据）。
+      "success_urls": document.getElementById("runSuccessUrl").value.trim(),
       "mode": document.getElementById("runMode").value,
       "evidence": document.getElementById("runEvidence").value.trim(),
       //: ★ 第 ① 件事：**失败记录里那个站键** + 它**跟着来的那一串网址**，两格原样发出去。
@@ -2586,6 +2615,26 @@
   //:   ③ 缺什么必填（尤其「什么算成功」那一格**只有人知道**）—— 交给**服务**说：
   //:      页面先把请求发出去，把它那句人话**原样**摆在红杠上。页面自己先拦一道，
   //:      运营就得分清「哪句是页面的规矩、哪句是服务的要求」—— 那是两个口径。
+  //: ★ 2026-09-24（用户点名「那不能一样加个 success_url 吗」）：判据是**两格**（文字 + 网址），
+  //: 而「并进那张表」这一下的**规矩是同一个** ⇒ 抽出来走两遍。
+  //: ⚠️ 两处各写一遍迟早分家（一处改了另一处忘），而这两格是同一件事的两半。
+  //: 规矩（与 `#fixNote` → `#runNote` 同一套）：**空着就填**；表里已经写了**以它为准**（不覆盖）；
+  //: 两处都写了、又不一样 ⇒ **不替人挑**（两句都摆出来让人改完再按）—— 返回 false 让调用方停下。
+  //: ⚠️ 它进的是 `setErr`（textContent，不过 `rich()`）—— 这儿的字符串里一个 `**` 都不许写。
+  function mergeCriterion(fromId, toId, label) {
+    var win = String((document.getElementById(fromId) || {}).value || "").trim();
+    if (!win) { return true; }
+    var box = document.getElementById(toId);
+    if (!box) { return true; }               // 件不可能缺（同一份文件里长出来的）；缺了就当没这一格
+    var had = String(box.value || "").trim();
+    if (!had || had === win) { box.value = win; return true; }
+    setErr("「" + label + "」两处都写了、又不一样：这一栏写的是「" + win +
+           "」，下面「开一趟新的」那张表里写的是「" + had +
+           "」—— 这一屏不替你挑。把那张表里那一格改成你要的那一句" +
+           "（真正发出去的是它），再按一次。", "act");
+    return false;
+  }
+
   function fixThisOne() {
     var id = String(document.getElementById("failPick").value || "").trim();
     var btn = document.getElementById("btnFixNow");
@@ -2604,20 +2653,8 @@
     //: **不新开口径**（服务收到的还是同一格、同一条路）。两处都写了、又不一样时
     //: **不替人挑**：把两句摆出来让人改（真正的判据只有一个，挑错的那一下要真花一趟活）。
     //: ⚠️ 这段进的是 `setErr`（textContent，不过 `rich()`）—— 一个 `**` 都不许写。
-    var win = String(document.getElementById("fixSuccess").value || "").trim();
-    var sBox = document.getElementById("runSuccess");
-    if (win) {
-      var hadWin = String(sBox.value || "").trim();
-      if (!hadWin || hadWin === win) {
-        sBox.value = win;
-      } else {
-        setErr("「什么算成功」两处都写了、又不一样：这一栏写的是「" + win +
-               "」，下面「开一趟新的」那张表里写的是「" + hadWin +
-               "」—— 这一屏不替你挑。把那张表里那一格改成你要的那一句" +
-               "（真正发出去的是它），再按一次。", "act");
-        return;
-      }
-    }
+    if (!mergeCriterion("fixSuccess", "runSuccess", "什么算成功")) { return; }
+    if (!mergeCriterion("fixSuccessUrl", "runSuccessUrl", "网址里会出现哪一截")) { return; }
     //: ★ 人猜的那句（`#fixNote`，2026-09-23 用户问「那怎么带上自己的语言」）**并进既有那一格**
     //: （`#runNote` = 「开工前先说一句」）—— 它本来就是「逐字进提示词」那条路
     //: （`runPayload().note` → 服务的 `hints`）。⚠️ 不另开一条到模型的通道：两条通道就是
