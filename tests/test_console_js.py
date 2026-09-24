@@ -2060,6 +2060,20 @@ def _rank_payloads() -> dict:
                                                  "body": {"detail": NO_CONFIG_SAY}}],
                 DIAG_WITH_URL: [{"body": DIAG_BODY}],
                 DIAG_NO_URL: [{"body": NO_DIAG_BODY}],
+                #: ★ 2026-09-23（用户问「点击看这单的原因不能点立即修复吗」）——
+                #: 「看完了，直接修这一单」那一颗按钮要走的三跳：**拿证据**（走页面上既有的
+                #: `fixFrom`：它把证据 + 站键 + 网址填进下面那张表）→ 再按既有的「开一趟」。
+                #: ⚠️ 地址**从服务那两个常量算出来**（与页面同源，不在这儿手拼一份）；
+                #: 查询串里那个键就是页面上 `#failSite` 当时的值（驱动脚本挑过 `RANK_CLEAN`）。
+                (service.FAILURE_EVIDENCE_PATH % DIAG_TASK
+                 + "?site=" + urllib.parse.quote(RANK_CLEAN, safe="")): [{"body": {
+                     "task_id": DIAG_TASK, "row_say": FAIL_ROW_SAY, "url": FAIL_ENTRY_URL,
+                     "evidence": FAIL_EV, "fill_url": True,
+                     "site": RANK_CLEAN, "fill_site": True}}],
+                "/run": [{"body": {"job_id": "job-fix-1", "say": "收到了，排队开跑。"}}],
+                #: 那一趟新活开出来之后，页面会跟着它走（`pickJob` → 拉它的 `/live`）——
+                #: 不给这一条的话，夹具会在屏幕上留一句「夹具没给这个 URL 准备响应」的假错。
+                "/job/job-fix-1/live": [{"body": _live("running", "queue", n=1)}],
             }}
 
 
@@ -2087,7 +2101,11 @@ def test_clicking_a_site_asks_the_existing_panel_for_that_sites_failures(tmp_pat
     for row in RANK_FAIL_ROWS:
         assert row["task_id"] in out["afterClean"]["fails"], out["afterClean"]["fails"]
     #: 这一下**只查**：`POST /run` 一次都不许发（与 Task 13 那条纪律同源）。
-    assert [s for s in out["sent"] if s["url"] == "/run"] == [], out["sent"]
+    #: ⚠️ **2026-09-23 改准**（逐行交代）：这一份夹具在**后面**（⑦b「看完了，直接修这一单」）
+    #: **确实**会发一次 `/run` ⇒ 原来那条「整趟里一条 `/run` 都没有」不再成立。
+    #: 换成量**那一刻**的发送记录（驱动器在 ② 之后就存了一份 `sentAfterClean`）——
+    #: 判的还是原来那件事（**选站 ≠ 开活**），而且它不再靠「后面有没有别的动作」才成立。
+    assert "/run" not in out["sentAfterClean"], out["sentAfterClean"]
 
 
 def test_a_key_that_cannot_be_found_says_so_instead_of_looking_healthy(tmp_path):
@@ -2245,6 +2263,38 @@ def test_the_failure_screenshot_is_shown_when_there_is_one(tmp_path):
     assert '<img src="%s"' % SHOT_URL in html, "那张失败截图没摆出来：%r" % html
     assert '<a href="%s"' % SHOT_URL in html, "那张图点不开（没有原图入口）：%r" % html
     assert "<img" not in out["afterNoDiag"]["diag"], out["afterNoDiag"]["diag"]
+
+
+def test_the_reason_can_be_fixed_right_there(tmp_path):
+    """★★ 2026-09-23（用户问「点击看这单的原因不能点立即修复吗」）：**看完了当场修**。
+
+    在这之前那条链要三步（挑这一单 → 按「照这条修」把下面那张表填好 → 再按「开一趟」），
+    而中间那一步在**原因那一栏**里根本没有 —— 运营看完原因就卡在那儿了。
+
+    量三下（缺一条这条就能靠改坏另一条过）：
+      ① 那一单的**证据真的被取回来了**（`/failures/<单号>/evidence` 那一跳走过）；
+      ② 发出去的 `POST /run` **就是那一趟 fix 活**：`mode=fix`、`evidence` 是那一段证据；
+      ③ 页面**没有自己先判缺什么**（「什么算成功」那一格是空的，请求照样发出去了）——
+         缺什么由**服务**说这句话在这个仓里是一条规矩，页面先拦一道就是两个口径。
+    """
+    out = _drive(tmp_path, scenario="rank-diag")
+    #: ① 那一段证据真的取回来了（否则下面量的是「页面自己编了一段」）
+    assert (service.FAILURE_EVIDENCE_PATH % DIAG_TASK
+            + "?site=" + urllib.parse.quote(RANK_CLEAN, safe="")) in out["urls"], out["urls"]
+    after = out["afterFixNow"]
+    #: ② 表填好了 + 就是那一趟 fix 活
+    assert after["mode"] == "fix", after
+    assert after["evidenceHidden"] is False, after
+    assert after["evidence"] == FAIL_EV, after
+    runs = [s for s in out["sent"] if s["url"] == "/run"]
+    assert len(runs) == 1, out["sent"]
+    body = json.loads(runs[0]["body"])
+    assert body["mode"] == "fix", body
+    assert body["evidence"] == FAIL_EV, body
+    #: ③ 页面**没有**替服务拦：「什么算成功」空着，请求照样发出去了
+    assert body["success_text"] == "", body
+    #: 而且看原因那一栏**还在**（这一下不把它擦掉 —— 人还在读那几行日志）
+    assert after["diag"] == out["afterDiag"]["diag"], after["diag"]
 
 
 def test_a_task_with_no_reason_yet_says_so_and_is_not_left_blank(tmp_path):

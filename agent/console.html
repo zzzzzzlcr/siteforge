@@ -420,6 +420,10 @@
           <div class="body">
             <div class="go">
               <button class="btn primary" type="button" id="btnDiag">看这一单的原因</button>
+              <!-- ★ 2026-09-23（用户问「点击看这单的原因不能点立即修复吗」）：看完了当场就能修。
+                   ⚠️ 它**不另起一条路**：先走既有的「拿这条修」（`fixFrom`：填下面那张表 +
+                   把这一条的站键记下），再按既有的「开一趟」—— 缺什么由**服务**说。 -->
+              <button class="btn" type="button" id="btnFixNow">看完了，直接修这一单</button>
               <p class="hint" id="diagHint">原因由**跑那一趟的机器**自己报上来 ——
                 还没报上来的单，这里会直说，不会空着。</p>
             </div>
@@ -2525,7 +2529,40 @@
                          '<figcaption>失败时的页面截图（点开放大）</figcaption></figure>'
                        : "") + "</div>");
     }
+
     box.innerHTML = html + '<div class="diaglist">' + items.join("") + "</div>";
+  }
+
+  //: ★★ 2026-09-23（用户问「点击看这单的原因不能点立即修复吗」）：**看完了当场修**。
+  //: 在这之前那条链要三步（挑这一单 → 按「拿这条修」把下面那张表填好 → 再按「开一趟」），
+  //: 而且中间那一步在**这一栏**里根本没有 —— 运营看完原因就卡在这儿了。
+  //:
+  //: ⚠️ 三件事**一个都不许在这儿自己判**（这一屏的老规矩）：
+  //:   ① 挑没挑单 —— 空着就**本地说一句**（这一下不用发请求，说不说都得说）；
+  //:   ② 该填哪几格 —— 交给**既有**的 `fixFrom`（它填的是服务给的那几格：证据 + 站键 + 网址）；
+  //:   ③ 缺什么必填（尤其「什么算成功」那一格**只有人知道**）—— 交给**服务**说，
+  //:      页面先把请求发出去，把它那句人话**原样**摆在红杠上。页面自己先拦一道，
+  //:      运营就得分清「哪句是页面的规矩、哪句是服务的要求」—— 那是两个口径。
+  function fixThisOne() {
+    var id = String(document.getElementById("failPick").value || "").trim();
+    var btn = document.getElementById("btnFixNow");
+    if (!id) {
+      //: 与 `fixFrom` 那句同源（同一个意思、同一处口径）——这一栏也有一个空下拉，
+      //: 而它空着的理由与上面那一栏**是同一个**（「查哪一段」默认只查今天）。
+      setErr("还没挑是**哪一单** —— 上面「要修哪一条」那一格是空的（上面那一栏里有几条就摆几条）。" +
+             "要是上面那一栏也是空的：「查哪一段」那一格现在只挑了**今天** —— " +
+             "挑「近 7 天」或「近 30 天」再按「查失败」。");
+      return;
+    }
+    setErr("");
+    btn.disabled = true;
+    return fixFrom().then(function (got) {
+      btn.disabled = false;
+      //: 没填成 ⇒ `fixFrom` 已经把**服务那句话**摆在红杠上了；这一下到此为止（不硬发一趟）。
+      if (!got) { return null; }
+      //: 填好了就按**既有的**那一颗（同一个 `startRun`）—— 两条路发出去的正文因此是同一份。
+      return startRun();
+    });
   }
 
   function fetchDiag() {
@@ -2895,6 +2932,8 @@
   //:   **点不动**（屏幕上看着一样，点了什么都不发生）。挂到两栏共同的父亲上。
   document.getElementById("pagePanel").addEventListener("click", pointAtElement);
   document.getElementById("btnDiag").addEventListener("click", fetchDiag);
+  //: ★ 2026-09-23：看完原因**当场修**（复用 `fixFrom` + `startRun`，不另起一条路）。
+  document.getElementById("btnFixNow").addEventListener("click", fixThisOne);
   document.getElementById("btnJson").addEventListener("click", fetchJson);
   document.getElementById("btnJsonPrepare").addEventListener("click", prepareJsonWrite);
   document.getElementById("btnJsonCommit").addEventListener("click", commitJsonWrite);

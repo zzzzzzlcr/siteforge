@@ -508,6 +508,9 @@ async function rankScenario(out) {
                     pick: el("rankPick").innerHTML };
   // ② 干净键：查得到，两个数**对得上**
   out.afterClean = await pick(payload.rank.clean);
+  //: ★ 2026-09-23：把**这一刻**的发送记录存一份 —— 后面（⑦b「看完了，直接修这一单」）
+  //: 会真的发一次 `POST /run`，而「选站那一下**不许**开活」这条判据量的是**这一刻**。
+  out.sentAfterClean = sent.map(function (s) { return s.url; });
   out.afterClean.siteBox = el("failSite").value;
   out.afterClean.disabled = el("btnRankGo").disabled;
   // ③ ★ 长而脏的键：后端**查得到**、而且比榜单那个数**多**（复审量的真形状：1 → 6）
@@ -531,6 +534,18 @@ async function rankScenario(out) {
   await settle();
   await settle();
   out.afterDiag = { diag: el("diag").innerHTML, disabled: el("btnDiag").disabled };
+  // ⑦b ★ 2026-09-23（用户问「点击看这单的原因不能点立即修复吗」）：看完原因**当场修**。
+  //: 这一下走的是**页面上既有**的那条路：`fixFrom`（把证据 + 站键 + 网址填进下面那张表）
+  //: → `startRun`（既有的「开一趟」）。⚠️ 「什么算成功」那一格**没填**（那一格只有人知道）——
+  //: 页面**不许**自己先拦：请求照发，缺什么由**服务**那句话说了算（红杠上摆的就是它）。
+  fire("btnFixNow", "click");
+  await settle();
+  await settle();
+  await settle();
+  out.afterFixNow = { errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
+                      mode: el("runMode").value, evidence: el("runEvidence").value,
+                      evidenceHidden: el("runEvidenceField").hidden,
+                      whoJob: el("whoJob").textContent, diag: el("diag").innerHTML };
   // ⑧ 挑**还没有原因**的那一单 ⇒ 服务那句 `note` 上屏
   el("failPick").value = payload.rank.noDiag;
   fire("btnDiag", "click");
