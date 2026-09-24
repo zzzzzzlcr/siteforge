@@ -3574,8 +3574,13 @@ class Service:
         那两句本来就是人话（「第 4 遍：换个窗口大小再跑…」+「这一遍没跑：…」），
         照搬，不重写、不再判断一次。
 
-        ⚠️ **没跑的那几遍也要说**（`skipped` / `not_needed`）：它们正是「哪一类失败这次
-        **没验到**」的载体，只在报告里看得见就等于没人看见（R-5 治的就是这个病）。
+        ⚠️ **该跑却没跑成的那几遍要说**（`skipped`）：它们正是「哪一类失败这次**没验到**」的载体，
+        只在报告里看得见就等于没人看见（R-5 治的就是这个病）。
+        ★ 2026-09-24（用户裁定「先把其他四类砍了把隐藏掉就行，就是回复一次就可以」）：
+        **被砍掉的那四遍（不在 `selftest.RUN_ONLY` 里的）不跑也不播** —— 四条「没验到」
+        把屏幕占满，运营看完不知道结论是什么（原话「反馈运营也不知道到底啥情况」）。
+        ⚠️ 它们**照旧在报告里**（`Report.runs` 有那四行、`summary()` 一句带过、`as_dict`
+        进产物）—— **不是静默删掉**，只是不再逐条占屏。
 
         ⚠️ 没有 job 可记时**抛**（与 `_note_teller` 不同，理由见那一头）：自测的播报在
         外面**没有** `journey.notes` 那样的落点，能看见它的只有 `selftest.run` 的护栏 ——
@@ -3583,6 +3588,12 @@ class Service:
         叫它的那一层）。**吞掉才是静默**：那样服务和人都不会知道这一趟的时间线少了每一遍。
         """
         def tell(run: Any) -> None:
+            #: ★ 这一格见上面 docstring：**砍掉的那四遍在这儿被挡掉**（播报这一层）。
+            #: ⚠️ `skipped` 不进来（那是 R-5 的「不算过」，必须看得见）；
+            #: `not_needed` 里**只挡「不在 RUN_ONLY 里」**的 —— 到顶（硬顶）那一种照旧播。
+            if (str(getattr(run, "status", "")) == selftest.STATUS_NOT_NEEDED
+                    and str(getattr(run, "name", "")) not in selftest.RUN_ONLY):
+                return
             job = self._jobs.get(job_id)
             if job is None:
                 raise RuntimeError(

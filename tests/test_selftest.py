@@ -184,6 +184,12 @@ def _run(env, scripts, **kw):
     env["install"](scripts, navi_fails=kw.pop("navi_fails", False))
     kw.setdefault("run_dir", env["dir"])
     kw.setdefault("cdp_bin", env["cdp"])
+    #: ★ 2026-09-24（逐行交代）：`selftest.run` 的默认改成**只跑基线**了（用户裁定「先把其他
+    #: 四类砍了」，见 `selftest.RUN_ONLY`）。**这个文件量的主要是那几遍各自的机器**
+    #: （补跑 / 硬顶 / 旋钮 / 各自的判据）—— 那些机器一个字节都没删，只是默认不跑了
+    #: ⇒ 这里**显式**把它们要回来（`only=RUN_NAMES`），老断言一个字不动。
+    #: ⚠️ **默认那一格**由下面那条 `test_the_default_is_only_the_baseline` 钉（它不传 `only`）。
+    kw.setdefault("only", selftest.RUN_NAMES)
     return selftest.run(str(env["py"]), WS, env["form"], SITE, **kw)
 
 
@@ -214,6 +220,33 @@ def test_the_default_is_one_submission_and_a_pass(env):
     assert "提交了 1 次" in said, said
     assert "没验到" in said, "没跑到的那几类要在人话里说清：\n%s" % said
 
+
+
+def test_the_default_is_only_the_baseline(env):
+    """★ 2026-09-24（**用户裁定**，原话「现在先把其他四类砍了把隐藏掉就行，就是回复一次就可以」）：
+    **默认只跑基线** —— 基线挂了也**不再往下补跑**。
+
+    ⚠️ 这是一条**新裁定**，它把 R-84 的「没过就补跑」也收掉了（R-84 只管「过了不往下跑」）。
+    **代价说清**：基线一挂，就**分不出**「产物不行」还是「这一趟环境抖了」—— 那正是第 2 遍
+    存在的唯一理由。要恢复：`selftest.run(..., only=selftest.RUN_NAMES)`（那几遍的机器
+    一个字节没删，上面那一批用例照旧验着它们）。
+
+    量四件：① 真提交**只有 1 次**（硬证据：产物真起了一次）；② 后四遍记 `not_needed`、
+    原因写着「只跑基线」；③ 判 `False`（一遍都没过 ⇒ 不许读成「差不多」）；
+    ④ 人话里那四类**压成一句**（不是四条 —— 用户原话「反馈运营也不知道到底啥情况」）。
+    """
+    stub = env["install"](_scripts(baseline=_Script(rc=1, oks=(True, False))))
+    report = selftest.run(str(env["py"]), WS, env["form"], SITE,
+                          run_dir=env["dir"], cdp_bin=env["cdp"])   # ← **不传 only**：量的就是默认
+    assert report.submissions == 1, report.runs
+    assert len(stub.artifact_calls) == 1, stub.artifact_calls
+    assert [r.status for r in report.runs] == ["failed"] + ["not_needed"] * 4, report.runs
+    assert report.passed is False, report.summary()
+    said = report.summary()
+    #: ④ 四类**压成一句**（不是四条）—— 量的是「一句」，不是某个字面量：
+    #: 同一个原因只许出现一条「另外 N 类扰动…」的行。
+    assert said.count("另外 4 类扰动这一次") == 1, said
+    assert "没验到" in said and "只跑基线" in said, said
 
 def test_a_failed_baseline_gets_one_retry_and_a_pass_counts(env):
     """**R-84 的补跑路径**：baseline 挂 → 跑第 2 遍；第 2 遍过 → **判过**。
@@ -469,14 +502,14 @@ def test_run_two_reruns_the_same_page_and_only_navigates_when_asked(env):
     bad = _Script(rc=1, oks=(True, False))
     stub = env["install"](_scripts(baseline=bad))
     selftest.run(str(env["py"]), WS, env["form"], SITE, run_dir=env["dir"], cdp_bin=env["cdp"],
-                 set_viewport=lambda w, h: None)
+                 only=selftest.RUN_NAMES, set_viewport=lambda w, h: None)
     assert stub.cdp_calls == [], "没给 entry_url 就不该动页面（R-6：不重置）"
     ws_urls = [_flag(cmd, "--ws-url") for cmd in stub.artifact_calls]
     assert ws_urls[0] == ws_urls[1] == WS, ws_urls
 
     stub = env["install"](_scripts(baseline=bad))
     selftest.run(str(env["py"]), WS, env["form"], SITE, run_dir=env["dir"], cdp_bin=env["cdp"],
-                 entry_url=ENTRY, set_viewport=lambda w, h: None)
+                 entry_url=ENTRY, set_viewport=lambda w, h: None, only=selftest.RUN_NAMES)
     assert len(stub.cdp_calls) == 1, stub.cdp_calls
     navi = stub.cdp_calls[0]
     assert navi[1] == "navi" and navi[2] == ENTRY, navi
@@ -502,7 +535,8 @@ def test_every_full_funnel_round_starts_from_the_top_again(env):
     bad = _Script(rc=1, oks=(True, False))
     stub = env["install"](_scripts(baseline=bad, rerun=bad, delay=bad, viewport=bad))
     selftest.run(str(env["py"]), WS, env["form"], SITE, run_dir=env["dir"], cdp_bin=env["cdp"],
-                 start_url=ENTRY, set_viewport=lambda w, h: None, max_submissions=4)
+                 start_url=ENTRY, set_viewport=lambda w, h: None, max_submissions=4,
+                 only=selftest.RUN_NAMES)
 
     navis = [c for c in stub.cdp_calls if c[1:2] == ["navi"]]
     assert navis, "整条漏斗那几遍一遍都没站回起点 —— 跑法还是「拿别人停下的那页起步」"
@@ -1045,12 +1079,15 @@ def test_a_real_run_that_never_succeeds_is_not_a_pass(live_site, tmp_path, monke
     R-84：这条也顺手把**硬顶**在真跑里量了一遍 —— 连着失败时**正好提交 3 次**
     （基线 / 第 2 遍 / 第 3 遍），第 4/5 遍到不了。
     """
+    #: ⚠️ 2026-09-24（逐行交代）：这一条量的是**那条阶梯本身**（连着失败时补跑到硬顶）——
+    #: 而默认已改成只跑基线（人裁）⇒ 这里**显式**要回五遍；断言一个字没改。
     py, form = _live_artifact(tmp_path / "bad", "NEVER-APPEARS")
     _install_net_guard(tmp_path, monkeypatch)
 
     report = selftest.run(str(py), live_site["ws_url"], str(form), SITE,
                           run_dir=tmp_path / "traces", cdp_bin=live_site["cdp"],
-                          delay=0.05, timeout=180, allow_skips=("country", "viewport"))
+                          delay=0.05, timeout=180, allow_skips=("country", "viewport"),
+                          only=selftest.RUN_NAMES)
 
     assert report.passed is False
     assert report.submissions == 3, "连着失败时正好提交 3 次（硬顶），一次都不许多"

@@ -849,7 +849,12 @@ def test_the_delay_pass_is_not_needed_for_a_legacy_artifact(tmp_path, monkeypatc
     monkeypatch.setenv("STUB_RC", "1")
     report = selftest.run(str(py), "ws://127.0.0.1:9222/devtools/browser/x",
                           str(tmp_path / "form.json"), SITE, legacy=True,
-                          run_dir=tmp_path / "runs", cdp_bin="/bin/true", timeout=60)
+                          run_dir=tmp_path / "runs", cdp_bin="/bin/true", timeout=60,
+                          #: ⚠️ 2026-09-24（逐行交代）：这一条量的是**老写法下放慢那一遍
+                          #: 怎么处置**；默认已改成只跑基线（人裁「先把其他四类砍了」）⇒
+                          #: 这里**显式**要回五遍，否则它记的是「被砍掉」那条原因，
+                          #: 而不是「产物不认 `--delay`」那条。断言一个字没改。
+                          only=selftest.RUN_NAMES)
 
     delay = [r for r in report.runs if r.name == "delay"]
     assert delay and delay[0].status == selftest.STATUS_NOT_NEEDED, [r.as_dict() for r in report.runs]

@@ -973,6 +973,11 @@ def _selftest_run(tmp_path, **kw):
     """跑一次自测（桩掉起产物那一步）：三遍都挂 + 硬顶 4 → 第 4/5 遍轮得到（跳过的那两支）。"""
     kw.setdefault("run_dir", str(tmp_path / "traces"))
     kw.setdefault("cdp_bin", str(tmp_path / "cdp"))
+    #: ★ 2026-09-24（逐行交代）：`selftest.run` 的默认改成**只跑基线**了（人裁「先把其他四类
+    #: 砍了」，见 `selftest.RUN_ONLY`）。**这个文件量的是播报那条线**（每一遍都要播、
+    #: `skipped` 也要播）⇒ 这里**显式**把五遍要回来，老断言一个字不动。
+    #: ⚠️ 「被砍掉的那四遍不播」另有一条用例（`test_the_cut_passes_are_not_broadcast`）。
+    kw.setdefault("only", selftest.RUN_NAMES)
     return selftest.run(str(_py(tmp_path)), WS_URL, str(tmp_path / "form.json"), SITE, **kw)
 
 
@@ -1010,6 +1015,35 @@ def test_every_run_is_broadcast_in_order_including_the_ones_that_did_not_run(
     assert [(r.name, r.status) for r in seen] == [(r.name, r.status) for r in report.runs]
     assert [r.status for r in seen] == ["failed", "failed", "failed", "skipped", "skipped"]
     assert seen[3].note.startswith("这一遍没跑"), seen[3].note
+
+
+def test_the_cut_passes_are_not_broadcast(tmp_path):
+    """★ 2026-09-24（用户裁定「先把其他四类砍了把隐藏掉就行，就是回复一次就可以」）：
+    被砍掉的那四遍**不播**；而 `skipped`（该跑却没跑成 = 不算过）**照旧播**。
+
+    ⚠️ 量在**服务这一层**（`_run_teller`）、不是 `selftest.run` 的 `on_run` 上：
+    那个钩子**照旧收得到**五遍（数据上一个都不少 —— 那正是
+    `test_every_run_is_broadcast_in_order_including_the_ones_that_did_not_run` 量着的），
+    「隐藏」只发生在**播报那个口子**上。两件事分开量：**数据完整**与**屏幕安静**。
+    """
+    svc = service.Service()
+    job = service.Job(job_id="job-cut", brief={}, created_at="2026-09-24T00:00:00+08:00")
+    svc._jobs[job.job_id] = job
+    calls: list = []
+    svc.narrate = lambda a_job, kind, say, **data: calls.append((kind, say))   # noqa: ARG005
+
+    def one(name, status, note):
+        svc._run_teller(job.job_id)(selftest.Run(
+            name=name, label=selftest.RUN_LABELS[name], status=status, ok=None,
+            failed_step=None, trace_path=None, note=note))
+
+    one("baseline", "failed", "第 1 遍挂了")
+    one("viewport", selftest.STATUS_NOT_NEEDED, "这一遍没跑：这一版**只跑基线**（人裁）")
+    one("country", "skipped", "这一遍没跑成：没给回调")
+    said = " ｜ ".join(s for _, s in calls)
+    assert "第 1 遍" in said, calls
+    assert "第 4 遍" not in said, "被砍掉的那一遍还是播出去了：%r" % (calls,)
+    assert "第 5 遍" in said, "`skipped`（不算过）照旧要播（R-5）：%r" % (calls,)
 
 
 # ═══════════ 7. 铁律二：`on_*` 不给 → 今天的行为一个字节不变 ══════════

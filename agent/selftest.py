@@ -97,6 +97,18 @@ _REPO = pathlib.Path(__file__).resolve().parents[1]
 #: 五遍的名字（稳定键：报告、图、PROVENANCE 都认这几个，改它们等于改契约）
 RUN_NAMES = ("baseline", "rerun", "delay", "viewport", "country")
 
+#: ★ 2026-09-24（**用户裁定**，原话「现在先把其他四类砍了把隐藏掉就行，就是回复一次就可以」）：
+#: **只跑基线那一遍**。其余四遍（`rerun` / `delay` / `viewport` / `country`）照旧记
+#: `not_needed`（**数据上一个都不少**：报告里那四行还在、`summary()` 一句带过），
+#: 但**不再逐条播到时间线上** —— 四条「没验到」把屏幕占满，运营看完不知道结论是什么
+#: （用户原话「反馈运营也不知道到底啥情况」）。
+#: ⚠️ **代价（说清，这是这一格唯一要记住的事）**：基线挂了**不再补跑** ⇒ 「产物不行」与
+#: 「这一趟环境抖了」**分不出**（原来靠 `rerun` 分辨）。要恢复就是把人裁改回这里 ——
+#: 那四遍的代码、名字、判据**一个字节都没删**，改这一格就全回来了。
+#: ⚠️ `skipped`（该跑却没跑成：没旋钮 / 回调炸了）**不在这里** —— 那是 R-5 的「不算过」，
+#: 照旧播、照旧拦。
+RUN_ONLY = ("baseline",)
+
 #: 每遍**人话**说它打什么（D16：给非技术人员看的不是错误码）
 RUN_LABELS = {
     "baseline": "第 1 遍：正常跑一遍（基线）",
@@ -266,7 +278,7 @@ class Report:
         }
 
     def summary(self) -> str:
-        """给非技术人员看的一段话（D16）：过没过、**提交了几次**、哪遍挂、卡在第几步、哪遍没验到。"""
+        """给非技术人员看的一段话（D16）：过没过、**提交了几次**、哪遍挂、卡在第几步、哪类没测。"""
         lines = []
         if self.passed:
             lines.append("扰动自测过了：这一轮往站方提交了 %d 次。" % self.submissions)
@@ -286,8 +298,24 @@ class Report:
         for run in self.skipped_runs:
             if run not in self.blocking:
                 lines.append("· %s —— %s" % (run.label, run.note))
-        for run in self.not_needed_runs:
-            lines.append("· %s —— %s" % (run.label, run.note))
+        if self.not_needed_runs:
+            #: ★ 2026-09-24（用户原话「反馈运营也不知道到底啥情况」）：这几遍**压成一句** ——
+            #: 逐条摆出来，读的人只记住「有几件事没验」，记不住结论。
+            #: ⚠️ **按原因分组**（这一格差点犯真事）：不跑的理由有三种（只跑基线 / 用满提交次数 /
+            #: 前一遍就过了），一律写成「只跑基线的跑法」就是**给「到顶」那一遍编了一个不成立
+            #: 的原因**。所以按 `note` 分组，一组一句 —— 正常情况下仍然只有一句。
+            #: ⚠️ **一个字都没瞒**：哪几类、为什么不跑、以及「没测 ≠ 没问题」都在这一句里；
+            #: 逐条细节照旧在 `runs` 里（`as_dict` 一路进产物 / 报告）。
+            grouped: dict = {}
+            for run in self.not_needed_runs:
+                #: ⚠️ **按「为什么」分组，不是按整句 note**：note 里还嵌着「它打的是哪一类」
+                #: ⇒ 四遍四句、分组就散了（这正是这一格第一次写错的地方：四行又回来了）。
+                why = run.note.split("它打的那一类失败")[0].strip().rstrip("。") or run.note
+                grouped.setdefault(why, []).append(run.label)
+            for why, labels in grouped.items():
+                lines.append("· 另外 %d 类扰动这一次**没验到**（%s）：%s。"
+                             "⚠️「没验到」既不等于「没问题」，也不等于「有问题」。"
+                             % (len(labels), "、".join(labels), why))
         if self.narrate_broken:
             # Task 5：**旁路坏掉要说**（不许静默）—— 上面那几行讲的是每一遍的结果，
             # 这一行讲的是「那些结果有没有送到正在看的人手里」。
@@ -991,6 +1019,12 @@ def run(py_path, ws_url, form_file, site, *,
         log_level: str = "INFO",
         allow_skips: Sequence[str] = DEFAULT_ALLOWED_SKIPS,
         max_submissions: int = MAX_SUBMISSIONS,
+        #: ★ 2026-09-24（人裁「先把其他四类砍了」）：**这一轮真跑哪几遍**。默认 `RUN_ONLY`
+        #: （只有基线）。⚠️ 它是参数而不是写死的常量，理由与 `max_submissions` 一样：
+        #: 那几遍各自的机器（补跑 / 硬顶 / 旋钮 / 各自判据）**一个字节都没删**，
+        #: `only=selftest.RUN_NAMES` 就全回来 —— 所以那些机器**照旧被用例验着**，
+        #: 不会烂在暗处；而屏上默认看到的是「只跑基线」。
+        only: Optional[Sequence[str]] = None,
         on_run: Optional[Callable] = None) -> Report:
     """在真浏览器上按 `RUN_NAMES` 的序列跑，返回一份**说得清**的结论。
 
@@ -1029,6 +1063,9 @@ def run(py_path, ws_url, form_file, site, *,
             ⚠️ 调大它 = 把「刷太多」那条裁定改掉 —— 要有人裁，不许顺手调。
             （它是参数、不是写死的常量：那套「没旋钮就跳过」的机制要靠它才验得到 ——
             默认 3 次之下，第 4/5 遍**到不了**。）
+        only           **这一轮真跑哪几遍**（默认 `RUN_ONLY`＝只有基线，2026-09-24 人裁）。
+            传 `RUN_NAMES` = 老行为（五遍按需跑）—— 那几遍的机器全在，只是默认不跑。
+            不认识的遍名**当场抛**（与 `allow_skips` 同一条规矩，别静默忽略）。
         on_run         **每一遍跑完当场**回调一次那个 `Run`（Task 5，Console 的实时视图）——
             **没跑的那几遍也要回调**：`skipped` / `not_needed` 正是「没验到」被吞掉的那条
             路（设计注 §3.2 第 3 行），只在报告里看得见就等于没人看见。
@@ -1146,7 +1183,19 @@ def run(py_path, ws_url, form_file, site, *,
         submissions += 1
         return _once(name, **kw)
 
+    #: ★ 2026-09-24：默认只跑 `RUN_ONLY`（基线）；`only=` 给了就按给的那串。
+    chosen = tuple(RUN_ONLY if only is None else only)
+    unknown_only = [n for n in chosen if n not in RUN_NAMES]
+    if unknown_only:
+        raise ValueError("only 里有不认识的遍：%s（认的是这五个：%s）"
+                         % ("、".join(unknown_only), "、".join(RUN_NAMES)))
+
     for name in RUN_NAMES:
+        if name not in chosen:
+            #: ★ 2026-09-24（人裁「先把其他四类砍了」）：**没被选中的那几遍不跑** ——
+            #: 照样如实记 `not_needed`（为什么、代价，见 `RUN_ONLY` 上面那段），只是不跑了。
+            _tell(_not_needed(name, "这一版**只跑基线**（人裁）：这一类扰动这一次不跑"))
+            continue
         # R-84 的两条闸：**到顶就停**、**过了就不再跑**。两条都要如实说为什么。
         if submissions >= max_submissions:
             _tell(_not_needed(name, "这一轮已经用满 %d 次提交（硬顶）" % max_submissions))
