@@ -49,7 +49,9 @@ DEFAULT_READ_JS = r"""(function(){
     if(!vis(e))return; var t=tid(e); if(!t)return;
     inputs.push([t, (e.value||'').trim()]);});
   var options=[], nextVisible=false, nextTxt='';
-  document.querySelectorAll('button,label,[role=button],a[href]').forEach(function(e){
+  // ★ 2026-09-24 第九趟真站：`a[href]` 一律不收 —— 页脚那几个「Privacy Policy」会被当成
+  //   选项，每轮挑中一个、又点不到（它们不是 button/label）⇒ 「再看一眼」空转到收摊 ✗。
+  document.querySelectorAll('button,label,[role=button]').forEach(function(e){
     if(!vis(e))return; var s=txt(e); if(!s)return;
     if(/^\s*(next|continue|get results|submit)\s*$/i.test(s)){nextVisible=true;nextTxt=s;return;}
     var t=tid(e);
@@ -218,6 +220,16 @@ class Filler:
         except OSError:
             pass                            # 旁路，坏了不带塌这一趟
 
+    def _stop(self, step, action, why, **kw):
+        """收摊：**先落一行 trace 再走**（哑着退场 ⇒ 下一个查的人只看得见退出码 ✗）。
+
+        ★ 2026-09-24 立的规矩：任何 `continue` / 收摊路径都先落一行 —— 那一天「看不见
+        却不说」出现了三次，每次都让诊断慢一大截（trace 里全是「再看一眼」，看不出
+        那一屏到底有什么）。
+        """
+        self._trace(step=step, action=action, ok=False, progress=None,
+                    progress_why=why, **kw)
+
     def _cookie_gone(self) -> bool:
         """同意条还在不在（**复读确认** ✓ 点完不等于真没了 —— 样本的原话就是这个）。"""
         js = COOKIE_GONE_JS.replace("__WORDS__", json.dumps(list(COOKIE_TEXTS)))
@@ -330,14 +342,17 @@ class Filler:
                     got = p.get(key)
                     if got:
                         return str(got)
-                return self._pool(kind or name)
+                #: ★ 名**先于** kind：`kind` 是「这一格填什么」那一档（这一站给的是笼统的
+                #: `value`），拿它当池子的名 ⇒ `_pool('value')` 什么都没有 ⇒ **邮编永远填不上** ✗
+                #: ⇒ 掉到「点页脚噪声」空转到收摊（第九趟真站的原形）。
+                return self._pool(name) or self._pool(kind)
         #: ③ 按**账本顺序**兜底（见 docstring 第 ③ 档）
         if 0 <= int(index) < len(FILL_ORDER):
             name = FILL_ORDER[int(index)]
             spec = (FILLS or {}).get(name) or {}
             kind = str(spec.get("kind") or name)
             got = p.get(name) or p.get(kind)
-            return str(got) if got else self._pool(kind)
+            return str(got) if got else (self._pool(name) or self._pool(kind))
         return ""
 
     def _pool(self, kind):
@@ -439,7 +454,9 @@ class Filler:
         if token.startswith(BY_TEXT):
             text = token[len(BY_TEXT):]
             payload = json.dumps(text)
-            js = ("(function(){var t=" + payload + ";var bs=document.querySelectorAll('button,label');"
+            #: 扫描集**与读取器一致**（2026-09-24 真站逼出来的）：读取器把 `[role=button]` 也当
+            #: 选项，这里少认一种 ⇒ 「读到了却点不到」⇒ 每轮落回「再看一眼」空转到收摊 ✗。
+            js = ("(function(){var t=" + payload + ";var bs=document.querySelectorAll('button,label,[role=button]');"
                   "for(var i=0;i<bs.length;i++){var e=bs[i];"
                   "if(e.offsetWidth<=0||e.offsetHeight<=0)continue;"
                   "var s=(e.textContent||'').replace(/\\\\s+/g,' ').trim();"
@@ -468,10 +485,12 @@ class Filler:
                     self.log.error("[%s] 导航到 %s 没成：%s —— 如实报失败",
                                    self.cid, ENTRY_URL, exc)
                     self._rpt("step", "navi failed")
+                    self._stop(0, "give_up", "导航到入口网址没成：%s" % str(exc)[:60])
                     return False
             else:
                 self.log.error("[%s] 这一版**没有入口网址** —— 不知道从哪儿开始，如实报失败",
                                self.cid)
+                self._stop(0, "give_up", "这一版**没有入口网址** ⇒ 不知道从哪儿开始")
                 return False
 
             #: ★ 前置：**先到问卷，再谈答题**（没到就别往下走 —— 那只是在落地页上瞎点 ✗）。
@@ -479,6 +498,7 @@ class Filler:
                 self.log.error("[%s] 前置没走成（没等到 %s）—— 如实报失败",
                                self.cid, ARRIVE_URL[:60])
                 self._rpt("step", "pre-steps failed")
+                self._stop(0, "give_up", "前置没走成（没等到 %s）" % ARRIVE_URL[:40])
                 return False
 
             answered = 0
@@ -495,6 +515,8 @@ class Filler:
                     if idle >= IDLE_LIMIT:
                         self.log.error("[%s] 连续 %d 步读不到页面 —— 如实报失败", self.cid, idle)
                         self._rpt("max_steps", "page unreadable")
+                        self._stop(step, "read", "连续 %d 步读不到页面（IDLE_LIMIT=%d）"
+                                   % (idle, IDLE_LIMIT))
                         return False
                     continue
 
@@ -521,6 +543,11 @@ class Filler:
                     val = self.value_for(tid, page, todo.index(tid))
                     if val and (tid, val) not in self._filled:
                         if not self.fill(tid, val):
+                            self.log.info("[%s] step %d: %s 没填上 ⇒ 下一轮再看", self.cid,
+                                          step, tid)
+                            self._trace(step=step, action="form", ok=False, progress=None,
+                                        target={"testid": tid},
+                                        progress_why="这一格没填上（不是「填过了」）")
                             continue           # 填不上就下一轮再看（绝不谎报填了）
                         self._filled.add((tid, val))
                         self._empty = 0      # ★ 只有**真填成功**才算是「这一屏有可动的东西」
@@ -546,6 +573,11 @@ class Filler:
                                     target={"token": str(pick)[:48]},
                                     note="答了第 %d 题" % answered)
                         continue
+                    self.log.info("[%s] step %d: 「%s」这一下没点到（页面上没找到那段文字）⇒ 下一轮再看",
+                                  self.cid, step, str(pick)[:32])
+                    self._trace(step=step, action="click", ok=False, progress=None,
+                                target={"token": str(pick)[:48]},
+                                progress_why="挑中的选项在页面上没找到（点了没点到）")
 
                 # ③ 只剩 Next ⇒ 点它
                 if page.get("nextVisible"):
@@ -553,6 +585,13 @@ class Filler:
                     if self._empty < EMPTY_ROUNDS_BEFORE_NEXT:
                         self.log.info("[%s] step %d: 这一屏可见的东西还没有 ⇒ 再看一眼再决定%s",
                                       self.cid, step, "" if self._empty < 2 else "（下一轮就轮到 Continue）")
+                        self._trace(step=step, action="none", ok=None, progress=None,
+                                    progress_why="Next 已可见、这一屏还没成形（第 %d 轮）"
+                                                 % self._empty,
+                                    head=(page.get("head") or "")[:80],
+                                    target={"options": len(page.get("options") or []),
+                                            "inputs": len(page.get("inputs") or []),
+                                            "nextTxt": str(page.get("nextTxt") or "")[:24]})
                         continue
                     sig = "%s|%s|%d" % (page.get("progress"), (page.get("head") or "")[:60],
                                         len(page.get("options") or []))
@@ -565,6 +604,8 @@ class Filler:
                         self.log.error("[%s] 连着 %d 次点 Next、页面还是那一屏 —— 如实报失败",
                                        self.cid, self._same_next)
                         self._rpt("max_steps", "next without change")
+                        self._stop(step, "click", "连着 %d 次点 Next、页面还是那一屏"
+                                   % self._same_next)
                         return False
                     self.click(BY_TEXT + str(page.get("nextTxt") or "Next"))
                     idle = 0
@@ -586,6 +627,8 @@ class Filler:
                         self.log.error("[%s] 页面在「处理」态停了 %.0f 秒 —— 如实报失败",
                                        self.cid, waited)
                         self._rpt("max_steps", "busy %.0fs" % waited)
+                        self._stop(step, "wait", "页面在「处理」态停了 %.0fs（BUSY_TIMEOUT=%ds）"
+                                   % (waited, BUSY_TIMEOUT))
                         return False
                     idle = 0                    # 忙 ≠ 空转
                     self.log.info("[%s] step %d: 页面在处理中（%.0fs/%ds）", self.cid, step,
@@ -607,13 +650,17 @@ class Filler:
                     self.log.error("[%s] 连 %d 步没有可动作的东西（答过 %d 题）—— 如实报失败",
                                    self.cid, idle, answered)
                     self._rpt("max_steps", "stalled after %d answers" % answered)
+                    self._stop(step, "none", "连 %d 步没有可动作的东西（答过 %d 题）"
+                               % (idle, answered))
                     return False
 
             self.log.error("[%s] 走满 %d 步还没到成功 —— 如实报失败", self.cid, max_steps)
             self._rpt("max_steps")
+            self._stop(max_steps, "give_up", "走满 %d 步还没到成功" % max_steps)
             return False
         except Exception as exc:                    # noqa: BLE001 —— 外面世界
             self.log.error("[%s] Error: %s", self.cid, exc)
+            self._stop(0, "crash", "抛异常：%s" % str(exc)[:60])
             return False
 
 
