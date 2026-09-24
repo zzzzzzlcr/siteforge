@@ -1695,6 +1695,16 @@ class JsonWriteRollbackRequest(_Intake):
     operator: str
 
 
+class AutoRequest(_Intake):
+    """`POST /auto` 的载荷（T6）：**拨总开关**（面板上那一个按钮）。
+
+    `note` 是「谁为什么拨的」——它进 `flags.json`，也进回话里（屏幕上要看得见是谁开的）。
+    """
+
+    on: bool = Field(False, description="开 / 关（默认关 = 什么都不动）")
+    note: str = Field("", description="为什么拨这一下（可选；会写进 flags.json 并显示出来）")
+
+
 class CountryRequest(_Intake):
     """`POST /country` 的载荷（2026-09-22）：**换成这个国家的出口**。
 
@@ -6679,6 +6689,22 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
             return svc.close_window(job_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="没这个任务：%s。" % job_id)
+
+    @api.post(AUTO_PATH)
+    def auto_switch(body: AutoRequest) -> dict:
+        """★ T6：**拨总开关**（面板那一个按钮）→ `{ok, on, note, say}`。
+
+        ⚠️ 这是**唯一**一个写开关的地方（读在 `read_flags`）；值班脚本自己只读不写 ——
+        「谁把它打开的」这件事只有人能回答。
+        ⚠️ 关掉**不影响正在跑的那一趟**（开关管的是「还开不开新的」）—— 那句话里写明了，
+        要它立马停得去那一趟上按「停」。
+        """
+        root = str(getattr(svc, "_auto_root", "") or os.getcwd())
+        wrote = auto_mod.write_flags(root, on=bool(body.on), note=body.note)
+        said = (auto_mod.FLAGS_ON_SAY if wrote["on"] else auto_mod.FLAGS_OFF_SAY)
+        return {"ok": True, "on": wrote["on"], "note": wrote["note"],
+                "say": said % (wrote["note"] or "没说为什么")}
+
 
     @api.get(AUTO_PATH)
     def auto_now() -> dict:

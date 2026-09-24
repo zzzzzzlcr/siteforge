@@ -148,3 +148,32 @@ def test_the_panel_has_the_auto_section_with_the_ids_the_script_needs():
     html = (pathlib.Path(ROOT) / "agent" / "console.html").read_text(encoding="utf-8")
     assert 'id="autoPanel"' in html and "自动值班" in html
     assert 'id="autoNow"' in html and 'id="autoNeeds"' in html
+
+
+# ── ★ 总开关那一个写口（面板上那个按钮）──────────────────────────────────
+
+
+def test_the_switch_can_be_turned_on_and_read_back(tmp_path):
+    """写进去的**读得回来**（一处口径：读在 `read_flags`，写只有 `write_flags` 一个口）。"""
+    app, _ = _svc(tmp_path)
+    got = app.post(service.AUTO_PATH, json={"on": True, "note": "用户按的"}).json()
+    assert got["ok"] is True and got["on"] is True and "**开了**" in got["say"], got
+    assert "用户按的" in got["say"], got["say"]
+    assert app.get(service.AUTO_PATH).json()["on"] is True
+
+
+def test_turning_it_off_says_the_running_one_is_untouched(tmp_path):
+    """关掉那句必须点明「**在跑的那一趟不受影响**」（开关管的是「还开不开新的」）。"""
+    app, _ = _svc(tmp_path)
+    _flags(tmp_path, on=True, note="先前按的")
+    got = app.post(service.AUTO_PATH, json={"on": False, "note": "先停"}).json()
+    assert got["on"] is False and "**关了**" in got["say"], got
+    assert "不受影响" in got["say"] and "按「停」" in got["say"], got["say"]
+    assert app.get(service.AUTO_PATH).json()["on"] is False
+
+
+def test_the_button_and_the_duty_script_look_at_the_same_book(tmp_path):
+    """★ 服务写下去的那份 = 值班脚本读的那份（`auto.read_flags` 同一处口径）。"""
+    app, _ = _svc(tmp_path)
+    app.post(service.AUTO_PATH, json={"on": True, "note": "面板"})
+    assert auto.read_flags(tmp_path) == {"on": True, "note": "面板"}

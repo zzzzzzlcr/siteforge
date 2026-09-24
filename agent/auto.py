@@ -348,3 +348,26 @@ def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
 def ledger_at(root=".") -> "Ledger":
     """账本在哪儿 —— **一处口径**（CLI、`run_once`、服务那几个读口都走这儿，别再各拼一份）。"""
     return Ledger(pathlib.Path(root) / STATE_DIR / "ledger.json")
+
+
+#: 开关拨了之后那句话（`%s` = 为什么）。⚠️ 关那一句必须点明「**在跑的那一趟不受影响**」——
+#: 开关管的是「还开不开新的」，管不到已经开出去的那一趟（那是「停」按钮的事）。
+FLAGS_ON_SAY = ("自动值班**开了**（%s）—— 它每轮看一次榜：连败够久的站自己开修，"
+                "修两遍不通才找人。停它就再按一次这个开关。")
+FLAGS_OFF_SAY = ("自动值班**关了**（%s）。⚠️ **这会儿在跑的那一趟不受影响**（它自己会走完）——"
+                 "要它现在就停，去那一趟上按「停」。")
+
+
+def write_flags(root=".", *, on: bool, note: str = "") -> dict:
+    """把总开关写下去（**原子**：先写 `.tmp` 再 `replace`）—— 面板那个按钮只按它一下。
+
+    ⚠️ 这是**唯一**一个写开关的地方（读在 `read_flags`，一处口径）：值班脚本自己**不改**开关
+    （它只读）——「谁把它打开的」这件事必须只有人能回答。
+    """
+    path = pathlib.Path(root) / STATE_DIR / "flags.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = {"on": bool(on), "note": str(note or "")}
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(body, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)                    # 换文件是原子的：读到半截开关那种事不会发生
+    return body
