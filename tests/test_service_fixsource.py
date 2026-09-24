@@ -365,3 +365,143 @@ def test_the_payload_carries_fix_py_down_to_the_graph():
     got = service.Service._payload({"url": "u", "goal": "g", "fix_py": "/tmp/x.py"})
 
     assert got["fix_py"] == "/tmp/x.py", got
+
+
+# ── ★ 2026-09-24：那一格**改成选填** —— 人没说就按**底稿自己那一条** ──────────────
+#
+# 用户原话：「话说失败的日志和取原配不是已经有成功条件了吗？为何还要再填？我认为可以选填，
+# 假如用户没说成功啥的就按之前那个脚本来」。量下来**能搬的是真一半**：
+#   · 我们自己产的 py（`gowizard` / `vogue` / `afrotech` …）里都有
+#     `SUCCESS_TEXTS = [...]` —— 那是老脚本**自己声明**的，逐字搬 ✅；
+#   · 而手写的老脚本判的**不是文案**：`japansdates` 判网址（`/wizard` 那一族）、
+#     `warthunder` 判退出码 —— 产物的判据只在**页面正文**里找
+#     （`template.page_signature()` **不含网址**）⇒ 搬过去是「永远认不出成功」，
+#     **比不搬更坏** ⇒ 照旧拦，但要说清**它靠什么判**（别让人对着一个空格发呆）。
+
+#: 声明了**恰好一串** —— 能搬的那一半。
+SRC_WITH_ONE = ('#!/usr/bin/env python3\nSTATES = []\nFILLS = {}\n'
+                'SUCCESS_TEXTS = ["Thank you for subscribing!"]\n')
+#: 声明了**两串** —— 「挑哪一串」是**人的意图**（它决定什么算成了），服务不替人挑。
+SRC_WITH_TWO = ('#!/usr/bin/env python3\nSTATES = []\nFILLS = {}\n'
+                'SUCCESS_TEXTS = ["Thank you", "Check your email"]\n')
+#: 手写那一种的真形状（照 `japansdates` 抄）：判据是**网址**。
+SRC_URL_ONLY = ('#!/usr/bin/env python3\n'
+                'SUCCESS_URL_MARKERS = ("/wizard", "/main-page")\n'
+                'def is_success(url):\n'
+                '    return any(m in (url or "") for m in SUCCESS_URL_MARKERS)\n')
+
+
+def _brief_no_success(tmp_path, **over):
+    """人**没填**「什么算成功」那一趟（用户点名的形状：`success_text` 整格不发）。"""
+    b = _brief(tmp_path)
+    del b["success_text"]
+    b.update(over)
+    return b
+
+
+def _app_with_script(tmp_path, src, seen, **kw):
+    """一个把它收到的 brief 记进 `seen` 的 app + 一份**指定源码**的底稿。"""
+    def factory(brief, deps):
+        seen.update(brief)
+        return None
+    return TestClient(
+        service.create_app(graph_factory=factory,
+                           checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST),
+                           failures_reader=fmr.FmrClient(token=FAKE_TOKEN,
+                                                         opener=Recorder(_script_body(src))),
+                           window=StubWindow(), **kw),
+        raise_server_exceptions=False)
+
+
+def test_a_fix_with_no_criterion_takes_the_drafts_own_one(tmp_path):
+    """★★ 人没填 ⇒ 用**这一趟底稿自己那一条**（老脚本里声明的那串字），而且**说出来**。
+
+    量三件，缺一条这条就能靠改坏另一条过：
+      ① 那一格真的被搬上了 —— 发进图里的 `success_text` 就是底稿那串字；
+      ② ★ **说出来**（没有静默的路径）：不说的话，运营以为判据是**自己**填的那条，
+         而它其实是**老脚本**那条 —— 两条不一样时，屏幕上没有任何地方看得出来；
+      ③ 人**填了**的时候，底稿那条**不许盖过他**（下一节那条用例量它）。
+    """
+    seen: dict = {}
+    app = _app_with_script(tmp_path, SRC_WITH_ONE, seen)
+
+    r = app.post("/run", json=_brief_no_success(tmp_path))
+
+    assert r.status_code == 202, r.text
+    assert seen.get("success_text") == "Thank you for subscribing!", seen.get("success_text")
+    #: ② 落在时间线第一行（`submitted`）上 —— 那就是运营读的那一屏。
+    events = app.get("/job/%s/live" % r.json()["job_id"]).json()["events"]
+    told = " ".join(str(e.get("say") or "") for e in events if e.get("kind") == "submitted")
+    assert "Thank you for subscribing!" in told, told
+    assert "没填" in told, told
+
+
+def test_what_the_human_typed_still_wins_over_the_draft(tmp_path):
+    """人**说了**就按他的来 —— 底稿那一条只是**兜底**，不是覆盖。
+
+    ⚠️ 少了这一条，「反正底稿里有一条，就用它」这种改法照绿 ——
+    而那正是「服务替人决定什么算成功」，这一仓最忌讳的那类越界。
+    """
+    seen: dict = {}
+    app = _app_with_script(tmp_path, SRC_WITH_ONE, seen)
+
+    r = app.post("/run", json=_brief(tmp_path))          # `_brief` 里带着 "Check your email"
+
+    assert r.status_code == 202, r.text
+    assert seen.get("success_text") == "Check your email", seen.get("success_text")
+
+
+def test_a_draft_with_two_criteria_is_refused_and_both_are_named(tmp_path):
+    """底稿里写着**不止一串** ⇒ 门口拦住，而且把两串都摆出来。
+
+    为什么不替人挑：那一格**决定什么算成了** —— 挑错的那一下就产出一个「跑到那一句就
+    自认成功」的假判据，而它在屏幕上与「挑对了」长得一模一样。所以「挑哪一串」是人的活，
+    服务只负责把选项**原样**摆出来（两串都在那句话里）。
+    """
+    seen: dict = {}
+    app = _app_with_script(tmp_path, SRC_WITH_TWO, seen)
+
+    r = app.post("/run", json=_brief_no_success(tmp_path))
+
+    assert r.status_code == 400, r.text
+    assert "Thank you" in r.text and "Check your email" in r.text, r.text
+    assert "不止一串" in r.text, r.text
+    assert "job_id" not in r.text, "开了 job：%s" % r.text
+    assert not (tmp_path / "sites").exists(), "拒了却落了底稿"
+
+
+def test_a_draft_that_judges_by_url_says_so_instead_of_moving_it_over(tmp_path):
+    """★★ 底稿判的是**网址** ⇒ **不动它**，但把「它靠什么判」说出来。
+
+    这是这一片最要紧的一条：`SUCCESS_URL_MARKERS` 那种判据搬进产物就是**永远认不出成功**
+    （产物只在**页面正文**里找那串字，`template.page_signature()` 不含网址）——
+    「搬过来了」在屏幕上与「搬对了」**一模一样**，而它是这一仓最贵的那种谎。
+    """
+    seen: dict = {}
+    app = _app_with_script(tmp_path, SRC_URL_ONLY, seen)
+
+    r = app.post("/run", json=_brief_no_success(tmp_path))
+
+    assert r.status_code == 400, r.text
+    assert "/wizard" in r.text, "没把底稿自己那几行摆出来：%s" % r.text
+    assert "只看网址" in r.text, r.text
+    #: ⚠️ 那句话里敢写「没有开浏览器」—— 这一趟**真的**没开：拦在**读完之后、写盘之前**
+    #: （回复里那几个星号是 markdown 的着重，逐字比会差一格，所以按**整段**比）。
+    assert "**没有**开浏览器、没有跑模型、也没有写任何文件" in r.text, r.text
+    assert not (tmp_path / "sites").exists(), "拒了却落了底稿"
+    assert not seen, "门口拒了却把它发进图了：%s" % seen
+
+
+def test_build_mode_still_needs_a_criterion_from_the_human(tmp_path):
+    """**build 那条路一个字没变**：新站没跑过，服务手上没有底稿可搬 ⇒ 照旧要人给。
+
+    ⚠️ 少了这一条，把闸整个拆掉（两边都不拦）也照绿 —— 而那会让**猜出来的判据**
+    进产物（「跑到底再报成功」，本项目最忌讳的那类谎）。
+    """
+    app = _client(tmp_path, fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=Recorder()))
+
+    r = app.post("/run", json={"url": URL, "goal": "走到报价页", "mode": "build",
+                               "out_dir": str(tmp_path / "sites")})
+
+    assert r.status_code == 400, r.text
+    assert "什么算成功" in r.text, r.text

@@ -148,3 +148,40 @@ def test_the_graph_fix_path_does_not_explore(tmp_path):
 
     app.invoke(Command(resume="continue"), cfg)          # 过 explore（**不探索**）
     assert explored == [], "走完 explore 这一步之后仍然一次都不许探索"
+
+
+# ── ★ 2026-09-24：从底稿里读**它自己声明的成功文案**（用户点名「没说就按之前那个脚本来」）
+#
+# 这一层是**纯函数**（不碰网、不碰盘），所以它自己单钉：读得到的**逐字**读出来、
+# 读不到的**不编**（回空 + 一句说清它靠什么判）。搬进产物之后是**永远认不出成功**那
+# 几种形状（判网址 / 判据写在函数里），靠的是这两条分得开 —— 合起来就会把
+# 「搬不过去」读成「搬好了」。
+
+def test_the_draft_own_criteria_are_read_verbatim():
+    """底稿自己声明的那几串字**逐字**读出来（列表 / 单数 / 下划线前缀那三种都认）。"""
+    src = ('SUCCESS_TEXTS = ["Thank you for subscribing!", "Check your email"]\n'
+           'OTHER = ["别动我"]\n')
+    assert fix.success_texts_from_source(src) == \
+        ["Thank you for subscribing!", "Check your email"]
+    #: 单数那一种（`warthunder` 的真形状：`_SUCCESS_TEXT = "…"`）
+    assert fix.success_texts_from_source('_SUCCESS_TEXT = "You can start playing"\n') == \
+        ["You can start playing"]
+    #: 正控：别的常量**不许**被读进来（读进来就是猜）
+    assert fix.success_texts_from_source('OTHER = ["别动我"]\n') == []
+
+
+def test_a_draft_with_no_readable_criterion_is_not_guessed():
+    """① 函数体里那串字**不读**（捞它就是猜）；② 判网址的那种要说清**它看的是网址**。"""
+    #: ⚠️ 写在函数里 —— `entyrecare` 的真形状（`".../auth/verify"` 那种）
+    inside = ('def run(self):\n'
+              '    if "thank-you" in page:\n'
+              '        self._rpt("success")\n')
+    assert fix.success_texts_from_source(inside) == [], "从函数体里捞字符串了（那是猜）"
+    #: 判网址那一种（`japansdates` 的真形状）⇒ 空 + 一句**说清它靠什么判**
+    url_only = ('SUCCESS_URL_MARKERS = ("/wizard", "/main-page")\n'
+                'def is_success(url):\n    return any(m in url for m in SUCCESS_URL_MARKERS)\n')
+    assert fix.success_texts_from_source(url_only) == []
+    clue = fix.success_clue_from_source(url_only)
+    assert "/wizard" in clue and "只看网址" in clue, clue
+    #: 说不出靠什么判时**回空串**（调用方那边有兜底那句话）—— 不编一句。
+    assert fix.success_clue_from_source("x = 1\n") == ""

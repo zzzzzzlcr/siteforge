@@ -92,6 +92,90 @@ def _literals(src: str):
     return found.get("STATES"), found.get("FILLS")
 
 
+#: 老脚本**自己声明**成功文案时用的名字（模块级字面量；`_` 前缀一样认 ——
+#: 手写的脚本常写成 `_SUCCESS_TEXT`，`warthunder` 那份就是）。
+SUCCESS_NAMES = ("SUCCESS_TEXT", "SUCCESS_TEXTS")
+#: 判成功**只看网址**的那几个名字 —— 只在「读不出文案」时用来**说清它靠什么判**。
+URL_JUDGE_NAMES = ("SUCCESS_URL_MARKERS", "SUCCESS_URL_MARK", "HASH_SUCCESS_STATES")
+
+
+def _module_literals(src: str) -> dict:
+    """模块级那几格的**字面量**（名字 → 值，`_` 前缀去掉）。
+
+    读不动 / 动态构造的那几格**不进这张表**（不猜）。坏 py 一律当「读不出来」，不抛 ——
+    与 `_literals` 同一个规矩。
+    """
+    try:
+        tree = ast.parse(src or "")
+    except Exception:                      # noqa: BLE001 —— 坏 py = 读不出来
+        return {}
+    out: dict = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names = [node.target.id]
+        else:
+            continue
+        for name in names:
+            key = name.lstrip("_")
+            if key in out or key not in SUCCESS_NAMES + URL_JUDGE_NAMES:
+                continue
+            try:
+                out[key] = ast.literal_eval(node.value)
+            except Exception:              # noqa: BLE001 —— 动态构造 ⇒ 不进来
+                continue
+    return out
+
+
+def success_texts_from_source(src: str) -> list:
+    """底稿**自己声明**的成功文案（逐字、保序、去重）。读不出来 ⇒ **空列表**（不是错）。
+
+    ★ 2026-09-24（用户点名：「失败的日志和取原配不是已经有成功条件了吗？为何还要再填……
+    没说成功啥的就按之前那个脚本来」）：修站那一趟的「什么算成功」**可以从底稿搬**，
+    不必让人再打一遍。这一条读的就是**底稿自己那一句**（`SUCCESS_TEXTS` / `SUCCESS_TEXT`）。
+
+    ⚠️ **只认这几种名字的字面量**：从函数体里捞字符串就是**在猜**（`entyrecare` 那种把
+    「thank-you in iframe」写在代码里的，捞出来的多半是类名/调试字）。
+    ⚠️ 读不出来时调用方**要说出来**（`success_clue_from_source` 给那句人话）——
+    手写的老脚本常常判的是**网址**，而产物的判据只在**页面正文**里找
+    （`template.page_signature()` 不含网址）⇒ 搬过去的结果是「永远认不出成功」，比不搬更坏。
+    """
+    table = _module_literals(src)
+    values: list = []
+    for key in SUCCESS_NAMES:
+        got = table.get(key)
+        if isinstance(got, str):
+            values.append(got)
+        elif isinstance(got, (list, tuple)):
+            values.extend(v for v in got if isinstance(v, str))
+    out: list = []
+    for text in values:
+        if text.strip() and text not in out:
+            out.append(text)
+    return out
+
+
+def success_clue_from_source(src: str) -> str:
+    """底稿里**读不出**可搬的文案时，说清它靠什么判成功（空串 = 说不出，**不编**）。"""
+    table = _module_literals(src)
+    urlish: list = []
+    for key in URL_JUDGE_NAMES:
+        got = table.get(key)
+        if isinstance(got, str):
+            urlish.append(got)
+        elif isinstance(got, (list, tuple)):
+            urlish.extend(v for v in got if isinstance(v, str))
+    if urlish:
+        return ("⚠️ 这一份底稿判成功**只看网址**（它自己那几行是：%s）—— "
+                "产物那边是在**页面正文**里找那串字的，搬过去会**永远认不出**成功，"
+                "所以不能替你搬。" % "、".join("`%s`" % u for u in urlish[:6]))
+    if re.search(r"def _?is_success\s*\(", str(src or "")):
+        return ("⚠️ 这一份底稿有自己的 `is_success(...)` —— 判据写在代码里（不是一格字面量），"
+                "服务**不替它猜**那一格该填什么。")
+    return ""
+
+
 def site_schema(url_get: Callable[[str], str], label: str) -> Optional[dict]:
     """站方配置里，这个组件号对应的那一块（拿不到给 `None`）。
 

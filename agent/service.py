@@ -925,6 +925,11 @@ UNWRITABLE_BYTES_SAY = ("（这条里有 %d 个字节**线上写不出来**（�
 #: 那一层（`_note_step`）在图上跑，门口换掉之后它手上只剩换好的值 —— 不说个数就没人说了。
 #: ⚠️ 它是**服务内部**的键，不在契约里，也不往下发给图（`_payload` 的 keep 清单里没有它）。
 EXPECTS_UNWRITABLE = "expects_unwritable"
+#: ★ 2026-09-24（用户点名）：「什么算成功」**选填** —— 人没说、而底稿**自己声明了恰好一串**时，
+#: 服务把那一串搬过来用。这一格 = **搬的是哪一串**（空 = 没这回事）—— 它只为了
+#: 「时间线上要说出来」（不说的话，运营以为判据是自己填的那条，而它其实是老脚本那条）。
+#: ⚠️ 与上面那个同一个道理：下划线开头 ⇒ **进不了图**（`_payload` 是白名单）。
+SUCCESS_TAKEN = "_success_taken_from_base"
 #: 直达那一句（`say_route` 说这句话会直达它的下一轮）
 SAY_DELIVERED_SAY = "这句话**直达**它的下一轮了（它正在探路里跑）。"
 #: 真的把它交出去那一刻，时间线上那条（设计注 §4.2 的**原话**「已经交给它了」）。
@@ -5080,9 +5085,15 @@ class Service:
             problems.append("还没说**是哪个站点**：`url`。")
         if not (body.goal or body.evidence or "").strip():
             problems.append("还没说**这次要做什么**：`goal`（或者 fix 模式下的失败证据 `evidence`）。")
-        if not (body.success_text or "").strip():
+        if (not (body.success_text or "").strip()
+                and str(getattr(body, "mode", "") or "") != MODE_FIX):
             problems.append("还没说**什么算成功**：`success_text` —— 走通之后页面上会出现哪段文字。"
                             "这一条只有人知道，猜不得（猜出来的成功判据会让产物「跑到底再报成功」）。")
+            #: ★ 2026-09-24（用户点名：「失败的日志和取原配不是已经有成功条件了吗？为何还要再填……
+            #: 没说成功啥的就按之前那个脚本来」）：**修站那条路上这一格改成选填** —— 人没说时按
+            #: **底稿自己那一条**来（`_stage_fix_source` 手上就有那份源码）。所以这儿只拦 **build**。
+            #: ⚠️ 底稿里也读不出来时**照旧拦**，只是那句话挪到了拿到底稿之后 —— 那条路
+            #: **一个 job 都不开、一个字节都不落盘**，所以「不碰浏览器、不跑模型、不花钱」没变。
         if body.allow_skips is not None:
             if not body.allow_skips:
                 problems.append("`allow_skips` 是空的（`[]`）—— 空列表没有意义：它和「没给」在图的边界"
@@ -5176,6 +5187,23 @@ class Service:
                        "（`type: json`）。⚠️ 拿一份空脚本去修一个 json 站，"
                        "下游看起来与「这个站该补一份脚本」**一模一样** —— "
                        "所以在这儿停。这一类该走配置那条路。")
+
+        #: ★ 2026-09-24（用户点名）：「什么算成功」**选填** —— 人没说就按**底稿自己那一条**。
+        #: ⚠️ **只搬恰好一串**那一种：两串以上时「挑哪一串」是**人的意图**（它决定什么算成了），
+        #: 服务不替人挑；一串都读不出来（判据写在函数里 / 它只判网址）时**照旧拦**，
+        #: 并把「这一份底稿靠什么判成功」说清楚。
+        #: ⚠️ 排在这儿（**写盘之前**、开 job 之前）：所以下面那句话里敢写「没有写任何文件」。
+        if not str(getattr(body, "success_text", "") or "").strip():
+            source = str(script.get("source") or "")
+            texts = fix.success_texts_from_source(source)
+            if len(texts) == 1:
+                brief["success_text"] = texts[0]
+                brief[SUCCESS_TAKEN] = texts[0]
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=self._fix_success_say(
+                        texts, fix.success_clue_from_source(source)))
         site = str(getattr(body, "site", "") or "").strip() or graph.site_name(getattr(body, "url", "") or "")
         out_dir = pathlib.Path(str(brief.get("out_dir") or self._out_dir))
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -5192,6 +5220,27 @@ class Service:
             "线上**启用**的那一份（sha256 %s）" % str(script.get("sha256") or "?")[:12])
         staged.write_text(str(script.get("source") or ""), encoding="utf-8")
         return str(staged)
+
+    @staticmethod
+    def _fix_success_say(taken: list, clue: str) -> str:
+        """「修不了这一趟：没给判据、底稿里也读不出来」那句人话（门口那句之一）。
+
+        两种不搬的情形**分成两句话**（处置不同：一种是**你挑一串**，一种是**你补一句话**）——
+        合成一句的话，读的人不知道自己是缺一串字还是缺一条完全不同的判据。
+        """
+        if len(taken) > 1:
+            why = ("底稿里**有**这一格，可是它写着**不止一串**：%s —— "
+                   "产物那一格一次只认**一串**，而「挑哪一串」是**你的意图**"
+                   "（它决定什么算成了），服务不替人挑。"
+                   % "、".join("`%s`" % t for t in taken))
+        else:
+            why = str(clue or "").strip() or (
+                "这一份底稿里**没有**可读的成功文案（判据可能写在函数里，或者它压根不判这一格）。")
+        return ("修不了这一趟：**没给成功判据**（走通之后页面上会出现哪段文字），"
+                "而**底稿里也读不出来** —— 服务不猜一个（猜出来的判据会让产物「跑到底再报成功」）。\n"
+                + why +
+                "\n补一句再发起：那一格就是「什么算成功」。"
+                "⚠️ 这一趟**没有**开浏览器、没有跑模型、也没有写任何文件（只读了后端那份底稿）。")
 
     def start(self, body: RunRequest) -> dict:
         problems = self._intake_problems(body)
@@ -5216,6 +5265,9 @@ class Service:
         staged = self._stage_fix_source(body, brief)
         if staged:
             brief["fix_py"] = staged
+        #: ★ 2026-09-24：这一格 = 「判据是**服务从底稿搬来的那一串**」（空 = 人自己填的 / 没这回事）。
+        #: ⚠️ 必须摆出来（没有静默的路径）：不说的话，运营以为判据是**自己**填的那条。
+        took_success = str(brief.get(SUCCESS_TAKEN) or "")
         self._clean_window_for_explore(brief)     # R-F1 的另一半：**探路也要干净会话**
         #: ★ 2026-09-22：窗口是**服务自己**开的（面板没有挑窗口那一栏）⇒ 开不出来时这一趟
         #: **必死**。按「拿不到底稿就不开 job」同一条规矩（`_stage_fix_source`）：门口红掉，
@@ -5260,7 +5312,9 @@ class Service:
         # （url / goal / success_text / 窗口那一串…），而它们一路会进 state、再回 `/live`
         # 与 `/job/{id}`。这一句人话落在时间线上（那正是运营读的那一屏）——
         # `/job/{id}` 的**既有形状**一个字都不动（那儿不加格）。
-        self.narrate(job, "submitted", self._submitted_say(body) + body.unwritable_say())
+        self.narrate(job, "submitted",
+                     self._submitted_say(body) + body.unwritable_say()
+                     + self._took_success_say(took_success))
         if self._something_is_ahead():
             self.narrate(job, "queued", QUEUED_SAY)
         self._submit(job, self._payload(brief))
@@ -5276,6 +5330,20 @@ class Service:
         if body.again_from:
             return AGAIN_SUBMITTED_SAY % (body.again_from, len(body.hints or []))
         return SUBMITTED_SAY
+
+    @staticmethod
+    def _took_success_say(taken: str) -> str:
+        """「这一格你没填，服务按底稿自己那一条走」那句（空串 = 没有这回事）。
+
+        ★ 2026-09-24（用户点名「没说就按之前那个脚本来」）：搬了就得**说出来** ——
+        不说的话，运营以为判据是**自己**填的那条，而它其实是**老脚本**那条；
+        两条不一样时，屏幕上**没有任何地方**看得出来。
+        """
+        if not taken:
+            return ""
+        return ("\n「什么算成功」这一趟**你没填** —— 服务按**这一趟的底稿**（后端那份 py）里"
+                "老脚本自己那一条走：「%s」。⚠️ 要换成别的，就在下一次发起之前填上那一格；"
+                "这一趟已经按这一条在判了。" % taken)
 
     @staticmethod
     def _payload(brief: dict) -> dict:
