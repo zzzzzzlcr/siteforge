@@ -112,11 +112,22 @@ docker run --rm --network siteforge-acc --entrypoint /bin/bash siteforge:acc -lc
 docker run -d --name siteforge -p 8080:8080 \
   -e BIT_WORKER_IP=<agent 自己的窗口 worker> -e BIT_ID=<agent 自己的 bit_id> \
   -e OPENAI_API_KEY=... -e DATABASE_URL=postgresql://... siteforge:latest
+
+# 这个部署**没有** Postgres 时：状态存盘上那个 sqlite 文件（同一档的意思 ——
+# 中断之后接着跑、服务重启也还在）。放 `runtime/` 是因为那棵树是**挂载**进容器的：
+# 换容器 / 重建镜像都不丢。
+docker run -d --name siteforge -p 8080:8080 \
+  -e OPENAI_API_KEY=... \
+  -e SITEFORGE_CHECKPOINT_URL=sqlite:////opt/siteforge/runtime/checkpoints.sqlite \
+  siteforge:latest
+# ⚠️ **四个斜杠** = 绝对路径（`sqlite:///x` 是相对路径）。两个名字都认，
+#    `SITEFORGE_CHECKPOINT_URL` 更具体 ⇒ 它说了算；URL 认不出来就当场报错，
+#    **不会**悄悄退回内存 saver。
 ```
 
 | 路由 | 干什么 |
 |---|---|
-| `GET /health` | 活着吗、**状态存哪儿**（内存还是 Postgres；内存的「能恢复」只活在进程里）、cdp 在哪 |
+| `GET /health` | 活着吗、**状态存哪儿**（内存 / sqlite 文件 / Postgres；只有后两种过得了「服务重启」）、cdp 在哪 |
 | `POST /run` | 收开场白 → `{job_id}`（立刻返回，活在一个工作线程上排队跑）。载荷要带 `success_text`（什么算成功，只有人知道）与窗口层的旋钮（`set_viewport` / `allow_skips` / `entry_url`） |
 | `GET /job/{id}` | 走到哪了、在问你什么、结果是什么 —— **人话**，不是错误码 |
 | `POST /job/{id}/reply` | 回答图停下来的那个问题（继续 / 喊停 / 一句纠正 / 这版不行） |

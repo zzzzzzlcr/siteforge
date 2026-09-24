@@ -49,11 +49,13 @@ RUN apt-get update && apt-get install -y ca-certificates && \
 # agent 侧依赖。刻意与 worker 的依赖不重叠(规格 §8.1):
 # 混装会重演「两套执行器」那种边界不清。
 #   langgraph-checkpoint-postgres + psycopg  —— R-19 的生产保存点(状态存容器外的那个库)
+#   langgraph-checkpoint-sqlite            —— 同一条 R-19 的**盘上那一档**(没有 Postgres 的
+#                                             部署用它:一个文件,`sqlite:////…`,服务重启不丢活)
 #   pytest                                    —— 在镜像里跑套件(R-29), 见「在镜像里跑测试」
 RUN pip3 install -i https://mirrors.aliyun.com/pypi/simple/ --break-system-packages \
     langgraph langchain-core langchain-openai \
     fastapi uvicorn pydantic httpx \
-    "psycopg[binary]" langgraph-checkpoint-postgres pyyaml \
+    "psycopg[binary]" langgraph-checkpoint-postgres langgraph-checkpoint-sqlite pyyaml \
     pytest
 
 RUN useradd -m -s /bin/bash appuser

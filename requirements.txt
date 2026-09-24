@@ -14,3 +14,6 @@ pytest
 # 宿主上跑 `tests/test_pg_checkpointer.py` 要它；没给 SITEFORGE_PG_URL 时那条是 skip。
 langgraph-checkpoint-postgres
 "psycopg[binary]"
+# 同一条 R-19 的**盘上那一档**（`SITEFORGE_CHECKPOINT_URL=sqlite:////…`）：没有 Postgres 的
+# 部署用它 —— 一个文件就够，服务重启不丢活。自带 `aiosqlite` / `sqlite-vec` 两个依赖。
+langgraph-checkpoint-sqlite

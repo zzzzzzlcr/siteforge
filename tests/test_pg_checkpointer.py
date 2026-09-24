@@ -96,7 +96,10 @@ def test_interrupt_then_resume_through_postgres_with_a_fresh_connection():
                         "ws_url": "ws://window/1", "form_file": "/tmp/form.json",
                         "allow_skips": ["country", "viewport"],
                         "out_dir": "/tmp/sf-pg-test/forms/sites"}, cfg)
-    assert out["__interrupt__"][0].value["step"] == "intake"
+    # ⚠️ 第一道闸是 `explore`（`intake` 自 2026-09-20 起不设闸 —— 见 `agent/graph.py:386`）。
+    # 这一条原来写的是 `intake`：它是**跳过**的用例（没给 `SITEFORGE_PG_URL` 就不跑），
+    # 所以那道闸改位置之后一直没人发现 —— 跑真库那天才现形（2026-09-24）。
+    assert out["__interrupt__"][0].value["step"] == "explore"
     del first                                     # 图对象没了（相当于进程死了）
 
     # —— 第二次：新图、**新连接**、同一个 thread ——

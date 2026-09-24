@@ -1350,17 +1350,49 @@ def bit_window_from_env(env: Optional[dict] = None) -> Optional[BitWindow]:
 # ─────────────────────────────── checkpointer（R-19）───────────────────────────────
 
 
+#: 状态存哪儿（R-19）—— **两个名字都认**：
+#:   `SITEFORGE_CHECKPOINT_URL` 是这一版新加的那一格（要能指到盘上的 sqlite 文件）；
+#:   `DATABASE_URL` 是既有名字（README 里那条 `docker run`、生产 Postgres 那条线都在用它，
+#:   **不能改**）。两个都写着时前者优先（更具体的那一个说了算）。
+CHECKPOINT_URL_ENVS = ("SITEFORGE_CHECKPOINT_URL", "DATABASE_URL")
+
+
+def checkpoint_url(env: Optional[dict] = None) -> str:
+    """环境里那条状态 URL（没有就是空串 —— 「这个部署没配」是**一等值**，不是错误）。"""
+    env = os.environ if env is None else env
+    for name in CHECKPOINT_URL_ENVS:
+        got = str(env.get(name) or "").strip()
+        if got:
+            return got
+    return ""
+
+
+def checkpoint_kind(url: str) -> str:
+    """URL → 哪一档 saver（`postgres` / `sqlite`）；**认不出来的返回空串**。
+
+    ⚠️ 认不出来时**不许**偷偷当 Postgres 使：那会在第一次真要用的时候炸在
+    `psycopg.connect("sqlite:///…")` 里，报出来的话与「URL 写错了」看不出关系 ——
+    这一套里最坏的形状就是把「配错了」说成「坏了」。
+    """
+    head = str(url or "").strip().lower()
+    if head.startswith(("postgres://", "postgresql://")):
+        return "postgres"
+    if head.startswith("sqlite:"):
+        return "sqlite"
+    return ""
+
+
 class Checkpointer:
     """按配置**懒**建 saver：`import agent.service` 不该去连数据库（测试会 import 它）。
 
     生产的形态是 Postgres（R-19：中断之后要恢复，状态就不能只活在进程里）；
-    没配 `DATABASE_URL` 时退回内存 saver —— 但要**说出来**（`/health` 里那句人话），
+    没配任何状态 URL 时退回内存 saver —— 但要**说出来**（`/health` 里那句人话），
     不然「能恢复」会被读成「重启也还在」。
     """
 
     def __init__(self, *, saver=None, url: Optional[str] = None):
         self._saver = saver
-        self._url = url or os.environ.get("DATABASE_URL") or None
+        self._url = (url or checkpoint_url()) or None
         self._lock = threading.RLock()
         self._read_lock = threading.RLock()
         self._reader = None
@@ -1369,10 +1401,11 @@ class Checkpointer:
         #: ⚠️ 不能靠「还没建」（`_saver is None`）去判：第一次真要用之后 `_saver` 就有值了，
         #: 那样 `/health` 会在一个**状态明明在 Postgres 里**的部署上说「重启就没了」
         #: —— 而那句话恰好是这套系统最不该说错的一句（R-19）。
-        self._kind = "memory" if saver is not None else ("postgres" if self._url else "memory")
+        self._kind = ("memory" if saver is not None
+                      else (checkpoint_kind(self._url) or ("unknown" if self._url else "memory")))
         #: 读是不是走**另一条连接**（只有那种情况才该绕开写锁）。
         #: ⚠️ 与 `kind` 同一个坑：必须**在构造时**定下来，不能等 `get()` 建完再判。
-        self._separate_reader = saver is None and bool(self._url)
+        self._separate_reader = saver is None and self._kind in ("postgres", "sqlite")
 
     @property
     def kind(self) -> str:
@@ -1382,8 +1415,15 @@ class Checkpointer:
         if self.kind == "postgres":
             return ("状态存在 Postgres 里：中断之后接着跑、服务重启也还在"
                     "（这就是「人能停下来再回来」靠的东西）。")
+        if self.kind == "sqlite":
+            return ("状态存在**盘上那个 sqlite 文件**里：中断之后接着跑、服务重启也还在"
+                    "（文件没了 / 换机器就没了；同一份文件只该有一个服务在写）。")
+        if self.kind == "unknown":
+            return ("**认不出状态存的 URL**（只认 `postgresql://…` 与 `sqlite:///…` 两种开头）："
+                    "这个部署现在既恢复不了、也存不下 —— 要么把 URL 改对，要么把它摘掉。")
         return ("状态只存在这个进程的内存里：**服务一重启就没了**，中断之后也就恢复不了。"
-                "要能恢复就给 `DATABASE_URL`，用 Postgres 存（R-19）。")
+                "要能恢复就给 `DATABASE_URL`（Postgres）或 `SITEFORGE_CHECKPOINT_URL`"
+                "（`sqlite:////…`，存盘上那份文件）—— R-19。")
 
     @property
     def lock(self) -> threading.RLock:
@@ -1400,6 +1440,11 @@ class Checkpointer:
                 self._saver = graph.allowlisted(InMemorySaver())
                 self._kind = "memory"
                 return self._saver
+            if self._kind == "sqlite":
+                self._saver = self._connect_sqlite(self._url)
+                return self._saver
+            if self._kind != "postgres":
+                raise self._why_unknown()
             self._saver = self._connect(self._url)
             self._kind = "postgres"
             return self._saver
@@ -1420,6 +1465,13 @@ class Checkpointer:
             if not self._url:
                 self._reader = self.get()           # 内存 saver：同一条（没有连接可抢）
                 return self._reader
+            if self._kind == "sqlite":
+                #: 另开一条连接（与 Postgres 那条同理：读不排在一次可能几分钟的 `invoke` 后面）。
+                #: WAL 由 `setup()` 打开 ⇒ 这条读连接不会被写挡住。
+                self._reader = self._connect_sqlite(self._url)
+                return self._reader
+            if self._kind != "postgres":
+                raise self._why_unknown()
             conn = self._connect_conn(self._url)
             from langgraph.checkpoint.postgres import PostgresSaver
             reader = graph.allowlisted(PostgresSaver(conn))
@@ -1462,6 +1514,44 @@ class Checkpointer:
         saver = PostgresSaver(self._conn)
         saver.setup()
         return graph.allowlisted(saver)
+
+    def _why_unknown(self) -> ValueError:
+        """URL 认不出来时那句**说得清**的话（两个调用点共用一处措辞 —— 别漂成两种说法）。"""
+        return ValueError(
+            "状态 URL 认不出来：%r —— 只认 `postgresql://…` 与 `sqlite:///…`"
+            "（`SITEFORGE_CHECKPOINT_URL` / `DATABASE_URL` 两个名字）。"
+            "别让它悄悄退回内存 saver：「重启还在」与「重启就没了」是两件完全不同的事"
+            "（R-19）。" % (self._url,))
+
+    def _connect_sqlite(self, url: str):
+        """盘上的 sqlite saver（`sqlite:////abs/x.sqlite` / `sqlite:///rel.sqlite`）。
+
+        - `setup()` **必须**调（幂等）：它顺手把 `journal_mode=WAL` 打开 —— 读那条连接
+          才不会被一次写挡住（服务里读与写是两条连接，见 `reader()`）。
+        - `check_same_thread=False`：读可能从**别的线程**问它（`_snapshot_soon` 那条路的
+          用意就是「不等」）。串行还是靠 `self._lock` / `self._read_lock` 那两把闸。
+        """
+        import sqlite3
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        path = self._sqlite_path(url)
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        conn = sqlite3.connect(path, check_same_thread=False)
+        saver = SqliteSaver(conn)
+        saver.setup()
+        return graph.allowlisted(saver)
+
+    @staticmethod
+    def _sqlite_path(url: str) -> str:
+        """URL → 盘上那个文件：`sqlite:////abs/x`（四个斜杠）= 绝对；`sqlite:///rel`（三个）= 相对。"""
+        rest = str(url or "")[len("sqlite:"):]
+        slashes = len(rest) - len(rest.lstrip("/"))
+        path = rest.lstrip("/")
+        if not path:
+            raise ValueError("sqlite 只给了 `sqlite:` —— 没说文件在哪"
+                             "（要像 `sqlite:////opt/siteforge/runtime/checkpoints.sqlite`）")
+        return ("/" + path) if slashes >= 4 else path
 
 
 # ─────────────────────────────── 收上来的东西 ───────────────────────────────
