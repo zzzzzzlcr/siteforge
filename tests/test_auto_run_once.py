@@ -54,6 +54,13 @@ class FakeFmr:
             raise _Refused("config not found")
         return self.fails.get(site, [])
 
+    def fetch_steps(self, task_id):
+        """那一单报过的几步（真那个走 `/formStep`；这里给一份够 `evidence_text` 用的）。"""
+        self.calls.append(("steps", task_id))
+        return [{"step": "start", "url": "https://x.example/p"},
+                {"step": "no_success", "url": "https://x.example/p?done=1"}]
+
+
 
 class Poster:
     def __init__(self, code=202):
@@ -253,3 +260,31 @@ def test_anything_that_is_not_a_404_is_not_retried(tmp_path):
     assert got["did"] == "没动" and "对账读不到" in got["why"], got
     assert all(c[2] is False for c in fmr.since_seen), fmr.since_seen
     assert poster.calls == []
+
+
+def test_the_payload_carries_what_this_run_is_about(tmp_path):
+    """★ 验收那一趟跑出来的（2026-09-24）：**不带证据，服务在门口就拦** ——
+    「还没说这次要做什么：`goal`（或者 fix 模式下的失败证据 `evidence`）」⇒ 一圈白跑。
+    所以载荷里必须有那一格（证据从那一单自己身上取：行 + 它报过的几步）。"""
+    _on(tmp_path)
+    poster = Poster()
+    fmr = FakeFmr()
+    assert _run(tmp_path, fmr, poster)["did"] == "开了"
+    payload = poster.calls[0][1]
+    assert payload["evidence"], payload
+    assert ("steps", "26034602") in fmr.calls, fmr.calls
+
+
+def test_steps_that_cannot_be_read_do_not_open_anything(tmp_path):
+    """逐步记录读不到 ⇒ **不开**（也**不记账**：记了就是把额度白花在一趟没开成的活上）。"""
+    _on(tmp_path)
+
+    class NoSteps(FakeFmr):
+        def fetch_steps(self, task_id):
+            raise RuntimeError("量不到")
+
+    poster = Poster()
+    got = _run(tmp_path, NoSteps(), poster)
+    assert got["did"] == "没动" and "逐步记录" in got["why"], got
+    assert poster.calls == []
+    assert auto.ledger_at(tmp_path).count(today="2026-09-24") == 0

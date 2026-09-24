@@ -353,6 +353,15 @@ def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
     if picked is None:
         return _stop("没动", "榜上没有一个够格开修的 —— %s" % ("；".join(skipped) or "榜是空的"))
 
+    #: ★ 验收那一趟跑出来的（2026-09-24）：**fix 模式必须带「这次要做什么」** —— 服务在门口就拦：
+    #: 「还没说**这次要做什么**：`goal`（或者 fix 模式下的失败证据 `evidence`）」。所以证据从
+    #: 那一单自己身上取（与面板「照这条修」同一个做法：失败行 + 它报过的那几步）。
+    try:
+        steps = list(fmr.fetch_steps(task_id) or [])
+    except Exception as exc:                      # noqa: BLE001 —— 读不到就说读不到（口径一条）
+        return _stop("没动", "对账读不到「%s」那一单的逐步记录：%s" % (site, exc), site=site)
+    from agent import fmr as fmr_mod      #: `evidence_text` 是**模块**里的函数（不是客户端的方法 —— 验收跑出来的）
+    evidence = fmr_mod.evidence_text(first, steps)
     #: **先记再开**：开完再记的话，中途挂了就会重复开（真站上=重复烧钱 + 重复真提交）。
     book.note(site, today=today, at=time.strftime("%H:%M:%S", time.localtime(now)))
     code, said = post(service_url.rstrip("/") + "/run", {
@@ -361,6 +370,7 @@ def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
         "env": {"proxy_country": country},
         #: 点名要修停用的那些行（服务那侧 `allow_disabled` 就是干这个的 —— 一个口径）。
         "allow_disabled": bool(allow_disabled),
+        "evidence": evidence,          # ★ 上面那一条：不带它，服务在门口就拦（验收跑出来的）
         "note": "自动值班：榜上「%s」连败够久（task %s）" % (site, task_id),
     })
     if code not in (200, 202):
