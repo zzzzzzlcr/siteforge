@@ -1689,6 +1689,11 @@ class JsonWritePrepareRequest(_Intake):
     site: str
     config: dict
     operator: str
+    #: ★ T7（2026-09-24）：**失败记录里那两个键**（与 py 上传那三格同一个做法）——
+    #: `url` = 「这一份配置是哪条失败记录带出来的」，`fix_site_url` = 「它当时跟着来的那串网址」。
+    #: ⚠️ 两个都不给 ⇒ **老那一趟一个字不变**（人手工打的键照旧）。
+    url: str = ""
+    fix_site_url: str = ""
 
 
 class JsonWriteCommitRequest(_Intake):
@@ -4941,9 +4946,17 @@ class Service:
             say=_jsondiff_say(came_back, summary),
         )
 
-    def jsonwrite_prepare(self, site: Any, proposed: Any, operator: Any) -> dict:
-        """只做预检并发一次性票据；这一阶段绝不调用写口。"""
+    def jsonwrite_prepare(self, site: Any, proposed: Any, operator: Any,
+                          url: Any = "", fix_site_url: Any = "") -> dict:
+        """只做预检并发一次性票据；这一阶段绝不调用写口。
+
+        ★ T7：`site` **还配不配得上**它跟着来的那串网址 —— 判据与 py 上传**共用一处**
+        （`_backend_key`：人把「站点网址」那一格改了，键继续用就会**静默改错站**）。
+        ⚠️ 两个新格子都没给 ⇒ 照旧用 `site`（老那一趟、手工打的键，一个字不变）。
+        """
         key = str(site or "").strip()
+        if str(url or "").strip() or str(fix_site_url or "").strip():
+            key = _backend_key(url, key, fix_site_url)
         who = str(operator or "").strip()
         if not key or not who:
             raise HTTPException(status_code=400,
@@ -6543,7 +6556,8 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
 
     @api.post(JSONWRITE_PREPARE_PATH)
     def jsonwrite_prepare(body: JsonWritePrepareRequest) -> dict:
-        return svc.jsonwrite_prepare(body.site, body.config, body.operator)
+        return svc.jsonwrite_prepare(body.site, body.config, body.operator,
+                                     body.url, body.fix_site_url)
 
     @api.post(JSONWRITE_COMMIT_PATH)
     def jsonwrite_commit(body: JsonWriteCommitRequest) -> dict:
