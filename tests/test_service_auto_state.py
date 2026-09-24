@@ -134,3 +134,17 @@ def test_a_needs_human_row_gets_a_whole_sentence(tmp_path):
     got = app.get(service.AUTO_PATH).json()
     assert got["needs"] == [{"job_id": "j-1", "site": "a.com/x",
                              "say": "**需要人**（两遍都没过）：停在闸上等人"}], got["needs"]
+
+
+# ── ★ 页面那一半：段落与 id（静态；跑起来那半在 JS 夹具里）──────────────────
+
+
+def test_the_panel_has_the_auto_section_with_the_ids_the_script_needs():
+    """段落在页面上、id 与脚本要对得上。
+
+    ⚠️ 这一段**自己不带判断**：话是 `/auto` 的 `say` / `needs[].say` **原样**摆出来的
+    （「从没跳过心跳」与「超时没跳」那两句的分别也是在服务那侧分好的）。
+    """
+    html = (pathlib.Path(ROOT) / "agent" / "console.html").read_text(encoding="utf-8")
+    assert 'id="autoPanel"' in html and "自动值班" in html
+    assert 'id="autoNow"' in html and 'id="autoNeeds"' in html
