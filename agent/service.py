@@ -252,6 +252,18 @@ SHOTS_OFF_SAY = ("这一次没留逐步的图：%s"
 #: 目录表第 3 行：交上去了 / 前面还有 run 在排队等窗口
 SUBMITTED_SAY = "收到了，排队开跑。"
 QUEUED_SAY = "排队等窗口（前面还有别的 run 在用）。"
+
+#: ★ 2026-09-24：`auto` 那一趟到闸时，服务替人按「继续」留下的那句（Task 1）。
+#: ⚠️ 它**不是**「人说的」——时间线上两张嘴不许混成一张（所以单开一个 `kind`）。
+AUTO_REPLIED_SAY = "自动模式：这一步自己走了（没人按）。"
+
+#: ★ 2026-09-24：自动那条路**一次最多替人按几下**（刹车之二，见 `_auto_reply` 的 docstring）。
+#: ⚠️ 它是**防死循环**的兜底，不是「修几遍」那个计数（那个是 `selftest`/`Caps` 的事）。
+AUTO_MAX_PRESSES = 30
+#: 刹车踩下去时那句人话（有人得接手 —— 而不是让它在原地无限按）。
+AUTO_STUCK_SAY = ("自动模式：**停在这儿了** —— 第 %s 这道闸按过之后没往前走"
+                  "（已经替人按过 %d 下）。再按下去就是在原地空转（真站上=一直烧钱），"
+                  "所以停住等人。")
 #: 目录表第 4 行（与 `/job/{id}` 上那句**同一句** —— 一件事一处口径）
 RUNNING_SAY = "在跑：真浏览器 + 模型，做完一步或需要你时就会停下来。"
 #: 「这一步跑挂了」那句话 —— `_advance` 的 except 与最后一层网（`_note_escaped`）**同一句**。
@@ -1605,6 +1617,9 @@ class RunRequest(_Intake):
     #: （`japansdates` / `warthunder`），而正文那格**接不住**它 —— 网址那一截不在正文里。
     #: ⚠️ 载荷里通常是一格字符串（面板一格）；底稿搬过来的那种可能是**列表**（见 `_stage_fix_source`）。
     success_urls: str = Field("", description="成功判据（网址那格）：走通之后网址里会出现哪一截")
+    #: ★ 2026-09-24：**这一趟是自动那条路开的**（值班脚本开的）⇒ 服务到闸替人按「继续」。
+    #: ⚠️ 它**不改图**：闸照旧 `interrupt()`，是**服务**去按（图的契约一个字不动）。
+    auto: bool = False
     evidence: str = Field("", description="fix 模式：失败证据的引用（FMR formLog / formStep）")
     site: str = Field("", description="站点短名（不给就从 URL 推）")
     fix_site: Optional[str] = Field(
@@ -1972,6 +1987,10 @@ class Job:
     #: 「窗口已经死了」这件事**说过了**没有：每次 `_advance` 返回都去问窗口层，
     #: 但只有「不是没了 → 没了」那一翻要记一条（同一件事记十遍不是信息）。
     window_dead: bool = False
+    #: ★ 2026-09-24（Task 1 的刹车）：自动那条路**已经替人按过的那几道闸**（`"<步名>|<指纹>"`）。
+    #: 为什么非有不可（这一条是**测试当场抓到的**）：图原地打转时（同一道闸反复返回同一份快照），
+    #: 没有它就会**一直按下去** —— 真站上那是无限烧钱 + 无限真提交。
+    auto_pressed: list = dataclasses.field(default_factory=list)
     #: **步拍**报过的 `why`（人话原文）。**同一句只报一次**（Task 5，目录表第 6 行）：
     #: 拍照坏掉通常是**每一步**都坏，每一步刷一条会把时间线灌满 —— 而多条不是信息。
     #: 认的是**那句话**、不是第几步：同一趟探路里两步的图没了往往是同一个原因。
@@ -4117,6 +4136,51 @@ class Service:
             job.status = DONE
             job.say = ""
         self._note_after_advance(job, ended=True)    # 目录表第 1、6 行
+        self._auto_reply(job)                        # ★ 自动那条路：到闸就替人按（图一个字不改）
+
+    def _auto_reply(self, job: "Job") -> None:
+        """`auto` 那一趟到闸了 ⇒ **替人按一次「继续」**（并留一条痕）。**只在这一处按。**
+
+        ⚠️ 它**不走 `reply()`**（这一步的判例）：那条路会记一条「**人说的**」——
+        而这一下**不是人**按的，两张嘴不许混成一张（与 `stop_landed` / `steer_landed` 同族）。
+
+        ⚠️ **刹车**（Task 1 内就有，测试当场抓到的）：图原地打转时（同一道闸反复回同一份快照）
+        没有它就会**无限按** —— 真站上 = 无限烧钱 + 无限真提交。两道：
+          ① 同一个「闸步名 + 快照指纹」**只按一次**（再按也没有新信息 ⇒ 停在那儿报人）；
+          ② job 级按压上限 `AUTO_MAX_PRESSES` 兜底（图一直在换闸名也拦得住）。
+        """
+        if not (job.brief or {}).get("auto"):
+            return
+        try:
+            snap = self._snapshot(job.job_id)
+        except Exception:                      # noqa: BLE001 —— 读不回来只是**这一次不按**（响一下）
+            traceback.print_exc()
+            return
+        if not self._interrupts(snap):
+            return                             # 不在闸上（还在跑 / 到头了）⇒ 不按
+        step, _where = self._where_it_stopped(job.job_id, snap)
+        values = dict(getattr(snap, "values", None) or {})
+        #: 指纹取**能看出「这一趟走到哪了」的那几格**（不是整个 values —— 里面有时间戳之类）
+        stamp = "%s|%s" % (step, (tuple(values.get("visits") or ()),
+                                  len(str(values.get("end_reason") or "")),
+                                  len(str(values.get("report") or ""))))
+        with job.lock:
+            pressed = list(job.auto_pressed)
+            if stamp in pressed or len(pressed) >= AUTO_MAX_PRESSES:
+                job.status = WAITING
+                job.say = AUTO_STUCK_SAY % (step or "（说不清哪一步）", len(pressed))
+                said = job.say
+            else:
+                pressed.append(stamp)
+                job.auto_pressed = pressed
+                job.status = RUNNING
+                job.say = AUTO_REPLIED_SAY
+                said = ""
+        if said:
+            self.narrate(job, "auto_stuck", said, step=step)
+            return
+        self.narrate(job, "auto_replied", AUTO_REPLIED_SAY, step=step)
+        self._submit(job, Command(resume={"action": "continue", "note": ""}))
 
     # ── 服务重启之后：从 checkpoint 把 job 捡回来（R-19）───────────────
     def _recover(self, job_id: str) -> Optional[Job]:
