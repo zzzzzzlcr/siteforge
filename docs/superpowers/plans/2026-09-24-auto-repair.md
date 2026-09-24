@@ -33,6 +33,13 @@
 - **没有静默的路径**：少修了、没验到、脚本挂了、核不到 —— 一律说出来。
 - 测试命令一律 `./.venv/bin/python -m pytest -q <路径>`；**不提交** `test.sh`（含真 key）。
 
+- ★ **机械闸一条都不许按过去**（2026-09-24 用户问「别再犯那种 goto 那种 py 错误」）：`lint`
+  那道节点（手拼 JS / 契约七格）与 `fix.check_patch` 那五条（`ast.parse` / 四个 CLI 开关 /
+  `sys.exit(0 if …)` / `report_url` 真调 / `_undefined_self_calls` / 「一处都没改」）
+  **照旧跑、照旧判**：判不过 = **这一遍失败**（计数照旧 ✓ 不许因为我替人按了一下「继续」
+  就把违规当成过 ✗）。⚠️ 自动模式**只替人按「继续」**，**绝不**改判据、绝不跳闸。
+- ★ **原来靠人眼兜的那一条改成留痕**：每一版的 **diff 摘要 + 违规行**进本次的账（Task 6 那一栏
+  摆着）—— 自动之后没人盯着屏幕看 diff，所以它必须**事后可查**（不是「没人看就等于没发生」）。
 ## Review Focus
 
 1. **榜上同时冒出很多站**（一天 >10）：第 11 个**不修**，且要说「今天到顶了，还剩 X 个没修」+ 清单
@@ -42,6 +49,8 @@
 4. **值班脚本挂了 / 卡住**：15 分钟（3 轮）没有心跳 ⇒ 面板上报警（Task 6）。
 5. **上传那两个口**：后端那份被别人改过（防覆盖）/ 回读不一致 ⇒ **自动回滚 + 报人**；
    停用行 ⇒ **一次都不上传**；**写口用的键必须带目录**（Task 4 + Task 7）。
+6. **自动模式不该放松任何一条机械判据**：一版带手拼 JS / 调了不存在的方法 / 丢了 CLI 开关 /
+   `sys.exit` 被改成无条件 0 / 一处都没改的稿 ⇒ **照样不算过**（Task 8）。
 
 ---
 
@@ -640,3 +649,67 @@ git commit -m "JSON 写回的键也从记录里来（带目录、不许手打）
   你给了模型名之后**另开一个小任务**接上（`_final_success_check` 那条看图的路已经在，只是没人能看）。
 - [ ] **一键停 / 总开关**：面板上那两个（`flags.on` 默认 **false**；「停」只停循环与不新开活，
   正在跑的那一趟走既有的「停」）—— Task 6 那一步里一起摆出来。
+
+---
+
+### Task 8: 自动模式**不放松**机械闸（一条回归钉子 + 账里留 diff）
+
+**Files:**
+- Modify: `agent/auto.py`（账本那一行带上**两遍各自的 diff 摘要 + 违规行**）
+- Test: `tests/test_service_auto.py`、`tests/test_auto.py`
+
+**Interfaces:**
+- Consumes: Task 1/2 的 auto 回路、Task 5 的账本
+- Produces: `auto.attempt_say(diff: str, violations: list) -> str`（一句话：改了几行 + 哪几条违规）
+
+- [ ] **Step 1: 写失败的测试**
+
+```python
+def test_auto_does_not_pass_a_version_that_breaks_the_lint_gate(auto_app):
+    """★ 用户 2026-09-24 点名的那一类：手拼 JS 的稿，**自动也不许**算过。"""
+    app = auto_app(drafts=["<<<REPLACE 1 3 x\\n手拼的 JS\\n>>>"])     # 桩：交一版带手拼 JS 的稿
+    job = app.post("/run", json=BRIEF_AUTO).json()["job_id"]
+    live = app.get("/job/%s/live" % job).json()
+    assert live["artifact"]["url"] is None, "带手拼 JS 的稿竟然进了产物"
+    said = " ".join(e["say"] for e in live["events"])
+    assert "手拼" in said or "违规" in said, said          # 违规行要**摆出来**
+    assert app.uploader.calls == [], app.uploader.calls     # 更不许上传
+
+
+def test_the_ledger_keeps_the_diff_of_every_attempt(tmp_path):
+    """两遍各自的 diff 摘要进账（自动之后没人看屏幕，所以要**事后可查**）。"""
+    out = auto.attempt_say("+1 -1", ["第 3 行：手拼 JS"])
+    assert "+1 -1" in out and "手拼 JS" in out, out
+```
+
+- [ ] **Step 2: 跑，确认它红**
+
+Run: `./.venv/bin/python -m pytest -q tests/test_service_auto.py -k lint_gate -x`
+Expected: FAIL（`attempt_say` 不存在 / 违规行没进账）
+
+- [ ] **Step 3: 实现**
+
+```python
+# agent/auto.py
+def attempt_say(diff: str, violations: list) -> str:
+    """一遍的**留痕**：改了几行 + 哪几条没过闸（空违规 = 这一遍没被闸打回）。"""
+    changed = " / ".join(sorted({ln[:1] for ln in str(diff or "").splitlines()
+                                 if ln[:1] in "+-"})) or "（没有 diff）"
+    bad = "、".join(str(v) for v in (violations or [])) or "（没有违规）"
+    return "这一版：%s；闸上：%s" % (changed, bad)
+```
+
+账本那一行（Task 5 的 `Ledger.open_entry` / `settle`）多带两格：`attempts: [attempt_say(...), ...]`
+⇒ Task 6 那一栏照它摆 ✓（`lint` / `check_patch` 的判**一个字不改**：这一条只加记账 ✓）
+
+- [ ] **Step 4: 跑，确认绿**
+
+Run: `./.venv/bin/python -m pytest -q tests/test_auto.py tests/test_service_auto.py tests/test_graph.py`
+Expected: PASS（`test_graph.py` 里那条「产物不许自带「先站到入口」那一步」也照旧绿 ✓）
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add agent/auto.py tests/test_auto.py tests/test_service_auto.py
+git commit -m "自动模式不放松机械闸：手拼 JS 那类照样不算过，账里留 diff"
+```
