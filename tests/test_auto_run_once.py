@@ -178,3 +178,22 @@ def test_an_enabled_row_is_not_touched_by_that_rule(tmp_path):
     got = _run(tmp_path, FakeFmr(), poster)
     assert got["did"] == "开了", got
     assert poster.calls[0][1].get("allow_disabled") is False, poster.calls[0][1]
+
+
+def test_a_stale_row_does_not_block_the_whole_round(tmp_path):
+    """★ 存量条目（读不出失败单）**跳过它、接着看下一行** —— 别让一条把整圈卡住。
+
+    2026-09-24 用户点明：榜上那些读不出来的连败，是「失败记录这条线**还没上线**」之前攒下的
+    ⇒ 后端根本没有可对账的单 ⇒ 那种行**永远**过不了对账 ✗ ⇒ 它要是排在最前面，
+    后面够格的行就永远轮不到 ✗（这条就是为这个写的）。
+    """
+    _on(tmp_path)
+    fmr = FakeFmr(
+        rank={"data": {"rank": [
+            {"site": "old.com/x", "streak": 23, "config_status": "启用"},   # 存量：读不到单
+            {"site": "a.com/x", "streak": 9, "config_status": "启用"}]}},
+        fails=FAILS_ONE)                                   # 只有 a.com/x 读得到
+    poster = Poster()
+    got = _run(tmp_path, fmr, poster)
+    assert got["did"] == "开了" and got["site"] == "a.com/x", got
+    assert poster.calls[0][1]["fix_site"] == "a.com/x", poster.calls[0][1]

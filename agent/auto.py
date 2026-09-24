@@ -323,25 +323,28 @@ def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
         if not ok:
             skipped.append(why)
             continue
+        #: ★ **对账**（2026-09-24 用户点到的存量条目）：榜单给的键**不一定读得出单** ——
+        #: 那些连败可能是在「失败记录这条线还没上线」之前攒下的（后端根本没有可对账的单）。
+        #: ⇒ 读不出来就**跳过这一行、看下一行**：别让一条存量行把整圈卡住（后面够格的永远轮不到）。
+        try:
+            fails = list(fmr.fetch_failures(site) or [])
+        except Exception as exc:                      # noqa: BLE001 —— 读不到就说读不到
+            skipped.append("对账读不到「%s」的失败记录：%s" % (site, exc))
+            continue
+        if not fails:
+            skipped.append("「%s」有连败记录、却读不到失败行（存量条目？）—— 对不上账" % site)
+            continue
+        first = fails[0]                              # 那个读口按时间**倒序** ⇒ 最新那条
+        task_id = str(first.get("task_id") or "").strip()
+        country = str(first.get("country") or "").strip()
+        if not task_id or not country:
+            skipped.append("「%s」那一单缺 task_id / country（%r）—— 不知道切哪条链"
+                           % (site, first))
+            continue
         picked = row
         break
     if picked is None:
         return _stop("没动", "榜上没有一个够格开修的 —— %s" % ("；".join(skipped) or "榜是空的"))
-    site = str(picked["site"]).strip()
-
-    # ── 对账：这一单是哪一号、哪个国家（榜上没有这两格）──────────────────
-    try:
-        fails = list(fmr.fetch_failures(site) or [])
-    except Exception as exc:                                  # noqa: BLE001 —— 读不到就说读不到
-        return _stop("没动", "对账读不到「%s」的失败记录：%s" % (site, exc), site=site)
-    if not fails:
-        return _stop("没动", "「%s」有连败记录、却读不到失败行 —— 对不上账，**不开**" % site, site=site)
-    row = fails[0]                                            # 那个读口按时间**倒序** ⇒ 最新那条
-    task_id = str(row.get("task_id") or "").strip()
-    country = str(row.get("country") or "").strip()
-    if not task_id or not country:
-        return _stop("没动", "「%s」那一单缺 task_id / country（%r）—— 不知道切哪条链，**不开**"
-                     % (site, row), site=site)
 
     #: **先记再开**：开完再记的话，中途挂了就会重复开（真站上=重复烧钱 + 重复真提交）。
     book.note(site, today=today, at=time.strftime("%H:%M:%S", time.localtime(now)))
