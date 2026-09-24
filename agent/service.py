@@ -2307,6 +2307,41 @@ class Service:
 
         return set_country
 
+    def _fix_country_gate(self, body: "RunRequest") -> None:
+        """★ T3（2026-09-24）：**开修之前先切到那一单的国家** —— 判在门口、判在一个 job 都没开的时候。
+
+        规矩是用户拍的「**不猜**」：那一单的国家**没给 / 不成形状 / 核不到** ⇒ **一律报人、不开 job**。
+        （真站上拿**错国家**的号去做单，比不做坏得多。）
+
+        ⚠️ 只管 **auto** 那条路：人按的那条路**一个字节不变**（人要换国家有面板那个按钮，
+        走 `POST /country`，与这里**同一个口**）。国家从 `env.proxy_country` 来
+        （后端那张连续失败榜上那一格 `country`，两字母码，原样带下来）。
+
+        ⚠️ 判据只认现成那一条：`_switch_country` → `tools/set-country.py` ——
+        **它自己核到出口真变了才回 0**。这里不重算、也不拿「命令跑完了」当成功
+        （`COUNTRY_NOT_VERIFIED_SAY` 那句写死了「不许说换好了」）。
+        """
+        if not getattr(body, "auto", False):
+            return
+        raw = str((getattr(body, "env", None) or {}).get("proxy_country") or "").strip()
+        code = _country_code(raw)
+        if not code:
+            raise HTTPException(
+                status_code=400,
+                detail=("自动那条路：这一单**没给国家**（或给的「%s」不成形状）—— "
+                        "不知道切哪条出口链，**不猜**，所以这一单没开。"
+                        "（后端榜上那一格 `country` 是两字母码，照原样带在 `env.proxy_country` 里。）"
+                        % raw))
+        busy = self._busy_job()
+        if busy is not None:
+            raise HTTPException(status_code=409, detail=COUNTRY_BUSY_SAY % busy)
+        ok, said = self._switch_country(code, str(getattr(body, "url", "") or ""))
+        if not ok:
+            #: 与面板那个按钮**同一个码、同一句话**（没核到 ≠ 换好了）。
+            raise HTTPException(status_code=502, detail=COUNTRY_NOT_VERIFIED_SAY % (code, said))
+        #: 核到了才记（与那个按钮同一条路：`self._country` 是「自测第 5 遍」那根线的开关）。
+        self._country = code
+
     def _switch_country(self, want: str, url: str = "") -> tuple:
         """真去换（`(成没成, 它说的话)`）。**判据只有脚本那一个**（见 `_run_country_tool`）。"""
         target = str(url or "").strip() or self._country_url or "https://example.com"
@@ -5231,6 +5266,9 @@ class Service:
         """
         if str(getattr(body, "mode", "") or "") != MODE_FIX:
             return None
+        #: ★ T3（2026-09-24）：**开修之前先切到那一单的国家**（核到了才开 job）——
+        #: 排在这儿的道理与下面那几条同一条：判在**服务这一层**、判在**一个 job 都没开**的时候。
+        self._fix_country_gate(body)
         #: ★ 失败记录里那个键优先（后端自己存的），没给才拿人填的入口网址去问。
         #: ⚠️ 它只在**还跟着它来的时候那一串网址**时才算数：人把「站点网址」那一格改了，
         #: 这趟活要修的**就不是那条失败记录那个站**了 —— 键继续用会**静默修错站**
