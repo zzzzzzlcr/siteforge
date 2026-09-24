@@ -288,3 +288,24 @@ def test_steps_that_cannot_be_read_do_not_open_anything(tmp_path):
     assert got["did"] == "没动" and "逐步记录" in got["why"], got
     assert poster.calls == []
     assert auto.ledger_at(tmp_path).count(today="2026-09-24") == 0
+
+
+def test_the_default_service_url_points_at_the_port_the_service_really_listens_on():
+    """★ 2026-09-24 验收第一跑逮出来的：默认 `--service` 指向 `8080` ✗，服务却听在 `8099` ⇒
+    **第一跑必然死在最后一步**（实测：挑中站 ✓ 过了对账 ✓ 记了账 ✓ 然后 callback `Connection refused` ✗）
+    —— 而「先记再开」⇒ 账本里白白留下一笔，那个站**当天再也开不了** ✓（代价是真的 ✓）。
+
+    所以这条钉子**跨文件**：默认值那个口必须 = 启动脚本真正监听的端口。
+    ⚠️ 读不到端口要**报错**（不让它静默通过 —— 那正是本仓反复栽的「量不到读成量到了」）。
+    """
+    import pathlib
+    import re
+    from agent import auto as auto_mod
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    text = (root / "tools" / "relaunch-svc.py").read_text("utf-8")
+    found = re.search(r"--port[\"',\s]+(\d+)", text)
+    assert found, "启动脚本里读不到 --port —— 这条钉子失效了，别让它静默通过"
+    assert auto_mod.SERVICE_URL.endswith(":" + found.group(1)), (
+        "默认服务口 %r 与启动脚本监听的 %s 对不上 —— 值班第一跑会死在 callback 上"
+        % (auto_mod.SERVICE_URL, found.group(1)))

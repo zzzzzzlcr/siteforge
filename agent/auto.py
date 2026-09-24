@@ -103,6 +103,13 @@ STATE_DIR = pathlib.Path("runtime") / "auto"
 #: 面板读「值班那几格」那个口（服务那侧只用它拼路由 —— 一处口径）。
 AUTO_PATH = "/auto"
 
+#: 值班脚本回调服务用的地址（**默认值**）—— 必须与 `tools/relaunch-svc.py` 启动时监听的端口一致。
+#: ★ 2026-09-24 验收第一跑逮出来的：这里原本是 `8080`（**没人听**），而服务在 `8099` ⇒
+#: 那一圈「挑中站 ✓ 过了对账 ✓ 记了账 ✓」然后**死在 callback 上** ✗（`Connection refused`）——
+#: 而「先记再开」意味着**账本里白白留下一笔**，那个站当天再也开不了 ✓（代价是真的 ✓）。
+#: `tests/test_auto_run_once.py` 有一条**跨文件**的钉子钉着这一格（改启动脚本的口，这条就红）。
+SERVICE_URL = "http://127.0.0.1:8099"
+
 
 def read_flags(root=".") -> dict:
     """值班的**总开关**（`runtime/auto/flags.json`）—— **默认全关**。

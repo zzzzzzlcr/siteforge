@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import sys
 import time
@@ -30,7 +31,8 @@ def main() -> int:
     ap.add_argument("--once", action="store_true", help="只转一圈就退出（验收用）")
     ap.add_argument("--seconds", type=float, default=300.0, help="常驻时每圈间隔（秒）")
     ap.add_argument("--root", default=str(ROOT), help="状态目录的根（开关/账本/心跳都在这儿）")
-    ap.add_argument("--service", default="http://127.0.0.1:8080", help="服务地址")
+    ap.add_argument("--service", default=os.environ.get("SITEFORGE_SERVICE_URL") or auto.SERVICE_URL,
+                    help="服务地址（默认 = 服务真正在听的那个口；SITEFORGE_SERVICE_URL 可覆盖）")
     got = ap.parse_args()
 
     client = fmr.FmrClient()                       # token 在构造那一刻读环境（`FMR_AGENT_TOKEN`）
