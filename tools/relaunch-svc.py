@@ -1,69 +1,51 @@
-"""把 env 从旧进程原样搬给新进程，再叠加 argv 里给的那几格（秘密只走 /proc 与自己的环境）。
+"""重启**服务容器**（一切都走容器 —— 用户 2026-09-24 定的）。
 
-用法：`python tools/relaunch-svc.py <旧 pid> [K=V | 变量名] ...`
-  · `K=V`          —— 直接叠上这个值（⚠️ 值会进 argv/ps/历史，别拿它传 key）
-  · 只给**变量名**   —— 从**我自己的环境**里取那个值（★ 换 key 用这一种：值不进 argv、
-                     不进 ps、不进 shell 历史）
-  · `-变量名`       —— **删掉**旧进程里的那一格（撤掉一次试验留下的旋钮用这一种）
+用法：
+    python3 tools/relaunch-svc.py                # 重启 siteforge 容器
+    python3 tools/relaunch-svc.py siteforge      # 点名容器（默认就是它）
 
-末尾会把新进程里那几把秘密的**指纹**（sha256 前 12 位）打出来 —— 值一个字符都不打，
-但那 12 位够你核对「换成了没有」（与你要用的那把比一比）。
+⚠️ 为什么不再是「起一个宿主进程」了（这一版之前的样子，留一行让人不再走回去）：
+  2026-09-24 实测：8099 被 **docker-proxy** 占着（→ 容器 172.17.0.7:8080），
+  而那个老脚本会在**执行它的机器上**起一个 `uvicorn --port 8099` ⇒ 在宿主上只会
+  bind 失败、或者起出一个**没人看的第二实例**（当天真出过一次：一份活开在容器里、
+  人在宿主那份的页面上找它 ✗）。⇒ 服务的口、环境、挂载都由**容器自己**带，一处口径。
+
+⚠️ 那几把秘密（`FMR_AGENT_TOKEN` / `FORM_SCRIPT_WRITE_TOKEN` / `OPENAI_API_KEY`）现在由
+  容器的环境给（compose / `docker run -e` 那一层）—— 这个脚本**一个都不碰**，
+  所以它也不再需要 `/proc/<pid>/environ` 那套搬运与指纹那一段。
+
+⚠️ `python3 tools/relaunch-svc.py` 在**哪台机器上跑都行**（只要那儿有 docker）——
+  这正是这一版的目的：不存在第二份服务。
 """
-import hashlib
-import os
 import subprocess
 import sys
-import time
 
-old_pid = sys.argv[1]
-extra = {}
-drop = set()
-for arg in sys.argv[2:]:
-    if "=" in arg:
-        k, v = arg.split("=", 1)
-        extra[k] = v
-    else:
-        name = arg.strip()
-        if name.startswith("-"):
-            drop.add(name[1:])
-            continue
-        if os.environ.get(name):
-            extra[name] = os.environ[name]
-            print("从我这儿取到了 %s（值不打）" % name)
-        else:
-            print("⚠️ 我这里也没有 %s 的值 —— 这一格跳过（没配成）" % name)
+#: 服务在**宿主上**的那个门牌（容器内是 8080，宿主上发布成这个）。
+#: ★ 值班脚本的默认服务口要跟它对得上 —— `tests/test_auto_run_once.py` 有一条钉子钉着
+#: （读不到这一格就报错，不许静默通过）。
+HOST_PORT = 8099
 
-raw = open("/proc/%s/environ" % old_pid, "rb").read().split(b"\0")
-env = {}
-for item in raw:
-    if b"=" in item:
-        k, v = item.split(b"=", 1)
-        env[k.decode()] = v.decode()
-for name in drop:
-    if env.pop(name, None) is not None:
-        print("删掉了旧进程里的 %s" % name)
-env.update(extra)
-print("搬过来的那几格：", sorted(k for k in env if k.startswith(("BIT_", "SPIKE", "FMR"))
-                               or "API_KEY" in k))
-print("额外叠上的：", sorted(extra))
+def main() -> int:
+    #: ⚠️ 以 `-` 开头的参数**不当容器名**（否则有人手滑敲 `--help`，那就成了
+    #: `docker restart --help` —— 一次莫名其妙的尝试；这一条只为不让人踩这个 ✗）。
+    if len(sys.argv) > 1 and sys.argv[1].startswith("-"):
+        print(__doc__)
+        return 0
+    name = (sys.argv[1] if len(sys.argv) > 1 else "siteforge").strip() or "siteforge"
+    got = subprocess.run(["docker", "restart", name], capture_output=True, text=True)
+    if got.returncode != 0:
+        print("重启失败：docker restart %s -> %s" % (name, (got.stderr or got.stdout).strip()),
+              file=sys.stderr)
+        return 2
+    print("重启了 %s" % name)
+    #: 回读一眼它现在什么样（**说「重启了」之前先看一眼** —— 这是本仓的老规矩）。
+    shown = subprocess.run(["docker", "ps", "--filter", "name=" + name,
+                            "--format", "{{.Names}}\t{{.Status}}\t{{.Ports}}"],
+                           capture_output=True, text=True)
+    print((shown.stdout or "").strip() or "（docker ps 没列出它 —— 去看一眼它是不是起不来）")
+    print("服务在宿主上的门牌：http://127.0.0.1:%d" % HOST_PORT)
+    return 0
 
-os.kill(int(old_pid), 15)
-for _ in range(40):
-    time.sleep(0.25)
-    try:
-        os.kill(int(old_pid), 0)
-    except OSError:
-        break
-print("旧进程停了")
 
-log = open("/tmp/svc.log", "a")
-proc = subprocess.Popen(
-    [".venv/bin/python", "-m", "uvicorn", "agent.service:app", "--host", "0.0.0.0", "--port", "8099"],
-    env=env, cwd="/company/siteforge", stdout=log, stderr=subprocess.STDOUT,
-    start_new_session=True)
-print("新进程 pid =", proc.pid)
-time.sleep(1.0)
-print("新进程里那几把秘密的指纹（sha256 前 12 位；值不打）:")
-for k in sorted(env):
-    if "KEY" in k or "TOKEN" in k:
-        print("  %-26s %s" % (k, hashlib.sha256(env[k].encode("utf-8")).hexdigest()[:12]))
+if __name__ == "__main__":
+    raise SystemExit(main())

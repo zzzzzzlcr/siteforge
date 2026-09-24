@@ -304,10 +304,10 @@ def test_the_default_service_url_points_at_the_port_the_service_really_listens_o
 
     root = pathlib.Path(__file__).resolve().parents[1]
     text = (root / "tools" / "relaunch-svc.py").read_text("utf-8")
-    found = re.search(r"--port[\"',\s]+(\d+)", text)
-    assert found, "启动脚本里读不到 --port —— 这条钉子失效了，别让它静默通过"
+    found = re.search(r"^HOST_PORT\s*=\s*(\d+)", text, re.M)
+    assert found, "启动脚本里读不到 HOST_PORT —— 这条钉子失效了，别让它静默通过"
     assert auto_mod.SERVICE_URL.endswith(":" + found.group(1)), (
-        "默认服务口 %r 与启动脚本监听的 %s 对不上 —— 值班第一跑会死在 callback 上"
+        "默认服务口 %r 与部署真正在听的那个门牌 %s 对不上 —— 值班第一跑会死在 callback 上"
         % (auto_mod.SERVICE_URL, found.group(1)))
 
 
