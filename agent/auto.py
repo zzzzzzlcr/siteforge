@@ -222,14 +222,17 @@ def parse_list(body) -> list:
     if not isinstance(body, dict):
         raise ValueError("榜单不是一份对象（%s）—— 这一次**没量着**，不是「今天没有失败」"
                          % type(body).__name__)
-    data = body.get("data")
-    if not isinstance(data, dict):
-        raise ValueError("榜单的 `data` 不是对象（%s）—— 同上：这一次**没量着**"
-                         % type(data).__name__)
+    #: ⚠️ **两种形状都认**（2026-09-24 真数据当场逮住的）：`fmr.FmrClient.fetch_rank()` 交回来的
+    #: **就是信封里那一份 `data`**（冒烟脚本里直接 `data.get("rank")`）；而契约文档写的是整个信封
+    #: `{"status","msg","data":{…}}`。两种都认 —— 但**认不出 `rank` 就是抛**（不许静默成空榜）。
+    inner = body.get("data")
+    data = inner if isinstance(inner, dict) else body
+    if "rank" not in data:
+        raise ValueError("这一份里没有 `rank`（%r）—— 这一次**没量着**，不是「今天没有失败」"
+                         % (sorted(data)[:6],))
     rows = data.get("rank")
     if not isinstance(rows, list):
-        raise ValueError("榜单的 `data.rank` 不是数组（%s）—— 同上：这一次**没量着**"
-                         % type(rows).__name__)
+        raise ValueError("`rank` 不是数组（%s）—— 同上：这一次**没量着**" % type(rows).__name__)
     out = []
     for row in rows:
         if not isinstance(row, dict):
@@ -271,7 +274,8 @@ def _stop(did: str, why: str, site: str = "") -> dict:
 
 
 def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
-             service_url: str = "http://127.0.0.1:8080") -> dict:
+             service_url: str = "http://127.0.0.1:8080",
+             allow_disabled: bool = False) -> dict:
     """**转一圈**：看榜 → 对账 → 开修（一次只开一个）。返回这一圈干了什么。
 
     口径照设计文档（`docs/superpowers/specs/2026-09-24-auto-repair-design.md`）：
@@ -306,6 +310,15 @@ def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
         if row.get("streak") is None:
             skipped.append("「%s」连败几次后端没说（v1 后端？）—— **不猜**" % site)
             continue
+        #: ★ 2026-09-24（用户点破的这一条）：**停用的站默认跳过** —— 它根本没有新单跑它
+        #: ⇒ 既不会失败（`fail: 0`）也不会成功 ⇒ `streak` **永远不归零**（契约：「成功一次即清零」）
+        #: ⇒ 这种行自己永远好不了，会一直占着榜单前排（2026-09-24 实测：前排 3 行**全是**停用）
+        #: ⇒ 默认跳过，把每天的额度留给**真在失败**的站。运营要点名修就带 `allow_disabled`。
+        #: ⚠️ 判据用后端自己给的那一格（`config_status`）—— **不猜**（认不出就不当停用）。
+        if not allow_disabled and "停用" in str(row.get("config_status") or ""):
+            skipped.append("「%s」是**停用**的配置 —— 它没有新单在跑（连败清不了零），"
+                           "默认不自动修；要点名修就带 allow_disabled" % site)
+            continue
         ok, why = book.may_open(site, today=today)
         if not ok:
             skipped.append(why)
@@ -336,6 +349,8 @@ def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
         "mode": "fix", "auto": True,
         "url": site, "fix_site": site, "fix_site_url": site,   # 三格同串 ⇒ 服务认这个键（_backend_key）
         "env": {"proxy_country": country},
+        #: 点名要修停用的那些行（服务那侧 `allow_disabled` 就是干这个的 —— 一个口径）。
+        "allow_disabled": bool(allow_disabled),
         "note": "自动值班：榜上「%s」连败够久（task %s）" % (site, task_id),
     })
     if code not in (200, 202):

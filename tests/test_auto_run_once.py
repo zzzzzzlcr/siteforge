@@ -145,3 +145,36 @@ def test_a_refused_run_is_said_plainly_and_the_book_keeps_the_mark(tmp_path):
     assert got["ok"] is False and got["did"] == "开了但被拒" and "409" in got["why"], got
     book = auto.Ledger(pathlib.Path(tmp_path) / auto.STATE_DIR / "ledger.json")
     assert book.count(today="2026-09-24") == 1
+
+
+def test_a_disabled_row_is_skipped_by_default(tmp_path):
+    """★ 2026-09-24（用户点破）：**停用的站默认跳过** —— 它没有新单在跑 ⇒ 连败清不了零
+    （契约：「成功一次即清零」）⇒ 自己永远好不了，会一直占着榜单前排、吃掉每天的额度。"""
+    _on(tmp_path)
+    fmr = FakeFmr(rank={"data": {"rank": [
+        {"site": "a.com/x", "streak": 23, "config_status": "停用",
+         "config_id": 74, "has_script": True}]}})
+    poster = Poster()
+    got = _run(tmp_path, fmr, poster)
+    assert got["did"] == "没动" and "停用" in got["why"], got
+    assert poster.calls == [], "停用的行还是被开了"
+
+
+def test_the_operator_can_ask_for_a_disabled_row_by_name(tmp_path):
+    """点名要修（`allow_disabled`）⇒ 照修，而且把这一格**交给服务**（那边同名那一格管这事）。"""
+    _on(tmp_path)
+    fmr = FakeFmr(rank={"data": {"rank": [
+        {"site": "a.com/x", "streak": 23, "config_status": "停用"}]}})
+    poster = Poster()
+    got = _run(tmp_path, fmr, poster, allow_disabled=True)
+    assert got["did"] == "开了", got
+    assert poster.calls[0][1]["allow_disabled"] is True, poster.calls[0][1]
+
+
+def test_an_enabled_row_is_not_touched_by_that_rule(tmp_path):
+    """正控：**启用**的行照旧照走（那条规矩只认「停用」两个字，别把好行也拦下）。"""
+    _on(tmp_path)
+    poster = Poster()
+    got = _run(tmp_path, FakeFmr(), poster)
+    assert got["did"] == "开了", got
+    assert poster.calls[0][1].get("allow_disabled") is False, poster.calls[0][1]
