@@ -147,17 +147,21 @@ def test_a_refused_run_is_said_plainly_and_the_book_keeps_the_mark(tmp_path):
     assert book.count(today="2026-09-24") == 1
 
 
-def test_a_disabled_row_is_skipped_by_default(tmp_path):
-    """★ 2026-09-24（用户点破）：**停用的站默认跳过** —— 它没有新单在跑 ⇒ 连败清不了零
-    （契约：「成功一次即清零」）⇒ 自己永远好不了，会一直占着榜单前排、吃掉每天的额度。"""
+def test_a_disabled_row_is_still_a_candidate(tmp_path):
+    """★ 停用的行**照样是候选** —— 「**停用 ≠ 没在跑**」是**量过的**（`japansdates` 那天还失败 6 条，
+    见 `agent/fmr.py::_disabled_py_source` 的注释）⇒ 我先前那条「停用 ⇒ 不跑 ⇒ 永远好不了 ⇒ 跳过」
+    的前提是错的，**撤了**（用户两次质疑都对）。
+
+    ⚠️ 但自动那条路**不拿停用那份当底稿**（`allow_disabled` 默认 False）—— 那是 2026-09-21 的裁定：
+    停用行要不要照修，**运营说了算**（服务那边同名那一格管这事）。
+    """
     _on(tmp_path)
     fmr = FakeFmr(rank={"data": {"rank": [
-        {"site": "a.com/x", "streak": 23, "config_status": "停用",
-         "config_id": 74, "has_script": True}]}})
+        {"site": "a.com/x", "streak": 23, "config_status": "停用"}]}})
     poster = Poster()
     got = _run(tmp_path, fmr, poster)
-    assert got["did"] == "没动" and "停用" in got["why"], got
-    assert poster.calls == [], "停用的行还是被开了"
+    assert got["did"] == "开了", got
+    assert poster.calls[0][1]["allow_disabled"] is False, poster.calls[0][1]
 
 
 def test_the_operator_can_ask_for_a_disabled_row_by_name(tmp_path):

@@ -308,16 +308,9 @@ def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
             skipped.append("榜上有一行的站点键是空的（读不到它的失败记录，**不猜**）")
             continue
         if row.get("streak") is None:
+            #: ★ **不猜**：后端没给「连败几次」（v1 后端就没有那一格）⇒ 这一行不开
+            #: （0 是合法读数，拿它顶替「没给」就是把「量不出」写成「它没在连败」）。
             skipped.append("「%s」连败几次后端没说（v1 后端？）—— **不猜**" % site)
-            continue
-        #: ★ 2026-09-24（用户点破的这一条）：**停用的站默认跳过** —— 它根本没有新单跑它
-        #: ⇒ 既不会失败（`fail: 0`）也不会成功 ⇒ `streak` **永远不归零**（契约：「成功一次即清零」）
-        #: ⇒ 这种行自己永远好不了，会一直占着榜单前排（2026-09-24 实测：前排 3 行**全是**停用）
-        #: ⇒ 默认跳过，把每天的额度留给**真在失败**的站。运营要点名修就带 `allow_disabled`。
-        #: ⚠️ 判据用后端自己给的那一格（`config_status`）—— **不猜**（认不出就不当停用）。
-        if not allow_disabled and "停用" in str(row.get("config_status") or ""):
-            skipped.append("「%s」是**停用**的配置 —— 它没有新单在跑（连败清不了零），"
-                           "默认不自动修；要点名修就带 allow_disabled" % site)
             continue
         ok, why = book.may_open(site, today=today)
         if not ok:
