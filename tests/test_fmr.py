@@ -2233,3 +2233,21 @@ def test_the_host_fallback_is_not_used_when_there_is_nothing_to_fall_back_to():
         assert len(asked) == 1, (key, asked)
     with pytest.raises(fmr.FmrUnmeasured):
         fmr.FmrClient(token="t", opener=lambda *a, **k: "{}").fetch_failures("  ", since="2026-09-17")
+
+
+def test_the_candidate_ladder_is_the_three_keys_measured_on_the_real_board():
+    """★ 2026-09-24 真榜量出来的三把键（同一个站、三个库各认一串）：
+    榜单 `host/path` ✗ / 配置库 `host` ✓ / 失败库 `qualify.host` ✓ ⇒ 候选表就是这三档。
+
+    ⚠️ 钉的是**候选表**：它只是「依次试哪几串」；一个都不认得的处置在别处
+    （抛原来那一句 ✓ —— 有那两条用例钉着）。
+    """
+    assert fmr._key_candidates("lastingpowerofattorney.io/article-1") == [
+        "lastingpowerofattorney.io/article-1",
+        "lastingpowerofattorney.io",
+        "qualify.lastingpowerofattorney.io"]
+    assert fmr._key_candidates("a.com") == ["a.com", "qualify.a.com"], \
+        "只有主机 ⇒ 那一档也试（同一个域族 ✓），但**不重复**、也不退回原串"
+    assert fmr._key_candidates("www.a.com/x") == ["www.a.com/x", "www.a.com"], \
+        "★ www. 那一档不加 qualify.（加了就是去问另一个站）"
+    assert fmr._key_candidates("") == []

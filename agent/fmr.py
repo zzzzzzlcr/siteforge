@@ -557,6 +557,34 @@ def _host_key(key: Any) -> str:
     return head if "." in head else ""
 
 
+def _key_candidates(key: Any) -> list:
+    """读口要试的那几串名字（**候选，不是判据** —— 全读不到照样抛、照样报人）。
+
+    ★ 2026-09-24 真榜量出来的事实：同一个站，**三个库认三串名字** ——
+      · 榜单给的是 `host/path`（`lastingpowerofattorney.io/article-1`）⇒ **三个口都不认它** ✗；
+      · 配置/脚本库认 `host`（`lastingpowerofattorney.io`）⇒ `type=debug` 读得到 py ✓；
+      · 失败库认 **`qualify.<host>`**（`qualify.lastingpowerofattorney.io` ✓ 13 条、country=GB）——
+        那是**真跑任务**的那一台。
+    ⇒ 所以依次试「原串 → 主机段 → `qualify.<主机段>`」。
+
+    ⚠️ 最后那一档是**按命名习惯列的候选**（量到过 ✓），**不是**一条判据：
+    它读不到就是读不到 —— 绝不拿它去猜「大概是哪个站」✗。
+    ⚠️ `www.` / `qualify.` 开头的不再加这一档（实测那一档是另一个站，加了就是去问别人 ✗）。
+    """
+    out = []
+    for candidate in (str(key or "").strip(), _host_key(key)):
+        if candidate and candidate not in out:
+            out.append(candidate)
+    host = _host_key(key)
+    if host and "." in host and not host.startswith(("www.", "qualify.")):
+        extra = "qualify." + host
+        if extra not in out:
+            out.append(extra)
+    return out
+
+
+
+
 # ─────────────────────────────── 人话 ───────────────────────────────
 
 
@@ -1277,13 +1305,17 @@ class FmrClient:
         try:
             data = self._call("/api/quest/formLog", params)
         except FmrRefused as exc:
-            host = _host_key(key)
-            if int(getattr(exc, "status", 0) or 0) != 404 or host == key or not host:
-                raise
-            try:
-                data = self._call("/api/quest/formLog", dict(params, site=host))
-            except FmrRefused:
-                raise exc      # ★ 两串都读不到 ⇒ 抛**原来那一句**（人该看到他自己给的那个键）
+            if int(getattr(exc, "status", 0) or 0) != 404:
+                raise                       # 别的码的原因不是「哪一串名字」
+            data = None
+            for candidate in _key_candidates(key)[1:]:
+                try:
+                    data = self._call("/api/quest/formLog", dict(params, site=candidate))
+                    break
+                except FmrRefused:
+                    continue
+            if data is None:
+                raise exc                   # ★ 全读不到 ⇒ 抛**原来那一句**（人看到他自己给的键）
         return [r for r in (data or []) if isinstance(r, dict)]
 
     # ── ② 逐步记录 ─────────────────────────────────────────────────
