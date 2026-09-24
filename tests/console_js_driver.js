@@ -288,16 +288,23 @@ async function runStepsScenario(out) {
 //: 「开一趟」**被服务拒了**（Task 12）：服务回 400 + 一句人话 ⇒ 那句话**原样**上屏、
 //: **活过之后三次重画**，而且这一屏**不许**跟着换趟（它压根没拿到 job id）。
 async function runRefusedScenario(out) {
+  //: ★ 2026-09-23（用户实测：「点了没反应」＋ console 里一串 `POST /run 400`）：
+  //: 服务**说了话**，可人在按钮那儿看不见那句（它在最上面那条红杠里）⇒ 动作失败时
+  //: 页面要把红杠**带到眼前**。这一份量两下：这一下**滚了**、而**重画不许滚**
+  //:（`paint()` 每 3 秒也会走到 `setErr` —— 在那儿滚就是跟人抢滚动条）。
+  let errScrolls = 0;
+  el("errBox").scrollIntoView = function () { errScrolls++; };
   out.afterLoad = { who: el("whoJob").textContent };
   el("runUrl").value = "";                          // 人什么都没填就按了
   fire("btnRun", "click");
   await settle();
   out.afterRun = { who: el("whoJob").textContent, errBox: el("errBox").textContent,
                    errHidden: el("errBox").hidden, errClass: el("errBox").className,
-                   disabled: el("btnRun").disabled };
+                   disabled: el("btnRun").disabled, errScrolls: errScrolls };
   await ticks(9);                                   // 三次重画之后那句话还在不在
   out.afterRepaint = { errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
-                       who: el("whoJob").textContent, timeline: el("timeline").innerHTML };
+                       who: el("whoJob").textContent, timeline: el("timeline").innerHTML,
+                       errScrolls: errScrolls };
 }
 
 //: 窗口那两下（Task 12）：人按「关掉这个窗口」→ 服务回 200 + 一句人话（服务说成了）；

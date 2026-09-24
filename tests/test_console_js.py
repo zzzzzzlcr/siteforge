@@ -1241,6 +1241,12 @@ def test_a_run_the_service_refused_puts_the_services_own_sentence_on_screen(tmp_
     assert len(run_posts) == 1, out["sent"]
     assert out["afterRun"]["errBox"] == RUN_400, out["afterRun"]
     assert out["afterRun"]["errHidden"] is False, "那句话没上屏"
+    #: ★ 2026-09-23（用户实测：「点了没反应」＋ console 里一串 `POST /run 400`）：
+    #: 服务**说了话**，可人在按钮那儿看不见那句（它在最上面那条红杠里）⇒ 动作失败时
+    #: 页面要把它**带到眼前**。量两下：这一下滚了、而**重画不许滚**
+    #:（`paint()` 每 3 秒也会走到 `setErr` —— 在那儿滚就是每 3 秒跟人抢一次滚动条）。
+    assert out["afterRun"]["errScrolls"] == 1, out["afterRun"]
+    assert out["afterRepaint"]["errScrolls"] == 1, out["afterRepaint"]
     assert "/job/%s/live" % NEW_JOB not in out["urls"], \
         "被拒了却去拉了「新那一趟」：%r" % out["urls"]
     assert NEW_JOB not in out["afterRun"]["who"], "被拒了却跟着换趟了：%r" % out["afterRun"]

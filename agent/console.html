@@ -432,9 +432,12 @@
                 <label for="fixNote">我猜它为什么失败（可空）</label>
                 <input type="text" id="fixNote" autocomplete="off" spellcheck="false"
                        placeholder="比如：那张弹层把按钮盖住了 / 这个站答完题会换域名">
-                <p class="why">你已经知道的那种话就写这儿 —— 它会<b>原样</b>进模型的提示词
+                <p class="why">⚠️ 按之前先看一眼下面「开一趟新的」那张表里的
+                  <b>「什么算成功」</b> —— <b>那一格只有你知道</b>（走通之后页面上会出现哪段文字）。
+                  空着按下去，服务会在<b>门口</b>把它拦下（<b>不开窗口、不花钱</b>），
+                  并且把那句人话<b>带到你眼前</b>。
+                  你已经知道的那种话就写这儿 —— 它会<b>原样</b>进模型的提示词
                   （跟「开工前先说一句」那一格是同一条路）。不写也行：不写就是让它自己找。</p>
-              </div>
               <p class="hint" id="diagHint">原因由**跑那一趟的机器**自己报上来 ——
                 还没报上来的单，这里会直说，不会空着。</p>
             </div>
@@ -1621,6 +1624,14 @@
     box.className = ok ? "notice done" : "notice err";
     box.textContent = text;   // **原样**（textContent：不把服务那句话当 HTML 解释）
     state.errFrom = from || "";
+    //: ★ 2026-09-23（用户实测：「点了没反应」＋ console 里一串 `POST /run 400`）：
+    //: 服务**说了话**，而那句话在最上面那条红杠里 —— 人的眼睛在按钮这儿 ⇒ 看着就是
+    //: 「没反应」。人按的那几下（`from === "act"`）就**把回话带到眼前**。
+    //: ⚠️ **只在人按的那几下滚**：`paint()` 每 3 秒也会走到这儿（`sayLiveProblem`），
+    //:    在那儿滚就是每 3 秒跟人抢一次滚动条 —— 那比「看不见」更坏。
+    if (from === "act" && typeof box.scrollIntoView === "function") {
+      box.scrollIntoView({ block: "center" });
+    }
   }
 
   // ══════════════════ 画一屏（只有这一处写 DOM）══════════════════
