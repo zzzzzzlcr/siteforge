@@ -1169,3 +1169,39 @@ def test_a_navi_that_fails_while_the_window_is_still_starting_is_retried(monkeyp
                               "https://x.test/", {})
     assert len(calls) == selftest.NAVI_TRIES, len(calls)
     assert "连不上" in said and "could not unmarshal" not in said, said
+
+
+def test_a_bare_host_entry_url_gets_a_scheme_before_navi(monkeypatch):
+    """★ 2026-09-24（真站跑出来的）：入口网址**没有 scheme** 时 `cdp navi` 直接回
+    `Cannot navigate to invalid URL (-32000)` —— 而**榜单给的那一串天生没有**
+    （`www.a.com/x`）⇒ 所以这一层要补上 `https://`。
+
+    ⚠️ 补的是**导航用的那个串**，不是 `brief["url"]` —— 那个串同时是**后端键**
+    （`_backend_key` 的比对逐字比 ✗ 补个 scheme 就废了）。`_navigate` 是通往 `navi`
+    的**唯一**入口 ⇒ 补在这儿一处就够（三个调用点全盖住）。
+    """
+    seen = []
+
+    def spy(cmd, **kw):
+        seen.append(list(cmd))
+        return selftest.subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(selftest.subprocess, "run", spy)
+    assert selftest._navigate("/bin/true", "ws://1.2.3.4:9222/devtools/browser/x",
+                              "www.a.com/x", {}) is None
+    got = seen[0]
+    assert got[1] == "navi" and got[2] == "https://www.a.com/x", got
+
+
+def test_an_entry_url_that_already_has_a_scheme_is_passed_through_untouched(monkeypatch):
+    """已经带 scheme 的**原样**交给 `navi` —— 不许把 `http://` 也改成 `https://`（那不是我们的事）。"""
+    seen = []
+
+    def spy(cmd, **kw):
+        seen.append(list(cmd))
+        return selftest.subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(selftest.subprocess, "run", spy)
+    selftest._navigate("/bin/true", "ws://1.2.3.4:9222/devtools/browser/x", "http://a.com/x", {})
+    selftest._navigate("/bin/true", "ws://1.2.3.4:9222/devtools/browser/x", "https://a.com/y", {})
+    assert [c[2] for c in seen] == ["http://a.com/x", "https://a.com/y"], seen

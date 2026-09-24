@@ -549,6 +549,19 @@ def _noise_free(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _with_scheme(url: str) -> str:
+    """入口网址**没有 scheme 就补 `https://`** —— 2026-09-24 真站实测：`cdp navi` 对没 scheme 的串
+    回 `Cannot navigate to invalid URL (-32000)`，而**榜单给的那一串天生没有**（`www.a.com/x`）。
+
+    ⚠️ 只补**导航用的那个串**：`brief["url"]` 同时是**后端键**（`_backend_key` 逐字比 ✗
+    给它补个 scheme 就把比对废了）。已经带 `://` 的**原样**留着（把 `http://` 改成 https 不是我们的事）。
+    """
+    said = str(url or "").strip()
+    if not said or "://" in said:
+        return said
+    return "https://" + said.lstrip("/")
+
+
 def _navigate(cdp_bin, ws_url, entry_url, env) -> Optional[str]:
     """把窗口**导航到 `entry_url`** → `None` 成了 / 一句人话为什么没成。
 
@@ -560,6 +573,7 @@ def _navigate(cdp_bin, ws_url, entry_url, env) -> Optional[str]:
     """
     if not cdp_bin or not entry_url:
         return "（没导航：%s）" % ("没有可用的 cdp 二进制" if not cdp_bin else "没给入口网址")
+    entry_url = _with_scheme(entry_url)       # ★ 见上面那条实测：没 scheme 的话 navi 直接判无效
     host, port = _host_port(ws_url)
     said = ""
     for attempt in range(NAVI_TRIES):
