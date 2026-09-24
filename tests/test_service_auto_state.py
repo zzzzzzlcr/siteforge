@@ -100,3 +100,37 @@ def test_only_the_jobs_that_need_a_human_are_listed(tmp_path):
     got = app.get(service.AUTO_PATH).json()
     assert got["needs_human"] == [{"job_id": "j-1", "site": "a.com/x",
                                   "why": "两遍都没过", "say": "停在闸上等人"}], got["needs_human"]
+
+
+# ── ★ 话在服务这一侧拼好（页面一个判断都不许有）─────────────────────────────
+
+
+def test_the_words_are_composed_here_so_the_page_judges_nothing(tmp_path):
+    """开关、心跳、今天几个 —— 全在 `say` 里（页面 `innerHTML` 一摆就完，不做判断）。"""
+    app, _ = _svc(tmp_path)
+    assert "**关着**" in app.get(service.AUTO_PATH).json()["say"]
+    _flags(tmp_path, on=True, note="用户按的")
+    auto.heartbeat(tmp_path)
+    got = app.get(service.AUTO_PATH).json()
+    assert "**开着**" in got["say"] and "用户按的" in got["say"]
+    assert "心跳正常" in got["say"] and "今天自动开了 0 个（上限 10）" in got["say"], got["say"]
+
+
+def test_never_beat_and_stale_are_two_different_sentences(tmp_path):
+    """★ 两句**不同**的话：从没跳过心跳 ≠ 超时没跳（页面上不许自己去分这件事）。"""
+    app, _ = _svc(tmp_path)
+    assert "从来没跳过心跳" in app.get(service.AUTO_PATH).json()["say"]
+    d = pathlib.Path(tmp_path) / auto.STATE_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "heartbeat.txt").write_text("%.0f" % (time.time() - 20 * 60), encoding="utf-8")
+    got = app.get(service.AUTO_PATH).json()
+    assert "超过 15 分钟没有心跳" in got["say"] and "从来没跳过" not in got["say"], got["say"]
+
+
+def test_a_needs_human_row_gets_a_whole_sentence(tmp_path):
+    """「需要人」那几件也把**整句**交下来（页面只摆，不拼）。"""
+    app, svc = _svc(tmp_path)
+    svc._jobs["j-1"] = FakeJob(auto_state="needs_human", auto_why="两遍都没过")
+    got = app.get(service.AUTO_PATH).json()
+    assert got["needs"] == [{"job_id": "j-1", "site": "a.com/x",
+                             "say": "**需要人**（两遍都没过）：停在闸上等人"}], got["needs"]

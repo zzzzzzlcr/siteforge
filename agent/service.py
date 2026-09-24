@@ -6707,7 +6707,22 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                   "say": str(getattr(j, "say", "") or "")}
                  for j in jobs if str(getattr(j, "auto_state", "") or "") == "needs_human"]
         stale = age is None or age > auto_mod.HEARTBEAT_MINUTES * 60.0
-        return {"on": bool(flags["on"]), "note": flags["note"],
+        #: ★ 话在**服务这一侧**拼好（页面一个判断都不许有 —— 与 `/country` 那两句同源）。
+        head = "自动值班：**%s**" % ("开着" if flags["on"] else "关着")
+        head += "（%s）。" % flags["note"] if flags["note"] else "（没说为什么）。"
+        if age is None:
+            beat = "⚠️ 值班脚本**从来没跳过心跳** —— 多半是它根本没被拉起来过。"
+        elif stale:
+            beat = "⚠️ **超过 %d 分钟没有心跳**了 —— 它可能已经不在。" % auto_mod.HEARTBEAT_MINUTES
+        else:
+            beat = "心跳正常（%d 秒前）。" % int(age)
+        opened_say = ("今天开了几个**数不出来**（%s）" % ledger_say if opened is None
+                      else "今天自动开了 %d 个（上限 %d）。" % (opened, auto_mod.DAY_CAP))
+        return {"say": head + beat + opened_say,
+                "needs": [{"job_id": n["job_id"], "site": n["site"],
+                           "say": "**需要人**（%s）：%s" % (n["why"] or "它没说为什么", n["say"])}
+                          for n in needs],
+                "on": bool(flags["on"]), "note": flags["note"],
                 "heartbeat_age": age, "heartbeat_minutes": auto_mod.HEARTBEAT_MINUTES,
                 "never_beat": age is None, "stale": stale,
                 "opened_today": opened, "day_cap": auto_mod.DAY_CAP,
