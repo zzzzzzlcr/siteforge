@@ -96,7 +96,9 @@ DAY_CAP = 10
 #: 心跳多久算「值班脚本不在了」（面板那条报警用这一格 —— 一处口径）。
 HEARTBEAT_MINUTES = 15
 #: 值班的东西都落在这个目录下（开关、账本、心跳）。
-STATE_DIR = pathlib.Path("runtime") / "auto-repair"
+#: ⚠️ 路径**照设计文档**（`docs/superpowers/specs/2026-09-24-auto-repair-design.md` §7：
+#: 「每轮往 `runtime/auto/heartbeat` 写一行」）—— 一处口径，别另起一个目录名。
+STATE_DIR = pathlib.Path("runtime") / "auto"
 
 
 def read_flags(root=".") -> dict:
