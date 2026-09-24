@@ -268,6 +268,18 @@ class SiteState(TypedDict, total=False):
     states: list                  # 「怎么走」（`journey.states()` 的产物）
     fills: dict                   # 字段值从哪来（`journey.fills()` 的产物）
     src: str                      # 这一版 py 的源码（lint 看的就是它）
+    #: ★ 2026-09-24（交接文档欠账 ④）：这一版产物是**哪一种形态** —— `"loop"`（步进循环型，
+    #: `agent/template_loop.py`）或 `"table"`（固定步骤表，`agent/template.py`；空 = table）。
+    #: 为什么它要在状态里：**交付前会重渲一次**（`graph._deliver`），两次必须产同一个形态 ——
+    #: 重渲换了形态就是把「人过闸认可的那一版」换成另一版 ✗。
+    #: ⚠️ 必须在这个 schema 里声明：langgraph 按字段名过滤，没声明的键**进不了状态、还不报错**
+    #: （`fix_py` 当年就是这么无声消失的，见上面那条注释）。
+    shape: Optional[str]
+    #: 循环型要的那几格（**从账本搬的**：`arrive_url` / `pre_steps` / `fill_order` / 几个上限），
+    #: 由 `graph._loop_spec` 算、`graph._loop_source` 用（draft 与重渲同一处读它）。
+    loop_spec: Optional[dict]
+    #: 「为什么判成这个形态」那一句人话（判据是**量到的**：多少个状态共用同一个地址）。
+    shape_why: Optional[str]
 
     # ── lint / selftest ───────────────────────────────────────
     violations: list              # 打回的行（`{line, code, message, snippet}`）

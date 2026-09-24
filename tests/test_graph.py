@@ -1905,3 +1905,85 @@ def test_an_auto_run_that_never_delivers_has_nothing_to_upload(tmp_path):
     reason = app.get_state(cfg).values.get("end_reason")
     assert reason and reason != "delivered", reason
     assert reason in ("lint_cap", "draft_failed"), reason
+
+
+# ─────────────── 形态分派：单页漏斗 ⇒ 步进循环型（交接文档欠账 ④）───────────────
+
+
+def _funnel_journey(pages=4):
+    """一份**单页漏斗**的真账本：一页上四道题（地址不变、靠正文换题）。"""
+    book = browser_agent.Journey(
+        steps=[{"state": "landing", "action": "click", "note": "点了「Get Quotes」",
+                "target": {"text": "Get Quotes", "role": "button", "near": None,
+                           "selectors": ["a.btn"], "above_fold_only": False},
+                "result": {"ok": True, "selector": "a.btn"}}],
+        notes=[], stop_reason="model_done",
+        pages=[{"name": "landing",
+                "when": {"url_contains": "example.test", "text_contains": ["Get Quotes"]},
+                "url": URL, "title": "t"}])
+    for i in range(pages):
+        name = "quiz" if i == 0 else "quiz-%d" % i
+        book.steps.append(
+            {"state": name, "action": "click", "note": "答了一题",
+             "target": {"text": "No", "role": "button", "near": None,
+                        "selectors": ["#no"], "above_fold_only": False},
+             "result": {"ok": True, "selector": "#no"}})
+        book.pages.append({"name": name,
+                           "when": {"url_contains": "funnel.test/quiz",
+                                    "text_contains": ["Question %d" % i]},
+                           "url": URL, "title": "t"})
+    return book
+
+
+def test_a_single_page_funnel_is_written_as_the_stepping_loop(tmp_path):
+    """★ 欠账 ④：**单页漏斗/问卷 ⇒ 步进循环型**（固定步骤表在这一类站上会静默跳过整组）。
+
+    判据落在**落盘那份字节**上（`out["py_path"]`）—— 换了形态，只有在那儿才看得见。
+    """
+    deps, _rec = _deps(journey=_funnel_journey())
+    app, cfg, _ = _build(deps=deps)
+    _payloads, out = _drive(app, cfg, _brief(tmp_path, success_urls="thank-you"))
+
+    assert out["end_reason"] == "delivered", out.get("end_note")
+    assert out["shape"] == "loop", out.get("shape_why")
+    assert "单页漏斗" in (out.get("shape_why") or ""), out.get("shape_why")
+    src = pathlib.Path(out["py_path"]).read_text(encoding="utf-8")
+    assert "步进循环型" in src, src[:400]
+    assert "STATES = [" not in src, "循环型那份里不该有固定步骤表的数据表"
+    # 漏斗**之前**那一步（账本里真走过的那一下）搬进了前置；产物自己**不导航**
+    assert "Get Quotes" in src, "漏斗之前那一步没搬进前置"
+    assert 'ENTRY_URL = str((PROVENANCE or {}).get("entry_url") or "")' in src, \
+        "循环型也从 PROVENANCE 读入口地址（这里该是空的 —— 谁开页面谁负责）"
+
+
+def test_a_multi_page_site_keeps_the_fixed_step_table(tmp_path):
+    """多页导航型**不许**被切成循环型：它的形状本来就是「一站一页、按 `when` 匹配」。
+
+    这一条用的是**默认那份账本**（只有一页）—— 也就是「判不出漏斗」的那一侧：
+    判据不够时照旧固定步骤表，**不猜**。
+    """
+    deps, _rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    _payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "delivered", out.get("end_note")
+    assert out.get("shape") == "table", out.get("shape_why")
+    assert "只有 1 个状态" in (out.get("shape_why") or ""), out.get("shape_why")
+    src = pathlib.Path(out["py_path"]).read_text(encoding="utf-8")
+    assert "STATES = [" in src
+    assert "步进循环型" not in src
+
+
+def test_a_funnel_without_a_url_criterion_stays_a_fixed_table_and_says_why(tmp_path):
+    """★ 循环型那一族**只看网址** ⇒ 人没给网址判据时**不许硬切**（切了就是 `draft_failed`）。
+
+    钉的是**回退的方向**：判据不够 ⇒ 照旧固定步骤表（它至少能靠正文判），
+    而且「为什么」要在 `shape_why` 里看得见 —— 看不见的话下一个人只会以为判据没生效。
+    """
+    deps, _rec = _deps(journey=_funnel_journey())
+    app, cfg, _ = _build(deps=deps)
+    _payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "delivered", out.get("end_note")
+    assert out.get("shape") == "table", out.get("shape_why")
+    assert "没给网址判据" in (out.get("shape_why") or ""), out.get("shape_why")

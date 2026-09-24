@@ -26,7 +26,8 @@ import json
 
 from agent.template import _lit, _provenance_literal
 
-__all__ = ["render_loop", "LOOP_PROVENANCE_KEEP", "DEFAULT_READ_JS"]
+__all__ = ["render_loop", "funnel_states", "LOOP_PROVENANCE_KEEP", "DEFAULT_READ_JS",
+           "LOOP_MIN_STATES", "LOOP_IDLE_LIMIT", "LOOP_MAX_STEPS", "LOOP_BUSY_TIMEOUT"]
 
 #: 这一族也要交代出处（与 `template.render` 同一套 key —— 一条口径）。
 LOOP_PROVENANCE_KEEP = ("site", "entry_url", "explored_at", "from", "note")
@@ -100,6 +101,51 @@ def render_loop(site, success_text, success_urls, fills, provenance, *,
                          ("__PROVENANCE__", _provenance_literal(provenance))):
         src = src.replace(token, value)
     return src
+
+
+#: 生成器产这一族时用的那几格参数：**量出来的**，不是拍的 ——
+#: `idle_limit` 60 是因为真站上那个 JS 应用要 ~40 秒才成形（`IDLE_LIMIT=6` ≈ 7 秒那一版
+#: 一上来就空转到收摊 ✗，2026-09-24 九趟真站试跑的账里记着）。
+LOOP_IDLE_LIMIT = 60
+LOOP_MAX_STEPS = 60
+LOOP_BUSY_TIMEOUT = 90
+
+#: 判「这是不是单页漏斗 / 问卷」的那把尺子：**同一个 `url_contains` 底下的状态数**。
+#: 为什么是这条：问卷整段在一页上（地址不变、靠正文换题）⇒ 账本里那一串状态共用同一个
+#: `url_contains`；而多页导航型每一门各占一条地址 ⇒ 最大那一组只有 1 ✓。
+#: ⚠️ 天花板（`ponytail:`）：**每页一屏、地址逐页变**的问卷会被判成固定步骤表（保守那一侧，
+#: 顶多多跑几趟才回过味来）；反过来「一页上就三五个状态的落地页」会被判成循环型 ——
+#: 那也正好是循环型擅长的形状。要收窄就调这个阈值，别再加第二套判据。
+LOOP_MIN_STATES = 3
+
+
+def funnel_states(journey) -> dict:
+    """账本 → 「这一趟是不是单页漏斗」+ 漏斗那一组状态。**判不出来就说判不出来**。
+
+    返回 `{"states": [名字…], "url": <共用的那一截地址>, "why": <人话>}`；
+    `states` 空的两种情形（没有带地址的页 / 最大那组不够大）都**不猜** ——
+    调用方照旧产固定步骤表（那一条至少不会因为形状切换而变坏）。
+    """
+    whens: dict = {}
+    for page in (getattr(journey, "pages", None) or []):
+        name = str((page or {}).get("name") or "")
+        url = str(((page or {}).get("when") or {}).get("url_contains") or "")
+        if name and url:
+            whens[name] = url
+    if not whens:
+        return {"states": [], "url": "",
+                "why": "账本里没有「带地址的页」（判不出单页漏斗）"}
+    groups: dict = {}
+    for name, url in whens.items():
+        groups.setdefault(url, []).append(name)
+    url, names = max(groups.items(), key=lambda kv: (len(kv[1]), kv[0]))
+    if len(names) < LOOP_MIN_STATES:
+        return {"states": [], "url": url,
+                "why": "最大那一组只有 %d 个状态共用地址「%s」（要 %d 个才算单页漏斗）"
+                       % (len(names), url[:50], LOOP_MIN_STATES)}
+    return {"states": sorted(names), "url": url,
+            "why": "有 %d 个状态共用同一个地址「%s」—— 单页漏斗/问卷"
+                   % (len(names), url[:50])}
 
 
 #: 固定骨架。⚠️ 与 `template.render` **同一个生产契约**（`forms/common.py::CDPHelper` + `report_url`

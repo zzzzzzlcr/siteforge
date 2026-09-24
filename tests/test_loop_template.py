@@ -104,3 +104,41 @@ def test_the_reader_js_really_parses():
     path.write_text(js, encoding="utf-8")
     done = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr[:400]
+
+
+def _book(pages):
+    """一个够用的账本桩（这一条只读 `pages[].when.url_contains` —— 别把整本账搬进来）。"""
+    import types
+    return types.SimpleNamespace(pages=pages)
+
+
+def test_the_shape_rule_reads_the_ledger_and_says_why():
+    """★ 判「单页漏斗」的那把尺子是**量到的**：多少个状态共用同一个 `url_contains`。
+
+    为什么需要这条规则（交接文档欠账 ④）：固定步骤表在问卷上会静默跳过整组 ——
+    它记的只是走过的那一条路，下一问变了 `when` 就不成立。
+    """
+    pages = [{"name": "landing", "when": {"url_contains": "example.test/article"}}]
+    pages += [{"name": "quiz-%d" % i, "when": {"url_contains": "quiz.example.test"}}
+              for i in range(template_loop.LOOP_MIN_STATES)]
+    got = template_loop.funnel_states(_book(pages))
+    assert got["states"] == ["quiz-0", "quiz-1", "quiz-2"], got
+    assert got["url"] == "quiz.example.test", got
+    assert "单页漏斗" in got["why"], got["why"]
+
+
+def test_the_shape_rule_refuses_to_guess_without_pages():
+    """判不出来就说判不出来（**不猜**）：没有带地址的页 / 最大那组不够大，两种都空手回去。
+
+    空手的代价只是「照旧产固定步骤表」—— 而猜错的代价是**换错形态**（那份产物在真站上
+    要么空转到收摊、要么跳过整组），两者不是一个量级。
+    """
+    none = template_loop.funnel_states(_book([]))
+    assert not none["states"] and "判不出" in none["why"], none
+
+    one = template_loop.funnel_states(_book([{"name": "a", "when": {"url_contains": "x.test"}}]))
+    assert not one["states"] and "只有 1 个状态" in one["why"], one
+
+    #: 有页但**没有 url_contains**（账本记不下地址那一格）⇒ 一样不猜
+    blind = template_loop.funnel_states(_book([{"name": "a", "when": {"text_contains": ["x"]}}]))
+    assert not blind["states"] and "判不出" in blind["why"], blind

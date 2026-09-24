@@ -120,6 +120,7 @@ from agent import browser_agent
 from agent import fix as fix_mod, lint as lint_mod, runtime
 from agent import selftest as selftest_mod
 from agent import template
+from agent import template_loop
 from agent.state import (
     END_DELIVERED, END_DELIVER_LINT, END_DRAFT_FAILED, END_EXPLORE_UNFINISHED, END_FIX_OLD_PASSES,
     END_HUMAN_STOP, END_LINT_CAP, END_MISSING_KNOB, END_NO_BRIEF, END_NO_SUCCESS_TEXT,
@@ -981,6 +982,55 @@ def _patch_failed_say(bad: list) -> str:
             + "\n（重发起一次就带着这些原因再补一版；闸只判结构，改得对不对由自测和人说了算。）")
 
 
+def _loop_spec(journey, funnel: dict) -> dict:
+    """账本 → 「步进循环型」要的那几格（**都从账本搬，不编**）。
+
+    - `pre_steps`：漏斗那一段**之前**的重放步骤（点同意条、点进问卷的 CTA、滚动）——
+      形状照 `template.render` 的 steps（`{action, target}`），只有 `click` / `scroll` 两种
+      是 `run_pre` 认的（别的搬过去它一个都不做，只会让账本里那串好步骤变成噪音）。
+      ⚠️ **不搬 `goto`**：产物不导航（谁开页面谁负责 —— 2026-09-23 用户点名那条规矩，
+      见 `_draft` 里那段注释）。
+    - `arrive_url`：漏斗那一组共用的地址（产物拿它当「进到问卷了」的到达判据）。
+    - `fill_order`：账本里**真填成功过**的那些格，按**首次填的顺序**（用户 2026-09-24 的原话：
+      「一般输入框顺序也不会变」）—— 认不出某一格时按这个顺序兜底填。
+    """
+    funnel_names = set(funnel.get("states") or [])
+    pre: list = []
+    for st in (journey.states() or []):
+        if st.get("name") in funnel_names:
+            break
+        pre.extend(st.get("steps") or [])
+    pre_steps = [{"action": s.get("action"), "target": s.get("target")}
+                 for s in pre if str((s or {}).get("action") or "") in ("click", "scroll")
+                 and (s or {}).get("target")]
+    return {"arrive_url": str(funnel.get("url") or ""), "pre_steps": pre_steps,
+            "fill_order": list((journey.fills() or {}).keys()),
+            "pick": "random", "max_steps": template_loop.LOOP_MAX_STEPS,
+            "idle_limit": template_loop.LOOP_IDLE_LIMIT,
+            "busy_timeout": template_loop.LOOP_BUSY_TIMEOUT,
+            "why": str(funnel.get("why") or "")}
+
+
+def _loop_source(state, deps: Deps, *, report) -> str:
+    """这一版**步进循环型**的源码（`draft` 与交付前重渲**同一处** —— 两处各写一遍一定会漂）。
+
+    `entry_url` **故意留空**：产物不自己导航（与固定步骤表同一条规矩）——
+    循环型读到什么就做什么，页面由平台按状态匹配开好。
+    """
+    spec = dict(state.get("loop_spec") or {})
+    prov = dict(_provenance(state, deps, report=report))
+    prov.update({"entry_url": "", "arrive_url": spec.get("arrive_url") or "",
+                 "pre_steps": list(spec.get("pre_steps") or []),
+                 "fill_order": list(spec.get("fill_order") or []),
+                 "shape": "loop", "why": spec.get("why") or ""})
+    return template_loop.render_loop(
+        state["site"], state.get("success_text"), state.get("success_urls") or "",
+        state.get("fills") or {}, prov, pick=str(spec.get("pick") or "random"),
+        max_steps=int(spec.get("max_steps") or template_loop.LOOP_MAX_STEPS),
+        idle_limit=int(spec.get("idle_limit") or template_loop.LOOP_IDLE_LIMIT),
+        busy_timeout=int(spec.get("busy_timeout") or template_loop.LOOP_BUSY_TIMEOUT))
+
+
 def _draft(state, deps: Deps, caps: Caps) -> dict:
     """把账本翻译成 py 源码（`template.render`），**带上回灌的证据**。
 
@@ -1034,6 +1084,22 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
                 "success_urls": state.get("success_urls"),
                 "states": journey.states(), "fills": journey.fills()}
     spec = deps.write(spec, feedback)
+    #: ★ 形态分派（2026-09-24，交接文档欠账 ④）：**单页漏斗/问卷 ⇒ 步进循环型** ——
+    #: 固定步骤表那一族在这类站上会**静默跳过整组**（它只记下走过的那一条路，下一问变了 ⇒
+    #: `when` 不成立 ✗）；多页导航型照旧固定步骤表。判据只有一条、而且是**量到的**：
+    #: 账本里有多少个状态共用同一个 `url_contains`（`template_loop.funnel_states`）。
+    #: ⚠️ 修站那条路（`fix_states`）**不切形态**：那一版的形状是人交进来的，我们不改它。
+    #: ⚠️ 还有一条**前提**：循环型这一族**只看网址**（`render_loop` 不给网址判据就当场拒 ——
+    #: 「跑到底再谎报成功」是本套最忌讳的那类谎）。人只给了正文判据时，照旧产固定步骤表
+    #: （那一条能靠正文判），并且**把为什么写在 `shape_why` 里**（人看得见，不用去猜）。
+    shape, loop_spec, shape_why = "table", {}, ""
+    if journey is not None:
+        funnel = template_loop.funnel_states(journey)
+        shape_why = funnel["why"]
+        if funnel["states"] and str(state.get("success_urls") or "").strip():
+            shape, loop_spec = "loop", _loop_spec(journey, funnel)
+        elif funnel["states"]:
+            shape_why = funnel["why"] + "；但**没给网址判据** —— 循环型只看网址，照旧产固定步骤表"
     # ⚠️ **产物里不许有「先站到入口」那一步**（2026-09-23 用户实测点名，作废了 2026-09-22 那一版）。
     # 用户原话：「我发现现在是不是我们的脚本在 auto-farm 也会重新导航一遍？那不对吧。
     # 在那边应该是匹配上直接做了而不用再打开一次吧」—— 他说对了，而且这一点**自测那条路
@@ -1044,9 +1110,17 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     #   账本里那一串帧重来一次（帧一重建，账本里的号全成死号）。
     # 修站那条路本来就不补（`journey is None`）—— 现在**两条路一致**：都不补。
     try:
-        src = template.render(spec["site"], spec["success_text"], spec["states"], spec["fills"],
-                              provenance=_provenance(state, deps, report=None),
-                              success_urls=spec.get("success_urls") or "")
+        if shape == "loop":
+            merged = dict(state)
+            merged.update({"loop_spec": loop_spec, "fills": spec["fills"],
+                           "success_text": spec["success_text"],
+                           "success_urls": spec.get("success_urls")})
+            src = _loop_source(merged, deps, report=None)
+        else:
+            src = template.render(spec["site"], spec["success_text"], spec["states"],
+                                  spec["fills"],
+                                  provenance=_provenance(state, deps, report=None),
+                                  success_urls=spec.get("success_urls") or "")
     except ValueError as exc:
         # 最常见的一种：没人说「什么算成功」。**不猜** —— 猜出来的成功判据就是
         # 「跑到底再谎报成功」的入口（template.py 也拒这种产物）。
@@ -1058,6 +1132,9 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     out.update({"states": spec["states"], "fills": spec["fills"],
                 "success_text": spec["success_text"],
                 "success_urls": spec.get("success_urls") or "", "src": src, "violations": [],
+                #: 形态与它的判据（人看得见的那一格）：交付时重渲要产**同一个形态**，
+                #: 而「为什么是循环型」那句话不该只活在这一次的日志里。
+                "shape": shape, "loop_spec": loop_spec, "shape_why": shape_why,
                 # 这一版就是为那次打回写的 → 把路上的那个标记收掉（`revisions` 留着当记录）。
                 # 不清的话路由会一直把它往回送（`_after_lint` 会以为「刚被人否过」）。
                 "revised_at": "", "diagnosis": None})
@@ -1280,6 +1357,10 @@ def _deliver(state, deps: Deps, caps: Caps) -> dict:
             #: 没有它 —— 往别人的脚本里加东西就不是「只改该改的那一处」了。这一次的
             #: 出身记在运行记录里（`state["provenance"]`），不在产物文件里。
             src = str(state.get("src") or "")
+        elif state.get("shape") == "loop":
+            #: 交付前也产**同一个形态**（`draft` 把它记在 `state["shape"]` / `loop_spec` 上）——
+            #: 重渲一次却换了形态，就是把「人过闸认可的那一版」换成另一版 ✗。
+            src = _loop_source(state, deps, report=state.get("report"))
         else:
             src = template.render(state["site"], state.get("success_text"),
                                   state.get("states"), state.get("fills"), provenance=prov)
