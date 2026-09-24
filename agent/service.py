@@ -264,6 +264,19 @@ AUTO_MAX_PRESSES = 30
 AUTO_STUCK_SAY = ("自动模式：**停在这儿了** —— 第 %s 这道闸按过之后没往前走"
                   "（已经替人按过 %d 下）。再按下去就是在原地空转（真站上=一直烧钱），"
                   "所以停住等人。")
+
+#: ★ 2026-09-24（Task 2，spec §5）：自动那条路**最多修两遍** —— 一遍 = 出一版稿 + 自测一次。
+#: 两遍都不过 ⇒ 停、报人（领导拍的停点：「修两遍不通才抛给人」）。
+AUTO_MAX_ATTEMPTS = 2
+#: 两遍都没过时那句人话（`%s` = 为什么需要人）。
+AUTO_GIVE_UP_SAY = ("自动模式：**两遍都没过**（一遍 = 出一版稿 + 自测一次），再试下去只是在猜 ⇒ "
+                    "停下、**需要人接手**。为什么：%s")
+#: 「**做不成**」的停因：这些**不等两遍**、立刻报人（再试也不会变）。
+#: ⚠️ 名字来自 `state.END_*`（那几个常量没全在这份文件里 import，所以按它们的**字面值**列；
+#: `tests/test_service_auto.py` 钉着这张表与 `state` 里那几个名字逐字对得上）。
+AUTO_CANNOT_DO = ("no_window", "missing_knob", "no_success_text", "window_gone")
+#: 做不成时那句人话的头（后面接那一趟自己留下的 `end_note`）。
+AUTO_CANNOT_DO_SAY = "自动模式：这一趟**做不成**（不是没修好）—— 不等第二遍，直接报人。为什么：%s"
 #: 目录表第 4 行（与 `/job/{id}` 上那句**同一句** —— 一件事一处口径）
 RUNNING_SAY = "在跑：真浏览器 + 模型，做完一步或需要你时就会停下来。"
 #: 「这一步跑挂了」那句话 —— `_advance` 的 except 与最后一层网（`_note_escaped`）**同一句**。
@@ -1983,6 +1996,10 @@ class Job:
     #: ⚠️ 它是 **process-local** 的：服务一重启就没了（`/live` 的 `note` 明说这件事）。
     timeline: events.Timeline = dataclasses.field(default_factory=events.Timeline)
     #: 这个 job 是不是**服务重启之后从 checkpoint 捡回来的**（`/live` 的 `note` 靠它明说）。
+    #: ★ Task 2：自动那条路给这个 job 记的**状态**（`""` / `"needs_human"`）与**为什么需要人**。
+    #: 面板那一栏（Task 6）照这两格说话 —— 它不是「日志」，是「现在该不该有人接手」的读数。
+    auto_state: str = ""
+    auto_why: str = ""
     recovered: bool = False
     #: 「窗口已经死了」这件事**说过了**没有：每次 `_advance` 返回都去问窗口层，
     #: 但只有「不是没了 → 没了」那一翻要记一条（同一件事记十遍不是信息）。
@@ -4141,13 +4158,14 @@ class Service:
     def _auto_reply(self, job: "Job") -> None:
         """`auto` 那一趟到闸了 ⇒ **替人按一次「继续」**（并留一条痕）。**只在这一处按。**
 
-        ⚠️ 它**不走 `reply()`**（这一步的判例）：那条路会记一条「**人说的**」——
+        ⚠️ 它**不走 `reply()`**（Task 1 的判例）：那条路会记一条「**人说的**」——
         而这一下**不是人**按的，两张嘴不许混成一张（与 `stop_landed` / `steer_landed` 同族）。
 
-        ⚠️ **刹车**（Task 1 内就有，测试当场抓到的）：图原地打转时（同一道闸反复回同一份快照）
-        没有它就会**无限按** —— 真站上 = 无限烧钱 + 无限真提交。两道：
-          ① 同一个「闸步名 + 快照指纹」**只按一次**（再按也没有新信息 ⇒ 停在那儿报人）；
-          ② job 级按压上限 `AUTO_MAX_PRESSES` 兜底（图一直在换闸名也拦得住）。
+        ⚠️ **三道刹车**（都在这一个口上）：
+          ① 图原地打转（同一道闸反复回同一份快照）⇒ 同一个「闸步名 + 快照指纹」只按一次，
+             job 级上限 `AUTO_MAX_PRESSES` 兜底；
+          ② **两遍为限**（Task 2）：已经到 `AUTO_MAX_ATTEMPTS` ⇒ 记「为什么需要人」、不再按；
+          ③ **做不成**（Task 2）：窗口/旋钮/底稿那一类（`AUTO_CANNOT_DO`）⇒ **不等第二遍**。
         """
         if not (job.brief or {}).get("auto"):
             return
@@ -4158,8 +4176,17 @@ class Service:
             return
         if not self._interrupts(snap):
             return                             # 不在闸上（还在跑 / 到头了）⇒ 不按
-        step, _where = self._where_it_stopped(job.job_id, snap)
         values = dict(getattr(snap, "values", None) or {})
+        #: ── 停的两道判（Task 2）：都不按，而是把「为什么需要人」记下来 ─────────────
+        reason = str(values.get("end_reason") or "")
+        if reason in AUTO_CANNOT_DO:
+            return self._auto_give_up(
+                job, values, AUTO_CANNOT_DO_SAY % (str(values.get("end_note") or reason)[:200]))
+        if self._auto_attempts(values) >= AUTO_MAX_ATTEMPTS:
+            return self._auto_give_up(
+                job, values, "已经到第 %d 遍（上限 %d）都没过"
+                             % (self._auto_attempts(values), AUTO_MAX_ATTEMPTS))
+        step, _where = self._where_it_stopped(job.job_id, snap)
         #: 指纹取**能看出「这一趟走到哪了」的那几格**（不是整个 values —— 里面有时间戳之类）
         stamp = "%s|%s" % (step, (tuple(values.get("visits") or ()),
                                   len(str(values.get("end_reason") or "")),
@@ -4167,8 +4194,10 @@ class Service:
         with job.lock:
             pressed = list(job.auto_pressed)
             if stamp in pressed or len(pressed) >= AUTO_MAX_PRESSES:
+                job.auto_state = "needs_human"
+                job.auto_why = AUTO_STUCK_SAY % (step or "（说不清哪一步）", len(pressed))
                 job.status = WAITING
-                job.say = AUTO_STUCK_SAY % (step or "（说不清哪一步）", len(pressed))
+                job.say = job.auto_why
                 said = job.say
             else:
                 pressed.append(stamp)
@@ -4181,6 +4210,30 @@ class Service:
             return
         self.narrate(job, "auto_replied", AUTO_REPLIED_SAY, step=step)
         self._submit(job, Command(resume={"action": "continue", "note": ""}))
+
+    @staticmethod
+    def _auto_attempts(values: dict) -> int:
+        """这一趟**已经到第几遍** —— 只认账上有的东西：`visits` 里 `draft` / `selftest` 的次数。
+
+        ⚠️ 为什么数 `visits`：图的每一步都会往 `visits` 里落一个节点名（`_visited`），
+        所以「写过几版稿」这件事**账上本来就有** —— 不另开一格状态（那会是第二个真相源）。
+        """
+        visits = [str(v) for v in (values or {}).get("visits") or []]
+        return max(visits.count("draft"), visits.count("selftest"))
+
+    def _auto_give_up(self, job: "Job", values: dict, why: str) -> None:
+        """自动那条路**不再替人按**了，并把「为什么需要人」记进 job（Task 6 那一栏照它说话）。
+
+        ⚠️ 时间线上记 `cap_hit`（那个词说的是「自动那条路到头了」）—— 与 `auto_stuck`
+        （图原地打转）**不是同一件事**，读账的人要能分开。
+        """
+        with job.lock:
+            job.status = WAITING
+            job.auto_state = "needs_human"
+            job.auto_why = str(why)
+            job.say = AUTO_GIVE_UP_SAY % str(why)
+            said = job.say
+        self.narrate(job, "cap_hit", said, end_reason="auto_give_up", end_note=str(why))
 
     # ── 服务重启之后：从 checkpoint 把 job 捡回来（R-19）───────────────
     def _recover(self, job_id: str) -> Optional[Job]:
