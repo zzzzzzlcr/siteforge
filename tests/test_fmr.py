@@ -2177,3 +2177,59 @@ def test_only_a_404_triggers_the_debug_read():
 
     assert len(rec.urls) == 1, rec.urls
     assert "401" in str(exc.value), str(exc.value)
+
+
+# ── ★ 2026-09-24（真榜逼出来的）：深键读不到 ⇒ 退到主机段再问一次 ──────────────
+
+
+def test_a_deep_key_falls_back_to_the_host_segment():
+    """★ 实测：`…/article-1` 那把深键在对账那个口回 404，而**主机那一段**能读到。
+
+    证据（真账）：`formScript?...&type=debug` 回的载荷里写着 `"site": "lastingpowerofattorney.io"`
+    —— 存的键**天生短一截**。所以这里必须退一层再问，否则榜上那些行永远对不上账
+    （「读不到就报人」会一路报到天荒地老，而站是**有记录**的）。
+    """
+    asked = []
+
+    def opener(url, headers, timeout=None):
+        site = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get("site", [""])[0]
+        asked.append(site)
+        if site == "lastingpowerofattorney.io/article-1":
+            return json.dumps({"status": 404, "msg": "config not found"})
+        return json.dumps({"status": 200, "msg": "success", "data": MEASURED_ROWS})
+
+    rows = fmr.FmrClient(token="t", opener=opener).fetch_failures(
+        "lastingpowerofattorney.io/article-1", since="2026-09-17")
+    assert [r["task_id"] for r in rows] == [r["task_id"] for r in MEASURED_ROWS]
+    assert asked == ["lastingpowerofattorney.io/article-1", "lastingpowerofattorney.io"], \
+        "退的那一次问的是**主机那一段**：%r" % (asked,)
+
+
+def test_when_both_keys_are_unreadable_the_first_error_is_what_you_see():
+    """两串都读不到 ⇒ 抛**第一串**那一句（人该看到的是他自己给的那个键 ✗ 不是我兜底的）。"""
+    asked = []
+
+    def opener(url, headers, timeout=None):
+        site = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get("site", [""])[0]
+        asked.append(site)
+        return json.dumps({"status": 404, "msg": "config not found: %s" % site})
+
+    with pytest.raises(fmr.FmrRefused) as got:
+        fmr.FmrClient(token="t", opener=opener).fetch_failures("a.com/x/y", since="2026-09-17")
+    assert "a.com/x/y" in str(got.value), got.value
+
+
+def test_the_host_fallback_is_not_used_when_there_is_nothing_to_fall_back_to():
+    """主机段 = 原串（本来就只有主机 ✓）⇒ **一个多余的请求都不发**；
+    空键更早一步就被拦下（免费的检查 ⇒ 一个请求都没出去）。"""
+    for key in ("a.com",):
+        asked = []
+
+        def opener(url, headers, timeout=None, _asked=asked):
+            _asked.append(url)
+            return json.dumps({"status": 200, "msg": "success", "data": []})
+
+        fmr.FmrClient(token="t", opener=opener).fetch_failures(key, since="2026-09-17")
+        assert len(asked) == 1, (key, asked)
+    with pytest.raises(fmr.FmrUnmeasured):
+        fmr.FmrClient(token="t", opener=lambda *a, **k: "{}").fetch_failures("  ", since="2026-09-17")

@@ -543,6 +543,20 @@ def since_text(since: Any, *, now: Optional[datetime.datetime] = None) -> str:
         "看到的却是今天那份）。" % (since,), kind="bad-since")
 
 
+def _host_key(key: Any) -> str:
+    """`host/path` → `host`（「深键读不到就退一层」那个兜底用的）。**认不出 ⇒ 空串**（不猜）。
+
+    ★ 2026-09-24（真榜逼出来的）：对账那个读口**不认深键**，而同一份东西用主机段问就 200 ——
+    证据是 `formScript?...&type=debug` 回的载荷里那格 `"site": "lastingpowerofattorney.io"`
+    （存的键天生短一截 ✓）。
+
+    ⚠️ 只认「第一段里有点」这种形状（`a.com/x` ⇒ `a.com`）：人填的键本来可能是别的形状，
+    猜出来的主机段会去问**另一个站** —— 那比「读不到」更坏（本仓最贵的那类失败）。
+    """
+    head = str(key or "").strip().split("/", 1)[0]
+    return head if "." in head else ""
+
+
 # ─────────────────────────────── 人话 ───────────────────────────────
 
 
@@ -550,6 +564,8 @@ def _word(value: Any, table: dict, what: str) -> str:
     """一个代号 → 人话。表里没有就**如实说没有**（不猜、也不悄悄吞掉）。
 
     三种情形分得开：
+
+
       · 有说法 → 那个说法；
       · 它没给（空 / 缺那一格）→ 「它没给」；
       · 它给了但这一屏不认识 → 「它写的是「××」（这一屏不认识这个代号）」。
@@ -1233,7 +1249,17 @@ class FmrClient:
         `lastingpowerofattorney.io/article-1` **带不带都 404** ⇒
         **它不是「查不到」的万能钥匙**：它救的是**被 `where('status',1)` 滤掉**的那一支。
         ⚠️ 与 `form_script` 那条一样：**只有 404 才值得重试**（别的码的原因不是「哪一份配置」）。
+        ⚠️ ★ 2026-09-24（真榜逼出来的）：这个读口**不认**「深键」那一串 ——
+        拿 `lastingpowerofattorney.io/article-1` 问是 404（**带不带 `type=debug` 都 404**），
+        而同一份东西用**主机那一段**（`lastingpowerofattorney.io`）问就 200。
+        证据：`formScript?...&type=debug` 回的载荷里 `"site": "lastingpowerofattorney.io"` ——
+        存的键**天生就短一截**（这就是 `test_fmr.py` 那句「存的 site 必须是请求值的
+        host+path 前缀」的另一面：存得**浅**时、拿**深**的去问就查不到 ✗）。
+        ⇒ 所以这里按「**深键 → 主机段**」试一次，并且**只认 404** 值得再试
+        （别的码的原因不是「哪一串名字」）。两串都读不到 ⇒ 抛**第一串**那一句
+        （原话照旧指向人真正该改的那一格）。
         """
+
         key = str(site or "").strip()
         if not key:
             raise FmrUnmeasured(
@@ -1248,7 +1274,16 @@ class FmrClient:
         }
         if debug:
             params["type"] = "debug"
-        data = self._call("/api/quest/formLog", params)
+        try:
+            data = self._call("/api/quest/formLog", params)
+        except FmrRefused as exc:
+            host = _host_key(key)
+            if int(getattr(exc, "status", 0) or 0) != 404 or host == key or not host:
+                raise
+            try:
+                data = self._call("/api/quest/formLog", dict(params, site=host))
+            except FmrRefused:
+                raise exc      # ★ 两串都读不到 ⇒ 抛**原来那一句**（人该看到他自己给的那个键）
         return [r for r in (data or []) if isinstance(r, dict)]
 
     # ── ② 逐步记录 ─────────────────────────────────────────────────
