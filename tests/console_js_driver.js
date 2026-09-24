@@ -637,6 +637,26 @@ async function againScenario(out) {
                      timeline: el("timeline").innerHTML };
 }
 
+//: ★ 「自动值班」那一栏（T6，2026-09-24）：开页问一次 `/auto` → 按「打开」→ 按「停」→ 再重画三次。
+//: 量的是**屏上那两句**：那一行（`#autoNow`）说的是服务给的 `say`（页面自己编一句在夹具里当场
+//: 露馅 —— 那条串根本不在响应里）；按下去之后 `#autoNote` 摆的是服务回的那句；
+//: 最后那次要看它**活过之后三次重画**（Task 7 那一族：写进去 ≠ 还在）。
+async function autoScenario(out) {
+  await settle();                                   // 开页那一问（`paintAuto()` 在接线段里调的）
+  await settle();
+  out.auto = { now: el("autoNow").innerHTML, needs: el("autoNeeds").innerHTML };
+  fire("btnAutoOn", "click");                       // 按「打开自动值班」
+  await settle(); await settle();
+  out.auto.afterOn = el("autoNote").innerHTML;
+  out.auto.nowAfterOn = el("autoNow").innerHTML;
+  fire("btnAutoOff", "click");                      // 按「停」
+  await settle(); await settle();
+  out.auto.afterOff = el("autoNote").innerHTML;
+  out.auto.nowAfterOff = el("autoNow").innerHTML;
+  await ticks(3);
+  out.auto.end = el("autoNote").innerHTML;
+}
+
 (async () => {
   vm.runInContext(source, sandbox, { filename: "console.html" });
   await settle();                                   // 开页那两次 fetch
@@ -672,6 +692,7 @@ async function againScenario(out) {
   //: （`fixSuccess` 有值 ⇒ 多跑 ⑦c/⑦d 那两下）。与 `artifact` / `artifact-missing` 同款约定。
   else if (payload.scenario === "rank-diag" ||
            payload.scenario === "rank-diag-success") { await rankScenario(out); }
+  else if (payload.scenario === "auto") { await autoScenario(out); }
   else { await repaintScenario(out); }
   out.paints = timelineWrites;                      // **重画了几次**（C1：别拿 fetch 数代替）
   if (out.paintMarks) { out.paintMarks.end = timelineWrites; }

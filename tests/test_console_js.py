@@ -351,6 +351,8 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _failures_wide_payloads()
     elif scenario == "failures-url-edited":
         payload = _failures_edited_payloads()
+    elif scenario == "auto":
+        payload = _auto_payloads()
     elif scenario == "failures-no-key":
         payload = _failures_no_key_payloads()
     elif scenario == "configcheck":
@@ -2560,3 +2562,38 @@ def test_the_country_row_does_not_re_ask_on_every_repaint(tmp_path):
     #: 按完是 **3**：开页那一问 + 按那一下 + 换成之后重新问一遍（成功才有第三下）。
     assert out["afterPress"]["asks"] == 3, out["afterPress"]
     assert len(out["calls"]) == 3, out["calls"]
+
+
+# ── ★ 「自动值班」那一栏（T6，2026-09-24）──────────────────────────────────
+#: 那一跳（**从服务自己的常量算出来**，不在这儿手拼一份）。
+AUTO_URL = service.AUTO_PATH
+
+
+def _auto_payloads() -> dict:
+    """那一栏的三份答复（**顺序有意义**：开页一问 → 按「打开」之后那一问 → 按「停」之后那一问）。
+
+    ⚠️ 三句人话里，后两句是 `agent/auto.py` 的常量**算出来**的（一处口径）；
+    第一句是服务在路由里拼的 ⇒ 没有对应常量 ⇒ 这里就是**夹具自己给的一份答复** ——
+    这一条要证明的正是「页面摆的是**服务给的**那句」，所以逐段比的是**它**。"""
+    from agent import auto as _auto            #: 只用它那两句人话（一处口径）
+    off = ("自动值班：**关着**（没说为什么）。心跳正常（3 秒前）。今天自动开了 0 个（上限 10）。")
+    needs_row = {"job_id": "j-1", "site": "a.com/x",
+                 "say": "**需要人**（两遍都没过）：停在闸上等人"}
+    return {"scenario": "auto", "responses": {AUTO_URL: [
+        {"body": {"say": off, "on": False, "needs": [needs_row],
+                  "never_beat": False, "stale": False}},
+        {"body": {"say": _auto.FLAGS_ON_SAY % "面板按的", "on": True, "needs": [needs_row]}},
+        {"body": {"say": _auto.FLAGS_OFF_SAY % "面板按的", "on": False, "needs": [needs_row]}},
+    ]}}
+
+
+def test_the_auto_row_says_what_the_service_said(tmp_path):
+    """★ T6：那一栏摆的是**服务给的 `say`**（逐段比）；按「打开」/「停」之后是服务回的那句；
+    而且最后那次**活过之后三次重画**（Task 7 那一族：写进去 ≠ 还在）。"""
+    rows = _auto_payloads()["responses"][AUTO_URL]
+    got = _drive(tmp_path, scenario="auto")["auto"]
+    _onscreen(got["now"], rows[0]["body"]["say"], "开页那一行")
+    _onscreen(got["needs"], rows[2]["body"]["needs"][0]["say"], "「需要人」那件")
+    _onscreen(got["afterOn"], rows[1]["body"]["say"], "按「打开」之后那句")
+    _onscreen(got["afterOff"], rows[2]["body"]["say"], "按「停」之后那句")
+    assert got["end"] == got["afterOff"], "那句话没活过之后三次重画"
