@@ -253,30 +253,16 @@ SHOTS_OFF_SAY = ("这一次没留逐步的图：%s"
 SUBMITTED_SAY = "收到了，排队开跑。"
 QUEUED_SAY = "排队等窗口（前面还有别的 run 在用）。"
 
-#: ★ 2026-09-24：`auto` 那一趟到闸时，服务替人按「继续」留下的那句（Task 1）。
-#: ⚠️ 它**不是**「人说的」——时间线上两张嘴不许混成一张（所以单开一个 `kind`）。
-AUTO_REPLIED_SAY = "自动模式：这一步自己走了（没人按）。"
 
-#: ★ 2026-09-24：自动那条路**一次最多替人按几下**（刹车之二，见 `_auto_reply` 的 docstring）。
-#: ⚠️ 它是**防死循环**的兜底，不是「修几遍」那个计数（那个是 `selftest`/`Caps` 的事）。
-AUTO_MAX_PRESSES = 30
-#: 刹车踩下去时那句人话（有人得接手 —— 而不是让它在原地无限按）。
-AUTO_STUCK_SAY = ("自动模式：**停在这儿了** —— 第 %s 这道闸按过之后没往前走"
-                  "（已经替人按过 %d 下）。再按下去就是在原地空转（真站上=一直烧钱），"
-                  "所以停住等人。")
-
-#: ★ 2026-09-24（Task 2，spec §5）：自动那条路**最多修两遍** —— 一遍 = 出一版稿 + 自测一次。
-#: 两遍都不过 ⇒ 停、报人（领导拍的停点：「修两遍不通才抛给人」）。
-AUTO_MAX_ATTEMPTS = 2
-#: 两遍都没过时那句人话（`%s` = 为什么需要人）。
-AUTO_GIVE_UP_SAY = ("自动模式：**两遍都没过**（一遍 = 出一版稿 + 自测一次），再试下去只是在猜 ⇒ "
-                    "停下、**需要人接手**。为什么：%s")
-#: 「**做不成**」的停因：这些**不等两遍**、立刻报人（再试也不会变）。
-#: ⚠️ 名字来自 `state.END_*`（那几个常量没全在这份文件里 import，所以按它们的**字面值**列；
-#: `tests/test_service_auto.py` 钉着这张表与 `state` 里那几个名字逐字对得上）。
-AUTO_CANNOT_DO = ("no_window", "missing_knob", "no_success_text", "window_gone")
-#: 做不成时那句人话的头（后面接那一趟自己留下的 `end_note`）。
-AUTO_CANNOT_DO_SAY = "自动模式：这一趟**做不成**（不是没修好）—— 不等第二遍，直接报人。为什么：%s"
+#: ★ 2026-09-24（用户点名「别把代码写个好几千行」）：自动那条路的**话与判据搬到
+#: `agent/auto.py` 了**（那文件一眼看完；这份文件 6500+ 行，再堆就没人读得动）。
+#: 这一行就是把它们引回来 —— 下面用的还是**裸名字**（与搬家前逐字相同），
+#: 谁改那些话/判据，改的地方只有一个：`agent/auto.py`。
+from agent.auto import (  # noqa: E402 —— 摆在这儿是**故意的**：谁找这几格就找这儿
+    AUTO_CANNOT_DO, AUTO_CANNOT_DO_SAY, AUTO_GIVE_UP_SAY, AUTO_MAX_ATTEMPTS,
+    AUTO_MAX_PRESSES, AUTO_REPLIED_SAY, AUTO_STUCK_SAY,
+)
+from agent import auto as auto_mod  # noqa: E402
 #: 目录表第 4 行（与 `/job/{id}` 上那句**同一句** —— 一件事一处口径）
 RUNNING_SAY = "在跑：真浏览器 + 模型，做完一步或需要你时就会停下来。"
 #: 「这一步跑挂了」那句话 —— `_advance` 的 except 与最后一层网（`_note_escaped`）**同一句**。
@@ -4213,13 +4199,8 @@ class Service:
 
     @staticmethod
     def _auto_attempts(values: dict) -> int:
-        """这一趟**已经到第几遍** —— 只认账上有的东西：`visits` 里 `draft` / `selftest` 的次数。
-
-        ⚠️ 为什么数 `visits`：图的每一步都会往 `visits` 里落一个节点名（`_visited`），
-        所以「写过几版稿」这件事**账上本来就有** —— 不另开一格状态（那会是第二个真相源）。
-        """
-        visits = [str(v) for v in (values or {}).get("visits") or []]
-        return max(visits.count("draft"), visits.count("selftest"))
+        """这一趟已经到第几遍 —— 判据在 `agent/auto.py::attempts`（一处口径）。"""
+        return auto_mod.attempts(values)
 
     def _auto_give_up(self, job: "Job", values: dict, why: str) -> None:
         """自动那条路**不再替人按**了，并把「为什么需要人」记进 job（Task 6 那一栏照它说话）。
