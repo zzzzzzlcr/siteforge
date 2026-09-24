@@ -437,6 +437,10 @@ from agent.country import (  # noqa: E402 —— 摆在这儿是**故意的**：
     COUNTRY_PATH, COUNTRY_SHOW_SAY, COUNTRY_UNREADABLE_SAY, SET_COUNTRY_SECONDS,
     SET_COUNTRY_TOOL, _country_code, _run_country_tool,
 )
+#: ★ T6（2026-09-24）：值班那几格（开关 / 心跳 / 今天开了几个 / 需要人的那几个）。
+#: 只读口 —— 面板那一栏照它说话（页面只搬字）；值班那套的判据全在 `agent/auto.py` 里。
+from agent import auto as auto_mod  # noqa: E402
+from agent.auto import AUTO_PATH  # noqa: E402
 
 
 def _backend_key(url: Any, fix_site: Any, fix_site_url: Any) -> str:
@@ -6675,6 +6679,40 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
             return svc.close_window(job_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="没这个任务：%s。" % job_id)
+
+    @api.get(AUTO_PATH)
+    def auto_now() -> dict:
+        """**值班那几格**（T6，只读）：开关 / 心跳 / 今天开了几个 / 需要人的那几个 job。
+
+        ⚠️ 页面**一个判断都不许有**：该不该报警由这里算好（`stale` 那一格），页面只搬字。
+        判据全在 `agent/auto.py`（一处口径）：`read_flags` / `heartbeat_age` / `HEARTBEAT_MINUTES` /
+        `DAY_CAP` / `ledger_at`。
+        ⚠️ 心跳那两种**要分开报**：「>15 分钟没跳」与「**从来没跳过**」（`heartbeat_age is None`）
+        不是一回事 —— 后者多半是这个脚本从没跑起来过（`stale=True` 但话不一样）。
+        """
+        root = str(getattr(svc, "_auto_root", "") or os.getcwd())
+        flags = auto_mod.read_flags(root)
+        age = auto_mod.heartbeat_age(root)
+        try:
+            opened = auto_mod.ledger_at(root).count(today=time.strftime("%Y-%m-%d"))
+        except RuntimeError as exc:            # 账本坏了：如实说，不装作今天没开过
+            opened, ledger_say = None, str(exc)
+        else:
+            ledger_say = ""
+        with svc._jobs_lock:
+            jobs = list(svc._jobs.values())
+        needs = [{"job_id": j.job_id,
+                  "site": str((j.brief or {}).get("site") or ""),
+                  "why": str(getattr(j, "auto_why", "") or ""),
+                  "say": str(getattr(j, "say", "") or "")}
+                 for j in jobs if str(getattr(j, "auto_state", "") or "") == "needs_human"]
+        stale = age is None or age > auto_mod.HEARTBEAT_MINUTES * 60.0
+        return {"on": bool(flags["on"]), "note": flags["note"],
+                "heartbeat_age": age, "heartbeat_minutes": auto_mod.HEARTBEAT_MINUTES,
+                "never_beat": age is None, "stale": stale,
+                "opened_today": opened, "day_cap": auto_mod.DAY_CAP,
+                "ledger_say": ledger_say, "needs_human": needs}
+
 
     @api.get(COUNTRY_PATH)
     def country_now() -> dict:

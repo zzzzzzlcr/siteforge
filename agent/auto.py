@@ -100,9 +100,12 @@ HEARTBEAT_MINUTES = 15
 #: 「每轮往 `runtime/auto/heartbeat` 写一行」）—— 一处口径，别另起一个目录名。
 STATE_DIR = pathlib.Path("runtime") / "auto"
 
+#: 面板读「值班那几格」那个口（服务那侧只用它拼路由 —— 一处口径）。
+AUTO_PATH = "/auto"
+
 
 def read_flags(root=".") -> dict:
-    """值班的**总开关**（`runtime/auto-repair/flags.json`）—— **默认全关**。
+    """值班的**总开关**（`runtime/auto/flags.json`）—— **默认全关**。
 
     返回 `{"on": bool, "note": str}`。⚠️ **读不到 / 不是 JSON / 不是对象 ⇒ 一律「关」**：
     值班脚本是无人看着跑的，「读不懂就当作开着」是这一仓最贵的那类形状的反面
@@ -340,3 +343,8 @@ def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
                 "why": "服务回了 %s：%s" % (code, str(said)[:300])}
     return {"ok": True, "did": "开了", "site": site,
             "why": "task %s · 国家 %s · 服务回了 %s" % (task_id, country, code)}
+
+
+def ledger_at(root=".") -> "Ledger":
+    """账本在哪儿 —— **一处口径**（CLI、`run_once`、服务那几个读口都走这儿，别再各拼一份）。"""
+    return Ledger(pathlib.Path(root) / STATE_DIR / "ledger.json")
