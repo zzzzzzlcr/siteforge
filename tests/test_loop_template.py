@@ -4,13 +4,16 @@
 `solarincentives` 从第 6 步起 19 步全被跳过、一趟白跑）—— 而**分支**（男/女 ⇒ 第二问变）
 在「每轮现读页面」这个形状下**根本不存在**。形状照生产在跑的 `goldenagesouls.py`。
 
-这一份钉四件：
+这一份钉五件：
   ① 产出的 py **是合法的**（`ast.parse`）而且是**生产认的那一族**（`fix.shape_of` 不返 unknown）；
-  ② **生产/自测那几个开关一个不少**（少一个，那个站从这一单起每一单都 argparse 报错）；
+  ② **生产那四个开关 + 自测那三个一个不少**（2026-09-24 实测：少了 `--trace` / `--no-report`，
+     产物在自测里一上来就 argparse 退出，报告只剩「进程退了（退出码 2）」—— 我第一版就把它们
+     当「可选」跳过了 ✗，这一条改成**一个都不许少**）；
   ③ **网址判据不能空** —— 这一族只看网址（老手原话：「正文判据是这一族栽跟头的老地方」）；
-  ④ ★ 「读这一屏」那段 JS **真能过语法检查**（`node --check`；没有 node 就跳过并说出来，
-     **不假装验过**）—— 2026-09-24 我自己就往里塞过一行 python 式 `#` 注释，那会让浏览器
-    eval 报错 ⇒ `read()` 恒返回 None ⇒ 整个循环空转。
+  ④ 挑选项规则、填值 `kind` 这两格给得不认识 ⇒ **当场拒**（不知道填什么就别产）；
+  ⑤ ★ 「读这一屏」那段 JS **真能过语法检查**（`node --check`；没有 node 就跳过并说出来，
+     **不假装验过**）—— 我自己就往里塞过一行 python 式 `#` 注释，那会让浏览器 eval 报错
+     ⇒ `read()` 恒返回 None ⇒ 整个循环空转。
 """
 from __future__ import annotations
 
@@ -44,16 +47,23 @@ def test_the_product_is_a_real_py_in_the_family_production_accepts():
 
 
 def test_every_switch_production_and_selftest_call_it_with_is_there():
-    """少一个开关，那个站从这一单起**每一单**都一上来就 argparse 报错。"""
+    """★ 一个都不许少：少一个，那个站从这一单起**每一单**都一上来就 argparse 报错。
+
+    （自测那三个尤其：`--trace` / `--delay` / `--no-report` —— 2026-09-24 实测过一次，
+    报告只剩「进程退了（退出码 2）」。）
+    """
     src = _src()
-    for flag in fix.REQUIRED_CLI_FLAGS:
-        assert flag in src, flag
-    for flag in selftest.ARTIFACT_FLAGS:
-        if flag in ("--delay", "--trace", "--no-report"):
-            continue                                   # 可选那几格
-        assert flag in src, flag
+    missing = [f for f in fix.REQUIRED_CLI_FLAGS if f not in src]
+    missing += [f for f in selftest.ARTIFACT_FLAGS if f not in src]
+    assert not missing, "少了这些开关：%r" % (missing,)
     assert "sys.exit(0 if" in src, "退出码就是生产的成功判据，少了它这一趟没有判据"
     assert "report_url" in src, "进度上报那条线"
+
+
+def test_the_selftest_never_reports_into_production():
+    """`--no-report` 不是摆设：自测那一遍**永不上报**（自测不是生产任务）。"""
+    src = _src()
+    assert "if self.no_report:" in src, "没有把 --no-report 用在 `_rpt` 上"
 
 
 def test_the_url_criterion_is_required_because_this_family_judges_by_url():

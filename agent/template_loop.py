@@ -124,6 +124,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from common import CDPHelper, setup_logger, report_url  # noqa: E402
 
 SITE = __SITE__
+#: ★ 2026-09-24 第三次真站试跑逼出来的：**新窗口开出来停在 BitBrowser 控制台那一页** ✗
+#: ⇒ 不导航过去，`read()` 只会一路返回 None（trace 里连着 6 行「页面读不到」✓ 它就是这么哑的）。
+#: 入口网址从「这一版是从哪儿探出来的」那一格拿（同一个 key 与固定步骤表那条同源）。
 SUCCESS_URL_MARKERS = __URL_MARKERS__
 SUCCESS_TEXTS = __TEXTS__
 FILLS = __FILLS__
@@ -138,6 +141,15 @@ SKIP_FIELDS = ("company", "company_url", "website", "url", "fax")
 BUSY_MARKERS = ("almost done", "processing your", "setting up", "just a moment",
                 "getting things ready", "hold on", "calculating", "please wait")
 PROVENANCE = __PROVENANCE__
+ENTRY_URL = str((PROVENANCE or {}).get("entry_url") or "")
+#: ★ 前置（用户 2026-09-24 点破）：进问卷之前那几步 —— **探路时真走过的**（从账本搬进来 ✓
+#: 不编 ✗ 也不抄别的站的表 ✗）。每步是账本里那一步的原样：`{action, target{text,role,selectors}}`。
+PRE_STEPS = list((PROVENANCE or {}).get("pre_steps") or [])
+#: 到没到问卷的判据（账本里**下一门**的 `when.url_contains` ✓）：地址里出现这一截才算到 ✓。
+ARRIVE_URL = str((PROVENANCE or {}).get("arrive_url") or "")
+#: ★ 账本里那几格**填过的顺序**（用户 2026-09-24 的原话：「**一般输入框顺序也不会变**」✓）。
+#: 哪一格都认不出来时用它兜底 —— 本屏第 n 个空格 ⇒ 账本第 n 格 ✓（我们自己的事实 ✓ 不猜 ✗）。
+FILL_ORDER = list((PROVENANCE or {}).get("fill_order") or [])
 #: 选项没给 `data-testid` 时的前缀：`\\x01文字` = 「按这段文字去页面上找」。
 BY_TEXT = "\\x01"
 #: 输入框没给 `testid`/`id`/`name` 时的前缀：`\\x02placeholder` = 「按占位符去页面上找」。
@@ -148,6 +160,27 @@ BY_PLACEHOLDER = "\\x02"
 #: 连着点几次「Next」页面还是那一屏 ⇒ 当**空转**，如实收摊（第一版没有这道闸，
 #: 真站上才会空点 55 次 Continue 把步数耗光 ✗）。
 SAME_NEXT_LIMIT = 3
+
+#: 用户 2026-09-24 拍的规则：「**根据是否可见来判断**」—— 读取器本来就只收可见的
+#: (`offsetWidth>0 && offsetHeight>0` ✓) ⇒ 所以「没有可动作的东西」=「**可见的题/按钮为零**」✓。
+#: 于是 Continue 降为**兜底**：连着这么多轮确实一件可见的都没有，才轮到点它 ✗
+#: （不这么办 ⇒ 页面正把题画出来的那两轮里它抢先点 Continue ⇒ 22 秒就被自己的闸误杀 ✓ 真发生过）。
+EMPTY_ROUNDS_BEFORE_NEXT = 2
+
+#: 同意条上那几个「接受」长什么样（两份样本都先清它：`goldenagesouls` 的第一句就是
+#: `self.cdp.click(COOKIE_BTN)` ✓ `lastingpowerofattorney` 的 `_clear_cookies` 同一条路 ✓）。
+#: ⚠️ 它**异步注入** ⇒ 得上限内等它出现 ✓。
+COOKIE_TEXTS = ("Accept All Cookies", "Accept All", "Accept Cookies", "I Accept", "Got it")
+#: 「同意条还在吗」——**按文字**问页面上有没有那几句（复读确认用 ✓ 不猜）。
+COOKIE_GONE_JS = r"""(function(){
+  var words=__WORDS__;
+  var bs=document.querySelectorAll('button,label,a[href],[role=button],div,span');
+  for(var i=0;i<bs.length;i++){var e=bs[i];
+    if(e.offsetWidth<=0||e.offsetHeight<=0)continue;
+    var s=(e.textContent||'').replace(/\s+/g,' ').trim();
+    for(var j=0;j<words.length;j++){
+      if(s===words[j]&&e.tagName!=='BODY')return 'still-here';}}
+  return 'gone';})()"""
 
 
 class Filler:
@@ -184,6 +217,32 @@ class Filler:
                 f.write(json.dumps(row, ensure_ascii=False) + "\\n")
         except OSError:
             pass                            # 旁路，坏了不带塌这一趟
+
+    def _cookie_gone(self) -> bool:
+        """同意条还在不在（**复读确认** ✓ 点完不等于真没了 —— 样本的原话就是这个）。"""
+        js = COOKIE_GONE_JS.replace("__WORDS__", json.dumps(list(COOKIE_TEXTS)))
+        try:
+            return "still-here" not in str(self.cdp.eval(js, "") or "")
+        except Exception:                          # noqa: BLE001 —— 外面世界
+            return False                           # 问不出来 ⇒ 当它还在（不静默放行）
+
+    def clear_cookies(self, tries=3) -> bool:
+        """点掉同意条，**并复读确认**（点完还在就再来）。清不掉 ⇒ False（调用方如实报失败）。
+
+        ★ 2026-09-24 第一次公平试跑逼出来的：不清它 ⇒ 横幅盖在页面上 ✗ ⇒ 它上面那个
+        `si-settings`（设置按钮）会被当成「可点的选项」⇒ `random` 一点就歪 ✗✗。
+        """
+        for _ in range(max(1, tries)):
+            if self._cookie_gone():
+                return True
+            for text in COOKIE_TEXTS:
+                if self.click(BY_TEXT + text):
+                    break                          # 点到一个就够了（横幅是一整块）
+            self._dly(1.0, 2.0)
+        ok = self._cookie_gone()
+        if not ok:
+            self.log.info("[%s] 同意条清不掉（复读说它还在）—— 交回去如实说", self.cid)
+        return ok
 
     def read(self):
         """读这一屏。**读不到返回 None** —— 那是「看不见」，不是「做完了」。
@@ -238,8 +297,16 @@ class Filler:
         return True
 
 
-    def value_for(self, token, page):
-        """这一格填什么：`FILLS[name].kind` 决定用哪一类值，取不到就用池子（兜底）。"""
+    def value_for(self, token, page, index=0):
+        """这一格填什么 —— 三档，从**有据可依**往**兜底**走：
+        ① 字样（`kind`/`label` ✓）对得上 ⇒ 用它 ✓
+        ② 对不上 ⇒ 拿**账本里那格自己记的地址**去对 ✓（探路时真用过那份 ✓）
+        ③ 还认不出 ⇒ ★ **按账本里那几格的顺序**填（本屏第 `index` 个空格 ⇒ 第 `index` 格 ✓）
+        ⚠️ 第 ③ 档为什么非有不可（2026-09-24 实测）：那一屏的占位符是 `e.g. HD6 4AH` ✗ 而账本里
+        记的是 `e.g. RG24 8PE` ✗ —— 同一格、**站点每次给的例子不一样** ⇒ ①② 全落空 ⇒ 不填 ✗ ⇒
+        掉到「点页脚噪声」⇒ 空转到 60 ✗。（样本那份靠写死 `"rg24" in hay` 绕过 ✗ 那是它那个
+        站的补丁，不是规则 ✓ 我们不这么干 ✓。）
+        """
         hay = str(token or "").lower()
         if hay.startswith(BY_PLACEHOLDER):
             hay = hay[len(BY_PLACEHOLDER):]
@@ -250,12 +317,27 @@ class Filler:
             spec = spec or {}
             kind = str(spec.get("kind") or "")
             label = str(spec.get("label") or name).lower()
-            if (label and label in hay) or (kind and kind in hay):
+            #: ★ 规则（用户 2026-09-24 拍的「做成规则」）：**字样认不出来**时，拿**账本里那一格
+            #: 自己记的地址**去对（`FILLS[name].target.selectors` = 探路时真用过的那份 ✓）——
+            #: 例：`\x02e.g. RG24 8PE` 对 `postcode` 那格的 `input[placeholder="e.g. RG24 8PE"]` ✓。
+            #: ⚠️ 这一条**不写任何站特有的字**（样本里那个 `"rg24" in hay` 是它那个站的补丁 ✗）
+            #: ⇒ 换站照样成立 ✓ —— 这就是「做成规则」与「照抄那一家」的分界 ✓。
+            blob = " ".join([label, kind] + [str(x) for x in
+                                             ((spec.get("target") or {}).get("selectors") or [])]).lower()
+            if ((label and label in hay) or (kind and kind in hay)
+                    or (hay and hay in blob)):
                 for key in (name, kind):
                     got = p.get(key)
                     if got:
                         return str(got)
                 return self._pool(kind or name)
+        #: ③ 按**账本顺序**兜底（见 docstring 第 ③ 档）
+        if 0 <= int(index) < len(FILL_ORDER):
+            name = FILL_ORDER[int(index)]
+            spec = (FILLS or {}).get(name) or {}
+            kind = str(spec.get("kind") or name)
+            got = p.get(name) or p.get(kind)
+            return str(got) if got else self._pool(kind)
         return ""
 
     def _pool(self, kind):
@@ -273,12 +355,78 @@ class Filler:
 
     # ---------- 挑哪个（生成器填的那一格）----------
 
+    def _click_spec(self, spec) -> bool:
+        """照账本记的那一步点一下：有可用选择器就用第一条，否则**按文字定位再点** ✓。"""
+        tgt = (spec or {}).get("target") or {}
+        sels = [s for s in (tgt.get("selectors") or []) if str(s or "").strip()]
+        if sels:
+            try:
+                self.cdp.click(sels[0])
+                return True
+            except Exception:                      # noqa: BLE001 —— 选择器失效就退文字
+                pass
+        text = str(tgt.get("text") or "").strip()
+        return self.click(BY_TEXT + text) if text else False
+
+    def _wait_arrive(self, timeout=45.0) -> bool:
+        """等**到达判据**出现（有界 ✓ 每秒看一眼）。空串 ⇒ 这一版没有到达判据，不等。"""
+        if not ARRIVE_URL:
+            return True
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            page = self.read()
+            if page and str(ARRIVE_URL).lower() in str(page.get("url") or "").lower():
+                return True
+            self._dly(0.8, 1.6)
+        return False
+
+    def run_pre(self, tries=2) -> bool:
+        """开跑前照**账本那串前置**走一遍（清横幅 → 滚 → 点进问卷的 CTA ✓），再等到达判据。
+
+        ★ 为什么必须有它（用户 2026-09-24 点破）：没有前置，脚本**压根没到问卷** ✗ ——
+        它会在落地页上把同意条那两个按钮当成「题」一直点 ✗✗（那一趟的 trace 就是 30 连击）。
+        """
+        for _ in range(max(1, tries)):
+            for spec in PRE_STEPS:
+                act = str((spec or {}).get("action") or "")
+                tgt = (spec or {}).get("target") or {}
+                sels = [s for s in (tgt.get("selectors") or []) if str(s or "").strip()]
+                if act == "scroll":
+                    try:
+                        self.cdp.scroll(sels[0] if sels else "")
+                    except Exception:              # noqa: BLE001 —— 滚不动不是致命
+                        pass
+                    self._dly(0.6, 1.4)
+                    continue
+                if act == "click":
+                    got = self._click_spec(spec)
+                    self.log.info("[%s] 前置：点「%s」-> %s", self.cid,
+                                  str(tgt.get("text") or (sels[0] if sels else ""))[:30],
+                                  "点了" if got else "没点到")
+                    self._trace(step=0, action="pre", ok=bool(got), progress=None,
+                                target={"text": tgt.get("text"), "selector": (sels or [""])[0][:40]},
+                                progress_why="前置：进问卷之前那几步")
+                    self._dly(1.0, 2.0)
+            if self._wait_arrive():
+                self.log.info("[%s] 前置：到了（地址里有 %s）", self.cid, ARRIVE_URL[:60])
+                return True
+        return False
+
     def pick_option(self, options):
-        """选项里挑一个：`random`（反检测那一族）或 `first`。没有选项 ⇒ None。"""
+        """选项里挑一个：**先只认带 `data-testid` 的那些**（那是「真选项」）✓，
+        一个都没有才退到「按文字」那一档。`PICK` 决定随机还是取第一个。没有 ⇒ None。
+
+        ★ 2026-09-24 第一次公平试跑逼出来的：`random` 原来在**全部** token 里挑 ✗ ⇒ 它挑中了
+        Cookie 条上的 `si-settings`（设置按钮 ✓ 没有 testid ✓）⇒ 点完什么都没发生 ⇒ 空转到收摊 ✗。
+        `goldenagesouls._pick_option` 那边认的正是 `data-testid` ✓ —— 「按文字」是**兜底**，
+        不是同一个池子（那里面混着页脚链接、州郡下拉、免责声明 ✗）。
+        """
         cand = [o for o in (options or []) if str(o or "").strip()]
-        if not cand:
+        real = [o for o in cand if not str(o).startswith(BY_TEXT)]
+        pool = real or [o for o in cand if str(o).startswith(BY_TEXT)]
+        if not pool:
             return None
-        return random.choice(cand) if PICK == "random" else cand[0]
+        return random.choice(pool) if PICK == "random" else pool[0]
 
     def click(self, token):
         """点一个「选项/按钮」：有 `data-testid` 就用它；没有就**按文字打标记再点**。
@@ -311,6 +459,28 @@ class Filler:
         try:
             self.log.info("[%s] loop: site=%s provenance=%s", self.cid, SITE,
                           PROVENANCE.get("site"))
+            if ENTRY_URL:
+                self.log.info("[%s] navi -> %s", self.cid, ENTRY_URL)
+                try:
+                    self.cdp.navigate(ENTRY_URL)
+                    self._dly(1.5, 3.0)
+                except Exception as exc:            # noqa: BLE001 —— 外面世界
+                    self.log.error("[%s] 导航到 %s 没成：%s —— 如实报失败",
+                                   self.cid, ENTRY_URL, exc)
+                    self._rpt("step", "navi failed")
+                    return False
+            else:
+                self.log.error("[%s] 这一版**没有入口网址** —— 不知道从哪儿开始，如实报失败",
+                               self.cid)
+                return False
+
+            #: ★ 前置：**先到问卷，再谈答题**（没到就别往下走 —— 那只是在落地页上瞎点 ✗）。
+            if not self.run_pre():
+                self.log.error("[%s] 前置没走成（没等到 %s）—— 如实报失败",
+                               self.cid, ARRIVE_URL[:60])
+                self._rpt("step", "pre-steps failed")
+                return False
+
             answered = 0
             idle = 0
             busy_since = None
@@ -344,14 +514,16 @@ class Filler:
                     return True
 
                 # ① 有空的可填 ⇒ 填第一个（「空了才填」⇒ 一格/两格的形态切换天然不怕）
-                todo = [t for t, v in (page.get("inputs") or []) if t and not v]
+                todo = [t for t, v in (page.get("inputs") or []) if t and not v
+                        and not any(s in str(t).lower() for s in SKIP_FIELDS)]
                 if todo:
                     tid = todo[0]
-                    val = self.value_for(tid, page)
+                    val = self.value_for(tid, page, todo.index(tid))
                     if val and (tid, val) not in self._filled:
                         if not self.fill(tid, val):
                             continue           # 填不上就下一轮再看（绝不谎报填了）
                         self._filled.add((tid, val))
+                        self._empty = 0      # ★ 只有**真填成功**才算是「这一屏有可动的东西」
                         self.log.info("[%s] step %d: 填了 %s", self.cid, step, tid)
                         self._trace(step=step, action="form", ok=True, progress=False,
                                     target={"testid": tid}, note="填了 %s" % tid)
@@ -362,6 +534,7 @@ class Filler:
                 # ② 有题可选 ⇒ 挑一个（随机或第一个）
                 pick = self.pick_option(page.get("options"))
                 if pick:
+                    self._empty = 0
                     if self.click(pick):
                         answered += 1
                         idle = 0
@@ -376,6 +549,11 @@ class Filler:
 
                 # ③ 只剩 Next ⇒ 点它
                 if page.get("nextVisible"):
+                    self._empty = getattr(self, "_empty", 0) + 1
+                    if self._empty < EMPTY_ROUNDS_BEFORE_NEXT:
+                        self.log.info("[%s] step %d: 这一屏可见的东西还没有 ⇒ 再看一眼再决定%s",
+                                      self.cid, step, "" if self._empty < 2 else "（下一轮就轮到 Continue）")
+                        continue
                     sig = "%s|%s|%d" % (page.get("progress"), (page.get("head") or "")[:60],
                                         len(page.get("options") or []))
                     if sig == getattr(self, "_last_next_sig", ""):
@@ -416,7 +594,9 @@ class Filler:
                                 progress_why="页面在处理中 %.0fs" % waited)
                     continue
 
-                # ⑤ 真的没事干
+                # ⑤ 真的没事干（★ 先怀疑同意条：它异步注入、会盖住整页 ✗）
+                if not self._cookie_gone():
+                    self.clear_cookies()
                 busy_since = None
                 idle += 1
                 self.log.info("[%s] step %d: 没有可动作的东西（%d）%s", self.cid, step, idle,
