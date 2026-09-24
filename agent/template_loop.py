@@ -16,7 +16,7 @@
 - 诚实那条来自 `docs/执行事实契约-2026-09-18.md`：`read()` **读不到必须返回 `None`** ✗
   不许当成「做完了」（`datewhirl.py:175` 连瞎三周、日志里成功 0 次，就是这么来的）。
 
-⇒ 生成器要填的只有**四格**：`READ_PAGE_JS` / `VALUE_FOR`（每格填什么）/ `PICK`（选项挑哪个，
+⇒ 生成器要填的只有**四格**：`READ_PAGE_JS` / `value_for`（每格填什么）/ `pick_option`（挑哪个，
 **可以随机**）/ 成功判据；骨架一个字不用动。
 """
 
@@ -26,17 +26,24 @@ import json
 
 from agent.template import _lit, _provenance_literal
 
-__all__ = ["render_loop", "LOOP_PROVENANCE_KEEP"]
+__all__ = ["render_loop", "LOOP_PROVENANCE_KEEP", "DEFAULT_READ_JS"]
 
 #: 这一族也要交代出处（与 `template.render` 同一套 key —— 一条口径）。
 LOOP_PROVENANCE_KEEP = ("site", "entry_url", "explored_at", "from", "note")
 
 #: 默认的「读这一屏」JS：**只读，不点**。`goldenagesouls.read()` 那一套的最小版 ——
-#: 它读回 `{url, head, progress, inputs:[(testid,value)], options:[testid], nextVisible}`。
+#: 它读回 `{url, head, progress, inputs:[[testid,value]], options:[…], nextVisible, nextTxt}`。
+#: ⚠️ 选项如果没有 `data-testid`，就用 `"\u0001" + 文字` 交回去 —— 调用方看到这个前缀
+#: 就走「按文字打标记再点」那条路（那一族按钮**没有稳定的 CSS 选择器**）。
+#: ⚠️ 这里面**不许**出现 python 式 `#` 注释（`tests/test_loop_template.py` 拿 `node --check`
+#: 真验它的语法 —— 2026-09-24 我自己塞过一行，那会让浏览器 eval 报错、`read()` 恒 None）。
 DEFAULT_READ_JS = r"""(function(){
   function vis(e){return e && e.offsetWidth>0 && e.offsetHeight>0;}
   function txt(e){return ((e.textContent||'').replace(/\s+/g,' ').trim());}
-  function tid(e){return e.getAttribute('data-testid')||e.id||e.getAttribute('name')||'';}
+  function tid(e){var t=e.getAttribute('data-testid')||e.id||e.getAttribute('name');
+    if(t)return t;
+    var p=(e.getAttribute('placeholder')||e.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim();
+    return p?("\u0002"+p):'';}
   var inputs=[];
   document.querySelectorAll('input,select,textarea').forEach(function(e){
     if(!vis(e))return; var t=tid(e); if(!t)return;
@@ -47,8 +54,7 @@ DEFAULT_READ_JS = r"""(function(){
     if(/^\s*(next|continue|get results|submit)\s*$/i.test(s)){nextVisible=true;nextTxt=s;return;}
     var t=tid(e);
     if(t) options.push(t); else options.push("\u0001"+s);});
-  var h=document.querySelector('h1,h2,[class*=progress],[data-testid*=progress]');
-  var prog=''; var pm=(document.body.innerText.match(/\b\d{1,3}\s*%/)||[])[0]; if(pm) prog=pm;
+  var pm=(document.body.innerText.match(/\b\d{1,3}\s*%/)||[])[0]; var prog=pm?pm:'';
   var head=(document.querySelector('h1,h2,h3')||document.body).innerText||'';
   return JSON.stringify({url:location.href, head:head.replace(/\s+/g,' ').trim().slice(0,300),
                          progress:prog, inputs:inputs, options:options, nextVisible:nextVisible,
@@ -64,7 +70,7 @@ def render_loop(site, success_text, success_urls, fills, provenance, *,
     老地方」，见 `lastingpowerofattorney.before.py` 的头注释）。`success_text` 给了就**加一条**
     兜底判据（URL 判据不成立、纯 SPA 不改地址时用得上），没给就不写。
     `pick`：`random`（反检测那一族）或 `first`。
-    `fills`：`{字段名: {kind, fallback}}` —— 与 `template.render` 同一套形状，**判据同源**。
+    `fills`：`{字段名: {kind, label, fallback}}` —— 形状与 `template.render` **同源**。
     """
     if not str(site or "").strip():
         raise ValueError("site 不能空")
@@ -94,9 +100,10 @@ def render_loop(site, success_text, success_urls, fills, provenance, *,
     return src
 
 
-#: 固定骨架。⚠️ 与 `template.render` 同一个**生产契约**（`forms/common.py::CDPHelper` +
-#: `report_url` + 那四个 grep 得到的开关 + `sys.exit(0 if … else 1)`）——
-#: `tests/test_loop_template.py` 拿 `fix.shape_of` / `selftest.ARTIFACT_FLAGS` 当闸。
+#: 固定骨架。⚠️ 与 `template.render` **同一个生产契约**（`forms/common.py::CDPHelper` + `report_url`
+#: + `fix.REQUIRED_CLI_FLAGS` 那四个）；**自测**那三个（`--trace` / `--delay` / `--no-report`）也必须在 ——
+#: 少了它们，产物在自测里**一上来就 argparse 退出**（2026-09-24 实测：`unrecognized arguments:
+#: --trace … --no-report`，那一刻报告只剩「进程退了（退出码 2）」）。
 _LOOP_SKELETON = '''#!/usr/bin/env python3
 """Site script for __SITE__ — 步进循环型：每轮读页面 → 有什么做什么 → 循环。
 
@@ -131,10 +138,21 @@ SKIP_FIELDS = ("company", "company_url", "website", "url", "fax")
 BUSY_MARKERS = ("almost done", "processing your", "setting up", "just a moment",
                 "getting things ready", "hold on", "calculating", "please wait")
 PROVENANCE = __PROVENANCE__
+#: 选项没给 `data-testid` 时的前缀：`\\x01文字` = 「按这段文字去页面上找」。
+BY_TEXT = "\\x01"
+#: 输入框没给 `testid`/`id`/`name` 时的前缀：`\\x02placeholder` = 「按占位符去页面上找」。
+#: ★ 2026-09-24 第一次真站试跑逼出来的：那一屏的邮编格**只有 placeholder**（形状同 LPA 的
+#: `input[placeholder="e.g. RG24 8PE"]`）⇒ 读取器原来直接丢掉它 ⇒ 只剩 Continue ⇒ 空点 55 次。
+BY_PLACEHOLDER = "\\x02"
+
+#: 连着点几次「Next」页面还是那一屏 ⇒ 当**空转**，如实收摊（第一版没有这道闸，
+#: 真站上才会空点 55 次 Continue 把步数耗光 ✗）。
+SAME_NEXT_LIMIT = 3
 
 
 class Filler:
-    def __init__(self, ws_url, form_file, correlation_id, task_id=""):
+    def __init__(self, ws_url, form_file, correlation_id, task_id="",
+                 trace_path="", no_report=False):
         self.cdp = CDPHelper(ws_url)
         with open(form_file) as f:
             self.form_data = json.load(f)
@@ -142,18 +160,36 @@ class Filler:
         self.tid = task_id
         self.log = setup_logger("loop")
         self._filled = set()
+        #: ★ 自测那两格（`selftest.ARTIFACT_FLAGS`）：少了它们，产物在自测里**一上来就 argparse
+        #: 退出**（2026-09-24 实测：`unrecognized arguments: --trace … --no-report` ⇒ 报告只剩
+        #: 「进程退了（退出码 2）」）。`--no-report` 是硬规矩（自测不是生产任务，不该在生产那边
+        #: 留记录）；`--trace` 是自测判「每一步成没成」的读数（没有它只剩退出码）。
+        self.trace_path = trace_path
+        self.no_report = bool(no_report)
 
     def _dly(self, a=0.6, b=1.8):
         time.sleep(random.uniform(a, b))
 
     def _rpt(self, step, reason=""):
+        if self.no_report:
+            return None                     # 自测那一遍：**永不上报**
         return report_url(self.cdp, self.tid, step, self.log, reason)
+
+    def _trace(self, **row):
+        """落一行 trace（JSON Lines）。自测/面板按它读「这一步成没成」——没有它只剩退出码。"""
+        if not self.trace_path:
+            return
+        try:
+            with open(self.trace_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\\n")
+        except OSError:
+            pass                            # 旁路，坏了不带塌这一趟
 
     def read(self):
         """读这一屏。**读不到返回 None** —— 那是「看不见」，不是「做完了」。
 
-        ⚠️ `None` 是一等值（`docs/执行事实契约-2026-09-18.md` 第 ② 条）：
-        `datewhirl.py:175` 就是把「什么都没看见」判成「做完了」，连瞎三周、成功 0 次。
+        ⚠️ `None` 是一等值（`docs/执行事实契约-2026-09-18.md` 第 ② 条）：`datewhirl.py:175`
+        就是把「什么都没看见」判成「做完了」，连瞎三周、日志里成功 0 次。
         """
         raw = (self.cdp.eval(READ_PAGE_JS, "") or "").strip()
         if not raw:
@@ -175,22 +211,46 @@ class Filler:
 
     # ---------- 填什么（生成器填的那一格）----------
 
-    def _hay(self, testid, page):
-        for item in (page.get("inputs") or []):
-            if item and item[0] == testid:
-                return testid.lower()
-        return str(testid or "").lower()
+    def fill(self, token, value):
+        """填一格：有 `data-testid` 就用它；没有就**按 placeholder/aria-label 打标记再填**。
 
-    def value_for(self, testid, page):
-        """这一格填什么。`FILLS[name].kind` 决定用哪一类值；取不到就用池子（兜底）。"""
-        hay = self._hay(testid, page)
+        ★ 2026-09-24 第一次真站试跑逼出来的：那一屏的邮编格**只有 placeholder**（形状同 LPA 的
+        `input[placeholder="e.g. RG24 8PE"]`）⇒ 读取器原来直接丢掉它 ✗ ⇒ 「没东西可填」⇒
+        只剩 Continue ⇒ **空点 55 次** ✗。做法与「按文字点」同一条：找用 JS、填还是走 `cdp.form`。
+        """
+        token = str(token or "")
+        if token.startswith(BY_PLACEHOLDER):
+            want = token[len(BY_PLACEHOLDER):]
+            js = ("(function(){var t=" + json.dumps(want) + ";"
+                  "var es=document.querySelectorAll('input,textarea,select');"
+                  "for(var i=0;i<es.length;i++){var e=es[i];"
+                  "if(e.offsetWidth<=0||e.offsetHeight<=0)continue;"
+                  "var p=(e.getAttribute('placeholder')||'').replace(/\\\\s+/g,' ').trim();"
+                  "var al=(e.getAttribute('aria-label')||'').replace(/\\\\s+/g,' ').trim();"
+                  "if(p===t||al===t){var old=document.querySelectorAll('[data-sf-fill]');"
+                  "for(var j=0;j<old.length;j++){old[j].removeAttribute('data-sf-fill');}"
+                  "e.setAttribute('data-sf-fill','1');return 'marked';}}return 'none';})()")
+            if "marked" not in (self.cdp.eval(js, "") or ""):
+                return False
+            self.cdp.form('[data-sf-fill="1"]', value=value)
+            return True
+        self.cdp.form('[data-testid="%s"]' % token, value=value)
+        return True
+
+
+    def value_for(self, token, page):
+        """这一格填什么：`FILLS[name].kind` 决定用哪一类值，取不到就用池子（兜底）。"""
+        hay = str(token or "").lower()
+        if hay.startswith(BY_PLACEHOLDER):
+            hay = hay[len(BY_PLACEHOLDER):]
         if any(s in hay for s in SKIP_FIELDS):
             return ""                       # 蜜罐：绝不填
         p = self.form_data if isinstance(self.form_data, dict) else {}
-        for name, spec in FILLS.items():
-            kind = str((spec or {}).get("kind") or "")
-            label = str((spec or {}).get("label") or name).lower()
-            if label and label in hay or kind and kind in hay:
+        for name, spec in (FILLS or {}).items():
+            spec = spec or {}
+            kind = str(spec.get("kind") or "")
+            label = str(spec.get("label") or name).lower()
+            if (label and label in hay) or (kind and kind in hay):
                 for key in (name, kind):
                     got = p.get(key)
                     if got:
@@ -200,7 +260,7 @@ class Filler:
 
     def _pool(self, kind):
         kind = (kind or "").lower()
-        if "first" in kind or "name" in kind:
+        if "first" in kind or "last" in kind or "name" in kind:
             return random.choice(("James", "Sarah", "David", "Emma", "Michael", "Laura"))
         if "email" in kind:
             return "user%d@%s" % (random.randint(100, 9999),
@@ -221,15 +281,15 @@ class Filler:
         return random.choice(cand) if PICK == "random" else cand[0]
 
     def click(self, token):
-        """点一个「选项/按钮」：有 `data-testid` 就用它，没有就**按文字标记再点**。
+        """点一个「选项/按钮」：有 `data-testid` 就用它；没有就**按文字打标记再点**。
 
         ★ 稳定性那一招（`lastingpowerofattorney.before.py` 的原话：「这些按钮**没有稳定的
-        CSS 选择器**」—— 选项 id 是 `option-<epoch毫秒>`、类名一长串 ⇒ 找用 JS、点还是
-        `cdp click`）：这里把 `\\x01文字` 那一种先打上标记，再按标记点。
+        CSS 选择器**」—— 选项 id 是 `option-<epoch毫秒>`、类名一长串）⇒ 找用 JS、点还是
+        `cdp click`（真人手势那一层不能省）。
         """
         token = str(token or "")
-        if token.startswith("\\x01"):
-            text = token[1:]
+        if token.startswith(BY_TEXT):
+            text = token[len(BY_TEXT):]
             payload = json.dumps(text)
             js = ("(function(){var t=" + payload + ";var bs=document.querySelectorAll('button,label');"
                   "for(var i=0;i<bs.length;i++){var e=bs[i];"
@@ -249,7 +309,8 @@ class Filler:
 
     def run(self, max_steps=MAX_STEPS):
         try:
-            self.log.info("[%s] loop: site=%s provenance=%s", self.cid, SITE, PROVENANCE.get("site"))
+            self.log.info("[%s] loop: site=%s provenance=%s", self.cid, SITE,
+                          PROVENANCE.get("site"))
             answered = 0
             idle = 0
             busy_since = None
@@ -259,6 +320,8 @@ class Filler:
                 if page is None:
                     idle += 1
                     self.log.info("[%s] step %d: 页面读不到（%d）", self.cid, step, idle)
+                    self._trace(step=step, action="read", ok=None, progress=None,
+                                progress_why="页面读不到")
                     if idle >= IDLE_LIMIT:
                         self.log.error("[%s] 连续 %d 步读不到页面 —— 如实报失败", self.cid, idle)
                         self._rpt("max_steps", "page unreadable")
@@ -268,11 +331,15 @@ class Filler:
                 url = page.get("url", "")
                 if self.is_success(url):
                     self.log.info("[%s] SUCCESS(url): %s", self.cid, url[:90])
+                    self._trace(step=step, action="success", ok=True, progress=True,
+                                url=url[:120])
                     self._rpt("success", url[:60])
                     return True
                 text = (page.get("head") or "")
                 if SUCCESS_TEXTS and any(str(t).lower() in text.lower() for t in SUCCESS_TEXTS):
                     self.log.info("[%s] SUCCESS(text): %s", self.cid, text[:60])
+                    self._trace(step=step, action="success", ok=True, progress=True,
+                                url=url[:120], progress_why=text[:60])
                     self._rpt("success", text[:60])
                     return True
 
@@ -282,9 +349,12 @@ class Filler:
                     tid = todo[0]
                     val = self.value_for(tid, page)
                     if val and (tid, val) not in self._filled:
-                        self.cdp.form('[data-testid="%s"]' % tid, value=val)
+                        if not self.fill(tid, val):
+                            continue           # 填不上就下一轮再看（绝不谎报填了）
                         self._filled.add((tid, val))
                         self.log.info("[%s] step %d: 填了 %s", self.cid, step, tid)
+                        self._trace(step=step, action="form", ok=True, progress=False,
+                                    target={"testid": tid}, note="填了 %s" % tid)
                         idle = 0
                         busy_since = None
                         continue
@@ -299,15 +369,33 @@ class Filler:
                         self.log.info("[%s] step %d [%s] %s -> %s", self.cid, step,
                                       page.get("progress", "?"), (page.get("head") or "")[:48],
                                       str(pick)[:32])
+                        self._trace(step=step, action="click", ok=True, progress=True,
+                                    target={"token": str(pick)[:48]},
+                                    note="答了第 %d 题" % answered)
                         continue
 
                 # ③ 只剩 Next ⇒ 点它
                 if page.get("nextVisible"):
-                    self.click("\\x01" + str(page.get("nextTxt") or "Next"))
+                    sig = "%s|%s|%d" % (page.get("progress"), (page.get("head") or "")[:60],
+                                        len(page.get("options") or []))
+                    if sig == getattr(self, "_last_next_sig", ""):
+                        self._same_next = getattr(self, "_same_next", 0) + 1
+                    else:
+                        self._same_next = 0
+                    self._last_next_sig = sig
+                    if self._same_next >= SAME_NEXT_LIMIT:
+                        self.log.error("[%s] 连着 %d 次点 Next、页面还是那一屏 —— 如实报失败",
+                                       self.cid, self._same_next)
+                        self._rpt("max_steps", "next without change")
+                        return False
+                    self.click(BY_TEXT + str(page.get("nextTxt") or "Next"))
                     idle = 0
                     busy_since = None
                     self.log.info("[%s] step %d: Next（%s）", self.cid, step,
                                   (page.get("head") or "")[:40])
+                    self._trace(step=step, action="click", ok=True, progress=None,
+                                progress_why="点了 Next，页面变没变由下一轮读出来",
+                                target={"text": str(page.get("nextTxt") or "Next")}, note="Next")
                     continue
 
                 # ④ 没得点：先分清「页面在处理」还是「真的没事干」
@@ -324,6 +412,8 @@ class Filler:
                     idle = 0                    # 忙 ≠ 空转
                     self.log.info("[%s] step %d: 页面在处理中（%.0fs/%ds）", self.cid, step,
                                   waited, BUSY_TIMEOUT)
+                    self._trace(step=step, action="wait", ok=None, progress=None,
+                                progress_why="页面在处理中 %.0fs" % waited)
                     continue
 
                 # ⑤ 真的没事干
@@ -331,6 +421,8 @@ class Filler:
                 idle += 1
                 self.log.info("[%s] step %d: 没有可动作的东西（%d）%s", self.cid, step, idle,
                               head[:50])
+                self._trace(step=step, action="none", ok=None, progress=False,
+                            progress_why="没有可动作的东西（%d）" % idle)
                 if idle >= IDLE_LIMIT:
                     self.log.error("[%s] 连 %d 步没有可动作的东西（答过 %d 题）—— 如实报失败",
                                    self.cid, idle, answered)
@@ -352,10 +444,14 @@ def main():
     ap.add_argument("--correlation-id", required=True)
     ap.add_argument("--log-level", default="INFO")
     ap.add_argument("--task-id", default="")
+    ap.add_argument("--trace", default="")
+    ap.add_argument("--delay", type=float, default=0.0)
+    ap.add_argument("--no-report", action="store_true")
     a = ap.parse_args()
     log = setup_logger("loop")
     log.setLevel(a.log_level)
-    f = Filler(a.ws_url, a.form_file, a.correlation_id, a.task_id)
+    f = Filler(a.ws_url, a.form_file, a.correlation_id, a.task_id,
+               trace_path=a.trace, no_report=a.no_report)
     sys.exit(0 if f.run() else 1)
 
 
