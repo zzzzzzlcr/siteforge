@@ -6252,7 +6252,10 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
         except OSError as exc:
             raise HTTPException(status_code=500,
                                 detail="读不了那份手册（%s）：%s" % (exc, manual.OPERATOR_MANUAL))
-        return HTMLResponse(manual.page(manual.render(text), title="运营手册：用面板修一个坏掉的站"),
+        #: ★ 2026-09-24：标题**从正文那个 h1 取**（`manual.title_of`）—— 原先这儿手抄了一份，
+        #: 文档标题改了、标签页还是旧的（真的漂过一次）。一处来源，见那个函数的 docstring。
+        body = manual.render(text)
+        return HTMLResponse(manual.page(body, title=manual.title_of(body)),
                             headers={"Cache-Control": "no-store"})
 
     @api.get("/")

@@ -113,6 +113,20 @@ hr{border:0; border-top:1px solid #8884; margin:26px 0}
 """
 
 
+def title_of(body_html: str) -> str:
+    """页面标签上的标题 —— **从正文那个 `h1` 取**（一处来源）。
+
+    ★ 2026-09-24（真的漂过一次）：服务那条路由原先自己**手抄**了一份标题
+    （「运营手册：用面板修一个坏掉的站」）—— 文档标题改了，标签页还是旧的。
+    这正是本模块开头那句「那会变成两个来源，改一份忘一份」说的形状，所以在这儿取一次。
+    取不到就退回一个中性的名字（**不编**文档里没有的标题）。
+    """
+    got = re.search(r"<h1>(.*?)</h1>", str(body_html or ""), re.S)
+    if not got:
+        return "运营手册"
+    return re.sub(r"<[^>]+>", "", got.group(1)).strip() or "运营手册"
+
+
 def page(body_html: str, *, title: str = "运营手册") -> str:
     """那份 HTML 套成一个能独立打开的页面。"""
     return ("<!doctype html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"

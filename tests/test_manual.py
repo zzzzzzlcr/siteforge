@@ -72,3 +72,29 @@ def test_the_panel_links_to_the_manual():
     """面板上要有入口 —— 手册再好，找不到就等于没有。"""
     page = (pathlib.Path(service.__file__).resolve().parent / "console.html").read_text(encoding="utf-8")
     assert 'href="/manual"' in page, "面板上没有去手册的入口"
+
+
+# ── ★ 2026-09-24：标签页那个标题**只有一处来源**（这一条是被一次真的漂移逼出来的）
+#
+# 病：服务那条路由原先自己手抄了一份标题（「运营手册：用面板修一个坏掉的站」）——
+# 文档标题改成「两种活」那个版本之后，**页面里是新的、标签页还是旧的**。
+# 这正是本模块开头那句「两个来源必然漂开」的形状，所以在这儿钉死。
+
+def test_the_tab_title_comes_from_the_document_not_a_second_copy():
+    """标签页标题 = 文档里那个 `h1`（**不是**服务里另抄的一份）。
+
+    量三件：① 取到的就是文档第一行那个 `# 标题`；② 换一份别的文档 ⇒ 跟着它走
+    （所以这一条**不用改** —— 它比的是「与文档一致」，不是某个写死的字）；
+    ③ 没有 `h1` 时退回中性名字（**不编**一个文档里没有的标题）。
+    """
+    body = manual.render(manual.OPERATOR_MANUAL.read_text(encoding="utf-8"))
+    first = manual.OPERATOR_MANUAL.read_text(encoding="utf-8").splitlines()[0]
+    assert first.startswith("# "), first
+    assert manual.title_of(body) == first[2:].strip()
+    assert manual.title_of(manual.render("# 另外一本手册\n\n正文。\n")) == "另外一本手册"
+    assert manual.title_of("<p>没有 h1</p>") == "运营手册"
+    assert manual.title_of("") == "运营手册"
+    #: ★ 而**服务里不许再抄一份**（抄一份 = 两个来源，实测漂过一次）
+    src = (pathlib.Path(service.__file__).resolve().parent / "service.py").read_text(encoding="utf-8")
+    assert "运营手册：用面板修一个坏掉的站" not in src, (
+        "服务里又手抄了一份手册标题 —— 文档改了标题，标签页就会是旧的（实测漂过一次）")
