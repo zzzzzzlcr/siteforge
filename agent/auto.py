@@ -180,3 +180,62 @@ def heartbeat_age(root=".", *, now: float = None) -> float | None:
     except (OSError, ValueError):
         return None
     return max(0.0, float(now if now is not None else time.time()) - stamp)
+
+
+# ── 看榜：后端那张「连续失败」榜 → 一行一个站（Task 5）────────────────────
+def _int_or_none(raw) -> int | None:
+    """整数就返回它；**其余一律 `None`**（**绝不拿 0 顶替**，也**不许截断**）。
+
+    只认两种：真`int`，和**干干净净的数字串**（后端偶尔把数当字符串来，像 `task_id` 那样；
+    那是明确的，不该因为 JSON 的类型习惯就当「没给」）。
+    其余（`None` / `""` / 带小数点 / 布尔 / 散文）⇒ `None` = 「它没给」——
+    ⚠️ 带小数点那种**不四舍五入**：截出个 23 就成了「连续 23 次」的证据，而那是我们编的。
+    """
+    if isinstance(raw, bool):                    # `bool` 是 `int` 的子类 ⇒ 先挡掉（True 不是 1 次失败）
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.strip().isdigit():
+        return int(raw.strip())
+    return None
+
+
+def parse_list(body) -> list:
+    """后端那张「连续失败」榜 → 一行一个站（**信封不认就抛**；v2 的格子缺了**不算不认**）。
+
+    口径照 `/tmp/rank-v2-handoff.html`（后端 CR 37794）+ 2026-09-24 真数据实测：
+      ① 信封是对象 `{"status","msg","data":{...,"rank":[…]}}`；`data`（或 `rank`）**不是对象/数组**
+         = 这一次**没量着**，**不是**「今天没有失败」⇒ **抛**（`agent/fmr.py` 顶部那条纪律：
+         只有「真量了、真没有」才给空榜）。
+      ② 一行 = `{site, fail, streak, config_id, config_status, has_script}`（v2 还多 `configs[]`）。
+      ③ ★ **缺 `streak` 不算不认**（v1 后端就没有那一格，交接写「缺失时退回旧口径…不编数、不假 0」）
+         ⇒ 不抛，而且**绝不拿 0 顶替**：`streak=None` 就是「它没给」。
+      ④ ★★ **判「有没有在失败」一律用 `streak`**：实测「失败 **0** 次 · 连续失败 **23** 次」——
+         `fail` 是**当日**条数、`streak` 是**跨天连败**（后端已按 `min_streak` 筛过），两者会脱钩。
+      ⑤ `site` 空的行**照收**（量到了就摆）—— 拒开是值班那边的判（`Ledger.may_open` 会说「没有键」）。
+    """
+    if not isinstance(body, dict):
+        raise ValueError("榜单不是一份对象（%s）—— 这一次**没量着**，不是「今天没有失败」"
+                         % type(body).__name__)
+    data = body.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("榜单的 `data` 不是对象（%s）—— 同上：这一次**没量着**"
+                         % type(data).__name__)
+    rows = data.get("rank")
+    if not isinstance(rows, list):
+        raise ValueError("榜单的 `data.rank` 不是数组（%s）—— 同上：这一次**没量着**"
+                         % type(rows).__name__)
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("榜单里有一行不是对象（%s）" % type(row).__name__)
+        out.append({
+            "site": str(row.get("site") or "").strip(),
+            "fail": _int_or_none(row.get("fail")),
+            "streak": _int_or_none(row.get("streak")),   # ★ 缺 = None（**不是 0**）
+            "config_id": row.get("config_id"),
+            "config_status": str(row.get("config_status") or ""),
+            "has_script": bool(row.get("has_script")),
+            "task_id": str(row.get("task_id") or ""),
+        })
+    return out
