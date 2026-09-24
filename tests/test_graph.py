@@ -1872,3 +1872,36 @@ def test_the_generated_script_does_not_navigate_to_the_entry_itself(tmp_path):
     entries = [s for st in states for s in st["steps"]
                if s.get("action") == "goto" and s.get("url") == URL]
     assert not entries, entries
+
+
+# ── ★ T8（2026-09-24）：**自动那条路不许放松机械闸** ─────────────────────────
+
+
+def test_auto_does_not_change_what_lint_lets_through(tmp_path):
+    """★ 同一份手拼 JS 的脏稿，`auto=True` 与人按那条路**停在同一个地方**。
+
+    为什么要有这一条：自动那套的全部职责是「替人按『继续』」（T1）—— 它**不许**替人
+    **改判据**、也不许把闸跳过去。这条钉子把它钉死：两条路的结局逐字相同。
+    ⚠️ 别改 `_dirty` 那个 fixture（`tests/test_template.py` 的钉子锁着它）。
+    """
+    def _end(*, auto):
+        deps, _rec = _deps(write=lambda spec, fb, n: _dirty(spec))   # 每版都脏 ⇒ 打回到底
+        app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_lint_bounces=2))
+        _drive(app, cfg, _brief(tmp_path, auto=auto))
+        return app.get_state(cfg).values.get("end_reason")
+
+    assert _end(auto=True) == _end(auto=False) == "lint_cap", "自动那条路把 lint 放过去了"
+
+
+def test_an_auto_run_that_never_delivers_has_nothing_to_upload(tmp_path):
+    """★ 走不到 `delivered` ⇒ **没有可传的东西**（上传只认那个结局，见 T4 的判据）。
+
+    这一条与上面那条是一对：上面说「闸不放松」，这条说「所以自动上传也到不了」——
+    两件事合起来才是「auto 绝不把手拼 JS 的稿子送上去」。
+    """
+    deps, _rec = _deps(write=lambda spec, fb, n: _dirty(spec))
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_lint_bounces=1))
+    _drive(app, cfg, _brief(tmp_path, auto=True))
+    reason = app.get_state(cfg).values.get("end_reason")
+    assert reason and reason != "delivered", reason
+    assert reason in ("lint_cap", "draft_failed"), reason
