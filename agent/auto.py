@@ -241,3 +241,102 @@ def parse_list(body) -> list:
             "task_id": str(row.get("task_id") or ""),
         })
     return out
+
+
+#: 看榜时一次问几个（后端默认 50、上限 200）—— 一次只开一个，50 够扫了。
+RANK_LIMIT = 50
+
+
+def _post_json(url: str, payload: dict) -> tuple:
+    """真发请求那条路（**标准库**：值班脚本不进容器、也不想多背一个依赖）。返回 `(码, 正文)`。"""
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as got:
+            return int(getattr(got, "status", 200)), got.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:                       # 4xx/5xx 也是「答复」，不是异常
+        return int(exc.code), exc.read().decode("utf-8", "replace")
+
+
+def _stop(did: str, why: str, site: str = "") -> dict:
+    """这一圈**没开修**（不是错误）：说清为什么，CLI 把它打出来。"""
+    return {"ok": True, "did": did, "why": why, "site": site}
+
+
+def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
+             service_url: str = "http://127.0.0.1:8080") -> dict:
+    """**转一圈**：看榜 → 对账 → 开修（一次只开一个）。返回这一圈干了什么。
+
+    口径照设计文档（`docs/superpowers/specs/2026-09-24-auto-repair-design.md`）：
+      · §7 总开关**默认关**：关着就只跳一下心跳、什么都不动；
+      · §6 一次只修一个（榜上同时冒 3 个新的 ⇒ **排队**，这一圈只挑第一个够格的）；
+      · §6 同一串不开第二趟（`Ledger`）；每天最多 `DAY_CAP` 个（`Ledger` 一处判）；
+      · ★ **国家不在榜上**（v2 榜没有那一格）⇒ 「对账」是**必需**的一步：
+        按站点键读那一单的失败记录，从那儿拿 `task_id` + `country`（读不到 ⇒ 报人、不开）；
+      · 开修**不带 `ws_url`**：窗口是服务那摊（§3 职责表）；无窗口时服务会走到 `no_window`
+        ⇒ 按「做不成 ⇒ 立刻报人」收尾（§8 验收 2 那条无窗口桩正是这么验的）。
+
+    ⚠️ 还没做的一件（**说清楚**，不假装有）：§6 那条「榜上同一串**已有未结案的活**就不开第二趟」
+    只做了一半 —— 账本管住了「同一个串今天开过一次」，管不住「上一次开的还挂着」。
+    要管住它得读服务的在跑清单，而那份清单的**行形状**我还没量过（不许照想象写判据）⇒ 留待量过再补。
+    """
+    post = post or _post_json
+    now = float(now if now is not None else time.time())
+    today = str(today or time.strftime("%Y-%m-%d", time.localtime(now)))
+    heartbeat(root)                       # 先跳一下：值班「还在」与「开不开」是两件事
+    flags = read_flags(root)
+    if not flags["on"]:
+        return _stop("没动", "总开关是**关**的（%s）" % (flags["note"] or "没说为什么"))
+
+    rows = parse_list(fmr.fetch_rank(date=today, limit=RANK_LIMIT))   # 信封不认 ⇒ 它抛（让上面报）
+    book = Ledger(pathlib.Path(root) / STATE_DIR / "ledger.json")
+    skipped, picked = [], None
+    for row in rows:
+        site = str(row.get("site") or "").strip()
+        if not site:
+            skipped.append("榜上有一行的站点键是空的（读不到它的失败记录，**不猜**）")
+            continue
+        if row.get("streak") is None:
+            skipped.append("「%s」连败几次后端没说（v1 后端？）—— **不猜**" % site)
+            continue
+        ok, why = book.may_open(site, today=today)
+        if not ok:
+            skipped.append(why)
+            continue
+        picked = row
+        break
+    if picked is None:
+        return _stop("没动", "榜上没有一个够格开修的 —— %s" % ("；".join(skipped) or "榜是空的"))
+    site = str(picked["site"]).strip()
+
+    # ── 对账：这一单是哪一号、哪个国家（榜上没有这两格）──────────────────
+    try:
+        fails = list(fmr.fetch_failures(site) or [])
+    except Exception as exc:                                  # noqa: BLE001 —— 读不到就说读不到
+        return _stop("没动", "对账读不到「%s」的失败记录：%s" % (site, exc), site=site)
+    if not fails:
+        return _stop("没动", "「%s」有连败记录、却读不到失败行 —— 对不上账，**不开**" % site, site=site)
+    row = fails[0]                                            # 那个读口按时间**倒序** ⇒ 最新那条
+    task_id = str(row.get("task_id") or "").strip()
+    country = str(row.get("country") or "").strip()
+    if not task_id or not country:
+        return _stop("没动", "「%s」那一单缺 task_id / country（%r）—— 不知道切哪条链，**不开**"
+                     % (site, row), site=site)
+
+    #: **先记再开**：开完再记的话，中途挂了就会重复开（真站上=重复烧钱 + 重复真提交）。
+    book.note(site, today=today, at=time.strftime("%H:%M:%S", time.localtime(now)))
+    code, said = post(service_url.rstrip("/") + "/run", {
+        "mode": "fix", "auto": True,
+        "url": site, "fix_site": site, "fix_site_url": site,   # 三格同串 ⇒ 服务认这个键（_backend_key）
+        "env": {"proxy_country": country},
+        "note": "自动值班：榜上「%s」连败够久（task %s）" % (site, task_id),
+    })
+    if code not in (200, 202):
+        return {"ok": False, "did": "开了但被拒", "site": site,
+                "why": "服务回了 %s：%s" % (code, str(said)[:300])}
+    return {"ok": True, "did": "开了", "site": site,
+            "why": "task %s · 国家 %s · 服务回了 %s" % (task_id, country, code)}
