@@ -56,6 +56,34 @@ def test_bad_env_value_keeps_the_safe_default(monkeypatch):
         assert importlib.reload(llm).DEFAULT_MAX_TOKENS >= 12000, bad
 
 
+def test_no_gateway_is_ever_guessed_at(monkeypatch):
+    """★★ 2026-09-23（用户点名：「想法是都要走我 test.sh 那个配置的」）：
+    **没给 `OPENAI_BASE_URL` 就不许建客户端** —— 一个请求都不发出去。
+
+    为什么这一条值一条测试：这一格原先兜底 `https://api.deepseek.com` ⇒ 它把
+    「env 没带上」变成「**静默打到别处**」，而屏幕上与「模型答不好」长得一模一样 ——
+    那件事没人看得出来，而它花的是别人的钱、走的是别人的线路。
+
+    两半都要量：没给 ⇒ 抛，而且那句话得**点名 `OPENAI_BASE_URL`**（不然读的人不知道
+    该去配哪个变量）；给了 ⇒ **照常建得起来**（不然判据就退化成「一概不让建」）。
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "dummy")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    fresh = importlib.reload(llm)
+    assert fresh.DEFAULT_BASE_URL == "", "又给这一格兜了一个地址？"
+    with pytest.raises(RuntimeError) as e:
+        fresh.client()
+    said = str(e.value)
+    assert "OPENAI_BASE_URL" in said, said
+    assert "没设" in said, said
+    #: 还得说清「这一格**故意**没有默认值」—— 不然下一个人会顺手加一个回来。
+    assert "默认" in said or "兜" in said, said
+    #: 正控：给了就建得起来（判据是「不许猜」，不是「不许建」）。
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://gw.example.test/v1")
+    built = importlib.reload(fresh).client()
+    assert str(built.base_url).rstrip("/") == "https://gw.example.test/v1"
+
+
 # ── 「递到了模型」这一半：常量放着不传等于没有 ────────────────────────
 
 class _Msg:

@@ -20,7 +20,13 @@ from typing import Any, Callable, Protocol
 from . import tools
 
 DEFAULT_MODEL = os.environ.get("SPIKE_MODEL", "deepseek-v4-flash")
-DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+#: ⚠️ **这一格故意没有默认值**（2026-09-23，用户点名：「想法是都要走我 test.sh 那个配置的」）。
+#: 原来这里兜底 `https://api.deepseek.com` —— 那是一条**静默**的路：env 一旦没带上
+#: （换机器 / `docker restart` 没重建 / 谁手滑删了一行），请求就打到**别处**去了，
+#: 而屏幕上与「模型答得不好」长得一模一样。兜底一个地址 = 把「配错了」变成「看不出来」，
+#: 正是这个项目从头到尾在治的那类失败。现在：没给就**当场报错并点名是哪个变量**
+#:（见 `client()`），**一个请求都不发出去**。
+DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "").strip()
 
 # reasoning 模型（deepseek-v4-*）的**思考 token 也算在 max_tokens 里**。
 # 实测：max_tokens=20 问一句 "say OK" → content 为空、20 token 全被 reasoning 吃掉
@@ -133,7 +139,20 @@ def client():
             "  ③ 核对：`sha256(<key>)` 的前 12 位 —— 与你要用的那把对得上才算换成了。\n"
             "⚠️ 值别打进命令行 / 别贴对话：从环境变量或 `read -rs` 里给它（见运营手册 §8）。"
         )
-    return OpenAI(base_url=DEFAULT_BASE_URL, api_key=key)
+    base = DEFAULT_BASE_URL
+    if not base:
+        raise RuntimeError(
+            "OPENAI_BASE_URL 没设 —— **不许静默挑一个地址**：这一格决定请求打到哪个网关"
+            "（也就是花谁的钱、走哪条线路），猜一个就是你最不希望的那种「看起来在跑」。\n"
+            "  ① 给启动命令加 `OPENAI_BASE_URL=<你那个网关，形如 https://…/v1>`（与 `OPENAI_API_KEY`"
+            "同一处 —— 别打进命令行、别贴对话）；\n"
+            "  ② **重启服务**（地址每次调用现读，但进程的 env 只有重启才变）——⚠️ 容器是把 env 烤进"
+            "**创建**那一刻的 ⇒ 改完要**重建**（`docker rm -f <容器名>` 再起），光 `docker restart`"
+            "不重读任何配置；\n"
+            "  ③ 核对：`docker exec <容器名> printenv OPENAI_BASE_URL` —— 与你要的那条对得上才算换成了。\n"
+            "（这一格**故意没有默认值**：兜一个官方地址会让「env 没带上」变成「静默打到别处」，"
+            "而那件事在这块屏幕上跟「模型答不好」长得一样，没人看得出来。）")
+    return OpenAI(base_url=base, api_key=key)
 
 
 def run_tool_loop(
