@@ -279,7 +279,7 @@ def _stop(did: str, why: str, site: str = "") -> dict:
     """这一圈**没开修**（不是错误）：说清为什么，CLI 把它打出来。"""
     return {"ok": True, "did": did, "why": why, "site": site}
 def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
-             service_url: str = "http://127.0.0.1:8080",
+             service_url: str = SERVICE_URL,
              allow_disabled: bool = True) -> dict:
     """**转一圈**：看榜 → 对账 → 开修（一次只开一个）。返回这一圈干了什么。
 

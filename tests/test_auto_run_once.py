@@ -309,3 +309,19 @@ def test_the_default_service_url_points_at_the_port_the_service_really_listens_o
     assert auto_mod.SERVICE_URL.endswith(":" + found.group(1)), (
         "默认服务口 %r 与启动脚本监听的 %s 对不上 —— 值班第一跑会死在 callback 上"
         % (auto_mod.SERVICE_URL, found.group(1)))
+
+
+def test_run_once_own_default_is_the_same_service_url():
+    """★ 2026-09-24：上面那条只钉住了**常量** ✗ —— 而 `run_once` **函数自己**还有一个默认
+    （原本也是 `8080`）⇒ 「只改一半」正是这一仓最怕的形状：常量对了、真正的口还是坏的。
+
+    所以这里把**真正的那个默认**也钉上：两者必须是同一个来源（`SERVICE_URL` 一处口径）。
+    """
+    import inspect
+    from agent import auto as auto_mod
+
+    sig = inspect.signature(auto_mod.run_once)
+    got = sig.parameters["service_url"].default
+    assert got == auto_mod.SERVICE_URL, (
+        "run_once 自己的 service_url 默认 %r 与 SERVICE_URL %r 不是同一个来源 —— "
+        "值班那一圈会连到另一个口上" % (got, auto_mod.SERVICE_URL))
