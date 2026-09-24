@@ -84,3 +84,99 @@ def code_for(say) -> str | None:
     不是「试试看」—— 真站上那一下是拿钱和号去跑的。
     """
     return SAY_CODE.get(str(say or "").strip())
+
+
+import json
+import pathlib
+import time
+
+# ── 值班那半：记账 / 开关 / 心跳（Task 5）───────────────────────────────
+#: 每天最多自动开修几个站（用户拍的无人值守护栏）。
+DAY_CAP = 10
+#: 心跳多久算「值班脚本不在了」（面板那条报警用这一格 —— 一处口径）。
+HEARTBEAT_MINUTES = 15
+#: 值班的东西都落在这个目录下（开关、账本、心跳）。
+STATE_DIR = pathlib.Path("runtime") / "auto-repair"
+
+
+def read_flags(root=".") -> dict:
+    """值班的**总开关**（`runtime/auto-repair/flags.json`）—— **默认全关**。
+
+    返回 `{"on": bool, "note": str}`。⚠️ **读不到 / 不是 JSON / 不是对象 ⇒ 一律「关」**：
+    值班脚本是无人看着跑的，「读不懂就当作开着」是这一仓最贵的那类形状的反面
+    （宁可今天不干活，也不要没人看着干活）。
+    """
+    path = pathlib.Path(root) / STATE_DIR / "flags.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"on": False, "note": ""}
+    if not isinstance(raw, dict):
+        return {"on": False, "note": ""}
+    return {"on": bool(raw.get("on")), "note": str(raw.get("note") or "")}
+
+
+class Ledger:
+    """**今天已经开过哪几个站** —— 一个串一天只开一次 + 一天最多 `DAY_CAP` 个。
+
+    账本是一份 JSON：`{"<日期>": {"<站点键>": <时刻>}}`。只留今天（写的时候顺手把旧的丢掉）。
+
+    ⚠️ 读不回来时**抛**（不是当作空）：当成空 = 同一个站今天会被再开一遍
+    （真站上就是重复烧钱、重复提交）—— 这种时候该停下来让人看，不是自己接着跑。
+    """
+
+    def __init__(self, path):
+        self.path = pathlib.Path(path)
+
+    def _load(self) -> dict:
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("账本读不回来（%s）：%s —— 不敢当作空的接着跑" % (self.path, exc))
+        if not isinstance(raw, dict):
+            raise RuntimeError("账本不是一份对象（%s）—— 不敢当作空的接着跑" % self.path)
+        return raw
+
+    def may_open(self, site: str, *, today: str) -> tuple:
+        """今天还能不能开这个站 ⇒ `(能不能, 为什么不能)`。**同一处口径**（`run_once` 只问它）。"""
+        site = str(site or "").strip()
+        if not site:
+            return False, "这个站没有键（榜单那一格是空的）—— 不知道拿谁去记账，**不猜**"
+        done = self._load().get(today) or {}
+        if site in done:
+            return False, "今天已经开过它了（%s）—— 同一个站一天只开一次" % done[site]
+        if len(done) >= DAY_CAP:
+            return False, "今天自动开修已经到顶（%d 个）—— 剩下的等人" % DAY_CAP
+        return True, ""
+
+    def note(self, site: str, *, today: str, at: str) -> None:
+        """记下「今天开过它」（**先记再开** —— 开完再记，中途挂了就会重复开）。"""
+        book = self._load()
+        day = dict(book.get(today) or {})
+        day[str(site).strip()] = str(at)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        tmp.write_text(json.dumps({today: day}, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self.path)               # 换文件是原子的：读到半截账本那种事不会发生
+
+    def count(self, *, today: str) -> int:
+        return len(self._load().get(today) or {})
+
+
+def heartbeat(root=".") -> None:
+    """值班脚本每次转一圈就写一下「我还在」（时刻用数字，免得时区绕进去）。"""
+    path = pathlib.Path(root) / STATE_DIR / "heartbeat.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("%.0f" % time.time(), encoding="utf-8")
+
+
+def heartbeat_age(root=".", *, now: float = None) -> float | None:
+    """心跳过去多久了（秒）；**从来没跳过** ⇒ `None`（「没跳过」与「刚跳过」不是一回事）。"""
+    path = pathlib.Path(root) / STATE_DIR / "heartbeat.txt"
+    try:
+        stamp = float(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return max(0.0, float(now if now is not None else time.time()) - stamp)
