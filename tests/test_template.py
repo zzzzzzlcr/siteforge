@@ -2898,3 +2898,28 @@ def test_a_page_change_is_rechecked_for_a_bounded_while(rendered):
         assert re.search(r"^%s = " % const, rendered, re.M), "%s 不在产物的常量里" % const
     assert "while waited < float(DIFF_POLL_SECONDS)" in rendered, \
         "产物没有「页面变了没有」的有界重试 —— 异步换页会被判成「页面没有变化」"
+
+
+def test_a_step_with_no_usable_selector_is_refused_with_its_step_number():
+    """★ 2026-09-24（真站实测逼出来的）：账本里那一步**没有可用的选择器** ⇒ **不许进产物**。
+
+    现场：`solarincentives` 那趟探路**误点了一个没名字的元素**（`selector_used: ""`，真站
+    trace 里量到的）⇒ 账本把它记成一步 ⇒ 产物忠实翻译 ⇒ 自测卡在第 8 步「页面上没找到
+    「没写名字的元素」」⇒ **三版稿撞同一堵墙**（那一步从根上就执行不了，改写法救不了）。
+    ⇒ 与门口那条「没有判据就拒」同一条规矩，这里再加一格：**拒，并且点名第几步**。
+    """
+    states = [
+        {"name": "a", "when": None, "steps": [
+            {"action": "click", "note": "点「Go」",
+             "target": {"text": "Go", "role": "button", "near": None,
+                        "selectors": ["#go"], "frame_id": ""}}]},
+        {"name": "b", "when": None, "steps": [
+            {"action": "click", "note": "点「没写名字的元素」",
+             "target": {"text": None, "role": None, "near": None,
+                        "selectors": [], "frame_id": ""}}]},
+    ]
+    with pytest.raises(ValueError) as got:
+        _render_with(states, [])
+    said = str(got.value)
+    assert "认不出来" in said, said
+    assert "第 2 步" in said, said          # 点名哪一步 —— 不然人不知道回去改哪儿

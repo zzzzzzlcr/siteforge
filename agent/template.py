@@ -180,6 +180,41 @@ def _provenance_literal(provenance) -> str:
     return _lit(prov)
 
 
+def _steps_must_be_findable(states) -> list:
+    """**认不出来的那一步**不许进产物 —— 否则**当场拒**。
+
+    ★ 2026-09-24（真站实测逼出来的）：`solarincentives` 那趟探路**误点了一个没名字的元素**
+    （真站 trace 里那一步写着 `selector_used: ""` ✓）⇒ 账本把它记成一步 ⇒ 产物**忠实翻译**它 ⇒
+    自测卡在第 8 步「页面上没找到」⇒ **三版稿撞同一堵墙**（那一步从根上执行不了，改写法救不了）。
+    ⇒ 与门口那条「没人说成功判据就拒」同一条规矩：**这种步骤不该到得了产物** ✓ 而且要说**第几步** ✓。
+
+    ★★ 判据是**「既没有选择器、也没有意图」**（用户 2026-09-24 拦下来的那一下）：
+    仓里有一整族产物是「声明里**一条选择器都不给**、全靠运行期 `observe` 给的池子认」
+    （`_one_click_states(**target_extra)` 那条用例的原话：「声明里的选择器全挂、observe 只
+    给出 `actions` 这一个池子」✓），随机选答案那族也走这条路 ⇒ **有意图的一步一律放行** ✗。
+    只砍「四样全空」——今天那个「没写名字的元素」就是四样全空 ✓。
+
+    ⚠️ 只判**点下去的那一类**（`click`）：`goto` 按 url 走 ✓、`observe` 不看元素 ✓、
+    **`scroll` 按像素走** ✓、**`form` 的落点在 `FILLS` 里**（那一步自己不带 target ✓）✓ ——
+    实测里 22 条用例就是被「把这四类也算上」砍红的 ✗。
+    """
+    for index, state in enumerate(states or []):
+        for step in (state or {}).get("steps") or []:
+            act = str((step or {}).get("action") or "")
+            if act != "click":
+                continue
+            target = (step or {}).get("target") or {}
+            if [s for s in (target.get("selectors") or []) if str(s or "").strip()]:
+                continue
+            if any(str(target.get(k) or "").strip() for k in ("text", "role", "near")):
+                continue                       # ★ 有意图 ⇒ 交给运行期认（那一族老写法）
+            raise ValueError(
+                "第 %d 步（%s）**认不出来**：`target.selectors` 是空的、`text`/`role`/`near`"
+                "也全空 —— 到了真站上只会「找不到」，而后面几版稿都会撞同一堵墙。这一步要回到"
+                "探路那侧弄明白（它到底是哪个元素），别把认不出来的一步写进产物。" % (index + 1, act))
+    return states
+
+
 def render(site, success_text, states, fills, provenance, success_urls=None) -> str:
     """把「怎么走」渲染成一条完整的 py 源码（文件级，可直接落盘进 `forms/sites/`）。
 
@@ -193,6 +228,7 @@ def render(site, success_text, states, fills, provenance, success_urls=None) -> 
     site = str(site).strip()
     if not states:
         raise ValueError("states 不能空：没有「怎么走」的产物跑起来只会站在那儿")
+    states = _steps_must_be_findable(states)   # ★ 见上面那条：没有落点的一步不许进产物
     #: ⚠️ 文字那格**只在人/底稿真给了字**时才走 `_success_texts`：它自己会在「剥完什么都不剩」
     #: 时抛（只写「出现」那种）—— 那一抛是对的，**别为了网址那格把它吞掉**。
     urls = _success_urls(success_urls)
