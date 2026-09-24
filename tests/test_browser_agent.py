@@ -4265,3 +4265,30 @@ def test_a_click_on_something_we_cannot_recognise_is_not_replayable():
                     target={"text": None, "role": None, "near": None, "selectors": []})
     assert browser_agent._replay_step(nameless) is None, "四样全空 ⇒ 不可重放（今天那一步）"
     assert browser_agent._replay_step(dict(base, target={})) is None, "连 target 都没有 ⇒ 同上"
+
+
+def test_the_when_of_two_questions_behind_one_url_is_not_the_same_gate():
+    """★★ 2026-09-24（真站逼出来的）：单页漏斗**地址不变、问题一屏一屏换**，而页头那一截
+    是**共用**的 ⇒ 判据永远取开头 48 字 ⇒ 每一问的 `text_contains` **一模一样** ✗
+    ⇒ `note_page` 按「同门」把它们合并成一组（3879 行，那是它该做的）⇒ 「下一问」的步
+    跟着这一组一起执行 ✗ —— 真站 trace 里第 9–12 步 `ok:false`（它们**执行了** ⇒
+    那道门当时成立）就是这个形状。
+
+    判据：两问的 `when` **不能是同一个门**；而且**第二问的门在第一问上不成立** ✓
+    （判据的鉴别力本来就在文本这一侧 —— `_stable_url` 的注释原话）。
+    ⚠️ 第一问（没有上一页）照旧从开头取：那是对的 ✓。
+    """
+    head = "Cookie notice and site navigation we share on every screen. "
+    a = {"url": "https://q.test/wizard", "title": "Quiz",
+         "page_text": head + "Are you a homeowner or a tenant? Homeowner Tenant"}
+    b = {"url": "https://q.test/wizard", "title": "Quiz",
+         "page_text": head + "How would you like to pay for your panels? In one go Spread the cost"}
+    when_a = browser_agent._when_for(a)
+    when_b = browser_agent._when_for(b, avoid=browser_agent._norm(a["page_text"]))
+    assert when_a and when_b, (when_a, when_b)
+    assert when_a != when_b, "两问的 when 一模一样 ⇒ 会被合并成一个门：%r" % (when_a,)
+    assert when_a["text_contains"] != when_b["text_contains"], when_a
+    assert browser_agent.when_holds(when_b, b), "自己那一页上必须成立：%r" % (when_b,)
+    assert not browser_agent.when_holds(when_b, a), \
+        "第二问的门在**第一问**上不许成立 —— 不然下一问的步会在这一问就跑：%r" % (when_b,)
+    assert browser_agent.when_holds(when_a, a), when_a

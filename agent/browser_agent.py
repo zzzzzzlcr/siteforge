@@ -3868,7 +3868,8 @@ class _Pages:
         if self._current is not None and self._current["key"] == key:
             return None
         previous = self._current["name"] if self._current else None
-        when = _when_for(model)
+        when = _when_for(model, avoid=_norm(((self._current or {}).get("model") or {})
+                                            .get("page_text") or ""))
         #: ★ 2026-09-22（生成侧建议第 1 条，真产物里量到的）：**相邻两页 `when` 完全相等 ⇒
         #: 合并成一个状态**（复用上一页的名字）。
         #: 为什么必须合并：`when` 是产物重放时**唯一的门** ⇒ 两个状态同门，就会演出
@@ -3914,7 +3915,7 @@ class _Pages:
         return name
 
 
-def _when_for(model: dict) -> dict | None:
+def _when_for(model: dict, avoid: str = "") -> dict | None:
     """一个状态的 `when`：**进这个状态时**那一页的判据。
 
     `url_contains` 用**稳定前缀**（`_stable_url`）：先去掉 query 与 fragment —— 重放时 query
@@ -3924,6 +3925,8 @@ def _when_for(model: dict) -> dict | None:
     「防 A/B 变体、防步骤增减」。`when` 判太严的后果**永远是**整组步骤被静默跳过。
     正文那一段是从这一页的 `page_text` 里**取的原文** —— 它是当时那一页的**子串**，
     所以必然成立（`when_holds` 在生成时就会验一遍）。
+    ⚠️ ★ 2026-09-24：`avoid`（上一页的正文）**必须传**（`note_page` 传的就是它）——
+    不然两页共用的页头会变成两页**同一个门**（见 `_snippet` 那条）。
 
     ⚠️ **正文那半条钉不出来的时候要说出来**：返回的 `when` 上带一句 `text_why`
     （见 `WHEN_TEXT_DROPPED`）。这是**有损**的（判据少了一半），而有损必须说 ——
@@ -3935,7 +3938,7 @@ def _when_for(model: dict) -> dict | None:
     if url:
         when["url_contains"] = url
     text = _norm(model.get("page_text") or "")
-    snippet = _snippet(text)
+    snippet = _snippet(text, avoid=avoid)
     if snippet:
         when["text_contains"] = [snippet]
     if not when:
@@ -3996,16 +3999,30 @@ def _id_like(segment: str) -> bool:
 _SNIPPET_JUNK = "_\u2014-\u00b7*| \t\r\n"
 
 
-def _snippet(text: str) -> str:
+def _snippet(text: str, avoid: str = "") -> str:
     """一个状态的判据里带哪一段正文（从这一页的 page_text 里**取原文**）。
 
-    ⚠️ 从开头取，但要**跳过开头那些装饰字符**（真站实测，2026-09-17 第七轮）：
-    某站首页的 page_text 是 `___ The listings featured are compensated and…` ——
-    那个 `___` 是广告位的占位符，第二次跑页面时它没了 →
-    判据要含「___ The listings…」而页面上是「The listings…」→ **整组步骤被跳过**，
-    而两句话**明明是同一句**。取判据的时候把开头那串装饰字符削掉，这个坑就没了。
+    ⚠️ 从开头取，但要**跳过开头那些装饰字符**（真站实测，2026-09-17 第七轮）。
+
+    ★★ 2026-09-24（真站逼出来的，最贵的一条）：**不许用「两页共用的开头」当判据**。
+    单页漏斗是「地址不变、问题一屏一屏换」，而**页头那一截是共用的**（导航、logo、
+    免责声明）⇒ 永远取开头 48 字 ⇒ 每一问的 `text_contains` **一模一样** ✗ ⇒
+    `note_page` 按「同门」把它们**合并成一组**（3879 行，那是它该做的）⇒ 于是
+    「下一问」的步跟着这一组一起执行 ✗ —— 真站 trace 里第 9–12 步 `ok:false`
+    （它们**执行了** ⇒ 那道门当时成立 ✗）就是这个形状。
+    ⇒ 从**与上一页不同的那一点**开始取（`avoid` 传上一页的正文）。
+    ⚠️ 判据的**鉴别力本来就在文本这一侧**（`_stable_url` 的注释原话）—— 这一改正是
+    把那一侧立起来，不是放松它 ✓。
     """
     text = str(text or "").lstrip(_SNIPPET_JUNK)
+    a = str(avoid or "")
+    if a:
+        i = 0
+        while i < len(text) and i < len(a) and text[i] == a[i]:
+            i += 1
+        diverged = text[i:].lstrip(_SNIPPET_JUNK)
+        #: 与上一页**一字不差**（真的同一页）⇒ 退回原样：这时候「从头取」是对的。
+        text = diverged or text
     head = text[:WHEN_SNIPPET_CHARS]
     if len(text) > WHEN_SNIPPET_CHARS and " " in head:
         head = head.rsplit(" ", 1)[0]           # 别把一个词从中间切断（读起来是半截话）
