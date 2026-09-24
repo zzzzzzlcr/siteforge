@@ -271,11 +271,9 @@ def _post_json(url: str, payload: dict) -> tuple:
 def _stop(did: str, why: str, site: str = "") -> dict:
     """这一圈**没开修**（不是错误）：说清为什么，CLI 把它打出来。"""
     return {"ok": True, "did": did, "why": why, "site": site}
-
-
 def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
              service_url: str = "http://127.0.0.1:8080",
-             allow_disabled: bool = False) -> dict:
+             allow_disabled: bool = True) -> dict:
     """**转一圈**：看榜 → 对账 → 开修（一次只开一个）。返回这一圈干了什么。
 
     口径照设计文档（`docs/superpowers/specs/2026-09-24-auto-repair-design.md`）：
@@ -367,8 +365,13 @@ def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
     code, said = post(service_url.rstrip("/") + "/run", {
         "mode": "fix", "auto": True,
         "url": site, "fix_site": site, "fix_site_url": site,   # 三格同串 ⇒ 服务认这个键（_backend_key）
+        #: ★ 国家那一格（**别丢**：T3 的国家闸就认它 —— 丢了这个，真跑时链切不了）。
         "env": {"proxy_country": country},
-        #: 点名要修停用的那些行（服务那侧 `allow_disabled` 就是干这个的 —— 一个口径）。
+        #: ★ 2026-09-24（用户点破）：「停用」**是常态、不是例外** —— 一个站连败十几次，运营当然把
+        #: 它停用（那是**对失败的反应**）⇒ 自动那条路要**默认允许**拿停用那份当底稿
+        #: （`type=debug` 读得到，2026-09-21 量过），否则它永远修不了最该修的那些站。
+        #: ⚠️ 两条不放松：① 服务会把「这一版底稿来自**停用那份**」记进状态 / 摆在闸上；
+        #: ② 停用行**绝不自动上传**（T4 那条按 `allow_disabled` 判的）。
         "allow_disabled": bool(allow_disabled),
         "evidence": evidence,          # ★ 上面那一条：不带它，服务在门口就拦（验收跑出来的）
         "note": "自动值班：榜上「%s」连败够久（task %s）" % (site, task_id),

@@ -185,7 +185,7 @@ def test_a_disabled_row_is_still_a_candidate(tmp_path):
     poster = Poster()
     got = _run(tmp_path, fmr, poster)
     assert got["did"] == "开了", got
-    assert poster.calls[0][1]["allow_disabled"] is False, poster.calls[0][1]
+    assert poster.calls[0][1]["allow_disabled"] is True, poster.calls[0][1]   # 默认允许（用户拍的）
 
 
 def test_the_operator_can_ask_for_a_disabled_row_by_name(tmp_path):
@@ -205,7 +205,7 @@ def test_an_enabled_row_is_not_touched_by_that_rule(tmp_path):
     poster = Poster()
     got = _run(tmp_path, FakeFmr(), poster)
     assert got["did"] == "开了", got
-    assert poster.calls[0][1].get("allow_disabled") is False, poster.calls[0][1]
+    assert poster.calls[0][1].get("allow_disabled") is True, poster.calls[0][1]
 
 
 def test_a_stale_row_does_not_block_the_whole_round(tmp_path):
