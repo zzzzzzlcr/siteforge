@@ -2553,6 +2553,20 @@ def _last_fill_wins(steps: list) -> list:
             if not (s.get("action") == "form" and last.get(s.get("fill")) != i)]
 
 
+def _has_usable_target(target) -> bool:
+    """这一步**有没有可用落点**：`selectors` 里有一串，或 `text`/`role`/`near` 至少一个有话。
+
+    ★ 判据与 `template._steps_must_be_findable`（产物门口那道闸）**同源** —— 一处口径两种用法：
+    那边拒的是「认不出来」，这边让它在**翻译成产物之前**就不可重放。
+    ⚠️ 「有意图 ⇒ 放行」不是放松：仓里有一整族产物是「声明里一条选择器都不给、全靠运行期
+    `observe` 给的池子认」的（随机选答案那族也走它）。
+    """
+    t = target or {}
+    if [s for s in (t.get("selectors") or []) if str(s or "").strip()]:
+        return True
+    return any(str(t.get(k) or "").strip() for k in ("text", "role", "near"))
+
+
 def _replay_step(step: dict):
     """一个 Journey 步骤 → 产物里的一步（不可重放的返回 None）。"""
     action = step.get("action")
@@ -2563,6 +2577,12 @@ def _replay_step(step: dict):
     target = step.get("target") or {}
     note = step.get("note") or ""
     if action == "click":
+        #: ★ 2026-09-24（真站逼出来的）：点一个**认不出来**的元素 ⇒ 这一步**不可重放**。
+        #: 现场：探路误点了一个没名字的元素（真站 trace 里那一步 `selector_used` 是空的 ✓）⇒
+        #: 账本把它记成一步 ⇒ 产物忠实翻译 ⇒ 自测卡在第 8 步「页面上没找到」⇒ **三版稿撞同一堵墙**。
+        #: 「不可重放」这个概念本来就有（返回 `None`）✓ —— 不用新造机制。
+        if not _has_usable_target(target):
+            return None
         return {"action": "click", "note": note, "target": target}
     if action == "form":
         fill = (step.get("result") or {}).get("fill") or {}

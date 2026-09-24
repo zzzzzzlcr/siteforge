@@ -4243,3 +4243,25 @@ def test_the_url_criterion_is_found_in_the_row_urls():
     #: 正控：**正文那格没被顺手放宽**（它是另一条路，量在另一个字段上）
     assert browser_agent._success_hit(rows, "页面上什么", []) == 0
     assert browser_agent._success_hit(rows, "不在页面上", []) is None
+
+
+def test_a_click_on_something_we_cannot_recognise_is_not_replayable():
+    """★ 2026-09-24（真站逼出来的）：探路误点了一个**没名字的元素**（真站 trace 里那一步
+    `selector_used` 是空的）⇒ 账本把它记成一步 ⇒ 产物忠实翻译 ⇒ 自测卡在第 8 步
+    「页面上没找到」⇒ **三版稿撞同一堵墙**（那一步从根上执行不了，改写法救不了）。
+
+    判据：这一步**不该进产物** —— 「不可重放」这个概念本来就有（`_replay_step` 返回 `None`）✓。
+    ⚠️ 有意图的一步（text/role/near）**照旧放行**：仓里有一整族产物是「声明里一条选择器都不给、
+    全靠运行期 observe 给的池子认」的（与产物门口那道闸同源）。
+    """
+    base = {"action": "click", "note": "点「Continue」", "result": {"ok": True}}
+    by_intent = dict(base, target={"text": "Continue", "role": "button", "near": None,
+                                   "selectors": []})
+    assert browser_agent._replay_step(by_intent) is not None, "有意图 ⇒ 放行"
+    by_selector = dict(base, target={"selectors": ["#go"], "text": None, "role": None,
+                                     "near": None})
+    assert browser_agent._replay_step(by_selector) is not None, "有选择器 ⇒ 放行"
+    nameless = dict(base, note="点「没写名字的元素」",
+                    target={"text": None, "role": None, "near": None, "selectors": []})
+    assert browser_agent._replay_step(nameless) is None, "四样全空 ⇒ 不可重放（今天那一步）"
+    assert browser_agent._replay_step(dict(base, target={})) is None, "连 target 都没有 ⇒ 同上"
