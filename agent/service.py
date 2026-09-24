@@ -409,6 +409,25 @@ FAILURE_EVIDENCE_PATH = "/failures/%s/evidence"
 RANK_PATH = "/rank"
 #: 一单的原因那一跳（`{单号}` 是路径上那一格）。
 DIAG_PATH = "/diag/%s"
+
+
+def _auto_mark_for(jobs: list, site: str) -> str:
+    """★ T6 打标（2026-09-24）：这一串**是不是正等着人** ⇒ 那句话；不是 ⇒ 空串。
+
+    为什么在服务这一侧：页面**不许自己拿 site 去 `needs` 里比**（那就是页面在判断 —— 本仓
+    「页面一个判断都不许有」那条）。所以标记与话都在这儿算好，页面只往行里摆。
+    ⚠️ 它**只说「自动那条路在这一串上停下来了」**，不改那一行原来那句人话（那一句是后端的话）。
+    """
+    want = str(site or "").strip()
+    if not want:
+        return ""
+    for j in jobs:
+        if str(getattr(j, "auto_state", "") or "") != "needs_human":
+            continue
+        if str((getattr(j, "brief", None) or {}).get("site") or "").strip() == want:
+            return "自动值班在这一串上**停下来了**，等人看：%s" % (
+                str(getattr(j, "auto_why", "") or "它没说为什么"))
+    return ""
 #: 「这份 JSON 配置差在哪一格」那一跳（Task B2/B3）。
 #: ⚠️ 站点键走**查询参数**、不走路径：真键长这样 `www.gowizard.com/auto-warranty/`
 #: —— 带斜杠，塞进路径会被切成好几段（`/diag` 那边没这问题，它走的是单号）。
@@ -4744,6 +4763,9 @@ class Service:
                 #: 读不出来就给 `None` —— **不给 0**（0 是一个合法读数，
                 #: 拿它顶替「没给」就是把「对不了账」写成「对上了」）。
                 "fail_count": fmr.int_or_none(r.get("fail")),
+                #: ★ T6 打标：这一行正等着人吗（**判在服务这一侧** —— 页面只摆它）。
+                #: 空串 = 没这回事（页面就当这一格不在，别拿它当「一切正常」的读数）。
+                "auto_say": _auto_mark_for(list(self._jobs.values()), r.get("site")),
             } for r in rows],
         }
 

@@ -2530,7 +2530,11 @@
       //:    走 `esc()` 就自动满足这条：我们**自己写的话**里不出现 `**`（标题句才有），
       //:    而后端原样搬进来的那两格（`note` / 认不出的 `config_status`）
       //:    **原样显示**——它们是数据，不是我们的标记，`rich()` 本来就不该去解释它们。
-      items.push('<li><span class="mono">' + esc(site) + "</span> " + esc(said) + "</li>");
+      //: ★ T6 打标：服务算好的 `auto_say`（这一串**正等着人**）如果非空就摆出来 ——
+      //: 「要不要打这个标」是**服务判的**（页面只搬字）；`auto_say` 是我们自己的话 ⇒ 过 `rich()`。
+      items.push('<li><span class="mono">' + esc(site) + "</span> " + esc(said) +
+        (at(rows[i], "auto_say", "") ? "<br>" + rich(at(rows[i], "auto_say", "")) : "") +
+        "</li>");
       opts.push('<option value="' + esc(site) + '">' + esc(site) + " — " + esc(said) + "</option>");
     }
     box.innerHTML = html + '<ul class="faillist">' + items.join("") + "</ul>";

@@ -177,3 +177,23 @@ def test_the_button_and_the_duty_script_look_at_the_same_book(tmp_path):
     app, _ = _svc(tmp_path)
     app.post(service.AUTO_PATH, json={"on": True, "note": "面板"})
     assert auto.read_flags(tmp_path) == {"on": True, "note": "面板"}
+
+
+# ── ★ T6 打标：那一行「正等着人」吗（判在服务这一侧）──────────────────────
+
+
+def test_the_rank_row_mark_is_decided_here_not_on_the_page():
+    """★ 页面**不许自己拿 site 去 needs 里比**（那就是页面在判断）⇒ 标记与话在服务算好。"""
+    waiting = FakeJob(auto_state="needs_human", auto_why="两遍都没过")
+    said = service._auto_mark_for([waiting], "a.com/x")
+    assert said and "停下来了" in said and "两遍都没过" in said, said
+
+
+def test_a_row_that_is_not_waiting_gets_no_mark():
+    """没这回事 ⇒ **空串**（页面就当这一格不在）—— 别拿一句话顶替成「一切正常」。"""
+    busy = FakeJob(auto_state="", auto_why="")
+    other = FakeJob(job_id="j-2", site="b.com/y", auto_state="needs_human")
+    assert service._auto_mark_for([busy, other], "a.com/x") == ""
+    assert service._auto_mark_for([other], "b.com/y"), "正等着人的那一串反而没标上"
+    assert service._auto_mark_for([other], "") == "", "没有键的行不许被标"
+    assert service._auto_mark_for([], "a.com/x") == ""
