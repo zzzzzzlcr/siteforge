@@ -64,3 +64,23 @@ def give_up_reason(values: dict) -> str:
     if reached >= AUTO_MAX_ATTEMPTS:
         return "已经到第 %d 遍（上限 %d）都没过" % (reached, AUTO_MAX_ATTEMPTS)
     return ""
+
+
+# ── 开修之前：那一单的国家要核成代理链上的码（Task 3）──────────────────────
+#: 「那一屏上写的国家名」→ 代理链上用的码。**只放有出处的**（后端那张 `fmr.COUNTRY_SAY`
+#: 里查得到的），表外一律 `None` ⇒ 调用方按「报人、不开」处理（不猜那条：不认识/没记/核不到）。
+#: ⚠️ 「英国」在后端表里挂**两个**码（`GB` + 别名 `UK`）—— 所以这儿**明确写 GB**，
+#: 不靠反查：反查出来有歧义，挑错就是把这一单导到**错的代理**上（真站上=拿错国家的号去做单）。
+#: ⚠️ 这张表不许自己长：加一格之前先去 `fmr.COUNTRY_SAY` 里核到出处
+#: （`tests/test_auto_country.py` 钉着这条 —— 编出来的格子会让那条用例红）。
+SAY_CODE = {"美国": "US", "英国": "GB"}
+
+
+def code_for(say) -> str | None:
+    """那一屏上写的国家名 ⇒ 码。**表外一律 `None`**（不猜）。
+
+    ⚠️ 只认表里那个写法（前后空格可以）：直接塞码（`"US"`）、大小写不对（`"us"`）、
+    没记过的国家 —— 全是 `None`。调用方拿到 `None` 的规矩是**报人、不开 job**，
+    不是「试试看」—— 真站上那一下是拿钱和号去跑的。
+    """
+    return SAY_CODE.get(str(say or "").strip())
