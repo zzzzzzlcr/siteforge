@@ -2895,7 +2895,13 @@
     btn.disabled = true;
     return fetch(JSONWRITE_PREPARE, {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({site: site, config: config, operator: operator})
+      //: ★ T7：把**失败记录那两格**带上（与 py 上传那条路同一个做法）—— 键只在「还配得上它
+      //: 跟着来的那串网址」时才算数（人改了「站点网址」那一格，旧键继续用会**静默改错站**）。
+      //: ⚠️ 没挑过失败记录时 `state.fixSiteUrl` 是**空的**（undefined ⇒ ""）⇒ 服务按老路走
+      //: （判据的开关就是它非不非空）—— 手工打的键一个字不变。判在**服务**那侧，页面只带格。
+      body: JSON.stringify({site: site, config: config, operator: operator,
+                            url: (document.getElementById("runUrl") || {value: ""}).value.trim(),
+                            fix_site_url: state.fixSiteUrl || ""})
     }).then(readJSON).then(function (res) {
       btn.disabled = false;
       if (!res.ok) { jsonProblem(sayOf(res)); return null; }

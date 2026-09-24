@@ -4955,7 +4955,9 @@ class Service:
         ⚠️ 两个新格子都没给 ⇒ 照旧用 `site`（老那一趟、手工打的键，一个字不变）。
         """
         key = str(site or "").strip()
-        if str(url or "").strip() or str(fix_site_url or "").strip():
+        #: ★ 判据的**开关**是 `fix_site_url`：它非空 = 「这个键是**跟着那条失败记录**来的」⇒ 才判。
+        #: （只给 `url` 不给它时按老路走 —— 人手工打的键照旧，不许因为多了一格就把它判死。）
+        if str(fix_site_url or "").strip():
             key = _backend_key(url, key, fix_site_url)
         who = str(operator or "").strip()
         if not key or not who:
