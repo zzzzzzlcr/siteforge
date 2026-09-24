@@ -4069,6 +4069,60 @@ class Service:
         except Exception:                            # noqa: BLE001 —— 网里的网：这一层不能再抛
             traceback.print_exc()
 
+    #: ★ T4（用户 2026-09-24 拍）：自动上传以**字面 `auto`** 签名 —— 后端那份审计里与
+    #: 「运营的」分得开，屏幕上也能一眼分清「机器自己传的」和「人传的」。
+    AUTO_OPERATOR = "auto"
+
+    def _auto_upload(self, job: "Job") -> None:
+        """auto 那条路上「**两遍内过了**」⇒ **自动上传**（走现成那两步，不绕票据）。
+
+        判据只有一条、而且是仓里写死的那一条：`end_reason == "delivered"`
+        （`state.END_DELIVERED`：「**唯一**一个『东西真的落盘了』的结局」——所以这儿不再
+        另造一个「算不算成」的判据）。⚠️ 字面值照抄，因为 `END_DELIVERED` 没在这份文件里
+        import；`tests/test_service_auto_upload.py` 钉着它与 `state.END_DELIVERED` 逐字相同。
+
+        **不许自动上传**的三种（每一种都只是在 job 上留句话，不抛、也不假装传过）：
+          ① 不是 auto —— 人按的那条路里，上传**永远**是人的动作；
+          ② `auto_state == "needs_human"`（两遍没通 / 做不成）—— 那是**没修好**；
+          ③ **停用行**（`allow_disabled`）—— 用户拍的「停用行不许自动上传」。
+
+        ⚠️ 「回读不一致 ⇒ 回滚 + 报人」**不在这儿写**：`py_upload_commit` 里已经有了
+        （传上去的那份回读对不上，它自己把原来那份传回去）—— 这一层只负责「什么时候传」。
+        ⚠️ 两步都要 `operator`：这里给 `AUTO_OPERATOR`（谁传的这件事**必须**留下痕）。
+        """
+        brief = dict(getattr(job, "brief", {}) or {})
+        if not brief.get("auto") or getattr(job, "auto_state", ""):
+            return
+        if brief.get("allow_disabled"):
+            self._auto_upload_say(job, "这一行是**停用行** —— 按规矩**不自动上传**（等人来传）。")
+            return
+        try:
+            snap = self._snapshot(job.job_id)
+        except Exception:                      # noqa: BLE001 —— 读不回来只是这一次不传（响一下）
+            traceback.print_exc()
+            return
+        values = dict(getattr(snap, "values", None) or {})
+        if str(values.get("end_reason") or "") != "delivered":
+            return                             # 不是「真落盘了」那个结局 ⇒ 一个字节都不发
+        try:
+            prepared = self.py_upload_prepare(job.job_id, self.AUTO_OPERATOR)
+            got = self.py_upload_commit(job.job_id, prepared.get("ticket"))
+        except HTTPException as exc:            # 预检/上传自己会把人话写在 detail 里
+            self._auto_upload_say(job, "自动上传**没成**（%s）：%s" % (self.AUTO_OPERATOR, exc.detail))
+            return
+        self._auto_upload_say(job, "自动传上去了（%s）：%s" % (self.AUTO_OPERATOR,
+                                                          str(got.get("say") or got)[:300]))
+
+    def _auto_upload_say(self, job: "Job", text: str) -> None:
+        """自动上传那件事**在 job 上留句话**（面板那一栏照它说话）。
+
+        ⚠️ 不另开一个时间线词：这一类是「这一趟的结论」，`job.say` 本来就是它该待的地方
+        （T6 的「自动修的活」那一栏读的就是这里）。
+        """
+        with job.lock:
+            job.say = str(text)
+
+
     def _advance(self, job: Job, payload) -> None:
         """把图往前推一步 —— **这是唯一一个 job 会动的地方**（单飞）。
 
@@ -4124,6 +4178,7 @@ class Service:
             job.say = ""
         self._note_after_advance(job, ended=True)    # 目录表第 1、6 行
         self._auto_reply(job)                        # ★ 自动那条路：到闸就替人按（图一个字不改）
+        self._auto_upload(job)                       # ★ T4 自动那条路：两遍内过了 ⇒ 自己传
 
     def _auto_reply(self, job: "Job") -> None:
         """`auto` 那一趟到闸了 ⇒ **替人按一次「继续」**（并留一条痕）。**只在这一处按。**
