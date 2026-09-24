@@ -1751,6 +1751,32 @@
     paintWindow();
     paintComposer();
     paintPyUploadWhy();
+    paintAuto();
+  }
+
+  // ══════════════════ 自动值班（2026-09-24，T6）══════════════════
+  //: 读 `/auto`：**话全在服务那侧拼好**（`say` / `needs[].say`）—— 这儿只摆字，一个判断都不做
+  //: （「从没跳过心跳」与「超时没跳」那两句的分别也在服务那侧分好的）。
+  //: ⚠️ 与隔壁「换国家」那格不同：`/auto` 读的是本机小文件（不打外网）⇒ **可以**跟着 `paint()` 刷。
+  var AUTO_PATH = "/auto";
+
+  function paintAuto() {
+    var box = document.getElementById("autoNow");
+    if (!box) { return; }
+    fetch(AUTO_PATH).then(readJSON).then(function (res) {
+      //: 读不到也摆**服务那句原话**（页面上不留白、也不自己编一句）：与换国家那格同一条纪律。
+      if (!res.ok) { box.innerHTML = rich(sayOf(res)); return; }
+      box.innerHTML = rich(at(res.obj, "say", "（服务没给一句人话）"));
+      var ul = document.getElementById("autoNeeds");
+      if (!ul) { return; }
+      var needs = at(res.obj, "needs", []) || [], items = [], i;
+      for (i = 0; i < needs.length; i++) {
+        items.push("<li>" + rich(at(needs[i], "say", "")) + "</li>");
+      }
+      ul.innerHTML = items.join("");
+    }).catch(function (e) {
+      box.innerHTML = rich("自动值班那一格没读到结果：" + e);
+    });
   }
 
   // ══════════════════ 取数据 ══════════════════
