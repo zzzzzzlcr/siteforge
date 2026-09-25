@@ -22,6 +22,7 @@ import importlib.util
 import json
 import logging
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -240,3 +241,31 @@ def test_the_phone_pool_gives_a_number_the_site_accepts(tmp_path, monkeypatch):
         got = module.Filler._pool(None, "phone")
         assert got.startswith("0207") and len(got) == 11, got
         assert not got.startswith("02079460"), "给了 Ofcom 影视保留段：%s" % got
+
+
+def test_four_byte_characters_are_written_as_escapes(tmp_path, monkeypatch):
+    """★ 2026-09-25 真上传撞出来的：后台的库是 `utf8`（不是 `utf8mb4`）⇒ **4 字节字符存不进去**
+    （那面 `🇬🇧` 是探路从电话格旁边的页面上抄回来的 ✓）⇒ 后端报 1366 然后 500。
+
+    产物里把这类字符写成 `\\UXXXXXXXX` 转义：文件落回 3 字节以内，**运行期那串字符一个不变**。
+    钉两件：① 产出的源码里**没有** 4 字节字符；② 转义之后字面量解出来还是那面旗（没丢信息）。
+    """
+    flag = "\U0001F1EC\U0001F1E7"
+    src = template_loop.render_loop(
+        "flagsite", "Thank you", "thank-you",
+        {"phone": {"kind": "value", "target": {"nearby_text": [flag]}}}, dict(PROV))
+    assert not re.search("[\U00010000-\U0010FFFF]", src), "源码里还有 4 字节字符"
+    assert "\\U0001F1EC" in src and "\\U0001F1E7" in src, "没写成转义"
+
+    #: 这份产物 import 的是 `common`（脚本靠 `dirname(dirname(__file__))` 找 forms/）——
+    #: 这一条只验「字面量转义」，给个假替身就够（别去碰真浏览器那套）。
+    _fake_common(monkeypatch, {"url": "https://x/", "head": "", "progress": "", "inputs": [],
+                               "options": [], "nextVisible": False, "nextTxt": ""},
+                 {"click": [], "form": [], "nav": [], "scroll": [], "report": []})
+    path = tmp_path / "flag.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("flag_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    got = module.FILLS["phone"]["target"]["nearby_text"]
+    assert got == [flag], "转义把字丢了：%r" % (got,)

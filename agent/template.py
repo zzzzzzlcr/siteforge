@@ -68,6 +68,27 @@ PROVENANCE_KEYS = ("generated_at", "generator", "env", "platform", "selftest", "
 DEFAULT_STUCK_LIMIT = 3
 
 
+#: 4 字节以上的码位（emoji / 国旗那一类）—— **后台那个库存不了**（它是 `utf8`，不是
+#: `utf8mb4`）。实测 2026-09-25 一次真上传：后端 500，它自己的 SQL 报
+#: `General error: 1366 Incorrect string value: '\xF0\x9F\x87\xAC…'`（那是 🇬🇧 的前 4 个字节），
+#: 插 `form_configs.script_source` 那一列时炸的 ⇒ 服务这层只能如实说「不知道写没写成」。
+_ASTRAL = re.compile("[\U00010000-\U0010FFFF]")
+
+
+def _no_astral(literal: str) -> str:
+    """字面量里的 4 字节字符 → 写成 `\\UXXXXXXXX` **转义**：源码里不再有 4 字节的字节，
+    而运行期那串字符**一个都不变**。
+
+    为什么不删掉：那些字符是**页面上真有的字**（这次那面 `🇬🇧` 就是电话格旁边的旗，
+    探路从页面上抄回来的 ✓）—— 删了等于把抄回来的东西改了；转义不丢信息，
+    而问题只在「文件里有没有 4 字节的字节」，转义正好治这个。
+    ⚠️ 只管**字面量**（`_lit` 的产物）：文件别处（注释/骨架）本来就没有这类字符。
+    ⚠️ 上传那一侧另有一道闸（`service._what_to_upload`）：源码里真还有 4 字节字符时
+    当场说清是哪一行，而不是让后端 500 一轮、再猜「写没写成」。
+    """
+    return _ASTRAL.sub(lambda m: "\\U%08X" % ord(m.group(0)), literal)
+
+
 def _lit(obj) -> str:
     """渲染成 **Python 字面量** —— 不是 JSON。
 
@@ -75,7 +96,7 @@ def _lit(obj) -> str:
     `true` / `false` / `null`。后者在 Python 里语法合法（所以 `ast.parse` 抓不到），
     import 时才 `NameError` —— 计划一 py_emitter 的断口 1 就是这个。
     """
-    return pprint.pformat(obj, width=96, indent=2, sort_dicts=False)
+    return _no_astral(pprint.pformat(obj, width=96, indent=2, sort_dicts=False))
 
 
 def _success_texts(success_text) -> list:

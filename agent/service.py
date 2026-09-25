@@ -76,7 +76,7 @@ from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from agent import (browser_agent, configcheck, events, fix, fmr, graph, journal, jsondiag,
                    jsonwrite, llm, manual, measure, pywrite, rounds, selftest, shots, steps,
-                   tools)
+                   template, tools)
 from agent.graph import NODES, STEP_SAY
 from agent.state import (END_DELIVERED, END_DRAFT_FAILED, END_EXPLORE_UNFINISHED,
                          END_HUMAN_STOP, END_LINT_CAP,
@@ -5234,6 +5234,23 @@ class Service:
         if not source.strip():
             raise HTTPException(status_code=400,
                                 detail="产物是**空文件** —— 传上去等于把那个站弄死。没上传。")
+        #: ★ 2026-09-25（真上传撞出来的）：后台那个库是 **`utf8`，不是 `utf8mb4`** ⇒
+        #: **4 字节字符（emoji / 国旗）它存不进去**。实测现场：产物里那面 `🇬🇧`
+        #: （探路从电话格旁边的页面上抄回来的）⇒ 后端 SQL 报
+        #: `General error: 1366 Incorrect string value: '\xF0\x9F\x87\xAC…'` ⇒ 500 ⇒
+        #: 这一层只能如实说「**不知道写没写成**」—— 那是最贵的一种答复（要人去核对）。
+        #: ⇒ 上传前**本地就拦下来说清是哪一行**（生成器那边现在会把这类字面量写成
+        #: `\UXXXXXXXX` 转义，所以在库里这套规矩下产出的稿不该再撞上这一条）。
+        found = template._ASTRAL.search(source)
+        if found is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=("产物里有**4 字节字符**（第 %d 行：%r）—— 后台那个库是 `utf8`、不是 "
+                        "`utf8mb4`，插 `script_source` 那一列会直接报 1366 然后 500，"
+                        "你只会看到「不知道写没写成」。**没上传**（一个请求都没发出去）。"
+                        "新产出一版就好：生成器会把这类字符写成 `\\UXXXXXXXX` 转义，"
+                        "运行期那串字符一个都不变。"
+                        % (source.count("\n", 0, found.start()) + 1, found.group(0))))
         try:
             ast.parse(source)
         except SyntaxError as exc:
