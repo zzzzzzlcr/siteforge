@@ -1388,8 +1388,7 @@ def _vision_look(journey, dispatch, success_text: str, specs, gate) -> None:
         return
     said = str((rounds[-1].get("content") or "") if rounds else "").strip()
     journey.vision_say = said
-    wants = [w.lower() for w in wanted_texts(success_text)]
-    journey.vision_hit = bool(wants) and any(w in _norm(said).lower() for w in wants)
+    journey.vision_hit = _vision_hit(said, success_text)
     if journey.vision_hit:
         journey.note("👁 收尾照图那一眼**在图上见到了**那句成功文案 —— 模型照着截图的原话是："
                      "「%s」。（⚠️ 这是**证据**，不是判据：判据只认**代码读到的那份正文**"
@@ -1400,6 +1399,44 @@ def _vision_look(journey, dispatch, success_text: str, specs, gate) -> None:
     else:
         journey.note("收尾照图那一眼**没在图上找到**那句成功文案 —— 模型的原话是：「%s」"
                      "（正文里也没有 ⇒ 这一趟**没见到**成功文案，照实算。）" % (said or "（它什么都没说）"))
+
+
+#: 「照图那一眼说见着了」的判据里，**否定句不算**。
+#:
+#: 实测（2026-09-26，`job-748efe71deaf`）：模型原话是
+#: 「没有。图上只有「Payment」…**并没有出现「Payment details」这一串字**。」
+#: —— 它**引用了判据那句话**，于是子串判据在这里命中了 ⇒ `vision_hit = True`。
+#: 代价有两层：① 面板上写「收尾照图那一眼**在图上见到了**」（**假话**，用户当场就问
+#: 「我页面看到是成功了的，为啥不产 py」）；② `graph._retry_wont_help` 也读它 ⇒
+#: **本来就该自动重探的那一趟被这条假阳性拦下了**（不再去真站试第二趟）。
+#: ⇒ 匹配点**前后各一段**里出现否定词就不算「见着」。
+#: ⚠️ 天花板（`ponytail:`）：拿自由文本做判据，否定词表永远漏 —— 正解是让模型先回一个
+#: 「有/没有」，判据只读那个词（那要改 `_vision_look` 的提问与解析，等有人要更稳的时候再做）。
+_NEG_BEFORE = ("没有", "没", "未", "并不", "看不到", "看不见", "无")
+_NEG_AFTER = ("没有出现", "没出现", "未出现", "看不到", "看不见", "并没有")
+_NEG_BEFORE_WINDOW = 12
+_NEG_AFTER_WINDOW = 8
+
+
+def _said_seen(said: str, wants) -> bool:
+    """模型那句话里，`wants` 里有没有哪一串是**肯定地**说了见着了（否定句不算）。"""
+    text = _norm(said).lower()
+    for want in wants:
+        at = text.find(want)
+        while at >= 0:
+            before = text[max(0, at - _NEG_BEFORE_WINDOW):at]
+            after = text[at + len(want):at + len(want) + _NEG_AFTER_WINDOW]
+            if not any(n in before for n in _NEG_BEFORE) \
+                    and not any(n in after for n in _NEG_AFTER):
+                return True
+            at = text.find(want, at + 1)
+    return False
+
+
+def _vision_hit(said: str, success_text) -> bool:
+    """专给 `_vision_look` 用的那一格（判据只写一处 —— 别在别处再拼一遍子串比对）。"""
+    wants = [w.lower() for w in wanted_texts(success_text)]
+    return bool(wants) and _said_seen(said, wants)
 
 
 def _spec_name(spec) -> str:

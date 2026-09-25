@@ -3679,6 +3679,30 @@ def test_the_final_look_asks_the_model_to_read_the_picture(monkeypatch):
     assert "base64" not in json.dumps(journey.vision_say)
 
 
+
+def test_a_negating_sentence_that_quotes_the_criterion_is_not_a_vision_hit():
+    """★ 2026-09-26 真事（`job-748efe71deaf`，用户当场问「我页面看到是成功了的，为啥不产 py」）：
+    模型的原话是「**并没有出现「Payment details」这一串字**」—— 它**引用了判据那句话**，
+    而子串判据在里面**命中了** ⇒ `vision_hit=True` ⇒ 面板上写「在图上见到了」（假话），
+    更要紧的是 `graph._retry_wont_help` 也读它 ⇒ **该自动重探的那一趟被这条假阳性拦下**。
+
+    这条钉：**否定句不算见着**；正面句照旧算（别把判据收紧成「再也不认」）。
+    """
+    real_say = ("没有。图上只有 **「Payment」**（下方紧接被截断的「Billing addre…」），"
+                "并没有出现「Payment details」这一串字。")
+    assert browser_agent._vision_hit(real_say, "出现Payment details") is False
+    #: 判据那格常带「出现/显示」这种说明壳 —— 剥壳之后一样不认否定句
+    assert browser_agent._vision_hit(real_say, "Payment details") is False
+    assert browser_agent._vision_hit("页面上没有 Payment details 这一行", "Payment details") is False
+    assert browser_agent._vision_hit("Payment details 没出现", "Payment details") is False
+    #: 正面句照旧算（含追问壳的那种写法）
+    assert browser_agent._vision_hit("有的，图上写着：Payment details", "Payment details") is True
+    assert browser_agent._vision_hit("见到了「Payment details」", "Payment details") is True
+    #: 空话 / 判据为空 ⇒ 不认
+    assert browser_agent._vision_hit("", "Payment details") is False
+    assert browser_agent._vision_hit("Payment details", "") is False
+
+
 def test_the_final_look_reads_the_whole_page_with_code_and_never_asks_the_model(monkeypatch):
     """⭐⭐ 2026-09-22 的要点（用户原话：「**让代码判断而不是让AI判断**」）：
 
