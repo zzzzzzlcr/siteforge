@@ -1020,10 +1020,17 @@ def _loop_spec(journey, funnel: dict) -> dict:
         base = re.sub(r"-\d+$", "", name)
         if base and val:
             examples[base] = val
+    #: ★ 2026-09-26：**步数预算按账本给**（不是写死 60）—— 实测那一站的自测一遍
+    #: **答了 52 题**、走到第 60 步被自己的预算收掉（`走满 60 步还没到成功`），而同一份产物
+    #: 在**短变体**上 21 步就通了（那站的问卷长度是随机的：30/80/110 都见过）。
+    #: 账本记着「探路那一趟花了多少步」，产物给**它两倍**：够它自己再走一遍 + 分支/重试的余量，
+    #: 而真正的收摊判据仍是「连着若干步没有可动作的东西」/「连着点 Next 页面不动」—— 不靠这个数兜底。
+    ledger_steps = len(getattr(journey, "steps", None) or [])
     return {"arrive_url": str(funnel.get("url") or ""), "pre_steps": pre_steps,
             "fill_order": list((journey.fills() or {}).keys()),
             "examples": examples,
-            "pick": "random", "max_steps": template_loop.LOOP_MAX_STEPS,
+            "pick": "random",
+            "max_steps": max(template_loop.LOOP_MAX_STEPS, 2 * ledger_steps),
             "idle_limit": template_loop.LOOP_IDLE_LIMIT,
             "busy_timeout": template_loop.LOOP_BUSY_TIMEOUT,
             "why": str(funnel.get("why") or "")}
