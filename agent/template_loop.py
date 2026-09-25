@@ -408,8 +408,15 @@ class Filler:
         if "email" in kind:
             return "user%d@%s" % (random.randint(100, 9999),
                                   random.choice(("gmail.com", "outlook.com", "yahoo.com")))
-        if "phone" in kind or "mobile" in kind:
-            return "07" + "".join(str(random.randint(0, 9)) for _ in range(9))
+        if "phone" in kind or "mobile" in kind or "tel" in kind:
+            #: ★ 2026-09-25 **用户点名**：给 **0207 开头**（伦敦座机的形状）——
+            #: 真站那一格的校验收它；原来给的是 `07…`（英国手机号形状，位数一样合法），
+            #: 在那一站上**过不去** ✗（填了但校验不过 ⇒ 停在那一屏）。
+            #: 顺带避开 Ofcom 的影视保留段 `020 7946 0xxx`：格式合法、一眼是假的。
+            while True:
+                got = "0207" + "".join(str(random.randint(0, 9)) for _ in range(7))
+                if not got.startswith("02079460"):
+                    return got
         if "post" in kind or "zip" in kind:
             return random.choice(("SW1A 1AA", "M1 1AA", "B1 1AA", "LS1 1AA"))
         return ""

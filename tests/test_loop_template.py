@@ -216,3 +216,27 @@ def test_a_product_without_an_entry_url_runs_on_the_current_page(tmp_path, monke
     assert any(r.get("action") == "goto" and r.get("ok") is None for r in rows), rows[:3]
     assert any(r.get("action") == "click" for r in rows), rows
     assert all("没有入口网址" not in str(r) for r in rows), "退场那条还在：%r" % (rows[:3],)
+
+
+def test_the_phone_pool_gives_a_number_the_site_accepts(tmp_path, monkeypatch):
+    """★ 2026-09-25（用户点名）：号码要 **0207 开头**（伦敦座机形状），不是 `07…` 手机号。
+
+    现场：真站那一格的校验收 0207；产物原来给 `07…`（位数一样合法）⇒ 填了过不去，
+    停在那一屏。顺带钉住 Ofcom 影视保留段 `020 7946 0xxx` **不许**出现（格式合法、一眼是假的）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/quiz", "head": "Q", "progress": "", "inputs": [],
+            "options": [], "nextVisible": True, "nextTxt": "Continue"}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop("phonesite", "Thank you", "thank-you",
+                                    {"phone": {"kind": "value"}}, dict(PROV))
+    path = tmp_path / "phone.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("phone_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    for _ in range(50):
+        got = module.Filler._pool(None, "phone")
+        assert got.startswith("0207") and len(got) == 11, got
+        assert not got.startswith("02079460"), "给了 Ofcom 影视保留段：%s" % got
