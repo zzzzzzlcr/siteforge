@@ -1003,8 +1003,26 @@ def _loop_spec(journey, funnel: dict) -> dict:
     pre_steps = [{"action": s.get("action"), "target": s.get("target")}
                  for s in pre if str((s or {}).get("action") or "") in ("click", "scroll")
                  and (s or {}).get("target")]
+    #: ★ 2026-09-26：**探路时每一格真用过的那个值**（账本里 `result.fill.value`）——
+    #: 它是**量到的事实**（那一趟站点自己收下了它），比我们另外编一个随机值强得多：
+    #: 实测那站的国家选择是 US、而手机池给的是英国座机号 ⇒ 客户端校验直接拒（页面上写着
+    #: 「valid phone」）⇒ 提交永远过不去；换回账本里那个值就过 ✓。
+    #: ⚠️ **最后一次填进去的那个值说了算**（不是第一次）—— 与 `journey.states()` 里
+    #: `_last_fill_wins` 同一条口径：同一格被填过两次说明第一次那个**站点没收**
+    #: （实测：`phone` 先填 `5550001234`（555 保留段）⇒ 重填 `4158675309` 才过）。
+    examples: dict = {}
+    for st in (getattr(journey, "steps", None) or []):
+        info = ((st or {}).get("result") or {}).get("fill") or {}
+        name, val = str(info.get("name") or ""), str(info.get("value") or "")
+        #: ⚠️ 账本里**同一格重复填**会长出 `phone-2` / `phone-3` 这种名字（那一趟就是这样）——
+        #: 它们说的是**同一个输入框**。按尾巴那截数字**并回同一个名字**，于是「最后一次说了算」
+        #: 真的按时间生效（否则 `phone` 会一直是第一次那个被站点拒掉的值 ✗）。
+        base = re.sub(r"-\d+$", "", name)
+        if base and val:
+            examples[base] = val
     return {"arrive_url": str(funnel.get("url") or ""), "pre_steps": pre_steps,
             "fill_order": list((journey.fills() or {}).keys()),
+            "examples": examples,
             "pick": "random", "max_steps": template_loop.LOOP_MAX_STEPS,
             "idle_limit": template_loop.LOOP_IDLE_LIMIT,
             "busy_timeout": template_loop.LOOP_BUSY_TIMEOUT,
@@ -1022,6 +1040,7 @@ def _loop_source(state, deps: Deps, *, report) -> str:
     prov.update({"entry_url": "", "arrive_url": spec.get("arrive_url") or "",
                  "pre_steps": list(spec.get("pre_steps") or []),
                  "fill_order": list(spec.get("fill_order") or []),
+                 "examples": dict(spec.get("examples") or {}),
                  "shape": "loop", "why": spec.get("why") or ""})
     return template_loop.render_loop(
         state["site"], state.get("success_text"), state.get("success_urls") or "",

@@ -94,11 +94,13 @@ def test_the_reader_js_really_parses():
     """★ 2026-09-24：我自己就往里塞过一行 python 式 `#` 注释 —— 那会让浏览器 eval 报错 ⇒
     `read()` 恒返回 None ⇒ 整个循环空转。所以这一段**必须**过真语法检查。
 
-    ⚠️ 没有 node ⇒ **跳过并说出来**（不假装验过）。
+    ⚠️ 按 **Python** 的语义读它（`ast.literal_eval`）—— 产物拿到的就是 Python 解出来的那串。
+    用 `json.loads` 会误报：`_json_lit` 把 4 字节字符写成 `\\UXXXXXXXX`（JSON 里没这个转义，
+    但 Python 认），而运行期那串字符是对的。
     """
     src = _src()
     body = src.split("READ_PAGE_JS = ", 1)[1].split("\n", 1)[0]
-    js = json.loads(body)
+    js = ast.literal_eval(body)
     assert "#" not in js, "JS 里出现 python 式注释 —— 浏览器 eval 会报错：%r" % js[:80]
     node = shutil.which("node")
     if node is None:
@@ -158,6 +160,9 @@ def _fake_common(monkeypatch, page, calls):
 
         def eval(self, js, *a, **kw):
             if "data-sf-pick" in js or "data-sf-fill" in js:
+                #: 「按文字找」那一招是 JS 找 → 打标记 → 再点 ⇒ 把那段 JS 记下来，
+                #: 测试才分得清这一下找的是**哪个**字（选项 vs Continue）。
+                calls.setdefault("marks", []).append(js)
                 return "marked"
             return json.dumps(page)
 
@@ -266,6 +271,82 @@ def test_four_byte_characters_are_written_as_escapes(tmp_path, monkeypatch):
     path.write_text(src, encoding="utf-8")
     spec = importlib.util.spec_from_file_location("flag_product", path)
     module = importlib.util.module_from_spec(spec)
+
     spec.loader.exec_module(module)
     got = module.FILLS["phone"]["target"]["nearby_text"]
     assert got == [flag], "转义把字丢了：%r" % (got,)
+
+
+def test_a_screen_with_options_is_answered_once_then_continue_is_clicked(tmp_path, monkeypatch):
+    """★ 2026-09-26 用户原话：「场上有选项但是选完还得点按钮那种场景他就过不去」。
+
+    真 trace（`job-c053e0b049f3`）：那一趟 **58 次点击全是「答了第 N 题」** —— ② 每轮都重新挑一个
+    选项，永远轮不到 ③ 去点 Continue ⇒ 在「先选一个、再点下一步」的屏上原地打转直到收摊。
+
+    这条钉：「同一屏只答一次」⇒ 下一轮（再下一轮，等到空转闸放行）点的是 **Continue**，
+    而且**不再**挑第二个选项；**换屏之后照旧挑**（自动前进那种漏斗不受影响）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/quiz", "head": "Question 1", "progress": "10%",
+            "inputs": [], "options": ["\u0001No", "\u0001Yes"], "nextVisible": True,
+            "nextTxt": "Continue"}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop("selsite", "Thank you", "thank-you", {}, dict(PROV))
+    path = tmp_path / "sel.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("sel_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    trace = tmp_path / "t.jsonl"
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    module.Filler("ws://x/1", str(form), "cid", trace_path=str(trace), no_report=True).run(max_steps=4)
+
+    marks = calls.get("marks", [])
+    picks = [m for m in marks if '"No"' in m or '"Yes"' in m]
+    assert len(picks) == 1, "同一屏挑了不止一次选项（%d 次）：%r" % (len(picks), marks)
+    assert any('"Continue"' in m for m in marks), "答完之后没去点「下一步」：%r" % (marks,)
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    answered = [r for r in rows if str(r.get("note") or "").startswith("答了第")]
+    assert len(answered) == 1, "同一屏答了不止一次：%r" % [(r.get("step"), r.get("note")) for r in rows]
+    assert any(r.get("action") == "click" and r.get("note") == "Next" for r in rows), rows[-4:]
+
+
+def test_an_input_that_only_has_an_id_is_filled_by_id(tmp_path, monkeypatch):
+    """★ 2026-09-26 第五次真站试跑（`easystorebuilderpro` 那三个格）逼出来的：
+    输入框**只有 `id`、没有 `data-testid`** ⇒ 原来一律按 `[data-testid=…]` 找 ⇒
+    `cdp form` 报 `element not found`，而 `fill()` **照样 return True** ⇒
+    trace 上写着「填了 qv3-fn」、表单里一个字都没有、提交一直被拒（点三次 Next 页面一动不动 ✗）。
+
+    这条钉三件：① 读取器给 id 来源打 `\\x04` 标记；② 填的时候按 `[id=…]`；
+    ③ **cdp 说没填上就不许报成功**（`_filled_ok`）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/lead", "head": "Activation", "progress": "92%",
+            "inputs": [["\u0004qv3-fn", ""]], "options": [], "nextVisible": False, "nextTxt": ""}
+    _fake_common(monkeypatch, page, calls)
+    #: 那一站的账本里有 `fill_order`（探路时真填过的顺序）—— 这一格按它兜底填（见 `value_for` 第 ③ 档）
+    src = template_loop.render_loop(
+        "idsite", "Thank you", "thank-you", {"full_name": {"kind": "full_name"}},
+        dict(PROV, fill_order=["full_name"]))
+    path = tmp_path / "idsite.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("id_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    trace = tmp_path / "t.jsonl"
+    module.Filler("ws://x/1", str(form), "cid", trace_path=str(trace), no_report=True).run(max_steps=1)
+
+    sels = [sel for sel, _kw in calls["form"]]
+    assert any(sel == '[id="qv3-fn"]' for sel in sels), "没有按 id 去找这一格：%r" % (sels,)
+    assert not any("data-testid" in sel for sel in sels), sels
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert any(r.get("action") == "form" and r.get("ok") is True for r in rows), rows
+
+    #: ③ cdp 说没填上 ⇒ 不许报成功（`_filled_ok`）
+    assert module.Filler._filled_ok("Error: scroll mouse wheel failed: element not found") is False
+    assert module.Filler._filled_ok("ok") is True
+    assert module.Filler._filled_ok("") is True

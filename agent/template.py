@@ -55,6 +55,7 @@
 
 from __future__ import annotations
 
+import json
 import pprint
 import re
 from string import Template
@@ -112,6 +113,8 @@ def _success_texts(success_text) -> list:
     为什么在**函数里**导入：这个模块在 import 期要尽量轻（`service` 也只是在函数里导入重家伙），
     而 `browser_agent` 会拉起 llm/tools —— 那是**渲染那一刻**才需要的东西。
     """
+
+
     from agent.browser_agent import wanted_texts     # noqa: PLC0415 —— 见 docstring
 
     texts = wanted_texts(success_text)
@@ -121,6 +124,21 @@ def _success_texts(success_text) -> list:
         raise ValueError("success_text 不能空（也不能只写「出现 / 显示」这种动词）："
                          "没有成功判据的产物会跑到底再说自己成功")
     return texts
+
+
+def _json_lit(obj) -> str:
+    """一段 JSON 文本，当**Python 字面量**用（`_lit` 的 JSON 兄弟）。
+
+    ⚠️ **不许**用 json 的默认 `ensure_ascii=True`：它把 4 字节字符写成**代理对**
+    （`"\\ud83e\\udde9"`），而 **Python 读这个字面量时不会把代理对合成一个字** ——
+    它拿到的是两个**孤立代理对** ⇒ 运行期只要有一次 `subprocess` 传参或写文件就
+    `UnicodeEncodeError: surrogates not allowed`。
+    2026-09-26 真事：产物在 `common.CDPHelper.eval`（读页面那一步）直接退，退出码 1，
+    而那两个字只是我写在 JS 注释里的一个 emoji ✗。
+    ⇒ `ensure_ascii=False` 出原字符，再由 `_no_astral` 把 4 字节字符写成 `\\UXXXXXXXX`
+    （Python 认、运行期还是那个字符、文件全 ASCII）。
+    """
+    return _no_astral(json.dumps(obj, ensure_ascii=False))
 
 
 def _success_urls(success_urls) -> list:

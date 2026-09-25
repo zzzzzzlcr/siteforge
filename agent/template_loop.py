@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 
-from agent.template import _lit, _provenance_literal
+from agent.template import _json_lit, _lit, _provenance_literal
 
 __all__ = ["render_loop", "funnel_states", "LOOP_PROVENANCE_KEEP", "DEFAULT_READ_JS",
            "LOOP_MIN_STATES", "LOOP_IDLE_LIMIT", "LOOP_MAX_STEPS", "LOOP_BUSY_TIMEOUT"]
@@ -41,8 +41,15 @@ LOOP_PROVENANCE_KEEP = ("site", "entry_url", "explored_at", "from", "note")
 DEFAULT_READ_JS = r"""(function(){
   function vis(e){return e && e.offsetWidth>0 && e.offsetHeight>0;}
   function txt(e){return ((e.textContent||'').replace(/\s+/g,' ').trim());}
-  function tid(e){var t=e.getAttribute('data-testid')||e.id||e.getAttribute('name');
+  // ★ 2026-09-26（第五次真站试跑，`easystorebuilderpro` 那三个格）：**`id` 与 `data-testid` 不是一回事** ——
+  //   那一站三个格只有 `id`（`qv3-fn` / `qv3-em` / `qv3-ph`），而填的那一侧一律按
+  //   `[data-testid="…"]` 找 ⇒ **一个都找不到**、`cdp form` 报「element not found」，
+  //   而调用方把这一下当成功了 ⇒ 表单永远是空的、提交永远被拒（真事：点三次 Next 页面一动不动）。
+  //   ⇒ 来源**打上标记**（`\u0004` = 按 id/name 找），填/点那一侧照着用对选择器。
+  function tid(e){var t=e.getAttribute('data-testid');
     if(t)return t;
+    var i=e.id||e.getAttribute('name');
+    if(i)return "\u0004"+i;
     var p=(e.getAttribute('placeholder')||e.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim();
     return p?("\u0002"+p):'';}
   var inputs=[];
@@ -52,9 +59,22 @@ DEFAULT_READ_JS = r"""(function(){
   var options=[], nextVisible=false, nextTxt='';
   // ★ 2026-09-24 第九趟真站：`a[href]` 一律不收 —— 页脚那几个「Privacy Policy」会被当成
   //   选项，每轮挑中一个、又点不到（它们不是 button/label）⇒ 「再看一眼」空转到收摊 ✗。
+  // ★ 2026-09-26（`job-c053e0b049f3` 的真 trace）：**导航/编辑类控件也不算选项** ——
+  //   那一趟 58 次点击里就有两次点在「‹ edit previous piece」上，**倒回上一屏** ⇒
+  //   来回震荡、永远走不到提交那一步。这一类不是答案，是往回走。
+  var NAVISH=/(previous|\bback\b|go back|\bedit\b|\u2039|\u00ab|\u2190)/i;
   document.querySelectorAll('button,label,[role=button]').forEach(function(e){
     if(!vis(e))return; var s=txt(e); if(!s)return;
-    if(/^\s*(next|continue|get results|submit)\s*$/i.test(s)){nextVisible=true;nextTxt=s;return;}
+    // ★ 2026-09-26（`job-c053e0b049f3` 那一站的真屏幕）：「下一步」那一颗**不叫 Next/Continue** ——
+    //   它是「INSTALL 2 MODULES →」⇒ 只认那几个英文词就永远点不到它，于是答完一题就干等 ✗。
+    //   收宽两条：① 多认几个「往前走」的词；② **以箭头收尾的按钮**（`→` / `»` / `›`）也算下一步。
+    // ★ 2026-09-26（第四次真站试跑）：**输入框自己的 `<label>` 不是选项** ——
+    //   那一趟把「📬 Email — where your blueprint is sent」当成一题点了（trace 里那行
+    //   「答了第 14 题」就是它）✗。带 `for=` 或肚子里有输入框的 label 一律不算选项。
+    if(e.tagName==='LABEL'&&(e.htmlFor||e.querySelector('input,select,textarea')))return;
+    if(/^\s*(next|continue|get results|submit|install|finish|done|complete)\b/i.test(s)
+       || /[\u2192\u00bb\u203a]\s*$/.test(s)){nextVisible=true;nextTxt=s;return;}
+    if(NAVISH.test(s))return;
     var t=tid(e);
     if(t) options.push(t); else options.push("\u0001"+s);});
   var pm=(document.body.innerText.match(/\b\d{1,3}\s*%/)||[])[0]; var prog=pm?pm:'';
@@ -89,15 +109,15 @@ def render_loop(site, success_text, success_urls, fills, provenance, *,
             raise ValueError("FILLS[%r] 没给 kind —— 填什么由它决定，没它这一格填不了" % (name,))
     src = _LOOP_SKELETON
     for token, value in (("__SITE__", _lit(str(site))),
-                         ("__URL_MARKERS__", json.dumps(urls, ensure_ascii=False)),
-                         ("__TEXTS__", json.dumps([success_text] if str(success_text or "").strip()
-                                                  else [], ensure_ascii=False)),
+                         ("__URL_MARKERS__", _json_lit(urls)),
+                         ("__TEXTS__", _json_lit([success_text]
+                                                 if str(success_text or "").strip() else [])),
                          ("__FILLS__", _lit(fills or {})),
                          ("__PICK__", _lit(str(pick))),
                          ("__MAX_STEPS__", str(int(max_steps))),
                          ("__IDLE_LIMIT__", str(int(idle_limit))),
                          ("__BUSY_TIMEOUT__", str(int(busy_timeout))),
-                         ("__READ_JS__", json.dumps(read_js or DEFAULT_READ_JS)),
+                         ("__READ_JS__", _json_lit(read_js or DEFAULT_READ_JS)),
                          ("__PROVENANCE__", _provenance_literal(provenance))):
         src = src.replace(token, value)
     return src
@@ -198,16 +218,29 @@ ARRIVE_URL = str((PROVENANCE or {}).get("arrive_url") or "")
 #: ★ 账本里那几格**填过的顺序**（用户 2026-09-24 的原话：「**一般输入框顺序也不会变**」✓）。
 #: 哪一格都认不出来时用它兜底 —— 本屏第 n 个空格 ⇒ 账本第 n 格 ✓（我们自己的事实 ✓ 不猜 ✗）。
 FILL_ORDER = list((PROVENANCE or {}).get("fill_order") or [])
+#: ★ 2026-09-26：**探路那一趟每一格真用过的那个值**（生成器从账本搬进来）——
+#: 优先于我们自己编的池子。实测：那站国家选择是 US，而我们的手机池给英国座机号 ⇒
+#: 客户端校验直接拒（页面写着「valid phone」）⇒ 提交永远过不去；用账本里那个
+#: `5551234567` 就过 ✓。任务给的 `form_data` 仍然最优先（那是运营填的）。
+EXAMPLES = dict((PROVENANCE or {}).get("examples") or {})
 #: 选项没给 `data-testid` 时的前缀：`\\x01文字` = 「按这段文字去页面上找」。
 BY_TEXT = "\\x01"
 #: 输入框没给 `testid`/`id`/`name` 时的前缀：`\\x02placeholder` = 「按占位符去页面上找」。
 #: ★ 2026-09-24 第一次真站试跑逼出来的：那一屏的邮编格**只有 placeholder**（形状同 LPA 的
 #: `input[placeholder="e.g. RG24 8PE"]`）⇒ 读取器原来直接丢掉它 ⇒ 只剩 Continue ⇒ 空点 55 次。
 BY_PLACEHOLDER = "\\x02"
+#: 元素**只有 `id`（或 `name`）、没有 `data-testid`** 时的前缀：`\\x04id` = 「按 `[id=…]` 找」。
+#: ★ 2026-09-26 第五次真站试跑逼出来的（`easystorebuilderpro` 那三个格只有 id）：
+#: 不分来源就一律按 `[data-testid=…]` 找 ⇒ **一个都找不到**，而填的那一步照样报成功 ✗✗。
+BY_ID = "\\x04"
 
 #: 连着点几次「Next」页面还是那一屏 ⇒ 当**空转**，如实收摊（第一版没有这道闸，
 #: 真站上才会空点 55 次 Continue 把步数耗光 ✗）。
 SAME_NEXT_LIMIT = 3
+
+#: 「这一屏答过了、但页面一动不动」最多再放行几次（见 ⑤ 里那段注释）。
+#: 2 次够用：一次留给站点偶发忽略点击，一次留给随机换一个选项试试。
+STUCK_RETRIES = 2
 
 #: 用户 2026-09-24 拍的规则：「**根据是否可见来判断**」—— 读取器本来就只收可见的
 #: (`offsetWidth>0 && offsetHeight>0` ✓) ⇒ 所以「没有可动作的东西」=「**可见的题/按钮为零**」✓。
@@ -241,6 +274,10 @@ class Filler:
         self.tid = task_id
         self.log = setup_logger("loop")
         self._filled = set()
+        #: 每一格**试过几次**、以及**最后给它的那个值**（见 ① 里那段：重试要重试同一个值，
+        #: 不能每次换一个新的随机值 —— 换来换去站点永远收不到一份完整的表单）。
+        self._field_tries = {}
+        self._field_value = {}
         #: ★ 自测那两格（`selftest.ARTIFACT_FLAGS`）：少了它们，产物在自测里**一上来就 argparse
         #: 退出**（2026-09-24 实测：`unrecognized arguments: --trace … --no-report` ⇒ 报告只剩
         #: 「进程退了（退出码 2）」）。`--no-report` 是硬规矩（自测不是生产任务，不该在生产那边
@@ -329,11 +366,16 @@ class Filler:
     # ---------- 填什么（生成器填的那一格）----------
 
     def fill(self, token, value):
-        """填一格：有 `data-testid` 就用它；没有就**按 placeholder/aria-label 打标记再填**。
+        """填一格：按 token 的**来源**用对选择器 —— `data-testid` / `\x04`=id/name /
+        `\x02`=placeholder（打标记再填）。**填没填上要看回话**，不是「发出去就算填了」。
 
         ★ 2026-09-24 第一次真站试跑逼出来的：那一屏的邮编格**只有 placeholder**（形状同 LPA 的
         `input[placeholder="e.g. RG24 8PE"]`）⇒ 读取器原来直接丢掉它 ✗ ⇒ 「没东西可填」⇒
         只剩 Continue ⇒ **空点 55 次** ✗。做法与「按文字点」同一条：找用 JS、填还是走 `cdp.form`。
+        ★ 2026-09-26 第五次真站试跑：那一站的三个格**只有 `id`、没有 `data-testid`** ⇒ 一律按
+        `[data-testid=…]` 找 ⇒ `cdp form` 报 `element not found`，而这里**照样 return True** ⇒
+        表单永远是空的、提交被拒、页面一动不动（而 trace 上写着「填了」✗✗）。
+        所以这一版：① id 来源用 `[id=…]`；② **回话里有 Error 就算没填上**（不许谎报）。
         """
         token = str(token or "")
         if token.startswith(BY_PLACEHOLDER):
@@ -349,10 +391,21 @@ class Filler:
                   "e.setAttribute('data-sf-fill','1');return 'marked';}}return 'none';})()")
             if "marked" not in (self.cdp.eval(js, "") or ""):
                 return False
-            self.cdp.form('[data-sf-fill="1"]', value=value)
-            return True
-        self.cdp.form('[data-testid="%s"]' % token, value=value)
-        return True
+            return self._filled_ok(self.cdp.form('[data-sf-fill="1"]', value=value))
+        if token.startswith(BY_ID):
+            return self._filled_ok(self.cdp.form('[id="%s"]' % token[len(BY_ID):], value=value))
+        return self._filled_ok(self.cdp.form('[data-testid="%s"]' % token, value=value))
+
+    @staticmethod
+    def _filled_ok(out) -> bool:
+        """`cdp form` 说填上了没有 —— **只看它自己那句话**（报错就不算填上）。
+
+        ⚠️ 为什么必须有这一道（2026-09-26）：`common.CDPHelper.form` **不抛异常**，
+        它把 cdp 的 stderr 一起交回来；调用方不看就变成「接上了但不响」——
+        今天那一趟就是照这样在 trace 里写了三次「填了 qv3-fn」，而格子里一个字都没有 ✗。
+        """
+        said = str(out or "")
+        return "Error" not in said and "element not found" not in said
 
 
     def value_for(self, token, page, index=0):
@@ -368,6 +421,8 @@ class Filler:
         hay = str(token or "").lower()
         if hay.startswith(BY_PLACEHOLDER):
             hay = hay[len(BY_PLACEHOLDER):]
+        if hay.startswith(BY_ID):
+            hay = hay[len(BY_ID):]
         if any(s in hay for s in SKIP_FIELDS):
             return ""                       # 蜜罐：绝不填
         p = self.form_data if isinstance(self.form_data, dict) else {}
@@ -385,7 +440,7 @@ class Filler:
             if ((label and label in hay) or (kind and kind in hay)
                     or (hay and hay in blob)):
                 for key in (name, kind):
-                    got = p.get(key)
+                    got = p.get(key) or EXAMPLES.get(key)
                     if got:
                         return str(got)
                 #: ★ 名**先于** kind：`kind` 是「这一格填什么」那一档（这一站给的是笼统的
@@ -397,7 +452,7 @@ class Filler:
             name = FILL_ORDER[int(index)]
             spec = (FILLS or {}).get(name) or {}
             kind = str(spec.get("kind") or name)
-            got = p.get(name) or p.get(kind)
+            got = p.get(name) or p.get(kind) or EXAMPLES.get(name) or EXAMPLES.get(kind)
             return str(got) if got else (self._pool(name) or self._pool(kind))
         return ""
 
@@ -520,6 +575,10 @@ class Filler:
                 return False
             self.cdp.click('[data-sf-pick="1"]')
             return True
+        if token.startswith(BY_ID):
+            #: 只有 `id` 的元素（见 `BY_ID` 那段）：按 `[id=…]` 点。
+            self.cdp.click('[id="%s"]' % token[len(BY_ID):])
+            return True
         self.cdp.click('[data-testid="%s"]' % token)
         return True
 
@@ -600,33 +659,64 @@ class Filler:
                 todo = [t for t, v in (page.get("inputs") or []) if t and not v
                         and not any(s in str(t).lower() for s in SKIP_FIELDS)]
                 if todo:
-                    tid = todo[0]
-                    val = self.value_for(tid, page, todo.index(tid))
-                    if val and (tid, val) not in self._filled:
+                    #: ★ 2026-09-26（第四次真站试跑）：那一屏有 **三个** 格（full name / email /
+                    #: phone），原来只填 `todo[0]` 就 `continue` ⇒ 那个格被站点回读成空就又填它
+                    #: （每次还塞一个**新的随机值**）⇒ 后面两格**永远轮不到** ⇒ 提交一直被拒 ✗。
+                    #: ⇒ 一轮把**空着的格都填掉**（上限 3 格），而且**每一格记住第一次给的值**
+                    #: （重试就重试那一个值，不再换新的 —— 换来换去只会让站点永远收不到一个完整的表单）。
+                    filled_any = 0
+                    for tid in todo:
+                        if filled_any >= 3:
+                            break
+                        tries = self._field_tries.get(tid, 0)
+                        if tries >= 2:
+                            continue            # 这一格试过两次了：别再往里塞东西
+                        val = self._field_value.get(tid) or self.value_for(tid, page,
+                                                                           todo.index(tid))
+                        if not val or (tid, val) in self._filled:
+                            continue
                         if not self.fill(tid, val):
                             self.log.info("[%s] step %d: %s 没填上 ⇒ 下一轮再看", self.cid,
                                           step, tid)
                             self._trace(step=step, action="form", ok=False, progress=None,
                                         target={"testid": tid},
                                         progress_why="这一格没填上（不是「填过了」）")
-                            continue           # 填不上就下一轮再看（绝不谎报填了）
+                            continue             # 填不上就下一轮再看（绝不谎报填了）
+                        self._field_value[tid] = val
+                        self._field_tries[tid] = tries + 1
                         self._filled.add((tid, val))
-                        self._empty = 0      # ★ 只有**真填成功**才算是「这一屏有可动的东西」
+                        filled_any += 1
+                        self._empty = 0  # ★ 只有**真填成功**才算是「这一屏有可动的东西」
                         self.log.info("[%s] step %d: 填了 %s", self.cid, step, tid)
                         self._trace(step=step, action="form", ok=True, progress=False,
                                     target={"testid": tid}, note="填了 %s" % tid)
+                    if filled_any:
                         idle = 0
                         busy_since = None
                         continue
 
-                # ② 有题可选 ⇒ 挑一个（随机或第一个）
+                # ② 有题可选 ⇒ 挑一个（随机或第一个）—— ★ **同一屏只答一次**。
+                #: ★ 2026-09-26 真 trace（`job-c053e0b049f3`，用户原话「场上有选项但是选完还得点
+                #: 按钮那种场景他就过不去」）：那一趟 **58 次点击全是「答了第 N 题」** ——
+                #: ② 每轮都重新挑一个选项，于是**永远轮不到 ③ 去点 Continue**，
+                #: 在「先选一个、再点下一步」的那种屏上原地打转直到收摊。
+                #: ⇒ 记住「这一屏已经答过了」，下一轮直接去点 Next/Continue。
+                #: ⚠️ 只有**点成功**才记（点空了不记 ⇒ 下一轮还挑，保留重试）。
+                #: ⚠️ 点完**换屏**了 ⇒ 签名变 ⇒ 新屏照常挑 ✓（自动前进的那种漏斗不受影响）。
+                #: ⚠️ 签名**不含 `progress`**：答完一题站点常常把百分比往上推（实测 69% ⇒ 77%），
+                #: 带上它的话「同一屏」会被读成新屏 ⇒ 又答一次 ⇒ 在单页漏斗上反复点 ✗。
+                #: 题面（head）+ **选项那一串文字**才是「这是不是同一道题」的判据。
+                answered_sig = "%s|%s" % ((page.get("head") or "")[:60],
+                                          "|".join(str(o) for o in (page.get("options") or []))[:160])
                 pick = self.pick_option(page.get("options"))
-                if pick:
+                if pick and answered_sig != getattr(self, "_answered_sig", ""):
                     self._empty = 0
                     if self.click(pick):
                         answered += 1
                         idle = 0
                         busy_since = None
+                        self._answered_sig = answered_sig
+                        self._stuck_retries = 0      # 这一屏答成了 ⇒ 次数归零（见 ⑤）
                         self.log.info("[%s] step %d [%s] %s -> %s", self.cid, step,
                                       page.get("progress", "?"), (page.get("head") or "")[:48],
                                       str(pick)[:32])
@@ -639,6 +729,11 @@ class Filler:
                     self._trace(step=step, action="click", ok=False, progress=None,
                                 target={"token": str(pick)[:48]},
                                 progress_why="挑中的选项在页面上没找到（点了没点到）")
+                elif pick:
+                    #: ★ 2026-09-26：**这一屏已经答过了**（② 故意不再挑）⇒ 下一轮该去点下一步；
+                    #: 要是它就是没有「下一步」可点，⑤ 那句「没有可动作的东西」会误导人
+                    #: （屏幕上明明有选项）—— 所以把这件事**记下来**，⑤ 照着说。
+                    self._answered_but_stuck = True
 
                 # ③ 只剩 Next ⇒ 点它
                 if page.get("nextVisible"):
@@ -654,8 +749,7 @@ class Filler:
                                             "inputs": len(page.get("inputs") or []),
                                             "nextTxt": str(page.get("nextTxt") or "")[:24]})
                         continue
-                    sig = "%s|%s|%d" % (page.get("progress"), (page.get("head") or "")[:60],
-                                        len(page.get("options") or []))
+                    sig = answered_sig          # ← 与 ② 那把尺子同一处（别各拼一份）
                     if sig == getattr(self, "_last_next_sig", ""):
                         self._same_next = getattr(self, "_same_next", 0) + 1
                     else:
@@ -703,10 +797,26 @@ class Filler:
                     self.clear_cookies()
                 busy_since = None
                 idle += 1
-                self.log.info("[%s] step %d: 没有可动作的东西（%d）%s", self.cid, step, idle,
-                              head[:50])
+                #: ★ 2026-09-26：**已经答过、但没有「下一步」可点** —— 这是最容易被误读的一种空转
+                #: （屏幕上明明有选项，却说「没有可动作的东西」）。把真正的原因说出来。
+                why = "没有可动作的东西（%d）" % idle
+                if getattr(self, "_answered_but_stuck", False):
+                    self._answered_but_stuck = False
+                    why = ("这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（%d）"
+                           % idle)
+                    #: ★ 2026-09-26（第三次真站试跑逼出来的）：**点过了 ≠ 页面动了** ——
+                    #: `click()` 只保证「找到了那个元素、点了它」，站点忽略这一下是有可能的
+                    #: （实测：同一屏上再点一次，`progress` 一动不动）。原来那一屏就此**永远**
+                    #: 不再尝试（签名记着「答过了」）⇒ 空转到收摊 ✗。
+                    #: ⇒ 卡住时**放行再答一次**（随机会换个选项），最多 `STUCK_RETRIES` 次；
+                    #: 每次真答成功都会把 `idle` 清零，所以「一直答不动」仍会在 IDLE_LIMIT 收摊 ✓。
+                    if getattr(self, "_stuck_retries", 0) < STUCK_RETRIES:
+                        self._stuck_retries = getattr(self, "_stuck_retries", 0) + 1
+                        self._answered_sig = ""
+                        why += "｜放行再答一次（第 %d 次）" % self._stuck_retries
+                self.log.info("[%s] step %d: %s | %s", self.cid, step, why, head[:50])
                 self._trace(step=step, action="none", ok=None, progress=False,
-                            progress_why="没有可动作的东西（%d）" % idle)
+                            progress_why=why)
                 if idle >= IDLE_LIMIT:
                     self.log.error("[%s] 连 %d 步没有可动作的东西（答过 %d 题）—— 如实报失败",
                                    self.cid, idle, answered)
