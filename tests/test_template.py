@@ -1358,6 +1358,11 @@ class CDPHelper:
         # `pageLoaderRe` / `elementFromPoint` 那条顺序规矩是同一件事。
         if "at_point" in script:
             return json.dumps(getattr(STATE, "scene", "") or "")
+        if "data-sf-consent" in script:
+            #: ★ 2026-09-28：同意按钮**只有文字、没有 id** 时，产物按文字给它打标记
+            #: （`_MARK_CONSENT_BY_TEXT_JS`）⇒ 点还是走 `cdp click`。
+            STATE.actions.append(("mark", "consent"))
+            return json.dumps("marked")
         if "privacy" in script:              # 同意弹层那个探针（它按 cookie|consent|gdpr|privacy 判）
             return json.dumps(STATE.consent)
         # ⚠️ 顺序要紧：`_PAGE_LOADER_JS` 里**也用 `elementFromPoint`**
@@ -1665,12 +1670,42 @@ def test_without_an_overlay_nothing_is_clicked_for_it(sandbox, form_file):
     common = _stub(sandbox,
                    observe={"url": "https://example.test/", "actions": [], "fields": []},
                    diff={"actionable": True})
-    common.STATE.texts = ["Walk"]
     common.STATE.consent = ""            # 没有弹层
 
     module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
     clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
     assert clicks == ["#go"], clicks
+
+
+
+def test_a_consent_button_without_an_id_is_still_clicked(sandbox, form_file):
+    """★ 2026-09-28（用户看到的现场：**「有个弹窗挡住了」**，那一趟第 11 步勾同意框没成）：
+    同意条那颗按钮**只有文字、没有 id** 时也要点得掉。
+
+    原来探针里写着 `if(!b.id) continue;`（按钮必须带 id）—— 而现在自绘的同意条常常只有文字
+    ⇒ **一个都点不到** ⇒ 「什么都不做」⇒ 弹层留在页面上挡住后面每一步 ✗（那一趟就是这样：
+    第 11 步那个勾选框按声明找不到、第 12 步「Join Now」也没成）。
+    这一条钉住退路：按文字打标记（`data-sf-consent`）再走 `cdp click`（§5.2：动作一律走 cdp）。
+    """
+    module, _ = _load(
+        "run_consent_text",
+        template.render("example-consent-text", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.consent = "TEXT|Accept All Cookies"      # ← 只有文字、没有 id
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert '[data-sf-consent="1"]' in clicks, common.STATE.actions
+    assert clicks.index('[data-sf-consent="1"]') == 0, (
+        "弹层要在**第一步之前**点掉（否则第一步就点到它上面）：%s" % clicks)
+    assert ("mark", "consent") in common.STATE.actions, "没按文字打标记就点了？"
+
 
 
 def test_a_covered_element_is_not_clicked_and_does_not_report_ok(sandbox, form_file):

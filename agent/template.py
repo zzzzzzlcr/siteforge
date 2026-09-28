@@ -510,22 +510,38 @@ COOKIE_KIND = "cookie-banner"
 #: （文字 / id / class 里有没有 cookie|consent|gdpr|privacy），只是这里自己做一遍 ——
 #: 原因见 `_clear_obstructions` 的 docstring（生产那个 cdp 没有 observe）。
 #:
-#: 只认**有把握**的那一下：可见的同意类容器 + 带稳定 id 的按钮 + 文字属于
-#: 「接受/同意/关闭/拒绝」那一族。**找不到就什么都不做**（宁可不做，也不猜一条会点错的选择器）——
-#: 「点到弹层上」由 `_covered_by` 兜住，不会被记成做成了。
+#: 只认**有把握**的那一下：可见的同意类容器 + 按钮文字属于「接受/同意/关闭/拒绝」那一族，
+#: 按钮**带 id 就走 `#id`、只有文字就交回一句「按文字点」**（调用方打标记再点，见
+#: `_MARK_CONSENT_BY_TEXT_JS`）。**两者都找不到就什么都不做**（宁可不做，也不猜一条会点错的
+#: 选择器）；「点到弹层上」由 `_covered_by` 兜住，不会被记成做成了。
+#:
+#: ★ 2026-09-28（用户看到的现场：**「有个弹窗挡住了」**；那一趟第 11 步勾同意框没成）：
+#: 原来这里写着 `if(!b.id) continue;` —— 按钮**必须带 id**。而现在常见的同意条
+#: （自绘的那种）按钮只有文字、没有 id ⇒ **一个都点不到** ⇒ 「什么都不做」⇒ 弹层留着挡住 ✗。
+#: 两条一起改：① 没 id 的走「按文字打标记再点」；② 按 `_CONSENT_ROOTS_JS` **穿 shadow root**。
 #:
 #: ── 「页面上现在还有没有同意弹层」────────────────────────────
 #:
 #: 与上面那段是**两个问题**，所以是两段 JS（不是把上面那段改一改）：
-#:   上面那段问「我该点哪个按钮」—— 要点得着才算数，所以它要求**按钮带稳定 id**；
+#:   上面那段问「我该点哪个按钮」—— 要点得着才算数；
 #:   这一段问「弹层还在不在」—— 只是**判据**，所以它连按钮都不用找。
-#: 用上面那段来回答下面这个问题是**错的**：弹层在、而按钮没 id 时它会返回空串，
+#: 用上面那段来回答下面这个问题是**错的**：弹层在、而按钮没 id 时它会退到按文字那条路，
 #: 于是「弹层还在」被读成「弹层不在」。
+#:
+#: ★ 2026-09-28：**穿 shadow root**（web component 里的同意条原来直接看不见 ✗）——
+#: 与 `_PAGE_TEXT_JS` 同一套 roots 走法（`ShadowRoot` 没有 `getElementsByTagName`）。
+_CONSENT_ROOTS_JS = (
+    "var roots=[document],ri=0,all=[];"
+    "while(ri<roots.length){var r=roots[ri++];"
+    "var els=(r.getElementsByTagName?r.getElementsByTagName('*'):r.querySelectorAll('*'));"
+    "for(var j=0;j<els.length;j++){all.push(els[j]);"
+    "if(els[j].shadowRoot){roots.push(els[j].shadowRoot);}}}"
+)
 _CONSENT_BOX_JS = (
     "var boxW=/(cookie|consent|gdpr|privacy)/i;"
     "var vis=function(e){var r=e.getBoundingClientRect();"
     "return r.width>0&&r.height>0&&r.bottom>0&&r.top<window.innerHeight;};"
-    "var all=document.getElementsByTagName('*');"
+    + _CONSENT_ROOTS_JS +
     "for(var i=0;i<all.length;i++){"
     "  var b=all[i];"
     "  var label=String(b.id||'')+' '+String(b.className||'')"
@@ -599,24 +615,38 @@ _CONSENT_PROBE_JS = (
     "var btnW=/(accept|agree|allow|got it|close|reject|decline|deny|同意|接受|关闭)/i;"
     "var vis=function(e){var r=e.getBoundingClientRect();"
     "return r.width>0&&r.height>0&&r.bottom>0&&r.top<window.innerHeight;};"
-    "var all=document.getElementsByTagName('*');"
+    + _CONSENT_ROOTS_JS +
     "for(var i=0;i<all.length;i++){"
     "  var box=all[i];"
     "  var label=String(box.id||'')+' '+String(box.className||'')"
     "+' '+String(box.getAttribute&&box.getAttribute('aria-label')||'');"
     "  if(!boxW.test(label)||!vis(box)) continue;"
-    "  var inner=box.getElementsByTagName('*');"
+    "  var inner=(box.getElementsByTagName?box.getElementsByTagName('*'):box.querySelectorAll('*'));"
     "  for(var j=0;j<inner.length;j++){"
     "    var b=inner[j], tag=String(b.tagName||'').toLowerCase();"
     "    if(tag!=='button'&&tag!=='a'&&tag!=='input') continue;"
     "    var t=String(b.innerText||b.value||(b.getAttribute&&b.getAttribute('aria-label'))||'').trim();"
     "    if(!btnW.test(t)) continue;"
-    # 没有稳定地址就不点（宁可不做，也不猜一条会点错的选择器）
-    "    if(!b.id) continue;"
-    "    return '#'+b.id+'|'+t.slice(0,40);"
+    #: 有稳定地址 ⇒ 直接用；只有文字 ⇒ 交回一句「按文字点」（调用方打标记再点）
+    "    return (b.id?('#'+b.id):'TEXT')+'|'+t.slice(0,40);"
     "  }"
     "}"
     "return '';"
+)
+
+#: 按文字给同意按钮**打标记**（只有文字的那种）—— 与产物里「按占位符填」同一招：
+#: 找用 JS、点还是走 `cdp click`（§5.2），标记属性用完就清。
+_MARK_CONSENT_BY_TEXT_JS = (
+    "var want=%s;"
+    + _CONSENT_ROOTS_JS +
+    "var hit=null;"
+    "for(var i=0;i<all.length;i++){var b=all[i],tag=String(b.tagName||'').toLowerCase();"
+    "if(tag!=='button'&&tag!=='a'&&tag!=='input')continue;"
+    "var t=String(b.innerText||b.value||(b.getAttribute&&b.getAttribute('aria-label'))||'').trim();"
+    "if(t===want){hit=b;break;}}"
+    "if(!hit)return 'none';"
+    "for(var k=0;k<all.length;k++){if(all[k].removeAttribute)all[k].removeAttribute('data-sf-consent');}"
+    "hit.setAttribute('data-sf-consent','1');return 'marked';"
 )
 
 # ── 「这个 cdp 会不会做这件事」────────────────────────────
@@ -1830,15 +1860,31 @@ class Filler:
         （§4.6 的能力边界），而弹层恰恰在生产每单都出现。所以这里走 `eval`（**读**，§5.2 允许），
         点还是走 cdp 的 click。
 
-        只做**有把握**的那一下：得在一个可见的同意类容器里找到带稳定 id 的按钮，
-        且它的文字是「接受/同意/关闭/拒绝」那一族；找不到就**什么都不做**（宁可不做），
+        只做**有把握**的那一下：得在一个可见的同意类容器里找到一个按钮，它的文字属于
+        「接受/同意/关闭/拒绝」那一族 —— **带 id 就点 `#id`**，**只有文字就按文字打标记再点**
+        （★ 2026-09-28，用户看到的现场「有个弹窗挡住了」；原来那种「没 id 就什么都不做」
+        等于把弹层留在页面上挡住后面每一步 ✗）。两条都走不通就**什么都不做**（宁可不做），
         由 `_covered_by` 保证「点到弹层上」不会被记成做成了。
         """
         raw = self._ev(_CONSENT_PROBE_JS)
         if not raw or "|" not in raw:
             return                      # 没有弹层（正常情况）—— 静默是对的，这是「无事可做」
-        selector, text = raw.split("|", 1)
+        how, text = raw.split("|", 1)
+        if how == "TEXT":               # 只有文字：打标记再点（点还是走 cdp）
+            marked = self._ev(_MARK_CONSENT_BY_TEXT_JS % json.dumps(text))
+            if "marked" not in str(marked or ""):
+                self.log.info("[%s] 同意弹层那颗按钮（%r）没有 id、按文字也没标记上 —— 不猜，"
+                              "留给 `_covered_by` 兜（下一步会被挡住并如实失败）", self.cid, text[:30])
+                return
+            selector = '[data-sf-consent="1"]'
+        else:
+            selector = how
         out = self.cdp.click(selector)   # 动作一律走 cdp（§5.2）
+        if how == "TEXT":
+            #: 标记用完就清（不清的话下一屏上会留一个 `[data-sf-consent="1"]`，那是脏状态）
+            self._ev("var a=document.getElementsByTagName('*');"
+                     "for(var i=0;i<a.length;i++){if(a[i].removeAttribute)"
+                     "a[i].removeAttribute('data-sf-consent');}return 'clean';")
         self.log.info("[%s] %s把同意弹层点掉了（%s，%r）：%s", self.cid,
                       ("%s之后 " % why) if why else "开跑前 ", selector, text[:30],
                       "看起来成了" if _ok(out) else "**没成**")
