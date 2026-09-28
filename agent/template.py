@@ -573,7 +573,13 @@ _CONSENT_BOX_JS = (
 #: 判据与 `_cover_once` 同源（`elementFromPoint` + 自己/后代/祖先都算同一个东西）。
 #: ⚠️ 只在**没做成**那一步探一次（§13：重跑必须便宜），而且**一次 eval 全给**（不是四次）。
 _SCENE_JS = (
-    "var out={ready:String(document.readyState||''),overlay:'',at_point:'',texts:[]};"
+    #: ★ 2026-09-28（用户点的那件事：**「这类问题下次不用开窗就能判」**）：再加三样 ——
+    #: `dpr` / `vw,vh` / `ua`。为什么：那一趟 `cdp screenshot` 一直报「图 984 设备像素 vs
+    #: 视口×dpr = 2952」⇒ 没有这三个数，只能靠开窗去猜「窗口到底多大、报的什么 dpr」；
+    #: 有了它们，日志里一眼就能看出「窗口与指纹不一致」。
+    "var out={ready:String(document.readyState||''),overlay:'',at_point:'',texts:[],"
+    "dpr:(window.devicePixelRatio||1),vw:window.innerWidth,vh:window.innerHeight,"
+    "ua:String(navigator.userAgent||'').slice(0,160)};"
     "var boxW=/(cookie|consent|gdpr|privacy)/i;"
     "var vis=function(e){var r=e.getBoundingClientRect();"
     "return r.width>0&&r.height>0&&r.bottom>0&&r.top<window.innerHeight;};"
@@ -1979,6 +1985,36 @@ class Filler:
             return ""
         return got[len("COVER|"):]
 
+    def _tabs_now(self):
+        """**当时所有页/tab 的地址**（只读；读不回来就说读不回来）。★ 2026-09-28。
+
+        为什么要有它（用户 2026-09-28 那条分析）：`target=_blank` 那一类点击会**新开一个页**，
+        而脚本还在老页上找元素 ⇒ 现场只有一句「没找到元素」，判不出「其实是切页没跟上」✗；
+        而开窗复验又贵。这一行把「当时一共几个页、各自什么地址、哪个是 active」直接写进 trace。
+        `cdp targets` 一次调用、只读 —— 与「切过去」是两件事：这一格只**记录**，不改行为。
+        """
+        host = str(getattr(self.cdp, "host", "") or "")
+        port = str(getattr(self.cdp, "port", "") or "")
+        if not host or not port:
+            return {"unreadable": "这个 cdp 帮手没给 host/port"}
+        try:
+            done = subprocess.run([CDP_BIN, "targets", "--host", host, "--port", port],
+                                  capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"unreadable": "%s: %s" % (type(exc).__name__, str(exc)[:60])}
+        try:
+            rows = json.loads(done.stdout or "[]")
+        except ValueError:
+            return {"unreadable": str(done.stdout or done.stderr or "")[:80]}
+        got = []
+        for r in (rows if isinstance(rows, list) else []):
+            if not isinstance(r, dict):
+                continue
+            got.append({"url": str(r.get("url") or "")[:120],
+                        "title": str(r.get("title") or "")[:60],
+                        "active": bool(r.get("active"))})
+        return got
+
     def _covered_by(self, selector, frame_id="", until=None):
         """这个选择器指的元素**是不是被别的东西盖着**。盖着就返回盖它的东西（读，不动页面）。
 
@@ -2423,6 +2459,12 @@ class Filler:
                     # ⚠️ 探不到**不许静默** —— 交一句「探不到 + 它回了什么」，
                     # 读 trace 的人要能分清「没有现场」与「现场一切正常」。
                     scene = {"unreadable": str(raw or "")[:80]}
+                if isinstance(scene, dict):
+                    #: ★ 2026-09-28（用户点的那件事）：**把当时所有的页/tab 也录下来** ——
+                    #: 「点完之后新开了一个页、而脚本还在老页上」这类缺陷（`target=_blank`），
+                    #: 现场只有一句「没找到元素」是判不出来的 ✗，而开窗复验又贵。
+                    #: `cdp targets` 只读、一次调用；读不回来就记 `unreadable`（不许编）。
+                    scene["tabs"] = self._tabs_now()
             except Exception as exc:               # noqa: BLE001 —— 探现场不许带塌这一步
                 scene = {"unreadable": "%s: %s" % (type(exc).__name__, str(exc)[:60])}
         try:
