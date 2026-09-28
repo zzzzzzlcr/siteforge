@@ -2432,14 +2432,6 @@ class Filler:
         self._wait_when(when, timeout=WAIT_WHEN_SECONDS)
         self._wait_ready(timeout=WAIT_READY_SECONDS)
         ok = self._matches(when)
-        if not ok:
-            #: ★ 2026-09-28（travelandleisure 生产 26221672 实测）：判「不像」时顺手看一眼
-            #: **这一页到底是不是内容页** —— 风控页 / 空白页 / 普通判据不匹配，原先在日志里
-            #: 长得一模一样，读的人会一直往判据上找，而前两样**不是脚本能解决的**。
-            #: **纯记录，不改行为**（下面那句 why 与返回值一个字不动）。
-            _t = _page_trouble(self.page_signature())
-            if _t:
-                self.trouble_steps.append((self.step, _t))
         #: ⚠️ why 必须在**判的这一刻**算死，不许事后重算 ——
         #: 事后再看一眼时页面已经变了，说出来的话就跟结论打架。
         self._when_why_cache = "" if ok else self._when_why(when)
@@ -2772,9 +2764,20 @@ class Filler:
                                 "先看这句里的 why（判据要的那段 vs 页面上实际有的那段）——"
                                 "多半是**判据本身不对**（跨元素拼接 / 瞬时状态 / 换了环境）。",
                                 self.cid, self.skipped_in_a_row, name)
+                        #: ★ 2026-09-28（travelandleisure 生产 26221672 实测）：跳过时顺手判一眼
+                        #: **这一页到底是不是内容页** —— 风控页 / 空白页 / 普通判据不匹配，
+                        #: 原先在日志里**长得一模一样**，读的人会一直往判据上找，而前两样
+                        #: **不是脚本能解决的**（要换出口 IP/降频、或查加载链路）。
+                        #: 记在这里（不是 `_applies` 里）是因为**只有这里的 `index` 是准的**：
+                        #: `applies` 是在 while 之前算好的，那时 `self.step` 还是上一步的值。
+                        #: 签名下面那句本来就要算一次 —— 借过来，不额外开一次 eval。
+                        _sig = self.page_signature() or ""
                         self.log.info("[%s] 第 %d 步**跳过**：这一页不像「%s」那个状态（%s）"
                                       "；页面上现在写着「%s」", self.cid, index, name, why,
-                                      (self.page_signature() or "")[:80])
+                                      _sig[:80])
+                        _trouble = _page_trouble(_sig)
+                        if _trouble:
+                            self.trouble_steps.append((index, _trouble))
                         self._trace({"step": index, "action": (step.get("action") or ""),
                                      "skipped": True, "state": name, "why": why,
                                      "note": "第 %d 步跳过：这一页不像「%s」那个状态（%s）"
