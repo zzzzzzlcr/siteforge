@@ -489,6 +489,24 @@ class Filler:
                     return got
         if "post" in kind or "zip" in kind:
             return random.choice(("SW1A 1AA", "M1 1AA", "B1 1AA", "LS1 1AA"))
+        #: ★ 2026-09-28（用户报的那一趟 `georgiapower`：「我跟他说 street 没填…他还是没改」）：
+        #: 产物里那一格的 `FILLS` **有** `city`、`country`、`search_for_address`，可 `_pool`
+        #: **一个分支都没有** ⇒ 一律返回空串 ⇒ `value_for` 给不出值 ⇒ **那一格永远填不上** ✗✗
+        #: （街/城市/州/国家这几个在真站上都是必填）。补上这几档：
+        #: ⚠️ 优先用账本里那趟**真用过的值**（`EXAMPLES`，`value_for` 里先查它）——
+        #: 这里是**没有账本值时**的兜底，形状按最常见的美国地址写（邮编那档仍是英国形状，
+        #: 谁与谁配套由站点的国家选择决定；填错了站上会拒，不会静默成"成功"）。
+        if "street" in kind or "address" in kind or "line1" in kind or "addr" in kind:
+            return "%d %s %s" % (random.randint(100, 9899),
+                                 random.choice(("Maple", "Oak", "Cedar", "Pine", "Elm", "Birch")),
+                                 random.choice(("St", "Ave", "Rd", "Ln", "Dr")))
+        if "city" in kind or "town" in kind:
+            return random.choice(("Springfield", "Riverton", "Fairview", "Greenville", "Madison",
+                                  "Clinton", "Georgetown", "Salem"))
+        if "state" in kind or "province" in kind or "county" in kind:
+            return random.choice(("CA", "TX", "FL", "NY", "GA", "OH", "IL", "NC"))
+        if "country" in kind:
+            return random.choice(("United States", "United Kingdom"))
         return ""
 
     # ---------- 挑哪个（生成器填的那一格）----------

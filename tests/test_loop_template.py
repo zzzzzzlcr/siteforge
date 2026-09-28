@@ -381,3 +381,43 @@ def test_the_phone_field_never_takes_the_profile_value(tmp_path, monkeypatch):
     assert got.startswith("0207") and len(got) == 11, "没按 0207+7 位现编：%r" % (got,)
     assert got != "9998887777", "取了资料里那个号"
 
+
+
+def test_street_and_city_fields_get_a_value(tmp_path, monkeypatch):
+    """★ 2026-09-28 用户报的那一趟（`georgiapower`）：「我跟他说 street 没填…他还是没改」。
+
+    查出来的第一层：产物里 `FILLS` **有** `city` / `country` / `search_for_address`，
+    可 `_pool` **一个分支都没有** ⇒ 一律空串 ⇒ **那几格永远填不上** ✗。
+    这条钉：street / city 现在拿得到值；而且**账本里真用过的值仍然优先**。
+    """
+    def _fill(src_prov, page_input):
+        calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+        page = {"url": "https://us.test/lead", "head": "Address", "progress": "",
+                "inputs": [[page_input, ""]], "options": [], "nextVisible": False, "nextTxt": ""}
+        _fake_common(monkeypatch, page, calls)
+        src = template_loop.render_loop(
+            "addrsite", "Thank you", "thank-you",
+            {"street": {"kind": "street", "label": "Street"},
+             "city": {"kind": "city", "label": "City"}},
+            src_prov)
+        path = tmp_path / "addr.py"
+        path.write_text(src, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("addr_product", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        form = tmp_path / "form.json"
+        form.write_text("{}", encoding="utf-8")
+        module.Filler("ws://x/1", str(form), "cid", no_report=True).run(max_steps=1)
+        return str(calls["form"][0][1].get("value") or "") if calls["form"] else ""
+
+    street = _fill(dict(PROV, fill_order=["street"]), "\u0002Street")
+    assert street, "street 那一格还是空的"
+    assert any(w in street for w in ("St", "Ave", "Rd", "Ln", "Dr")), street
+
+    city = _fill(dict(PROV, fill_order=["city"]), "\u0002City")
+    assert city, "city 那一格还是空的"
+
+    #: 账本里真用过的值（`examples`）**优先**——那是那一站收过的地址形状
+    from_ledger = _fill(dict(PROV, fill_order=["street"], examples={"street": "1234 Ledger Ave"}),
+                        "\u0002Street")
+    assert from_ledger == "1234 Ledger Ave", from_ledger
