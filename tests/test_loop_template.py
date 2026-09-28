@@ -350,3 +350,34 @@ def test_an_input_that_only_has_an_id_is_filled_by_id(tmp_path, monkeypatch):
     assert module.Filler._filled_ok("Error: scroll mouse wheel failed: element not found") is False
     assert module.Filler._filled_ok("ok") is True
     assert module.Filler._filled_ok("") is True
+
+
+def test_the_phone_field_never_takes_the_profile_value(tmp_path, monkeypatch):
+    """★ 2026-09-26 用户点名（solarincentives）：「手机号别取资料」。
+
+    那一格**永远现编**（`0207` + 7 位）—— 资料里那份是别人填过的真实号，同一串在站上反复
+    出现迟早被认出来。这条把「资料里给了 phone 也不许用」钉住（正控：别的格照旧用资料里的值）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://uk.test/lead", "head": "Phone", "progress": "",
+            "inputs": [["\u0002Enter your phone", ""]], "options": [], "nextVisible": False,
+            "nextTxt": ""}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop("ukphone", "Thank you", "thank-you",
+                                    {"phone": {"kind": "phone", "label": "Enter your phone"}},
+                                    dict(PROV, fill_order=["phone"]))
+    path = tmp_path / "ukphone.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("uk_phone_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text(json.dumps({"phone": "9998887777"}), encoding="utf-8")   # ← 资料里给了号
+    module.Filler("ws://x/1", str(form), "cid", no_report=True).run(max_steps=1)
+
+    assert calls["form"], "一格都没填"
+    _sel, kw = calls["form"][0]
+    got = str(kw.get("value") or "")
+    assert got.startswith("0207") and len(got) == 11, "没按 0207+7 位现编：%r" % (got,)
+    assert got != "9998887777", "取了资料里那个号"
+

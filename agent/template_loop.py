@@ -439,6 +439,13 @@ class Filler:
                                              ((spec.get("target") or {}).get("selectors") or [])]).lower()
             if ((label and label in hay) or (kind and kind in hay)
                     or (hay and hay in blob)):
+                if self._is_phone(name, kind):
+                    #: ★ 2026-09-26 用户点名（solarincentives 那一站）：「**手机号别取资料**」——
+                    #: 那一格永远是**现编的号码**：资料里那份是别人填过的真实号，同一串在站上
+                    #: 反复出现迟早被认出来。账本里那一趟真用过的值还能用（那是**这一站**收过的
+                    #: 形状，比如美国号），再不然就按池子现编。
+                    return (EXAMPLES.get(name) or EXAMPLES.get(kind)
+                            or self._pool(name) or self._pool(kind))
                 for key in (name, kind):
                     got = p.get(key) or EXAMPLES.get(key)
                     if got:
@@ -452,9 +459,17 @@ class Filler:
             name = FILL_ORDER[int(index)]
             spec = (FILLS or {}).get(name) or {}
             kind = str(spec.get("kind") or name)
+            if self._is_phone(name, kind):        # 同上：号码那一格**不取资料**
+                return (EXAMPLES.get(name) or EXAMPLES.get(kind)
+                        or self._pool(name) or self._pool(kind))
             got = p.get(name) or p.get(kind) or EXAMPLES.get(name) or EXAMPLES.get(kind)
             return str(got) if got else (self._pool(name) or self._pool(kind))
         return ""
+
+    @staticmethod
+    def _is_phone(name, kind) -> bool:
+        """这一格是不是**电话号**（`phone` / `tel` / `mobile` 任何一种写法都算）。"""
+        return any(s in ("%s %s" % (name, kind)).lower() for s in ("phone", "tel", "mobile"))
 
     def _pool(self, kind):
         kind = (kind or "").lower()
