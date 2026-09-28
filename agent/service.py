@@ -5525,10 +5525,12 @@ class Service:
         ask_with = _backend_key(getattr(body, "url", ""), getattr(body, "fix_site", ""),
                                 getattr(body, "fix_site_url", ""))
         try:
-            #: ★ 停用的站要不要照修，**运营说了算**（2026-09-21）：勾了才把 debug 那一份
-            #: 当底稿（见 `fmr._disabled_py_source`）。默认 False ⇒ 门口那句人话一个字不变。
-            script = self._fmr.form_script(ask_with,
-                                           allow_disabled=bool(getattr(body, "allow_disabled", False)))
+            #: ★ 2026-09-26（用户裁定）：「这个读取带上 `type=debug` 就能读到，**固定**就不会报
+            #: 那个」—— ⇒ 这条读**始终**带 debug，不再看面板那个勾（勾还在，但它现在的意思只剩
+            #: 「这一趟是**停用行**、别自动上传」，见 `brief.allow_disabled`）。
+            #: ⚠️ 两件不放松：① 底稿是**哪一份**照样如实记（`fix_base`，来自返回载荷的
+            #: `debug_read` / `disabled` 两格）并摆在闸上；② 「停用 ≠ 没在跑」那条提醒一个字不删。
+            script = self._fmr.form_script(ask_with, allow_disabled=True)
         except fmr.FmrUnmeasured as exc:
             # 读不到 / 没这个站 / 没给 url —— 全走既有的「量不到」那张表（非 2xx + 原话）。
             raise self._unmeasured_to_http(exc)
