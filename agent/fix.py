@@ -662,6 +662,11 @@ STATES_SYSTEM = """\
   `fill_order`（认不出的格子按这个顺序兜底填）、`examples`（每一格**站点真收下过**的值）、
   `pre_steps`（进到那一屏**之前**要先做的几步：`[{"action": "click"/"scroll", "target": …}]`）、
   `why`（这一版为什么这么判 —— 一句人话，写给人看的，不改变行为）。
+- `shape`：产物的**形态**。`"table"` = 固定步骤表（按网址/文案**逐步匹配** —— 题目顺序一变、
+  某一步提前出现，那一步就不成立，整组**静默跳过**）；`"loop"` = 步进循环型（每一轮读页面、
+  有什么做什么 ⇒ 顺序变了照样做完）。人要的是「有时提前出现也得做完」时，这一格就是那个开关。
+  ⚠️ **只有在表里给了 `loop` 那一格时才许写 `"loop"`**：那一格在 = 这一趟算得出循环型
+  （账本 + 网址判据都齐）。没给就别写 —— 那样换不成，我会**当场停下**（不默默留在老形态上）。
 - `success_text` / `success_urls`：什么算成功。⚠️ **人明确给了新判据才改** ——
   放松它 = 「跑到底再谎报成功」，那是这套工具最忌讳的一条。
 
@@ -676,6 +681,8 @@ STATES_SYSTEM = """\
   ⚠️ 一处都没改就写 `"note": "照原样：人说的那一处，这张表里没有能改它的格子"` ——
   **假装改过比不改更坏**（把一个值换成等价的写法，下一遍自测还是同一个结果，
   而人以为改过了）。
+
+- **要换形态**就带上 `"shape": "loop"`（规矩见上面那一格）—— 顺序会变的那些站就靠它。
 - 不确定的（选择器、字段名、值）**不要编**：写进 `note` 说清缺什么。"""
 
 #: `loop` 那一格只认这几个键 —— **正身是 `graph._loop_spec` / `graph._loop_source` 读的那几格**
@@ -684,7 +691,7 @@ LOOP_KEYS = ("pick", "max_steps", "idle_limit", "busy_timeout", "arrive_url",
              "fill_order", "examples", "pre_steps", "why")
 
 #: 摆给模型的那几格（**只有这几格**：内部状态不上桌 —— 摆出去就等于给了它一个改内部的口子）。
-_TABLE_KEYS = ("success_text", "success_urls", "states", "fills", "loop")
+_TABLE_KEYS = ("shape", "success_text", "success_urls", "states", "fills", "loop")
 
 #: JSON 围栏。⚠️ **不复用 `_CODE_FENCE`**：那一条只认 `python|py|diff`，
 #: ```` ```json ```` 那种匹配不上（会退到「整段原话」那条路上，而那段里带着说明文字）。
@@ -749,6 +756,14 @@ def states_from_reply(spec: dict, reply: str) -> tuple:
             bad.append("`fills` 得是「字段名 → 值」那样一张表")
         else:
             new["fills"] = got["fills"]
+    if "shape" in got:
+        #: ★ 2026-09-28：形态那一格（`table` / `loop`）。**这里只管形状对不对** ——
+        #: 「这一趟换不换得成」是图那一边的事（`graph._can_loop`）：换不成它会**当场停下
+        #: 点名**，不许在这儿悄悄吞掉（吞掉就是「话说了、产物没变」那个病）。
+        if str(got["shape"] or "").strip().lower() not in ("table", "loop"):
+            bad.append('`shape` 只能是 `"table"` 或 `"loop"`')
+        else:
+            new["shape"] = str(got["shape"]).strip().lower()
     if "states" in got:
         if not isinstance(got["states"], list) or \
                 any(not isinstance(x, dict) for x in got["states"]):

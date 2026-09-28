@@ -1039,6 +1039,29 @@ def _loop_spec(journey, funnel: dict) -> dict:
             "why": str(funnel.get("why") or "")}
 
 
+
+def _can_loop(journey, funnel, state) -> bool:
+    """这一趟**换得成**步进循环型吗（三条前提全要，`_why_no_loop` 逐条说为什么）。
+
+    ⚠️ 这一格同时是**提示词里那一格 `loop` 出不出现在表上的判据**：表上有 `loop` = 换得成
+    （那个「改稿那双手」据此写 `{"shape": "loop"}`）—— 两边必须是**同一条判据**，
+    不然它会照着一个表上没给的口子写（然后我们这边拒绝，白跑一轮）。
+    """
+    return (journey is not None and funnel is not None
+            and bool(str(funnel.get("url") or "").strip())
+            and bool(str(state.get("success_urls") or "").strip()))
+
+
+def _why_no_loop(journey, funnel, state) -> str:
+    """换不成的那**一条**原因（人话，逐条对着 `_can_loop` 的三条前提）。"""
+    if journey is None:
+        return "这一趟是**修站**那条路（没有探路账本）—— 循环型要按账本算「怎么走」，算不出来"
+    if funnel is None or not str(funnel.get("url") or "").strip():
+        return "账本里**没有带地址的页** —— 算不出「哪一屏算进到里面了」"
+    return ("**没人给网址判据**（面板上那一格空着）—— 循环型只看网址，"
+            "这一条不给就只能产固定步骤表（那一条至少能靠正文判）")
+
+
 def _loop_source(state, deps: Deps, *, report) -> str:
     """这一版**步进循环型**的源码（`draft` 与交付前重渲**同一处** —— 两处各写一遍一定会漂）。
 
@@ -1121,21 +1144,49 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     #: 「跑到底再谎报成功」是本套最忌讳的那类谎）。人只给了正文判据时，照旧产固定步骤表
     #: （那一条能靠正文判），并且**把为什么写在 `shape_why` 里**（人看得见，不用去猜）。
     shape, loop_spec, shape_why = "table", {}, ""
-    if journey is not None:
-        funnel = template_loop.funnel_states(journey)
+    funnel = template_loop.funnel_states(journey) if journey is not None else None
+    if funnel is not None:
         shape_why = funnel["why"]
         if funnel["states"] and str(state.get("success_urls") or "").strip():
             shape, loop_spec = "loop", _loop_spec(journey, funnel)
         elif funnel["states"]:
             shape_why = funnel["why"] + "；但**没给网址判据** —— 循环型只看网址，照旧产固定步骤表"
-    #: ★ 2026-09-28：**先把形态定下来，再叫改稿那双手改** —— 它拿到的表里要带**循环型现在
-    #: 那几格旋钮**（`loop`）：「把 max_steps 调大」这种话，看不见现值就只能猜一个数（编值）。
-    if shape == "loop":
-        spec["loop"] = dict(loop_spec)
+    #: ★ 2026-09-28：**先把形态定下来，再叫改稿那双手改** —— 它拿到的表里要带**循环型那几格
+    #: 旋钮**（`loop`）与**现在的形态**（`shape`）：
+    #:   - 旋钮看不见现值 ⇒ 「把 max_steps 调大」这种话它只能猜一个数（编值）；
+    #:   - `loop` **在不在** = 「这一趟换不换得成循环型」那一格（`_can_loop`，**同一条判据**）——
+    #:     它据此才敢写 `{"shape": "loop"}`（换不成会当场停下，见下面那一段）。
+    if shape == "loop" or _can_loop(journey, funnel, state):
+        spec["loop"] = dict(loop_spec or _loop_spec(journey, funnel))
+    spec["shape"] = shape
 
     spec = deps.write(spec, feedback)
+    #: ★ 2026-09-28（运营那一刻的原话：「年龄有时候会提前出现，能改成自适应吗」）：**形态也交给
+    #: 这双手**。固定步骤表那一族靠 `when` 逐步匹配 —— 题目**提前出现**时那一步不成立、整组
+    #: **静默跳过**；步进循环型每一轮读页面、有什么做什么，顺序变了照样做完。所以这一格
+    #: （`shape`）是模型能改的：改得成就换、重渲、重自测。
+    #: ⚠️ **换不成要当场停下点名**，不许默默留在老形态上 —— 「话说了、产物没变」正是这一片要
+    #: 治的病（用户就是照着那个症状来问的）。判据与给表那一条同源（`_can_loop`）。
+    want = str(spec.get("shape") or "").strip().lower()
+    if want and want != shape:
+        if want == "loop" and _can_loop(journey, funnel, state):
+            shape, loop_spec = "loop", _loop_spec(journey, funnel)
+            shape_why = ("改稿那双手按人说的换了形态：**步进循环型**（顺序会变也照样做完）—— %s"
+                         % (funnel.get("why") or ""))
+        elif want == "table":
+            shape, loop_spec = "table", {}
+            shape_why = "改稿那双手按人说的换了形态：**固定步骤表**（按网址/文案逐步匹配）。"
+        else:
+            out.update({"end_reason": END_DRAFT_FAILED,
+                        "end_note": ("改稿那双手要把产物改成「%s」，但这一趟换不成：%s。\n"
+                                     "（循环型只看**网址** —— 没有网址判据的产物会「跑到底再说"
+                                     "自己成功」，那是本套最忌讳的那类谎。）" % (want,
+                                       _why_no_loop(journey, funnel, state)))})
+            return out
+
     #: 它回来的那几格**按白名单**合到这一份上（`fix.states_from_reply` 已经挡过一次；
     #: 这里是第二道：从别处塞进来的 `loop` 也不许长出 `_loop_source` 不认的键）。
+    #: ⚠️ 合的顺序是**先换形态再合旋钮**：换过来的那一份 `_loop_spec` 是底，模型说的盖在上面。
     if isinstance(spec.get("loop"), dict):
         loop_spec.update({k: v for k, v in spec["loop"].items() if k in fix_mod.LOOP_KEYS})
     #: ponytail: 循环型那一支**仍然不读 `states`** —— 模型改它的 `states` 只有提示词里那句

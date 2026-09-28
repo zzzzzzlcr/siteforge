@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT))
 from agent import browser_agent, fix, graph, service  # noqa: E402
 from test_graph import SITE, SUCCESS, URL, _brief, _build, _deps, _drive  # noqa: E402
 from test_service_artifact import _client, _factory, _out_dir  # noqa: E402
+from agent.state import END_DRAFT_FAILED  # noqa: E402
 
 SAID = "年龄有时候会提前能修复自适应吗"
 
@@ -268,3 +269,79 @@ def test_without_a_model_key_the_service_does_not_pretend(tmp_path, monkeypatch)
     deps = box[-1]
     assert deps.write is graph._writer_from_journey, \
         "没 key 时接了一双假的手（那会让「改不了」看起来像「改过了」）"
+
+
+# ────────── 形态那一格：话能让产物**变成自适应的形状**（2026-09-28，运营点名要的） ──────────
+#
+# 为什么单开一节：「年龄有时候会提前出现，能改成自适应吗」——那一句要的不是某个值，
+# 而是**换一种产物**（固定步骤表按 `when` 逐步匹配，题提前出现那一步就不成立、整组静默跳过；
+# 步进循环型每一轮读页面、有什么做什么）。所以形态这一格也交给了改稿那双手。
+
+
+def _two_page_journey():
+    """一份**不是**单页漏斗的账本（2 个状态共用地址 —— 差一个才够 `LOOP_MIN_STATES`）。"""
+    journey = _funnel_journey()
+    journey.pages = journey.pages[:2]
+    return journey
+
+
+def test_the_prompt_says_when_the_shape_may_be_switched():
+    """提示词里要说清 `shape` 是什么、以及**什么时候才许**改成 `loop`（不然它白写一轮）。"""
+    assert "`shape`" in fix.STATES_SYSTEM
+    assert '"loop"' in fix.STATES_SYSTEM and '"table"' in fix.STATES_SYSTEM
+    assert "给了 `loop` 那一格" in fix.STATES_SYSTEM, "没写「什么时候才许换」"
+    assert "静默跳过" in fix.STATES_SYSTEM, "没写清固定步骤表为什么会漏题"
+
+
+def test_a_shape_change_is_accepted_only_for_the_two_names():
+    """`shape` 只收那两个字；别的（包括「自适应」这种人话）⇒ 整份退回。"""
+    spec = {"site": SITE, "shape": "table", "fills": {}, "states": []}
+    new, notes = fix.states_from_reply(spec, '{"shape": "loop", "note": "按人说的换成循环型"}')
+    assert new["shape"] == "loop" and notes == ["按人说的换成循环型"]
+
+    for junk in ('{"shape": "自适应", "note": "x"}', '{"shape": 1, "note": "x"}'):
+        back, bad = fix.states_from_reply(spec, junk)
+        assert back == spec, junk
+        assert bad and "shape" in bad[0], bad
+
+
+def test_the_writer_can_switch_a_fixed_table_artifact_to_the_loop_shape(tmp_path):
+    """★ 那句话的正解：`{"shape": "loop"}` ⇒ 交出去的产物**变成循环型**（顺序会变也做完）。
+
+    「换得成」与「表里给不给 `loop` 那一格」必须是**同一条判据**（`graph._can_loop`）——
+    这一条把两边一起钉住：这一趟是非漏斗多页站（2 页共用地址），默认产固定步骤表，但
+    账本 + 网址判据齐 ⇒ 表里**有** `loop`（换得成），于是 `shape` 这一格才敢写。
+    """
+    seen: list = []
+
+    def write(spec, feedback, n):
+        seen.append({"现在的形态": spec.get("shape"), "表里有 loop": "loop" in spec})
+        return fix.states_from_reply(spec, '{"shape": "loop", "note": "按人说的换成循环型"}')[0]
+
+    deps, rec = _deps(journey=_two_page_journey(), write=write)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path, success_urls="Thank you"))
+
+    assert out["end_reason"] == "delivered", out.get("end_note")
+    assert seen[0] == {"现在的形态": "table", "表里有 loop": True}, \
+        "表里既要说清现在的形态、也要把「换得成」那一格摆出来：%r" % (seen[0],)
+    assert out["shape"] == "loop", out.get("shape_why")
+    src = pathlib.Path(out["py_path"]).read_text(encoding="utf-8")
+    assert "MAX_STEPS" in src and "ARRIVE_URL" in src, "交出去的还是固定步骤表那一份"
+    assert "改稿那双手按人说的换了形态" in out["shape_why"], out["shape_why"]
+
+
+def test_asking_for_the_loop_without_a_url_judge_stops_loudly(tmp_path):
+    """换不成时**当场停下点名** —— 不许默默留在老形态上（那正是「话说了、产物没变」那个病）。"""
+    def write(spec, feedback, n):
+        assert "loop" not in spec, "网址判据都没给，这一格不该摆出来（它会白写一轮）"
+        return fix.states_from_reply(spec, '{"shape": "loop", "note": "按人说的换成循环型"}')[0]
+
+    deps, rec = _deps(journey=_funnel_journey(), write=write)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))          # ← 没给 success_urls
+
+    assert out["end_reason"] == END_DRAFT_FAILED, out.get("end_note")
+    assert "网址判据" in out["end_note"], out["end_note"]
+    assert rec.selftest == [], "换不成就不该去动浏览器"
+    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
