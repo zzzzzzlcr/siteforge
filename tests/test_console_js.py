@@ -118,6 +118,18 @@ NO_ART = {"url": None, "filename": None, "path": None, "say": NO_ART_SAY}
 #: 那样「那一步在」会让「下载不在」这条断言**永远假绿**。
 STEP_MARK = 'data-artifact-step="1"'
 DL_MARK = 'data-download="1"'
+#: ★ 2026-09-26（用户点名「这个逻辑还差点吧，就是直接上传到 FMR」）：产物那一步自带的**上传**
+#: 按钮。与上面两个名字**不许互相包含**（同上那条理由）。
+UP_MARK = 'data-upload-fmr="1"'
+
+
+def _artifact_li(html: str) -> str:
+    """产物那一步那一个 `<li>` 的 HTML —— 用来量「按钮是不是**长在它里面**」。"""
+    at = html.find(STEP_MARK)
+    if at < 0:
+        return ""
+    end = html.find("</li>", at)
+    return html[at:end if end >= 0 else len(html)]
 
 
 def _thin(text: str) -> tuple:
@@ -566,11 +578,10 @@ def test_the_download_is_not_there_until_the_artifact_really_is(tmp_path):
     marks = out["paintMarks"]
     assert marks["afterArtifact"] > marks["afterLoad"], marks
     assert marks["end"] - marks["afterArtifact"] >= 3, marks
-
-    # ① 产物出现之前：那个位置**不存在**
     before = out["afterLoad"]["timeline"]
     assert STEP_MARK not in before, "产物还没出现，页面上就已经有了那一步：%r" % before
     assert DL_MARK not in before, before
+    assert UP_MARK not in before, "产物还没出现就摆了个上传按钮：%r" % before
 
     # ② 出现了：地址 / 文件名 / 路径都是**服务给的那三格**（页面不自己拼）
     mid = out["afterArtifact"]["timeline"]
@@ -584,11 +595,15 @@ def test_the_download_is_not_there_until_the_artifact_really_is(tmp_path):
         "下下来叫什么没摆出来：%r" % mid
     assert ART["path"] in mid, "「它写到哪了」没摆出来（人要拿它去对账）：%r" % mid
     assert ART_SAY[:20] in mid, "服务那句人话没上屏：%r" % mid
+    #: ★ 2026-09-26（用户点名「就是直接上传到 FMR」）：上传按钮**长在产物那一步里面**
+    box = _artifact_li(mid)
+    assert UP_MARK in box and DL_MARK in box, "上传/下载不长在同一步里：%r" % box
 
     # ③ ★ 又三次重画之后：它**还在**（重画不许把它擦掉）
     end = out["afterRepaint"]["timeline"]
     assert STEP_MARK in end, "产物那一步被下一次重画擦掉了：%r" % end
     assert DL_MARK in end, end
+    assert UP_MARK in end, "重画之后上传按钮没了：%r" % end
     assert 'href="%s"' % ART_URL in end, end
     assert ART["path"] in end, end
 
@@ -613,6 +628,7 @@ def test_a_run_that_ended_without_an_artifact_says_so_and_offers_no_button(tmp_p
     assert tail[:16] in end, "服务那句话的尾巴没上屏：%r" % end
     assert "撞上限" in end, "说了「没有产物」却没说是**为什么**：%r" % end
     assert DL_MARK not in end, "没有产物却摆了一个下载（A14 点名不许的形状）：%r" % end
+    assert UP_MARK not in end, "没有产物却摆了个上传按钮：%r" % end
     # 开页时（还在跑）那个位置也不存在 —— 与上一条同一个判据的另一头
     assert STEP_MARK not in out["afterLoad"]["timeline"], out["afterLoad"]
 

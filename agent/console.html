@@ -1070,7 +1070,12 @@
     if (url) {
       out += '<p class="dl"><a class="btn primary" data-download="1" href="' + esc(url) + '"' +
         (name ? ' download="' + esc(name) + '"' : "") + ">" +
-        esc(name || "下载这一版的 py") + "</a></p>";
+        esc(name || "下载这一版的 py") + "</a>" +
+        //: ★ 2026-09-26（用户点名「这个逻辑还差点吧，就是直接上传到 FMR」）：**产物这一步**
+        //: 自己带一个上传按钮 —— 产物出现的地方就在这儿，另外再翻到上面那一栏去按一下是白走一趟。
+        //: 两下（预检 → 确认）照样都在（服务那三步 API 没变），只是**结果写在上面那一栏**：
+        //: 时间线每拍都重画，状态摆在这里活不过一次重画（上面那一栏不会）。
+        ' <button class="btn" type="button" data-upload-fmr="1">上传到后台（FMR）</button></p>';
     }
     if (where) {
       out += '<p class="where">它落在盘上的位置：' + esc(where) + "</p>";
@@ -2115,6 +2120,34 @@
   function pyUploadURL(tpl) {
     return tpl.replace("{job_id}", encodeURIComponent(jobId || ""));
   }
+
+
+  //: ★ 2026-09-26：**产物那一步的上传按钮**（用户点名要的）。
+  //: 一下点下去 = 预检 → 确认**连着走**（服务那三步没变，防覆盖的判据在 `commit` 里：
+  //: 预检之后后端那份被改过 ⇒ 409、一个字节都不写）。结果与「要确认什么」写在上面那一栏，
+  //: 并且把那一栏滚进视野 —— 时间线每拍重画，状态放它里面活不过一次重画。
+  function uploadFromArtifact() {
+    var op = document.getElementById("pyUploadOperator");
+    var who = (op && op.value || "").trim();
+    if (!who) {
+      setErr("先填**谁确认的**（上面那一栏的「谁确认的」）—— 那是后端实测的必填审计字段，"
+             + "替你编一个名字等于把「谁传的」这件事抹掉。", "act");
+      if (op) { op.focus(); op.scrollIntoView({ block: "center" }); }
+      return;
+    }
+    var panel = document.getElementById("pyUploadPanel");
+    if (panel && panel.scrollIntoView) { panel.scrollIntoView({ block: "center" }); }
+    return preparePyUpload().then(function (prep) {
+      if (!prep || !pyUploadTicket) { return null; }   // 预检没过（没这一趟/没产物/一模一样）
+      return commitPyUpload();
+    });
+  }
+
+  //: 时间线是 innerHTML 重建的 ⇒ 用**委托**接这一下（按钮每拍都是新的）。
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (t && t.closest && t.closest("[data-upload-fmr]")) { uploadFromArtifact(); }
+  });
 
   function pyUploadNote(said) {
     var el = document.getElementById("pyUploadNote");
