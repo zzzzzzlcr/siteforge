@@ -43,7 +43,8 @@ from agent import plan as plan_mod
 
 __all__ = ["from_py", "repair_states", "REQUIRED_CLI_FLAGS",
            "PATCH_SYSTEM", "shape_of", "check_patch", "patch_user", "extract_source",
-           "patch_from_rounds", "apply_diff", "apply_edits", "source_from_reply"]
+           "patch_from_rounds", "apply_diff", "apply_edits", "source_from_reply",
+           "STATES_SYSTEM", "LOOP_KEYS", "states_user", "states_from_reply"]
 
 #: 取站方配置的超时（秒）。**短** —— 它是可选层，拿不到就往下走，不能把整趟拖住。
 CONFIG_TIMEOUT = 8.0
@@ -619,6 +620,164 @@ def patch_user(old_src: str, *, evidence: str = "", success_text: str = "",
     parts.append("照上面那个形状交：每一处一块 `<<<REPLACE 起行-止行 锚点`，末尾单独一行 `>>>`。"
                  "行号用清单左边那一列，锚点写那一段第一行开头的几个字。")
     return "\n\n".join(parts)
+
+
+# ── 账本那一族的改稿那双手：**只交一张数据表**（★ 2026-09-28）──────────────────
+#
+# 为什么有这一节（用户原话：「在跑的时候说的那句话，为什么传不到改稿那一步」）：
+# `Deps.write` 这根缝一直在（`graph._draft` 把 `spec` + `feedback` 递给它，而 `feedback`
+# 里装着**人在闸上说的话** / 违规行 / 自测诊断），但**服务没接线** —— 生产里跑的是默认那个
+# 恒等翻译器（`graph._writer_from_journey`：`return spec`）。于是那句话一路进了提示词，
+# 而产物**一个字节不变**。这一节就是那双手。
+#
+# 形状与修站那条路（`PATCH_SYSTEM` / `patch_user`）**对偶**：
+#   - 老写法（`PATCH_SYSTEM`）：整份**源码**进、整份源码出（模型改代码）；
+#   - 账本这一族（这一节）：一张**数据表**进、**只回要改的那几格**（代码由 `template.render`
+#     / `template_loop.render_loop` 重渲 —— 模型碰不到代码）。
+# 为什么不让模型直接改那份 py：产物每次由 `states`/`fills` 重渲，改盘上那份当场被下一次
+# 重渲覆盖掉（用户口径：「改产物必须同时改 state 的 states/fills/src」）。
+
+#: 账本那一族给模型的**系统提示**。
+STATES_SYSTEM = """\
+你在改一份站点自动填写脚本的**数据表**（不是代码，也不是 diff）。
+
+那份 py 由我们的模板从这张表重渲出来 —— 所以你能改的**只有表里这几格**：
+
+- `fills`：每一格是一条**声明**（不是「名字 → 值」那么简单）——
+  `{"postcode": {"source": "postcode", "kind": "postcode", "label": "Postcode",
+  "target": {"selectors": ["input#postcode"]}, "fallback": [{"random": "postcode"}]}}`。
+  **这一格填什么**：先看 `--form-file` 里 `source` 那个键，没有就用 `fallback` 里挑一个
+  （`{"random": "postcode"}` 这种，或一行字面值）。
+  ⚠️ `target.selectors` **非空**是硬要求（渲染时不给就**当场拒**：`FILLS['x'] 没给
+  target.selectors`）；步进循环型还要求 `kind`（「这一格填什么」由它定）。
+  ⇒ **改一格就把那一整条原样带上**，只动你要改的那几格（`source` / `fallback` / `kind`…）。
+  ⚠️ 往里写一个 `"value"` 是**没用的**：渲染器不读它（那正是「假装改过」那种改法）。
+  **加新的一格**必须给出选择器 —— 人点名了才加；没人说**不要编**
+  （编出来的选择器到了真站只会「找不到」）。
+- `states`：固定步骤表那一族的每一步。⚠️ **步进循环型的产物不读它**（怎么走由模板现算）
+  —— 那一族里改它等于没改，所以别只改它。
+- `loop`：步进循环型的旋钮，只认这几个键：`pick`（选项挑哪个：`random` / `first`）、
+  `max_steps`（这趟最多走几步）、`idle_limit`（连着几步没事可做就收摊）、
+  `busy_timeout`（一步最多等多久，秒）、`arrive_url`（哪一屏算「进到表里了」）、
+  `fill_order`（认不出的格子按这个顺序兜底填）、`examples`（每一格**站点真收下过**的值）、
+  `pre_steps`（进到那一屏**之前**要先做的几步：`[{"action": "click"/"scroll", "target": …}]`）、
+  `why`（这一版为什么这么判 —— 一句人话，写给人看的，不改变行为）。
+- `success_text` / `success_urls`：什么算成功。⚠️ **人明确给了新判据才改** ——
+  放松它 = 「跑到底再谎报成功」，那是这套工具最忌讳的一条。
+
+怎么答：**只交一个 JSON 对象**，放在围栏里；围栏外**一个字都不要写**：
+
+{"fills": {"postcode": {"source": "postcode", "kind": "postcode", "label": "Postcode",
+ "target": {"selectors": ["input#postcode"]}, "fallback": ["SW1A 9AA"]}},
+ "loop": {"max_steps": 90}, "note": "按人说的把邮编那格的兜底值改成 SW1A 9AA"}
+
+- **省略某一格 = 那一格不改**（不是清空）。
+- `note` **必填**：一句话说清你按人说的改了**哪一处、改成什么**。
+  ⚠️ 一处都没改就写 `"note": "照原样：人说的那一处，这张表里没有能改它的格子"` ——
+  **假装改过比不改更坏**（把一个值换成等价的写法，下一遍自测还是同一个结果，
+  而人以为改过了）。
+- 不确定的（选择器、字段名、值）**不要编**：写进 `note` 说清缺什么。"""
+
+#: `loop` 那一格只认这几个键 —— **正身是 `graph._loop_spec` / `graph._loop_source` 读的那几格**
+#: （两处各写一份清单，加一格时两边一起加）。
+LOOP_KEYS = ("pick", "max_steps", "idle_limit", "busy_timeout", "arrive_url",
+             "fill_order", "examples", "pre_steps", "why")
+
+#: 摆给模型的那几格（**只有这几格**：内部状态不上桌 —— 摆出去就等于给了它一个改内部的口子）。
+_TABLE_KEYS = ("success_text", "success_urls", "states", "fills", "loop")
+
+#: JSON 围栏。⚠️ **不复用 `_CODE_FENCE`**：那一条只认 `python|py|diff`，
+#: ```` ```json ```` 那种匹配不上（会退到「整段原话」那条路上，而那段里带着说明文字）。
+_JSON_FENCE = re.compile(r"```[a-zA-Z]*\s*\n(.*?)```", re.S)
+
+
+def _table(spec: dict) -> dict:
+    """摆给模型的那张表（**逐字**，不概括）。"""
+    return {k: spec.get(k) for k in _TABLE_KEYS if k in spec}
+
+
+def states_user(spec: dict, *, diagnosis: str = "", page_evidence: str = "",
+                violations: Optional[list] = None, hints: Optional[list] = None) -> str:
+    """给模型的**这一轮**输入：这张表全文 + 人说的话 + 自测诊断 + 上一版被打回的原因。
+
+    ⚠️ 人说的话与诊断**逐字**贴进去（与 `patch_user` 同一条规矩）：这一层替它概括一次，
+    模型就再也看不到原文里那些细节了（实测：「年龄那一格」这种指代词一概括就没了）。
+    """
+    parts = []
+    for hint in (hints or []):
+        if str(hint or "").strip():
+            parts.append("## 人说的话（逐字 —— 这一趟就是按它改）\n%s" % str(hint).strip())
+    if str(diagnosis or "").strip():
+        parts.append("## 上一版自测没过：诊断（逐字）\n%s" % str(diagnosis).strip())
+    if str(page_evidence or "").strip():
+        parts.append("## 上一版真跑了一遍的证据（下面是它自己打的）\n%s" % page_evidence.strip())
+    for bad in (violations or []):
+        parts.append("## 上一版被打回的原因（逐条改掉）\n%s" % bad)
+    parts.append("## 现在的表（逐字；改它就是改产物）\n```json\n%s\n```"
+                 % json.dumps(_table(spec), ensure_ascii=False, indent=1, sort_keys=True))
+    parts.append("照上面那个形状交：**一个** JSON 对象，只写你要改的那几格 + `note`。")
+    return "\n\n".join(parts)
+
+
+def states_from_reply(spec: dict, reply: str) -> tuple:
+    """模型原话 → `(改过的 spec, 人话)`。
+
+    **读不动 / 有一样不合法 ⇒ 整份原样退回 + 原因**（不是「能认的那几格先收下」）：
+    半份收下的后果是**闸上看到「改过了」而其中一半根本没进去** —— 那种静默分岔是这套工具
+    反复付过代价的坏法（`graph._patch_draft` 的「逐条人话」也是为它写的）。
+    """
+    text = str(reply or "")
+    fenced = _JSON_FENCE.search(text)
+    if fenced:
+        text = fenced.group(1)
+    else:                       # 没套围栏也认（模型偶尔不套）—— 从第一个 `{` 到最后一个 `}`
+        start, end = text.find("{"), text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start:end + 1]
+    try:
+        got = json.loads(text)
+    except (ValueError, TypeError) as exc:
+        return dict(spec), ["改稿那双手交回来的东西不是一段合法的 JSON（%s）" % exc]
+    if not isinstance(got, dict):
+        return dict(spec), ["改稿那双手交回来的不是一个 JSON 对象（是一份 %s）"
+                            % type(got).__name__]
+    bad: list = []
+    new = dict(spec)
+    if "fills" in got:
+        if not isinstance(got["fills"], dict) or \
+                any(not isinstance(k, str) for k in got["fills"]):
+            bad.append("`fills` 得是「字段名 → 值」那样一张表")
+        else:
+            new["fills"] = got["fills"]
+    if "states" in got:
+        if not isinstance(got["states"], list) or \
+                any(not isinstance(x, dict) for x in got["states"]):
+            bad.append("`states` 得是一串对象（每一步一个）")
+        else:
+            new["states"] = got["states"]
+    if "loop" in got:
+        unknown = None
+        if isinstance(got["loop"], dict):
+            unknown = [k for k in got["loop"] if k not in LOOP_KEYS]
+        if unknown is None:
+            bad.append("`loop` 得是一个对象")
+        elif unknown:
+            bad.append("`loop` 里那几格只认 %s（多了 %s）"
+                       % ("、".join(LOOP_KEYS), "、".join(str(k) for k in unknown)))
+        else:
+            new["loop"] = got["loop"]
+    for key in ("success_text", "success_urls"):
+        if key in got:
+            if not isinstance(got[key], (str, list)):
+                bad.append("`%s` 得是一段文字（或者一串）" % key)
+            else:
+                new[key] = got[key]
+    note = str(got.get("note") or "").strip()
+    if not note:
+        bad.append("那份回话里没有 `note` —— 说不清它按人说的改了哪一处")
+    if bad:
+        return dict(spec), bad
+    return new, [note]
 
 
 _CODE_FENCE = re.compile(r"```(?:python|py|diff)?\s*\n(.*?)```", re.S)

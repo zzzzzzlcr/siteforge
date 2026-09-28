@@ -242,6 +242,9 @@ class Deps:
     """
 
     explore: Callable = browser_agent.explore
+    #: ★ 2026-09-28：**账本那一族的改稿那双手**（`(spec, feedback) -> spec`）。默认是那个
+    #: 恒等翻译器；生产里由服务接上模型（`service._write_cb`）。⚠️ **不接上**的后果是：
+    #: 人在闸上说的那句话只进提示词，产物**一个字节不变**（用户问的那件事的根就在这一格）。
     write: Callable = _writer_from_journey
     #: **老写法那份 py 的改稿那双手**（B 线 ③ 乙）：`(old_src, feedback) -> 模型原话`。
     #: 与 `should_pause` / `set_viewport` 同一条规矩：**没接上就停下并点名** ——
@@ -1109,7 +1112,6 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
         spec = {"site": state["site"], "success_text": state.get("success_text"),
                 "success_urls": state.get("success_urls"),
                 "states": journey.states(), "fills": journey.fills()}
-    spec = deps.write(spec, feedback)
     #: ★ 形态分派（2026-09-24，交接文档欠账 ④）：**单页漏斗/问卷 ⇒ 步进循环型** ——
     #: 固定步骤表那一族在这类站上会**静默跳过整组**（它只记下走过的那一条路，下一问变了 ⇒
     #: `when` 不成立 ✗）；多页导航型照旧固定步骤表。判据只有一条、而且是**量到的**：
@@ -1126,6 +1128,20 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
             shape, loop_spec = "loop", _loop_spec(journey, funnel)
         elif funnel["states"]:
             shape_why = funnel["why"] + "；但**没给网址判据** —— 循环型只看网址，照旧产固定步骤表"
+    #: ★ 2026-09-28：**先把形态定下来，再叫改稿那双手改** —— 它拿到的表里要带**循环型现在
+    #: 那几格旋钮**（`loop`）：「把 max_steps 调大」这种话，看不见现值就只能猜一个数（编值）。
+    if shape == "loop":
+        spec["loop"] = dict(loop_spec)
+
+    spec = deps.write(spec, feedback)
+    #: 它回来的那几格**按白名单**合到这一份上（`fix.states_from_reply` 已经挡过一次；
+    #: 这里是第二道：从别处塞进来的 `loop` 也不许长出 `_loop_source` 不认的键）。
+    if isinstance(spec.get("loop"), dict):
+        loop_spec.update({k: v for k, v in spec["loop"].items() if k in fix_mod.LOOP_KEYS})
+    #: ponytail: 循环型那一支**仍然不读 `states`** —— 模型改它的 `states` 只有提示词里那句
+    #: 「那一族里改它等于没改，别只改它」拦着，产物这一侧**不会响**（既不改产物、也不报错）。
+    #: 要让它响就得把 `states` 也喂进 `render_loop`（那是换形状，不是加一格），
+    #: 等真有人在那一格上栽一次再做；今天那一族能改的几格是 `fills` 与 `loop`。
     # ⚠️ **产物里不许有「先站到入口」那一步**（2026-09-23 用户实测点名，作废了 2026-09-22 那一版）。
     # 用户原话：「我发现现在是不是我们的脚本在 auto-farm 也会重新导航一遍？那不对吧。
     # 在那边应该是匹配上直接做了而不用再打开一次吧」—— 他说对了，而且这一点**自测那条路

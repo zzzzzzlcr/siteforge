@@ -2374,6 +2374,10 @@ class Service:
         （测试 / 计划三的 Console）可以只换掉贵的那些（探路、自测），而**继承**窗口层那根线。
         生产走 `graph_factory=None` 那条：全是真接线。
         """
+        # ★ 2026-09-28：**账本那一族的改稿那双手**（模型按人说的话 / 自测诊断改那张表）。
+        # 没接上（这个部署没有模型 key）⇒ **连这一格都不传**，`Deps.write` 用它默认的那个
+        # 恒等翻译器 —— 打回只会走到上限就停（诚实的那种停）。
+        write = self._write_cb(brief)
         deps = graph.Deps(explore=self._explore_for(brief, job_id),
                           # ★ 修站那条路：出稿之前先跑一遍旧脚本，把「它停在哪儿」给模型。
                           evidence_run=self._evidence_run_cb(brief, job_id),
@@ -2392,6 +2396,8 @@ class Service:
                           # Task 8：「停下，我要说一句」伸进浏览器的那根线（设计注 §4.1 第 1 行）。
                           # 接上它，探路才会**每一步/每一轮之前**问一句「人喊停了吗」。
                           should_pause=self._pause_cb(job_id))
+        if write is not None:
+            deps.write = write
         if self._graph_factory is not None:
             return self._graph_factory(brief, deps)
         return graph.build(checkpointer=self._check.get(), deps=deps)
@@ -2631,6 +2637,48 @@ class Service:
             return fix.patch_from_rounds(rounds, max_tokens=self.PATCH_MAX_TOKENS)
 
         return patch
+
+    def _write_cb(self, brief: dict) -> Optional[Callable]:
+        """`Deps.write`（★ 2026-09-28）：**账本那一族的改稿那双手**（模型）。
+
+        形状 `(spec, feedback) -> spec`：这里只负责「把提示词拼好、把模型叫醒、把回话读成
+        一张表」；过闸与重渲在图那一侧（`graph._draft`）。
+
+        ⚠️ 与 `_patch_cb` **同一份 `feedback`、两双手**（分工不重）：老写法那份 py 里没有
+        `states`/`fills` 可改 ⇒ 改整份源码（`patch_source`）；账本这一族反过来 —— **只改那张
+        表**，代码由 `template.render` / `template_loop.render_loop` 重渲。
+
+        ⚠️ **没有模型 key（`OPENAI_API_KEY`）就返回 `None`**（不接这根线）—— 图于是用它默认
+        那个恒等翻译器：打回只会走到上限就停（**诚实的那种停**）。**不编一个假的改稿器**：
+        那会让「改不了」看起来像「改过了」（用户问的那件事，根就在这儿）。
+        ⚠️ 模型回话读不动 / 少了 `note` ⇒ **这一版表原样退回**（`fix.states_from_reply` 说清
+        为什么）：半份收下会让闸上看到「改过了」而产物没变。
+        """
+        if not os.environ.get("OPENAI_API_KEY"):
+            return None
+        #: 修站那条路的失败证据（`brief["evidence"]` = 跑一遍旧脚本拿到的）；没给就是空串。
+        brief_evidence = str(brief.get("evidence") or "")
+
+        def write(spec: dict, feedback: dict) -> dict:
+            fb = feedback or {}
+            diag = fb.get("diagnosis") if isinstance(fb.get("diagnosis"), dict) else {}
+            #: 模型不调工具直接答（`tool_specs=[]`）—— 这是**一次问答**，不是工具循环。
+            rounds = llm.run_tool_loop(
+                fix.STATES_SYSTEM,
+                fix.states_user(spec,
+                                diagnosis=str((diag or {}).get("say") or ""),
+                                page_evidence=str(fb.get("fix_evidence") or brief_evidence),
+                                violations=fix.violations_for_prompt(fb.get("violations")),
+                                hints=list(fb.get("hints") or [])),
+                [], lambda name, args: None, max_rounds=1,
+                max_tokens=self.PATCH_MAX_TOKENS)
+            #: 空回话在这儿**抛**（带那一次的账）—— 图那一侧会把它原样摆到闸上，
+            #: 不许只说「改稿是空的」（与 `_patch_cb` 同一条纪律）。
+            reply = fix.patch_from_rounds(rounds, max_tokens=self.PATCH_MAX_TOKENS)
+            new, _notes = fix.states_from_reply(spec, reply)
+            return new
+
+        return write
 
     def _explore_for(self, brief: dict, job_id: str = "") -> Optional[Callable]:
         """探路要朝**载荷里那个窗口**去（服务是知道窗口的那一层）。
