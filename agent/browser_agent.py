@@ -2315,6 +2315,14 @@ _RANDOM_HINTS = (
     # 运营 form-file 的 `state` 对不上 → 随机兜底给了 `full_name` → **往「州」里填人名**。
     (("state", "province"), "state"),
     (("birth", "dob"), "dob"),
+    #: ★ 2026-09-28（用户报的那一趟 `georgiapower`：「How many people live in your household?」
+    #: 探路时 MCP 明明填的是**数字**，产出的 py 却填了个**姓名」）—— 那一格原先**没有**这一条，
+    #: 于是落进 `_fallback` 的兜底默认值（`full_name`）⇒ 往「家里几口人」里填人名 ✗。
+    #: ⚠️ **顺序是判据的一部分**：这一条排在 `phone` / `postcode` / `state` **之后** ——
+    #: `Phone number` 会先命中 `phone`、`Zip/Postal Code` 先命中 `postcode`（别把它挪到前面，
+    #: 否则「number」这个词会把手机号那一格吃掉）。
+    (("how many", "household", "occupants", "people", "persons", "number of",
+      "quantity", "count"), "number"),
     # 「整名」这一族。原先**没有这一条** —— 于是 `Full Name:` 判不出种类，
     # 靠 `_fallback` 的兜底默认值**碰巧**也给了 `full_name`（真站实测：
     # 那一格的名字对得上运营的键，但那是巧合，不是判据）。
@@ -2452,7 +2460,12 @@ def _fallback(kind: str, value: str, label: str, element) -> list:
     guessed = _field_kind(label, element)
     if guessed:
         return [{"random": guessed}]
-    return [{"random": "full_name"}]
+    #: ★ 2026-09-28（用户报的那一趟 `georgiapower`）：这一行原来一律给 `full_name` ——
+    #: 于是「认不出是什么」的格子**拿到一个人名**（那一站往「家里几口人」里填了姓名 ✗✗）。
+    #: 认不出来还塞一个姓名，既不是证据也不是兜底，是**编**，而且错得很难发现（它确实填了东西）。
+    #: ⇒ 认不出时用**账本里那一趟真填进去的值**（站点当时收下过它 ✓）；
+    #: 连值都没有 ⇒ **不给兜底**（产物那边就空着，如实报「没做成」），不再拿姓名去顶。
+    return [value] if str(value or "").strip() else []
 
 
 def _diag_row(d: dict) -> dict:

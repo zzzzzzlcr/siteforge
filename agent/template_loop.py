@@ -507,6 +507,10 @@ class Filler:
             return random.choice(("CA", "TX", "FL", "NY", "GA", "OH", "IL", "NC"))
         if "country" in kind:
             return random.choice(("United States", "United Kingdom"))
+        if "number" in kind or "household" in kind or "occupants" in kind or "count" in kind:
+            #: ★ 2026-09-28 同上（那一趟「How many people live in your household?」被填了姓名）：
+            #: 人数/件数那一类给个小正整数。
+            return str(random.randint(1, 5))
         return ""
 
     # ---------- 挑哪个（生成器填的那一格）----------

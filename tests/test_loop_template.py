@@ -421,3 +421,46 @@ def test_street_and_city_fields_get_a_value(tmp_path, monkeypatch):
     from_ledger = _fill(dict(PROV, fill_order=["street"], examples={"street": "1234 Ledger Ave"}),
                         "\u0002Street")
     assert from_ledger == "1234 Ledger Ave", from_ledger
+
+
+def test_a_household_count_field_gets_a_number_not_a_name(tmp_path, monkeypatch):
+    """★ 2026-09-28 用户报的那一趟（`georgiapower`）：「How many people live in your household?
+    他自己第一遍用的 mcp-cdp 明显知道填**数字**，产出的 py 就是填的**名字**」。
+
+    根在两处，这条一起钉：
+      ① `_RANDOM_HINTS` 里**没有**「人数」那一族 ⇒ 那一格认不出种类；
+      ② `_fallback` 认不出时**一律给 `full_name`** ⇒ 往「家里几口人」里填人名 ✗✗。
+    """
+    from agent import browser_agent as ba
+    assert ba._field_kind("How many people live in your household?", {}) == "number"
+    #: ⚠️ 顺序是判据的一部分：别把「number」那一族挪到 phone / postcode 前面
+    assert ba._field_kind("Mobile Phone Number", {}) == "phone"
+    assert ba._field_kind("*Zip/Postal Code", {}) == "postcode"
+    assert ba._fallback("value", "3", "How many people live in your household?", []) \
+        == [{"random": "number"}]
+
+    #: ② 认不出种类时：用**账本里那趟真填进去的值**；连值都没有 ⇒ **不给兜底**（不再给姓名）
+    assert ba._fallback("value", "abc", "???", []) == ["abc"]
+    assert ba._fallback("value", "", "???", []) == []
+
+    #: ③ 产物那一侧要真给得出数字（骨架的池子）
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://us.test/q", "head": "Household", "progress": "",
+            "inputs": [["\u0002How many people live in your household?", ""]],
+            "options": [], "nextVisible": False, "nextTxt": ""}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop(
+        "countsite", "Thank you", "thank-you",
+        {"how_many_people_live_in_your_home": {"kind": "number",
+                                               "label": "How many people live in your household?"}},
+        dict(PROV, fill_order=["how_many_people_live_in_your_home"]))
+    path = tmp_path / "count.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("count_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    module.Filler("ws://x/1", str(form), "cid", no_report=True).run(max_steps=1)
+    got = str(calls["form"][0][1].get("value") or "")
+    assert got.isdigit(), "那一格拿到的不是数字：%r" % (got,)

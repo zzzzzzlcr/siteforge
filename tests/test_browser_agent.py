@@ -1335,8 +1335,11 @@ def test_the_html_type_is_only_the_last_resort():
     assert browser_agent._fallback("value", "", "", _field(type="tel")) == [{"random": "phone"}]
     assert browser_agent._fallback("value", "", "", _field(type="email")) == [{"random": "email"}]
     assert browser_agent._fallback("value", "", "", _field(type="password")) == [{"random": "password"}]
-    # 一个字都没有 → 保守的默认（不编内容）
-    assert browser_agent._fallback("value", "", "", _field()) == [{"random": "full_name"}]
+    # ★ 2026-09-28（用户报的那一趟）：一个字都没有时**不再给 `full_name`** ——
+    # 那一律给姓名的规矩，把「How many people live in your household?」那格填成了人名 ✗。
+    # 认不出 ⇒ 用**账本里那趟真填进去的值**；连值都没有 ⇒ **不给兜底**（产物那边空着，如实报）。
+    assert browser_agent._fallback("value", "", "", _field()) == []
+    assert browser_agent._fallback("value", "3", "", _field()) == ["3"]
 
 
 def test_nearby_text_rescues_a_field_whose_label_is_an_opaque_id():
@@ -1533,11 +1536,12 @@ def test_the_state_field_is_read_from_the_question_text_the_page_shows():
         state_elem, browser_agent.Journey())
     assert fill["name"] == "state" and fill["fallback"] == [{"random": "state"}], fill
 
-    # 认不出的那一格：**不许**再落到 full_name（往州里填人名那件事）
+    # ★ 2026-09-28：认不出的那一格**不再落到 `full_name`**（往「州」里填人名那件事的同族）——
+    # 现在：有账本里的值就用它，没有就**不给兜底**（空着、如实报）。
     unknown = {"label": "", "hint": "textField-000000", "placeholder": "Type here", "type": "text"}
     assert browser_agent._field_kind("", unknown) is None
-    assert browser_agent._fallback("value", "", "", unknown) == [{"random": "full_name"}], \
-        "认不出时的兜底仍然是 full_name —— 这条**没改**，它背后的规矩见 `_fallback`"
+    assert browser_agent._fallback("value", "", "", unknown) == []
+    assert browser_agent._fallback("value", "Three", "", unknown) == ["Three"]
 
 
 

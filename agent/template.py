@@ -1721,6 +1721,20 @@ class Filler:
             return random.choice(PHONES)
         if kind == "postcode":
             return random.choice(POSTCODES)
+        #: ★ 2026-09-28：`number` / 地址那几档是**新认出来的种类**（`browser_agent._RANDOM_HINTS`
+        #: 与 `_fallback` 一起加的）—— 这里不接的话，产物拿到 `{"random": "number"}` 会**当场抛**
+        #: （`_random_value` 原先只认七个种类）。
+        if kind == "number":
+            return str(random.randint(1, 5))          # 人数/件数那一类：给个小的正整数
+        if kind == "city":
+            return random.choice(("Springfield", "Riverton", "Fairview", "Greenville",
+                                  "Madison", "Clinton", "Georgetown", "Salem"))
+        if kind == "street":
+            return "%d %s %s" % (random.randint(100, 9899),
+                                 random.choice(("Maple", "Oak", "Cedar", "Pine", "Elm", "Birch")),
+                                 random.choice(("St", "Ave", "Rd", "Ln", "Dr")))
+        if kind == "country":
+            return random.choice(("United States", "United Kingdom"))
         if kind == "state":
             return random.choice(US_STATES)
         if kind == "dob":
