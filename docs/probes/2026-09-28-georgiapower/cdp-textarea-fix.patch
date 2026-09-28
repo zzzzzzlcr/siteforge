@@ -1,0 +1,22 @@
+修复：cdp form --value 填不了 <textarea>（一行）
+
+病灶：internal/form.go 的 isDatePickerJS() 里，只要目标不是 <input> 就当成
+「wrapper」，进去找 input；<textarea> 里没有 input ⇒ 直接
+`error: no input found in wrapper` ⇒ FillText 提前 return，连填值的路都没走到。
+两个不同选择器报的是同一个错（真站实测，2026-09-28 georgiapower 的 *Street）。
+
+改法：把 <textarea> 排除出「wrapper」分支 —— 之后 textarea 的 type 不是 'tel'，
+自然 isDatePicker:false，走 plain flow。
+
+风险：**纯扩展**。改之前 textarea 走这一支必然报错 ⇒ 没有任何现在能成功的路径
+会走到这里 ⇒ 零回归。本地合成页已验（旧：报错且值空 / 新：填上；input 那条路不变）。
+
+--- a/internal/form.go
++++ b/internal/form.go
+@@ -81,7 +81,7 @@
+ 		// Step 0: resolve to input element
+ 		var input = el;
+-		if (el.tagName !== 'INPUT') {
++		if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') {
+ 			input = __cdpQIn(el, 'input[type="tel"]') || __cdpQIn(el, 'input');
+ 		}

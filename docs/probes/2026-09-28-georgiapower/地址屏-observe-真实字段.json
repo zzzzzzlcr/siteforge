@@ -1,0 +1,452 @@
+{
+  "url": "https://utility-energyservices.my.site.com/s/GPClipboardAuditScheduler",
+  "title": "GP Clipboard Audit",
+  "page_text": "Please use the search bar to select the address for your clipboard audit. *Address Search for Address *Country --None-- Canada United States Country Complete this field. *Street Street Complete this field. *City City Complete this field. State/Province --None-- *Zip/Postal Code Previous Next GP Clipboard Audit Please use the search bar to select the address for your clipboard audit. *Address Search for Address *Country --None-- Canada United States Country Complete this field. *Street Street Complete this field. *City City Complete this field. State/Province --None-- *Zip/Postal Code Previous ",
+  "shadow_roots": 33,
+  "viewport_css_px": {
+    "width": 984,
+    "height": 905
+  },
+  "actions": [
+    {
+      "selector": "#combobox-input-168",
+      "alternates": [
+        "input[data-value=\"123 Peachtree St NE\"]",
+        "input.slds-combobox__input.slds-input"
+      ],
+      "stability": "high",
+      "text": "",
+      "aria_label": "Search for Address",
+      "label": "Search for Address",
+      "role": "combobox",
+      "tag": "INPUT",
+      "type": "text",
+      "visible": true,
+      "value": "123 Peachtree St NE",
+      "value_truncated": false,
+      "selected": null,
+      "disabled": false,
+      "occluded_by": null,
+      "shadow_depth": 10,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        29,
+        340,
+        926,
+        32
+      ],
+      "region": "hero",
+      "above_fold": true,
+      "relative_size": 1,
+      "peer_count": 3,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": []
+    },
+    {
+      "selector": "#select-160",
+      "alternates": [
+        "select[name=\"country\"]"
+      ],
+      "stability": "high",
+      "text": "--None--CanadaUnited States",
+      "aria_label": "",
+      "label": "*Country",
+      "role": "select",
+      "tag": "SELECT",
+      "type": "select-one",
+      "visible": true,
+      "value": "",
+      "value_truncated": false,
+      "selected": true,
+      "disabled": false,
+      "occluded_by": null,
+      "shadow_depth": 10,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        29,
+        397,
+        926,
+        32
+      ],
+      "region": "hero",
+      "above_fold": true,
+      "relative_size": 1,
+      "peer_count": 2,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "*Country"
+      ]
+    },
+    {
+      "selector": "#input-161",
+      "alternates": [
+        "textarea[name=\"street\"]",
+        "textarea.slds-textarea"
+      ],
+      "stability": "high",
+      "text": "",
+      "aria_label": "",
+      "label": "*Street",
+      "role": "textarea",
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "visible": true,
+      "value": "",
+      "value_truncated": false,
+      "selected": null,
+      "disabled": false,
+      "occluded_by": null,
+      "shadow_depth": 9,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        29,
+        490,
+        926,
+        54
+      ],
+      "region": "hero",
+      "above_fold": true,
+      "relative_size": 1.7,
+      "peer_count": 1,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "*Street"
+      ]
+    },
+    {
+      "selector": "#input-163",
+      "alternates": [
+        "input[name=\"city\"]"
+      ],
+      "stability": "high",
+      "text": "",
+      "aria_label": "",
+      "label": "*City",
+      "role": "input",
+      "tag": "INPUT",
+      "type": "text",
+      "visible": true,
+      "value": "",
+      "value_truncated": false,
+      "selected": null,
+      "disabled": false,
+      "occluded_by": null,
+      "shadow_depth": 10,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        29,
+        588,
+        615,
+        32
+      ],
+      "region": "hero",
+      "above_fold": true,
+      "relative_size": 0.7,
+      "peer_count": 3,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "*City"
+      ]
+    },
+    {
+      "selector": "#select-165",
+      "alternates": [
+        "select[name=\"province\"]"
+      ],
+      "stability": "high",
+      "text": "--None--",
+      "aria_label": "",
+      "label": "State/Province",
+      "role": "select",
+      "tag": "SELECT",
+      "type": "select-one",
+      "visible": true,
+      "value": "",
+      "value_truncated": false,
+      "selected": true,
+      "disabled": false,
+      "occluded_by": null,
+      "shadow_depth": 10,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        652,
+        588,
+        303,
+        32
+      ],
+      "region": "hero",
+      "above_fold": true,
+      "relative_size": 0.3,
+      "peer_count": 2,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "State/Province"
+      ]
+    },
+    {
+      "selector": "#input-167",
+      "alternates": [
+        "input[name=\"postalCode\"]"
+      ],
+      "stability": "high",
+      "text": "",
+      "aria_label": "",
+      "label": "*Zip/Postal Code",
+      "role": "input",
+      "tag": "INPUT",
+      "type": "text",
+      "visible": true,
+      "value": "NN3 3AQ",
+      "value_truncated": false,
+      "selected": null,
+      "disabled": false,
+      "occluded_by": null,
+      "shadow_depth": 10,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        29,
+        665,
+        926,
+        32
+      ],
+      "region": "hero",
+      "above_fold": true,
+      "relative_size": 1,
+      "peer_count": 3,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": [
+        "*Zip/Postal Code"
+      ]
+    },
+    {
+      "selector": "button:nth-of-type(1)",
+      "alternates": [],
+      "stability": "low",
+      "text": "Previous",
+      "aria_label": "",
+      "label": null,
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "value": null,
+      "value_truncated": false,
+      "selected": null,
+      "disabled": false,
+      "occluded_by": null,
+      "shadow_depth": 3,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        802,
+        737,
+        84,
+        32
+      ],
+      "region": "hero",
+      "above_fold": true,
+      "relative_size": 0.1,
+      "peer_count": 2,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": []
+    },
+    {
+      "selector": "button.slds-button.slds-button_brand",
+      "alternates": [],
+      "stability": "medium",
+      "text": "Next",
+      "aria_label": "",
+      "label": null,
+      "role": "button",
+      "tag": "BUTTON",
+      "type": "button",
+      "visible": true,
+      "value": null,
+      "value_truncated": false,
+      "selected": null,
+      "disabled": false,
+      "occluded_by": null,
+      "shadow_depth": 3,
+      "frame_path": [
+        "main"
+      ],
+      "bbox": [
+        892,
+        737,
+        62,
+        32
+      ],
+      "region": "hero",
+      "above_fold": true,
+      "relative_size": 0.1,
+      "peer_count": 2,
+      "z_index": "auto",
+      "contrast": "high",
+      "nearby_text": []
+    }
+  ],
+  "fields": [
+    {
+      "selector": "#combobox-input-168",
+      "alternates": [
+        "input[data-value=\"123 Peachtree St NE\"]",
+        "input.slds-combobox__input.slds-input"
+      ],
+      "stability": "high",
+      "label": "Search for Address",
+      "aria_label": "Search for Address",
+      "value": "123 Peachtree St NE",
+      "value_truncated": false,
+      "selected": null,
+      "hint": "combobox-input-168",
+      "placeholder": "",
+      "nearby_text": [],
+      "type": "text",
+      "required": false,
+      "shadow_depth": 10,
+      "frame_path": [
+        "main"
+      ]
+    },
+    {
+      "selector": "#select-160",
+      "alternates": [
+        "select[name=\"country\"]"
+      ],
+      "stability": "high",
+      "label": "*Country",
+      "aria_label": "",
+      "value": "",
+      "value_truncated": false,
+      "selected": true,
+      "hint": "country",
+      "placeholder": "",
+      "nearby_text": [
+        "*Country"
+      ],
+      "type": "select-one",
+      "required": true,
+      "shadow_depth": 10,
+      "frame_path": [
+        "main"
+      ]
+    },
+    {
+      "selector": "#input-161",
+      "alternates": [
+        "textarea[name=\"street\"]",
+        "textarea.slds-textarea"
+      ],
+      "stability": "high",
+      "label": "*Street",
+      "aria_label": "",
+      "value": "",
+      "value_truncated": false,
+      "selected": null,
+      "hint": "street",
+      "placeholder": "",
+      "nearby_text": [
+        "*Street"
+      ],
+      "type": "textarea",
+      "required": true,
+      "shadow_depth": 9,
+      "frame_path": [
+        "main"
+      ]
+    },
+    {
+      "selector": "#input-163",
+      "alternates": [
+        "input[name=\"city\"]"
+      ],
+      "stability": "high",
+      "label": "*City",
+      "aria_label": "",
+      "value": "",
+      "value_truncated": false,
+      "selected": null,
+      "hint": "city",
+      "placeholder": "",
+      "nearby_text": [
+        "*City"
+      ],
+      "type": "text",
+      "required": true,
+      "shadow_depth": 10,
+      "frame_path": [
+        "main"
+      ]
+    },
+    {
+      "selector": "#select-165",
+      "alternates": [
+        "select[name=\"province\"]"
+      ],
+      "stability": "high",
+      "label": "State/Province",
+      "aria_label": "",
+      "value": "",
+      "value_truncated": false,
+      "selected": true,
+      "hint": "province",
+      "placeholder": "",
+      "nearby_text": [
+        "State/Province"
+      ],
+      "type": "select-one",
+      "required": false,
+      "shadow_depth": 10,
+      "frame_path": [
+        "main"
+      ]
+    },
+    {
+      "selector": "#input-167",
+      "alternates": [
+        "input[name=\"postalCode\"]"
+      ],
+      "stability": "high",
+      "label": "*Zip/Postal Code",
+      "aria_label": "",
+      "value": "NN3 3AQ",
+      "value_truncated": false,
+      "selected": null,
+      "hint": "postalCode",
+      "placeholder": "",
+      "nearby_text": [
+        "*Zip/Postal Code"
+      ],
+      "type": "text",
+      "required": true,
+      "shadow_depth": 10,
+      "frame_path": [
+        "main"
+      ]
+    }
+  ],
+  "option_groups": [],
+  "obstructions": [],
+  "honeypots": [],
+  "diagnostics": []
+}
