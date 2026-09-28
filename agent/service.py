@@ -5290,12 +5290,14 @@ class Service:
                 status_code=400,
                 detail="产物过不了 `ast.parse`（第 %s 行：%s）—— 这一版落盘，生产里那个站"
                        "就是跑 0 次。没上传。" % (exc.lineno, exc.msg))
+        #: ★ 2026-09-28：登记表里没有它时（**服务刚重启、这一趟还没被捡回来**）从记录里取那两个格 ——
+        #: 原来一律说「没说是哪个站」：那是**假话**（记录里明明写着 URL），人只会以为传不了 ✗。
         job = self._jobs.get(str(job_id))
-        brief = dict(getattr(job, "brief", {}) or {})
+        brief = dict(getattr(job, "brief", {}) or {}) or dict(values or {})
         key = _backend_key(brief.get("url"), brief.get("fix_site"), brief.get("fix_site_url"))
         if not key:
             raise HTTPException(status_code=400,
-                                detail="这一趟**没说是哪个站**（brief 里没有 url/fix_site）"
+                                detail="这一趟**没说是哪个站**（记录与 brief 里都没有 url/fix_site）"
                                        "—— 不知道往哪儿传。没上传。")
         return {"path": str(path), "source": source, "key": key,
                 #: ★ 2026-09-28：这一版**没走到交付**（可能还没自测）—— 预检那句人话要**先说它**。
