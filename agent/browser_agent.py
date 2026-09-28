@@ -131,7 +131,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from . import events, lessons, llm, plan as plan_module, shots, tools
 
@@ -273,6 +273,86 @@ WHEN_NO_TEXT_WHY = "这一次观测没读到页面正文（`page_text` 是空的
 #: 重放时会变成整组静默跳过。够不着 ≠ 可以删：删了它，「取出来的判据当场不成立」
 #: 就会**静默**地发出去。（别把这句读成「有一条用例钉着它」—— 没有。）
 WHEN_TEXT_UNVERIFIED_WHY = "照这一次观测取出来的那段正文，在这一次观测上就不成立"
+
+#: ★ 2026-09-28（缺陷单《产物判据跨元素拼接》）：判据那一段**跨了两个元素**时说的话。
+#: 有损就必须说 —— 读产物/日志的人要能分辨「用的是哪一个元素的哪句话」。
+WHEN_TEXT_SPLICE = ("这一段判据原来是**跨两个元素拼**出来的（在页面上根本不是一句话）——"
+                    "已经换成落在**单个元素**里的那一段：%r")
+#: 剪出来那一段**跨了两个元素**、又换不出单元素的一段时说的话（这一组只剩 URL）。
+#: 与 `WHEN_TEXT_SPLICE`（换成了另一段）是**两件事**：一个是「改用了哪段」，
+#: 一个是「这段没法用 ⇒ 判据少了一半」—— 混成一句，读的人就分不出该不该动手。
+WHEN_TEXT_SPLICED_AWAY = ("剪出来的那一段是**跨两个元素拼**的（页面上根本没有这一句话）：%r；"
+                          "而这一页**找不到**任何单个元素能顶替它")
+#: 逐元素正文的读口：只读**会说话的**标签，且**每个元素各给一条**（不合并）。
+#: 与产物 `_PAGE_TEXT_JS` 同一套 roots 走法（ShadowRoot 没有 `getElementsByTagName`）。
+_NODE_TEXT_JS = (
+    "return (function(){"
+    "var SKIP={SCRIPT:1,STYLE:1,TEMPLATE:1,LINK:1,META:1,NOSCRIPT:1,TITLE:1};"
+    "var roots=[document],i=0;"
+    "while(i<roots.length){var r=roots[i++];"
+    "var els=(r.getElementsByTagName?r.getElementsByTagName('*'):r.querySelectorAll('*'));"
+    "for(var j=0;j<els.length;j++){if(els[j].shadowRoot){roots.push(els[j].shadowRoot);}}}"
+    "var out=[];"
+    "for(var k=0;k<roots.length;k++){var rt=roots[k];"
+    "var list=(rt.querySelectorAll?rt.querySelectorAll('*'):[]);"
+    "for(var m=0;m<list.length;m++){var e=list[m];"
+    "if(SKIP[e.tagName]){continue;}"
+    #: 只要**叶子**元素：父元素那一段本来就是「拼起来的」，拿它验等于没验。
+    "if(e.children&&e.children.length){continue;}"
+    "try{var t=(e.innerText||'').replace(/\\s+/g,' ').trim();if(t){out.push(t);}}catch(err){}}}"
+    "return JSON.stringify(out.slice(0,400));})();"
+)
+
+
+def _read_node_texts(session) -> Optional[list]:
+    """读**逐元素自己的正文**（只读、一次 `eval`）。读不到给 `None` —— **不编**。
+
+    ⚠️ 它只服务一件事：判据那一段要**落在单个元素里**（见 `_when_for`）。
+    读不到时 `_when_for` 退回老行为（照旧剪一段）—— 那不是「没问题」，
+    所以 `_when_for` 拿 `None` 时不写任何 `text_why`（那条话说的是「验过了」，
+    没验过就不能说）✓。
+    """
+    if session is None or not hasattr(session, "call_tool"):
+        return None
+    try:
+        raw = session.call_tool("eval", {"code": _NODE_TEXT_JS})
+    except Exception:                       # noqa: BLE001 —— 工具层什么错都可能给
+        return None
+    for _ in range(2):                      # cdp eval 的答复被编码两层（交接 §7）
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            break
+def _snippet_in_one_node(snippet: str, nodes) -> str:
+    """把跨元素拼出来的 `snippet` 换成**落在单个元素里**的那一段（换不了给空串）。
+
+    怎么挑：与这段判据**共有最长一串字**的那个元素（≥8 字才算数），
+    然后取**它自己的开头**那一段（口径与 `_snippet` 完全一样：≤`WHEN_SNIPPET_CHARS`、
+    落在词边界上、跳过开头装饰字符）。
+
+    为什么不是「取共有的那串字」：与原件共有最多的那一段在真站上常是**半句**
+    （`Schedule your residential`），而判据要的是**这一屏独有的那句话** ——
+    元素自己的开头才是「它自己的话」（`Schedule your residential clipboard energy aud`）。
+    ⚠️ 为什么要「≥8 字」这个门槛：短判据的鉴别力等于零（一页上到处都成立），
+    那会让**每一组**的门都成立 —— 比整组跳过更坏（它会误做）。
+    """
+    want = _norm(snippet)
+    best_node, best_len = "", 0
+    for text in nodes or []:
+        node = _norm(str(text or ""))
+        if not node:
+            continue
+        run = 0
+        for start in range(len(want)):
+            n = 0
+            while (start + n < len(want) and n < len(node)
+                   and want[start + n].lower() == node[n].lower()):
+                n += 1
+            run = max(run, n)
+        if run > best_len:
+            best_node, best_len = node, run
+    return _snippet(best_node) if best_len >= 8 else ""
+
 
 #: 看着像轮换码的 path 末段长什么样（字母数字，可带 `-_.` 分隔；**还要含数字**才算，
 #: 见 `_id_like`）。`cr640` / `gt1791-1` / `a3f9c2` / `12345` 都算，`checkout` 不算。
@@ -931,6 +1011,11 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             step["note"] = _say(name, step["target"], True)
             journey.steps.append(step)
             if name == "observe":
+                # ⚠️ 2026-09-28：`node_texts=` **这一版还没接上** —— 接上它就意味着
+                # 每观测一页**多一次真实调用**（`eval` 读逐元素正文），而探索期是有预算的：
+                # 真接上去当场撞了 12 条契约用例（预算 3 步变 5 次调用、停止线之后还发了一次）。
+                # 对的路是**把它并进 `observe` 的模型**（Go 那边加一格 `node_texts`，零额外调用），
+                # 见缺陷单《产物判据跨元素拼接》§六 A.4 —— 那一改动**还没做**。
                 moved = pages.note_page(raw)
                 # 第 5 格 `sig_after`：**这一眼看到的**那一页（`note_page` 刚把它算进
                 # `pages.sig`）。读不出正文时它是 `None` —— 那就补一句 why，
@@ -3943,8 +4028,12 @@ class _Pages:
     def current_model(self):
         return self._current["model"] if self._current else None
 
-    def note_page(self, model: dict) -> str | None:
-        """记一页。返回**上一个状态名**（说明换页了），第一页返回 None。"""
+    def note_page(self, model: dict, node_texts=None) -> str | None:
+        """记一页。返回**上一个状态名**（说明换页了），第一页返回 None。
+
+        `node_texts`：逐元素正文的读口（见 `_when_for`）—— 传进来就**先验一遍**
+        判据那一段是不是落在单个元素里，`None` = 老行为。
+        """
         if not isinstance(model, dict):
             return None
         # ⚠️ **签在早退之前更新**：下面第一个 `return None` 是「没换页」，可**没换页不等于
@@ -3958,7 +4047,8 @@ class _Pages:
             return None
         previous = self._current["name"] if self._current else None
         when = _when_for(model, avoid=_norm(((self._current or {}).get("model") or {})
-                                            .get("page_text") or ""))
+                                            .get("page_text") or ""),
+                         node_texts=node_texts)
         #: ★ 2026-09-22（生成侧建议第 1 条，真产物里量到的）：**相邻两页 `when` 完全相等 ⇒
         #: 合并成一个状态**（复用上一页的名字）。
         #: 为什么必须合并：`when` 是产物重放时**唯一的门** ⇒ 两个状态同门，就会演出
@@ -4004,7 +4094,7 @@ class _Pages:
         return name
 
 
-def _when_for(model: dict, avoid: str = "") -> dict | None:
+def _when_for(model: dict, avoid: str = "", node_texts=None) -> dict | None:
     """一个状态的 `when`：**进这个状态时**那一页的判据。
 
     `url_contains` 用**稳定前缀**（`_stable_url`）：先去掉 query 与 fragment —— 重放时 query
@@ -4021,6 +4111,10 @@ def _when_for(model: dict, avoid: str = "") -> dict | None:
     （见 `WHEN_TEXT_DROPPED`）。这是**有损**的（判据少了一半），而有损必须说 ——
     不然产物上「只有 URL」与「判据本来就只有 URL」长得一模一样，读的人分不出
     「查过了，只有 URL 稳」和「没钉出来」。**不许**悄悄退化成只有 `url_contains` 一条。
+
+    ★ 2026-09-28：`node_texts` = 「**逐元素自己的正文**」的读口（探索期给得起，见
+    `_read_node_texts`；给不起就传 `None` = 老行为）。它的用途只有一个：**别把跨元素
+    拼出来的那句话当判据**（缺陷单《产物判据跨元素拼接》的正题）。验不过时的处置见那一段。
     """
     when: dict = {}
     url = _stable_url(model.get("url") or "")
@@ -4028,11 +4122,30 @@ def _when_for(model: dict, avoid: str = "") -> dict | None:
         when["url_contains"] = url
     text = _norm(model.get("page_text") or "")
     snippet = _snippet(text, avoid=avoid)
+    spliced = ""
+    if snippet and node_texts is not None:
+        # ★ 2026-09-28（缺陷单《产物判据跨元素拼接》§六 A.4 —— 那份单子的**正题**）：
+        # 判据必须是**某一个元素自己的话**。从合并后的 `page_text` 里剪一段，剪点可能落在
+        # **两个元素中间**（真站实测：`Main Content Schedule your residential` 是
+        # a11y skip-link 的尾巴接上主标题开头拼出来的）⇒ 重放时那句话**在页面上根本不存在**
+        # ⇒ 这一组静默跳过，而后面每一组跟着垮（georgiapower 那单：真做 2 步、跳 23 步）。
+        # 这里把剪出来的那段拿**逐节点正文**验一遍：不落在单个节点上就换成落在的那个。
+        got = [str(t or "") for t in (node_texts() or [])]
+        if got and not any(_norm(snippet).lower() in t.lower() for t in got):
+            better = _snippet_in_one_node(snippet, got)
+            if better:
+                spliced, snippet = snippet, better
+            else:
+                snippet, spliced = "", snippet
     if snippet:
         when["text_contains"] = [snippet]
     if not when:
         return None
     if snippet and when_holds(when, model):
+        if spliced:
+            #: 换了判据（或换成只有 URL）时**必须说**：读产物的人要能看见
+            #: 「原来剪出来那串跨了两个元素、现在用的是哪一个」。
+            when["text_why"] = WHEN_TEXT_SPLICE % spliced[:60]
         return when
     # ── 退化成「**只有 URL**」那一条 ────────────────────────────────────
     # ⚠️ 这一支是**有损**的（判据少了一半，站点改文案就整组跳过）⇒ **有损必须说**
@@ -4041,7 +4154,13 @@ def _when_for(model: dict, avoid: str = "") -> dict | None:
     #    「查过、只有 URL 稳」与「没钉出来」）。
     if not url:
         return None
-    why = WHEN_NO_TEXT_WHY if not snippet else WHEN_TEXT_UNVERIFIED_WHY
+    if not snippet and spliced:
+        #: 剪出来的那段**跨了两个元素**、又换不出单元素的一段 ⇒ 这一组只剩 URL。
+        #: 原因必须说**这一条**：说成「没读到正文」是假话（正文明明读到了），
+        #: 而读的人正是靠这句话决定「去改判据」还是「去查读页面那一层」。
+        why = WHEN_TEXT_SPLICED_AWAY % spliced[:60]
+    else:
+        why = WHEN_NO_TEXT_WHY if not snippet else WHEN_TEXT_UNVERIFIED_WHY
     return {"url_contains": url, "text_why": WHEN_TEXT_DROPPED % why}
 
 

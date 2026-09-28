@@ -4361,3 +4361,57 @@ def test_the_same_address_in_another_state_is_still_filled_there():
     got = {s["name"]: [x.get("fill") for x in s["steps"]] for s in j.states()}
     assert got == {"start": ["zip"], "later": ["zip-2"]}, got
     assert sorted(j.fills()) == ["zip", "zip-2"], sorted(j.fills())
+
+
+# ── 缺陷单《产物判据跨元素拼接》（2026-09-28）────────────────────────────────
+
+def _page_model(text: str) -> dict:
+    return {"url": "https://example.test/step-1", "title": "T", "page_text": text}
+
+
+def test_a_judge_spliced_out_of_two_elements_is_replaced_by_one_element_s_own_words():
+    """★ 缺陷单 §六 A.4（那份单子的正题）：判据那一段**必须落在单个元素里**。
+
+    真站实测的形状：`Main Content Schedule your residential` —— 它是
+    `Skip to Main Content`（a11y 跳转链接）的**尾巴**接上主标题开头拼出来的，
+    真页面上以 `Schedule your residential clipboard…` 开头，前面**没有**那句 skip-link
+    ⇒ 这一组静默跳过，后面每一组跟着垮（georgiapower：真做 2 步、跳 23 步）。
+    这里钉住：给了逐元素正文时，判据换成**落在单个元素里**的那一段，并在 `text_why` 里说清它换过。
+    """
+    from agent import browser_agent
+
+    model = _page_model("Main Content Schedule your residential clipboard energy audit today")
+    nodes = ["Skip to Main Content",
+             "Schedule your residential clipboard energy audit today",
+             "At no cost to you, a UES energy advisor will help"]
+    when = browser_agent._when_for(model, node_texts=lambda: nodes)
+    got = when["text_contains"][0]
+    #: 判据换成**那个元素自己的开头**（不是「与原件共有的那半句」）—— 而且必须真的
+    #: 落在某一个元素里（这条才是这一格的不变量）。
+    assert got.startswith("Schedule your residential"), got
+    assert any(got in n for n in nodes), (got, nodes)
+    assert "跨两个元素拼" in when["text_why"], when
+
+
+def test_a_spliced_judge_with_no_single_node_to_stand_on_keeps_only_the_url():
+    """换不出一段单元素的话 ⇒ **不许**把跨元素那句留着（那正是这一格要治的病），
+    退化成**只有 URL**，并把「为什么少了一半」写在 `text_why` 里（有损必须说）。"""
+    from agent import browser_agent
+
+    model = _page_model("Main Content ZzzzZzzz ZzzzZzzz")
+    when = browser_agent._when_for(model, node_texts=lambda: ["完全无关的一串字", "另一串也无关"])
+    assert "text_contains" not in when, when
+    assert when["url_contains"] == "https://example.test/step-1", when
+    assert "跨两个元素拼" in when["text_why"], when
+    assert when.get("text_why"), when
+
+
+def test_without_a_node_reader_we_do_not_claim_we_checked():
+    """读不到逐元素正文（老行为 / 那次 eval 没成）⇒ 照旧剪一段，而且**不许**写
+    「验过了」那句话 —— 「没验」与「验过没问题」长得一样，是这一族的原型病。"""
+    from agent import browser_agent
+
+    model = _page_model("Main Content Schedule your residential clipboard energy audit today")
+    when = browser_agent._when_for(model, node_texts=lambda: None)
+    assert when["text_contains"] == ["Main Content Schedule your residential"], when
+    assert "text_why" not in when, when
