@@ -112,6 +112,61 @@ def test_the_reader_js_really_parses():
     assert done.returncode == 0, done.stderr[:400]
 
 
+def test_the_reader_and_the_click_scan_pierce_shadow_roots():
+    """★ 2026-09-28（`try` 那站的问卷真跑逼出来的）：控件长在 **shadow root** 里 ⇒
+    `document.querySelectorAll` 看不见它们 ⇒ 读取器那一屏只读到一颗「Back」、
+    连着 60 步「没有可动作的东西」到收摊 ✗（真 trace）。
+
+    所以三处（读这一屏 / 按文字点 / 按占位符填）都走**同一个** `deepAll` ——
+    ⚠️ 判据只有一处，读得到却点不到就是「每轮空转」那个老病（2026-09-24 撞过）。
+    """
+    src = _src()
+    assert "function deepAll(" in template_loop.DEFAULT_READ_JS
+    assert "deepAll('input,select,textarea')" in template_loop.DEFAULT_READ_JS
+    assert "deepAll('button,label,[role=button]')" in template_loop.DEFAULT_READ_JS
+    #: 点/填那两处（骨架里拼的 JS）也要穿 —— 它们各自在字符串里带一次 `deepAll(`
+    assert src.count("deepAll(") >= 5, "点/填那几处没穿 shadow：%d 处" % src.count("deepAll(")
+    assert "__DEEP__" not in src, "占位符没被替掉（产物里会留一串 __DEEP__）"
+
+
+def test_the_shadow_helper_can_be_dropped_into_a_string_literal():
+    """`DEEP_JS` 是**拼进 py 字符串字面量**的（`__DEEP__` 在 `_json_lit` **之后**替）
+    ⇒ 它里面**不许有** `"` 和 `\\`，否则产物那份 py 会当场语法错。
+
+    ⚠️ 这条是**我自己写错过一次**才补的：第一版把 `+ DEEP_JS +` 直接写进骨架，
+    产物一上来就 `NameError` / `unmatched ')'`。
+    """
+    assert '"' not in template_loop.DEEP_JS
+    assert "\\" not in template_loop.DEEP_JS
+    ast.parse(_src())          # 产物本身要是合法 py
+
+
+def test_both_js_literals_of_the_product_really_parse():
+    """产物里那两段模块级 JS（读这一屏、同意条在不在）都要过 `node --check`。
+
+    与 `test_the_reader_js_really_parses` 同一个理由，但验的是**渲染之后**的那一份 ——
+    替占位符那一下（`__DEEP__`）就是在这之后才发生的，光验原文验不到它。
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("这台机器上没有 node —— 没验语法，别当验过")
+    tree = ast.parse(_src())
+    seen = set()
+    for stmt in tree.body:
+        if not (isinstance(stmt, ast.Assign)
+                and getattr(stmt.targets[0], "id", "") in ("READ_PAGE_JS", "COOKIE_GONE_JS")):
+            continue
+        name = stmt.targets[0].id
+        seen.add(name)
+        js = ast.literal_eval(stmt.value).replace("__WORDS__", "[]")
+        path = ROOT / "runtime" / ("loop-template-%s.js" % name.lower())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(js, encoding="utf-8")
+        done = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
+        assert done.returncode == 0, "%s: %s" % (name, done.stderr[:300])
+    assert seen == {"READ_PAGE_JS", "COOKIE_GONE_JS"}, "产物里少了那两段 JS 里的一段：%s" % seen
+
+
 def _book(pages):
     """一个够用的账本桩（这一条只读 `pages[].when.url_contains` —— 别把整本账搬进来）。"""
     import types

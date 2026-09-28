@@ -32,13 +32,30 @@ __all__ = ["render_loop", "funnel_states", "LOOP_PROVENANCE_KEEP", "DEFAULT_READ
 #: 这一族也要交代出处（与 `template.render` 同一套 key —— 一条口径）。
 LOOP_PROVENANCE_KEEP = ("site", "entry_url", "explored_at", "from", "note")
 
+#: 读/点那几段 JS 共用的「**穿透 shadow root**」收集器（★ 2026-09-28，`try` 那站的问卷实测）。
+#:
+#: 为什么需要它：那一屏的题目控件长在 **shadow root** 里 —— `document.querySelectorAll`
+#: **看不见**它们（`cdp observe` 自己报了 `shadow_roots: 1`，而读取器那一屏只读到一颗「Back」）
+#: ⇒ 每轮「没有可动作的东西」⇒ 空转到收摊、如实报失败 ✗（那一趟 61 步里 60 步是这个）。
+#: ⚠️ `cdp` 自己的选择器引擎**本来就穿 shadow**（`observe` 给出的选择器在 shadow 里也点得中）
+#: —— 这里补齐的是「我们自己手拼的那几段 JS」这一处短板，从此两边是**同一套可见性**。
+#:
+#: ⚠️ **这段文本会被拼进 py 里的字符串字面量**（骨架里的 `__DEEP__` 是在 `_json_lit`
+#: **之后**替进去的）⇒ 它里面**不许有** `"` 和 `\`（`tests/test_loop_template.py` 钉着这条）。
 #: 默认的「读这一屏」JS：**只读，不点**。`goldenagesouls.read()` 那一套的最小版 ——
 #: 它读回 `{url, head, progress, inputs:[[testid,value]], options:[…], nextVisible, nextTxt}`。
 #: ⚠️ 选项如果没有 `data-testid`，就用 `"\u0001" + 文字` 交回去 —— 调用方看到这个前缀
 #: 就走「按文字打标记再点」那条路（那一族按钮**没有稳定的 CSS 选择器**）。
 #: ⚠️ 这里面**不许**出现 python 式 `#` 注释（`tests/test_loop_template.py` 拿 `node --check`
 #: 真验它的语法 —— 2026-09-24 我自己塞过一行，那会让浏览器 eval 报错、`read()` 恒 None）。
-DEFAULT_READ_JS = r"""(function(){
+DEEP_JS = ("function deepAll(sel){var out=[];"
+           "function walk(root){root.querySelectorAll(sel).forEach(function(e){out.push(e);});"
+           "var all=root.querySelectorAll('*');"
+           "for(var i=0;i<all.length;i++){if(all[i].shadowRoot)walk(all[i].shadowRoot);}}"
+           "walk(document);return out;}")
+
+
+DEFAULT_READ_JS = r"""(function(){""" + DEEP_JS + r"""
   function vis(e){return e && e.offsetWidth>0 && e.offsetHeight>0;}
   function txt(e){return ((e.textContent||'').replace(/\s+/g,' ').trim());}
   // ★ 2026-09-26（第五次真站试跑，`easystorebuilderpro` 那三个格）：**`id` 与 `data-testid` 不是一回事** ——
@@ -53,7 +70,7 @@ DEFAULT_READ_JS = r"""(function(){
     var p=(e.getAttribute('placeholder')||e.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim();
     return p?("\u0002"+p):'';}
   var inputs=[];
-  document.querySelectorAll('input,select,textarea').forEach(function(e){
+  deepAll('input,select,textarea').forEach(function(e){
     if(!vis(e))return; var t=tid(e); if(!t)return;
     inputs.push([t, (e.value||'').trim()]);});
   var options=[], nextVisible=false, nextTxt='';
@@ -63,7 +80,7 @@ DEFAULT_READ_JS = r"""(function(){
   //   那一趟 58 次点击里就有两次点在「‹ edit previous piece」上，**倒回上一屏** ⇒
   //   来回震荡、永远走不到提交那一步。这一类不是答案，是往回走。
   var NAVISH=/(previous|\bback\b|go back|\bedit\b|\u2039|\u00ab|\u2190)/i;
-  document.querySelectorAll('button,label,[role=button]').forEach(function(e){
+  deepAll('button,label,[role=button]').forEach(function(e){
     if(!vis(e))return; var s=txt(e); if(!s)return;
     // ★ 2026-09-26（`job-c053e0b049f3` 那一站的真屏幕）：「下一步」那一颗**不叫 Next/Continue** ——
     //   它是「INSTALL 2 MODULES →」⇒ 只认那几个英文词就永远点不到它，于是答完一题就干等 ✗。
@@ -120,6 +137,10 @@ def render_loop(site, success_text, success_urls, fills, provenance, *,
                          ("__READ_JS__", _json_lit(read_js or DEFAULT_READ_JS)),
                          ("__PROVENANCE__", _provenance_literal(provenance))):
         src = src.replace(token, value)
+    #: ★ 2026-09-28：那几段自己手拼的 JS 里的「穿透 shadow root」收集器 —— 见 `DEEP_JS`。
+    #: ⚠️ 这一下放在**最后**：`__READ_JS__` 那一格到这儿已经是一个 **JSON 字符串字面量**了，
+    #: 替进去的是**原文**（所以 `DEEP_JS` 里不许有 `"` / `\`）。
+    src = src.replace("__DEEP__", DEEP_JS)
     return src
 
 
@@ -253,16 +274,15 @@ EMPTY_ROUNDS_BEFORE_NEXT = 2
 #: ⚠️ 它**异步注入** ⇒ 得上限内等它出现 ✓。
 COOKIE_TEXTS = ("Accept All Cookies", "Accept All", "Accept Cookies", "I Accept", "Got it")
 #: 「同意条还在吗」——**按文字**问页面上有没有那几句（复读确认用 ✓ 不猜）。
-COOKIE_GONE_JS = r"""(function(){
+COOKIE_GONE_JS = r"""(function(){__DEEP__
   var words=__WORDS__;
-  var bs=document.querySelectorAll('button,label,a[href],[role=button],div,span');
+  var bs=deepAll('button,label,a[href],[role=button],div,span');
   for(var i=0;i<bs.length;i++){var e=bs[i];
     if(e.offsetWidth<=0||e.offsetHeight<=0)continue;
     var s=(e.textContent||'').replace(/\s+/g,' ').trim();
     for(var j=0;j<words.length;j++){
       if(s===words[j]&&e.tagName!=='BODY')return 'still-here';}}
   return 'gone';})()"""
-
 
 class Filler:
     def __init__(self, ws_url, form_file, correlation_id, task_id="",
@@ -380,13 +400,13 @@ class Filler:
         token = str(token or "")
         if token.startswith(BY_PLACEHOLDER):
             want = token[len(BY_PLACEHOLDER):]
-            js = ("(function(){var t=" + json.dumps(want) + ";"
-                  "var es=document.querySelectorAll('input,textarea,select');"
+            js = ("(function(){__DEEP__var t=" + json.dumps(want) + ";"
+                  "var es=deepAll('input,textarea,select');"
                   "for(var i=0;i<es.length;i++){var e=es[i];"
                   "if(e.offsetWidth<=0||e.offsetHeight<=0)continue;"
                   "var p=(e.getAttribute('placeholder')||'').replace(/\\\\s+/g,' ').trim();"
                   "var al=(e.getAttribute('aria-label')||'').replace(/\\\\s+/g,' ').trim();"
-                  "if(p===t||al===t){var old=document.querySelectorAll('[data-sf-fill]');"
+                  "if(p===t||al===t){var old=deepAll('[data-sf-fill]');"
                   "for(var j=0;j<old.length;j++){old[j].removeAttribute('data-sf-fill');}"
                   "e.setAttribute('data-sf-fill','1');return 'marked';}}return 'none';})()")
             if "marked" not in (self.cdp.eval(js, "") or ""):
@@ -601,11 +621,11 @@ class Filler:
             payload = json.dumps(text)
             #: 扫描集**与读取器一致**（2026-09-24 真站逼出来的）：读取器把 `[role=button]` 也当
             #: 选项，这里少认一种 ⇒ 「读到了却点不到」⇒ 每轮落回「再看一眼」空转到收摊 ✗。
-            js = ("(function(){var t=" + payload + ";var bs=document.querySelectorAll('button,label,[role=button]');"
+            js = ("(function(){__DEEP__var t=" + payload + ";var bs=deepAll('button,label,[role=button]');"
                   "for(var i=0;i<bs.length;i++){var e=bs[i];"
                   "if(e.offsetWidth<=0||e.offsetHeight<=0)continue;"
                   "var s=(e.textContent||'').replace(/\\\\s+/g,' ').trim();"
-                  "if(s===t){var old=document.querySelectorAll('[data-sf-pick]');"
+                  "if(s===t){var old=deepAll('[data-sf-pick]');"
                   "for(var j=0;j<old.length;j++){old[j].removeAttribute('data-sf-pick');}"
                   "e.setAttribute('data-sf-pick','1');return 'marked';}}return 'none';})()")
             if "marked" not in (self.cdp.eval(js, "") or ""):
