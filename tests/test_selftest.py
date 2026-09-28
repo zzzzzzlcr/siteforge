@@ -658,12 +658,43 @@ def test_a_soft_step_failing_does_not_take_a_successful_run_down():
 def test_a_run_that_walked_everything_but_never_saw_success_is_a_failure(env):
     """每一步都做成了、退出码 1、trace 里没有 `ok=false` 的行 —— 是「没见到成功文案」，
     不是「卡在第几步」。两种说法要分开，别拿 None 冒充一个步号。"""
+
     bad = _Script(rc=1, oks=(True, True, True))
     report = _run(env, _scripts(baseline=bad, rerun=bad), set_viewport=lambda w, h: None)
     assert report.passed is False
     for run in report.runs[:2]:
         assert run.status == "failed" and run.failed_step is None, run
         assert "成功" in run.note, run.note
+
+
+def test_a_run_where_most_steps_were_skipped_says_which_step_and_what_to_do():
+    """★ 2026-09-28 **用户两句话戳破的**：
+    ①「第一个都没点击吧」—— 那趟自测 27 行里只有 2 行真做成、25 行是「跳过」（`when` 的地址
+      对不上 ⇒ 整组没做），而结论写「每一步都做成了」✗✗（**跳过 = 没做**）；
+    ②「这样反馈根本不知道咋配合啊。我跟 AI 聊第一步没点击？」—— 光报个数没用：得说清
+      **第一处跳过是哪一步、为什么**，以及**人在这儿能做什么**。
+
+    这条同时钉这三样（少一样这条就是在自欺）。
+    """
+    lines = [
+        {"step": 1, "action": "scroll", "ok": True, "note": "把「LEARN MORE」滚进了视口"},
+        {"step": 2, "action": "click", "ok": True, "note": "点了「LEARN MORE」"},
+        {"step": 3, "action": "click", "ok": None,
+         "progress_why": "第 3 步跳过：这一页不像「preschool」那个状态（地址对不上：要含「x」）"},
+        {"step": 4, "action": "form", "ok": None,
+         "progress_why": "第 4 步跳过：这一页不像「en_gb」那个状态（地址对不上）"},
+    ]
+    ok, step, note = selftest._verdict(1, False, lines, 0, "", "", 600)
+    assert "每一步都做成了" not in note, note                      # ① 不许说「都做成了」
+    assert "2 步被跳过" in note, note                              # ① 数字要对
+    assert "第一处跳过：第 3 步" in note, note                      # ② 要指名
+    assert "地址对不上" in note, note                               # ② 要带原因原文
+    assert "能配合的" in note and "它会带着这句话重改一版" in note, note   # ② 要给人下一步
+
+    #: 正控：没有跳过行时，那句话**照旧**（别把这一支写死成新句子）
+    only_done = [dict(lines[0]), dict(lines[1])]
+    _ok, _step, note2 = selftest._verdict(1, False, only_done, 0, "", "", 600)
+    assert "每一步都做成了" in note2, note2
 
 
 def test_a_run_that_never_wrote_a_trace_is_still_a_failure(env):

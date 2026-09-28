@@ -871,7 +871,31 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
     elif first_bad is not None:
         note = "卡在第 %s 步：%s" % (failed_step, step_said)
     elif lines:
-        note = "每一步都做成了，但页面上一直没出现成功文案（退出码 %s）—— 不是卡在哪一步，是没走到成功" % rc
+        #: ★ 2026-09-28（用户当场戳破：「**第一个都没点击吧**」）—— 这一支原来一律写
+        #: 「每一步都做成了」，而真事是：那一趟 27 行里**只有 2 行真做成、25 行是「跳过」**
+        #: （`when` 的地址对不上 ⇒ 整组没做）✗✗。**跳过 = 没做**，不是「做成了」。
+        skipped = [ln for ln in lines
+                   if "跳过" in str(ln.get("progress_why") or ln.get("note") or "")]
+        if skipped:
+            #: ★ 2026-09-28（用户第二句：「这样反馈根本不知道咋配合啊。我跟 AI 聊第一步没点击？」）
+            #: ⇒ 光报个数还是没用：要把**第一处跳过**的原文摆出来（第几步、什么动作、为什么），
+            #: 并说清**人在这儿能做什么**。人手里能改的就那几样：成功判据 / 开工前那一句 /
+            #: 或者把状态判据本身改对（那要动产物）。
+            head = skipped[0]
+            note = ("这一遍 **%d 步里 %d 步被跳过**（那些状态跟当前这一页对不上 —— 页面压根没走到"
+                    "它们那一页），真正做成的只有 %d 步 ⇒ 没走到成功（退出码 %s）。\n"
+                    "第一处跳过：第 %s 步（%s）—— %s\n"
+                    "⚠️ 跳过就是**没做** —— 这一遍不能当成「走完了」。\n"
+                    "⇒ 这儿能配合的：① 如果页面上其实**成了**，改「什么算成功」那一格；"
+                    "② 如果它**走岔了**，在闸上说一句「从第 %s 步起，页面在哪 / 该点哪个」——"
+                    "它会带着这句话重改一版。"
+                    % (len(lines), len(skipped), len(lines) - len(skipped), rc,
+                       head.get("step"), str(head.get("action") or "?"),
+                       str(head.get("progress_why") or head.get("note") or "（它没说为什么）")[:160],
+                       head.get("step")))
+        else:
+            note = ("每一步都做成了，但页面上一直没出现成功文案（退出码 %s）—— "
+                    "不是卡在哪一步，是没走到成功" % rc)
     else:
         why = _tail(_noise_free(err)) or _tail(out)
         note = "它一步都没走成：进程退了（退出码 %s）%s" % (
