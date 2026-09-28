@@ -331,8 +331,13 @@ def test_the_writer_can_switch_a_fixed_table_artifact_to_the_loop_shape(tmp_path
     assert "改稿那双手按人说的换了形态" in out["shape_why"], out["shape_why"]
 
 
-def test_asking_for_the_loop_without_a_url_judge_stops_loudly(tmp_path):
-    """换不成时**当场停下点名** —— 不许默默留在老形态上（那正是「话说了、产物没变」那个病）。"""
+def test_asking_for_the_loop_without_a_url_judge_does_not_kill_the_run(tmp_path):
+    """★ 2026-09-28（用户当场骂醒：「啥玩意这不是循环类的啊」）：模型**想**换形态而换不成时，
+    **照旧按这一趟算得出来的形态产**，把那件事写进 `shape_why` —— 不砍这一趟、不瞒。
+
+    ⚠️ 第一版这里是 `END_DRAFT_FAILED`（「当场停下点名」），于是模型只是"想"一下就能把整趟砍死、
+    一个 py 都不出 ✗✗ —— 那要防的是「话说了、产物没变」被藏起来，不是「模型不许有自己的想法」。
+    """
     def write(spec, feedback, n):
         assert "loop" not in spec, "网址判据都没给，这一格不该摆出来（它会白写一轮）"
         return fix.states_from_reply(spec, '{"shape": "loop", "note": "按人说的换成循环型"}')[0]
@@ -341,7 +346,7 @@ def test_asking_for_the_loop_without_a_url_judge_stops_loudly(tmp_path):
     app, cfg, _ = _build(deps=deps)
     _, out = _drive(app, cfg, _brief(tmp_path))          # ← 没给 success_urls
 
-    assert out["end_reason"] == END_DRAFT_FAILED, out.get("end_note")
-    assert "网址判据" in out["end_note"], out["end_note"]
-    assert rec.selftest == [], "换不成就不该去动浏览器"
-    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+    assert out["end_reason"] == "delivered", out.get("end_note")   # 不砍：照旧产、照旧往下走
+    assert out["shape"] == "table", out.get("shape_why")
+    assert "换不成" in out["shape_why"] or "给不了" in out["shape_why"], out["shape_why"]
+    assert "loop" in out["shape_why"], "它想要什么也要写在里面（不然下一版又绕一圈）：%r" % out["shape_why"]

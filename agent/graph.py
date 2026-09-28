@@ -1094,7 +1094,11 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
                  facts={"violations": was["violations"], "diagnosis": was["diagnosis"],
                         "第几版": list(state.get("visits") or []).count("draft") + 1,
                         # ★ 给模型的那份证据，人也看得见（不然闸上判不了「这稿有没有依据」）
-                        "给模型的证据（旧脚本停在哪儿）": state.get("fix_evidence")})
+                        "给模型的证据（旧脚本停在哪儿）": state.get("fix_evidence"),
+                        #: ★ 2026-09-28：**形态这件事要摆到闸上** —— 模型上一轮可能想换、而换不成
+                        #: （`shape_why` 里写着为什么）⇒ 人得看见「它想要什么、这一版按什么产」，
+                        #: 不然下一版又会绕同一圈。
+                        "形态": state.get("shape_why")})
     if out.get("end_reason"):
         return out
     # 人在**这一道闸**上说的话，属于**这一版**稿（所以 feedback 在闸之后组装）
@@ -1165,8 +1169,12 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     #: 这双手**。固定步骤表那一族靠 `when` 逐步匹配 —— 题目**提前出现**时那一步不成立、整组
     #: **静默跳过**；步进循环型每一轮读页面、有什么做什么，顺序变了照样做完。所以这一格
     #: （`shape`）是模型能改的：改得成就换、重渲、重自测。
-    #: ⚠️ **换不成要当场停下点名**，不许默默留在老形态上 —— 「话说了、产物没变」正是这一片要
-    #: 治的病（用户就是照着那个症状来问的）。判据与给表那一条同源（`_can_loop`）。
+    #: ⚠️ **换不成不砍这一趟**（★ 2026-09-28 用户当场骂醒的那条：「啥玩意这不是循环类的啊」）：
+    #: 第一版把「换不成」写成 `END_DRAFT_FAILED` —— 于是**模型乱点形态**（它只是"想"）就能
+    #: 把整趟砍死、一个 py 都不出 ✗✗。那不是我想要的那条纪律：要防的是「话说了、产物没变」
+    #: 这件事**被藏起来**，不是「模型不许有自己的想法」。
+    #: ⇒ 现在的处置：**照旧按这一趟算得出来的形态产**，把「它想要什么、为什么给不了」写进
+    #: `shape_why`（人看得见的那一格）—— 不砍、不瞒。
     want = str(spec.get("shape") or "").strip().lower()
     if want and want != shape:
         if want == "loop" and _can_loop(journey, funnel, state):
@@ -1177,12 +1185,9 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
             shape, loop_spec = "table", {}
             shape_why = "改稿那双手按人说的换了形态：**固定步骤表**（按网址/文案逐步匹配）。"
         else:
-            out.update({"end_reason": END_DRAFT_FAILED,
-                        "end_note": ("改稿那双手要把产物改成「%s」，但这一趟换不成：%s。\n"
-                                     "（循环型只看**网址** —— 没有网址判据的产物会「跑到底再说"
-                                     "自己成功」，那是本套最忌讳的那类谎。）" % (want,
-                                       _why_no_loop(journey, funnel, state)))})
-            return out
+            shape_why = ("改稿那双手想把产物改成「%s」，这一趟给不了：%s。"
+                         "⇒ 照旧按这一趟算得出来的形态（%s）产 —— 那一格想要的东西**没进产物**。"
+                         % (want, _why_no_loop(journey, funnel, state), shape))
 
     #: 它回来的那几格**按白名单**合到这一份上（`fix.states_from_reply` 已经挡过一次；
     #: 这里是第二道：从别处塞进来的 `loop` 也不许长出 `_loop_source` 不认的键）。
