@@ -2321,8 +2321,11 @@ _RANDOM_HINTS = (
     #: ⚠️ **顺序是判据的一部分**：这一条排在 `phone` / `postcode` / `state` **之后** ——
     #: `Phone number` 会先命中 `phone`、`Zip/Postal Code` 先命中 `postcode`（别把它挪到前面，
     #: 否则「number」这个词会把手机号那一格吃掉）。
+    #: ⚠️ **不许**放 `count` 这种短词：这一档是**子串**匹配，`count` 会命中 `Country` ✗✗
+    #: （2026-09-28 当场撞上：`country` 那一格被这条判成了 `number`）。要加词先想一遍「它会不会
+    #: 出现在别的字段名里」（`account` / `discount` / `country` 都含 count）。
     (("how many", "household", "occupants", "people", "persons", "number of",
-      "quantity", "count"), "number"),
+      "quantity"), "number"),
     # 「整名」这一族。原先**没有这一条** —— 于是 `Full Name:` 判不出种类，
     # 靠 `_fallback` 的兜底默认值**碰巧**也给了 `full_name`（真站实测：
     # 那一格的名字对得上运营的键，但那是巧合，不是判据）。
