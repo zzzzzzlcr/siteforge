@@ -641,6 +641,173 @@ class Filler:
 
     # ---------- 主循环 ----------
 
+    # ── 结构化快照兜底（★ 2026-09-28，`try` 那站的问卷逼出来的）────────────────
+    #
+    # 为什么要有它：那一站的问卷第一屏，产物里那几行轻量 JS **读不到控件**（真 trace：连 60 步
+    # 「没有可动作的东西」、答过 0 题），而**探路那一层**（`observe` / `screenshot`，同一台机器）
+    # 在同一屏上是做得动的 ⇒ 差的是**读取层**：
+    #   - 轻量 JS 只认那几种标签，也不往外走（闭 shadow / 跨帧看不见）；
+    #   - `cdp snapshot` 是**跨帧的结构树**（生产那份 `CDPHelper` 本来就有它）。
+    # 所以：**快路先用轻量 JS；连着几轮读不到东西时，换一次结构化快照**，从树里挑
+    # 「能填的」与「能点的」，用**结构选择器**动手（`body > div:nth-of-type(1) > …` 链 ——
+    # 探路那份产物用的就是这个形状；那站的 class 是 `css-1nb0d45` 这种每次都不一样的随机名，
+    # 靠不住）。
+    # ⚠️ 三条纪律：① 一轮只试一次、**同一屏只试一次**（签字 = 读取器给的头/地址）；
+    # ② 全程 `STRUCTURED_LIMIT` 次上限；③ **真填/真点成功**才 `idle = 0`
+    # （「换了读法」本身不算「这一屏有可动的东西」）。
+    #: 结构化这一路全程最多动手几次（它是**兜底**，不是主路）
+    STRUCTURED_LIMIT = 12
+    #: 结构化树里「像下一步」的词（与读取器那段 JS 同一套 —— 一处一张嘴）
+    NEXT_WORDS = ("next", "continue", "submit", "finish", "done", "complete",
+                  "install", "get results", "see results", "start")
+    #: 结构化树里**不点**的（往回走 / 页脚 / 站标那一族 —— 与 JS 里那份 NAVISH 同一套；
+    #: 「logo」是补的：真跑里那颗站标也读成了可点的东西，点它等于**导航走** ✗）
+    NAVISH = ("previous", "back", "edit", "home page", "terms", "privacy", "policy",
+              "disclaimer", "cookie", "sign in", "log in", "logo")
+
+    def _tree_text(self, node, cap=60):
+        """结构树里那一棵的文字（递归拼、压空白、截断 —— 选项都很短）。"""
+        got: list = []
+
+        def walk(n, depth=0):
+            if depth > 6 or not isinstance(n, dict) or len(" ".join(got)) > cap:
+                return
+            if str(n.get("text") or "").strip():
+                got.append(str(n["text"]).strip())
+            for kid in (n.get("children") or []):
+                walk(kid, depth + 1)
+
+        walk(node)
+        return " ".join(" ".join(got).split())[:cap]
+
+    def _tree_rows(self, snap):
+        """`snapshot()` → `[(frame_id, 结构选择器, tag, attr, 文字)]`（跨帧、深度有界）。
+
+        ⚠️ `nth-of-type` 是**按同标签**数的（`div` 与 `label` 各数各的）—— 数错一位，
+        选择器就指向另一个元素（探路那份产物里就是这个形状 ✓）。
+        """
+        frames = []
+        if isinstance(snap, dict):
+            if isinstance(snap.get("frames"), list):
+                frames = list(snap["frames"])
+            elif snap.get("frame"):
+                frames = [snap["frame"]]
+        rows: list = []
+        for fr in frames:
+            if not isinstance(fr, dict):
+                continue
+            fid = str(fr.get("frameId") or "")
+
+            def walk(node, path, depth=0):
+                if depth > 12 or not isinstance(node, dict):
+                    return
+                seen: dict = {}
+                for kid in (node.get("children") or []):
+                    if not isinstance(kid, dict):
+                        continue
+                    tag = str(kid.get("tag") or "").lower()
+                    seen[tag] = seen.get(tag, 0) + 1
+                    seg = "%s:nth-of-type(%d)" % (tag, seen[tag]) if tag else ""
+                    here = ("%s > %s" % (path, seg)) if (path and seg) else (seg or path)
+                    rows.append((fid, here, tag, kid.get("attr") or {}, self._tree_text(kid)))
+                    walk(kid, here, depth + 1)
+
+            walk(fr.get("body"), "body", 0)
+        return rows
+
+    def structured(self):
+        """`snapshot()` → `{"fields": [...], "actions": [...]}`；**读不回来给 `None`**（不编）。"""
+        try:
+            snap = self.cdp.snapshot()
+        except Exception as exc:                    # noqa: BLE001 —— 外面世界
+            self.log.warning("[%s] 结构化快照读不回来：%s", self.cid, exc)
+            return None
+        fields: list = []
+        by_text: dict = {}
+        for fid, sel, tag, attr, text in self._tree_rows(snap):
+            if tag in ("input", "textarea", "select"):
+                if str(attr.get("type") or "").lower() in ("hidden", "submit",
+                                                           "button", "image"):
+                    continue
+                hint = " ".join(str(attr.get(k) or "") for k in
+                                ("placeholder", "aria-label", "name", "id", "data-testid"))
+                fields.append({"frame": fid, "selector": sel, "attr": attr, "hint": hint})
+                continue
+            if not text or len(str(text)) > 44:
+                continue
+            low = str(text).lower()
+            if any(w in low for w in self.NAVISH):
+                continue
+            by_text[str(text)] = {"frame": fid, "selector": sel, "text": str(text),
+                                  "next": any(w in low for w in self.NEXT_WORDS)}
+        return {"fields": fields, "actions": list(by_text.values())}
+
+    @staticmethod
+    def _token_of(field) -> str:
+        """结构化那一格 → 产物**自己那套 token**（值池与蜜罐都按 token 判）。认不出给空串。"""
+        attr = field.get("attr") or {}
+        for key, pre in (("data-testid", ""), ("placeholder", BY_PLACEHOLDER),
+                         ("id", BY_ID), ("name", BY_ID)):
+            val = str(attr.get(key) or "").strip()
+            if val:
+                return pre + val
+        return ""
+
+    def _structured_try(self, step, page) -> bool:
+        """兜底那一路：读 → 填 → 点。**真动手了**才返回 `True`（并把它记进 trace）。"""
+        left = getattr(self, "_structured_left", self.STRUCTURED_LIMIT)
+        if left <= 0:
+            return False
+        sig = "%s|%s" % (str(page.get("url") or ""), str(page.get("head") or "")[:60])
+        if sig == getattr(self, "_structured_sig", ""):
+            return False                      # 同一屏只试一次
+        got = self.structured()
+        if got is None:
+            return False                      # 读不回来：不算试过（下一轮还能再试）
+        self._structured_sig = sig
+        self._structured_left = left - 1
+        did = False
+        for f in got["fields"][:3]:
+            token = self._token_of(f)
+            if not token or token in self._filled:
+                continue
+            value = self.value_for(token, {"inputs": [[token, ""]]}, 0)
+            if not value:
+                continue
+            if self._filled_ok(self.cdp.form(f["selector"], value=value,
+                                             frame_id=f["frame"])):
+                self._filled.add(token)
+                did = True
+                self.log.info("[%s] step %d: 结构化快照填了 %s（%s）",
+                              self.cid, step, token, f["selector"][:60])
+                self._trace(step=step, action="form", ok=True, progress=False,
+                            target={"selector": f["selector"]},
+                            note="结构化快照填了 %s" % token)
+        #: ★ 2026-09-28：**挑哪一处点**有讲究 —— 真跑撞过一次：那一屏的 FAQ 标题（「What is
+        #: Atticus?」这种）也被读成可点的东西，于是循环一直在点它、页面当然不动 ✗。
+        #: 判据：先「像下一步」的词 ✓，再把**像问句的标题**（`?` 结尾，或以 what/why/how/is… 开头）
+        #: 排到后面 ✓，其余（选项那种短名词/短语）优先 ✓。**只点一处**（不连环点）。
+        def rank(a):
+            low = str(a.get("text") or "").lower()
+            question = low.rstrip().endswith("?") or low.startswith(
+                ("what ", "why ", "how ", "is ", "do ", "does ", "can ", "when ", "where "))
+            return (0 if a.get("next") else 1, 1 if question else 0)
+
+        acts = sorted(got["actions"], key=rank)
+        if acts and self._filled_ok(self.cdp.click(acts[0]["selector"], acts[0]["frame"])):
+            did = True
+            act = acts[0]
+            self.log.info("[%s] step %d: 结构化快照点了「%s」（%s）",
+                          self.cid, step, act["text"], act["selector"][:60])
+            self._trace(step=step, action="click", ok=True, progress=False,
+                        target={"text": act["text"], "selector": act["selector"],
+                                "frame_id": act["frame"]},
+                        note="结构化快照点了「%s」" % act["text"])
+        if not did:
+            self.log.info("[%s] step %d: 结构化快照也没读出能动的东西（fields=%d actions=%d）",
+                          self.cid, step, len(got["fields"]), len(got["actions"]))
+        return did
+
     def run(self, max_steps=MAX_STEPS):
         try:
             self.log.info("[%s] loop: site=%s provenance=%s", self.cid, SITE,
@@ -852,7 +1019,19 @@ class Filler:
                 # ⑤ 真的没事干（★ 先怀疑同意条：它异步注入、会盖住整页 ✗）
                 if not self._cookie_gone():
                     self.clear_cookies()
+                #: ★ 2026-09-28：轻量读取器读不到的两种情形都要走兜底 ——
+                #:   ① 连着几轮**什么都没有**（`idle` 涨到 `EMPTY_ROUNDS_BEFORE_NEXT`）；
+                #:   ② **同一屏打转**（`_answered_but_stuck`：屏幕上那几样读得到、可全都点不动
+                #:      页面 —— 真跑撞过：阅读器把 FAQ 那几颗当选项，一直点它、`idle` 永远只有 1）。
+                #: ⚠️ 同一屏只试一次（`_structured_try` 里那个签字），真动手才清零 idle。
+                if (idle >= EMPTY_ROUNDS_BEFORE_NEXT
+                        or getattr(self, "_answered_but_stuck", False)) \
+                        and self._structured_try(step, page):
+                    self._answered_but_stuck = False
+                    idle = 0
+                    continue
                 busy_since = None
+
                 idle += 1
                 #: ★ 2026-09-26：**已经答过、但没有「下一步」可点** —— 这是最容易被误读的一种空转
                 #: （屏幕上明明有选项，却说「没有可动作的东西」）。把真正的原因说出来。

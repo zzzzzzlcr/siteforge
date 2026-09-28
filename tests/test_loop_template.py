@@ -205,7 +205,7 @@ def test_the_shape_rule_refuses_to_guess_without_pages():
     assert not blind["states"] and "判不出" in blind["why"], blind
 
 
-def _fake_common(monkeypatch, page, calls):
+def _fake_common(monkeypatch, page, calls, snap=None):
     """一个够用的假 `common`：产物 import 的就是它（只记调用，不碰真浏览器）。"""
     mod = types.ModuleType("common")
 
@@ -220,6 +220,13 @@ def _fake_common(monkeypatch, page, calls):
                 calls.setdefault("marks", []).append(js)
                 return "marked"
             return json.dumps(page)
+
+        def snapshot(self):
+            """结构化那一路（兜底）读的就是它 —— 不给就抛（产物的兜底会「读不回来」）。"""
+            calls["snapshot"] = calls.get("snapshot", 0) + 1
+            if snap is None:
+                raise RuntimeError("这个桩没给快照")
+            return snap
 
         def click(self, sel, *a, **kw):
             calls["click"].append(sel)
@@ -519,3 +526,50 @@ def test_a_household_count_field_gets_a_number_not_a_name(tmp_path, monkeypatch)
     module.Filler("ws://x/1", str(form), "cid", no_report=True).run(max_steps=1)
     got = str(calls["form"][0][1].get("value") or "")
     assert got.isdigit(), "那一格拿到的不是数字：%r" % (got,)
+
+
+def test_a_screen_the_light_reader_cannot_see_is_read_by_the_snapshot_fallback(tmp_path, monkeypatch):
+    """★ 2026-09-28（`try` 那站真跑逼出来的）：轻量读取器读不到的那一屏，**换结构快照也要能动手**。
+
+    现场：那一站的问卷第一屏，产物连着 60 步「没有可动作的东西」、答过 0 题 ⇒ 收摊；
+    而同一屏探路那层（observe/screenshot）看得见 ⇒ 差的是**读取层**。
+    这一条钉住兜底那一路：轻量 JS 空 ⇒ `snapshot()` 里挑出**能点的**与**能填的**，
+    用**结构选择器**（`body > … > tag:nth-of-type(n)`）动手，并且**记进 trace**。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    #: 轻量读取器：这一屏**什么都没有**（就是那一站的真实形状）
+    page = {"url": "https://funnel.test/survey", "head": "Hi there! I'm Jackie.",
+            "progress": "", "inputs": [], "options": [], "nextVisible": False, "nextTxt": ""}
+    #: 结构快照：选项是一个 `<label>`（**没有 testid、class 还是随机名**）+ 一个按 placeholder
+    #: 认得出的输入框 ⇒ 选择器只能靠**结构**拼出来
+    snap = {"frame": {"frameId": "F1", "body": {"tag": "BODY", "children": [
+        {"tag": "DIV", "children": [
+            {"tag": "DIV", "children": [{"tag": "LABEL", "text": "Myself"}]},
+            {"tag": "INPUT", "attr": {"placeholder": "postcode"}}]}]}}}
+    _fake_common(monkeypatch, page, calls, snap=snap)
+
+    src = template_loop.render_loop("try", "Thank you", "thank-you",
+                                    {"postcode": {"kind": "postcode"}}, dict(PROV))
+    path = tmp_path / "fallback.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("fallback_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    trace = tmp_path / "t.jsonl"
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    filler = module.Filler("ws://x/1", str(form), "cid",
+                           trace_path=str(trace), no_report=True)
+    filler.run(max_steps=6)
+
+    assert calls.get("snapshot", 0) >= 1, "轻量读取器读不到，兜底那一路没去读快照"
+    assert calls["form"], "结构快照里那个输入框没填"
+    sel = calls["form"][0][0]
+    assert sel.startswith("body > div:nth-of-type(1)"), \
+        "填的不是结构选择器（那站的 class 是随机名，靠不住）：%r" % sel
+    assert calls["click"], "结构快照里那个选项没点"
+    assert calls["click"][0].startswith("body > div:nth-of-type(1)"), calls["click"][0]
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert any("结构化快照" in str(r.get("note") or "") for r in rows), \
+        "兜底动手了却没记 trace：%r" % (rows[-3:],)
