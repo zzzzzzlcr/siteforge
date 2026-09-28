@@ -170,26 +170,51 @@ def _success_urls(success_urls) -> list:
 _GENERATED_ID = re.compile(r"^#(?:__[A-Za-z]+__\d+$|:r[0-9a-z]+:|mui-\d|radix-"
                            r"|headlessui-|downshift-|react-select-)", re.I)
 
+#: ★ 2026-09-28（缺陷单《产物判据跨元素拼接》§四.1，真站实测）：「自造 id 会漂」。
+#: georgiapower 同一天量到的对照（探路记的 → 今天实际的）：`#input-167` → `input-163`、
+#: `#combobox-input-182` → `combobox-input-168`、`#combobox-input-182-0-182` → `…-168-0-168`；
+#: 而 `input[name="city"]` / `input[aria-label="Search for Address"]` **全对上了**。
+#: ⇒ 「**以 `-数字` 结尾的 id**」与上面那一族同一条待遇：**只能当兜底**。
+#: ⚠️ 代价说清楚：`#step-2`、`#section-3` 这种**人写的**序号 id 也会被一起贬到最后一档 ——
+#: 它仍然**留着**（页面真没给别的地址时它是唯一够得着的路），只是不再排第一。
+_RENDER_INDEX_ID = re.compile(r"^#[-\w]*-\d+$")
+#: `:nth-of-type` / `:nth-child` 的**跳数**：跳数越多越像「位置」而不像「身份」。
+#: 阈值与 cdp 那边**同一份判据**（`tools/cdp/internal/observe.go` 的 `stability()`：
+#: hops 0 且带锚点 = high、≤3 = medium、**>3 = low**）—— 两处对不上就会出现
+#: 「评级说它脆、产物还是先试它」。实测那个换分辨率全挂的 9 跳长链就在这一档。
+_HOPS_LOW = 3
+_HOPS = re.compile(r":nth-of-type|:nth-child")
+
+
+def _selector_rank(selector) -> int:
+    """产物里试这条选择器的**顺序档**：0 稳（先试）／1 一般／2 兜底（最后试）。"""
+    text = str(selector or "")
+    if _GENERATED_ID.match(text) or _RENDER_INDEX_ID.match(text):
+        return 2
+    return 2 if len(_HOPS.findall(text)) > _HOPS_LOW else 1
 
 def _stable_first(obj):
-    """每处 `selectors` 重排一遍：**框架生成的 id 放最后**（人写的地址优先）。
+    """每处 `selectors` 重排一遍：**稳的排前面、脆的排最后**（见 `_selector_rank`）。
 
-    ★ 2026-09-23，用户实测指出的那条（原话：「用的这个 id？会有问题吧，感觉这种 ID
+    ★ 2026-09-23，用户实测指出的第一条（原话：「用的这个 id？会有问题吧，感觉这种 ID
     随时会变」）：`#__BVID__408` 是 Vue 的**渲染序号** —— 同一个框重渲染就换号
     （真站实测：这一趟 `#__BVID__42`、下一趟 `#__BVID__429`）。产物按声明顺序一条条试，
     于是**先用**它；而「第 408 个渲染出来的控件」不是这个元素的身份，它是**位置**。
-    人写的地址（`input[name="firstName"]`、class、精确的 nth-of-type 路径）留在前面。
 
-    ⚠️ `sorted` 是**稳定**的：不是生成 id 的那些，相对顺序一个都不动 ——
+    ★ 2026-09-28（缺陷单《产物判据跨元素拼接》§四.1）补上同族的另外两族：
+    以 `-数字` 结尾的 id（`#input-167` 那种框架自造号）与**长 `nth-of-type` 链**
+    （实测 9 跳那条：**换个分辨率全挂**）—— 一条判据管三族，都在 `_selector_rank` 里。
+
+    ⚠️ `sorted` 是**稳定**的：不是那三族的，相对顺序一个都不动 ——
     那个顺序是探索那一趟量的，别顺手重排它。
-    ⚠️ 生成 id 仍然**留着**（排在最后）：页面真没给别的地址时，它是唯一够得着的路
+    ⚠️ 脆的仍然**留着**（排在最后）：页面真没给别的地址时，它是唯一够得着的路
     —— 实测有一格（`telephoneNumber`）就只有它一个候选。
     """
     if isinstance(obj, dict):
         out = {}
         for key, value in obj.items():
             if key == "selectors" and isinstance(value, list):
-                out[key] = sorted(value, key=lambda s: bool(_GENERATED_ID.match(str(s or ""))))
+                out[key] = sorted(value, key=_selector_rank)
             else:
                 out[key] = _stable_first(value)
         return out
@@ -342,6 +367,13 @@ SUCCESS_URLS = $success_urls
 # bool(_cur_tab) 恒真 → 连续失败计数每步被清零 → 失败任务必磨完全程），
 # 所以这条必须产物**自带**，不指望外面兜。
 STUCK_LIMIT = $stuck_limit
+# 连着这么多**组**的判据都不成立 ⇒ 当场喊一句（缺陷单《产物判据跨元素拼接》§六 E3）。
+#
+# 为什么不是「每一跳都喊」：跳过是一条**正常**的路（SPA 每屏只成立一组，其余都跳过），
+# 每跳喊一遍等于刷屏。真正的病是**连着**垮 —— georgiapower 那单 25 步里真做 2 步、
+# 后面 23 步全跳，而日志长得像正常跑。3 组是这条线：一组不像可能是判据保守，
+# 连着三组不像就只可能是「判据不该在这页成立」或「环境变了」。
+SKIPPED_GROUPS_ALOUD = 3
 # 一步**没做成**之后，把它那一组**从头再走一遍**；这个数是**一趟里**的总次数上限。
 #
 # 为什么要重试（2026-09-20 真站实测，单号 26015658）：
@@ -369,6 +401,17 @@ PAGE_TAIL_CHARS = 240
 
 # 动作命令自己报错时的字样：cdp click / form 找不到元素就直接报这些。
 # 「这一步成没成」在**填/选**类步骤上只能看它 —— diff 判不了控件状态（§4.6 的能力边界）。
+#: ★ 2026-09-28（travelandleisure 生产单 26221672 实测逼出来的）：**页面根本不是内容页**时的特征词。
+#: 命中就说出来 —— 因为**风控/挑战页**与「判据不匹配」在日志里**长得一模一样**，
+#: 而前者**不是脚本能解决的**（要换出口 IP 或降频），读日志的人不该往判据上找。
+#: 真事：那一单从第 3 步起 12 步读到的正文一直是
+#: `One moment, we're checking you're not a bot. 20260928T094845Z-…`，
+#: 而现场只报「正文里没有「Log In Join Now」」⇒ 看着像脚本的错，其实是 IP 被盯上了。
+_TROUBLE_MARKERS = (
+    "checking you're not a bot", "just a moment", "verifying you are human",
+    "are you a human", "enable javascript and cookies", "attention required",
+    "access denied", "ddos protection", "cf-chl", "captcha",
+)
 ERR_MARKERS = ("Error:", "error:", "not found", "BugError", "no page target",
                "failed to create client", "Usage:", "Flags:", "panic:")
 
@@ -742,6 +785,23 @@ STATES = $states
 FILLS = $fills
 
 
+def _page_trouble(text):
+    """这一页**是不是根本不是内容页** —— 是就给一句人话，不是就给空串（★ 2026-09-28）。
+
+    两样，都**不是脚本能解决的**，所以必须与「判据不匹配」分开说：
+      · **风控 / 挑战页** —— 正文明含 `_TROUBLE_MARKERS` 里那几句之一；
+      · **空白页** —— 正文读出来是空的（还在加载 / 被拦 / 跨域读不到）。
+    """
+    t = _norm(text or "")
+    low = t.lower()
+    for m in _TROUBLE_MARKERS:
+        if m in low:
+            return "页面是**风控/挑战页**（正文里有「%s」）：%s" % (m, t[:80])
+    if not low:
+        return "读不到页面正文（空串）—— 还在加载？还是被拦了？"
+    return ""
+
+
 def _norm(text):
     r"""把一段文字归一成「看内容」的形态：空白（含 NBSP）压成单个空格、两端剪掉。
 
@@ -763,8 +823,15 @@ def _norm(text):
 # 每个 `when` 判据都不成立、整份产物**一步不做**。2026-09-23 afrotech 真站复现：
 # 20/20 次抛异常、7 步全跳，日志却只说「这页不像」——真正的原因一个字都不提。
 # 所以按 root 的类型挑遍历方式（Document / Element 走老路，ShadowRoot 走 querySelectorAll）。
+#: ★ 2026-09-28（缺陷单《产物判据跨元素拼接》§六 D）：shadow 那一支原来写的是
+#: `c.innerText || c.textContent` —— `<style>` 的 `innerText` 是空的 ⇒ 回退到 `textContent`
+#: ⇒ **把 LWC 的整段 CSS 读进「正文」**（实测旁证：trace 里 `page_sig_tail` 是
+#: `--mobileLanding-colorTextButtonBrand:rgb(255, 255, 255);…`）。而 `page_text` 是**给判据
+#: 与成功文案看的那一页**，600 字的窗口被 CSS 挤爆 = 判据看不见正文 ⇒ 整组静默跳过。
+#: ⇒ 只读**会说话的**那几个标签，`style/script/template/link/meta` 一律不进正文。
 _PAGE_TEXT_JS = (
     "return (function(){"
+    "var SKIP={SCRIPT:1,STYLE:1,TEMPLATE:1,LINK:1,META:1,NOSCRIPT:1,TITLE:1};"
     "var roots=[document],i=0;"
     "while(i<roots.length){var r=roots[i++];"
     "var els=(r.getElementsByTagName?r.getElementsByTagName('*'):r.querySelectorAll('*'));"
@@ -773,7 +840,8 @@ _PAGE_TEXT_JS = (
     "for(var k=0;k<roots.length;k++){var rt=roots[k];"
     "if(rt.body){try{parts.push(rt.body.innerText||'');}catch(e){}}"
     "else{for(var m=0;m<rt.children.length;m++){var c=rt.children[m];"
-    "try{parts.push(c.innerText||c.textContent||'');}catch(e){}}}}"
+    "if(SKIP[c.tagName]){continue;}"
+    "try{parts.push(c.innerText||'');}catch(e){}}}}"
     "return parts.join(' ').replace(/\\s+/g,' ').trim();})();"
 )
 
@@ -1049,6 +1117,12 @@ class Filler:
         self.stuck = 0         # 连续没做成的步数（早停看它）
         self.skipped = 0       # 被 `when` 判据整组跳过的步数（最后那句总结要报出来）
         self.skipped_states = {}   # 状态名 → 被跳过的步数（报「跳过最多的是哪个状态」）
+        #: ★ 2026-09-28：这一趟读到**风控页 / 空白页**的 `(步号, 一句人话)` —— **纯诊断**
+        #: （收尾那句要报出来）。与 `skipped_states` 是两件事：那个说「卡在哪个状态」，
+        #: 这个说「页面压根不是内容页」—— 后者不是判据的问题，也不是脚本能解决的。
+        self.trouble_steps = []
+        #: 连着**几组**判据都不成立（缺陷单 §六 E3 的那句报警看它；一组真做了就清零）。
+        self.skipped_in_a_row = 0
         self.stalled = 0       # 连续「点了但页面没动」的步数（另一种原地打转）
         #: 这一趟**已经重试过几次状态组**（上限 `GROUP_RETRY_LIMIT`，一趟里算总数）。
         #: ⚠️ 它与 `stuck` 是**两个**计数器，别合并：`stuck` 数「连着几步没做成」（早停看它），
@@ -2358,6 +2432,14 @@ class Filler:
         self._wait_when(when, timeout=WAIT_WHEN_SECONDS)
         self._wait_ready(timeout=WAIT_READY_SECONDS)
         ok = self._matches(when)
+        if not ok:
+            #: ★ 2026-09-28（travelandleisure 生产 26221672 实测）：判「不像」时顺手看一眼
+            #: **这一页到底是不是内容页** —— 风控页 / 空白页 / 普通判据不匹配，原先在日志里
+            #: 长得一模一样，读的人会一直往判据上找，而前两样**不是脚本能解决的**。
+            #: **纯记录，不改行为**（下面那句 why 与返回值一个字不动）。
+            _t = _page_trouble(self.page_signature())
+            if _t:
+                self.trouble_steps.append((self.step, _t))
         #: ⚠️ why 必须在**判的这一刻**算死，不许事后重算 ——
         #: 事后再看一眼时页面已经变了，说出来的话就跟结论打架。
         self._when_why_cache = "" if ok else self._when_why(when)
@@ -2675,6 +2757,21 @@ class Filler:
                         why = self._when_why_cache
                         self.skipped += 1
                         self.skipped_states[name] = self.skipped_states.get(name, 0) + 1
+                        #: ★ 2026-09-28（缺陷单《产物判据跨元素拼接》§六 E3）：**连着跳过**要当场喊。
+                        #: 原来是每一跳一句 INFO + 最后一句总结 ⇒ georgiapower 那单「真做 2 步、
+                        #: 跳过 23 步」在日志里长得像**正常跑**（每一步都写着点上了/填好了），
+                        #: 到结账才发现整单没成。`STUCK_LIMIT` 只管**失败**，管不到跳过 ——
+                        #: 于是「这一页不像任何状态」这件事一直没人说。
+                        #: ⚠️ **只喊一次**：第 N 组那一下喊，之后不再刷屏（后面还有十几组）。
+                        self.skipped_in_a_row += 1
+                        if self.skipped_in_a_row == SKIPPED_GROUPS_ALOUD:
+                            self.log.error(
+                                "[%s] ⚠️ **连着 %d 组判据都不成立**（从「%s」起）—— 这一页不像"
+                                "任何一个状态。跳过**就是没做**：后面每一组都会跟着垮，"
+                                "而日志里每一步照样写着「点上了/填好了」。"
+                                "先看这句里的 why（判据要的那段 vs 页面上实际有的那段）——"
+                                "多半是**判据本身不对**（跨元素拼接 / 瞬时状态 / 换了环境）。",
+                                self.cid, self.skipped_in_a_row, name)
                         self.log.info("[%s] 第 %d 步**跳过**：这一页不像「%s」那个状态（%s）"
                                       "；页面上现在写着「%s」", self.cid, index, name, why,
                                       (self.page_signature() or "")[:80])
@@ -2688,6 +2785,8 @@ class Filler:
                         cursor += 1
                         continue
                     self._rpt_if_moved(name)
+                    # 这一组真做了 ⇒ 「连着跳过」的计数清零（它不是「跳过总数」）。
+                    self.skipped_in_a_row = 0
                     if (step.get("action") or "") == "goto":
                         # ① 先**等这一页加载完**再判 `when` —— 不等的话，紧接着的判据会把
                         #    「还没加载完」读成「这一页不像那个状态」，整组步骤静默跳过
@@ -2770,6 +2869,23 @@ class Filler:
                 self.cid, total, total - self.skipped, self.skipped,
                 ("（跳过最多的那个状态是「%s」）" % self._skip_peak()) if self.skipped else "",
                 " / ".join(SUCCESS_TEXTS[:2]) or ("网址 " + " / ".join(SUCCESS_URLS[:2])))
+            # ★ 2026-09-28：**页面压根不是内容页**时把话说透 —— 这类失败最容易被当成
+            # 「判据没钉好」，而它其实**不是脚本能解决的**（风控要换出口 IP / 降频，
+            # 空白页要查加载链路）。本项目的规矩：异常**必须说出来**，不许让人从
+            # 「正文里没有 X」里自己猜。
+            if self.trouble_steps:
+                kinds = {}
+                for _, say in self.trouble_steps:
+                    k = say.split("（")[0]
+                    kinds[k] = kinds.get(k, 0) + 1
+                self.log.error(
+                    "[%s] ⚠️ 诊断：这一趟有 **%d 步**读到的**根本不是内容页**"
+                    "（第一次在第 %d 步）—— %s；分项：%s。"
+                    "**这不是判据的问题，也不是脚本能解决的**："
+                    "风控/挑战页要换出口 IP 或降频，空白页要查加载链路。",
+                    self.cid, len(self.trouble_steps), self.trouble_steps[0][0],
+                    self.trouble_steps[0][1],
+                    "、".join("%s×%d" % (k, v) for k, v in kinds.items()))
             # ⚠️ 这一句**只进日志、不进 trace**：trace 的每一行都是「一步」
             # （下游按 `line["ok"]` 读它，加一行没有 ok 的会把它读崩 ——
             # `tests/test_template.py` 的截图那条就是这么读的）。

@@ -44,6 +44,13 @@ SUCCESS_URLS = []
 # bool(_cur_tab) 恒真 → 连续失败计数每步被清零 → 失败任务必磨完全程），
 # 所以这条必须产物**自带**，不指望外面兜。
 STUCK_LIMIT = 3
+# 连着这么多**组**的判据都不成立 ⇒ 当场喊一句（缺陷单《产物判据跨元素拼接》§六 E3）。
+#
+# 为什么不是「每一跳都喊」：跳过是一条**正常**的路（SPA 每屏只成立一组，其余都跳过），
+# 每跳喊一遍等于刷屏。真正的病是**连着**垮 —— georgiapower 那单 25 步里真做 2 步、
+# 后面 23 步全跳，而日志长得像正常跑。3 组是这条线：一组不像可能是判据保守，
+# 连着三组不像就只可能是「判据不该在这页成立」或「环境变了」。
+SKIPPED_GROUPS_ALOUD = 3
 # 一步**没做成**之后，把它那一组**从头再走一遍**；这个数是**一趟里**的总次数上限。
 #
 # 为什么要重试（2026-09-20 真站实测，单号 26015658）：
@@ -539,8 +546,15 @@ def _norm(text):
 # 每个 `when` 判据都不成立、整份产物**一步不做**。2026-09-23 afrotech 真站复现：
 # 20/20 次抛异常、7 步全跳，日志却只说「这页不像」——真正的原因一个字都不提。
 # 所以按 root 的类型挑遍历方式（Document / Element 走老路，ShadowRoot 走 querySelectorAll）。
+#: ★ 2026-09-28（缺陷单《产物判据跨元素拼接》§六 D）：shadow 那一支原来写的是
+#: `c.innerText || c.textContent` —— `<style>` 的 `innerText` 是空的 ⇒ 回退到 `textContent`
+#: ⇒ **把 LWC 的整段 CSS 读进「正文」**（实测旁证：trace 里 `page_sig_tail` 是
+#: `--mobileLanding-colorTextButtonBrand:rgb(255, 255, 255);…`）。而 `page_text` 是**给判据
+#: 与成功文案看的那一页**，600 字的窗口被 CSS 挤爆 = 判据看不见正文 ⇒ 整组静默跳过。
+#: ⇒ 只读**会说话的**那几个标签，`style/script/template/link/meta` 一律不进正文。
 _PAGE_TEXT_JS = (
     "return (function(){"
+    "var SKIP={SCRIPT:1,STYLE:1,TEMPLATE:1,LINK:1,META:1,NOSCRIPT:1,TITLE:1};"
     "var roots=[document],i=0;"
     "while(i<roots.length){var r=roots[i++];"
     "var els=(r.getElementsByTagName?r.getElementsByTagName('*'):r.querySelectorAll('*'));"
@@ -549,7 +563,8 @@ _PAGE_TEXT_JS = (
     "for(var k=0;k<roots.length;k++){var rt=roots[k];"
     "if(rt.body){try{parts.push(rt.body.innerText||'');}catch(e){}}"
     "else{for(var m=0;m<rt.children.length;m++){var c=rt.children[m];"
-    "try{parts.push(c.innerText||c.textContent||'');}catch(e){}}}}"
+    "if(SKIP[c.tagName]){continue;}"
+    "try{parts.push(c.innerText||'');}catch(e){}}}}"
     "return parts.join(' ').replace(/\\s+/g,' ').trim();})();"
 )
 
@@ -825,6 +840,8 @@ class Filler:
         self.stuck = 0         # 连续没做成的步数（早停看它）
         self.skipped = 0       # 被 `when` 判据整组跳过的步数（最后那句总结要报出来）
         self.skipped_states = {}   # 状态名 → 被跳过的步数（报「跳过最多的是哪个状态」）
+        #: 连着**几组**判据都不成立（缺陷单 §六 E3 的那句报警看它；一组真做了就清零）。
+        self.skipped_in_a_row = 0
         self.stalled = 0       # 连续「点了但页面没动」的步数（另一种原地打转）
         #: 这一趟**已经重试过几次状态组**（上限 `GROUP_RETRY_LIMIT`，一趟里算总数）。
         #: ⚠️ 它与 `stuck` 是**两个**计数器，别合并：`stuck` 数「连着几步没做成」（早停看它），
@@ -2451,6 +2468,21 @@ class Filler:
                         why = self._when_why_cache
                         self.skipped += 1
                         self.skipped_states[name] = self.skipped_states.get(name, 0) + 1
+                        #: ★ 2026-09-28（缺陷单《产物判据跨元素拼接》§六 E3）：**连着跳过**要当场喊。
+                        #: 原来是每一跳一句 INFO + 最后一句总结 ⇒ georgiapower 那单「真做 2 步、
+                        #: 跳过 23 步」在日志里长得像**正常跑**（每一步都写着点上了/填好了），
+                        #: 到结账才发现整单没成。`STUCK_LIMIT` 只管**失败**，管不到跳过 ——
+                        #: 于是「这一页不像任何状态」这件事一直没人说。
+                        #: ⚠️ **只喊一次**：第 N 组那一下喊，之后不再刷屏（后面还有十几组）。
+                        self.skipped_in_a_row += 1
+                        if self.skipped_in_a_row == SKIPPED_GROUPS_ALOUD:
+                            self.log.error(
+                                "[%s] ⚠️ **连着 %d 组判据都不成立**（从「%s」起）—— 这一页不像"
+                                "任何一个状态。跳过**就是没做**：后面每一组都会跟着垮，"
+                                "而日志里每一步照样写着「点上了/填好了」。"
+                                "先看这句里的 why（判据要的那段 vs 页面上实际有的那段）——"
+                                "多半是**判据本身不对**（跨元素拼接 / 瞬时状态 / 换了环境）。",
+                                self.cid, self.skipped_in_a_row, name)
                         self.log.info("[%s] 第 %d 步**跳过**：这一页不像「%s」那个状态（%s）"
                                       "；页面上现在写着「%s」", self.cid, index, name, why,
                                       (self.page_signature() or "")[:80])
@@ -2464,6 +2496,8 @@ class Filler:
                         cursor += 1
                         continue
                     self._rpt_if_moved(name)
+                    # 这一组真做了 ⇒ 「连着跳过」的计数清零（它不是「跳过总数」）。
+                    self.skipped_in_a_row = 0
                     if (step.get("action") or "") == "goto":
                         # ① 先**等这一页加载完**再判 `when` —— 不等的话，紧接着的判据会把
                         #    「还没加载完」读成「这一页不像那个状态」，整组步骤静默跳过

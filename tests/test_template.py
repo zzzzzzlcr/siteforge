@@ -2999,3 +2999,63 @@ def test_a_product_without_a_recorded_fingerprint_says_so(rendered, sandbox, for
     filler._say_fingerprint()
     assert "没记录入指纹" in caplog.text, caplog.text
     assert not trace.exists() or "fingerprint_mismatch" not in trace.read_text(encoding="utf-8")
+
+
+def test_a_render_index_id_and_a_long_chain_are_tried_last():
+    """★ 2026-09-28（缺陷单《产物判据跨元素拼接》§四.1，真站实测）：
+
+    `#input-167` 这种**框架自造号会漂**（同一天量到的对照：探路 `#input-167` → 今天
+    `input-163`；`#combobox-input-182` → `combobox-input-168`），而 `input[name="city"]`
+    一直对得上；9 跳的 `nth-of-type` 长链更是**换个分辨率全挂**。
+    ⇒ 这两族都只能当兜底：稳的排前面，它们排最后（但**留着** —— 没别的地址时是唯一的路）。
+    """
+    states = [{"name": "s", "when": None,
+               "steps": [{"action": "click",
+                          "target": {"selectors": ["#input-167",
+                                                   "input[name=\"city\"]",
+                                                   "body > div:nth-of-type(1) > div:nth-of-type(2) > "
+                                                   "div:nth-of-type(3) > form:nth-of-type(1) > "
+                                                   "input:nth-of-type(1)"]}}]}]
+    got = _literal_of(_render_with(states, []), "STATES")[0]["steps"][0]["target"]["selectors"]
+    assert got[0] == 'input[name="city"]', got
+    assert set(got[1:]) == {"#input-167",
+                            "body > div:nth-of-type(1) > div:nth-of-type(2) > "
+                            "div:nth-of-type(3) > form:nth-of-type(1) > input:nth-of-type(1)"}, got
+
+
+def test_the_shadow_text_does_not_swallow_css(rendered):
+    """★ 2026-09-28（缺陷单 §六 D）：shadow 那一支原来 `innerText || textContent`
+    ⇒ `<style>` 的 innerText 是空、回退到 textContent ⇒ **整段 CSS 进了「正文」**
+    （真站旁证：trace 的 `page_sig_tail` 是 `--mobileLanding-colorTextButtonBrand:…`）。
+    `page_text` 是判据与成功文案看的那一页，被 CSS 挤爆就是「判据看不见正文」。
+    """
+    js = rendered
+    assert "SCRIPT:1" in js and "STYLE:1" in js, js
+    assert "SKIP[c.tagName]" in js, js
+    assert "parts.push(c.innerText||\'\')" in js.replace(" ", ""), js   # 只读会说话的标签
+
+
+def test_running_into_a_wall_of_skips_is_said_out_loud(sandbox, form_file, caplog):
+    """★ 2026-09-28（缺陷单《产物判据跨元素拼接》§六 E3）：**连着跳过要当场喊**。
+
+    现场（georgiapower 那单）：25 步里真做 2 步、后面 23 步全跳，而每一跳只是一句 INFO ⇒
+    日志长得像**正常跑**，到结账才发现整单没成。`STUCK_LIMIT` 只管失败、管不到跳过。
+    这里钉住：连着三组判据都不成立 ⇒ 日志里有一句 `ERROR`，且**只说一次**（不刷屏）。
+    """
+    states = [{"name": "g%d" % n, "when": {"text_contains": ["NOPE-NOT-ON-THIS-PAGE"]},
+               "steps": [{"action": "click", "note": "点「Go」",
+                          "target": {"text": "Go", "role": "button", "selectors": ["#go"]}}]}
+              for n in range(1, 6)]
+    src = template.render(SAMPLE_SITE, SAMPLE_SUCCESS, states,
+                          [{"name": "email", "target": {"selectors": ["#email"]}}],
+                          SAMPLE_PROVENANCE)
+    module, _ = _load("all_skipped", src, sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/step-1", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["配不上任何判据的一页"]
+    with caplog.at_level("ERROR"):
+        assert module.Filler(WS, form_file, "cid_skip", "task_skip", delay=(0, 0)).run() is False
+    hits = [r for r in caplog.records if "连着" in r.getMessage() and "组判据都不成立" in r.getMessage()]
+    assert len(hits) == 1, [r.getMessage()[:120] for r in caplog.records]
+    assert not common.STATE.actions, "一组都不成立 ⇒ 一步都不该真做"
