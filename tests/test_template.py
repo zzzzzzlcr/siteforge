@@ -2958,3 +2958,44 @@ def test_a_step_with_no_usable_selector_is_refused_with_its_step_number():
     said = str(got.value)
     assert "认不出来" in said, said
     assert "第 2 步" in said, said          # 点名哪一步 —— 不然人不知道回去改哪儿
+
+
+def test_a_fingerprint_mismatch_is_written_into_the_trace(rendered, sandbox, form_file, tmp_path):
+    """★ 2026-09-28（用户报的「页头按视口/UA 换版式」那件事）：产物开跑要**核指纹**。
+
+    录它的时候视口是一个值、跑它的时候是另一个值 ⇒ 必须**出声**（trace 落一行
+    `fingerprint_mismatch`）。为什么这一格非有不可：这个站的版式随视口变，
+    那些「点了也不动 / 找不到元素」的现场，只有这一行才解释得清 —— 以前那一格
+    **一个字都不说**，于是每次都只能开窗复验、再手改一遍产物。
+    反向也钉住：指纹**对上了就不许留那一行**（否则读的人会以为它永远有问题）。
+    """
+    module, _ = _load("fp_check", rendered, sandbox)
+    module.PROVENANCE["fingerprint"] = {"viewport": "1000x1000", "dpr": 3, "ua": "rec"}
+    trace = tmp_path / "fp.jsonl"
+    filler = module.Filler(WS, form_file, "cid-fp", "task-fp", trace=str(trace))
+    filler._ev = lambda js, frame_id="": '{"w":377,"h":757,"dpr":3,"ua":"now"}'   # noqa: ARG005
+
+    filler._say_fingerprint()
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert [r for r in rows if "fingerprint_mismatch" in r], rows
+    got = [r for r in rows if "fingerprint_mismatch" in r][0]["fingerprint_mismatch"]
+    assert got["recorded"]["viewport"] == "1000x1000" and got["now"]["viewport"] == "377x757"
+
+    trace.write_text("", encoding="utf-8")          # 对上了：**不许**留那一行
+    filler._ev = lambda js, frame_id="": '{"w":1000,"h":1000,"dpr":3,"ua":"now"}'  # noqa: ARG005
+    filler._say_fingerprint()
+    said = trace.read_text(encoding="utf-8")
+    assert "fingerprint_mismatch" not in said, said
+
+
+def test_a_product_without_a_recorded_fingerprint_says_so(rendered, sandbox, form_file, tmp_path, caplog):
+    """没有那一格时（老产物 / 录的时候没量到）**也要说**：「不知道」不许长得像「对上了」。"""
+    module, _ = _load("fp_none", rendered, sandbox)
+    module.PROVENANCE["fingerprint"] = None
+    trace = tmp_path / "fp_none.jsonl"
+    filler = module.Filler(WS, form_file, "cid-fp-none", "task-fp-none", trace=str(trace))
+    filler._ev = lambda js, frame_id="": '{"w":377,"h":757,"dpr":3,"ua":"now"}'   # noqa: ARG005
+
+    filler._say_fingerprint()
+    assert "没记录入指纹" in caplog.text, caplog.text
+    assert not trace.exists() or "fingerprint_mismatch" not in trace.read_text(encoding="utf-8")

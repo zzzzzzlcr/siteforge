@@ -102,6 +102,44 @@ FAILED = "failed"
 #: 服务只认这两个名字（`BitWindow` 是它的一个实现）。
 WINDOW_LAYER = ("set_viewport", "alive")
 
+#: ★ 2026-09-28（用户实测给的那个数）：**生产那套窗口尺寸** = 393×852
+#: （auto-farm 的档案 `win1210_3`：iPhone 18.7 / DPR 3 / 393×852；本机 222 那个档案是
+#: iPhone 18.1.1 / 1000×1000）。为什么非要这个数：
+#:
+#: 这个站的页头**按视口/UA 换版式**（实测：宽的时候汉堡与 BOOK NOW 是 0×0、点不动；
+#: 窄的时候页头那个 Join Now 又不在了）⇒ **在别的尺寸下录出来的选择器，搬到生产就是
+#: 「点了也不动」**。而账本里原本**一个字都没记**「这份是在什么指纹下录的」——
+#: 于是每一次都要人去后台再修一遍。⇒ 两件事一起做：
+#:   ① 探路/自测**就在这套尺寸下跑**（这一格，`_align_window_size`）；
+#:   ② 指纹（视口/DPR/UA）**跟着账本与产物走**（`PROVENANCE["fingerprint"]`）。
+#: 旋钮 `SITEFORGE_PROD_VIEWPORT=WxH`；给 `-` = **一个字节都不动**（老行为，留着好回退）。
+PROD_VIEWPORT_ENV = "SITEFORGE_PROD_VIEWPORT"
+DEFAULT_PROD_VIEWPORT = (393, 852)
+
+
+def parse_viewport(text: Any) -> Optional[tuple]:
+    """`"393x852"` → `(393, 852)`；`"-"` / 空 → `None`（= 不动窗口）。读到读不出来就抛。
+
+    ⚠️ 读不出来**抛**而不是退回默认值：这个旋钮一错，下一次探路就会在**错的尺寸**下录一遍，
+    而那种错**当时看不出来**（产物照旧能跑自测，只是到了生产点不动）—— 那正是这一格要治的病。
+    """
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return DEFAULT_PROD_VIEWPORT
+    if raw in ("-", "off", "none"):
+        return None
+    parts = [p for p in raw.replace("×", "x").replace("*", "x").split("x") if p.strip()]
+    if len(parts) != 2:
+        raise ValueError("`%s=%s` 读不出来（要 `宽x高`，例如 `393x852`；`-` = 不动窗口）"
+                         % (PROD_VIEWPORT_ENV, text))
+    try:
+        width, height = (int(p) for p in parts)
+    except ValueError as exc:
+        raise ValueError("`%s=%s` 里不是两个整数（要 `宽x高`）" % (PROD_VIEWPORT_ENV, text)) from exc
+    if width <= 0 or height <= 0:
+        raise ValueError("`%s=%s` 里的尺寸必须为正" % (PROD_VIEWPORT_ENV, text))
+    return (width, height)
+
 #: Bit 的窗口服务（§4.6）。bit.sh 里写死的就是这个端口。
 BIT_API_PORT = 54345
 
@@ -1258,6 +1296,20 @@ class BitWindow:
         # 按「不是 false 就是成功」读，等于把没答应当答应。
         if not (isinstance(out, dict) and out.get("success") is True):
             raise RuntimeError("换窗口大小的请求没被确认成功：%s" % str(out)[:200])
+
+    def configured_size(self) -> Optional[tuple]:
+        """配置里那个窗口尺寸（`browserFingerPrint.openWidth/openHeight`）→ `(w, h)`。
+
+        读不出来给 `None`（**不编**：读不出来与「它是 0×0」不是一回事）。
+        与 `set_viewport` 的分工：这个只**读配置**（不碰活窗口）—— 活窗口到底多大，
+        要 `cdp eval` 去量（见 `Service.fingerprint_of`）。
+        """
+        fp = dict(self.detail().get("browserFingerPrint") or {})
+        try:
+            width, height = int(fp.get("openWidth") or 0), int(fp.get("openHeight") or 0)
+        except (TypeError, ValueError):
+            return None
+        return (width, height) if width > 0 and height > 0 else None
 
     def probe(self) -> dict:
         """窗口还活着吗 + **它是哪个进程**：`{"alive": bool|None, "pid": int|None}`。
@@ -3539,6 +3591,7 @@ class Service:
         不这么办的话，那一趟会**注定死**（探路那格现在会如实停，但人看不到外面那句原话、
         也没有可做的动作）。
         """
+        self._align_window_size()
         if self._window is None or not hasattr(self._window, "fresh_open"):
             return
         try:
@@ -3550,8 +3603,99 @@ class Service:
             return
         if ws:
             brief["ws_url"] = str(ws)
+            #: ★ 2026-09-28：**量下来的指纹跟着这一趟走**（不覆盖 `env`：那一格是「人要求了什么」，
+            #: 这一格是「窗口实际是什么」—— 两个都留着，才分得出「名字说 A、量的是 B」）。
+            got = self.fingerprint_of(str(ws))
+            if got:
+                brief["fingerprint"] = got
+            else:
+                print("[siteforge] 读不出这个窗口的指纹（视口/DPR/UA）—— 这一趟的账本与产物里"
+                      "**不会有**指纹那一格（下一个人分不出它是在什么尺寸下录的）")
         else:
             brief[WINDOW_OPEN_FAILED] = "开窗口没给出新的 `ws_url`（空串）"
+
+    def _align_window_size(self) -> None:
+        """把档案的窗口尺寸对齐**生产那套**（`PROD_VIEWPORT_ENV`，默认 393×852）。
+
+        为什么：这个站的页头按视口换版式 ⇒ 在别的尺寸下探路，录出来的选择器搬到生产
+        **点了也不动**。所以「录」与「跑」要在同一套尺寸下。
+
+        ⚠️ 三条说清楚的：
+        1. `set_viewport` 只**写配置**，下次启动才生效 ⇒ 必须在 `fresh_open()` **之前**调
+           （活窗口这一个字节都不动）。
+        2. 改的是**这个部署那个档案**的配置（共享的）—— 所以成功与否都打一行日志，
+           把「原尺寸 → 新尺寸」摆出来；旋钮给 `-` 就一个字节都不碰（回退那条路）。
+        3. 这个部署没接窗口层 / 读不出配置 / 写被拒 ⇒ **照跑**，把原因说出来 ——
+           指纹对不上这件事，产物那一侧还会再说一次（`PROVENANCE["fingerprint"]`）。
+        """
+        if self._window is None or not hasattr(self._window, "set_viewport"):
+            return
+        try:
+            want = parse_viewport(os.environ.get(PROD_VIEWPORT_ENV))
+        except ValueError as exc:
+            print("[siteforge] %s" % exc)
+            return
+        if want is None:
+            return                                    # `-`：老行为，不动
+        try:
+            now = (self._window.configured_size()
+                   if hasattr(self._window, "configured_size") else None)
+        except Exception as exc:                      # noqa: BLE001 —— 外面世界
+            now, print_note = None, str(exc)
+            print("[siteforge] 读窗口配置尺寸没成（%s）—— 不猜、也不改" % print_note)
+            return
+        if now == want:
+            return
+        try:
+            self._window.set_viewport(*want)
+        except Exception as exc:                      # noqa: BLE001
+            print("[siteforge] 把窗口尺寸对齐生产那套（%s×%s）没成：%s —— 照旧用现在的尺寸"
+                  "（**注意**：这一趟录出来的选择器可能只在当前尺寸下成立）" % (*want, exc))
+            return
+        print("[siteforge] 窗口尺寸已对齐生产那套：%s → %s×%s（写的是**档案配置**，"
+              "下一次开窗口生效）；旋钮 `%s=%s`"
+              % ("%s×%s" % now if now else "读不出", want[0], want[1],
+                 PROD_VIEWPORT_ENV, "%dx%d" % want))
+
+    def fingerprint_of(self, ws_url: str) -> Optional[dict]:
+        """量这个窗口**当下**的指纹：`{"viewport": "984x905", "dpr": 3, "ua": "…"}`。
+
+        读不到就给 `None`（**不编**）—— 这是这一格的全部纪律：账本与产物里那一格
+        要么是**量出来的**，要么就是没有。
+        """
+        cdp_bin = getattr(self, "_cdp_bin", None)
+        if not cdp_bin or not ws_url:
+            return None
+        try:
+            host, port = selftest._host_port(ws_url)
+        except Exception:                             # noqa: BLE001 —— ws 读不动
+            return None
+        js = ("return JSON.stringify({w:Math.round(window.innerWidth),"
+              "h:Math.round(window.innerHeight),dpr:window.devicePixelRatio||1,"
+              "ua:navigator.userAgent||''})")
+        try:
+            done = subprocess.run([str(cdp_bin), "eval", js, "--host", host, "--port", port],
+                                  capture_output=True, text=True, timeout=30,
+                                  env=os.environ.copy())
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if done.returncode != 0:
+            return None
+        raw = (done.stdout or "").strip()
+        for _ in range(2):                            # cdp eval 的答复被编码两层
+            try:
+                raw = json.loads(raw)
+            except (ValueError, TypeError):
+                break
+        if not isinstance(raw, dict):
+            return None
+        try:
+            viewport = "%dx%d" % (int(raw["w"]), int(raw["h"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+        return {"viewport": viewport, "dpr": raw.get("dpr"),
+                "ua": str(raw.get("ua") or "")[:200]}
+
 
     def _fresh_session_cb(self) -> Optional[Callable]:
         """R-F1 那根线：自测之前换一个**干净会话**（关旧窗 → 开新窗，返回新的 ws_url）。
@@ -4474,7 +4618,8 @@ class Service:
         if not values:
             return None
         keep = ("url", "goal", "mode", "success_text", "success_urls", "evidence", "site",
-                "ws_url", "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url")
+                "ws_url", "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url",
+                "fingerprint")
         brief = {k: values[k] for k in keep if values.get(k) is not None}
         brief["set_viewport"] = bool(self._window is not None
                                      and hasattr(self._window, "set_viewport"))
@@ -5815,7 +5960,13 @@ class Service:
                 #: ⚠️【同一天实测】加 `fix_base` 那一次**又栽在同一个地方** —— 服务把它算出来了、
                 #: 状态里也声明了，可它不在这张白名单里 ⇒ 发不进图 ⇒ 闸上印的是「（没说）」。
                 #: 所以这一格与 `fix_py` 是**一件事的两半**：谁改了其中一个，另一个一起改。
-                "fix_base")
+                "fix_base",
+                #: ★ 2026-09-28：**量下来的指纹**（探路那个窗口的视口/DPR/UA）—— 跟着这一趟
+                #: 进图，最后写进 `PROVENANCE["fingerprint"]` 与产物。为什么它非进白名单不可：
+                #: 少了它，服务量了、也放进了 brief，图却收不到 ⇒ 产物里那一格恒为空，
+                #: 而这正是这一格要治的病（「在什么尺寸下录的」谁都不知道）。上面 `fix_py` /
+                #: `fix_base` 那两条注释记的就是同一个坑。
+                "fingerprint")
         return {k: brief[k] for k in keep if k in brief}
 
     def reply(self, job_id: str, body: ReplyRequest) -> dict:

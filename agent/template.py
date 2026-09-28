@@ -63,7 +63,11 @@ from string import Template
 __all__ = ["render", "PROVENANCE_KEYS"]
 
 #: 规格 §5.3 的元数据键。缺的补 None（「不知道」），**不编内容**。
-PROVENANCE_KEYS = ("generated_at", "generator", "env", "platform", "selftest", "source")
+#: `fingerprint`（2026-09-28 加）：**探路那个窗口量下来的**视口/DPR/UA —— 产物开跑时拿它
+#: 跟当下的窗口比。为什么它必须在**这一张表**里：这张表是「产出时照抄哪几格」的**唯一**名单，
+#: 不在名单里的格生成时就丢了（产物里那一格恒为空，而那正是这一格要治的病）。
+PROVENANCE_KEYS = ("generated_at", "generator", "env", "fingerprint", "platform",
+                   "selftest", "source")
 
 #: 产出的 py 一律把这个常量当默认名（诊断/日志里认它）
 DEFAULT_STUCK_LIMIT = 3
@@ -2359,6 +2363,63 @@ class Filler:
         self._when_why_cache = "" if ok else self._when_why(when)
         return ok
 
+    def _fingerprint_now(self):
+        """这个窗口**当下**的指纹：`{"viewport": "984x905", "dpr": 3, "ua": "…"}`；读不到给 `None`。
+
+        读不到就是**读不到**（不许拿空串顶替 —— 那会把「没量着」写成「量着了、是空的」）。
+        """
+        raw = self._ev("return JSON.stringify({w:Math.round(window.innerWidth),"
+                       "h:Math.round(window.innerHeight),dpr:window.devicePixelRatio||1,"
+                       "ua:navigator.userAgent||''});")
+        for _ in range(2):                       # cdp eval 的答复被编码两层（交接 §7）
+            try:
+                raw = json.loads(raw)
+            except (ValueError, TypeError):
+                break
+        if not isinstance(raw, dict):
+            return None
+        try:
+            viewport = "%dx%d" % (int(raw["w"]), int(raw["h"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+        return {"viewport": viewport, "dpr": raw.get("dpr"),
+                "ua": str(raw.get("ua") or "")[:200]}
+
+    def _say_fingerprint(self):
+        """开跑之前把**指纹**摆出来：录它的时候是什么、现在是什么 —— 不一致就**出声**。
+
+        为什么这一格必须存在（2026-09-28 用户报的那件事）：站点按视口/UA 换版式，
+        而账本里的选择器是**在某一个尺寸下**录的。指纹一变，那些选择器就变成
+        「点了也不动」—— 现场只有一句「没找到元素」，谁都得开窗复验才判得出。
+        这一句把那个判断**提前到开跑那一刻**，并且写进 trace（`fingerprint_mismatch`）。
+
+        ⚠️ **不许**把它做成一条闸（不 return False、不停）：
+        它只回答「环境与录制时一不一样」。停不停是人的事 —— 而这一次真跑要不要，
+        取决于人手上的信息（有时就是要拿老指纹下的产物去新指纹上试）。
+        """
+        want = (PROVENANCE or {}).get("fingerprint") if isinstance(PROVENANCE, dict) else None
+        if not isinstance(want, dict) or not want.get("viewport"):
+            self.log.warning("[%s] 这份产物**没记录入指纹**（`PROVENANCE['fingerprint']` 是空的）"
+                             "—— 所以「它是在什么尺寸下录的」这件事，谁都答不上来；"
+                             "选择器只在某一个版式下成立时，这里一个字都提示不了。", self.cid)
+            return
+        now = self._fingerprint_now()
+        if now is None:
+            self.log.warning("[%s] 读不出这个窗口的指纹 —— 录的时候是 %s（视口）/ DPR %s；"
+                             "**这一次量不到**，所以对不上对得上都说不了。",
+                             self.cid, want.get("viewport"), want.get("dpr"))
+            return
+        if now.get("viewport") == want.get("viewport"):
+            self.log.info("[%s] 指纹对上了：视口 %s（录它的时候也是这个）",
+                          self.cid, now["viewport"])
+            return
+        self.log.warning("[%s] ⚠️ **指纹不一样**：录它的时候视口是 %s，现在是 %s"
+                         "（dpr %s→%s）—— 这一站的页头按视口换版式，"
+                         "这一趟里「点了也不动 / 找不到元素」很可能就是**这个差**造成的，"
+                         "别当成站点改版。", self.cid, want.get("viewport"),
+                         now["viewport"], want.get("dpr"), now.get("dpr"))
+        self._trace({"fingerprint_mismatch": {"recorded": want, "now": now}})
+
     def _say_url_only_whens(self):
         """哪些状态的判据**只有地址** —— 开跑之前说一次（**不许沉默**）。
 
@@ -2573,6 +2634,14 @@ class Filler:
         # 开跑之前先看有没有**挡路的同意弹层**并点掉（见 _clear_obstructions 的 docstring：
         # 生产每单都是新窗口 → 每单都会遇到它，而账本里通常没有这一步）。
         self._clear_obstructions()
+
+        # ★ 2026-09-28：**先核指纹**（视口/DPR/UA）—— 这一格以前一个字都不说。
+        # 为什么非说不可：这个站的页头**按视口/UA 换版式**（实测：宽的时候汉堡与 BOOK NOW
+        # 是 0×0、窄的时候页头那个 Join Now 又不在了）⇒ 在别的尺寸下录出来的选择器，跑起来
+        # 就是「点了也不动」，而现场只有一句「没找到元素」—— 判不出是站变了还是**指纹变了**。
+        # 判据取 `PROVENANCE["fingerprint"]`（探路那个窗口**量下来**的；没有这一格就是「不知道」，
+        # 那也**要说**：不说的话，「没录指纹」与「指纹对上了」长得一模一样）。
+        self._say_fingerprint()
 
         # ★ 线①：判据**只有地址**的状态，先喊一声（见 `_say_url_only_whens` 的 docstring）——
         # 在**任何一步之前**说，这样即使它整组被跳过了，日志里也早就有那句为什么。

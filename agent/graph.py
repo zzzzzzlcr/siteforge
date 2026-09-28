@@ -2125,6 +2125,11 @@ def _provenance(state, deps: Deps, *, report) -> dict:
         "generated_at": now,
         "generator": GENERATOR,
         "env": state.get("env") or None,
+        #: ★ 2026-09-28：探路那个窗口**量下来的**指纹（视口/DPR/UA）—— 与上面 `env`
+        #:（人要求了什么）分两格。它跟着产物走，产物开跑时拿它跟当下的窗口比，
+        #: 不一致就**出声**：这个站的页头按视口换版式，在别的尺寸下录的选择器到了生产
+        #: 就是「点了也不动」，而这件事以前**一个字都没记**（每次都要人去后台再修一遍）。
+        "fingerprint": state.get("fingerprint") or None,
         "platform": state.get("platform") or None,
         "selftest": _selftest_block(report, now),
         "source": {

@@ -227,6 +227,12 @@ class SiteState(TypedDict, total=False):
     ws_url: Optional[str]
     form_file: Optional[str]
     env: Optional[dict]           # {"proxy_country","dpr","ua","viewport"}；没人给就 None
+    #: ★ 2026-09-28：**探路那个窗口量下来的指纹**（`{"viewport","dpr","ua"}`，量不出来就是 None）。
+    #: 与上面 `env` 那一格**不是一回事**：`env` 是「人要求了什么」，这一格是「窗口实际是什么」——
+    #: 两个都留着，才分得出「名字说 A、量的是 B」。它一路走到 `PROVENANCE["fingerprint"]`，
+    #: 产物开跑时拿它跟当下的窗口比：不一致就**出声**（这个站的页头按视口换版式，
+    #: 在别的尺寸下录的选择器搬到生产就是「点了也不动」）。
+    fingerprint: Optional[dict]
     platform: Optional[dict]      # {"guess","confidence"}；平台分类不在这张图里
     out_dir: Optional[str]        # 产物落在哪个目录（默认 `forms/sites/`）
     #: 扰动自测的两件**数据**旋钮（窗口层那根**回调**在 `graph.Deps.set_viewport` 上，

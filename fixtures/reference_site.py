@@ -216,27 +216,52 @@ COOKIE_KIND = "cookie-banner"
 #: （文字 / id / class 里有没有 cookie|consent|gdpr|privacy），只是这里自己做一遍 ——
 #: 原因见 `_clear_obstructions` 的 docstring（生产那个 cdp 没有 observe）。
 #:
-#: 只认**有把握**的那一下：可见的同意类容器 + 带稳定 id 的按钮 + 文字属于
-#: 「接受/同意/关闭/拒绝」那一族。**找不到就什么都不做**（宁可不做，也不猜一条会点错的选择器）——
-#: 「点到弹层上」由 `_covered_by` 兜住，不会被记成做成了。
+#: 只认**有把握**的那一下：可见的同意类容器 + 按钮文字属于「接受/同意/关闭/拒绝」那一族，
+#: 按钮**带 id 就走 `#id`、只有文字就交回一句「按文字点」**（调用方打标记再点，见
+#: `_MARK_CONSENT_BY_TEXT_JS`）。**两者都找不到就什么都不做**（宁可不做，也不猜一条会点错的
+#: 选择器）；「点到弹层上」由 `_covered_by` 兜住，不会被记成做成了。
+#:
+#: ★ 2026-09-28（用户看到的现场：**「有个弹窗挡住了」**；那一趟第 11 步勾同意框没成）：
+#: 原来这里写着 `if(!b.id) continue;` —— 按钮**必须带 id**。而现在常见的同意条
+#: （自绘的那种）按钮只有文字、没有 id ⇒ **一个都点不到** ⇒ 「什么都不做」⇒ 弹层留着挡住 ✗。
+#: 两条一起改：① 没 id 的走「按文字打标记再点」；② 按 `_CONSENT_ROOTS_JS` **穿 shadow root**。
 #:
 #: ── 「页面上现在还有没有同意弹层」────────────────────────────
 #:
 #: 与上面那段是**两个问题**，所以是两段 JS（不是把上面那段改一改）：
-#:   上面那段问「我该点哪个按钮」—— 要点得着才算数，所以它要求**按钮带稳定 id**；
+#:   上面那段问「我该点哪个按钮」—— 要点得着才算数；
 #:   这一段问「弹层还在不在」—— 只是**判据**，所以它连按钮都不用找。
-#: 用上面那段来回答下面这个问题是**错的**：弹层在、而按钮没 id 时它会返回空串，
+#: 用上面那段来回答下面这个问题是**错的**：弹层在、而按钮没 id 时它会退到按文字那条路，
 #: 于是「弹层还在」被读成「弹层不在」。
+#:
+#: ★ 2026-09-28：**穿 shadow root**（web component 里的同意条原来直接看不见 ✗）——
+#: 与 `_PAGE_TEXT_JS` 同一套 roots 走法（`ShadowRoot` 没有 `getElementsByTagName`）。
+#:
+#: ★★ 同一天、更关键的一条（用户看到现场后骂醒的那句「**cookie 没点啊**」）：
+#: 认「这是不是同意条」**只看了 id/class/aria-label** ✗ —— 而 OneTrust 那个容器的 id 是
+#: `#onetrust-banner-sdk`，**这三个词一个都没有** ⇒ 整条弹层被跳过 ⇒ 一下都不点 ✗✗
+#: （`cdp observe` 之所以标得出来，是因为它看的是**页面文字**「This website uses
+#: third-party cookies…」✓ 那边含 `cookies` ✓ —— 两边的判据不一致，从此对齐）。
+#: ⇒ `label` 里加上**它自己那截文字**（前 200 字，够装下一整条横幅的正文）。
+_CONSENT_ROOTS_JS = (
+    "var roots=[document],ri=0,all=[];"
+    "while(ri<roots.length){var r=roots[ri++];"
+    "var els=(r.getElementsByTagName?r.getElementsByTagName('*'):r.querySelectorAll('*'));"
+    "for(var j=0;j<els.length;j++){all.push(els[j]);"
+    "if(els[j].shadowRoot){roots.push(els[j].shadowRoot);}}}"
+    #: 这条判据是**两段 JS 共用**的（找按钮那段、判「还在不在」那段）—— 一处一张嘴。
+    "var boxLabel=function(e){return String(e.id||'')+' '+String(e.className||'')"
+    "+' '+String((e.getAttribute&&e.getAttribute('aria-label'))||'')"
+    "+' '+String(e.innerText||'').replace(/\\s+/g,' ').slice(0,200);};"
+)
 _CONSENT_BOX_JS = (
     "var boxW=/(cookie|consent|gdpr|privacy)/i;"
     "var vis=function(e){var r=e.getBoundingClientRect();"
     "return r.width>0&&r.height>0&&r.bottom>0&&r.top<window.innerHeight;};"
-    "var all=document.getElementsByTagName('*');"
+    + _CONSENT_ROOTS_JS +
     "for(var i=0;i<all.length;i++){"
     "  var b=all[i];"
-    "  var label=String(b.id||'')+' '+String(b.className||'')"
-    "+' '+String(b.getAttribute&&b.getAttribute('aria-label')||'');"
-    "  if(boxW.test(label)&&vis(b)) return '1';"
+    "  if(boxW.test(boxLabel(b))&&vis(b)) return '1';"
     "}"
     "return '';"
 )
@@ -254,7 +279,13 @@ _CONSENT_BOX_JS = (
 #: 判据与 `_cover_once` 同源（`elementFromPoint` + 自己/后代/祖先都算同一个东西）。
 #: ⚠️ 只在**没做成**那一步探一次（§13：重跑必须便宜），而且**一次 eval 全给**（不是四次）。
 _SCENE_JS = (
-    "var out={ready:String(document.readyState||''),overlay:'',at_point:'',texts:[]};"
+    #: ★ 2026-09-28（用户点的那件事：**「这类问题下次不用开窗就能判」**）：再加三样 ——
+    #: `dpr` / `vw,vh` / `ua`。为什么：那一趟 `cdp screenshot` 一直报「图 984 设备像素 vs
+    #: 视口×dpr = 2952」⇒ 没有这三个数，只能靠开窗去猜「窗口到底多大、报的什么 dpr」；
+    #: 有了它们，日志里一眼就能看出「窗口与指纹不一致」。
+    "var out={ready:String(document.readyState||''),overlay:'',at_point:'',texts:[],"
+    "dpr:(window.devicePixelRatio||1),vw:window.innerWidth,vh:window.innerHeight,"
+    "ua:String(navigator.userAgent||'').slice(0,160)};"
     "var boxW=/(cookie|consent|gdpr|privacy)/i;"
     "var vis=function(e){var r=e.getBoundingClientRect();"
     "return r.width>0&&r.height>0&&r.bottom>0&&r.top<window.innerHeight;};"
@@ -305,24 +336,39 @@ _CONSENT_PROBE_JS = (
     "var btnW=/(accept|agree|allow|got it|close|reject|decline|deny|同意|接受|关闭)/i;"
     "var vis=function(e){var r=e.getBoundingClientRect();"
     "return r.width>0&&r.height>0&&r.bottom>0&&r.top<window.innerHeight;};"
-    "var all=document.getElementsByTagName('*');"
+    + _CONSENT_ROOTS_JS +
     "for(var i=0;i<all.length;i++){"
     "  var box=all[i];"
-    "  var label=String(box.id||'')+' '+String(box.className||'')"
-    "+' '+String(box.getAttribute&&box.getAttribute('aria-label')||'');"
-    "  if(!boxW.test(label)||!vis(box)) continue;"
-    "  var inner=box.getElementsByTagName('*');"
+    "  if(!boxW.test(boxLabel(box))||!vis(box)) continue;"
+    "  var inner=(box.getElementsByTagName?box.getElementsByTagName('*'):box.querySelectorAll('*'));"
     "  for(var j=0;j<inner.length;j++){"
     "    var b=inner[j], tag=String(b.tagName||'').toLowerCase();"
     "    if(tag!=='button'&&tag!=='a'&&tag!=='input') continue;"
+    #: ★ 2026-09-28：**按钮也得是可见的** —— 藏起来的那颗（有的是给读屏用的）点不到，
+    #: 点了也是白点（`cdp click` 会回错误 ⇒ 白搭一步）。
+    "    if(!vis(b)) continue;"
     "    var t=String(b.innerText||b.value||(b.getAttribute&&b.getAttribute('aria-label'))||'').trim();"
     "    if(!btnW.test(t)) continue;"
-    # 没有稳定地址就不点（宁可不做，也不猜一条会点错的选择器）
-    "    if(!b.id) continue;"
-    "    return '#'+b.id+'|'+t.slice(0,40);"
+    #: 有稳定地址 ⇒ 直接用；只有文字 ⇒ 交回一句「按文字点」（调用方打标记再点）
+    "    return (b.id?('#'+b.id):'TEXT')+'|'+t.slice(0,40);"
     "  }"
     "}"
     "return '';"
+)
+
+#: 按文字给同意按钮**打标记**（只有文字的那种）—— 与产物里「按占位符填」同一招：
+#: 找用 JS、点还是走 `cdp click`（§5.2），标记属性用完就清。
+_MARK_CONSENT_BY_TEXT_JS = (
+    "var want=%s;"
+    + _CONSENT_ROOTS_JS +
+    "var hit=null;"
+    "for(var i=0;i<all.length;i++){var b=all[i],tag=String(b.tagName||'').toLowerCase();"
+    "if(tag!=='button'&&tag!=='a'&&tag!=='input')continue;"
+    "var t=String(b.innerText||b.value||(b.getAttribute&&b.getAttribute('aria-label'))||'').trim();"
+    "if(t===want){hit=b;break;}}"
+    "if(!hit)return 'none';"
+    "for(var k=0;k<all.length;k++){if(all[k].removeAttribute)all[k].removeAttribute('data-sf-consent');}"
+    "hit.setAttribute('data-sf-consent','1');return 'marked';"
 )
 
 # ── 「这个 cdp 会不会做这件事」────────────────────────────
@@ -370,6 +416,7 @@ PHONES = ["07936567874", "07700900123", "07400123456", "07911123456"]
 PROVENANCE = { 'generated_at': '2026-09-17T02:00:00+08:00',
   'generator': 'siteforge/v0.1',
   'env': {'proxy_country': 'US', 'dpr': 1, 'ua': 'Mozilla/5.0 (stub)', 'viewport': [1280, 800]},
+  'fingerprint': None,
   'platform': {'guess': 'custom-quiz', 'confidence': 0.6},
   'selftest': None,
   'source': {'kind': 'build', 'evidence': 'fixtures/reference_spec（合成站，不是真站）'}}
@@ -1500,6 +1547,20 @@ class Filler:
             return random.choice(PHONES)
         if kind == "postcode":
             return random.choice(POSTCODES)
+        #: ★ 2026-09-28：`number` / 地址那几档是**新认出来的种类**（`browser_agent._RANDOM_HINTS`
+        #: 与 `_fallback` 一起加的）—— 这里不接的话，产物拿到 `{"random": "number"}` 会**当场抛**
+        #: （`_random_value` 原先只认七个种类）。
+        if kind == "number":
+            return str(random.randint(1, 5))          # 人数/件数那一类：给个小的正整数
+        if kind == "city":
+            return random.choice(("Springfield", "Riverton", "Fairview", "Greenville",
+                                  "Madison", "Clinton", "Georgetown", "Salem"))
+        if kind == "street":
+            return "%d %s %s" % (random.randint(100, 9899),
+                                 random.choice(("Maple", "Oak", "Cedar", "Pine", "Elm", "Birch")),
+                                 random.choice(("St", "Ave", "Rd", "Ln", "Dr")))
+        if kind == "country":
+            return random.choice(("United States", "United Kingdom"))
         if kind == "state":
             return random.choice(US_STATES)
         if kind == "dob":
@@ -1595,15 +1656,31 @@ class Filler:
         （§4.6 的能力边界），而弹层恰恰在生产每单都出现。所以这里走 `eval`（**读**，§5.2 允许），
         点还是走 cdp 的 click。
 
-        只做**有把握**的那一下：得在一个可见的同意类容器里找到带稳定 id 的按钮，
-        且它的文字是「接受/同意/关闭/拒绝」那一族；找不到就**什么都不做**（宁可不做），
+        只做**有把握**的那一下：得在一个可见的同意类容器里找到一个按钮，它的文字属于
+        「接受/同意/关闭/拒绝」那一族 —— **带 id 就点 `#id`**，**只有文字就按文字打标记再点**
+        （★ 2026-09-28，用户看到的现场「有个弹窗挡住了」；原来那种「没 id 就什么都不做」
+        等于把弹层留在页面上挡住后面每一步 ✗）。两条都走不通就**什么都不做**（宁可不做），
         由 `_covered_by` 保证「点到弹层上」不会被记成做成了。
         """
         raw = self._ev(_CONSENT_PROBE_JS)
         if not raw or "|" not in raw:
             return                      # 没有弹层（正常情况）—— 静默是对的，这是「无事可做」
-        selector, text = raw.split("|", 1)
+        how, text = raw.split("|", 1)
+        if how == "TEXT":               # 只有文字：打标记再点（点还是走 cdp）
+            marked = self._ev(_MARK_CONSENT_BY_TEXT_JS % json.dumps(text))
+            if "marked" not in str(marked or ""):
+                self.log.info("[%s] 同意弹层那颗按钮（%r）没有 id、按文字也没标记上 —— 不猜，"
+                              "留给 `_covered_by` 兜（下一步会被挡住并如实失败）", self.cid, text[:30])
+                return
+            selector = '[data-sf-consent="1"]'
+        else:
+            selector = how
         out = self.cdp.click(selector)   # 动作一律走 cdp（§5.2）
+        if how == "TEXT":
+            #: 标记用完就清（不清的话下一屏上会留一个 `[data-sf-consent="1"]`，那是脏状态）
+            self._ev("var a=document.getElementsByTagName('*');"
+                     "for(var i=0;i<a.length;i++){if(a[i].removeAttribute)"
+                     "a[i].removeAttribute('data-sf-consent');}return 'clean';")
         self.log.info("[%s] %s把同意弹层点掉了（%s，%r）：%s", self.cid,
                       ("%s之后 " % why) if why else "开跑前 ", selector, text[:30],
                       "看起来成了" if _ok(out) else "**没成**")
@@ -1687,6 +1764,36 @@ class Filler:
         if not got.startswith("COVER|"):
             return ""
         return got[len("COVER|"):]
+
+    def _tabs_now(self):
+        """**当时所有页/tab 的地址**（只读；读不回来就说读不回来）。★ 2026-09-28。
+
+        为什么要有它（用户 2026-09-28 那条分析）：`target=_blank` 那一类点击会**新开一个页**，
+        而脚本还在老页上找元素 ⇒ 现场只有一句「没找到元素」，判不出「其实是切页没跟上」✗；
+        而开窗复验又贵。这一行把「当时一共几个页、各自什么地址、哪个是 active」直接写进 trace。
+        `cdp targets` 一次调用、只读 —— 与「切过去」是两件事：这一格只**记录**，不改行为。
+        """
+        host = str(getattr(self.cdp, "host", "") or "")
+        port = str(getattr(self.cdp, "port", "") or "")
+        if not host or not port:
+            return {"unreadable": "这个 cdp 帮手没给 host/port"}
+        try:
+            done = subprocess.run([CDP_BIN, "targets", "--host", host, "--port", port],
+                                  capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"unreadable": "%s: %s" % (type(exc).__name__, str(exc)[:60])}
+        try:
+            rows = json.loads(done.stdout or "[]")
+        except ValueError:
+            return {"unreadable": str(done.stdout or done.stderr or "")[:80]}
+        got = []
+        for r in (rows if isinstance(rows, list) else []):
+            if not isinstance(r, dict):
+                continue
+            got.append({"url": str(r.get("url") or "")[:120],
+                        "title": str(r.get("title") or "")[:60],
+                        "active": bool(r.get("active"))})
+        return got
 
     def _covered_by(self, selector, frame_id="", until=None):
         """这个选择器指的元素**是不是被别的东西盖着**。盖着就返回盖它的东西（读，不动页面）。
@@ -2032,6 +2139,63 @@ class Filler:
         self._when_why_cache = "" if ok else self._when_why(when)
         return ok
 
+    def _fingerprint_now(self):
+        """这个窗口**当下**的指纹：`{"viewport": "984x905", "dpr": 3, "ua": "…"}`；读不到给 `None`。
+
+        读不到就是**读不到**（不许拿空串顶替 —— 那会把「没量着」写成「量着了、是空的」）。
+        """
+        raw = self._ev("return JSON.stringify({w:Math.round(window.innerWidth),"
+                       "h:Math.round(window.innerHeight),dpr:window.devicePixelRatio||1,"
+                       "ua:navigator.userAgent||''});")
+        for _ in range(2):                       # cdp eval 的答复被编码两层（交接 §7）
+            try:
+                raw = json.loads(raw)
+            except (ValueError, TypeError):
+                break
+        if not isinstance(raw, dict):
+            return None
+        try:
+            viewport = "%dx%d" % (int(raw["w"]), int(raw["h"]))
+        except (KeyError, TypeError, ValueError):
+            return None
+        return {"viewport": viewport, "dpr": raw.get("dpr"),
+                "ua": str(raw.get("ua") or "")[:200]}
+
+    def _say_fingerprint(self):
+        """开跑之前把**指纹**摆出来：录它的时候是什么、现在是什么 —— 不一致就**出声**。
+
+        为什么这一格必须存在（2026-09-28 用户报的那件事）：站点按视口/UA 换版式，
+        而账本里的选择器是**在某一个尺寸下**录的。指纹一变，那些选择器就变成
+        「点了也不动」—— 现场只有一句「没找到元素」，谁都得开窗复验才判得出。
+        这一句把那个判断**提前到开跑那一刻**，并且写进 trace（`fingerprint_mismatch`）。
+
+        ⚠️ **不许**把它做成一条闸（不 return False、不停）：
+        它只回答「环境与录制时一不一样」。停不停是人的事 —— 而这一次真跑要不要，
+        取决于人手上的信息（有时就是要拿老指纹下的产物去新指纹上试）。
+        """
+        want = (PROVENANCE or {}).get("fingerprint") if isinstance(PROVENANCE, dict) else None
+        if not isinstance(want, dict) or not want.get("viewport"):
+            self.log.warning("[%s] 这份产物**没记录入指纹**（`PROVENANCE['fingerprint']` 是空的）"
+                             "—— 所以「它是在什么尺寸下录的」这件事，谁都答不上来；"
+                             "选择器只在某一个版式下成立时，这里一个字都提示不了。", self.cid)
+            return
+        now = self._fingerprint_now()
+        if now is None:
+            self.log.warning("[%s] 读不出这个窗口的指纹 —— 录的时候是 %s（视口）/ DPR %s；"
+                             "**这一次量不到**，所以对不上对得上都说不了。",
+                             self.cid, want.get("viewport"), want.get("dpr"))
+            return
+        if now.get("viewport") == want.get("viewport"):
+            self.log.info("[%s] 指纹对上了：视口 %s（录它的时候也是这个）",
+                          self.cid, now["viewport"])
+            return
+        self.log.warning("[%s] ⚠️ **指纹不一样**：录它的时候视口是 %s，现在是 %s"
+                         "（dpr %s→%s）—— 这一站的页头按视口换版式，"
+                         "这一趟里「点了也不动 / 找不到元素」很可能就是**这个差**造成的，"
+                         "别当成站点改版。", self.cid, want.get("viewport"),
+                         now["viewport"], want.get("dpr"), now.get("dpr"))
+        self._trace({"fingerprint_mismatch": {"recorded": want, "now": now}})
+
     def _say_url_only_whens(self):
         """哪些状态的判据**只有地址** —— 开跑之前说一次（**不许沉默**）。
 
@@ -2132,6 +2296,12 @@ class Filler:
                     # ⚠️ 探不到**不许静默** —— 交一句「探不到 + 它回了什么」，
                     # 读 trace 的人要能分清「没有现场」与「现场一切正常」。
                     scene = {"unreadable": str(raw or "")[:80]}
+                if isinstance(scene, dict):
+                    #: ★ 2026-09-28（用户点的那件事）：**把当时所有的页/tab 也录下来** ——
+                    #: 「点完之后新开了一个页、而脚本还在老页上」这类缺陷（`target=_blank`），
+                    #: 现场只有一句「没找到元素」是判不出来的 ✗，而开窗复验又贵。
+                    #: `cdp targets` 只读、一次调用；读不回来就记 `unreadable`（不许编）。
+                    scene["tabs"] = self._tabs_now()
             except Exception as exc:               # noqa: BLE001 —— 探现场不许带塌这一步
                 scene = {"unreadable": "%s: %s" % (type(exc).__name__, str(exc)[:60])}
         try:
@@ -2240,6 +2410,14 @@ class Filler:
         # 开跑之前先看有没有**挡路的同意弹层**并点掉（见 _clear_obstructions 的 docstring：
         # 生产每单都是新窗口 → 每单都会遇到它，而账本里通常没有这一步）。
         self._clear_obstructions()
+
+        # ★ 2026-09-28：**先核指纹**（视口/DPR/UA）—— 这一格以前一个字都不说。
+        # 为什么非说不可：这个站的页头**按视口/UA 换版式**（实测：宽的时候汉堡与 BOOK NOW
+        # 是 0×0、窄的时候页头那个 Join Now 又不在了）⇒ 在别的尺寸下录出来的选择器，跑起来
+        # 就是「点了也不动」，而现场只有一句「没找到元素」—— 判不出是站变了还是**指纹变了**。
+        # 判据取 `PROVENANCE["fingerprint"]`（探路那个窗口**量下来**的；没有这一格就是「不知道」，
+        # 那也**要说**：不说的话，「没录指纹」与「指纹对上了」长得一模一样）。
+        self._say_fingerprint()
 
         # ★ 线①：判据**只有地址**的状态，先喊一声（见 `_say_url_only_whens` 的 docstring）——
         # 在**任何一步之前**说，这样即使它整组被跳过了，日志里也早就有那句为什么。
