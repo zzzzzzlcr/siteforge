@@ -530,12 +530,23 @@ COOKIE_KIND = "cookie-banner"
 #:
 #: ★ 2026-09-28：**穿 shadow root**（web component 里的同意条原来直接看不见 ✗）——
 #: 与 `_PAGE_TEXT_JS` 同一套 roots 走法（`ShadowRoot` 没有 `getElementsByTagName`）。
+#:
+#: ★★ 同一天、更关键的一条（用户看到现场后骂醒的那句「**cookie 没点啊**」）：
+#: 认「这是不是同意条」**只看了 id/class/aria-label** ✗ —— 而 OneTrust 那个容器的 id 是
+#: `#onetrust-banner-sdk`，**这三个词一个都没有** ⇒ 整条弹层被跳过 ⇒ 一下都不点 ✗✗
+#: （`cdp observe` 之所以标得出来，是因为它看的是**页面文字**「This website uses
+#: third-party cookies…」✓ 那边含 `cookies` ✓ —— 两边的判据不一致，从此对齐）。
+#: ⇒ `label` 里加上**它自己那截文字**（前 200 字，够装下一整条横幅的正文）。
 _CONSENT_ROOTS_JS = (
     "var roots=[document],ri=0,all=[];"
     "while(ri<roots.length){var r=roots[ri++];"
     "var els=(r.getElementsByTagName?r.getElementsByTagName('*'):r.querySelectorAll('*'));"
     "for(var j=0;j<els.length;j++){all.push(els[j]);"
     "if(els[j].shadowRoot){roots.push(els[j].shadowRoot);}}}"
+    #: 这条判据是**两段 JS 共用**的（找按钮那段、判「还在不在」那段）—— 一处一张嘴。
+    "var boxLabel=function(e){return String(e.id||'')+' '+String(e.className||'')"
+    "+' '+String((e.getAttribute&&e.getAttribute('aria-label'))||'')"
+    "+' '+String(e.innerText||'').replace(/\\s+/g,' ').slice(0,200);};"
 )
 _CONSENT_BOX_JS = (
     "var boxW=/(cookie|consent|gdpr|privacy)/i;"
@@ -544,9 +555,7 @@ _CONSENT_BOX_JS = (
     + _CONSENT_ROOTS_JS +
     "for(var i=0;i<all.length;i++){"
     "  var b=all[i];"
-    "  var label=String(b.id||'')+' '+String(b.className||'')"
-    "+' '+String(b.getAttribute&&b.getAttribute('aria-label')||'');"
-    "  if(boxW.test(label)&&vis(b)) return '1';"
+    "  if(boxW.test(boxLabel(b))&&vis(b)) return '1';"
     "}"
     "return '';"
 )
@@ -618,13 +627,14 @@ _CONSENT_PROBE_JS = (
     + _CONSENT_ROOTS_JS +
     "for(var i=0;i<all.length;i++){"
     "  var box=all[i];"
-    "  var label=String(box.id||'')+' '+String(box.className||'')"
-    "+' '+String(box.getAttribute&&box.getAttribute('aria-label')||'');"
-    "  if(!boxW.test(label)||!vis(box)) continue;"
+    "  if(!boxW.test(boxLabel(box))||!vis(box)) continue;"
     "  var inner=(box.getElementsByTagName?box.getElementsByTagName('*'):box.querySelectorAll('*'));"
     "  for(var j=0;j<inner.length;j++){"
     "    var b=inner[j], tag=String(b.tagName||'').toLowerCase();"
     "    if(tag!=='button'&&tag!=='a'&&tag!=='input') continue;"
+    #: ★ 2026-09-28：**按钮也得是可见的** —— 藏起来的那颗（有的是给读屏用的）点不到，
+    #: 点了也是白点（`cdp click` 会回错误 ⇒ 白搭一步）。
+    "    if(!vis(b)) continue;"
     "    var t=String(b.innerText||b.value||(b.getAttribute&&b.getAttribute('aria-label'))||'').trim();"
     "    if(!btnW.test(t)) continue;"
     #: 有稳定地址 ⇒ 直接用；只有文字 ⇒ 交回一句「按文字点」（调用方打标记再点）
