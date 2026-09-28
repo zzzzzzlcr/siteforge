@@ -4320,3 +4320,44 @@ def test_the_when_of_two_questions_behind_one_url_is_not_the_same_gate():
     assert not browser_agent.when_holds(when_b, a), \
         "第二问的门在**第一问**上不许成立 —— 不然下一问的步会在这一问就跑：%r" % (when_b,)
     assert browser_agent.when_holds(when_a, a), when_a
+
+
+def _form_step(name, selector, *, state="form"):
+    """账本里一步「填表填成了」——`states()` / `fills()` 的原料那一格。"""
+    return {"state": state, "action": "form", "note": "",
+            "target": {"selectors": [selector]},
+            "result": {"ok": True, "fill": {"name": name, "source": "self",
+                                            "kind": "text", "label": name,
+                                            "fallback": []}}}
+
+
+def test_the_same_field_recorded_twice_does_not_get_filled_twice():
+    """同一个状态里**同一个地址**被记了两遍（名字不同）⇒ 产物只填一次。
+
+    ★ 2026-09-28 travelandleisure 那一单（真站实测）：
+      探路来回走了一趟，同一张报名表的 6 个格子被记了两遍 —— 第二遍换了名字
+      （`field` 与 `field-7` 都指 `#enroll-firstName`）。`_last_fill_wins` 按名字去重，
+      一个都没删 ⇒ 产物把同一张表**填两轮**，第二轮那页上已经没得填：真日志里第 8 步起
+      「没找到 field-4」，重试组一跳之后 7 格全找不到，rc=1。
+    """
+    j = browser_agent.Journey(steps=[
+        _form_step("field", "#enroll-firstName"),
+        _form_step("field-2", "#enroll-lastName"),
+        _form_step("field-7", "#enroll-firstName"),
+        _form_step("field-8", "#enroll-lastName"),
+    ])
+    steps = j.states()[0]["steps"]
+    got = [s.get("fill") for s in steps if s.get("action") == "form"]
+    assert got == ["field", "field-2"], got
+    assert sorted(j.fills()) == ["field", "field-2"], sorted(j.fills())
+
+
+def test_the_same_address_in_another_state_is_still_filled_there():
+    """跨状态填同一格是**另一件事**（流程里第二次问它）⇒ 一步都不许删。"""
+    j = browser_agent.Journey(steps=[
+        _form_step("zip", "#zip", state="start"),
+        _form_step("zip-2", "#zip", state="later"),
+    ])
+    got = {s["name"]: [x.get("fill") for x in s["steps"]] for s in j.states()}
+    assert got == {"start": ["zip"], "later": ["zip-2"]}, got
+    assert sorted(j.fills()) == ["zip", "zip-2"], sorted(j.fills())

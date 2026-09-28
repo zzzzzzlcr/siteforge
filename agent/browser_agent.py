@@ -584,6 +584,7 @@ class Journey:
         """
         order: list[str] = []
         groups: dict[str, list] = {}
+        alias = _same_address_same_state(self.steps)
         for step in self.steps:
             name = step.get("state") or START_STATE
             if name not in groups:
@@ -591,6 +592,8 @@ class Journey:
                 order.append(name)
             replay = _replay_step(step)
             if replay is not None:
+                if replay.get("fill"):
+                    replay["fill"] = alias.get(replay["fill"], replay["fill"])
                 groups[name].append(replay)
         groups = {name: _last_fill_wins(steps) for name, steps in groups.items()}
         whens = {page.get("name"): page.get("when") for page in self.pages}
@@ -604,11 +607,16 @@ class Journey:
 
         只收**真填成功过**的字段：没填成的字段进了 FILLS，重放时就会去填一个
         agent 当时都没找着的东西。
+
+        ⚠️ 与 `states()` **同一把尺子**：同一个状态里、同一个地址被记了两遍（名字不同）
+        只留前面那个（见 `_same_address_same_state`）—— 两处口径不一样的话，产物里
+        会留下一格**没有任何一步引用**的死条目。
         """
+        alias = _same_address_same_state(self.steps)
         out: dict = {}
         for step in self.steps:
             info = (step.get("result") or {}).get("fill")
-            if not info:
+            if not info or info["name"] in alias:
                 continue
             out[info["name"]] = {
                 "name": info["name"],
@@ -2582,6 +2590,34 @@ def _label_of(target) -> str:
     # （账本上没丢），排查时对得回页面；端进句子里是**多此一举地把实现细节摆上主视图**。
     # 与 `template.py` 渲染进产物那份同一个说法（那边写着「不把选择器端给人看」）。
     return "没写名字的元素"
+
+
+def _same_address_same_state(steps: list) -> dict:
+    """同一个状态里**同一个地址**被记了两遍（名字却不同）⇒ 后面的名字让给前面那个。
+
+    ★ 2026-09-28 真事（travelandleisure 那一单）：探路时来回走了一趟，同一张报名表的
+    6 个格子被记了**两遍**，第二遍拿到了别的名字（`field` 与 `field-7` 都指
+    `#enroll-firstName`）。`_last_fill_wins` 只按**名字**去重 ⇒ 一个都没删 ✗
+    ⇒ 产物把同一张表**填两轮**，第二轮那页上已经没得填了：真实日志里第 8 步起
+    「没找到 field-4」，重试组一跳之后 7 格全找不到。
+    ⇒ 名字不同、**地址相同**的，按同一个字段论：留前面的名字，后面的改指过去。
+
+    ⚠️ 仍然只在**同一个状态内**：跨状态填同一格是另一件事（流程里第二次问它）。
+    """
+    seen: dict = {}
+    alias: dict = {}
+    for step in steps or []:
+        info = step.get("result") or {}
+        name = ((info.get("fill") or {}) or {}).get("name")
+        sels = (step.get("target") or {}).get("selectors") or []
+        if not name or not sels:
+            continue
+        key = (step.get("state") or START_STATE, str(sels[0]).strip())
+        if key in seen and seen[key] != name:
+            alias[name] = seen[key]
+        else:
+            seen.setdefault(key, name)
+    return alias
 
 
 def _last_fill_wins(steps: list) -> list:
