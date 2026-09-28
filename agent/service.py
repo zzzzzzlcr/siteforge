@@ -1200,7 +1200,10 @@ class BitWindow:
         ws = (data or {}).get("ws") if isinstance(data, dict) else None
         if not (isinstance(out, dict) and out.get("success") is True and ws):
             raise RuntimeError("开窗口没成：%s" % str(out)[:200])
-        ws = re.sub(r"(127\.0\.0\.1|0\.0\.0\.0)", self.worker_ip, str(ws))
+        #: ★ 2026-09-28：**回环的三种写法都要换** —— 原先只换 `127.0.0.1`/`0.0.0.0`，
+        #: 而 Bit 回的那串有时是 `ws://[::1]:61129/…` ⇒ 原样交出去的话，谁都连不上它
+        #: （真跑撞过：`[::1]` 那串交给自测，`cdp eval` 一直连不上、白白烧掉一轮的等待）。
+        ws = re.sub(r"(\[::1\]|localhost|127\.0\.0\.1|0\.0\.0\.0)", self.worker_ip, str(ws))
         probe = self.probe()
         if probe["alive"] is not True:
             raise RuntimeError("窗口开了但**探活说它不是活的**（%s）—— 不把这种窗口交出去"
