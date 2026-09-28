@@ -78,6 +78,17 @@ PAGE_TAIL_CHARS = 240
 
 # 动作命令自己报错时的字样：cdp click / form 找不到元素就直接报这些。
 # 「这一步成没成」在**填/选**类步骤上只能看它 —— diff 判不了控件状态（§4.6 的能力边界）。
+#: ★ 2026-09-28（travelandleisure 生产单 26221672 实测逼出来的）：**页面根本不是内容页**时的特征词。
+#: 命中就说出来 —— 因为**风控/挑战页**与「判据不匹配」在日志里**长得一模一样**，
+#: 而前者**不是脚本能解决的**（要换出口 IP 或降频），读日志的人不该往判据上找。
+#: 真事：那一单从第 3 步起 12 步读到的正文一直是
+#: `One moment, we're checking you're not a bot. 20260928T094845Z-…`，
+#: 而现场只报「正文里没有「Log In Join Now」」⇒ 看着像脚本的错，其实是 IP 被盯上了。
+_TROUBLE_MARKERS = (
+    "checking you're not a bot", "just a moment", "verifying you are human",
+    "are you a human", "enable javascript and cookies", "attention required",
+    "access denied", "ddos protection", "cf-chl", "captcha",
+)
 ERR_MARKERS = ("Error:", "error:", "not found", "BugError", "no page target",
                "failed to create client", "Usage:", "Flags:", "panic:")
 
@@ -525,6 +536,23 @@ FILLS = { 'postcode': { 'name': 'postcode',
              'fallback': [{'random': 'phone'}]}}
 
 
+def _page_trouble(text):
+    """这一页**是不是根本不是内容页** —— 是就给一句人话，不是就给空串（★ 2026-09-28）。
+
+    两样，都**不是脚本能解决的**，所以必须与「判据不匹配」分开说：
+      · **风控 / 挑战页** —— 正文明含 `_TROUBLE_MARKERS` 里那几句之一；
+      · **空白页** —— 正文读出来是空的（还在加载 / 被拦 / 跨域读不到）。
+    """
+    t = _norm(text or "")
+    low = t.lower()
+    for m in _TROUBLE_MARKERS:
+        if m in low:
+            return "页面是**风控/挑战页**（正文里有「%s」）：%s" % (m, t[:80])
+    if not low:
+        return "读不到页面正文（空串）—— 还在加载？还是被拦了？"
+    return ""
+
+
 def _norm(text):
     r"""把一段文字归一成「看内容」的形态：空白（含 NBSP）压成单个空格、两端剪掉。
 
@@ -840,6 +868,10 @@ class Filler:
         self.stuck = 0         # 连续没做成的步数（早停看它）
         self.skipped = 0       # 被 `when` 判据整组跳过的步数（最后那句总结要报出来）
         self.skipped_states = {}   # 状态名 → 被跳过的步数（报「跳过最多的是哪个状态」）
+        #: ★ 2026-09-28：这一趟读到**风控页 / 空白页**的 `(步号, 一句人话)` —— **纯诊断**
+        #: （收尾那句要报出来）。与 `skipped_states` 是两件事：那个说「卡在哪个状态」，
+        #: 这个说「页面压根不是内容页」—— 后者不是判据的问题，也不是脚本能解决的。
+        self.trouble_steps = []
         #: 连着**几组**判据都不成立（缺陷单 §六 E3 的那句报警看它；一组真做了就清零）。
         self.skipped_in_a_row = 0
         self.stalled = 0       # 连续「点了但页面没动」的步数（另一种原地打转）
@@ -2483,9 +2515,20 @@ class Filler:
                                 "先看这句里的 why（判据要的那段 vs 页面上实际有的那段）——"
                                 "多半是**判据本身不对**（跨元素拼接 / 瞬时状态 / 换了环境）。",
                                 self.cid, self.skipped_in_a_row, name)
+                        #: ★ 2026-09-28（travelandleisure 生产 26221672 实测）：跳过时顺手判一眼
+                        #: **这一页到底是不是内容页** —— 风控页 / 空白页 / 普通判据不匹配，
+                        #: 原先在日志里**长得一模一样**，读的人会一直往判据上找，而前两样
+                        #: **不是脚本能解决的**（要换出口 IP/降频、或查加载链路）。
+                        #: 记在这里（不是 `_applies` 里）是因为**只有这里的 `index` 是准的**：
+                        #: `applies` 是在 while 之前算好的，那时 `self.step` 还是上一步的值。
+                        #: 签名下面那句本来就要算一次 —— 借过来，不额外开一次 eval。
+                        _sig = self.page_signature() or ""
                         self.log.info("[%s] 第 %d 步**跳过**：这一页不像「%s」那个状态（%s）"
                                       "；页面上现在写着「%s」", self.cid, index, name, why,
-                                      (self.page_signature() or "")[:80])
+                                      _sig[:80])
+                        _trouble = _page_trouble(_sig)
+                        if _trouble:
+                            self.trouble_steps.append((index, _trouble))
                         self._trace({"step": index, "action": (step.get("action") or ""),
                                      "skipped": True, "state": name, "why": why,
                                      "note": "第 %d 步跳过：这一页不像「%s」那个状态（%s）"
@@ -2580,6 +2623,23 @@ class Filler:
                 self.cid, total, total - self.skipped, self.skipped,
                 ("（跳过最多的那个状态是「%s」）" % self._skip_peak()) if self.skipped else "",
                 " / ".join(SUCCESS_TEXTS[:2]) or ("网址 " + " / ".join(SUCCESS_URLS[:2])))
+            # ★ 2026-09-28：**页面压根不是内容页**时把话说透 —— 这类失败最容易被当成
+            # 「判据没钉好」，而它其实**不是脚本能解决的**（风控要换出口 IP / 降频，
+            # 空白页要查加载链路）。本项目的规矩：异常**必须说出来**，不许让人从
+            # 「正文里没有 X」里自己猜。
+            if self.trouble_steps:
+                kinds = {}
+                for _, say in self.trouble_steps:
+                    k = say.split("（")[0]
+                    kinds[k] = kinds.get(k, 0) + 1
+                self.log.error(
+                    "[%s] ⚠️ 诊断：这一趟有 **%d 步**读到的**根本不是内容页**"
+                    "（第一次在第 %d 步）—— %s；分项：%s。"
+                    "**这不是判据的问题，也不是脚本能解决的**："
+                    "风控/挑战页要换出口 IP 或降频，空白页要查加载链路。",
+                    self.cid, len(self.trouble_steps), self.trouble_steps[0][0],
+                    self.trouble_steps[0][1],
+                    "、".join("%s×%d" % (k, v) for k, v in kinds.items()))
             # ⚠️ 这一句**只进日志、不进 trace**：trace 的每一行都是「一步」
             # （下游按 `line["ok"]` 读它，加一行没有 ok 的会把它读崩 ——
             # `tests/test_template.py` 的截图那条就是这么读的）。
