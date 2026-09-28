@@ -419,6 +419,70 @@ def test_a_delivered_run_whose_writes_did_not_land_still_gets_its_bytes_out(tmp_
     assert "看它自己的记录" in said, "那句话没把运营指向**记录**：%r" % said
 
 
+
+def test_a_run_that_never_reached_delivery_needs_an_explicit_tick_to_upload(tmp_path):
+    """★ 2026-09-28（用户点名「上传别只认交付过那一趟」）：**没走到交付、但确实写下了 py**。
+
+    真事：`georgiapower` 那一趟改好的那一版**在真站上跑通过（退出码 0）**，可它停在闸上、
+    `end_reason` 不是 `delivered` ⇒ 上传那条路原来是 409「没有可交付的产物」✗。
+
+    两件一起钉：
+      ① **产物那道闸不放水**（还是 409）—— 跑挂/没跑完的那一趟 state 里可能留着**上一次**
+         真跑留下的 `src`，那是别人那一版，不能悄悄端出去；但那句人话要**指出出路**；
+      ② 出路就是**人明确勾「照样传」**（`force`）⇒ 预检放行，并**先说清**「没经过流水线自测」。
+    """
+    written = "# 没走到交付、但写下来了\nBODY = 1\n"
+    #: ⚠️ 用 `raise_on` 把预设的 state **冻住**：`FakeGraph.invoke` 否则会用本次结果覆盖它
+    #: （与上面「写盘成功、账没落」那条同一个手法）。
+    g = FakeGraph(steps=[], raise_on=[1])
+    g.state = _Snap(values={
+        "site": SITE, "visits": ["intake", "explore", "draft", "lint"],
+        "out_dir": str(_out_dir(tmp_path)), "end_reason": "", "end_note": "",
+        "candidate_path": str(_out_dir(tmp_path) / ("%s.candidate.py" % SITE)),
+        "src": written})
+
+    class _Backend:
+        """一个够用的后端桩：读得回一份**别的**内容 ⇒ 预检不会说「已经是这一份了」。"""
+        configured = True
+        write_token = "write-token-for-test"
+        base = "https://fmr.example"
+
+        def form_script(self, site, *, allow_disabled=False):
+            from agent import pywrite
+            other = "# 后端现在那份（与本趟不同）\n"
+            return {"type": "py", "source": other, "sha256": pywrite.sha256_text(other)}
+
+        def update_form_script(self, key, source, *, operator):
+            from agent import fmr
+            return fmr.FormWriteResult(fmr.WRITE_OK, 200, "success", "上传好了")
+
+    client = _client(tmp_path, lambda brief, deps: g, failures_reader=_Backend())
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, job_id, until=("failed", "done", "waiting"))
+
+    # ① 产物那道闸：还是 409，但把出路说清（「照样传这一版」）
+    r = client.get("/job/%s/artifact" % job_id)
+    assert r.status_code == 409, (r.status_code, r.text)
+    assert "照样传这一版" in r.json()["detail"], r.json()["detail"]
+
+    # ② 不勾 force ⇒ 预检也 409（同一个理由）
+    prep = client.post(service.PYWRITE_PREPARE_PATH.format(job_id=job_id),
+                       json={"operator": "值班员 A"})
+    assert prep.status_code == 409, prep.text
+
+    # ③ 勾了 force ⇒ 放行 + **先**说清「没经过流水线自测」
+    forced = client.post(service.PYWRITE_PREPARE_PATH.format(job_id=job_id),
+                         json={"operator": "值班员 A", "force": True})
+    assert forced.status_code == 200, forced.text
+    body = forced.json()
+    assert body.get("undelivered") is True, body
+    assert "没走到「交付」" in body["say"] and "没经过流水线自测" in body["say"], body["say"]
+    assert body["say"].index("没经过流水线自测") < body["say"].index("预检过了"), \
+        "警告要**排在前面**（人先看到它，才按「确认上传」）：%r" % body["say"]
+    assert body["bytes"] == len(written.encode("utf-8")), body
+    assert body["local_sha256"] == hashlib.sha256(written.encode("utf-8")).hexdigest(), body
+
+
 def test_the_download_name_is_sanitised_even_when_the_record_is_nasty(tmp_path):
     """记录里那个文件名**再脏也不许进头字段**（复审 A3：这一档**零守**，M12 ⇒ 0 红）。
 

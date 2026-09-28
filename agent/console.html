@@ -546,8 +546,8 @@
         <section class="panel" id="pyUploadPanel">
           <header>
             <h2>把这一趟修好的脚本传到后台</h2>
-            <span class="sub">自测过了、落盘了之后才按得动。<b>会上传 = 换掉后台那份</b>，
-              生产按接口下载就变成这一份。</span>
+            <span class="sub">这一趟<b>写下过</b>一版就能传（交付过的最稳；<b>没交付的也能传</b>，
+              只要你把「照样传」勾上）。<b>会上传 = 换掉后台那份</b>，生产按接口下载就变成这一份。</span>
           </header>
           <div class="body">
             <div class="nrun">
@@ -555,6 +555,14 @@
                 <label for="pyUploadOperator">谁确认的</label>
                 <input type="text" id="pyUploadOperator" autocomplete="off"
                        placeholder="姓名或可追溯的值班标识">
+              </div>
+              <div class="field">
+                <label for="pyUploadForce">这一版没走到交付，也照样传</label>
+                <label><input type="checkbox" id="pyUploadForce">
+                  我确认要传这一版</label>
+                <p class="why">默认<b>不勾</b>：那一趟可能<b>压根没写完整</b>（服务会拦下并说明）。
+                  勾上 = <b>你自己判断这一版可以传</b> —— 它会说清「没经过流水线自测」，
+                  传上去的就是它记录里那一版。</p>
               </div>
               <div class="go">
                 <button class="btn" type="button" id="btnPyPrepare">预检上传</button>
@@ -2172,7 +2180,8 @@
     document.getElementById("pyUploadFacts").innerHTML = "";
     return fetch(pyUploadURL(PYUPLOAD_PREPARE), {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ operator: document.getElementById("pyUploadOperator").value.trim() })
+      body: JSON.stringify({ operator: document.getElementById("pyUploadOperator").value.trim(),
+                             force: document.getElementById("pyUploadForce").checked === true })
     }).then(readJSON).then(function (res) {
       btn.disabled = false;
       if (!res.ok) { setErr(sayOf(res), "act"); return null; }

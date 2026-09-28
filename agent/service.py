@@ -506,7 +506,13 @@ def _artifact_say(values: dict, state: dict) -> str:
     if state.get("bytes"):
         return state["say"]
     why = _no_py_say(values)
-    return ("%s\n%s" % (why, state["say"])) if why else state["say"]
+    #: ★ 2026-09-28（用户点名「上传别只认交付过那一趟」）：这一趟**没走到交付、但确实写下了
+    #: 一版**时，光说「没有可交付的产物」等于把人堵死 —— 把**出路**一起说清（勾「照样传」）。
+    #: ⚠️ 这一句放在**这一处**（两处出口共用同一拼法），别在 `_artifact_state` 里再来一遍。
+    way = ("（这一趟**确实写下了这一版**：把「照样传这一版」勾上再预检一次，就能拿它上传 —— "
+           "那是你自己的判断，服务不替你做。）") if _recorded_bytes(values) is not None else ""
+    head = ("%s\n%s" % (why, state["say"])) if why else state["say"]
+    return ("%s\n%s" % (head, way)) if way else head
 
 
 def _no_py_say(values: dict) -> str:
@@ -685,6 +691,14 @@ def _diag_say(task_id: str, rows: list) -> str:
 ARTIFACT_URL = "/job/%s/artifact"
 #: 有产物（= 这一趟写下的那串字节拿到了）那句话。
 ARTIFACT_READY_SAY = "这一趟的 py 写下来了 —— 点文件名下载，它落在盘上的位置写在下面。"
+#: ★ 2026-09-28（用户点名「上传别只认交付过那一趟」）：这一趟**没走到「交付」**，可它**确实
+#: 写下了一版 py**（`state["src"]` 在）。原来这一档与「压根没产物」一起被 409 拦下 ——
+#: 那天真撞上：改好的那一版**真站跑通过**，却因为「这一趟没有可交付的产物」传不上去 ✗。
+#: 现在放行，但**必须明说**它没经过流水线自测（人要按「确认上传」那一下自己的判断）。
+ARTIFACT_UNDELIVERED_SAY = (
+    "这一趟**没走到「交付」**（所以它没有落盘、也没有自测报告），但它**确实写下了这一版 py**。"
+    "⚠️ 传上去的是**没经过流水线自测**的那一版 —— 它可能在真站上还没验过；"
+    "**确认要传就按「确认上传」**，不放心就先去把它验一遍（自测那一步按「继续」）。")
 # ── 盘上那一份**现在是什么**：一句**信息**（端出去的是记录里那一串，与它无关）──
 #: 盘上那份**不是这一趟写下的那串字节**了。
 #: ⚠️ **不许断言因果**（复审实测：没有任何第二趟运行、只把文件换掉，也会走到这儿）——
@@ -1794,6 +1808,9 @@ class JsonWriteCommitRequest(_Intake):
 class PyWritePrepareRequest(_Intake):
     """`/job/{id}/upload/prepare` 的载荷（2026-09-22）。"""
     operator: str = ""
+    #: ★ 2026-09-28（用户点名）：**这一趟没走到交付**（可能没自测）时，人明确说「照样传」。
+    #: 默认 False ⇒ 产物那道闸一个字没松（跑挂的趟里可能留着上一版的 `src`）。
+    force: bool = False
 
 
 class PyWriteCommitRequest(_Intake):
@@ -3088,10 +3105,14 @@ class Service:
 
         拿不到只有两种情形（都 409 + 一句人话）：① 记录里没有它交付过的证据；
         ② 记录说交付过、可没留下那串字节。
+        ★ 2026-09-28：**这一档照旧是 409** —— 跑挂/没跑完的那一趟 state 里可能留着**上一次**
+        真跑留下的 `src`（那是别人那一版，不能悄悄端出去）。要「明明没交付也照样传」，
+        走**上传**那条路的显式确认（`force`，见 `_what_to_upload`），**不在这道闸上放水**。
         """
         values = dict(values or {})
         raw = _delivered_path(values)          # ★ 这道闸的唯一写法（与 `_project` 同一句）
         if raw is None:
+            #: ★ 那句「出路」（照样传）在 `_artifact_say` 里拼 —— 两处出口共用一处拼法。
             return {"bytes": None, "filename": None, "path": None,
                     "say": self._no_artifact_say(view, values)}
         blob = _recorded_bytes(values)
@@ -5206,7 +5227,7 @@ class Service:
 
     # ── py 上传（2026-09-22）：把**这一趟落盘的那份脚本**传到后台 ─────────────
 
-    def _what_to_upload(self, job_id: str) -> dict:
+    def _what_to_upload(self, job_id: str, *, force: bool = False) -> dict:
         """这一趟「要传什么」：那份源码 + 后端那个键。**免费**（只看本地状态）。
 
         ⚠️ 走 `_artifact_state` —— 仓里**唯一**判「这一趟的产物」的那一处，而且它给的正是
@@ -5215,12 +5236,23 @@ class Service:
         ⚠️ 因此这里**不许**从 `view`/`result` 上读 `delivered`：那是 `inbox` 判据的**同名不同物**，
         `tests/test_service_input.py::test_the_inbox_criteria_live_in_exactly_one_place` 当场逮过我一次。
         """
+        force = bool(force)
         view = self._view(job_id)
         soon = str(view.get("status") or "") in (QUEUED, RUNNING)
         snap = None if soon else self._snapshot(job_id)
         values = dict(getattr(snap, "values", None) or {}) if snap is not None else {}
         art = self._artifact_state(view, values)
         blob = art.get("bytes")
+        if not blob and force:
+            #: ★ 2026-09-28（用户点名「上传别只认交付过那一趟」）：**人明确要求「照样传」**时，
+            #: 拿这一趟记录里那串字节（`state["src"]`）—— 即便它没走到交付、没跑过自测。
+            #: ⚠️ 只在 `force` 下走这条路：产物那道闸（`_artifact_state`）**不放水**，
+            #: 因为跑挂/没跑完的那一趟 state 里可能留着**上一次**真跑留下的 `src`。
+            blob = _recorded_bytes(values)
+            cand = str(values.get("candidate_path") or "")
+            if blob:
+                art = {"bytes": blob, "path": cand or None, "undelivered": True,
+                       "say": ARTIFACT_UNDELIVERED_SAY}
         if not blob:
             raise HTTPException(status_code=409,
                                 detail=art.get("say") or "这一趟还没有产物。")
@@ -5265,7 +5297,9 @@ class Service:
             raise HTTPException(status_code=400,
                                 detail="这一趟**没说是哪个站**（brief 里没有 url/fix_site）"
                                        "—— 不知道往哪儿传。没上传。")
-        return {"path": str(path), "source": source, "key": key}
+        return {"path": str(path), "source": source, "key": key,
+                #: ★ 2026-09-28：这一版**没走到交付**（可能还没自测）—— 预检那句人话要**先说它**。
+                "undelivered": bool(art.get("undelivered"))}
 
     def _backend_script(self, key: str) -> tuple:
         """`(后端那份源码, 这个键后端不认识吗)` —— 404 当「**还没有这一份**」，别的错照样抛。
@@ -5289,9 +5323,9 @@ class Service:
         except fmr.FmrUnmeasured as exc:
             raise self._unmeasured_to_http(exc)
 
-    def py_upload_prepare(self, job_id: str, operator: Any) -> dict:
+    def py_upload_prepare(self, job_id: str, operator: Any, force: Any = False) -> dict:
         """预检：把「要传什么 / 后端现在是什么」摆出来，发一张一次性票据。**这一阶段绝不写。**"""
-        what = self._what_to_upload(job_id)
+        what = self._what_to_upload(job_id, force=bool(force))
         who = str(operator or "").strip()
         if not who:
             raise HTTPException(
@@ -5327,9 +5361,16 @@ class Service:
                     "⚠️ 那一行若是**被人停用**的，会被**重新启用**。后端回执不回显这一格，"
                     "要确认就再读一次（正常读、不加 debug）✓。"
                     % (n_bytes, item.source_sha256[:16], item.original_sha256[:16]))
+        if what.get("undelivered"):
+            #: ★ 2026-09-28：**先说**「这一版没走到交付/没经过自测」，再说键与指纹那一段 ——
+            #: 顺序是有意的：人要按「确认上传」之前，必须先看到这一句。
+            said = ARTIFACT_UNDELIVERED_SAY + "\n\n" + said
+            returned = {"undelivered": True}
+        else:
+            returned = {}
         return {"ticket": item.ticket, "site": item.key, "path": item.path,
                 "bytes": n_bytes, "local_sha256": item.source_sha256,
-                "backend_sha256": item.original_sha256, "say": said}
+                "backend_sha256": item.original_sha256, "say": said, **returned}
 
     def py_upload_commit(self, job_id: str, ticket: Any) -> dict:
         """消费票据 → 写前防覆盖 → 上传 → **回读校验**；不一致就传回原来那份。"""
@@ -6715,7 +6756,7 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
 
     @api.post(PYWRITE_PREPARE_PATH)
     def py_upload_prepare(job_id: str, body: PyWritePrepareRequest) -> dict:
-        return svc.py_upload_prepare(job_id, body.operator)
+        return svc.py_upload_prepare(job_id, body.operator, force=body.force)
 
     @api.post(PYWRITE_COMMIT_PATH)
     def py_upload_commit(job_id: str, body: PyWriteCommitRequest) -> dict:
