@@ -1006,38 +1006,45 @@ func (c *Client) IsTouchDevice() (bool, error) {
 	return c.EvalBool("", TouchDetectionJS)
 }
 
-// IsElementVisible checks if element visible area >= 80%
+// IsElementVisible checks if element visible area >= 80%.
+//
+// 为什么不再走 JS 算那一个比值（2026-09-29 afrotech 任务 26238922 开窗实测）：
+// 原 JS 里 totalArea = width*height，元素 0×0（[hidden] 里的同名重复件）时
+// 0/0 = NaN，而 `NaN >= 0.8` **恒假**；同一算式对视口外的矩形不做 clamp 还会
+// 算出负数（结论一样是 false，但「看不见」这件事实已经被说成堆垃圾数字）。
+// 现在统一走 Go 的 visibleRatio：0 面积**明说不可见**，越界一律 clamp 到 0；
+// 两条路（普通元素 / `__iframeNode:` 那一路）也终于用**同一份**算式。
 func (c *Client) IsElementVisible(selector string) (bool, error) {
-	if bID, ok := iframeNodeBackendID(selector); ok {
-		rect, err := c.elementRectByBackendID(bID)
-		if err != nil {
-			return false, err
-		}
-		vw, vh, err := c.getViewportDimensions()
-		if err != nil {
-			return false, err
-		}
-		w, h := rect["width"], rect["height"]
-		if w <= 0 || h <= 0 {
-			return false, nil // 0×0 的 iframe：不可见（也点不到）
-		}
-		visible := (math.Min(rect["x"]+w, vw) - math.Max(rect["x"], 0)) *
-			(math.Min(rect["y"]+h, vh) - math.Max(rect["y"], 0))
-		return visible/(w*h) >= 0.8, nil
+	rect, err := c.elementRect(selector)
+	if err != nil {
+		return false, err
 	}
-	js := withPierce(fmt.Sprintf(`(function(){
-		var el;
-		el = __cdpQ('%[1]s');
-		if (!el) return false;
-		const rect = el.getBoundingClientRect();
-		const visibleArea = (Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0)) *
-						   (Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
-		const totalArea = rect.width * rect.height;
-		return visibleArea / totalArea >= 0.8;
-	})()`, selector))
-	var result bool
-	err := c.EvalInFrame("", js, &result)
-	return result, err
+	vw, vh, err := c.getViewportDimensions()
+	if err != nil {
+		return false, err
+	}
+	return visibleRatio(rect, vw, vh) >= 0.8, nil
+}
+
+// elementRect 取元素矩形：`__iframeNode:` 那一路不走 JS（见 iframeNodePrefix），
+// 其余走 GetElementCenter。两个入口合成一处，免得可见性判据漏掉其中一路。
+func (c *Client) elementRect(selector string) (map[string]float64, error) {
+	if bID, ok := iframeNodeBackendID(selector); ok {
+		return c.elementRectByBackendID(bID)
+	}
+	return c.GetElementCenter(selector, "")
+}
+
+// visibleRatio 是「这个矩形在视口里露出多少」。0 面积**直接判 0**（不许落进
+// NaN），越界一律 clamp 到 0（负数不是「更不可见」，是算错了）。
+func visibleRatio(rect map[string]float64, vw, vh float64) float64 {
+	w, h := rect["width"], rect["height"]
+	if !(w > 0) || !(h > 0) {
+		return 0
+	}
+	visibleW := math.Max(0, math.Min(rect["x"]+w, vw)-math.Max(rect["x"], 0))
+	visibleH := math.Max(0, math.Min(rect["y"]+h, vh)-math.Max(rect["y"], 0))
+	return visibleW * visibleH / (w * h)
 }
 
 // ScrollIntoView executes scrollIntoView on element
@@ -1106,11 +1113,53 @@ func (c *Client) ScrollTouch(selector string, track bool) ([][]float64, string, 
 	if err != nil {
 		return nil, "", err
 	}
-	center, err := c.GetElementCenter(selector, "")
+	rect, err := c.GetElementCenter(selector, "")
 	if err != nil {
 		return nil, "", err
 	}
-	centerY := center["centerY"]
+	points, err := scrollGestureFor(rect["centerY"], vpWidth, vpHeight, rect["width"], rect["height"])
+	if err != nil {
+		return nil, "", err
+	}
+
+	// 分 3 次发送 touch 事件
+	// 1. touchStart + 1 point
+	if err := c.DispatchTouchEvent("touchStart", []TouchPoint{DefaultTouchPoint(points[0][0], points[0][1])}); err != nil {
+		return nil, "", fmt.Errorf("touchStart failed: %w", err)
+	}
+	// 2. touchMove - each point as a separate event (sequential, not multi-touch)
+	for i := 1; i < len(points)-1; i++ {
+		if err := c.DispatchTouchEvent("touchMove", []TouchPoint{DefaultTouchPoint(points[i][0], points[i][1])}); err != nil {
+			return nil, "", fmt.Errorf("touchMove failed: %w", err)
+		}
+		time.Sleep(time.Duration(8+mathrand.Intn(8)) * time.Millisecond)
+	}
+	// 3. touchEnd + 1 point
+	if err := c.DispatchTouchEvent("touchEnd", []TouchPoint{DefaultTouchPoint(points[len(points)-1][0], points[len(points)-1][1])}); err != nil {
+		return nil, "", fmt.Errorf("touchEnd failed: %w", err)
+	}
+
+	// 触摸结束后重置状态，防止页面锁定触摸
+	c.DispatchTouchEvent("touchCancel", []TouchPoint{DefaultTouchPoint(points[len(points)-1][0], points[len(points)-1][1])})
+
+	// 生成随机颜色
+	color := fmt.Sprintf("hsl(%d, 70%%, 50%%)", int(mathrand.Float64()*360))
+
+	return points, color, nil
+}
+
+// scrollGestureFor 算出一次拟人滑动的手势点（15 个贝塞尔采样）。
+//
+// ⚠️ 宽度或高度为 0 时**返回错误，不猜方向**（2026-09-29 afrotech 任务 26238922 实测）：
+// 那个隐藏重复件的 centerY 恰是 0，老判据 centerY < vh/2 ⇒ 每一轮都判成「在视口
+// 上方」⇒ 每轮手势把页面往**远处**拖 ⇒ 20 轮结构上不可能收敛（实测 cdp scroll
+// 46.9 秒，scrollY 从 17348 被拖到 8041）。一个没有盒子的东西没有可信的中心，
+// 方向只能拒 —— 拒了会一路响到调用方，猜了则是静默地把页面拖反。
+func scrollGestureFor(centerY, vpWidth, vpHeight, width, height float64) ([][]float64, error) {
+	if !(width > 0) || !(height > 0) {
+		return nil, fmt.Errorf("element has no visible box (%g×%g): refusing to guess the scroll "+
+			"direction from a centerY of %g (afrotech 那个 0×0 隐藏重复件的形状)", width, height, centerY)
+	}
 
 	// 计算滑动方向：元素在视口中心上方则下滑，否则上滑
 	isAbove := centerY < vpHeight/2
@@ -1149,32 +1198,7 @@ func (c *Client) ScrollTouch(selector string, track bool) ([][]float64, string, 
 	p1 := []float64{p1X, p1Y}
 	p2 := []float64{stopX, stopY}
 
-	points := sampleBezier(p0, p1, p2, 15)
-
-	// 分 3 次发送 touch 事件
-	// 1. touchStart + 1 point
-	if err := c.DispatchTouchEvent("touchStart", []TouchPoint{DefaultTouchPoint(points[0][0], points[0][1])}); err != nil {
-		return nil, "", fmt.Errorf("touchStart failed: %w", err)
-	}
-	// 2. touchMove - each point as a separate event (sequential, not multi-touch)
-	for i := 1; i < len(points)-1; i++ {
-		if err := c.DispatchTouchEvent("touchMove", []TouchPoint{DefaultTouchPoint(points[i][0], points[i][1])}); err != nil {
-			return nil, "", fmt.Errorf("touchMove failed: %w", err)
-		}
-		time.Sleep(time.Duration(8+mathrand.Intn(8)) * time.Millisecond)
-	}
-	// 3. touchEnd + 1 point
-	if err := c.DispatchTouchEvent("touchEnd", []TouchPoint{DefaultTouchPoint(points[len(points)-1][0], points[len(points)-1][1])}); err != nil {
-		return nil, "", fmt.Errorf("touchEnd failed: %w", err)
-	}
-
-	// 触摸结束后重置状态，防止页面锁定触摸
-	c.DispatchTouchEvent("touchCancel", []TouchPoint{DefaultTouchPoint(points[len(points)-1][0], points[len(points)-1][1])})
-
-	// 生成随机颜色
-	color := fmt.Sprintf("hsl(%d, 70%%, 50%%)", int(mathrand.Float64()*360))
-
-	return points, color, nil
+	return sampleBezier(p0, p1, p2, 15), nil
 }
 
 // DispatchMouseScrollEventAt dispatches mouse scroll event at (x, y) via CDP
@@ -1745,44 +1769,142 @@ func (c *Client) ScrollMouseWheel(selector string) error {
 }
 
 // ScrollToElement scrolls the element into viewport using human-like gestures.
-// Performs up to 20 iterations of touch/mouse scrolling until element is visible.
+//
+// 为什么要按距离分流（2026-09-29 afrotech 任务 26238706 真站实测）：那个页脚
+// 订阅框在**文档第 21 屏**，而老循环一轮大约只走一屏、上限固定 20 轮 ——
+// 刚好差一点，25–40 秒撞上调用方 30 秒超时 ⇒ 整单挂。所以：远的（>2 屏）先
+// 一次精确 scrollIntoView（毫秒级）把距离抹掉，再补一两轮拟人滑动「抹平」；
+// 近的维持拟人循环，但轮数跟距离走、并给总时长上限。最后那一下精确滚动也补上
+// （原来只有 20 轮跑满才轮到它）。
+//
+// ⚠️ 量不到盒子（0×0 的隐藏重复件）时**当场拒**，不许猜方向滚 —— 那是同一天
+// 另一张单（afrotech 26238922：那个隐藏件让每一轮手势朝反方向拖）。
 func (c *Client) ScrollToElement(selector string, track bool) error {
 	isTouch, err := c.IsTouchDevice()
 	if err != nil {
 		return fmt.Errorf("failed to detect device type: %w", err)
 	}
 
-	for i := 0; i < 20; i++ {
+	screens, hasBox, known := c.scrollScreensAway(selector)
+	if known && !hasBox {
+		return fmt.Errorf("scroll %q: 元素没有可见盒子（0×0，极可能是同名隐藏重复件）—— "+
+			"拒绝滚它：一个没有盒子的东西永远滚不进视口，方向也量不出来", selector)
+	}
+	if known && screens > scrollPreciseScreens {
+		if err := c.ScrollIntoView(selector, ""); err != nil {
+			return fmt.Errorf("scrollIntoView failed: %w", err)
+		}
+		for range 2 {
+			if err := c.scrollOneGesture(selector, track, isTouch); err != nil {
+				return err
+			}
+			if visible, err := c.IsElementVisible(selector); err == nil && visible {
+				return nil
+			}
+		}
+		return nil
+	}
+
+	rounds := 20
+	if known {
+		rounds = scrollRoundsForScreens(screens)
+	}
+	deadline := time.Now().Add(scrollBudget)
+	for i := range rounds {
 		if i > 0 {
 			delay := time.Duration(200+mathrand.Intn(400)) * time.Millisecond
 			time.Sleep(delay)
 		}
-
-		if isTouch {
-			points, color, err := c.ScrollTouch(selector, track)
-			if err != nil {
-				return fmt.Errorf("scroll touch failed: %w", err)
-			}
-			if track && len(points) > 0 {
-				if err := c.RenderTrack(points, color); err != nil {
-					return fmt.Errorf("render track failed: %w", err)
-				}
-			}
-		} else {
-			if err := c.ScrollMouseWheel(selector); err != nil {
-				return fmt.Errorf("scroll mouse wheel failed: %w", err)
-			}
+		if err := c.scrollOneGesture(selector, track, isTouch); err != nil {
+			return err
 		}
-
 		visible, err := c.IsElementVisible(selector)
 		if err != nil {
 			return fmt.Errorf("failed to check visibility: %w", err)
 		}
 		if visible {
+			return nil
+		}
+		if time.Now().After(deadline) {
 			break
 		}
 	}
+	// 拟人轮次够不着时，用精确那一下收尾（老实现里它排在 20 轮之后）。
+	return c.ScrollIntoView(selector, "")
+}
+
+// scrollBudget 是拟人滚动一条命令的总时长上限：超了就落到精确那一下，
+// 而不是继续磨（磨下去只会撞调用方的超时）。
+const scrollBudget = 8 * time.Second
+
+// scrollPreciseScreens 是「远到不值得拟人磨」的门槛：超过这么多屏就直接精确
+// scrollIntoView。2 屏以内维持拟人循环（那点距离磨得起，也更像人）。
+const scrollPreciseScreens = 2
+
+// scrollRoundsForScreens 是拟人循环的轮数：跟距离走（一轮大约一屏），不再固定 20。
+// 2026-09-29 afrotech 26238706 就是固定 20 轮刚好差一点（第 21 屏）而撞超时的。
+func scrollRoundsForScreens(screens float64) int {
+	rounds := int(math.Ceil(screens)) + 2
+	if rounds < 4 {
+		rounds = 4
+	}
+	if rounds > 20 {
+		rounds = 20
+	}
+	return rounds
+}
+
+// scrollOneGesture 走一轮拟人滚动（触摸设备用贝塞尔滑动，其余用滚轮）。
+func (c *Client) scrollOneGesture(selector string, track, isTouch bool) error {
+	if isTouch {
+		points, color, err := c.ScrollTouch(selector, track)
+		if err != nil {
+			return fmt.Errorf("scroll touch failed: %w", err)
+		}
+		if track && len(points) > 0 {
+			if err := c.RenderTrack(points, color); err != nil {
+				return fmt.Errorf("render track failed: %w", err)
+			}
+		}
+		return nil
+	}
+	if err := c.ScrollMouseWheel(selector); err != nil {
+		return fmt.Errorf("scroll mouse wheel failed: %w", err)
+	}
 	return nil
+}
+
+// scrollProbeJS 一次求值量出「元素有没有盒子 / 离视口中心几屏」。用 __cdpQ
+// （可见优先）—— 与坐标、点击同一套解析，免得算距离的和真正点的那一下分家。
+func scrollProbeJS(selector string) string {
+	return withPierce(fmt.Sprintf(`(function(){
+		var el = __cdpQ('%s');
+		if (!el) return JSON.stringify({found: false});
+		var r = el.getBoundingClientRect();
+		if (!(r.width > 0) || !(r.height > 0)) return JSON.stringify({found: true, hasBox: false});
+		var vh = window.innerHeight || 0;
+		var cy = r.y + r.height / 2;
+		return JSON.stringify({found: true, hasBox: true, screens: vh > 0 ? Math.abs(cy - vh/2)/vh : 0});
+	})()`, escapeJS(selector)))
+}
+
+// scrollScreensAway 量「元素离视口中心几屏」。known=false = 这次量不出来
+// （元素不在 / 求值失败）—— 调用方**按老行为走**，不许把「读不到」当成
+// 「0 屏」或「很远」（那会让一次抖动变成一次静默的行为改变）。
+func (c *Client) scrollScreensAway(selector string) (screens float64, hasBox, known bool) {
+	var out string
+	if err := c.EvalInFrame("", scrollProbeJS(selector), &out); err != nil {
+		return 0, false, false
+	}
+	var res struct {
+		Found   bool    `json:"found"`
+		HasBox  bool    `json:"hasBox"`
+		Screens float64 `json:"screens"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil || !res.Found {
+		return 0, false, false
+	}
+	return res.Screens, res.HasBox, true
 }
 
 // ClickElement 拟人点击一个元素（**宽松**：老行为，一个字节都不改）。
@@ -1864,65 +1986,13 @@ func (c *Client) clickAndReport(selector, frameID string, track bool, strict boo
 		}
 	}
 
-	// Calculate click coordinates
-	var clickX, clickY, elemWidth, elemHeight float64
-	var elemLeft, elemTop float64
-	if frameID != "" {
-		// Get iframe position in main frame
-		iframeRect, err := c.GetElementCenter(scrollSelector, "")
-		if err != nil {
-			return nil, fmt.Errorf("failed to get iframe position: %w", err)
-		}
-		// Get element position within iframe
-		elemRect, err := c.GetElementCenter(selector, frameID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get element position: %w", err)
-		}
-		clickX = iframeRect["x"] + elemRect["centerX"]
-		clickY = iframeRect["y"] + elemRect["centerY"]
-		elemWidth = elemRect["width"]
-		elemHeight = elemRect["height"]
-		elemLeft = iframeRect["x"] + elemRect["x"]
-		elemTop = iframeRect["y"] + elemRect["y"]
-	} else {
-		rect, err := c.GetElementCenter(selector, "")
-		if err != nil {
-			return nil, fmt.Errorf("failed to get element position: %w", err)
-		}
-		clickX = rect["centerX"]
-		clickY = rect["centerY"]
-		elemWidth = rect["width"]
-		elemHeight = rect["height"]
-		elemLeft = rect["x"]
-		elemTop = rect["y"]
-	}
-
-	// Apply Gaussian offset, then clamp to stay within element bounds.
-	// Small buttons can be missed entirely by the offset (e.g. a 35px-tall
-	// button with sigma=8.8 can get +20px dy, landing outside the element).
-	sigma := math.Min(elemWidth, elemHeight) / 4
-	dx, dy := GaussianOffset(sigma)
-	clickX += dx
-	clickY += dy
-
-	// Clamp: keep 1px margin from edges to avoid border/rounding issues.
-	if clickX < elemLeft+1 {
-		clickX = elemLeft + 1
-	}
-	if clickX > elemLeft+elemWidth-1 {
-		clickX = elemLeft + elemWidth - 1
-	}
-	if clickY < elemTop+1 {
-		clickY = elemTop + 1
-	}
-	if clickY > elemTop+elemHeight-1 {
-		clickY = elemTop + elemHeight - 1
-	}
-
-	// Reject hidden elements (display:none or 0×0). Clicking them wastes time
-	// and the hit-test lands at (0,0), triggering nothing useful.
-	if elemWidth == 0 || elemHeight == 0 {
-		return nil, fmt.Errorf("element %q is not visible (size 0×0)", selector)
+	// 算落点 + 过「动手之前的落点判据」（在 form.go 的 calcClickPoint 上 ——
+	// 与 form / check / select 走同一条路）。老实现这里是第二份「中心 + 高斯 + clamp」，
+	// 两份判据必然漂移；而且原来那一份**不问**这一点上画的是不是目标，
+	// 于是「点到弹层/隐藏件上」在回执里与一次正常点击长得一模一样。
+	pt, err := c.calcClickPoint(selector, scrollSelector, frameID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Always use mouse click - CDP dispatchTouchEvent does not synthesize
@@ -1932,7 +2002,7 @@ func (c *Client) clickAndReport(selector, frameID string, track bool, strict boo
 	// ⚠️ 走 dispatchMouseClick（不是 DispatchMouseClick）：这里要拿到「抬起交没交给
 	// 新落点」那份事实，填进回执。少了它，「这次点击只发出了按下的那一半」在回执里
 	// 一个字都没有 —— 而那正是本项目最贵的一类失败（看起来成功了）。
-	outcome, err := c.dispatchMouseClick(clickX, clickY)
+	outcome, err := c.dispatchMouseClick(pt.X, pt.Y)
 	if err != nil {
 		return nil, fmt.Errorf("click failed: %w", err)
 	}
@@ -1940,12 +2010,29 @@ func (c *Client) clickAndReport(selector, frameID string, track bool, strict boo
 	if outcome.ReleaseWithheld {
 		result.CoveredBy = outcome.LandedAfter
 	}
-	result.LandingBlind = outcome.Blind
-	result.LandingNote = outcome.Note
+	result.LandingBlind = outcome.Blind || pt.GuardBlind
+	// 动手前判不了那一句也要进回执：它说的是「这一击没有那层保护」，
+	// 与按下之后判据说的话是两件事，两句都要留。
+	result.LandingNote = joinNotes(pt.GuardNote, outcome.Note)
 
-	result.X = clickX
-	result.Y = clickY
+	result.X = pt.X
+	result.Y = pt.Y
 	return result, nil
+}
+
+// joinNotes 把「动手前」与「按下之后」两句落点判据的话拼成一句（空的不算）。
+func joinNotes(notes ...string) string {
+	var b strings.Builder
+	for _, n := range notes {
+		if n == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("；")
+		}
+		b.WriteString(n)
+	}
+	return b.String()
 }
 
 // GaussianOffset returns random (dx, dy) offsets using Box-Muller transform.

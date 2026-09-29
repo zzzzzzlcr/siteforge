@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	mathrand "math/rand"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -83,7 +84,12 @@ func isDatePickerJS(selector string) string {
 
 		// Step 0: resolve to input element
 		var input = el;
-		if (el.tagName !== 'INPUT') {
+		// ⚠️ <textarea> **不是** wrapper（2026-09-28 georgiapower 真站实测）：
+		// 只要目标不是 <input> 就进去找 input，而 textarea 里没有 input ⇒
+		// 报 no input found in wrapper、连填值的路都没走到（两个不同选择器的
+		// *Street 字段报的是同一个错）。排掉之后 textarea 的 type 不是 'tel'，
+		// 自然 isDatePicker:false，走 plain flow。纯扩展：改前那一支必然报错 ⇒ 零回归。
+		if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') {
 			input = __cdpQIn(el, 'input[type="tel"]') || __cdpQIn(el, 'input');
 		}
 		if (!input) return JSON.stringify({error: 'no input found in wrapper'});
@@ -101,6 +107,9 @@ func isDatePickerJS(selector string) string {
 
 		var r = btn.getBoundingClientRect();
 		if (r.width === 0 || r.height === 0) return JSON.stringify({'isDatePicker': false});
+		// 动手前先问落点：日历按钮的中心压着别的东西就拒点（同 docs/交接-2026-09-29 §3）。
+		var g = __cdpReachesAt(btn, r.x+r.width/2, r.y+r.height/2);
+		if (!g.reach) return JSON.stringify({error: '日历按钮的中心压着别的东西（' + (g.at || '?') + '）—— 点它会落到那上面，拒绝'});
 
 		// Return unique selector for the input for later use
 		var inputId = input.id ? ('#' + input.id) : '';
@@ -175,7 +184,7 @@ func navigateCalendarMonthJS(targetMonth, targetYear int) string {
 // patterns (calendar-day, MuiPickersDay-root, ant-picker-cell). Filters
 // out empty/disabled cells.
 func pickCalendarDayJS(targetDay int) string {
-	return fmt.Sprintf(`(function(){
+	return withPierce(fmt.Sprintf(`(function(){
 		var targetDay = %d;
 		var popup = document.querySelector('.calendar-popup._open_') || document.querySelector('[role="dialog"]');
 		if (!popup) return JSON.stringify({error: 'calendar popup not found'});
@@ -193,11 +202,14 @@ func pickCalendarDayJS(targetDay int) string {
 			if (text === String(targetDay)) {
 				var r = cell.getBoundingClientRect();
 				if (r.width === 0 || r.height === 0) continue;
+				// 动手前先问落点：格子中心压着别的东西就拒点（同 docs/交接-2026-09-29 §3）。
+				var g = __cdpReachesAt(cell, r.x+r.width/2, r.y+r.height/2);
+				if (!g.reach) return JSON.stringify({error: 'day cell is covered by ' + (g.at||'?') + ' — 点它会落到那上面，拒绝'});
 				return JSON.stringify({found: true, centerX: r.x+r.width/2, centerY: r.y+r.height/2, width: r.width, height: r.height});
 			}
 		}
 		return JSON.stringify({error: 'day ' + targetDay + ' not found in calendar'});
-	})()`, targetDay)
+	})()`, targetDay))
 }
 
 // buildClearJS generates JS to focus an element and clear its value.
@@ -291,6 +303,9 @@ func findControlJS(wrapperSelector string) string {
 		if (!control) control = wrapper;
 		var r = control.getBoundingClientRect();
 		if (r.width === 0 || r.height === 0) return JSON.stringify({error: 'no clickable control found'});
+		// 动手前先问落点（docs/交接-2026-09-29 §3）：控件中心压着别的东西就拒点。
+		var g = __cdpReachesAt(control, r.x+r.width/2, r.y+r.height/2);
+		if (!g.reach) return JSON.stringify({error: 'dropdown control is covered by ' + (g.at||'?') + ' — 点它会落到那上面，拒绝'});
 		return JSON.stringify({found: true, x: r.x, y: r.y, centerX: r.x+r.width/2, centerY: r.y+r.height/2, width: r.width, height: r.height});
 	})()`, escaped))
 }
@@ -326,14 +341,17 @@ func findCustomOptionJS(wrapperSelector, optionText string) string {
 				var r = el.getBoundingClientRect();
 				if (r.width === 0 || r.height === 0) continue;
 				var text = (el.textContent || '').trim();
-				if (text === '%s') return {r: r, text: text};
-				if (fallback === null && text.indexOf('%s') !== -1) fallback = {r: r, text: text};
+				if (text === '%s') return {r: r, text: text, el: el};
+				if (fallback === null && text.indexOf('%s') !== -1) fallback = {r: r, text: text, el: el};
 			}
 			return fallback;
 		}
 		function hit(h) {
 			if (h === null) return null;
 			var r = h.r;
+			// 动手前先问落点：选项中心压着别的东西就拒点（同 docs/交接-2026-09-29 §3）。
+			var g = __cdpReachesAt(h.el, r.x+r.width/2, r.y+r.height/2);
+			if (!g.reach) return JSON.stringify({error: 'option is covered by ' + (g.at||'?') + ' — 点它会落到那上面，拒绝'});
 			return JSON.stringify({found: true, text: h.text, x: r.x, y: r.y, centerX: r.x+r.width/2, centerY: r.y+r.height/2, width: r.width, height: r.height});
 		}
 
@@ -527,56 +545,333 @@ func (c *Client) CheckElement(selector string, checked bool, frameID string, tra
 		return fmt.Errorf("position not stable: %w", err)
 	}
 
-	var stateResultStr string
-	if err := c.EvalInFrame(frameID, buildCheckStateJS(selector), &stateResultStr); err != nil {
+	state, err := c.readCheckedState(selector, frameID)
+	if err != nil {
 		return err
 	}
-	var stateResult map[string]interface{}
-	if err := json.Unmarshal([]byte(stateResultStr), &stateResult); err != nil {
-		return fmt.Errorf("failed to parse check state result: %w", err)
-	}
-	if errMsg, ok := stateResult["error"]; ok {
-		return fmt.Errorf("%v", errMsg)
-	}
-
-	isChecked, _ := stateResult["checked"].(bool)
-	if isChecked == checked {
+	// Already in the requested state: nothing to click. This early exit is not
+	// the "fake success" case below — there was no click to verify.
+	// An element with no `checked` property reads as unchecked, exactly as the
+	// old type assertion did, so `--check false` on a <div role=checkbox> stays
+	// a no-op instead of starting to fire clicks it never used to fire.
+	if state.checked == checked {
 		return nil
 	}
 
-	clickX, clickY, err := c.calcClickCoords(selector, scrollSelector, frameID)
+	pt, err := c.calcClickPoint(selector, scrollSelector, frameID)
 	if err != nil {
 		return err
 	}
-	return c.DispatchMouseClick(clickX, clickY)
+	if err := c.DispatchMouseClick(pt.X, pt.Y); err != nil {
+		return err
+	}
+
+	// A dispatched click is not the same thing as a click that took: the point
+	// can land on a neighbour (a link sitting inside the same label) and the
+	// command would still exit 0 — the caller reads that as "ok". So read the
+	// state back and fail loudly when the wanted state did not arrive.
+	//
+	// A state that never becomes readable is *not* a failure: widgets that are
+	// not really checkboxes (a <div role=checkbox>) have no `checked` property,
+	// and those sites relied on the old "clicked and hoped" behaviour. Only a
+	// state we can read and that stayed wrong is reported as a failure.
+	if !state.known {
+		return nil
+	}
+	deadline := time.Now().Add(checkVerifyTimeout)
+	for {
+		now, err := c.readCheckedState(selector, frameID)
+		if err != nil {
+			return err
+		}
+		if !now.known || now.checked == checked {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%q did not become checked=%v after the click (still checked=%v %s after it): the click landed but the element did not follow",
+				selector, checked, now.checked, checkVerifyTimeout)
+		}
+		time.Sleep(checkVerifyEvery)
+	}
 }
 
-// calcClickCoords returns click coordinates for an element center with Gaussian offset.
-// Handles iframe coordinate translation.
-func (c *Client) calcClickCoords(selector, scrollSelector, frameID string) (float64, float64, error) {
+// How long to wait for a click to show up in the element's `checked` property,
+// and how often to look. The click is dispatched into the page and the state
+// change is what we are really waiting on: native checkboxes flip synchronously,
+// framework handlers (React/MUI) land a tick or a re-render later. The wait only
+// happens on the failing path — a click that took returns on the first read.
+const (
+	checkVerifyTimeout = 3 * time.Second
+	checkVerifyEvery   = 150 * time.Millisecond
+)
+
+// checkState is a readback of an element's `checked` property.
+// known=false means the element has no such property at all.
+type checkState struct {
+	checked bool
+	known   bool
+}
+
+// readCheckedState reads the element's current `checked` property.
+func (c *Client) readCheckedState(selector, frameID string) (checkState, error) {
+	var stateResultStr string
+	if err := c.EvalInFrame(frameID, buildCheckStateJS(selector), &stateResultStr); err != nil {
+		return checkState{}, err
+	}
+	var stateResult map[string]interface{}
+	if err := json.Unmarshal([]byte(stateResultStr), &stateResult); err != nil {
+		return checkState{}, fmt.Errorf("failed to parse check state result: %w", err)
+	}
+	if errMsg, ok := stateResult["error"]; ok {
+		return checkState{}, fmt.Errorf("%v", errMsg)
+	}
+	// buildCheckStateJS returns {checked: el.checked}; JSON.stringify drops the
+	// key when the property is undefined, so an absent key means "not a checkbox".
+	raw, present := stateResult["checked"]
+	if !present {
+		return checkState{}, nil
+	}
+	isChecked, _ := raw.(bool)
+	return checkState{checked: isChecked, known: true}, nil
+}
+
+// landedPoint 是算好的一击落点，外加「动手之前」落点判据的结论。
+type landedPoint struct {
+	X, Y float64
+	// GuardBlind/GuardNote：判据**没能跑成**时说出来的那一句（按老行为放行，
+	// 但必须能听见 —— 「判不了」与「判成不是它」是两件事）。
+	GuardBlind bool
+	GuardNote  string
+}
+
+// calcClickPoint 算落点并过「动手之前的落点判据」（docs/交接-2026-09-29 八条 §3/§7：
+// 这一下按下去，那个坐标上画的到底是不是我要点的东西）。落点是人类的画法：
+// 元素中心 + 高斯偏移，再逐点问页面「这一点会落到谁身上」（见 buildReachProbeJS）。
+// 处理 iframe 坐标平移。
+//
+// 为什么页面有发言权（2026-09-20 warthunder 真站实测）：EULA 勾选框的中心正压在
+// 同一个 <label> 里的 Terms of Service 链接上，一次中心点击点开了 ToS 页、勾选框
+// 纹丝不动；1920px 宽下 9 个采样宽度有 7 个中心落在链接上。光靠 clamp 治不了
+// （中心本身就在链接上），所以落点还要命中测试。
+//
+// 判据**跑成**而这一点上不是目标（自己/后代/包着它的 label）⇒ 返回拒绝错误：
+// 拒点发生在一个鼠标事件发出**之前**，页面上不留痕迹。
+// 判据**跑不了**（跨站子帧取不到点 / 求值失败）⇒ 按老行为给出候选点、GuardBlind
+// 记下这件事（调用方印出去）—— 判不了不额外拿走一次点击，判成了才是拒。
+func (c *Client) calcClickPoint(selector, scrollSelector, frameID string) (landedPoint, error) {
+	var left, top, width, height, centerX, centerY float64
+	// The click is dispatched in main-frame coordinates, but the hit-test runs
+	// inside the frame the element lives in, so candidates stay frame-local and
+	// only the chosen point is translated.
+	var offsetX, offsetY float64
+
 	if frameID != "" {
 		iframeRect, err := c.GetElementCenter(scrollSelector, "")
 		if err != nil {
-			return 0, 0, fmt.Errorf("failed to get iframe position: %w", err)
+			return landedPoint{}, fmt.Errorf("failed to get iframe position: %w", err)
 		}
 		elemRect, err := c.GetElementCenter(selector, frameID)
 		if err != nil {
-			return 0, 0, fmt.Errorf("failed to get element position: %w", err)
+			return landedPoint{}, fmt.Errorf("failed to get element position: %w", err)
 		}
-		clickX := iframeRect["x"] + elemRect["centerX"]
-		clickY := iframeRect["y"] + elemRect["centerY"]
-		sigma := math.Min(elemRect["width"], elemRect["height"]) / 4
-		dx, dy := GaussianOffset(sigma)
-		return clickX + dx, clickY + dy, nil
+		offsetX, offsetY = iframeRect["x"], iframeRect["y"]
+		left, top = elemRect["x"], elemRect["y"]
+		width, height = elemRect["width"], elemRect["height"]
+		centerX, centerY = elemRect["centerX"], elemRect["centerY"]
+	} else {
+		rect, err := c.GetElementCenter(selector, "")
+		if err != nil {
+			return landedPoint{}, fmt.Errorf("failed to get element position: %w", err)
+		}
+		left, top = rect["x"], rect["y"]
+		width, height = rect["width"], rect["height"]
+		centerX, centerY = rect["centerX"], rect["centerY"]
 	}
 
-	rect, err := c.GetElementCenter(selector, "")
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to get element position: %w", err)
+	// 0×0：没有盒子就点不到 —— 明说，不许落进「高斯偏移 + clamp 编出一个坐标」
+	// 再点出去（afrotech 26238922 的最坏一档：点 (0,0) 还报一切正常 = 假成功）。
+	if !(width > 0) || !(height > 0) {
+		return landedPoint{}, fmt.Errorf("拒绝点击 %q：它没有可见盒子（%g×%g）—— "+
+			"极可能是同名隐藏重复件（文档序第一个匹配）。点它会落在页面左上角而回执一切正常（假成功）",
+			selector, width, height)
 	}
-	sigma := math.Min(rect["width"], rect["height"]) / 4
-	dx, dy := GaussianOffset(sigma)
-	return rect["centerX"] + dx, rect["centerY"] + dy, nil
+
+	candidates := clickCandidates(centerX, centerY, left, top, width, height)
+	i, at, blind := c.firstReachingPoint(candidates, selector, frameID)
+	if blind {
+		note := fmt.Sprintf("动手前的落点判据没跑成（%s）—— 按老行为把这一击发出去，"+
+			"但这一次没有「先确认那个坐标上是不是目标」这层保护", at)
+		c.landingDiags = append(c.landingDiags, Diagnostic{
+			Kind:      DiagKindLandingBlind,
+			Detail:    note,
+			FramePath: framePathFor(frameID),
+		})
+		return landedPoint{X: candidates[0][0] + offsetX, Y: candidates[0][1] + offsetY,
+			GuardBlind: true, GuardNote: note}, nil
+	}
+	if i < 0 {
+		return landedPoint{}, landedElsewhereError(selector, at)
+	}
+	return landedPoint{X: candidates[i][0] + offsetX, Y: candidates[i][1] + offsetY}, nil
+}
+
+// landedElsewhereError 是「动手之前」判据说「这一点上不是目标」时的拒点理由
+// （纯函数，脱开浏览器就能单测）。
+func landedElsewhereError(selector, at string) error {
+	if at == "" {
+		at = "那个坐标上取不到节点"
+	}
+	return fmt.Errorf("拒绝点击 %q：它中心的整摞里没有它 —— 那一点上站着的是 %s。"+
+		"这一下按下去会落到**别的东西**身上（本项目最贵的一类失败：看起来成功了，实际点的是别人）。"+
+		"检查是不是有浮层盖着它，或把选择器改准", selector, at)
+}
+
+// clickJitterTries is how many human-like draws are offered to the page before
+// the deterministic fallback grid is consulted.
+const clickJitterTries = 5
+
+// clickCandidates returns the points to try, in order of preference:
+//
+//  1. human-like draws: element centre + Gaussian offset (sigma stays
+//     min(w,h)/4 — the jitter is the design, humans do not hit dead centre),
+//     each clamped back inside the element so a draw can never land outside it;
+//  2. a grid across the element's interior, nearest-to-centre first — the
+//     fallback for when a draw would land on something that is not the element
+//     (see firstReachingPoint). Element too small for a grid is fine: the grid
+//     points collapse onto the clamped centre.
+func clickCandidates(centerX, centerY, left, top, width, height float64) [][2]float64 {
+	margin := clickEdgeMargin(width, height)
+	sigma := math.Min(width, height) / 4
+
+	pts := make([][2]float64, 0, clickJitterTries+15)
+	for i := 0; i < clickJitterTries; i++ {
+		dx, dy := GaussianOffset(sigma)
+		x, y := clampPointToRect(centerX+dx, centerY+dy, left, top, width, height, margin)
+		pts = append(pts, [2]float64{x, y})
+	}
+
+	grid := make([][2]float64, 0, 15)
+	for _, fx := range []float64{0, 0.25, 0.5, 0.75, 1} {
+		for _, fy := range []float64{0, 0.5, 1} {
+			x, y := clampPointToRect(left+width*fx, top+height*fy, left, top, width, height, margin)
+			grid = append(grid, [2]float64{x, y})
+		}
+	}
+	sort.SliceStable(grid, func(i, j int) bool {
+		return dist2(grid[i], centerX, centerY) < dist2(grid[j], centerX, centerY)
+	})
+	return append(pts, grid...)
+}
+
+func dist2(p [2]float64, x, y float64) float64 {
+	dx, dy := p[0]-x, p[1]-y
+	return dx*dx + dy*dy
+}
+
+// clickEdgeMargin is how far inside the element's edges a click is kept.
+// 2px covers borders and sub-pixel rounding. On tiny elements (a 12px custom
+// checkbox) 2px would eat a third of the box, so the margin scales down to a
+// third of the shorter side — which also keeps the clamped interval non-empty
+// for any element with a non-zero side.
+func clickEdgeMargin(width, height float64) float64 {
+	return math.Min(2, math.Min(width, height)/3)
+}
+
+// clampPointToRect pulls a point back inside the rect, keeping `margin` from
+// every edge.
+func clampPointToRect(x, y, left, top, width, height, margin float64) (float64, float64) {
+	minX, maxX := left+margin, left+width-margin
+	minY, maxY := top+margin, top+height-margin
+	if minX > maxX {
+		minX, maxX = left+width/2, left+width/2
+	}
+	if minY > maxY {
+		minY, maxY = top+height/2, top+height/2
+	}
+	if x < minX {
+		x = minX
+	}
+	if x > maxX {
+		x = maxX
+	}
+	if y < minY {
+		y = minY
+	}
+	if y > maxY {
+		y = maxY
+	}
+	return x, y
+}
+
+// firstReachingPoint asks the page which candidate point a click would actually
+// deliver to the element. Returns (index, at, blind):
+//
+//   - index >= 0：那个候选点会落到目标身上；
+//   - index == -1、blind == false：判据**跑了**，没有一个点落得到目标身上
+//     （at 是那一点上实际站着谁）；
+//   - blind == true：判据**没跑成**（求值失败 / 解不开），at 是原因 —— 调用方
+//     按老行为走，但必须把这件事说出来。
+func (c *Client) firstReachingPoint(candidates [][2]float64, selector, frameID string) (int, string, bool) {
+	if len(candidates) == 0 {
+		return -1, "没有候选点", false
+	}
+	var out string
+	if err := c.EvalInFrame(frameID, buildReachProbeJS(selector, candidates), &out); err != nil {
+		return -1, "求值失败: " + firstRunes(err.Error(), 120), true
+	}
+	var res struct {
+		Reach []int  `json:"reach"`
+		At    string `json:"at"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		return -1, "结果解不开: " + firstRunes(out, 120), true
+	}
+	if res.Error != "" {
+		return -1, res.Error, true
+	}
+	for i, r := range res.Reach {
+		if r == 1 && i < len(candidates) {
+			return i, "", false
+		}
+	}
+	return -1, res.At, false
+}
+
+// buildReachProbeJS generates JS that hit-tests each candidate point and reports
+// which of them would reach the element if clicked, plus — for the ones that do
+// not — who is actually painted there.
+//
+// 判据本体在内核助手 __cdpReachesAt（shadow.go），与 click / 各个 form 动作用的是
+// **同一份**语义：自己 / 后代 / 包着它的 <label>（label[for=el] 会把点击转发过去，
+// 大多数勾选框那一行就是这么做的），而且从命中点到 label 之间没有交互件吞点击
+// —— 最后这一条是关键：label 里的链接会把这一次点击吞掉（浏览器遇到交互件的
+// 点击不做 label 激活行为），所以落在链接上的点**到不了**勾选框。
+// 命中走整摞并跳过 pointer-events:none 的透明层（2026-09-28 ukg 实测的那个空遮罩）。
+// 这份脚本只负责「把候选点喂进去、收答案」，不再自己实现一遍（两份必然漂移）。
+func buildReachProbeJS(selector string, points [][2]float64) string {
+	var pts strings.Builder
+	pts.WriteString("[")
+	for i, p := range points {
+		if i > 0 {
+			pts.WriteString(",")
+		}
+		fmt.Fprintf(&pts, "[%g,%g]", p[0], p[1])
+	}
+	pts.WriteString("]")
+
+	return withPierce(fmt.Sprintf(`(function(){
+		var el = __cdpQ('%s');
+		if (!el) return JSON.stringify({error: 'element not found'});
+		var pts = %s;
+		var out = [], ats = [];
+		for (var i = 0; i < pts.length; i++) {
+			var g = __cdpReachesAt(el, pts[i][0], pts[i][1]);
+			out.push(g.reach ? 1 : 0);
+			if (!g.reach && g.at) ats.push(i + ':' + g.at);
+		}
+		return JSON.stringify({reach: out, at: ats.slice(0, 4).join(' | ')});
+	})()`, escapeJS(selector), pts.String()))
 }
 
 // SelectOption selects an option in a <select> element or a custom dropdown.
@@ -617,10 +912,11 @@ func (c *Client) SelectOption(selector, option, frameID string, track bool) erro
 
 	isSelect, _ := isSelectResult["isSelect"].(bool)
 	if isSelect {
-		// Native <select> flow
-		clickX, clickY, err := c.calcClickCoords(selector, scrollSelector, frameID)
-		if err == nil {
-			c.DispatchMouseClick(clickX, clickY)
+		// Native <select> flow：这一下鼠标点击只是「像人一样点一下」，值由
+		// buildSelectOptionJS 直接设，所以点击是 best-effort（老行为不改）；
+		// 但判据拒了/跑不成照样由 calcClickPoint 记进 landingDiags，不静默。
+		if pt, err := c.calcClickPoint(selector, scrollSelector, frameID); err == nil {
+			c.DispatchMouseClick(pt.X, pt.Y)
 		}
 
 		var selectResultStr string

@@ -34,7 +34,9 @@ go mod tidy                           # 整理依赖
 - `eval`: `--frame-id` (目标 frame)、`--file` (JS 文件路径)
 - `snapshot`: 无额外 flags
 - `click`: `[selector]` (位置参数) 或 `--selector`、`--frame-id`、`--track` (显示鼠标轨迹)、`--strict` (歧义选择器 / 禁用目标**当场失败**；默认 **false**，MCP 门默认走严格那一版)。每次点击在 **stderr** 上留一行「命中几个 / 点的第几个 / 禁没禁用」，stdout 仍是纯 JSON（回执多了 `match_count` / `match_index` / `target` / `target_disabled`）。**落点判据**：按下与抬起之间落点换了人（典型：mousedown 展开的下拉铺了 backdrop 上来）→ 这一次 `released` **不发**，回执里 `release_withheld` + `covered_by`；扣下要正向取证（原目标还在文档里 ∧ 新落点不是它的重建），**节点重建不是覆盖**；判据跑不了时（跨站子帧的 `<iframe>` 上命中栈不下钻 → 判据在那儿**恒不触发**）出 `landing_blind` + `landing_note`，判不了就按老行为走但**必须能听见**
+- **动手之前的落点守卫（2026-09-29，afrotech 26238922 / georgiapower）**：任何**坐标点击之前**先问「这一点上画的到底是不是目标（它自己 / 它的后代 / 包着它的 `label`）」—— 不是就**拒点**（非 0 退出，理由里带上「那一点上站着谁」）；判据**跑不了**（跨站子帧 / 求值失败）才按老行为放行、并把「判不了」记进 `landing_note`。判据是内核的 `__cdpReachesAt`（`shadow.go`，整摞命中、跳过 `pointer-events:none` 的空遮罩）—— `click` / `check` / `select` 的自定义下拉 / 日期选择器 / `form` 的每一次坐标点击都走它（原来在三处各写一遍、口径还不一致）。
 - `scroll`: `[selector]` (位置参数) 或 `--selector`、`--frame-id`、`--track` (显示鼠标轨迹)
+- **滚动按距离分流、没有盒子就拒（2026-09-29，afrotech 26238706 / 26238922）**：先量元素离视口几屏 —— **>2 屏**先来一次精确 `scrollIntoView`（毫秒级）再补 1–2 轮拟人滑动，否则维持拟人循环但**轮数跟距离走**、并给总时长上限（8 秒）；元素**没有可见盒子**（0×0 的隐藏重复件）**拒滚**并说清，不再用 `centerY` 猜方向（隐藏件 `centerY=0` 会让每一轮手势朝反方向拖、20 轮结构上不可能收敛）。解析一律**可见优先**（`shadow.go` 的 `__cdpQIn`：先挑可见的匹配，一个都没有才退回文档序第一个）。
 - `navi`: `[url]` (必填位置参数)、`--frame-id` (目标 frame，默认主 frame)
 - `form`: `[selector]` (位置参数) 或 `--selector`、`--value` / `--check` / `--select` (三选一)、`--frame-id`、`--track`。内部每一次点击都走同一条落点判据，判据说的话也印在 **stderr**（只有判据有话可说时才印 —— 扣下 / 判不了 / 判成重建）。**MCP 门**上 `form` 把同一批话放进**回执**（`landing_note` / `landing_blind` / `landing`）、`click` 走 `ClickResult` 的字段 —— 只在 CLI 上说不等于说了（agent 用的是门）。扣下的三条取证：原目标还在文档里 ∧ 覆盖者不在目标子树里（ancestry：parentNode 或 shadow host 那条链；⚠️ `<slot>` 分发没实现，是活洞）∧ 不是同一个东西的另一个节点。`cdp form` 的成功回执走 **stdout**（`{"ok":true,…}`，失败不印）—— 下游只看得到 stdout。诊断 kind 三选一：`landing-withheld`（扣下了）/ `landing-blind`（判不了）/ `landing-passed`（跑了但不扣），回执的 `landing_withheld` **只认第一个**
 - `observe`: `--json` (默认 true；`--json=false` 出人话摘要)、`--frame-id` (只观察指定帧 —— 传的必须是 **CDP frameID**，不是 frame_path 里给人读的 `"main"`)、`--expect-url` (预期 URL 子串；模型的 `url` 不含它就**非 0 退出**且不输出模型 —— 拿错页时的主动闸门)
@@ -107,7 +109,8 @@ cdp/
 │   ├── observe_frames.go# 跨帧枚举与合并（ObserveAll）、帧覆盖守卫
 │   ├── diff.go          # DiffModels：前进判据（对选择器改名免疫）+ 人话渲染用的数据
 │   ├── shadow.go        # 穿透内核：withPierce / __cdpQA / __cdpRoots
-│   ├── form.go          # 拟人手势填表（文本 / 复选 / 下拉 / 日期选择器）
+│   │                    # （+ 可见优先解析 __cdpVisible/__cdpQIn、落点判据 __cdpReachesAt）
+│   ├── form.go          # 拟人手势填表（文本 / 复选 / 下拉 / 日期选择器）+ 动手前的落点守卫
 │   ├── targets.go       # 页面目标列举与激活
 │   └── js.go            # JS 常量（触控检测、快照、轨迹渲染）
 ├── internal/testdata/   # 集成测试的 fixture 页面（先读它的 README）

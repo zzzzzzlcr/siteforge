@@ -92,10 +92,10 @@ func capRunes(s string, n int) string {
 type ClickProbe struct {
 	// MatchCount 是选择器命中的**总数**（不只是抓下来的那几个）。
 	MatchCount int `json:"match_count"`
-	// MatchIndex 是「用的是第几个」（文档序，0 起）。默认路径取的是**第一个**：
-	// `__cdpQA(sel)[0]` 与 `__cdpQ(sel)` 是同一个元素 —— 两个助手都按
-	// `__cdpRoots` 的同一顺序遍历（先各 root 的 querySelectorAll 拼起来，
-	// 再取首个），所以「第 0 个」就是坐标与点击真正用的那一个。
+	// MatchIndex 是「用的是第几个」（文档序，0 起）。默认路径取的是**第一个
+	// 可见的**：`__cdpQA(sel)[i]` 与 `__cdpQ(sel)` 是同一个元素（两个助手都按
+	// `__cdpRoots` 的同一顺序遍历，`__cdpQ` 再多一步「先挑可见的」），
+	// 所以这里报的下标就是坐标与点击真正用的那一个。
 	MatchIndex int              `json:"match_index"`
 	Candidates []ClickCandidate `json:"candidates"`
 }
@@ -121,6 +121,13 @@ func probeTargetJS(selector string) string {
 	return withPierce(fmt.Sprintf(`(function(){
   var els = __cdpQA('%s');
   if (!els.length) return JSON.stringify({error: 'element not found'});
+  // 实际会被点的是**第一个可见的**匹配（与 GetElementCenter / 点击同一套解析，
+  // 见 shadow.go 的 __cdpQIn）。命中集合仍按文档序摆，match_index 指向它 ——
+  // 不这么做的话，回执里报的「第几个」与真正点下去的那一个会静默分家。
+  var vi = 0;
+  for (var k = 0; k < els.length; k++) {
+    if (__cdpVisible(els[k])) { vi = k; break; }
+  }
   function one(el) {
     var r = el.getBoundingClientRect();
     return {
@@ -136,9 +143,10 @@ func probeTargetJS(selector string) string {
       bbox: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]
     };
   }
-  var cap = Math.min(els.length, %d), out = [];
+  // 至少把**选中的那一个**描述出来（它可能排在 cap 之外）。
+  var cap = Math.min(els.length, Math.max(%d, vi + 1)), out = [];
   for (var i = 0; i < cap; i++) out.push(one(els[i]));
-  return JSON.stringify({ match_count: els.length, match_index: 0, candidates: out });
+  return JSON.stringify({ match_count: els.length, match_index: vi, candidates: out });
 })()`, escaped, clickDescTextCap, clickDescTextCap, candidateCap))
 }
 
@@ -170,7 +178,7 @@ func strictClickRefusal(selector string, p *ClickProbe) error {
 	if p.MatchCount > 1 {
 		chosen, _ := p.Chosen()
 		return fmt.Errorf("选择器 %q 匹配 %d 个元素 —— 拒绝点击：不知道你要哪一个。"+
-			"（宽松模式会静默取文档序第 1 个，也就是 %s；真站实测里那一下点到了 **Back**，"+
+			"（宽松模式会静默取**第一个可见的**，也就是 %s；真站实测里那一下点到了 **Back**，"+
 			"把漏斗走回去了。）请换一个**唯一**的选择器：observe 给的 alternates 里那条 "+
 			"nth-of-type 路径是唯一的，或者把选择器收窄到只命中目标。\n候选：\n%s",
 			selector, p.MatchCount, chosen.Describe(), formatCandidates(p))
