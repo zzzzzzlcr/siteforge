@@ -3929,6 +3929,39 @@ def test_the_descriptive_head_is_stripped_and_never_loosens_the_rule():
         "出现 Tailor Your Cover") == 0
 
 
+def test_the_shell_missed_by_one_character_does_not_swallow_the_run():
+    """★ 2026-09-29 真事（`job-5850107f65ed`，thegiraffe）：判据那格写的是「**页面中出现**found
+    your offers」—— 手列的词表里只有「页面上出现」「页面出现」，**差一个「中」字** ⇒
+    整句成了**逐字判据** ⇒ 页面上明明写着 `We've found your offers!`，三趟都报
+    「没见到成功文案」（**每趟还是一次真提交**）⇒ 图判 `explore_unfinished` ⇒ **不出 py**。
+
+    ⚠️ 「页面 / 页面上 / 页面中 / 页面里 + 会 / 出现 / 显示 / 看到」是**一族**，
+    这一族里每一种写法都得剥掉 —— 漏一个字的代价是**整趟白跑**，所以这一格钉的是**那一族**，
+    不是补上「页面中出现」这一个词。
+    """
+    case = "页面中出现found your offers"
+    assert browser_agent.strip_criterion_head(case) == "found your offers"
+    page = "We've found your offers! While you're waiting, check out the deals below."
+    steps = browser_agent.Journey(
+        steps=[{"action": "observe", "target": {},
+                "result": {"ok": True, "page_text_head": page}}]).steps
+    assert browser_agent._success_hit(steps, case) == 0, (
+        "页面上真写着那串字，系统却还是判「没见到」—— 就是这次的病（`job-5850107f65ed`）")
+    #: 这一族里人怎么写都该剥掉（下一个字不许再把它漏过去）
+    for head in ("页面中出现", "页面上出现", "页面出现", "页面里出现", "页面上会显示",
+                 "页面中看到", "页面会显示", "页面上", "页面中", "页面里"):
+        assert browser_agent.strip_criterion_head(head + "X") == "X", head
+    #: ⚠️ 更严不更松：`showcase` **不是**壳（裸 `show` 会把它剥成 `case`）
+    assert browser_agent.strip_criterion_head("showcase 2026") == "showcase 2026"
+    #: 认得出的壳 ⇒ 不吭声（它已经剥掉了，屏幕上有「比的时候按…」那句就够）
+    assert browser_agent.criterion_shell_unrecognized(case) == ""
+    #: 兜底那句话只对**真不认识**的壳响（正控：换一个写法就得说得出是哪个词）
+    assert browser_agent.criterion_shell_unrecognized(
+        "页面底下出现found your offers") == "出现"
+    assert browser_agent.criterion_shell_unrecognized("found your offers") == ""
+
+
+
 def test_the_recorded_page_text_is_long_enough_to_hold_the_criterion():
     """★ 2026-09-22 真事（`job-9b48f2b513ec`）：账本里那格 `page_text_head` 只留了 **200 字**，
     而那 200 字恰好是**页脚**（`Privacy Policy Cookie Policy … Company registration number`）

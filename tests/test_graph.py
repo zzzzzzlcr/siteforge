@@ -1830,6 +1830,31 @@ def test_the_descriptive_head_is_stripped_before_comparing():
         _book("Thanks! Your request was received."), ["出现 Nope", "显示 Thanks!"]) is True
 
 
+def test_a_shell_we_do_not_recognize_is_said_in_plain_words():
+    """★ 2026-09-29 真事（`job-5850107f65ed`，thegiraffe，**一个 py 都没出**）：
+    那一格写着「页面中出现found your offers」—— 带着说明词，而剥壳的词表里**没有那种写法**
+    ⇒ 它成了**逐字判据**（页面上永远不会有整句）⇒ 三趟都「没见到成功文案」（每趟一次真提交）。
+
+    ⚠️ 「页面中出现」这一族现在**剥得掉**了（真事见 `browser_agent.CRITERION_HEAD_RE`），
+    所以这一格钉的是**下一层兜底**：壳换了别的写法、剥不掉时，屏幕上必须**说得出**
+    「我是按字面在找」—— 不然人分不出「站点没成」还是「这一格填错了」，只能干猜三趟。
+    这一句挂在 intake 的 facts 上（那行「成功判据（提醒）」）⇒ **开窗口之前**就看得见。
+    """
+    #: ① 认得出的壳不许多嘴（负控：正常的说明句不许被说成「不认识」）
+    assert "不认识" not in graph._criterion_advice("页面中出现found your offers")
+    assert "不认识" not in graph._criterion_advice("出现 Tailor Your Cover")
+    assert "不认识" not in graph._criterion_say("出现 Tailor Your Cover")
+    #: ② 换一个不认识的壳：要说出来，而且**原话照抄**那一格
+    odd = "页面底下出现found your offers"
+    told = graph._criterion_advice(odd)
+    assert "不认识" in told and "『%s』" % odd in told, told
+    assert "字面" in told, told
+    assert "不认识" in graph._criterion_say(odd), graph._criterion_say(odd)
+    #: ③ 那一格本来就是**照抄页面上的字**（没有说明词）⇒ 不许多嘴
+    assert graph._criterion_advice("found your offers") == ""
+    assert "不认识" not in graph._criterion_say("found your offers")
+
+
 def test_the_outcome_line_says_which_words_it_compared():
     """结局那句要**说出比的是哪串字**（连着四次「明明到了却不认」都栽在这一格上：
 

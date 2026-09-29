@@ -1185,6 +1185,10 @@ def test_the_product_gets_the_criterion_without_the_descriptive_shell():
     assert template._success_texts("出现 Tailor Your Cover") == ["Tailor Your Cover"]
     assert template._success_texts("Tailor Your Cover") == ["Tailor Your Cover"]
     assert template._success_texts(["出现 A", "显示 B"]) == ["A", "B"]
+    #: ★ 2026-09-29（`job-5850107f65ed`，thegiraffe）：那一格写的是「**页面中出现**found your
+    #: offers」—— 剥壳的词表里差一个「中」字 ⇒ 整句成了**逐字判据** ⇒ 产物**永远报不了成功**
+    #: （活的探路那一侧是同一个实现，也一样「没见到」⇒ 三趟白跑、一个 py 都没出）。
+    assert template._success_texts("页面中出现found your offers") == ["found your offers"]
     #: 只写了那个动词 ⇒ 剥完什么都不剩 ⇒ **照旧抛**（那是「没有判据」，不是「什么都算成功」）
     try:
         template._success_texts("出现")

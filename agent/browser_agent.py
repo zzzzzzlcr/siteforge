@@ -1516,9 +1516,28 @@ def _spec_name(spec) -> str:
 
 
 #: 判据那一格写成**说明句**时的开头（「我要它出现」的意思）—— 这些词是**壳**，
-#: 不是页面上会有的字。长的排前面（`出现文字` 先于 `出现`）。
-DESCRIPTIVE_CRITERION_HEADS = ("出现文字:", "出现文字：", "出现文字", "页面上出现", "页面出现",
-                               "出现", "显示", "看到", "页面上", "shows", "show ", "contains")
+#: 不是页面上会有的字。
+#:
+#: ★ 2026-09-29：**它从一张手列的表改成了一条正则**。真事（`job-5850107f65ed`，thegiraffe）：
+#: 运营把那一格写成「**页面中出现**found your offers」，而表里只有「页面上出现」「页面出现」
+#: —— **差一个「中」字** ⇒ 整句被当成**逐字判据** ⇒ 页面上明明写着 `We've found your offers!`，
+#: 三趟却都报「没见到成功文案」⇒ 图判 `explore_unfinished` ⇒ **一个 py 都不出**，
+#: 而每一趟都是一次**真提交**。这一族（页面 / 页面上 / 页面中 / 页面里 + 会 / 出现 / 显示 / 看到）
+#: 不该再靠人往里补词 —— 补一个，下一个字还能把它漏过去。
+#: ⚠️ 英文那三个照旧：`show(?!\S)` 那一条不许收成裸 `show`，少了它 `showcase` 会被剥成 `case`。
+CRITERION_HEAD_RE = re.compile(
+    r"^(?:"
+    r"出现文字\s*[:：]?"
+    r"|页面\s*[上中里]?\s*(?:会\s*)?(?:出现|显示|看到)"
+    r"|页面\s*[上中里]"
+    r"|出现|显示|看到"
+    r"|shows|show(?!\S)|contains"
+    r")\s*[:：,，。;；\-—]?\s*", re.I)
+
+
+#: 判据那一格里**像说明句**的记号（出现在任意位置都算）。它只用来**说一句话**，不参与匹配 ——
+#: 匹配的尺子只有 `strip_criterion_head` 那一把。
+CRITERION_SHELLISH_RE = re.compile(r"出现|显示|看到|shows|contains|show\b", re.I)
 
 
 def strip_criterion_head(word: str) -> str:
@@ -1534,12 +1553,31 @@ def strip_criterion_head(word: str) -> str:
     ⚠️ 剥壳**更严不更松**：页面上真写着「出现 Tailor Your Cover」时，它也含 `Tailor Your Cover`
     ⇒ 照样算见到（剥了只是不可能**更**容易匹配）。
     ⚠️ 壳剥完什么都不剩（那一格只写了「出现」）⇒ 返回**空串** —— 由调用方去说人话，不编。
+
+    ★ 2026-09-29：剥的是 `CRITERION_HEAD_RE` 那一族，**不再是一张手列的词表** ——
+    「页面中出现…」原来是剥不动的（表里没有那一种写法），于是它被当成逐字判据、
+    页面上永远找不到（上面 `CRITERION_HEAD_RE` 那段真事）。**判据那一侧与产物那一侧
+    共用这一个函数**（`template._success_texts` → `wanted_texts` → 这里）。
     """
     text = _norm(str(word or ""))
-    for head in sorted(DESCRIPTIVE_CRITERION_HEADS, key=len, reverse=True):
-        if text.lower().startswith(head.lower()):
-            return _norm(text[len(head):]).lstrip(" :：,，。;；-—").strip()
-    return text
+    return _norm(CRITERION_HEAD_RE.sub("", text, count=1)).lstrip(" :：,，。;；-—").strip()
+
+
+def criterion_shell_unrecognized(text) -> str:
+    """这一格**像说明句**、而我们**不认识**它开头那种写法 ⇒ 返回那个记号；否则空串。
+
+    ★ 2026-09-29（`job-5850107f65ed`）：那一格写着「页面中出现found your offers」——
+    带着说明词，壳却差一个字没被剥掉 ⇒ 它成了**逐字判据** ⇒ 三趟都「没见到成功文案」
+    ⇒ 没有 py。而屏幕上**没有一句话**能让人看出「是这一格填错了」还是「站点没成」：
+    人只能去猜。这一句就是那句缺的话。
+    ⚠️ 它**不参与匹配**（匹配只有 `strip_criterion_head` 那一把尺子），也不拦任何东西 ——
+    它只负责把「我按**字面**在找」这件事摆到人说得出话的地方。
+    """
+    text = _norm(str(text or ""))
+    if not text or strip_criterion_head(text) != text:
+        return ""
+    hit = CRITERION_SHELLISH_RE.search(text)
+    return hit.group(0) if hit else ""
 
 
 def wanted_texts(success_text) -> list:

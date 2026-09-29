@@ -1779,10 +1779,10 @@ def _explore_reached_success(journey, success_text, success_urls="") -> Optional
     return False if seen_any else None
 
 
-#: 判据那格**写成了说明句**的开头。★ 2026-09-22 起**只有一处实现**
-#: （`browser_agent.DESCRIPTIVE_CRITERION_HEADS`）—— 「剥壳」与「提醒」必须是同一张表，
-#: 不然就会出现「提醒说这格不对、判的时候又没剥」这种两种口径（真事，见那一格的注释）。
-DESCRIPTIVE_CRITERION_HEADS = browser_agent.DESCRIPTIVE_CRITERION_HEADS
+#: ⚠️ 「剥壳」这件事**只有一处实现**（`browser_agent.strip_criterion_head`）——「提醒」也用它。
+#: 两处各写一遍就会出现「提醒说这格不对、判的时候又没剥」这种两种口径。
+#: ★ 2026-09-29：那一族的**词表**已经收进 `browser_agent.CRITERION_HEAD_RE` 这条正则里，
+#: 这里不再转发一份（转发的那份没人读，还多出一个「哪份才是真的」的问题）。
 
 
 def _criterion_advice(success_text) -> str:
@@ -1807,11 +1807,20 @@ def _criterion_advice(success_text) -> str:
     if any(not browser_agent.strip_criterion_head(w) for w in given):
         said.append("⚠️ 这一格剥掉那个动词之后**什么都不剩** —— 没有可以拿去比的字，"
                     "一比就永远落空。改成**照抄页面上真会出现的那串字**再跑。")
+    #: ★ 2026-09-29（`job-5850107f65ed`：thegiraffe 三趟白跑、**一个 py 都没出**）：
+    #: 壳**没认出来**也要说 —— 那一格写成说明句、偏偏差一种写法时，屏幕上原来只有
+    #: 「没见到成功文案」，人分不出「是站点没成」还是「是这一格填错了」，只能去猜。
+    #: 这一句挂在 intake 的 facts 上（`graph.py` 里那行「成功判据（提醒）」）：
+    #: **开窗口之前**就能看见，不用等三趟探路烧完。
+    for w in given:
+        shell = browser_agent.criterion_shell_unrecognized(w)
+        if shell:
+            said.append("⚠️ 这一格『%s』里带着说明词「%s」，而它开头那种写法**我们不认识** ⇒ "
+                        "上面是按**字面**去找的（那串字要**一模一样**出现在页面上才算数）。"
+                        "要么把壳换成认得的那几种写法（页面 / 页面上 / 页面中 / 页面里 + 出现…），"
+                        "要么干脆**照抄页面上真会出现的那串字**。" % (w, shell))
+            break
     return "\n".join(said)
-    return ("⚠️ 这一格是**照抄页面上会出现的那串字**（子串判据），不是写「我要它出现」："
-            "%s 里那个**说明词也要一模一样出现在页面上**才成立 —— 真事：有人填 `出现Thank you.`，"
-            "而页面上是 `Thank you.` ⇒ **三趟探路都没认出来**（只表现为「没见到成功文案」）。"
-            % "、".join("『%s』" % w for w in bad))
 
 
 def _criterion_say(success_text, success_urls=None) -> str:
@@ -1836,6 +1845,16 @@ def _criterion_say(success_text, success_urls=None) -> str:
     if got != want:
         line += "（**比的时候按**%s）" % (
             "、".join("『%s』" % w for w in got) if got else "**空**（剥完什么都不剩）")
+    #: ★ 2026-09-29（`job-5850107f65ed`）：壳**没认出来**也要说 —— 那一格写着
+    #: 「页面中出现found your offers」，上面那句「按『页面中出现found your offers』比」
+    #: 表面上没毛病（剥壳没改动它），可它其实意味着「拿整句去当子串找」——
+    #: 页面上永远不会有这一句。屏幕上看不出来的那件事，就得**写出来**。
+    for w in want:
+        shell = browser_agent.criterion_shell_unrecognized(w)
+        if shell:
+            line += ("（⚠️ 里面有说明词「%s」，而它开头那种写法**不认识** ⇒ "
+                     "上面是按**字面**比的、那串字要一模一样出现在页面上才算）" % shell)
+            break
     #: ★ 2026-09-24：**网址那一格也要摆出来**（用户点名「那不能一样加个 success_url 吗」）——
     #: 只给网址时，上面那句「没给」是**假话**（判据其实在，在另一格）。
     if urls:
