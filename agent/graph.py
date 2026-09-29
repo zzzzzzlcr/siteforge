@@ -1083,6 +1083,33 @@ def _loop_source(state, deps: Deps, *, report) -> str:
         busy_timeout=int(spec.get("busy_timeout") or template_loop.LOOP_BUSY_TIMEOUT))
 
 
+def _gate_collision_note(collisions: list) -> str:
+    """判据在**别的页**上也成立时，为什么不产这一版（交接《骨架还缺什么》§1）。
+
+    为什么不产：`_applies` 是重放时**唯一的门**。两个状态的判据互相命中 ⇒ 走到那一页时，
+    前一组的步骤会**在那页上真做一遍**（它点的会是那一页上的元素），而日志里每一步照样
+    写着「点上了/填好了」—— 与「判据太严 ⇒ 整组静默跳过」是同一个门的两面，都是这个项目
+    最贵的那类失败（georgiapower 那趟「真做 2 步、跳过 23 步」就是这个门出的）。
+
+    ⚠️ **不许**在这儿替它把判据改「稳」一点：判据是**观测来的**（`_when_for` 从那一页正文
+    剪的原文），编一条更漂亮的出来正是那段注释里说的循环论证。两条正路都在**生成**这一侧：
+      - 让判据落在**只有那一页有**的那句话上（页头/导航那种公用文案一被剪成判据就长这样）；
+      - 或者承认这两页**分不开**、把它们**并成一个状态** —— 相邻同门的两页
+        `_Pages.note_page` 早就是这么办的（2026-09-22），那件事要改生成器，不是改产物。
+    """
+    lines = "；".join(
+        "「%s」这一组的判据在「%s」上也成立"
+        % (one.get("name"), "、".join(str(u) for u in (one.get("pages") or [])))
+        for one in collisions)
+    return ("先别写 py：这一趟账本里的判据**分不开页** —— %s。\n"
+            "重放走到那几页时，前一组的步骤会**在那页上真做一遍**，而每一步的日志都写着做成了"
+            "（2026-09-28 georgiapower：真做 2 步、跳过 23 步，日志里看不出来）。"
+            "**宁可没有，也不交一份「看着在跑、其实在别的页上乱点」的产物**。\n"
+            "两条正路：① 让判据落在**只有那一页有**的那句话上（别用页头/导航那种公用文案）；"
+            "② 承认这两页分不开，把它们**并成一个状态**（相邻同门的两页生成器早就是这么并的）。"
+            % lines)
+
+
 def _draft(state, deps: Deps, caps: Caps) -> dict:
     """把账本翻译成 py 源码（`template.render`），**带上回灌的证据**。
 
@@ -1227,6 +1254,16 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
                                  "**机制**，只有人能告诉它**意图**。）" % exc)})
         return out
 
+
+    #: ★ 2026-09-29（交接《骨架还缺什么》§1）：生成期那一验的**另一半** —— 反面。
+    #: ⚠️ 只对**固定步骤表**那一族成立：循环型（`shape == "loop"`）**压根不给每步发 `when`**
+    #:    （它的判据是「到没到问卷那一屏」，就是 `PROVENANCE["arrive_url"]` 一条）——
+    #:    拿它当闸是**误伤**，而那正是「把好产物也打回」那类错。
+    #: ⚠️ 修站那条路（`journey is None`）不适用：那一版的 `states` 是人交进来的，我们不改它。
+    if shape != "loop" and journey is not None and journey.gate_collisions:
+        out.update({"end_reason": END_DRAFT_FAILED,
+                    "end_note": _gate_collision_note(journey.gate_collisions)})
+        return out
     out.update({"states": spec["states"], "fills": spec["fills"],
                 "success_text": spec["success_text"],
                 "success_urls": spec.get("success_urls") or "", "src": src, "violations": [],

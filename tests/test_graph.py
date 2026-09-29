@@ -820,6 +820,62 @@ def test_a_draft_that_loses_the_success_condition_still_stops_loudly(tmp_path):
     assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
 
 
+# ───── 判据分不开页 ⇒ 生成期就拦住（交接《骨架还缺什么》§1 的另一半）─────
+#
+# `_when_for` 末尾那次 `when_holds` 是**循环论证**（判据就是从那一页的正文里剪的原文
+# ⇒ 必然成立），所以生成期从来没验过**反面**：这句话在**别的页**上还成不成立。
+# `browser_agent.explore` 把答案记在 `journey.gate_collisions` 上；这一格是那道门。
+
+
+def test_a_ledger_whose_judges_cannot_tell_two_pages_apart_writes_no_artifact(tmp_path):
+    """判据在**别的页**上也成立 ⇒ 一份 py 都不许出（人话要说清是哪两组、为什么）。
+
+    为什么不产：`_applies` 是重放时**唯一的门**。两组判据互相命中 ⇒ 走到那一页时，
+    前一组的步骤会**在那页上真做一遍**（点的会是那一页上的元素），而日志里每一步照样
+    写着「点上了/填好了」—— 2026-09-28 georgiapower 那趟「真做 2 步、跳过 23 步」
+    就是这个门出的。宁可没有，也不交一份「看着在跑、其实在别的页上乱点」的产物。
+    """
+    book = _journey()
+    book.gate_collisions = [{"name": "landing", "url": URL,
+                             "pages": ["https://example-funnel.test/thanks"]}]
+    deps, rec = _deps(journey=book)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "draft_failed", out.get("end_note")
+    assert "分不开页" in out["end_note"], out["end_note"]
+    # 说清是哪一组、在哪一页上也成立 —— 只说「判据有问题」人没法动手
+    assert "landing" in out["end_note"] and "thanks" in out["end_note"], out["end_note"]
+    assert rec.selftest == [], "连产物都没写出来，不该去跑自测"
+    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+
+
+def test_a_clean_ledger_is_not_touched_by_that_gate(tmp_path):
+    """正控：`gate_collisions` 空（默认值）时**一个字都不许多说** —— 否则这条闸会误伤每一份正常产物。"""
+    deps, rec = _deps()                        # `_journey()` 不带这一格
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "delivered", out.get("end_note")
+    assert (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).is_file()
+
+
+def test_the_loop_shape_does_not_take_that_gate(tmp_path):
+    """循环型**压根不给每步发 `when`**（判据是「到没到问卷那一屏」一条）⇒ 拿这一格挡它是**误伤**。
+
+    误伤不是小事：它会把一份**本来能跑**的产物打回去，而那正是「拿闸当扫帚」那类错。
+    """
+    book = _funnel_journey()
+    book.gate_collisions = [{"name": "landing", "url": URL,
+                             "pages": ["https://example-funnel.test/thanks"]}]
+    deps, _rec = _deps(journey=book)
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path, success_urls="thank-you"))
+
+    assert out.get("shape") == "loop", out.get("shape_why")
+    assert out["end_reason"] == "delivered", out.get("end_note")
+
+
 # ───────────── 窗口层那三个旋钮（评审 Important 1 / R-31）─────────────
 
 

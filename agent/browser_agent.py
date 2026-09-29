@@ -508,6 +508,12 @@ class Journey:
     #: **残留状态天生会漏掉「发生又消失」的事实**；那一刻的事只有当场记下来才留得住。
     shot_failures: list = field(default_factory=list)
     pages: list = field(default_factory=list)
+    #: ★ 2026-09-29（交接《骨架还缺什么》§1）：**判据分不开页**的那几条
+    #: （`_gates_that_hold_elsewhere` 的产物，一个状态一条）。
+    #: 为什么它要活到 `graph` 那一层：生成期验一遍只回答「这一趟账本有没有这个病」，
+    #: 而**拦住产物**是 `draft` 那一格的事 —— 这一格就是两者之间那条线。
+    #: ⚠️ 它是**账本自己的事实**（不是产物的），所以照旧会跟着 journey 进 checkpoint。
+    gate_collisions: list = field(default_factory=list)
 
     # ── 计划模式的账（Task 3 起；没计划时全空 —— **不加计划就不假装有计划**）──
 
@@ -1143,7 +1149,10 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         # 原文 ⇒ 必然成立），没验过的正是这一向，而它命中就是「重放走到那页、这组步骤真做一遍」。
         # ⚠️ 排在 `_drop_incidental_start_when` **之后**：那个旁枝起点有意不设门，
         # 先撤掉它，这里才不会拿它当「一条判据」去比。
-        for gate in _gates_that_hold_elsewhere(pages.pages):
+        #: ⚠️ **留在账本上**（不只是记一句话）：`graph._draft` 拿它**拦住产物** ——
+        #: 「生成期就该拦住」这句要落在产物那道门上，光喊一声还是会把这一版发出去。
+        journey.gate_collisions = _gates_that_hold_elsewhere(pages.pages)
+        for gate in journey.gate_collisions:
             journey.note(GATE_HOLDS_ELSEWHERE % (gate["name"],
                                                  "、".join(gate["pages"]),
                                                  gate["name"]))
