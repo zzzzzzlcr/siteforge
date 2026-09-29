@@ -465,6 +465,12 @@ PROVENANCE = { 'generated_at': '2026-09-17T02:00:00+08:00',
   'platform': {'guess': 'custom-quiz', 'confidence': 0.6},
   'selftest': None,
   'source': {'kind': 'build', 'evidence': 'fixtures/reference_spec（合成站，不是真站）'}}
+#: ★ 2026-09-29：**这份产物是哪一版骨架渲染出来的** —— `agent/template.py` 的 sha256 前 16 位。
+#: 为什么要有这一格：骨架在仓库里往前走、线上那份产物还在跑，中间一直**没有对账**
+#: （实测代价：重渲一版 travelandleisure 一口气多带了 8 个方法）。
+#: 拿它跟当前骨架的 `template.SKELETON_SHA` 一比，`skeleton_drift()` 就答得出「落后多少」。
+#: ⚠️ 它是**骨架**的指纹（这份文件），不是产物的 —— 站点数据（STATES/FILLS）不算骨架。
+SKELETON_SHA = "2eef143dee78feb0"
 
 # ── 怎么走 ────────────────────────────────────────────────
 # 每个 target 都是**声明式多元描述**（§5.1b），不写死单个选择器。运行时的回退链：

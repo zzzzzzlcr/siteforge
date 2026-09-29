@@ -54,8 +54,10 @@
 """
 
 from __future__ import annotations
-
+import ast
+import hashlib
 import json
+import pathlib
 import pprint
 import re
 from string import Template
@@ -68,6 +70,68 @@ __all__ = ["render", "PROVENANCE_KEYS"]
 #: 不在名单里的格生成时就丢了（产物里那一格恒为空，而那正是这一格要治的病）。
 PROVENANCE_KEYS = ("generated_at", "generator", "env", "fingerprint", "platform",
                    "selftest", "source")
+#: ★ 2026-09-29（交接《骨架还缺什么》§2）：**这一版骨架是哪一份**。
+#:
+#: 为什么非有不可：产物里一直只有 `PROVENANCE`（生成时间 / 生成器 / 运行库指纹），
+#: **没有「骨架版本」这一格** ⇒「线上这份产物比仓库里的骨架落后多少」没人答得上来。
+#: 代价是实测的：重渲一版 travelandleisure，**一口气多带了 8 个方法**
+#: （`_follow_new_tab` / `_ALIASES` / `_page_trouble` / `elementsFromPoint` 那一批 09-28 的活儿）
+#: —— 也就是说旧产物在线上继续跑、骨架在仓库里往前走，**中间没有对账**。
+#: 现在：每个产物里带一格 `SKELETON_SHA`，`skeleton_drift()` 拿它跟当前骨架一比就有答案。
+#: ⚠️ 认的是**这一份文件**的字节（`agent/template.py`）—— 骨架的每一处改动都在它里面，
+#: 而站点数据（STATES/FILLS/PROVENANCE）**不算骨架**，所以不能拿产物自己的 hash 顶替。
+def _skeleton_sha() -> str:
+    """当前骨架的指纹（`agent/template.py` 的 sha256 前 16 位；读不出来给空串 —— **不编**）。"""
+    try:
+        return hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()[:16]
+    except OSError:                      # 读不出来 ⇒ 空串：产物那一格会是空，体检会说「答不上来」
+        return ""
+
+
+SKELETON_SHA = _skeleton_sha()
+
+#: 产物里那一格叫什么（`skeleton_drift` 与体检脚本都按这个名字找）。
+SKELETON_FIELD = "SKELETON_SHA"
+
+
+def skeleton_drift(src: str) -> dict:
+    """这份产物**落后当前骨架多少** → `{"have","now","stale","say"}`。
+
+    ⚠️ **读不出那一格时 `stale` 是 `None`，不是 `False`** ——「答不上来」与「不落后」是
+    两件事，混成一个就会把「老产物」显示成「没问题」（本项目栽过很多次的老病）。
+    手写的那族 py（`forms/sites/warthunder.py` 那类）本来就没有这一格，它们走的正是这一支。
+    """
+    have = ""
+    try:
+        tree = ast.parse(str(src or ""))
+    except (SyntaxError, ValueError):
+        tree = None
+    for node in (tree.body if tree is not None else []):
+        targets = node.targets if isinstance(node, ast.Assign) else (
+            [node.target] if isinstance(node, ast.AnnAssign) else [])
+        if not any(isinstance(t, ast.Name) and t.id == SKELETON_FIELD for t in targets):
+            continue
+        try:
+            have = str(ast.literal_eval(node.value) or "")
+        except Exception:                # noqa: BLE001 —— 动态构造 = 读不出来
+            have = ""
+        break
+    now = SKELETON_SHA
+    if not have:
+        return {"have": "", "now": now, "stale": None,
+                "say": "这份产物**没记骨架指纹**（没有 `%s` 那一格）：它是哪一版骨架渲染出来的"
+                       "**答不上来** —— 这不等于「它跟当前骨架一样」。" % SKELETON_FIELD}
+    if not now:
+        return {"have": have, "now": "", "stale": None,
+                "say": "这份产物记的是骨架 `%s`，**当前骨架的指纹读不出来**（模板文件读不了）"
+                       "—— 对不上对不上都答不上来。" % have}
+    if have == now:
+        return {"have": have, "now": now, "stale": False,
+                "say": "这份产物就是**当前骨架**渲染的（`%s`）✓。" % have}
+    return {"have": have, "now": now, "stale": True,
+            "say": "⚠️ 这份产物是**旧骨架**渲染的：它记的是 `%s`，现在是 `%s` —— "
+                   "骨架在它之后改过（新产物会带上那些改动，比如每步前兜同意弹层、"
+                   "跟新 tab、字段别名表）。要它跟上就得**重渲一版**。" % (have, now)}
 
 #: 产出的 py 一律把这个常量当默认名（诊断/日志里认它）
 DEFAULT_STUCK_LIMIT = 3
@@ -314,12 +378,13 @@ def render(site, success_text, states, fills, provenance, success_urls=None) -> 
         states=_lit(_stable_first(list(states))),
         fills=_lit(_stable_first(_fills_map(fills))),
         provenance=_provenance_literal(provenance),
+        skeleton_sha=SKELETON_SHA,
         stuck_limit=DEFAULT_STUCK_LIMIT,
     )
 
 
-# ⚠️ 骨架里的 $ 只有 `render()` 填的那八个（site / summary / success_texts / **success_urls** /
-#    states / fills / provenance / stuck_limit）—— `string.Template` 会把任何别的 $ 也当占位符。
+# ⚠️ 骨架里的 $ 只有 `render()` 填的那九个（site / summary / success_texts / **success_urls** /
+#    states / fills / provenance / **skeleton_sha** / stuck_limit）—— `string.Template` 会把任何别的 $ 也当占位符。
 #    其余部分请当作「生成出来的源码」读：注释是给将来读产物的人看的（D16：人话）。
 SKELETON = Template(r'''#!/usr/bin/env python3
 """$site —— siteforge 产出的站点脚本。
@@ -782,6 +847,12 @@ PHONES = ["07936567874", "07700900123", "07400123456", "07911123456"]
 
 # ── 产出元数据（siteforge 自动写入，勿手工编辑）────────────
 PROVENANCE = $provenance
+#: ★ 2026-09-29：**这份产物是哪一版骨架渲染出来的** —— `agent/template.py` 的 sha256 前 16 位。
+#: 为什么要有这一格：骨架在仓库里往前走、线上那份产物还在跑，中间一直**没有对账**
+#: （实测代价：重渲一版 travelandleisure 一口气多带了 8 个方法）。
+#: 拿它跟当前骨架的 `template.SKELETON_SHA` 一比，`skeleton_drift()` 就答得出「落后多少」。
+#: ⚠️ 它是**骨架**的指纹（这份文件），不是产物的 —— 站点数据（STATES/FILLS）不算骨架。
+SKELETON_SHA = "$skeleton_sha"
 
 # ── 怎么走 ────────────────────────────────────────────────
 # 每个 target 都是**声明式多元描述**（§5.1b），不写死单个选择器。运行时的回退链：

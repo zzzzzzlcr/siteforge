@@ -3128,3 +3128,37 @@ def test_running_into_a_wall_of_skips_is_said_out_loud(sandbox, form_file, caplo
     hits = [r for r in caplog.records if "连着" in r.getMessage() and "组判据都不成立" in r.getMessage()]
     assert len(hits) == 1, [r.getMessage()[:120] for r in caplog.records]
     assert not common.STATE.actions, "一组都不成立 ⇒ 一步都不该真做"
+
+
+# ── §2：产物与骨架的版本契约（2026-09-29 交接《骨架还缺什么》）────────────────
+
+def test_a_rendered_product_records_the_skeleton_it_came_from(rendered):
+    """产物里记**它出自哪一版骨架**（`SKELETON_SHA`），而且体检认得出「就是当前这一版」。
+
+    为什么非有不可：骨架往前走、线上那份还在跑，中间一直没对账 —— 实测代价是重渲一版
+    travelandleisure 一口气多带 8 个方法（`_follow_new_tab` / `_ALIASES` / `_page_trouble`…）。
+    """
+    assert 'SKELETON_SHA = "%s"' % template.SKELETON_SHA in rendered, rendered[:400]
+    got = template.skeleton_drift(rendered)
+    assert got["stale"] is False, got
+    assert got["have"] == got["now"] == template.SKELETON_SHA, got
+
+
+def test_a_product_drawn_by_an_older_skeleton_says_how_far_behind(rendered):
+    """旧骨架渲染的产物 ⇒ 报 `stale: True`，并把它记的与现在这份都摆出来（人要据此决定重渲）。"""
+    old = rendered.replace('SKELETON_SHA = "%s"' % template.SKELETON_SHA,
+                           'SKELETON_SHA = "0123456789abcdef"')
+    got = template.skeleton_drift(old)
+    assert got["stale"] is True, got
+    assert got["have"] == "0123456789abcdef" and got["now"] == template.SKELETON_SHA, got
+    assert "重渲" in got["say"], got
+
+
+def test_a_product_without_the_field_is_not_called_fresh(rendered):
+    """没那一格（老产物 / 手写 py）⇒ `stale` 是 **None**，不是 False ——
+    「答不上来」与「不落后」混成一个，就会把老产物显示成「没问题」。"""
+    stripped = "\n".join(ln for ln in rendered.splitlines()
+                         if not ln.startswith("SKELETON_SHA = "))
+    got = template.skeleton_drift(stripped)
+    assert got["stale"] is None, got
+    assert "答不上来" in got["say"], got
