@@ -1262,6 +1262,13 @@ class _State:
         #: 同意弹层的答复（`"<选择器>|<按钮文字>"`，空串 = 没有弹层）——
         #: 产物 `_clear_obstructions` 的探针认这个形状。
         self.consent = ""
+        #: 同意弹层的**逐次**答复（同 `cover_seq`）：量一次弹一个，弹空了才退回 `consent`。
+        #: ★ 2026-09-29 加的：真站上弹层是**页面加载完之后才异步冒出来**的（travelandleisure
+        #: 那 18 条生产失败）—— 固定值只能演「一直在」或「一直没有」，演不出
+        #: 「开跑时没有、动手时压上来了」这个形状。
+        self.consent_seq = []
+        #: 探针一读就炸（真站上 cdp 偶尔这样）—— 钉「它不许变成新的失败点」那一条。
+        self.consent_raises = False
         #: 遮挡判据的答复（`"COVER|tag#id.class"`，空串 = 没被盖着）——
         #: 产物 `_covered_by` **只认带 `COVER|` 前缀**的答复。
         self.cover = ""
@@ -1364,6 +1371,10 @@ class CDPHelper:
             STATE.actions.append(("mark", "consent"))
             return json.dumps("marked")
         if "privacy" in script:              # 同意弹层那个探针（它按 cookie|consent|gdpr|privacy 判）
+            if STATE.consent_raises:
+                raise RuntimeError("cdp 挂了")     # 探针坏掉时的真站形状
+            if STATE.consent_seq:
+                return json.dumps(STATE.consent_seq.pop(0))
             return json.dumps(STATE.consent)
         # ⚠️ 顺序要紧：`_PAGE_LOADER_JS` 里**也用 `elementFromPoint`**
         # （它要判「真的盖在视口中央」）—— 放在 `elementFromPoint` 那条**后面**
@@ -1372,7 +1383,11 @@ class CDPHelper:
             if STATE.page_loader_seq:
                 return json.dumps(STATE.page_loader_seq.pop(0))
             return json.dumps(STATE.page_loader)
-        if "elementFromPoint" in script:     # 遮挡判据那个探针
+        # ⚠️ 拼写**两种都要认**：`_cover_once` 2026-09-28 起改用整摞 `elementsFromPoint`
+        # （跳过 `pointer-events:none` 的透明空遮罩），而它**不是** `elementFromPoint`
+        # 的子串（`element|s|FromPoint`）—— 只认旧拼写的话，假页面会干脆**不答遮挡问题**，
+        # 于是「被盖着就不点」那几条用例**静默失效**（2026-09-29 全量 4 红逮到的）。
+        if "elementsFromPoint" in script or "elementFromPoint" in script:   # 遮挡判据那个探针
             if STATE.cover_seq:
                 return json.dumps(STATE.cover_seq.pop(0))
             return json.dumps(STATE.cover)
@@ -1707,6 +1722,58 @@ def test_a_consent_button_without_an_id_is_still_clicked(sandbox, form_file):
     assert ("mark", "consent") in common.STATE.actions, "没按文字打标记就点了？"
 
 
+def test_a_consent_overlay_that_shows_up_late_is_cleared_before_the_next_click(sandbox, form_file):
+    """★ 2026-09-29（travelandleisure 生产：25 条失败里 18 条一个形状）：弹层**是页面加载
+    完之后才异步冒出来**的 —— 只在「开跑前 / 导航后」清一次**不够**，每一步动手之前都得再看一眼。
+
+    真站日志原话（那 18 条）：
+      第 1 个选择器没成：button[data-testid="B2cLandingNavJoinButton"]
+      第 2 个选择器指的元素被 div#onetrust-group-container.ot-sdk-eight 盖着 —— 这一下不点
+      第 6 步：页面上没找到「Join Now」，这一步没做成
+      连着 3 步没做成，收摊（早停，不磨完全程）
+    """
+    module, _ = _load(
+        "run_consent_late",
+        template.render("example-consent-late", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    #: 开跑前那一次探针答「没有弹层」；动手之前那一次它才冒出来（`consent` 是兜底值）
+    common.STATE.consent_seq = [""]
+    common.STATE.consent = "#onetrust-accept-btn-handler|Accept Cookies"
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert "#onetrust-accept-btn-handler" in clicks, common.STATE.actions
+    assert clicks.index("#onetrust-accept-btn-handler") < clicks.index("#go"), (
+        "弹层要在**这一步动手之前**点掉 —— 否则那一下就是点在它上面：%s" % clicks)
+
+
+def test_a_broken_consent_probe_never_breaks_the_step(sandbox, form_file):
+    """★ 2026-09-29：它现在挨着**每一步**，所以**不许自己变成新的失败点** ——
+    探针读不到就只记一行、照旧走这一步自己的判据（与 `warthunder.py` 的
+    `_dismiss_consent` 同一条口径：为了修失败才加的，自己再变成失败点就本末倒置）。"""
+    module, _ = _load(
+        "run_consent_broken",
+        template.render("example-consent-broken", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.consent_raises = True          # 探针一读就炸
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert clicks == ["#go"], clicks            # 这一步照做，没被弹层那一下带塌
+
+
 
 def test_a_covered_element_is_not_clicked_and_does_not_report_ok(sandbox, form_file):
     """C：目标被别的东西盖着 → **不点**，而且这一步**不算做成**（不许静默假成功）。
@@ -1858,7 +1925,9 @@ def test_a_mask_that_never_clears_is_not_waited_for_twice(sandbox, form_file):
     module.COVER_POLL_SECONDS = 0.02
 
     def measured():
-        return len([s for s in common.STATE.evals if "elementFromPoint" in s])
+        #: 两种拼写都数（理由见假页面分派那一段：新探针用的是 `elementsFromPoint`）
+        return len([s for s in common.STATE.evals
+                    if "elementsFromPoint" in s or "elementFromPoint" in s])
 
     f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))
     f._covered_by("#a", until=time.monotonic() + module.COVER_WAIT_SECONDS)

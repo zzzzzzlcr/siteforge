@@ -89,6 +89,33 @@ _TROUBLE_MARKERS = (
     "are you a human", "enable javascript and cookies", "attention required",
     "access denied", "ddos protection", "cf-chl", "captcha",
 )
+#: ★ 2026-09-28（mapleporchdaily 真站排查）：**同一件东西，两边叫法不同**。
+#: 产物的 `FILLS[*].source` 是照**页面字段名**起的（`phone` —— 见 `browser_agent`
+#: 那句 `{"source": name}`），而任务资料（`--form-file`）的键是**资料库的列名**
+#: （`phone_number` / `username` …）。两边**没有任何约定** ⇒ 只有恰好同名的
+#: （`email`）才取得到，其余静默掉进随机池，而日志里照样写着「填好了」。
+#: 真事：加拿大站被填了骨架池里的**英国**手机号 `07700900123`，站方红字
+#: `The phone number is not valid.` ⇒ 整单提交被拒（截图在 failDiag 里）。
+#: 这一格就是照名字再找一遍 —— **只加回退，不动原来的键**。
+#: ★ 2026-09-28：切到新开的那个 tab 之后，**让页面稳住**再读 —— 切过去的那一瞬
+#: 新页可能还在加载/还在重定向（`/json/activate` 只负责把它弄到前台，不等它加载）。
+#: 0.6 秒是「够它把 URL 定下来」的量级；真要不要等，`_wait_when` 还会再等一轮。
+TAB_SETTLE_SECONDS = 0.6
+
+_ALIASES = {
+    "phone": ("phone_number", "tel", "mobile", "phone1", "telephone"),
+    "first_name": ("firstname", "first", "given_name"),
+    "last_name": ("lastname", "last", "surname", "family_name"),
+    "email": ("mail", "email_address"),
+    "postcode": ("postal_code", "zip", "zipcode", "zip_code"),
+    "city": ("town",),
+    "street": ("address", "address1", "street_address"),
+    "country": ("country_code",),
+}
+#: 资料只给**一个全名**（`username: "Lin Cameron"`）时，这两格从它按空格拆。
+#: 页面上是 First / Last 两个框、资料库里是一个字段 —— 这是**结构差**，
+#: 光靠别名对不上（真事：那一站 `first_name` 曾经被填进整个 "Lin Cameron"）。
+_SPLIT_FROM = {"first_name": "username", "last_name": "username"}
 ERR_MARKERS = ("Error:", "error:", "not found", "BugError", "no page target",
                "failed to create client", "Usage:", "Flags:", "panic:")
 
@@ -872,6 +899,9 @@ class Filler:
         #: （收尾那句要报出来）。与 `skipped_states` 是两件事：那个说「卡在哪个状态」，
         #: 这个说「页面压根不是内容页」—— 后者不是判据的问题，也不是脚本能解决的。
         self.trouble_steps = []
+        #: ★ 2026-09-28：这一下点完是不是**新开了 tab 并切了过去**（`_follow_new_tab` 写、
+        #: `_tab_note` 读）—— 每一步开头清空，只属于触发它的那一步。
+        self._followed_tab = ""
         #: 连着**几组**判据都不成立（缺陷单 §六 E3 的那句报警看它；一组真做了就清零）。
         self.skipped_in_a_row = 0
         self.stalled = 0       # 连续「点了但页面没动」的步数（另一种原地打转）
@@ -1508,7 +1538,13 @@ class Filler:
         而这件事在账本里原本看不出来（那份产物没有「帧」这个概念）。
         """
         if action == "click":
-            return self.cdp.click(selector, frame_id=frame_id or "")
+            self._followed_tab = ""       # 每一步开头清空：这半句只属于触发它的那一步
+            # 点**之前**先记下有哪些页：点完冒出来的**新**页，就是这一下开的 tab
+            # （`target="_blank"` 那类）—— 见 `_follow_new_tab` 里那段真站实测。
+            before_ids = {t.get("id") for t in self._page_targets()}
+            out = self.cdp.click(selector, frame_id=frame_id or "")
+            self._followed_tab = self._follow_new_tab(before_ids)
+            return out
         if action == "form":
             # `strict` + `expect_label`：命中多个元素时**不许静默挑第一个** ——
             # 拿这个字段自己的身份（页面上写着的那句名字）认准它，认不出就大声失败。
@@ -1565,20 +1601,132 @@ class Filler:
         raise ValueError("产物写错了：不认识这个动作「%s」" % action)
 
     def _fill_value(self, fill, step):
-        """这一步填什么：先读 --form-file 里的键，没有就用 fallback 里的一个随机值。"""
+        """这一步填什么：先读 --form-file 里的键，没有就用 fallback 里的一个随机值。
+
+        ★ 2026-09-28（mapleporchdaily 真站排查）加了三样，都是那次踩出来的：
+
+        ① **别名回退**（`_ALIASES`）：`source` 是照页面字段名起的、资料的键是资料库列名，
+           两边没约定 ⇒ 取不到就**静默**掉进随机池。
+        ② **全名拆分**（`_SPLIT_FROM`）：资料只给一个全名时，First / Last 各取一段。
+        ③ **说出值是哪来的**（`self._value_from`，由调用方拼进 note）：
+           填上了不等于填对了 —— 「这值是**任务资料**的还是**随机池**的」必须让人一眼看见。
+           ⚠️ 只报**来源**，**不报值本身**（生产日志会上报到后端，姓名/电话没必要进那儿）。
+        """
+        self._value_from = ""
         source = fill.get("source")
+
+        def take(key):
+            return str((self.form_data or {}).get(key) or "").strip() if key else ""
+
         if source:
-            given = str(self.form_data.get(source) or "").strip()
+            given = take(source)
             if given:
+                self._value_from = "任务资料「%s」" % source
                 return given
+            for alt in _ALIASES.get(source, ()):
+                given = take(alt)
+                if given:
+                    self._value_from = "任务资料「%s」（别名 → %s）" % (alt, source)
+                    return given
+            #: 资料只给全名时按空格拆：`username: "Lin Cameron"` → Lin / Cameron
+            whole = take(_SPLIT_FROM.get(source, ""))
+            if whole and " " in whole.strip():
+                parts = whole.split()
+                got = parts[0] if source == "first_name" else " ".join(parts[1:])
+                self._value_from = "任务资料「%s」拆出（%r → %s）" % (
+                    _SPLIT_FROM[source], whole, source)
+                return got
         candidates = list(fill.get("fallback") or [])
         if not candidates:
             self.log.warning("[%s] 「%s」既没有 form-file 的值也没有 fallback", self.cid, source or "?")
+            self._value_from = "**没有来源**（form-file 与 fallback 都空）"
             return ""
         pick = random.choice(candidates)
         if isinstance(pick, dict) and pick.get("random"):
+            self._value_from = "**随机池**「%s」" % pick["random"]
             return self._random_value(str(pick["random"]))
+        self._value_from = "**随机池**（写死的候选）"
         return str(pick)
+
+    def _value_note(self):
+        """「这个值是哪来的」那半句（★ 2026-09-28）—— 没有就空串（不是填值那步）。"""
+        return ("（值来自 %s）" % self._value_from) if getattr(self, "_value_from", "") else ""
+
+
+    # ── 新 tab（`target="_blank"`）：点完要认得出来、并且**切过去** ──────────
+    def _page_targets(self):
+        """当前有哪些**页**（tab）。走 `/json/list`；读不到就返回 `[]`（**不抛**）。
+
+        ⚠️ 为什么要有这一格（2026-09-28 georgiapower 真站实测）：那个 CTA 是
+        `<a target="_blank" href="…">` —— 点它是**新开一个 tab**，而 cdp 每次调用挑的是
+        「可见 / 最近激活的那一页」。新 tab 若在**后台**开着，后面每一步读到的都还是旧页
+        ⇒ 判据全不成立、整段步骤被静默跳过 —— 那一趟 25 步里只做成 2 步、23 步被跳过，
+        结账是 `no_success`，而日志里每一步都写着「点上了/填好了」。
+        自测那次之所以过，是新 tab 恰好抢到了前台：**运气，不是逻辑**。
+        """
+        try:
+            import urllib.request as _u
+            raw = _u.urlopen("http://%s:%s/json/list" % (self.cdp.host, self.cdp.port),
+                             timeout=3).read()
+            return [t for t in json.loads(raw)
+                    if t.get("type") == "page" and t.get("id")]
+        except Exception:
+            return []
+
+    def _activate_tab(self, target_id):
+        """把一个 tab 弄到前台（`GET /json/activate/<id>`）。失败就算了 —— **不抛**。"""
+        try:
+            import urllib.request as _u
+            _u.urlopen("http://%s:%s/json/activate/%s"
+                       % (self.cdp.host, self.cdp.port, target_id), timeout=3).read()
+            return True
+        except Exception:
+            return False
+
+    def _follow_new_tab(self, before_ids):
+        """点完**新开**的 tab 就切过去，返回它的地址（没有新的就是空串）。
+
+        挑哪一个：优先地址命中本流程某个 `when.url_contains` 的那个 —— 广告站一次点击
+        开出好几个 tab 是常态，挑错等于白切；都没有可比地址时退回**最新**那个
+        （`/json/list` 的顺序近似 MRU）。
+        """
+        new = [t for t in self._page_targets() if t.get("id") not in before_ids]
+        if not new:
+            return ""
+        pick = None
+        for t in new:
+            url = str(t.get("url") or "")
+            if any(w and w in url for w in self.want_urls):
+                pick = t
+                break
+        pick = pick or new[-1]
+        if not self._activate_tab(pick["id"]):
+            return ""
+        time.sleep(TAB_SETTLE_SECONDS)
+        return str(pick.get("url") or "")
+
+    def _follow_tab_matching(self, when):
+        """判据成立的那一页**在另一个 tab 上**时，把它切过来（返回切过去的地址）。
+
+        与 `_follow_new_tab` 互补：那条管「刚点的这一下新开了 tab」，这条管
+        「tab 早就开着、只是没在前台」（上一步开的、当时没抢到前台那类）。
+        """
+        want = str((when or {}).get("url_contains") or "")
+        if not want:
+            return ""
+        here = self._url()
+        for t in self._page_targets():
+            url = str(t.get("url") or "")
+            if want in url and url != here and self._activate_tab(t["id"]):
+                time.sleep(TAB_SETTLE_SECONDS)
+                return url
+        return ""
+
+    def _tab_note(self):
+        """「点完新开了一个 tab 并切了过去」说给人听的那半句（没有就是空串）。"""
+        if not getattr(self, "_followed_tab", ""):
+            return ""
+        return "（点完新开了一个 tab：%s —— 已切过去）" % self._followed_tab[:80]
 
     def _random_value(self, kind):
         """数据随机化（拟人）：每次重跑都同一份数据是明显的机器味。"""
@@ -1710,29 +1858,45 @@ class Filler:
         （★ 2026-09-28，用户看到的现场「有个弹窗挡住了」；原来那种「没 id 就什么都不做」
         等于把弹层留在页面上挡住后面每一步 ✗）。两条都走不通就**什么都不做**（宁可不做），
         由 `_covered_by` 保证「点到弹层上」不会被记成做成了。
+
+        ★ 2026-09-29：**每一步动手之前也会调它**（`_perform` 里那一处）。起因是
+        travelandleisure 的生产失败（25 条里 18 条）：弹层**是页面加载完之后才异步冒出来的**，
+        只在「开跑前 / 导航后」看一眼是不够的 —— 点「Join Now」时它已经压在按钮上，
+        日志原话 `第 2 个选择器指的元素被 div#onetrust-group-container.ot-sdk-eight 盖着`，
+        然后 `连着 3 步没做成，收摊`。既然它现在挨着**每一步**，它就**不许自己变成新的
+        失败点**：探不动 / 点不动一律只记一行 INFO 走人（与 `warthunder.py` 的
+        `_dismiss_consent` 同一条口径：它是为了修失败才加的，自己再变成失败点就本末倒置）。
         """
-        raw = self._ev(_CONSENT_PROBE_JS)
-        if not raw or "|" not in raw:
-            return                      # 没有弹层（正常情况）—— 静默是对的，这是「无事可做」
-        how, text = raw.split("|", 1)
-        if how == "TEXT":               # 只有文字：打标记再点（点还是走 cdp）
-            marked = self._ev(_MARK_CONSENT_BY_TEXT_JS % json.dumps(text))
-            if "marked" not in str(marked or ""):
-                self.log.info("[%s] 同意弹层那颗按钮（%r）没有 id、按文字也没标记上 —— 不猜，"
-                              "留给 `_covered_by` 兜（下一步会被挡住并如实失败）", self.cid, text[:30])
-                return
-            selector = '[data-sf-consent="1"]'
-        else:
-            selector = how
-        out = self.cdp.click(selector)   # 动作一律走 cdp（§5.2）
-        if how == "TEXT":
-            #: 标记用完就清（不清的话下一屏上会留一个 `[data-sf-consent="1"]`，那是脏状态）
-            self._ev("var a=document.getElementsByTagName('*');"
-                     "for(var i=0;i<a.length;i++){if(a[i].removeAttribute)"
-                     "a[i].removeAttribute('data-sf-consent');}return 'clean';")
-        self.log.info("[%s] %s把同意弹层点掉了（%s，%r）：%s", self.cid,
-                      ("%s之后 " % why) if why else "开跑前 ", selector, text[:30],
-                      "看起来成了" if _ok(out) else "**没成**")
+        try:
+            raw = self._ev(_CONSENT_PROBE_JS)
+            if not raw or "|" not in raw:
+                return                  # 没有弹层（正常情况）—— 静默是对的，这是「无事可做」
+            how, text = raw.split("|", 1)
+            if how == "TEXT":           # 只有文字：打标记再点（点还是走 cdp）
+                marked = self._ev(_MARK_CONSENT_BY_TEXT_JS % json.dumps(text))
+                if "marked" not in str(marked or ""):
+                    self.log.info("[%s] 同意弹层那颗按钮（%r）没有 id、按文字也没标记上 —— 不猜，"
+                                  "留给 `_covered_by` 兜（下一步会被挡住并如实失败）",
+                                  self.cid, text[:30])
+                    return
+                selector = '[data-sf-consent="1"]'
+            else:
+                selector = how
+            out = self.cdp.click(selector)   # 动作一律走 cdp（§5.2）
+            if how == "TEXT":
+                #: 标记用完就清（不清的话下一屏上会留一个 `[data-sf-consent="1"]`，那是脏状态）
+                self._ev("var a=document.getElementsByTagName('*');"
+                         "for(var i=0;i<a.length;i++){if(a[i].removeAttribute)"
+                         "a[i].removeAttribute('data-sf-consent');}return 'clean';")
+            self.log.info("[%s] %s把同意弹层点掉了（%s，%r）：%s", self.cid,
+                          ("%s之后 " % why) if why else "开跑前 ", selector, text[:30],
+                          "看起来成了" if _ok(out) else "**没成**")
+        except Exception as exc:                           # noqa: BLE001
+            #: **永不失败**：读不到 / 点不动都只记一行，绝不往上抛 ——
+            #: 往上抛会把这**一步**判成「产物自己出错了」（`_run_step` 里那条 except 会
+            #: 直接结束整趟），而弹层只是环境带来的噪声，不该有这种权力。
+            self.log.info("[%s] 看/点同意弹层这一下没成（%s: %s）—— 当它没有，照旧往下走",
+                          self.cid, type(exc).__name__, exc)
 
     def _consent_step_handled(self, label, frame=""):
         """「点掉同意弹层」这一步**找不到元素**时：它是软跳过，不是失败。
@@ -1802,10 +1966,21 @@ class Filler:
               "if(!r||r.width<=0||r.height<=0) return '';"
               "var x=r.left+r.width/2, y=r.top+r.height/2;"
               "if(x<0||y<0||x>window.innerWidth||y>window.innerHeight) return '';"
-              "var hit=document.elementFromPoint(x,y); if(!hit) return '';"
-              "if(hit===el||el.contains(hit)||hit.contains(el)) return '';"
-              "return 'COVER|'+(hit.tagName||'').toLowerCase()+(hit.id?('#'+hit.id):'')"
-              "+'.'+String(hit.className||'').split(' ')[0];")
+              #: ★ 2026-09-28（ukg 真站实测）：改用整摞 elementsFromPoint，跳过点得穿的。
+              #: 单问 elementFromPoint 会把 pointer-events:none 的透明空遮罩也报成遮挡 ——
+              #: 真事：`#qualified-multimodal-host`（967x905、全透明、z-index 拉满、
+              #: **pointer-events:none**）盖在整页上，产物于是「礼貌地」拒绝点击，
+              #: 后面几个字段全空 ⇒ 提交被站点打回 `The Title field is required`。
+              #: 而同一页 `cdp observe` 的 occluded_by 是 None（它判对了）——
+              #: 两把尺子对不上就说明这把量错了：**点得穿的，不算盖着**。
+              "var stack=document.elementsFromPoint(x,y)||[];"
+              "for(var k=0;k<stack.length;k++){var h=stack[k];var pe='';"
+              "try{pe=getComputedStyle(h).pointerEvents||'';}catch(e){}"
+              "if(pe==='none') continue;"
+              "if(h===el||el.contains(h)||h.contains(el)) return '';"
+              "return 'COVER|'+(h.tagName||'').toLowerCase()+(h.id?('#'+h.id):'')"
+              "+'.'+String(h.className||'').split(' ')[0];}"
+              "return '';")
         got = self._ev(js % json.dumps(selector), frame_id).strip()
         # ⚠️ **只认带 `COVER|` 前缀的答复**。空串 / `null` / 任何别的形状都是「量不出来」——
         # 一律**不当成盖着**（当成盖着会让每一步都无缘无故不点；不认前缀则会在
@@ -2014,6 +2189,17 @@ class Filler:
                 "这一页没加载完（%s 盖着整页，等了 %.0f 秒还没走）—— **没动手**："
                 "点了也是白点，还会把后面的判据全带错" % (loading, PAGE_READY_SECONDS)), ""
 
+        # ★ 2026-09-29（travelandleisure 生产实测：25 条失败里 18 条死在这一格）：
+        # **动手之前再兜一次同意弹层**。它不只在「开跑 / 导航之后」出现 —— go-offer 那一趟
+        # 是**页面加载完之后才异步冒出来的**，等要点「Join Now」时它已经压在按钮上了
+        # （日志原话：`第 2 个选择器指的元素被 div#onetrust-group-container.ot-sdk-eight
+        # 盖着` → `第 6 步：页面上没找到「Join Now」` → `连着 3 步没做成，收摊`）。
+        # 开跑前那次 `_clear_obstructions` 早在弹层出现**之前**就跑过了，中间没人再看一眼。
+        # ⚠️ 位置特意选在**整页就绪之后**：早于它就等于在弹层还没渲染出来时问「有没有弹层」；
+        #    也特意选在遮挡预算之前 —— 先把弹层清掉，`_covered_by` 才不必为它白等一轮。
+        # ⚠️ 它**永不算失败**（清不掉也照走这一步自己的判据），见 `_clear_obstructions`。
+        self._clear_obstructions(why="这一步动手之前")
+
         value, kind = None, "value"
         if action == "form":
             fill = FILLS.get(step.get("fill") or "")
@@ -2045,7 +2231,9 @@ class Filler:
             out = self._do(action, selector, value, kind, frame, label)
             if _ok(out):
                 return (True, selector, level,
-                        _say(action, label, True, level, landing=_landing_say(out)), frame)
+                        _say(action, label, True, level, landing=_landing_say(out))
+                        + self._tab_note()
+                        + (self._value_note() if action == "form" else ""), frame)
             self.log.info("[%s] 第 %d 个选择器没成：%s", self.cid, level + 1, selector)
 
         found = self._relocate(target, "field" if action == "form" else "action")
@@ -2066,7 +2254,9 @@ class Filler:
                 continue
             out = self._do(action, selector, value, kind, cand_frame)
             if _ok(out):
-                note = _say(action, label, True, level, landing=_landing_say(out))
+                note = (_say(action, label, True, level, landing=_landing_say(out))
+                        + self._tab_note()
+                        + (self._value_note() if action == "form" else ""))
                 # ★ 2026-09-23 Recovery Trace（人话那一半）：这一步**声明里的地址全失效了**，
                 # 是靠意图重找救回来的 —— 必须说出来，别让它长得像「本来就成了」。
                 # 结构化的那一半（primary_selector / resolved_by / confidence）在 trace 里。
@@ -2183,6 +2373,14 @@ class Filler:
         self._wait_when(when, timeout=WAIT_WHEN_SECONDS)
         self._wait_ready(timeout=WAIT_READY_SECONDS)
         ok = self._matches(when)
+        if not ok:
+            # ★ 2026-09-28（georgiapower 真站实测）：判据成立的那一页可能在**另一个 tab** 上
+            # —— CTA 是 `target="_blank"`，排程页开在新 tab 里，而这里读的一直是旧页。
+            # 不补这一条，25 步里 23 步会被**静默跳过**（每步都写着「点上了/填好了」，
+            # 结账却是 no_success）。切过去再判一次，判上就当这一页就是它。
+            if self._follow_tab_matching(when):
+                self._wait_when(when, timeout=WAIT_WHEN_SECONDS)
+                ok = self._matches(when)
         #: ⚠️ why 必须在**判的这一刻**算死，不许事后重算 ——
         #: 事后再看一眼时页面已经变了，说出来的话就跟结论打架。
         self._when_why_cache = "" if ok else self._when_why(when)
