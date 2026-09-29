@@ -1246,6 +1246,13 @@ class Filler:
         #: 它数「退一步重来过几次」（成本闸看它）。重试成功了 `stuck` 会清零，它**不清**——
         #: 否则「重试上限」就变成了「只要这次重试成了，下次还能再重试」。
         self.group_retries = 0
+        #: ★ 2026-09-29（交接《骨架还缺什么》§8）：判据不成立时**复核那一击**要用到的三格。
+        #: `_last_hit` = 刚动手的那一步（重试就重试它）；`_seen_tabs` = 见过的 tab（用来认
+        #: 「晚到的新 tab」）；`_retried_groups` = 复核过重试的状态名（**一组只重试一次**）。
+        #: ⚠️ 这三个都只在这一条路上用（判据不成立）—— 成功路径一次都不碰，代价不摊到每步。
+        self._last_hit = None
+        self._seen_tabs = set()
+        self._retried_groups = set()
         #: 触发重试的那一步要带的那句话（进它的 trace 行；用完即清，与 `progress_why` 同规矩）。
         self.retry_why = None
         self._reported_url = ""
@@ -2057,6 +2064,63 @@ class Filler:
                 time.sleep(TAB_SETTLE_SECONDS)
                 return url
         return ""
+
+    def _verify_the_hit(self, when, name):
+        """判据不成立 → 复核**刚才那一击**到底落地没有；动过了返回 True（调用方据此重判）。
+
+        ★ 2026-09-29（交接《骨架还缺什么》§8，georgiapower 开窗实测）：
+        `_follow_new_tab` 在 `cdp click` 返回后**立刻**看一次 tab 列表 —— 实测那时候
+        **一定没有新 tab**（弹窗 2.26 秒才出现、而且**先以空地址出现**，4.3 秒才有地址）。
+        于是「点了但页面什么都没动」与「点成了」长得一模一样：生产 `26233250` / `26226785`
+        就是这么跑完两分钟、20 步全跳过，而每一步日志都写着「点上了」。
+
+        三步，**代价只落在这一条路上**（判据不成立时；成功路径一次都不碰）：
+          ① 有没有**晚到的新 tab**（与我们见过的 id 集合比）⇒ 切过去；
+          ② 判据要的那一页是不是**早就在、只是没在前台**（`_follow_tab_matching`）⇒ 切过去；
+          ③ 两个都不是 ⇒ 把**刚才那一击重试一次**（进 `_perform`，所以先过 §7 那道闸：
+             文档到 interactive + 元素中心点得到的还是它自己）。
+        ⚠️ **一组只重试一次**（`_retried_groups`）：重试的代价是**在真页面上多做几个真实动作**，
+        而运营口径是「刷太多不太好」—— 这一格不许随着失败组数累积。
+        ⚠️ 它**只进日志、不进 trace**：trace 的每一行都是「一步」（下游按 `line["ok"]` 读它），
+        这里加一行没有 `ok` 的会把读的人读崩 —— 与「没走到成功」那句同一条规矩。
+        """
+        if self._last_hit is None:
+            return False                       # 还没动手过：没什么可复核的
+        # ① 晚到的新 tab
+        tabs = self._page_targets()
+        if tabs:
+            before = set(self._seen_tabs)
+            self._seen_tabs |= {str(t.get("id") or "") for t in tabs}
+            fresh = [t for t in tabs if str(t.get("id") or "") not in before]
+            if fresh and before:               # 第一次列不算「新到」——没有基线
+                pick = None
+                for t in fresh:
+                    url = str(t.get("url") or "")
+                    if any(w and w in url for w in self.want_urls):
+                        pick = t
+                        break
+                pick = pick or fresh[-1]
+                if self._activate_tab(pick["id"]):
+                    time.sleep(TAB_SETTLE_SECONDS)
+                    self.log.info("[%s] ⚠️ 判据不成立 —— 但**晚到的新 tab 出现了**（%s），"
+                                  "已经切过去；这一组不跳过", self.cid,
+                                  str(pick.get("url") or "")[:80])
+                    return True
+        # ② 那一页早就在、只是没在前台
+        if self._follow_tab_matching(when):
+            self.log.info("[%s] ⚠️ 判据不成立 —— 但**那一页在另一个 tab 上**，已经切过去",
+                          self.cid)
+            return True
+        # ③ 重试那一击（一组一次）
+        if name in self._retried_groups:
+            return False
+        self._retried_groups.add(name)
+        index, step = self._last_hit
+        self.log.warning("[%s] ⚠️ 「%s」的判据不成立，而页面**一点没动** —— "
+                         "把第 %d 步（%s）**重来一次**（这一组只重试这一次）",
+                         self.cid, name, index, _label((step or {}).get("target"), step))
+        self._run_step(index, step)
+        return True
 
     def _tab_note(self):
         """「点完新开了一个 tab 并切了过去」说给人听的那半句（没有就是空串）。"""
@@ -3024,6 +3088,14 @@ class Filler:
                     continue
                 name = state.get("name") or SITE
                 applies = self._applies(state.get("when"))
+                if not applies and self._verify_the_hit(state.get("when"), name):
+                    # ★ 2026-09-29（交接 §8）：判据不成立 ≠ 这一页不是那个状态 ——
+                    # 也可能是**刚才那一击**没落地（新 tab 2.26 秒才冒出来、先空地址）。
+                    # 复核动过之后重判一次；成立就照常走这一组，不跳过。
+                    applies = self._applies(state.get("when"))
+                    if applies:
+                        self.log.info("[%s] 复核之后这一页**就是**「%s」那个状态 —— "
+                                      "刚才那一击是落地了的（不复核就会整组跳过）", self.cid, name)
                 #: 这一组走到第几个动作了。⚠️ 用**游标**而不是 `for step in steps`：
                 #: 一步没做成时要把这一组**从头再走一遍**（线③），游标能回去，for 不能。
                 cursor = 0
@@ -3093,6 +3165,8 @@ class Filler:
                         self._wait_ready()
                         self._clear_obstructions(why="这一次导航")
                     ok, progress = self._run_step(index, step)
+                    #: 记下来：判据一旦不成立，要复核的就是**这一下**（§8）。
+                    self._last_hit = (index, step)
 
                     if self._succeeded():
                         self.log.info("[%s] 成功：判据成立了（页面上那串字 / 网址那一截）", self.cid)

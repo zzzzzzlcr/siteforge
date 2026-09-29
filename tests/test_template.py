@@ -3217,3 +3217,58 @@ def test_the_document_becoming_interactive_lets_the_step_run(sandbox, form_file)
     module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
     assert ("click", "#go") in common.STATE.actions, (
         "文档 interactive 之后就该照常点：%s" % common.STATE.actions)
+
+
+# ── §8：判据不成立时复核「那一击」（2026-09-29 交接《骨架还缺什么》）──────────
+
+def _two_groups(when_b):
+    return [
+        {"name": "first", "when": {"url_contains": "https://example.test/",
+                                   "text_contains": ["First"]},
+         "steps": [{"action": "click", "target": {"text": "Go", "role": "button",
+                                                  "selectors": ["#go"]}}]},
+        {"name": "second", "when": when_b,
+         "steps": [{"action": "click", "target": {"text": "Next", "role": "button",
+                                                  "selectors": ["#next"]}}]},
+    ]
+
+
+def test_a_hit_that_did_not_land_is_retried_and_the_group_survives(sandbox, form_file):
+    """★ §8 现场：`cdp click` 回执一切正常，而页面**一点没动**（新 tab 2.26 秒才冒出来）。
+
+    原先这条路**整组跳过**，而日志里每一步都写着「点上了」——生产就是这么跑完两分钟、
+    20 步全跳过、结账 `no_success`。现在：判据不成立时先**复核那一击**（重来一次），
+    真落地了就把这一组救回来。
+    """
+    module, _ = _load("run_retry_hit", template.render(
+        "example-retry-hit", "Thank you",
+        _two_groups({"url_contains": "https://example.test/", "text_contains": ["Second"]}),
+        [], SAMPLE_PROVENANCE), sandbox)
+    common = _stub(sandbox, observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    # 每动一次手，页面往后走一格（假页面的口径）：头两格都还看不到「Second」⇒ 逼出重试
+    common.STATE.texts = ["First", "First", "Second", "Second"]
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a for a in common.STATE.actions if a[0] == "click"]
+    assert ("click", "#go") in clicks
+    assert clicks.count(("click", "#go")) == 2, (
+        "那一击没落地就该**重来一次**：%s" % clicks)
+    assert ("click", "#next") in clicks, (
+        "复核之后这一页就是那个状态 ⇒ 这一组**不该被跳过**：%s" % clicks)
+
+
+def test_the_retry_happens_only_once_per_group(sandbox, form_file):
+    """反例（代价闸）：**一组只重试一次** —— 重试是在真页面上多做真实动作，
+    运营口径是「刷太多不太好」，不许随失败组数累积。"""
+    module, _ = _load("run_retry_once", template.render(
+        "example-retry-once", "Thank you",
+        _two_groups({"url_contains": "https://example.test/", "text_contains": ["Never"]}),
+        [], SAMPLE_PROVENANCE), sandbox)
+    common = _stub(sandbox, observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["First"] * 20          # 「Never」永远不出现
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a for a in common.STATE.actions if a[0] == "click"]
+    assert clicks.count(("click", "#go")) == 2, (
+        "第一组那一击重试一次就到头（1 次动手 + 1 次重试）：%s" % clicks)
+    assert ("click", "#next") not in clicks, "判据一直不成立 ⇒ 不该做第二组：%s" % clicks
