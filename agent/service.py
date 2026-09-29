@@ -59,6 +59,14 @@ import os
 import pathlib
 import queue
 import re
+#: ⚠️ **这一行被搬走过一次**（1856939 把「换代理国家」那套挪进 `agent/country.py` 时，
+#: 连 `import subprocess` 一起搬走了）—— 而本文件里 `subprocess.run` 还在两处：
+#: `live_viewport` 与 `fingerprint_of`。少了它，那两处**不是抛 OSError 就是抛 NameError**，
+#: 而 `fingerprint_of` 又在 `start() → _clean_window_for_explore` 这条**每一趟都要走**的路上
+#: ⇒ 「开一趟」直接 500（`except (OSError, subprocess.TimeoutExpired)` 连异常类型都算不出来，
+#: 真正的错被一个 NameError 顶掉，屏幕上只剩 Internal Server Error）。
+#: ⚠️ 别再把它搬进函数里「省一个顶层名字」：那两处都要用，且它们是**生产路径**不是旁路。
+import subprocess
 import threading
 import tempfile
 import time
