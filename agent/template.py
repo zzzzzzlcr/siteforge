@@ -604,6 +604,16 @@ PAGE_READY_POLL = 0.5
 #: ⚠️ 名字这一条是启发式。所以配了 ②③ 两道：**光看名字会把页面上任何一个
 #: 叫 `*loading*` 的小控件读成「整页没好」，那样产物就什么都不做了。**
 _PAGE_LOADER_JS = (
+    # ★ 2026-09-29（交接《骨架还缺什么》§7，georgiapower 真广告 URL 开窗实测）：
+    # **先问 readyState**。同一个 CTA（`<a target="_blank">`）、同一条产物路径：
+    # `readyState=loading`（正文 0 字）时点 **2/2 全不成**（60 秒内新 tab 从没出现、
+    # 地址一直是落地页），而 **cdp 回执一切正常**（`match_count:1`、坐标正常）；
+    # `readyState=interactive`（正文 2619 字）时点 **2/2 全成**（+2.26 秒新 tab 出现）。
+    # 而首屏 ~10 秒才 interactive、runner 导航到第一击只有 ~6 秒 ⇒ 正好压在成/不成那条线上
+    # —— 这就是那件事「时好时坏」的来源。
+    # ⚠️ 与下面蒙版那条**并列**、不是替代：蒙版问「页面上有没有一块东西盖着」，
+    # 这条问「文档到 interactive 了没」。两种都不许动手。
+    "if(document.readyState==='loading') return 'READY|loading';"
     "var pageLoaderRe=/(page-?loader|preloader|loading|spinner|skeleton)/i;"
     "var all=document.getElementsByTagName('*');"
     "var vw=window.innerWidth||0, vh=window.innerHeight||0;"
@@ -638,6 +648,12 @@ _PAGE_LOADER_JS = (
 #: 「量不出来」（答复形状不认识）被读成「量出来了，而且是那个坏结果」。
 #: 与本文件里 `COVER|` 那条是**同一个病、同一道闸**。
 LOADER_PREFIX = "LOADER|"
+
+#: ★ 2026-09-29：**文档还没到 interactive** 那一种答复的前缀（§7 实测那半，见 `_PAGE_LOADER_JS`）。
+#: 与 `LOADER|` **并列**、不合并：一个是「页面上有东西盖着整页」，一个是「文档还在 loading」——
+#: 处置相同（都不动手、都有界等），但**说出来的话不一样**（读日志的人要分得清是哪种）。
+#: ⚠️ 同样**只认带前缀的答复**：形状不认识 = 量不出来 = 放行（读成「在加载」会让整趟不做事）。
+READY_PREFIX = "READY|"
 
 #: `observe` 给 cookie 同意类遮挡物记的 kind（`internal/observe.go`：按
 #: 文字/ id / class 里有没有 cookie|consent|gdpr|privacy 判的）。**只点这一类** ——
@@ -2246,35 +2262,43 @@ class Filler:
                       "或者这一单本来就是干净会话没有弹层）—— 跳过，不算没做成。"
                       "产物开跑前本来就会自己清一次弹层（`_clear_obstructions`）。" % label)
     def _page_ready(self, until=None):
-        """**整页**加载完了吗。没好 → 返回盖着整页的那个加载物；好了 → 空串。
+        """**整页**能不能动手。不能 → 返回一句**为什么**（人话）；能 → 空串。
 
         为什么要它（2026-09-18 真站对照，见 `PAGE_READY_SECONDS` 那段）：
         `_covered_by` 只看得见「**我要点的那个东西**被压住了吗」，
         **看不见「整页还没好」** —— 今天每趟就是「元素恰好没被压住」而「整页还烂着」，
         于是它动手、页面不响应、后面 20 步的判据全错。
 
+        ★ 2026-09-29（交接《骨架还缺什么》§7）补上第二种「没好」：**文档还在 `loading`**。
+        实测（georgiapower 真广告 URL）loading 时点 2/2 全不成、而 cdp 回执一切正常；
+        interactive 时 2/2 全成。两种「没好」的处置相同（都不动手、都有界等），
+        但**说出来的话不一样** —— 读日志的人要分得清「被蒙版盖着」还是「文档没到 interactive」。
+
         `until` 是单调时钟的截止点（`None` = 只量一次，不等）。
         """
         waited = False
         while True:
             got = str(self._ev(_PAGE_LOADER_JS) or "").strip()
-            # ⚠️ **只认带 `LOADER|` 前缀的答复**（见 `LOADER_PREFIX` 那段）：
+            # ⚠️ **只认带前缀的答复**（`LOADER|` / `READY|`，见那两个常量的注释）：
             # 空串 / `null` / 任何别的形状都是「量不出来」—— 一律**不当成在加载**。
             # 当成在加载的代价是**整趟什么都不做**，比漏判严重得多。
             hit = got[1:-1] if (len(got) >= 2 and got[0] == got[-1] == '"') else got
             hit = hit.strip()
-            if not hit.startswith(LOADER_PREFIX):
+            if hit.startswith(LOADER_PREFIX):
+                why = "%s 盖着整页" % hit[len(LOADER_PREFIX):]
+            elif hit.startswith(READY_PREFIX):
+                why = "文档还是 `%s`（首屏还没到 interactive）" % hit[len(READY_PREFIX):]
+            else:
                 return ""
-            hit = hit[len(LOADER_PREFIX):]
             if until is None or time.monotonic() >= until:
                 if waited:
-                    self.log.info("[%s] 等了 %.0f 秒，%s 还盖着整页 —— 这一页没加载完",
-                                  self.cid, PAGE_READY_SECONDS, hit)
-                return hit
+                    self.log.info("[%s] 等了 %.0f 秒，%s —— 这一页还不能动手",
+                                  self.cid, PAGE_READY_SECONDS, why)
+                return why
             if not waited:
                 waited = True
-                self.log.info("[%s] 这一页还在加载（%s 盖着整页）—— "
-                              "先等它加载完，最多 %.0f 秒", self.cid, hit, PAGE_READY_SECONDS)
+                self.log.info("[%s] 这一页还在加载（%s）—— 先等它好，最多 %.0f 秒",
+                              self.cid, why, PAGE_READY_SECONDS)
             time.sleep(PAGE_READY_POLL)
 
     def _cover_once(self, selector, frame_id=""):
@@ -2503,11 +2527,13 @@ class Filler:
         # ★ **动手之前**先问「这一页就绪了吗」（2026-09-18 真站对照：见 `PAGE_READY_SECONDS`）。
         # 整页还在加载就**不许动手** —— 点了也是白点，而且会把后面 20 步的判据全带错。
         # 注意这与下面那个 `_covered_by` 是**两个问题**：那个问元素，这个问整页。
-        loading = self._page_ready(until=time.monotonic() + PAGE_READY_SECONDS)
-        if loading:
+        not_ready = self._page_ready(until=time.monotonic() + PAGE_READY_SECONDS)
+        if not_ready:
+            #: `not_ready` **本来就是一句人话**（`LOADER|` 与 `READY|` 两种各自说清是哪一种）——
+            #: 这里别再加「盖着整页」那种字样：文档还没到 interactive 时它不是被盖着。
             return False, "", None, (
-                "这一页没加载完（%s 盖着整页，等了 %.0f 秒还没走）—— **没动手**："
-                "点了也是白点，还会把后面的判据全带错" % (loading, PAGE_READY_SECONDS)), ""
+                "这一页还不能动手（%s；等了 %.0f 秒还是这样）—— **没动手**："
+                "点了也是白点，还会把后面的判据全带错" % (not_ready, PAGE_READY_SECONDS)), ""
 
         # ★ 2026-09-29（travelandleisure 生产实测：25 条失败里 18 条死在这一格）：
         # **动手之前再兜一次同意弹层**。它不只在「开跑 / 导航之后」出现 —— go-offer 那一趟

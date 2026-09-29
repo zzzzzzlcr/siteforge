@@ -3162,3 +3162,58 @@ def test_a_product_without_the_field_is_not_called_fresh(rendered):
     got = template.skeleton_drift(stripped)
     assert got["stale"] is None, got
     assert "答不上来" in got["say"], got
+
+
+def test_a_step_does_not_act_while_the_document_is_still_loading(sandbox, form_file):
+    """★ 2026-09-29（交接《骨架还缺什么》§7，georgiapower 真广告 URL 开窗实测）：
+
+    **动手之前还有一问**：文档到 interactive 了没。实测同一个 CTA、同一条产物路径：
+    `readyState=loading` 时点 **2/2 全不成**（60 秒内新 tab 从没出现、地址一直是落地页），
+    而 **cdp 回执一切正常**（`match_count:1`、坐标正常、只有 `landing_blind`）；
+    interactive 时点 **2/2 全成**。首屏 ~10 秒才 interactive，runner 导航到第一击只有 ~6 秒
+    ⇒ 正好压在成/不成那条线上 —— 就是那件事「时好时坏」的来源。
+    这里钉住：loading 时**不许把这一击发出去**，而且要说清是**哪一种**没就绪。
+    """
+    module, _ = _load(
+        "run_still_loading",
+        template.render("example-still-loading", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.page_loader = "READY|loading"      # 一直在 loading，走不掉
+    module.PAGE_READY_SECONDS = 0.3
+    module.PAGE_READY_POLL = 0.02
+
+    ok = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    assert ok is False, "文档还在 loading 就不许算做成"
+    assert not [a for a in common.STATE.actions if a[0] == "click"], (
+        "loading 时**不许动手**（点了也是白点）：%s" % common.STATE.actions)
+
+
+def test_the_document_becoming_interactive_lets_the_step_run(sandbox, form_file):
+    """同一格的反面：头两次还在 loading、之后 interactive ⇒ **照常动手**。
+
+    没有这一格，就会写出「只要见过 loading 就整趟不做事」那种怂改法 ——
+    而那正好会把成功那趟也一起毙掉。
+    """
+    module, _ = _load(
+        "run_becomes_interactive",
+        template.render("example-interactive", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.page_loader_seq = ["READY|loading"] * 2 + [""] * 30
+    module.PAGE_READY_SECONDS = 5.0
+    module.PAGE_READY_POLL = 0.02
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    assert ("click", "#go") in common.STATE.actions, (
+        "文档 interactive 之后就该照常点：%s" % common.STATE.actions)
