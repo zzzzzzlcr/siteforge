@@ -180,3 +180,125 @@ def test_no_new_url_says_it_cannot_judge_rather_than_ok():
     got = reuse.portability(_loop(), "")
     assert got["blocking"] == []
     assert any("判不了" in one for one in got["notes"])
+
+
+# ═══════ 跨站同代体检（`reuse.same_generation`）═══════════════════════════════
+#
+# 这一层治的是《骨架还缺什么》§5 那件真事：funchatt 与同组三家本应同代，可它还挂在
+# **文案匹配**的老脚本上，而平台的新版问卷（`data-testid` 那一代）早给别的组迁过了 ——
+# 漏在外面十来天，**是靠人开窗手工撞见的**。这一关把那一撞变成机器话。
+#
+# 夹具两代，形状都从线上真产物量来（#66 那组 14 处 `data-testid`、#93 那组 0 处）：
+#   · 新版 `_new_gen`：认 `data-testid`，成功判据钉在网址上；
+#   · 老版 `_old_gen`：只读页面正文，没有 testid 词汇。
+#
+# ⚠️ 分组数据（`/api/quest/formConfig/sites`）**不许编** —— 拿不到就如实说「拿不到」。
+
+def _new_gen(done: str, ids=("continue-button", "age-18-24", "email")) -> str:
+    """新版那一代：`data-testid` 元素标记 + 网址成功判据。"""
+    body = "\n".join("%s = '[data-testid=\"%s\"]'"
+                     % (one.upper().replace("-", "_"), one) for one in ids)
+    return ("SUCCESS_URL_MARKERS = (\"%s\",)\n%s\n"
+            "def read():\n"
+            "    return document.querySelector('[data-testid=\"continue-button\"]')\n"
+            % (done, body))
+
+
+def _old_gen(text: str = "Next") -> str:
+    """老版那一代：只读页面正文，一个 testid 都不用。"""
+    return ('NEXT = "%s"\n'
+            'def _body():\n'
+            '    return document.body.innerText\n' % text)
+
+
+def test_a_group_that_is_all_one_generation_is_not_flagged():
+    """① 同组同代 → **不喊**。
+
+    ⚠️ 两家钉的成功网址**字面不同**（`a.example` / `b.example`）—— 同代两站本来就
+    各钉各的域名，这一关比的是**形状**，拿字面值比会把健康的一组喊成一锅粥。
+    """
+    rows = [{"site": "a.example", "config_id": 93},
+            {"site": "b.example", "config_id": 93}]
+    srcs = {"a.example": _new_gen("https://a.example/wizard"),
+            "b.example": _new_gen("https://b.example/wizard")}
+    got = reuse.same_generation(rows, srcs)
+    assert got["connected"] is True and got["checked"] is True, got
+    assert got["verdict"] == "同代", got
+    assert got["groups"][0]["same"] is True, got["groups"][0]
+    assert "不喊" in "".join(got["say"])
+
+
+def test_a_member_left_on_the_old_generation_is_named_and_the_gap_located():
+    """② 同组混代 → **喊出是哪几家、差在哪几条**（不凑相似度分数）。"""
+    rows = [{"site": "asiatalks.example", "config_id": 93},
+            {"site": "thisromance.example", "config_id": 93},
+            {"site": "funchatt.example", "config_id": 93}]
+    srcs = {"asiatalks.example": _new_gen("https://a.example/wizard"),
+            "thisromance.example": _new_gen("https://b.example/wizard"),
+            "funchatt.example": _old_gen()}
+    got = reuse.same_generation(rows, srcs)
+    assert got["verdict"] == "有 1 组不同代", got
+    group = got["groups"][0]
+    assert group["same"] is False, group
+    said = "\n".join(group["say"])
+    assert "不是同一代" in said and "funchatt.example" in said, said
+    whats = {one["what"] for one in group["diffs"]}
+    assert "testid 词汇" in whats and "判据形态" in whats, whats
+    testid = next(one for one in group["diffs"] if one["what"] == "testid 词汇")
+    assert "funchatt.example" in testid["say"] and "一个都不用" in testid["say"], testid
+
+
+def test_without_the_grouping_data_it_says_not_checked_not_all_clear():
+    """③ 分组拿不到 → **如实说「拿不到 / 没检查」**（不是「没问题」）。
+
+    「拿不到」与「检查过、没问题」是**两件事**；混成一件就是本项目最贵的那种谎。
+    """
+    got = reuse.same_generation(None, {"a.example": _new_gen("https://a.example/wizard")})
+    assert got["connected"] is False and got["checked"] is False, got
+    assert got["verdict"] == "拿不到分组", got
+    said = "".join(got["say"])
+    assert "拿不到" in said and "没检查" in said and "不表示" in said, said
+    # 空清单走同一条路（「一个站都没有」不是「都没问题」）。
+    assert reuse.same_generation([], {})["verdict"] == "拿不到分组"
+
+
+def test_a_group_member_without_a_source_is_said_not_silently_dropped():
+    """④ 组里某一家的源码没接上 → **出声点名**，不许静默当成「它没问题」。"""
+    rows = [{"site": "a.example", "config_id": 7},
+            {"site": "b.example", "config_id": 7}]
+    got = reuse.same_generation(rows, {"a.example": _new_gen("https://a.example/wizard")})
+    group = got["groups"][0]
+    said = "\n".join(group["say"])
+    assert "读不到源码" in said and "b.example" in said, said
+    assert group["same"] is None, group          # 比不了 ≠ 同一代
+    assert got["checked"] is False and got["verdict"] == "没得比", got
+
+
+def test_a_site_without_a_config_number_is_said_out_loud_and_left_out():
+    """⑤ 一条清单里**没有 config 号**的站 → 出声（分不进组），其余的照比。"""
+    rows = [{"site": "a.example", "config_id": 1},
+            {"site": "b.example", "config_id": 1},
+            {"site": "noconfig.example"}]
+    srcs = {"a.example": _new_gen("https://a.example/wizard"),
+            "b.example": _new_gen("https://b.example/wizard")}
+    got = reuse.same_generation(rows, srcs)
+    said = "".join(got["say"])
+    assert "noconfig.example" in said and "没有 config 号" in said, said
+    assert got["verdict"] == "同代", got        # 另外那两家仍比成了
+
+
+def test_a_group_that_could_not_be_compared_is_not_read_as_same_generation():
+    """⑥ 有组比成了「同代」，**同时**有组比不了 → 后者要单独出声（不许被「同代」盖掉）。
+
+    这两件事在不同组上同时成立时最容易出事：一句「不喊」会把没查的那几组
+    一起销掉 —— 那正是「没检查却看着像检查过了」。
+    """
+    rows = [{"site": "a.example", "config_id": 1},
+            {"site": "b.example", "config_id": 1},
+            {"site": "lonely.example", "config_id": 2}]
+    srcs = {"a.example": _new_gen("https://a.example/wizard"),
+            "b.example": _new_gen("https://b.example/wizard")}
+    got = reuse.same_generation(rows, srcs)
+    assert got["verdict"] == "同代", got           # 比成的那一组确实同代
+    said = "".join(got["say"])
+    assert "比不了" in said and "没检查" in said and "配置 2" in said, said

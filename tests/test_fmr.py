@@ -1246,6 +1246,8 @@ def test_the_noun_each_reader_actually_prints_is_the_one_for_that_endpoint():
     ⚠️ 四个口 **×** 两条失败路 = 八格，一格都不许漏（漏的那几格就是上一版逃掉的那两处）。
     ⚠️ Task B1：这一圈**遍历 `_PATH_SAY`**，所以新加的那个读口（⑤ 配置）**自动**进来了
     —— 下面那张表也补了它（不补就是 `KeyError`：这张表与那张词表必须一起长）。
+    ⚠️ ④ 站点清单（跨站同代体检的输入）同样**自动**进来 —— 它**要读 token**，
+    所以下面那张表里它那一条照 `client()` 配了 token 的那条路走。
     """
     cases = [
         (r"not json at all", "不是 JSON"),
@@ -1265,6 +1267,9 @@ def test_the_noun_each_reader_actually_prints_is_the_one_for_that_endpoint():
                 fmr.FORM_CONFIG_PATH: lambda c: c.form_config("cvrefresh.com"),
                 #: B 线 py 支（2026-09-21）：同样是**公开**口，不配 token 也走得通。
                 fmr.FORM_SCRIPT_PATH: lambda c: c.form_script("cvrefresh.com"),
+                #: ④ 站点清单（跨站同代体检的输入）：**要读 token**（与上两个公开口不同），
+                #: 而这里的 `client()` 配了 token，所以走得通。
+                fmr.FORM_CONFIG_SITES_PATH: lambda c: c.form_config_sites(),
             }[path]
             with pytest.raises(fmr.FmrUnmeasured) as e:
                 call(client(rec))
@@ -1383,6 +1388,16 @@ MEASURED_WRITE_401_BODY = {"status": 401, "msg": "unauthorized", "data": []}
 #: 【转述的·出处 `task-b1-brief.md` §1】—— 这一句**我没量过**（量它要真写生产配置，
 #: brief 与 plan §7 都点名不许）。它只在「后端拒了」那一支当输入用。
 MEASURED_WRITE_400_BODY = {"status": 400, "msg": "参数错误: site 与 steps 必填"}
+
+
+#: 【出处 `farmer-api.md` §四「站点清单」的响应示例，逐字】清单在 `data` **里面**那一格
+#: `sites` 里。这一条用例只吃形状，所以示例行够用 —— 真机那 196 站 / 116 组是
+#: `tools/same-generation.py` 真跑时量的，不进这个夹具。
+MEASURED_SITES = [
+    {"site": "compareinsulation.io/article-1-c", "config_id": 30, "status": 1},
+    {"site": "warthunder.com/en/play4free/", "config_id": 21, "status": 0},
+]
+MEASURED_SITES_BODY = {"status": 200, "msg": "success", "data": {"sites": MEASURED_SITES}}
 
 
 class PostRecorder:
@@ -1692,6 +1707,56 @@ def test_a_config_read_without_a_site_is_refused_for_free():
         client(rec).form_config("   ")
     assert e.value.kind == "no-site", e.value.kind
     assert rec.urls == [], "免费的那道闸没挡住：%r" % rec.urls
+
+
+# ─────────────── 读：站点清单（跨站同代体检的输入）───────────────
+
+
+def test_the_sites_query_asks_the_deployed_route_and_hands_back_the_list_inside_data():
+    """请求的形状（**要读 token**）+ 交出来的是 `data` **里面**那一格 `sites`。
+
+    ⚠️ `data` 是**对象**、清单在 `sites` 里 —— 照抄 `data` 交出去的就是那个包裹层
+    （与 `form_config` 那个「读错层」的坑**形状不同、病同一个**）。
+    """
+    rec = Recorder(MEASURED_SITES_BODY)
+    got = client(rec).form_config_sites()
+    assert got == MEASURED_SITES, got
+    assert got != MEASURED_SITES_BODY["data"], "把包裹层当清单交出去了：%r" % got
+    path, params = query_of(rec.urls[0])
+    assert path == "/api/quest/formConfig/sites", path
+    assert params == {}, params
+    assert rec.headers[0].get("X-Api-Token") == FAKE_TOKEN, rec.headers[0]
+    assert FAKE_TOKEN not in rec.urls[0], "token 进了 URL：%r" % rec.urls[0]
+
+
+def test_the_sites_read_needs_a_token_unlike_the_two_public_readers():
+    """★ 这个口**要读 token**（`farmer-api.md` §五 ④）—— 与 `formConfig` / `formScript`
+    那两个**公开**口**不是一回事**：没配 token 时**门口就抛**（一个请求都不发）。
+
+    ⚠️ 单钉的理由：上面那两条公开口的用例刚钉过「不配 token 也读得动」，
+    照抄到这一个口上就会把一个**要鉴权**的口读成公开的。
+    """
+    rec = Recorder(MEASURED_SITES_BODY)
+    with pytest.raises(fmr.FmrNoToken) as e:
+        fmr.FmrClient(token="", opener=rec).form_config_sites()
+    assert e.value.kind == "no-token", e.value.kind
+    assert rec.urls == [], "免费的闸没挡住：%r" % rec.urls
+
+
+def test_a_sites_answer_whose_data_cell_is_not_the_list_is_unmeasured():
+    """信封对得上、可 `data.sites` **不是数组** → **抛**（不许把包裹层 / 缺失当成清单）。
+
+    ★ 正控在最后：**真空**（`data.sites: []`）是**量得到的事实** —— 它原样交出去，
+    与上面那些「没量着」分得开（否则「什么都抛」也能满足这一条）。
+    """
+    for bad in ({"sites": {"a": 1}}, {"sites": None}, {}):
+        with pytest.raises(fmr.FmrUnreachable) as e:
+            client(Recorder(envelope(bad))).form_config_sites()
+        said = str(e.value)
+        assert "不是一个数组" in said, said
+        assert "读不了站点清单" in said, said
+        assert fmr.UNMEASURED_SAY in said, said
+    assert client(Recorder(envelope({"sites": []}))).form_config_sites() == []
 
 
 # ─────────────────────── 写：把一份配置写回去 ───────────────────────

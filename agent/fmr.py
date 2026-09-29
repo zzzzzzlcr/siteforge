@@ -48,7 +48,7 @@
   `_cdp_bin` / `_shots_dir` / `_selftest_root` 同一条不变量 —— 服务跑起来之后
   环境再变，不该悄悄换一个身份（那是「名字说 A、量的是 B」）。
 
-## 这一层现在有五个读口 + 一个写口
+## 这一层的读口与写口
 
 | 口 | 答的是 |
 |---|---|
@@ -57,6 +57,7 @@
 | `fetch_rank(date)` | **今天哪些站**在失败（榜单）—— Task 4 加的 |
 | `fetch_diag(task_id)` | **这一单为什么**失败（原因行）—— Task 4 加的 |
 | `form_config(site)` | **这个站的 JSON 配置**长什么样 —— Task B1 加的 |
+| `form_config_sites()` | **后端那份站点清单**（谁跟谁同一个 config 组）—— 跨站同代体检的输入 |
 | `update_form_config(site, steps)` | **把一份 JSON 配置写回去** —— Task B1 加的（唯一一个写口） |
 
 ```
@@ -184,7 +185,8 @@ __all__ = [
     "EXIT_SAY", "CONFIG_STATUS_SAY", "NO_DIAG_SAY", "int_or_none",
     "exit_say", "has_script_say", "rank_row_say", "rank_say", "diag_head_say",
     # Task B1：一份 JSON 配置的读（⑤）与写
-    "FORM_CONFIG_PATH", "FORM_CONFIG_UPDATE_PATH", "FORM_SCRIPT_PATH", "CONFIG_TIMEOUT",
+    "FORM_CONFIG_PATH", "FORM_CONFIG_UPDATE_PATH", "FORM_CONFIG_SITES_PATH",
+    "FORM_SCRIPT_PATH", "CONFIG_TIMEOUT",
     "FormWriteResult", "WRITE_VERDICTS", "business_status", "looks_like_wrapper",
 ]
 
@@ -233,6 +235,13 @@ DEFAULT_TIMEOUT = 20.0
 FORM_CONFIG_PATH = "/api/quest/formConfig"
 #: 写回一份配置的口（要 `X-Api-Token`）。
 FORM_CONFIG_UPDATE_PATH = "/api/quest/formConfig/update"
+
+#: ④ 站点清单 / 分组（跨站同代体检的输入）：**谁跟谁同一个 config 组**。
+#: 【我量的·2026-09-29，真机】`GET /api/quest/formConfig/sites`（**要读 token**）→
+#: `{"status":200,"msg":"success","data":{"sites":[{"site","config_id","status"}, …]}}`
+#: —— 196 个站 / 116 个组；⚠️ `data` 是**对象**，清单在它里面那一格 `sites`。
+#: 出处：`farmer-api.md` §四「站点清单」与 §五「生效的调用」第 ④ 条。
+FORM_CONFIG_SITES_PATH = "/api/quest/formConfig/sites"
 
 # ── ⑥ 一个站的**脚本源码**：读（B 线 py 支，2026-09-21）──────────────────────
 #: 读一个站的脚本源码。**公开，无鉴权** —— 【我量的·2026-09-21】不带任何头去拿它
@@ -1033,6 +1042,8 @@ _PATH_SAY = {
     FORM_CONFIG_PATH: "这份 JSON 配置",
     #: B 线 py 支。同样是**读**口（写那个口 `formScript/update` 照旧不入表，理由同上）。
     FORM_SCRIPT_PATH: "这个站的脚本",
+    #: ④ 站点清单（跨站同代体检的输入）。⚠️ **要读 token**（与上两个公开口不同）。
+    FORM_CONFIG_SITES_PATH: "站点清单",
 }
 
 
@@ -1552,6 +1563,45 @@ class FmrClient:
                 "这一层不替它猜。" % (self._what(FORM_SCRIPT_PATH), str(kind)[:40]),
                 kind="no-type")
         return data
+
+    # ── ⑦ 站点清单 / 分组：读（跨站同代体检的输入）────────────────────
+    def form_config_sites(self) -> List[dict]:
+        """**后端那份站点清单**（谁跟谁同一个 config 组）→ `[{site, config_id, status}, …]`。
+
+        【我量的·2026-09-29，真机】`GET /api/quest/formConfig/sites`：
+
+        ```
+        {"status":200,"msg":"success","data":{
+           "sites":[{"site":"compareinsulation.io/article-1-c","config_id":30,"status":1},
+                    {"site":"warthunder.com/en/play4free/","config_id":21,"status":0}]}}
+        ```
+
+        ⚠️ `data` 是**对象**，清单在**它里面那一格** `sites` —— 照抄 `data` 交出去的会是
+        `{"sites": …}` 而不是清单（与 `form_config` 那个「读错层」的坑**形状不同、病同一个**）。
+
+        ★ 交出来的是**清单那一根数组**（`data.sites`）—— 它正是
+        `reuse.same_generation(rows=…)` 那个 `rows` 要的东西（按 `config_id` 分组、
+        比「同组该同代」）。这一层**不加工任何一个格**（`status` 是 1/0、`config_id` 是数字，
+        原样带出去）。
+
+        ⚠️ 这个口**要读 token**（`farmer-api.md` §五：`④ GET /api/quest/formConfig/sites
+        只读 token`）—— 与 `form_config` / `form_script` 那两个**公开**口不是一回事，
+        所以走默认的 `need_token=True`：没配 token 的部署**在门口就抛**，一个请求都不发。
+
+        ⚠️ 形状不对**只能抛**（不许把包裹层当清单、也不许把读不到当成「一个站都没有」）：
+        `data.sites` 不是数组 ⇒ `FmrUnreachable`（这一次**没量着**）。真量了、真的一个站都
+        没有，是 `{"sites":[]}` 那个**空数组** —— 那条**原样交出去**（空数组是量得到的
+        事实，读不到不是）。
+        """
+        data = self._call(FORM_CONFIG_SITES_PATH, {}, shape=dict)
+        sites = data.get("sites")
+        if not isinstance(sites, list):
+            # ⚠️ 与 `form_config` 里面那道闸同一个道理，只是这一次在**外层信封里面**。
+            raise FmrUnreachable(
+                "读不了%s：信封对得上（`status:200`），可 `data.sites` 那一格**不是一个数组**"
+                "（读回来的是 %s…）—— 清单在 `data` 里面那一格 `sites` 里。%s。"
+                % (self._what(FORM_CONFIG_SITES_PATH), str(sites)[:60], UNMEASURED_SAY))
+        return list(sites)
 
     def _script_404_say(self, key: str, first: "FmrRefused") -> str:
         """★ ②（2026-09-21）脚本读口 404 那一句：**再拿 `type=debug` 问一次**才说。

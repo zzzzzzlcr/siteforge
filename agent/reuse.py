@@ -19,6 +19,11 @@
   · `legacy`   —— 线上那一族手写脚本（没有 `STATES`/`FILLS`）：只能比**词表**
     （选择器串 + 页面文字串的 Jaccard）—— 这条**是估的，不是判的**，`say` 里会说明。
 
+第三件（2026-09-29，交接《骨架还缺什么》§5）：`same_generation(rows, sources)` ——
+**按平台分组（同一 `config_id`）做同代体检**：同组内该同代（testid 词汇 / 判据形态 /
+成功判据一致），不同代就喊出**是哪几家、差在哪几条**；分组数据与各站源码都是**注入的**，
+拿不到就**如实说拿不到**（见那个函数的 docstring）。
+
 ⚠️ 读源码**不走 exec**（与 `fix._literals` 同一条规矩）：坏 py / 动态构造的值一律当
 「读不出来」，不抛、不猜。
 """
@@ -34,6 +39,30 @@ from agent import fix
 _SELECTOR_RE = re.compile(r"[#.][A-Za-z][-\w]*(?:[ >+~][-\w#.=\"'\[\]()]+)*")
 #: 词表那档收「像页面文字」的串：够长、带空格、不是 URL/模板话术。
 _TEXT_MIN = 8
+
+# ── 跨站同代体检（《骨架还缺什么》§5）：四个**形状**读口 ─────────────────────
+#:
+#: 判据只读**形状**（用了哪几条通道 / 哪一族元素标记），不读站点专属的字面值 ——
+#: 同代的两站域名与文案本来就不同，拿字面值比会把健康的一组喊成一锅粥。
+#:
+#: 元素标记：`data-testid="continue-button"` 与 `[data-testid=age-18-24]`
+#: **两种写法都认**（带引号 / 不带引号；值取到第一个引号/空白/前缀数字为止）。
+_TESTID_RE = re.compile(r"""data-testid\s*=\s*["']?([A-Za-z][-\w]*)""")
+#: testid 值里**每站的实例号**抹掉（`age-18-24` → `age`）—— 不然同代两站会因为
+#: 题目编号不同被判成两代（`image-button-1` 那种同日增删也会变）。
+_TESTID_TAIL_RE = re.compile(r"(?:[-_]\d+)+$")
+#: 判据/状态走的**通道**。四条各自对着被真站逼出来的一种写法：
+#:   网址     —— 成功/到达判据钉在地址上（`SUCCESS_URL_MARKERS` / `SUCCESS_URLS`）；
+#:   testid   —— 「走到哪一屏」靠 `data-testid` 读（2026-09 平台改版那一代）；
+#:   hash状态 —— 状态写在地址 hash 的 base64 里（平台新版问卷）；
+#:   文字     —— 判据靠页面正文/文案（老脚本那一代）。
+_URL_MARK_RE = re.compile(r"SUCCESS_URL")
+_HASH_RE = re.compile(r"location\.hash|\batob\s*\(|\bbtoa\s*\(")
+_TEXT_MARK_RE = re.compile(r"text_contains|innerText|textContent")
+
+#: 一维的名字 ↔ `_generation` 里那一格（差异句按这个顺序摆）。
+_DIMENSIONS = (("形状", "family"), ("testid 词汇", "testids"),
+               ("判据形态", "judges"), ("成功判据", "success"))
 
 
 def _parse(src):
@@ -367,3 +396,202 @@ def _compare_clues(a: dict, b: dict) -> dict:
         say.append("共有的选择器样例：%s" % ", ".join(sorted(sa & sb)[:6]))
     return {"verdict": "不同族" if diffs else "看着同族（词表，需真跑确认）",
             "diffs": diffs, "same": [], "say": say}
+
+
+# ═══════ 跨站同代体检（《骨架还缺什么》§5）═══════════════════════════════════
+#
+# 为什么要有这一关（2026-09-29 交接 §5 的真事）：funchatt 与 thisromance / asiatalks /
+# sparkydates 同属**一个 config 组**，而平台的新版问卷（`<button data-testid="age-*" /
+# "image-button-*" / continue-button`，状态写在 hash 的 base64 里）早在 09-17/09-18 就
+# 给另一个组迁过了 —— funchatt 那一组**漏在外面十来天**，失败是**稳定**的，而发现它的
+# 方式是人开窗手工撞见。这一关就是「同组应当同代，不同代就喊」，把手工那一撞变成一句机器话。
+#
+# ⚠️ **分组数据是注入的，不是这一层去取的**（与 `Deps.patch_source` 那条「没接上就停下
+# 并点名」同一规矩）：分组在 `/api/quest/formConfig/sites`（`data.sites`：
+# 每条 `{site, config_id, status}`，站点清单 + config 号那两列）。**读它要走网络、
+# 要读 token、要给每个站再拉一份源码** —— 那不是纯比对的活，所以这一层只吃**已经取好的**
+# 输入：`rows` 是那份清单，`sources` 是 `{站点: 源码}`。**拿不到就如实说拿不到**
+# （`connected: False` + 「没检查」），**不许**退化成「没检查却看着像检查过了」。
+#
+# 【我量的·2026-09-29，真机】`GET https://fmr.3tkj.cn/api/quest/formConfig/sites`
+# （带读 token `FMR_AGENT_TOKEN`）回 `data.sites`：**196 个站 / 116 个 config 组**；
+# 例：#93 组（asiatalks/sparkydates/thisromance）与 #66 组（funchatt/callyourdate/…）。
+# 同一批站用 `formScript?site=` 拉源码，**同组内的确同代**（#66 那族 14 处 `data-testid`、
+# #93 那族 0 处）—— 所以「按 config 分组比这一族形状」这一刀是量出来的，不是猜的。
+
+
+def _testid_vocab(src: str) -> tuple:
+    """这一份产物认的 testid 词汇（**按实例号归口、排好序**）—— 空 tuple = 一个都不用。"""
+    out = set()
+    for match in _TESTID_RE.finditer(str(src or "")):
+        word = _TESTID_TAIL_RE.sub("", match.group(1)).rstrip("-_")
+        if word:
+            out.add(word)
+    return tuple(sorted(out))
+
+
+def _generation(src: str) -> dict:
+    """一份产物的「这一代」指纹：**形状 + testid 词汇 + 判据形态 + 成功判据**。
+
+    逐格都是**形状**（用了哪几条通道 / 哪一族元素标记），**不是**站点专属的字面值
+    （域名、成功文案）—— 同代两站的字面值本来就不同，拿字面值比会凭空喊一锅粥。
+    坏 py 读不出骨架时 `family` 是 `"unknown"`，其余格照量（那三个正则读的是**文本**，
+    不吃 AST）—— 所以「源码本身坏掉了」这一件事也会在 `family` 上现形。
+    """
+    skel = skeleton(src)
+    text = str(src or "")
+    judges = []
+    if skel["success_urls"] or skel["arrive"] or _URL_MARK_RE.search(text):
+        judges.append("网址")
+    if _TESTID_RE.search(text):
+        judges.append("testid")
+    if _HASH_RE.search(text):
+        judges.append("hash状态")
+    if (_TEXT_MARK_RE.search(text) or skel["success_texts"]
+            or any(j[2] for j in skel["judges"])):
+        judges.append("文字")
+    success = []
+    if skel["success_urls"]:
+        success.append("网址")
+    if skel["success_texts"]:
+        success.append("文字")
+    return {"family": skel["kind"], "testids": _testid_vocab(text),
+            "judges": tuple(judges), "success": tuple(success)}
+
+
+def _gen_key(one: dict) -> tuple:
+    return (one["family"], one["testids"], one["judges"], one["success"])
+
+
+def _one_value_say(value) -> str:
+    """一格的值 → 人话（**空**要说成「一个都不用」，不是留白）。"""
+    if isinstance(value, tuple):
+        return "、".join(value) if value else "（一个都不用）"
+    return str(value)
+
+
+def _dim_say(name: str, per_site: list) -> str:
+    """一维上**分成几拨** → 一句人话：**逐家点名**，不说分数、不凑相似度。"""
+    buckets: dict = {}
+    for site, value in per_site:
+        buckets.setdefault(value, []).append(site)
+    parts = ["%s 用 %s" % ("、".join(sites), _one_value_say(value))
+             for value, sites in sorted(buckets.items(),
+                                        key=lambda kv: (-len(kv[1]), str(kv[0])))]
+    return "「%s」分成 %d 拨：%s" % (name, len(buckets), "；".join(parts))
+
+
+def same_generation(rows, sources=None) -> dict:
+    """按平台分组（同一 `config_id`）做**同代体检** —— 同组该同代，不同代就喊。
+
+    `rows`（**注入的分组**）：`/api/quest/formConfig/sites` 的 `data.sites`，
+       每条 `{"site": …, "config_id": …, "status": …}`。**整份拿不到（`None`/空）
+       ⇒ 如实说「拿不到分组」**，绝不装作检查过。
+    `sources`（**注入的源码**）：`{站点: 这份产物的 py/配置文本}`，按 `site` 对上上面那条。
+       某个站没给 / 给的是空串 ⇒ 这一家**出声**说「读不到源码」，**不静默丢**。
+
+    交回来：`{connected, checked, verdict, groups, say}`。
+      · `connected` —— 分组数据到底接上没有（`False` = 这一关没跑）；
+      · `checked`   —— 真比成了几组（`False` = 一组都没比成，**不是「都没问题」**）；
+      · `verdict`   —— 一句人话结论；`say` 是给运营读的逐句（哪个组、哪几家、差在哪几条）。
+    """
+    if not isinstance(rows, (list, tuple)) or not rows:
+        return {"connected": False, "checked": False, "verdict": "拿不到分组",
+                "groups": [],
+                "say": ["跨站同代体检 —— **分组数据拿不到**（一个字节都没进来）："
+                        "这一次**没检查**，**不表示「没问题」**。",
+                        "分组在 `/api/quest/formConfig/sites` 里（`data.sites`："
+                        "每条 `{site, config_id, status}`）；把那份清单，连同每个站的源码，"
+                        "一起传进来这一关才跑得起来。"]}
+    srcs = sources if isinstance(sources, dict) else {}
+
+    grouped: dict = {}
+    ungrouped: list = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        site = str(row.get("site") or "").strip()
+        if not site:
+            continue
+        cid = row.get("config_id")
+        if cid is None:
+            ungrouped.append(site)
+        else:
+            grouped.setdefault(cid, []).append(site)
+
+    say: list = []
+    if ungrouped:
+        say.append("⚠️ %d 个站**没有 config 号**（分不进任何一组，这一关没管它们）：%s"
+                   % (len(set(ungrouped)), "、".join(sorted(set(ungrouped)))))
+    if not grouped:
+        return {"connected": True, "checked": False, "verdict": "分组里没有成组的站",
+                "groups": [],
+                "say": say + ["清单读到了，可**没有一个站带 config 号** —— "
+                              "分组这一关没有能比的对象（不是「都没问题」）。"]}
+
+    out_groups: list = []
+    compared = 0
+    for cid, raw_sites in sorted(grouped.items(), key=lambda kv: str(kv[0])):
+        sites = sorted(set(raw_sites))
+        gens: dict = {}
+        missing: list = []
+        for site in sites:
+            src = srcs.get(site)
+            if isinstance(src, str) and src.strip():
+                gens[site] = _generation(src)
+            else:
+                missing.append(site)
+        gsay: list = []
+        head = "配置 %s 这一组 %d 家" % (cid, len(sites))
+        if missing:
+            gsay.append("⚠️ 有 %d 家**读不到源码**（这一关没拿它们比）：%s"
+                        % (len(missing), "、".join(missing)))
+        if len(gens) < 2:
+            reason = ("一家都读不到源码" if not gens
+                      else "只读到了 %s 一家" % "、".join(sorted(gens)))
+            gsay.append("%s —— %s，**比不了**。" % (head, reason))
+            out_groups.append({"config_id": cid, "sites": sites, "same": None,
+                               "diffs": [], "say": gsay})
+            continue
+        compared += 1
+        buckets: dict = {}
+        for site in sorted(gens):
+            buckets.setdefault(_gen_key(gens[site]), []).append(site)
+        if len(buckets) == 1:
+            gsay.append("%s（%s）**同一代** —— 不喊。" % (head, "、".join(sites)))
+            out_groups.append({"config_id": cid, "sites": sites, "same": True,
+                               "diffs": [], "say": gsay})
+            continue
+        gsay.append("⚠️ %s **不是同一代** —— 分成 %d 拨：%s。"
+                    % (head, len(buckets),
+                       "；".join("%s（%d 家）" % ("、".join(names), len(names))
+                                 for names in buckets.values())))
+        diffs = []
+        for name, field in _DIMENSIONS:
+            per_site = [(site, gens[site][field]) for site in sorted(gens)]
+            if len({value for _, value in per_site}) > 1:
+                diffs.append({"what": name, "say": _dim_say(name, per_site)})
+        gsay.extend("  · " + one["say"] for one in diffs)
+        out_groups.append({"config_id": cid, "sites": sites, "same": False,
+                           "diffs": diffs, "say": gsay})
+
+    shouted = [one for one in out_groups if one["same"] is False]
+    uncompared = [one for one in out_groups if one["same"] is None]
+    if shouted:
+        verdict = "有 %d 组不同代" % len(shouted)
+        say.append("⚠️ 比成的 %d 组里 %d 组**不同代** —— 见上面逐组的「哪几家 / 差在哪」。"
+                   % (compared, len(shouted)))
+    elif compared == 0:
+        verdict = "没得比"
+        say.append("一组都没比成（每家要么读不到源码，要么组里不足 2 家）—— "
+                   "**没检查**，不是「没问题」。")
+    else:
+        verdict = "同代"
+        say.append("比成的 %d 组都是同一代 —— 不喊。" % compared)
+    if uncompared:
+        say.append("⚠️ 另有 %d 组**比不了**（源码没接上 / 组里不足 2 家）—— "
+                   "那几组**没检查**，不是「同一代」。" % len(uncompared))
+    for one in out_groups:
+        say.extend(one["say"])
+    return {"connected": True, "checked": compared > 0, "verdict": verdict,
+            "groups": out_groups, "say": say}
