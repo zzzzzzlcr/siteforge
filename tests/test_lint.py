@@ -313,3 +313,210 @@ def test_each_judge_rule_is_load_bearing(monkeypatch):
     assert "judge-transient" in _codes(src)
     monkeypatch.setattr(lint, "JUDGE_RULES", ("judge-fill-value", "judge-url-only"))
     assert "judge-transient" not in _codes(src), "摘掉了它却还在报 —— 说明报它的不是这一条"
+
+
+# ── 2026-09-29 晚：探针那套 A/E/F/G/I 接进**生成期**（交接《骨架还缺什么》§6）────────
+#
+# 探针（`docs/probes/2026-09-28-georgiapower/artifact_lint.py`）是**事后扫**：见到形状就报，
+# 报告长了有人读。这一段测的是**生成期的闸** —— 命中就不许出产物，所以凡是「本骨架自己那份
+# **合法**写法也会被打回」的规则，都必须**收窄**到真的会出事的那个形状（A 与 I 两条就是
+# 收窄过的，理由逐字写在 `agent/lint.py` 各自 docstring 里）。
+# ⇒ 这一段里每条规则都是**一对**：一条「该挂」的正例 + 一条「不该挂」的反例。
+
+
+def test_a_strict_form_with_no_way_out_is_refused():
+    """A：把**严格闸**发出去、却不写「这一版部署不认这个开关」的退路。
+
+    真站两次：带 `--strict` 时 mapleporchdaily **每一步 form 都失败**（选择器命中数都是 1，
+    却一律 `element not found` —— `forms-222/sites/mapleporchdaily.v2.py:1584-1587` 逐字记着）；
+    部署的 `common.py` 不认识那两个参数时，这一下 `TypeError` 会把整份产物炸掉，
+    而自测会把它读成「走完了 N 步、0 跳过」。
+    """
+    src = ("def _fill(self, selector, value):\n"
+           "    return self.cdp.form(selector, value=value, strict=True)\n")
+    assert _codes(src) == ["judge-strict-unguarded"], lint.check(src)
+
+
+def test_the_skeletons_own_strict_form_is_not_flagged():
+    """A 的**反例**：本骨架那份写法（`strict` 与那条退路**成对**）不挂。
+
+    ⚠️ 探针原来那句是「出现 `"strict": true` 就报」（`artifact_lint.py:109-110`）——
+    照抄过来会把本骨架自己渲染的**每一份**产物都打回，连参考产物一起，
+    也就是这个闸永远红。所以判据收窄成「成对出现」。
+    """
+    src = REFERENCE.read_text(encoding="utf-8")
+    assert '"strict": True' in src and "except TypeError" in src, "反例本身要真是那个形状"
+    assert "judge-strict-unguarded" not in _codes(src), lint.check(src)
+
+
+def test_an_ungated_group_clicking_by_words_is_refused():
+    """E：无门的那一组里，有一步点击**只按页面上的文字**认元素。
+
+    落到别的页上时，它照样找得到「碰巧写着同一句话」的那个东西点下去，而日志里看不出
+    异常（交接 §6 / 探针 E 条：「无条件执行：广告落到别的页会乱点」）。
+    """
+    src = _artifact([{"name": "start", "when": None,
+                      "steps": [{"action": "click",
+                                 "target": {"text": "Continue", "role": "button",
+                                            "selectors": []}}]}])
+    assert "judge-ungated-click" in _codes(src), lint.check(src)
+
+
+def test_an_ungated_group_addressed_by_selectors_is_not_flagged():
+    """E 的**反例**（用户 2026-09-29 明确过的那一向）：旁枝起点**有意**不设门
+    （`browser_agent._drop_incidental_start_when`）—— 它的步骤按**选择器**认元素，
+    落到别的页上最坏是当场「没找到」（出声，不静默），不是乱点 ⇒ 不许打回。
+    """
+    src = _artifact([{"name": "start", "when": None,
+                      "steps": [{"action": "click",
+                                 "target": {"text": "Continue", "role": "button",
+                                            "selectors": ["#continue"]}}]}])
+    assert lint.check(src) == [], lint.check(src)
+
+
+#: F 的样例：有一步点击、产物里却没有骨架那个跟新 tab 的方法
+#: （**故意**手写一份最小产物 —— 从当前骨架渲染出来的**一定**带着它，那正是这条要盯的东西）。
+NO_FOLLOW_SRC = (
+    "STATES = [{'name': 'go',\n"
+    "           'when': {'url_contains': '/a', 'text_contains': ['Go']},\n"
+    "           'steps': [{'action': 'click', 'target': {'selectors': ['#cta']}}]}]\n"
+)
+
+
+def test_clicks_without_following_a_new_tab_is_refused():
+    """F：点 CTA 会开新 tab，而这份产物没有「点完跟一下新开的那一页」。
+
+    真站（`docs/缺陷单-2026-09-28-产物缺跟随新tab.md`，georgiapower）：新 tab **2.26 秒**
+    才出现、先以空地址出现、4.3 秒才有地址 —— 那一下之后脚本读的还是旧页，
+    25 步里 23 步被静默跳过，而每一步日志照样写着「点上了」。
+    """
+    assert _codes(NO_FOLLOW_SRC) == ["judge-no-follow-tab"], lint.check(NO_FOLLOW_SRC)
+
+
+def test_no_click_means_no_new_tab_to_follow():
+    """F 的**反例**：一次点击都没有的产物不挂 —— 没有「新开的那一页」要跟，报它是噪音。"""
+    src = ("STATES = [{'name': 'go', 'when': {'url_contains': '/a', 'text_contains': ['Go']},\n"
+           "           'steps': [{'action': 'scroll', 'pixels': '400'}]}]\n")
+    assert lint.check(src) == [], lint.check(src)
+
+
+#: G / I 的样例共用这一组状态：有判据（不碰 H）、点击带选择器（不碰 E/F/I）。
+ONE_GATED_STATE = {"name": "go", "when": {"url_contains": "/a", "text_contains": ["Go"]},
+                   "steps": [{"action": "click", "target": {"selectors": ["#a"]}}]}
+
+
+def test_a_machine_made_source_name_is_refused():
+    """G：`FILLS[*].source` **认不出语义**、形状又是**机器起的名**。
+
+    真站（2026-09-17）：gowizard 那个 ZIP 框的标签是个不透明的 MUI id ⇒ 名字成了
+    `textfield_173838`，运营的 `zip`/`postcode` 一个都对不上 ⇒ 取不到资料、掉进随机池，
+    美国站被填了英国邮编（`docs/生成脚本-取值缺陷-2026-09-17.md`）。
+    """
+    src = _artifact([ONE_GATED_STATE],
+                    [{"name": "postcode", "source": "textfield_173838",
+                      "target": {"selectors": ["input#postcode"]},
+                      "fallback": [{"random": "postcode"}]}])
+    assert "judge-source-autoname" in _codes(src), lint.check(src)
+
+
+def test_source_names_the_skeleton_recognises_are_not_flagged():
+    """G 的**反例**：语义名 / 别名表里的名字 / 人写的列名形状（`username`）都不挂。
+
+    ⚠️ 这一条同时也是这条规则的**局限**，写在明处：`phone` vs `phone_number` 那种
+    「语义名 vs 资料库列名」的错位，它**抓不到** —— 仓里**没有**资料库键的真相源
+    （探针那张 `LIB_KEYS` 是 09-28 从线上 `formMessage` 手抄的，抄进来就是第二份真相源）。
+    那种错位归运行期的 `template._ALIASES` 管（09-28 mapleporchdaily 就是它兜的）。
+    `state2` 那种「语义词 + 后缀」也故意放过（同一句 `_kind_by_words` 的边界）；
+    真要收紧它，那是改判据 —— 连同这条用例一起改，别顺手改 lint。
+
+    ⚠️ `address1` 那一格是**另一种钉子**：它带数字、又不在语义词表里，只有靠
+    `_alias_names()` 真读到了骨架那张 `_ALIASES` 才不挂 —— 而骨架是一份 `string.Template`
+    （`STATES = $states` 那种占位符**不是合法 py**）⇒ 这张表要解析成功必须先做占位符替换。
+    谁把那段替换弄坏（表变成空集），这一格立刻红。
+    """
+    for source in ("zip", "username", "email", "phone", "postcode", "age", "task_id",
+                   "state2", "address1"):
+        src = _artifact([ONE_GATED_STATE],
+                        [{"name": "x", "source": source, "target": {"selectors": ["#x"]},
+                          "fallback": [{"random": "postcode"}]}])
+        assert "judge-source-autoname" not in _codes(src), (source, lint.check(src))
+
+
+#: I 的三族脆地址（判据与骨架 `template._GENERATED_ID` / `_RENDER_INDEX_ID` / `_HOPS_LOW`
+#: 是**同一份**）：框架渲染序号 id、以 `-数字` 结尾的自造 id、跳数 > 3 的 nth 链。
+FRAGILE_ONLY = [
+    "#__BVID__408",
+    "#input-174",
+    "#a > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > a:nth-of-type(2)",
+]
+
+
+@pytest.mark.parametrize("selector", FRAGILE_ONLY)
+def test_a_target_with_only_a_fragile_address_is_refused(selector):
+    """I：这一格**只有一根随时会漂的地址** —— 重渲一次就换号（真站实测 `#input-167` →
+    `#input-163`、`#combobox-input-182` → `#combobox-input-168`；9 跳那条长链**换个分辨率全挂**）
+    ⇒ 这一步「页面上没找到」、整组步骤被静默跳过。
+    """
+    src = _artifact([{"name": "go", "when": {"url_contains": "/a", "text_contains": ["Go"]},
+                      "steps": [{"action": "click", "target": {"selectors": [selector]}}]}])
+    assert _codes(src) == ["judge-fragile-selectors"], lint.check(src)
+
+
+def test_a_stable_candidate_beside_a_fragile_one_is_not_flagged():
+    """I 的**反例**：还有一条稳的候选时不挂 —— 骨架**故意**把脆的排在最后当兜底
+    （`template._selector_rank`：「页面真没给别的地址时，它是唯一够得着的路」，
+    实测有一格 `telephoneNumber` 就只有它一个候选）。
+
+    探针原来那句是「出现就报」（`artifact_lint.py:103-108`），照抄会把**留着兜底**的产物
+    一起打回 ⇒ 判据收窄成「一条稳的都没有」。
+    """
+    src = _artifact([{"name": "go", "when": {"url_contains": "/a", "text_contains": ["Go"]},
+                      "steps": [{"action": "click",
+                                 "target": {"selectors": ["a.btn-primary", "#input-174"]}}]}])
+    assert lint.check(src) == [], lint.check(src)
+
+
+def test_judge_rule_table_is_the_mounted_eight():
+    """挂进生成期出口的判据规则就这**八条**（C/D/H + A/E/F/G/I）——
+    多一条 / 少一条都要有人来解释（与上面 `RULES` 那张表同一条规矩）。"""
+    assert list(lint.JUDGE_RULES) == [
+        "judge-transient", "judge-fill-value", "judge-url-only",
+        "judge-strict-unguarded", "judge-ungated-click", "judge-no-follow-tab",
+        "judge-source-autoname", "judge-fragile-selectors",
+    ]
+
+
+E_UNGATED_SRC = _artifact([{"name": "start", "when": None,
+                            "steps": [{"action": "click",
+                                       "target": {"text": "Continue", "role": "button",
+                                                  "selectors": []}}]}])
+G_AUTONAME_SRC = _artifact([ONE_GATED_STATE],
+                           [{"name": "postcode", "source": "textfield_173838",
+                             "target": {"selectors": ["input#postcode"]},
+                             "fallback": [{"random": "postcode"}]}])
+I_FRAGILE_SRC = _artifact([{"name": "go", "when": {"url_contains": "/a",
+                                                  "text_contains": ["Go"]},
+                            "steps": [{"action": "click",
+                                       "target": {"selectors": ["#input-174"]}}]}])
+
+NEW_JUDGE_CASES = [
+    pytest.param("judge-strict-unguarded",
+                 "def _fill(self, selector, value):\n"
+                 "    return self.cdp.form(selector, value=value, strict=True)\n",
+                 id="A-strict-unguarded"),
+    pytest.param("judge-ungated-click", E_UNGATED_SRC, id="E-ungated-click"),
+    pytest.param("judge-no-follow-tab", NO_FOLLOW_SRC, id="F-no-follow-tab"),
+    pytest.param("judge-source-autoname", G_AUTONAME_SRC, id="G-source-autoname"),
+    pytest.param("judge-fragile-selectors", I_FRAGILE_SRC, id="I-fragile-selectors"),
+]
+
+
+@pytest.mark.parametrize("code, src", NEW_JUDGE_CASES)
+def test_each_new_judge_rule_is_load_bearing(monkeypatch, code, src):
+    """变异验证（与上面那两条同一条规矩）：把这条规则从 `JUDGE_RULES` 里摘掉 ⇒
+    它对应的样例**必须不再**被打回。摘不掉 = 报它的不是这条规则（用例在骗人）。
+    """
+    assert code in _codes(src), "这条样例本该命中 %s：%r" % (code, lint.check(src))
+    monkeypatch.setattr(lint, "JUDGE_RULES",
+                        tuple(name for name in lint.JUDGE_RULES if name != code))
+    assert code not in _codes(src), "摘掉 %s 之后仍被打回 —— 说明报它的不是这条规则" % code
