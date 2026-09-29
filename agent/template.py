@@ -720,19 +720,29 @@ _CONSENT_BOX_JS = (
 #: **失败那一步的现场**，变成机器读得懂的一段字。为什么是字而不是图：视觉模型今天**没配**
 #: （`modelRoles.vision` 空 ⇒ `inspect_image` 直接报「不支持图像输入」），而图本身也只是
 #: 「给人看」；真正缺的是**没人把现场写成字** ⇒ 运营在图前发呆、AI（探路 / 以后的 Repair）
-#: 也只能猜。这一格把四样摆出来：
+#: 也只能猜。这一格把现场摆出来：
 #:   `ready`    这一页加载完了吗（`loading` ≠ 「页面不对」）
 #:   `overlay`  页面上现在还有没有同意类容器（与 `_CONSENT_BOX_JS` 同一条判据）
 #:   `at_point` 动作那个坐标上**站着的是谁** —— 「点到的其实是弹层」这句话的全部证据
 #:   `texts`    视口里最显眼的三段短文字（一眼认出「这是哪一页」）
+#:   `top_url`  活跃页地址；`url` 这一帧自己的地址（子帧里动手时两个不是一回事）
+#:   `text`     整页正文前 N 字；`trouble` 这一页是不是风控/空白页（`_page_trouble`，**复用**）
+#:   `tabs`     当时所有页/tab；`shot` 失败现场那张图（`common.report_screenshot` 那条路）
 #: 判据与 `_cover_once` 同源（`elementFromPoint` + 自己/后代/祖先都算同一个东西）。
 #: ⚠️ 只在**没做成**那一步探一次（§13：重跑必须便宜），而且**一次 eval 全给**（不是四次）。
+#: ⚠️ ★ 2026-09-29（§4）：这一格**不再只在 --trace 时才有用** —— 生产重跑不落 trace，
+#: 现场随日志/上报一起走（见 `Filler._scene` 与 `_run_step` 里那句日志）。
 _SCENE_JS = (
     #: ★ 2026-09-28（用户点的那件事：**「这类问题下次不用开窗就能判」**）：再加三样 ——
     #: `dpr` / `vw,vh` / `ua`。为什么：那一趟 `cdp screenshot` 一直报「图 984 设备像素 vs
     #: 视口×dpr = 2952」⇒ 没有这三个数，只能靠开窗去猜「窗口到底多大、报的什么 dpr」；
     #: 有了它们，日志里一眼就能看出「窗口与指纹不一致」。
     "var out={ready:String(document.readyState||''),overlay:'',at_point:'',texts:[],"
+    #: ★ 2026-09-29（交接《骨架还缺什么》§4：funchatt 那天 7 条失败**一条现场都拿不到**）：
+    #: 再加三样当时定案最值的 —— `top_url` = **活跃页地址**（跨源读不到就是空串，**不编**）、
+    #: `url` = 这一帧自己的地址（动作在子帧里时它跟活跃页**不是同一个**，两个都要）、
+    #: `text` = **这一页整页正文前 N 字**（N 与 `page_sig` 同口径 = `PAGE_TEXT_CHARS`）。
+    "url:'',top_url:'',text:'',"
     "dpr:(window.devicePixelRatio||1),vw:window.innerWidth,vh:window.innerHeight,"
     "ua:String(navigator.userAgent||'').slice(0,160)};"
     "var boxW=/(cookie|consent|gdpr|privacy)/i;"
@@ -756,6 +766,11 @@ _SCENE_JS = (
     "for(var m=0;m<all.length&&out.texts.length<3;m++){var t=all[m];"
     "if(!vis(t))continue;var s=String(t.innerText||'').trim();"
     "if(s&&s.length>=2&&s.length<=40&&t.children.length===0)out.texts.push(s);}"
+    "try{out.url=String(window.location.href||'');}catch(e){}"
+    "try{out.top_url=String((window.top&&window.top.location"
+    "&&window.top.location.href)||'');}catch(e){}"
+    "out.text=String((document.body&&document.body.innerText)||'')"
+    ".replace(/\\s+/g,' ').slice(0,%d);"
     "return JSON.stringify(out);"
 )
 
@@ -861,6 +876,35 @@ POSTCODES = ["SW1A 1AA", "NN3 3AQ", "M1 1AA", "B1 1AA", "LS1 1AA", "G1 1AA"]
 US_STATES = ["California", "Texas", "Arizona", "Florida", "New York", "Illinois", "Ohio"]
 PHONES = ["07936567874", "07700900123", "07400123456", "07911123456"]
 
+# ── 随机池按**站点国家**分流（★ 2026-09-29，交接《骨架还缺什么》「别处」那条）──────
+#
+# 为什么非分流不可（真站代价，`forms/common.py` 的 `_ALIASES` 注释里记着那一次）：
+# **加拿大站被填了骨架池里的英国手机号 `07700900123`** ⇒ 站方红字
+# `The phone number is not valid.` ⇒ 整单提交被拒（截图在 failDiag 里）。
+# 而分流的**依据只有一处现成的信号**：`PROVENANCE["env"]["proxy_country"]`
+# （后端连续失败榜上那格 `country`，两字母码，`agent/auto.py` 原样写进来 —— 与
+# `service.py` 的 `env` 契约是同一格）。**取不到 = 「不知道」** ——
+# 那份不知道必须**出声**（`Filler._say_country`），不许静默当美国、也不许静默当英国。
+#
+# ⚠️ `US_STATES` 的口径**一个字没改**：仍然是「小池子 + 随机选」，
+# 内容照抄 `forms/sites/lifynest.py:16`（那一注说的「站点在美国时适用」在这里就是
+# 「美国那一档用它」）。英国那一档补一个同口径的小池子（郡名），不是新造一套逻辑。
+US_ZIPS = ["10001", "90001", "60601", "30301", "02108", "98101"]
+US_PHONES = ["2025550147", "4155550123", "2125550198", "3125550147", "6175550165"]
+GB_COUNTIES = ["Greater London", "Greater Manchester", "West Midlands", "West Yorkshire",
+               "Merseyside", "Kent"]
+#: 国家（两字母码） → 各随机池。`country` 那一档要的是**国家名**（页面上的 Country 框）。
+COUNTRY_POOLS = {
+    "US": {"country": "United States", "state": US_STATES,
+           "postcode": US_ZIPS, "phone": US_PHONES},
+    "GB": {"country": "United Kingdom", "state": GB_COUNTIES,
+           "postcode": POSTCODES, "phone": PHONES},
+}
+#: 「不知道这个站在哪一国」时用的兜底 —— 与分流**之前逐字相同**
+#: （邮编/手机是英国那一套、州是美国那一套）。为什么原样保留：改掉它 = 拿一个
+#: **不知道**去赌一个池子；而这事已经有一个出声的去处（`_say_country`）。
+UNKNOWN_POOLS = {"country": None, "state": US_STATES, "postcode": POSTCODES, "phone": PHONES}
+
 # ── 产出元数据（siteforge 自动写入，勿手工编辑）────────────
 PROVENANCE = $provenance
 #: ★ 2026-09-29：**这份产物是哪一版骨架渲染出来的** —— `agent/template.py` 的 sha256 前 16 位。
@@ -869,6 +913,20 @@ PROVENANCE = $provenance
 #: 拿它跟当前骨架的 `template.SKELETON_SHA` 一比，`skeleton_drift()` 就答得出「落后多少」。
 #: ⚠️ 它是**骨架**的指纹（这份文件），不是产物的 —— 站点数据（STATES/FILLS）不算骨架。
 SKELETON_SHA = "$skeleton_sha"
+
+
+def _site_country():
+    """这个站属于哪一档随机池 —— `PROVENANCE["env"]["proxy_country"]` 里那个两字母码。
+
+    只认**已经有**的那一处信号（见 `COUNTRY_POOLS` 上面那段）；拿不到 / 认不出来
+    一律给空串 = **「不知道」** —— 由 `Filler._say_country()` 出声，这里不猜。
+    """
+    env = PROVENANCE.get("env") if isinstance(PROVENANCE, dict) else None
+    if not isinstance(env, dict):
+        return ""
+    code = str(env.get("proxy_country") or "").strip().upper()
+    return code if code in COUNTRY_POOLS else ""
+
 
 # ── 怎么走 ────────────────────────────────────────────────
 # 每个 target 都是**声明式多元描述**（§5.1b），不写死单个选择器。运行时的回退链：
@@ -1177,6 +1235,11 @@ class Filler:
     #: 同上（这条流程认得的地址）：空元组 = **这条流程一个地址都没报过** ——
     #: 正是 `_frame_table_is_usable` 里「回落到旧口径」的那一支，所以这里的默认值与原意一致。
     want_urls = ()
+    #: ★ 2026-09-29（见 `COUNTRY_POOLS`）：这个站的随机池按哪一国分。
+    #: 类默认值 = **「不知道」那一档**（`UNKNOWN_POOLS`，与分流之前逐字相同）——
+    #: `object.__new__(Filler)` 那种实例（单测直接问「这一页算不算那个状态」）也要够得着。
+    country = ""
+    pools = UNKNOWN_POOLS
     #: 同上（替身）：不进 `__init__` 的实例没有 CDPHelper —— 读帧那几条路靠它判「读不了」，
     #: 而不是抛 AttributeError（单测里那些只 stub 了 `_url`/`page_signature` 的实例）。
     cdp = None
@@ -1225,6 +1288,14 @@ class Filler:
         self.delay = delay
         self.no_report = no_report    # --no-report：这次不上报（自测/调试用；生产必须上报）
         self.tracing = bool(trace)
+        #: ★ 2026-09-29（见 `COUNTRY_POOLS`）：随机池按**站点国家**分流。
+        #: 国家从 `PROVENANCE["env"]["proxy_country"]` 来（已有的那一处信号）；
+        #: 拿不到就是 **「不知道」** —— 那就**出声**（`_say_country`），
+        #: 池子照旧用 `UNKNOWN_POOLS`（与分流之前逐字相同的那一套）。
+        self.country = _site_country()
+        self.pools = COUNTRY_POOLS.get(self.country) or UNKNOWN_POOLS
+        if not self.country:
+            self._say_country()
         if self.no_report:
             self.log.info("[%s] 这一次不上报（--no-report）：结果不往生产接口写", self.cid)
         self.step = 0          # 当前第几步（全局编号，与 --stop-at 同一套）
@@ -2129,7 +2200,13 @@ class Filler:
         return "（点完新开了一个 tab：%s —— 已切过去）" % self._followed_tab[:80]
 
     def _random_value(self, kind):
-        """数据随机化（拟人）：每次重跑都同一份数据是明显的机器味。"""
+        """数据随机化（拟人）：每次重跑都同一份数据是明显的机器味。
+
+        ⚠️ ★ 2026-09-29：邮编 / 手机 / 州 这三档**按站点国家走 `self.pools`**
+        （见 `COUNTRY_POOLS`）—— 美国站不许被填英国邮编、英国站不许被填美国州；
+        国家不知道时 `self.pools` 是 `UNKNOWN_POOLS`（分流之前逐字相同那一套），
+        而「不知道」这件事已经由 `_say_country()` 出声。
+        """
         first, last = random.choice(FIRST_NAMES), random.choice(LAST_NAMES)
         if kind == "first_name":
             return first
@@ -2141,9 +2218,9 @@ class Filler:
             return "%s.%s%d@%s" % (first.lower(), last.lower(), random.randint(100, 999),
                                    random.choice(EMAIL_DOMAINS))
         if kind == "phone":
-            return random.choice(PHONES)
+            return random.choice(self.pools["phone"])
         if kind == "postcode":
-            return random.choice(POSTCODES)
+            return random.choice(self.pools["postcode"])
         #: ★ 2026-09-28：`number` / 地址那几档是**新认出来的种类**（`browser_agent._RANDOM_HINTS`
         #: 与 `_fallback` 一起加的）—— 这里不接的话，产物拿到 `{"random": "number"}` 会**当场抛**
         #: （`_random_value` 原先只认七个种类）。
@@ -2157,9 +2234,12 @@ class Filler:
                                  random.choice(("Maple", "Oak", "Cedar", "Pine", "Elm", "Birch")),
                                  random.choice(("St", "Ave", "Rd", "Ln", "Dr")))
         if kind == "country":
-            return random.choice(("United States", "United Kingdom"))
+            #: 知道国家就给那一国的名字（美国站不该填出「United Kingdom」）；
+            #: 不知道就照旧随机 —— 老口径一个字不动。
+            return (str(self.pools["country"]) if self.country
+                    else random.choice(("United States", "United Kingdom")))
         if kind == "state":
-            return random.choice(US_STATES)
+            return random.choice(self.pools["state"])
         if kind == "dob":
             return "%02d/%02d/%d" % (random.randint(1, 12), random.randint(1, 28),
                                      random.randint(1970, 1995))
@@ -2426,6 +2506,81 @@ class Filler:
                         "title": str(r.get("title") or "")[:60],
                         "active": bool(r.get("active"))})
         return got
+
+    def _scene(self, index, selector, frame):
+        """失败那一步的现场（见 `_SCENE_JS` 那一段）。**一次 eval 给全** DOM 那几样。
+
+        ★ 2026-09-29（交接《骨架还缺什么》§4，funchatt 那 7 条「一条现场都拿不到」逼出来的）：
+        这一格过去只是 trace 里的一栏，而生产重跑**不落 trace** ⇒ 现场采了也等于没采。
+        现在它在任何一条路上都会跑（`_run_step` 里那句日志把结果交出去），并且补齐了当时
+        定案最值的那几样：整页正文前 N 字、活跃页地址（`top_url`）、`_page_trouble`
+        （**复用**那一格，不另造一套「是不是风控页」的判据）、以及失败现场那张图
+        （`_scene_shot` → 既有的 `common.report_screenshot` 上报通道）。
+
+        ⚠️ 旁路纪律（照抄 `_shots` / shooter 那条）：**探针不许带塌主路** —— 自己出任何事
+        都只落一句 why（`unreadable` 里），照常往下走。代价只在「这一步没做成」这条路上付：
+        成功的步一次都不探（§13：重跑必须便宜）。
+        """
+        try:
+            raw = _clean_eval(self._ev(_SCENE_JS % (json.dumps(str(selector or "")),
+                                                    PAGE_TEXT_CHARS), frame))
+            scene = (json.loads(raw) if raw and raw.strip().startswith("{")
+                     else {"unreadable": str(raw or "")[:80]})
+            if not isinstance(scene, dict):
+                scene = {"unreadable": "现场探针回的不是一个对象：%s" % str(scene)[:60]}
+        except Exception as exc:               # noqa: BLE001 —— 探现场不许带塌这一步
+            scene = {"unreadable": "%s: %s" % (type(exc).__name__, str(exc)[:60])}
+        #: 这一页是不是**风控 / 空白页** —— 判据只有 `_page_trouble` 那一份（骨架已有）。
+        #: 空串 = 是正常内容页（「不是」也是一个结论，照实记）。
+        scene["trouble"] = _page_trouble(str(scene.get("text") or ""))
+        #: ★ 2026-09-28（`target=_blank` 那一族）：「点完之后新开了一个页、而脚本还在老页上」
+        #: 这类缺陷，现场只有一句「没找到元素」是判不出来的。`cdp targets` 只读、一次调用。
+        scene["tabs"] = self._tabs_now()
+        scene["shot"] = self._scene_shot(index, scene)
+        return scene
+
+    def _scene_shot(self, index, scene):
+        """失败现场那张图 —— **窗口在、能力在时**才拍，拍不成说清是**哪一种**不成。
+
+        ★ 2026-09-29（§4）：图走**既有的那条上报通道**（`common.report_screenshot` →
+        `/api/quest/screenshot`；本仓里往那个口送图的**只有它** ⇒ 后端那格 `fail_img`
+        **多半**就是它的产物。这一点看不到后端，只能说到这儿），**不落本地文件**：
+        生产重跑没有 trace 目录可落，而「落了图没人拿得到」跟没落一样。
+        `--no-report` 那一趟**连拍都不拍**（发了也白发，还白赔一次截图）。
+
+        ⚠️ 旁路纪律：拍 / 发炸了只记一句 why（返回串就是那句话），绝不许带塌这一步
+        （照抄 `_shot`：为了解释失败才加的，自己再变成失败点就本末倒置）。
+        """
+        if self.no_report:
+            return "没拍也没发：这一趟给了 --no-report（不上报）"
+        try:
+            data = (self.cdp.screenshot() or "").strip()
+        except Exception as exc:               # noqa: BLE001
+            return "截图没成：%s: %s" % (type(exc).__name__, str(exc)[:60])
+        if not data or data.startswith("{"):
+            # 空输出 + 命令表里没有它 = 这个 cdp 根本不会截图（与 `_shot` 同一条判据）
+            if not data and self._command_absent("screenshot"):
+                self._note_missing("screenshot")
+            return (_missing_short("screenshot") if "screenshot" in self.missing
+                    else "截图没成（cdp 没给出图）")
+        try:
+            base64.b64decode(data, validate=True)     # 不是图就别往上报接口发
+        except Exception as exc:               # noqa: BLE001
+            return "截图没成（cdp 给的答复不是图）：%s: %s" % (type(exc).__name__, str(exc)[:40])
+        #: 为什么在函数里 import：这一格只在**失败那一步**才走得着，而 `report_screenshot`
+        #: 是 common.py 里较新的一格 —— 万一部署那份没有它，这里必须只丢一张图 + 说清楚，
+        #: 而不是在 import 期就把**整份产物**炸掉（与「老 common.py 不认识 --strict」同一口径）。
+        try:
+            from common import report_screenshot     # noqa: PLC0415
+        except ImportError as exc:
+            return "截图发不出去：部署的 common.py 里没有 report_screenshot（%s）" % exc
+        url = str(scene.get("top_url") or scene.get("url") or "")
+        try:
+            ok = report_screenshot(self.tid, "fail_scene_%d" % index, data, url)
+        except Exception as exc:               # noqa: BLE001
+            return "截图没发成：%s: %s" % (type(exc).__name__, str(exc)[:60])
+        return ("已随这次失败上报（step=fail_scene_%d）" % index) if ok \
+            else "截图没发成：上报接口没收下（它也没说为什么）"
 
     def _covered_by(self, selector, frame_id="", until=None):
         """这个选择器指的元素**是不是被别的东西盖着**。盖着就返回盖它的东西（读，不动页面）。
@@ -2853,6 +3008,24 @@ class Filler:
                          now["viewport"], want.get("dpr"), now.get("dpr"))
         self._trace({"fingerprint_mismatch": {"recorded": want, "now": now}})
 
+    def _say_country(self):
+        """**不知道这个站在哪一国** —— 说一次（★ 2026-09-29，见 `COUNTRY_POOLS`）。
+
+        为什么非说不可：随机池是**按国家**分的（美国站填美国邮编、英国站填英国邮编），
+        而国家只从 `PROVENANCE["env"]["proxy_country"]` 来。取不到时**照样要填**三个字段
+        （邮编/手机/州），池子退回分流之前那一套 —— 这件事**必须出声**：
+        「不知道」与「知道，就是美国」在日志里长得一模一样，而代价是真金白银的
+        （加拿大站被填英国手机号 ⇒ 站方红字 `The phone number is not valid.` ⇒ 整单被拒）。
+        ⚠️ 不静默当美国、也不静默当英国 —— 这里说的就是「猜不了，用的是老那一套」。
+        """
+        self.log.warning(
+            "[%s] 这份产物**不知道这个站在哪个国家**"
+            "（`PROVENANCE['env']['proxy_country']` 是空的 / 认不出来 —— 两字母码对得上、"
+            "但池子里还没有那一国的（像 `CA`）也算这一档）—— "
+            "邮编 / 手机 / 州 照旧用分流之前那一套（英国邮编与手机、美国州）。"
+            "要按国家分流，就把两字母码写进生成时的 `PROVENANCE['env']['proxy_country']`"
+            "（后端连续失败榜上那格 `country` 原样带下来即可）。", self.cid)
+
     def _say_url_only_whens(self):
         """哪些状态的判据**只有地址** —— 开跑之前说一次（**不许沉默**）。
 
@@ -2936,31 +3109,20 @@ class Filler:
             self.log.error("[%s] 产物自己在第 %d 步出错了：%s: %s",
                            self.cid, index, type(exc).__name__, exc)
             raise
-        # ★ 2026-09-23（用户点的那件事）：**没做成的那一步**，把现场录下来（见 `_SCENE_JS`）。
-        # 为什么只在这一档探：§13 要求重跑便宜 —— 成功的步不探；一次 eval 给全四样 ✓。
-        # 探不动就交 None（**不许**编一个现场出来）—— 读的人要能分清「没有现场」与
-        # 「现场一切正常」。
+        # ★ 2026-09-23（用户点的那件事）／★ 2026-09-29（交接《骨架还缺什么》§4）：**没做成
+        # 的那一步**把现场录下来（`_scene` 的 docstring 写着为什么是字而不是图、为什么它
+        # 现在在生产路径上也要跑）。§13 的老口径一个字没变：**成功的步不探**；
+        # 探不动就交一句 why（**不许**编一个现场出来）。
         scene = None
         if not ok and getattr(self, "cdp", None) is not None:
-            try:
-                # ⚠️ 走 `_clean_eval`：真 cdp 的 `eval` 回来的是**带引号的 JSON 字符串**
-                # （`_clean_eval` 的 docstring 写着这件事）。少了这道剥壳，`startswith("{")`
-                # 判不过 ⇒ 现场永远记成 None（2026-09-23 实测：新用例当场红）。
-                raw = _clean_eval(self._ev(_SCENE_JS % json.dumps(str(selector or "")), frame))
-                if raw and raw.strip().startswith("{"):
-                    scene = json.loads(raw)
-                else:
-                    # ⚠️ 探不到**不许静默** —— 交一句「探不到 + 它回了什么」，
-                    # 读 trace 的人要能分清「没有现场」与「现场一切正常」。
-                    scene = {"unreadable": str(raw or "")[:80]}
-                if isinstance(scene, dict):
-                    #: ★ 2026-09-28（用户点的那件事）：**把当时所有的页/tab 也录下来** ——
-                    #: 「点完之后新开了一个页、而脚本还在老页上」这类缺陷（`target=_blank`），
-                    #: 现场只有一句「没找到元素」是判不出来的 ✗，而开窗复验又贵。
-                    #: `cdp targets` 只读、一次调用；读不回来就记 `unreadable`（不许编）。
-                    scene["tabs"] = self._tabs_now()
-            except Exception as exc:               # noqa: BLE001 —— 探现场不许带塌这一步
-                scene = {"unreadable": "%s: %s" % (type(exc).__name__, str(exc)[:60])}
+            scene = self._scene(index, selector, frame)
+            if not self.tracing:
+                #: ★ 2026-09-29（§4）：生产重跑**不落 trace** ⇒ 现场只交给**日志**
+                #: （运维把它收进 failDiag 的 `lines`；那张图另有 `_scene_shot` 那条上报）。
+                #: 一行 JSON，机器读得懂 —— funchatt 那天 7 条失败一条现场都拿不到，
+                #: 就是因为现场过去只写进 trace 这个生产不开的通道。
+                self.log.warning("[%s] 第 %d 步没做成 —— 现场：%s",
+                                 self.cid, index, json.dumps(scene, ensure_ascii=False))
         try:
             self._dly()
             progress = self._diff(before_path) if before_path else None

@@ -1301,6 +1301,15 @@ class _State:
         #: 每次 `form` 的 (选择器, strict, expect_label) —— 严格闸那两条参数的钉子
         self.form_strict = []
         self.reports = []        # report_url 的 step 标签
+        #: ★ 2026-09-29（`_scene_shot`）失败现场那张图的每一次上报
+        #: （`(task_id, step, 图有多少字节, 当时的地址)`）—— 生产那条路只有它说得清
+        #: 「图到底发出去了没有」。
+        self.scene_shots = []
+        #: 上报接口回「没成」时的形状（`report_screenshot` 返回 False）——
+        #: 钉「发不出去也要出声」那一条。
+        self.fail_report_screenshot = False
+        #: 现场探针一读就炸（真站上 cdp 偶尔这样）—— 钉「探针不许带塌主路」那一条。
+        self.scene_raises = False
         self.shots = 0
         self.evals = []
         self.__dict__.update(kw)
@@ -1364,6 +1373,8 @@ class CDPHelper:
         # `{'unreadable': ''}`，白追半小时）。**更具体的标记先判** —— 与下面
         # `pageLoaderRe` / `elementFromPoint` 那条顺序规矩是同一件事。
         if "at_point" in script:
+            if STATE.scene_raises:
+                raise RuntimeError("cdp 挂了")     # 现场探针坏掉时的真站形状
             return json.dumps(getattr(STATE, "scene", "") or "")
         if "data-sf-consent" in script:
             #: ★ 2026-09-28：同意按钮**只有文字、没有 id** 时，产物按文字给它打标记
@@ -1423,6 +1434,15 @@ def setup_logger(name):
 def report_url(cdp_helper, task_id, step, log=None, base64_content=""):
     STATE.reports.append(step)
     return True
+
+
+def report_screenshot(task_id, step, screenshot_b64, url="", api_url=""):
+    """★ 2026-09-29（§4）：失败现场那张图走的那条既有上报通道 —— 真 common 里它 POST
+    `/api/quest/screenshot`（本仓里往那个口送图的只有它；那格 `fail_img` 多半就是它的
+    产物）。替身只**记账**，不发网络。"""
+    STATE.scene_shots.append({"task_id": task_id, "step": step,
+                              "bytes": len(screenshot_b64 or ""), "url": url})
+    return not STATE.fail_report_screenshot
 '''
 
 
@@ -3272,3 +3292,210 @@ def test_the_retry_happens_only_once_per_group(sandbox, form_file):
     assert clicks.count(("click", "#go")) == 2, (
         "第一组那一击重试一次就到头（1 次动手 + 1 次重试）：%s" % clicks)
     assert ("click", "#next") not in clicks, "判据一直不成立 ⇒ 不该做第二组：%s" % clicks
+
+
+# ── ★ 2026-09-29（交接《骨架还缺什么》§4）：失败现场在生产那条路上也要采、也要交出去 ──
+#
+# 现场（真站代价）：funchatt 那天 7 条失败**一条现场都拿不到**（`failDiag` 全表 100 条里
+# 0 条）—— 因为现场探针过去只把结果写进 **trace**，而生产重跑（`ad-task.py` 的调法）
+# **不落 trace** ⇒ 采了等于没采。warthunder 那三条能查清，纯粹是因为 `fail_img` 有截图。
+
+
+def test_a_failed_step_in_production_ships_the_scene_and_the_shot(sandbox, form_file, caplog):
+    """★ 不给 `--trace` 的那条路上，**失败那一步**的现场随日志走、图随上报走。
+
+    三半都钉，缺一半这条就白写：
+      · 现场在**日志**里（一行 JSON：`at_point` / `text` / `top_url` / `trouble` / `shot`）；
+      · 那张图真**发出去**了（`report_screenshot` 收到一张，step 带步号、url 是活跃页）；
+      · **成功的步一个字都不说**（§13：重跑必须便宜 —— 代价只在失败那条路上付）。
+    """
+    scene = json.dumps({"ready": "interactive", "overlay": "",
+                        "at_point": "a#terms-of-service", "texts": ["Terms of Service"],
+                        "text": "one moment, we're checking you're not a bot.",
+                        "url": "https://example.test/step-1",
+                        "top_url": "https://example.test/legal"})
+    module, _ = _load("run_scene_prod",
+                      template.render("example-scene-prod", "Thank you",
+                                      _one_click_states(selectors=["#go"]), [],
+                                      SAMPLE_PROVENANCE), sandbox)
+    common = _stub(sandbox, diff={"actionable": True},
+                   observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common.STATE.fail_actions = True
+    common.STATE.scene = scene
+    common.STATE.url = "https://example.test/step-1"
+    module.STUCK_LIMIT = 1          # 一步没成即收摊 ⇒ 日志里**恰好**一句现场（好数）
+
+    with caplog.at_level(logging.WARNING):
+        assert module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run() is False
+
+    said = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    hits = [m for m in said if "现场：" in m]
+    assert len(hits) == 1, ("没做成的步要在生产那条路上把现场说进日志（一条）：%r" % (said,))
+    got = json.loads(hits[0].split("现场：", 1)[1])
+    for key in ("at_point", "text", "top_url", "trouble", "shot", "tabs"):
+        assert key in got, (key, got)
+    assert got["at_point"] == "a#terms-of-service", got
+    #: `trouble` **复用** `_page_trouble`：正文里那句风控文案必须被认出来
+    #: （「判据不匹配」与「被风控盯上」在日志里长得一模一样，这一格把两者分开）。
+    assert "风控" in got["trouble"], got
+    #: 图走既有那条上报通道（`common.report_screenshot` = 后端那格 `fail_img`）：
+    #: 一条记录、步号带的是那一步、地址取的是**活跃页**。
+    assert len(common.STATE.scene_shots) == 1, common.STATE.scene_shots
+    shot = common.STATE.scene_shots[0]
+    assert shot["step"] == "fail_scene_1", shot
+    assert shot["url"] == "https://example.test/legal", shot
+    assert shot["bytes"] > 0, shot
+
+    # ② 反例（同一格）：**跑成功那一趟一条现场都不许有**（探针一次都不跑、图一张都不发）。
+    module2, _ = _load("run_scene_prod_ok",
+                       template.render("example-scene-prod-ok", "Thank you",
+                                       _walk_states(1, _ok_click), [], SAMPLE_PROVENANCE),
+                       sandbox)
+    common2 = _stub(sandbox, diff={"actionable": True},
+                    observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common2.STATE.texts = ["Thank you"]
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        assert module2.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run() is True
+    assert common2.STATE.scene_shots == [], common2.STATE.scene_shots
+    assert not [m for m in (r.getMessage() for r in caplog.records) if "现场：" in m]
+    assert common2.STATE.shots == 0, "生产重跑路径一次都不该截图"
+
+
+def test_a_shot_that_cannot_be_taken_says_which_way_it_failed(sandbox, form_file, caplog):
+    """★ 同一格（§4）：图**拍不成**时要说清是哪一种不成 —— 不许静默少一张。
+
+    两种真站形状各钉一次：① 这个 cdp 根本没有 `screenshot` 这条命令（生产那个老版本就是）；
+    ② `--no-report` 那一趟连拍都不拍（发了也白发）。两样都不许把图算成「发出去了」。
+    """
+    states = _one_click_states(selectors=["#go"])
+    # ① 老 cdp：命令表里没有 screenshot（与 `PROD_CDP_COMMANDS` 同形状）
+    module, _ = _load("run_shot_none",
+                      template.render("example-shot-none", "Thank you", states, [],
+                                      SAMPLE_PROVENANCE), sandbox)
+    common = _stub(sandbox, commands=list(PROD_CDP_COMMANDS), diff={"actionable": True},
+                   observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common.STATE.fail_actions = True
+    common.STATE.fail_screenshot = True           # 老版本 cdp 交回空串
+    module.STUCK_LIMIT = 1
+    with caplog.at_level(logging.WARNING):
+        module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    hits = [m for m in (r.getMessage() for r in caplog.records) if "现场：" in m]
+    assert len(hits) == 1, hits
+    shot = json.loads(hits[0].split("现场：", 1)[1])["shot"]
+    assert "screenshot" in shot, ("要指名是哪条命令不会 / 怎么换：%r" % (shot,))
+    assert common.STATE.scene_shots == [], "图都没拍成，不许说发出去了"
+
+    # ② --no-report：不上报的一趟连拍都不拍，而且要**说清是这一条**（不是「拍不成」）
+    module2, _ = _load("run_shot_noreport",
+                       template.render("example-shot-noreport", "Thank you", states, [],
+                                       SAMPLE_PROVENANCE), sandbox)
+    common2 = _stub(sandbox, diff={"actionable": True},
+                    observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common2.STATE.fail_actions = True
+    module2.STUCK_LIMIT = 1
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        module2.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                       no_report=True).run()
+    hits = [m for m in (r.getMessage() for r in caplog.records) if "现场：" in m]
+    assert len(hits) == 1, hits
+    shot = json.loads(hits[0].split("现场：", 1)[1])["shot"]
+    assert "--no-report" in shot, shot
+    assert common2.STATE.shots == 0 and common2.STATE.scene_shots == []
+
+
+def test_a_broken_scene_probe_never_breaks_the_step(sandbox, form_file, caplog):
+    """★ 同一格（§4）：探针**不许带塌主路** —— 读炸了只记一句 why，照常往下走。
+
+    与 `_shots` / shooter 那条旁路纪律同一个口径（为了解释失败才加的，自己再变成失败点
+    就本末倒置）：产物该早停还早停、该出声还出声，只是现场那一栏写「读不到 + 为什么」。
+    """
+    module, _ = _load("run_scene_broken",
+                      template.render("example-scene-broken", "Thank you",
+                                      _one_click_states(selectors=["#go"]), [],
+                                      SAMPLE_PROVENANCE), sandbox)
+    common = _stub(sandbox, diff={"actionable": True},
+                   observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common.STATE.fail_actions = True
+    common.STATE.scene_raises = True
+    module.STUCK_LIMIT = 1
+    with caplog.at_level(logging.WARNING):
+        assert module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run() is False
+    hits = [m for m in (r.getMessage() for r in caplog.records) if "现场：" in m]
+    assert len(hits) == 1, ("探针炸了也要交一句 why（不许整条路跟着炸）：%r" % (hits,))
+    got = json.loads(hits[0].split("现场：", 1)[1])
+    assert "RuntimeError" in got.get("unreadable", ""), got
+    assert "step" in got or got.get("tabs") is not None, got     # 别的几格照旧给
+
+
+# ── ★ 2026-09-29（交接《骨架还缺什么》「别处」）：随机池按**站点国家**分流 ──────────
+
+
+def _country_product(country):
+    """一个**只靠随机池**填 邮编 / 手机 / 州 的产物（资料里那三样一个都不给）。"""
+    fills = []
+    for name, label in (("postcode", "Postcode"), ("phone", "Phone"), ("state", "State")):
+        fills.append({"name": name, "source": name, "kind": "value", "label": label,
+                      "target": {"text": None, "label": label, "role": None, "near": None,
+                                 "selectors": ["input#%s" % name]},
+                      "fallback": [{"random": name}]})
+    steps = [{"action": "form", "fill": f["name"], "note": "填 %s" % f["label"]}
+             for f in fills]
+    env = {"dpr": 1, "ua": "Mozilla/5.0 (stub)", "viewport": [1280, 800]}
+    if country:
+        env["proxy_country"] = country
+    return template.render("example-country", "Thank you",
+                           [{"name": "walk", "when": None, "steps": steps}], fills,
+                           dict(SAMPLE_PROVENANCE, env=env))
+
+
+def test_the_random_pools_follow_the_country_of_the_site(sandbox, tmp_path):
+    """★★ 美国站与英国站各跑一次 ⇒ **拿到不同池子**（交接《骨架还缺什么》「别处」）。
+
+    为什么这条是硬的（真站代价，`forms/common.py` 的 `_ALIASES` 注释里记着那一次）：
+    **加拿大站被填了骨架池里的英国手机号 `07700900123`** ⇒ 站方红字
+    `The phone number is not valid.` ⇒ 整单提交被拒（截图在 failDiag 里）。
+    国家只认产物里**已有**的那一处信号：`PROVENANCE["env"]["proxy_country"]`。
+    """
+    ff = tmp_path / "form.json"
+    #: ⚠️ 这份资料里**没有** zip/phone/state —— 于是三格只能落到随机池上（正是要量的事）。
+    ff.write_text(json.dumps({"email": "sam@example.test"}), encoding="utf-8")
+    mod, filled = {}, {}
+    for country in ("US", "GB"):
+        mod[country], _ = _load("run_country_%s" % country, _country_product(country), sandbox)
+        common = _stub(sandbox, diff={"actionable": True},
+                       observe={"url": "https://example.test/", "actions": [], "fields": []})
+        common.STATE.texts = ["Walk"]
+        mod[country].Filler(WS, str(ff), "cid_1", "task_1", delay=(0, 0)).run()
+        filled[country] = {a[1]: a[2] for a in common.STATE.actions if a[0] == "form"}
+
+    #: 两个池子**不重叠**（不然「拿到了不同池子」这句话就可能是巧合）。
+    assert not (set(mod["US"].US_ZIPS) & set(mod["US"].POSTCODES))
+    assert not (set(mod["US"].US_PHONES) & set(mod["US"].PHONES))
+    assert filled["US"]["input#postcode"] in mod["US"].US_ZIPS, filled["US"]
+    assert filled["GB"]["input#postcode"] in mod["GB"].POSTCODES, filled["GB"]
+    assert filled["US"]["input#phone"] in mod["US"].US_PHONES, filled["US"]
+    assert filled["GB"]["input#phone"] in mod["GB"].PHONES, filled["GB"]
+    assert filled["US"]["input#state"] in mod["US"].US_STATES, filled["US"]
+    assert filled["GB"]["input#state"] in mod["GB"].GB_COUNTIES, filled["GB"]
+
+
+def test_a_site_with_no_country_says_so_rather_than_guessing(sandbox, form_file, caplog):
+    """★ 同一格的反面：**拿不到国家 = 「不知道」** —— 必须出声，不静默当美国/当英国。
+
+    判两半，缺一半这条就能靠「反正池子没变」蒙过去：
+      · 日志里有那一句（说清取自哪一格、退回的是哪一套池子）；
+      · 池子**确实**还是分流之前那一套（`UNKNOWN_POOLS`）—— 出声不等于偷偷改行为。
+    """
+    module, _ = _load("run_country_none", _country_product(""), sandbox)
+    common = _stub(sandbox)
+    with caplog.at_level(logging.WARNING):
+        f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))
+    said = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    hits = [m for m in said if "不知道这个站在哪个国家" in m]
+    assert len(hits) == 1, ("不知道国家必须说出来（一条）：%r" % (said,))
+    assert "proxy_country" in hits[0], hits[0]
+    assert f.country == "" and f.pools is module.UNKNOWN_POOLS, f.country
+    assert f.pools["postcode"] is module.POSTCODES, "「不知道」那一档的池子不许被换掉"
+    assert common.STATE.shots == 0
