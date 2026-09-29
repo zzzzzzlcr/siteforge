@@ -34,7 +34,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import lint  # noqa: E402
+from agent import lint, template  # noqa: E402
 
 REFERENCE = ROOT / "fixtures" / "reference_site.py"
 
@@ -246,3 +246,70 @@ def test_violations_are_ordered_and_deduped_per_line():
 
     assert [v.line for v in violations] == [2, 4]
     assert {v.code for v in violations} == {"js-value-assign"}
+
+
+# ── 第二族：判据（C/D/H，2026-09-29 用户裁定）────────────────────────────────
+#
+# 为什么有这一族：上面四条盯「**怎么写**」，这一族盯「**认页那一段字**」——
+# 2026-09-28 一天里修掉的六个站，死因多半在前者之外（判据错了，产物每步都「做成了」
+# 而整单没成：georgiapower 真做 2 步、跳过 23 步）。
+
+
+def _artifact(states, fills=None):
+    return template.render("lint-sample", "Thank you", states, fills or [],
+                           {"generated_at": "2026-09-29T00:00:00+08:00"})
+
+
+def _codes(src):
+    return sorted({v.code for v in lint.check(src)})
+
+
+def test_a_transient_error_string_as_a_judge_is_refused():
+    """C：判据是**瞬时文案**（校验报错那种）⇒ 只有那一刻才出现，重放时必然整组跳过。"""
+    src = _artifact([{"name": "why", "when": {"url_contains": "/a",
+                                               "text_contains": ["Please enter a valid email address"]},
+                      "steps": [{"action": "click", "target": {"selectors": ["#a"]}}]}])
+    assert "judge-transient" in _codes(src), lint.check(src)
+
+
+def test_a_judge_containing_the_value_we_are_going_to_fill_is_refused():
+    """D：判据里含**要填进去的值** ⇒ 与随机池自相矛盾（真站：`123 Peachtree St NE … 123`）。"""
+    src = _artifact(
+        [{"name": "addr", "when": {"url_contains": "/a",
+                                   "text_contains": ["123 Peachtree Street Northeast is your address"]},
+          "steps": [{"action": "form", "fill": "street", "target": {"selectors": ["#street"]}}]}],
+        [{"name": "street", "target": {"selectors": ["#street"]},
+          "fallback": ["123 Peachtree Street Northeast"]}])
+    assert "judge-fill-value" in _codes(src), lint.check(src)
+
+
+def test_a_url_only_judge_is_refused_unless_it_says_why():
+    """H：只有地址判据 ⇒ SPA 上等于没判据（11 组的 url 一模一样）。
+
+    ⚠️ 但**带了 `text_why` 的不报** —— 那是「查过了，只有地址稳」的记录（有损但**说了**），
+    与「没钉出来」是两件事。这一条钉的就是这个区别。
+    """
+    bare = _artifact([{"name": "spa", "when": {"url_contains": "/go"},
+                       "steps": [{"action": "click", "target": {"selectors": ["#a"]}}]}])
+    assert "judge-url-only" in _codes(bare), lint.check(bare)
+    told = _artifact([{"name": "spa", "when": {"url_contains": "/go", "text_why": "查过了：只有地址稳"},
+                       "steps": [{"action": "click", "target": {"selectors": ["#a"]}}]}])
+    assert "judge-url-only" not in _codes(told), lint.check(told)
+
+
+def test_a_bare_when_is_not_a_violation():
+    """E **不挂**（用户 2026-09-29 明确）：旁枝起点**有意**不设门
+    （`browser_agent._drop_incidental_start_when`）—— 拿它当闸会把每一份正常产物都打回。"""
+    src = _artifact([{"name": "start", "when": None,
+                      "steps": [{"action": "click", "target": {"selectors": ["#a"]}}]}])
+    assert lint.check(src) == [], lint.check(src)
+
+
+def test_each_judge_rule_is_load_bearing(monkeypatch):
+    """变异验证：摘掉一条 ⇒ 对应样例**必须不再**被打回（与 `RULES` 那族同一条规矩）。"""
+    src = _artifact([{"name": "why", "when": {"url_contains": "/a",
+                                              "text_contains": ["Please enter a valid email address"]},
+                      "steps": [{"action": "click", "target": {"selectors": ["#a"]}}]}])
+    assert "judge-transient" in _codes(src)
+    monkeypatch.setattr(lint, "JUDGE_RULES", ("judge-fill-value", "judge-url-only"))
+    assert "judge-transient" not in _codes(src), "摘掉了它却还在报 —— 说明报它的不是这一条"

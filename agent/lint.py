@@ -124,8 +124,95 @@ RULES: tuple[Rule, ...] = (
     ),
 )
 
+# ──────────────────────────────────────────────────────────────────────────
+# 第二族：**判据**（`STATES[*].when` / `FILLS`）—— 要读字面量，正则扫不出来。
+#
+# ★ 2026-09-29（用户裁定）：挂 **C / D / H** 三条，**E 不挂**。
+#   为什么会有这一族：上面四条盯的是「**怎么写**」，而 2026-09-28 一天里修掉的六个站，
+#   死因多半在「**认页那一段字**」——判据错了，产物每一步都「做成了」而整单没成
+#   （georgiapower：真做 2 步、跳过 23 步，日志里每步都写着点上了）。
+#
+# 三条各自的现场：
+#   · C 瞬时文案（`Please enter a valid email address…`）—— 只有空提交/非法值那一刻才出现；
+#   · D 判据含**要填进去的值**（`123 Peachtree St NE Atlanta, GA, USA 123`）—— 与随机池自相矛盾；
+#   · H 只有地址判据 —— SPA 上 URL 全程不变 ⇒ 等于没判据（georgiapower 11 组的 url 全一样）。
+#
+# ⚠️ **不挂的**（挂上去就是把好产物拦下来，`test_lint.py` 那条「负例比正例重要」说得很清楚）：
+#   · **E `when=None`**：旁枝起点**有意**不设门（`browser_agent._drop_incidental_start_when`），
+#     那是设计不是错 —— 拿它当闸会把每一份正常产物都打回；
+#   · **B 跨元素拼接**：机械判据要**逐元素正文**，那只在生成期拿得到（`cdp observe` 的
+#     `node_texts`，2026-09-29 起随模型一起来）——生成期已经在换/丢那段判据了
+#     （`browser_agent._when_for`）；放到这一层只能写成「长串 + 空格」那种启发式，
+#     实测它会把**修好的**产物也标出来（51 份里 185 处）。
+JUDGE_RULES: tuple[str, ...] = ("judge-transient", "judge-fill-value", "judge-url-only")
+
+#: 瞬时/校验类文案（C）。与 `docs/probes/2026-09-28-georgiapower/artifact_lint.py` 的
+#: `TRANSIENT` 同一套词 —— 两处对不上就会出现「体检说有问题、闸说没有」那种不一致。
+TRANSIENT_RE = re.compile(
+    r"complete this field|please enter|is not valid|invalid|required|"
+    r"error|loading|please wait|try again|verification", re.I)
+
 #: snippet 的截断长度：够看出是哪一行，又不至于把整行 JS 灌进提示词。
 SNIPPET_CHARS = 120
+
+
+def _line_of(src: str, needle: str) -> int:
+    """这一串字在源码里的行号（找不到给 0）。回灌给 agent 时要「指着行说」。"""
+    for lineno, raw in enumerate(str(src or "").splitlines(), start=1):
+        if needle in raw:
+            return lineno
+    return 0
+
+
+def _judge_violations(src: str) -> list[Violation]:
+    """判据那三条（C/D/H）。读不出来（坏 py / 动态构造）⇒ 空列表（**不猜**）。"""
+    from agent import fix                      # 局部 import：避免与 fix 循环引用
+
+    out: list[Violation] = []
+    states, fills = fix._literals(src)
+    if not isinstance(states, list):
+        return out
+    literals = []
+    for one in (fills or {}).values():
+        for cand in ((one or {}).get("fallback") or []):
+            if isinstance(cand, str) and len(cand) > 3:
+                literals.append(cand)
+    for state in states:
+        if not isinstance(state, dict):
+            continue
+        name = str(state.get("name") or "?")
+        when = state.get("when")
+        if not isinstance(when, dict):
+            continue                            # `when=None` 是**有意**的（E 不挂）
+        judged = [str(t) for t in (when.get("text_contains") or [])]
+        if not judged and when.get("url_contains") and not when.get("text_why"):
+            # ⚠️ 带了 `text_why` 的不报：那是「查过了，只有地址稳」的记录（有损但**说了**），
+            # 与「没钉出来」是两件事 —— 判据就在这一格上。
+            out.append(Violation(
+                line=_line_of(src, str(state.get("name") or "")), code="judge-url-only",
+                message=("组「%s」的判据**只有地址**：SPA 上的 URL 全程不变 ⇒ 等于没判据"
+                         "（真站实测：同一趟 11 组的 url 一模一样）。补一条**这一屏独有的**"
+                         "正文判据（字段标签 / 标题 / 按钮文字）。" % name),
+                snippet=_snippet('"name": %r' % name)))
+        for text in judged:
+            if TRANSIENT_RE.search(text):
+                out.append(Violation(
+                    line=_line_of(src, text), code="judge-transient",
+                    message=("组「%s」的判据是**瞬时文案**（%r）—— 校验报错/加载中那种，"
+                             "只在某一刻出现。换成这一屏**稳定**的文字。" % (name, text[:40])),
+                    snippet=_snippet(text)))
+            for literal in literals:
+                if literal in text:
+                    out.append(Violation(
+                        line=_line_of(src, text), code="judge-fill-value",
+                        message=("组「%s」的判据里含**要填进去的值**（%r ← %r）—— "
+                                 "填什么由随机池决定，这两格会自相矛盾。"
+                                 % (name, text[:40], literal[:30])),
+                        snippet=_snippet(text)))
+                    break
+    #: 表就是开关：`JUDGE_RULES` 里没有的不报 —— 变异验证（摘掉一条 ⇒ 对应用例不再红）
+    #: 靠的就是这一行，与上面那族 `RULES` 同一条规矩。
+    return [one for one in out if one.code in JUDGE_RULES]
 
 
 def _snippet(raw: str) -> str:
@@ -152,4 +239,11 @@ def check(src: str) -> list[Violation]:
             seen.add(key)
             violations.append(Violation(line=lineno, code=rule.code,
                                         message=rule.message, snippet=_snippet(raw)))
-    return violations
+    # 第二族：判据那三条（C / D / H）。同一行同一条只报一次 —— 与上面同一条规矩。
+    for one in _judge_violations(src):
+        key = (one.line, one.code)
+        if key in seen:
+            continue
+        seen.add(key)
+        violations.append(one)
+    return sorted(violations, key=lambda v: (v.line, v.code))
