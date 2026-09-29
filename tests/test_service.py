@@ -435,7 +435,14 @@ def test_the_happy_path_delivers_through_the_service(tmp_path):
     cb = rec.selftest[0].get("set_viewport")
     assert cb is not None, rec.selftest[0]
     cb(1280, 900)
-    assert win.calls == [(1280, 900)], "自测拿到的回调不通向窗口层：%r" % (win.calls,)
+    #: ⚠️ **第一格是服务自己做的**：开窗/探路之前先把窗口对齐生产那套（393×852，
+    #: `Service._align_window_size`，2026-09-28「产物不再吃指纹」那条），那一格的判据在
+    #: `tests/test_service_viewport.py` 里单独钉着。这里原先只写了自测那一下 ⇒ 这条从那天起
+    #: 一直红，而它**红的方式**掩盖了另一件事：同一批红的用例里，`fingerprint_of` 少了
+    #: 一个 `import subprocess`，「开一趟」是必 500 的（1856939 搬走 import + d8a4b5b 接线）。
+    #: 判据一个字没放宽：两格都要在，顺序也要对。
+    assert win.calls == [(393, 852), (1280, 900)], \
+        "窗口层收到的两下（服务对齐生产尺寸 + 自测那一下）：%r" % (win.calls,)
     assert len(rec.explore) == 1
 
 
@@ -456,7 +463,8 @@ def test_allow_skips_and_entry_url_reach_the_graph_as_given(tmp_path):
     cb = rec.selftest[0].get("set_viewport")
     assert cb is not None, "载荷里要了 set_viewport，那根线就得接上：%r" % (rec.selftest[0],)
     cb(1024, 768)
-    assert win.calls == [(1024, 768)], win.calls
+    #: 第一格同上看：服务自己那次「对齐生产尺寸」（`_align_window_size`）。
+    assert win.calls == [(393, 852), (1024, 768)], win.calls
 
 
 # ─────────────────── 3. 跑挂的 job 绝不许被读成跑成的（变异靶子）───────────────────
