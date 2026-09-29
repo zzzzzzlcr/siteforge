@@ -294,3 +294,25 @@ func TestPageModelJSONShape(t *testing.T) {
 		t.Errorf("honeypots[0] = %+v，三个键应分别是 input[name=\"company_url\"] / company_url / off-document-left", h)
 	}
 }
+
+// ★ 2026-09-29（用户裁定「走 A」）：逐元素正文必须**在 observe 的模型里**。
+//
+// 为什么：生成期要从「跨元素拼出来的 page_text」里剪判据 ⇒ 剪点会落在两个元素中间，
+// 剪出来那句话在页面上根本不存在（真站实测 `Main Content Schedule your residential`）。
+// 有了这一格，生成期才能**机械地**问「这段判据落在单个元素里吗」。
+// 而它必须**并进 observe**（而不是另开一次 eval）：另开一次 = 每观测一页多一次真实调用，
+// 探索期有预算（当场撞了 12 条契约用例）。
+func TestObserveJSCollectsPerElementText(t *testing.T) {
+	body := observeBody(t)
+	if !strings.Contains(body, "node_texts") {
+		t.Error("模型里没有 node_texts —— 生成期就没法问「判据落在单个元素里吗」")
+	}
+	if !strings.Contains(body, "SKIP_TAGS") {
+		t.Error("收逐元素正文时没有跳过 style/script 那几族 —— innerText 空会回退到 textContent，把 CSS 当正文")
+	}
+	// 反向：老那处「innerText || textContent」的兜底不许再出现在收正文的那几行里
+	// （它正是把整段 CSS 读进 page_text 的那一条）。
+	if strings.Contains(body, "c.innerText || c.textContent") {
+		t.Error("正文收集仍写着 `innerText || textContent` —— <style> 的 innerText 是空的 ⇒ 整段 CSS 进正文")
+	}
+}

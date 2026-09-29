@@ -11,6 +11,25 @@ type PageModel struct {
 	URL         string `json:"url"`
 	Title       string `json:"title"`
 	PageText    string `json:"page_text"`
+	// NodeTexts 是**逐元素自己的正文**（每个**叶子**元素一条，归一化空白；跳过
+	// style/script/template/link/meta/noscript/title 那几族）。
+	//
+	// ★ 2026-09-29（交接《骨架还缺什么》八条版 §1.2 / 缺陷单《产物判据跨元素拼接》正题）：
+	// 生成期的判据是**从 `page_text` 里剪的一段子串**，而 `page_text` 是**跨元素拼**出来的
+	// ⇒ 剪点会落在两个元素中间，剪出来那句在页面上**根本不存在**（真站实测：
+	// `Main Content Schedule your residential` = a11y 跳转链接的尾巴接上主标题开头）。
+	// 重放时那一组静默跳过、后面每组跟着垮（georgiapower：真做 2 步、跳 23 步）。
+	// ⇒ 有了这一格，生成期就能问「这段判据落在**单个元素**里吗」——**机械判据**，不是启发式。
+	//
+	// ⚠️ 为什么放进 `observe` 而不是另开一次 eval（2026-09-29 用户裁定「走 A」）：
+	// 另开一次就等于**每观测一页多一次真实调用**，探索期是有预算的（当场撞了 12 条契约用例：
+	// 预算 3 步变 5 次、停止线之后还发了一次）。并进模型 ⇒ **零额外调用**。
+	// ⚠️ 有上限（见 JS 里的 slice）：这一格是给判据比对用的，不是拿来做全文检索的。
+	NodeTexts []string `json:"node_texts"`
+	// NodeTextsTruncated —— 上面那一格**被截断过**（页面上的叶子元素比上限多）。
+	// ⚠️ 消费者读到 true 时**不许**下「这段判据不在任何单个元素里」这种结论：
+	// 判据的元素可能就排在截断线之后 —— 「量不到」与「没有」是两件事。
+	NodeTextsTruncated bool `json:"node_texts_truncated"`
 	ShadowRoots int    `json:"shadow_roots"`
 	// ViewportCssPx 是**观测那一刻的视口**，CSS 像素 —— `bbox` 就在这个空间里。
 	//
@@ -1203,17 +1222,41 @@ func observeJS() string {
       text: txt(el, 60) });
   });
 
+  // ── 逐元素正文（2026-09-29 加，见 NodeTexts 那段注释）──
+  // 与 page_text 的区别：这里是**每个叶子元素各一条**，不合并 —— 合并之后就没法回答
+  // 「这段判据是不是落在单个元素里」。跳过 style/script 那几族：它们的 innerText 是空的，
+  // 老写法「innerText || textContent」会回退到 textContent，**把整段 CSS 读进正文**
+  // （缺陷单 §六 D 实测：page_sig_tail 是 --mobileLanding-colorTextButtonBrand 那串 CSS）。
+  var SKIP_TAGS = { SCRIPT: 1, STYLE: 1, TEMPLATE: 1, LINK: 1, META: 1, NOSCRIPT: 1, TITLE: 1 };
+  var nodeTexts = [];
+  var nodeTextsCut = 0;
+  for (var ri = 0; ri < RS.length; ri++) {
+    var rtl = RS[ri];
+    var list = (rtl.querySelectorAll ? rtl.querySelectorAll('*') : []);
+    for (var ni = 0; ni < list.length; ni++) {
+      var e = list[ni];
+      if (SKIP_TAGS[e.tagName]) { continue; }
+      if (e.children && e.children.length) { continue; }   // 只要叶子：父元素那一段本来就是拼的
+      var one = '';
+      try { one = (e.innerText || '').replace(/\s+/g, ' ').trim(); } catch (err) { }
+      if (one) { nodeTexts.push(one); }
+    }
+  }
+
   // ── 正文：探针发现两个坑 ──
   //   ① innerText 不穿 shadow（document.body.innerText 在 shadow 页上几乎为空）
   //   ② ShadowRoot 根本没有 innerText（那是 HTMLElement 的属性）——
   //      第一版直接对 root 取 innerText 拿到 undefined，页面正文只剩 10 个字符
   //   正确做法：逐 root 收集，shadow root 取它**子元素**的 innerText
+  // ⚠️ 第三坑（2026-09-29，缺陷单 §六 D）：「innerText || textContent」会把 style 标签的
+  //    CSS 当正文（style 的 innerText 是空的 ⇒ 回退到 textContent）⇒ 跳过那几族标签。
   var perRoot = RS.map(function (rt) {
     if (rt.body) { try { return rt.body.innerText || ''; } catch (e) { return ''; } }
     var out = [];
     for (var i = 0; i < rt.children.length; i++) {
       var c = rt.children[i];
-      try { out.push(c.innerText || c.textContent || ''); } catch (e) { }
+      if (SKIP_TAGS[c.tagName]) { continue; }
+      try { out.push(c.innerText || ''); } catch (e) { }
     }
     return out.join(' ');
   });
@@ -1222,11 +1265,11 @@ func observeJS() string {
   return JSON.stringify({
     url: location.href, title: document.title,
     page_text: pageText.slice(0, 600),
+    node_texts: nodeTexts.slice(0, 400),
+    // ⚠️ 截断了没：消费者**不许**在截断时下「这段判据不在任何单个元素里」这种结论 ——
+    // 那会把排在 400 之后的好判据改坏（「量不到」与「没有」是两件事，本项目的老病）。
+    node_texts_truncated: nodeTexts.length > 400,
     shadow_roots: RS.length - 1,
-    // 视口（CSS 像素）。**必须**是 innerWidth/innerHeight：它们**含**滚动条，
-    // 与 screenshot 那条契约（image_px = viewport_css_px × dpr，滚动条画进图里）
-    // 对齐；clientWidth/clientHeight 不含滚动条，用了就会与截图静默错开一个滚动条宽。
-    // Math.round：契约是整数（PixelSize），小数（页面缩放时）会让 Go 侧解不动 int。
     viewport_css_px: { width: Math.round(window.innerWidth), height: Math.round(window.innerHeight) },
     actions: actions, fields: fields, option_groups: groups, obstructions: obs,
     honeypots: traps

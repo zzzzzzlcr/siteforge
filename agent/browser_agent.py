@@ -283,46 +283,6 @@ WHEN_TEXT_SPLICE = ("这一段判据原来是**跨两个元素拼**出来的（�
 #: 一个是「这段没法用 ⇒ 判据少了一半」—— 混成一句，读的人就分不出该不该动手。
 WHEN_TEXT_SPLICED_AWAY = ("剪出来的那一段是**跨两个元素拼**的（页面上根本没有这一句话）：%r；"
                           "而这一页**找不到**任何单个元素能顶替它")
-#: 逐元素正文的读口：只读**会说话的**标签，且**每个元素各给一条**（不合并）。
-#: 与产物 `_PAGE_TEXT_JS` 同一套 roots 走法（ShadowRoot 没有 `getElementsByTagName`）。
-_NODE_TEXT_JS = (
-    "return (function(){"
-    "var SKIP={SCRIPT:1,STYLE:1,TEMPLATE:1,LINK:1,META:1,NOSCRIPT:1,TITLE:1};"
-    "var roots=[document],i=0;"
-    "while(i<roots.length){var r=roots[i++];"
-    "var els=(r.getElementsByTagName?r.getElementsByTagName('*'):r.querySelectorAll('*'));"
-    "for(var j=0;j<els.length;j++){if(els[j].shadowRoot){roots.push(els[j].shadowRoot);}}}"
-    "var out=[];"
-    "for(var k=0;k<roots.length;k++){var rt=roots[k];"
-    "var list=(rt.querySelectorAll?rt.querySelectorAll('*'):[]);"
-    "for(var m=0;m<list.length;m++){var e=list[m];"
-    "if(SKIP[e.tagName]){continue;}"
-    #: 只要**叶子**元素：父元素那一段本来就是「拼起来的」，拿它验等于没验。
-    "if(e.children&&e.children.length){continue;}"
-    "try{var t=(e.innerText||'').replace(/\\s+/g,' ').trim();if(t){out.push(t);}}catch(err){}}}"
-    "return JSON.stringify(out.slice(0,400));})();"
-)
-
-
-def _read_node_texts(session) -> Optional[list]:
-    """读**逐元素自己的正文**（只读、一次 `eval`）。读不到给 `None` —— **不编**。
-
-    ⚠️ 它只服务一件事：判据那一段要**落在单个元素里**（见 `_when_for`）。
-    读不到时 `_when_for` 退回老行为（照旧剪一段）—— 那不是「没问题」，
-    所以 `_when_for` 拿 `None` 时不写任何 `text_why`（那条话说的是「验过了」，
-    没验过就不能说）✓。
-    """
-    if session is None or not hasattr(session, "call_tool"):
-        return None
-    try:
-        raw = session.call_tool("eval", {"code": _NODE_TEXT_JS})
-    except Exception:                       # noqa: BLE001 —— 工具层什么错都可能给
-        return None
-    for _ in range(2):                      # cdp eval 的答复被编码两层（交接 §7）
-        try:
-            raw = json.loads(raw)
-        except (ValueError, TypeError):
-            break
 def _snippet_in_one_node(snippet: str, nodes) -> str:
     """把跨元素拼出来的 `snippet` 换成**落在单个元素里**的那一段（换不了给空串）。
 
@@ -1011,11 +971,8 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             step["note"] = _say(name, step["target"], True)
             journey.steps.append(step)
             if name == "observe":
-                # ⚠️ 2026-09-28：`node_texts=` **这一版还没接上** —— 接上它就意味着
-                # 每观测一页**多一次真实调用**（`eval` 读逐元素正文），而探索期是有预算的：
-                # 真接上去当场撞了 12 条契约用例（预算 3 步变 5 次调用、停止线之后还发了一次）。
-                # 对的路是**把它并进 `observe` 的模型**（Go 那边加一格 `node_texts`，零额外调用），
-                # 见缺陷单《产物判据跨元素拼接》§六 A.4 —— 那一改动**还没做**。
+                # ★ 2026-09-29：逐元素正文**并进了 `cdp observe` 的模型**（`node_texts`）——
+                # 所以这里照旧只是一次观测：判据那一格（「落在单个元素里吗」）**零额外调用**。
                 moved = pages.note_page(raw)
                 # 第 5 格 `sig_after`：**这一眼看到的**那一页（`note_page` 刚把它算进
                 # `pages.sig`）。读不出正文时它是 `None` —— 那就补一句 why，
@@ -4028,11 +3985,11 @@ class _Pages:
     def current_model(self):
         return self._current["model"] if self._current else None
 
-    def note_page(self, model: dict, node_texts=None) -> str | None:
+    def note_page(self, model: dict) -> str | None:
         """记一页。返回**上一个状态名**（说明换页了），第一页返回 None。
 
-        `node_texts`：逐元素正文的读口（见 `_when_for`）—— 传进来就**先验一遍**
-        判据那一段是不是落在单个元素里，`None` = 老行为。
+        逐元素正文（`node_texts`）现在**就在 `model` 里**（`cdp observe` 2026-09-29 加的那一格）
+        —— 所以这里既没有额外参数、也没有额外调用。
         """
         if not isinstance(model, dict):
             return None
@@ -4047,8 +4004,7 @@ class _Pages:
             return None
         previous = self._current["name"] if self._current else None
         when = _when_for(model, avoid=_norm(((self._current or {}).get("model") or {})
-                                            .get("page_text") or ""),
-                         node_texts=node_texts)
+                                            .get("page_text") or ""))
         #: ★ 2026-09-22（生成侧建议第 1 条，真产物里量到的）：**相邻两页 `when` 完全相等 ⇒
         #: 合并成一个状态**（复用上一页的名字）。
         #: 为什么必须合并：`when` 是产物重放时**唯一的门** ⇒ 两个状态同门，就会演出
@@ -4094,7 +4050,7 @@ class _Pages:
         return name
 
 
-def _when_for(model: dict, avoid: str = "", node_texts=None) -> dict | None:
+def _when_for(model: dict, avoid: str = "") -> dict | None:
     """一个状态的 `when`：**进这个状态时**那一页的判据。
 
     `url_contains` 用**稳定前缀**（`_stable_url`）：先去掉 query 与 fragment —— 重放时 query
@@ -4112,9 +4068,11 @@ def _when_for(model: dict, avoid: str = "", node_texts=None) -> dict | None:
     不然产物上「只有 URL」与「判据本来就只有 URL」长得一模一样，读的人分不出
     「查过了，只有 URL 稳」和「没钉出来」。**不许**悄悄退化成只有 `url_contains` 一条。
 
-    ★ 2026-09-28：`node_texts` = 「**逐元素自己的正文**」的读口（探索期给得起，见
-    `_read_node_texts`；给不起就传 `None` = 老行为）。它的用途只有一个：**别把跨元素
-    拼出来的那句话当判据**（缺陷单《产物判据跨元素拼接》的正题）。验不过时的处置见那一段。
+    ★ 2026-09-29（用户裁定「走 A」）：逐元素正文**由 `cdp observe` 一起给**
+    （`model["node_texts"]`，零额外调用 —— 另开一次 eval 会撞探索期的预算）。
+    它的用途只有一个：**别把跨元素拼出来的那句话当判据**（缺陷单的正题）。
+    ⚠️ `node_texts_truncated` 为真时**不下结论**：那一格被**截断**过（叶子元素比上限多），
+    判据的元素可能就排在截断线之后 ——「量不到」与「没有」是两件事。
     """
     when: dict = {}
     url = _stable_url(model.get("url") or "")
@@ -4123,14 +4081,15 @@ def _when_for(model: dict, avoid: str = "", node_texts=None) -> dict | None:
     text = _norm(model.get("page_text") or "")
     snippet = _snippet(text, avoid=avoid)
     spliced = ""
-    if snippet and node_texts is not None:
+    nodes = model.get("node_texts")
+    if snippet and isinstance(nodes, list) and nodes and not model.get("node_texts_truncated"):
         # ★ 2026-09-28（缺陷单《产物判据跨元素拼接》§六 A.4 —— 那份单子的**正题**）：
         # 判据必须是**某一个元素自己的话**。从合并后的 `page_text` 里剪一段，剪点可能落在
         # **两个元素中间**（真站实测：`Main Content Schedule your residential` 是
         # a11y skip-link 的尾巴接上主标题开头拼出来的）⇒ 重放时那句话**在页面上根本不存在**
         # ⇒ 这一组静默跳过，而后面每一组跟着垮（georgiapower 那单：真做 2 步、跳 23 步）。
         # 这里把剪出来的那段拿**逐节点正文**验一遍：不落在单个节点上就换成落在的那个。
-        got = [str(t or "") for t in (node_texts() or [])]
+        got = [str(t or "") for t in nodes]
         if got and not any(_norm(snippet).lower() in t.lower() for t in got):
             better = _snippet_in_one_node(snippet, got)
             if better:

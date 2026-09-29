@@ -4365,8 +4365,13 @@ def test_the_same_address_in_another_state_is_still_filled_there():
 
 # ── 缺陷单《产物判据跨元素拼接》（2026-09-28）────────────────────────────────
 
-def _page_model(text: str) -> dict:
-    return {"url": "https://example.test/step-1", "title": "T", "page_text": text}
+def _page_model(text: str, nodes=None, truncated=False) -> dict:
+    """一页的模型替身。`nodes` = `cdp observe` 现在一起给的**逐元素正文**（2026-09-29 加）。"""
+    model = {"url": "https://example.test/step-1", "title": "T", "page_text": text}
+    if nodes is not None:
+        model["node_texts"] = list(nodes)
+        model["node_texts_truncated"] = bool(truncated)
+    return model
 
 
 def test_a_judge_spliced_out_of_two_elements_is_replaced_by_one_element_s_own_words():
@@ -4380,11 +4385,12 @@ def test_a_judge_spliced_out_of_two_elements_is_replaced_by_one_element_s_own_wo
     """
     from agent import browser_agent
 
-    model = _page_model("Main Content Schedule your residential clipboard energy audit today")
     nodes = ["Skip to Main Content",
              "Schedule your residential clipboard energy audit today",
              "At no cost to you, a UES energy advisor will help"]
-    when = browser_agent._when_for(model, node_texts=lambda: nodes)
+    model = _page_model("Main Content Schedule your residential clipboard energy audit today",
+                        nodes=nodes)
+    when = browser_agent._when_for(model)
     got = when["text_contains"][0]
     #: 判据换成**那个元素自己的开头**（不是「与原件共有的那半句」）—— 而且必须真的
     #: 落在某一个元素里（这条才是这一格的不变量）。
@@ -4398,20 +4404,36 @@ def test_a_spliced_judge_with_no_single_node_to_stand_on_keeps_only_the_url():
     退化成**只有 URL**，并把「为什么少了一半」写在 `text_why` 里（有损必须说）。"""
     from agent import browser_agent
 
-    model = _page_model("Main Content ZzzzZzzz ZzzzZzzz")
-    when = browser_agent._when_for(model, node_texts=lambda: ["完全无关的一串字", "另一串也无关"])
+    model = _page_model("Main Content ZzzzZzzz ZzzzZzzz",
+                        nodes=["完全无关的一串字", "另一串也无关"])
+    when = browser_agent._when_for(model)
     assert "text_contains" not in when, when
     assert when["url_contains"] == "https://example.test/step-1", when
     assert "跨两个元素拼" in when["text_why"], when
     assert when.get("text_why"), when
 
 
-def test_without_a_node_reader_we_do_not_claim_we_checked():
-    """读不到逐元素正文（老行为 / 那次 eval 没成）⇒ 照旧剪一段，而且**不许**写
-    「验过了」那句话 —— 「没验」与「验过没问题」长得一样，是这一族的原型病。"""
+def test_without_node_texts_we_do_not_claim_we_checked():
+    """模型里没有那一格（老 cdp / 手写那条路）⇒ 照旧剪一段，而且**不许**写「验过了」那句话
+    ——「没验」与「验过没问题」长得一样，是这一族的原型病。"""
     from agent import browser_agent
 
     model = _page_model("Main Content Schedule your residential clipboard energy audit today")
-    when = browser_agent._when_for(model, node_texts=lambda: None)
+    when = browser_agent._when_for(model)
+    assert when["text_contains"] == ["Main Content Schedule your residential"], when
+    assert "text_why" not in when, when
+
+
+def test_a_truncated_node_list_is_not_read_as_a_splice():
+    """★ 2026-09-29（我自己量出来的那个坑）：`node_texts` 有上限（页面上叶子元素比它多时会截断）。
+
+    截断之后**不许**下「这段判据不在任何单个元素里」这种结论 —— 判据的元素可能就排在
+    截断线之后，而那个结论会把**好判据**改掉（甚至改成只剩 URL）。「量不到」与「没有」
+    是两件事 —— 这一格钉的就是它。"""
+    from agent import browser_agent
+
+    model = _page_model("Main Content Schedule your residential clipboard energy audit today",
+                        nodes=["和判据无关的一串字"], truncated=True)
+    when = browser_agent._when_for(model)
     assert when["text_contains"] == ["Main Content Schedule your residential"], when
     assert "text_why" not in when, when

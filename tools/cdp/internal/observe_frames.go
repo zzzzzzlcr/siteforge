@@ -15,6 +15,11 @@ import (
 // 主帧那一段要翻成空串。
 const mainFramePath = "main"
 
+// nodeTextsLimit —— 合并后「逐元素正文」最多留几条（单帧那条 JS 自己截 400）。
+// 为什么要有上限：这一格是给**判据比对**用的（「这段判据落在单个元素里吗」），
+// 不是拿来做全文检索；子帧多的页面（广告帧一大堆）不许把模型撑大。
+const nodeTextsLimit = 600
+
 // 诊断 kind。**导出**：它跨 JSON 边界到 CLI（Task 6）和 agent，改字符串等于改契约。
 const (
 	// DiagKindFrameError —— 某一帧观测失败（广告/追踪帧本来就取不到）。
@@ -284,6 +289,17 @@ func mergeFrameModel(merged *PageModel, m *PageModel, path []string, isMain bool
 			merged.PageText = m.PageText
 		} else {
 			merged.PageText += " " + m.PageText
+		}
+	}
+	// 逐元素正文：**跨帧并起来**（与 PageText 同一条口径 —— 判据既可能落在主帧，
+	// 也可能落在跨源子帧里，生成期要拿它验「这段判据落在单个元素里吗」）。
+	// ⚠️ 有上限（`nodeTextsLimit`，与单帧那条 JS 里的 slice 同量级）：
+	// 这一格只服务判据比对，不是全文检索 —— 子帧多的页面不许把它撑大。
+	merged.NodeTextsTruncated = merged.NodeTextsTruncated || m.NodeTextsTruncated
+	if len(m.NodeTexts) > 0 {
+		merged.NodeTexts = append(merged.NodeTexts, m.NodeTexts...)
+		if len(merged.NodeTexts) > nodeTextsLimit {
+			merged.NodeTexts = merged.NodeTexts[:nodeTextsLimit]
 		}
 	}
 	for _, a := range m.Actions {
