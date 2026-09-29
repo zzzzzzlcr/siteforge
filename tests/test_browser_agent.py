@@ -776,6 +776,88 @@ def test_states_when_holds_on_the_page_it_came_from(tmp_path):
     assert not browser_agent.when_holds(quiz_state["when"], PAGE_LANDING)
     assert not browser_agent.when_holds(landing_state["when"], PAGE_QUIZ)
 
+# ─────── 判据的**反面**那一向：它在**别的页**上也成立吗（交接《骨架还缺什么》§1）───────
+#
+# 上面那条反向断言是**孤例**（两个手写的模型），真跑一趟没人验过。而生成期那一验
+# （`_when_for` 末尾的 `when_holds`）是**循环论证** —— 判据就是从这一页的正文里剪的原文
+# ⇒ 必然成立 ⇒ 它什么也没验。没验过的是反面：拿**别的页**问同一句话。
+# 太松与「判据太严 ⇒ 整组静默跳过」是同一个门的两面；真到重放时，这一组会在那页上
+# **真做一遍**（`_applies` 是按当前页逐组重判的），而日志里每一步照样写着做成了。
+
+
+def _gate_page(name: str, url: str, text: str) -> dict:
+    """`_Pages` 录下来的一条 —— `_gates_that_hold_elsewhere` 直接吃这个形状。"""
+    model = {"url": url, "title": name, "page_text": text}
+    return {"name": name, "when": browser_agent._when_for(model), "key": (url, name, text),
+            "model": model, "url": url, "title": name}
+
+
+def test_a_gate_that_also_holds_on_another_page_is_caught():
+    """判据落在**页头/导航那种公用文案**上 ⇒ 门分不出两页 ⇒ 生成期就得说。"""
+    shared = "Get Started 先看看你能省多少"
+    landing = _gate_page("landing", "https://example.test/funnel", shared)
+    #: 另一页：稳定前缀**一样**、正文里**也有**那一段（只靠地址 + 一段公用文案就成门了）
+    twin = _gate_page("twin", "https://example.test/funnel?step=3",
+                      shared + " 第三步 请留下你的邮箱")
+    #: 正控：地址前缀与正文**都**不同的一页，谁也不该命谁
+    other = _gate_page("quiz", "https://example.test/quiz", "你多久用一次？每天 每周 很少")
+    hits = browser_agent._gates_that_hold_elsewhere([landing, twin, other])
+    assert [h["name"] for h in hits] == ["landing"], hits
+    assert hits[0]["pages"] == ["https://example.test/funnel?step=3"], hits
+
+
+def test_a_page_with_no_gate_is_never_reported():
+    """「有意不设门」的旁枝起点不许被报成缺陷 —— 否则每一份正常产物都在喊狼来了。"""
+    pages = [{"name": "start", "when": None, "key": ("u", "t", ""), "model": PAGE_LANDING,
+              "url": "https://console.bitbrowser.test/x?id=1&port=1", "title": "【Bit】工作台"}]
+    assert browser_agent._gates_that_hold_elsewhere(pages) == []
+
+
+def test_the_same_state_is_not_compared_with_itself():
+    """相邻同门的两页**有意**合成一个状态（2026-09-22）—— 同名之间不许互报。"""
+    same = _gate_page("funnel", "https://example.test/funnel", PAGE_LANDING["page_text"])
+    again = dict(same, key=("x", "y", "z"))      # 同一个状态名、又一次观测
+    assert browser_agent._gates_that_hold_elsewhere([same, again]) == []
+
+
+def test_the_collision_reaches_the_ledger(tmp_path):
+    """真跑一趟（真 `explore` / 真 `note_page`）：命中要落进账本，读账的人靠它去改判据。"""
+    head = "Get Started 先看看你能省多少"
+    second = dict(PAGE_LANDING, url="https://example.test/funnel?step=2",
+                  title="Example 漏斗 第 2 步", page_text=head + " 第二步 你的邮编")
+    journey, _, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": second},
+                     {"structured": second}],
+         "click": [{"structured": {"ok": True}}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"content": "完了"}],
+    )
+    said = [n for n in journey.notes if "在**别的页**上也成立" in n]
+    assert said, journey.notes
+    assert "「funnel」" in said[0], said
+    assert "https://example.test/funnel?step=2" in said[0], said
+
+
+def test_a_clean_run_says_nothing_about_collisions(tmp_path):
+    """正控：两页的判据分得开时，**一个字都不许多说**（否则这条会变成噪音）。"""
+    journey, _, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_QUIZ}],
+         "click": [{"structured": {"ok": True}}],
+         "form": [{"structured": {"ok": True}}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"calls": [("form", {"selector": "#postcode", "value": "SW1A 1AA"})]},
+         {"content": "完了"}],
+    )
+    assert not [n for n in journey.notes if "在**别的页**上也成立" in n], journey.notes
+
+
+
 
 # ─────── 判据的 URL 侧：钉**稳定前缀**，不钉整条 path（R-35 真站实测 → R-37）───────
 #

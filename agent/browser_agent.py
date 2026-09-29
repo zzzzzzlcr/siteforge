@@ -1138,6 +1138,15 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             _shots(step_shots.finish)
         # 起点那一页**与后面所有页都不同源**时，撤掉它的 `when`（见 `_drop_incidental_start_when`）。
         _drop_incidental_start_when(pages.pages, journey)
+        # ★ 2026-09-29（交接《骨架还缺什么》§1）：判据的**反面**那一向 ——
+        # 「这句话在**别的页**上还成不成立」。生成期验正例是循环论证（判据就是从这一页剪的
+        # 原文 ⇒ 必然成立），没验过的正是这一向，而它命中就是「重放走到那页、这组步骤真做一遍」。
+        # ⚠️ 排在 `_drop_incidental_start_when` **之后**：那个旁枝起点有意不设门，
+        # 先撤掉它，这里才不会拿它当「一条判据」去比。
+        for gate in _gates_that_hold_elsewhere(pages.pages):
+            journey.note(GATE_HOLDS_ELSEWHERE % (gate["name"],
+                                                 "、".join(gate["pages"]),
+                                                 gate["name"]))
         journey.pages = [{"name": p["name"], "when": p["when"], "url": p["url"],
                           "title": p["title"]} for p in pages.pages]
         if own_session:
@@ -4220,6 +4229,62 @@ def _drop_incidental_start_when(pages: list, journey: Journey) -> None:
         "起点那一页（%s）与后面**每一页**都不同源 —— 它是「我们碰巧从那儿开始」的旁枝，"
         "不是站点自己的页。所以它的状态**不设判据**（那种页的地址每开一次窗口都不一样，"
         "设了判据会在换窗之后把起点那组步骤整组跳过）。" % first_host)
+
+
+#: ★ 2026-09-29（交接《骨架还缺什么》§1）：一条判据**在别的页上也成立**时说的话。
+#:
+#: 为什么这条非喊不可：生成期那一验（`_when_for` 末尾的 `when_holds`）是**循环论证** ——
+#: 判据就是从这一页的正文里剪的原文，那段注释自己就写着「必然成立」⇒ **那一验什么也没验**。
+#: 真正没验过的是**反面**：拿**别的页**的模型去问同一句话。成立 ⇒ 这个门分不出这两页
+#: ⇒ 产物重放走到那一页时，这一组的步骤会**在那页上真做一遍**（`_applies` 是按当前页
+#: 逐组重判的，与那一页自己的门成不成立无关），而日志里每一步照样写着「点上了/填好了」。
+#: 它是「整组静默跳过」的孪生病：跳过是判据太严，这是判据太松，两样长在同一个门上。
+GATE_HOLDS_ELSEWHERE = (
+    "「%s」这一组的判据在**别的页**上也成立（%s）—— 这个门分不出这几页。"
+    "产物重放走到那一页时，「%s」这组步骤会**在那页上真做一遍**"
+    "（它点的会是那一页上的元素），而日志里看不出任何异常。"
+    "要动的是**判据本身**：让它落在这几页里**只有一页有**的那句话上"
+    "（页头/导航那类公用文案、跨元素拼接、只钉地址，都会长成这个样子）。")
+
+
+def _gates_that_hold_elsewhere(pages: list) -> list:
+    """每条 `when` 在**别的页**上也成立的那些 —— 生成期的**反面**那一向（交接 §1）。
+
+    与 `_when_for` 末尾那次 `when_holds` 的分工：那一次验的是**正例**，而判据是从这一页的
+    正文里剪出来的原文字串 ⇒ 必然成立 ⇒ 那次等于没验。这一向（反例）今天谁都没看过。
+
+    ⚠️ **同名状态之间不比**：`note_page` 把相邻同门的两页**有意**合并成一个状态
+    （2026-09-22 那处：「两个状态同门 ⇒ 同一页上填做了、点却被跳过」）—— 同一个状态名
+    底下的几个观测本来就该同门，拿它们互报等于把那条设计本身报成缺陷。
+    ⚠️ **没有门的不参与**：`when` 为空是有意的（`_drop_incidental_start_when` 那个旁枝
+    起点），把「有意不设门」报成缺陷 = 每一份正常产物都在喊狼来了。
+
+    返回 `[{"name", "url", "pages": [它**不该**成立的那几页 url]}, …]`：一个状态一条。
+    """
+    out: list = []
+    seen: set = set()
+    for i, entry in enumerate(pages):
+        when = entry.get("when")
+        if not when:
+            continue
+        name = entry.get("name") or ""
+        hits: list = []
+        for j, other in enumerate(pages):
+            url = other.get("url") or ""
+            if j == i or (other.get("name") or "") == name or url in hits:
+                continue
+            if when_holds(when, other.get("model") or {}):
+                hits.append(url)
+        if not hits:
+            continue
+        #: 同一个状态名底下可能有几个观测（`same_gate` 合并过）—— 它们会各自报一遍同样
+        #: 的那几句，去重之后读的人才看得见「一共几个状态有事」。
+        key = (name, tuple(hits))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"name": name, "url": entry.get("url") or "", "pages": hits})
+    return out
 
 
 def _host_of(url: str) -> str:
