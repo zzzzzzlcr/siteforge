@@ -593,6 +593,67 @@ def _no_py_say(values: dict) -> str:
             "**为什么没有 py**：**写这一版 py** 那一步没能产出一份过得了闸的稿 —— "
             "原因写在它自己那句话里。下一步：看那句话，缺什么补什么（判据 / 步骤表 / 证据）。"),
     }.get(reason, "")
+
+
+def _why_head(text: str) -> str:
+    """那一趟自己交代的那句话 → 列表上那一行看得见的**短句**（第一句；超了切**并说出来**）。
+
+    ★ 2026-09-30（用户原话：「运营不知道为啥没有生成脚本」）：为什么没出脚本，原来只有在
+    **点开这一趟**之后才看得见（`/live.artifact.say` 那一格）。列表上只有「跑完了 · 没交付」
+    —— 20 行一模一样的字，人看不出**为什么**，也看不出「这十几趟其实是同一件事」。
+
+    ⚠️ **不另编一个类别名**（「判据问题」「环境问题」那种）：编一个就是第二套口径，
+    迟早与这一趟自己那句话漂开。取的就是它说过的第一句。
+    ⚠️ 切了必须说（Global Constraints：没有静默的路径）—— 尾巴上写「点开这一趟看全句」。
+    """
+    said = " ".join(str(text or "").split())
+    if not said:
+        return ""
+    head = said.split("。")[0].strip()
+    if not head:
+        return ""
+    if len(head) >= WHY_HEAD_CHARS:
+        return head[:WHY_HEAD_CHARS] + "…（点开这一趟看全句）"
+    return head + "。"
+
+
+#: `_why_head` 那一行最多留多少字（超了就切，并把「切了」写在尾巴上）。
+WHY_HEAD_CHARS = 100
+
+
+def _runs_why_say(facts: list) -> str:
+    """`/runs` 顶上那句：**这一屏里几趟跑完了却没出脚本、分别是因为什么**。
+
+    ★ 2026-09-30（用户原话：「运营不知道为啥没有生成脚本」）：原来这一屏只有一行行的
+    「跑完了 · 没交付」，为什么得**逐个点开**才知道 —— 而同一个停因连着十几趟时，
+    人更看不出「这其实是一件事」（实测那天：20 趟里 10 趟是同一个停因）。
+
+    做法：**按停因聚**（`end_reason`，与服务那一侧同源），每类摆**那一趟自己说的第一句**
+    —— 一个类别名都不编。数出来的东西只说数出来的。
+    ⚠️ 只数**跑完了**的那些：跑着 / 在闸上的还没走到那一步，把它们算进「没出脚本」是假话。
+    ⚠️ 入参是**攒好的事实** `(停因, 那一行的 why, 状态, 出了脚本没有)` —— 不在这儿去读行字典
+    上那两格：`view` 上那几个键的读次数有 AST 守卫数着（见 `runs()` 里那段注释）；
+    而**分组用停因、上屏用那一趟自己的话**（停因是机器码，上屏就违反「码不许露给运营」）。
+    """
+    if not facts:
+        return ""
+    done = [f for f in facts if f[2] in (DONE, FAILED)]
+    no_py = [f for f in done if not f[3]]
+    if not no_py:
+        return ("这一屏 %d 趟里，跑完的**都出了脚本**。" % len(facts)) if done else ""
+    groups: dict = {}
+    for reason, why, _status, _py in no_py:
+        groups.setdefault(reason or "", []).append(why)
+    lines = ["这一屏 **%d 趟**里，**%d 趟跑完了却没出脚本**"
+             "（另有 %d 趟还没跑到那一步、%d 趟出了脚本）："
+             % (len(facts), len(no_py), len(facts) - len(done),
+                len([f for f in done if f[3]]))]
+    for _reason, whys in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        lines.append("  · **%d 趟** —— %s" % (len(whys), whys[0] or "（那一趟没说为什么）"))
+    lines.append("每一行下面就是它自己那句；点开任一趟，那一屏里是完整的为什么与下一步。")
+    return "\n".join(lines)
+
+
 #: 复跑用哪个浏览器（`ws://…`）。没配 = 这个部署**跑不了复跑** —— 那是合法状态，
 #: 面板照样读得到配置，只是「复跑」那一步会明确说「没量着」。
 JSON_WS_URL_ENV = "SITEFORGE_JSON_WS_URL"
@@ -4959,6 +5020,9 @@ class Service:
         那几趟排在**最后**（两栏的分界处正是「捡回来的 / 开出来的」）。
         `note`：空列表时那句话说清「这个列表是 process-local 的」—— 不说的话，
         人会把「空」读成「什么都没提交过」（§3.5 同一条纪律）。
+        `why_say`：★ 2026-09-30（用户原话「运营不知道为啥没有生成脚本」）—— 这一屏里
+        **几趟跑完了却没出脚本、分别是因为什么**（按停因聚成几行，每行摆那一趟自己说的那句）。
+        它是**服务算的**（页面一个字都不算 —— 与「谁在值班」「榜单」那两栏同一条纪律）。
         """
         with self._jobs_lock:
             jobs = list(self._jobs.values())
@@ -4972,31 +5036,52 @@ class Service:
             if back is not None:
                 jobs.append(back)
         rows = []
+        #: 顶上那句要的那几样**在这一次循环里就取出来**（`(停因, 那一行的 why, 状态, 出了脚本没有)`）：
+        #: ⚠️ `view` 上那几个键的读**次数是有守卫数着的**（`tests/test_service_input.py` 那条
+        #: AST 守卫：多读一次 = 那一格里又抄了一份判据）⇒ 攒成事实，别让下面那句去读行字典。
+        facts: list = []
         for seq, job in enumerate(jobs):
             view = self._view(job.job_id)         # 登记表里的 job 读得回来（读不回来是 500，不是少一行）
-            rows.append((_stamp(job.created_at), seq, {
+            status, delivered = view["status"], bool(view.get("delivered"))
+            why = (_why_head(view.get("say"))
+                   if status in (DONE, FAILED) and not delivered else "")
+            row = {
                 "job_id": job.job_id,
                 #: ★ 2026-09-30：`site` 改取**这一趟自己的状态**那一格（与 `GET /job/{id}` 同源）。
                 #: 原来取 `brief["site"]` —— 而**人在面板上开的那一趟** brief 里没有这一格
                 #: （只有值班脚本那条路会写它）⇒ 人自己刚开的那几趟在列表上写着「（没说站点）」，
                 #: 一排长得一样的行，认不出哪一趟是自己的（而同几个字在 job 那一屏上是有值的）。
                 "site": view.get("site"),
-                "status": view["status"],
+                "status": status,
                 "say": str(view.get("say") or ""),
+                #: ★ 2026-09-30（用户原话「运营不知道为啥没有生成脚本」）：**这一行的**
+                #: 那句「为什么没出脚本」—— 取这一趟自己那句话的**第一句**（见 `_why_head`）。
+                #: 原来它只在点开这一趟之后才看得见（`/live.artifact.say` 那一格），
+                #: 而列表上只有「跑完了 · 没交付」⇒ 运营盯着 20 行一模一样的字，
+                #: 既不知道为什么，也不知道自己能不能动手。
+                "why": why,
                 #: ★ 2026-09-30：捡回来的那一趟不再盖「现在」（见 `_ledger_time`）。
                 "created_at": job.created_at,
                 #: 「到过几道闸」—— 轮数**只有这一个算法**（`rounds.count`）；
                 #: 到头了的那两档要把「最后那张图」去掉（它不是一轮）
-                "rounds": rounds.count(job.shot_notes, view["status"]),
-                "delivered": bool(view.get("delivered")),
-            }))
+                "rounds": rounds.count(job.shot_notes, status),
+                "delivered": delivered,
+            }
+            #: 停因**只用来分组那句话**（`_runs_why_say`），**不进 row** —— 那一份载荷是
+            #: 页面上看得见的东西，机器码不许上屏（同「榜单」「谁在值班」那两栏的纪律）。
+            reason = str((view.get("result") or {}).get("end_reason") or "")
+            rows.append((_stamp(job.created_at), seq, row))
+            facts.append((reason, why, status, delivered))
         #: ★ 2026-09-30（docstring 里那句「最近的在前」这一栏**真的做出来**）：
         #: `seq` = 进登记表的先后（捡回来的与后来开的**在同一把尺子上**比）——
         #: `created_at` 是**秒级**的，同一秒里交上来两趟是常事（实测那一天 03:24/03:27/03:29…），
         #: 那种平手就按**交上来的先后倒过来**（后交的在前），不许靠字典顺序碰运气。
         rows.sort(key=lambda t: (t[0], t[1]), reverse=True)
-        return {"note": "" if rows else NO_RUNS_SAY,
-                "runs": [row for _at, _seq, row in rows]}
+        out_rows = [t[2] for t in rows]
+        return {"note": "" if out_rows else NO_RUNS_SAY,
+                #: 顶上那句：这一屏里几趟没出脚本、分别因为什么（服务算，页面只摆）。
+                "why_say": _runs_why_say(facts),
+                "runs": out_rows}
 
     #: `/runs` 从盘上捡回几个（每一个都要读一次 checkpoint ⇒ 给个上限）。
     #: ⚠️ `ponytail`：够用就好（面板那一栏是「最近的那些」）；真嫌少再加缓存，别现在就上。

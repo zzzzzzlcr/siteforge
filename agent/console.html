@@ -60,6 +60,12 @@
   .runrow .id{display:block; font-family:var(--mono); font-size:11.5px; color:var(--ink-3)}
   .runrow .site{display:block; font-size:13.5px; margin-top:1px}
   .runrow .st{display:block; font-size:12px; color:var(--ink-2); margin-top:3px}
+  /* ★ 2026-09-30：那一行为什么没出脚本（服务给的原话，第一句）—— 列表上就得看得见。 */
+  .runrow .why{display:block; font-size:11.5px; color:var(--ink-3); margin-top:3px;
+    line-height:1.5; white-space:pre-wrap}
+  .runs .whyall{font-size:11.5px; color:var(--ink-2); line-height:1.6; white-space:pre-wrap;
+    background:var(--surface); border:1px solid var(--line); border-radius:8px;
+    padding:8px 9px; margin:0 0 10px}
 
   /* ── 顶栏 ─────────────────────────────────────── */
   .top{border-bottom:1px solid var(--line); background:var(--surface); padding:10px 16px;
@@ -1553,6 +1559,11 @@
     if (rows === null) { return; }
     var box = document.getElementById("runs");
     var html = "", i;
+    //: ★ 2026-09-30（用户原话「运营不知道为啥没有生成脚本」）：这一屏**顶上那句** ——
+    //: 几趟跑完了却没出脚本、分别因为什么。**服务算、页面只摆**（一个数都不许在这儿数）。
+    //: ⚠️ 服务没给（空串）就**一个字都不摆**：编一句「一切正常」是这一片最忌讳的那种假话。
+    var whyAll = at(data, "why_say", "");
+    if (whyAll) { html += '<p class="whyall">' + rich(whyAll) + "</p>"; }
     for (i = 0; i < rows.length; i++) {
       var row = rows[i];
       var id = at(row, "job_id", "");
@@ -1560,10 +1571,15 @@
       var st = (STATUS_WORD[at(row, "status", "")] || at(row, "status", "")) +
         (at(row, "status", "") === "done" ? (delivered ? " · 交付了" : " · 没交付") : "") +
         " · " + at(row, "rounds", 0) + " 轮（闸拍）";
+      //: ★ 2026-09-30：**这一行为什么没出脚本** —— 那一趟自己说的第一句（服务给的原文，
+      //: 页面一个字都不改）。原来列表上只有「跑完了 · 没交付」，为什么得逐个点开才知道。
+      var why = at(row, "why", "");
       html += '<button class="runrow' + (id === jobId ? " on" : "") + '" type="button" data-job="' + esc(id) + '">' +
         '<span class="id">' + esc(id) + "</span>" +
         '<span class="site">' + rich(at(row, "site", "（没说站点）")) + "</span>" +
-        '<span class="st">' + rich(st) + "</span></button>";
+        '<span class="st">' + rich(st) + "</span>" +
+        (why ? '<span class="why">' + rich(why) + "</span>" : "") +
+        "</button>";
     }
     if (!rows.length) {
       html = '<p class="hintline">' + rich(at(data, "note", "还没有任何运行。")) + "</p>";

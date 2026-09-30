@@ -1170,16 +1170,62 @@ def test_runs_is_the_short_list_you_pick_from(tmp_path):
     _wait(client, job_id)
 
     body = client.get("/runs").json()
-    assert set(body) == {"note", "runs"}
+    assert set(body) == {"note", "runs", "why_say"}
     rows = [r for r in body["runs"] if r["job_id"] == job_id]
     assert len(rows) == 1, body
     row = rows[0]
-    assert set(row) == {"job_id", "site", "status", "say", "created_at", "rounds", "delivered"}
+    assert set(row) == {"job_id", "site", "status", "say", "why", "created_at", "rounds",
+                        "delivered"}
     assert row["site"] == SITE
     assert row["status"] == "waiting" and row["delivered"] is False
     assert row["say"], "挑运行的人先看这一句人话"
     assert row["created_at"]
     assert row["rounds"] == len(_live(client, job_id)["rounds"])
+    #: ★ 2026-09-30：**还在闸上**的那一趟不算「没出脚本」（它还没走到那一步）——
+    #: 那一格此刻必须是空的，不然运营会读成「这一趟已经废了」。
+    assert row["why"] == "", row
+
+
+def test_a_run_that_ended_without_a_py_says_why_in_the_list(tmp_path):
+    """★ 2026-09-30（用户原话「运营不知道为啥没有生成脚本」）：**列表上就得看得见为什么**。
+
+    钉四样：① 跑完了没出脚本的那一行，`why` = 那一趟自己那句话的**第一句**（不许另编类别）；
+    ② 顶上那句把它**聚起来**（几趟、各是因为什么）；③ 出了脚本的那一趟 `why` 是空的；
+    ④ 跑着/在闸上的**不算**进「没出脚本」（还没走到那一步）。
+    """
+    made: list = []
+
+    def factory(brief, deps):
+        g = _FakeGraph([_Snap(values={"site": SITE, "ws_url": WS_URL}, interrupts=(_interrupt("intake"),)),
+                        _Snap(values={"site": SITE, "ws_url": WS_URL, "visits": ["intake"],
+                                      "end_reason": "explore_unfinished",
+                                      "end_note": "这次探路没走完（预算到顶了）。第二句不该上列表。"})])
+        made.append(g)
+        return g
+
+    client = _client(factory)
+    no_py = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, no_py)
+    client.post("/job/%s/reply" % no_py, json={"action": "continue"})
+    assert _wait(client, no_py)["status"] == "done"
+    #: 第二趟**停在闸上**（正控：它还没走到那一步，不算「没出脚本」）
+    waiting = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, waiting)
+
+    body = client.get("/runs").json()
+    rows = {r["job_id"]: r for r in body["runs"]}
+    assert rows[no_py]["delivered"] is False
+    said = rows[no_py]["why"]
+    assert said.startswith("这次探路没走完"), said
+    assert said.endswith("。"), said
+    assert "第二句" not in said, "列表那一行要的是**第一句**：%r" % said
+    assert rows[waiting]["why"] == "", rows[waiting]
+
+    why_say = body["why_say"]
+    assert "**2 趟**" in why_say, why_say
+    assert "**1 趟跑完了却没出脚本**" in why_say, why_say
+    assert "1 趟还没跑到那一步" in why_say, why_say
+    assert said.rstrip("。") in why_say, why_say
 
 
 def test_runs_counts_the_gates_not_the_last_picture(tmp_path):

@@ -173,7 +173,7 @@ def _live(status: str, mode: str, *, n: int, stop_requested: bool = False,
     }
 
 
-def _payloads(*, final_mode: str) -> dict:
+def _payloads(*, final_mode: str, with_why: bool = True) -> dict:
     """这一趟要喂给页面的那些响应（顺序有意义 —— 驱动脚本按顺序取）。
 
     `/live` 那份：开页时在跑 → 点「停」之后那份（**变了** ⇒ 会重画）→ 之后停在闸上，
@@ -191,14 +191,27 @@ def _payloads(*, final_mode: str) -> dict:
     #: 那句前提**在这里就量掉**（Task 10 修复轮 1 / C1）：22 份正文两两不同，
     #: 而用例还会用「重画次数 == `/live` 的 fetch 次数」再量一遍**行为**。
     _assert_all_different([x["body"] for x in lives], "`/live` 的正文")
+    #: ★ 2026-09-30：那一栏上「为什么没出脚本」的两格 —— **服务算的那句**（`why_say`）
+    #: 与**每一行自己那句的头一句**（`why`）。`with_why=False` 那份两格都不给：
+    #: 页面**一个字都不许摆**（编一句「一切正常」是这一片最忌讳的那种假话）。
+    #: ⚠️ 这一行的形状要**照服务那一侧真会给的**：`why` 只在**跑完了、没交付**的那两档才有
+    #: （还在跑 / 在闸上的那一格是空的 —— 它还没走到那一步）。
+    row = {"job_id": "job-1", "site": "example-funnel",
+           "status": "done", "say": "先别写 py：这一趟账本里的判据分不开页。",
+           "created_at": "2026-09-19T21:00:00+08:00",
+           "rounds": 0, "delivered": False}
+    runs_body = {"note": "", "runs": [row]}
+    if with_why:
+        #: ⚠️ 顶上那句与行里那句**要长得不一样**（两处都得能单独量出来）—— 一样的话
+        #: 「页面只摆了其中一处」也照绿，那这条用例的牙就没了。
+        runs_body["why_say"] = ("这一屏 **2 趟**里，**1 趟跑完了却没出脚本**：\n"
+                                "  · **1 趟** —— 顶上那句：判据分不开页。")
+        row["why"] = "行里那句：先别写 py。"
     return {
         "search": "?job=job-1",
         "responses": {
             "/runs": [
-                {"body": {"note": "", "runs": [{"job_id": "job-1", "site": "example-funnel",
-                                                "status": "running", "say": "在跑。",
-                                                "created_at": "2026-09-19T21:00:00+08:00",
-                                                "rounds": 0, "delivered": False}]}},
+                {"body": runs_body},
                 {"status": 500, "body": {"detail": RUNS_500}},
             ],
             #: ⚠️ 每一条都要**包一层信封**（`{"body": …}`）：驱动脚本从信封上读 HTTP 状态码，
@@ -318,13 +331,17 @@ def _artifact_payloads(*, with_artifact: bool) -> dict:
 
 
 #: `_drive` 的 `scenario` 名字 → 驱动器认识的那个名字（**只差这一对**）。
-_DRIVER_SCENARIO = {"artifact-missing": "artifact"}
+_DRIVER_SCENARIO = {"artifact-missing": "artifact",
+                    "runs-why": "repaint", "runs-why-none": "repaint"}
 
 
 def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
            page: pathlib.Path = None) -> dict:
     """跑一次夹具，把驱动脚本打回来的那份观测解析出来。"""
-    if scenario == "again":
+    if scenario in ("runs-why", "runs-why-none"):
+        #: 两趟**同一个驱动**，只差「那两格给不给」（与 artifact / artifact-missing 同一路数）。
+        payload = _payloads(final_mode=None, with_why=(scenario == "runs-why"))
+    elif scenario == "again":
         payload = _again_payloads()
     elif scenario == "artifact":
         payload = _artifact_payloads(with_artifact=True)
@@ -499,6 +516,31 @@ def test_a_sentence_the_service_said_stays_on_screen_through_the_repaints(tmp_pa
     assert RUNS_STILL in after["runs"], "左边那一栏那句真话被过期列表盖掉了：%r" % after["runs"]
     assert 'class="runrow' not in after["runs"], "旧列表被照画回去了（真话被盖掉）：%r" % after["runs"]
     assert STOP_HINT_STILL in out["afterStop"]["stopHint"], out["afterStop"]
+
+
+def test_the_runs_column_says_why_a_run_produced_no_py(tmp_path):
+    """★ 2026-09-30（用户原话「运营不知道为啥没有生成脚本」）：那一栏上就得看得见**为什么**。
+
+    两处一起钉：① 顶上那句（**服务算的**：这一屏几趟没出脚本、分别因为什么 ——
+    页面一个数都不许自己数）；② 那一行自己那句（服务给的原文，页面一个字都不改）。
+    改前这两处都不存在：列表上只有「跑完了 · 没交付」，为什么得**逐个点开**才知道。
+    """
+    runs = _drive(tmp_path, scenario="runs-why")["afterLoad"]["runs"]
+    assert "1 趟跑完了却没出脚本" in runs, runs          # 顶上那句（服务算的）
+    assert "顶上那句：判据分不开页。" in runs, runs      # …它自己那几行
+    assert "行里那句：先别写 py。" in runs, runs         # 那一行上那一句（两处都得在）
+
+
+def test_the_runs_column_does_not_invent_a_why_when_the_service_gives_none(tmp_path):
+    """正控：服务没给那两格 ⇒ 页面**一个字都不许摆**。
+
+    （编一句「一切正常」或「没有没出脚本的」正是这一片最忌讳的那种假话：那一刻页面
+    并不知道那些趟为什么没出脚本。）
+    """
+    runs = _drive(tmp_path, scenario="runs-why-none")["afterLoad"]["runs"]
+    assert "没出脚本" not in runs, runs
+    assert "为什么" not in runs, runs
+    assert "job-1" in runs, "正控：列表本身还是要画的（否则这条量的是「整栏都没画」）"
 
 
 def test_the_page_says_the_two_cells_disagree_instead_of_picking_one(tmp_path):
