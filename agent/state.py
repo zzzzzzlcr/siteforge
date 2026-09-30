@@ -296,6 +296,9 @@ class SiteState(TypedDict, total=False):
     #: 产物会自相矛盾）。空列表 = 没补过。留着它是因为「说话了、产物也真的变了」这件事
     #: 得看得见（补回去 ≠ 静默修）。
     fills_restored: list
+    #: ★ 2026-09-30：**被退回的组**（改稿那双手动了步骤序列 ⇒ 那一组按账本原样退回）。
+    #: 空列表 = 没有哪一组被动过序列。
+    steps_reverted: list
 
     # ── lint / selftest ───────────────────────────────────────
     violations: list              # 打回的行（`{line, code, message, snippet}`）

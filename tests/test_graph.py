@@ -733,9 +733,18 @@ def test_a_revision_is_recorded_so_a_reader_can_tell_it_from_a_kill(tmp_path):
     只留一句 `hints` 是不够的：后面读这份记录的人分不出「他改过，产物按他说的重写了」
     与「他没让这份东西出去」。
     """
-    deps, rec = _deps(write=lambda spec, fb, n: ({**spec, "states": [
-        {**spec["states"][0], "steps": [{**spec["states"][0]["steps"][0],
-                                         "note": "第二版：按人说的改了"}]}]} if n == 2 else spec))
+    #: ★ 2026-09-30：那一笔「按人说的重写」**不许动步骤序列**（见 `_keep_step_sequences`）——
+    #: 所以这个桩只改 `note`（原来它顺手把第 1 步之后的步删掉了，现在会被退回 ✗，那是新契约
+    #: 该做的事：序列是账本的事实）。
+    def _rewrite_keeps_the_sequence(spec, fb, n):
+        if n != 2:
+            return spec
+        states = [{**st, "steps": [{**s, "note": "第二版：按人说的改了"}
+                                   for s in (st.get("steps") or [])]}
+                  for st in spec["states"]]
+        return {**spec, "states": states}
+
+    deps, rec = _deps(write=_rewrite_keeps_the_sequence)
     app, cfg, _ = _build(deps=deps)
     state = {"asked": False}
 
@@ -825,6 +834,56 @@ def test_a_draft_that_loses_the_success_condition_still_stops_loudly(tmp_path):
 # `_when_for` 末尾那次 `when_holds` 是**循环论证**（判据就是从那一页的正文里剪的原文
 # ⇒ 必然成立），所以生成期从来没验过**反面**：这句话在**别的页**上还成不成立。
 # `browser_agent.explore` 把答案记在 `journey.gate_collisions` 上；这一格是那道门。
+
+
+def test_a_rewrite_that_reorders_the_steps_is_rolled_back(tmp_path, monkeypatch):
+    """★ 2026-09-30（用户那一问点破的）：「**有没有可能他直接弹出来 SIGN IN 了。你找 Buy now
+    肯定找不到**」—— 这个站**先登录**，账本里的顺序就是那一趟真做过的事实；
+    改稿那双手把它揉乱 ⇒ 重放会在**登录页**上找买按钮（3 遍自测全卡在那儿）。
+
+    契约：**不许动序列**（加步/删步/挪步/搬组）；动了就把**那一组**的步骤原样退回并记下来。
+    正控：只改每一步的地址（`target`）⇒ **保留**（那双手该改的就是这些）。
+    """
+    import copy as _copy
+
+    import test_graph as TG
+    from agent import browser_agent as _ba
+
+    def _book():
+        steps_by = {"signup": [{"action": "click", "fill": "", "target": {"selectors": ["#a"]}},
+                               {"action": "form", "fill": "email", "target": {"selectors": ["#b"]}}]}
+        b = TG._journey()
+        monkeypatch.setattr(_ba.Journey, "states",
+                            lambda self: [{"name": "signup",
+                                           "when": {"url_contains": "https://x.test/signup"},
+                                           "steps": _copy.deepcopy(steps_by["signup"])}])
+        monkeypatch.setattr(_ba.Journey, "fills", lambda self: {})
+        return b
+
+    class _Reorder:
+        """把那一组的步**倒过来**（加步/删步/挪步的同一族）。"""
+
+        def __call__(self, spec, feedback, n=1):
+            out = _copy.deepcopy(spec)
+            for st in out.get("states") or []:
+                st["steps"] = list(reversed(st.get("steps") or []))
+            return out
+
+    class _Retarget:
+        """只改地址（那双手该做的），序列一个字节不动。"""
+
+        def __call__(self, spec, feedback, n=1):
+            out = _copy.deepcopy(spec)
+            for st in out.get("states") or []:
+                for s_ in st.get("steps") or []:
+                    (s_.get("target") or {})["selectors"] = ["input[name=email]"]
+            return out
+
+    for who, want_reverted in ((_Reorder(), ["signup"]), (_Retarget(), [])):
+        deps, rec = TG._deps(journey=_book(), write=who)
+        app, cfg, _ = TG._build(deps=deps)
+        _, out = TG._drive(app, cfg, TG._brief(tmp_path))
+        assert (out.get("steps_reverted") or []) == want_reverted, (who, out.get("steps_reverted"))
 
 
 def test_a_fill_that_the_rewrite_dropped_is_restored_from_the_ledger(tmp_path, monkeypatch):

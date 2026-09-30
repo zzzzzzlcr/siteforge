@@ -1191,7 +1191,15 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
         spec["loop"] = dict(loop_spec or _loop_spec(journey, funnel))
     spec["shape"] = shape
 
+    #: ★ 2026-09-30：改稿那双手**不许动步骤序列**（见 `_keep_step_sequences`）——
+    #: 账本里那一组的动作顺序（含「先登录」这一步）是**那一趟真做过的事实**，
+    #: 动了它，重放就会在错的页上做事（`zekear` 3 遍自测就是栽在这儿）。
+    _spec_before_write = copy.deepcopy(spec)
     spec = deps.write(spec, feedback)
+    spec["states"], _reverted = _keep_step_sequences(_spec_before_write.get("states") or [],
+                                                    spec.get("states") or [])
+    #: 空列表也要落（不是只在退回时才写）—— 读它的人（统计、面板）不必再判「这一格在不在」。
+    out["steps_reverted"] = _reverted
     #: ★ 2026-09-30（现场那一趟：自测报「这一步要填「email」，FILLS 里没有它」）：
     #: **改稿那双手会把 `FILLS` 砍掉、却留着引用它的步骤** ⇒ 产物自我矛盾（跑起来当场
     #: `ValueError: 产物写错了`）。账本里记着的那些格子是**真相**（那一步当初就是这么填的）
@@ -1485,6 +1493,48 @@ def _selftest(state, deps: Deps, caps: Caps) -> dict:
             out.update({"end_reason": END_SELFTEST_CAP,
                         "end_note": _selftest_cap_note(out["diagnoses"], report)})
     return out
+
+
+def _seq_of(state: dict) -> list:
+    """一组的**步骤序列身份证**：每一步的 `(action, fill)` —— 只用来判「序列有没有被动过」。"""
+    return [(str((s or {}).get("action") or ""), str((s or {}).get("fill") or ""))
+            for s in ((state or {}).get("steps") or [])]
+
+
+def _keep_step_sequences(before: list, after: list) -> tuple:
+    """把「**步骤序列**」按 `before`（= 账本的事实）钉回去，返回 `(新的 states, 被退回的组名)`。
+
+    ★ 2026-09-30（用户那一问点破的）：「**有没有可能他直接弹出来 SIGN IN 了。你找 Buy now
+    肯定找不到**」—— 这个站**先登录**，账本里的顺序就是
+    `signIn → signUp（注册）→ user/center → 商品页 → Buy now`；而改稿那双手把「点 Log in」
+    与「Buy now」揉进一组、顺序也乱了 ⇒ 重放时在**登录页**上找买按钮，3 遍自测全卡在那儿。
+
+    契约：那双手**可以**改每一步的地址/取值、可以改判据、可以换形态；**不许动序列**
+    （加步、删步、挪步、把一组里的步搬去另一组）。判据是 `(action, fill)` 逐位相同 ——
+    不同就把**那一组的步骤**原样退回（别的组、别的东西一个字节不动），并记进
+    `steps_reverted`（**退回了什么要说出来**，不是静默改）。
+    """
+    was = {str(st.get("name") or ""): st for st in (before or []) if isinstance(st, dict)}
+    reverted: list = []
+    out: list = []
+    for st in (after or []):
+        if not isinstance(st, dict):
+            out.append(st)
+            continue
+        name = str(st.get("name") or "")
+        src = was.get(name)
+        if src is None:
+            #: 新冒出来的组：它没有账本依据 ⇒ 记下（序列这一格它没有"事实"可依）
+            out.append(st)
+            continue
+        if _seq_of(st) != _seq_of(src):
+            fixed = dict(st)
+            fixed["steps"] = src.get("steps") or []
+            out.append(fixed)
+            reverted.append(name)
+        else:
+            out.append(st)
+    return out, sorted(set(reverted))
 
 
 def _nav_failed_note(report) -> str:
