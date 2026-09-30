@@ -38,20 +38,29 @@ def _state(name="funnel", *, url="https://example.test/funnel", text="Get Starte
     return {"name": name, "when": when,
             "steps": [{"action": a[0]} for a in steps]}
 
+def _two_screens_one_url() -> list:
+    """同一个地址上的两屏，其中一屏**只有地址**（`zekear` 那趟现场的形状）。"""
+    url = "https://example.test/product"
+    bare = _state("product-2", url=url, text=None)
+    return [_state("product", url=url, text="Add to cart"), bare]
 
-def test_a_clean_ir_reports_nothing():
-    """干净的 IR ⇒ 一条都不报（这一条的牙是「不许喊狼来了」）。"""
-    assert ir.validate(_journey_with([_state(), _state("thanks", url="https://example.test/thanks",
-                                                       text="Thank you")])) == []
 
+def test_a_bare_gate_is_an_ir_problem_only_when_the_url_has_other_screens():
+    """★ 只有地址的门 —— **判据是「同一个地址上还有没有别的组」**（2026-09-30 收窄）。
 
-def test_a_bare_gate_is_an_ir_problem():
-    """★ 只有地址的门（今晚那批事故的正身）：同一个地址下每一屏都满足它 ⇒ 等于没有门。"""
-    got = ir.validate(_journey_with([_state(text=None)]))
+    现场（`job-face3bb1d760`）：`signin` 那一组只有地址（`/user/signIn`），而那个地址上
+    **独它一份** ⇒ 地址前缀本来就够用（就是它自己那一页）⇒ 拦住它是**误判**，而它拦掉了
+    一份本来对的产物。反过来，同一个地址上**还有别的组**时，地址前缀在每一屏上都成立
+    ⇒ 那时才真的分不出是哪一屏（这才是那条判据的射程）。
+    """
+    got = ir.validate(_journey_with(_two_screens_one_url()))
     assert [p.code for p in got] == ["ir_unexpressible.bare_gate"], got
-    assert got[0].layer == "ir" and got[0].name == "funnel", got[0]
+    assert got[0].layer == "ir" and got[0].name == "product-2", got[0]
     assert "没读到正文" in got[0].say, got[0].say
 
+    #: 正控：同一个地址上**独一份** ⇒ 不报（那一趟被误拦的就是这个形状）
+    alone = _state("signin", url="https://example.test/user/signIn", text=None)
+    assert ir.validate(_journey_with([alone])) == []
 
 def test_a_goto_in_the_middle_of_a_group_is_an_ir_problem():
     """★ `goto` 后面还有动作（`zekear` 那趟自测的真因）：重放第一步就走掉了，后面的步会在别的页上做。"""
@@ -98,7 +107,7 @@ def test_no_ledger_at_all_is_classified_not_raised():
 
 def test_the_human_sentence_names_the_layer_and_never_leaks_the_codes():
     """`say()` 是上屏的那一句：**说清卡在哪一层**，机器码一个都不许露。"""
-    got = ir.validate(_journey_with([_state(text=None)]))
+    got = ir.validate(_journey_with(_two_screens_one_url()))
     said = ir.say(got)
     assert "卡在" in said and "可编译的步骤表" in said, said
     for p in got:
@@ -114,7 +123,7 @@ def test_the_draft_refuses_an_incomplete_ir_before_rendering(tmp_path, monkeypat
     import test_graph as TG
 
     monkeypatch.setattr(browser_agent.Journey, "states",
-                        lambda self: [_state(text=None)])   # ← 只有地址的空门
+                        lambda self: _two_screens_one_url())   # ← 同址两屏、其中一屏只有地址
     book = TG._journey()
     deps, rec = TG._deps(journey=book)
     app, cfg, _ = TG._build(deps=deps)

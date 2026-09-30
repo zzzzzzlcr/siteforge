@@ -58,6 +58,15 @@ class Problem:
                 "name": self.name, **({"extra": self.extra} if self.extra else {})}
 
 
+def _stable(url) -> str:
+    """判「是不是同一个地址」用的**稳定前缀**：去掉 fragment / query、去掉尾斜杠、小写。
+
+    与 `browser_agent._stable_url` 的前两步同一口径（那一步还丢「像轮换码的末段」——
+    这里不必：它只用来数「同一个地址上有几个状态」）。
+    """
+    return str(url or "").split("#")[0].split("?")[0].rstrip("/").lower()
+
+
 def validate(journey, values: dict | None = None) -> list:
     """这份 IR 能不能编译 ⇒ `[Problem]`（空列表 = 可以）。
 
@@ -82,6 +91,13 @@ def validate(journey, values: dict | None = None) -> list:
                            "账本里**一步可重放的都没有**（全是「看一眼」这类感知动作）—— "
                            "没有可重放步骤就没有产物可谈。"))
 
+    #: 每个**稳定地址**上有几个状态 —— 下面那条 `bare_gate` 要看它（★ 2026-09-30 收窄）。
+    _urls: dict = {}
+    for _st in states:
+        _u = _stable((_st.get("when") or {}).get("url_contains"))
+        if _u:
+            _urls[_u] = _urls.get(_u, 0) + 1
+
     for st in states:
         name = str(st.get("name") or "")
         when = st.get("when") or {}
@@ -95,13 +111,16 @@ def validate(journey, values: dict | None = None) -> list:
                                "「%s」这一组一步都没有。" % name, name))
             continue
 
-        # ② **只有地址**的门（没有正文判据、也不是「有意不设门」的那种起手页）：
-        #    ⚠️ 这一条是今晚那批事故的正身：同一个地址下的**每一屏**都满足它 ⇒ 等于没有门，
-        #    而它又会让下游「判据分不开页」那一验报错 ⇒ 稿出不来。根子多半是**那一眼没读到正文**。
-        if when and not has_text:
+        # ② **只有地址**的门 —— ★ 2026-09-30 **收窄**（`zekear` 现场逮到的第二个误判）：
+        #    **只在同一个地址上还有别的组时**才算病（那时它分不出是哪一屏 ✗）；
+        #    而这个地址上**独一份**时，地址前缀本来就够用（`/user/signIn` 就是它自己那一页）
+        #    ⇒ 报它是误判，而它会拦住一份本来对的产物。
+        #    ⚠️ 根子多半还是「记下这一组的那一眼没读到正文」（页面还在加载）。
+        if when and not has_text and _urls.get(_stable(when.get("url_contains")), 0) > 1:
             out.append(Problem("ir", "ir_unexpressible.bare_gate",
-                               "「%s」这一组**只有地址**当门（`%s`）：同一个地址下的每一屏都满足它，"
-                               "等于没有门。多半是记下这一组的那一眼**没读到正文**（页面还在加载）。"
+                               "「%s」这一组**只有地址**当门（`%s`），而这个地址上还有别的组 —— "
+                               "地址前缀在**每一屏**上都成立，等于没有门、分不出是哪一屏。"
+                               "多半是记下这一组的那一眼**没读到正文**（页面还在加载）。"
                                % (name, when.get("url_contains") or ""), name))
         if when and not has_url and not has_text:
             out.append(Problem("ir", "ir_unexpressible.no_criterion",
