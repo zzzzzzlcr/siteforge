@@ -6,6 +6,10 @@
 logs/
 tmp/
 runtime/
+# runtime-222/ 是 **8100 那个容器**的挂载点（`/company/siteforge/runtime-222 → /opt/siteforge/runtime`）：
+# 它是**运行期状态**（checkpoint 的 sqlite、每趟的账本），不是源码。打进镜像等于往镜像里塞一份
+# 别人容器昨天的状态 —— 而且它里面有 `checkpoints.sqlite`，那是 `_recover` 会去读的那个文件名。
+runtime-222/
 __pycache__/
 *.pyc
 tools/cdp/cdp
