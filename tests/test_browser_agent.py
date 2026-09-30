@@ -919,12 +919,18 @@ def test_one_page_split_by_a_countdown_is_merged_back_into_one_state():
 
 
 def test_a_bare_url_gate_is_not_evidence_that_two_screens_are_one_page():
-    """★ 2026-09-30（**并过头**时逮到的）：**「只有地址」的那条判据不算「分不开」的证据**。
+    """★ 2026-09-30（用户那句「那这样就不对吧」）：**「只有地址」的那一眼不是一页**。
 
-    那种判据是「那一眼没读到正文」的产物（观测撞上加载中的那一页），而**地址前缀**在
-    **同一个地址下的每一屏**上都成立 ⇒ 拿它当证据，单页漏斗的十几屏会被并成一组
-    （实测 `easystorebuilderpro.com/FUBGB/`：12 屏问卷会被并成一屏、每一屏自己那条好判据全丢；
-    一次扫盘：68 本账本并了 300 组，其中 31 本出现「一次并掉 ≥3 组」）。
+    那种判据是「那一眼没读到正文」的产物（观测撞上加载中的那一页）：**它没有在说「这两页
+    一样」**（地址前缀在同一个地址下的**每一屏**上都成立），而它又会去 §1 那儿报「分不开页」
+    ⇒ 一份 py 都不出 —— 而判据是**机器剪的**，运营一个字都没做错。实测（扫盘 106 本账本）：
+    改前 70 本会被那条闸拒，改后 **7** 本；剩下那 7 本里 2 本是这种「只有地址」的残留。
+
+    两条底线一起钉：
+      · ① 那一页（没读到正文的那一眼）**并进同一地址上紧接着那个读到正文的状态**
+        （判据用读到的那个 —— 那才是这一页该有的门）；
+      · ② 读到正文的两屏**不许**因此被并成一屏（那会把单页漏斗的逐屏判据全丢掉 ——
+        实测 `easystorebuilderpro.com/FUBGB/` 12 屏问卷，判据 `PIECE 2 / 12 …` 一条不剩）。
     """
     url = "https://fubgb.test/FUBGB/"
     models = [{"url": url, "title": "FUBGB", "page_text": ""},          # ← 加载中：一个字都没读到
@@ -934,9 +940,17 @@ def test_a_bare_url_gate_is_not_evidence_that_two_screens_are_one_page():
                "page_text": "PIECE 3 / 12 EXPERIENCE RANK What's your age range? 18-24 25-34"}]
     pages, steps = _split_one_page_into_states(models)
     assert [p["name"] for p in pages.pages] == ["fubgb", "fubgb-2", "fubgb-3"], pages.pages
-    assert browser_agent._merge_one_page_states(pages.pages, steps) == []
-    assert [p["name"] for p in pages.pages] == ["fubgb", "fubgb-2", "fubgb-3"], pages.pages
-    assert {s["state"] for s in steps} == {"fubgb", "fubgb-2", "fubgb-3"}, steps
+
+    gone = browser_agent._merge_one_page_states(pages.pages, steps)
+
+    assert [(g["name"], g["into"], g["kind"]) for g in gone] == [("fubgb", "fubgb-2", "unread")], gone
+    assert [p["name"] for p in pages.pages] == ["fubgb-2", "fubgb-3"], pages.pages
+    assert {s["state"] for s in steps} == {"fubgb-2", "fubgb-3"}, steps
+    #: ① 留下的判据是**读到正文那一页**的，不是地址那条
+    kept = {p["name"]: p["when"] for p in pages.pages}
+    assert kept["fubgb-2"]["text_contains"] == ["PIECE 2 / 12 YOUR BUILDER How do you identify?"], kept
+    #: ② 两屏各留各的门（逐屏判据不许被并掉）
+    assert len(pages.pages) == 2, pages.pages
 
 
 def test_two_screens_behind_one_url_are_not_merged():
