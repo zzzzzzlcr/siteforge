@@ -4545,9 +4545,18 @@ def _merge_one_page_states(pages: list, steps: list) -> list:
         url = _stable_url(pg.get("url") or "")
         if not url:
             continue
-        rest = pages[pages.index(pg) + 1:]
-        target = next((q for q in rest if _stable_url(q.get("url") or "") == url
-                       and (q.get("when") or {}).get("text_contains")), None)
+        here = pages.index(pg)
+        readable = [q for q in pages
+                    if _stable_url(q.get("url") or "") == url
+                    and (q.get("when") or {}).get("text_contains")]
+        #: ★ 2026-09-30（现场逮到的第二个形状）：**先往后找，再往前找** ——
+        #: 「没读到正文」的那一眼可能落在**这一页的最后一眼**上（`zekear` 那趟：
+        #: `…_cleaner-2` 是那一页的最后一眼，后面直接去了别的地址）⇒ 只往后找的话它活下来，
+        #: 那一组就带着一条「只有地址」的门，§1 照旧报「分不开页」、还是一份 py 都不出。
+        #: 往后那是「它接下来变成的那一页」（正常形状：观测撞上刚跳转的加载中页面）；
+        #: 往前那是「它就是这一页的又一次观测」（落在最后那一眼的形状）。两边都不在 ⇒ 留着。
+        target = next((q for q in pages[here + 1:] if q in readable), None) \
+            or next((q for q in reversed(pages[:here]) if q in readable), None)
         if target is None:
             continue
         merged.append({"name": pg.get("name") or "", "into": target.get("name") or "",

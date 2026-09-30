@@ -953,6 +953,34 @@ def test_a_bare_url_gate_is_not_evidence_that_two_screens_are_one_page():
     assert len(pages.pages) == 2, pages.pages
 
 
+def test_a_trailing_unread_observation_is_not_a_page_either():
+    """★ 2026-09-30（**现场逮到的第二个形状**，用户报的 `zekear` 那一趟）：「没读到正文」的那一眼
+    可能落在**这一页的最后一眼**上 —— `…_cleaner-2` 是那一页最后一眼，后面直接去了别的地址。
+
+    那一趟死法一模一样（「判据分不开页 ⇒ 一份 py 都不出」）：只**往后**找可读的同一页 ⇒ 找不到 ⇒
+    它带着一条「只有地址」的门活下来 ⇒ §1 报它。这一条钉：**往前找**也并（并进同一地址上那个
+    读到正文的状态），而且留下的判据必须是**有正文**的那条（`_best_gate` 平手时优先有正文的 ——
+    只比条数的话，那条「在同址每一屏上都成立」的空门会胜出）。
+    """
+    url = "https://zekear.test/products/cordless-electric-window-cleaner"
+    models = [{"url": url, "title": "Zekear",
+               "page_text": "FREE SHIPPING ON ORDER OVER $79.99 Home SHOP NOW Add to cart"},
+              {"url": url, "title": "Zekear", "page_text": ""}]     # ← 最后一眼：没读到正文
+    pages, steps = _split_one_page_into_states(models)
+    assert [p["name"] for p in pages.pages] == ["cordless_electric_window_cleaner",
+                                                "cordless_electric_window_cleaner-2"], pages.pages
+    assert browser_agent._gates_that_hold_elsewhere(pages.pages), "先钉住改前那个形状：它确实会报"
+
+    gone = browser_agent._merge_one_page_states(pages.pages, steps)
+
+    assert [(g["name"], g["into"], g["kind"]) for g in gone] == [
+        ("cordless_electric_window_cleaner-2", "cordless_electric_window_cleaner", "unread")], gone
+    assert [p["name"] for p in pages.pages] == ["cordless_electric_window_cleaner"], pages.pages
+    kept = pages.pages[0]["when"].get("text_contains") or []
+    assert kept and kept[0].startswith("FREE SHIPPING ON ORDER OVER $79.99 Home"), kept
+    assert browser_agent._gates_that_hold_elsewhere(pages.pages) == [], "并掉之后还报 = 还是一份 py 都不出"
+
+
 def test_two_screens_behind_one_url_are_not_merged():
     """单页漏斗**地址不变、问题一屏一屏换**（2026-09-24 那条）—— 那两屏**不许**并。
 
