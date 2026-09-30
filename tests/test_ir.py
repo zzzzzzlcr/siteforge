@@ -62,28 +62,37 @@ def test_a_bare_gate_is_an_ir_problem_only_when_the_url_has_other_screens():
     alone = _state("signin", url="https://example.test/user/signIn", text=None)
     assert ir.validate(_journey_with([alone])) == []
 
-def test_a_goto_in_the_middle_of_a_group_is_an_ir_problem():
-    """★ `goto` 后面还有动作（`zekear` 那趟自测的真因）：重放第一步就走掉了，后面的步会在别的页上做。"""
-    got = ir.validate(_journey_with([_state(steps=(("goto",), ("click",)))]))
+def test_a_goto_sandwiched_between_actions_of_two_pages_is_an_ir_problem():
+    """★ `goto` **夹在中间**（前面有步、后面也有步）**而且换了页** ⇒ 真病：
+    前面那几步按这一页记的、后面那几步按新页记的，重放时一页上做一半、另一半在别的页上做，
+    而日志看不出区别（`zekear` 那趟自测「页面上没找到「Buy now」」就是这个形状）。
+    """
+    bad = _state(steps=(("click",), ("goto",), ("click",)))
+    bad["when"]["url_contains"] = "https://example.test/product"
+    bad["steps"][1]["url"] = "https://example.test/user/signIn"        # ← 真换了页
+    got = ir.validate(_journey_with([bad]))
     assert [p.code for p in got] == ["trace_ambiguous.goto_in_the_middle"], got
-    assert "另一个页面" in got[0].say, got[0].say
+    assert "前后都有别的动作" in got[0].say, got[0].say
+
+
+def test_a_goto_the_group_starts_with_is_a_legal_shape():
+    """★ 2026-09-30（现场逮到的第三个误判）：「**从这一页出发、去那一页做事**」是合法形状 ——
+    `center-2` 的 `[goto 商品页, 点 Buy now]` 就是这样，而它**是对的**（那一组的前提页就是它
+    出发的那一页）。改成拦它 = 一份本来对的产物出不来。
+    """
+    ok = _state(steps=(("goto",), ("click",)))
+    ok["when"]["url_contains"] = "https://example.test/center"
+    ok["steps"][0]["url"] = "https://example.test/product"             # ← 换了页，但 goto 在最前
+    assert ir.validate(_journey_with([ok])) == []
 
 
 def test_a_goto_that_stays_on_the_same_page_is_a_reload_not_a_problem():
-    """★ 2026-09-30（用户问「还是说我提的还要改」时逮到的**误判**）：同一个地址上的 `goto`
-    是**重载**（真站实测：`goto https://…/user/signUp` 之后再填表 —— 页面没换），后面的动作
-    照样在这一页上 ⇒ 报它就是误判，而它会**拦住一整份本来对的产物**。换页的那种照旧要报。
-    """
-    same = _state(steps=(("goto",), ("form",)))
+    """★ 2026-09-30（第二个误判）：同一个地址上的 `goto` 是**重载**（真站实测：
+    `goto https://…/user/signUp` 之后再填表 —— 页面没换）⇒ 夹在中间也放行。"""
+    same = _state(steps=(("form",), ("goto",), ("form",)))
     same["when"]["url_contains"] = "https://example.test/signup"
-    same["steps"][0]["url"] = "https://example.test/signup?step=2"      # ← 同址（带 query）
+    same["steps"][1]["url"] = "https://example.test/signup?step=2"      # ← 同址（带 query）
     assert ir.validate(_journey_with([same])) == []
-
-    other = _state(steps=(("goto",), ("form",)))
-    other["when"]["url_contains"] = "https://example.test/product"
-    other["steps"][0]["url"] = "https://example.test/user/signIn"       # ← 真换了页
-    got = ir.validate(_journey_with([other]))
-    assert [p.code for p in got] == ["trace_ambiguous.goto_in_the_middle"], got
 
 
 def test_an_action_the_product_does_not_accept_is_an_ir_problem():
