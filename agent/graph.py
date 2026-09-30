@@ -117,7 +117,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from agent import browser_agent
-from agent import fix as fix_mod, lint as lint_mod, runtime
+from agent import fix as fix_mod, ir as ir_mod, lint as lint_mod, runtime
 from agent import selftest as selftest_mod
 from agent import template
 from agent import template_loop
@@ -1192,6 +1192,17 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     spec["shape"] = shape
 
     spec = deps.write(spec, feedback)
+    #: ★ 2026-09-30（用户诊断：「探路能走通，但把一次成功探路压缩成可重复运行的 py 这一步
+    #: 不稳定 …… 我建议你立刻把链路拆成 3 个明确阶段」）：**IR 完整才允许 Emit**。
+    #: 这一段只做「能不能编译」这件事（`agent/ir.py`）：每一条都是**哪一层、哪一类、人话**。
+    #: ⚠️ 排在渲之前（`.write` / `render` 之前）：不完整的 IR 交给那两处，只会得到一句笼统的
+    #: 「生成脚本失败」，而它其实卡在**前一层的**某个具体形状上。
+    ir_problems = ir_mod.validate(journey, state)
+    if ir_problems:
+        out.update({"end_reason": END_DRAFT_FAILED, "end_note": ir_mod.say(ir_problems),
+                    "ir_layer": ir_mod.layer_of(ir_problems)})
+        return out
+
     #: ★ 2026-09-28（运营那一刻的原话：「年龄有时候会提前出现，能改成自适应吗」）：**形态也交给
     #: 这双手**。固定步骤表那一族靠 `when` 逐步匹配 —— 题目**提前出现**时那一步不成立、整组
     #: **静默跳过**；步进循环型每一轮读页面、有什么做什么，顺序变了照样做完。所以这一格

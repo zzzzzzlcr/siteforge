@@ -286,6 +286,12 @@ class SiteState(TypedDict, total=False):
     loop_spec: Optional[dict]
     #: 「为什么判成这个形态」那一句人话（判据是**量到的**：多少个状态共用同一个地址）。
     shape_why: Optional[str]
+    #: ★ 2026-09-30（用户诊断：失败全叫「生成脚本失败」，其实是不同层）：这一趟**卡在哪一层**
+    #: （`explore` / `ir` / `emit` / `selftest`，空串 = 一层都没卡）。**统计用**，也是「卡在第几层」
+    #: 那句话的出处（人话在 `end_note` 里，见 `agent/ir.py` 的 `say()`）。
+    #: ⚠️ 它是**归类**，不是新的停因：停因仍旧是 `end_reason`（`draft_failed` 那些），
+    #: 两格各说各的 —— 一个是「为什么停」，一个是「停在哪一层」。
+    ir_layer: str
 
     # ── lint / selftest ───────────────────────────────────────
     violations: list              # 打回的行（`{line, code, message, snippet}`）
