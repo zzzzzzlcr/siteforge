@@ -520,3 +520,26 @@ def test_each_new_judge_rule_is_load_bearing(monkeypatch, code, src):
     monkeypatch.setattr(lint, "JUDGE_RULES",
                         tuple(name for name in lint.JUDGE_RULES if name != code))
     assert code not in _codes(src), "摘掉 %s 之后仍被打回 —— 说明报它的不是这条规则" % code
+
+
+# ─── ★ 2026-09-30：有文字/标签锚的格**不算**「只剩一根漂的线」（zekear 那趟的现场）──────
+
+def test_a_fragile_chain_with_a_text_anchor_is_not_a_violation():
+    """那个「i agree」勾选框：页面上**没有 name / id**，探路只留下一条 9 跳 nth 链 ——
+    而它**有 label**。打回它只会让 draft ↔ lint 来回打转（每一圈一次模型调用），
+    产物本来就能按 label 找得到 ⇒ **有文字锚的不挂**。
+    反面（正控）：同样脆、**没有**任何文字锚的 ⇒ 照旧要挂。
+    """
+    from agent import lint as lint_mod
+
+    frag = ("div#customer-register > form:nth-of-type(1) > div:nth-of-type(3) > "
+            "label:nth-of-type(1) > span:nth-of-type(1) > input:nth-of-type(1)")
+
+    def say(target):
+        states = [{"name": "signup-2",
+                   "steps": [{"action": "form", "fill": "field", "target": target}]}]
+        return [v.code for v in lint_mod._rule_i(states, {}, "x = 1\n")]
+
+    assert say({"selectors": [frag], "label": "i agree"}) == []
+    assert say({"selectors": [frag], "text": "i agree"}) == []
+    assert say({"selectors": [frag]}) == ["judge-fragile-selectors"]

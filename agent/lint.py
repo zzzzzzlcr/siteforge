@@ -449,6 +449,20 @@ def _fragile(selector) -> bool:
                 or len(template._HOPS.findall(text)) > template._HOPS_LOW)
 
 
+def _has_text_anchor(target: dict) -> bool:
+    """这一格除了选择器之外，有没有**文字/标签**那根锚。
+
+    ★ 2026-09-30（`zekear` 那趟现场）：那个「i agree」勾选框**页面上没有 name / id**，
+    探路只留下一条 9 跳 nth 链 —— 打回一次、改稿那双手也补不出稳的（真没有），于是
+    **draft ↔ lint 来回打转**（每一圈一次模型调用）。而它**有 label**（`i agree`）——
+    产物本来就能按 label 找得到。
+    ⇒ 「一条稳的都没有」这句话里的**稳**，本来就不止 CSS 那一条路（`_selector_rank`
+    把脆的排最后，正是因为它只是**最后一条路**）：有文字/标签锚的格不算「只剩一根漂的线」。
+    """
+    t = target or {}
+    return bool(str(t.get("label") or "").strip() or str(t.get("text") or "").strip())
+
+
 def _rule_i(states: list, fills, src: str) -> list[Violation]:
     """I 脆地址：这一格的候选**全是**「随时会漂」的那种，没有一条稳的可依。
 
@@ -478,6 +492,9 @@ def _rule_i(states: list, fills, src: str) -> list[Violation]:
             sels = _selectors(target)
             if not sels or not all(_fragile(s) for s in sels):
                 continue
+            #: 有文字/标签锚 ⇒ 不挂（见 `_has_text_anchor`：那种格不是「只剩一根漂的线」）
+            if _has_text_anchor(target):
+                continue
             handle = "%s#%d" % (name, index)
             if handle in seen:
                 continue
@@ -492,8 +509,11 @@ def _rule_i(states: list, fills, src: str) -> list[Violation]:
                          % (name, index + 1)),
                 snippet=_snippet(sels[0])))
     for key, fill in (fills or {}).items():
-        sels = _selectors((fill or {}).get("target"))
+        target = (fill or {}).get("target") or {}
+        sels = _selectors(target)
         if not sels or not all(_fragile(s) for s in sels):
+            continue
+        if _has_text_anchor(target) or str((fill or {}).get("label") or "").strip():
             continue
         handle = "FILLS:%s" % key
         if handle in seen:
