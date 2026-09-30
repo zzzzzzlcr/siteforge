@@ -821,9 +821,15 @@ def test_the_same_state_is_not_compared_with_itself():
 
 
 def test_the_collision_reaches_the_ledger(tmp_path):
-    """真跑一趟（真 `explore` / 真 `note_page`）：命中要落进账本，读账的人靠它去改判据。"""
+    """真跑一趟（真 `explore` / 真 `note_page`）：命中要落进账本，读账的人靠它去改判据。
+
+    ⚠️ 两页的**地址要不一样**（★ 2026-09-30）：同一个稳定地址上、判据又分不开的那些，
+    现在是**并成一个状态**（`_merge_one_page_states`，还记一句在账本上）——
+    那是对的形状（同一页不该有两道门），所以它不再走到这一验这儿来。
+    这一条钉的是**另一页**上命中：那一验的活儿一个字没少。
+    """
     head = "Get Started 先看看你能省多少"
-    second = dict(PAGE_LANDING, url="https://example.test/funnel?step=2",
+    second = dict(PAGE_LANDING, url="https://example.test/funnel/step2",
                   title="Example 漏斗 第 2 步", page_text=head + " 第二步 你的邮编")
     journey, _, _ = _run(
         tmp_path,
@@ -838,7 +844,7 @@ def test_the_collision_reaches_the_ledger(tmp_path):
     said = [n for n in journey.notes if "在**别的页**上也成立" in n]
     assert said, journey.notes
     assert "「funnel」" in said[0], said
-    assert "https://example.test/funnel?step=2" in said[0], said
+    assert "https://example.test/funnel/step2" in said[0], said
 
 
 def test_a_clean_run_says_nothing_about_collisions(tmp_path):
@@ -857,6 +863,91 @@ def test_a_clean_run_says_nothing_about_collisions(tmp_path):
     assert not [n for n in journey.notes if "在**别的页**上也成立" in n], journey.notes
 
 
+
+# ─── 同一页被判成两页的那些：并成一个状态，**不是**拒掉（2026-09-30）─────────────
+#
+# 现场（8099 实测）：`getfixapro.com/offer-new/cart.php` 一眼**加载中**（正文开头是
+# `<script>` 的源码）、一眼加载完（横幅）、一眼只差**倒计时那几个数字**（10:00 → 09:44）——
+# `note_page` 的键是「url + 标题 + 正文前 400 字」⇒ **一个页面三个状态**；而三个判据都是从
+# **同一页**剪的 ⇒ 上面那一验报「cart 的判据在 cart.php 上也成立」（它嘴上说的是「别的页」）
+# ⇒ `graph._draft` **一份 py 都不出**。那一天 20 趟里 10 趟是这么死的。
+#
+# 判据（两条都要）：**同一个稳定地址** + 两页的判据**至少一个方向成立**。
+# 留下来的那条判据 = 在并进来这几页的模型上**都成立**的那条（量出来的，不是挑好看的）。
+
+
+def _split_one_page_into_states(models):
+    """把「同一页的几次观测」喂进 `_Pages`，返回 `(Pages, steps)` —— 与真探路同一条路。"""
+    pages = browser_agent._Pages(site_url="https://getfixapro.test/", journey=None)
+    steps = []
+    for n, model in enumerate(models, 1):
+        pages.note_page(model)
+        steps.append({"state": pages.pages[-1]["name"], "step_no": n, "action": "observe"})
+    return pages, steps
+
+
+def test_one_page_split_by_a_countdown_is_merged_back_into_one_state():
+    """同一页的三次观测（加载中 / 加载完 / 倒计时跳了一格）⇒ 并成**一个**状态。
+
+    钉三样：① 状态数回到 1；② 步骤改挂到留下的那个名下（不然 `states()` 还是三组、
+    `graph` 也还在报「分不开页」）；③ 留下的判据在**并进来的每一页**上都成立
+    （那是这一组重放时不静默跳过的唯一理由）。
+    """
+    js = "'use strict';var m={};class n{constructor(a){this.l=a}}"
+    banner = ("SPECIAL LIMITED TIME OFFER UP TO 65% OFF Only 59 items Left in Stock "
+              "Your 65% Discount Has Been Applied Hurry! Your discount is reserved for ")
+    url = "https://getfixapro.test/offer-new/cart.php"
+    models = [
+        {"url": url, "title": "Special Offer", "page_text": js},
+        {"url": url, "title": "Special Offer", "page_text": banner + "10:00 minutes! " + js},
+        {"url": url, "title": "Special Offer", "page_text": banner + "09:44 minutes! " + js},
+    ]
+    pages, steps = _split_one_page_into_states(models)
+    assert [p["name"] for p in pages.pages] == ["cart", "cart-2", "cart-3"], pages.pages
+    assert browser_agent._gates_that_hold_elsewhere(pages.pages), "先钉住改前那个形状：它确实会报"
+
+    gone = browser_agent._merge_one_page_states(pages.pages, steps)
+
+    assert [(g["name"], g["into"]) for g in gone] == [("cart-2", "cart"), ("cart-3", "cart")], gone
+    assert [p["name"] for p in pages.pages] == ["cart"], pages.pages
+    assert {s["state"] for s in steps} == {"cart"}, steps
+    kept = pages.pages[0]["when"]
+    for model in models:
+        assert browser_agent.when_holds(kept, model), (kept, model)
+    assert browser_agent._gates_that_hold_elsewhere(pages.pages) == [], \
+        "并掉之后还报的话，`graph._draft` 照样一份 py 都不出"
+
+
+def test_two_screens_behind_one_url_are_not_merged():
+    """单页漏斗**地址不变、问题一屏一屏换**（2026-09-24 那条）—— 那两屏**不许**并。
+
+    它们分得开（两个方向都不成立）：判据本来就是按「与上一页不同的那一点」剪的。
+    """
+    url = "https://getfixapro.test/quiz"
+    models = [{"url": url, "title": "Quiz", "page_text": "第一问：你多久用一次？每天 每周 很少"},
+              {"url": url, "title": "Quiz", "page_text": "第二问：你的邮编是多少？请输入五位数字"}]
+    pages, steps = _split_one_page_into_states(models)
+    assert [p["name"] for p in pages.pages] == ["quiz", "quiz-2"], pages.pages
+    assert browser_agent._merge_one_page_states(pages.pages, steps) == []
+    assert [p["name"] for p in pages.pages] == ["quiz", "quiz-2"], pages.pages
+    assert {s["state"] for s in steps} == {"quiz", "quiz-2"}, steps
+
+
+def test_two_pages_that_share_their_text_are_still_two_states():
+    """**地址不一样**的共享文案（页头/导航那种）**不并** —— 那一验的活儿一个字没少。
+
+    （这一对正是 §1 那条用例的形状：稳定前缀一样、正文里也有那段公用文案 ⇒ 门分不出两页。
+    它该被**报出来**，不该被并掉。）
+    """
+    shared = "Get Started 先看看你能省多少"
+    models = [{"url": "https://example.test/funnel", "title": "Funnel", "page_text": shared},
+              {"url": "https://example.test/funnel/step2", "title": "Funnel 第二步",
+               "page_text": shared + " 第二步 请留下你的邮箱"}]
+    pages, steps = _split_one_page_into_states(models)
+    assert browser_agent._merge_one_page_states(pages.pages, steps) == []
+    assert [p["name"] for p in pages.pages] == ["funnel", "step2"], pages.pages
+    hits = browser_agent._gates_that_hold_elsewhere(pages.pages)
+    assert [h["name"] for h in hits] == ["funnel"], hits
 
 
 # ─────── 判据的 URL 侧：钉**稳定前缀**，不钉整条 path（R-35 真站实测 → R-37）───────
@@ -1683,7 +1774,7 @@ def test_the_unpinned_when_reaches_the_ledger(tmp_path):
     journey, _, _ = _run(
         tmp_path,
         {"observe": [{"structured": dict(PAGE_LANDING, page_text="")},
-                     {"structured": PAGE_QUIZ}],
+                     {"structured": dict(PAGE_QUIZ, url="https://example.test/quiz")}],
          "click": [{"structured": {"ok": True}}]},
         [{"calls": [("observe", {})]},
          {"calls": [("click", {"selector": "#get-started"})]},

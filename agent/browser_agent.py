@@ -1144,6 +1144,12 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             _shots(step_shots.finish)
         # 起点那一页**与后面所有页都不同源**时，撤掉它的 `when`（见 `_drop_incidental_start_when`）。
         _drop_incidental_start_when(pages.pages, journey)
+        # ★ 2026-09-30：「**同一页**被判成两页」的那些先并掉（`_merge_one_page_states`）——
+        # ⚠️ 必须排在判据那一验**之前**：并掉之后下面那一验才不会拿「同一页的自己」当
+        # 「**别的页**」报（它一报，`graph._draft` 就**一份 py 都不出**；实测那一天 20 趟里
+        # 10 趟是这么死的）。并掉这件事**记在账上**（没有静默的路径）。
+        for gone in _merge_one_page_states(pages.pages, journey.steps):
+            journey.note(SAME_PAGE_MERGED_SAY % (gone["name"], gone["into"], gone["url"]))
         # ★ 2026-09-29（交接《骨架还缺什么》§1）：判据的**反面**那一向 ——
         # 「这句话在**别的页**上还成不成立」。生成期验正例是循环论证（判据就是从这一页剪的
         # 原文 ⇒ 必然成立），没验过的正是这一向，而它命中就是「重放走到那页、这组步骤真做一遍」。
@@ -4355,6 +4361,112 @@ def _gates_that_hold_elsewhere(pages: list) -> list:
         seen.add(key)
         out.append({"name": name, "url": entry.get("url") or "", "pages": hits})
     return out
+
+
+#: ★ 2026-09-30：**同一页**被判成两个状态、并掉时记在账上的一句。
+#:
+#: 现场（用户报的「他老是说啥对不上的、然后就不产出 py」）：`getfixapro.com/offer-new/cart.php`
+#: 一眼是**加载中**（正文开头是 `<script>` 的源码 `'use strict';var m={};class`）、一眼是加载完
+#: 的横幅、再一眼只差**倒计时那几个数字**（10:00 → 09:44）—— `note_page` 的键是
+#: 「url + 标题 + 正文前 400 字」，三眼三个键 ⇒ **一个页面三个状态**。而这三个状态的判据都是
+#: 从**同一页**剪的 ⇒ `_gates_that_hold_elsewhere` 报「cart 这组的判据在 cart.php 上也成立」
+#: （⚠️ 它嘴上说的是「**别的页**」），`graph._draft` 于是**一份 py 都不出**。
+#: 实测那一天的面板：20 趟里 **10 趟**是这么死的（`draft_failed`）。
+SAME_PAGE_MERGED_SAY = (
+    "「%s」并进「%s」：**同一页**（%s）—— 地址一样、两边的判据分不开。"
+    "同一页上两组步骤，重放时一组成立、另一组不成立，演出的就是「填做了、点却被跳过」，"
+    "所以并成一组。")
+
+
+def _page_pair_indistinguishable(a: dict, b: dict) -> bool:
+    """这两页**说不清谁是谁**吗 —— 判据至少**一个方向**成立（`when_holds`）。
+
+    一个方向就够的理由：`note_page` 剪判据时是**从这一页正文里取原文**，而两次观测的
+    正文头可能被**截断**（`page_text` 只有 600 字，`observe` 自己截的）—— 于是「A 的判据
+    在 B 那一眼的正文里找不到」可能只是**那一眼没截到**，不代表这两页分得开。
+    ⚠️ 两向都不成立 = 真的分得开（单页漏斗每一问正是这个样子）⇒ **不并**。
+    """
+    aw, bw = a.get("when"), b.get("when")
+    if not aw or not bw:
+        return False
+    return bool(when_holds(aw, b.get("model") or {}) or when_holds(bw, a.get("model") or {}))
+
+
+def _best_gate(group: list) -> dict | None:
+    """这一组里**在并进来这几页的模型上都成立**的那条判据（成立得最多的那条；平手取最早的）。
+
+    ⚠️ 挑的是**量出来的**那一条，不是好看的那一条：并进来的是这一页的**变体**，
+    判据得在变体上都成立 —— 否则重放时这一组静默跳过（本仓最贵的那种病）。
+    """
+    best, best_n = None, -1
+    for cand in group:
+        when = cand.get("when")
+        if not when:
+            continue
+        n = sum(1 for other in group if when_holds(when, other.get("model") or {}))
+        if n > best_n:
+            best, best_n = when, n
+    return best or (group[0].get("when") or None)
+
+
+def _rename_state(steps: list, gone: str, into: str) -> None:
+    """把账上属于「并掉那个状态」的步骤改挂到留下的那个下面（`states()` 是按状态名分组的）。"""
+    for step in steps or []:
+        if (step.get("state") or "") == gone:
+            step["state"] = into
+
+
+def _merge_one_page_states(pages: list, steps: list) -> list:
+    """把**同一页**被判成几个状态的那些并成一个（就地改 `pages` 与 `steps`），返回并掉的清单。
+
+    为什么是「并」不是「拒」：这正是那句拒绝话自己给的出路 ②（「承认这两页分不开，把它们
+    **并成一个状态**」），也是 2026-09-22 那条的同一把尺子（相邻同门 ⇒ 并，**别半执行**）。
+    而按地址拒（`_gates_that_hold_elsewhere` 照旧报）在今天这个形状上是**死路**：
+    同一个地址上根本没有「只有那一页有」的那句话可以拿来当判据 —— 让运营去改判据，
+    他改不动，于是**永远不出 py**。
+
+    ⚠️ 只在**同一个稳定地址**（`_stable_url`：query / fragment 不算）上并，而且两页的判据
+    分不开（`_page_pair_indistinguishable`）。两条都要：
+      · 地址不一样 ⇒ 那是**两页**（§1 那一验正该拦，它的活儿一个字没少）；
+      · 判据分得开 ⇒ 那是**真的两屏**（单页漏斗每一问一屏，2026-09-24 那条钉着它）。
+
+    并掉之后：重放时这一组只有**一道门**，那几屏的步骤按**账上的先后**一起做 ——
+    这正是那一趟**实际做过**的事（并进来的那些步本来就是在这一页上做的）。
+    """
+    groups: list = []
+    for pg in pages:
+        url = _stable_url(pg.get("url") or "")
+        hit = None
+        for group in groups:
+            for member in group:
+                if url and _stable_url(member.get("url") or "") == url \
+                        and _page_pair_indistinguishable(member, pg):
+                    hit = group
+                    break
+            if hit is not None:
+                break
+        if hit is None:
+            groups.append([pg])
+        else:
+            hit.append(pg)
+
+    merged: list = []
+    for group in groups:
+        if len(group) < 2:
+            continue
+        keep = group[0]
+        keep["when"] = _best_gate(group)
+        #: 判据随**最新那一眼**的模型走：下一页要与它比（`_gates_that_hold_elsewhere` 用的是 `model`）。
+        keep["model"] = group[-1].get("model") or keep.get("model")
+        keep["key"] = group[-1].get("key") or keep.get("key")
+        for gone in group[1:]:
+            merged.append({"name": gone.get("name") or "", "into": keep.get("name") or "",
+                           "url": gone.get("url") or ""})
+            _rename_state(steps, gone.get("name"), keep.get("name"))
+    if merged:
+        dropped = {m["name"] for m in merged}
+        pages[:] = [p for p in pages if (p.get("name") or "") not in dropped]
+    return merged
 
 
 def _host_of(url: str) -> str:
