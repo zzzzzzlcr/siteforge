@@ -292,6 +292,10 @@ class SiteState(TypedDict, total=False):
     #: ⚠️ 它是**归类**，不是新的停因：停因仍旧是 `end_reason`（`draft_failed` 那些），
     #: 两格各说各的 —— 一个是「为什么停」，一个是「停在哪一层」。
     ir_layer: str
+    #: ★ 2026-09-30：**从账本补回来的那几格 FILLS 名**（改稿那双手砍掉、而步骤还引用着 ⇒
+    #: 产物会自相矛盾）。空列表 = 没补过。留着它是因为「说话了、产物也真的变了」这件事
+    #: 得看得见（补回去 ≠ 静默修）。
+    fills_restored: list
 
     # ── lint / selftest ───────────────────────────────────────
     violations: list              # 打回的行（`{line, code, message, snippet}`）

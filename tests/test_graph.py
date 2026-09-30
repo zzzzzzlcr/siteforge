@@ -827,6 +827,48 @@ def test_a_draft_that_loses_the_success_condition_still_stops_loudly(tmp_path):
 # `browser_agent.explore` 把答案记在 `journey.gate_collisions` 上；这一格是那道门。
 
 
+def test_a_fill_that_the_rewrite_dropped_is_restored_from_the_ledger(tmp_path, monkeypatch):
+    """★ 2026-09-30（现场那一趟的真因）：**改稿那双手把 `FILLS` 砍了、却留着引用它的步骤** ⇒
+    产物自我矛盾（自测当场 `ValueError：这一步要填「email」，FILLS 里没有它`）。
+
+    账本里记着的那几格是**真相**（那一步当初就是这么填的）⇒ 从账本**补回去**（并把这件事
+    说出来：`fills_restored`）；**补不回来**的（账本里也没有 ⇒ 那一步是模型新编的）交给
+    `ir` 那道闸拦 —— 不许带着矛盾走到真站上。
+    """
+    import copy as _copy
+
+    class _DropEmail:
+        """把 spec 里 `email` 那一格砍掉（别的原样）—— 复现那双手干的事。"""
+
+        def __call__(self, spec, feedback, n=1):
+            out = _copy.deepcopy(spec)
+            out["fills"].pop("email", None)
+            return out
+
+    import test_graph as TG
+    from agent import browser_agent as _ba
+
+    fills = {"email": {"source": "email", "kind": "value", "label": "Email",
+                       "target": {"selectors": ["input[name=email]"]}, "fallback": []}}
+    states = [{"name": "signup", "when": {"url_contains": "https://x.test/signup"},
+               "steps": [{"action": "form", "fill": "email"}]}]
+    #: ⚠️ 打**类**上：账本会被 saver 序列化/反序列化，打在实例上的 lambda 过不了这一趟
+    #: （那样改完这一趟量的还是原来那条路 —— 这条用例的上一版就栽在这儿）。
+    monkeypatch.setattr(_ba.Journey, "fills", lambda self: fills)
+    monkeypatch.setattr(_ba.Journey, "states", lambda self: states)
+
+    book = TG._journey()
+
+    deps, rec = TG._deps(journey=book, write=_DropEmail())
+    app, cfg, _ = TG._build(deps=deps)
+    _, out = TG._drive(app, cfg, TG._brief(tmp_path))
+
+    assert out.get("fills_restored") == ["email"], out
+    #: 补回去了这件事**记在账上**（不是静默修）：`fills_restored` 是那一格的落点。
+    #: ⚠️ 产物里真的带着它，要过 draft 那道闸之后才在 `fills` 里看得到（这一条只钉「补了、
+    #: 且说了」—— 渲出来的那串字节由 `test_template.py` 那一族管）。
+
+
 def test_a_self_test_that_could_not_reach_the_window_is_not_a_product_failure(tmp_path):
     """★ 2026-09-30（用户问「那为啥不导航呢」）：**自测没跑成 ≠ 自测跑不过**。
 

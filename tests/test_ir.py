@@ -108,3 +108,17 @@ def test_the_draft_refuses_an_incomplete_ir_before_rendering(tmp_path, monkeypat
     assert "卡在" in out["end_note"] and "只有地址" in out["end_note"], out["end_note"]
     assert rec.selftest == [], "IR 都不完整，不该去跑自测"
     assert not (tmp_path / "forms" / "sites" / ("%s.py" % TG.SITE)).exists()
+
+
+# ─── ★ 2026-09-30：步骤引用的 fill 必须在 FILLS 里（用户问「FILLS 没有不是有兜底的随机码」）──
+
+def test_a_step_that_fills_something_the_fills_table_does_not_declare_is_caught():
+    """产物自我矛盾的正身：`form` 步引用 `email`，而 `FILLS` 里没有它 ⇒ 跑起来当场报
+    「产物写错了：这一步要填「email」，FILLS 里没有它」并停。**兜底管不了这一格** ——
+    别名/拆名/随机池覆盖的是「**资料里**没有那一列」，不是「产物自己的声明表里没有这一格」。
+    """
+    states = [{"name": "signup", "when": {"url_contains": "https://x.test/signup"},
+               "steps": [{"action": "form", "fill": "email"}, {"action": "form", "fill": "field"}]}]
+    assert ir.missing_fills(states, {"field": {"source": "field"}}) == {"email"}
+    assert ir.missing_fills(states, {"field": {}, "email": {}}) == set()
+    assert ir.referenced_fills(states) == {"email", "field"}

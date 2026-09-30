@@ -1192,11 +1192,32 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     spec["shape"] = shape
 
     spec = deps.write(spec, feedback)
+    #: ★ 2026-09-30（现场那一趟：自测报「这一步要填「email」，FILLS 里没有它」）：
+    #: **改稿那双手会把 `FILLS` 砍掉、却留着引用它的步骤** ⇒ 产物自我矛盾（跑起来当场
+    #: `ValueError: 产物写错了`）。账本里记着的那些格子是**真相**（那一步当初就是这么填的）
+    #: ⇒ 从账本**补回去**，并把这件事说出来（没有静默的路径）。补不回来（账本里也没有 ⇒
+    #: 步骤是那双手新编的）⇒ 交给下面 `ir` 那道闸拦，别让它带着矛盾走到真站上。
+    ledger_fills = dict((journey.fills() if journey is not None else {}) or {})
+    missing = ir_mod.missing_fills(spec.get("states") or [], spec.get("fills") or {})
+    restored = sorted(n for n in missing if n in ledger_fills)
+    for name in restored:
+        spec["fills"][name] = ledger_fills[name]
+    if restored:
+        out["fills_restored"] = restored
     #: ★ 2026-09-30（用户诊断：「探路能走通，但把一次成功探路压缩成可重复运行的 py 这一步
     #: 不稳定 …… 我建议你立刻把链路拆成 3 个明确阶段」）：**IR 完整才允许 Emit**。
     #: 这一段只做「能不能编译」这件事（`agent/ir.py`）：每一条都是**哪一层、哪一类、人话**。
     #: ⚠️ 排在渲之前（`.write` / `render` 之前）：不完整的 IR 交给那两处，只会得到一句笼统的
     #: 「生成脚本失败」，而它其实卡在**前一层的**某个具体形状上。
+    still_missing = ir_mod.missing_fills(spec.get("states") or [], spec.get("fills") or {})
+    if still_missing:
+        out.update({"end_reason": END_DRAFT_FAILED, "ir_layer": "ir",
+                    "end_note": ("先别写 py：**卡在「把账本变成可编译的步骤表」那一层** —— "
+                                 "这些步骤要填的格子，`FILLS` 里没有、**账本里也没有**：%s。"
+                                 "（多半是改稿那双手新编了一步而没给它声明；"
+                                 "重跑一趟或把那一句回给模型。）" % "、".join(sorted(still_missing)))})
+        return out
+
     ir_problems = ir_mod.validate(journey, state)
     if ir_problems:
         out.update({"end_reason": END_DRAFT_FAILED, "end_note": ir_mod.say(ir_problems),

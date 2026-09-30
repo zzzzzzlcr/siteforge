@@ -126,6 +126,35 @@ def validate(journey, values: dict | None = None) -> list:
     return out
 
 
+def referenced_fills(states: list) -> set:
+    """产物里**被步骤引用到的**那些 fill 名（`form` 步的 `fill` 那一格）。"""
+    out = set()
+    for st in states or ():
+        for step in (st.get("steps") or ()):
+            name = str((step or {}).get("fill") or "").strip()
+            if name:
+                out.add(name)
+    return out
+
+
+def missing_fills(states: list, fills: dict) -> set:
+    """被步骤引用、却**不在 `FILLS` 里**的那些名字 —— 产物自我矛盾的正身。
+
+    ★ 2026-09-30（用户问「FILLS 没有不是有兜底的随机码」时当场量到的）：现场那一趟
+
+        账本 `journey.fills()`      : email / password / field      ← 三格都在
+        交出去那一版 `FILLS`        : field                          ← 少了两格
+        而步骤里还**引用**着        : email / password / field
+        ⇒ 跑起来报「这一步要填「email」，FILLS 里没有它」并停
+
+    ⚠️ **兜底管不了这一格**：别名 → 拆名 → 随机池那条链，覆盖的是「**资料里**没有那一列」；
+    而这里缺的是「**产物自己的声明表**里没有这一格」—— 那种时候产物连「填什么、什么类型」
+    都没有，只能报「产物写错了」（拿一个凭空的随机值去填，正是「自信地错」）。
+    能补就补（账本里有 ⇒ `graph` 那一侧补回去），补不了才拦。
+    """
+    return set(referenced_fills(states)) - set((fills or {}).keys())
+
+
 def layer_of(problems: list) -> str:
     """这一批问题的**最靠前的那一层**（给「卡在第几层」那一格用）。空列表 ⇒ 空串。"""
     order = ("explore", "ir", "emit", "selftest")
