@@ -123,6 +123,7 @@ Task 1 的 spike 证明了模型**肯**调工具（24 跑 0 编造、47 次真 o
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import inspect
 import json
@@ -133,7 +134,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from . import events, lessons, llm, plan as plan_module, shots, tools
+from . import events, lessons, llm, plan as plan_module, shots, template, tools
 
 #: **C1**：`deepseek-v4-*` 把思考 token 算进 `max_tokens`。给 4000 时最终答案会**静默变空**
 #: （spike 实测 1/8，提到 12000 后 5/5 正常）。别往下调 —— 那不是省钱，是把能力削掉。
@@ -484,6 +485,11 @@ class Journey:
 
     steps: list = field(default_factory=list)
     notes: list = field(default_factory=list)
+    #: ★ 2026-09-30：这一趟资料（`--form-file`）里**真有的那几个键** —— 只用来给
+    #: `FILLS[*].source` 起名（`template.library_key`）：资料里真有的那个名字才写进产物，
+    #: 运行期就**直接命中**，不必再靠骨架的别名表兜（兜不到就静默掉随机池的那条路）。
+    #: 拿不到（服务没给 / 文件读不到）⇒ 空列表 = **不知道**，一个字节都不动。
+    data_keys: list = field(default_factory=list)
     stop_reason: str = "running"
     final_answer: str = ""
     #: **现在**坏着吗 —— 最近一次没拍成的原因（人话）。空串 = 这一刻没事。
@@ -666,7 +672,11 @@ class Journey:
                 continue
             out[info["name"]] = {
                 "name": info["name"],
-                "source": info["source"],
+                #: ★ 2026-09-30（用户「修下吧」）：这一格**是产物拿去资料里找真数据**的那个键。
+                #: 页面字段名（`phone`）与资料库列名（`phone_number`）两边没有约定 ⇒ 在**这一处**
+                #: 换成资料里真有的那个名字（`library_key`，只在真有它时才换；
+                #: 资料不知道 ⇒ 原样 —— 老行为一个字不变，运行期的别名兜底也照旧留着）。
+                "source": library_key(info["source"], self.data_keys),
                 "kind": info["kind"],
                 "label": info["label"],
                 "target": step.get("target") or {},
@@ -748,6 +758,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             #: ⚠️ 它是**另外一格**，**不是**把正文那格放宽成「正文+网址」——
             #: 「判据一个字没放宽，要不要改得人点头」（`graph._criterion_say` 那一族的口径）。
             success_urls: str = "",
+            data_keys=None,
             hints=None) -> Journey:
     """在真浏览器里为 `goal` 探 `url` 这条路，返回 `Journey`。
 
@@ -757,6 +768,9 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         ★ 2026-09-22 加的（真事）：新站那条路的稿是「账本 → 模板」算出来的，模型在这条路上
         **只有探路这一处有判断力**；人的话原来只进「修站出补丁」那条路 ⇒ 运营把步骤写得再细
         也**一个字都到不了这儿**，屏幕上就成了「它完全没按我的来」。现在进 `_brief` ✓。
+      - `data_keys`：★ 2026-09-30 —— 这一趟资料（`--form-file`）里**真有的键**。只用来给
+        `FILLS[*].source` 起名（`template.library_key`）：资料里真有的那个名字才写进产物 ⇒
+        运行期直接命中。**不给 = 不知道**（照旧按页面字段名记，运行期靠别名表兜）。
       - `success_text`：**人给的成功判据**（「走通之后页面上会出现哪段文字」）。
         给了它，这一趟就多一条停因（`STOP_REACHED_SUCCESS`）：**页面上出现了这句话就
         当场收摊**，不再往下点。为什么非加不可（2026-09-20 真站 `job-a4d100addd25`）：
@@ -808,7 +822,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
     """
     limits = _as_budget(budget)
     paused = _as_predicate(should_pause)
-    journey = Journey()
+    journey = Journey(data_keys=[str(k) for k in (data_keys or []) if str(k or "").strip()])
     pages = _Pages(journey=journey)
     #: 步拍（§5.4）。**只有调用方给了目录才建** —— 不给 = 今天的行为，一个字节不变
     #: （连 `shooter` 都不看一眼）。`shooter` 不给就用 `shots.capture_via_session`。
@@ -1149,7 +1163,11 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         # 「**别的页**」报（它一报，`graph._draft` 就**一份 py 都不出**；实测那一天 20 趟里
         # 10 趟是这么死的）。并掉这件事**记在账上**（没有静默的路径）。
         for gone in _merge_one_page_states(pages.pages, journey.steps):
-            journey.note(SAME_PAGE_MERGED_SAY % (gone["name"], gone["into"], gone["url"]))
+            #: 两种「并」各有各的理由（一处选，别在别处再判一次）：同一页分不开 / 那一页没读到正文。
+            journey.note((UNREAD_MERGED_SAY if gone.get("kind") == "unread"
+                          else SAME_PAGE_MERGED_SAY)
+                         % (gone["name"], gone["into"], gone["url"]))
+
         # ★ 2026-09-29（交接《骨架还缺什么》§1）：判据的**反面**那一向 ——
         # 「这句话在**别的页**上还成不成立」。生成期验正例是循环论证（判据就是从这一页剪的
         # 原文 ⇒ 必然成立），没验过的正是这一向，而它命中就是「重放走到那页、这组步骤真做一遍」。
@@ -2406,6 +2424,8 @@ def _fill_info(args: dict, target: dict, element, journey: Journey) -> dict:
     # 语义判不出来时，用**探索那一趟自己写进去的那个值**当证据（见上面那个函数）。
     semantic = _kind_from_recorded_value(_field_kind(label, element), value, element)
     name = _fill_name(label, element, journey, semantic=semantic)
+    #: ⚠️ 这一格记的是**账本上那个名字**（页面字段名）；给产物用的那个键在 `fills()` 里换
+    #: （一处口径：谁写进产物只在那一处决定 —— 记录保持原样，读账的人看到的才是这一趟真记的）。
     return {"name": name, "source": name, "kind": kind,
             "label": label or name, "value": value,
             "fallback": (_fallback(kind, value, label, element) if semantic is None
@@ -2436,6 +2456,69 @@ def _fill_name(label: str, element, journey: Journey, semantic=None) -> str:
     while f"{stem}-{index}" in used:
         index += 1
     return f"{stem}-{index}"
+
+
+#: 骨架里那两张表（`_ALIASES` / `_SPLIT_FROM`）——**从骨架自己那一份里读出来**给生成侧用。
+#: ⚠️ **不另抄一份**：手抄一张表就是第二份真相源、会过期（`lint.py:387` 那条纪律；
+#: 探针里那张 `LIB_KEYS` 之所以只能留在探针里，正是这个理由）。
+#: 做法与 `lint.py` 同一路：模板占位符（`$states` 这种）不是合法 py ⇒ 先换成 `None` 再解析。
+#: 读不动 ⇒ 两张空表：调用方按「**不知道**」办（绝不按「没有」办）。
+_SKELETON_PLACEHOLDER = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
+
+
+def alias_tables() -> tuple:
+    """`(骨架里的 _ALIASES, 骨架里的 _SPLIT_FROM)`。"""
+    try:
+        tree = ast.parse(_SKELETON_PLACEHOLDER.sub("None", template.SKELETON.template))
+    except SyntaxError:
+        return {}, {}
+    got: dict = {"_ALIASES": {}, "_SPLIT_FROM": {}}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            name = getattr(target, "id", "")
+            if name in got:
+                try:
+                    got[name] = ast.literal_eval(node.value)
+                except ValueError:
+                    pass
+    return got["_ALIASES"], got["_SPLIT_FROM"]
+
+
+def _key_shape(text) -> str:
+    """一个键的**形状**（只留小写字母数字）—— `firstName` / `first_name` / `first-name` 同形。"""
+    return re.sub(r"[^0-9a-z]+", "", str(text or "").lower())
+
+
+def library_key(name: str, data_keys=()) -> str:
+    """页面字段名 → **这次那份资料里真有的那个键**；两边都对不上 ⇒ **原样返回**（不编）。
+
+    ★ 2026-09-30（用户「修下吧」+ 探针报的三条 `[G·提示]`）：产物 `FILLS[*].source` 原来照
+    **页面字段名**起（`phone`），而资料是**资料库的列名**（`phone_number`）—— 两边没有约定
+    ⇒ 只有恰好同名的（`email`）取得到，其余靠骨架的别名表在**运行期**兜，兜不到就**静默**
+    掉进随机池（真事：加拿大站被填了池子里的**英国**手机号，整单被拒）。
+    这一格把「**资料里真有它**」这件事在生成期就落实：`phone_number` / `username` … 直接写进
+    产物 ⇒ 运行期**直接命中**，不再依赖兜底（兜底那一套照旧留着，管别的拼法与老产物）。
+
+    ⚠️ **只在资料里真有它时才改**：猜一个名字写进产物，会在资料用另一种拼法的部署上把
+    「本来能取到」变成「取不到」——那是把病治成另一种病。资料不知道（没给 / 读不到）⇒
+    一个字节都不动（就是今天的行为）。
+    顺序：**同名 → 形状同（`firstName` ↔ `first_name`）→ 骨架别名表 → `_SPLIT_FROM`**。
+    """
+    given = [str(k) for k in (data_keys or []) if str(k or "").strip()]
+    if not name or not given:
+        return name
+    if name in given:
+        return name
+    shape = {_key_shape(k): k for k in given}
+    if _key_shape(name) in shape:
+        return shape[_key_shape(name)]
+    aliases, splits = alias_tables()
+    for cand in [splits.get(name) or ""] + list(aliases.get(name) or ()):
+        if cand and cand in given:
+            return cand
+    return name
 
 
 #: `random` 池子认的几类值（与产物里 `_random_value` 同一套 —— 产物认不出的类型会抛）。
@@ -4376,6 +4459,14 @@ SAME_PAGE_MERGED_SAY = (
     "「%s」并进「%s」：**同一页**（%s）—— 地址一样、两边的判据分不开。"
     "同一页上两组步骤，重放时一组成立、另一组不成立，演出的就是「填做了、点却被跳过」，"
     "所以并成一组。")
+#: ★ 2026-09-30（用户那句「那这样就不对吧」）：**判据是机器剪的** —— 观测撞上加载中的
+#: 那一页时 `page_text` 是空的，那一页只能剪出「地址」这一条判据，而地址前缀在**同一个
+#: 地址下的每一屏**上都成立 ⇒「分不开页」这一报**根子在我们这一侧**（那一页还没读完就被
+#: 当成一页记下来了），运营一个字都没做错。处置见 `_merge_one_page_states`。
+UNREAD_MERGED_SAY = (
+    "「%s」并进「%s」：**那一页当时没读到正文**（%s）—— 只拿地址当门的话，同一个地址下的"
+    "**每一屏**都成立，等于没有门。并进紧接着那个读到了正文的状态，判据用它的（那才是这一页"
+    "该有的门）。")
 
 
 def _page_pair_indistinguishable(a: dict, b: dict) -> bool:
@@ -4442,6 +4533,30 @@ def _merge_one_page_states(pages: list, steps: list) -> list:
     并掉之后：重放时这一组只有**一道门**，那几屏的步骤按**账上的先后**一起做 ——
     这正是那一趟**实际做过**的事（并进来的那些步本来就是在这一页上做的）。
     """
+    merged: list = []
+    #: ① **「没读到正文」的那一眼不是一页**（见 `UNREAD_MERGED_SAY`）：并进**同一地址上、
+    #: 紧接着的那个读到了正文的状态**（步骤按账上先后改挂过去；判据用那个读到的）。
+    #: ⚠️ 只在**同一稳定地址**上并：地址都不一样时，那一眼里做的事与后面那一页的关系
+    #: 本来就说不清（§1 那一验照旧拦，它的活儿一个字没少）。
+    for pg in list(pages):
+        when = pg.get("when") or {}
+        if not when or when.get("text_contains"):
+            continue
+        url = _stable_url(pg.get("url") or "")
+        if not url:
+            continue
+        rest = pages[pages.index(pg) + 1:]
+        target = next((q for q in rest if _stable_url(q.get("url") or "") == url
+                       and (q.get("when") or {}).get("text_contains")), None)
+        if target is None:
+            continue
+        merged.append({"name": pg.get("name") or "", "into": target.get("name") or "",
+                       "url": pg.get("url") or "", "kind": "unread"})
+        _rename_state(steps, pg.get("name"), target.get("name"))
+    if merged:
+        dropped = {m["name"] for m in merged}
+        pages[:] = [q for q in pages if (q.get("name") or "") not in dropped]
+
     groups: list = []
     for pg in pages:
         url = _stable_url(pg.get("url") or "")
@@ -4459,7 +4574,6 @@ def _merge_one_page_states(pages: list, steps: list) -> list:
         else:
             hit.append(pg)
 
-    merged: list = []
     for group in groups:
         if len(group) < 2:
             continue
@@ -4470,7 +4584,7 @@ def _merge_one_page_states(pages: list, steps: list) -> list:
         keep["key"] = group[-1].get("key") or keep.get("key")
         for gone in group[1:]:
             merged.append({"name": gone.get("name") or "", "into": keep.get("name") or "",
-                           "url": gone.get("url") or ""})
+                           "url": gone.get("url") or "", "kind": "same_page"})
             _rename_state(steps, gone.get("name"), keep.get("name"))
     if merged:
         dropped = {m["name"] for m in merged}

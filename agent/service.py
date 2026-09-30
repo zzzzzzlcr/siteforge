@@ -595,6 +595,30 @@ def _no_py_say(values: dict) -> str:
     }.get(reason, "")
 
 
+def _form_data_keys(form_file) -> list:
+    """这一趟资料（`--form-file`，服务自己落的那份）里**真有的键** —— 探路给 `source` 起名用。
+
+    ★ 2026-09-30（用户「修下吧」）：产物 `FILLS[*].source` 原来照**页面字段名**起，而资料的键
+    是**资料库的列名**（`phone_number` / `username` …）—— 两边没有约定 ⇒ 只有恰好同名的取得到，
+    其余靠骨架别名表在运行期兜、兜不到就**静默**掉随机池。**这次手上就有真资料** ⇒ 把「真有
+    哪些键」交给探路，产物里写的就是能直接命中的那个名字。
+
+    ⚠️ **读不到 = 空列表 = 不知道**（照旧按页面字段名记）—— 绝不按「没有」办（那会把一个
+    本来能取到的键改坏）。只认**顶层键**：资料是一张平表，嵌套的那几格不是列名。
+    """
+    path = str(form_file or "").strip()
+    if not path:
+        return []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            got = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(got, dict):
+        return []
+    return [str(k) for k in got if str(k or "").strip()]
+
+
 def _why_head(text: str) -> str:
     """那一趟自己交代的那句话 → 列表上那一行看得见的**短句**（第一句；超了切**并说出来**）。
 
@@ -2901,6 +2925,9 @@ class Service:
                                                 # 是 `browser_agent.explore`，这条是服务那一条。
                                                 success_text=success_text or "",
                                                 success_urls=success_urls or "",
+                                                # ★ 2026-09-30：这一趟资料里真有的键 ⇒
+                                                # `FILLS[*].source` 写能直接命中的那个名字。
+                                                data_keys=_form_data_keys(brief.get("form_file")),
                                                 shots_dir=shots_where,
                                                 binary=self._mcp_bin,
                                                 # Task 9：人的话「直达下一轮」那条线

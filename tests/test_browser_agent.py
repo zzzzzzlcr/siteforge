@@ -1754,6 +1754,60 @@ def test_the_when_snippet_does_not_lead_with_decoration():
         "Progress: 30% What state do you live in?"
 
 
+def test_library_key_only_rewrites_when_the_data_really_has_it():
+    """★ 2026-09-30（用户「修下吧」）：`FILLS[*].source` 要写**资料里真有的那个键**。
+
+    页面字段名（`phone`）与资料库列名（`phone_number`）两边没有约定 ⇒ 只在**资料里真有**
+    那个名字时才换过去；猜一个名字写进产物，会把「本来能取到」治成「取不到」。
+    钉五样：① 资料里是资料库那套名字 ⇒ 换；② 资料里就是页面那套拼法 ⇒ **不动**；
+    ③ 形状同也算（`firstName` ↔ `first_name`）；④ 资料里没有 ⇒ **不动**；
+    ⑤ **没给资料 = 不知道** ⇒ 一个字节都不动。
+    """
+    lib = ["email", "username", "phone_number"]
+    assert browser_agent.library_key("phone", lib) == "phone_number"
+    assert browser_agent.library_key("first_name", lib) == "username"
+    assert browser_agent.library_key("last_name", lib) == "username"
+    assert browser_agent.library_key("email", lib) == "email"
+    assert browser_agent.library_key("phone", ["phone", "email"]) == "phone"
+    assert browser_agent.library_key("first_name", ["firstName"]) == "firstName"
+    assert browser_agent.library_key("postcode", lib) == "postcode"
+    assert browser_agent.library_key("phone", []) == "phone"
+    assert browser_agent.library_key("phone", None) == "phone"
+
+
+def test_the_alias_tables_come_from_the_skeleton_not_a_second_copy():
+    """那两张表**只有一份**（骨架源码里）；这里读出来的必须是它 —— 另抄一份就是第二份真相源。"""
+    aliases, splits = browser_agent.alias_tables()
+    assert "phone_number" in aliases["phone"], aliases
+    assert "postal_code" in aliases["postcode"], aliases
+    assert splits.get("first_name") == "username", splits
+
+
+def test_the_fills_use_the_key_the_data_really_has():
+    """★ 2026-09-30（用户「修下吧」）：产物那一格 `FILLS[*].source` = **资料里真有的那个键**。
+
+    资料里真有 `phone_number` / `username` 时，产物就该写那一个（运行期直接命中，不必再靠
+    骨架的别名表兜、兜不到就静默掉随机池）；**资料不知道 ⇒ 原样**（不猜 —— 猜一个名字写进
+    产物，会在资料用另一种拼法的部署上把「本来能取到」治成「取不到」）。
+    ⚠️ 账本上记的仍是**页面字段名**（那是这一趟真记的东西）；换名字只发生在 `fills()` 这一处。
+    """
+    def book(keys):
+        jr = browser_agent.Journey(data_keys=keys)
+        jr.steps = [{"state": "cart", "action": "form",
+                     "result": {"fill": {"name": n, "source": n, "kind": "value",
+                                         "label": n, "value": "x"}}}
+                    for n in ("first_name", "phone", "email")]
+        return jr
+
+    got = {n: f["source"] for n, f in book(["email", "username", "phone_number"]).fills().items()}
+    assert got == {"first_name": "username", "phone": "phone_number", "email": "email"}, got
+    #: 账本上那一步记的还是页面字段名（读账的人看到的是这一趟真记的）
+    assert book(["email"]).steps[0]["result"]["fill"]["source"] == "first_name"
+    #: 没给资料 ⇒ 原样（= 今天的行为，一个字节都不动）
+    assert {n: f["source"] for n, f in book([]).fills().items()} == {
+        "first_name": "first_name", "phone": "phone", "email": "email"}
+
+
 def test_a_when_that_can_not_be_pinned_says_so():
     """★ 线①：钉不出正文判据时**必须说出来** —— 不许悄悄退化成只有 `url_contains` 一条。
 
