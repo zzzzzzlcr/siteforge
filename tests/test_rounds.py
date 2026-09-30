@@ -14,6 +14,10 @@
    （字节走 `/job/{id}/shot/{name}`，一个字节都不进 JSON）。
 4. **同一个名字、两个事实**：**闸拍轮次**（本模块）不是**探路的模型轮数**
    （`journey.rounds` —— 它记 7，也不代表这里有 7 轮）。有一条用例专门钉它。
+5. **`/runs` 的第一行 = 最新交上来的那一趟**（★ 2026-09-30 补）：页面没人点名看哪一趟时
+   取 `rows[0]` 并说「先看最新提交的那一趟」（`console.html`）⇒ 这个顺序是**给运营用的
+   那个事实**，不是排版 —— 老活占着第一行时，人刚开的几趟在屏幕最下面，等于「找不到
+   最近那一趟」。两条用例钉它（重启过 / 同一秒里交两趟）。
 
 ⚠️ 这个模块是**纯函数**：不许读盘、不许读时间、不许碰全局 —— 有一条 AST 用例钉着
 （加一句 `open(...)` / `time.time()` 就红）。
@@ -26,6 +30,7 @@ from __future__ import annotations
 import ast
 import copy
 import json
+import os
 import pathlib
 import sys
 import time
@@ -1200,6 +1205,66 @@ def test_runs_counts_the_gates_not_the_last_picture(tmp_path):
     live = _live(client, job_id)
     assert len(live["rounds"]) == 1 and live["rounds"][0]["n"] == 1
     assert live["rounds"][0]["last_shot"]["name"] == "pause-2.png", "最后那张图挂在这一张卡上"
+
+
+def test_runs_puts_the_run_you_just_submitted_first_even_after_a_restart(tmp_path):
+    """★ 2026-09-30（用户报的「8099 的最近 job」）：`/runs` 的第一行 = **面板打开时那趟活**。
+
+    没人点名看哪一趟时页面取 `rows[0]`，而它嘴上说的是「先看**最新提交**的那一趟」
+    （`console.html` 的 `fetchRuns`）。重启之后**捡回来的老活先进登记表**，于是它占着第一行
+    —— 实测（8099，2026-09-30）：第一行是一趟 **09-29 19:31** 的老活，而人当天交上来的
+    那几趟排在**最后**。这一条钉的就是那个顺序，外加捡回来的那一趟**不许盖「现在」**。
+
+    ⚠️ 必须用**真图**：老活得真的躺在 checkpoint 里，`_recover` 才捡得回来（同
+    `test_a_recovered_job_says_why_the_earlier_rounds_are_not_on_this_screen`）。
+    """
+    saver = InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)
+    factory = lambda brief, deps: graph.build(checkpointer=saver, deps=_never_used_deps())  # noqa: E731
+    first = _client(factory, checkpointer=saver)
+    old_id = first.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(first, old_id)                        # 停在第一道闸上 ⇒ checkpoint 里有了
+    #: 这一趟是**三天前**动的：账本目录的 mtime 就是这盘上唯一那个说得出的时刻。
+    book = pathlib.Path(service.measure.DEFAULT_ROOT) / old_id
+    book.mkdir(parents=True, exist_ok=True)
+    days_ago = time.time() - 3 * 86400
+    os.utime(book, (days_ago, days_ago))
+
+    second = _client(factory, checkpointer=saver)      # 换一个服务实例 = 重启过
+    rows = second.get("/runs").json()["runs"]          # 重启后的**第一眼**：只有捡回来的那一趟
+    assert [r["job_id"] for r in rows] == [old_id], rows
+    assert service._stamp(rows[0]["created_at"]) < time.time() - 86400, \
+        "捡回来的老活盖的是「现在」：%r（那样它就冒充最新那一趟）" % rows[0]["created_at"]
+
+    #: ★ 人在面板上开的那些趟**载荷里没有 `site` 这一格**（只有值班脚本那条路会写；
+    #: 服务那张模型也**不收** `null`，所以是**整格不发**，不是发个空的）——
+    #: 这一行量的正是「列表上认得出是哪一趟吗」：站点该从这一趟自己的状态里来。
+    payload = _brief(tmp_path)
+    payload.pop("site")
+    new_id = second.post("/run", json=payload).json()["job_id"]
+    _wait(second, new_id)
+    rows = second.get("/runs").json()["runs"]
+    assert [r["job_id"] for r in rows] == [new_id, old_id], \
+        "面板打开时那一趟不是最新交上来的（后交的必须在最前面）：%r" % rows
+    assert rows[0]["site"], "人自己开的那一趟在列表上认不出来（站点那一格是空的）：%r" % rows[0]
+
+
+def test_runs_orders_two_runs_submitted_in_the_same_second_by_who_came_later(tmp_path):
+    """`created_at` 是**秒级**的 —— 同一秒里交上来两趟是常事（实测那天连着开了好几趟）。
+
+    那种平手按**交上来的先后倒过来**（后交的在前）。靠登记表那点插入顺序碰运气的话，
+    面板第一行会是**先**交的那一趟，而它说的是「最新提交的那一趟」。
+    """
+    g = _FakeGraph([_Snap(values={"site": SITE, "ws_url": WS_URL},
+                          interrupts=(_interrupt("intake"),))])
+    client = _client(lambda brief, deps: g)
+    first_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    second_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    _wait(client, first_id)
+    _wait(client, second_id)
+
+    ids = [r["job_id"] for r in client.get("/runs").json()["runs"]]
+    assert ids == [second_id, first_id], \
+        "同秒里的两趟按谁先交的排了（第一行该是最新交的那一趟）：%r" % ids
 
 
 def test_runs_on_a_fresh_service_says_why_it_is_empty(tmp_path):

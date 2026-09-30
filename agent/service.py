@@ -2311,6 +2311,19 @@ def _tighter(recorded, on_disk) -> dict:
     return out
 
 
+def _stamp(at: str) -> float:
+    """`Job.created_at`（本地 ISO 秒级）→ **能比大小的数字**。读不出来当**最旧**（`0.0`）。
+
+    ⚠️ 为什么不用字符串比大小：这一格**带时区偏移**（`+00:00` 秒级 / `+08:00` 都出现过，
+    容器是 UTC、写这行的人在 +08）—— 字符串比会在跨时区时给出**错的顺序**，
+    而那正是「排出来的第一名不是最新的那一趟」这类错里最难看见的一种。
+    """
+    try:
+        return datetime.datetime.fromisoformat(str(at)).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
 class Service:
     """登记表 + 一个工作线程 + 一组投影。
 
@@ -4608,6 +4621,25 @@ class Service:
             said = job.say
         self.narrate(job, "cap_hit", said, end_reason="auto_give_up", end_note=str(why))
 
+    def _ledger_time(self, job_id: str) -> str:
+        """捡回来的那一趟「**盘上最后一次动过**」的时刻（`runtime/explore/<job_id>/` 的 mtime）。
+
+        ★ 2026-09-30（用户报的「8099 的最近 job」）：原来这里写的是 `now()` ——
+        于是**重启那一刻捡回来的每一趟都盖着同一个「现在」**，而 `/runs` 是按这一格排的 ⇒
+        「什么时候交上来的」这件事**从盘上就丢了**，面板那一栏排出来的不是运营要看的那一趟。
+
+        ⚠️ checkpoint 里**没有**「提交时刻」那一格（`state.SiteState` 没有它）⇒ 拿盘上
+        唯一那个**真读到的**观察顶上：一个 job 的账本目录最后动过 = 它这一趟最后干过活。
+        界面**不显示**这一格（`/runs.created_at` 只用来排序、`console.html` 的「开了多久」
+        只在跑着/排队时才读它）⇒ 它是什么，就照什么写。
+        读不到目录 ⇒ 退回 `now()`：宁可顺序不美，也不许这一趟**捡不回来**。
+        """
+        try:
+            at = (pathlib.Path(self._explore_root) / job_id).stat().st_mtime
+        except OSError:
+            return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+        return datetime.datetime.fromtimestamp(at).astimezone().isoformat(timespec="seconds")
+
     # ── 服务重启之后：从 checkpoint 把 job 捡回来（R-19）───────────────
     def _recover(self, job_id: str) -> Optional[Job]:
         """登记表里没有这个 job，但 checkpoint 里有 → 就地从状态里把它捡回来。
@@ -4632,7 +4664,7 @@ class Service:
         brief["set_viewport"] = bool(self._window is not None
                                      and hasattr(self._window, "set_viewport"))
         job = Job(job_id=job_id, brief=brief, status=DONE, say=RECOVERED_SAY, recovered=True,
-                  created_at=datetime.datetime.now().astimezone().isoformat(timespec="seconds"))
+                  created_at=self._ledger_time(job_id))
         job.graph = self._build_graph(brief, job_id)
         with self._jobs_lock:
             self._jobs.setdefault(job_id, job)
@@ -4919,7 +4951,12 @@ class Service:
         ⚠️ 别把它读成探路的模型轮数（`journey.rounds`）：**那是另一个事实**
         （`agent/rounds.py` 的模块 docstring 里那张表）。
 
-        顺序：**最近的在前**（页面左边那一栏据此长）。
+        顺序：**最近的在前**（页面左边那一栏据此长）—— ★ 2026-09-30 起**真的**是：
+        没人点名看哪一趟时页面取的是 `rows[0]`，而它嘴上说的是「先看**最新提交**的那一趟」
+        （`console.html` 的 `fetchRuns`）⇒ 这个顺序是**给运营用的那个事实**，不是排版。
+        ⚠️ 此前它是「先捡回来的（按目录 mtime 倒序）+ 后来开的（按先后正序）」**拼**出来的
+        —— 实测（2026-09-30，8099）：`rows[0]` 是一趟 09-29 19:31 的老活，而人刚交上来的
+        那几趟排在**最后**（两栏的分界处正是「捡回来的 / 开出来的」）。
         `note`：空列表时那句话说清「这个列表是 process-local 的」—— 不说的话，
         人会把「空」读成「什么都没提交过」（§3.5 同一条纪律）。
         """
@@ -4935,20 +4972,31 @@ class Service:
             if back is not None:
                 jobs.append(back)
         rows = []
-        for job in jobs:
+        for seq, job in enumerate(jobs):
             view = self._view(job.job_id)         # 登记表里的 job 读得回来（读不回来是 500，不是少一行）
-            rows.append({
+            rows.append((_stamp(job.created_at), seq, {
                 "job_id": job.job_id,
-                "site": (job.brief or {}).get("site"),
+                #: ★ 2026-09-30：`site` 改取**这一趟自己的状态**那一格（与 `GET /job/{id}` 同源）。
+                #: 原来取 `brief["site"]` —— 而**人在面板上开的那一趟** brief 里没有这一格
+                #: （只有值班脚本那条路会写它）⇒ 人自己刚开的那几趟在列表上写着「（没说站点）」，
+                #: 一排长得一样的行，认不出哪一趟是自己的（而同几个字在 job 那一屏上是有值的）。
+                "site": view.get("site"),
                 "status": view["status"],
                 "say": str(view.get("say") or ""),
+                #: ★ 2026-09-30：捡回来的那一趟不再盖「现在」（见 `_ledger_time`）。
                 "created_at": job.created_at,
                 #: 「到过几道闸」—— 轮数**只有这一个算法**（`rounds.count`）；
                 #: 到头了的那两档要把「最后那张图」去掉（它不是一轮）
                 "rounds": rounds.count(job.shot_notes, view["status"]),
                 "delivered": bool(view.get("delivered")),
-            })
-        return {"note": "" if rows else NO_RUNS_SAY, "runs": rows}
+            }))
+        #: ★ 2026-09-30（docstring 里那句「最近的在前」这一栏**真的做出来**）：
+        #: `seq` = 进登记表的先后（捡回来的与后来开的**在同一把尺子上**比）——
+        #: `created_at` 是**秒级**的，同一秒里交上来两趟是常事（实测那一天 03:24/03:27/03:29…），
+        #: 那种平手就按**交上来的先后倒过来**（后交的在前），不许靠字典顺序碰运气。
+        rows.sort(key=lambda t: (t[0], t[1]), reverse=True)
+        return {"note": "" if rows else NO_RUNS_SAY,
+                "runs": [row for _at, _seq, row in rows]}
 
     #: `/runs` 从盘上捡回几个（每一个都要读一次 checkpoint ⇒ 给个上限）。
     #: ⚠️ `ponytail`：够用就好（面板那一栏是「最近的那些」）；真嫌少再加缓存，别现在就上。
