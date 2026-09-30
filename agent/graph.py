@@ -1449,12 +1449,34 @@ def _selftest(state, deps: Deps, caps: Caps) -> dict:
                            **_selftest_kwargs(state, deps))
     out.update({"candidate_path": str(py), "report": report})
     if not report.passed:
+        #: ★ 2026-09-30（用户问「那为啥不导航呢」时逮到的）：**「自测没跑成」与「自测跑不过」
+        #: 是两件事**。前者是**窗口/地址那一层**（Bit 窗口只活几分钟，探路 + lint 走完它常常
+        #: 就没了；实测那条报错的真话是 `connection refused`），要的是「**重开一个窗口，
+        #: 接着走**」——探路的账本还在，不用重来。以前两种都落到 `diagnose` ⇒ 人被逼着
+        #: 「重新来一遍」（连探路一起，几分钟又一次），而重开窗口那一跳**根本没出现**。
+        if getattr(report, "nav_failed", False):
+            out.update({"end_reason": END_NO_WINDOW, "end_note": _nav_failed_note(report),
+                        "ir_layer": "selftest"})
+            return out
         out["diagnoses"] = int(state.get("diagnoses") or 0) + 1
         if out["diagnoses"] > caps.max_diagnoses:
             _drop_candidate(state)
             out.update({"end_reason": END_SELFTEST_CAP,
                         "end_note": _selftest_cap_note(out["diagnoses"], report)})
     return out
+
+
+def _nav_failed_note(report) -> str:
+    """自测那一步**窗口连不上**时那句人话（把那一遍自己说的那句原样带上）。"""
+    said = ""
+    for run in (getattr(report, "runs", ()) or ()):
+        note = str(getattr(run, "note", "") or "")
+        if note:
+            said = note
+            break
+    return ("自测**没跑成**（不是产物的问题）：**窗口连不上** —— 它自己说：\n%s\n"
+            "这一步要的是**一个新窗口**：按「重新开一个窗口，接着走」就能接着跑自测"
+            "（探路的账本还在，**不用**重新来一遍）。" % (said or "（它没说什么）"))
 
 
 def _diagnose(state, deps: Deps, caps: Caps) -> dict:

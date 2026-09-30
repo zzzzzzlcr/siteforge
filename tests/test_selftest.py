@@ -195,6 +195,25 @@ def _run(env, scripts, **kw):
 
 # ── 跑几遍（R-84：按需 + 提交硬顶）──────────────────────────────────
 
+def test_a_navigation_that_could_not_connect_says_what_the_window_said(env):
+    """★ 2026-09-30（用户问「那为啥不导航呢」）：自测**没跑成**时，那一句要说**窗口真正说的那句**。
+
+    现场：`zekear` 那趟报的是「导航没成（退出码 1，它说：**--p…**）」—— 那个 `--p…` 是
+    `--port int …` 那行的**前三个字符**（旧实现取的是**最后一行、只留 3 个字符**），
+    读的人会以为是**参数写错了**。真话是 `Error: … connection refused`（窗口没了）。
+    这一条钉两样：① 报错带上那句话的**头**（不是尾巴）；② 报告上标了 `nav_failed`
+    （图据此把它归到「窗口那一支」—— 可以重开窗口接着走，不用把探路重来）。
+    """
+    report = _run(env, _scripts(baseline=_Script(rc=0)), navi_fails=True,
+                  start_url=ENTRY)
+    assert report.nav_failed is True, report
+    note = report.runs[0].note
+    assert "没能先导航到那个页面" in note, note
+    assert "boom" in note, "窗口自己说的那句要带上：%r" % note
+    assert "--p…" not in note, "不许再是「用法说明那行的前三个字符」：%r" % note
+    assert report.passed is False
+
+
 def test_the_default_is_one_submission_and_a_pass(env):
     """**R-84 的默认路径**：baseline 过了 → **只提交 1 次**，判过，后面那几遍**不再跑**。
 

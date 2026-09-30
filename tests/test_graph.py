@@ -827,6 +827,35 @@ def test_a_draft_that_loses_the_success_condition_still_stops_loudly(tmp_path):
 # `browser_agent.explore` 把答案记在 `journey.gate_collisions` 上；这一格是那道门。
 
 
+def test_a_self_test_that_could_not_reach_the_window_is_not_a_product_failure(tmp_path):
+    """★ 2026-09-30（用户问「那为啥不导航呢」）：**自测没跑成 ≠ 自测跑不过**。
+
+    窗口连不上（Bit 窗口只活几分钟，探路 + lint 走完它常常就没了）时，这一趟该落在
+    **窗口那一档**（`no_window`）——那一档在服务侧允许「**重开一个窗口，接着走**」
+    （`service.WINDOW_END_REASONS["selftest"]`），探路的账本还在，不用重来。
+    改前它落在 `diagnose`（“自测没过…回 draft 改一版”）⇒ 人被逼着「重新来一遍」，
+    而重开窗口那一跳根本不出现。
+    """
+    from agent import selftest as selftest_mod
+    from agent import service as service_mod, state as state_mod
+
+    report = selftest_mod.Report(runs=(selftest_mod.Run(
+        name="baseline", label="正常跑一遍（基线）", status="skipped", ok=None,
+        failed_step=None, trace_path=None,
+        note="这一遍没跑：**没能先导航到那个页面**（导航没成（退出码 1，它说：boom））"),),  # noqa: E501
+        passed=False, allowed_skips=("country",), cdp_bin="/bin/false", site=SITE,
+        py_path="/tmp/x.py", nav_failed=True)
+    deps, rec = _deps(reports=[report])
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "no_window", out.get("end_note")
+    assert out.get("ir_layer") == "selftest", out
+    assert "重新开一个窗口" in out["end_note"] and "不用" in out["end_note"], out["end_note"]
+    assert state_mod.END_NO_WINDOW in service_mod.WINDOW_END_REASONS["selftest"], \
+        "这一档要允许「重开窗口接着走」（服务侧那张表说了算）"
+
+
 def test_a_ledger_whose_judges_cannot_tell_two_pages_apart_writes_no_artifact(tmp_path):
     """判据在**别的页**上也成立 ⇒ 一份 py 都不许出（人话要说清是哪两组、为什么）。
 

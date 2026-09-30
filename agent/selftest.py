@@ -222,6 +222,11 @@ class Report:
     #: 真正让时间线上也能看见的那一步在服务侧：`Service._note_narration_broken`
     #: （读 state 里的 `report`，记一条 `narration_broken`）。
     narrate_broken: tuple = ()
+    #: ★ 2026-09-30：**自测「没跑成」= 窗口/地址那一层**（Bit 窗口只活几分钟，探路 + lint 走完
+    #: 它常常就没了；实测那条报错的真话是 `connection refused`）—— 与「跑不过」（产物的
+    #: 问题）**分开报**。图据此把它归到**窗口那一支**：可以「重开一个窗口，接着走」，
+    #: 不用把探路一起重来（以前两种都落到 diagnose ⇒ 人被逼着「重新来一遍」）。
+    nav_failed: bool = False
 
     # ── 谁拦住了 `passed` ────────────────────────────────────────────
     @property
@@ -334,6 +339,26 @@ def _as_text(chunk) -> str:
     if isinstance(chunk, bytes):
         return chunk.decode("utf-8", "replace")
     return chunk
+
+
+#: cdp 出错时**第一行**才是真话（后面跟的是用法说明）。
+#: ★ 2026-09-30（现场逮到的）：原来这里取的是**最后一行**、又只留 **3 个字符** ——
+#: 于是一趟「连不上窗口」的报错在屏幕上成了「它说：--p…」（`--port int …` 那行的头三个字符），
+#: 读的人（和运营）会以为是**参数写错了**。实测那趟命令的真话是
+#: `Error: failed to create client: failed to connect to Chrome: … connection refused`。
+_ERROR_HEAD = ("error:", "failed", "cannot", "无法", "拒绝")
+
+
+def _error_line(text: str) -> str:
+    """从一段输出里挑**说清出错的那一行**：优先 `Error:`，其次第一行非空 —— 挑不到给空串。"""
+    rows = [ln.strip() for ln in _as_text(text).splitlines() if ln.strip()]
+    for row in rows:
+        if row.lower().startswith("error:"):
+            return row
+    for row in rows:
+        if any(row.lower().startswith(head) for head in _ERROR_HEAD):
+            return row
+    return rows[0] if rows else ""
 
 
 def _tail(text: str, limit: int = 200) -> str:
@@ -585,9 +610,11 @@ def _navigate(cdp_bin, ws_url, entry_url, env) -> Optional[str]:
         else:
             if done.returncode == 0:
                 return None
+            #: ⚠️ 说清是哪一种没成：**连不上窗口**（窗口没了 / 地址不对）与别的分开 ——
+            #: 下游据此把它归到「窗口那一支」（可以重开窗口接着走），而不是「诊断」那一档。
+            raw = done.stderr or done.stdout
             said = "导航没成（退出码 %d，它说：%s）" % (
-                done.returncode,
-                _tail(_noise_free(done.stderr) or done.stdout, 3) or "什么都没说")
+                done.returncode, _error_line(_noise_free(raw)) or "什么都没说")
         if attempt < NAVI_TRIES - 1:
             time.sleep(NAVI_GAP_SECONDS)      # 端口还没通 ⇒ 等一下再试（见上面那条实测）
     return said
@@ -1167,7 +1194,7 @@ def run(py_path, ws_url, form_file, site, *,
             "**不是对产物的判定**（实测：窗口开出来停在 Bit 自己的控制台页上，"
             "那种「自测没过」是对跑法说的）。先把窗口/地址弄对再来自测。" % navi_why)),),
             passed=False, allowed_skips=allowed, cdp_bin=cdp_bin, site=site,
-            py_path=str(py))
+            py_path=str(py), nav_failed=True)
 
     def _navi_back(what: str) -> str:
         """**每一遍整条漏斗再跑之前**，先站回起点（`start_url`）。返回空串 = 成了。
