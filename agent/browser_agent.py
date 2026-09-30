@@ -4418,6 +4418,16 @@ def _gates_that_hold_elsewhere(pages: list) -> list:
     ⚠️ **没有门的不参与**：`when` 为空是有意的（`_drop_incidental_start_when` 那个旁枝
     起点），把「有意不设门」报成缺陷 = 每一份正常产物都在喊狼来了。
 
+    ⚠️ ★ 2026-09-30（**现场逮到的第三个形状**，`zekear` 那趟）：**同一个地址上的两个状态
+    不算「别的页」**。判据：命中那条的稳定地址（`_stable_url`）与本组的**一样** ⇒ 跳过。
+    为什么：那句警告怕的是「走**到那一页**时，前一组的步骤会**在那页上真做一遍**（它点的会是
+    那一页上的元素）」—— 那是**跨页**的事（判据跨元素拼接那种）。而同一个地址上两组的元素
+    本来就在那一页上、各自在**自己那次停留**里成立：像「商品页 → 去注册 → **回商品页** → 点
+    Buy now」这种往返，重放时第一组在第一次停留里走完（最后一步 `goto` 走掉），回到商品页
+    那次第二组才成立 ⇒ **照旧是对的**（`_merge_one_page_states` 只并**相邻**的那一次停留，
+    往返不许被压平）。实测（盘上 108 本真账本）：同址命中不报之后，「会被拒」从 47 降回 **5**，
+    而**不同地址**上真分不开的照旧报 —— 那一验的活儿一个字没少。
+
     返回 `[{"name", "url", "pages": [它**不该**成立的那几页 url]}, …]`：一个状态一条。
     """
     out: list = []
@@ -4428,9 +4438,14 @@ def _gates_that_hold_elsewhere(pages: list) -> list:
             continue
         name = entry.get("name") or ""
         hits: list = []
+        own = _stable_url(entry.get("url") or "")
         for j, other in enumerate(pages):
             url = other.get("url") or ""
             if j == i or (other.get("name") or "") == name or url in hits:
+                continue
+            #: ⚠️ **同址不算「别的页」**（见 docstring）：那是同一页的两次停留，各自在自己
+            #: 那次停留里成立 —— 报它只会把一份对的产物打回（实测：47 条误拒里绝大多数是它）。
+            if own and _stable_url(url) == own:
                 continue
             if when_holds(when, other.get("model") or {}):
                 hits.append(url)
@@ -4566,22 +4581,21 @@ def _merge_one_page_states(pages: list, steps: list) -> list:
         dropped = {m["name"] for m in merged}
         pages[:] = [q for q in pages if (q.get("name") or "") not in dropped]
 
+    #: ⚠️ ★ 2026-09-30（**现场逮到的第三个形状**，`zekear` 那趟自测倒在这儿）：
+    #: 只并**相邻的**那几页。原来是在 `pages` 里**跨着找**同址、判据分不开的那些 —— 于是
+    #: 「商品页 → 去 signIn → 注册 → **回商品页** → Buy now」这种**往返行程**被压成一组
+    #: `[goto signIn, click Buy now]`：重放时第一步就走掉了，第二步在**另一个页面**上找
+    #: 商品页的按钮 ⇒ 自测第 2 步「页面上没找到「Buy now」」（那条 trace 就在盘上）。
+    #: 判据：`_Pages` 里**挨着**的两条才算一页的两眼（同一趟行程里连着发生的才是同一次停留）。
     groups: list = []
     for pg in pages:
         url = _stable_url(pg.get("url") or "")
-        hit = None
-        for group in groups:
-            for member in group:
-                if url and _stable_url(member.get("url") or "") == url \
-                        and _page_pair_indistinguishable(member, pg):
-                    hit = group
-                    break
-            if hit is not None:
-                break
-        if hit is None:
-            groups.append([pg])
+        prev = groups[-1][-1] if groups else None
+        if prev is not None and url and _stable_url(prev.get("url") or "") == url \
+                and _page_pair_indistinguishable(prev, pg):
+            groups[-1].append(pg)
         else:
-            hit.append(pg)
+            groups.append([pg])
 
     for group in groups:
         if len(group) < 2:

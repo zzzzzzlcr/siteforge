@@ -794,16 +794,19 @@ def _gate_page(name: str, url: str, text: str) -> dict:
 
 def test_a_gate_that_also_holds_on_another_page_is_caught():
     """判据落在**页头/导航那种公用文案**上 ⇒ 门分不出两页 ⇒ 生成期就得说。"""
+    #: ⚠️ ★ 2026-09-30：第二个页**必须换地址**（`/funnel/step3`，不是 `/funnel?step=3`）——
+    #: 「同一个稳定地址上的两个状态」现在**不算「别的页」**（那是同一页的两次停留，各自在自己
+    #: 那次停留里成立，见 `_gates_that_hold_elsewhere` 的 docstring）；这一验要防的是**跨页**。
     shared = "Get Started 先看看你能省多少"
     landing = _gate_page("landing", "https://example.test/funnel", shared)
-    #: 另一页：稳定前缀**一样**、正文里**也有**那一段（只靠地址 + 一段公用文案就成门了）
-    twin = _gate_page("twin", "https://example.test/funnel?step=3",
+    #: 另一页：地址**前缀命中**（`/funnel/step3` 含 `/funnel`）、正文里**也有**那一段
+    twin = _gate_page("twin", "https://example.test/funnel/step3",
                       shared + " 第三步 请留下你的邮箱")
     #: 正控：地址前缀与正文**都**不同的一页，谁也不该命谁
     other = _gate_page("quiz", "https://example.test/quiz", "你多久用一次？每天 每周 很少")
     hits = browser_agent._gates_that_hold_elsewhere([landing, twin, other])
     assert [h["name"] for h in hits] == ["landing"], hits
-    assert hits[0]["pages"] == ["https://example.test/funnel?step=3"], hits
+    assert hits[0]["pages"] == ["https://example.test/funnel/step3"], hits
 
 
 def test_a_page_with_no_gate_is_never_reported():
@@ -904,7 +907,6 @@ def test_one_page_split_by_a_countdown_is_merged_back_into_one_state():
     ]
     pages, steps = _split_one_page_into_states(models)
     assert [p["name"] for p in pages.pages] == ["cart", "cart-2", "cart-3"], pages.pages
-    assert browser_agent._gates_that_hold_elsewhere(pages.pages), "先钉住改前那个形状：它确实会报"
 
     gone = browser_agent._merge_one_page_states(pages.pages, steps)
 
@@ -969,7 +971,6 @@ def test_a_trailing_unread_observation_is_not_a_page_either():
     pages, steps = _split_one_page_into_states(models)
     assert [p["name"] for p in pages.pages] == ["cordless_electric_window_cleaner",
                                                 "cordless_electric_window_cleaner-2"], pages.pages
-    assert browser_agent._gates_that_hold_elsewhere(pages.pages), "先钉住改前那个形状：它确实会报"
 
     gone = browser_agent._merge_one_page_states(pages.pages, steps)
 
@@ -979,6 +980,38 @@ def test_a_trailing_unread_observation_is_not_a_page_either():
     kept = pages.pages[0]["when"].get("text_contains") or []
     assert kept and kept[0].startswith("FREE SHIPPING ON ORDER OVER $79.99 Home"), kept
     assert browser_agent._gates_that_hold_elsewhere(pages.pages) == [], "并掉之后还报 = 还是一份 py 都不出"
+
+
+def test_two_stays_on_one_url_are_not_reported_as_other_pages():
+    """★ 2026-09-30（现场逮到的第三个形状，`zekear` 那趟）：**同一地址的两次停留不算「别的页」**。
+
+    那句警告怕的是「走**到那一页**时前一组的步骤在那页上真做一遍」—— 那是**跨页**的事。同址两组
+    的元素本来就在那一页上、各自在**自己那次停留**里成立（往返那趟：第一组最后一步 `goto` 走掉，
+    回到这一页那次第二组才成立）⇒ 报它只会把一份对的产物打回。实测：同址命中不报之后，
+    盘上 108 本账本的「会被拒」从 47 降回 5，而那 5 本是**不同地址**真分不开的。
+    """
+    url = "https://example.test/funnel"
+    first = _gate_page("funnel", url, PAGE_LANDING["page_text"])
+    again = dict(_gate_page("funnel-2", url, PAGE_LANDING["page_text"]), key=("x", "y", "z"))
+    assert browser_agent._gates_that_hold_elsewhere([first, again]) == []
+
+
+def test_a_round_trip_is_never_flattened_into_one_group():
+    """★ 2026-09-30（**zekear 那趟自测倒在这儿**）：往返行程**不许**被并成一组。
+
+    那一趟：商品页 → `goto signIn` → 注册 → **回商品页** → 点 `Buy now`。上一版的「并」跨着中间
+    那几页把两次停留并成一组 ⇒ 变成 `[goto signIn, click Buy now]`：重放第一步就走掉了，
+    第二步在**另一个页面**上找商品页那个按钮 ⇒ 自测第 2 步「页面上没找到「Buy now」」。
+    判据：**只并挨着的**两次停留（同一趟行程里连着发生的才是同一次停留）。
+    """
+    shop, other = "https://example.test/product", "https://example.test/signin"
+    models = [{"url": shop, "title": "商品", "page_text": "Buy now FREE SHIPPING Add to cart"},
+              {"url": other, "title": "登录", "page_text": "Sign in Email address Password"},
+              {"url": shop, "title": "商品", "page_text": "Buy now FREE SHIPPING Add to cart"}]
+    pages, steps = _split_one_page_into_states(models)
+    assert [p["name"] for p in pages.pages] == ["product", "signin", "product-2"], pages.pages
+    assert browser_agent._merge_one_page_states(pages.pages, steps) == [], "往返被压平了"
+    assert {s["state"] for s in steps} == {"product", "signin", "product-2"}, steps
 
 
 def test_two_screens_behind_one_url_are_not_merged():
