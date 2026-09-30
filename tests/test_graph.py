@@ -1830,29 +1830,29 @@ def test_the_descriptive_head_is_stripped_before_comparing():
         _book("Thanks! Your request was received."), ["出现 Nope", "显示 Thanks!"]) is True
 
 
-def test_a_shell_we_do_not_recognize_is_said_in_plain_words():
+def test_a_criterion_that_is_still_a_sentence_is_said_in_plain_words():
     """★ 2026-09-29 真事（`job-5850107f65ed`，thegiraffe，**一个 py 都没出**）：
     那一格写着「页面中出现found your offers」—— 带着说明词，而剥壳的词表里**没有那种写法**
     ⇒ 它成了**逐字判据**（页面上永远不会有整句）⇒ 三趟都「没见到成功文案」（每趟一次真提交）。
 
-    ⚠️ 「页面中出现」这一族现在**剥得掉**了（真事见 `browser_agent.CRITERION_HEAD_RE`），
-    所以这一格钉的是**下一层兜底**：壳换了别的写法、剥不掉时，屏幕上必须**说得出**
-    「我是按字面在找」—— 不然人分不出「站点没成」还是「这一格填错了」，只能干猜三趟。
+    ★ 2026-09-30 起（「剥完只留 ASCII」）那种写法**收掉了**，于是这一格钉的是**剩下那一档**：
+    剥完**还是句人话**时（纯中文：`页面上有出现字样`），屏幕上必须**说得出**「我是按字面在找」
+    —— 不然人分不出「站点没成」还是「这一格填错了」，只能干猜三趟。
     这一句挂在 intake 的 facts 上（那行「成功判据（提醒）」）⇒ **开窗口之前**就看得见。
     """
-    #: ① 认得出的壳不许多嘴（负控：正常的说明句不许被说成「不认识」）
-    assert "不认识" not in graph._criterion_advice("页面中出现found your offers")
-    assert "不认识" not in graph._criterion_advice("出现 Tailor Your Cover")
-    assert "不认识" not in graph._criterion_say("出现 Tailor Your Cover")
-    #: ② 换一个不认识的壳：要说出来，而且**原话照抄**那一格
-    odd = "页面底下出现found your offers"
+    #: ① 剥干净了 ⇒ 不许多嘴（负控：正常的说明句不许被说成「还是句说明」）
+    assert "剥完还剩" not in graph._criterion_advice("页面中出现found your offers")
+    assert "剥完还剩" not in graph._criterion_advice("出现 Tailor Your Cover")
+    assert "剥完还剩" not in graph._criterion_say("出现 Tailor Your Cover")
+    #: ② 剥完还剩中文说明话：要说出来，而且**把剩下的那截原话照抄**出来给人看
+    odd = "页面上有出现字样"
     told = graph._criterion_advice(odd)
-    assert "不认识" in told and "『%s』" % odd in told, told
+    assert "剥完还剩" in told and "『%s』" % odd in told and "『有出现字样』" in told, told
     assert "字面" in told, told
-    assert "不认识" in graph._criterion_say(odd), graph._criterion_say(odd)
+    assert "剥完还剩" in graph._criterion_say(odd), graph._criterion_say(odd)
     #: ③ 那一格本来就是**照抄页面上的字**（没有说明词）⇒ 不许多嘴
     assert graph._criterion_advice("found your offers") == ""
-    assert "不认识" not in graph._criterion_say("found your offers")
+    assert "剥完还剩" not in graph._criterion_say("found your offers")
 
 
 def test_the_outcome_line_says_which_words_it_compared():

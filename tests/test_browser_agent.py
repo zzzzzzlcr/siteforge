@@ -3935,9 +3935,10 @@ def test_the_shell_missed_by_one_character_does_not_swallow_the_run():
     整句成了**逐字判据** ⇒ 页面上明明写着 `We've found your offers!`，三趟都报
     「没见到成功文案」（**每趟还是一次真提交**）⇒ 图判 `explore_unfinished` ⇒ **不出 py**。
 
-    ⚠️ 「页面 / 页面上 / 页面中 / 页面里 + 会 / 出现 / 显示 / 看到」是**一族**，
-    这一族里每一种写法都得剥掉 —— 漏一个字的代价是**整趟白跑**，所以这一格钉的是**那一族**，
-    不是补上「页面中出现」这一个词。
+    ★ 2026-09-30（用户原话「改成成功只提取英文就行了」）：不再靠往词表里补写法 ——
+    剥完壳**只留 ASCII 那几段**（说明词是人话、中文；要认的那串字是 ASCII）。
+    这一格钉四件事：① 真事那一格落到 `found your offers`；② 目标带英文时随便怎么写都落到它；
+    ③ **纯中文判据**剥完壳还是中文（不许整格丢）；④ 编号/标点要留在里面（少一个字就更松）。
     """
     case = "页面中出现found your offers"
     assert browser_agent.strip_criterion_head(case) == "found your offers"
@@ -3947,19 +3948,25 @@ def test_the_shell_missed_by_one_character_does_not_swallow_the_run():
                 "result": {"ok": True, "page_text_head": page}}]).steps
     assert browser_agent._success_hit(steps, case) == 0, (
         "页面上真写着那串字，系统却还是判「没见到」—— 就是这次的病（`job-5850107f65ed`）")
-    #: 这一族里人怎么写都该剥掉（下一个字不许再把它漏过去）
-    for head in ("页面中出现", "页面上出现", "页面出现", "页面里出现", "页面上会显示",
-                 "页面中看到", "页面会显示", "页面上", "页面中", "页面里"):
-        assert browser_agent.strip_criterion_head(head + "X") == "X", head
-    #: ⚠️ 更严不更松：`showcase` **不是**壳（裸 `show` 会把它剥成 `case`）
+    #: ② 目标带英文时，说明词怎么写都落在那串字上（下一个字不许再把它漏过去）
+    for cell in ("页面中出现found your offers", "页面上出现found your offers",
+                 "页面里出现found your offers", "页面上会显示found your offers",
+                 "页面中看到found your offers", "页面上found your offers",
+                 "出现found your offers", "出现文字：found your offers",
+                 "出现『found your offers』", "页面中出现 found your offers。"):
+        assert browser_agent.strip_criterion_head(cell) == "found your offers", cell
+    #: ③ ⚠️ 纯中文判据：剥完壳**留下中文**（中文站的成功文案就是中文，整格丢掉 = 没有判据）
+    assert browser_agent.strip_criterion_head("页面上出现提交成功") == "提交成功"
+    assert browser_agent.strip_criterion_head("页面中会显示提交成功") == "提交成功"
+    #: ④ ⚠️ **更严不更松**：编号与标点跟着英文一起留下（切掉 `#A12345` 就成了「页面上有 Order 就算成」）
+    assert browser_agent.strip_criterion_head("页面上出现 Order #A12345 已确认") == "Order #A12345"
+    #: ⚠️ `showcase` **不是**壳（裸 `show` 会把它剥成 `case`）
     assert browser_agent.strip_criterion_head("showcase 2026") == "showcase 2026"
-    #: 认得出的壳 ⇒ 不吭声（它已经剥掉了，屏幕上有「比的时候按…」那句就够）
+    #: 目标带英文 ⇒ 剥干净了，兜底那句话**不吭声**（屏幕上有「比的时候按…」那句就够）
     assert browser_agent.criterion_shell_unrecognized(case) == ""
-    #: 兜底那句话只对**真不认识**的壳响（正控：换一个写法就得说得出是哪个词）
-    assert browser_agent.criterion_shell_unrecognized(
-        "页面底下出现found your offers") == "出现"
     assert browser_agent.criterion_shell_unrecognized("found your offers") == ""
-
+    #: 兜底那句话管的是**中文没剥完**那一档（正控：剩的还是句人话 ⇒ 得说得出是哪个词）
+    assert browser_agent.criterion_shell_unrecognized("页面上有出现字样") == "出现"
 
 
 def test_the_recorded_page_text_is_long_enough_to_hold_the_criterion():

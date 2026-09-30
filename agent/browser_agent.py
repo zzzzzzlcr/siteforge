@@ -1534,10 +1534,15 @@ CRITERION_HEAD_RE = re.compile(
     r"|shows|show(?!\S)|contains"
     r")\s*[:：,，。;；\-—]?\s*", re.I)
 
-
 #: 判据那一格里**像说明句**的记号（出现在任意位置都算）。它只用来**说一句话**，不参与匹配 ——
 #: 匹配的尺子只有 `strip_criterion_head` 那一把。
 CRITERION_SHELLISH_RE = re.compile(r"出现|显示|看到|shows|contains|show\b", re.I)
+
+
+#: 判据那一格里**页面上真会有的那几段字**：连续可打印 ASCII（字母 / 数字 / 空格 / 标点）。
+#: 为什么连数字和标点一起要（`#A12345` 这种编号、`Order #12` 里那个 `#`）：子串判据**少一个字就更松**，
+#: 把编号切掉就成了「页面上有 `Order` 就算成」—— 那是往「谎报成功」那一侧走。
+_ASCII_RUN_RE = re.compile(r"[ -~]+")
 
 
 def strip_criterion_head(word: str) -> str:
@@ -1558,25 +1563,43 @@ def strip_criterion_head(word: str) -> str:
     「页面中出现…」原来是剥不动的（表里没有那一种写法），于是它被当成逐字判据、
     页面上永远找不到（上面 `CRITERION_HEAD_RE` 那段真事）。**判据那一侧与产物那一侧
     共用这一个函数**（`template._success_texts` → `wanted_texts` → 这里）。
+    ★ 2026-09-30（用户原话「改成成功只提取英文就行了」）：剥完壳**再只留 ASCII 那几段** ——
+    中文那部分是**人话**（「我要它出现」），页面上要认的那串字是 ASCII。理由与那一档
+    纯中文判据的兜底，见下面函数体里那段注释。
     """
     text = _norm(str(word or ""))
-    return _norm(CRITERION_HEAD_RE.sub("", text, count=1)).lstrip(" :：,，。;；-—").strip()
+    text = _norm(CRITERION_HEAD_RE.sub("", text, count=1)).lstrip(" :：,，。;；-—").strip()
+    #: ★ 2026-09-30（用户原话「改成成功只提取英文就行了」）：剥完壳**只留 ASCII 那几段**
+    #: （多段用空格接起来）。`job-5850107f65ed` 那一格「页面中出现found your offers」本来就该
+    #: 落到 `found your offers` 上 —— 与其把「页面中 / 页面上 / 页面里…」这一族写法一个个
+    #: 往词表里补，不如认下这条：**判据那一格要的是照抄页面上真会出现的字**；说明词是人话（中文），
+    #: 要认的那串字是 ASCII。上面那条正则因此只剩一个用途：**纯中文判据**那一档。
+    #: ⚠️ 一格 ASCII 都没有（`页面上出现提交成功`）⇒ 返回**剥完壳的那份中文**，不许整格丢掉 ——
+    #: 中文站的成功文案就是中文（`tests/test_template.py` 里 `SUCCESS_TEXTS == ["READY"]` 那种）。
+    runs = [r.strip() for r in _ASCII_RUN_RE.findall(text)]
+    return _norm(" ".join(r for r in runs if r)) or text
 
 
 def criterion_shell_unrecognized(text) -> str:
-    """这一格**像说明句**、而我们**不认识**它开头那种写法 ⇒ 返回那个记号；否则空串。
+    """那一格**剥完剩下的字里还带着说明词** ⇒ 返回那个记号；否则空串。
 
     ★ 2026-09-29（`job-5850107f65ed`）：那一格写着「页面中出现found your offers」——
     带着说明词，壳却差一个字没被剥掉 ⇒ 它成了**逐字判据** ⇒ 三趟都「没见到成功文案」
     ⇒ 没有 py。而屏幕上**没有一句话**能让人看出「是这一格填错了」还是「站点没成」：
     人只能去猜。这一句就是那句缺的话。
+
+    ★ 2026-09-30：原来只在「**一个字都没剥掉**」时才吭声，于是「页面上有出现字样」这种
+    **剥了一半**的漏过去（剥掉「页面上」还剩「有出现字样」，里面那个「出现」正说明它还
+    是一句人话、不是页面上会有的字）。⇒ 判据改成看**剩下的那串**里还有没有说明词：
+    页面上真会有的字（`Tailor Your Cover` / `found your offers`）里没有这些词，所以
+    「更严不更松」这条不受影响（真写着「显示更多」按钮的那种，剥完是「更多」）。
     ⚠️ 它**不参与匹配**（匹配只有 `strip_criterion_head` 那一把尺子），也不拦任何东西 ——
     它只负责把「我按**字面**在找」这件事摆到人说得出话的地方。
     """
     text = _norm(str(text or ""))
-    if not text or strip_criterion_head(text) != text:
+    if not text:
         return ""
-    hit = CRITERION_SHELLISH_RE.search(text)
+    hit = CRITERION_SHELLISH_RE.search(strip_criterion_head(text))
     return hit.group(0) if hit else ""
 
 
