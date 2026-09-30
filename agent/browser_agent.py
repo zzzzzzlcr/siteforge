@@ -2515,8 +2515,16 @@ def library_key(name: str, data_keys=()) -> str:
     if _key_shape(name) in shape:
         return shape[_key_shape(name)]
     aliases, splits = alias_tables()
-    for cand in [splits.get(name) or ""] + list(aliases.get(name) or ()):
-        if cand and cand in given:
+    #: ⚠️ ★ 2026-09-30（**用户问「确认资料不会乱映射吧」时当场逮到的**）：**「拆名」那一族
+    #: 不参与改写**。骨架里那条路是**按 `source` 的名字**触发的
+    #: （`_fill_value`：`whole = take(_SPLIT_FROM.get(source, ""))` 且 `parts[0] if
+    #: source == "first_name"`）⇒ 把 `first_name` 改写成 `username` 之后那一支**不会触发**，
+    #: 资料只给一个全名（`username: "Lin Cameron"`）时整串会被填进名字框 ✗
+    #: （仓库注释里记着的那个老事故）。**整取**的那些（`phone → phone_number`）照旧改写。
+    if name in splits:
+        return name
+    for cand in aliases.get(name) or ():
+        if cand in given:
             return cand
     return name
 

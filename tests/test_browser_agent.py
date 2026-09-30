@@ -1840,9 +1840,13 @@ def test_library_key_only_rewrites_when_the_data_really_has_it():
     """
     lib = ["email", "username", "phone_number"]
     assert browser_agent.library_key("phone", lib) == "phone_number"
-    assert browser_agent.library_key("first_name", lib) == "username"
-    assert browser_agent.library_key("last_name", lib) == "username"
     assert browser_agent.library_key("email", lib) == "email"
+    #: ⚠️ **「拆名」那一族不许改写**（用户问「确认资料不会乱映射吧」时当场逮到的那一条）：
+    #: 骨架里那一支是按 **`source` 的名字**触发的（`_SPLIT_FROM.get(source)` 且
+    #: `parts[0] if source == "first_name"`）⇒ 改成 `username` 之后就不拆了，资料只给一个全名
+    #: （`www: "Lin Cameron"`）时**整串会被填进名字框**（仓库注释里那个老事故）。
+    assert browser_agent.library_key("first_name", lib) == "first_name"
+    assert browser_agent.library_key("last_name", lib) == "last_name"
     assert browser_agent.library_key("phone", ["phone", "email"]) == "phone"
     assert browser_agent.library_key("first_name", ["firstName"]) == "firstName"
     assert browser_agent.library_key("postcode", lib) == "postcode"
@@ -1875,7 +1879,9 @@ def test_the_fills_use_the_key_the_data_really_has():
         return jr
 
     got = {n: f["source"] for n, f in book(["email", "username", "phone_number"]).fills().items()}
-    assert got == {"first_name": "username", "phone": "phone_number", "email": "email"}, got
+    #: `phone` 是**整取**的 ⇒ 换成资料里那个真键；`first_name` 是**拆名**那一族 ⇒ 原样留着
+    #: （改写它会把运行期那条拆名规则打断，整串全名填进名字框）。
+    assert got == {"first_name": "first_name", "phone": "phone_number", "email": "email"}, got
     #: 账本上那一步记的还是页面字段名（读账的人看到的是这一趟真记的）
     assert book(["email"]).steps[0]["result"]["fill"]["source"] == "first_name"
     #: 没给资料 ⇒ 原样（= 今天的行为，一个字节都不动）
