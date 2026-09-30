@@ -115,14 +115,24 @@ def validate(journey, values: dict | None = None) -> list:
                                    "「%s」第 %d 步的动作是 `%s` —— 产物只认 %s 这几种。"
                                    % (name, i, act, "、".join(REPLAYABLE_ACTIONS)), name,
                                    {"step": i, "action": act}))
-            # ④ `goto` 落在组中间（后面还有动作）：重放时第一步就走掉了，后面的步会在**别的页**
-            #    上做（2026-09-30 现场：`zekear` 那趟自测「页面上没找到「Buy now」」就是这个形状）。
-            if act == "goto" and any(str(s.get("action") or "") != "scroll"
-                                     for s in steps[i:]):
-                out.append(Problem("ir", "trace_ambiguous.goto_in_the_middle",
-                                   "「%s」第 %d 步是 `goto`，它后面还有别的动作 —— 重放时那一步"
-                                   "就走了，后面的动作会在**另一个页面**上做。这一组该在 `goto` 那儿断开。"
-                                   % (name, i), name, {"step": i}))
+            # ④ `goto` 落在组中间**而且真的换了页**（后面还有动作）：重放时那一步就走了，
+            #    后面的步会在**别的页**上做（2026-09-30 现场：`zekear` 那趟自测
+            #    「页面上没找到「Buy now」」就是这个形状）。
+            #    ⚠️ ★ 2026-09-30 **收窄**（用户问「还是说我提的还要改」时当场逮到的误判）：
+            #    **同一个地址上的 `goto` 是重载**（真站实测：`goto https://…/user/signUp`
+            #    之后再填表 —— 页面没换），后面的动作照样在这一页上 ⇒ 报它就是**误判**，
+            #    而它会**拦住一整份本来对的产物**。判据：拿这一组的 `url_contains` 与 `goto`
+            #    要去的那串比 —— 前缀命中 ⇒ 还是这一页 ⇒ 放行。
+            if act == "goto" and any(str(s.get("action") or "") != "scroll" for s in steps[i:]):
+                where = str(step.get("url") or "")
+                own = str(when.get("url_contains") or "")
+                if not (own and where.startswith(own)):
+                    out.append(Problem("ir", "trace_ambiguous.goto_in_the_middle",
+                                       "「%s」第 %d 步是 `goto`（去「%s」），它后面还有别的动作 —— "
+                                       "重放时那一步就走了，后面的动作会在**另一个页面**上做。"
+                                       "这一组该在 `goto` 那儿断开。"
+                                       % (name, i, where[:60]), name,
+                                       {"step": i, "goto": where}))
     return out
 
 

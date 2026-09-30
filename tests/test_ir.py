@@ -60,6 +60,23 @@ def test_a_goto_in_the_middle_of_a_group_is_an_ir_problem():
     assert "另一个页面" in got[0].say, got[0].say
 
 
+def test_a_goto_that_stays_on_the_same_page_is_a_reload_not_a_problem():
+    """★ 2026-09-30（用户问「还是说我提的还要改」时逮到的**误判**）：同一个地址上的 `goto`
+    是**重载**（真站实测：`goto https://…/user/signUp` 之后再填表 —— 页面没换），后面的动作
+    照样在这一页上 ⇒ 报它就是误判，而它会**拦住一整份本来对的产物**。换页的那种照旧要报。
+    """
+    same = _state(steps=(("goto",), ("form",)))
+    same["when"]["url_contains"] = "https://example.test/signup"
+    same["steps"][0]["url"] = "https://example.test/signup?step=2"      # ← 同址（带 query）
+    assert ir.validate(_journey_with([same])) == []
+
+    other = _state(steps=(("goto",), ("form",)))
+    other["when"]["url_contains"] = "https://example.test/product"
+    other["steps"][0]["url"] = "https://example.test/user/signIn"       # ← 真换了页
+    got = ir.validate(_journey_with([other]))
+    assert [p.code for p in got] == ["trace_ambiguous.goto_in_the_middle"], got
+
+
 def test_an_action_the_product_does_not_accept_is_an_ir_problem():
     """产物只认那五种动作（骨架的契约）—— 别的到了产物里会被当成「写错了」。"""
     got = ir.validate(_journey_with([_state(steps=(("eval",),))]))
