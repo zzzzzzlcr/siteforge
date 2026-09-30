@@ -4379,15 +4379,24 @@ SAME_PAGE_MERGED_SAY = (
 
 
 def _page_pair_indistinguishable(a: dict, b: dict) -> bool:
-    """这两页**说不清谁是谁**吗 —— 判据至少**一个方向**成立（`when_holds`）。
+    """这两页**说不清谁是谁**吗 —— 两边都**有正文判据**，且至少**一个方向**成立（`when_holds`）。
 
     一个方向就够的理由：`note_page` 剪判据时是**从这一页正文里取原文**，而两次观测的
     正文头可能被**截断**（`page_text` 只有 600 字，`observe` 自己截的）—— 于是「A 的判据
     在 B 那一眼的正文里找不到」可能只是**那一眼没截到**，不代表这两页分得开。
     ⚠️ 两向都不成立 = 真的分得开（单页漏斗每一问正是这个样子）⇒ **不并**。
+
+    ⚠️ ★ 2026-09-30（**并过头**时逮到的）：**「只有地址」的那条判据不算「分不开」的证据**。
+    它是「那一眼没读到正文」的产物（`observe` 撞上加载中的那一页），而**地址前缀**在
+    同一个地址下的**每一屏**上都成立 ⇒ 拿它当证据，单页漏斗的十几屏会被并成一组
+    （实测 `easystorebuilderpro.com/FUBGB/`：12 屏的问卷会被并成一屏、每一屏自己那条
+    好判据全丢）。一次扫盘：68 本账本并了 300 组，其中 31 本出现「一次并掉 ≥3 组」。
+    ⇒ 两边都得有正文判据，才谈得上「分不开」。地址那条只管「是不是同一页」。
     """
     aw, bw = a.get("when"), b.get("when")
     if not aw or not bw:
+        return False
+    if not aw.get("text_contains") or not bw.get("text_contains"):
         return False
     return bool(when_holds(aw, b.get("model") or {}) or when_holds(bw, a.get("model") or {}))
 

@@ -918,6 +918,27 @@ def test_one_page_split_by_a_countdown_is_merged_back_into_one_state():
         "并掉之后还报的话，`graph._draft` 照样一份 py 都不出"
 
 
+def test_a_bare_url_gate_is_not_evidence_that_two_screens_are_one_page():
+    """★ 2026-09-30（**并过头**时逮到的）：**「只有地址」的那条判据不算「分不开」的证据**。
+
+    那种判据是「那一眼没读到正文」的产物（观测撞上加载中的那一页），而**地址前缀**在
+    **同一个地址下的每一屏**上都成立 ⇒ 拿它当证据，单页漏斗的十几屏会被并成一组
+    （实测 `easystorebuilderpro.com/FUBGB/`：12 屏问卷会被并成一屏、每一屏自己那条好判据全丢；
+    一次扫盘：68 本账本并了 300 组，其中 31 本出现「一次并掉 ≥3 组」）。
+    """
+    url = "https://fubgb.test/FUBGB/"
+    models = [{"url": url, "title": "FUBGB", "page_text": ""},          # ← 加载中：一个字都没读到
+              {"url": url, "title": "FUBGB",
+               "page_text": "PIECE 2 / 12 YOUR BUILDER How do you identify? Male Female"},
+              {"url": url, "title": "FUBGB",
+               "page_text": "PIECE 3 / 12 EXPERIENCE RANK What's your age range? 18-24 25-34"}]
+    pages, steps = _split_one_page_into_states(models)
+    assert [p["name"] for p in pages.pages] == ["fubgb", "fubgb-2", "fubgb-3"], pages.pages
+    assert browser_agent._merge_one_page_states(pages.pages, steps) == []
+    assert [p["name"] for p in pages.pages] == ["fubgb", "fubgb-2", "fubgb-3"], pages.pages
+    assert {s["state"] for s in steps} == {"fubgb", "fubgb-2", "fubgb-3"}, steps
+
+
 def test_two_screens_behind_one_url_are_not_merged():
     """单页漏斗**地址不变、问题一屏一屏换**（2026-09-24 那条）—— 那两屏**不许**并。
 
