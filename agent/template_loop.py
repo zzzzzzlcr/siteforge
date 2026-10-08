@@ -286,7 +286,7 @@ COOKIE_GONE_JS = r"""(function(){__DEEP__
 
 class Filler:
     def __init__(self, ws_url, form_file, correlation_id, task_id="",
-                 trace_path="", no_report=False):
+                 trace_path="", no_report=False, stop_at=0):
         self.cdp = CDPHelper(ws_url)
         with open(form_file) as f:
             self.form_data = json.load(f)
@@ -304,7 +304,8 @@ class Filler:
         #: 留记录）；`--trace` 是自测判「每一步成没成」的读数（没有它只剩退出码）。
         self.trace_path = trace_path
         self.no_report = bool(no_report)
-
+        #: ★ 2026-09-30：`--stop-at`（见 `run()` 里那一格 —— 这一族是「跑到第 N 步就停」）。
+        self.stop_at = int(stop_at or 0)
     def _dly(self, a=0.6, b=1.8):
         time.sleep(random.uniform(a, b))
 
@@ -849,6 +850,18 @@ class Filler:
             idle = 0
             busy_since = None
             for step in range(1, max_steps + 1):
+                #: ★ 2026-09-30（用户裁定「Py 必须通过稳定性测试才能交付」）：`--stop-at` 在这个族里
+                #: 就是「**跑到第 N 步就停**」（循环稿没有固定步表，一步 = 看过一屏）。
+                #: 形状与平铺那一族**逐字对齐**：先落一行 `{"stopped_at": N}`、再走，退出码非 0
+                #: （「不谎报成功」）。自测判那一遍看的就是这一行（`selftest._verdict`）。
+                #: ⚠️ 这一族**不用它做「停在提交前一步」**：提交发生在漏斗走到头的那一刻，
+                #: 静态说不清是第几步 ⇒ 自测对循环稿**不做同环境复跑**（见 `selftest.run` 的 `loop`）。
+                if self.stop_at and step >= int(self.stop_at):
+                    self._trace(step=step, action="none", ok=None, progress=None,
+                                progress_why="按 --stop-at 停在第 %d 步" % step,
+                                stopped_at=int(self.stop_at))
+                    self.log.info("[%s] 按 --stop-at 停在第 %d 步", self.cid, step)
+                    return False
                 self._dly(0.6, 1.8)
                 page = self.read()
                 if page is None:
@@ -1081,11 +1094,12 @@ def main():
     ap.add_argument("--trace", default="")
     ap.add_argument("--delay", type=float, default=0.0)
     ap.add_argument("--no-report", action="store_true")
+    ap.add_argument("--stop-at", type=int, default=0)
     a = ap.parse_args()
     log = setup_logger("loop")
     log.setLevel(a.log_level)
     f = Filler(a.ws_url, a.form_file, a.correlation_id, a.task_id,
-               trace_path=a.trace, no_report=a.no_report)
+               trace_path=a.trace, no_report=a.no_report, stop_at=a.stop_at)
     sys.exit(0 if f.run() else 1)
 
 

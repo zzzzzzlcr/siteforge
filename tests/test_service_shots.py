@@ -477,8 +477,12 @@ def test_a_selftest_that_runs_after_the_fixtures_are_gone_cannot_touch_the_real_
     """
     seen: dict = {}
 
+    #: ⚠️ `**kw`：`_execute` 的旋钮会加（2026-09-30 加了 `repeats` —— 同环境复跑，
+    #: 还有 `start_url` / `cdp_bin` / `loop`）—— 桩写死签名的话，加一颗旋钮就红一片，
+    #: 而红的是**桩**、不是被测的东西。
     def fake_execute(name, py, ws_url, form_file, correlation_id, log_level, env,
-                     run_dir, site, timeout, task_id=None, delay=None, legacy_why=None):
+                     run_dir, site, timeout, task_id=None, delay=None, legacy_why=None,
+                     **kw):
         seen.setdefault("env", dict(env))
         return selftest.Run(name=name, label=selftest.RUN_LABELS[name], status="failed",
                             ok=False, failed_step=None, trace_path=None, note="桩")
@@ -589,7 +593,8 @@ def test_a_selftest_that_runs_after_the_fixtures_are_gone_writes_its_traces_in_t
     seen: dict = {}
 
     def fake_execute(name, py, ws_url, form_file, correlation_id, log_level, env,
-                     run_dir, site, timeout, task_id=None, delay=None, legacy_why=None):
+                     run_dir, site, timeout, task_id=None, delay=None, legacy_why=None,
+                     **kw):
         seen.setdefault("run_dir", str(run_dir))
         return selftest.Run(name=name, label=selftest.RUN_LABELS[name], status="failed",
                             ok=False, failed_step=None, trace_path=None, note="桩")

@@ -1174,8 +1174,10 @@ def test_runs_is_the_short_list_you_pick_from(tmp_path):
     rows = [r for r in body["runs"] if r["job_id"] == job_id]
     assert len(rows) == 1, body
     row = rows[0]
+    #: ★ 2026-09-30：`layer`（**卡在第几层**，人话）也是这一行的一格 —— 认不出来的（老记录、
+    #: 还在跑的）是空串，但这一格在（页面据此决定摆不摆）。
     assert set(row) == {"job_id", "site", "status", "say", "why", "created_at", "rounds",
-                        "delivered"}
+                        "delivered", "layer"}
     assert row["site"] == SITE
     assert row["status"] == "waiting" and row["delivered"] is False
     assert row["say"], "挑运行的人先看这一句人话"

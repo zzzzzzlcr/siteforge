@@ -2322,3 +2322,23 @@ def test_the_human_words_ride_into_the_explore_call(monkeypatch):
     dep("https://example-funnel.test/quiz", "走通")
     assert seen.get("hints") == ["点 #a ｜ 等 2-5 秒 ｜ 出现 #b"], (
         "服务那层把**人说的话**丢了（探路拿到的关键字：%r）" % sorted(seen))
+
+
+def test_the_panel_says_which_layer_it_got_stuck_on():
+    """★ 2026-09-30（用户裁定「IR 必须先证明完整」）：**卡在第几层**要摆到列表上。
+
+    为什么（用户原话那一路）：运营盯着一列「跑完了 · 没交付」，既不知道为什么、也不知道
+    卡在哪一层 —— 而 `ir_layer` 从今晚起已经算出来了（`explore` / `ir` / `emit` / `selftest`）。
+    两条判据：
+      ① 层 → 人话那张表**四个层都有**，而且**人话里不许出现机器名**（上屏纪律：
+         `runs()` 里那一行只摆人话，机器码一个都不上屏）；
+      ② 页面读的是 `row.layer`（服务给的那一句），没有这一格时**一个字节都不摆**——
+         老记录没有 `ir_layer`，编一句「一切正常」是这一片最忌讳的假话。
+    """
+    assert set(service.LAYER_SAY) == {"explore", "ir", "emit", "selftest"}, service.LAYER_SAY
+    for layer, said in service.LAYER_SAY.items():
+        assert said.strip(), (layer, said)
+        assert layer not in said, "上屏的人话里混进了机器名：%r" % said
+    html = service.CONSOLE_PATH.read_text(encoding="utf-8")
+    assert 'at(row, "layer", "")' in html, "列表没读服务给的那一层"
+    assert "卡在：" in html, "读到了却不摆出来，等于没读"

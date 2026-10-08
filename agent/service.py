@@ -621,6 +621,19 @@ def _form_data_keys(form_file) -> list:
     return [str(k) for k in got if str(k or "").strip()]
 
 
+#: ★ 2026-09-30（用户裁定「IR 必须先证明完整」）：**卡在第几层** —— `ir_layer` 那格是机器名
+#: （`explore` / `ir` / `emit` / `selftest`），**上屏的只能是这一张表里的人话**。
+#: ⚠️ 与 `ir.layer_of` 那一侧的 `where` 表**两处各写一份**是有意的：那一处是**小结那一句**
+#: （「先别写 py：卡在…」），这一处是**列表上一行**（更短、更贴「这一步是什么」）。
+#: 两份都在明处、都由用例钉着；认不出来的层**一个字都不摆**（不许编）。
+LAYER_SAY = {
+    "explore": "探路那一层（账本没走完）",
+    "ir": "「账本 → 步骤表」那一层",
+    "emit": "「步骤表 → py」那一层",
+    "selftest": "在真站上跑自测那一层",
+}
+
+
 def _why_head(text: str) -> str:
     """那一趟自己交代的那句话 → 列表上那一行看得见的**短句**（第一句；超了切**并说出来**）。
 
@@ -4818,7 +4831,11 @@ class Service:
                            "py_path": str(py_path) if py_path else None,
                            "site": values.get("site"),
                            "visits": list(values.get("visits") or []),
-                           "say": note,
+                           #: ★ 2026-09-30（用户裁定「IR 必须先证明完整」）：**卡在第几层**。
+                           #: `ir_layer` 是机器名（`explore`/`ir`/`emit`/`selftest`），进 `result`
+                           #: 与 `end_reason` 同一个位置；**上屏的那一份是 `runs()` 里的人话**
+                           #: （`LAYER_SAY`）—— 机器码不许上屏（同那一栏的纪律）。
+                           "ir_layer": str(values.get("ir_layer") or ""),
                            "selftest": self._report_brief(report)}}
 
     @staticmethod
@@ -5089,6 +5106,12 @@ class Service:
                 #: 而列表上只有「跑完了 · 没交付」⇒ 运营盯着 20 行一模一样的字，
                 #: 既不知道为什么，也不知道自己能不能动手。
                 "why": why,
+                #: ★ 2026-09-30（用户裁定「IR 必须先证明完整」）：**卡在第几层**（人话）。
+                #: 原来这一格只在 state 里（`ir_layer`），列表上完全看不见 —— 运营盯着
+                #: 「跑完了 · 没交付」不知道它卡在探路、账本、还是自测。认不出来（老记录
+                #: 没有这一格）就**一个字节都不摆**（不许编）。
+                "layer": LAYER_SAY.get(
+                    str((view.get("result") or {}).get("ir_layer") or ""), ""),
                 #: ★ 2026-09-30：捡回来的那一趟不再盖「现在」（见 `_ledger_time`）。
                 "created_at": job.created_at,
                 #: 「到过几道闸」—— 轮数**只有这一个算法**（`rounds.count`）；

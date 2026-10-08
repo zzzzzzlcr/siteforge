@@ -87,7 +87,25 @@ SCREENSHOT_API_URL = os.environ.get("SCREENSHOT_API_URL", "https://fmr.3tkj.cn/a
 FORM_API_URL = os.environ.get("FORM_API_URL", "https://fmr.3tkj.cn/api/quest/formMessage")
 
 # Timeouts (in seconds)
-CDP_TIMEOUT = 30
+#: 每一次 cdp 调用的上限。2026-09-29 由 30 → 60，**2026-09-30 由 60 → 90**。
+#:
+#: 为什么 90（blavity 生产 26249323 等 **8 条**实测）：第 2 步
+#: `cdp form '#newsletter-email'` **timed out after 30 seconds** ⇒ 整单 `exit=unknown`。
+#: 那个输入框在侧栏（文档 59% 处）属于**远元素**，而 cdp 的 ScrollToElement 是
+#: 「最多 20 轮拟人滑动、一轮约走一屏、每轮 15 个 touch-move 各一次远端往返」——
+#: 同一份产物第 1 步那条 `scroll` 实测 **42 / 51 / 53 秒**，另有一条 `observe`
+#: 撞满过 60 秒（26248354）。⇒ 30（乃至 60）那条线离真实耗时太近，慢一点就砍死整单。
+#: （afrotech 26238706 是同一族：`cdp scroll` 要把**第 21 屏**的页脚订阅框滚进视口，
+#:  快链 25.4 秒、慢链 35–40 秒。）
+#: ⚠️ 这是**止血**：根治在 cdp 侧（按距离分流：>2 屏就直接精确滚动），
+#:    见 siteforge `docs/缺陷单-2026-09-29-cdp滚动卡死.md`。
+#: ⚠️ 下面每一个下 cdp 命令的地方都要**引用这个常量**，不许再写死数字
+#:    （原来 7 处全是写死的 30、压根没引用它 —— tests/test_cdp_call_timeout.py 钉着）。
+#: ⚠️ **改这里不等于舰队改了**：`common.py` 不跟站点脚本走 FMR 下发，舰队那份藏在
+#:    部署里 —— 2026-09-30 实测 .142 上跑的仍是**写死的 30**。产物侧因此另有一处
+#:    兜底：动作类（click / form / scroll）改走 `self._cdp()` + 产物自己的上限
+#:    （见 blavity 产物里的 `CDP_TIMEOUT_SECONDS`）。
+CDP_TIMEOUT = 90
 API_TIMEOUT = 15
 
 # Logger setup lock for thread safety
@@ -148,7 +166,7 @@ class CDPHelper:
                      "--port", self.port],
                     capture_output=True,
                     text=True,
-                    timeout=30
+                    timeout=CDP_TIMEOUT
                 )
 
                 if result.returncode == 0:
@@ -187,7 +205,7 @@ class CDPHelper:
             shell=False,
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=CDP_TIMEOUT
         )
         return _clean_value(result)
 
@@ -212,7 +230,7 @@ class CDPHelper:
             shell=False,
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=CDP_TIMEOUT
         )
         # ⚠️ **取值**的地方绝不能把 stderr 混进返回值：cdp 的诊断行（比如
         # `ERROR: could not unmarshal event … unknown IPAddressSpace value: Private`）
@@ -279,7 +297,7 @@ class CDPHelper:
             shell=False,
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=CDP_TIMEOUT
         )
         output = _clean_value(result)
 
@@ -305,7 +323,7 @@ class CDPHelper:
              "--host", self.host, "--port", self.port],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=CDP_TIMEOUT
         )
         return _clean_value(result)
 
@@ -324,7 +342,7 @@ class CDPHelper:
              "--host", self.host, "--port", self.port],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=CDP_TIMEOUT
         )
         return _clean_value(result)
 
@@ -341,7 +359,7 @@ class CDPHelper:
              "--host", self.host, "--port", self.port],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=CDP_TIMEOUT
         )
         if result.returncode != 0:
             # 命令没成时**说得出为什么**（R-16）：原先 stderr 与退出码被一起丢掉，

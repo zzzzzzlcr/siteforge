@@ -1568,8 +1568,11 @@
       var row = rows[i];
       var id = at(row, "job_id", "");
       var delivered = at(row, "delivered", false);
+      //: ★ 2026-09-30：**卡在第几层**（服务给的人话；老记录没有这一格 ⇒ 一个字都不摆）
+      var layer = at(row, "layer", "");
       var st = (STATUS_WORD[at(row, "status", "")] || at(row, "status", "")) +
         (at(row, "status", "") === "done" ? (delivered ? " · 交付了" : " · 没交付") : "") +
+        (layer ? " · 卡在：" + layer : "") +
         " · " + at(row, "rounds", 0) + " 轮（闸拍）";
       //: ★ 2026-09-30：**这一行为什么没出脚本** —— 那一趟自己说的第一句（服务给的原文，
       //: 页面一个字都不改）。原来列表上只有「跑完了 · 没交付」，为什么得逐个点开才知道。

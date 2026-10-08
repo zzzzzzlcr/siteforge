@@ -262,9 +262,14 @@ def test_divergence_is_visible_on_demand(tmp_path):
     assert runtime.main(["diff", "--other", str(same)]) == 0
 
     other = tmp_path / "other.py"
-    drifted = runtime.RUNTIME_PATH.read_text(encoding="utf-8").replace(
-        "CDP_TIMEOUT = 30", "CDP_TIMEOUT = 99")
-    assert drifted != runtime.RUNTIME_PATH.read_text(encoding="utf-8")
+    #: ⚠️ 2026-09-30：原来这里写死 `"CDP_TIMEOUT = 30"`。那个值 09-29 改成 60、
+    #: 09-30 又改成 90 ⇒ `replace` 一个字都换不掉 ⇒ `drifted` 与原文件**逐字相同**
+    #: ⇒ 这条测试**静默地不再造分歧**，红在一个跟它意图无关的断言上（红了三天没人管）。
+    #: 现在按**当前那一行的实际值**去改，并且**当场断言真造出了分歧** ——
+    #: 值再变也不会重演「换了等于没换」。
+    src = runtime.RUNTIME_PATH.read_text(encoding="utf-8")
+    drifted = re.sub(r"CDP_TIMEOUT = \d+", "CDP_TIMEOUT = 99", src, count=1)
+    assert drifted != src, "没造出分歧：`CDP_TIMEOUT = <数字>` 那一行没匹配上？"
     other.write_text(drifted, encoding="utf-8")
 
     identical, text = runtime.compare(other)

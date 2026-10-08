@@ -1252,7 +1252,9 @@ def test_the_panel_can_upload_the_fixed_script_three_clicks(tmp_path):
                     "/job/%s/upload/commit" % PY_JOB,
                     "/job/%s/upload/rollback" % PY_JOB], urls
     bodies = [json.loads(u["body"]) for u in out["uploads"]]
-    assert bodies[0] == {"operator": "值班员 A"}, bodies[0]
+    #: ⚠️ `force` 是那一句「我确认要传这一版」的勾（`#pyUploadForce`，默认不勾）——
+    #: 页面从 2026-09-2x 起一直把它发出去，而这条断言停在「只有 operator」那一版上（在 HEAD 上就是红的）。
+    assert bodies[0] == {"operator": "值班员 A", "force": False}, bodies[0]
     assert bodies[1] == {"ticket": "ticket-1"}, bodies[1]
     assert bodies[2] == {"backup_id": "py-abc", "operator": "值班员 A"}, bodies[2]
 
