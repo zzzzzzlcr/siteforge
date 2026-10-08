@@ -85,7 +85,7 @@ class _Script:
     """一遍产物的剧本。默认：跑通（退出码 0 + 全 ok 的 trace）。"""
 
     def __init__(self, rc=0, oks=(True, True, True), notes=None, trace=True,
-                 timeout=False, stderr="", stdout=""):
+                 timeout=False, stderr="", stdout="", stopped_at=None):
         self.rc = rc
         self.oks = tuple(oks)
         self.notes = notes or {}
@@ -93,6 +93,10 @@ class _Script:
         self.timeout = timeout
         self.stderr = stderr
         self.stdout = stdout
+        #: ★ 2026-09-30：这一遍是按 `--stop-at` 停的（同环境复跑那一趟）。
+        #: 真实产物在停下时**故意返回非 0**（「不谎报成功」）并往 trace 追一行
+        #: `{"stopped_at": N}` —— 桩要照这个形状造，否则量的是桩的想象。
+        self.stopped_at = stopped_at
 
     def __call__(self, cmd):
         if self.timeout:
@@ -102,6 +106,8 @@ class _Script:
             with open(path, "a", encoding="utf-8") as fp:
                 for line in _trace_lines(self.oks, self.notes):
                     fp.write(json.dumps(line, ensure_ascii=False) + "\n")
+                if self.stopped_at:
+                    fp.write(json.dumps({"stopped_at": int(self.stopped_at)}) + "\n")
         return subprocess.CompletedProcess(cmd, self.rc, self.stdout, self.stderr)
 
 
@@ -114,10 +120,14 @@ class _Stub:
     - 别的命令一律报错：桩不该替别的调用方做主。
     """
 
-    def __init__(self, py_path, cdp_bin, scripts, navi_fails=False):
+    def __init__(self, py_path, cdp_bin, scripts, navi_fails=False, replay_oks=None):
         self.py = str(py_path)
         self.cdp = str(cdp_bin)
         self.scripts = list(scripts)
+        #: ★ 2026-09-30：复跑那几遍（`--stop-at`）的 trace。`None` = **照第一份剧本**
+        #: （正常情况下复跑就该和第一遍一样）；给了就按它造 —— 用来造「第一遍成、复跑挂」
+        #: 那一版**不可重放**的产物。
+        self.replay_oks = replay_oks
         self.navi_fails = navi_fails
         self.calls = []          # [(kind, cmd, env)]
 
@@ -137,9 +147,21 @@ class _Stub:
         cmd = [str(c) for c in cmd]
         env = kw.get("env")
         if cmd[:1] == ["python3"] and cmd[1:2] == [self.py]:
+            self.calls.append(("artifact", cmd, env))
+            stop_at = _flag(cmd, "--stop-at")
+            if stop_at:
+                #: ★ 2026-09-30：**同环境复跑**那一趟。它**不从剧本队列里领** ——
+                #: 那不是「另外一遍扰动」，而是同一遍的复跑；队列照旧留在那儿
+                #: （「后面那几遍的剧本一个都不该被领走」这条判据因此照旧成立）。
+                #: 形状照真产物：停在第 N 步 ⇒ 前 N-1 步的 trace（全 ok）+ 一行
+                #: `stopped_at` + 非 0 退出码。
+                n = int(stop_at)
+                base = self.scripts[0] if self.scripts else _Script()
+                oks = (self.replay_oks if self.replay_oks is not None
+                       else base.oks[: max(0, n - 1)])
+                return _Script(rc=1, oks=oks, stopped_at=n)(cmd)
             if not self.scripts:
                 raise AssertionError("产物被多跑了一遍：剧本已经领完了（%r）" % (cmd,))
-            self.calls.append(("artifact", cmd, env))
             return self.scripts.pop(0)(cmd)
         if cmd[:1] == [self.cdp]:
             self.calls.append(("cdp", cmd, env))
@@ -170,8 +192,8 @@ def env(tmp_path, monkeypatch):
 
     holder = {}
 
-    def install(scripts, navi_fails=False):
-        stub = _Stub(py, cdp, scripts, navi_fails=navi_fails)
+    def install(scripts, navi_fails=False, replay_oks=None):
+        stub = _Stub(py, cdp, scripts, navi_fails=navi_fails, replay_oks=replay_oks)
         monkeypatch.setattr(subprocess, "run", stub)
         holder["stub"] = stub
         return stub
@@ -215,20 +237,41 @@ def test_a_navigation_that_could_not_connect_says_what_the_window_said(env):
 
 
 def test_the_default_is_one_submission_and_a_pass(env):
-    """**R-84 的默认路径**：baseline 过了 → **只提交 1 次**，判过，后面那几遍**不再跑**。
+    """**默认路径**：baseline 过了 → **只提交 1 次**，判过，后面那几类扰动**不再跑**。
 
     这是用户裁定的正身（「不需要 3 遍。刷太多不太好」）：每跑一遍 = 产物把整个漏斗
     从头走一遍 = **一次真实提交到站方**。⚠️ 但「少跑」不许读成「验过了」——
     没跑到的那几遍照样在报告里（`not_needed`、`ok=None`），而且写清它们打的那一类
     **这一次没验到**（少跑丢掉的正是「状态残留 / 时序 / 折叠遮挡」这三类）。
+
+    ★ 2026-10-08（**用户新裁定**，原话「跑1此就行了」，随后在「默认改成 1（永久）」上点头）：
+    `STABILITY_RUNS` 从 3 收到 **1** —— 连「同环境复跑」那两遍也**不跑了**。这是把
+    2026-09-30 那条「可重放性：同环境连续跑 3~5 次」**推翻**（用户当时的话是「跑 1 次就行了」，
+    因为每一遍复跑虽停在提交前一步，仍然要把整个漏斗走完，一趟真窗口要烧几分钟）。
+    代价**照旧要说清**：「同一台机连着跑每次都成」这件事**从此没量** —— 报告里那句
+    「可重放性过了」再也不会出现，换成一句「这一关没验到」（`selftest._rerun_note`）。
+
+    ⚠️ 这条钉的是**默认那一格**（不传 `stability_runs`）。复跑那台机器**一个字节没删**，
+    由 `test_three_runs_when_asked_says_replayability_passed` 显式要回来跑。
     """
-    report = _run(env, _scripts())          # 一个回调都不给
+    report = _run(env, _scripts(), start_url=ENTRY)   # 一个回调都不给
     assert report.passed is True, report.summary()
     assert report.submissions == 1, report.runs
     assert [r.status for r in report.runs] == ["passed"] + ["not_needed"] * 4, report.runs
-    # 硬证据：产物**只起来了一次**（不是报告自己说「就跑了 1 遍」）
-    assert len(env["stub"].artifact_calls) == 1, env["stub"].artifact_calls
-    assert len(env["stub"].scripts) == 4, "后面那几遍的剧本一个都不该被领走"
+    #: 硬证据：产物只起来 **1 次**，而且那一次**不带 `--stop-at`** —— 复跑不跑了，
+    #: 「停在提交前一步」这一档就不存在 ⇒ 真提交只有 1 次（比原先那档证据更硬：
+    #: 原先要数「哪一次没带 `--stop-at`」，现在一次就是一次）。
+    calls = env["stub"].artifact_calls
+    assert len(calls) == 1, calls
+    stops = [_flag(cmd, "--stop-at") for cmd in calls]
+    assert stops == [None], stops
+    #: 复跑前**先站回起点**（R-6）那一趟也一并不跑了 ⇒ cdp 一次都不调。
+    assert len(env["stub"].cdp_calls) == 1, env["stub"].cdp_calls
+    #: ★ 2026-10-08：**没量的事必须说出来**（「少跑」不许读成「验过了」）——
+    #: 这是这条裁定唯一危险的地方：默认从 3 收到 1 之后，屏幕上不许再出现
+    #: 「可重放性过了」这句**没量过的**结论，只许是一句「这一关没验到」。
+    assert "可重放性过了" not in report.runs[0].note, report.runs[0].note
+    assert "没验到" in report.runs[0].note, report.runs[0].note
     # 没跑的那几遍：ok 不许是 True、没有 trace、note 里说清哪一类没验到
     for run in report.runs[1:]:
         assert run.ok is None and run.trace_path is None and run.failed_step is None, run
@@ -239,6 +282,53 @@ def test_the_default_is_one_submission_and_a_pass(env):
     assert "提交了 1 次" in said, said
     assert "没验到" in said, "没跑到的那几类要在人话里说清：\n%s" % said
 
+
+def test_three_runs_when_asked_says_replayability_passed(env):
+    """**显式点名 3 遍**（`stability_runs=3`）：复跑那台机器**照旧在**，一个字都没丢。
+
+    ★ 2026-10-08：默认从 3 收到 1（用户裁定「跑1此就行了」）之后，这一条是**原样搬过来**的
+    老断言（原先住在 `test_the_default_is_one_submission_and_a_pass` 里）—— 搬家的理由只有
+    一个：那几条量的是**复跑这台机器**，而默认那一趟现在走不到它了。判据一条没放宽，
+    只是**从「默认走得到」改成「点名走得到」**（`_selftest_kwargs` 的规矩：没给的一律不传，
+    这里就是调用方**真给了**）。
+    """
+    report = _run(env, _scripts(), start_url=ENTRY, stability_runs=3)
+    assert report.passed is True, report.summary()
+    assert report.submissions == 1, report.runs
+    #: 硬证据：产物起来 3 次（1 遍完整 + 2 遍停在提交前一步），而**只有一次**不带
+    #: `--stop-at` ⇒ 真提交只有 1 次。停在「最后一步减一」：最后一步就是提交那一下。
+    calls = env["stub"].artifact_calls
+    assert len(calls) == 3, calls
+    stops = [_flag(cmd, "--stop-at") for cmd in calls]
+    assert stops == [None, "2", "2"], stops
+    #: 复跑前**先站回起点**（R-6 的教训）：不复位就是从成功页起步 ⇒ 那一遍是白跑，
+    #: 「不可重放」会变成一句对**跑法**的判定。次数的构成：整条阶梯开跑前 1 次（基线）
+    #: + 每遍复跑各 1 次 = 3。
+    assert len(env["stub"].cdp_calls) == 3, env["stub"].cdp_calls
+    assert "可重放性过了" in report.runs[0].note, report.runs[0].note
+
+
+def test_a_product_that_only_passes_the_first_time_is_not_delivered(env):
+    """★ 2026-09-30（用户裁定「Py 必须通过稳定性测试才能交付」）：**同环境复跑挂一遍 ⇒ 不过**。
+
+    可重放性就是这个意思：同一台机、同一扇窗、同一条路再走一遍就挂的产物，真站上更挂 ✗
+    —— 判据是**每一遍都得成**（与那几类扰动允许「抖一次」不是一回事）。
+    这一条同时钉住「**挂的是复跑，不是第一遍**」这件事：第一遍真成了（不然不会去复跑），
+    结论里点名的必须是复跑那一遍。
+    """
+    stub = env["install"](_scripts(), replay_oks=(True, False))   # 第 2 步在复跑里没做成
+    #: ⚠️ 2026-10-08：默认收到 1 遍之后，**不显式点名就一遍都不复跑**（那这一条会
+    #: 变成一句空判 —— 「复跑挂一遍就不过」压根跑不到）。这条量的是那台机器，显式要回来。
+    report = selftest.run(str(env["py"]), WS, env["form"], SITE, start_url=ENTRY,
+                          run_dir=env["dir"], cdp_bin=env["cdp"], stability_runs=3)
+    assert report.passed is False, report.summary()
+    assert report.submissions == 1, "复跑停在提交前一步 ⇒ 它不算一次提交"
+    assert len(stub.artifact_calls) == 2, stub.artifact_calls
+    note = report.runs[0].note
+    assert "同环境复跑没过" in note and "不可重放" in note, note
+    assert "第 2 遍" in note, note
+    assert len(stub.cdp_calls) == 2, stub.cdp_calls    # 基线前 1 次 + 复跑前 1 次
+    #: 同上：复跑必须站回起点才会真跑（这是这一关的前提，别的用例见上面那条）
 
 
 def test_the_default_is_only_the_baseline(env):

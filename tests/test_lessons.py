@@ -64,3 +64,27 @@ def test_the_lessons_ride_into_the_system_prompt():
     #: 每条都在（逐条比：只比整块的话，「库改了但拼装漏了一条」量不出来）。
     for one in lessons.LESSONS:
         assert str(one["scene"]) in browser_agent._SYSTEM, one["scene"]
+
+
+def test_a_uk_phone_field_is_told_the_0207_shape_and_not_a_mobile():
+    """★ 2026-10-08（用户点名「加上0207规则」）：英国那格电话要填 **0207** 的座机形状。
+
+    为什么这条非得进**探路**这一层（只进产物不够）：`template_loop._pool()` 与
+    `template.COUNTRY_POOLS` 那两个池子**都只在重放时生效** —— 探路那一趟模型手上
+    一个池子都没有，它是自己现编的。`job-ada35bcc8dd4`（laterlifechoices.uk，
+    2026-10-08）编出 `+4479111234567911123456`（国家码与号码拼在一起）⇒ 站方顶回
+    ⇒ 一路绕到 86 轮预算烧光，结局 `explore_unfinished`，一个 py 都没有。
+    同一站换成 0207 形状那一趟一次过（`job-cce9d4b8e5fd` 交付）。
+
+    ⚠️ 这条钉的是「**有没有**这一条、**有没有写清哪一国**」——**不钉措辞**（措辞会改，
+    而钉措辞的用例会在每次改文案时红一次，然后就被人顺手删掉）。
+    """
+    hit = [one for one in lessons.LESSONS if "0207" in str(one.get("do") or "")]
+    assert hit, ("经验库里没有一条讲 0207 的 —— 探路时模型只会自己现编一个号"
+                 "（2026-10-08 job-ada35bcc8dd4 就是这么烧掉 86 轮预算的）")
+    #: **得写清是哪一国的规矩**：无条件的「电话格就填 0207」会把加拿大站也填上英国号
+    #: —— 那条路已经有真站代价（mapleporchdaily，见 `template.COUNTRY_POOLS` 上面
+    #: 那段注释里 `The phone number is not valid.` 那一次）。
+    no_country = [one for one in hit if "英" not in str(one.get("scene") or "")]
+    assert not no_country, ("这条 0207 没写清是哪一国的规矩 —— 加拿大站会被一起填错：%r"
+                            % (no_country,))

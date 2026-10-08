@@ -1727,6 +1727,67 @@ def test_a_tel_field_with_no_words_or_shapes_is_decided_by_what_the_explore_type
         browser_agent.Journey())
     assert phone_fill["fallback"] == [{"random": "phone"}], phone_fill
 
+
+def test_a_select_never_gets_a_random_pool_for_its_value():
+    """★ 2026-10-08（真账本 `job-6589d75582d5`，lanternfocus.com）：**下拉框不吃随机池** ——
+    它的值必须是**页面上真有的那个选项**。
+
+    真事：那一页的 `Country` 下拉，`nearby_text`（observe 爬三层祖先收下来的）里有**邻格的
+    名字** `"Email"` ⇒ `_field_kind` 命中 `email` ⇒ 兜底值成了 `{"random": "email"}`
+    ⇒ 重放时产物拿一个**随机邮箱地址**去下拉框里找 ⇒ 那一步失败（`没找到「Country」这个
+    输入框`）。同页没被误判的 `Hours` 那格拿到的是 `["4 to 6"]`（账本里真选过的那个选项），
+    **一次过** —— 两个下拉挂、一个不挂，差别就在这儿。
+
+    ⚠️ 这一条是**防御性的**：不管 `_field_kind` 将来怎么误判，下拉框 / 勾选框都不该被塞一个
+    池子里编出来的值 —— 那种值在页面上根本不存在，重放必挂。而**自由输入格照旧**吃随机池
+    （拟人那件事不能一起改掉，判两半）。
+
+    出处（原话）：重放那一遍的 trace 里 step 6 / 12 / 13 挂（Country、Current experience
+    两个下拉），step 14 的 `Hours`（同一个种类、没被误判）过。
+    """
+    country = {"label": "Country", "hint": "country", "type": "select-one",
+               "nearby_text": ["Country", "Email"], "selector": "#country"}
+    #: 前提：这一格**确实**会被误判成 email（不成立的话这条测试量的是别的事）
+    assert browser_agent._field_kind("Country", country) == "email", \
+        "前提不成立了 —— 那不是这条测试要治的形状"
+
+    info = browser_agent._fill_info(
+        {"select": "United States"},
+        {"label": "Country", "hint": "country", "nearby_text": ["Country", "Email"],
+         "placeholder": None, "selectors": ["#country", 'select[name="country"]']},
+        country, browser_agent.Journey())
+    assert info["kind"] == "select", info
+    assert info["fallback"] == ["United States"], (
+        "下拉框拿到的是池子里编的值（页面上根本没有这个选项，重放必挂）：%r"
+        % (info["fallback"],))
+
+    #: 勾选框同理（`check` 的真假也只有两个值，"池子里挑一个"没有意义）：
+    #: 这一格的 `nearby_text` 里带着邻格的「Email」，所以它也会被误判成 email。
+    marketing = {"label": "Send me course updates", "hint": "agree_marketing",
+                 "type": "checkbox", "nearby_text": ["Send me course updates", "Email"],
+                 "selector": "#agree_marketing"}
+    assert browser_agent._field_kind("Send me course updates", marketing) == "email", \
+        "前提不成立了 —— 那不是这条测试要治的形状"
+    checked = browser_agent._fill_info(
+        {"check": True},
+        {"label": "Send me course updates", "hint": "agree_marketing",
+         "nearby_text": ["Send me course updates", "Email"], "placeholder": None,
+         "selectors": ["#agree_marketing"]},
+        marketing, browser_agent.Journey())
+    assert checked["kind"] == "check", checked
+    assert checked["fallback"] == ["true"], (
+        "勾选框拿到了池子里编的值（那格只认真假，重放必挂）：%r" % (checked["fallback"],))
+
+    #: 另一半：**自由输入格照旧**走随机池 —— 别为了修这一条把拟人那件事一起改了。
+    text = browser_agent._fill_info(
+        {"value": "90210"},
+        {"label": "", "hint": "x", "nearby_text": ["What's your ZIP code?"],
+         "selectors": ["#zip"]},
+        {"label": "", "hint": "x", "placeholder": "e.g. 06801",
+         "nearby_text": ["What's your ZIP code?"], "type": "tel", "selector": "#zip"},
+        browser_agent.Journey())
+    assert text["fallback"] == [{"random": "postcode"}], text
+
     # 反例：不是 tel 的字段不掺这一脚（语义已经判出来了就按语义）
     text_elem = {"label": "Full Name:", "type": "text"}
     got = browser_agent._fill_info({"value": "90210"}, {"label": "Full Name:"}, text_elem,
@@ -4265,6 +4326,73 @@ def test_a_diagnostic_row_does_not_drag_the_rest_of_the_tool_return_in(tmp_path)
     assert len(line) < 2000, f"账本那一步被工具返回撑大了：{len(line)} 字符"
 
 
+def test_the_ledger_keeps_a_compact_field_table_not_just_a_count():
+    """★ 2026-09-30（用户裁定「IR 必须先证明完整」）：`observe` 那一行要留下**格的清单**。
+
+    实测的痛（盘上数的）：**551 行**「页面上真有字段」的 observe，账本里留下的字段数是 **0**
+    —— `_receipt_of` 见回执一大就整份不抄（`{chars, limit, note, transcribed}`），
+    而 `fields` 那个**计数**留下了。于是 IR 那一层**想证明「必填格有没有对应的一步」也证明不了**
+    （无米之炊）—— 这条门（必填格覆盖）就是靠这一格才立得住。
+
+    判据三半：
+      ① 白名单那几个键在（`required` 尤其 —— 那是那条门的证据）；
+      ② 回执里那几个**大键不许跟进来**（`alternates` / `nearby_text` / `value` / `placeholder`
+         / `aria_label`）—— 抄的纪律与 `_diag_row` 同一条（今天多抄一个键，明天账本跟着涨）；
+      ③ 计数与上限：`fields` 那个数照旧（老读者一个字节不动）；超上限就停，并记下**本来有几个**。
+    """
+    field = {"selector": "#town", "alternates": ["input[name=town]", "input#town-2"],
+             "stability": "high", "label": "Town/City", "aria_label": "Town or city",
+             "value": None, "value_truncated": False, "selected": None,
+             "hint": "town", "placeholder": "Town/City", "nearby_text": ["Where do you live?"],
+             "type": "text", "required": True, "shadow_depth": 0, "frame_path": ["main"]}
+    optional = {"selector": "#nl", "label": "Newsletter", "type": "checkbox",
+                "required": False, "frame_path": ["main"]}
+    out = browser_agent._summarize("observe", {}, {"url": "https://x.test/f",
+                                                   "fields": [field, optional]}, 5, None)
+    row = out["page_fields"][0]
+    assert row["required"] is True and row["label"] == "Town/City", row
+    assert row["selector"] == "#town" and row["hint"] == "town" and row["type"] == "text", row
+    for big in ("alternates", "nearby_text", "value", "value_truncated", "selected",
+                "placeholder", "aria_label", "shadow_depth"):
+        assert big not in row, f"账本里混进了不需要的键：{big}（{sorted(row)}）"
+    #: 不是必填的那一格：`required` 这个键**不写**（空值不写，与 `_diag_row` 同一条纪律）
+    assert "required" not in out["page_fields"][1], out["page_fields"][1]
+    assert out["fields"] == 2, out            # 计数照旧（老读者不动）
+    assert "page_fields_capped" not in out, out
+
+    many = {"fields": [{"selector": "#f%d" % i} for i in range(browser_agent.MAX_LEDGER_FIELDS + 5)]}
+    capped = browser_agent._summarize("observe", {}, many, 5, None)
+    assert len(capped["page_fields"]) == browser_agent.MAX_LEDGER_FIELDS, capped
+    assert capped["page_fields_capped"] == browser_agent.MAX_LEDGER_FIELDS + 5, capped
+
+
+def test_the_field_table_reaches_the_ledger_and_is_read_back_by_state(tmp_path):
+    """同一件事的**端到端**那一半：格表要真的进账本（`Journey.steps`），并能按状态读回来。
+
+    为什么单独一条（上面那条不是已经管了）：那条量的是 `_summarize` 的**返回**，
+    而用它的那一层读的是 `journey.fields_by_state()` —— 中间断在哪一段（写没写进 step /
+    读的时候按不按状态分组 / 同一个格看两眼算不算两格）只有走一遍真那一趟才看得见。
+    """
+    page = {"url": ENTRY, "title": "页面", "page_text": "Get started",
+            "fields": [{"selector": "#town", "label": "Town/City", "hint": "town",
+                        "required": True, "stability": "high"}]}
+    journey, _, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": page}, {"structured": page}]},
+        [{"calls": [("observe", {}), ("observe", {})]}, {"content": "看完了"}],
+    )
+    rows = journey.steps[0]["result"].get("page_fields")
+    assert rows and rows[0]["required"] is True, journey.steps[0]["result"]
+    got = journey.fields_by_state()
+    #: ★ 归属是**按页面的判据**算的，不是按 `step["state"]` —— 那一格是**动手前**抓的，
+    #: 于是「这一步发现了新的一页」会被记成**上一页**的名字（这一条用例第一次写的时候
+    #: 量到的正是这个：同一页的两次观测落进了 `start` 与 `funnel` 两个组 ✗）。
+    #: 归属对了，这条门的人话才说得出「是**哪一组**的必填格没填」。
+    assert list(got) == ["funnel"], got
+    assert len(got["funnel"]) == 1, got                 # 同一格看两眼**只算一格**
+    assert got["funnel"][0]["label"] == "Town/City", got
+
+
 # ══════════ 见到成功文案就收摊（Task 15：真站 job-a4d100addd25 第 66 → 71 步）══════════
 #
 # **病**（2026-09-20 真站实测）：`runtime/explore/job-a4d100addd25/attempt-1.jsonl` 的
@@ -4806,3 +4934,104 @@ def test_a_truncated_node_list_is_not_read_as_a_splice():
     when = browser_agent._when_for(model)
     assert when["text_contains"] == ["Main Content Schedule your residential"], when
     assert "text_why" not in when, when
+
+
+def test_a_fill_that_names_the_element_by_its_own_id_still_finds_it():
+    """★ 2026-10-08（真账本 `job-7f43337b2ba0`，laterlifechoices.uk）：填格那一步的选择器
+    **就是元素自报的那个 id** 时，必须认回观察里那一条。
+
+    为什么这条是承重的（不是「少了个名字」那种小事）：认不回来 ⇒ 那一步的
+    `label` / `hint` / `placeholder` 全丢 ⇒ `_field_kind` 判不出这一格是什么 ⇒
+    `_fallback` 走它 2026-09-28 定的那条兜底「用账本里那一趟真填进去的值」⇒
+    **手机号写死成同一个**（`02071234567`，每条 lead 都一样），四格的名字也退化成
+    `field` / `field-2` / `field-3` / `field-4`。
+
+    真账本里那四条元素**全都没有 `alternates`**，能比的只有那一个 `selector` 字符串：
+    观察报的是 `input[placeholder="+44 0000 000000"]`，模型填的时候用的是
+    `input#phone-3848a5d5` —— 而那条元素的 `hint` 正是 `phone-input-phone-3848a5d5`。
+
+    ⚠️ 与 `ir` 那一刀同一个形状：身份的线索摆在那儿（那个在账本的选择器原文里，
+    这个在元素的 `hint` 里），代码没读它。
+
+    判两半，缺一半能靠「反正没崩」蒙过去：
+      · **该认回的认回**（选择器里那个 id 对得上元素的 `hint`）；
+      · **不该认的别乱认**（一个跟谁都不沾边的选择器，不许随手挑一个元素回来）。
+    """
+    from agent import browser_agent
+
+    pages = browser_agent._Pages()
+    phone = {"label": "Phone number", "hint": "phone-input-phone-3848a5d5", "type": "tel",
+             "selector": 'input[placeholder="+44 0000 000000"]', "frame_path": ["main"]}
+    email = {"label": "Email", "hint": "input-8df0faf4", "type": "email",
+             "selector": 'form:has(input[placeholder="Search"]) input[type=email]',
+             "frame_path": ["main"]}
+    pages.note_page({"url": "https://uk.example.test/?x=1#contact-details", "title": "联系页",
+                     "page_text": "Please enter these details for your quote",
+                     "fields": [email, phone], "actions": []})
+
+    #: 前半：**按元素自报的 id 找得到** —— 真账本里那四格就是这个形状。
+    got = browser_agent._find_element(pages, "field", "input#phone-3848a5d5")
+    assert got is phone, ("按 id 认不回元素 ⇒ label/hint/placeholder 全丢、"
+                          "手机号会写死成同一个：%r" % (got,))
+
+    #: 后半：**不许乱认** —— 一个跟谁都不沾边的选择器，必须照旧给 None
+    #: （「认不回来」是可接受的旧行为；「认错了」比它坏得多）。
+    assert browser_agent._find_element(pages, "field", "input#nope-000000") is None
+
+    #: 老行为一个字不动：原样的 `selector` 照旧认得出（这一条今天就是绿的）。
+    assert browser_agent._find_element(
+        pages, "field", 'input[placeholder="+44 0000 000000"]') is phone
+
+    #: 第三半：**相等要压过包含** —— 同前缀的两个框（`phone` / `phone-2`）同时在场时，
+    #: `input#phone-2` 必须认到 `phone-2` 那一个上。认到 `phone` 上就是把这一步指向
+    #: **别的元素**，那比认不回来坏得多（认不回来只是少几条语义证据）。
+    two = browser_agent._Pages()
+    home = {"label": "Home phone", "hint": "phone", "selector": "input#a",
+            "frame_path": ["main"]}
+    mobile = {"label": "Mobile", "hint": "phone-2", "selector": "input#b",
+              "frame_path": ["main"]}
+    two.note_page({"url": "https://uk.example.test/?x=2#two", "title": "两个电话框",
+                   "page_text": "两个电话框的那一页", "fields": [home, mobile], "actions": []})
+    assert browser_agent._find_element(two, "field", "input#phone-2") is mobile
+
+
+def test_a_fill_that_names_the_element_by_an_attribute_value_still_finds_it():
+    """★ 2026-10-08（真账本 `job-a02dcd78380d`，laterlifechoices.uk 第二趟）：
+    选择器里没有 `#id`、只有 **`[attr="值"]`** 时，同样要认回观察里那一条。
+
+    为什么单钉这一条：上面那条补的是「选择器里的 `#id`」，而这一趟模型换了个写法 ——
+    `input[data-label="@Firstname"]`。抠 `#` 那一路**一个字符都抠不出来** ⇒ 又没认回元素
+    ⇒ 那一步的 label 丢了 ⇒ 产物里的格子叫 `field` / `field-2` ⇒ **IR 那道必填格闸
+    拿「First Name」这个名字去对，对不上** ⇒ 判「账本里见过 2 个必填格、产物里一步都没填
+    它们」⇒ `draft_failed`，**一个 py 都没出**。
+
+    ⚠️ 证据就摆在旁边（与上一条同一个形状）：`data-label` 那个值归一化之后是 `firstname`，
+    观察报的那条 `label` 是 `First Name`，归一化也是 `firstname`。一模一样。
+
+    判两半：**该认回的认回**（属性值对得上 label / hint / placeholder）、
+    **不该认的别乱认**。
+    """
+    from agent import browser_agent
+
+    pages = browser_agent._Pages()
+    first = {"label": "First Name", "hint": "input-e3d6d0f7", "type": "text", "required": True,
+             "selector": 'body:nth-of-type(1) > div:nth-of-type(1) > form:nth-of-type(1) '
+                         '> section:nth-of-type(8) > div:nth-of-type(5) > input:nth-of-type(1)',
+             "frame_path": ["main"]}
+    last = {"label": "Last Name", "hint": "input-99d21b96", "type": "text", "required": True,
+            "selector": 'body:nth-of-type(1) > div:nth-of-type(1) > form:nth-of-type(1) '
+                        '> section:nth-of-type(8) > div:nth-of-type(6) > input:nth-of-type(1)',
+            "frame_path": ["main"]}
+    pages.note_page({"url": "https://uk.example.test/?x=3#name", "title": "姓名那一屏",
+                     "page_text": "What is your name?", "fields": [first, last], "actions": []})
+
+    got = browser_agent._find_element(pages, "field", 'input[data-label="@Firstname"]')
+    assert got is first, ("属性选择器认不回元素 ⇒ label 丢 ⇒ 产物里那格叫 `field` ⇒ "
+                          "必填格闸对不上名字、直接不出稿：%r" % (got,))
+    #: 同页的另一个（`@Lastname`）不许被认成它 —— 相等要压过包含。
+    assert browser_agent._find_element(pages, "field", 'input[data-label="@Lastname"]') is last
+    #: 不该认的别乱认。
+    assert browser_agent._find_element(pages, "field", 'input[data-label="@Nothing"]') is None
+    #: **短 token 不参与比对**：`[id="na"]` 归一化只剩两个字符，拿去"包含"任何一条 label
+    #: 都会命中（`lastname` 里就有 `na`）—— 那不是身份，是噪声。
+    assert browser_agent._find_element(pages, "field", 'input[id="na"]') is None

@@ -108,6 +108,9 @@ RUN_NAMES = ("baseline", "rerun", "delay", "viewport", "country")
 #: ⚠️ `skipped`（该跑却没跑成：没旋钮 / 回调炸了）**不在这里** —— 那是 R-5 的「不算过」，
 #: 照旧播、照旧拦。
 RUN_ONLY = ("baseline",)
+#: ★ 2026-09-30（用户裁定「Py 必须通过稳定性测试才能交付」）：上面「只跑基线**那一遍**」
+#: 这一句**不完全对**了 —— 基线那一趟里现在要**同环境连跑 `STABILITY_RUNS` 遍**
+#: （`run(stability_runs=…)`）。四类扰动照旧不跑（屏幕噪音那条理由没变）。
 
 #: 每遍**人话**说它打什么（D16：给非技术人员看的不是错误码）
 RUN_LABELS = {
@@ -132,6 +135,26 @@ RUN_BLASTS = {
 #: 那个「3」是用户裁定的上界（原来固定跑三遍 = 每轮 3 次；现在只在需要时才用到）。
 MAX_SUBMISSIONS = 3
 
+#: ★ 2026-09-30（用户裁定「**Py 必须通过稳定性测试才能交付**」+「可重放性：同环境连续跑
+#: 3~5 次」）：**基线那一趟里，产物同环境连跑几遍**。
+#:
+#: 与 R-84 的「一遍过了就停」是什么关系：那一条管的是**扰动那几遍**（过了就不必再花提交次数
+#: 去分辨「产物不行」还是「环境抖了」）—— 照旧有效。这一格管的是另一件事：**这一版是不是
+#: 每次都成**（连着跑都飘的产物，真站上更飘）。两颗旋钮，两件事。
+#:
+#: 真 lead（生产纪律：不许重复真提交）⇒ 代价是**最后那一下只验 1 次**，其余整条路验 N 次。
+#:
+#: ★★ 2026-10-08（**用户新裁定**，原话「跑1此就行了」；随后在「默认改成 1（永久）」上点头）：
+#: **从 3 收到 1** —— 2026-09-30 那条裁定**被这一条推翻**。理由（用户当场说的）：复跑那两遍
+#: 虽然按 `--stop-at` 停在提交前一步（不往真站交单），但**整个漏斗照样要重走一遍**，
+#: 一趟真窗口要烧几分钟；而运营那边的真实收益早就到手了（他们自己会跑）。
+#: ⚠️ **代价（这一格唯一要记住的事，与 2026-09-24 那次同一形状）**：从此
+#: 「同一台机连着跑每次都成」这件事**没量** ⇒ 报告里**不许**再出现「可重放性过了」
+#: 这句结论，只许是一句「这一关没验到」（`_rerun_note` 里那一支写的）。
+#: 复跑那台机器**一个字节都没删**：`run(stability_runs=3)` 就全回来
+#: （用例 `test_three_runs_when_asked_says_replayability_passed` 照旧验着它）。
+STABILITY_RUNS = 1
+
 #: R-84 加的那一种状态：**这一轮用不着跑它**（前一遍就过了 / 已经用满提交次数）。
 #: ⚠️ 与 `skipped` 是**两件事**，别混：
 #:   - `skipped`      = 该跑而没跑成（没旋钮 / 回调炸了）→ **默认拦** `passed`（R-5）；
@@ -147,7 +170,7 @@ DEFAULT_ALLOWED_SKIPS = ("country",)
 #: 自测拼给产物的参数 —— 每一个都必须是产物 CLI 上真有的（`agent/template.py` §5.1c）。
 #: `test_selftest_and_the_template_agree_on_the_artifact_cli` 拿它当闸门。
 ARTIFACT_FLAGS = ("--ws-url", "--form-file", "--correlation-id", "--task-id",
-                  "--log-level", "--trace", "--delay", "--no-report")
+                  "--log-level", "--trace", "--delay", "--no-report", "--stop-at")
 
 #: 自测**永远**给产物带上这个 —— 自测不是生产任务，不该在生产那边留下记录。
 #: 断言这件事的测试走的是**网线**（子进程里装网络守卫，任何出网动作都记一笔），
@@ -787,7 +810,7 @@ def evidence_say(ev: dict) -> str:
 
 
 def _artifact_cmd(py, ws_url, form_file, correlation_id, log_level, trace_path,
-                  task_id=None, delay=None) -> list:
+                  task_id=None, delay=None, stop_at=None) -> list:
     """起产物的命令行。
 
     形态**照抄** `scripts/ad-task.py:1525`（生产就这么调的）：
@@ -816,6 +839,13 @@ def _artifact_cmd(py, ws_url, form_file, correlation_id, log_level, trace_path,
         cmd.append(NO_REPORT_FLAG)  # 自测**永远**不上报（见那个常量上面的注释）
     if delay is not None:
         cmd += ["--delay", ("%g" % float(delay))]
+    #: ★ 2026-09-30（用户裁定「Py 必须通过稳定性测试才能交付」）：**同环境复跑**那几遍走到
+    #: 提交前一步为止 —— 走完漏斗 = 往真站交一份真 lead（生产纪律：不许重复真提交），
+    #: 而「可重放性」要打的是状态残留 / 时序 / 首次加载假设，那条路在提交之前已经走完。
+    #: ⚠️ 产物按 `--stop-at` 停下时**故意返回非 0**（「不谎报成功」）⇒ 判那一遍的那一处
+    #: 必须知道「这是按要求的停」（`_verdict` 的 `stopped_at`）。
+    if stop_at:
+        cmd += ["--stop-at", str(int(stop_at))]
     return cmd
 
 
@@ -837,7 +867,6 @@ def _half_executed_states(lines: list) -> list:
             ran.add(name)
     return sorted(ran & skipped)
 
-
 #: 辅助步：它们**不为「做成某件事」负责**，只为「把它弄到能做成的位置」——
 #: 所以它们没做成时，不许拿它们否决整遍（见 `_verdict` 与模块 docstring 第 1 条）。
 #: ★ 2026-09-23 用户裁定：判据要能分开「某一步没做成」与「这一趟没成」。
@@ -845,12 +874,16 @@ AUXILIARY_ACTIONS = ("scroll", "wait")
 
 
 def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
-             err: str, out: str, timeout: float) -> tuple:
+             err: str, out: str, timeout: float, stopped_at: int = 0) -> tuple:
     """一遍的证据 → (ok, failed_step, note)。**这一处就是「诚实」本身**，别把它做软。
 
     ★ 2026-09-23：`ok=false` 分两档（模块 docstring 第 1 条写全了理由）——
     **辅助步**（`AUXILIARY_ACTIONS`）失败 ⇒ 这一遍仍算过，但**必须点名**；
     **承重步**失败 ⇒ 照旧否决。两档都进 `note`，不点名就是把失败藏起来。
+
+    ★ 2026-09-30（用户裁定「Py 必须通过稳定性测试才能交付」）：`stopped_at` 非 0 = 这一遍是
+    **同环境复跑**那一趟，按 `--stop-at` 停在提交前一步。产物在停下时**故意**返回非 0
+    （「不谎报成功」）⇒ 判它认的是 trace 里那行 `{"stopped_at": N}`（**证据**），不是退出码。
     """
     bad_rows = [ln for ln in lines if ln.get("ok") is False]
     hard_rows = [ln for ln in bad_rows
@@ -859,9 +892,11 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
     first_hard = hard_rows[0] if hard_rows else None
     failed_step = first_hard.get("step") if first_hard else None
     step_said = (first_bad or {}).get("note") or "trace 里那一步没写为什么"
+    stopped = bool(stopped_at) and any(
+        int((ln or {}).get("stopped_at") or 0) == int(stopped_at) for ln in (lines or []))
     # `lines` 非空是承重的一环（R-27）：一行 trace 都没有时，「trace 里没有没做成的步」
     # 这句话是**空口白话** —— 没有证据的东西不许被读成「过了」。
-    ok = (rc == 0) and bool(lines) and first_hard is None and not timed_out
+    ok = (rc == 0 or stopped) and bool(lines) and first_hard is None and not timed_out
 
     #: ★ 2026-09-22（生成侧建议第 5 条）：**同一组状态里「有的步做了、有的步被跳过」** ——
     #: 那条路**跑完全程不报错**，只表现为「没走到成功」，最容易被当成**站点**问题糊过去。
@@ -875,7 +910,11 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
                 "两个状态用了同一个 `when` 闸门，生成侧该把它们**合并**成一个状态（生成侧建议第 1 条）。"
                 % "、".join(halved))
 
-    if timed_out:
+    if stopped and first_hard is None and not timed_out:
+        note = ("按 `--stop-at` 停在第 %d 步（**提交前一步**）：这一遍把前面整条路又走了一遍，"
+                "**最后那一下提交没做**（同环境复跑不上真站交单；退出码 %s 是产物故意的 —— "
+                "「不谎报成功」）。" % (stopped_at, rc if rc is not None else "?"))
+    elif timed_out:
         note = "这一遍没跑完就超时了（>%s 秒）—— 卡在第 %s 步" % (
             ("%g" % timeout), failed_step) if failed_step else \
             "这一遍没跑完就超时了（>%s 秒）" % ("%g" % timeout)
@@ -992,8 +1031,19 @@ def _default_cdp_bin() -> Optional[str]:
 
 def _execute(name: str, py, ws_url, form_file, correlation_id, log_level, env,
              run_dir: pathlib.Path, site: str, timeout: float, task_id=None,
-             delay=None, legacy_why: str = "") -> Run:
+             delay=None, legacy_why: str = "", repeats: int = 1,
+             start_url: Optional[str] = None, cdp_bin: Optional[str] = None,
+             loop: bool = False) -> Run:
     """跑一遍产物，按 trace + 退出码下结论。
+
+    `repeats > 1` = ★ 2026-09-30（用户裁定「Py 必须通过稳定性测试才能交付」）：
+    **同环境连跑 `repeats` 遍**。第一遍照旧走完整漏斗（那是这一轮**唯一**一次真提交），
+    后面几遍按 `--stop-at <最后一步-1>` **停在提交前一步** —— 走完漏斗 = 往真站再交一份
+    真 lead（生产纪律：不许重复真提交），而「可重放性」打的是状态残留 / 时序 / 首次加载
+    假设，那条路在提交之前已经走完。复跑每一遍**自己的 trace**（`<name>.repN.trace.jsonl`）：
+    混进第一遍那一份里，`failed_step` 就说不清是哪一遍卡的了。
+
+    ⚠️ **代价，说在明处**：最后那一下提交，稳定性只验了 1 次。
 
     `legacy_why` 非空 = 这一版是**老写法**（不认 `--trace` / `--no-report` / `--delay`，
     见 `_artifact_flags`）：argv 那三个开关**一个都不传**，改由环境把那两条线接上
@@ -1028,6 +1078,10 @@ def _execute(name: str, py, ws_url, form_file, correlation_id, log_level, env,
     ok, failed_step, note = _verdict(rc, timed_out, lines, bad_lines, err, out, timeout)
     if legacy_why:
         note = (note + " " + legacy_why) if note else legacy_why
+    ok, extra = _rerun_note(py, ws_url, form_file, correlation_id, log_level, env,
+                            run_dir, site, name, lines, timeout, task_id, delay,
+                            repeats, ok, legacy_why, start_url, cdp_bin, loop)
+    note = note + extra
     return Run(
         name=name,
         label=RUN_LABELS[name],
@@ -1037,6 +1091,90 @@ def _execute(name: str, py, ws_url, form_file, correlation_id, log_level, env,
         trace_path=str(trace),
         note=note,
     )
+
+
+def _last_step(lines: list) -> int:
+    """trace 里**最后一步**的编号（`--stop-at` 要的是它减一：停在提交前一步）。"""
+    got = [int(ln.get("step") or 0) for ln in (lines or []) if (ln or {}).get("step")]
+    return max(got) if got else 0
+
+
+def _rerun_note(py, ws_url, form_file, correlation_id, log_level, env, run_dir,
+                site, name, lines, timeout, task_id, delay, repeats, ok,
+                legacy_why, start_url=None, cdp_bin=None, loop=False) -> tuple:
+    """★ 2026-09-30：**同环境复跑**那几遍 —— 跑完返回该贴在结论尾巴上的那句话（失败就点名）。
+
+    为什么要它（用户裁定原话：「可重放性：同环境连续跑 3~5 次」）：自测原来**一遍过了就停**
+    （R-84），于是「这一版是不是每次都成」这件事**从来没验过** —— 而真站上飘一下、状态残留
+    一下就会挂的那种产物，正是这一条要拦的。
+    ⚠️ 判据是**每一遍都得成**（可重放性就是这个意思）——不像扰动那几遍允许「抖一次」。
+    停止点取自第一遍的 trace（`_last_step - 1`）：产物最后一步就是提交那一下。
+    """
+    if legacy_why or not ok:
+        return (ok, "")
+    #: ★ 2026-10-08（用户裁定「跑1此就行了」⇒ `STABILITY_RUNS=1`）：**没跑就得说没跑**。
+    #: 这一支原先回的是空字符串 —— 那时候 `repeats<=1` 只可能是「调用方自己要的 1」，
+    #: 报告里那句「可重放性过了」自然也不出现；但**默认**变成 1 之后，空字符串会让
+    #: 「这一版到底验没验过可重放性」在屏幕上**看不出来**（与 2026-09-24 那次同形状：
+    #: 少跑的那几类照旧在报告里，写清「没验到」）。所以照 `loop` 那一支的样子，明说。
+    #: ⚠️ 它**不拦人**（`ok` 原样返回）：这是「没量到」，不是「量出来不行」——两件事。
+    if repeats <= 1:
+        return (ok, "\n⚠️ 同环境复跑这一关**这一次没验到**：默认只跑一遍"
+                    "（`STABILITY_RUNS=1`，2026-10-08 用户裁定「跑1此就行了」）——"
+                    "「同一台机连着跑每次都成」这件事**这一次没有量**。"
+                    "要量它：`selftest.run(..., stability_runs=3)`。")
+    #: ★ 2026-09-30：**循环型不做同环境复跑** —— 它的提交发生在「漏斗走到头」那一刻，
+    #: 静态说不清是第几步（`--stop-at` 在这一族里只能按步数停，停不到「提交前一步」）⇒
+    #: 复跑就是**再往真站交一份真 lead**（生产纪律：不许重复真提交）。这一关对循环稿
+    #: 记成「没验到」，如实说，不硬跑、也不拿它拦人。
+    if loop:
+        return (ok, "\n⚠️ 同环境复跑这一关**这一版没验到**：这是**循环型**（步表由页面决定）——"
+                    "它说不清「提交前一步」是哪一步，复跑就成了第二次真提交。"
+                    "循环稿的可重放性要看它自己的 trace（每一屏答了没有）与真站记录。")
+    last = _last_step(lines)
+    if last <= 1:
+        return (ok, "")
+    #: ⚠️ **复跑前必须站回起点**（`rerun` 那一支的 R-6 教训，2026-09-22 现场）：
+    #: 第一遍是走**完整条漏斗**的 ⇒ 它停在成功页上；不复位就复跑 = 从成功页起步，
+    #: 而产物第一个状态的 `when` 是 `None`（起点那页与后面每页都不同源）⇒ 照样匹配 ⇒
+    #: 拿「成功页」去执行第一步 ⇒ 整遍作废 —— 那份「不可重放」的结论**是对跑法说的**，不是对产物。
+    #: 没有起点网址 = 这一关**没验到**（不硬跑一遍假的，也不拿它拦人）。
+    if not start_url:
+        return (ok, "\n⚠️ 同环境复跑这一关**这一次没验到**：没给起点网址（`start_url`/`entry_url`）"
+                    " ⇒ 复跑会从上一遍停下的那一页起步（那是白跑，不是复现）。")
+    passed = 0
+    bad: list = []
+    for i in range(2, int(repeats) + 1):
+        missed = _navigate(cdp_bin, ws_url, start_url, env) or ""
+        if missed:
+            return (ok, "\n⚠️ 同环境复跑这一关**这一次没验到**：起跑前站不回起点（%s）。" % missed)
+        rep_trace = pathlib.Path(run_dir) / ("%s.%s.rep%d.trace.jsonl" % (site, name, i))
+        cmd = _artifact_cmd(py, ws_url, form_file, correlation_id, log_level,
+                            rep_trace, task_id, delay, stop_at=last - 1)
+        rc, timed_out, out, err = None, False, "", ""
+        try:
+            done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+            rc, out, err = done.returncode, done.stdout, done.stderr
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            out, err = _as_text(exc.stdout), _as_text(exc.stderr)
+        except OSError as exc:
+            err = "起不来：%s" % exc
+        rep_lines, rep_bad = _read_trace(rep_trace)
+        ok_i, step_i, note_i = _verdict(rc, timed_out, rep_lines, rep_bad, err, out, timeout,
+                                        stopped_at=last - 1)
+        if ok_i:
+            passed += 1
+            continue
+        ok = False
+        bad.append("第 %d 遍卡在第 %s 步：%s" % (i, step_i, _tail(note_i, 160)))
+        #: 挂了一遍就已经「不可重放」了 —— 再跑下去只是白等（结论不会变）
+        break
+    if bad:
+        return (False, "\n⚠️ **同环境复跑没过**（这一版不可重放）：%s。"
+                       "同环境连着跑都过不去，真站上更过不去 —— 先别交付。" % "；".join(bad))
+    return (ok, " 同环境又连跑 %d 遍（每一遍都停在**提交前一步**：最后那一下不上真站交单）"
+                "**每一遍都走通了** ⇒ 可重放性过了。" % passed)
 
 
 def _judge(runs: Sequence[Run], allowed_skips: Sequence[str]) -> bool:
@@ -1084,12 +1222,16 @@ def run(py_path, ws_url, form_file, site, *,
         log_level: str = "INFO",
         allow_skips: Sequence[str] = DEFAULT_ALLOWED_SKIPS,
         max_submissions: int = MAX_SUBMISSIONS,
+        #: ★ 2026-09-30：**同环境连跑几遍**（见 `STABILITY_RUNS`）。给 1 = 老行为（只跑一遍）。
+        stability_runs: int = STABILITY_RUNS,
         #: ★ 2026-09-24（人裁「先把其他四类砍了」）：**这一轮真跑哪几遍**。默认 `RUN_ONLY`
         #: （只有基线）。⚠️ 它是参数而不是写死的常量，理由与 `max_submissions` 一样：
         #: 那几遍各自的机器（补跑 / 硬顶 / 旋钮 / 各自判据）**一个字节都没删**，
         #: `only=selftest.RUN_NAMES` 就全回来 —— 所以那些机器**照旧被用例验着**，
         #: 不会烂在暗处；而屏上默认看到的是「只跑基线」。
         only: Optional[Sequence[str]] = None,
+        #: ★ 2026-09-30：这一版是**循环型**吗（见 `_rerun_note` 里那一格：循环稿不做复跑）。
+        loop: bool = False,
         on_run: Optional[Callable] = None) -> Report:
     """在真浏览器上按 `RUN_NAMES` 的序列跑，返回一份**说得清**的结论。
 
@@ -1270,7 +1412,9 @@ def run(py_path, ws_url, form_file, site, *,
             continue
 
         if name == "baseline":
-            _tell(_spend("baseline"))
+            #: ★ 2026-09-30：基线那一趟里再**同环境连跑**（`repeats`）—— 可重放性那一关。
+            _tell(_spend("baseline", repeats=stability_runs, start_url=start_url,
+                         cdp_bin=cdp_bin, loop=loop))
             continue
 
         if name == "rerun":

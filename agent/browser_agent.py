@@ -684,6 +684,59 @@ class Journey:
             }
         return out
 
+    def observed_pages(self) -> list:
+        """`[{state, url, text, fields}]` —— 账本里**真看过的那几眼**（每一眼一条）。
+
+        只收 `observe` 那一行（同 R3 那条前提的口径：一页长什么样，只有「看一眼」说了算）。
+
+        ⚠️ **归属按账本自己的判据算，不按 `step["state"]`**：那一格是**动手之前**抓的
+        （`dispatch` 里 `pages.current_name`），于是「这一步发现了新的一页」那一行会被记成
+        **上一页**的名字（实测：同一页的两次观测落进了两个组）。这里用的是 `when_holds`
+        —— 与产物 `_applies` 逐条对齐的那一条判据，再按「正文也对得上」优先、后出现的页优先。
+        真的谁也判不出来（没有一页的判据在这页上成立）⇒ 退回 `step["state"]`（老口径，
+        一个字节不变）。
+        """
+        whens = {str(p.get("name") or ""): p.get("when") for p in self.pages}
+        out: list = []
+        for step in self.steps:
+            if str(step.get("action") or "") != "observe":
+                continue
+            result = step.get("result") or {}
+            model = {"url": result.get("url") or "",
+                     "page_text": result.get("page_text_head") or ""}
+            best, best_text = "", False
+            for name, when in whens.items():
+                if not name or not when_holds(when, model):
+                    continue
+                hit = bool(when.get("text_contains"))
+                if not best or (hit and not best_text):
+                    best, best_text = name, hit
+            out.append({
+                "state": best or str(step.get("state") or START_STATE),
+                "url": str(model["url"]),
+                "text": str(model["page_text"]),
+                "fields": list(result.get("page_fields") or []),
+            })
+        return out
+
+    def fields_by_state(self) -> dict:
+        """`{状态名: [紧凑字段表]}` —— 这一组的页面上**见过哪些格**。
+
+        从 `observed_pages()` 收（同一份归属，不另抄一份）：同一格（选择器/标签/hint 同）
+        **只留一次** —— 同一个状态在不同时刻看了两眼，不该记成两格（`_field_id`）。
+        """
+        out: dict = {}
+        for page in self.observed_pages():
+            bucket = out.setdefault(str(page.get("state") or START_STATE), [])
+            seen = {_field_id(r) for r in bucket}
+            for row in page.get("fields") or []:
+                key = _field_id(row)
+                if key in seen or not any(key):
+                    continue
+                seen.add(key)
+                bucket.append(row)
+        return out
+
 
 def when_holds(when, model: dict) -> bool:
     """一条 `when` 在**这一份页面模型**上成不成立。
@@ -2278,6 +2331,88 @@ def _frame_id_of_path(path):
     return rest[0] if len(rest) == 1 else None
 
 
+#: 选择器里**能指认这个元素**的那几段原文。两种写法（今天两条真账本各撞上一种）：
+#:   · `#id`            —— `input#phone-3848a5d5`      → `phone-3848a5d5`
+#:   · `[attr="值"]`    —— `input[data-label="@Firstname"]` → `@Firstname`
+#: ⚠️ **属性名本身（`data-label`）不算** —— 同一种格子上都是一样的，指认不了谁是谁；
+#: 算的是它**那个值**。
+_SELECTOR_TOKEN = re.compile(
+    r"#([A-Za-z_][-\w]*)"
+    r"|\[\s*[-\w]+\s*[~^$*|]?=\s*[\"']([^\"']*)[\"']\s*\]"
+    r"|\[\s*[-\w]+\s*=\s*([^\]\s\"']+)\s*\]")
+
+
+def _selector_tokens(selector) -> set:
+    """这个选择器里点名的几段身份字（`#id` 与 `[attr="值"]` 的值）。"""
+    out = set()
+    for m in _SELECTOR_TOKEN.finditer(str(selector or "")):
+        for one in m.groups():
+            if one:
+                out.add(one)
+    return out
+
+
+def _token_key(text) -> str:
+    """归一化成一个可比对的形式：**只留小写字母数字**。
+
+    为什么非归一化不可：同一件事在三个地方是三种写法 —— 页面上印的是 `First Name`、
+    元素自报的是 `input-e3d6d0f7`、而模型写的选择器里是 `@Firstname`。按原文比，
+    这三个**永远对不上**；归一化之后（`firstname` / `inpute3d6d0f7` / `firstname`）才是同一个东西。
+    """
+    return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
+
+
+#: 归一化之后**短于这个长度的 token 不参与比对** —— 例如 `#a` / `[id="x1"]` 这种，
+#: 拿去"包含"一个几十字的 hint 几乎必然命中，那就不是身份、是噪声。
+_MIN_TOKEN_KEY = 4
+
+
+def _id_is_the_elements_hint(element: dict, selector: str, frame_id: str = ""):
+    """选择器里那个 `#id` 与这条元素自报的 id（`hint`）对得上到什么程度（`None` = 对不上）。
+
+    返回值是**确信度档**（数字小的先要）：
+      · `2` / `3` = **一字不差**（选择器里那段 id 就是 `hint` 本身），帧对得上 / 对不上；
+      · `4` / `5` = 一个**含**另一个（帧对得上 / 对不上）。
+
+    ★ 2026-10-08（真账本 `job-7f43337b2ba0`，laterlifechoices.uk）：填格那一步模型用的
+    选择器是 `input#phone-3848a5d5`，而观察给这一格报的 `selector` 是
+    `input[placeholder="+44 0000 000000"]` —— 只比「原样的 selector 字符串」就认不回来，
+    那一步的 `label` / `hint` / `placeholder` **全丢**：
+      · 判不出这一格是什么 ⇒ `_fallback` 走「用账本里那一趟真填进去的值」那条兜底
+        ⇒ **手机号写死成同一个 `02071234567`**（每条 lead 都一样）；
+      · 四格的名字退化成 `field` / `field-2` / `field-3` / `field-4`。
+    四格**全中** —— 一个形状，四个症状。
+
+    ⚠️ `hint` 是**元素自报的 name / id**（`_target_of` 那段 2026-09-17 的注释写的就是这件事），
+    它本来就是身份的一部分 —— 与 `ir` 那一刀（选择器原文纳入身份比对）同一个形状：
+    **线索摆在那儿，代码没读它**。
+
+    ⚠️ **相等必须压过包含**（所以是四档不是两档）：`phone` 与 `phone-2` 两个框同时在场时，
+    「包含」那一档会让 `input#phone-2` 认到 `phone` 上去 —— 那是把这一步指到**别的元素**上，
+    比认不回来坏得多。真账本那次是**尾段**包含（`phone-3848a5d5` ⊂
+    `phone-input-phone-3848a5d5`），而框架自造号那种 `input-e3d6d0f7` 是**完全相等** ——
+    哪一头长不固定，只收一边就会漏，所以两边都收，但排在相等后面。
+    """
+    want = {k for k in (_token_key(t) for t in _selector_tokens(selector))
+            if len(k) >= _MIN_TOKEN_KEY}
+    if not want:
+        return None
+    #: 元素那几样**身份证据**（`_target_of` 那段 2026-09-17 的注释列的就是这几样）——
+    #: hint = 元素自报的 name/id、label = 页面上印的名字、placeholder = 那行例子。
+    #: ⚠️ 三样**都认**：今天两条真账本一条撞在 `hint` 上（`#phone-3848a5d5`）、
+    #: 另一条撞在 `label` 上（`@Firstname` vs `First Name`）—— 只认一样就漏一半。
+    said = {k for k in (_token_key(element.get(k))
+                        for k in ("hint", "label", "placeholder")) if k}
+    if not said:
+        return None
+    ok = _frame_id_of_path(element.get("frame_path")) == frame_id
+    if want & said:
+        return 2 if ok else 3
+    if any(w in s or s in w for w in want for s in said):
+        return 4 if ok else 5
+    return None
+
+
 def _find_element(pages: "_Pages", kind: str, selector: str, frame_id: str = ""):
     """在上一次观测的模型里找这个选择器对应的元素（找不到就 None）。
 
@@ -2287,21 +2422,36 @@ def _find_element(pages: "_Pages", kind: str, selector: str, frame_id: str = "")
     同一个选择器**在主帧与子帧里可以是两个不同的元素**（跨源 iframe 的部件常常就是把
     同一套结构再渲染一遍）。所以先挑**帧对得上**的那一个；一个都对不上时退回原先的
     「文档序第一个」—— 「帧对不上」不等于「一定是它」，只是没有更好的线索。
+
+    ★ 2026-10-08：**按信任度排队**（`rank` 小的先要），六档：
+      0/1 = 选择器**原样**对得上（帧对得上 / 对不上）—— 老行为，一个字没动；
+      2/3 = 选择器里那个 `#id` 与元素的 `hint` **一字不差**（帧对得上 / 对不上）；
+      4/5 = 一个**含**另一个（帧对得上 / 对不上）。
+    每一档里都是**文档序第一个**说了算（`rank` 严格小于才换人 ⇒ 先到的不被后来者顶掉）。
+
+    ⚠️ 顺序有讲究：**原样对得上的永远排在 id 推断前面**，**相等永远排在包含前面** ——
+    同前缀的两个元素（`phone` / `phone-2`）才不会因为推断而认错，而「认错了」比
+    「认不回来」坏得多（后者只是少了几条语义证据，前者会把这一步指到**别的元素**上）。
     """
     model = pages.current_model
     if not model or not selector:
         return None
     pool = (model.get("fields") if kind == "field" else model.get("actions")) or []
-    fallback = None
+    best, best_rank = None, 99
     for element in pool:
         if not isinstance(element, dict):
             continue
         if element.get("selector") == selector or selector in (element.get("alternates") or []):
-            if _frame_id_of_path(element.get("frame_path")) == frame_id:
-                return element
-            if fallback is None:
-                fallback = element
-    return fallback
+            rank = 0 if _frame_id_of_path(element.get("frame_path")) == frame_id else 1
+        else:
+            rank = _id_is_the_elements_hint(element, selector, frame_id)
+        if rank is None:
+            continue
+        if rank < best_rank:
+            best, best_rank = element, rank
+            if rank == 0:
+                break
+    return best
 
 
 def _selectors_of(element, selector: str) -> list:
@@ -2424,12 +2574,26 @@ def _fill_info(args: dict, target: dict, element, journey: Journey) -> dict:
     # 语义判不出来时，用**探索那一趟自己写进去的那个值**当证据（见上面那个函数）。
     semantic = _kind_from_recorded_value(_field_kind(label, element), value, element)
     name = _fill_name(label, element, journey, semantic=semantic)
+    #: ★ 2026-10-08（真账本 `job-6589d75582d5`，lanternfocus.com）：**`select` / `check`
+    #: 不吃随机池** —— 它们的值必须是**页面上真有的那个**（下拉的选项 / 勾选框的真假）。
+    #: 池子里编出来的值在页面上根本不存在，重放时那一格必定失败。
+    #:
+    #: 真事：那一页的 `Country` 下拉，`nearby_text`（observe 爬三层祖先收的）里带着**邻格的
+    #: 名字** `"Email"` ⇒ `_field_kind` 命中 `email` ⇒ 这一格原先会走下面那支 ⇒ 兜底值成了
+    #: `{"random": "email"}` ⇒ 重放时拿一个随机邮箱地址去下拉框里找 ⇒ 那一步失败
+    #: （报的是「没找到「Country」这个输入框，没填成」）。同一个页面上**没被误判**的
+    #: `Hours` 那格拿到的是 `["4 to 6"]`（账本里真选过的那个选项）⇒ **一次过**。
+    #:
+    #: ⚠️ 这是**防御性的**：`_field_kind` 将来再怎么误判，下拉框/勾选框都不该被塞假值。
+    #: ⚠️ 只管 `select` / `check`：**自由输入格照旧**吃随机池（拟人那件事一个字不改）——
+    #: 所以判据落在 `kind` 上，不是「有 semantic 就不给池子」。
+    random_ok = semantic is not None and kind == "value"
     #: ⚠️ 这一格记的是**账本上那个名字**（页面字段名）；给产物用的那个键在 `fills()` 里换
     #: （一处口径：谁写进产物只在那一处决定 —— 记录保持原样，读账的人看到的才是这一趟真记的）。
     return {"name": name, "source": name, "kind": kind,
             "label": label or name, "value": value,
-            "fallback": (_fallback(kind, value, label, element) if semantic is None
-                         else [{"random": semantic}])}
+            "fallback": ([{"random": semantic}] if random_ok
+                         else _fallback(kind, value, label, element))}
 
 
 def _fill_name(label: str, element, journey: Journey, semantic=None) -> str:
@@ -2731,6 +2895,39 @@ def _diag_row(d: dict) -> dict:
     return row
 
 
+#: ★ 2026-09-30（用户裁定「IR 必须先证明完整」）：**账本里每页留下哪些格**。
+#: 为什么非留不可：`observe` 回执里那串 `fields`（每个带 `required` / `stability` / `label`
+#: / `selector`）是**唯一**能证明「这一页的必填格，产物到底有没有去填」的原料 ——
+#: 而回执一大就整份不抄（`_receipt_of`），实测 551 行「页面上真有格」的 observe 里，
+#: 账本留下的字段数是 **0** ⇒ `ir.validate` 那时候**想证明也证明不了**（无米之炊）。
+#: 所以只抄**紧凑表**（白名单键 + 条数上限）：与 `_diag_row` 同一条纪律 ——
+#: 少抄一格是「读的人看不见」，多抄一格是「账本和 checkpoint 一起涨」。
+LEDGER_FIELD_KEYS = ("label", "hint", "type", "required", "stability", "selector")
+#: 一页最多记几个格（同一页几十个格的站不少；超出的那部分**不静默丢**：见 `_field_row` 的尾巴）。
+MAX_LEDGER_FIELDS = 30
+
+
+def _field_row(f: dict) -> dict:
+    """一个字段进账本的样子：**白名单键、空值不写**（同 `_diag_row` 的理由与纪律）。
+
+    ⚠️ `required` **只在为真时写**：`False` 与「没有这个键」在这条路上是同一个意思
+    （"这一格不是必填"），而写一个 `False` 进去只会让账本里全是噪音键。
+    """
+    row = {k: f.get(k) for k in LEDGER_FIELD_KEYS if f.get(k) not in (None, "", False)}
+    if f.get("required") is True:
+        row["required"] = True
+    path = f.get("frame_path")
+    if isinstance(path, (list, tuple)) and path:
+        row["frame_path"] = [str(x) for x in path]
+    return row
+
+
+def _field_id(row: dict) -> tuple:
+    """「是不是同一格」的判据：选择器 + 标签 + hint（任一处相同就算同一格）。"""
+    return (str(row.get("selector") or ""), str(row.get("label") or ""),
+            str(row.get("hint") or ""))
+
+
 def _summarize(name: str, args: dict, raw: Any, elapsed_ms: int, fill: dict | None) -> dict:
     """这一步的**结果**（进 Journey 的那份）。
 
@@ -2746,6 +2943,13 @@ def _summarize(name: str, args: dict, raw: Any, elapsed_ms: int, fill: dict | No
         out["fields"] = len(raw.get("fields") or [])
         out["option_groups"] = len(raw.get("option_groups") or [])
         out["honeypots"] = len(raw.get("honeypots") or [])
+        #: ★ 2026-09-30：**格的清单**（紧凑表）—— `fields` 那个数只够说「有几个」，
+        #: 说不清「是哪几个、哪几个必填」；IR 那一层要证明「必填格有没有对应的一步」，
+        #: 靠的就是这一格。上限到了就停下来并**记一个数**（不静默丢，见 `_field_row`）。
+        rows = [_field_row(f) for f in (raw.get("fields") or []) if isinstance(f, dict)]
+        out["page_fields"] = rows[:MAX_LEDGER_FIELDS]
+        if len(rows) > MAX_LEDGER_FIELDS:
+            out["page_fields_capped"] = len(rows)
         # 诊断：**哪一帧、因为什么**（`_diag_row` 的 docstring 写了「只留 kind」的后果）
         out["diagnostics"] = [_diag_row(d) for d in (raw.get("diagnostics") or [])
                               if isinstance(d, dict)]

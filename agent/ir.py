@@ -330,6 +330,22 @@ def _field_problems(states: list, journey) -> list:
     return out
 
 
+#: ★ 2026-10-08（用户裁定「先把限制那道闸去掉」「让他允许交付吧，修复我们这边来」）：
+#: **这几条病不再砍整趟** —— `graph._draft` 拿它分流：放行的照旧出稿，缺什么写进 `unverified`。
+#:
+#: 为什么只有**这一条**（而不是整个 IR 闸都拆）：
+#:   · `trace_incomplete.required_field_without_step`（账本里探到过必填格、产物里没一步填它）
+#:     —— 放它过去，站方多半**当面退回**（缺必填项）：看得见、拿回来改就行。
+#:     真代价（改之前）：`job-a02dcd78380d`（laterlifechoices.uk，2026-10-08）—— 两个必填格
+#:     在产物里名字对不上 ⇒ 整趟砍死 ⇒ **运营什么都拿不到**。
+#:   · `trace_ambiguous.gate_holds_elsewhere`（两组判据分不开）**照旧砍** —— 它会让产物
+#:     **静默地在错的页上做动作**、而日志每一步照样写着「做成了」（georgiapower 那趟
+#:     「真做 2 步、跳过 23 步」）⇒ 用户 2026-09-30 定的口径是「**宁可没有**，也不交一份
+#:     看着在跑、其实在别的页上乱点的产物」。
+#: ⚠️ 这两类是两码事（一个**看得见**、一个**静默**），别图省事一起放。
+SOFT_CODES = ("trace_incomplete.required_field_without_step",)
+
+
 def validate(journey, values: dict | None = None, shape: str | None = None,
              states: list | None = None) -> list:
     """这份 IR 能不能编译 ⇒ `[Problem]`（空列表 = 可以）。

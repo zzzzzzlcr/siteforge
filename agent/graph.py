@@ -1217,10 +1217,33 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     #: 当没看见，那这刀就白补了。没补过时照旧不传（一个字节不变）。
     ir_problems = ir_mod.validate(journey, state, shape,
                                   states=(spec.get("states") if _required_restored else None))
-    if ir_problems:
-        out.update({"end_reason": END_DRAFT_FAILED, "end_note": ir_mod.say(ir_problems),
-                    "ir_layer": ir_mod.layer_of(ir_problems)})
+    #: ★ 2026-10-08（**用户裁定**，原话「先把限制那道闸去掉」「让他允许交付吧。修复我们这边
+    #: 来吧」）：**缺必填格那一条不再砍这一趟** —— 与紧接着那格 `shape` 同一条纪律
+    #: （2026-09-28 用户当场定的「**不砍、不瞒**」）：要防的是「缺的东西**被藏起来**」，
+    #: 不是「缺一点就不许出稿」。
+    #:
+    #: 真代价（`job-a02dcd78380d`，laterlifechoices.uk，2026-10-08）：账本里探到的两个必填格
+    #: （First Name / Last Name）在产物里对不上名字 ⇒ 整趟砍死、**运营什么都拿不到**。
+    #: ⇒ 现在：**照旧往下走**（渲出这一版 → 契约检查 → 自测 → 交付），缺什么写在明面上。
+    #:
+    #: ⚠️ **只放这一类**（`ir_mod.SOFT_CODES`），不是整个 IR 闸都拆：
+    #: `trace_ambiguous.gate_holds_elsewhere`（两组判据分不开）那一类**照旧砍** ——
+    #: 它会让产物**静默地在错的页上做动作**、日志还写着「做成了」（georgiapower 那趟
+    #: 「真做 2 步、跳过 23 步」），与「缺个必填格、站方当面退回」完全是两码事。
+    #:
+    #: ⚠️ **代价说清**：放过去的这一版**带着缺口出去**，站方多半因为缺必填项退回。它是
+    #: **给运营拿回去改的料**，不是「验过了」—— 所以那句话进 `unverified`（与今天别处同一格）。
+    _hard = [p for p in ir_problems if p.code not in ir_mod.SOFT_CODES]
+    if _hard:
+        out.update({"end_reason": END_DRAFT_FAILED, "end_note": ir_mod.say(_hard),
+                    "ir_layer": ir_mod.layer_of(_hard)})
         return out
+    if ir_problems:
+        _ir_said = ir_mod.say(ir_problems)
+        out["ir_problems"] = _ir_said
+        out["ir_layer"] = ir_mod.layer_of(ir_problems)
+        out["unverified"] = list(out.get("unverified") or []) + [
+            "结构检查没过（**照旧出了这一版**）：%s" % _ir_said]
 
     #: ★ 2026-09-28（运营那一刻的原话：「年龄有时候会提前出现，能改成自适应吗」）：**形态也交给
     #: 这双手**。固定步骤表那一族靠 `when` 逐步匹配 —— 题目**提前出现**时那一步不成立、整组
@@ -1433,12 +1456,22 @@ def _selftest(state, deps: Deps, caps: Caps) -> dict:
     #: ⚠️ 遍数**只有一个来源**（`selftest.STABILITY_RUNS`）—— 这句话里的数字与真跑的遍数
     #: 必须同源：两处各写一个数，改了那边忘了这边，屏幕上又是一句假话（就是这次逮到的形状）。
     runs = int(getattr(deps, "stability_runs", 0) or 0) or selftest_mod.STABILITY_RUNS
+    #: ★ 2026-10-08（用户裁定「跑1此就行了」⇒ `STABILITY_RUNS=1`）：**1 遍那一档要换一句话**。
+    #: 原句写死「再**同环境复跑 %d 遍**」，`runs-1 = 0` ⇒ 屏幕上成了「复跑 0 遍」
+    #: （比不说更坏：读的人以为参数写错了）。这也是这一格唯一要守的事 ——
+    #: 行为从 3 收到 1 之后，「可重放性」这一关**没量**，那句话就必须**说没量**，
+    #: 不许把「没跑」摆成「跑了」、也不许把没量过的结论留在屏幕上（与 `_rerun_note` 同源）。
+    if runs > 1:
+        _replay = ("再**同环境复跑 %d 遍**（每一遍都停在**提交前一步**，不再往站方交单）——"
+                   "每一遍都得成，挂一遍就算这一版不可重放。" % (runs - 1))
+    else:
+        _replay = ("**这一次不复跑**（同环境复跑这一关**这一次没验到**：默认只跑一遍，"
+                   "`STABILITY_RUNS=1`）——「同一台机连着跑每次都成」这件事**没有量**。")
     out = _enter(state, caps, "selftest",
                  ("接下来要在真浏览器上跑产物：**正常跑一遍**（这一遍会往站方真提交一次），"
-                  "再**同环境复跑 %d 遍**（每一遍都停在**提交前一步**，不再往站方交单）——"
-                  "每一遍都得成，挂一遍就算这一版不可重放。"
+                  + _replay +
                   "**自测通过 ≠ 生产一定过** —— 工具侧跑的浏览器与生产 worker 的代理出口/"
-                  "指纹/时序不是一套（规格 §10）。" % (runs - 1)),
+                  "指纹/时序不是一套（规格 §10）。"),
                  facts={"窗口": state.get("ws_url"), "表单数据": state.get("form_file"),
                         # ★ 老写法那一版：人在这儿才第一次能看见「它到底改了什么」——
                         # 这一道「继续」是**放它去跑真页面**的那一下（见 `_patch_diff`）。
@@ -2149,6 +2182,14 @@ def _selftest_kwargs(state, deps: Deps) -> dict:
     #: 一个键都不多，`test_service_country.py` 那条判据钉的就是这件事）。
     if str(state.get("shape") or "") == "loop":
         kw["loop"] = True
+    #: ★ 2026-10-08（`STABILITY_RUNS` 从 3 收到 1）：**遍数只有一个来源** ——
+    #: `_selftest` 那句话里的数字也是从这一格读的（`getattr(deps, "stability_runs", …)`），
+    #: 这里把它**原样带下去**，两处就永远是同一个数。不这么做的话，「那句话说要跑几遍」
+    #: 与「`selftest.run` 真跑几遍」是两份各写各的 —— 正是 `_selftest` 注释里点名的那个坑。
+    #: ⚠️ 照这一格的规矩：**没给的一律不传**（`Deps` 上没这一格时，`selftest` 的默认自己说了算）。
+    _runs = int(getattr(deps, "stability_runs", 0) or 0)
+    if _runs:
+        kw["stability_runs"] = _runs
     return kw
 
 

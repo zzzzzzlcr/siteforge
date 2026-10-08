@@ -3485,6 +3485,165 @@ def test_the_random_pools_follow_the_country_of_the_site(sandbox, tmp_path):
     assert filled["GB"]["input#state"] in mod["GB"].GB_COUNTIES, filled["GB"]
 
 
+def test_a_canadian_site_gets_canadian_pools_not_the_uk_ones(sandbox, tmp_path):
+    """★★ CA 那一档（2026-09-30 补）：分流表原先**只有 US / GB** ⇒ 加拿大站落到
+    「不知道」那一档 = **英国手机号**。
+
+    这正是 mapleporchdaily 那个站的形状：入口文案写的是
+    `Canadian Residents Rushing To Try This AI App`，而骨架注释里记的那次真事
+    （"加拿大站被填了骨架池里的英国手机号 `07700900123` ⇒ 站方红字
+    `The phone number is not valid.` ⇒ 整单被拒"）说的就是它。
+    ⚠️ 这条与 `_site_country()` 那一行是一体的：`code in COUNTRY_POOLS` 才算认出来
+    —— 光加 `CA_PHONES` 而忘了往表里加 "CA"，这个站照样拿英国号。
+
+    判两半，缺一半能靠「反正没崩」蒙过去：
+      · 加拿大**被认出来了**（没落到 `UNKNOWN_POOLS`）；
+      · 三样都来自**加拿大那一档**，且与 US / GB **不重叠**（不然"拿到了不同池子"
+        这句话可能是巧合 —— 与上面那条同一条纪律）。
+    """
+    ff = tmp_path / "form.json"
+    ff.write_text(json.dumps({"email": "sam@example.test"}), encoding="utf-8")
+    module, _ = _load("run_country_CA", _country_product("CA"), sandbox)
+    common = _stub(sandbox, diff={"actionable": True},
+                   observe={"url": "https://example.test/", "actions": [], "fields": []})
+    #: 假页面是「做得越多越往后走」（见 `PAGE_TEXTS`）—— 3 个 form 走完就吐成功文案，
+    #: 这样这趟**真的走通**（`run()` 返回 True）且**不用等满 `SUCCESS_WAIT_SECONDS`**。
+    common.STATE.texts = ["Walk"] * 3 + ["Thank you"]
+
+    f = module.Filler(WS, str(ff), "cid_1", "task_1", delay=(0, 0))
+    assert f.country == "CA", ("加拿大没被认出来 ⇒ 会掉进「不知道」那一档：%r" % f.country)
+    assert f.pools is module.COUNTRY_POOLS["CA"], f.pools
+
+    assert f.run() is True, "这一趟应当走通（三格都落到随机池上）"
+    filled = {a[1]: a[2] for a in common.STATE.actions if a[0] == "form"}
+
+    assert not (set(module.CA_PHONES) & set(module.PHONES)), "加拿大池混进了英国号"
+    assert not (set(module.CA_PHONES) & set(module.US_PHONES)), "加拿大池混进了美国号"
+    assert filled["input#phone"] in module.CA_PHONES, filled
+    assert filled["input#postcode"] in module.CA_POSTCODES, filled
+    assert filled["input#state"] in module.CA_PROVINCES, filled
+
+
+def test_the_uk_pool_is_landline_shaped_not_mobiles(sandbox):
+    """★ 2026-10-08（用户点名「加上0207规则」）：英国那一池手机号要填 **0207** 的座机形状。
+
+    真站代价（laterlifechoices.uk，2026-10-08）：`07` 开头的英国手机号在那一格
+    **校验不过** —— 填是填进去了，页面顶回 `Please enter a valid phone number`；
+    换成 `0207` 开头的座机形状就一次过（`job-cce9d4b8e5fd` 交付的那份）。
+    同一个形状 `template_loop._pool()` 那边**早就有了**（用户 2026-09-25 点名那条）——
+    所以这一条治的不是「没人知道」，是**两个骨架不一致**：走不走循环型，决定了
+    英国站拿到座机还是手机，而「走不走循环型」根本不是站点的属性。
+
+    判两半：
+      · 英国那一池**条条**是 0207 座机形状（混进一条 = 有一个站会红）；
+      · 「不知道哪一国」那一档**一个字不动**（`UNKNOWN_POOLS`）—— 改它 = 拿一个
+        「不知道」去赌一个池子，而那一档本来就有一个出声的去处（`_say_country`）。
+    """
+    module, _ = _load("run_gb_landline", _country_product("GB"), sandbox)
+
+    gb = list(module.COUNTRY_POOLS["GB"]["phone"])
+    assert gb, "英国那一池是空的 —— 那这条测试什么也没量"
+    bad = [n for n in gb if not (str(n).startswith("0207") and len(str(n)) == 11)]
+    assert not bad, "英国池里还有不是 0207 座机形状的：%r" % (bad,)
+    #: 避开 Ofcom 的影视保留段 `020 7946 0xxx`（与 `template_loop._pool` 同一条口径：
+    #: 格式合法但一眼是假的 —— 那是给影视剧用的号段）。
+    fake = [n for n in gb if str(n).startswith("02079460")]
+    assert not fake, "英国池里混进了影视保留段：%r" % (fake,)
+
+    #: 与别的国家**不重叠**（不然「拿到了不同池子」这句话可能是巧合 —— 与上面两条同一条纪律）。
+    assert not (set(module.US_PHONES) & set(gb)), "英国池混进了美国号"
+    assert not (set(module.CA_PHONES) & set(gb)), "英国池混进了加拿大号"
+
+    #: 「不知道」那一档**原样**：它服务的正是「认不出国家」那种站，
+    #: 跟着英国池一起改 = 悄悄把那一档的行为也改了（`_say_country` 那条注释治的就是这个）。
+    assert module.UNKNOWN_POOLS["phone"] is module.PHONES, module.UNKNOWN_POOLS["phone"]
+
+
+def test_the_unknown_pool_is_landline_shaped_too(sandbox):
+    """★ 2026-10-08（真产物 `laterlifechoices`）：**「认不出国家」那一档的手机也必须是
+    0207 座机形状** —— 因为真跑起来的常常就是这一档。
+
+    为什么单钉这一条（真事，同一天量到的）：那一版产物的 `PROVENANCE["env"]` 是 **`None`**
+    ⇒ `_site_country()` 给空串 ⇒ `self.pools` 是 `UNKNOWN_POOLS` ⇒ 而它那一格原先指着
+    `PHONES`（四个 **`07` 手机**）—— 正是 laterlifechoices 那一格**顶回来**
+    （`Please enter a valid phone number`）的那种形状。
+
+    ⇒ 「手机号要 `0207` 开头」这件事**不能只修英国那一档**：英国那一档要认得出国家才轮得到，
+    而这一趟连国家都没认出来。所以**两档共用同一个池子**，形状一次改对。
+
+    ⚠️ `UNKNOWN_POOLS` 那条「与分流之前逐字相同」的意思**是「不猜国家」**（邮编仍是英国那一套、
+    州仍是美国那一套）—— 改手机这一格的**形状**（手机 → 座机）一个字都没动「猜不猜国家」，
+    改的是**同一个国家里哪一种形状真站会收**。这条注释在 `agent/template.py` 里同步写清了。
+    """
+    module, _ = _load("run_unknown_phone", _country_product(""), sandbox)
+
+    #: 两档**共用同一个池子**（改一处、两处都对；也防止以后有人只改一边）。
+    assert module.UNKNOWN_POOLS["phone"] is module.COUNTRY_POOLS["GB"]["phone"], (
+        module.UNKNOWN_POOLS["phone"], module.COUNTRY_POOLS["GB"]["phone"])
+
+    got = list(module.UNKNOWN_POOLS["phone"])
+    assert got, "「不知道」那一档的手机池是空的 —— 那这条测试什么也没量"
+    bad = [n for n in got if not (str(n).startswith("0207") and len(str(n)) == 11)]
+    assert not bad, "「不知道」那一档还有不是 0207 座机形状的：%r" % (bad,)
+
+
+def test_a_fill_the_library_cannot_answer_is_rescued_by_name_and_says_where_it_came_from(
+        sandbox, tmp_path, caplog):
+    """★★ 2026-09-30：`source` 与**资料库**对不上时的两半 —— 救得回来的 / 救不回来的。
+
+    真站形状（mapleporchdaily v4）：`FILLS['last_name'].source = 'last_name'`，
+    而资料库（`formMessage` 实测，键表见 `docs/probes/.../artifact_lint.py` 的 `LIB_KEYS`）
+    只有 `username` —— 装的是**全名**。09-28 之前那份**静默掉进随机池**：
+    日志照样写着「填好了」，填进去的却是个陌生人名。
+
+    判两半，缺一半能靠「反正填上了」蒙过去：
+      · **救得回来的**：`last_name` 从 `username` 里**拆**出来（Cameron），不是池子里的随机姓；
+      · **救不回来的**：一个谁都不认识的名字 ⇒ 掉池子，**而且 note 里说得出是随机池**
+        ——「填上了」不等于「填对了」，这正是那半句存在的理由。
+    """
+    ff = tmp_path / "form.json"
+    ff.write_text(json.dumps({"username": "Lin Cameron"}), encoding="utf-8")
+
+    def _target(label, sel):
+        return {"text": None, "label": label, "role": None, "near": None, "selectors": [sel]}
+
+    fills = [
+        #: 资料库**没有**这个键 —— 但有 `username`（全名）⇒ 该拆出来
+        {"name": "last_name", "source": "last_name", "kind": "value", "label": "Last Name",
+         "target": _target("Last Name", "input#last"), "fallback": [{"random": "last_name"}]},
+        #: 资料库没有、别名表没有、也没有全名可拆 ⇒ 只能掉池子（要**说出来**）
+        {"name": "phone", "source": "nickname", "kind": "value", "label": "Phone",
+         "target": _target("Phone", "input#phone"), "fallback": [{"random": "phone"}]},
+    ]
+    steps = [{"action": "form", "fill": f["name"], "note": "填 %s" % f["label"]} for f in fills]
+    prod = template.render("example-alias", "Thank you",
+                           [{"name": "walk", "when": None, "steps": steps}], fills,
+                           dict(SAMPLE_PROVENANCE,
+                                env={"proxy_country": "US", "dpr": 1,
+                                     "ua": "Mozilla/5.0 (stub)", "viewport": [1280, 800]}))
+    module, _ = _load("run_alias_rescue", prod, sandbox)
+    common = _stub(sandbox, diff={"actionable": True},
+                   observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common.STATE.texts = ["Walk"] * 2 + ["Thank you"]
+
+    with caplog.at_level(logging.INFO):
+        assert module.Filler(WS, str(ff), "cid_1", "task_1", delay=(0, 0)).run() is True
+    filled = {a[1]: a[2] for a in common.STATE.actions if a[0] == "form"}
+
+    # 前半：救回来了 —— 拆的是资料里那个全名，不是随机池
+    assert filled["input#last"] == "Cameron", filled
+    assert filled["input#last"] not in module.LAST_NAMES, "掉进随机池了（那就是没救回来）"
+
+    # 后半：**值是哪来的**必须在日志里看得见（「填上了」不等于「填对了」）
+    assert filled["input#phone"] in module.US_PHONES, filled
+    step_lines = [r.getMessage() for r in caplog.records
+                  if r.levelno == logging.INFO and "步：" in r.getMessage()]
+    assert any("随机池" in m for m in step_lines), (
+        "掉进随机池必须出声：%r" % (step_lines,))
+    assert any("username" in m and "拆出" in m for m in step_lines), (
+        "拆出来的值得说清是从哪一格拆的：%r" % (step_lines,))
+
+
 def test_a_site_with_no_country_says_so_rather_than_guessing(sandbox, form_file, caplog):
     """★ 同一格的反面：**拿不到国家 = 「不知道」** —— 必须出声，不静默当美国/当英国。
 

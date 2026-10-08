@@ -874,7 +874,24 @@ POSTCODES = ["SW1A 1AA", "NN3 3AQ", "M1 1AA", "B1 1AA", "LS1 1AA", "G1 1AA"]
 # 「州」这一类**生产脚本本来就是一个小池子 + 随机选**（不是从 form-file 取）——
 # 照抄 `forms/sites/lifynest.py:16` 的 STATES（同一套「资料逻辑」，站点在美国时适用）。
 US_STATES = ["California", "Texas", "Arizona", "Florida", "New York", "Illinois", "Ohio"]
-PHONES = ["07936567874", "07700900123", "07400123456", "07911123456"]
+#: ★ 2026-10-08（用户点名「加上0207规则」+「手机号随机要以0207开头」）：英国风格的手机池
+#: 改用 **0207 开头的座机形状**，不是 `07` 手机 —— 真站那一格的校验只收座机。
+#:
+#: 真站代价（laterlifechoices.uk，2026-10-08）：`07…` 位数一样合法，填进去页面顶回
+#: `Please enter a valid phone number`；换 `0207…` 一次过（`job-cce9d4b8e5fd` 那份产物）。
+#: 同一个形状 `template_loop._pool()` 那边**早就有**（用户 2026-09-25 点名那条）——
+#: 所以这一格补的不是「没人知道」，是**两个骨架不一致**：产物走不走循环型，决定了
+#: 英国站拿座机还是手机，而「走不走循环型」根本不是站点的属性。
+#:
+#: ⚠️ **`PHONES` 同时是「英国那一档」与「不知道那一档」的手机池**（`COUNTRY_POOLS["GB"]`
+#: 与 `UNKNOWN_POOLS` 都指着它）。这是**故意的**，不是省事：实测那一版产物
+#: （laterlifechoices，`job-7f43337b2ba0`）的 `PROVENANCE["env"]` 是 **`None`**
+#: ⇒ `_site_country()` 给空串 ⇒ 真跑起来走的**就是「不知道」那一档**。
+#: 所以「手机要 0207」只修英国那一档等于没修 —— 那一档根本轮不到。两档共用，一次改对。
+#: 口径与别的池子一样（小池子 + 随机选）；避开 Ofcom 的影视保留段 `020 7946 0xxx`
+#: （格式合法、一眼是假的 —— 与 `template_loop._pool()` 同一条口径）。
+PHONES = ["02071234567", "02074561234", "02078889999", "02075550123",
+          "02076667777", "02073338888"]
 
 # ── 随机池按**站点国家**分流（★ 2026-09-29，交接《骨架还缺什么》「别处」那条）──────
 #
@@ -893,16 +910,34 @@ US_ZIPS = ["10001", "90001", "60601", "30301", "02108", "98101"]
 US_PHONES = ["2025550147", "4155550123", "2125550198", "3125550147", "6175550165"]
 GB_COUNTIES = ["Greater London", "Greater Manchester", "West Midlands", "West Yorkshire",
                "Merseyside", "Kent"]
+#: ★ 2026-09-30 补的第四档（2026-09-29 只有 US / GB）。为什么会漏：那一版分流表是照
+#: 「已经量到的那两个国家」建的，而**两字母码对得上、池子里却没有那一国的，走的是
+#: `_site_country()` 最后那个 `code in COUNTRY_POOLS` ⇒ 落到「不知道」= 英国那一套**
+#: —— `_say_country` 的告警文案里拿 `CA` 当例子写的，说的就是这个洞。
+#: 真站代价（mapleporchdaily）：加拿大站被判成「不知道」⇒ 填了英国手机号 ⇒ 站方红字
+#: `The phone number is not valid.` ⇒ 整单被拒（骨架注释里那条 `07700900123` 就是它）。
+#: 口径与上面两档**一模一样**：小池子 + 随机选；手机与邮编都取**格式合法**的样例值
+#: （NANP 的 555-01xx 与 `A1A 1A1` 这种形状），不新造逻辑。
+CA_PROVINCES = ["Ontario", "Quebec", "British Columbia", "Alberta", "Manitoba",
+                "Saskatchewan"]
+CA_POSTCODES = ["M5V 3L9", "V6B 1A1", "H3Z 2Y7", "K1A 0A6", "T2P 2M5", "R3C 3J7"]
+CA_PHONES = ["4165550147", "6045550123", "5145550198", "4035550147", "6135550165",
+             "9025550134"]
 #: 国家（两字母码） → 各随机池。`country` 那一档要的是**国家名**（页面上的 Country 框）。
 COUNTRY_POOLS = {
     "US": {"country": "United States", "state": US_STATES,
            "postcode": US_ZIPS, "phone": US_PHONES},
     "GB": {"country": "United Kingdom", "state": GB_COUNTIES,
            "postcode": POSTCODES, "phone": PHONES},
+    "CA": {"country": "Canada", "state": CA_PROVINCES,
+           "postcode": CA_POSTCODES, "phone": CA_PHONES},
 }
-#: 「不知道这个站在哪一国」时用的兜底 —— 与分流**之前逐字相同**
-#: （邮编/手机是英国那一套、州是美国那一套）。为什么原样保留：改掉它 = 拿一个
-#: **不知道**去赌一个池子；而这事已经有一个出声的去处（`_say_country`）。
+#: 「不知道这个站在哪一国」时用的兜底 —— 邮编仍是英国那一套、州仍是美国那一套，
+#: 手机与英国那一档**共用 `PHONES`**（见 `PHONES` 上面那段：真跑起来常常就是这一档）。
+#: 为什么保留这个兜底而不是当场拒：拿不到国家 = 「不知道」，而「不知道」已经有一个
+#: **出声的去处**（`Filler._say_country`）。⚠️ 这条的原话是「与分流之前逐字相同」——
+#: ★ 2026-10-08 改的是**手机那一格的形状**（07 手机 → 0207 座机），
+#: **「猜不猜国家」一个字没动**：邮编/州仍是老那两套，只是同一国里换成真站肯收的形状。
 UNKNOWN_POOLS = {"country": None, "state": US_STATES, "postcode": POSTCODES, "phone": PHONES}
 
 # ── 产出元数据（siteforge 自动写入，勿手工编辑）────────────
@@ -3021,7 +3056,7 @@ class Filler:
         self.log.warning(
             "[%s] 这份产物**不知道这个站在哪个国家**"
             "（`PROVENANCE['env']['proxy_country']` 是空的 / 认不出来 —— 两字母码对得上、"
-            "但池子里还没有那一国的（像 `CA`）也算这一档）—— "
+            "但池子里还没有那一国的（像 `AU`）也算这一档）—— "
             "邮编 / 手机 / 州 照旧用分流之前那一套（英国邮编与手机、美国州）。"
             "要按国家分流，就把两字母码写进生成时的 `PROVENANCE['env']['proxy_country']`"
             "（后端连续失败榜上那格 `country` 原样带下来即可）。", self.cid)

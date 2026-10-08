@@ -2082,6 +2082,44 @@ def test_the_selftest_is_told_which_page_to_start_on(tmp_path):
     assert rec2.selftest[0].get("start_url") == "https://deep.example.test/step-1", rec2.selftest[0]
 
 
+def test_the_selftest_sentence_counts_the_replays_it_will_actually_run(tmp_path):
+    """★ 2026-10-08：那道闸上那句话里的**遍数**，必须与 `selftest.run` 真拿到的**同一个数**。
+
+    为什么单钉这一条：`STABILITY_RUNS` 从 3 收到 1 之后，原句「再**同环境复跑 %d 遍**」里的
+    `%d` 会算出 **0** —— 屏幕上就成了一句「复跑 0 遍」（比不说更坏：读的人以为参数写错了）。
+    这个坑的形状与 2026-09-30 逮到的那次**一模一样**（行为改了、那句话没改 ⇒ 摆给运营看的
+    是一句旧话）：`_selftest` 的注释自己就写着「两处各写一个数，改了那边忘了这边，
+    屏幕上又是一句假话」。
+
+    判两条：① 默认（1 遍）那句话里**不许**出现「复跑 N 遍」，而且要**明说这一关没验到**
+    （「少跑」不许读成「验过了」）；② 点名 3 遍时那句话写「复跑 2 遍」，并且**真传下去**
+    的 `stability_runs` 就是 3 —— 同一格读出来的一个数，不是两处各写一份。
+    """
+    # ① 默认那一格（不传 `stability_runs`）
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    out = app.invoke(_brief(tmp_path), cfg)
+    for _ in range(3):                      # explore 前 → draft → lint → selftest 前
+        out = app.invoke(Command(resume="continue"), cfg)
+    payload = out["__interrupt__"][0].value
+    assert payload["step"] == "selftest", payload
+    assert "复跑 0 遍" not in payload["say"], payload["say"]
+    assert "没验到" in payload["say"], payload["say"]
+
+    # ② 点名 3 遍那一格
+    deps2, rec2 = _deps()
+    deps2.stability_runs = 3                # ← 与 `_selftest` 读的是同一格
+    app2, cfg2, _ = _build(deps=deps2)
+    out2 = app2.invoke(_brief(tmp_path / "b"), cfg2)
+    for _ in range(3):
+        out2 = app2.invoke(Command(resume="continue"), cfg2)
+    payload2 = out2["__interrupt__"][0].value
+    assert payload2["step"] == "selftest", payload2
+    assert "复跑 2 遍" in payload2["say"], payload2["say"]
+    app2.invoke(Command(resume="continue"), cfg2)
+    assert rec2.selftest[0].get("stability_runs") == 3, rec2.selftest[0]
+
+
 def test_a_run_without_a_window_ends_honestly_instead_of_crashing(tmp_path):
     """★ 2026-09-22 真事（`job-82547a95ba34`）：载荷里没挑窗口 ⇒ 服务那侧塞进 `Deps` 的
     `explore` 就是 `None`（`service.py:2074`）—— 探路那一格原先**直接调它**，运营在面板上
@@ -2257,3 +2295,44 @@ def test_a_funnel_without_a_url_criterion_stays_a_fixed_table_and_says_why(tmp_p
     assert out["end_reason"] == "delivered", out.get("end_note")
     assert out.get("shape") == "table", out.get("shape_why")
     assert "没给网址判据" in (out.get("shape_why") or ""), out.get("shape_why")
+
+
+def test_a_missing_required_field_no_longer_kills_the_run_but_a_gate_collision_still_does(
+        tmp_path, monkeypatch):
+    """★ 2026-10-08（**用户裁定**：「先把限制那道闸去掉」「让他允许交付吧。修复我们这边来」）：
+    **缺必填格那一条不再砍整趟** —— 照旧出稿，把缺什么写进 `unverified`。
+
+    真代价（改之前）：`job-a02dcd78380d`（laterlifechoices.uk，2026-10-08）—— 账本里探到的
+    两个必填格（First Name / Last Name）在产物里对不上名字 ⇒ `draft_failed` ⇒ **一个 py
+    都不出**、运营什么都拿不到。
+
+    ⚠️ **判两半，缺一半就会变成「图省事把整个 IR 闸拆了」**：
+      · 缺必填格 ⇒ **不砍**（走到 `delivered`，而且 `unverified` 里**写着缺了什么**）；
+      · `gate_holds_elsewhere`（两组判据在别的页上也成立）⇒ **照旧砍** —— 那一类会让产物
+        **静默地在错的页上**做动作、而日志每一步照样写着「做成了」（georgiapower 那趟
+        「真做 2 步、跳过 23 步」）⇒ 用户 2026-09-30 定的口径是「**宁可没有**」。
+    """
+    import test_graph as TG
+    from agent import ir as ir_mod
+
+    def outcome(problem):
+        monkeypatch.setattr(ir_mod, "validate", lambda *a, **k: [problem])
+        deps, _rec = TG._deps(journey=TG._journey())
+        app, cfg, _ = TG._build(deps=deps)
+        _payloads, out = TG._drive(app, cfg, TG._brief(tmp_path))
+        return out
+
+    soft = ir_mod.Problem("ir", "trace_incomplete.required_field_without_step",
+                          "账本里见到过 1 个**必填格**，而产物里**一步都没填**它：「First Name」。")
+    out = outcome(soft)
+    assert out.get("end_reason") == "delivered", out.get("end_note")
+    #: 「不砍」不等于「瞒着」：缺了什么必须在记录里看得见（与今天别处同一个 `unverified`）。
+    assert any("First Name" in str(s) for s in (out.get("unverified") or [])), \
+        "放它过去却没在记录里说缺了什么：%r" % (out.get("unverified"),)
+
+    hard = ir_mod.Problem("ir", "trace_ambiguous.gate_holds_elsewhere",
+                          "两组判据在别的页上也成立 —— 这个门分不出这几页。")
+    out2 = outcome(hard)
+    assert out2["end_reason"] == "draft_failed", out2.get("end_note")
+    assert "gate_holds_elsewhere" not in str(out2.get("end_note")), \
+        "人话里不该出现机器码：%r" % (out2.get("end_note"),)
