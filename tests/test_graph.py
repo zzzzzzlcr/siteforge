@@ -2396,3 +2396,74 @@ def test_a_gate_collision_still_ends_the_run_but_now_leaves_the_py_for_the_opera
     assert out.get("py_path") and pathlib.Path(out["py_path"]).is_file(), out.get("py_path")
     assert any("结构检查" in str(s) for s in (out.get("unverified") or [])), (
         "落了却没在记录里说它没过什么：%r" % (out.get("unverified"),))
+
+
+def test_the_sentence_the_operator_reads_never_says_nothing_was_kept_when_a_version_was_kept(
+        tmp_path):
+    """★ 2026-10-08（用户：「**我不希望再出现还得经过我们这边再修复**」）：**话和事实不许打架**。
+
+    现场 `job-c8730acb27c5`（policyquail.com）：运营在面板那一格上同时读到两句 ——
+
+        第一句（`service._artifact_say` 拼的）：**这一版 py 它留下了** … 确实留下了一版 py
+        中间那句（`ir.say` 拼的）：**宁可没有**，也不交一份「看着在跑、其实在别的页上乱点」的产物
+
+    后面那句是 **2026-09-30 定的口径**，写它的时候还没有第四处口子。`4a0f662`（今天 13:35）
+    给 IR 硬拦那一支开完口子之后，**这一版确实躺在交付路径上**（上一条用例钉着 `py_path`
+    是个真文件）—— 于是那句「宁可没有」从「裁定的原话」变成了**假话**。
+    运营读到「白跑了」⇒ 回来找人过一手；而盘上那份 py 一直没人拿。
+    「老是产不出 py、得这边再过一次」的一半就是这个 —— 不是没产出，是**话自相矛盾**。
+
+    ⚠️ 判的是**一致性**，不是文采：手上有一版时，给人看的那句话**不许**说「什么都没有」。
+
+    ⚠️ 这一趟**走真路径**（`book.gate_collisions` → `ir._gate_problems` → `ir._collision_say`），
+    不拿手写的 `Problem` 顶替 —— 假的那条文案里根本没有那句话，用例会**假绿**
+    （第一版就是这么写的，当场逮到）。
+    """
+    book = _journey()
+    book.gate_collisions = [{"name": "landing", "url": URL,
+                             "pages": ["https://example-funnel.test/thanks"]}]
+    deps, _rec = _deps(journey=book)
+    app, cfg, _ = _build(deps=deps)
+    _payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out.get("py_path") and pathlib.Path(out["py_path"]).is_file(), (
+        "前提不成立：这一趟没留下一版 —— 那这条用例判的就不是同一件事了")
+    said = str(out.get("end_note") or "")
+    for claim in ("宁可没有", "没有落盘", "一个字节都没写"):
+        assert claim not in said, (
+            "手上明明留了一版，给人看的那句话却写着「%s」—— 运营读到就会以为白跑了：\n%s"
+            % (claim, said))
+
+
+def test_the_final_lint_sentence_does_not_claim_nothing_was_written_when_it_was(tmp_path):
+    """★ 2026-10-08（与上一条同一件事，另一处）：交付前那道 lint 没过时，**同一句里的两半打架**。
+
+    `_keep_unverified` 就在上面两行**把这一版写进交付路径**，而紧接着拼出来的那句话
+    头一句是「**没有落盘**」、末一句是「一个字节都没写」—— 两句都是 2026-10-08 之前的
+    口径（那时候确实一个字节都不写）。运营读到「没有落盘」，就不会去勾「照样传」，
+    而那份 py 正躺在交付路径上等着人拿。
+
+    ⚠️ 与上一条同一个判据：**手上有一版时，那句话不许说「什么都没有」**。
+    """
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+
+    def lint_stub(src):
+        rec.lint.append(src)
+        if len(rec.lint) == 2:                  # 第 1 次 = lint 节点；第 2 次 = 交付前
+            return [{"line": 1, "code": "js-click", "message": "这段用 JavaScript 直接点了一下",
+                     "snippet": "el.click()"}]
+        return lint.check(src)
+
+    deps.lint = lint_stub
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "deliver_lint", out.get("end_note")
+    assert pathlib.Path(out["py_path"]).is_file(), out.get("py_path")   # 真落了盘
+    said = str(out.get("end_note") or "")
+    #: 该说的话一个字都不许少：哪一行、什么毛病（少了它就只剩一句「不算验过」，人没法动手）。
+    assert "契约检查" in said and "第 1 行" in said, said
+    for claim in ("没有落盘", "一个字节都没写", "宁可没有"):
+        assert claim not in said, (
+            "这一版真落了盘，给人看的那句话却写着「%s」—— 运营读到就不会去勾「照样传」：\n%s"
+            % (claim, said))
