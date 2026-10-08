@@ -11,12 +11,30 @@ venv/
 logs/
 tmp/
 runtime/
+# ★ 2026-10-08：8100 那台（`siteforge-222`）自己的一套 runtime / forms ——
+# 与 `runtime/` `forms/` 同一类东西（跑出来的数据），只是一直没被忽略，
+# 于是 `git status` 里躺着 150 多条。
+runtime-222/
+forms-222/
 config/*.local.*
 
 .env
 .env.*
 
+# ── 产物：落在盘上就行，不进仓（★ 2026-10-08）──────────────────────────────
+# 为什么：`forms/sites/` 是**运行时目录**（生产那份也从后端下载，不是从这儿读），
+# 里面绝大多数是**生成物**（`.candidate.py`）与**调试时的快照**
+# （`.before.py` / `.fixed.py` / `.v2.py` / `_debug.py`）。
+# ⚠️ 已经跟踪的那几个（`gowizard.py` / `gowizard_fixed.py` / `qualify.py`）**不受影响** ——
+# gitignore 管不了已跟踪的文件，它们照旧在仓里。将来真要新加一份手写参考稿：
+# `git add -f forms/sites/<名字>.py`。
+forms/sites/*.py
+
 # 工具层构建产物(源码在 tools/cdp/)
 tools/cdp/cdp
 tools/cdp/cdp-mcp
+# ★ 2026-10-08：`vendor/`（Go 的第三方依赖，1340 个文件）与历次探针留下的
+# `*.bak-*` 二进制 —— 都是**本地构建/备份**的产物，不进仓（源码在 `tools/cdp/`）。
+tools/cdp/vendor/
+tools/cdp/*.bak-*
 siteforge.env
