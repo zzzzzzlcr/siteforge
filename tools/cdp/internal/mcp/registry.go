@@ -381,8 +381,10 @@ var toolTable = []Tool{
 		}, nil, handleDiff),
 
 	newTool("screenshot",
-		"截当前视口，返回 PNG 的 base64 与**坐标证据**（image_px / viewport_css_px / dpr）。"+
-			"三者是契约：image_px = viewport_css_px × dpr，screen_px = css_px × dpr。"+
+		"截当前视口，返回 PNG 的 base64 与**坐标证据**（image_px / viewport_css_px / dpr / scale）。"+
+			"契约：scale = image_px ÷ viewport_css_px（**量出来的**，换算用它），screen_px = css_px × scale。"+
+			"dpr 是浏览器**自称**的数、只留档 —— 反检测浏览器的指纹会编它（实测自称 3、真画出来 1 倍），"+
+			"它跟 scale 对不上时 scale_note 里会有一句话。\n"+
 			"拿它可以把 observe 报的 bbox（视口 CSS 像素）叠到图上。\n"+
 			"这是**按需**的目视检查：DOM 分不出时再用（同名按钮、SPA、shadow/iframe 里），"+
 			"不是主视角 —— 主视角是 observe。⚠️ 图只对当次观测有效：页面一滚，bbox 就与它对不上了。",

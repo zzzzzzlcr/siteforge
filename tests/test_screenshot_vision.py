@@ -158,6 +158,22 @@ def test_the_coordinate_evidence_travels_in_the_same_message():
 # ─────────────────────── 2. 太大就说出来（不许静默）───────────────────────
 
 
+def test_the_sentence_the_model_reads_says_scale_not_dpr():
+    """给模型的那句话必须说**量出来的 scale**，并且点名 dpr「别拿它换算」。
+
+    为什么一句话也值得钉（2026-10-08，job-f9b0090a9472）：那台窗口自称 dpr=3、
+    真画出来是 1 倍。这句话要是还写着「乘 dpr 就叠到图上」，模型就会按 3 倍去图上
+    找元素 —— 找不到、或者找到错的那个，而**没有任何东西报错**（这正是本项目
+    被 DPR 咬过的那类症状：不是崩溃，是点不准）。
+    """
+    fake, _ = _loop(SHOT)
+    said = json.loads(_text_part(_parts_of(_tool_message(fake)))["text"])["image"]
+    assert "scale" in said, said
+    assert "÷" in said, "得把那条除法写出来（scale 是怎么来的）：" + said
+    assert "dpr" in said, "得点名那个数 —— 不然读者不知道「别拿它换算」说的是谁：" + said
+    assert "乘 dpr" not in said, "还在教模型乘 dpr：" + said
+
+
 def test_an_oversized_screenshot_says_so_instead_of_disappearing():
     """超上限时：**没有**图，但同一条消息里**明说**没进来、以及为什么。
 

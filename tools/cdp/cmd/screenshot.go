@@ -26,21 +26,25 @@ import (
 // 默认给 base64 = 让那份代码按它原本设想的方式直接活过来；要坐标证据的人显式加 --json。
 //
 // 退出码：0 = 拿到了图；1 = 没拿到（连不上 Chrome / 读不到 devicePixelRatio /
-// 比例与图对不上 —— 见 internal/screenshot.go 的 checkScale）。
+// 图与视口对不上 —— 见 internal/screenshot.go 的 measureScale）。
 // 与 observe 同一个约定：**要么一份完整可用的输出，要么什么都没有**。
 var screenshotCmd = &cobra.Command{
 	Use:   "screenshot",
 	Short: "截图：stdout 出 base64 PNG（--json 附坐标证据，--out 落盘）",
 	Long: `截当前视口。默认把 PNG 的 base64 直接写到 stdout（无装饰，即 forms/common.py 读的那种）。
 
-加 --json 会改吐一份带**坐标证据**的对象：png_base64 / image_px / viewport_css_px / dpr。
-这三个数之间的关系是契约：
+加 --json 会改吐一份带**坐标证据**的对象：png_base64 / image_px / viewport_css_px / dpr / scale。
+它们之间的关系是契约：
 
-    image_px = viewport_css_px × dpr        （图是设备像素，视口是 CSS 像素）
-  ⇒ screen_px = css_px × dpr                （observe 的 bbox 就在 css_px 这一侧）
+    scale = image_px ÷ viewport_css_px      （**量出来的**：这张图自己有多大 ÷ 视口有多大）
+  ⇒ screen_px = css_px × scale              （observe 的 bbox 就在 css_px 这一侧）
 
 拿它可以把 observe 报告的 bbox（CSS 像素、相对**视口**）叠到这张图上。
-比例对不上时命令**直接失败**，不吐一份看着能叠、其实叠错的 JSON。
+比例是**量**的，不是问浏览器的：dpr 那个数是它自称的，反检测浏览器的指纹会编它
+（实测一台自称 3、真画出来 1 倍）—— 所以 dpr 只留档，它跟 scale 对不上时
+scale_note 里会有一句话。
+图与视口对不上（整页图 / 拍到了别的窗口）时命令**直接失败**，
+不吐一份看着能叠、其实叠错的 JSON。
 
 ⚠️ 图只对**当次**观测有效：bbox 是视口相对的，页面一滚就与图对不上了。
 元素在 fold 之下的部分会映射到图外（ScreenPx 会给 ok=false）。
@@ -51,7 +55,7 @@ var screenshotCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(screenshotCmd)
-	screenshotCmd.Flags().Bool("json", false, "改吐 JSON（png_base64 + image_px + viewport_css_px + dpr；默认只吐裸 base64）")
+	screenshotCmd.Flags().Bool("json", false, "改吐 JSON（png_base64 + image_px + viewport_css_px + dpr + scale；默认只吐裸 base64）")
 	screenshotCmd.Flags().String("out", "", "把 PNG 写到这个文件（stdout 的内容不变）")
 }
 

@@ -135,7 +135,9 @@ type shotJSON struct {
 	PNGBase64     string     `json:"png_base64"`
 	ImagePx       pxSizeJSON `json:"image_px"`
 	ViewportCssPx pxSizeJSON `json:"viewport_css_px"`
-	DPR           float64    `json:"dpr"`
+	DPR           float64    `json:"dpr"`        // 浏览器**自称**的
+	Scale         float64    `json:"scale"`      // **量出来的**：image_px ÷ viewport_css_px
+	ScaleNote     string     `json:"scale_note"` // 两者对不上时的那句话（对得上就是空串）
 }
 
 type observeJSON struct {
@@ -320,6 +322,19 @@ func TestScreenshotAlignsWithObserveBBox(t *testing.T) {
 				}
 			}
 
+			// ②b 量出来的比例：这三个档都是**老实**浏览器（dpr 是用
+			// --force-device-scale-factor 真逼出来的），所以量出来的必须与它自称的
+			// 一致、也不该有那句话 —— 这两条钉住「正常机器上没被这次改坏」。
+			// （浏览器**说谎**那一档在 TestScreenshotOnAWindowThatLiesAboutDPR。）
+			if math.Abs(shot.Scale-shot.DPR) > 0.01*shot.DPR {
+				t.Errorf("[%s] 量出来的比例是 %g，浏览器自称 dpr=%g —— 这一档是老实浏览器，"+
+					"两者本就该一致（差这么多说明换算量的不是那个东西）", tc.name, shot.Scale, shot.DPR)
+			}
+			if shot.ScaleNote != "" {
+				t.Errorf("[%s] 老实浏览器上不该有 scale_note，实际 %q —— "+
+					"一句话见谁都说的后果是没人再读它", tc.name, shot.ScaleNote)
+			}
+
 			// ③ image_px 必须是 **PNG 实际**的尺寸（不是算出来的）
 			if cfgW, cfgH := img.Bounds().Dx(), img.Bounds().Dy(); cfgW != shot.ImagePx.Width || cfgH != shot.ImagePx.Height {
 				t.Errorf("[%s] image_px 报的是 %d×%d，但 PNG 实际是 %d×%d —— "+
@@ -338,6 +353,127 @@ func TestScreenshotAlignsWithObserveBBox(t *testing.T) {
 					tc.name, shot.DPR, tc.wantDPR)
 			}
 		})
+	}
+}
+
+// ---- ①b 浏览器**说谎**时：换算跟量出来的比例走 ----
+
+// TestScreenshotOnAWindowThatLiesAboutDPR 把 2026-10-08 那台窗口搬进测试里。
+//
+// 真事（job-f9b0090a9472，8100 上那个窗口）：指纹是手机档，页面自称
+// devicePixelRatio=3、连 CSS 的 `(resolution: 3dppx)` 媒体查询都点头，
+// 而它**真正渲染/截出来的面就是 1 倍** —— 视口 377×757，图 377×757。
+// 老实现拿自称的 dpr 当渲染比例（image_px == viewport_css_px × dpr），
+// 于是这台窗口上**每一张图都被拒**：8100 上 7 次截图 7 次全拒、一张 PNG 都没落下
+// （8099 那边是 dpr=1 的 PC 档，233 张全成）。而任务本来就要跑在不同机型上。
+//
+// 这一条钉三件事：
+//   - 这种窗口上**照样出图**（不是「宁可没有图」，图本身一点毛病都没有）
+//   - 图上的坐标**是对的**：按量出来的比例换算，夹具元素落在它该在的像素上
+//   - 两个数不一致要**说出来**（scale_note），不许静默按 1 倍换算
+func TestScreenshotOnAWindowThatLiesAboutDPR(t *testing.T) {
+	e := env(t)
+	c := startShotChrome(t) // 不给 --force-device-scale-factor：这台浏览器**真的**是 1 倍
+
+	if _, errOut, code := c.run("navi", e.fixture+"/screenshot.html"); code != 0 {
+		t.Fatalf("navi 退出码 = %d\nstderr: %s", code, errOut)
+	}
+
+	// 只把**它自称的那个数**改成 3，渲染面一点没动 —— 反检测浏览器干的就是这件事
+	// （页面加载完之后再改：defineProperty 挂在 window 自己身上，configurable）。
+	if _, errOut, code := c.run("eval",
+		"Object.defineProperty(window,'devicePixelRatio',{get:function(){return 3},configurable:true});'ok'"); code != 0 {
+		t.Fatalf("装「说谎的 dpr」失败（退出码 %d）: %s", code, errOut)
+	}
+	said, errOut, code := c.run("eval", "window.devicePixelRatio")
+	if code != 0 {
+		t.Fatalf("读 devicePixelRatio 失败: %s", errOut)
+	}
+	// 前提检查：谎没装上，下面那些断言就什么也证明不了
+	if got, err := strconv.ParseFloat(strings.TrimSpace(said), 64); err != nil || math.Abs(got-3) > 1e-9 {
+		t.Fatalf("前提没成立：页面自称的 dpr 是 %q（想要 3）—— 这一条测的就是「自称与真实不一致」，"+
+			"谎没装上就什么也没测到", strings.TrimSpace(said))
+	}
+
+	modelOut, errOut, code := c.run("observe", "--json")
+	if code != 0 {
+		t.Fatalf("observe 退出码 = %d\nstderr: %s", code, errOut)
+	}
+	bbox := magentaBBox(t, modelOut)
+
+	shotOut, errOut, code := c.run("screenshot", "--json")
+	if code != 0 {
+		t.Fatalf("浏览器自称的 dpr 与真实比例不一致时**照样要出图** —— "+
+			"图的尺寸与视口逐像素相同，它没有任何毛病；老实现就是在这儿把每一张都拒了。"+
+			"（退出码 %d）\nstderr: %s", code, errOut)
+	}
+	var shot shotJSON
+	if err := json.Unmarshal([]byte(shotOut), &shot); err != nil {
+		t.Fatalf("screenshot 的输出不是合法 JSON: %v\n前 200 字符: %q", err, firstN(shotOut, 200))
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(shot.PNGBase64)
+	if err != nil {
+		t.Fatalf("png_base64 解不开: %v", err)
+	}
+	img, err := png.Decode(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("png_base64 不是一张能解码的 PNG: %v", err)
+	}
+
+	// 它自称的：原样报出来（不改写、不吞掉 —— 那是这条链上唯一会撒谎的数，
+	// 恰恰最该留档）
+	if math.Abs(shot.DPR-3) > 1e-9 {
+		t.Errorf("dpr 报的是 %g，页面自称的是 3 —— 这个数要**原样**交出去", shot.DPR)
+	}
+	// 量出来的：这台浏览器没给 --force-device-scale-factor，真实比例就是 1
+	wantScale := float64(shot.ImagePx.Width) / float64(shot.ViewportCssPx.Width)
+	if math.Abs(shot.Scale-wantScale) > 1e-9 {
+		t.Errorf("scale 应当就是 image_px ÷ viewport_css_px = %d ÷ %d = %g，实际 %g",
+			shot.ImagePx.Width, shot.ViewportCssPx.Width, wantScale, shot.Scale)
+	}
+	if math.Abs(shot.Scale-1) > 1e-9 {
+		t.Errorf("这台浏览器真的按 1 倍渲染，量出来的比例却是 %g", shot.Scale)
+	}
+	// 两个数不一致 → 必须说出来（不然调用方以为它自称的就是真的）
+	if shot.ScaleNote == "" {
+		t.Errorf("自称 dpr=3、量出来 %g —— scale_note 是空的（没人会知道这个数在撒谎）", shot.Scale)
+	} else if !strings.Contains(shot.ScaleNote, "3") || !strings.Contains(shot.ScaleNote, "1") {
+		t.Errorf("scale_note 得把两个数都摆出来（自称 3、量出来 1），实际: %q", shot.ScaleNote)
+	}
+
+	// ── 像素：按**量出来的**比例换算，元素必须落在它该在的像素上 ──
+	// 换算同样写在测试里（不调生产的 ScreenPx）；这一条用的必须是 scale。
+	screen := func(cssX, cssY float64) (int, int) {
+		return int(math.Round(cssX * shot.Scale)), int(math.Round(cssY * shot.Scale))
+	}
+	bx, by := float64(bbox[0]), float64(bbox[1])
+	bw, bh := float64(bbox[2]), float64(bbox[3])
+	for _, s := range []struct {
+		name       string
+		cssX, cssY float64
+		want       [3]uint8
+	}{
+		{"元素左上内侧(+10,+10)", bx + 10, by + 10, rgbMagenta},
+		{"元素正中", bx + bw/2, by + bh/2, rgbMagenta},
+		{"元素外左上(-30,-10)", bx - 30, by - 10, rgbWhite},
+	} {
+		x, y := screen(s.cssX, s.cssY)
+		if x < 0 || y < 0 || x >= img.Bounds().Dx() || y >= img.Bounds().Dy() {
+			t.Errorf("[%s] bbox %v 上的 CSS 点 (%g,%g) × scale %g → 图上 (%d,%d)，"+
+				"落在 %d×%d 的图外 —— 换算把点推出去了（要是拿自称的 dpr=3 换算，"+
+				"点会正好差三倍）", s.name, bbox, s.cssX, s.cssY, shot.Scale, x, y,
+				img.Bounds().Dx(), img.Bounds().Dy())
+			continue
+		}
+		got := pixelRGB(img, x, y)
+		if got != s.want {
+			t.Errorf("[%s] 对齐错了：bbox 是 %v（CSS 像素，视口相对），按 scale=%g 算，"+
+				"CSS 点 (%g,%g) 应落在图上 (%d,%d)、颜色 %v；实际是 %v。\n"+
+				"（图 %d×%d —— 「运营在截图上点的那个元素」就是靠这条换算）",
+				s.name, bbox, shot.Scale, s.cssX, s.cssY, x, y, s.want, got,
+				img.Bounds().Dx(), img.Bounds().Dy())
+		}
 	}
 }
 

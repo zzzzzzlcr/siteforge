@@ -366,8 +366,10 @@ def tool_message_content(name: str, result: Any) -> Any:
         return [{"type": "text", "text": json.dumps(evidence, ensure_ascii=False)}]
 
     evidence["image"] = (
-        "见下图（本条结果里 image_url 那一份）。坐标契约：image_px = viewport_css_px × dpr —— "
-        "observe 给的 bbox 是**视口 CSS 像素**，乘 dpr 就叠到图上。"
+        "见下图（本条结果里 image_url 那一份）。坐标契约：scale = image_px ÷ viewport_css_px"
+        "（**量出来的**比例，换算用它）—— observe 给的 bbox 是**视口 CSS 像素**，乘 scale 就叠到图上。"
+        "⚠️ `dpr` 是浏览器**自称**的，别拿它换算：反检测浏览器的指纹会编这个数"
+        "（实测自称 3、真画出来 1 倍），`scale_note` 里要是有话，就是它俩对不上。"
         "⚠️ 图只对当次观测有效：页面一滚，bbox 就与它对不上了。"
     )
     return [
