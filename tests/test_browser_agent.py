@@ -30,6 +30,7 @@ spike（Task 1）量到三件事，每一条都在这条循环里变成一个**�
 from __future__ import annotations
 
 import ast
+import copy
 import http.server
 import importlib.util
 import json
@@ -850,6 +851,271 @@ def test_the_collision_reaches_the_ledger(tmp_path):
     assert "https://example.test/funnel/step2" in said[0], said
 
 
+# ── ★ 2026-10-08：形状 A —— 「上级/根地址 + 全站公用文案」那个门，收尾时重挑一段 ────────
+#
+# 现场（真账本，2026-10-08）：
+#   · `shorecrestwpb` 首页那组 = url `https://www.shorecrestwpb.com/` + 正文 `Skip to main content`
+#     （无障碍跳转链接，**全站每一页都有**）⇒ 这个门在 `/inquire`、`/thankyou?token=…` 上**也成立**。
+#   · `policyquail` 的 `auto_wi` = url `…/auto_wi` + 正文 `Auto Quiz - PolicyQuail`（**页面标题**，
+#     SPA 不换屏就不换标题）⇒ 在 `/auto_wi/results` 上也成立。
+# 两处的正文都是**从正文开头剪的第一段**：第一个状态没有「上一页」可比（`avoid=""`），
+# 而 `_snippet` 的避让**只避上一页** ⇒ 排在正文最前的那句公用文案原样进了判据。
+#
+# 处置：收尾时（那一刻每一页的正文都在手边）对**已经撞了**的那些门重挑一段 ——
+# 「在**别的每一页**的正文里都不出现」并且**落在单个元素**里的那一段。挑不到就**一个字不改**
+# （保持今天的样子：IR 照旧拦住并说清）。**不新增静默路径。**
+#
+# ⚠️ 剪判据那一侧（`_snippet` / `_when_for` / `note_page`）**一个字不动**：
+# 没撞的门判据一个字节都不该变，别的站的产物照旧。
+
+
+def _gate_page_with_nodes(name: str, url: str, text: str, nodes) -> dict:
+    """带**逐元素正文**的一条（重挑那一步要它 —— 跨元素拼出来的那串不许当判据）。"""
+    model = {"url": url, "title": name, "page_text": text, "node_texts": list(nodes)}
+    return {"name": name, "when": browser_agent._when_for(model), "key": (url, name, text),
+            "model": model, "url": url, "title": name}
+
+
+#: 无障碍跳转链接：**全站每一页都有**（真站上就是它当了首页那组的判据）。
+SKIP_LINK = "Skip to main content"
+
+#: ★ 真站那两个形状的正文开头（**逐字**，2026-10-08 `job-f86ac12fda15` 的账本）。
+#: 为什么这里非要用真文案：判据窗口只有 `WHEN_SNIPPET_CHARS`(48) 字，而这 48 字里
+#: **够格落在单个元素上的只有那句跳转链接**（`INQUIRE` 7 字、`Image Vision` 12 字都在窗口外
+#: 或被门槛挡住）⇒ `_snippet_in_one_node` 把窗口"纠正"成了跳转链接。用编的文案复现不出来。
+HOME_TEXT = ("Skip to main content INQUIRE Image Vision REFINED WATERFRONT LIVING "
+             "Conceived and curated by connoisseurs of modern living, Shorecrest from Related Ross "
+             "is a collection of distinctive condominium residences")
+HOME_NODES = ["Skip to main content", "INQUIRE", "Image Vision", "REFINED WATERFRONT LIVING",
+              "Conceived and curated by connoisseurs of modern living, Shorecrest from Related Ross"]
+INQUIRE_TEXT = ("Skip to main content INQUIRE Inquire INQUIRE Thank you for your interest in "
+                "Shorecrest. For further information, please complete the following details")
+INQUIRE_NODES = ["Skip to main content", "INQUIRE", "Inquire",
+                 "Thank you for your interest in Shorecrest."]
+
+
+def test_a_gate_is_not_cut_from_text_that_earlier_pages_already_have():
+    """★ 2026-10-08：剪判据时就躲开**前面那些页上也有**的那段（不是等收尾再救）。
+
+    为什么要这一条（形状 A 的真实形状）：判据从页头剪，而页头那句跳转链接**全站都有**。
+    真站 `job-6f1fdfa3c1ce` 的 `inquire-4`：它**上一页是 reCAPTCHA 那页** ⇒ `_snippet` 的
+    「与上一页不同的那一点」退化成**从头剪**（两页一个共同前缀都没有）⇒ 剪到
+    `Skip to main content` ——而那句**首页**（更早的一页）上也有。
+    `avoid` 只避得开**紧挨着的那一页**，隔页的撞不上 ✗。
+
+    这里的判据：剪的时候拿**前面每一页**的正文（`page_text` + 逐元素正文）比一遍，
+    撞了就换**落在单个元素里**的下一个候选。⚠️ 与「收尾重挑」不是一回事、也不取代它：
+    收尾那一手要等**所有页都看过**（它救的是「第一页就没得躲」那种 —— 第一页前面没有页）。
+
+    判据三半：① 那句公用文案**不在**判据里了；② 换完在**自己那一页**上仍然成立
+    （不成立 = 整组静默跳过，比撞车更坏）；③ 在**前面那两页**上都不成立。
+    """
+    recaptcha_text = "Please verify you are a human reCAPTCHA Privacy Terms"
+    pages, _steps = _split_one_page_into_states([
+        {"url": "https://www.shorecrestwpb.com/", "title": "Shorecrest",
+         "page_text": HOME_TEXT, "node_texts": HOME_NODES,
+         "node_elements": ["a@body", "a@header", "img@main", "h1@main", "p@main"]},
+        {"url": "https://www.shorecrestwpb.com/verify", "title": "Verify",
+         "page_text": recaptcha_text, "node_texts": ["Please verify you are a human", "reCAPTCHA"],
+         "node_elements": ["h1@main", "div@main"]},
+        {"url": "https://www.shorecrestwpb.com/inquire", "title": "Inquire",
+         "page_text": INQUIRE_TEXT, "node_texts": INQUIRE_NODES,
+         "node_elements": ["a@body", "a@header", "a@header", "p@main"]},
+    ])
+    home, verify, inq = pages.pages
+
+    assert inq["when"]["text_contains"] != [SKIP_LINK], \
+        "判据还是从页头剪的那句公用文案：%r" % (inq["when"],)
+    assert browser_agent.when_holds(inq["when"], inq["model"]), "换完在**自己那一页**上不成立了"
+    for other in (home, verify):
+        assert not browser_agent.when_holds(inq["when"], other["model"]), \
+            "换完在「%s」上还成立：%r" % (other["name"], inq["when"])
+    #: 换了就要说（谁被躲开了、换成了哪一句）—— 账本上看得见，不是静默换的。
+    why = inq["when"].get("text_why") or ""
+    assert SKIP_LINK in why, why
+    #: ★ 而且要说清**这一段是从哪个元素剪的**（用户当场要的那句）：「是啥元素」是那段文字
+    #: 自己看不出来的东西 —— `Skip to main content` 是页头那个跳转链接还是正文里的一句话，
+    #: 只有元素身份说得清；没有它，读账本的人只能再跑一趟真站去猜。
+    assert "元素" in (inq["when"].get("text_from") or ""), inq["when"]
+
+
+def test_avoiding_a_phrase_that_earlier_pages_only_carry_past_the_text_cut():
+    """★ 2026-10-08：避让要拿**逐元素正文**比，不能只比 `page_text`（那是**截到 600 字**的）。
+
+    为什么这条单独钉：真站上要躲的那段常在**页脚**里，而页脚在 600 字之后 —— `page_text`
+    里根本没有它，只有逐元素那格有（实测一份真回执：45 条 / 1844 字，比 600 字厚三倍）。
+    只比 `page_text` ⇒ **以为躲开了，其实没躲开** ⇒ 判据照样是全站公用文案。
+    """
+    #: 前一页：正文 600 字全都是文章，要躲的那句只在**逐元素**里（页脚那句，排在 600 字之后）
+    long_text = "A field guide to waterfront living " * 24
+    assert len(browser_agent._norm(long_text)) > 600
+    banner, _steps = _split_one_page_into_states([
+        {"url": "https://www.shorecrestwpb.com/guide", "title": "Guide",
+         "page_text": long_text, "node_texts": [long_text[:200], SKIP_LINK]},
+    ])
+    guide = banner.pages[0]
+    assert SKIP_LINK not in browser_agent._norm(guide["model"]["page_text"]), \
+        "夹具不对：那句在前一页的正文（前 600 字）里也出现了 —— 这条就量不出「只比正文会漏」"
+
+    verify = {"url": "https://www.shorecrestwpb.com/verify", "title": "Verify",
+              "page_text": "Please verify you are a human reCAPTCHA",
+              "node_texts": ["Please verify you are a human", "reCAPTCHA"]}
+    inq = {"url": "https://www.shorecrestwpb.com/inquire", "title": "Inquire",
+           "page_text": INQUIRE_TEXT, "node_texts": INQUIRE_NODES}
+
+    when = browser_agent._when_for(inq, avoid=verify["page_text"],
+                                   others=[guide["model"], verify])
+
+    assert when["text_contains"] != [SKIP_LINK], \
+        "没比逐元素正文 ⇒ 那句全站公用的文案又当上判据了：%r" % (when,)
+    assert browser_agent.when_holds(when, inq), when
+
+
+def test_a_colliding_gate_is_repicked_to_a_unique_snippet():
+    """★ 形状 A 的正题：撞了 ⇒ **重挑一段独有的**，而不是把这一趟砍死。
+
+    三件事一起看才算数：① 原来那句公用文案**不在**判据里了；② 换完之后在**自己那一页**上
+    仍然成立（正例 —— 不成立就是「整组静默跳过」，比撞车更坏）；③ 在**别的页**上不再成立。
+    """
+    home = _gate_page_with_nodes("www_shorecrestwpb", "https://www.shorecrestwpb.com/",
+                                 HOME_TEXT, HOME_NODES)
+    inq = _gate_page_with_nodes("inquire", "https://www.shorecrestwpb.com/inquire",
+                                INQUIRE_TEXT, INQUIRE_NODES)
+    pages = [home, inq]
+    #: 先确认这份夹具**真的**复现了那个形状（不然后面几条断言测得是空气）
+    assert [h["name"] for h in browser_agent._gates_that_hold_elsewhere(pages)] == ["www_shorecrestwpb"]
+    assert home["when"]["text_contains"] == [SKIP_LINK], home["when"]
+
+    fixed = browser_agent._repair_ambiguous_whens(pages)
+
+    assert [f["name"] for f in fixed] == ["www_shorecrestwpb"], fixed
+    assert SKIP_LINK not in (home["when"].get("text_contains") or []), home["when"]
+    #: (a) 正例：换完在**自己那一页**上仍然成立
+    assert browser_agent.when_holds(home["when"], home["model"]), home["when"]
+    #: (b) 反面：别的页上不再成立
+    assert browser_agent._gates_that_hold_elsewhere(pages) == []
+
+
+def test_a_state_seen_twice_is_repicked_as_one():
+    """同一个状态看了两眼（`same_gate` 合成一条名）⇒ 那几条**一起换**成同一段。
+
+    ⚠️ 为什么非钉不可：`Journey.states()` 取的是**最后一条**的判据（`browser_agent.py:663`
+    那个 `whens` 字典），而 `_gates_that_hold_elsewhere` 是**逐条**比的 ⇒ 只换最后那条的话，
+    前面那条照旧撞车、`gate_collisions` 仍不为空 —— 账本上写着「重挑过了」，这一趟照样被砍死。
+    """
+    home = _gate_page_with_nodes("www_shorecrestwpb", "https://www.shorecrestwpb.com/",
+                                 HOME_TEXT, HOME_NODES)
+    again = _gate_page_with_nodes("www_shorecrestwpb", "https://www.shorecrestwpb.com/",
+                                  HOME_TEXT + " 滚动之后又多了一句", HOME_NODES)
+    inq = _gate_page_with_nodes("inquire", "https://www.shorecrestwpb.com/inquire",
+                                INQUIRE_TEXT, INQUIRE_NODES)
+    pages = [home, again, inq]
+    assert [h["name"] for h in browser_agent._gates_that_hold_elsewhere(pages)] == ["www_shorecrestwpb"]
+
+    assert [f["name"] for f in browser_agent._repair_ambiguous_whens(pages)] == ["www_shorecrestwpb"]
+    assert home["when"]["text_contains"] == again["when"]["text_contains"], "两条该一起换"
+    assert browser_agent._gates_that_hold_elsewhere(pages) == []
+
+
+def test_a_state_seen_twice_is_left_alone_when_the_new_snippet_is_missing_from_one():
+    """同名那几条里，只要有一条**自己那页上没有**那一段 ⇒ 一起不换（正例不许破）。
+
+    换上一段它自己页上**不存在**的字，那个 `when` 在它那一页上就不成立了 ——
+    与 `_when_for` 里那一次 `when_holds`（正例）同一条底线：判据在自己页上不成立
+    = 那一组**整组静默跳过**，比撞车更坏。
+    """
+    thin = _gate_page_with_nodes("www_shorecrestwpb", "https://www.shorecrestwpb.com/",
+                                 SKIP_LINK + " INQUIRE 换个角度看看",
+                                 [SKIP_LINK, "INQUIRE", "换个角度看看"])
+    full = _gate_page_with_nodes("www_shorecrestwpb", "https://www.shorecrestwpb.com/",
+                                 HOME_TEXT, HOME_NODES)
+    inq = _gate_page_with_nodes("inquire", "https://www.shorecrestwpb.com/inquire",
+                                INQUIRE_TEXT, INQUIRE_NODES)
+    pages = [thin, full, inq]
+    assert [h["name"] for h in browser_agent._gates_that_hold_elsewhere(pages)] == ["www_shorecrestwpb"]
+    before = copy.deepcopy([thin["when"], full["when"]])
+
+    assert browser_agent._repair_ambiguous_whens(pages) == []
+    assert [thin["when"], full["when"]] == before, "有一条没有那段 ⇒ 一起不换"
+    assert browser_agent._gates_that_hold_elsewhere(pages), "撞车该留着（IR 还得拦）"
+
+
+def test_a_page_with_no_unique_text_keeps_its_gate_byte_for_byte():
+    """这一页**没有**独有的正文（两页一字不差）⇒ 一个字都不改 —— 防「假装修好了」。
+
+    改不动的后果照旧：`gate_collisions` 还在 ⇒ IR 拦住并说清（那是对的形状）。
+    """
+    body = SKIP_LINK
+    landing = _gate_page_with_nodes("landing", "https://example.test/", body, [SKIP_LINK])
+    twin = _gate_page_with_nodes("inquire", "https://example.test/inquire",
+                                 body + " 另一页也有的那一句", [SKIP_LINK, "另一页也有的那一句"])
+    pages = [landing, twin]
+    assert browser_agent._gates_that_hold_elsewhere(pages), "夹具没复现出撞车"
+    before = copy.deepcopy(landing["when"])
+
+    assert browser_agent._repair_ambiguous_whens(pages) == []
+    assert landing["when"] == before, "改不动的时候不许动 —— 半份改动比不改更坏"
+    assert browser_agent._gates_that_hold_elsewhere(pages), "撞车该留着（IR 还得拦）"
+
+
+def test_a_gate_that_does_not_collide_is_not_touched():
+    """没撞的门**一个字节都不许动** —— 这一改要是溢出去，所有站的产物判据一起变。"""
+    landing = _gate_page_with_nodes("landing", "https://example.test/funnel",
+                                    "Get Started 先看看你能省多少", ["Get Started 先看看你能省多少"])
+    quiz = _gate_page_with_nodes("quiz", "https://example.test/quiz",
+                                 "你多久用一次？每天 每周 很少", ["你多久用一次？每天 每周 很少"])
+    pages = [landing, quiz]
+    assert browser_agent._gates_that_hold_elsewhere(pages) == []
+    before = copy.deepcopy([p["when"] for p in pages])
+
+    assert browser_agent._repair_ambiguous_whens(pages) == []
+    assert [p["when"] for p in pages] == before
+
+
+def test_a_page_without_per_element_text_is_not_repicked():
+    """拿不到逐元素正文（`node_texts` 缺 / 被截断）⇒ **不修**（`test_a_colliding_gate_…`
+    那一份带着逐元素正文、同样撞车的夹具会被重挑 —— 差别只在这一格）。
+
+    宁可不动，也不去犯 2026-09-28 那个「拿跨元素拼出来的那串字当判据」的旧病 ——
+    那一串在页面上**根本不存在**，重放时整组静默跳过。
+    """
+    landing = _gate_page("landing", "https://example.test/", SKIP_LINK)   # ← 没有 node_texts
+    twin = _gate_page("inquire", "https://example.test/inquire",
+                      SKIP_LINK + " 另一页自己的话")
+    pages = [landing, twin]
+    assert browser_agent._gates_that_hold_elsewhere(pages), "夹具没复现出撞车"
+    before = copy.deepcopy(landing["when"])
+
+    assert browser_agent._repair_ambiguous_whens(pages) == []
+    assert landing["when"] == before
+
+
+def test_the_repair_runs_at_the_end_of_a_real_explore_run(tmp_path):
+    """真跑一趟：撞车**在收尾那一刻被重挑掉**，账本上换成了「换了哪一段」那句。
+
+    ⚠️ 这一条量的是**接线**（跟 `test_the_collision_reaches_the_ledger` 同一套桩跑法）：
+    纯函数那一层写对了，收尾那一趟不接上，生产里就一次都不会发生。
+    """
+    home = dict(PAGE_LANDING, url="https://www.shorecrestwpb.com/",
+                title="Luxury Condos in West Palm Beach", page_text=HOME_TEXT, node_texts=HOME_NODES)
+    inq = dict(PAGE_LANDING, url="https://www.shorecrestwpb.com/inquire",
+               title="Inquire About Shorecrest", page_text=INQUIRE_TEXT, node_texts=INQUIRE_NODES)
+    journey, _, _ = _run(
+        tmp_path,
+        {"observe": [{"structured": home}, {"structured": inq}, {"structured": inq}],
+         "click": [{"structured": {"ok": True}}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#get-started"})]},
+         {"calls": [("observe", {})]},
+         {"content": "完了"}],
+    )
+    #: 换了（账本上看得见换了哪一段 —— 没有静默的路径）
+    assert [n for n in journey.notes if "重挑" in n], journey.notes
+    #: 而且**没有**再报「这个门分不出这几页」那句（那是 `GATE_HOLDS_ELSEWHERE` 独有的话）
+    assert not [n for n in journey.notes if "这个门分不出" in n], journey.notes
+    assert journey.gate_collisions == [], journey.gate_collisions
+
+
 def test_a_clean_run_says_nothing_about_collisions(tmp_path):
     """正控：两页的判据分得开时，**一个字都不许多说**（否则这条会变成噪音）。"""
     journey, _, _ = _run(
@@ -918,6 +1184,42 @@ def test_one_page_split_by_a_countdown_is_merged_back_into_one_state():
         assert browser_agent.when_holds(kept, model), (kept, model)
     assert browser_agent._gates_that_hold_elsewhere(pages.pages) == [], \
         "并掉之后还报的话，`graph._draft` 照样一份 py 都不出"
+
+
+def test_merging_two_observations_that_share_a_name_keeps_the_survivor():
+    """★ 2026-10-08：**两条同名**（`same_gate` 复用名字）的观测并起来时，留下的那条**不许被删掉**。
+
+    怎么会有同名两条：`note_page` 见相邻两页 `when` **完全相等**就把新的一条挂在**同一个
+    状态名**下（那是 2026-09-22 那条该做的事）。而 `when` 相等、`key` 不等，真站上正是
+    `_SNIPPET_JUNK` 注释里那个形状：**广告位的 `___` 占位符时有时无**（`_snippet` 把它当装饰
+    字符剥掉 ⇒ 两次的判据一字不差），而 `key` 里那 400 字里带着那几个下划线 ⇒ 不算「同一眼」。
+
+    坏在哪儿：`_merge_one_page_states` 收尾是**按名字**删（`{m["name"] for m in merged}`），
+    而这一组「并进的」与「留下的」**同名** ⇒ 连留下的那条一起删 ✗ ⇒ 这一页从
+    `journey.pages` 里整个消失 ⇒ 产物里这一组成了 `when: null`（`template._matches(None)`
+    恒真）⇒ **没有门 = 在任何页上都适用**，重放时它会在**错的页上照做、日志还写着做成了**。
+    """
+    url = "https://example.test/store"
+    body = "Your cart Checkout Continue shopping Free shipping on orders over $50"
+    models = [
+        {"url": url, "title": "Store", "page_text": body},
+        #: 同一页的下一眼：广告位占位符没了（`___` 是 `_SNIPPET_JUNK` 里的字符 ⇒ 判据不受影响）
+        {"url": url, "title": "Store", "page_text": body.replace("Your cart", "___ Your cart")},
+    ]
+    pages, steps = _split_one_page_into_states(models)
+    assert [p["name"] for p in pages.pages] == ["store", "store"], \
+        "这两眼没被判成同一页 ⇒ 这条用例造的不是那个形状：%r" % [p["name"] for p in pages.pages]
+
+    gone = browser_agent._merge_one_page_states(pages.pages, steps)
+
+    assert [(g["name"], g["into"]) for g in gone] == [("store", "store")], gone
+    assert [p["name"] for p in pages.pages] == ["store"], \
+        "留下的那条被按名字一起删了 —— 这一页整个没了（产物里这一组会变成无门）"
+    assert {s["state"] for s in steps} == {"store"}, steps
+    kept = pages.pages[0]["when"]
+    assert kept and kept.get("text_contains"), "留下的判据没了正文（等于没门）：%r" % (kept,)
+    for model in models:
+        assert browser_agent.when_holds(kept, model), (kept, model)
 
 
 def test_a_bare_url_gate_is_not_evidence_that_two_screens_are_one_page():
@@ -1624,6 +1926,57 @@ def test_nearby_text_rescues_a_field_whose_label_is_an_opaque_id():
         elem = _field(label="textField-0001", type="text", nearby_text=words)
         got = browser_agent._fallback("value", "", elem["label"], elem)
         assert got == [{"random": want}], (words, got)
+
+
+def test_only_a_field_seen_empty_gets_marked_empty_in_the_ledger():
+    """★ 2026-10-08（policyquail `job-c8730acb27c5`）：账本要分得清「看过时是空的」与「站点填好了」。
+
+    为什么非分不可（就是这一趟）：`observe` 一直**回读**每一格的值（工具那边 `Field.Value`
+    的三态：`null` = 不是值控件 / `""` = 值控件但是空的），可**投影进账本时被丢掉了**
+    （`LEDGER_FIELD_KEYS` 里没有它）。于是 IR 那一层只看得见「见过这个框」，
+    看不见「见的时候它空着」—— 两者差着一条真缺口：
+
+      · `#zip` 站点按 IP 自己填好了（实测 `92582`）⇒ 探路**正确地**没动它，产物也不该动它；
+      · `#birth-year` 是**空的** ⇒ 产物必须填它。
+
+    ⚠️ 只记「空不空」这个**是/否**，**不把值本身抄进账本**：那是访问者在页面上留下的东西
+    （`92582` 就是他的邮编），账本没有理由替它留档；判据也只需要那个「是/否」。
+    """
+    blank = browser_agent._field_row({"selector": "#birth-year", "label": "Year of birth",
+                                      "hint": "birth_year", "type": "text", "value": ""})
+    assert blank.get("empty") is True, blank
+
+    filled = browser_agent._field_row({"selector": "#zip", "label": "Zip code", "hint": "zip",
+                                       "type": "text", "value": "92582"})
+    assert "empty" not in filled, filled
+    assert "value" not in filled, "把访问者的值抄进账本了：%r" % filled
+
+    #: `value: null` = **不是值控件**（工具那边三态里的第一态）—— 不许读成「空」
+    button = browser_agent._field_row({"selector": "button#go", "type": "button", "value": None})
+    assert "empty" not in button, button
+
+
+def test_a_year_of_birth_field_is_not_given_a_whole_date():
+    """★ 2026-10-08（policyquail 真站，`job-c8730acb27c5` 那份产物在 8100 上验出来的）。
+
+    那一格是 `label="Year of birth"` / `hint="birth_year"` / `placeholder="YYYY"` ——
+    要的是**4 位年份**。可 `_RANDOM_HINTS` 里 `("birth", "dob")` 那一行在前，
+    `birth` 一命中就判成 `dob`，而 `dob` 池吐的是 **`MM/DD/YYYY` 整串日期**
+    ⇒ 产物复跑时往「年份」框里打了 `07/23/1981`（那一趟 8100 上验的：每步都 ok、
+    成功文案一直没出现）。
+
+    ⚠️ **探路那趟是对的**：账本 `attempt-1.jsonl` 第 3 步记着真填进去的值 `"1975"`。
+    错的只有「重放时填什么」这一格 —— 也就是这张表。
+
+    ⚠️ `dob` 那一档**一个字不许动**：`Date of birth` 那种要整串日期的还归它
+    （上一条用例钉着 `Date of birth → dob`）。
+    """
+    elem = _field(label="Year of birth", hint="birth_year", placeholder="YYYY")
+    got = browser_agent._fallback("value", "", elem["label"], elem)
+    assert got == [{"random": "birth_year"}], got
+    #: 反例：真要整串日期的那一格照旧是 `dob`（改这一条不许把它带走）
+    dob = _field(label="Date of birth", hint="dob", placeholder="MM/DD/YYYY")
+    assert browser_agent._fallback("value", "", dob["label"], dob) == [{"random": "dob"}]
 
 
 def test_check_and_select_fills_are_not_touched_by_the_semantics():
@@ -4371,6 +4724,80 @@ def test_the_ledger_keeps_a_compact_field_table_not_just_a_count():
     capped = browser_agent._summarize("observe", {}, many, 5, None)
     assert len(capped["page_fields"]) == browser_agent.MAX_LEDGER_FIELDS, capped
     assert capped["page_fields_capped"] == browser_agent.MAX_LEDGER_FIELDS + 5, capped
+
+
+def test_the_ledger_keeps_the_per_element_text_so_a_gate_can_be_explained_afterwards():
+    """★ 2026-10-08：`observe` 那一行还要留下**逐元素正文**（`node_texts`）。
+
+    为什么（2026-10-08 形状 A 那一趟卡在哪儿）：判据那段话是 `_when_for` 剪的，而它有一道
+    「这段判据落在**单个元素**里吗」的纠正（`_snippet_in_one_node`）—— 那一道正是「页头那句
+    跳转链接当了首页判据」这个形状的成因。可它的原料（`node_texts`）**只活在回执里**：
+    账本上只有 `page_text_head`，于是**盘上任何一本账本都回答不了**「这条判据当时为什么被
+    换成那样」，只能重跑一趟真站。同 `page_fields` 的纪律：白名单 + 上限 + **超了记一个数**。
+
+    判据三半：
+      ① 逐条**归一化空白**、空的那几条丢掉（工具那边每条已经归一过，这里是同一把尺子）；
+      ② 上限挡住之后**记下本来有几条**（不静默丢）；
+      ③ `node_texts_truncated` 对读的人只有一个意思 —— **这份清单不是这一页的全部**
+         （工具那边截过，或账本这一道截过）⇒「没找到」不能当结论。
+    """
+    raw = {"url": "https://x.test/",
+           "node_texts": ["  Skip  to main  content ", "INQUIRE", "  "],
+           "node_elements": ["a@body", "span@header", "div@body"]}
+    out = browser_agent._summarize("observe", {}, raw, 5, None)
+    assert out["node_texts"] == ["Skip to main content", "INQUIRE"], out
+    assert out["node_elements"] == ["a@body", "span@header"], \
+        "元素身份没跟上正文（空的那条滤掉了，身份也要跟着滤 —— 错位比没有更坏）"
+    assert "node_texts_truncated" not in out, out          # 既没截断也没超上限 ⇒ 不写这个键
+    assert "node_texts_capped" not in out, out
+
+    #: 两条**对不上**时宁可缺：错位的话每一句正文都配着**另一个元素的名字** ——
+    #: 看上去完全正常（长度差不多、值也合法），比没有这一格坏得多。
+    mixed = browser_agent._summarize("observe", {},
+                                     {"node_texts": ["a", "b"], "node_elements": ["x@main"]}, 5, None)
+    assert mixed["node_elements"] == ["", ""], mixed
+
+    many = {"node_texts": ["n%d" % i for i in range(browser_agent.MAX_LEDGER_NODES + 5)],
+            "node_elements": ["p@main"] * (browser_agent.MAX_LEDGER_NODES + 5)}
+    capped = browser_agent._summarize("observe", {}, many, 5, None)
+    assert len(capped["node_texts"]) == browser_agent.MAX_LEDGER_NODES, len(capped["node_texts"])
+    assert len(capped["node_elements"]) == len(capped["node_texts"]), \
+        "截的时候只截了一条（两条错位）"
+    assert capped["node_texts_capped"] == browser_agent.MAX_LEDGER_NODES + 5, capped
+    assert capped["node_texts_truncated"] is True, "账本自己截过 ⇒ 读的人也必须知道「看不全」"
+
+    #: 工具**自己**就截过（页面上的叶子元素比它的上限多）⇒ 照实带过来（账本没截，不写那个数）
+    tool = browser_agent._summarize("observe", {}, {"node_texts": ["a"], "node_texts_truncated": True},
+                                    5, None)
+    assert tool["node_texts_truncated"] is True and "node_texts_capped" not in tool, tool
+
+
+def test_a_non_observe_tool_writing_the_node_texts_key_trips_the_premise_at_the_source():
+    """**同一条前提**在 `node_texts` 上也成立（写入侧 + 读取侧）：正文只有 `observe` 写。
+
+    为什么这一格也要一起守：它和 `page_text_head` 是**同一件事**的两个投影
+    （「这一页长什么样」），只是粒度不同 —— 逐元素那半正是判据那道纠正
+    （`_snippet_in_one_node`）的原料。哪天有别的工具把一整页的逐元素正文带进账本，
+    「带正文的行 == 落点认的那些行」这条等价就跟 `page_text_head` 那会儿一样破
+    （`_summarize` 的兜底那支 `out.update(raw)` 不设防）。
+    """
+    with pytest.raises(browser_agent._TextPremiseBroken) as exc:
+        browser_agent._summarize("read", {}, {"node_texts": ["Skip to main content"]}, 1, None)
+    assert "read" in str(exc.value) and "node_texts" in str(exc.value), str(exc.value)
+
+    #: 逐元素的**身份**（`node_elements`）与正文是同一件事的两个投影 ⇒ 一起守：
+    #: 别的工具把「那一页长什么样」写进账本，不管写的是文字还是元素名，等价都破。
+    with pytest.raises(browser_agent._TextPremiseBroken) as exc_el:
+        browser_agent._summarize("read", {}, {"node_elements": ["a@body"]}, 1, None)
+    assert "node_elements" in str(exc_el.value), str(exc_el.value)
+
+    #: 读取侧（账本从别的路进来）：一条 `diff` 行带着它 —— 照样拦得住，并报得出是第几行。
+    rows = [_goto(ENTRY, state="start"),
+            _look(ENTRY, TEXT_A, state="start"),
+            _row("diff", "quote", result={"actionable": True, "node_texts": ["x"]})]
+    with pytest.raises(browser_agent._TextPremiseBroken) as exc2:
+        browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert "第 3 行" in str(exc2.value) and "diff" in str(exc2.value), str(exc2.value)
 
 
 def test_the_field_table_reaches_the_ledger_and_is_read_back_by_state(tmp_path):

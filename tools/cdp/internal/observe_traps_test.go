@@ -316,3 +316,27 @@ func TestObserveJSCollectsPerElementText(t *testing.T) {
 		t.Error("正文收集仍写着 `innerText || textContent` —— <style> 的 innerText 是空的 ⇒ 整段 CSS 进正文")
 	}
 }
+
+// ★ 2026-10-08（用户：「探路的时候告诉我们这个对应的文本到底是在啥元素找到的」）：
+// `node_texts` 每一条要配上**它是啥元素**（`标签@区域`）。
+//
+// 为什么：账本上光有文字、没有「从哪个元素来的」⇒「这一组为什么是这个门」**事后查不出来**。
+// 真站形状：判据落在 `Skip to main content` 上，只有回头才知道那是页头那个无障碍跳转链接
+// （`a@body`，全站每页都有）⇒ 门分不出两页、整组在错的页上做。
+func TestObserveJSCollectsPerElementIdentity(t *testing.T) {
+	body := observeBody(t)
+	if !strings.Contains(body, "node_elements") {
+		t.Error("模型里没有 node_elements —— 读账本的人就看不见那段判据是从哪个元素剪的")
+	}
+	// 必须与 nodeTexts **同一个循环**里 push（同长同序是它对消费者的契约）：
+	// 拆成第二个循环就等于两处各自维护一份口径，早晚漂。
+	push := regexp.MustCompile(`nodeTexts\.push\(one\)[^\n]*nodeElements\.push\(`).FindString(body)
+	if push == "" {
+		t.Error("node_elements 不是与 node_texts 在同一个判空分支里 push 的 —— 同长同序的前提没了")
+	}
+	// 「是啥元素」= 标签 + **区域**（region：header/nav/footer/main/…）。
+	// 只记标签的话，「一个 <a>」在页头和页脚里长得一模一样。
+	if !strings.Contains(body, "@' + region(") {
+		t.Error("node_elements 里没有区域（region）—— 光有标签分不出「页头那个链接」与「正文里那个链接」")
+	}
+}

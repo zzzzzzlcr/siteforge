@@ -30,6 +30,18 @@ type PageModel struct {
 	// ⚠️ 消费者读到 true 时**不许**下「这段判据不在任何单个元素里」这种结论：
 	// 判据的元素可能就排在截断线之后 —— 「量不到」与「没有」是两件事。
 	NodeTextsTruncated bool `json:"node_texts_truncated"`
+	// NodeElements 与 NodeTexts **逐条对应**（同长、同序）：每一条写明那个叶子元素
+	// **是啥元素** —— `标签@区域`（如 `a@header`、`h1@main`、`div@body`；区域见 `region()`）。
+	//
+	// ★ 2026-10-08（用户：「探路的时候告诉我们这个对应的文本到底是在啥元素找到的」）：
+	// 判据是从某一段正文剪的，可账本上只有**文字**、没有「它是从哪个元素来的」——
+	// 于是「这一组为什么是这个门」在事后**查不出来**。真站形状：判据落在
+	// `Skip to main content` 上，只有回头才知道那是页头那个**无障碍跳转链接**
+	// （`a@body`，全站每页都有）⇒ 门分不出两页。有了这一格，读账本的人一眼看得见。
+	//
+	// ⚠️ 与 `NodeTexts` **同生共死**：JS 里同一个循环产出、同一个上限切片，合并那条路
+	// 也并排 append + 并排截断。消费者可以假定两者等长（Go 侧有用例钉着）。
+	NodeElements []string `json:"node_elements"`
 	ShadowRoots int    `json:"shadow_roots"`
 	// ViewportCssPx 是**观测那一刻的视口**，CSS 像素 —— `bbox` 就在这个空间里。
 	//
@@ -39,9 +51,11 @@ type PageModel struct {
 	// 的区间并把「这是推的」说出来。视口尺寸本身就是**感知**（规格 D11），却被漏了。
 	//
 	// ⚠️ 名字与坐标**必须**与 cmd/screenshot.go 的 `--json` 一致：那边报
-	// `viewport_css_px`（CSS 像素）+ `image_px`（设备像素）+ `dpr`，关系是
-	// `image_px = viewport_css_px × dpr`。同一个量在一个工具里有两个名字，正是本项目
-	// 反复栽的那一类（DPR 那次就是字段名写错被静默忽略）。
+	// `viewport_css_px`（CSS 像素）+ `image_px`（设备像素）+ 量出来的 `scale`，
+	// 关系是 `scale = image_px ÷ viewport_css_px`（`dpr` 也在那边，但它是浏览器
+	// **自称**的、只留档，2026-10-08 起不拿它换算 —— 见 screenshot.go 文件头）。
+	// 同一个量在一个工具里有两个名字，正是本项目反复栽的那一类（DPR 那次就是
+	// 字段名写错被静默忽略）。
 	//
 	// ⚠️ 取值**必须**是 `window.innerWidth / innerHeight`，**不是** `documentElement`
 	// 的 clientWidth / clientHeight —— 后者不含滚动条。screenshot.go 文件头实测过：
@@ -1229,6 +1243,11 @@ func observeJS() string {
   // （缺陷单 §六 D 实测：page_sig_tail 是 --mobileLanding-colorTextButtonBrand 那串 CSS）。
   var SKIP_TAGS = { SCRIPT: 1, STYLE: 1, TEMPLATE: 1, LINK: 1, META: 1, NOSCRIPT: 1, TITLE: 1 };
   var nodeTexts = [];
+  // 与 nodeTexts **逐条对应**（同长同序）：那个叶子元素**是啥元素**（标签@区域）。
+  // 2026-10-08 加：账本上光有文字、没有「它是从哪个元素来的」⇒「这一组为什么是这个门」
+  // 事后查不出来（真站形状：判据落在页头那个无障碍跳转链接上，a@body，全站每页都有）。
+  // ⚠️ 注释里别用反引号：这段 JS 整个装在一个 Go 原始字符串里。
+  var nodeElements = [];
   var nodeTextsCut = 0;
   for (var ri = 0; ri < RS.length; ri++) {
     var rtl = RS[ri];
@@ -1239,7 +1258,7 @@ func observeJS() string {
       if (e.children && e.children.length) { continue; }   // 只要叶子：父元素那一段本来就是拼的
       var one = '';
       try { one = (e.innerText || '').replace(/\s+/g, ' ').trim(); } catch (err) { }
-      if (one) { nodeTexts.push(one); }
+      if (one) { nodeTexts.push(one); nodeElements.push(e.tagName.toLowerCase() + '@' + region(e)); }
     }
   }
 
@@ -1266,6 +1285,7 @@ func observeJS() string {
     url: location.href, title: document.title,
     page_text: pageText.slice(0, 600),
     node_texts: nodeTexts.slice(0, 400),
+    node_elements: nodeElements.slice(0, 400),
     // ⚠️ 截断了没：消费者**不许**在截断时下「这段判据不在任何单个元素里」这种结论 ——
     // 那会把排在 400 之后的好判据改坏（「量不到」与「没有」是两件事，本项目的老病）。
     node_texts_truncated: nodeTexts.length > 400,

@@ -15,7 +15,7 @@ import (
 // 这一层钉的是**不依赖浏览器**的那半：
 //
 //   - JS 必须从 `innerWidth / innerHeight` 取（**不是** clientWidth/clientHeight ——
-//     后者不含滚动条，与 cmd/screenshot.go 那条 `image_px = viewport_css_px × dpr`
+//     后者不含滚动条，与 cmd/screenshot.go 那条 `scale = image_px ÷ viewport_css_px`
 //     差一个滚动条宽，静默叠不准）
 //   - 合并（ObserveAll）只能拿**主帧**的视口：不求和、不让子帧盖掉、也不拿子帧的值
 //     去填一个空的主帧
@@ -96,5 +96,36 @@ func TestMergeFrameModelViewportFromMainFrame(t *testing.T) {
 	if hidden.ViewportCssPx != (PixelSize{}) {
 		t.Errorf("主帧报 0×0 时合并结果是 %+v —— 被一个子帧的尺寸冒名顶替了；"+
 			"0×0 是如实的感知（D11），不该被别的帧的值填上", hidden.ViewportCssPx)
+	}
+}
+
+// TestMergeFrameModelKeepsNodeElementsParallel 钉跨帧合并时那两条**并排**。
+//
+// 为什么单独钉：`node_texts` 与 `node_elements` 是**逐条对应**的（同长同序），
+// 生成期正是拿这个对应关系说「这段判据出自哪个元素」。合并时若只截断其中一条
+// （两处 `if len(...) > nodeTextsLimit` 各写各的），两条就**错位**——
+// 而错位之后每一句正文都配着**另一个元素的名字**：比没有这一格更坏，
+// 它看上去完全正常（长度差不多、值也都合法）。
+func TestMergeFrameModelKeepsNodeElementsParallel(t *testing.T) {
+	merged := &PageModel{}
+	mergeFrameModel(merged, &PageModel{
+		URL: "https://a/", NodeTexts: []string{"main one", "main two"},
+		NodeElements: []string{"h1@main", "p@main"},
+	}, []string{mainFramePath}, true)
+	mergeFrameModel(merged, &PageModel{
+		NodeTexts: []string{"frame one"}, NodeElements: []string{"div@body"},
+	}, []string{mainFramePath, "F1"}, false)
+
+	if len(merged.NodeTexts) != len(merged.NodeElements) {
+		t.Fatalf("合并后两条不一样长：node_texts=%d node_elements=%d（消费者的对应关系断了）",
+			len(merged.NodeTexts), len(merged.NodeElements))
+	}
+	for i := range merged.NodeTexts {
+		if merged.NodeElements[i] == "" {
+			t.Errorf("第 %d 条正文（%q）没有配元素名", i, merged.NodeTexts[i])
+		}
+	}
+	if merged.NodeTexts[1] != "main two" || merged.NodeElements[1] != "p@main" {
+		t.Errorf("两条错位了：texts=%v elements=%v", merged.NodeTexts, merged.NodeElements)
 	}
 }

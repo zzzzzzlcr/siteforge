@@ -302,6 +302,15 @@ func mergeFrameModel(merged *PageModel, m *PageModel, path []string, isMain bool
 			merged.NodeTexts = merged.NodeTexts[:nodeTextsLimit]
 		}
 	}
+	// 逐元素的**身份**（`标签@区域`）与上面那条**并排**并：同长同序是它对消费者的契约
+	// （`NodeElements` 那条注释写了为什么要有它）。两条各自判 `len(m.…) > 0` 也不会漂：
+	// JS 里是同一个循环产出的，要么都空、要么一样长。
+	if len(m.NodeElements) > 0 {
+		merged.NodeElements = append(merged.NodeElements, m.NodeElements...)
+		if len(merged.NodeElements) > nodeTextsLimit {
+			merged.NodeElements = merged.NodeElements[:nodeTextsLimit]
+		}
+	}
 	for _, a := range m.Actions {
 		a.FramePath = path // 值拷贝，改的是副本
 		merged.Actions = append(merged.Actions, a)

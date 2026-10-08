@@ -291,7 +291,37 @@ WHEN_TEXT_SPLICE = ("这一段判据原来是**跨两个元素拼**出来的（�
 #: 一个是「这段没法用 ⇒ 判据少了一半」—— 混成一句，读的人就分不出该不该动手。
 WHEN_TEXT_SPLICED_AWAY = ("剪出来的那一段是**跨两个元素拼**的（页面上根本没有这一句话）：%r；"
                           "而这一页**找不到**任何单个元素能顶替它")
-def _snippet_in_one_node(snippet: str, nodes) -> str:
+
+#: ★ 2026-10-08：剪判据时**躲开了「前面那些页上也有的那段」**时说的话。
+#: 与 `WHEN_TEXT_SPLICE`（跨元素拼接）是**两件事**，得分开说：那一句讲的是「取的时候取歪了」，
+#: 这一句讲的是「取到的这段**别的页上也有** ⇒ 门分不出两页」。读的人靠它决定要不要动判据。
+WHEN_TEXT_AVOIDED = ("原来剪到的那段（%r）在**前面走过的那几页**上也有 ⇒ 门分不出两页 ——"
+                     "已经换成这一页自己的一段：%r")
+
+#: ★ 2026-10-08（用户：「探路的时候告诉我们这个对应的文本到底是在啥元素找到的」）：
+#: 判据那一段**是从哪个元素剪的**（`标签@区域`，如 `a@body`、`h1@main`）。
+#: 为什么光有那段文字不够：`Skip to main content` 可以是页头那个无障碍跳转链接
+#: （全站每页都有 ⇒ 门分不出两页），也可以是正文里的一句话 —— 文字本身看不出来，
+#: 回头只能再跑一趟真站去猜。写这一句，读账本的人一眼看得见。
+WHEN_TEXT_FROM = "这一段是从「%s」这个元素剪的"
+
+
+def _other_pages_text(models) -> list:
+    """**别的页**上有什么文字（归一化、小写；一页一条）—— 剪判据时拿它避让。
+
+    ⚠️ 两边都要收：`page_text`（工具截到 600 字）+ **逐元素正文**（实测那份真回执
+    45 条 / 1844 字，比前者厚三倍）。只比一个会漏，而漏的后果是「以为躲开了、其实没躲开」。
+    """
+    out = []
+    for model in models or []:
+        parts = [_norm((model or {}).get("page_text") or "").lower()]
+        parts += [_norm(str(t or "")).lower()
+                  for t in ((model or {}).get("node_texts") or []) if str(t or "").strip()]
+        out.append(" \n ".join(p for p in parts if p))
+    return out
+
+
+def _snippet_in_one_node(snippet: str, nodes, others=(), kinds=()) -> tuple:
     """把跨元素拼出来的 `snippet` 换成**落在单个元素里**的那一段（换不了给空串）。
 
     怎么挑：与这段判据**共有最长一串字**的那个元素（≥8 字才算数），
@@ -303,10 +333,29 @@ def _snippet_in_one_node(snippet: str, nodes) -> str:
     元素自己的开头才是「它自己的话」（`Schedule your residential clipboard energy aud`）。
     ⚠️ 为什么要「≥8 字」这个门槛：短判据的鉴别力等于零（一页上到处都成立），
     那会让**每一组**的门都成立 —— 比整组跳过更坏（它会误做）。
+
+    ★ 2026-10-08：`others`（**前面走过的那几页**）里有的人话，**优先不选**。理由见
+    `WHEN_TEXT_AVOIDED` 那条：页头那句跳转链接**全站每页都有**，而它恰恰是与上一页
+    「一个共同前缀都没有」时（上一页是 reCAPTCHA 那种）剪到的那一段 ⇒ 门分不出两页。
+    两条纪律：
+      · **只是优先，不是硬拒**：全都撞上时退回原来那一条（今天的行为一个字不改）——
+        硬拒会把这一组打成「只有 URL」，那比一条不够独有的门更坏（整组静默跳过）。
+      · 比的是**真要写进判据的那一段**（`_snippet(节点)`，≤48 字），不是整个节点的全文 ——
+        长句子全站重复的概率本来就低，拿它当判据的是那 48 字的窗口。
+
+    返回 `(挑中的那一段, 被躲开的元素正文, 挑中那条**是啥元素**)` —— 后两个没有时是空串。
+    ⚠️ 「是啥元素」（标签@区域）由 `kinds` 递进来（与 `nodes` 逐条对应，来自 `observe` 的
+    `node_elements`）：它是**「这一段是从哪个元素剪的」唯一的证据**，写在判据那句话里
+    （见 `WHEN_TEXT_FROM`）—— 读账本的人不用再跑一趟真站去猜。
     """
     want = _norm(snippet)
-    best_node, best_len = "", 0
-    for text in nodes or []:
+    elsewhere = _other_pages_text(others)
+    kinds = [str(k or "") for k in (kinds or [])]
+    if len(kinds) != len(nodes or []):
+        kinds = [""] * len(nodes or [])          # 对不上就别猜（缺了比错位好）
+    best_node, best_len, best_el = "", 0, ""
+    uniq_node, uniq_el = "", ""
+    for pos, text in enumerate(nodes or []):
         node = _norm(str(text or ""))
         if not node:
             continue
@@ -318,8 +367,28 @@ def _snippet_in_one_node(snippet: str, nodes) -> str:
                 n += 1
             run = max(run, n)
         if run > best_len:
-            best_node, best_len = node, run
-    return _snippet(best_node) if best_len >= 8 else ""
+            best_node, best_len, best_el = node, run, kinds[pos]
+        #: 备选：**按顺序**取这一页第一个「别处没见过」的元素（不是最像的那个）。
+        #: 为什么按顺序而不是按像不像：这会儿要的已经不是「判据原来出自哪个元素」，
+        #: 而是「这一页上哪一段是它自己的」—— 页面上第一个独有元素就是那句话。
+        if not uniq_node:
+            cand = _snippet(node)
+            if len(cand) >= _WHEN_REPICK_MIN_CHARS and not _on_other_pages(cand, elsewhere):
+                uniq_node, uniq_el = node, kinds[pos]
+    if best_len < 8:
+        return "", "", ""
+    head = _snippet(best_node)
+    if not _on_other_pages(head, elsewhere):
+        return head, "", best_el            # 页头这段是本页自己的 ⇒ 照旧（今天的行为）
+    if uniq_node:
+        return _snippet(uniq_node), best_node, uniq_el
+    return head, "", best_el                # 全页都撞上 ⇒ 退回原来那条（不硬拒，见上）
+
+
+def _on_other_pages(cand: str, elsewhere) -> bool:
+    """这一段**别的页上也有**吗（`elsewhere` = `_other_pages_text` 那一份）。"""
+    low = _norm(cand).lower()
+    return bool(low) and any(low in text_of for text_of in elsewhere)
 
 
 #: 看着像轮换码的 path 末段长什么样（字母数字，可带 `-_.` 分隔；**还要含数字**才算，
@@ -1240,6 +1309,15 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         # 先撤掉它，这里才不会拿它当「一条判据」去比。
         #: ⚠️ **留在账本上**（不只是记一句话）：`graph._draft` 拿它**拦住产物** ——
         #: 「生成期就该拦住」这句要落在产物那道门上，光喊一声还是会把这一版发出去。
+        #: ★ 2026-10-08：**先把能救的救回来，再算还剩几个**（`_repair_ambiguous_whens`）——
+        #: 撞车多半是「第一个状态在正文开头剪到了全站公用文案」（跳转链接 / `<title>`），
+        #: 而这一刻每一页的正文都在手边，够得着**按全站避让重挑一段**。
+        #: ⚠️ 顺序不能反：反了的话救回来的那些也照样进 `gate_collisions`、照样把整趟砍死。
+        for fixed in _repair_ambiguous_whens(pages.pages):
+            journey.note(WHEN_REPICKED_SAY % (fixed["name"],
+                                              "、".join(fixed["pages"]),
+                                              fixed["had"][0] if fixed["had"] else None,
+                                              fixed["now"]))
         journey.gate_collisions = _gates_that_hold_elsewhere(pages.pages)
         for gate in journey.gate_collisions:
             journey.note(GATE_HOLDS_ELSEWHERE % (gate["name"],
@@ -2716,6 +2794,16 @@ _RANDOM_HINTS = (
     # （placeholder 只是两个地名例子 `e.g. California or Texas`），于是名字落在不透明的 MUI id 上，
     # 运营 form-file 的 `state` 对不上 → 随机兜底给了 `full_name` → **往「州」里填人名**。
     (("state", "province"), "state"),
+    #: ★ 2026-10-08（policyquail 真站 `job-c8730acb27c5`：那份产物在 8100 上验出来
+    #: 「Year of birth」被填了整串日期）：**「出生年」与「生日」不是一个形状**。
+    #: 原先只有下面那一行 `(("birth", "dob"), "dob")` —— `birth` 一命中就判成 `dob`，
+    #: 而 `dob` 池吐的是 `MM/DD/YYYY` ⇒ 往 `placeholder="YYYY"` 那一格打了 `07/23/1981`
+    #: （每步都 ok、成功文案一直没出现；探路那趟其实**填对了** —— 账本里是 `"1975"`）。
+    #: ⚠️ **必须排在 `birth`/`dob` 那一行前面**：它是子串匹配，`birth_year` 与
+    #: `Year of birth` 都含 `birth`，排在后面等于没加。
+    #: ⚠️ **不许收宽成裸 `year`**：`Vehicle year`（要的是近年，不是 1970-1995）、
+    #: `Years at address`（要的是个位数）都会被它误伤 —— 同 `number` 那条的纪律。
+    (("birth year", "birth_year", "year of birth"), "birth_year"),
     (("birth", "dob"), "dob"),
     #: ★ 2026-09-28（用户报的那一趟 `georgiapower`：「How many people live in your household?」
     #: 探路时 MCP 明明填的是**数字**，产出的 py 却填了个**姓名」）—— 那一格原先**没有**这一条，
@@ -2918,6 +3006,22 @@ LEDGER_FIELD_KEYS = ("label", "hint", "type", "required", "stability", "selector
 #: 一页最多记几个格（同一页几十个格的站不少；超出的那部分**不静默丢**：见 `_field_row` 的尾巴）。
 MAX_LEDGER_FIELDS = 30
 
+#: ★ 2026-10-08：一页最多记几条**逐元素正文**（`node_texts`）。同 `MAX_LEDGER_FIELDS` 的理由：
+#: 账本和 checkpoint 会一起涨。数量级是**量出来的**，不是拍的：
+#: 【我量的·2026-10-08】真站一份 `observe` 回执（policyquail，`/tmp/pq-observe.json`）：
+#: 45 条 / 共 1844 字（均 ~41 字一条）—— 而工具那边上限是 600 条（`nodeTextsLimit`，
+#: 子帧多的页面才够得着），600 × 41 字 ≈ 24KB/行，比 `PAGE_HEAD_CHARS`(8000) 还大。
+#: 120 条 ≈ 5KB 封顶，而这一格要服务的那道纠正（`_snippet_in_one_node`）找的是**页头那
+#: 48 字**落在哪个元素里 ⇒ 那一段本来就在前面几条里。超出的**不静默丢**（见下面那两个键）。
+MAX_LEDGER_NODES = 120
+
+#: 账本里**只有 `observe` 行**许写的那几个键（R3 的**前提**，破了当场抛 —— 见 `_summarize`
+#: 的尾巴与 `_only_looks_carry_the_text`）。三格是**同一件事的三个投影**：「这一页长什么样」——
+#: 一个整段（`page_text_head`）、一个逐元素（`node_texts`）、一个逐元素的**身份**
+#: （`node_elements`）。判据那头读的是「带正文的行 == 落点认的那些行」这条等价，
+#: 而「这页长什么样」一旦能从别处（别的一手工具）混进账本，等价就不成立了。
+_TEXT_KEYS = ("page_text_head", "node_texts", "node_elements")
+
 
 def _field_row(f: dict) -> dict:
     """一个字段进账本的样子：**白名单键、空值不写**（同 `_diag_row` 的理由与纪律）。
@@ -2928,6 +3032,17 @@ def _field_row(f: dict) -> dict:
     row = {k: f.get(k) for k in LEDGER_FIELD_KEYS if f.get(k) not in (None, "", False)}
     if f.get("required") is True:
         row["required"] = True
+    #: ★ 2026-10-08（policyquail `job-c8730acb27c5`）：**看过这一格时它是不是空的**。
+    #: `observe` 一直**回读**每一格的值（工具那边是**三态**：`null` = 不是值控件（按钮）/
+    #: `""` = 是值控件但现在是空的 / 有值 = 现在装着什么），可投影进账本时被丢掉了
+    #: （`LEDGER_FIELD_KEYS` 里没有它）⇒ IR 那一层只看得见「见过这个框」、看不见
+    #: 「见的时候它空着」。两者差着一条真缺口 —— 这个站上 `#zip` 是站点按 IP **自己填好的**，
+    #: 探路**正确地**没动它；而 `#birth-year` 是空的、产物必须填。
+    #: ⚠️ 只落**是/否**这个「空」，**不落值本身**：那是访问者留在页面上的东西
+    #: （`92582` 就是他的邮编），账本没有理由替它留档，判据也只需要那个是/否。
+    #: ⚠️ 只认**空串**：`None` 是「不是值控件」，不许读成空。
+    if f.get("value") == "":
+        row["empty"] = True
     path = f.get("frame_path")
     if isinstance(path, (list, tuple)) and path:
         row["frame_path"] = [str(x) for x in path]
@@ -2962,6 +3077,33 @@ def _summarize(name: str, args: dict, raw: Any, elapsed_ms: int, fill: dict | No
         out["page_fields"] = rows[:MAX_LEDGER_FIELDS]
         if len(rows) > MAX_LEDGER_FIELDS:
             out["page_fields_capped"] = len(rows)
+        #: ★ 2026-10-08：**逐元素正文**（`node_texts`）—— 判据那道「落在**单个元素**里吗」的
+        #: 纠正（`_snippet_in_one_node`）唯一的原料。它一直在回执里，却没进账本 ⇒ 盘上
+        #: 任何一本账本都回答不了「这条判据当时为什么是这么剪的」（形状 A 那一趟就卡在这儿），
+        #: 只能重跑一趟真站。同 `page_fields` 的纪律：白名单 + 上限 + **超了记一个数**。
+        raw_nodes = [_norm(t) for t in (raw.get("node_texts") or [])]
+        #: ★ 2026-10-08：**每一段正文配一个「它是啥元素」**（标签@区域）—— 与 `node_texts`
+        #: 逐条对应（工具那边同一个循环产出的，见 `PageModel.NodeElements`）。
+        #: 为什么账本要它：光有文字 ⇒「这一组为什么是这个门」事后**查不出来**
+        #: （真站形状：判据落在 `Skip to main content` 上，只有回头看元素身份才知道那是
+        #: 页头那个无障碍跳转链接、全站每页都有）⇒ 读账本的人只能再跑一趟真站。
+        #: ⚠️ 两条**一起**滤、**一起**截：错位比没有这一格更坏（每一句都配着别人的名字）。
+        raw_kinds = [str(k or "") for k in (raw.get("node_elements") or [])]
+        if len(raw_kinds) != len(raw_nodes):
+            raw_kinds = [""] * len(raw_nodes)     # 对不上就别猜：宁可缺，不许错位
+        pairs = [(t, k) for t, k in zip(raw_nodes, raw_kinds) if t]
+        nodes = [t for t, _ in pairs]
+        kinds = [k for _, k in pairs]
+        out["node_texts"] = nodes[:MAX_LEDGER_NODES]
+        out["node_elements"] = kinds[:MAX_LEDGER_NODES]
+        #: ⚠️ `node_texts_truncated` 对读的人**只有一个意思**：这份清单**不是这一页的全部**
+        #: （工具那边就截过，或者账本这一道上限截过）⇒「这段判据不在单个元素里」**不能当结论**
+        #: （与 `_snippet_in_one_node` 拿它做的事一致）。账本自己截掉多少另记一格（诊断用），
+        #: 两个原因不许混成一个数：一个是「页面上元素多到看不全」，一个是「账本没抄那么多」。
+        if raw.get("node_texts_truncated") or len(nodes) > MAX_LEDGER_NODES:
+            out["node_texts_truncated"] = True
+        if len(nodes) > MAX_LEDGER_NODES:
+            out["node_texts_capped"] = len(nodes)
         # 诊断：**哪一帧、因为什么**（`_diag_row` 的 docstring 写了「只留 kind」的后果）
         out["diagnostics"] = [_diag_row(d) for d in (raw.get("diagnostics") or [])
                               if isinstance(d, dict)]
@@ -2981,14 +3123,16 @@ def _summarize(name: str, args: dict, raw: Any, elapsed_ms: int, fill: dict | No
     # 判的是**键在不在**，不是值真不真：一串空正文照样说明「有别的工具也在写它」，
     # 而 R3 的整套推导（「窗口里任何一眼看见 ⇔ 最后一眼看见」）正是从「只有 observe 写」来的。
     # 放在这里而不是只放在读的那一侧：**前提是在这儿产生的**，破了要当场知道是哪个工具。
-    if name != "observe" and "page_text_head" in out:
+    leaked = [k for k in _TEXT_KEYS if k in out] if name != "observe" else []
+    if leaked:
         raise _TextPremiseBroken(
-            "工具「%s」的结果里冒出了 `page_text_head` —— R3 的**前提破了**"
-            "（前提：这一键只有 `observe` 写；本函数是唯一的写点）。"
+            "工具「%s」的结果里冒出了 %s —— R3 的**前提破了**"
+            "（前提：正文那几个键只有 `observe` 写；本函数是唯一的写点）。"
             "R3 判「过没过成功线」时只认 `observe` 行当落点，别的行带正文会让"
             "「窗口里看见过」漏判 ⇒ **提交会留在前缀里**，重放它 = **往真实站点"
-            "再交一次真实表单**。要么把这个键从这个工具的结果里去掉，要么先改 R3 的落点"
-            "（`_landing_index`）让它也认这一类行 —— 别让它就这么过去。" % name)
+            "再交一次真实表单**。要么把这几个键从这个工具的结果里去掉，要么先改 R3 的落点"
+            "（`_landing_index`）让它也认这一类行 —— 别让它就这么过去。"
+            % (name, "、".join("`%s`" % k for k in leaked)))
     return out
 
 
@@ -3179,18 +3323,22 @@ def _only_looks_carry_the_text(rows: list) -> None:
     """
     for i, row in enumerate(rows or []):
         res = (row or {}).get("result")
-        if not isinstance(res, dict) or not res.get("page_text_head"):
+        if not isinstance(res, dict):
+            continue
+        carried = [k for k in _TEXT_KEYS if res.get(k)]
+        if not carried:
             continue
         action = str((row or {}).get("action") or "")
         if action != "observe":
             raise _TextPremiseBroken(
-                "第 %d 行是「%s」，可它的结果里带着 `page_text_head` —— R3 的**前提破了**"
-                "（前提：正文只有 `observe` 那些行才写）。R3 判「过没过成功线」时**只认 `observe` "
-                "当落点**，别的行带正文会让「窗口里看见过」漏判 ⇒ **这一步（常常就是提交）"
-                "会留在前缀里**，重放它 = **往真实站点再交一次真实表单**。"
-                "这里不猜：先把前提收回来（该写这一键的只有 `_summarize` 的 `observe` 那一支），"
+                "第 %d 行是「%s」，可它的结果里带着 %s —— R3 的**前提破了**"
+                "（前提：正文那几个键只有 `observe` 那些行才写）。R3 判「过没过成功线」时"
+                "**只认 `observe` 当落点**，别的行带正文会让「窗口里看见过」漏判 ⇒ "
+                "**这一步（常常就是提交）会留在前缀里**，重放它 = **往真实站点再交一次真实表单**。"
+                "这里不猜：先把前提收回来（该写这几个键的只有 `_summarize` 的 `observe` 那一支），"
                 "再决定 R3 的落点要不要跟着改大。"
-                % (i + 1, action or "（这一行没写动作名）"))
+                % (i + 1, action or "（这一行没写动作名）",
+                   "、".join("`%s`" % k for k in carried)))
 
 
 def replayable_prefix(steps: list, success_text: str, *,
@@ -4395,8 +4543,13 @@ class _Pages:
         if self._current is not None and self._current["key"] == key:
             return None
         previous = self._current["name"] if self._current else None
-        when = _when_for(model, avoid=_norm(((self._current or {}).get("model") or {})
-                                            .get("page_text") or ""))
+        #: ★ 2026-10-08：除了「紧挨着的上一页」（`avoid`），把**前面每一页**都递进去 ——
+        #: 判据要躲开的是「别的页上也有」的那段，而它常常不在上一页、在更早那几页上
+        #: （真站：`inquire` 的上一页是 reCAPTCHA，撞的却是**首页**那句跳转链接）。
+        when = _when_for(model,
+                         avoid=_norm(((self._current or {}).get("model") or {})
+                                     .get("page_text") or ""),
+                         others=[(p or {}).get("model") or {} for p in self.pages])
         #: ★ 2026-09-22（生成侧建议第 1 条，真产物里量到的）：**相邻两页 `when` 完全相等 ⇒
         #: 合并成一个状态**（复用上一页的名字）。
         #: 为什么必须合并：`when` 是产物重放时**唯一的门** ⇒ 两个状态同门，就会演出
@@ -4442,7 +4595,7 @@ class _Pages:
         return name
 
 
-def _when_for(model: dict, avoid: str = "") -> dict | None:
+def _when_for(model: dict, avoid: str = "", others=()) -> dict | None:
     """一个状态的 `when`：**进这个状态时**那一页的判据。
 
     `url_contains` 用**稳定前缀**（`_stable_url`）：先去掉 query 与 fragment —— 重放时 query
@@ -4472,7 +4625,7 @@ def _when_for(model: dict, avoid: str = "") -> dict | None:
         when["url_contains"] = url
     text = _norm(model.get("page_text") or "")
     snippet = _snippet(text, avoid=avoid)
-    spliced = ""
+    spliced, avoided, element = "", "", ""
     nodes = model.get("node_texts")
     if snippet and isinstance(nodes, list) and nodes and not model.get("node_texts_truncated"):
         # ★ 2026-09-28（缺陷单《产物判据跨元素拼接》§六 A.4 —— 那份单子的**正题**）：
@@ -4483,9 +4636,11 @@ def _when_for(model: dict, avoid: str = "") -> dict | None:
         # 这里把剪出来的那段拿**逐节点正文**验一遍：不落在单个节点上就换成落在的那个。
         got = [str(t or "") for t in nodes]
         if got and not any(_norm(snippet).lower() in t.lower() for t in got):
-            better = _snippet_in_one_node(snippet, got)
+            better, skipped, element = _snippet_in_one_node(
+                snippet, got, others=others, kinds=model.get("node_elements") or [])
             if better:
                 spliced, snippet = snippet, better
+                avoided = _snippet(_norm(skipped)) if skipped else ""
             else:
                 snippet, spliced = "", snippet
     if snippet:
@@ -4493,10 +4648,21 @@ def _when_for(model: dict, avoid: str = "") -> dict | None:
     if not when:
         return None
     if snippet and when_holds(when, model):
+        if spliced and element:
+            #: ★ 2026-10-08：**这一段是从哪个元素剪的**（标签@区域）—— 用户当场要的那句
+            #: 「探路的时候告诉我们这个对应的文本到底是在啥元素找到的」。
+            #: 为什么非要有它：判据是从正文里剪的一段话，而那句话**自己是看不出出处的**
+            #: （`Skip to main content` 可以是页头那个跳转链接、也可以是正文里的一句话）。
+            when["text_from"] = WHEN_TEXT_FROM % element
         if spliced:
             #: 换了判据（或换成只有 URL）时**必须说**：读产物的人要能看见
             #: 「原来剪出来那串跨了两个元素、现在用的是哪一个」。
             when["text_why"] = WHEN_TEXT_SPLICE % spliced[:60]
+        if avoided:
+            #: ★ 2026-10-08：躲开「别的页上也有的那段」这件事**必须说**（有损/有改就要说）：
+            #: 读账本的人要能看见「门原来是那句公用文案、现在换成这一页自己的」——
+            #: 不然「这一组为什么是这个门」在账上又变成一个查不出来的问题。
+            when["text_why"] = WHEN_TEXT_AVOIDED % (avoided[:60], snippet[:60])
         return when
     # ── 退化成「**只有 URL**」那一条 ────────────────────────────────────
     # ⚠️ 这一支是**有损**的（判据少了一半，站点改文案就整组跳过）⇒ **有损必须说**
@@ -4685,6 +4851,125 @@ def _gates_that_hold_elsewhere(pages: list) -> list:
     return out
 
 
+#: ★ 2026-10-08：收尾时给**撞了的那道门**重挑一段正文（形状 A 的正题）。
+#:
+#: 现场（真账本，`job-f86ac12fda15` / `job-c8730acb27c5`）：
+#:   · `shorecrestwpb` 首页那组 = url `https://www.shorecrestwpb.com/` + 正文 `Skip to main content`
+#:     （无障碍跳转链接）⇒ 这道门在 `/inquire`、`/thankyou?token=…` 上**也成立** ⇒ IR 拦住整趟。
+#:   · `policyquail` 的 `auto_wi` = `…/auto_wi` + `Auto Quiz - PolicyQuail`（**页面标题**）⇒ 同理。
+#: 为什么剪的时候避不开：`_snippet` 的避让**只避上一页**，而「页头 / 跳转链接 / `<title>`」这类
+#: 文字是**全站每一页**都有的 —— 只要它不紧挨着上一页就避不开；而**第一个状态根本没有上一页**
+#: （`avoid=""`），直接在正文开头剪，剪到的就是它。
+#:
+#: 为什么等到收尾才做：只有那一刻「每一页的正文」才都在手边 —— 才谈得上**按全站避让**。
+#: ⚠️ 顺序：**先重挑、再算撞车** —— `gate_collisions` 拦的是产物，它必须记的是重挑之后
+#: 还剩几个真分不开的（反过来的话，救回来的那些也会照样把整趟砍死）。
+#: ⚠️ 剪判据那一侧（`_snippet` / `_when_for` / `note_page`）**一个字不动**：
+#: 没撞的门判据一个字节都不该变（不然所有站的产物判据一起动）。
+WHEN_REPICKED_SAY = (
+    "「%s」这一组的判据在**别的页**上也成立（%s）—— 收尾时**按全站避让重挑了一段**："
+    "原来钉的是 %r（全站每一页都有），现在钉在 %r（只这一页有）。")
+
+#: 写在**门自己身上**的那一句（`when["text_why"]`）。比上面那句短：读产物源码的人看的是它。
+#: ⚠️ 与 `WHEN_TEXT_SPLICE`（2026-09-28 跨元素拼接那条）同一个位置、同一条规矩：
+#: **换过判据就要在门上留一句**，读的人不必去翻账本才知道这段字不是原来那段。
+WHEN_REPICKED_WHY = ("这一段判据**收尾时按全站避让重挑过**：原来钉的那段在别的页上也成立"
+                     "（分不开页）——现在已经落在**只有这一页有**的那一段上。")
+
+#: 重挑时候选正文至少要多长。与 `_snippet_in_one_node` 那个门槛**同一个口径**（8 字）：
+#: 短判据的鉴别力等于零（一页上到处都成立），那会让**每一组**的门都成立 —— 比整组跳过更坏。
+_WHEN_REPICK_MIN_CHARS = 8
+
+
+def _unique_snippet_for(model: dict, others: list) -> str:
+    """这一页上**只有它有**的那一段正文（挑不到给空串）。
+
+    候选 = 逐元素正文里每一个元素**自己的开头**（口径与 `_snippet_in_one_node` 一样：
+    元素自己的开头才是「它自己的话」）。三条要求，缺一不可：
+
+      ① 落在**单个元素**里 —— 拿不到逐元素正文（缺 / 被截断）时**直接不挑**：宁可不动，
+         也不去犯 2026-09-28 那个「拿跨元素拼出来的那串字当判据」的旧病（那串在页面上
+         根本不存在 ⇒ 重放时整组静默跳过）。
+      ② 在**别的每一页**的正文里都不出现 —— 比 `_snippet` 那个「只避上一页」严，撞车正是
+         从「只避上一页」那儿来的。
+      ③ 在**自己这一页**上真成立（正例）—— 不成立就是整组静默跳过，比撞车更坏。
+
+    挑到第一个合格的就要（按页面自己的元素顺序）：够用就行，不挑更长的 ——
+    读起来才是这一页正文里的原话。
+    """
+    nodes = model.get("node_texts")
+    if not isinstance(nodes, list) or not nodes or model.get("node_texts_truncated"):
+        return ""
+    mine = _norm(model.get("page_text") or "").lower()
+    if not mine:
+        return ""
+    others_norm = [_norm(str(o.get("page_text") or "")).lower() for o in others]
+    for raw in nodes:
+        cand = _snippet(_norm(str(raw or "")))
+        if len(cand) < _WHEN_REPICK_MIN_CHARS:
+            continue
+        low = cand.lower()
+        if low not in mine:
+            continue
+        if any(low in text for text in others_norm):
+            continue
+        return cand
+    return ""
+
+
+def _repair_ambiguous_whens(pages: list) -> list:
+    """★ 2026-10-08：收尾时给**已经撞了**的那些门重挑一段正文（形状 A）。
+
+    只动 `_gates_that_hold_elsewhere` **点名的那几个门** —— 没撞的一个字都不碰（这一改要是
+    溢出去，所有站的产物判据一起变）。挑不到（这一页真没有独有的正文）⇒ **一个字都不改**：
+    那时候照旧交给 IR 拦住并说清，**不新增静默路径**。
+
+    ⚠️ **按状态名成组**（与那一验、「`Journey.states()` 取最后一条」同一条口径）：同一个名字
+    底下的几条是**同一个状态**的几次观测 —— 「别的页」只算**别的名字**的页；换的时候几条
+    **一起换**成同一段，而且那一段要在**每一条自己那一页**上都成立（正例不许破）。
+    只换最后一条（进产物的那条）的话，前面几条照旧撞车 ⇒ `gate_collisions` 不为空 ⇒
+    整趟还是被砍死，而账本上却写着「重挑过了」—— 那是半句真话。
+
+    返回重挑成了的那些 `[{"name", "had", "now", "pages"}]` —— 调用方据此**记账 + 重算**
+    `gate_collisions`（那一格拦的是产物，必须记重挑之后还剩几个）。
+    """
+    out: list = []
+    for hit in _gates_that_hold_elsewhere(pages):
+        name = str(hit.get("name") or "")
+        #: ⚠️ **按名字成组**（与上面那一验、「`Journey.states()` 取最后一条」同一条口径）：
+        #: 同一个名字底下的几条是**同一个状态**的几次观测 ——
+        #:   · 「别的页」= **别的名字**的页（同名之间不比，那一验自己就是这么写的）；
+        #:   · 换的时候**几条一起换**成同一段，而且那一段必须在**每一条自己那一页**上都成立 ——
+        #:     只换最后一条（进产物的那条）的话，前面几条照旧撞车 ⇒ `gate_collisions`
+        #:     不为空 ⇒ 整趟还是被砍死，而账本上却写着「重挑过了」（半句真话）。
+        mine = [p for p in pages if str(p.get("name") or "") == name]
+        if not mine:
+            continue
+        others = [p.get("model") or {} for p in pages if str(p.get("name") or "") != name]
+        cand = _unique_snippet_for(mine[-1].get("model") or {}, others)
+        if not cand:
+            continue
+        low = cand.lower()
+        if not all(low in _norm(str((p.get("model") or {}).get("page_text") or "")).lower()
+                   for p in mine):
+            continue                    # 这一条自己那页上没有这段 ⇒ 一起不换（正例不许破）
+        had: list = []
+        changed = False
+        for p in mine:
+            when = p.get("when")
+            if not isinstance(when, dict) or not when.get("url_contains"):
+                continue
+            if not had:
+                had = list(when.get("text_contains") or [])
+            when["text_contains"] = [cand]
+            when["text_why"] = WHEN_REPICKED_WHY
+            changed = True
+        if changed:
+            out.append({"name": name, "had": had, "now": cand,
+                        "pages": list(hit.get("pages") or [])})
+    return out
+
+
 #: ★ 2026-09-30：**同一页**被判成两个状态、并掉时记在账上的一句。
 #:
 #: 现场（用户报的「他老是说啥对不上的、然后就不产出 py」）：`getfixapro.com/offer-new/cart.php`
@@ -4773,6 +5058,15 @@ def _merge_one_page_states(pages: list, steps: list) -> list:
     这正是那一趟**实际做过**的事（并进来的那些步本来就是在这一页上做的）。
     """
     merged: list = []
+    #: ★ 2026-10-08：删的时候按**身份**（这两条被并掉的清单本身），**不按名字**。
+    #: 为什么：并进来的那条与留下的那条**可能同名** —— `note_page` 见相邻两页 `when` 完全
+    #: 相等时就把新的挂在**同一个状态名**下（2026-09-22 那条该做的事），而真站上确实会出现
+    #: 「判据一字不差、`key` 不等」的两眼（`_SNIPPET_JUNK` 注释里那个形状：广告位占位符
+    #: `___` 时有时无 —— 它被当装饰字符剥掉 ⇒ 判据不变，而 `key` 那 400 字里带着它 ⇒
+    #: 不算「同一眼」）。按名字删的后果：**连留下的那条一起删** ⇒ 这一页从 `journey.pages`
+    #: 里整个消失 ⇒ 产物里这一组成了 `when: null`（`template._matches(None)` 恒真）
+    #: ⇒ 没有门 = **在任何页上都适用**（重放时在错的页上照做、日志还写着做成了）。
+    gone_objs: list = []
     #: ① **「没读到正文」的那一眼不是一页**（见 `UNREAD_MERGED_SAY`）：并进**同一地址上、
     #: 紧接着的那个读到了正文的状态**（步骤按账上先后改挂过去；判据用那个读到的）。
     #: ⚠️ 只在**同一稳定地址**上并：地址都不一样时，那一眼里做的事与后面那一页的关系
@@ -4800,10 +5094,10 @@ def _merge_one_page_states(pages: list, steps: list) -> list:
             continue
         merged.append({"name": pg.get("name") or "", "into": target.get("name") or "",
                        "url": pg.get("url") or "", "kind": "unread"})
+        gone_objs.append(pg)
         _rename_state(steps, pg.get("name"), target.get("name"))
-    if merged:
-        dropped = {m["name"] for m in merged}
-        pages[:] = [q for q in pages if (q.get("name") or "") not in dropped]
+    if gone_objs:
+        pages[:] = [q for q in pages if not any(q is g for g in gone_objs)]
 
     #: ⚠️ ★ 2026-09-30（**现场逮到的第三个形状**，`zekear` 那趟自测倒在这儿）：
     #: 只并**相邻的**那几页。原来是在 `pages` 里**跨着找**同址、判据分不开的那些 —— 于是
@@ -4832,10 +5126,10 @@ def _merge_one_page_states(pages: list, steps: list) -> list:
         for gone in group[1:]:
             merged.append({"name": gone.get("name") or "", "into": keep.get("name") or "",
                            "url": gone.get("url") or "", "kind": "same_page"})
+            gone_objs.append(gone)
             _rename_state(steps, gone.get("name"), keep.get("name"))
-    if merged:
-        dropped = {m["name"] for m in merged}
-        pages[:] = [p for p in pages if (p.get("name") or "") not in dropped]
+    if gone_objs:
+        pages[:] = [p for p in pages if not any(p is g for g in gone_objs)]
     return merged
 
 
