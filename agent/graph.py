@@ -1227,18 +1227,27 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     #: ⇒ 现在：**照旧往下走**（渲出这一版 → 契约检查 → 自测 → 交付），缺什么写在明面上。
     #:
     #: ⚠️ **只放这一类**（`ir_mod.SOFT_CODES`），不是整个 IR 闸都拆：
-    #: `trace_ambiguous.gate_holds_elsewhere`（两组判据分不开）那一类**照旧砍** ——
+    #: `trace_ambiguous.gate_holds_elsewhere`（两组判据分不开）那一类**这一次照旧不往下走** ——
     #: 它会让产物**静默地在错的页上做动作**、日志还写着「做成了」（georgiapower 那趟
     #: 「真做 2 步、跳过 23 步」），与「缺个必填格、站方当面退回」完全是两码事。
+    #:
+    #: ★ 2026-10-08（用户：「**修吧，第四处也开个口子**」）：那一类的**结局照旧是 `draft_failed`**
+    #: （不往下走、不交付），但**这一版要渲出来留给运营** —— 与前阵子那三处（lint 触顶 /
+    #: 自测触顶 / 交付前没过检查）用**同一个** `_keep_unverified`。
+    #: 为什么非开不可：它原先**在这儿当场 return**，而 `src` 是在那**之后**才渲出来的
+    #: ⇒ `state["src"]` 从来没写过 ⇒ 面板上「没有可上传的 py」，连「照样传」都救不了
+    #: （`service._what_to_upload` 的 force 那一路读的正是 `state["src"]`）。
+    #: 真代价 `job-f86ac12fda15`（shorecrestwpb.com，2026-10-08）：探路 4 步就见到成功文案、
+    #: 一路正常推进，被砍死之后**运营手上一个字节都没有**。
+    #: ⇒ 现在的分工：**砍的是这一趟的结局，不是那一版的存在**（见下面渲完之后那一段）。
     #:
     #: ⚠️ **代价说清**：放过去的这一版**带着缺口出去**，站方多半因为缺必填项退回。它是
     #: **给运营拿回去改的料**，不是「验过了」—— 所以那句话进 `unverified`（与今天别处同一格）。
     _hard = [p for p in ir_problems if p.code not in ir_mod.SOFT_CODES]
+    _hard_said = ir_mod.say(_hard) if _hard else ""
     if _hard:
-        out.update({"end_reason": END_DRAFT_FAILED, "end_note": ir_mod.say(_hard),
-                    "ir_layer": ir_mod.layer_of(_hard)})
-        return out
-    if ir_problems:
+        out["ir_layer"] = ir_mod.layer_of(_hard)      # 照旧记着：面板看得到卡在第几层
+    if ir_problems and not _hard:
         _ir_said = ir_mod.say(ir_problems)
         out["ir_problems"] = _ir_said
         out["ir_layer"] = ir_mod.layer_of(ir_problems)
@@ -1302,9 +1311,17 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     except ValueError as exc:
         # 最常见的一种：没人说「什么算成功」。**不猜** —— 猜出来的成功判据就是
         # 「跑到底再谎报成功」的入口（template.py 也拒这种产物）。
-        out.update({"end_reason": END_DRAFT_FAILED,
-                    "end_note": ("先别写 py：%s\n（成功判据只有人知道 —— §6.1：页面能告诉 agent "
-                                 "**机制**，只有人能告诉它**意图**。）" % exc)})
+        #: ⚠️ ★ 2026-10-08：`_hard` 也在时**两个原因都要说**，而且结构问题排在前 ——
+        #: 它是**先**量到的（排在这一版渲出来之前），渲不出来是第二条。
+        #: 只说后者，读的人会去修一个**不是根因**的东西：这正是
+        #: `tests/test_ir.py::test_the_draft_refuses_an_incomplete_ir_before_rendering`
+        #: 逮到的（改了「硬拦不再当场 return」之后，那句话从「只有地址」变成了
+        #: 「第 1 步认不出来」—— 后者是真的、但不是先发生的那个）。
+        _why = ("先别写 py：%s\n（成功判据只有人知道 —— §6.1：页面能告诉 agent "
+                "**机制**，只有人能告诉它**意图**。）" % exc)
+        if _hard:
+            _why = "%s\n⚠️ 另外：**这一版渲之前就已经量到结构问题** —— %s" % (_hard_said, _why)
+        out.update({"end_reason": END_DRAFT_FAILED, "end_note": _why})
         return out
 
 
@@ -1325,6 +1342,20 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
                 # 这一版就是为那次打回写的 → 把路上的那个标记收掉（`revisions` 留着当记录）。
                 # 不清的话路由会一直把它往回送（`_after_lint` 会以为「刚被人否过」）。
                 "revised_at": "", "diagnosis": None})
+    #: ★ 2026-10-08（用户：「修吧，第四处也开个口子」）：**IR 硬拦那一支的收尾挪到这儿**。
+    #: 排在这一版**渲出来之后**的理由是死的：那一支要留的就是这份 `src`，而它到这一行才有。
+    #: ⚠️ 与那三处（lint 触顶 / 自测触顶 / 交付前没过检查）**同一个** `_keep_unverified`：
+    #: 落进交付路径 + `unverified` 里写清没过什么。
+    #: ⚠️ `end_reason` 一个字没动（仍是 `draft_failed`）：**留料 ≠ 放行** —— 上面那条「宁可没有」
+    #: 的裁定管的是「这一趟的结局」，不是「这一版存不存在」。上传那道闸也照旧只认
+    #: `delivered`（`service._delivered_path`）⇒ 面板不会自动把它当成产物，要人**明确**
+    #: 点「照样传」才传得出去。
+    if _hard:
+        out.update({"end_reason": END_DRAFT_FAILED, "end_note": _hard_said,
+                    "ir_problems": _hard_said})
+        _keep_unverified(state, out,
+                         "结构检查没过（这一版**照样留给运营**，可以「照样传」去试）：%s"
+                         % _hard_said, src=src)
     return out
 
 

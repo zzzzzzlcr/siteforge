@@ -37,11 +37,15 @@ Console 的原话：「这次探路没走完（预算到顶了。走了 20 步�
 跑一趟真模型，而那一趟这一轮不许开）。它是个**估计**：按手头那几条（**偏的**）样本折出来的
 —— 4 条**全是同一个站**（gowizard）、**全是被 20 轮钉死的那一档**（能走完的早就走了，
 走完那几趟只用 2–4 轮）⇒ 这个子集天然是「动作密度最低」的那一类，**偏在哪一边没量**。
-已知目标 25 步、已知实测推进速率 ⇒ 低于 64 就（按这个估计）走不完。什么时候该再校准：
-**放开预算之后的第一趟真站探路**（`attempts.jsonl` 的 `rounds` 那一格）—— 若它落在
-新预算的 80% 以上（>64），说明还是紧的。⚠️ 那个门限**恰好压在 64（估计）上** ⇒
-**第一批样本就可能响**：响了说明还是紧的；**不响也不能说明松**（估计若偏高，真实需求
-本就在 64 以下 —— 「偏在哪一边没量」）。两种都要记，但**别把「响」当成误报**。
+已知目标 25 步、已知实测推进速率 ⇒ 低于 64 就（按这个估计）走不完。
+
+★ **2026-10-08：那个「什么时候该再校准」的样本来了，而且响在估计的上方。**
+`job-42daa38499e9`（hormn.com）烧到 `rounds=86 / steps=95` 还没走完（旧的 80 把它掐了，
+`explore_unfinished`、没有 py），而它一路在推进 ⇒ **64 这个估计是偏低的**（与上面那句
+「偏在哪一边没量」合得上）。用户当天裁定「放大点」⇒ 默认值放到 **160 / 200**，
+**下面那条短漏斗的下界（64）一个字没动** —— 新加了一条**长漏斗**的下界（86 / 95）
+在 `test_the_budget_also_covers_a_real_long_funnel_not_just_the_gowizard_one` 里。
+再校准的时机改成：**下一趟把 160 也烧光**的真站探路。
 
 ⚠️ **这一段的措辞与 `agent/browser_agent.py` 那张预算注释是同一套**（2026-09-20 修复轮 5
 对齐：那边写的是「64 是**估计**不是下界」/「就**可能**响」）—— **两个文件不许一个知道、
@@ -113,6 +117,45 @@ def test_the_budget_is_still_a_brake_not_a_number_with_a_zero_added():
     assert browser_agent.DEFAULT_MAX_ROUNDS <= 4 * IMPLIED_ROUNDS, (
         "轮预算 %d 已经四倍于已知需要（%d）—— 那不是「放开」，那是把防跑飞那根线拔了"
         % (browser_agent.DEFAULT_MAX_ROUNDS, IMPLIED_ROUNDS))
+
+
+#: ★ 2026-10-08 的**真长漏斗**样本（`job-42daa38499e9`，hormn.com，build）：
+#: `attempts.jsonl` 记 `rounds=86 / steps=95`、`stop_reason=budget_rounds`、
+#: `end_reason=explore_unfinished`、`delivered=false` —— **一个 py 都没有**。
+#: ⚠️ 它不是「卡住」：95 步里**只有 1 步**真的没做成（一个选择器没找到），
+#: 一路在推进（13 题的问卷 + 注册漏斗，最后已经走到 app 页）⇒ 是**路比预算长**。
+MEASURED_LONG_FUNNEL_ROUNDS = 86
+MEASURED_LONG_FUNNEL_STEPS = 95
+
+
+def test_the_budget_also_covers_a_real_long_funnel_not_just_the_gowizard_one():
+    """**上面那个 64 只管得住「25 步的短漏斗」** —— 真长漏斗今天量到了一个，比它大。
+
+    `IMPLIED_ROUNDS` 那个 64 是从**一个**已知重放（gowizard 的 25 步）折出来的，
+    而它的样本子集**自己承认是偏的**（「4 条全是同一个站、全是被 20 轮钉死的那一档」）。
+    2026-10-08 拿到了那条注释一直在等的**第一个真样本**：hormn 那趟按 13 题问卷 +
+    注册的漏斗，烧到 **86 轮 / 95 步还没走完**就被旧的 80 掐断。
+
+    ⇒ 两条下界**同时**要成立：短漏斗那条（64）管「别退回去」，这条（86/95）管
+    「今天这种长度的漏斗也走得完」。**旧的断言一条都没动**（`IMPLIED_ROUNDS == 64`
+    照旧钉着），这是**另加**的一条 —— 加而不是改，因为那两个数说的是两件事。
+    """
+    assert browser_agent.DEFAULT_MAX_ROUNDS > MEASURED_LONG_FUNNEL_ROUNDS, (
+        "轮预算 %d 不大于实测的长漏斗需求 %d —— 那种 13 题问卷 + 注册的站**结构上又走不完**"
+        "（2026-10-08 `job-42daa38499e9` 就是这么停在 80 的：86 轮还在推进，被掐断，"
+        "`explore_unfinished`，没有 py）"
+        % (browser_agent.DEFAULT_MAX_ROUNDS, MEASURED_LONG_FUNNEL_ROUNDS))
+    #: ⚠️ 步预算这半条**不许**写成 `DEFAULT_MAX_STEPS > MEASURED_LONG_FUNNEL_STEPS`（95）——
+    #: 变异测试当场抓到了：**旧的 100 本来就 > 95**，那条断言改成什么样都是绿的，是个**假钉子**
+    #: （它看着像在钉「这次放大了」，其实一个字节都没钉住）。
+    #: 步预算真正的规矩是「**不许先于轮数卡死**」—— 实测每轮正好一次工具调用，
+    #: 所以步数卡住时模型连收尾那一轮都拿不到；那条规矩由下面
+    #: `test_the_step_budget_does_not_bind_before_the_round_budget` 钉着。
+    #: 这里钉的是**这一放之后它仍然成立**：`steps > rounds = 160`，顺带就覆盖了 95。
+    assert browser_agent.DEFAULT_MAX_STEPS > browser_agent.DEFAULT_MAX_ROUNDS, (
+        "步预算 %d 不大于轮预算 %d —— 实测每轮正好一次工具调用 ⇒ 步会先卡死，"
+        "而那个停因（`budget_steps`）连收尾那一轮都不给。长漏斗那 95 步也就一起被盖住了"
+        % (browser_agent.DEFAULT_MAX_STEPS, browser_agent.DEFAULT_MAX_ROUNDS))
 
 
 def test_the_step_budget_does_not_bind_before_the_round_budget():
@@ -213,7 +256,8 @@ def test_the_production_path_never_hands_explore_a_plan_so_the_round_budget_is_t
          所以就算有人往②上加，生产上也会当场 TypeError（不是悄悄接上）。
 
     ⇒ 松开 20 就是松开**那唯一一根**上限：一个卡住的模型在一趟里对**真站**能做的
-    改页面动作从 20 个变成 80 个。哪天有人把 `plan` 接进生产路径，这一条会红 ——
+    改页面动作从 20 个变成 **80 个**（2026-10-08 又放到 160，同一个道理 —— 见模块顶上）。
+    哪天有人把 `plan` 接进生产路径，这一条会红 ——
     那正是 `DEFAULT_MAX_ROUNDS` 旁边那张注释该被重写的时候。
     """
     # ① `plan` 默认 None（不给 = 没有 watch = 停滞判据不参与）

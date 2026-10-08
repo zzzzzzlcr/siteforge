@@ -1005,17 +1005,30 @@ def test_a_self_test_that_could_not_reach_the_window_is_not_a_product_failure(tm
         "这一档要允许「重开窗口接着走」（服务侧那张表说了算）"
 
 
-def test_a_ledger_whose_judges_cannot_tell_two_pages_apart_writes_no_artifact(tmp_path):
-    """判据在**别的页**上也成立 ⇒ 一份 py 都不许出（人话要说清是哪两组、为什么）。
+def test_a_ledger_whose_judges_cannot_tell_two_pages_apart_still_ends_the_run_but_keeps_a_py(
+        tmp_path):
+    """判据在**别的页**上也成立 ⇒ 这一趟**照旧不往下走**（人话要说清是哪两组、为什么），
+    ★ 2026-10-08 起**但把这一版渲出来留给运营**（用户：「修吧，第四处也开个口子」）。
 
-    为什么不产：`_applies` 是重放时**唯一的门**。两组判据互相命中 ⇒ 走到那一页时，
+    **为什么不放行**：`_applies` 是重放时**唯一的门**。两组判据互相命中 ⇒ 走到那一页时，
     前一组的步骤会**在那页上真做一遍**（点的会是那一页上的元素），而日志里每一步照样
     写着「点上了/填好了」—— 2026-09-28 georgiapower 那趟「真做 2 步、跳过 23 步」
-    就是这个门出的。宁可没有，也不交一份「看着在跑、其实在别的页上乱点」的产物。
+    就是这个门出的。
 
     ★ 2026-09-30：这道门**搬进 IR 层**了（`ir._gate_problems`）—— 事实照旧只有一个来源
     （`journey.gate_collisions`），但判它的是 IR 那一层 ⇒ `ir_layer` 写得上，
     面板上看得出「卡在第几层」（搬之前那 9 趟的 `ir_layer` 都是空的）。
+
+    ★★ 2026-10-08（**逐行交代这次改了什么**）：这道题的答案从「**一份 py 都不许出**」
+    改成「**这一趟照旧不出货，但盘上留一份**」。改的是一条断言（`not exists()` → `is_file()`
+    加上 `unverified` 那条），**其余一个字没动**：`end_reason` 仍是 `draft_failed`、
+    人话仍要点名是哪两组哪一页、`ir_layer` 仍是 `ir`、`selftest` 仍是一步没跑。
+    为什么改：**「不往下走」与「手上什么都没有」是两件事**，而原先那条口径把后一件也捎上了
+    —— 真事 `job-f86ac12fda15`（shorecrestwpb.com）：探路 4 步就见到成功文案、一路正常，
+    被这一道门砍死之后运营**一个字节都没有**，连「照样传」都救不了（上传那条 `force` 路
+    读的 `state["src"]`，而它从来没被写过）。
+    ⚠️ 留料 ≠ 放行：上传那道闸照旧只认 `delivered`（`service._delivered_path`），
+    要人**明确**点「照样传」才传得出去。
     """
     book = _journey()
     book.gate_collisions = [{"name": "landing", "url": URL,
@@ -1031,7 +1044,14 @@ def test_a_ledger_whose_judges_cannot_tell_two_pages_apart_writes_no_artifact(tm
     assert rec.selftest == [], "连产物都没写出来，不该去跑自测"
     #: 「卡在第几层」这一格：搬进 IR 之后它必须有值（没有它，面板分不出卡在哪一层）
     assert out.get("ir_layer") == "ir", out
-    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+    #: ★ 2026-10-08：**这一条断言改过**（原来钉的是 `not exists()`）——
+    #: 硬拦那一支现在也把这一版渲出来留给运营（用户「第四处也开个口子」，与那三处
+    #: 同一个 `_keep_unverified`）。**改的只有这一句**，上面每一条都在原处。
+    kept = tmp_path / "forms" / "sites" / ("%s.py" % SITE)
+    assert kept.is_file(), "硬拦那一支又回到「一个字节都不留」了 —— 运营手上会空着"
+    assert str(out.get("src") or "").strip(), "文件在、state 里那串字节不在（force 上传读的是它）"
+    assert any("结构检查" in str(s) for s in (out.get("unverified") or [])), \
+        "落了却没在记录里说它没过什么：%r" % (out.get("unverified"),)
 
 
 def test_a_clean_ledger_is_not_touched_by_that_gate(tmp_path):
@@ -2336,3 +2356,43 @@ def test_a_missing_required_field_no_longer_kills_the_run_but_a_gate_collision_s
     assert out2["end_reason"] == "draft_failed", out2.get("end_note")
     assert "gate_holds_elsewhere" not in str(out2.get("end_note")), \
         "人话里不该出现机器码：%r" % (out2.get("end_note"),)
+
+
+def test_a_gate_collision_still_ends_the_run_but_now_leaves_the_py_for_the_operator(
+        tmp_path, monkeypatch):
+    """★ 2026-10-08（用户：「**修吧，第四处也开个口子**」）：IR 硬拦那一支**也把这一版留给运营**。
+
+    前情：`08340c6` 已经给三处开了口子（lint 触顶 / 自测触顶 / 交付前没过检查）——
+    `_keep_unverified`：落进交付路径 + 把「没过什么」写进 `unverified`。用户原话
+    「尽量让运营能直接出 py 脚本并上传，有问题我们这边再修」。
+
+    **漏的正是第四处**：`_draft` 里 `_hard` 那一支。它原先**当场 return**，而 `src` 是在那
+    **之后**才渲出来的 ⇒ 稿子**从没落过盘**、`state["src"]` 也从来没写过 ⇒ 面板上
+    「没有可上传的 py」，连「照样传」都救不了：上传那条 `force` 路读的正是
+    `state["src"]`（`service._what_to_upload`），而它是空的。
+
+    真事 `job-f86ac12fda15`（shorecrestwpb.com）：探路 4 步就见到成功文案、一路正常推进，
+    却因为首页那组判据只钉了网址（`/inquire` 也含它）被整趟砍死 ⇒ 运营手上一个字节都没有。
+
+    ⚠️ **判三样，少一样这个口子就是开错了**：
+      · `end_reason` **仍然是 `draft_failed`** —— 「留料」不等于「放行」，这一版没往下走
+        （与上面那条用例里「照旧砍」的裁定并存：砍的是**这一趟的结局**，不是**那一版的存在**）；
+      · 手上**真有一版**：`src` 有字节、`py_path` 指着盘上一个真文件；
+      · `unverified` 里**写清它没过结构检查** —— 落了 ≠ 验过了。
+    """
+    import test_graph as TG
+    from agent import ir as ir_mod
+
+    hard = ir_mod.Problem("ir", "trace_ambiguous.gate_holds_elsewhere",
+                          "两组判据在别的页上也成立 —— 这个门分不出这几页。")
+    monkeypatch.setattr(ir_mod, "validate", lambda *a, **k: [hard])
+    deps, _rec = TG._deps(journey=TG._journey())
+    app, cfg, _ = TG._build(deps=deps)
+    _payloads, out = TG._drive(app, cfg, TG._brief(tmp_path))
+
+    assert out["end_reason"] == "draft_failed", out.get("end_note")
+    assert str(out.get("src") or "").strip(), (
+        "硬拦那一支仍然一个字节都没留 —— 面板上会照旧说「没有可上传的 py」")
+    assert out.get("py_path") and pathlib.Path(out["py_path"]).is_file(), out.get("py_path")
+    assert any("结构检查" in str(s) for s in (out.get("unverified") or [])), (
+        "落了却没在记录里说它没过什么：%r" % (out.get("unverified"),))

@@ -88,3 +88,36 @@ def test_a_uk_phone_field_is_told_the_0207_shape_and_not_a_mobile():
     no_country = [one for one in hit if "英" not in str(one.get("scene") or "")]
     assert not no_country, ("这条 0207 没写清是哪一国的规矩 —— 加拿大站会被一起填错：%r"
                             % (no_country,))
+
+
+def test_a_phone_number_that_changes_per_load_is_not_used_as_a_criterion():
+    """★ 2026-10-08（真事 `job-0f511e5f5e0b`，alansfactoryoutlet.com）：**页头那个电话号
+    不许当判据** —— 它每次开页都不一样。
+
+    形状（同一个商品页，三次开、三个号）：探路看到 `1-888-537-9043`，自测第 1 遍看到
+    `1-844-620-7858`；改稿把判据改成那个号之后再跑，页面又成了 `1-888-531-0927`。
+    而 HTML 里**恒为** `1-800-488-6903`（挂在 `afo-impact-attribution.js` 上 ——
+    「attribution」= 通话归因，脚本在客户端按访客来源换号）。
+    代价：6 步里 4 步判据不成立、被跳过 ⇒ 没走到成功。
+
+    ⚠️ 为什么这条**非得进探路这一层**：改稿救不了它 —— 每一轮改稿都把「这次看到的那个号」
+    写进判据，下一趟开页又是新号，追不上（`max_diagnoses` 烧完也过不了）。只有探路那一趟
+    **不选它**，这条路才断得掉。
+
+    ⚠️ 与上面那条 0207 **方向相反、两条都必须有**：那条讲「电话格该填什么形状」，
+    这条讲「**别拿电话号当判据**」。别把它们合成一条。
+    """
+    hit = [one for one in lessons.LESSONS
+           if "判据" in str(one.get("do") or "")
+           and "电话" in (str(one.get("scene") or "") + str(one.get("do") or ""))]
+    assert hit, ("经验库里没有一条讲「会变的电话号不许当判据」的 —— 挂归因脚本的站"
+                 "（2026-10-08 alansfactoryoutlet）会一路跳步到自测挂，而改稿追不上")
+    #: 得说清**为什么会变**（不说清，下一个人会当成「这一站碰巧」而不当规矩）
+    said = " ".join(str(one.get(k) or "") for one in hit for k in ("scene", "do"))
+    assert any(w in said for w in ("归因", "每次开页", "每趟都", "A/B")), (
+        "这条只说「会变」，没说清**为什么**会变（归因 / 每次开页）—— 那样它读起来像"
+        "「这一站运气不好」，而不是一条规矩：%r" % said)
+    #: 出处要指得到那一趟（站名或单号），否则读者查不到
+    src = " ".join(str(one.get("from") or "") for one in hit)
+    assert "alansfactoryoutlet" in src or "job-0f511e5f5e0b" in src, (
+        "出处里既没有站名也没有单号 —— 这条经验查不到：%r" % src)
