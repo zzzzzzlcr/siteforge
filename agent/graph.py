@@ -1083,33 +1083,6 @@ def _loop_source(state, deps: Deps, *, report) -> str:
         busy_timeout=int(spec.get("busy_timeout") or template_loop.LOOP_BUSY_TIMEOUT))
 
 
-def _gate_collision_note(collisions: list) -> str:
-    """判据在**别的页**上也成立时，为什么不产这一版（交接《骨架还缺什么》§1）。
-
-    为什么不产：`_applies` 是重放时**唯一的门**。两个状态的判据互相命中 ⇒ 走到那一页时，
-    前一组的步骤会**在那页上真做一遍**（它点的会是那一页上的元素），而日志里每一步照样
-    写着「点上了/填好了」—— 与「判据太严 ⇒ 整组静默跳过」是同一个门的两面，都是这个项目
-    最贵的那类失败（georgiapower 那趟「真做 2 步、跳过 23 步」就是这个门出的）。
-
-    ⚠️ **不许**在这儿替它把判据改「稳」一点：判据是**观测来的**（`_when_for` 从那一页正文
-    剪的原文），编一条更漂亮的出来正是那段注释里说的循环论证。两条正路都在**生成**这一侧：
-      - 让判据落在**只有那一页有**的那句话上（页头/导航那种公用文案一被剪成判据就长这样）；
-      - 或者承认这两页**分不开**、把它们**并成一个状态** —— 相邻同门的两页
-        `_Pages.note_page` 早就是这么办的（2026-09-22），那件事要改生成器，不是改产物。
-    """
-    lines = "；".join(
-        "「%s」这一组的判据在「%s」上也成立"
-        % (one.get("name"), "、".join(str(u) for u in (one.get("pages") or [])))
-        for one in collisions)
-    return ("先别写 py：这一趟账本里的判据**分不开页** —— %s。\n"
-            "重放走到那几页时，前一组的步骤会**在那页上真做一遍**，而每一步的日志都写着做成了"
-            "（2026-09-28 georgiapower：真做 2 步、跳过 23 步，日志里看不出来）。"
-            "**宁可没有，也不交一份「看着在跑、其实在别的页上乱点」的产物**。\n"
-            "两条正路：① 让判据落在**只有那一页有**的那句话上（别用页头/导航那种公用文案）；"
-            "② 承认这两页分不开，把它们**并成一个状态**（相邻同门的两页生成器早就是这么并的）。"
-            % lines)
-
-
 def _draft(state, deps: Deps, caps: Caps) -> dict:
     """把账本翻译成 py 源码（`template.render`），**带上回灌的证据**。
 
@@ -1200,6 +1173,18 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
                                                     spec.get("states") or [])
     #: 空列表也要落（不是只在退回时才写）—— 读它的人（统计、面板）不必再判「这一格在不在」。
     out["steps_reverted"] = _reverted
+    #: ★ 2026-10-07（用户：「探路不是探出来了吗？不能自己修正？」）：**能补就补，补不了才拦** ——
+    #: 与紧跟着的那段 `FILLS` 是同一句话，只是这一处补的是**必填格那一步**：账本里**真填过**、
+    #: 而产物里没有一步在填 ⇒ 照账本把它补回去，别把一份本来能跑的稿拦在编译之前。
+    #: ⚠️ 顺序不能反：补进来的那一步会引用一个 `FILLS` 键，正好由下面那段一起补上。
+    #: ⚠️ 补不了（账本里也没填过 —— 迪士尼那趟「Town/City 认不出来、没动它」）⇒ 原样留着，
+    #: 交给下面 `ir` 那道闸拦：「尽量能出脚本」不许变成「缺了也照样出」。
+    _fixed_states, _required_restored, _required_notes = ir_mod.repair_required(
+        spec.get("states") or [], journey)
+    if _required_restored:
+        spec["states"] = _fixed_states
+        out["required_restored"] = _required_restored
+        out["required_notes"] = _required_notes
     #: ★ 2026-09-30（现场那一趟：自测报「这一步要填「email」，FILLS 里没有它」）：
     #: **改稿那双手会把 `FILLS` 砍掉、却留着引用它的步骤** ⇒ 产物自我矛盾（跑起来当场
     #: `ValueError: 产物写错了`）。账本里记着的那些格子是**真相**（那一步当初就是这么填的）
@@ -1226,7 +1211,12 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
                                  "重跑一趟或把那一句回给模型。）" % "、".join(sorted(still_missing)))})
         return out
 
-    ir_problems = ir_mod.validate(journey, state)
+    #: ⚠️ `shape` 要跟着进去：循环型那两条判据（必填格覆盖 / 死 `FILLS`）**必须关掉** ——
+    #: 它运行期按页面挑格，静态对不上号（`ir._field_problems` 的口径）。
+    #: ⚠️ 补过必填格时判**补完的那一份**（也就是要出稿的那一份）—— 判旧的等于把刚补的那一步
+    #: 当没看见，那这刀就白补了。没补过时照旧不传（一个字节不变）。
+    ir_problems = ir_mod.validate(journey, state, shape,
+                                  states=(spec.get("states") if _required_restored else None))
     if ir_problems:
         out.update({"end_reason": END_DRAFT_FAILED, "end_note": ir_mod.say(ir_problems),
                     "ir_layer": ir_mod.layer_of(ir_problems)})
@@ -1300,10 +1290,9 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     #:    （它的判据是「到没到问卷那一屏」，就是 `PROVENANCE["arrive_url"]` 一条）——
     #:    拿它当闸是**误伤**，而那正是「把好产物也打回」那类错。
     #: ⚠️ 修站那条路（`journey is None`）不适用：那一版的 `states` 是人交进来的，我们不改它。
-    if shape != "loop" and journey is not None and journey.gate_collisions:
-        out.update({"end_reason": END_DRAFT_FAILED,
-                    "end_note": _gate_collision_note(journey.gate_collisions)})
-        return out
+    #: ★ 2026-09-30：**这一格空了** —— 「判据分不开页」那道门搬进 IR 层了
+    #: （`ir._gate_problems`：同一个事实 `journey.gate_collisions`，但带层/类/人话，
+    #: 而且 `ir_layer` 会写上 ⇒ 面板看得出「卡在第几层」）。这里再拦一遍就是两份判据。
     out.update({"states": spec["states"], "fills": spec["fills"],
                 "success_text": spec["success_text"],
                 "success_urls": spec.get("success_urls") or "", "src": src, "violations": [],
@@ -1330,6 +1319,8 @@ def _lint(state, deps: Deps, caps: Caps) -> dict:
 
     out["lint_bounces"] = int(state.get("lint_bounces") or 0) + 1
     if out["lint_bounces"] > caps.max_lint_bounces:
+        #: ★ 2026-10-08：触顶也把这一版留给运营（用户：「尽量让运营能直接出 py 脚本并上传」）。
+        _keep_unverified(state, out, "契约检查打回 %d 次还是同一处没过" % out["lint_bounces"])
         out.update({"end_reason": END_LINT_CAP,
                     "end_note": _lint_cap_note(out["lint_bounces"], violations)})
     return out
@@ -1430,14 +1421,24 @@ def _fresh_session(state, deps: Deps) -> tuple:
 
 
 def _selftest(state, deps: Deps, caps: Caps) -> dict:
-    """扰动自测（Task 6）：在真浏览器上按扰动序列跑，任一遍挂就不算过（§10）。
+    """自测：在真浏览器上跑产物 —— **正常跑一遍 + 同环境复跑几遍**（2026-09-30 起）。
+
+    ★ 2026-09-30（用户裁定「Py 必须通过稳定性测试才能交付」）：这一道闸**说的**必须与
+    自测**真做的**是同一件事 —— 行为改了、这句话不改，就是把一句旧话摆给运营看
+    （原来那句还写着「接着再跑一遍、放慢跑一遍、换个窗口大小跑一遍」，而四类扰动
+    从 2026-09-24 起就默认不跑了 ⇒ 那句话早就是假的，今天现场逮到）。
 
     没有窗口就**停**，不许「跳过自测当通过」—— 那是把「没验到」说成「过了」。
     """
+    #: ⚠️ 遍数**只有一个来源**（`selftest.STABILITY_RUNS`）—— 这句话里的数字与真跑的遍数
+    #: 必须同源：两处各写一个数，改了那边忘了这边，屏幕上又是一句假话（就是这次逮到的形状）。
+    runs = int(getattr(deps, "stability_runs", 0) or 0) or selftest_mod.STABILITY_RUNS
     out = _enter(state, caps, "selftest",
-                 ("接下来要在真浏览器上按扰动序列跑几遍：正常跑一遍、接着再跑一遍、放慢跑一遍、"
-                  "再换个窗口大小跑一遍。**自测通过 ≠ 生产一定过** —— 工具侧跑的浏览器与生产 "
-                  "worker 的代理出口/指纹/时序不是一套（规格 §10）。"),
+                 ("接下来要在真浏览器上跑产物：**正常跑一遍**（这一遍会往站方真提交一次），"
+                  "再**同环境复跑 %d 遍**（每一遍都停在**提交前一步**，不再往站方交单）——"
+                  "每一遍都得成，挂一遍就算这一版不可重放。"
+                  "**自测通过 ≠ 生产一定过** —— 工具侧跑的浏览器与生产 worker 的代理出口/"
+                  "指纹/时序不是一套（规格 §10）。" % (runs - 1)),
                  facts={"窗口": state.get("ws_url"), "表单数据": state.get("form_file"),
                         # ★ 老写法那一版：人在这儿才第一次能看见「它到底改了什么」——
                         # 这一道「继续」是**放它去跑真页面**的那一下（见 `_patch_diff`）。
@@ -1489,7 +1490,9 @@ def _selftest(state, deps: Deps, caps: Caps) -> dict:
             return out
         out["diagnoses"] = int(state.get("diagnoses") or 0) + 1
         if out["diagnoses"] > caps.max_diagnoses:
-            _drop_candidate(state)
+            #: ★ 2026-10-08：改自测也一直没过 ⇒ 这一版照样留给运营，只是写清「自测没过」。
+            _keep_unverified(state, out, "自测没过，改了 %d 版还是没过（到上限了）"
+                             % out["diagnoses"])
             out.update({"end_reason": END_SELFTEST_CAP,
                         "end_note": _selftest_cap_note(out["diagnoses"], report)})
     return out
@@ -1609,7 +1612,9 @@ def _deliver(state, deps: Deps, caps: Caps) -> dict:
 
     dirty = [_violation_dict(v) for v in (deps.lint(src) or [])]
     if dirty:
-        _drop_candidate(state)
+        #: ★ 2026-10-08：交付前那一遍契约检查没过 —— 照样写下去，写清它没过什么。
+        _keep_unverified(state, out, "要写出去的那串字节自己没过契约检查",
+                         src=src)
         #: 那句「多半是 PROVENANCE…」只对**模板形**成立：老写法那一版没有 PROVENANCE
         #: 那一段，脏了就是模型那一版本身带着手拼 JS（B 线 ③ 乙）。
         hint = ("PROVENANCE 里的自由文本撞上了写模式" if state.get("fix_style") != "legacy"
@@ -2137,6 +2142,13 @@ def _selftest_kwargs(state, deps: Deps) -> dict:
         kw["allow_skips"] = tuple(state["allow_skips"])
     if state.get("entry_url"):
         kw["entry_url"] = state["entry_url"]
+    #: ★ 2026-09-30（用户裁定「Py 必须通过稳定性测试才能交付」）：**循环型不做同环境复跑**
+    #: （它的提交点静态说不清 ⇒ 复跑 = 第二次真提交）。形态是**图**知道的（`shape`），
+    #: 产物自己不知道 ⇒ 必须由这儿告诉自测（口径写在 `selftest._rerun_note`）。
+    #: ⚠️ **只为循环型点这一格**（`_selftest_kwargs` 的规矩：没给的一律不传 —— 平铺型照旧
+    #: 一个键都不多，`test_service_country.py` 那条判据钉的就是这件事）。
+    if str(state.get("shape") or "") == "loop":
+        kw["loop"] = True
     return kw
 
 
@@ -2267,6 +2279,28 @@ def _stage_candidate(state) -> pathlib.Path:
     py = out_dir / ("%s.candidate.py" % state["site"])
     py.write_text(state["src"], encoding="utf-8")
     return py
+
+
+def _keep_unverified(state, out: dict, why: str, src: str = "") -> None:
+    """★ 2026-10-08（用户：「**尽量让运营能直接出 py 脚本并上传，有问题我们这边再修**」）：
+    触顶 / 没过检查时**不再把这一版扔掉** —— 落进交付路径，并在记录里写清它没过什么。
+
+    为什么改（用户当场裁的）：从前那几处的口径是「宁可没有，也不交一份自己都没过检查的
+    产物」。可运营要的是一份**能上传去试**的 py —— 错了拿回来修，比「什么都没有」强。
+    ⚠️ **落了 ≠ 验过了**：`unverified` 那一格是这件事的落点，面板与运营看得见差别。
+    ⚠️ **人喊停那一支不走这儿**（`_human`）：那儿承诺过「页面与文件都保持原样」，不许偷偷落盘。
+    """
+    text = str(src or state.get("src") or "")
+    if not text:
+        _drop_candidate(state)                # 手上连一版都没有 ⇒ 照旧什么也不留
+        return
+    path = _delivery_path(state)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    _drop_candidate(state)                    # 「交付目录里只该有交付物」——候选那份收掉
+    out["py_path"] = str(path)
+    out["src"] = text
+    out["unverified"] = list(out.get("unverified") or []) + [why]
 
 
 def _drop_candidate(state) -> None:

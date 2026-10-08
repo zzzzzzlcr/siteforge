@@ -533,8 +533,12 @@ def test_lint_that_never_passes_stops_at_the_cap_instead_of_spinning(tmp_path):
     assert out["end_reason"] == "lint_cap", out.get("end_note")
     assert len(rec.write) == 3, "首版 + 两次打回 = 三次；多一次就是上限失效"
     assert len(rec.selftest) == 0, "连 lint 都没过，不该去跑自测"
-    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists(), \
-        "没通过的东西一个字节都不许落到交付路径上"
+    #: ★ 2026-10-08（用户裁的，逐行交代）：原断言是
+    #:     assert not (...).exists(), "没通过的东西一个字节都不许落到交付路径上"
+    #: 用户改成「尽量让运营能直接出 py 脚本并上传，有问题我们这边再修」⇒ 现在**要**落，
+    #: 条件是 `unverified` 里写清它没过什么（落了 ≠ 验过了）。`end_reason` 一个字没动。
+    assert (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+    assert out.get("unverified") and "契约检查" in out["unverified"][0], out.get("unverified")
     assert "第" in out["end_note"] or "次" in out["end_note"]        # 人话说得清为什么停
     assert [p["step"] for p in payloads].count("draft") == 3
 
@@ -620,7 +624,15 @@ def test_selftest_that_never_passes_stops_at_the_cap_instead_of_spinning(tmp_pat
     assert out["end_reason"] == "selftest_cap", out.get("end_note")
     assert [p["step"] for p in payloads].count("diagnose") == 2
     assert len(rec.selftest) == 3, "首版 + 两次修 = 三次自测；多一次就是上限失效"
-    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+    #: ★ 2026-10-08（用户：「尽量让运营能直接出 py 脚本并上传，有问题我们这边再修」）——
+    #: **被推翻的那一条就在这儿，逐行交代**：原断言是
+    #:     assert not (tmp_path / "forms"/"sites"/(SITE+".py")).exists()
+    #: （口径：「一个字节都没写 —— 宁可没有，也不交一份自己都没过检查的产物」）。
+    #: 用户 2026-10-08 把这个口径反过来：**触顶/没过检查也要把这一版留给运营**，
+    #: 错了拿回来修。所以现在是「落下去 + 写清它没过什么」，`end_reason` 一个字没动。
+    assert (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+    assert out.get("py_path"), out
+    assert out.get("unverified") and "自测" in out["unverified"][0], out.get("unverified")
     assert "自测" in out["end_note"] or "扰动" in out["end_note"]
 
 
@@ -928,6 +940,42 @@ def test_a_fill_that_the_rewrite_dropped_is_restored_from_the_ledger(tmp_path, m
     #: 且说了」—— 渲出来的那串字节由 `test_template.py` 那一族管）。
 
 
+def test_a_required_field_the_ledger_filled_is_restored_instead_of_blocking_the_draft(tmp_path, monkeypatch):
+    """★ 2026-10-07（用户：「探路不是探出来了吗？不能自己修正？」）：**能补就补，补不了才拦**。
+
+    与上一条是**同一句话**，只是这一处补的是**必填格那一步**：账本里**真填过**这一格、
+    而产物里没有一步在填 ⇒ 照账本把它补回去（`required_restored` 记在账上），别把一份
+    本来能跑的稿拦在编译之前。
+
+    ⚠️ 补不了（账本里也**没**填过 —— 迪士尼那趟「Town/City 认不出来、没动它」）⇒ 那条闸
+    照旧拦，「尽量能出脚本」不许变成「缺了也照样出」—— 那一半由 `test_ir.py` 那两条钉着。
+    """
+    import test_graph as TG
+    from agent import browser_agent as _ba
+
+    #: 逐字抄自 `job-fa794783c63b` 的账本（就是被那条闸误拦下来的那一趟）
+    fields = {"co-3": [{"label": "Email", "hint": "input-8df0faf4", "type": "email",
+                        "required": True,
+                        "selector": 'form:has(input[placeholder="Search"]) input[type=email]'}]}
+    fills = {"field-3": {"source": "field-3", "kind": "value", "label": "field-3",
+                         "target": {"selectors": ['form > section.visible input[data-label="@Email"]']},
+                         "fallback": []}}
+    states = [{"name": "co-3", "when": {"url_contains": "https://uk.guaranteed.overfifties.co.uk/"},
+               "steps": [{"action": "click"}]}]
+    #: ⚠️ 打**类**上（同下那条的教训）：打在实例上的 lambda 过不了 saver 那一趟序列化。
+    monkeypatch.setattr(_ba.Journey, "fills", lambda self: fills)
+    monkeypatch.setattr(_ba.Journey, "fields_by_state", lambda self: fields)
+    monkeypatch.setattr(_ba.Journey, "states", lambda self: states)
+
+    deps, rec = TG._deps(journey=TG._journey())
+    app, cfg, _ = TG._build(deps=deps)
+    _, out = TG._drive(app, cfg, TG._brief(tmp_path))
+
+    assert out.get("required_restored") == ["field-3"], out
+    #: 补回去了这件事**记在账上**（不是静默修）：`required_restored` / `required_notes` 是落点。
+    assert out.get("required_notes") and "field-3" in out["required_notes"][0], out.get("required_notes")
+
+
 def test_a_self_test_that_could_not_reach_the_window_is_not_a_product_failure(tmp_path):
     """★ 2026-09-30（用户问「那为啥不导航呢」）：**自测没跑成 ≠ 自测跑不过**。
 
@@ -964,6 +1012,10 @@ def test_a_ledger_whose_judges_cannot_tell_two_pages_apart_writes_no_artifact(tm
     前一组的步骤会**在那页上真做一遍**（点的会是那一页上的元素），而日志里每一步照样
     写着「点上了/填好了」—— 2026-09-28 georgiapower 那趟「真做 2 步、跳过 23 步」
     就是这个门出的。宁可没有，也不交一份「看着在跑、其实在别的页上乱点」的产物。
+
+    ★ 2026-09-30：这道门**搬进 IR 层**了（`ir._gate_problems`）—— 事实照旧只有一个来源
+    （`journey.gate_collisions`），但判它的是 IR 那一层 ⇒ `ir_layer` 写得上，
+    面板上看得出「卡在第几层」（搬之前那 9 趟的 `ir_layer` 都是空的）。
     """
     book = _journey()
     book.gate_collisions = [{"name": "landing", "url": URL,
@@ -977,6 +1029,8 @@ def test_a_ledger_whose_judges_cannot_tell_two_pages_apart_writes_no_artifact(tm
     # 说清是哪一组、在哪一页上也成立 —— 只说「判据有问题」人没法动手
     assert "landing" in out["end_note"] and "thanks" in out["end_note"], out["end_note"]
     assert rec.selftest == [], "连产物都没写出来，不该去跑自测"
+    #: 「卡在第几层」这一格：搬进 IR 之后它必须有值（没有它，面板分不出卡在哪一层）
+    assert out.get("ir_layer") == "ir", out
     assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
 
 
@@ -1176,7 +1230,12 @@ def test_the_final_bytes_are_lint_checked_before_they_are_written(tmp_path):
     _, out = _drive(app, cfg, _brief(tmp_path))
 
     assert out["end_reason"] == "deliver_lint", out.get("end_note")
-    assert not (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+    #: ★ 2026-10-08（用户裁的，逐行交代）：原断言是
+    #:     assert not (tmp_path / "forms"/"sites"/(SITE+".py")).exists()
+    #: （「脏了就不许落盘」）。用户把这一条反过来：「尽量让运营能直接出 py 脚本并上传，
+    #: 有问题我们这边再修」⇒ 现在**要**落，但 `unverified` 里必须写清它没过什么。
+    assert (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists()
+    assert out.get("unverified") and "契约检查" in out["unverified"][0], out.get("unverified")
     assert "第 1 行" in out["end_note"]
 
 

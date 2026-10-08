@@ -67,11 +67,283 @@ def _stable(url) -> str:
     return str(url or "").split("#")[0].split("?")[0].rstrip("/").lower()
 
 
-def validate(journey, values: dict | None = None) -> list:
+def _norm_text(text) -> str:
+    """比名字前的归一：去空白、小写（「First Name」与「first name」是同一个框）。"""
+    return " ".join(str(text or "").split()).lower()
+
+
+def _norm_sel(sel) -> str:
+    """比选择器前的归一：只去空白（大小写与空白是同一件事，别的**不许动**）。"""
+    return "".join(str(sel or "").split())
+
+
+def _step_covers(field: dict, steps: list) -> bool:
+    """产物里**有没有一步**是在填这一格（选择器对得上、或名字对得上就算有）。
+
+    ⚠️ **宽松判「有」**（用户口径：本来对的产物不许被拦）：任一处对上就算覆盖 ——
+    选择器（`target.selectors` 里有一个与它一模一样）、或者名字（步骤的 `name` /
+    `label` / `fill` **以及选择器原文**，与它的 `label` / `hint` 互相含）。
+    判不出来（格上既没选择器也没名字）也算「有」：**没有证据就不拦**。
+
+    ★ 2026-10-07 补上「选择器原文」这一路（真事 `job-fa794783c63b`）：**没有 DOM 名字**的
+    输入框，两条路各记各的选择器，于是一个都对不上 ——
+
+      · 动作那条路（产物照它重放）：`form > section.visible input[data-label="@Email"]`
+      · `observe` 那条路（这一行是判据）：`form:has(input[placeholder="Search"]) input[type=email]`
+
+    账本给那次填起的名是 `field-3`（没有名字可起）⇒ 「一模一样」与「名字互相含」两条
+    **都撞不上**，闸就把一份本来对的稿拦在编译之前。而产物那一步的选择器里明明写着
+    `@Email` —— 格子的标签就藏在它的**原文**里。所以选择器原文也算一条「名字」。
+    ⚠️ 代价说在明处：这是**宽松**的一路（格子的标签碰巧出现在某步选择器里就判「有」）——
+    与这条判据一贯的偏向一致：**宁可不拦，不许拦对的**。
+    """
+    sel, names = _field_handles(field)
+    if not sel and not names:
+        return True
+    for step in steps or []:
+        if str(step.get("action") or "") != "form":
+            continue
+        if _covers(field, _step_handles(step)):
+            return True
+    return False
+
+
+def _field_handles(field: dict) -> tuple:
+    """这一格身上能拿来认它的两样东西：`(选择器, 名字集合)`。"""
+    return (_norm_sel(field.get("selector")),
+            {_norm_text(field.get(k)) for k in ("label", "hint")} - {""})
+
+
+def _step_handles(step: dict) -> tuple:
+    """**一步**身上能拿来认它的两样东西：`(选择器集合, 名字集合)`。
+
+    ⚠️ 名字那一格里**含选择器原文**（★ 2026-10-07）：没有 DOM 名字的元素，它的身份只写在
+    选择器里（`data-label="@Email"`）—— 理由见 `_step_covers` 的 docstring。
+    """
+    target = step.get("target") or {}
+    raw = list(target.get("selectors") or [])
+    said = {_norm_text(target.get("name")), _norm_text(target.get("label")),
+            _norm_text(step.get("fill"))} - {""}
+    said |= {_norm_text(s) for s in raw} - {""}
+    return [_norm_sel(s) for s in raw], said
+
+
+def _covers(field: dict, handles: tuple) -> bool:
+    """这一格与「一步的身份」是不是同一格。**宽松判「是」**（宁可不拦、不许拦对的）。"""
+    sel, names = _field_handles(field)
+    if not sel and not names:
+        return True                       # 没有证据就不拦
+    selectors, said = handles
+    if sel and sel in selectors:
+        return True
+    return bool(names and said and any(n in s or s in n for n in names for s in said))
+
+
+def _collision_say(collisions: list) -> str:
+    """判据在**别的页**上也成立时，为什么不产这一版（交接《骨架还缺什么》§1）。
+
+    ⚠️ 这段字**从 `graph._gate_collision_note` 搬过来的**（用户 2026-09-30：「闸门充分性」
+    要进 IR 层 —— 那一格以前只写 `end_reason`，`ir_layer` 是空的，面板上看不出「卡在第几层」；
+    搬进 IR 后它跟别的 IR 病一样：层、类、人话三样齐全）。**一个字没改，只换住处** ——
+    除了开头那句「先别写 py：」：那句由 `say()` 统一给，留着会念两遍。
+
+    为什么不产：`_applies` 是重放时**唯一的门**。两个状态的判据互相命中 ⇒ 走到那一页时，
+    前一组的步骤会**在那页上真做一遍**（它点的会是那一页上的元素），而日志里每一步照样
+    写着「点上了/填好了」—— 与「判据太严 ⇒ 整组静默跳过」是同一个门的两面，都是这个项目
+    最贵的那类失败（georgiapower 那趟「真做 2 步、跳过 23 步」就是这个门出的）。
+
+    ⚠️ **不许**在这儿替它把判据改「稳」一点：判据是**观测来的**（`_when_for` 从那一页正文
+    剪的原文），编一条更漂亮的出来正是那段注释里说的循环论证。两条正路都在**生成**这一侧：
+      - 让判据落在**只有那一页有**的那句话上（页头/导航那种公用文案一被剪成判据就长这样）；
+      - 或者承认这两页**分不开**、把它们**并成一个状态** —— 相邻同门的两页
+        `_Pages.note_page` 早就是这么办的（2026-09-22），那件事要改生成器，不是改产物。
+
+    """
+    lines = "；".join(
+        "「%s」这一组的判据在「%s」上也成立"
+        % (one.get("name"), "、".join(str(u) for u in (one.get("pages") or [])))
+        for one in collisions)
+    return ("这一趟账本里的判据**分不开页** —— %s。\n"
+            "重放走到那几页时，前一组的步骤会**在那页上真做一遍**，而每一步的日志都写着做成了"
+            "（2026-09-28 georgiapower：真做 2 步、跳过 23 步，日志里看不出来）。"
+            "**宁可没有，也不交一份「看着在跑、其实在别的页上乱点」的产物**。\n"
+            "两条正路：① 让判据落在**只有那一页有**的那句话上（别用页头/导航那种公用文案）；"
+            "② 承认这两页分不开，把它们**并成一个状态**（相邻同门的两页生成器早就是这么并的）。"
+            % lines)
+
+
+def _gate_problems(journey, shape: str | None) -> list:
+    """★ 2026-09-30（用户裁定「IR 必须先证明完整」的第二半）：**闸门够不够用**。
+
+    判据**只有一个来源**：`journey.gate_collisions`（探路期 `_gates_that_hold_elsewhere`
+    算的「这条判据在**别的页**上也成立」）。这里**照它说的话判，不另算一遍** ——
+    同一个事实两份算法就是两个真相源，而那正是这个仓一直在治的病。
+
+    这一搬是为了**归类**：原来是 `graph._draft` 那一格自己拦，只写 `end_reason`，
+    `ir_layer` 空着 ⇒ 面板上看不出「卡在第几层」（搬之前那 9 趟就是 `ir_layer=None`）。
+    搬进 IR 之后它跟别的 IR 病一样：层 / 类 / 人话三样齐全。
+
+    ⚠️ **试过、又砍掉的那一条**（写在这儿免得下一个人重走）：还想加一条「这一组的闸在
+    **它自己看过的地址**上从没成立过（地址不截断，是硬证据）」——**误拦**，当场被
+    `test_graph.py::test_a_retry_that_sees_the_success_text_wins` 逮到：合并组会把
+    `when` 换成 `_best_gate` 挑的那一条（可能是**另一页**的判据），于是「地址不含」在
+    **对**的产物上也成立。没有跨过那一步的证据 ⇒ 不拦（用户口径：本来对的产物出不来才是大错）。
+
+    ⚠️ 循环型（`shape == "loop"`）全关：它靠地址判、运行期自己找，静态这一条不适用。
+    """
+    if shape == "loop":
+        return []
+    collisions = list(getattr(journey, "gate_collisions", None) or [])
+    if not collisions:
+        return []
+    return [Problem("ir", "trace_ambiguous.gate_holds_elsewhere",
+                    _collision_say(collisions),
+                    str((collisions[0] or {}).get("name") or ""),
+                    {"collisions": collisions[:4]})]
+
+
+def uncovered_required(states: list, journey) -> list:
+    """`[(组名, 格子, 能补回来的那一格的名字 or "")]` —— 账本说必填、而产物里**没有一步在填**的。
+
+    `""` = 账本里**也没填过**这一格（补不了 ⇒ 交给闸拦；见 `repair_required`）。
+
+    ⚠️ 与 `_field_problems` 走**同一条判据**（同一份 `fields_by_state` + 同一个 `_step_covers`）：
+    两处各写一份的话，「拦不拦」与「补什么」迟早走散。
+    """
+    every_step = [s for st in states for s in (st.get("steps") or [])]
+    try:
+        fields = journey.fields_by_state()
+    except Exception:                                  # noqa: BLE001 —— 读不出来不拦（没证据）
+        return []
+    try:
+        fills = dict(journey.fills() or {})
+    except Exception:                                  # noqa: BLE001
+        fills = {}
+    out: list = []
+    for where, rows in fields.items():
+        for row in rows:
+            if not row.get("required") or _step_covers(row, every_step):
+                continue
+            name = ""
+            for key, info in fills.items():
+                target = dict((info or {}).get("target") or {})
+                if not target.get("label"):
+                    target["label"] = (info or {}).get("label")
+                if _covers(row, _step_handles({"action": "form", "fill": key,
+                                               "target": target})):
+                    name = str(key)
+                    break
+            out.append((where, row, name))
+    return out
+
+
+def repair_required(states: list, journey) -> tuple:
+    """账本里**真填过**的必填格，产物里没有一步在填 ⇒ **把它补回产物**，而不是拦。
+
+    返回 `(新 states, 补回去的名字, notes)`。`notes` 是人话（哪一格、补到哪一组、凭什么）。
+
+    ★ 2026-10-07（用户：「探路不是探出来了吗？不能自己修正？」）：这就是 `graph` 里
+    `FILLS` 那一格的同一句话 —— **能补就补，补不了才拦**。补的是**账本里那一格**
+    （选择器与值都照抄，不编一个）；补不了（账本里也没填过 —— 迪士尼那趟
+    `Town/City` 认不出来、没动它）⇒ 那一格**原样留着**，交给 `_field_problems` 去拦。
+    「尽量能出脚本」不许变成「缺了也照样出」。
+
+    ⚠️ 原样那一份**一个字节都不动**（补出来的是新的一份）：调用方可能还要拿旧的对账。
+    """
+    fixed = [dict(st) for st in (states or [])]
+    by_name = {str(st.get("name") or ""): st for st in fixed}
+    try:
+        fills = dict(journey.fills() or {})
+    except Exception:                                  # noqa: BLE001
+        fills = {}
+    restored: list = []
+    notes: list = []
+    for where, row, name in uncovered_required(states, journey):
+        st = by_name.get(str(where))
+        if not name or st is None or name not in fills:
+            continue                       # 补不了 / 那一组不在产物里 ⇒ 不硬塞，留给闸
+        info = dict(fills.get(name) or {})
+        st["steps"] = list(st.get("steps") or []) + [
+            {"action": "form", "fill": name,
+             "note": "从账本补回来的：这一步探路时真填过（%s）"
+                     % (row.get("label") or row.get("hint") or row.get("selector") or "？"),
+             "target": dict(info.get("target") or {})}]
+        restored.append(name)
+        notes.append("「%s」（%s 那一组）产物里没有一步在填，而账本里**真填过**（`%s`）"
+                     "⇒ 照账本把那一步补回去。" % (
+                         row.get("label") or row.get("hint") or row.get("selector") or "？",
+                         where, name))
+    return fixed, restored, notes
+
+
+def _field_problems(states: list, journey) -> list:
+    """★ 2026-09-30（用户裁定「**IR 必须先证明完整**」）：**这一页的必填格，产物有没有去填**。
+
+    为什么这条门非有不可（样本是真站挂单，`job-243fd328e088` 的 `fix_notes` 原话）：
+    「「Town/City」认不出是什么 —— **没动它**（认不出就不填，绝不猜）」「「I have read and
+    agree to the My Disney Experience Terms and Conditions.」认不出是什么 —— 没动它」
+    ⇒ 一趟下来**关键格一个没填**，而产物照样跑、照样过（自测那条尺子当时**看不见填**）
+    ⇒ 交付的是废稿。这条门就是让这一步**在编译之前**停下来，而不是等到真站上才发现。
+
+    两条（都**只用账本里已经记着的事实**，不猜）：
+      ① 账本观察到的格是 `required`（DOM 自己说的必填 —— 不是我们猜的「该填」），
+         而**所有组里都没有一步**在填它；
+      ② 账本里**真填成功过**的那一格（`journey.fills()`），在步骤表里**没有任何一步引用**
+         —— 死条目 = 那一步被改稿那双手**弄丢了**（`fills()` 的 docstring 里那条口径）。
+
+    ⚠️ **覆盖是对「所有组」判的，不是对「归属那一组」**（`fields_by_state` 的归属只用来
+    写人话里说哪一组）：归属是按判据算的、可能算不准，而**拦不拦不能建立在一个可能算不准的
+    结论上** —— 只有「哪儿都没填它」这一条是不会误伤的。
+
+    ⚠️ **只对平铺型（`shape == "table"`）跑**：循环型（`template_loop`）的填法是**运行期
+    按页面挑**的，静态对不上号 —— 拿这两条去判它会全是误杀。`validate(shape=...)` 是那个口子。
+    """
+    out: list = []
+    #: ⚠️ 与 `repair_required` **同一条判据**（`uncovered_required`）：两处各写一份的话，
+    #: 「补什么」与「拦什么」迟早走散 —— 补过的那几格就不该再被拦。
+    missed = [(where, row) for where, row, _name in uncovered_required(states, journey)]
+    if missed:
+        who = "、".join("「%s」（%s 那一页）" % (
+            r.get("label") or r.get("hint") or r.get("selector"), where)
+            for where, r in missed[:4])
+        out.append(Problem("ir", "trace_incomplete.required_field_without_step",
+                           "账本里见到过 %d 个**必填格**，而产物里**一步都没填它们**：%s —— "
+                           "这些格是页面自己说的必填（`observe` 记着 `required`），"
+                           "就照这个交出去，站方多半直接退回（缺必填项），"
+                           "而日志看上去「每一步都做成了」。" % (len(missed), who),
+                           str(missed[0][0]),
+                           {"fields": [r.get("label") or r.get("hint") or r.get("selector")
+                                       for _, r in missed[:8]],
+                            "selectors": [r.get("selector") for _, r in missed[:8]]}))
+    try:
+        ledger_fills = dict(journey.fills() or {})
+    except Exception:                                  # noqa: BLE001
+        ledger_fills = {}
+    referenced = referenced_fills(states)
+    dead = sorted(n for n in ledger_fills if n not in referenced)
+    if dead:
+        out.append(Problem("ir", "trace_incomplete.dead_fill",
+                           "账本里**真填成功过**的这几格，步骤表里一步都没引用：%s —— "
+                           "等于那几步被改稿那双手弄丢了（产物里会留一个没人用的 `FILLS` 条目），"
+                           "重放时那几格就**空着**。" % "、".join("「%s」" % n for n in dead[:6]),
+                           extra={"fills": dead[:8]}))
+    return out
+
+
+def validate(journey, values: dict | None = None, shape: str | None = None,
+             states: list | None = None) -> list:
     """这份 IR 能不能编译 ⇒ `[Problem]`（空列表 = 可以）。
 
     ⚠️ **只在 IR 这一层判**：这里不看探路成没成（那是 `explore` 层，`graph` 有它自己的判据），
     也不看产物渲得出来渲不出来（那是 `emit` 层）。越界判会让「卡在第几层」这件事又糊掉。
+
+    `shape`：形态（`"table"` 平铺 / `"loop"` 步进循环）。**循环型有几条判据必须关掉**
+    （`_field_problems` 那两条：它运行期挑格，静态对不上号）—— 不给（`None`）就按平铺判，
+    与老调用方一个字节都不差。
+
+    `states`：**要判的那一份步骤表**。不给（`None`）= 账本自己那份（老口径，一个字节不变）。
+    ★ 2026-10-07：`graph` 在**补回必填格**之后把它传进来 —— 补过的那一份才是要出稿的那一份，
+    判旧的等于把刚补的那一步当没看见。
     """
     values = dict(values or {})
     out: list = []
@@ -80,7 +352,8 @@ def validate(journey, values: dict | None = None) -> list:
                         "这一趟没有账本（探路那一层就没留下东西）—— 没有账本就没有「怎么走」。")]
 
     try:
-        states = journey.states()
+        if states is None:
+            states = journey.states()
     except Exception as exc:                      # noqa: BLE001 —— 读不出来也要**归类**，不许炸给上层
         return [Problem("ir", "ir_unexpressible.states_raised",
                         "账本读不成 IR（`states()` 自己抛了：%s：%s）—— 这是 IR 这一层的代码问题，"
@@ -157,6 +430,13 @@ def validate(journey, values: dict | None = None) -> list:
                                        "而日志看不出区别。这一组该在 `goto` 那儿断开。"
                                        % (name, i, where[:60]), name,
                                        {"step": i, "goto": where}))
+    #: ⑤ ★ 2026-09-30（用户裁定「IR 必须先证明完整」）：**这一页的必填格，产物有没有去填**。
+    #: ⚠️ 只看平铺型：循环型的填法是运行期挑的，静态对不上号（口径写在 `_field_problems`）。
+    if shape in (None, "table"):
+        out.extend(_field_problems(states, journey))
+    #: ⑥ ★ 2026-09-30（同一裁定的第二半）：**闸门够不够用**（判据分不开页那一条，搬进 IR 层）。
+    #: 循环型由 `_gate_problems` 自己关掉（它靠地址判、运行期自己找）。
+    out.extend(_gate_problems(journey, shape))
     return out
 
 
