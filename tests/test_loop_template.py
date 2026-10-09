@@ -287,10 +287,11 @@ def test_a_product_without_an_entry_url_runs_on_the_current_page(tmp_path, monke
 
 
 def test_the_phone_pool_gives_a_number_the_site_accepts(tmp_path, monkeypatch):
-    """★ 2026-09-25（用户点名）：号码要 **0207 开头**（伦敦座机形状），不是 `07…` 手机号。
+    """★ 2026-09-25（用户点名）：号码要**座机**形状，不是 `07…` 手机号；
+    ★ 2026-10-08（用户点名「**不是**都是 `0207` 啊」）：号段**别锁死一个**。
 
-    现场：真站那一格的校验收 0207；产物原来给 `07…`（位数一样合法）⇒ 填了过不去，
-    停在那一屏。顺带钉住 Ofcom 影视保留段 `020 7946 0xxx` **不许**出现（格式合法、一眼是假的）。
+    现场：真站那一格的校验收座机；产物原来给 `07…`（位数一样合法）⇒ 填了过不去，
+    停在那一屏。顺带钉住 Ofcom 影视保留段**不许**出现（格式合法、一眼是假的）。
     """
     calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
     page = {"url": "https://funnel.test/quiz", "head": "Q", "progress": "", "inputs": [],
@@ -306,8 +307,13 @@ def test_the_phone_pool_gives_a_number_the_site_accepts(tmp_path, monkeypatch):
 
     for _ in range(50):
         got = module.Filler._pool(None, "phone")
-        assert got.startswith("0207") and len(got) == 11, got
-        assert not got.startswith("02079460"), "给了 Ofcom 影视保留段：%s" % got
+        assert (got.startswith(("0203", "0207", "0208", "0113", "0114", "0115", "0116",
+                                "0117", "0118", "0121", "0131", "0141", "0151", "0161",
+                                "0191")) and len(got) == 11), got
+        assert not got.startswith(("02079460", "0113496", "0114496", "0115496", "0116496",
+                                   "0117496", "0118496", "0121496", "0131496", "0141496",
+                                   "0151496", "0161496", "0191496", "0289018", "0292018")), \
+            "给了 Ofcom 影视保留段：%s" % got
 
 
 def test_four_byte_characters_are_written_as_escapes(tmp_path, monkeypatch):
@@ -440,8 +446,11 @@ def test_the_phone_field_never_takes_the_profile_value(tmp_path, monkeypatch):
     assert calls["form"], "一格都没填"
     _sel, kw = calls["form"][0]
     got = str(kw.get("value") or "")
-    assert got.startswith("0207") and len(got) == 11, "没按 0207+7 位现编：%r" % (got,)
+    assert (got.startswith(("0203", "0207", "0208", "0113", "0114", "0115", "0116", "0117",
+                            "0118", "0121", "0131", "0141", "0151", "0161", "0191"))
+            and len(got) == 11), "没按英国座机形状现编（多个号段，用户点名不许只有 0207）：%r" % (got,)
     assert got != "9998887777", "取了资料里那个号"
+
 
 
 

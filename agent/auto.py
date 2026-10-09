@@ -10,6 +10,10 @@
 """
 from __future__ import annotations
 
+#: ★ 2026-10-08：停点从**图的上限**推出来（见下面 `AUTO_MAX_ATTEMPTS`）——
+#: 两处不许各写一份。`state` 不 import 本模块，所以这里没有环。
+from agent.state import Caps  # noqa: E402
+
 # ── 到闸替人按（Task 1）──────────────────────────────────────────────
 #: `auto` 那一趟到闸时，服务替人按「继续」留下的那句。
 #: ⚠️ 它**不是**「人说的」—— 时间线上两张嘴不许混成一张（所以单有一个 kind）。
@@ -25,7 +29,19 @@ AUTO_STUCK_SAY = ("自动模式：**停在这儿了** —— 第 %s 这道闸按
 
 # ── 两遍为限（Task 2，spec §5）───────────────────────────────────────
 #: 最多修两遍 —— 一遍 = 出一版稿 + 自测一次。两遍都不过 ⇒ 停、报人。
-AUTO_MAX_ATTEMPTS = 2
+#:
+#: ★ 2026-10-08（用户：自测没过那三趟 —— 「拿这份记录去定位，定位完回 draft 改一版」里
+#: 「定位」和「改一版」都是人干的；要它自己好）：这个数**不再单独拍** —— 它必须等于
+#: **图自己触顶的那一步**（`state.Caps.max_diagnoses + 1`）。
+#: 为什么（真事，`job-b9f0c6a74cbd` / `job-9c5b17be2629` / `job-cfefcd7a3aef`）：三趟都停在
+#: `diagnose` 闸上 —— `src` 里有稿、`unverified` 是空的，运营看到的是「什么都没有」。
+#: 而「留料」（这一版落进交付路径 + `unverified` 写清「自测没过」）**只发生在图触顶那一步**
+#: （`graph._selftest` → `_keep_unverified`，`tests/test_graph.py` 钉着它）。
+#: auto 要是**早一步**抛人，那一步永远走不到。⇒ 按到那儿为止，两件事同一步发生：
+#: 「出了、标清了没验过」+「需要人」。
+#: ⚠️ 所以这一格是**推出来的**，与图的上限一处口径（`tests/test_service_auto.py::
+#: test_the_auto_stop_point_is_pinned_to_the_graphs_own_cap` 拿等式钉着）。
+AUTO_MAX_ATTEMPTS = Caps().max_diagnoses + 1
 
 #: 两遍都没过那句人话（`%s` = 为什么需要人）。
 AUTO_GIVE_UP_SAY = ("自动模式：**两遍都没过**（一遍 = 出一版稿 + 自测一次），再试下去只是在猜 ⇒ "

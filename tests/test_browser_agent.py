@@ -1913,6 +1913,58 @@ def test_the_html_type_is_only_the_last_resort():
     assert browser_agent._fallback("value", "3", "", _field()) == ["3"]
 
 
+class _Journey:
+    """一个空账本：`_fill_name` 只看它的 `steps`（用来判有没有重名）。"""
+
+    steps: list = []
+
+
+# ───────── ★ 2026-10-09：账本里那个值的**形状**是最后一票（用户裁的那条）─────────
+#
+# 用户原话：「假如没有对应资料的话就对应随机 —— 比如说之前填的是数字，生成的也要是数字」。
+# 真事（`job-5d7c20fbfe14`，fleet-solutions）：`#fleet_size` 那格的 `nearby_text` 抄的是
+# **隔壁 State 下拉的选项长串**（`Select a State or Province*Alabama…`）⇒ 弱证据判成 `state`
+# ⇒ 名字成 `state-2`、兜底成了随机**州名**；而账本里那一趟填的是 `"5"` ⇒ 站方
+# `This field is required.` ⇒ 12 步全做完、点 Contact Us 没反应，从未到成功（222 上复现过）。
+
+
+def test_the_recorded_values_shape_beats_the_words_next_to_the_field():
+    """弱证据（③ 周围写的字）可以被**账本里那个值的形状**推翻 —— 名字与兜底一起改。"""
+    elem = _field(label="fleet_size", hint="fleet_size", placeholder="Fleet Size*",
+                  nearby_text=["Select a State or Province*AlabamaAlaskaArizonaArkansas"])
+    info = browser_agent._fill_info({"value": "5"},
+                                    {"label": "fleet_size", "selectors": ["#fleet_size"]},
+                                    elem, _Journey())
+
+    assert info["name"] == "number" and info["source"] == "number", info
+    assert info["fallback"] == [{"random": "number"}], info
+
+
+def test_the_shape_vote_never_overrides_the_fields_own_name():
+    """强证据（①② 字段自己的名字 / 它自己举的例子）**压得过**形状 —— 边界写死在这儿。
+
+    名字写着 `email`、而账本里那次填的是个数字：那是**账本脏**（或那一趟本来就填错了），
+    不是「这一格要数字」。放宽这一条 = 谁都能把一个字段的语义带歪。
+    """
+    elem = _field(label="business_email", type="email")
+    assert browser_agent._kind_from_recorded_value(
+        browser_agent._field_kind("business_email", elem), "5", elem) == "email"
+
+
+def test_a_field_nobody_can_name_gets_a_random_of_the_same_shape():
+    """一个字都没有的框：**按账本里那个值的形状给随机**（而不是把同一个值每趟重填）。
+
+    形状也认不出来 ⇒ 原样返回（老规矩：拿账本里那次填的值顶上，或干脆空着）。
+    """
+    assert browser_agent._kind_from_recorded_value(None, "3", _field()) == "number"
+    assert browser_agent._kind_from_recorded_value(None, "a.b@outlook.com", _field()) == "email"
+    assert browser_agent._kind_from_recorded_value(None, "", _field()) is None
+    #: ⚠️ **5 位数字不算 `number`**（那是美国邮编的形状）：老判据（type=tel + 5 位 → postcode）
+    #: 一个字不动 —— 这一条是它的回归钉子。
+    assert browser_agent._kind_from_recorded_value("phone", "90210", _field(type="tel")) == "postcode"
+    assert browser_agent._shape_kind("90210") == ""
+
+
 def test_nearby_text_rescues_a_field_whose_label_is_an_opaque_id():
     """标签是不透明 id、周围写着「Postcode」→ 第二档救回来（同类字段一起受益）。
 

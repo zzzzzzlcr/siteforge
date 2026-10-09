@@ -870,10 +870,17 @@ DELAY_RANGE = (0.4, 1.6)
 FIRST_NAMES = ["James", "John", "Robert", "Michael", "David", "Alex", "Chris", "Sam"]
 LAST_NAMES = ["Smith", "Jones", "Williams", "Taylor", "Brown", "Johnson", "Davies", "Wilson"]
 EMAIL_DOMAINS = ["outlook.com", "gmail.com", "yahoo.com", "hotmail.com"]
-POSTCODES = ["SW1A 1AA", "NN3 3AQ", "M1 1AA", "B1 1AA", "LS1 1AA", "G1 1AA"]
+#: 英国邮编（都是真的/格式合法的一批，跨城市）；「不知道」那一档也用它。
+POSTCODES = ["SW1A 1AA", "SW1A 2AA", "EC1A 1BB", "W1A 0AX", "NN3 3AQ", "M1 1AA",
+             "M1 1AE", "B1 1AA", "LS1 1AA", "G1 1AA", "EH1 1YZ", "CF10 1EP",
+             "BT1 1AA", "NE1 1EE", "L1 1AA", "S1 1AA", "BS1 1AA", "OX1 1AA",
+             "CB1 1AA", "PL1 1AA"]
 # 「州」这一类**生产脚本本来就是一个小池子 + 随机选**（不是从 form-file 取）——
 # 照抄 `forms/sites/lifynest.py:16` 的 STATES（同一套「资料逻辑」，站点在美国时适用）。
-US_STATES = ["California", "Texas", "Arizona", "Florida", "New York", "Illinois", "Ohio"]
+US_STATES = ["California", "Texas", "Arizona", "Florida", "New York", "Illinois", "Ohio",
+             "Pennsylvania", "Michigan", "Georgia", "North Carolina", "Washington",
+             "Colorado", "Nevada", "Tennessee", "Missouri", "Minnesota", "Massachusetts",
+             "Oregon", "Virginia"]
 #: ★ 2026-10-08（用户点名「加上0207规则」+「手机号随机要以0207开头」）：英国风格的手机池
 #: 改用 **0207 开头的座机形状**，不是 `07` 手机 —— 真站那一格的校验只收座机。
 #:
@@ -887,12 +894,62 @@ US_STATES = ["California", "Texas", "Arizona", "Florida", "New York", "Illinois"
 #: 与 `UNKNOWN_POOLS` 都指着它）。这是**故意的**，不是省事：实测那一版产物
 #: （laterlifechoices，`job-7f43337b2ba0`）的 `PROVENANCE["env"]` 是 **`None`**
 #: ⇒ `_site_country()` 给空串 ⇒ 真跑起来走的**就是「不知道」那一档**。
-#: 所以「手机要 0207」只修英国那一档等于没修 —— 那一档根本轮不到。两档共用，一次改对。
-#: 口径与别的池子一样（小池子 + 随机选）；避开 Ofcom 的影视保留段 `020 7946 0xxx`
-#: （格式合法、一眼是假的 —— 与 `template_loop._pool()` 同一条口径）。
-PHONES = ["02071234567", "02074561234", "02078889999", "02075550123",
-          "02076667777", "02073338888"]
+#: 所以「手机号要**座机形状**」只修英国那一档等于没修 —— 那一档根本轮不到。两档共用，一次改对。
+#:
+#: ★ 2026-10-08（用户点名「**不是**都是 `0207` 啊」）：英国那一池不能清一色 `0207` ——
+#: 那一个号段本身就是个可疑的常量（每个站、每一趟都是伦敦 0207，站方的去重/风控看得见）。
+#: ⇒ 改成**英国座机号的多个号段**里随机（`020 3/7/8…` 与 `011x/01x1 …` 各城市），
+#: 位数与形状**一个字没放宽**：11 位、座机、**不是 `07` 手机**、且**照旧避开**
+#: Ofcom 的影视保留段（`020 7946 0xxx` / `0113 496 0xxx` … —— 那几段是真站一眼假的号）。
+#:
+#: ★ 2026-10-08（用户点名「手机号应该更随机一点吧，而不是用 12345 这种的」）：
+#: **池子改成每次开跑现生成** —— 产物是**一趟一个新进程**，于是每一趟填的手机号都不同。
+#: 为什么非改不可：写死的那几个值（`02071234567` / `02078889999`…）码型一眼是编的
+#: （`1234567`、`8889999`、`5550123`），而**每一趟、每个站填的都是同一批** ——
+#: 站方的去重/风控看的就是这个重复。形状**一个字没放宽**（见下面三个生成器）。
+PHONE_POOL_SIZE = 40
+#: 美国 / 加拿大的号段（前 3 位）：**号段是真的、尾号随机**，而 `555-01xx` 是 NANP
+#: 留给影艺的保留段（打过去到不了真人）—— 随机只发生在**保留段内部**。
+_US_AREA_CODES = ("202", "212", "305", "312", "404", "415", "480", "512", "602", "617",
+                  "702", "703", "713", "801", "813", "847", "901", "919", "214", "267",
+                  "336", "407", "469", "614", "646", "678", "786", "818", "858", "916")
+_CA_AREA_CODES = ("416", "604", "514", "403", "613", "902", "780", "905", "204", "306",
+                  "709", "867")
+#: 英国座机的号段（真段）：伦敦 `020 3/7/8…` + 各城市 `01x1…` —— 不锁死 `0207` 一个段。
+_GB_AREA_CODES = ("0203", "0207", "0208", "0113", "0114", "0115", "0116", "0117", "0118",
+                  "0121", "0131", "0141", "0151", "0161", "0191")
+#: Ofcom 的**影视保留段**（给电视剧用的，真站一眼假）—— 生成时避开，不写进池子。
+_GB_DRAMA_PREFIXES = ("02079460", "0113496", "0114496", "0115496", "0116496", "0117496",
+                      "0118496", "0121496", "0131496", "0141496", "0151496", "0161496",
+                      "0191496", "0289018", "0292018")
 
+
+def _random_nanp_phone(areas) -> str:
+    """保留段 `555-01xx` 里的一个号（`NPA-555-01xx`）—— 号段真、尾号随机。"""
+    return "%s55501%02d" % (random.choice(areas), random.randint(0, 99))
+
+
+def _random_gb_landline() -> str:
+    """英国**座机**形状的一个号（11 位，`020 x…` / `01x1 …`）—— 号段随机、不是 `07` 手机。"""
+    while True:
+        got = (random.choice(_GB_AREA_CODES)
+               + "".join(str(random.randint(0, 9)) for _ in range(7)))
+        if not got.startswith(_GB_DRAMA_PREFIXES):
+            return got
+
+
+def _phone_pool(make) -> list:
+    """现生成 `PHONE_POOL_SIZE` 个**互不相同**的值（重复的丢掉重抽）。"""
+    out: list = []
+    while len(out) < PHONE_POOL_SIZE:
+        got = make()
+        if got not in out:
+            out.append(got)
+    return out
+
+
+#: 英国那一档（同时是「不知道」那一档，见上面那段）。
+PHONES = _phone_pool(_random_gb_landline)
 # ── 随机池按**站点国家**分流（★ 2026-09-29，交接《骨架还缺什么》「别处」那条）──────
 #
 # 为什么非分流不可（真站代价，`forms/common.py` 的 `_ALIASES` 注释里记着那一次）：
@@ -903,11 +960,23 @@ PHONES = ["02071234567", "02074561234", "02078889999", "02075550123",
 # `service.py` 的 `env` 契约是同一格）。**取不到 = 「不知道」** ——
 # 那份不知道必须**出声**（`Filler._say_country`），不许静默当美国、也不许静默当英国。
 #
+#: ★ 2026-10-08（用户点名「US / CA 都要**对应国家**的邮编和手机号」）：这三档**各自成池、
+#: 互不借用**（美国站拿美国邮编 + 美国号、加拿大站拿加拿大邮编 + 加拿大号）—— 这条由
+#: `COUNTRY_POOLS` 那张表钉着，`tests/test_template.py` 里有四条用例量它（互不重叠 + 各自形状）。
+#: ⚠️ 邮编用**真实/格式合法的一批**（不是随机造）：真站常拿邮编查城市 / 路由（homeknight 就是
+#: 拿它选地区），造一个不存在的邮编会走到「地址查不出来」那一屏 —— 手机可以随机（保留段里
+#: 尾号无人接），邮编不可以。
+#
 # ⚠️ `US_STATES` 的口径**一个字没改**：仍然是「小池子 + 随机选」，
 # 内容照抄 `forms/sites/lifynest.py:16`（那一注说的「站点在美国时适用」在这里就是
 # 「美国那一档用它」）。英国那一档补一个同口径的小池子（郡名），不是新造一套逻辑。
-US_ZIPS = ["10001", "90001", "60601", "30301", "02108", "98101"]
-US_PHONES = ["2025550147", "4155550123", "2125550198", "3125550147", "6175550165"]
+#: 美国邮编：**真的**，跨 20 个州（真 ZIP，查得到城市）。
+US_ZIPS = ["10001", "10011", "90001", "90012", "60601", "60614", "30301", "30308",
+           "02108", "02116", "98101", "98109", "33101", "33139", "75201", "78701",
+           "85001", "85016", "19102", "19103", "44101", "43201", "48201", "48226",
+           "80202", "80206", "89101", "89109", "37201", "37203", "63101", "63108",
+           "55401", "55403", "28202", "28204", "20001", "20009", "97201", "97205"]
+US_PHONES = _phone_pool(lambda: _random_nanp_phone(_US_AREA_CODES))
 GB_COUNTIES = ["Greater London", "Greater Manchester", "West Midlands", "West Yorkshire",
                "Merseyside", "Kent"]
 #: ★ 2026-09-30 补的第四档（2026-09-29 只有 US / GB）。为什么会漏：那一版分流表是照
@@ -920,9 +989,11 @@ GB_COUNTIES = ["Greater London", "Greater Manchester", "West Midlands", "West Yo
 #: （NANP 的 555-01xx 与 `A1A 1A1` 这种形状），不新造逻辑。
 CA_PROVINCES = ["Ontario", "Quebec", "British Columbia", "Alberta", "Manitoba",
                 "Saskatchewan"]
-CA_POSTCODES = ["M5V 3L9", "V6B 1A1", "H3Z 2Y7", "K1A 0A6", "T2P 2M5", "R3C 3J7"]
-CA_PHONES = ["4165550147", "6045550123", "5145550198", "4035550147", "6135550165",
-             "9025550134"]
+#: 加拿大邮编：**格式合法**（`A1A 1A1`）的一批，跨 6 省。
+CA_POSTCODES = ["M5V 3L9", "M4B 1B3", "V6B 1A1", "V5K 0A1", "V8W 1A1", "H3Z 2Y7",
+                "H2Y 1C6", "K1A 0A6", "K1P 1J1", "T2P 2M5", "T2R 0C5", "R3C 3J7",
+                "R3B 0T4", "S4P 3Y2", "S7K 1J5", "B3H 1A1", "B3J 3K5", "E1C 1E8"]
+CA_PHONES = _phone_pool(lambda: _random_nanp_phone(_CA_AREA_CODES))
 #: 国家（两字母码） → 各随机池。`country` 那一档要的是**国家名**（页面上的 Country 框）。
 COUNTRY_POOLS = {
     "US": {"country": "United States", "state": US_STATES,
@@ -936,8 +1007,7 @@ COUNTRY_POOLS = {
 #: 手机与英国那一档**共用 `PHONES`**（见 `PHONES` 上面那段：真跑起来常常就是这一档）。
 #: 为什么保留这个兜底而不是当场拒：拿不到国家 = 「不知道」，而「不知道」已经有一个
 #: **出声的去处**（`Filler._say_country`）。⚠️ 这条的原话是「与分流之前逐字相同」——
-#: ★ 2026-10-08 改的是**手机那一格的形状**（07 手机 → 0207 座机），
-#: **「猜不猜国家」一个字没动**：邮编/州仍是老那两套，只是同一国里换成真站肯收的形状。
+#: ★ 2026-10-08 改的是**手机那一格的形状**（`07` 手机 → **座机**、多个号段里随机），
 UNKNOWN_POOLS = {"country": None, "state": US_STATES, "postcode": POSTCODES, "phone": PHONES}
 
 # ── 产出元数据（siteforge 自动写入，勿手工编辑）────────────
@@ -1337,6 +1407,10 @@ class Filler:
         self.stuck = 0         # 连续没做成的步数（早停看它）
         self.skipped = 0       # 被 `when` 判据整组跳过的步数（最后那句总结要报出来）
         self.skipped_states = {}   # 状态名 → 被跳过的步数（报「跳过最多的是哪个状态」）
+        #: ★ 2026-10-09（用户裁的「耐性」那条）：**靠正文（而不是地址）认出来**的组数 ——
+        #: 地址漂了（参数 / slug 变了）而正文没变的那些。收尾那句要报出来（不报 = 看不出来
+        #: 这一趟是怎么走下来的），`_url_drift_note` 写它自己的那一句。
+        self.drifted = 0
         #: ★ 2026-09-28：这一趟读到**风控页 / 空白页**的 `(步号, 一句人话)` —— **纯诊断**
         #: （收尾那句要报出来）。与 `skipped_states` 是两件事：那个说「卡在哪个状态」，
         #: 这个说「页面压根不是内容页」—— 后者不是判据的问题，也不是脚本能解决的。
@@ -2930,19 +3004,76 @@ class Filler:
         return ("判据说成立 —— 但这是**事后**算的：判的那一刻它不成立"
                 "（这句话自己就是证据：结论与解释在打架，别把它当成原因读）")
 
+    def _url_drift_ok(self, when) -> bool:
+        """地址对不上时：**漂在同一条路上**吗（同一个目录前缀 ⇒ 换了末段 / 加了参数）。
+
+        ★ 2026-10-09：**这一格就是那条宽限的边界** ——
+          · 地址漂：判据 `…/intake/sh-7aq5xg/location`，手里是 `…/intake/sh-7aq5xg/physical-assessment?ofr=…`
+            ⇒ 同一个目录 ⇒ 算同一段路（照走）；
+          · 换到**另一条路径**：判据 `…/walk-in-showers/`，手里是 `…/bath-fitters/zz991`
+            ⇒ 不算 ⇒ 照旧跳过。
+        为什么非要有这条边界：**两页正文一样时，鉴别力只剩地址一条** ——
+        `tests/test_browser_agent.py::test_when_url_still_discriminates_a_different_path_prefix`
+        就是拿这个形状钉的（正文**故意一样**，放松过头它当场红）。
+        ⚠️ 判据只到主机名（或主机根）时**没有「同一条路」可谈** ⇒ 不放宽。
+        """
+        want = str((when or {}).get("url_contains") or "")
+        if "/" not in want.split("://", 1)[-1]:
+            return False                       # 判据只到主机名 ⇒ 没有「同一条路」可谈
+        base = want if want.endswith("/") else want.rsplit("/", 1)[0] + "/"
+        stem = base.split("://", 1)[-1]
+        if "/" not in stem:
+            return False                       # 判据就是主机根 ⇒ 同上
+        #: ⚠️ 比的是**去掉 scheme 的那一段**：判据里写没写 `https://` 两边都碰得到
+        #: （真产出里两种写法都有 —— 判据是生成期从账本抄的，写法不统一）。
+        return any(str(u).split("://", 1)[-1].startswith(stem) for u in self._urls())
+
+    def _url_drift_note(self, when) -> str:
+        """地址那一格**没命中但漂在同一条路上**吗 → 一句人话（空串 = 命中了 / 没漂 / 没写地址判据）。
+
+        ★ 2026-10-09（用户裁的「耐性」那条）：同一段路的地址会**漂** —— 带 `?ofr=…&lang=en`
+        这类参数、或换一个末段 slug，而正文一个字没变。这句就是「我认出了这一屏，但**不是靠地址**」。
+        """
+        want = str((when or {}).get("url_contains") or "")
+        if not want:
+            return ""
+        urls = self._urls()
+        if any(want in url for url in urls):
+            return ""
+        if not self._url_drift_ok(when):
+            return ""                          # 换到另一条路上了 ⇒ 这条不算「漂」，不记
+        return ("地址对不上但**同一条路**（要含「%s」，手里这些地址是：%s）"
+                % (want, " ｜ ".join(urls) or "（一个都没读到）"))
+
     def _matches(self, when):
-        """这条 `when` 现在成不成立（**只看判据**，不做等待）。"""
+        """这条 `when` 现在成不成立（**只看判据**，不做等待）。
+
+        ★ 2026-10-09（用户裁的「不换形态、给固定步骤表加耐性」那条）：**地址那一格允许漂**
+        —— 地址对不上、**正文判据命中**、且地址**漂在同一条路上**时算成立
+        （并在日志里说明「靠正文认的」）。为什么（真站现场，`job-f9b0090a9472`
+        `go.roviran.com`）：同一屏的地址会带 `?ofr=OFR-FOOT-FORTE-10&lang=en` 这类参数、
+        也会换末段 slug，而**正文一个字没变** —— 判据把地址钉死 ⇒ 整组静默跳过
+        （那趟 18 步里 **15 步**这么没的，最后「没走到成功」）。
+
+        ⚠️ 三条边界（每一条都有真站代价）：
+          · 地址命中、正文没命中 ⇒ 照旧**不成立**（地址一个参数就能改，正文才是这一屏的样子）；
+          · 换到**另一条路径**（不是同一个目录前缀）⇒ 照旧**不成立**（见 `_url_drift_ok`）；
+          · 判据**只有地址**（没写正文）⇒ 照旧**严格**比地址 —— 那种组本来就靠地址认，
+            放宽它等于「哪一页都行」。
+        ⚠️ 这条**不会**把「两屏正文一样、地址不同」的两组看成一个 —— 那种形状在**生成期**
+        就并成一组了（`browser_agent` 那条并组判据：URL 与正文**两向都分不开** ⇒ 并）。
+        """
         if not when:
             return True
-        if when.get("url_contains") and not any(when["url_contains"] in url
-                                                for url in self._urls()):
+        want_url = str(when.get("url_contains") or "")
+        url_ok = (not want_url) or any(want_url in url for url in self._urls())
+        wants = [_norm(str(w)).lower() for w in (when.get("text_contains") or [])]
+        if not wants:
+            return url_ok
+        signature = self.page_signature().lower()
+        if not any(w in signature for w in wants):
             return False
-        wants = when.get("text_contains") or []
-        if wants:
-            signature = self.page_signature().lower()
-            if not any(_norm(str(w)).lower() in signature for w in wants):
-                return False
-        return True
+        return url_ok or self._url_drift_ok(when)
 
     def _applies(self, when):
         """这一页看着像不像这个状态（防 A/B 变体、防步骤增减）。
@@ -3293,6 +3424,14 @@ class Filler:
                     if applies:
                         self.log.info("[%s] 复核之后这一页**就是**「%s」那个状态 —— "
                                       "刚才那一击是落地了的（不复核就会整组跳过）", self.cid, name)
+                if applies and self._url_drift_note(state.get("when")):
+                    # ★ 2026-10-09（用户裁的「耐性」那条）：**靠正文认出来的**这一组要说一句 ——
+                    # 地址漂了（参数 / slug 变了）而正文没变，走的是宽限那条路。
+                    # 不说的话，「这一趟为什么还能走」在日志里没有出处：地址判据写着别的网址。
+                    self.drifted += 1
+                    self.log.info("[%s] 「%s」这一组**不是靠地址认出来的** —— %s；"
+                                  "正文判据命中了，照走（地址漂了不算换屏）",
+                                  self.cid, name, self._url_drift_note(state.get("when")))
                 #: 这一组走到第几个动作了。⚠️ 用**游标**而不是 `for step in steps`：
                 #: 一步没做成时要把这一组**从头再走一遍**（线③），游标能回去，for 不能。
                 cursor = 0
@@ -3433,10 +3572,12 @@ class Filler:
             # **没见到成功文案就必须大声说「我没到」**，并说清停在哪、跳过了多少 ——
             # 「走完了 N 步」这句话本身**不是**一个结论（它听着像「跑完了」）。
             self.log.error(
-                "[%s] **没走到成功**：%d 步里真做了 %d 步、被 when 判据跳过 %d 步%s；"
+                "[%s] **没走到成功**：%d 步里真做了 %d 步、被 when 判据跳过 %d 步%s%s；"
                 "页面上**从头到尾没有出现过成功判据**（要认的那段：%s）……",
                 self.cid, total, total - self.skipped, self.skipped,
                 ("（跳过最多的那个状态是「%s」）" % self._skip_peak()) if self.skipped else "",
+                ("（另有 %d 组是靠**正文**认出来的：地址漂了、正文没变）" % self.drifted)
+                if self.drifted else "",
                 " / ".join(SUCCESS_TEXTS[:2]) or ("网址 " + " / ".join(SUCCESS_URLS[:2])))
             # ★ 2026-09-28：**页面压根不是内容页**时把话说透 —— 这类失败最容易被当成
             # 「判据没钉好」，而它其实**不是脚本能解决的**（风控要换出口 IP / 降频，

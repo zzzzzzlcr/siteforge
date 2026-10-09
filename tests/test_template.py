@@ -2139,6 +2139,84 @@ def test_a_skipped_state_leaves_a_line_in_the_trace_with_the_reason(sandbox, for
     assert not [a for a in common.STATE.actions if a[1] == "#go"], "跳过的步不许真做"
 
 
+def test_a_group_whose_url_drifted_still_runs_as_long_as_its_text_matches(sandbox):
+    """★ 2026-10-09（用户裁的「不换形态、给固定步骤表加耐性」那条）：
+    **地址漂了、正文没变 ⇒ 照样走这一组**；**换到另一条路 ⇒ 照旧跳过**。
+
+    真站现场（`job-f9b0090a9472`，`go.roviran.com`）：同一段路的地址会带
+    `?ofr=OFR-FOOT-FORTE-10&lang=en` 这类参数、也会换末段 slug，而**正文一个字没变** ——
+    判据把地址钉死 ⇒ 整组静默跳过（那趟 18 步里 **15 步**这么没的，最后「没走到成功」）。
+
+    判三半（判据本身是一个纯判断，所以直接打在这个判断上；端到端那一半由
+    `tests/test_browser_agent.py::test_when_url_still_discriminates_a_different_path_prefix`
+    与 `test_when_url_survives_a_rotated_trailing_id` 从产物那一侧钉着）：
+      · 同一条路上漂（末段换了 / 加了参数）⇒ **成立**；
+      · 换到另一条路径（前缀不同）⇒ **不成立**（两页正文一样时鉴别力只剩地址这一条）；
+      · 那条出处**说得出是哪一条判据**（不说 = 「为什么还能走」没人答得上来）。
+    """
+    module, _ = _load(
+        "run_url_drift_rules",
+        template.render("example-drift", "Thank you",
+                        [{"name": "walk", "when": None,
+                          "steps": [{"action": "scroll", "note": "s"}]}], [],
+                        SAMPLE_PROVENANCE),
+        sandbox)
+    when = {"url_contains": "example.test/step/location",
+            "text_contains": ["How sexually active are you?"]}
+
+    def _filler(url):
+        f = object.__new__(module.Filler)          # 只问那两条判断，不起浏览器
+        f._urls = lambda: [url]
+        f.page_signature = lambda: "How sexually active are you?"
+        return f
+
+    drifted = _filler("https://example.test/step/physical-assessment?ofr=OFR-X&lang=en")
+    assert drifted._matches(when) is True, "同一条路上的地址漂了就不走了 —— 这正是要修的那条"
+    said = drifted._url_drift_note(when)
+    assert "step/location" in said and "同一条路" in said, said
+
+    other = _filler("https://example.test/bath-fitters/zz991")
+    assert other._matches(when) is False, "换到另一条路上也算成立 —— 那两页正文一样时就串门了"
+    assert other._url_drift_note(when) == "", "不是「漂」，不该记那一句出处"
+
+    #: 判据**只有地址**（没写正文）⇒ 照旧严格比地址（那种组本来就靠地址认）。
+    only_url = {"url_contains": "example.test/step/location"}
+    assert drifted._matches(only_url) is False, "只写地址的判据被放宽了 —— 那等于「哪一页都行」"
+
+
+def test_a_group_whose_text_is_missing_is_still_skipped_even_when_the_url_matches(sandbox, form_file):
+    """反面钉子：**地址命中、正文没命中 ⇒ 照旧跳过**（这条宽限不许把闸整个拆掉）。
+
+    为什么单钉这一条：放宽的方向只能是「正文说了算」那一半 —— 反过来（地址命中就认）
+    等于把「甲页的步骤」放到乙页上做，而地址**一个参数就能改**，正文才是这一屏的样子。
+    与 `_matches` 的 docstring 是同一句话，一边改了另一边不会自己跟着改。
+    """
+    states = [
+        {"name": "wrong_page",
+         "when": {"url_contains": "example.test/",
+                  "text_contains": ["这句话页面上没有"]},
+         "steps": [{"action": "click", "note": "点「Go」",
+                    "target": {"text": "Go", "role": "button", "near": None,
+                               "selectors": ["#go2"]}}]},
+    ]
+    module, _ = _load(
+        "run_url_ok_text_missing",
+        template.render("example-notext", "Thank you", states, [], SAMPLE_PROVENANCE),
+        sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/page", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    trace = sandbox / "notext.jsonl"
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                  trace=str(trace)).run()
+
+    assert not [a for a in common.STATE.actions if a[1] == "#go2"], \
+        "地址命中就认了 —— 这一步本该跳过（正文判据没成立）：%r" % (common.STATE.actions,)
+    lines = [json.loads(l) for l in trace.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert [l for l in lines if l.get("skipped")], lines
+
+
 def test_the_end_says_out_loud_that_it_did_not_arrive(sandbox, form_file, caplog):
     """跑完没见到成功文案 → **大声说「没到」**，并报出「真做了几步 / 跳过几步」。
 
@@ -3525,30 +3603,41 @@ def test_a_canadian_site_gets_canadian_pools_not_the_uk_ones(sandbox, tmp_path):
 
 
 def test_the_uk_pool_is_landline_shaped_not_mobiles(sandbox):
-    """★ 2026-10-08（用户点名「加上0207规则」）：英国那一池手机号要填 **0207** 的座机形状。
+    """★ 2026-10-08（用户点名「加上0207规则」，同日再点名「**不是**都是 `0207` 啊」）：
+    英国那一池要 **座机形状、号段别锁死一个**。
 
     真站代价（laterlifechoices.uk，2026-10-08）：`07` 开头的英国手机号在那一格
     **校验不过** —— 填是填进去了，页面顶回 `Please enter a valid phone number`；
-    换成 `0207` 开头的座机形状就一次过（`job-cce9d4b8e5fd` 交付的那份）。
-    同一个形状 `template_loop._pool()` 那边**早就有了**（用户 2026-09-25 点名那条）——
+    换成座机形状就一次过（`job-cce9d4b8e5fd` 交付的那份）。同一个形状
+    `template_loop._pool()` 那边**早就有了**（用户 2026-09-25 点名那条）——
     所以这一条治的不是「没人知道」，是**两个骨架不一致**：走不走循环型，决定了
     英国站拿到座机还是手机，而「走不走循环型」根本不是站点的属性。
 
+    ⚠️ 但**不能清一色 `0207`**（用户同日第二条）：每一个站、每一趟都是伦敦 0207，
+    本身就是个可疑的常量。⇒ 判据是「**英国座机**（`020 3/7/8…` 与 `01x1…` 各城市）、
+    11 位、**不是 `07` 手机**、且避开 Ofcom 影视保留段」，不是「以 0207 开头」。
+
     判两半：
-      · 英国那一池**条条**是 0207 座机形状（混进一条 = 有一个站会红）；
-      · 「不知道哪一国」那一档**一个字不动**（`UNKNOWN_POOLS`）—— 改它 = 拿一个
-        「不知道」去赌一个池子，而那一档本来就有一个出声的去处（`_say_country`）。
+      · 英国那一池**条条**是座机形状（混进一条 `07` 或影视段 = 有一个站会红）；
+      · 「不知道哪一国」那一档与它**共用同一个池子**（`UNKNOWN_POOLS` 指着 `PHONES`）。
     """
     module, _ = _load("run_gb_landline", _country_product("GB"), sandbox)
 
     gb = list(module.COUNTRY_POOLS["GB"]["phone"])
     assert gb, "英国那一池是空的 —— 那这条测试什么也没量"
-    bad = [n for n in gb if not (str(n).startswith("0207") and len(str(n)) == 11)]
-    assert not bad, "英国池里还有不是 0207 座机形状的：%r" % (bad,)
-    #: 避开 Ofcom 的影视保留段 `020 7946 0xxx`（与 `template_loop._pool` 同一条口径：
-    #: 格式合法但一眼是假的 —— 那是给影视剧用的号段）。
-    fake = [n for n in gb if str(n).startswith("02079460")]
-    assert not fake, "英国池里混进了影视保留段：%r" % (fake,)
+    areas = tuple(module._GB_AREA_CODES)
+    drama = tuple(module._GB_DRAMA_PREFIXES)
+    bad = [n for n in gb
+           if not (str(n).startswith(areas) and len(str(n)) == 11
+                   and not str(n).startswith("07"))]
+    assert not bad, "英国池里还有不是座机形状的（`07` 手机 / 位数不对 / 号段不认识）：%r" % (bad,)
+    fake = [n for n in gb if str(n).startswith(drama)]
+    assert not fake, "英国池里混进了 Ofcom 影视保留段：%r" % (fake,)
+
+    #: ★ 2026-10-08（用户点名「不是都是 0207」）：池子不许锁在一个号段上 ——
+    #: 清一色 `0207` 等于每站每趟同一个常量。
+    segs = {str(n)[:4] for n in gb}
+    assert len(segs) >= 3, "英国池锁在少数几个号段上了（用户点名过这条）：%r" % (sorted(segs),)
 
     #: 与别的国家**不重叠**（不然「拿到了不同池子」这句话可能是巧合 —— 与上面两条同一条纪律）。
     assert not (set(module.US_PHONES) & set(gb)), "英国池混进了美国号"
@@ -3561,14 +3650,14 @@ def test_the_uk_pool_is_landline_shaped_not_mobiles(sandbox):
 
 def test_the_unknown_pool_is_landline_shaped_too(sandbox):
     """★ 2026-10-08（真产物 `laterlifechoices`）：**「认不出国家」那一档的手机也必须是
-    0207 座机形状** —— 因为真跑起来的常常就是这一档。
+    **英国座机形状**（不是 `07` 手机、也不锁死 `0207` 一个号段）—— 真跑起来的常常就是这一档。
 
     为什么单钉这一条（真事，同一天量到的）：那一版产物的 `PROVENANCE["env"]` 是 **`None`**
     ⇒ `_site_country()` 给空串 ⇒ `self.pools` 是 `UNKNOWN_POOLS` ⇒ 而它那一格原先指着
     `PHONES`（四个 **`07` 手机**）—— 正是 laterlifechoices 那一格**顶回来**
     （`Please enter a valid phone number`）的那种形状。
 
-    ⇒ 「手机号要 `0207` 开头」这件事**不能只修英国那一档**：英国那一档要认得出国家才轮得到，
+    ⇒ 「手机号要**座机形状**」这件事**不能只修英国那一档**：英国那一档要认得出国家才轮得到，
     而这一趟连国家都没认出来。所以**两档共用同一个池子**，形状一次改对。
 
     ⚠️ `UNKNOWN_POOLS` 那条「与分流之前逐字相同」的意思**是「不猜国家」**（邮编仍是英国那一套、
@@ -3583,8 +3672,45 @@ def test_the_unknown_pool_is_landline_shaped_too(sandbox):
 
     got = list(module.UNKNOWN_POOLS["phone"])
     assert got, "「不知道」那一档的手机池是空的 —— 那这条测试什么也没量"
-    bad = [n for n in got if not (str(n).startswith("0207") and len(str(n)) == 11)]
-    assert not bad, "「不知道」那一档还有不是 0207 座机形状的：%r" % (bad,)
+    bad = [n for n in got if not (str(n).startswith(tuple(module._GB_AREA_CODES))
+                                  and len(str(n)) == 11 and not str(n).startswith("07"))]
+    assert not bad, "「不知道」那一档还有不是座机形状的：%r" % (bad,)
+
+
+def test_the_phone_pools_are_rolled_fresh_every_run_not_a_few_fixed_numbers(sandbox):
+    """★ 2026-10-08（用户点名「手机号应该更随机一点吧，而不是用 12345 这种的」）。
+
+    改之前那三个池子是**写死的三四个值**：美国 `2025550147` / 英国 `02071234567` /
+    加拿大 `4165550147` —— 码型一眼是编的（`1234567`、`8889999`），而且**每一个站、
+    每一趟填的都是同一批**：站方的去重/风控看的就是这个重复。
+    现在池子**在产物装载时现生成**（产物是**一趟一个新进程**）⇒ 每趟都不一样。
+
+    判三半，缺一半都能"看着还在正常填"地混过去：
+      · **形状一个字没放宽** —— 美国 / 加拿大：NANP 保留段 `555-01xx`（影艺段，
+        打过去到不了真人）；英国：**座机**形状（`020 3/7/8…` / `01x1…` 多个号段里随机），
+        且**照旧避开** Ofcom 影视段（上面那条用例钉的就是这个）；
+      · **池子够大且无重复**（40 个互不相同）；
+      · **同一份产物装载两次拿到的不是同一批** —— 这就是「每趟都不一样」那一半，
+        少了它，这池子只是从「写死 5 个」变成「写死 40 个」。
+    """
+    us, _ = _load("run_pool_roll_us_1", _country_product("US"), sandbox)
+    again, _ = _load("run_pool_roll_us_2", _country_product("US"), sandbox)
+    gb, _ = _load("run_pool_roll_gb", _country_product("GB"), sandbox)
+    ca, _ = _load("run_pool_roll_ca", _country_product("CA"), sandbox)
+
+    for name, pool, pattern in (("US", us.US_PHONES, r"\d{3}55501\d{2}"),
+                                ("CA", ca.CA_PHONES, r"\d{3}55501\d{2}"),
+                                ("GB", gb.PHONES, r"020[378]\d{7}|01[0-9]{2}\d{7}")):
+        got = list(pool)
+        assert len(got) == us.PHONE_POOL_SIZE, (name, len(got))
+        assert len(set(got)) == len(got), "%s 池里有重复：%r" % (name, got)
+        bad = [n for n in got if not re.fullmatch(pattern, str(n))]
+        assert not bad, "%s 池里还有不成形状的：%r" % (name, bad)
+    assert not [n for n in gb.PHONES
+                if str(n).startswith(tuple(gb._GB_DRAMA_PREFIXES))], "混进了影视保留段"
+
+    assert set(us.US_PHONES) != set(again.US_PHONES), \
+        "同一份产物装载两次拿到同一批号 —— 那还是「写死的池子」"
 
 
 def test_a_fill_the_library_cannot_answer_is_rescued_by_name_and_says_where_it_came_from(

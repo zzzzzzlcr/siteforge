@@ -500,13 +500,21 @@ class Filler:
             return "user%d@%s" % (random.randint(100, 9999),
                                   random.choice(("gmail.com", "outlook.com", "yahoo.com")))
         if "phone" in kind or "mobile" in kind or "tel" in kind:
-            #: ★ 2026-09-25 **用户点名**：给 **0207 开头**（伦敦座机的形状）——
-            #: 真站那一格的校验收它；原来给的是 `07…`（英国手机号形状，位数一样合法），
-            #: 在那一站上**过不去** ✗（填了但校验不过 ⇒ 停在那一屏）。
-            #: 顺带避开 Ofcom 的影视保留段 `020 7946 0xxx`：格式合法、一眼是假的。
+            #: ★ 2026-09-25 **用户点名**：给**座机**形状（原来给 `07…` 手机 —— 位数一样合法，
+            #: 在那一站上**过不去** ✗：填了但校验不过 ⇒ 停在那一屏）。
+            #: ★ 2026-10-08（用户点名「**不是**都是 `0207` 啊」）：号段**别锁死一个** ——
+            #: 每站每趟都是伦敦 `0207`，那本身就是个可疑的常量。口径与 `template.py` 那边
+            #: 同一张表（`_GB_AREA_CODES` / `_GB_DRAMA_PREFIXES`），顺带避开 Ofcom 的
+            #: **影视保留段**（格式合法、一眼是假的）。
             while True:
-                got = "0207" + "".join(str(random.randint(0, 9)) for _ in range(7))
-                if not got.startswith("02079460"):
+                got = (random.choice(("0203", "0207", "0208", "0113", "0114", "0115",
+                                      "0116", "0117", "0118", "0121", "0131", "0141",
+                                      "0151", "0161", "0191"))
+                       + "".join(str(random.randint(0, 9)) for _ in range(7)))
+                if not got.startswith(("02079460", "0113496", "0114496", "0115496",
+                                       "0116496", "0117496", "0118496", "0121496",
+                                       "0131496", "0141496", "0151496", "0161496",
+                                       "0191496", "0289018", "0292018")):
                     return got
         if "post" in kind or "zip" in kind:
             return random.choice(("SW1A 1AA", "M1 1AA", "B1 1AA", "LS1 1AA"))

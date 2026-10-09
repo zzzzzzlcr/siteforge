@@ -35,11 +35,101 @@ class Runner:
         return self.ok, self.said
 
 
-def _app(tmp_path, runner: Runner = None):
+def _app(tmp_path, runner: Runner = None, **kw):
     app = TestClient(service.create_app(
         json_backup_dir=str(tmp_path / "backups"),
-        country_runner=runner), raise_server_exceptions=False)
+        country_runner=runner, **kw), raise_server_exceptions=False)
     return app, app.app.state.service
+
+
+class _Snap:
+    """`get_state()` 那个东西：服务只准看这三格（与 `test_service.py` 的桩同源）。"""
+
+    values: dict = {}
+    next: tuple = ()
+    interrupts: tuple = ()
+
+
+
+
+# ── ⓪ ★ 2026-10-08：**没给国家时按出口链自动补**（用户：「能否根据切换的 gost 的代理
+#      自动适配资料」）—— 真站代价是 `job-b9f0c6a74cbd`（英国手机号 → 美国站红字
+#      `Invalid phone number` → 提交被表单校验吃掉，而 trace 上看着「9 步全 ok」）。
+
+
+class _Graph:
+    """一个不碰浏览器的图：`/run` 只建它、不调它的探路那一步（用例只看到闸前那一屏）。"""
+
+    def invoke(self, payload, config):
+        return {}
+
+    def get_state(self, config):
+        return _Snap()
+
+
+def _run(tmp_path, runner, brief, **kw):
+    """发一趟活，返回 `(client, svc, job_id)` —— **同步那一半**（narration 就在 `start()` 里）。"""
+    app, svc = _app(tmp_path, runner, graph_factory=lambda b, d: _Graph(), **kw)
+    r = app.post("/run", json=brief)
+    assert r.status_code == 202, r.text
+    return app, svc, r.json()["job_id"]
+
+
+def _brief(**over):
+    brief = {"url": "https://moonstreamcoaching.com/getinfo", "goal": "填表并提交",
+             "success_text": "FOR SERIOUS DIGITAL ASSET INVESTORS", "site": "moonstreamcoaching"}
+    brief.update(over)
+    return brief
+
+
+def test_the_country_is_read_from_the_exit_chain_when_the_run_does_not_name_one(tmp_path):
+    """没给国家 ⇒ 服务按出口链**实测**那个国家补进 `env`，而且**说出来**（`/submitted` 那条）。"""
+    runner = Runner(ok=True, said="US\n")
+    client, svc, job_id = _run(tmp_path, runner, _brief(), country_autofill=True)
+
+    job = svc._jobs[job_id]
+    assert job.brief["env"]["proxy_country"] == "US", job.brief.get("env")
+    assert runner.calls == [{"country": "", "url": ""}], \
+        "读那一下必须是**只读**（--show），不能顺手换链"
+    said = "\n".join(e["say"] for e in job.timeline.all())
+    assert "出口链实测到的那一国" in said and "US" in said, said
+    client.app.state.service._queue.join()
+
+
+def test_a_country_the_caller_named_is_never_overridden(tmp_path):
+    """人说了就听人的：**一个字节都不问**（那条链上现在恰好是哪国与这一趟无关）。"""
+    runner = Runner(ok=True, said="CA")
+    client, svc, job_id = _run(tmp_path, runner,
+                               _brief(env={"proxy_country": "gb"}), country_autofill=True)
+    assert svc._jobs[job_id].brief["env"]["proxy_country"] == "gb"
+    assert runner.calls == [], "人给了国家还去问出口链 = 替人决定"
+    client.app.state.service._queue.join()
+
+
+def test_an_unreadable_chain_leaves_the_cell_empty_instead_of_guessing(tmp_path):
+    """问不出来 ⇒ **照旧空着**（产物那边会出声说「不知道这个站在哪一国」）—— 不猜。"""
+    for runner in (Runner(ok=False, said=""), Runner(raises=RuntimeError(":1081 没在跑"))):
+        client, svc, job_id = _run(tmp_path, runner, _brief(), country_autofill=True)
+        assert not (svc._jobs[job_id].brief.get("env") or {}).get("proxy_country")
+        said = "\n".join(e["say"] for e in svc._jobs[job_id].timeline.all())
+        assert "出口链实测到的那一国" not in said, said
+        client.app.state.service._queue.join()
+
+
+def test_the_autofill_is_off_unless_the_deployment_wired_it(tmp_path):
+    """默认**关**：一开就要真去问 :1081，而用例 / 别的部署不该被带到网上（`app` 那一行才开）。"""
+    runner = Runner(ok=True, said="US")
+    client, svc, job_id = _run(tmp_path, runner, _brief())      # 不给 country_autofill
+    assert runner.calls == [], "默认关着还去问了一次 —— 用例就跑在真 gost 上了"
+    client.app.state.service._queue.join()
+
+
+def test_the_auto_path_keeps_its_own_gate_untouched(tmp_path):
+    """`auto` 那条有自己的门口（缺国家就**不开**）—— 这里不许替它补上一个。"""
+    runner = Runner(ok=True, said="US")
+    client, svc, job_id = _run(tmp_path, runner, _brief(auto=True), country_autofill=True)
+    assert runner.calls == [], "auto 那条路是它自己去换链，这里不许先问一句"
+    client.app.state.service._queue.join()
 
 
 # ── ① 面板按的那两下 ────────────────────────────────────────────────────────

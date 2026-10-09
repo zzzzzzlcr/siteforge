@@ -2601,35 +2601,12 @@ def _target_of(element, action: str, selector: str, frame_id: str = "") -> dict:
         "frame_id": frame_id,
     }
 
-
 #: 一个「看起来就是美国邮编」的值（5 位数字）。用在下面那种**歧义**场合。
 _US_ZIP_RE = re.compile(r"^\d{5}$")
 
 
-#: 认「这个值是个美国州名」用的小池子 —— **与生产脚本同一套**
-#: （`forms/sites/lifynest.py:16` 的 STATES）。它只用来**认**（认不出就照旧保守兜底）。
-#:
-#: ⚠️⚠️ **2026-09-17：这一条不再当判据用了**（保留常量与这条注释，是为了让下一个人
-#: 看见「它存在过、以及为什么撤了」）。撤它的理由：
-#:
-#:   它把「美国州名表」当成了**识别字段种类的判据** —— 而那正是控制器在 R-75/R-76
-#:   点过名的「规则折叠回潮」（判据要一个站一个站地维护，换个国家整个失效）。
-#:   当时只能这么办，是因为**没有别的路**：`nearby_text` 在字段这一路一直是空的
-#:   （observe 算了、Go 侧 `Field` 没这个字段、被静默丢掉 —— 见 observe.go 的注释），
-#:   而 placeholder 那一档根本不存在。
-#:
-#:   现在两条通用路都通了，实测都能认对（2026-09-17 活页面上量的）：
-#:     placeholder 形状：`e.g. 06801`         → `postcode`（`_SHAPE_RULES`）
-#:     题目正文：       `What state do you live in?` → `state`（`nearby_text` 第三档）
-#:   ⇒ 判据不再依赖任何词表。**硬编码池子留着当兜底值池是对的**（生产一直这么干，
-#:     R-76），但**不当判据** —— 这两件事 R-76 分得很清楚，这里按那条办。
-_RECOGNIZABLE_STATES = ("California", "Texas", "Arizona", "Florida", "New York", "Illinois",
-                        "Ohio", "Georgia", "Virginia", "Washington", "Pennsylvania",
-                        "Michigan", "Colorado", "Tennessee", "Missouri", "Maryland")
-
-
 def _kind_from_recorded_value(kind, value, element):
-    """语义判不出来时，**看探索那一趟自己往这个框里写了什么**（证据，不是猜）。
+    """**看探索那一趟自己往这个框里写了什么**（证据，不是猜）—— 语义判不出来时的那一票。
 
     为什么需要它（2026-09-17 真站实测，量出来的）：
     gowizard 的邮编框身上**一个语义信号都没有** —— `label` 空、`hint` 是不透明的 MUI id
@@ -2639,16 +2616,30 @@ def _kind_from_recorded_value(kind, value, element):
     但账本里有一件**现成的证据**：探索那一趟模型自己往这个框里写过 `90210` / `75201` ——
     **邮编形状**。所以：`type=tel`（它本身就有歧义）而记下来的值像美国邮编 → 判 postcode。
 
-    ⚠️ 只在**歧义**时用（`tel` 这一类），而且只认「5 位数字」这一种形状：
-    手机号的形状（10~11 位、带括号/横线）不会被它读成邮编。
+    ★ 2026-10-09（用户：「**没有对应资料的话就对应随机** —— 之前填的是数字，生成的也要是数字」）：
+    上一条从「只认 `tel` + 5 位邮编」**收成一条通例** —— `_shape_kind(value)` 说这一格要什么
+    形状，就按那个形状给随机值（产物于是每趟生成**同形状**的随机，而不是把账本里那一个值
+    每趟重填一遍）。真事（`job-5d7c20fbfe14`，fleet-solutions）：`#fleet_size` 那一格的
+    `nearby_text` 抄的是**隔壁 State 下拉的选项长串**（`Select a State or Province*Alabama…`）
+    ⇒ 判成 `state` ⇒ 名字成 `state-2`、兜底成了随机**州名**；而账本里那一趟填的是 `"5"`
+    ⇒ 站方 `This field is required.` ⇒ 12 步全做完、点 Contact Us 没反应，从没到成功。
+
+    ⚠️ **边界（这一票压得过谁、压不过谁）**：
+      · 压得过**弱证据**（③ 周围写的字 / ④ html 的 `type`）—— 那一格自己什么都没说；
+      · 压不过**强证据**（①② 字段自己的名字 / 它自己举的例子）—— 名字写着 `email`、
+        而账本里是个数字，那是账本脏，不是这一格要数字。
+    ⚠️ 形状认不出来（`_shape_kind` 给空串）⇒ **原样返回**，一个字都不改。
     """
-    if kind != "phone":
-        return kind
-    if str((element or {}).get("type") or "").strip().lower() != "tel":
-        return kind
-    if _US_ZIP_RE.match(str(value or "").strip()):
-        return "postcode"
-    return kind
+    if (kind == "phone"
+            and str((element or {}).get("type") or "").strip().lower() == "tel"
+            and _US_ZIP_RE.match(str(value or "").strip())):
+        return "postcode"                                # 老判据（2026-09-17）一个字不动
+    shape = _shape_kind(value)
+    if not shape or shape == kind:
+        return kind                                      # 认不出形状 / 本来就是它 ⇒ 一个字不改
+    if _strong_kind((element or {}).get("label") or "", element):
+        return kind                                      # ①② 说了算
+    return shape
 
 
 def _fill_info(args: dict, target: dict, element, journey: Journey) -> dict:
@@ -2890,6 +2881,44 @@ def _kind_by_placeholder(placeholder):
     return None
 
 
+#: 「账本里那个值是什么形状」——**只认一眼看得出来的那几种**（认不出给空串，不猜）。
+#:
+#: ⚠️ **5 位数字故意不算 `number`**：那是美国邮编的形状（`_US_ZIP_RE`），
+#: 而「邮编」与「件数」都是数字串 —— 这一档不许把邮编读成人数（下面 `_kind_from_recorded_value`
+#: 那条 `tel`+邮编的老判据照旧先前一步生效）。
+_SHAPE_NUMBER_RE = re.compile(r"^\d{1,4}$")
+_SHAPE_PHONE_RE = re.compile(r"^\+?\d{10,11}$")
+_SHAPE_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
+
+
+def _shape_kind(value) -> str:
+    """这个**值本身**是什么形状（`number` / `phone` / `email`）——认不出给空串。
+
+    ★ 2026-10-09（用户：「没有对应资料的话就对应随机 —— 之前填的是数字，生成的也要是数字」）：
+    账本里那一趟**真填进去、站点收下过**的那个值，是判定这一格要什么形状的**最后一票**。
+    """
+    v = str(value or "").strip()
+    if _SHAPE_EMAIL_RE.match(v):
+        return "email"
+    if _SHAPE_NUMBER_RE.match(v):
+        return "number"
+    if _SHAPE_PHONE_RE.match(v):
+        return "phone"
+    return ""
+
+
+def _strong_kind(label, element) -> str:
+    """**强证据**那一半（`_field_kind` 的 ①②）：这一格自己的名字 / 它自己举的例子。
+
+    为什么单独一个函数：弱证据（③ 周围写的字 / ④ html 的 type）**可以被账本里那个值的
+    形状推翻**，强证据不行（见 `_kind_from_recorded_value`）—— 两半必须能分开问。
+    """
+    element = element or {}
+    own = " ".join(str(x or "") for x in (label, element.get("label"), element.get("hint"),
+                                          element.get("placeholder")))
+    return _kind_by_words(own) or _kind_by_placeholder(element.get("placeholder"))
+
+
 def _field_kind(label: str, element):
     """这个字段**是什么**（`postcode` / `email` / `phone` / `full_name` …）—— 认不出给 `None`。
 
@@ -2911,18 +2940,13 @@ def _field_kind(label: str, element):
     两处各判一次必然漂（一处改了另一处没改），所以只有这一个函数说这件事。
     """
     element = element or {}
-    own = " ".join(str(x or "") for x in (label, element.get("label"), element.get("hint"),
-                                          element.get("placeholder")))
-    kind = _kind_by_words(own)
-    if kind:
-        return kind
-    kind = _kind_by_placeholder(element.get("placeholder"))
+    kind = _strong_kind(label, element)                  # ①② 强证据（见 `_strong_kind`）
     if kind:
         return kind
     kind = _kind_by_words(" ".join(str(x or "") for x in (element.get("nearby_text") or [])))
-    if kind:
+    if kind:                                             # ③ 周围写的字（**弱**证据）
         return kind
-    return _TYPE_HINTS.get(str(element.get("type") or "").strip().lower())
+    return _TYPE_HINTS.get(str(element.get("type") or "").strip().lower())   # ④ 也是弱证据
 
 
 def _fallback(kind: str, value: str, label: str, element) -> list:

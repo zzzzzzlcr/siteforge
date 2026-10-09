@@ -503,6 +503,21 @@ from agent.country import (  # noqa: E402 —— 摆在这儿是**故意的**：
     COUNTRY_PATH, COUNTRY_SHOW_SAY, COUNTRY_UNREADABLE_SAY, SET_COUNTRY_SECONDS,
     SET_COUNTRY_TOOL, _country_code, _run_country_tool,
 )
+
+
+def _read_exit_country(runner: Callable) -> str:
+    """★ 2026-10-08：**实测出口国家**（`--show`，经 :1081 问一句）→ 两字母码。
+
+    问不出来（抛了 / 没核到 / 回来的不成形状）一律给**空串** = 「不知道」——
+    **不许猜一个**：产物那边拿不到国家时会照旧出声说「不知道这个站在哪一国」
+    （`template.Filler._say_country`），猜出来的那个国家会静默地把手机/邮编换成别国的形状。
+    """
+    try:
+        ok, said = runner()
+    except Exception:                      # noqa: BLE001 —— 外面那条链什么都可能抛
+        return ""
+    lines = str(said or "").strip().splitlines()
+    return _country_code(lines[0]) if (ok and lines) else ""
 #: ★ T6（2026-09-24）：值班那几格（开关 / 心跳 / 今天开了几个 / 需要人的那几个）。
 #: 只读口 —— 面板那一栏照它说话（页面只搬字）；值班那套的判据全在 `agent/auto.py` 里。
 from agent import auto as auto_mod  # noqa: E402
@@ -1074,6 +1089,12 @@ EXPECTS_UNWRITABLE = "expects_unwritable"
 #: 「时间线上要说出来」（不说的话，运营以为判据是自己填的那条，而它其实是老脚本那条）。
 #: ⚠️ 与上面那个同一个道理：下划线开头 ⇒ **进不了图**（`_payload` 是白名单）。
 SUCCESS_TAKEN = "_success_taken_from_base"
+#: ★ 2026-10-08（用户：「能否根据切换的 gost 的代理自动适配资料」）：面板按的那趟**没给国家**
+#: 时，服务按**现在这条出口链实测到的国家**补上 `env.proxy_country`。这一格 = **补的是哪个国家**
+#: （空 = 没这回事）—— 与 `SUCCESS_TAKEN` 同一个道理：**补了就得说出来**（时间线上那一句）。
+#: ⚠️ 下划线开头 ⇒ **进不了图**（`_payload` 是白名单）：它只给 `/submitted` 那一句用。
+COUNTRY_TAKEN = "_country_taken_from_proxy"
+
 #: 直达那一句（`say_route` 说这句话会直达它的下一轮）
 SAY_DELIVERED_SAY = "这句话**直达**它的下一轮了（它正在探路里跑）。"
 #: 真的把它交出去那一刻，时间线上那条（设计注 §4.2 的**原话**「已经交给它了」）。
@@ -2444,7 +2465,8 @@ class Service:
                  json_backup_dir: Optional[str] = None,
                  json_ticket_store: Any = None,
                  country_runner: Optional[Callable] = None,
-                 country_tool: Optional[str] = None):
+                 country_tool: Optional[str] = None,
+                 country_autofill: bool = False):
         self._jobs: dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
         self._queue: "queue.Queue[tuple]" = queue.Queue()
@@ -2541,6 +2563,14 @@ class Service:
         self._country = ""
         #: 换链时用哪个目标站（接口按它挑链）。上一次成功那次用的是什么就还用那个。
         self._country_url = ""
+        #: ★ 2026-10-08（用户：「能否根据切换的 gost 的代理自动适配资料」）：面板按的那趟
+        #: **没给国家**时，按现在这条出口链**实测**到的国家补 `env.proxy_country`
+        #: （产物拿它挑随机池：手机 / 邮编 / 州 —— 挑错就是站方红字 `Invalid phone number`）。
+        #: ⚠️ **默认关**：一开就会在开 job 的那一刻真去问一次 :1081，而用例 / 别的部署
+        #: 不该被这一下带到网上（用例跑的那台机器根本没有 gost）。
+        #: 真部署那一行（模块末尾的 `app = create_app(...)`）显式开着它 —— **一处声明**。
+        #: 与 `_country_runner` 的分工：那是**换**（写链文件），这一格是**读**（只问一句）。
+        self._country_autofill = bool(country_autofill)
 
     # ── 外面那三层：图、窗口、检查点 ────────────────────────────────
     def _build_graph(self, brief: dict, job_id: str = ""):
@@ -2693,6 +2723,34 @@ class Service:
             raise HTTPException(status_code=503, detail=COUNTRY_UNREADABLE_SAY % (said or "（它什么都没说）"))
         return {"country": got, "say": COUNTRY_SHOW_SAY % got,
                 "chosen": self._country}
+
+    def _country_from_proxy(self, brief: dict) -> dict:
+        """★ 2026-10-08（用户：「能否根据切换的 gost 的代理自动适配资料」）：
+        **面板按的那趟**没给国家时，把现在这条出口链实测到的国家填进 `env.proxy_country`。
+
+        为什么非补不可（真站代价，`job-b9f0c6a74cbd` moonstreamcoaching，2026-10-08）：
+        那一趟没带国家 ⇒ 产物的 `PROVENANCE['env']['proxy_country']` 是 `null` ⇒
+        `_site_country()` 落到「不知道」那一档 ⇒ **手机号用英国那一池**（真填进去的是
+        `02076667777`）⇒ 美国站红字 `Invalid phone number` ⇒ 提交被表单校验吃掉。而那份
+        trace 上看着是「9 步全 ok、页面没变」—— 真站**明说**的原因，产物一个字节都没读。
+
+        ⚠️ 只管**人按的那条路**：`auto` 那条有自己的门口（`_fix_country_gate`：缺国家就
+        **不开**，并真把链换到那一国）—— 那条路一个字节都不动。
+        ⚠️ 读数**只认实测**：问不出来**照旧空着**，不猜一个（猜错就是上面那笔代价）。
+        ⚠️ 没开自动补（默认，测试那一档）⇒ 一个字节都不动。
+        """
+        if not self._country_autofill or brief.get("auto"):
+            return brief
+        env = dict(brief.get("env") or {})
+        if str(env.get("proxy_country") or "").strip():
+            return brief                       # 人说了就听人的（补的是「没人说」那一格）
+        got = _read_exit_country(self._country_runner)
+        if not got:
+            return brief
+        env["proxy_country"] = got
+        brief["env"] = env
+        brief[COUNTRY_TAKEN] = got
+        return brief
 
     def switch_country(self, country: str, url: str = "") -> dict:
         """`POST /country`：**换成这个国家** —— 核到了才算成。
@@ -6057,6 +6115,8 @@ class Service:
         #: ★ 2026-09-24：这一格 = 「判据是**服务从底稿搬来的那一串**」（空 = 人自己填的 / 没这回事）。
         #: ⚠️ 必须摆出来（没有静默的路径）：不说的话，运营以为判据是**自己**填的那条。
         took_success = str(brief.get(SUCCESS_TAKEN) or "")
+        brief = self._country_from_proxy(brief)   # ★ 2026-10-08：没给国家就按出口链补
+        took_country = str(brief.get(COUNTRY_TAKEN) or "")
         self._clean_window_for_explore(brief)     # R-F1 的另一半：**探路也要干净会话**
         #: ★ 2026-09-22：窗口是**服务自己**开的（面板没有挑窗口那一栏）⇒ 开不出来时这一趟
         #: **必死**。按「拿不到底稿就不开 job」同一条规矩（`_stage_fix_source`）：门口红掉，
@@ -6103,7 +6163,8 @@ class Service:
         # `/job/{id}` 的**既有形状**一个字都不动（那儿不加格）。
         self.narrate(job, "submitted",
                      self._submitted_say(body) + body.unwritable_say()
-                     + self._took_success_say(took_success))
+                     + self._took_success_say(took_success)
+                     + self._took_country_say(took_country))
         if self._something_is_ahead():
             self.narrate(job, "queued", QUEUED_SAY)
         self._submit(job, self._payload(brief))
@@ -6133,6 +6194,20 @@ class Service:
         return ("\n「什么算成功」这一趟**你没填** —— 服务按**这一趟的底稿**（后端那份 py）里"
                 "老脚本自己声明的那一条走：%s。⚠️ 要换成别的，就在下一次发起之前填上那两格；"
                 "这一趟已经按它判了。" % taken)
+
+    @staticmethod
+    def _took_country_say(code: str) -> str:
+        """「这一趟你没说国家，服务按**现在这条出口链**实测到的那一国填了」那句。
+
+        ★ 2026-10-08：补了就得**说出来**（与 `_took_success_say` 同一条纪律）——
+        不说的话，运营以为手机 / 邮编 / 州是按**他自己**说的那个国家挑的，而实际是按
+        **这台机器现在这条链**挑的；两者不一样时，屏幕上没有任何地方看得出来。
+        """
+        if not code:
+            return ""
+        return ("\n这一趟**你没给国家** —— 服务按**现在这条出口链实测到的那一国**（%s）"
+                "填了随机池那一格（手机 / 邮编 / 州都按它挑）。要按别的国家，先在面板上"
+                "换链、再开一趟。" % code)
 
     @staticmethod
     def _payload(brief: dict) -> dict:
@@ -6970,7 +7045,8 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                json_backup_dir: Optional[str] = None,
                json_ticket_store: Any = None,
                country_runner: Optional[Callable] = None,
-               country_tool: Optional[str] = None) -> FastAPI:
+               country_tool: Optional[str] = None,
+               country_autofill: bool = False) -> FastAPI:
     """拼一个 app。测试从这里注入桩图 / 桩窗口 / 内存 saver。
 
     `window=None` 是**默认且合法**的：这个部署没接窗口层 —— 于是 `set_viewport` 那根线
@@ -7000,7 +7076,8 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                   selftest_dir=selftest_dir, mcp_bin=mcp_bin, failures_reader=failures_reader,
                   json_ws_url=json_ws_url, json_rerun=json_rerun,
                   json_backup_dir=json_backup_dir, json_ticket_store=json_ticket_store,
-                  country_runner=country_runner, country_tool=country_tool)
+                  country_runner=country_runner, country_tool=country_tool,
+                  country_autofill=country_autofill)
     api = FastAPI(title="siteforge", version="0.1",
                   description="看着真页面产出 cdp-first py 脚本的 agent 服务（计划二 Task 8）")
 
@@ -7400,4 +7477,4 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
 
 #: uvicorn 的入口（`entrypoint.sh` 里 `agent.service:app`）。
 #: ⚠️ 导入这个模块**不碰**数据库：saver 是第一次真要用的时候才建的（`Checkpointer`）。
-app = create_app(window=bit_window_from_env())
+app = create_app(window=bit_window_from_env(), country_autofill=True)
