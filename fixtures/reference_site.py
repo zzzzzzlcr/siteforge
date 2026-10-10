@@ -315,11 +315,17 @@ _CONSENT_ROOTS_JS = (
     "+' '+String((e.getAttribute&&e.getAttribute('aria-label'))||'')"
     "+' '+String(e.innerText||'').replace(/\\s+/g,' ').slice(0,200);};"
 )
-_CONSENT_BOX_JS = (
-    "var boxW=/(cookie|consent|gdpr|privacy)/i;"
+#: 「这个东西**看得见**吗」—— 弹层那几段 JS 共用的一处（原来同意条那段里一份、
+#: 「还在不在」那段里又一份，逐字一样：同一件事写了两遍）。
+#: 判据：有面积、而且顶边还没划出视口 —— 与 `cdp observe` 看 obstructions 一个口径。
+_VIS_JS = (
     "var vis=function(e){var r=e.getBoundingClientRect();"
     "return r.width>0&&r.height>0&&r.bottom>0&&r.top<window.innerHeight;};"
-    + _CONSENT_ROOTS_JS +
+)
+_CONSENT_BOX_JS = (
+    "var boxW=/(cookie|consent|gdpr|privacy)/i;"
+    + _VIS_JS +
+    _CONSENT_ROOTS_JS +
     "for(var i=0;i<all.length;i++){"
     "  var b=all[i];"
     "  if(boxW.test(boxLabel(b))&&vis(b)) return '1';"
@@ -404,15 +410,66 @@ def _is_consent_step(label: str) -> bool:
     return bool(text) and any(w in text for w in _CONSENT_STEP_WORDS)
 
 
-_CONSENT_PROBE_JS = (
+#: ★ 2026-10-10（用户当天那句：「**执行的时候都检测是否有弹窗**」）：
+#: 再看一眼**盖住整页的模态对话框** —— 它不是同意条，但比同意条更硬：
+#: 同意条最多盖住一条边，模态底下**什么都点不到**。
+#:
+#: 现场（topcopdtrends / cardahealth 问卷的生日那一屏，2026-10-10 真站实测）：
+#: `div.MuiDialog-root.MuiModal-root` —— position:fixed、z-index 1300、盖满 390x844，
+#: **底下还压着 `MuiBackdrop-root`**；backdrop 把点击全吃掉 ⇒ 那一步就成了
+#: 「做了、页面没动」（日志里那句 `第 2 步没做成`）。内容是一句挽留话 +
+#: `1-800-592-2165` + 「Finish My Assessment」；**唯一该点的是那颗 `<button aria-label="close">`**
+#: （实测：点它弹窗就没了、底下的生日页立刻能操作）。
+#:
+#: 为什么**不能**并进上面那条 `boxW`：那条认的是「**对同意做个决定**」这件事
+#: （cookie|consent|gdpr|privacy），而模态里那颗按钮**不一定是**那种 ——
+#: 可能是「Finish My Assessment」这种**会真做事**的按钮。所以这个分支**只认明确的关闭控件**，
+#: 一颗都找不到就**什么都不点**（宁可不做，也不替人做决定）。
+#:
+#: 三条窄口径，缺一不可：
+#:   ① 容器自己得是**模态语义**（id/class 里有 `dialog|modal`，或 `role=dialog` / `aria-modal=true`）；
+#:   ② 它得**盖住大半个视口**（宽高都 ≥80%）—— 小浮标、侧栏抽屉不算
+#:      （那些可能真是页面要人看的东西，点掉它同样是「点到别的东西」）；
+#:   ③ 里面得有一颗**可见的、明确叫「关闭」**的控件（close / dismiss / 关闭 / ×，且很短）。
+#: ⚠️ 剩下的那点风险与「同意条只有文字」那条**同一个量级**（调用方按文字打标记再点）：
+#: 页面上若另有一颗文字恰好也是 `close` 的按钮，标记会命中靠前的那个。
+#: 由 `_covered_by` 兜住 —— 点歪了那一步照样会被判成没做成，不会被记成做成了。
+#:
+#: ★ 2026-10-10 起它是**钩子表里的一条**（`_POPUP_HOOKS` 第二行）：签名 `(all, vis)` ——
+#: 用调用方穿好 shadow root 的那份元素表，**不再**吃上一条钩子的局部变量（原来那是个暗扣）。
+_MODAL_BOX_JS = (
+    "var isModal=function(e){"
+    "var lab=String(e.id||'')+' '+String(e.className||'')+' '"
+    "+String((e.getAttribute&&e.getAttribute('aria-label'))||'');"
+    "var sem=/(dialog|modal)/i.test(lab)"
+    "||!!(e.getAttribute&&(e.getAttribute('role')==='dialog'"
+    "||String(e.getAttribute('aria-modal'))==='true'));"
+    "if(!sem)return false;"
+    "var r=e.getBoundingClientRect();"
+    "return r.width>=window.innerWidth*0.8&&r.height>=window.innerHeight*0.8;};"
+    "var closeW=function(s){s=String(s||'').trim().toLowerCase();"
+    "if(!s)return false;"
+    "if(s==='×'||s==='✕'||s==='✖')return true;"
+    "return /^(close|dismiss|关闭)/.test(s)&&s.length<=24;};"
+    "for(var m=0;m<all.length;m++){var mb=all[m];"
+    "if(!isModal(mb))continue;"
+    "var mi=(mb.getElementsByTagName?mb.getElementsByTagName('*'):mb.querySelectorAll('*'));"
+    "for(var n=0;n<mi.length;n++){var cb=mi[n],ct=String(cb.tagName||'').toLowerCase();"
+    "if(ct!=='button'&&ct!=='a'&&ct!=='input')continue;"
+    "if(!vis(cb))continue;"
+    "var ca=String((cb.getAttribute&&cb.getAttribute('aria-label'))||'').trim();"
+    "var cx=String(cb.innerText||cb.value||'').trim();"
+    "if(!(closeW(ca)||closeW(cx)))continue;"
+    "return (cb.id?('#'+cb.id):'TEXT')+'|'+(ca||cx).slice(0,40);}"
+    "return '';}"
+)
+
+_CONSENT_HOOK_JS = (
     # ⚠️ 用 `getElementsByTagName('*')` + 属性自检，**不走**「按选择器一步查」的那种写法 ——
     # 产品里凡是要按选择器找元素的地方一律避开它（`tests/test_template.py` 的
     # 「动作全走 cdp」那条把它钉死了；而这里本来就只是**读**，`matches()` 一样能读）。
     "var boxW=/(cookie|consent|gdpr|privacy)/i;"
     "var btnW=/(accept|agree|allow|got it|close|reject|decline|deny|同意|接受|关闭)/i;"
-    "var vis=function(e){var r=e.getBoundingClientRect();"
-    "return r.width>0&&r.height>0&&r.bottom>0&&r.top<window.innerHeight;};"
-    + _CONSENT_ROOTS_JS +
     "for(var i=0;i<all.length;i++){"
     "  var box=all[i];"
     "  if(!boxW.test(boxLabel(box))||!vis(box)) continue;"
@@ -429,8 +486,61 @@ _CONSENT_PROBE_JS = (
     "    return (b.id?('#'+b.id):'TEXT')+'|'+t.slice(0,40);"
     "  }"
     "}"
-    "return '';"
 )
+
+
+#: ★ 2026-10-10（用户问的那句：「假如会出现某些弹窗的钩子函数」）：**弹窗钩子表**。
+#:
+#: 这一段原来是一根用 `+` 拼起来的字符串（同意条那段 + 模态那段 + 兜底 `return ''`）：
+#: 加一类弹窗得动那段拼接，还得当心别踩到上一条的局部变量 —— 模态那段就**偷偷用着**
+#: 同意条那段里定义的 `all` / `vis`（那段哪天被删掉或挪走，模态会**静默**失灵）。
+#: 现在**加一类弹窗 = 表里加一行**。
+#:
+#: 一条钩子 = 一个**函数体**，签名 `(all, vis)`：
+#:   `all`  **穿好 shadow root 的全部元素**（`_CONSENT_ROOTS_JS` 走一遍 DOM，所有钩子
+#:          共用这一份 —— 不各自再走一遍；这条探针挂在**每一步动手之前**，贵不起）
+#:   `vis`  「看得见吗」（`_VIS_JS`）
+#: 返回 `"<选择器|TEXT>|<按钮文字>"`：选择器 = 直接点它；`TEXT` = 那颗按钮只有文字、
+#: 没有 id ⇒ 调用方按文字打标记再点（`_MARK_CONSENT_BY_TEXT_JS`）。
+#: **认不出就返回空串** —— 空串是正常情况（页面上没有这类东西），不是失败。
+#:
+#: 写新钩子时照抄这三条纪律：
+#:   ① **表里的次序就是优先级**：第一个答应的那个被点掉，后面的不再问；
+#:   ② **宁可不做，不可错点**：找不到就返回空串，点歪了由 `_covered_by` 兜
+#:      （它保证「点了个寂寞」不会被记成做成了）；
+#:   ③ 钩子只许**读**页面：动手那一下一律交回选择器，由调用方走 `cdp click`（§5.2）。
+#: 每一条的「为什么这么窄」写在它自己的注释里（下面两条就是）。
+_POPUP_HOOKS = (
+    ("同意条", _CONSENT_HOOK_JS),
+    ("盖住整页的模态", _MODAL_BOX_JS),
+)
+
+
+def _popup_probe_js(hooks=None):
+    """把表拼成**一段**探针 JS（`_POPUP_PROBE_JS` 就是它拼出来的）。
+
+    为什么拼成一段、而不是一条钩子一次 eval：它挂在**每一步动手之前**（`_perform` 里那处），
+    往返次数不许随钩子条数涨 —— 一次问完，第一个答应的就 `return`，后面的不再问。
+
+    名字（表里的第一格）**跟着答复一起回来**：日志要照它说「把『盖住整页的模态』点掉了」——
+    原来那句话一律说「同意弹层」，模态被点掉时也是（读日志的人会去找错的东西）。
+    """
+    out = [_CONSENT_ROOTS_JS, _VIS_JS]      # `all` / `vis`：只算一遍，所有钩子共用
+    for name, js in (_POPUP_HOOKS if hooks is None else hooks):
+        #: ⚠️ 钩子的 `return` 只在**它自己那个函数**里有效，而「第一个答应的就此打住」
+        #: 要的是**探针这一层**的 return ⇒ `if(hit)` 那半句必须留在外面这一层。
+        #: （写成 `(function(){…if(hit)return…})()` 的话，那一下只返回给那个空壳、
+        #: 探针照样一路走到兜底的 `return ''` —— 2026-10-10 拿假 DOM 真跑一遍才逮到，
+        #: 替身测试**测不出来**：它根本不执行这段 JS。）
+        #: ⚠️ 拼接而**不用 `%` 格式化**：钩子是别人写的 JS，里面完全可能有 `width:100%`
+        #: 这种百分号 —— 那会在 import 期炸出一个跟钩子八竿子打不着的格式错误。
+        out.append("var hit=(function(all,vis){" + js + "})(all,vis);"
+                   "if(hit)return " + json.dumps(name, ensure_ascii=False) + "+'|'+hit;")
+    out.append("return '';")
+    return "".join(out)
+
+
+_POPUP_PROBE_JS = _popup_probe_js()
 
 #: 按文字给同意按钮**打标记**（只有文字的那种）—— 与产物里「按占位符填」同一招：
 #: 找用 JS、点还是走 `cdp click`（§5.2），标记属性用完就清。
@@ -635,7 +745,7 @@ PROVENANCE = { 'generated_at': '2026-09-17T02:00:00+08:00',
 #: （实测代价：重渲一版 travelandleisure 一口气多带了 8 个方法）。
 #: 拿它跟当前骨架的 `template.SKELETON_SHA` 一比，`skeleton_drift()` 就答得出「落后多少」。
 #: ⚠️ 它是**骨架**的指纹（这份文件），不是产物的 —— 站点数据（STATES/FILLS）不算骨架。
-SKELETON_SHA = "0dd645ebc65d0f47"
+SKELETON_SHA = "15c0b0200c473894"
 
 
 def _site_country():
@@ -765,15 +875,54 @@ def _page_trouble(text):
     return ""
 
 
+# ★ 2026-10-09：**同一个字的两种排版写法算同一个字**（用户裁定原话：「那就大小写吧」
+# —— 按 2026-09-22 那条**大小写**先例办：`Check your email` 与 `check your email` 算
+# 同一个词，那么 `’` 与 `'` 就是**同一个撇号**）。
+#
+# 真事（`job-27389cef3110`，enroll 那趟）：人给的判据是
+# `Thank You! We've Received Your Information!`（**直角**撇号），站点把那句渲染成
+# `We’ve`（**弯**撇号 U+2019）。只压空白 + 小写时子串不成立 ⇒ **一份 py 都不出**，
+# 尽管探路走完了、正文里也真有那句。
+#
+# ⚠️ 折的只是**同一个字的排版变体**（弯引号 / 长短破折 / 省略号），**不是抹标点**：
+# `Thank You!` 与 `Thank You` 仍然是**两串不同的字**，不许配上。
+# ⚠️ 这张表**必须与探路那份逐字一致**（`agent/browser_agent.py` 里的 `_FOLD`）——
+# 这一份是**独立交付出去的一份 py**，import 不到 agent 包，所以只能是两份。
+_FOLD = str.maketrans({
+    # 弯单引号 → 直角撇号
+    "‘": "'", "’": "'", "‚": "'", "‛": "'",
+    # 角分 / 角秒
+    "′": "'", "″": '"',
+    # 弯双引号 → 直角双引号
+    "“": '"', "”": '"', "„": '"', "‟": '"',
+    # 各种横线 → 直角连字符（连字符 / 不换行连字符 / 短破折 / 长破折 / 横线 / 减号）
+    "‐": "-", "‑": "-", "‒": "-", "–": "-",
+    "—": "-", "―": "-", "−": "-",
+    # 省略号 → 三个点
+    "…": "...",
+    # ── 全角 ASCII（U+FF01–U+FF5E）→ 半角 ──
+    # ★ 2026-10-09 用户第二次点头（原话「算吧算同一个」）：宽度也是「同一个字的两种写法」。
+    # ⚠️ **整段一起折** —— Unicode 里它们就是「同一个字符的两种宽度」，只折标点、
+    # 不折字母数字是凭空划一条线。
+    # ⚠️ 到 U+FF5E 为止。再往后的 U+FF61–U+FF9F 是**半角片假名**（ｱｲｳ）—— 那是**另一个
+    # 字符**，不是谁的全角形；按「块」写就会把它们一起吃掉（钉在
+    # `test_the_two_norms_do_not_fold_what_is_actually_a_different_character`）。
+    **{chr(0xFF01 + i): chr(0x21 + i) for i in range(0x5E)},
+})
+
+
 def _norm(text):
-    r"""把一段文字归一成「看内容」的形态：空白（含 NBSP）压成单个空格、两端剪掉。
+    r"""把一段文字归一成「看内容」的形态：空白（含 NBSP）压成单个空格、两端剪掉，
+    **同一个字的两种排版写法折成一个**（`_FOLD`）。
 
     ⚠️ 这条口径**必须**与 `cdp observe` 的 page_text 完全一致（规格 §4.3 明写
     「与 py 里 page_signature() 同口径」）。不一致的后果是：trace 里的 page_sig 与
     agent 当时看到的页面模型对不上，Console 会把**同一个页面**显示成两个页面。
+    ⚠️ 折同形字那一步是 ★ 2026-10-09 加的，**两边一起加**；只加一边就是
+    「探路认得出、脚本在真站上认不出」。同理，抹标点**不做**（那才是放宽判据）。
     Python 的 \s 与 JS 的 \s 都含 NBSP（Go 的不含 —— diff.go 那个坑就是它）。
     """
-    return re.sub(r"\s+", " ", text or "").strip()
+    return re.sub(r"\s+", " ", text or "").translate(_FOLD).strip()
 
 
 # 读页面正文（**只读**）。shadow DOM 要逐 root 收：body.innerText 不穿 shadow，
@@ -2132,7 +2281,8 @@ class Filler:
         return False
 
     def _clear_obstructions(self, why=""):
-        """开跑（以及每次导航之后）把**挡路的 cookie 同意弹层**点掉。
+        """开跑（以及每次导航之后）把**挡路的弹层**点掉：问一遍钩子表（`_POPUP_HOOKS`），
+        谁先答应就点谁（今天：同意条 → 盖住整页的模态）。要加一类弹窗，**改表**，不改这里。
 
         为什么要产物自带（2026-09-17 真站实测，链条闭合）：生产**每一单都是新窗口**、
         每次都清 cookie —— 所以**每单都会遇到同意弹层**；而探索那一趟跑在一个「弹层已经
@@ -2162,16 +2312,24 @@ class Filler:
         `_dismiss_consent` 同一条口径：它是为了修失败才加的，自己再变成失败点就本末倒置）。
         """
         try:
-            raw = self._ev(_CONSENT_PROBE_JS)
-            if not raw or "|" not in raw:
-                return                  # 没有弹层（正常情况）—— 静默是对的，这是「无事可做」
-            how, text = raw.split("|", 1)
+            raw = str(self._ev(_POPUP_PROBE_JS) or "")
+            #: 答复是 `"<钩子名>|<选择器|TEXT>|<按钮文字>"`（三格，表见 `_POPUP_HOOKS`）。
+            parts = raw.split("|", 2)
+            if len(parts) != 3:
+                #: 空串 = 表里一条都没答应（**正常情况**，页面上就是没有这类东西）—— 静默是对的。
+                #: 但**形状不认识 ≠ 没有弹层**：那是「量不出来」，说出来（与本文件里
+                #: `LOADER|` / `COVER|` 那两条前缀同一个道理），只是不当成「有弹层」去点。
+                if raw.strip():
+                    self.log.info("[%s] 弹窗探针的答复形状不认识（%r）—— 当它没答，"
+                                  "照旧走这一步自己的判据", self.cid, raw[:60])
+                return
+            who, how, text = parts
             if how == "TEXT":           # 只有文字：打标记再点（点还是走 cdp）
                 marked = self._ev(_MARK_CONSENT_BY_TEXT_JS % json.dumps(text))
                 if "marked" not in str(marked or ""):
-                    self.log.info("[%s] 同意弹层那颗按钮（%r）没有 id、按文字也没标记上 —— 不猜，"
+                    self.log.info("[%s] 「%s」那颗按钮（%r）没有 id、按文字也没标记上 —— 不猜，"
                                   "留给 `_covered_by` 兜（下一步会被挡住并如实失败）",
-                                  self.cid, text[:30])
+                                  self.cid, who, text[:30])
                     return
                 selector = '[data-sf-consent="1"]'
             else:
@@ -2182,14 +2340,14 @@ class Filler:
                 self._ev("var a=document.getElementsByTagName('*');"
                          "for(var i=0;i<a.length;i++){if(a[i].removeAttribute)"
                          "a[i].removeAttribute('data-sf-consent');}return 'clean';")
-            self.log.info("[%s] %s把同意弹层点掉了（%s，%r）：%s", self.cid,
-                          ("%s之后 " % why) if why else "开跑前 ", selector, text[:30],
+            self.log.info("[%s] %s把「%s」点掉了（%s，%r）：%s", self.cid,
+                          ("%s之后 " % why) if why else "开跑前 ", who, selector, text[:30],
                           "看起来成了" if _ok(out) else "**没成**")
         except Exception as exc:                           # noqa: BLE001
             #: **永不失败**：读不到 / 点不动都只记一行，绝不往上抛 ——
             #: 往上抛会把这**一步**判成「产物自己出错了」（`_run_step` 里那条 except 会
             #: 直接结束整趟），而弹层只是环境带来的噪声，不该有这种权力。
-            self.log.info("[%s] 看/点同意弹层这一下没成（%s: %s）—— 当它没有，照旧往下走",
+            self.log.info("[%s] 看/点弹层这一下没成（%s: %s）—— 当它没有，照旧往下走",
                           self.cid, type(exc).__name__, exc)
 
     def _consent_step_handled(self, label, frame=""):
@@ -3085,6 +3243,13 @@ class Filler:
                 # 这一步真在哪一帧里做的（主帧 = ""）——「帧内的点击有没有带上帧号」
                 # 这件事，读 trace 就能看见，不用去读产物源码。
                 "frame_id": frame,
+                #: ★ 2026-10-09：这一步**不承重**（探路里同一个**无名**目标作成过也做败过
+                #: —— 浮窗那类"有时候有有时候没有"的东西，见
+                #: `browser_agent._not_load_bearing_clicks`）。自测拿这一格分档：
+                #: 它没做成**不否决**那一遍，但要**点名**说清（与 `scroll` / `wait` 同一档）。
+                #: 不写这一格的理由也在这句里：**只有产物知道**哪一步是那种步，自测那边
+                #: 光看 trace 认不出来（`action` 是 `click`，跟承重步长得一模一样）。
+                "auxiliary": (True if step.get("auxiliary") else None),
                 "ok": ok,
                 "progress": progress,
                 # 判不出来时**带上为什么**（「没算出有没有推进」与「没有推进」是两件事）
@@ -3287,6 +3452,22 @@ class Filler:
                     # ⚠️ 重试**不再判一次 `when`**：这一组的门在进组时已经判过了，而页面上
                     #    什么都没推进（失败的那一步没成）。重判会把「重试」变成「整组跳过」——
                     #    那正是这套产物最贵的那类失败。
+                    #: ★ 2026-10-09（真站 `job-d40bb4d2d2be`／`taxlawadvocates` 实测）：
+                    #: **「滚不动」不该把整组打回**。现场：第 13 步点了「Next →」（页面当场翻页）
+                    #: ⇒ 第 14 步还写着「把 Next → 滚进视口」，而那只按钮**已经不在页面上** ⇒
+                    #: 整组 25 步从头再来（上限 1 次）⇒ 重走时第二步的 click 也找不到它
+                    #: （trace 原话：`step16 click 页面上没找到「Next →」`）—— **一次滚动失败把
+                    #: 整条线性流程搅乱了**，最后报「没走到成功」。
+                    #: 判据：**滚动是准备动作**（真正要做的下一步自己会把元素滚进视口）——
+                    #: 没滚成时**出声 + trace 里如实记 `ok=False`**，然后**接着走下一步**；
+                    #: 不重试整组（重试的前提是「那一步真的要做的事没做成」）。
+                    if not ok and str((step or {}).get("action") or "") == "scroll":
+                        self.log.warning("[%s] 第 %d 步是 scroll，没滚成（%s）—— 照旧往下走"
+                                         "（滚动是准备动作，不拿它打回整组）",
+                                         self.cid, index,
+                                         str(self._when_why_cache or self.retry_why or "")[:60])
+                        cursor += 1
+                        continue
                     if not ok and self.group_retries < GROUP_RETRY_LIMIT:
                         self.group_retries += 1
                         self.retry_why = (

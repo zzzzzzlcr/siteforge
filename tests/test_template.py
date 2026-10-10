@@ -204,6 +204,27 @@ def sandbox(tmp_path_factory) -> pathlib.Path:
     return root
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_cdp_override(monkeypatch):
+    """跑这一份时把 `SITEFORGE_CDP_BIN` 摘掉 —— 它是**给生产的运维开关**，
+    而这一片的判据是「产物默认调**沙箱里那个假 cdp**」（`test_cdp_binary_can_be_pointed_elsewhere`
+    明写着 `assert module.CDP_BIN == str(sandbox / "cdp")`）。
+
+    为什么必须有它（★ 2026-10-10 实测，链条闭合）：`test.sh` 起容器时 `-e` 了
+    `SITEFORGE_CDP_BIN=/opt/siteforge/tools/cdp/cdp`（生产该有的），而 **8100/8099 容器里跑
+    pytest 会原样继承它** ⇒ 产物照设计听了那个变量、绕过沙箱里的假 cdp ⇒
+    `fake_cdp_calls.log` 一个字节都没有 ⇒ **17 条用例当场红**（2026-10-10 实测：带变量 17 红、
+    把变量摘掉同一份全绿；数 cdp 调用次数的那一族）。
+    ⚠️ 这 17 条此前被记成「`fixtures/reference_site.py` 比模板旧」（交接 2026-10-10 §3）——
+    **那是归因错了**：实测把变量摘掉就绿（同一条用例：带变量红、不带绿），而重渲染产物
+    一条都不治。判据长得像「产物没调 cdp」，其实产物没错、是**跑法**错了。
+
+    要验「那个环境变量真管用」的用例自己 `monkeypatch.setenv`（照旧跑得通：
+    它自己设的值后于这一条生效）。
+    """
+    monkeypatch.delenv("SITEFORGE_CDP_BIN", raising=False)
+
+
 # ── 静态契约（规格 §5.1 / §5.3 / §5.1c）────────────────────────────
 
 def test_ast_parses(rendered):
@@ -1263,8 +1284,11 @@ class _State:
         self.text = ""
         self.fail_actions = False
         self.fail_selectors = ()
-        #: 同意弹层的答复（`"<选择器>|<按钮文字>"`，空串 = 没有弹层）——
+        #: 弹窗探针的答复（`"<钩子名>|<选择器|TEXT>|<按钮文字>"`，空串 = 表里一条都没答应）——
         #: 产物 `_clear_obstructions` 的探针认这个形状。
+        #: ★ 2026-10-11：**第一段是钩子自己的名字**（`_POPUP_HOOKS` 那个表里的第一条），
+        #: 日志要照着它说「把『盖住整页的模态』点掉了」——原来只有两段、名字由调用方猜。
+        #: ⚠️ 同一个值也喂着 `_CONSENT_BOX_JS`（它只问「还在不在」）—— 那边只看**空不空**。
         self.consent = ""
         #: 同意弹层的**逐次**答复（同 `cover_seq`）：量一次弹一个，弹空了才退回 `consent`。
         #: ★ 2026-09-29 加的：真站上弹层是**页面加载完之后才异步冒出来**的（travelandleisure
@@ -1689,7 +1713,7 @@ def test_the_product_dismisses_a_consent_overlay_before_it_starts(sandbox, form_
                    observe={"url": "https://example.test/", "actions": [], "fields": []},
                    diff={"actionable": True})
     common.STATE.texts = ["Walk"]
-    common.STATE.consent = "#onetrust-accept-btn-handler|Accept Cookies"
+    common.STATE.consent = "同意条|#onetrust-accept-btn-handler|Accept Cookies"
 
     module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
     clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
@@ -1736,7 +1760,7 @@ def test_a_consent_button_without_an_id_is_still_clicked(sandbox, form_file):
                    observe={"url": "https://example.test/", "actions": [], "fields": []},
                    diff={"actionable": True})
     common.STATE.texts = ["Walk"]
-    common.STATE.consent = "TEXT|Accept All Cookies"      # ← 只有文字、没有 id
+    common.STATE.consent = "同意条|TEXT|Accept All Cookies"      # ← 只有文字、没有 id
 
     module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
     clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
@@ -1768,7 +1792,7 @@ def test_a_consent_overlay_that_shows_up_late_is_cleared_before_the_next_click(s
     common.STATE.texts = ["Walk"]
     #: 开跑前那一次探针答「没有弹层」；动手之前那一次它才冒出来（`consent` 是兜底值）
     common.STATE.consent_seq = [""]
-    common.STATE.consent = "#onetrust-accept-btn-handler|Accept Cookies"
+    common.STATE.consent = "同意条|#onetrust-accept-btn-handler|Accept Cookies"
 
     module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
     clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
@@ -1829,6 +1853,112 @@ def test_a_covered_element_is_not_clicked_and_does_not_report_ok(sandbox, form_f
         "被盖着就不该点下去：%s" % common.STATE.actions)
     line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
     assert line["ok"] is False, line
+
+# ─────────── ★ 2026-10-10：弹窗**钩子表**（`_POPUP_HOOKS`）───────────────
+#
+# 起因是用户那句「假如会出现某些弹窗的钩子函数」。原来那条链是**一段拼起来的 JS**
+# （同意条那段 + 模态那段 + 兜底 `return ''`）：加一类弹窗要动拼接、还要小心别踩到
+# 上一条的局部变量（模态那段就偷偷用着同意条那段里定义的 `all` / `vis`）。
+# 现在：**一条钩子 = 表里一行**（函数体，签名 `(all, vis)`，回 `"<选择器|TEXT>|<按钮文字>"`）。
+
+
+def test_a_new_popup_kind_is_one_row_in_the_hook_table(sandbox, form_file):
+    """★ 2026-10-10：**加一类弹窗 = 表里加一行** —— 这条钉住「表驱动」这件事本身。
+
+    这一条塞进表里的是本用例独有的第三类弹窗（「假弹窗」）。判两半：
+      · 那一行的 JS **真的进了探针**（不是表摆了好看）；
+      · 产物**照它把东西点掉了**（载入表 → 问探针 → 点 —— 整条链路上再没有第二处要改）。
+    反过来读：要是哪天有人把这三类写成 `_clear_obstructions` 里的三个 if，
+    这一条当场红（`_popup_probe_js` / `_POPUP_HOOKS` 会直接不见）。
+    """
+    module, _ = _load(
+        "run_popup_row",
+        template.render("example-popup-row", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    hook = "return '#fake-gate|Close';"
+    probe = module._popup_probe_js(module._POPUP_HOOKS + (("假弹窗", hook),))
+    assert hook in probe, "表里加的那一行没进探针：%s" % probe[-200:]
+    module._POPUP_PROBE_JS = probe
+    common.STATE.consent = "假弹窗|#fake-gate|Close"
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert clicks and clicks[0] == "#fake-gate", clicks
+
+
+def test_the_hook_table_order_is_the_priority_order(sandbox, form_file):
+    """表里的**次序就是优先级**：先问同意条，再问盖住整页的模态。
+
+    为什么次序是判据而不是实现细节：两者同时在页面上时，要先把「对同意的决定」做掉
+    —— 模态那支本来就只在同意条一个都没找到时才看（见它在表里的位置与自己的 docstring）。
+    ⚠️ 问的是**产物里那份拼出来的探针**（名字按表序拼在答复前面），不是 `agent/template.py`
+    那个渲染器 —— 钩子表在产物里，渲染器只负责把它渲出来。
+    """
+    module, _ = _load(
+        "run_popup_order",
+        template.render("example-popup-order", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    js = module._popup_probe_js()
+    assert js.index("同意条") < js.index("盖住整页的模态"), js[:300]
+
+
+def test_the_log_says_which_hook_cleared_what(sandbox, form_file, caplog):
+    """★ 2026-10-10：点掉的东西**报它自己的名字**。
+
+    原来那句话是「把**同意弹层**点掉了」一把抓 —— 模态被点掉时它也这么说，而那压根不是
+    同意条；读日志的人会照着错的名字去页面上找东西。名字跟着答复一起回来（答复第一段）。
+    """
+    module, _ = _load(
+        "run_popup_log",
+        template.render("example-popup-log", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.consent = "盖住整页的模态|#close|Close"
+
+    with caplog.at_level(logging.INFO):
+        module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert "#close" in clicks, clicks
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "盖住整页的模态" in said and "同意弹层" not in said, said
+
+
+def test_an_answer_in_a_shape_we_do_not_know_is_not_a_popup(sandbox, form_file):
+    """反例（新形状的边界）：答复**认不出来**时一下都不点 —— 不许拿半个答复去点东西。
+
+    「认不出来」与「没有弹层」处置相同（都不动手），所以这一条钉的是**不点**：
+    只在没听懂的时候乱点，是拿页面当赌注 —— `_covered_by` 兜得住「点了个寂寞」，
+    兜不住「点到了别的东西」。
+    """
+    module, _ = _load(
+        "run_popup_shape",
+        template.render("example-popup-shape", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.consent = "同意条|少了第三段"
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert clicks == ["#go"], clicks
+
 
 
 def test_a_failed_step_records_the_scene_and_a_successful_one_does_not(sandbox, form_file):
@@ -2814,7 +2944,7 @@ def test_a_consent_step_whose_banner_is_still_there_is_still_a_failure(sandbox, 
              "target": {"text": "Reject All", "role": "button", "near": None,
                         "selectors": ["#onetrust-reject-all-handler"]}}]}],
         ("#onetrust-reject-all-handler",),
-        "#onetrust-accept-btn-handler|Accept Cookies")     # 弹层还在
+        "同意条|#onetrust-accept-btn-handler|Accept Cookies")     # 弹层还在
     assert rows[1]["ok"] is False, (
         "弹层还在页面上时，那一步找不到元素**就是失败**，不许软跳过: %s" % rows.get(1))
 
