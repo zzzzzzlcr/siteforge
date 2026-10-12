@@ -1,0 +1,34 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>影子树里那个没有 id 的输入框（cdp form --strict 的夹具）</title></head>
+<body style="margin:0">
+<!--
+  复刻真站量到的形状（2026-10-12 · `job-d57366d0cf35` · ic.com 抽屉里那个搜索框）：
+
+   ① 它在**开着的影子根**里 —— 裸 `document.querySelector` 找不到它（夹具自报 `plain` 为 0），
+      而 cdp 的解析（`__cdpQ` / `__cdpQA`）穿 shadow，找得到；
+   ② 它**没有 id**（只有 placeholder）—— 这一条是关键：`cdp form --strict` 那一路会把命中的
+      元素**改写**成 `strictPickJS` 里 `pathOf()` 造出来的地址，而 `pathOf` 沿 `parentElement`
+      往上走，**影子边界上 `parentElement` 是 null** ⇒ 造出 `html>input:nth-of-type(1)`
+      这种根本不存在的地址 ⇒ 回头拿它去填 ⇒ `scroll mouse wheel failed: element not found`。
+
+  有 id 的元素不会踩到（`pathOf` 第一句就是 `if (el.id) return '#' + id`）—— 所以这个夹具
+  **刻意不给 id**：给了就把要测的那条路绕过去了。
+-->
+<div id="host"></div>
+<script>
+  var sr = document.getElementById('host').attachShadow({mode: 'open'});
+  sr.innerHTML = '<div id="sheet" style="position:fixed;left:20px;top:120px;width:320px;' +
+                 'background:#fff;box-shadow:0 0 0 1px #ccc">' +
+                 '<input type="text" placeholder="Search..." ' +
+                 'style="display:block;width:300px;height:36px;margin:10px;border:1px solid #ccc">' +
+                 '</div>';
+
+  window.__state = function () {
+    var inp = sr.querySelector('input');
+    return JSON.stringify({
+      plain: document.querySelectorAll('input[placeholder="Search..."]').length,   // 裸查询：应为 0
+      value: inp ? inp.value : null
+    });
+  };
+</script>
+</body></html>

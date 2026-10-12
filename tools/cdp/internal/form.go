@@ -1164,6 +1164,14 @@ func pickUnique(probeJSON, expectLabel string) (string, error) {
 	}
 	switch len(hit) {
 	case 1:
+		// ★ 2026-10-12：认出来的那一个**在影子树里**（`pathOf` 给不出唯一地址，回空串）——
+		// 那就**没有**「唯一化」可言：照原样返回 = 拿原来那条再赌一次，而这条闸的承诺
+		// 正是「宁可不填，绝不填错」。所以在这儿大声失败。
+		if hit[0] == "" {
+			return "", fmt.Errorf("选择器命中 %d 个元素，按字段身份 %q 认出的是**影子树里**那一个 ——"+
+				"跨影子边界造不出一条唯一的 CSS 地址，拒绝填：说不清是不是它。候选：\n%s",
+				probe.Count, expectLabel, describePickCandidates(probe.Items))
+		}
 		return hit[0], nil
 	case 0:
 		return "", fmt.Errorf("选择器命中 %d 个元素，按字段身份 %q 一个都对不上 —— 拒绝填："+
@@ -1215,6 +1223,15 @@ func strictPickJS(selector string) string {
   }
   function pathOf(el){
     try { if (el.id) return '#' + CSS.escape(el.id); } catch (e) {}
+    // ★ 2026-10-12（真事 job-5b01fdf771e0 / job-d57366d0cf35 · ic.com 抽屉里那个搜索框）：
+    // **影子树里的元素造不出一条跨得过去的 CSS 选择器** —— 下面那个循环沿 parentElement
+    // 往上走，而影子边界上 parentElement 是 null，于是它会造出
+    // html>input:nth-of-type(1) 这种**根本不存在**的地址；CLI 拿这条**改写过的**地址
+    // 去填（cmd/form.go 里那句 if picked != '' 就换掉了原选择器）⇒ 报
+    // scroll mouse wheel failed: element not found —— 元素明明就在那儿。
+    // 返回空串 = 「这条改写不了，用原来那条」：调用方本来就为「给不出更好的」留了这一格
+    // （picked 为空串时保留原选择器）。有 id 的元素走上面那句、不受影响。
+    try { if (el.getRootNode && el.getRootNode() !== document) return ''; } catch (e) {}
     var parts = [], cur = el;
     while (cur && cur.nodeType === 1 && cur !== document.documentElement) {
       var tag = cur.tagName.toLowerCase(), i = 1, sib = cur;
