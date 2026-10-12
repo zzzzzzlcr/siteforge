@@ -5705,3 +5705,64 @@ def test_an_address_field_is_named_street_not_the_label_slug():
     journey = browser_agent.Journey()
     name = browser_agent._fill_name("Address line 1", {"type": "text"}, journey)
     assert name == "street", "地址那格的名字该是语义名 `street`（资料能对、池子也有），拿到 %r" % name
+
+
+def test_a_repick_never_lands_on_a_running_clock():
+    """★ 2026-10-12（真事 `job-7c0cb8a45c25` · nitrouscompetitions.com）：那一页上有个**走秒的倒计时** ——
+    它把**同一屏**按「url+标题+正文前 400 字」裂成了三个状态（`…-2/-3/-4`），而**撞车重挑**那一支
+    按**状态名**认「别的页」⇒ 兄弟页把稳的判据挤掉，**每屏都独一无二的秒数**反而当选
+    （账本原话：「原来剪到的那段（'2025 KTM SX 85 - Big Wheel'）在**前面走过的那几页**上也有
+    ⇒ 门分不出两页 ——已经换成这一页自己的一段：'01:11:45'」）⇒ 重放时那道门永远不成立、
+    自测 18 步全跳过。
+
+    撞车的另一头是**列表页**（`/all-competitions`：它上面同时有 `CLOSES IN` 与产品标题 ——
+    正是那两条 `text_why` 说的那两段）。所以这一页上**真稳又真独有**的只有它自己的那几格
+    （开奖日 / 售票数那种）；判据要落到它们上，**不许**落到走秒的那串上。
+    """
+    url = "https://nitrous.test/competition/2025-ktm-85"
+    #: 撞车的另一头：**另一场竞猜的页**（slug 不带数字 ⇒ 它的稳定地址与这一页不同，
+    #: 而 `previous` 的 `url_contains` 用的是剥掉末段之后的前缀 `…/competition/` ⇒ 两边都成立）
+    listing = "https://nitrous.test/competition/summer-draw"
+    head = "CLOSES IN 2025 KTM SX 85 - Big Wheel"
+    nodes = ["2025 KTM SX 85 - Big Wheel", "01:11:45", "CLOSES IN",
+             "DRAW DATE Fri 16 October 2026"]
+    prefix = browser_agent._stable_url(url)          # 与 `_when_for` 同一把尺子（剥掉末段）
+    eye1 = {"name": "competition", "url": url, "title": "Nitrous",
+            "when": {"url_contains": prefix, "text_contains": ["CLOSES IN"]},
+            "key": (url, "nitrous", "01:11:45"),
+            "model": {"url": url, "page_text": head + " 01:11:45 DRAW DATE Fri 16 October 2026",
+                      "node_texts": nodes}}
+    eye2 = {"name": "competition-2", "url": url, "title": "Nitrous",
+            "when": {"url_contains": prefix, "text_contains": ["CLOSES IN"]},
+            "key": (url, "nitrous", "01:11:37"),
+            "model": {"url": url, "page_text": head + " 01:11:37 DRAW DATE Fri 16 October 2026",
+                      "node_texts": nodes}}
+    #: 真正撞车的那一头：**列表页**（别的稳定地址）—— 它上面同时有 `CLOSES IN` 与产品标题
+    listing_page = {"name": "summer-draw", "url": listing, "title": "Nitrous",
+                    "when": {"url_contains": browser_agent._stable_url(listing),
+                             "text_contains": ["Summer Draw"]},
+                    "key": (listing,), "model": {"url": listing,
+                                                 "page_text": "Summer Draw " + head + " 02:00:00"}}
+    pages = [eye1, eye2, listing_page]
+
+    browser_agent._repair_ambiguous_whens(pages)
+
+    for p in (eye1, eye2):
+        got = (p.get("when") or {}).get("text_contains")
+        assert got, p.get("when")
+        assert not browser_agent._looks_like_a_clock(str(got[0])), \
+            "重挑挑到了走秒的那串（%r）—— 重放时那道门永远不成立：%r" % (got, p.get("when"))
+        assert got == ["DRAW DATE Fri 16 October 2026"], \
+            "该落到这一页**真稳又真独有**的那一格上，拿到 %r" % (got,)
+
+
+def test_a_running_clock_is_never_a_gate_candidate():
+    """候选里那串**走秒的**一律不选（`_looks_like_a_clock`）—— 挑不到就交空串，
+    让 IR 那道门照旧拦住并说清（宁可不挑，也不给一个重放时必然不成立的门）。"""
+    model = {"url": "https://x.test/a", "page_text": "倒计时 01:11:45 结束",
+             "node_texts": ["01:11:45 结束"]}
+    assert browser_agent._unique_snippet_for(model, []) == "", "走秒的那串当选了"
+    #: 反向：同一页上有稳的候选时，照旧挑它（这一刀不许把正常的重挑一起废掉）
+    model2 = {"url": "https://x.test/a", "page_text": "2025 KTM SX 85 - Big Wheel 倒计时 01:11:45",
+              "node_texts": ["2025 KTM SX 85 - Big Wheel", "01:11:45"]}
+    assert browser_agent._unique_snippet_for(model2, []) == "2025 KTM SX 85 - Big Wheel"

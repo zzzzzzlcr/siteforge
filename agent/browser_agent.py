@@ -4917,6 +4917,25 @@ WHEN_REPICKED_WHY = ("这一段判据**收尾时按全站避让重挑过**：原
 _WHEN_REPICK_MIN_CHARS = 8
 
 
+#: 走秒的那一串长什么样（倒计时 / 计时器）：`01:11:45` / `1:11:45` / `11:45`。
+#: ⚠️ 只认**冒号形状的时刻**、两端都有界（`(?<![\d:]) … (?![\d:])`）：`12:30pm` 那种带尾巴的、
+#: 以及 `Step 1 of 7` 那种不带冒号的**都不算** —— 后者正是单页漏斗里判页的真判据，
+#: 收宽了会把它们一起废掉。
+_CLOCK_RE = re.compile(r"(?<![\d:])\d{1,3}:\d{2}(?::\d{2})?(?![\d:])")
+
+
+def _looks_like_a_clock(text: str) -> bool:
+    """这一段里有**冒号形状的时刻**吗 —— 那一类会走秒，**不许当页面判据**。
+
+    ★ 2026-10-12（真事 `job-7c0cb8a45c25` · nitrouscompetitions.com）：那一页的倒计时
+    （`01:11:45` → `01:11:37`）先把**同一屏**按「url + 标题 + 正文前 400 字」裂成三个状态，
+    又被撞车重挑选中当了门 —— 它对每一个兄弟页都「独一无二」（秒数当然不一样）——
+    ⇒ 重放时那道门永远不成立 ⇒ 自测 18 步**全跳过**。
+    见 `_unique_snippet_for`（候选这一侧）与 `_repair_ambiguous_whens`（「别的页」那一侧）。
+    """
+    return bool(_CLOCK_RE.search(_norm(str(text or ""))))
+
+
 def _unique_snippet_for(model: dict, others: list) -> str:
     """这一页上**只有它有**的那一段正文（挑不到给空串）。
 
@@ -4947,6 +4966,8 @@ def _unique_snippet_for(model: dict, others: list) -> str:
         low = cand.lower()
         if low not in mine:
             continue
+        if _looks_like_a_clock(cand):
+            continue                    # 走秒的那串不许当门（见 _looks_like_a_clock）
         if any(low in text for text in others_norm):
             continue
         return cand
@@ -4981,7 +5002,17 @@ def _repair_ambiguous_whens(pages: list) -> list:
         mine = [p for p in pages if str(p.get("name") or "") == name]
         if not mine:
             continue
-        others = [p.get("model") or {} for p in pages if str(p.get("name") or "") != name]
+        #: ⚠️ ★ 2026-10-12（真事 `job-7c0cb8a45c25` · nitrouscompetitions.com）：**「别的页」要跟
+        #: 撞车检测器同一条尺子** —— `_gates_that_hold_elsewhere` 明写着「同一个地址上的两个状态
+        #: **不算别的页**」（那是同一页的几次停留），而这一格原先按**状态名**算 ⇒ 一个走秒的倒计时
+        #: 把同一屏裂成 `…-2/-3/-4` 之后，**兄弟页**把稳的产品标题挤掉、**每屏都独一无二的秒数**
+        #: 反而当选（账本原话：『原来剪到的那段（'2025 KTM SX 85 - Big Wheel'）在前面走过的那几页
+        #: 上也有 ⇒ 门分不出两页 ——已经换成这一页自己的一段：'01:11:45'』）⇒ 重放时那道门
+        #: 永远不成立、18 步全跳过。两处不一致的后果就是这种「检测器说没事、重挑却把门换坏」。
+        own_url = _stable_url(mine[-1].get("url") or "")
+        others = [p.get("model") or {} for p in pages
+                  if str(p.get("name") or "") != name
+                  and not (own_url and _stable_url(p.get("url") or "") == own_url)]
         cand = _unique_snippet_for(mine[-1].get("model") or {}, others)
         if not cand:
             continue
