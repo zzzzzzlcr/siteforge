@@ -433,6 +433,74 @@ def _read_trace(path) -> tuple:
     return lines, bad
 
 
+def scene_of(run) -> Optional[dict]:
+    """**卡住那一刻的现场** —— 这一遍的 trace 里，最该给人（和改稿那双手）看的那一行。
+
+    ★ 2026-10-10（`job-d037348fba4d` / `job-bbc57727025c` 两趟查出来的）：
+    到这一版为止，`graph._diagnosis` 递给下游的是**报告里那几格摘要**（`failed_step`
+    一个号 + `note` 一句话），而 `service.write` 连摘要都只取 `say` 那一句
+    ⇒ **改稿那双手拿到的是「卡在第 N 步」**，它只能去改「找元素」那一层。
+    可真站那两趟的真因在 trace 里：**用的那条选择器指到了另一个元素**
+    （d037：`selector_used` 是页脚的订阅框，而账本里这一步实际命中过弹窗那格）。
+
+    **挑哪一行**（走的是哪条，返回的「为什么是这一步」里会写明）：
+
+      · `run.failed_step` 有值 ⇒ **那一行**（= `_verdict` 判它没过的第一条承重步）；
+      · 没有 ⇒ **最后一行**。「没报失败」与「没走到成功」是两件事，硬凑一个失败步
+        出来就是编话 —— 真事：d037 那趟 `failed_step` 是 `None`，报告只说
+        「每一步都做成了，但页面上一直没出现成功文案」，而答案在**最后一步**身上
+        （它 `progress` 是 `false`、页面尾巴上写着站方那句 `Please try again`）。
+
+    ⚠️ **只搬 trace 里现成的那几格，一格都不加工**（D11：给感知不给判断）——
+    摘要是读的人自己下的，这一层不下。`scene` 那一格只搬它里面**结构化的那几样**，
+    不搬它的整页正文：正文已经由 `page_sig` / `page_sig_tail` 带着了，再抄一遍
+    只是把同一件事说两遍（而这三处都要装进 state / 闸口 facts / 提示词）。
+    读不动、没跑过、那一行找不到 ⇒ `None`（**不编**）。
+    """
+    path = getattr(run, "trace_path", None)
+    if not path:
+        return None
+    rows, _bad = _read_trace(path)
+    if not rows:
+        return None
+    step = getattr(run, "failed_step", None)
+    if step is not None:
+        row = next((r for r in rows if r.get("step") == step), None)
+        why = "这一遍卡在第 %s 步（trace 里第一条**承重步**没做成的那行）" % step
+    else:
+        row = rows[-1]
+        why = ("这一遍**没有哪一步报「没做成」**（`failed_step` 是空的）—— "
+               "摆的是**最后一步**：它走到这儿就没有下一步了，而成功判据始终没成立。")
+    if row is None:
+        return None
+    scene = row.get("scene") if isinstance(row.get("scene"), dict) else None
+    return {
+        "为什么是这一步": why,
+        "哪一步": row.get("step"),
+        "动作": row.get("action"),
+        "这一步的目标": row.get("target"),
+        "脚本自己那句话": row.get("note"),
+        #: ★ 这一格是这一版**新摆到台面上**的那一样：它说「这一步**真发出去的**是哪个
+        #: 选择器」。空串与「非空但对不上」是两种不同的病，两种都要能看见。
+        "实际用的选择器": row.get("selector_used"),
+        #: 重找记录：`primary_selector`（原本要用的第一条，它没成）/ `resolved_by`
+        #: （重找时按哪几样身份命中）/ `confidence`。空 = **没走重找**，不是「重找失败」。
+        "重找记录": row.get("recovery"),
+        "这一步往前推了没有": row.get("progress"),
+        "判不出来时为什么": row.get("progress_why"),
+        "当时网址": row.get("url"),
+        "当时页面上这段字（前 600 字）": row.get("page_sig"),
+        "当时页面上这段字（末尾 240 字）": row.get("page_sig_tail"),
+        "现场": (None if scene is None else {
+            "加载完了没": scene.get("ready"),
+            "盖在上面的是什么": scene.get("overlay"),
+            "点到的其实是": scene.get("at_point"),
+            "视口里最显眼的那几段字": scene.get("texts"),
+            "可疑特征": scene.get("trouble"),
+        }),
+    }
+
+
 #: 脚本自己那套读页面的 JS（`READ_PAGE_JS = r"""…"""`）—— 拿来**现读一遍**它看到了什么。
 _READER_JS = re.compile(r'READ_PAGE_JS\s*=\s*r?"""(.*?)"""', re.S)
 
@@ -708,6 +776,50 @@ def run_once(py_path, ws_url, form_file, site, *, legacy: bool = False, run_dir=
             #: 选择器里根本没有 `a`，于是 `buttons: 0`，一直「nothing actionable」。
             "dom": _dom_view(py, cdp_bin, ws_url, env, entry_url or "")}
 
+#: ★ 2026-10-09（真站 `taxlawadvocates`，`job-196682353b03`）：**「判据那句话写错了」这一类**。
+#: 现场：15 步全做成、提交那一下也点了，页面原文是 `Step 6 of 6 / ESTIMATED AMOUNT YOU OWE /
+#: - $5,070`，而判据抄的是 brief 里那句 `YOUR ESTIMATED FEDERAL REFUND`（**退款那一支**的
+#: 说法）⇒ 三次自测全挂在这一句上，而这三轮诊错的方向一直是「改选择器」：
+#: 稿子在三个版本之间来回改，判据一句话都没动过。这一段就是**把方向换掉**。
+#: 形状（都量得到、不猜）：① 它自己说没走通（退出码非 0）；② trace 里**没有一步** `ok=false`；
+#: ③ 跑完那一眼 `cdp observe`：**一个可填字段都没有**（选项都答完了、不是还停在表单上）；
+#: ④ 那一页**有正文**（不是白屏/跳转中）。四条凑齐 ⇒ 先怀疑判据，不是选择器。
+CRITERION_SUSPECT_MIN_STEPS = 3
+#: 给模型看的正文截多长：够它挑一句「只有结果页才有」的话，又不至于把证据淹掉。
+CRITERION_SUSPECT_TEXT_CHARS = 700
+
+
+def criterion_suspect(ev: dict) -> str:
+    """这一趟**像不像**「成功判据那句话写错了」？像就说一段人话（含当时的正文），不像回 ""。
+
+    纯函数。**只描述量到的东西** —— 但把四条形状摆出来，读的人（模型/人）一眼就能自己判。
+    为什么值得单独一段：这类失败**长得像**选择器问题（脚本说自己每一步都做成了），
+    于是修的方向全落在选择器上，白改三轮（真站实测）。
+    """
+    ev = ev if isinstance(ev, dict) else {}
+    rc = ev.get("rc")
+    if rc in (None, 0) or ev.get("timed_out"):
+        return ""
+    trace = [ln for ln in (ev.get("trace") or []) if isinstance(ln, dict)]
+    if len(trace) < CRITERION_SUSPECT_MIN_STEPS:
+        return ""
+    if any(ln.get("ok") is False for ln in trace):
+        return ""                       # 有步骤没做成 ⇒ 那是流程/选择器那一支，别往判据上引
+    dom = ev.get("dom") if isinstance(ev.get("dom"), dict) else {}
+    page = dom.get("page") if isinstance(dom.get("page"), dict) else None
+    if not page or (page.get("fields") or ()):
+        return ""                       # 读不到那一页 / 页面上还有可填字段 ⇒ 流程没走完
+    text = str(page.get("page_text") or "").strip()
+    if not text:
+        return ""
+    return ("⚠️ **这像「成功判据那句话写错了」，不像选择器问题**：%d 步**没有一步**是没做成的、"
+            "跑完那一眼页面上**一个可填字段都没有**（选项都答完了），可正文里就是没有那串"
+            "成功文案。**先别改选择器** —— 读下面这段**当时的正文**，挑一句**只有结果页才有**"
+            "的话（金额/结论那种），照抄进 `SUCCESS_TEXTS`；结果页的措辞常常**随输入换支**"
+            "（退款一支、欠款一支），那就把**两支都收进去**（这一格本来就允许多条）。\n"
+            "当时的正文（前 %d 字）：\n%s"
+            % (len(trace), CRITERION_SUSPECT_TEXT_CHARS, text[:CRITERION_SUSPECT_TEXT_CHARS]))
+
 
 def evidence_say(ev: dict) -> str:
     """那次证据跑 → **一段人话**（同时是给模型看的那份证据）。**纯函数**。
@@ -804,6 +916,9 @@ def evidence_say(ev: dict) -> str:
                                if a.get("occluded_by") else ""))
             parts.append("工具给的可动作元素（**这些选择器是它算出来的、能直接拿去点**）：\n"
                          + "\n".join(said))
+    hint = criterion_suspect(ev)
+    if hint:
+        parts.append(hint)
     if ev.get("bad_lines"):
         parts.append("（它写的证据里有 %d 行读不动）" % ev["bad_lines"])
     return "\n".join(parts)
@@ -880,14 +995,51 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
     ★ 2026-09-23：`ok=false` 分两档（模块 docstring 第 1 条写全了理由）——
     **辅助步**（`AUXILIARY_ACTIONS`）失败 ⇒ 这一遍仍算过，但**必须点名**；
     **承重步**失败 ⇒ 照旧否决。两档都进 `note`，不点名就是把失败藏起来。
+    ★ 2026-10-09 补第三档：**失败那一步 `success_in_page is True`**（页面当时已经显示成功文案）
+    ⇒ 与辅助步同档（过了，但点名）—— 那是「已经走到成功了」，不是「没走到」（见 `settled_rows`）。
 
     ★ 2026-09-30（用户裁定「Py 必须通过稳定性测试才能交付」）：`stopped_at` 非 0 = 这一遍是
     **同环境复跑**那一趟，按 `--stop-at` 停在提交前一步。产物在停下时**故意**返回非 0
     （「不谎报成功」）⇒ 判它认的是 trace 里那行 `{"stopped_at": N}`（**证据**），不是退出码。
     """
     bad_rows = [ln for ln in lines if ln.get("ok") is False]
+    #: ★ 2026-10-09：**失败那一刻页面上成功判据已经成立**（trace 行里 `success_in_page is True`）
+    #: ⇒ 与辅助步**同一档**：不否决，但照样点名。它不是「没走到」，是「**已经走到了**」——
+    #: 表单交出去之后，后面的「找框填字」当然一个都找不到（真站复现逐字：第 15 步点中
+    #: `#gform_submit_button_12` 提交成功 ⇒ 第 17 步的 `#input_12_1_6` 连同 `#gform_12`
+    #: 整个不在页面上 ⇒ `selector_used=""`、`recovery=null`、`success_in_page=true`）。
+    #: 判据只吃 trace 行里现成的那一格，不另算、不猜（失败发生在成功**之前**的那些
+    #: 没有这一格、照旧否决 —— 负控钉在 `test_a_step_that_failed_after_the_page_already_
+    #: showed_success_does_not_take_the_run_down`）。
+    settled_rows = [ln for ln in bad_rows if ln.get("success_in_page") is True]
+    #: ★ 2026-10-09：**产物自己标了 `auxiliary` 的那一步**也算辅助步。
+    #: 谁标的、凭什么标：`browser_agent._not_load_bearing_clicks` —— 探路里**同一个
+    #: 无名目标作成过也做败过**的那些（现场：浮窗的 ✕，`job-22e8c86afe10` 账本 step 30/45）。
+    #: 用户原话：「浮窗本来就是类似弹窗有时候有有时候没有，不能把它认为不做就继续不下去」。
+    #: ⚠️ 有名字的步（`Submit` 那类）**永远不标** —— 那由生成侧保证，这一档只读记号。
+    #: ★ 2026-10-12（用户裁定「都拍吧」；真事 `job-d57366d0cf35` · ic.com 选国家那一单）：
+    #: **这一趟最后一行站在成功页上**（`lines[-1].success_in_page is True`）⇒ 成功**之前**
+    #: 那几下承重步的失败**与辅助步同档**（过了，但照样点名）。
+    #: 现场逐字：第 11 步点「Continue」没找到（`ok=false`）→ 整组重试 → 重试里第 15 步
+    #: **又**没找到 → 可第 20 步把单交出去了（`success_in_page=true`、到了 `/Account/EmailOtp`）。
+    #: 判据问的是「**走到了没有**」—— 它走到了：那两步在重放的那一屏上本来就不存在
+    #: （explore 记的是一根位置链），它们没做成没有拦住流程。
+    #: ⚠️ 与 2026-10-09 那一档分工不同：那一档认「失败**那一刻**已站在成功页上」（成功之后）；
+    #: 这一档认「这一趟**最后**走到了」（成功之前的失败）。**只认最后一行**：中途一闪而过的
+    #: 成功文案放行不了整趟（负控钉在 `test_a_run_that_walked_on_to_success_passes_…`）。
+    #: ⚠️ 它管不了「走对没走对」（值填错、字填错格子）—— 那是产物质检那条线，别拿它当。
+    ended_in_success = bool(lines) and (lines[-1] or {}).get("success_in_page") is True
     hard_rows = [ln for ln in bad_rows
-                 if str(ln.get("action") or "").strip().lower() not in AUXILIARY_ACTIONS]
+                 if str(ln.get("action") or "").strip().lower() not in AUXILIARY_ACTIONS
+                 and not ln.get("auxiliary")
+                 and ln.get("success_in_page") is not True
+                 and not ended_in_success]
+    #: 上面那一档**放过**的那些行（照旧要说出来）：它们本该是承重步，只是这一趟最后走到了。
+    walked_rows = ([ln for ln in bad_rows
+                    if str(ln.get("action") or "").strip().lower() not in AUXILIARY_ACTIONS
+                    and not ln.get("auxiliary")
+                    and ln.get("success_in_page") is not True]
+                   if ended_in_success else [])
     first_bad = bad_rows[0] if bad_rows else None
     first_hard = hard_rows[0] if hard_rows else None
     failed_step = first_hard.get("step") if first_hard else None
@@ -928,6 +1080,19 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
                     "第 %s 步（%s）没做成：%s" % (ln.get("step"), str(ln.get("action") or "?"),
                                                 str(ln.get("note") or "")[:80])
                     for ln in bad_rows)))
+        if settled_rows:
+            #: 说清「为什么这一步的失败不算没走到」—— 否则读的人只看到「跑通了」，
+            #: 会以为那些步本来就成了（与「跳过不许长得像过了」同一条规矩）。
+            note += ("（其中第 %s 步：**失败那一刻页面上成功判据已经成立** —— 表单已经交出去了、"
+                     "要填的那个框当然不在页面上；不是「没走到」）"
+                     % "、".join(str(ln.get("step")) for ln in settled_rows))
+        if walked_rows:
+            #: ★ 2026-10-12：同一句话的另一半 —— 失败发生在**成功之前**的那些，凭什么不算数。
+            note += ("（其中第 %s 步：失败发生在成功**之前**，可这一趟**最后走到了成功页**"
+                     "（第 %s 步那行 trace 里 `success_in_page` 是 true）—— 那几下没有拦住流程，"
+                     "整趟照样到了成功页；**不是「没走到」**）"
+                     % ("、".join(str(ln.get("step")) for ln in walked_rows),
+                        (lines[-1] or {}).get("step")))
     elif rc == 0 and not lines:
         note = ("退出码说成功，但这一遍**一行 trace 都没有** —— 没有证据就不算过。"
                 "两种可能：trace 没写进去（产物会警告一句再接着跑），或者一步都没走到"

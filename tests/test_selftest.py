@@ -215,6 +215,97 @@ def _run(env, scripts, **kw):
     return selftest.run(str(env["py"]), WS, env["form"], SITE, **kw)
 
 
+# ── 现场（★ 2026-10-10：改稿那双手要看得见「卡住那一刻」）────────────────
+
+
+def _run_pointing_at(tmp_path, rows, *, failed_step, name="baseline"):
+    """一份**真落盘**的 trace + 指着它的那个 `Run`（形状与 `selftest._execute` 一致）。"""
+    path = tmp_path / ("%s.trace.jsonl" % name)
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
+                    encoding="utf-8")
+    return selftest.Run(name=name, label="第 1 遍：正常跑一遍（基线）", status="failed",
+                        ok=False, failed_step=failed_step, trace_path=str(path),
+                        note="挂了")
+
+
+def test_the_scene_comes_from_the_step_that_was_judged_hard_failed(tmp_path):
+    """★ 2026-10-10（bbc 那趟 `job-bbc57727025c` 的形状）：`failed_step` 有值 ⇒ 取**那一行**。
+
+    这一格要摆到台面上的东西，就是病根本身：**这一步真发出去的是哪个选择器**。
+    真站那趟它 `selector_used` 是**空的**，而 `recovery.primary_selector` 是非空的
+    —— 「手上有一条选择器，却一条都没解析出来」，这跟「判据说没找到」是两件事。
+    """
+    rows = [
+        {"step": 1, "action": "scroll", "target": "GET STARTED", "ok": True,
+         "selector_used": "a.et_pb_button.et_pb_button_0_tb_footer",
+         "note": "把「GET STARTED」滚进了视口"},
+        {"step": 2, "action": "click", "target": "GET STARTED", "ok": False,
+         "selector_used": "",
+         "recovery": {"primary_selector": "a.et_pb_button.et_pb_button_0_tb_footer",
+                      "resolved_by": "text+role+near", "confidence": 1},
+         "progress": False, "url": "https://site.test/",
+         "page_sig": "… East Cobb, Marietta and Roswell, GA. GET STARTED Give us a call …",
+         "page_sig_tail": "…阅读辅助 Policy Accessibility …",
+         "scene": {"ready": "complete", "overlay": "", "at_point": "",
+                   "texts": ["678-650-4577", "Make a Reservation"],
+                   "text": "整页正文（这一格**不搬**：正文由 page_sig 带着）",
+                   "trouble": ""},
+         "note": "页面上没找到「GET STARTED」，这一步没做成"},
+        {"step": 3, "action": "click", "target": "Submit", "ok": True,
+         "selector_used": "#gform_submit_button_9", "note": "点了「Submit」"},
+    ]
+    scene = selftest.scene_of(_run_pointing_at(tmp_path, rows, failed_step=2))
+    assert scene["哪一步"] == 2, scene
+    assert scene["实际用的选择器"] == "", scene                      # ← 病根就在这一格
+    assert scene["重找记录"]["primary_selector"] == "a.et_pb_button.et_pb_button_0_tb_footer", scene
+    assert "承重步" in scene["为什么是这一步"], scene
+    assert "GET STARTED" in scene["当时页面上这段字（前 600 字）"], scene
+    #: `scene` 那一格只搬**结构化的那几样**：整页正文**不搬**（`page_sig` 已经带着了，
+    #: 再抄一遍只是把同一件事说两遍，而这三处都要装进 state / 闸口 facts / 提示词）。
+    assert scene["现场"]["加载完了没"] == "complete", scene
+    assert scene["现场"]["视口里最显眼的那几段字"] == ["678-650-4577", "Make a Reservation"], scene
+    assert "text" not in scene["现场"], scene
+
+
+def test_without_a_failed_step_the_scene_is_the_last_one_and_says_so(tmp_path):
+    """★ 没有哪一步「没做成」时（真事：d037 那趟 `failed_step` 就是空的）：摆**最后一步**。
+
+    硬凑一个失败步出来就是编话 ——「没报失败」与「没走到成功」是两件事，而报告当时
+    只说了一句「每一步都做成了，但页面上一直没出现成功文案」。答案在**最后一步**身上：
+    它 `progress` 是 `false`，页面尾巴上写着站方那句 `Please try again`。
+    """
+    rows = [
+        {"step": 1, "action": "click", "ok": True, "selector_used": "#a", "note": "点了"},
+        {"step": 2, "action": "click", "ok": True, "selector_used": "#claim",
+         "progress": False, "url": "https://site.test/en-us",
+         "page_sig_tail": "…Please try again. ⚠️ Verify EN",
+         "note": "点了「没写名字的元素」"},
+    ]
+    scene = selftest.scene_of(_run_pointing_at(tmp_path, rows, failed_step=None))
+    assert scene["哪一步"] == 2, scene
+    assert "没有哪一步报「没做成」" in scene["为什么是这一步"], scene
+    assert scene["这一步往前推了没有"] is False, scene
+    assert "Please try again" in scene["当时页面上这段字（末尾 240 字）"], scene
+
+
+def test_no_trace_means_no_scene_and_nothing_is_invented(tmp_path):
+    """**负控**：没跑过 / 读不动 / 那一行找不到 ⇒ `None`，绝不从 `note` 里推一段出来。
+
+    ⚠️ 第三条（号对不上）最要紧：退回「最后一行」是**静默换一行**给模型，
+    而它以为那就是判它没过的那一步 —— 比不给更坏。
+    """
+    assert selftest.scene_of(selftest.Run(
+        name="baseline", label="第 1 遍", status="failed", ok=False, failed_step=2,
+        trace_path=None, note="页面上没找到「Go」")) is None
+    assert selftest.scene_of(selftest.Run(
+        name="baseline", label="第 1 遍", status="failed", ok=False, failed_step=2,
+        trace_path=str(tmp_path / "nope.jsonl"), note="…")) is None
+    assert selftest.scene_of(_run_pointing_at(
+        tmp_path, [{"step": 1, "action": "click", "ok": True}], failed_step=9)) is None
+    #: 空 trace（一行都没有）也是 `None` —— 不是「现场是空的」。
+    assert selftest.scene_of(_run_pointing_at(tmp_path, [], failed_step=1)) is None
+
+
 # ── 跑几遍（R-84：按需 + 提交硬顶）──────────────────────────────────
 
 def test_a_navigation_that_could_not_connect_says_what_the_window_said(env):
@@ -762,6 +853,116 @@ def test_a_soft_step_failing_does_not_take_a_successful_run_down():
     ok2, step2, note2 = selftest._verdict(0, False, hard, 0, "", "", 600)
     assert ok2 is False and step2 == 1, (ok2, step2, note2)
     assert "按没做成算" in note2 and "承重步" in note2, note2
+
+
+def test_an_auxiliary_step_failing_does_not_take_a_successful_run_down():
+    """★ 2026-10-09：产物标了 `auxiliary` 的那一步没做成 ⇒ 与辅助步**同一档**
+    （这一遍仍算过，但**照样点名**）。
+
+    现场（`job-22e8c86afe10` 的自测，逐字）：产物一路跑到成功页、退出码 0，
+    可 trace 里第 14 步（点浮窗那个 ✕）`ok=false` ⇒ 判「**承重步**失败」⇒ **整趟否决**。
+    而那个 ✕ 在探路里**自己就一次成一次不成**（账本 step 30 成 / step 45 不成）——
+    用户当场的话：「浮窗本来就是类似弹窗有时候有有时候没有，不能把它认为不做就继续不下去」。
+
+    ⚠️ 这一档**只**对产物标了记号的步生效；**有名字**的步（`Submit` 那类）永远不标
+    —— 那条由 `browser_agent` 那一侧保证（`test_a_named_target_that_was_not_always_there_
+    is_still_load_bearing` 钉着），这一条只管「标了之后判据怎么读」。
+    """
+    lines = [{"step": 1, "action": "click", "ok": True},
+             {"step": 14, "action": "click", "ok": False, "auxiliary": True,
+              "note": "页面上没找到「没写名字的元素」，这一步没做成"}]
+    ok, failed_step, note = selftest._verdict(0, False, lines, 0, "", "", 600)
+    assert ok is True, note
+    assert failed_step is None, "带瑕疵过 ≠ 卡在第几步"
+    assert "带瑕疵" in note and "14" in note, note
+
+
+def test_a_step_that_failed_after_the_page_already_showed_success_does_not_take_the_run_down():
+    """★ 2026-10-09（真站复现钉死的）：**失败那一步的 trace 行里 `success_in_page` 是 true**
+    ⇒ 那一步不是「没走到」，是「**已经走到了**」—— 表单交出去之后框当然不在了。
+
+    现场（`job-22e8c86afe10` 的自测 trace 第 17 步，逐字）：
+      `form「Last」ok=false / selector_used="" / recovery=null / success_in_page=true`
+    —— 那一趟里「关浮窗」那一步重找到了 `#gform_submit_button_12` 并点下去，表单**已经交掉了**；
+    第 17 步去看时页面是确认文案（`Thanks for contacting us!`），`#gform_12` 连 `#input_12_1_6`
+    都不在了 ⇒ 三个声明选择器 + 重找当然一个都找不到。
+    ★ 2026-10-09 同一天真站重跑（换站点收的邮箱）复现：第 15 步点中 Submit ⇒ 提交成功、
+      确认文案渲染出来、产物判成功退出码 0 —— **失败的那几步全在成功之后**。
+
+    ⚠️ 这一档**只**吃 `success_in_page is True` 那一格（证据在 trace 行里，不用另算）：
+      · 失败发生在成功**之前**（没有这一格 / 是 false）⇒ 照旧否决（负控钉在下面）；
+      · 这一档照样**点名**，只是不拦 `passed`。
+    """
+    lines = [{"step": 16, "action": "form", "ok": True},
+             {"step": 17, "action": "form", "ok": False, "success_in_page": True,
+              "selector_used": "", "recovery": None,
+              "note": "没找到「Last」这个输入框，没填成"}]
+    ok, failed_step, note = selftest._verdict(0, False, lines, 0, "", "", 600)
+    assert ok is True, note
+    assert failed_step is None, "带瑕疵过 ≠ 卡在第几步"
+    assert "带瑕疵" in note and "17" in note, note
+    assert "成功" in note, note          # 要说清为什么这一步的失败不算数
+
+    #: 负控①：**成功之前**的失败（老形状，没有 success_in_page 这一格）照旧否决
+    before = [{"step": 1, "action": "form", "ok": False, "note": "没找到「Email」这个输入框"}]
+    ok2, step2, note2 = selftest._verdict(0, False, before, 0, "", "", 600)
+    assert ok2 is False and step2 == 1, (ok2, step2, note2)
+    assert "按没做成算" in note2, note2
+
+    #: 负控②：显式写着 false 的，也照旧否决（不靠「有没有这一格」蒙）
+    said_no = [dict(before[0], success_in_page=False)]
+    ok3, step3, _note3 = selftest._verdict(0, False, said_no, 0, "", "", 600)
+    assert ok3 is False and step3 == 1, (ok3, step3)
+
+
+def test_a_run_that_walked_on_to_success_passes_even_though_a_load_bearing_step_failed_before_it():
+    """★ 2026-10-12（用户裁定「都拍吧」；真事 `job-d57366d0cf35` · ic.com 选国家那一单）：
+    **这一趟最后一行站在成功页上** ⇒ 成功**之前**那几下承重步的失败与辅助步同档
+    （这一遍仍算过，但**照样点名**）。
+
+    现场（两版 py 的自测 trace，逐字）：第 11 步点「Continue」`ok=false`（页面上没找到它），
+    紧接着**整组重试**（第 12 步的 `note`：「重试『register』这一组（第 1 次，上限 1 次）：
+    刚才那一步没做成，把这一组 9 步从头再走一遍」），重试里第 15 步**又**没找到「Continue」——
+    可第 20 步点「Create an account」把单交出去了：`success_in_page: true`、
+    网址到了 `/Account/EmailOtp`（开场白里那句成功判据就在那一页上）。
+    ⇒ 判据问的是「**走到了没有**」，而答案是走到了：那两步 Continue 在重放的那一屏上
+    本来就不存在（explore 那趟记的是一根位置链），它们没做成**没有拦住流程**。
+
+    ⚠️ 与 2026-10-09 那一档不是一回事：那一档的失败发生在**成功之后**（表单都交掉了，
+    要填的框当然不在）；这一档的失败发生在**成功之前**，认的是**这一趟最后走到了**。
+
+    ⚠️ **它管不了「走对没走对」**：值填错（国家选成了 Albania）、字填错格子，
+    这一格判据看不见 —— 那是产物**质检**那条线的事，别拿这一档当它。
+    """
+    lines = [
+        {"step": 8, "action": "click", "ok": True, "success_in_page": False},
+        {"step": 11, "action": "click", "ok": False, "success_in_page": False,
+         "note": "页面上没找到「Continue」，这一步没做成；页面没有变化"},
+        {"step": 12, "action": "click", "ok": True, "success_in_page": False,
+         "note": "重试「register」这一组（第 1 次，上限 1 次）：刚才那一步没做成，"
+                 "把这一组 9 步从头再走一遍；点了「Select your country」"},
+        {"step": 15, "action": "click", "ok": False, "success_in_page": False,
+         "note": "页面上没找到「Continue」，这一步没做成；页面没有变化"},
+        {"step": 20, "action": "click", "ok": True, "success_in_page": True,
+         "note": "点了「Create an account」"},
+    ]
+    ok, failed_step, note = selftest._verdict(0, False, lines, 0, "", "", 600)
+    assert ok is True, note
+    assert failed_step is None, "带瑕疵过 ≠ 卡在第几步"
+    assert "带瑕疵" in note and "11" in note and "15" in note, note
+    assert "成功页" in note, note          # 要说清凭什么这一步的失败不算数
+
+    #: 负控①：最后一行**不在成功页上**（老形状：退出码 0、页面没走到成功）⇒ 照旧否决
+    ok2, step2, note2 = selftest._verdict(0, False, lines[:-1], 0, "", "", 600)
+    assert ok2 is False and step2 == 11, (ok2, step2, note2)
+    assert "按没做成算" in note2, note2
+
+    #: 负控②：成功**只在中途出现过**、最后一行写着 false ⇒ 也照旧否决
+    #: （钉的是「最后一行」，不是「随便哪一行」——否则中途一闪而过的成功文案就能放行整趟）
+    mid = [dict(lines[0]), dict(lines[1]), dict(lines[2], success_in_page=True),
+           dict(lines[3]), dict(lines[4], success_in_page=False)]
+    ok3, step3, _n3 = selftest._verdict(0, False, mid, 0, "", "", 600)
+    assert ok3 is False and step3 == 11, (ok3, step3)
 
 
 def test_a_run_that_walked_everything_but_never_saw_success_is_a_failure(env):
@@ -1345,3 +1546,55 @@ def test_an_entry_url_that_already_has_a_scheme_is_passed_through_untouched(monk
     selftest._navigate("/bin/true", "ws://1.2.3.4:9222/devtools/browser/x", "http://a.com/x", {})
     selftest._navigate("/bin/true", "ws://1.2.3.4:9222/devtools/browser/x", "https://a.com/y", {})
     assert [c[2] for c in seen] == ["http://a.com/x", "https://a.com/y"], seen
+
+
+# ── ★ 2026-10-09：**「判据那句话写错了」这一类**（真站 `job-196682353b03`）───────────────
+# 现场：15 步全做成、提交也点了，页面原文 `Step 6 of 6 / ESTIMATED AMOUNT YOU OWE / - $5,070`，
+# 而判据是 brief 里那句「YOUR ESTIMATED FEDERAL REFUND」（**退款那一支**的说法）⇒ 三次自测
+# 全挂在这一句上，而三轮诊错的方向一直是「改选择器」（稿子改了三版，判据一个字没动）。
+# 下面这几条钉的就是那四条形状 —— 凑齐了必须**把方向掰到判据上**（并且把当时的正文摆出来，
+# 好让它/人从里面挑一句），凑不齐就必须闭嘴（判据不是万能背锅的）。
+
+
+def _criterion_ev(**over) -> dict:
+    ev = {"rc": 1, "timed_out": False,
+          "trace": [{"step": i, "ok": True} for i in range(1, 16)],
+          "dom": {"page": {"fields": [],
+                           "page_text": "Step 6 of 6 ESTIMATED AMOUNT YOU OWE - $5,070"}}}
+    ev.update(over)
+    return ev
+
+
+def test_a_funnel_that_ran_every_step_but_never_showed_the_text_is_a_criterion_suspect():
+    """四条都凑齐 ⇒ 出声，且**把当时那段正文摆出来**（模型要照抄的就是它里面那句）。"""
+    said = selftest.criterion_suspect(_criterion_ev())
+    assert said, "四步全做成 + 页面上没有可填字段 + 有正文 ⇒ 必须把方向掰到判据上"
+    assert "ESTIMATED AMOUNT YOU OWE" in said, "不摆当时的正文，它就没有可照抄的那句：%r" % said
+    assert "先别改选择器" in said, said
+    assert "SUCCESS_TEXTS" in said, said
+
+
+def test_the_criterion_hint_stays_quiet_when_a_step_really_did_not_work():
+    """有一步 `ok=false` ⇒ **闭嘴** —— 那是流程/选择器那一支，把判据拎出来说就是甩锅。"""
+    ev = _criterion_ev(trace=[{"step": 1, "ok": True}, {"step": 2, "ok": False}])
+    assert selftest.criterion_suspect(ev) == ""
+
+
+def test_the_criterion_hint_stays_quiet_when_the_page_still_has_fields():
+    """页面上还有可填字段 ⇒ 流程**没走完**，这时候该说的是「还差几步」，不是判据。"""
+    ev = _criterion_ev(dom={"page": {"fields": [{"selector": "#email"}],
+                                     "page_text": "把邮箱填一下"}})
+    assert selftest.criterion_suspect(ev) == ""
+
+
+def test_the_criterion_hint_stays_quiet_on_a_pass_and_on_a_blank_page():
+    """走通了（rc=0）不必说；白屏（读不到正文）也不能说 —— 那两种都不是判据的事。"""
+    assert selftest.criterion_suspect(_criterion_ev(rc=0)) == ""
+    assert selftest.criterion_suspect(_criterion_ev(dom={"page": {"fields": [], "page_text": ""}})) == ""
+
+
+def test_the_evidence_text_carries_the_hint_when_the_shape_matches():
+    """这一段要跟着 `evidence_say` 一起给模型看（它是「同时也是给模型看的那份证据」）。"""
+    assert "先别改选择器" in selftest.evidence_say(_criterion_ev())
+    ok = _criterion_ev(rc=0)
+    assert "先别改选择器" not in selftest.evidence_say(ok)
