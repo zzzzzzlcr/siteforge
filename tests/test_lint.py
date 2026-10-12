@@ -442,6 +442,33 @@ def test_source_names_the_skeleton_recognises_are_not_flagged():
         assert "judge-source-autoname" not in _codes(src), (source, lint.check(src))
 
 
+def test_a_source_named_after_the_fields_own_label_is_not_a_machine_name():
+    """★ 2026-10-12（真事 `job-7c0cb8a45c25` · nitrouscompetitions.com/auth）：**标签蛇形化**出来的
+    名字不是「框架自造名」—— 规则 G 要抓的是 `textfield_173838` 那种**与页面文字无关**的机器名。
+
+    那单的两格：`address_line_1`（标签「Address line 1」）与
+    `i_confirm_i_am_18_or_over_and_i_accept_t`（标签「I confirm I am 18 or over…」，被截断）
+    —— 它们只因为**标签里本来就有数字**（1 / 18）就中了「带数字串 = 机器起的名」那一格，
+    连打三轮把整单卡停。而运营的 form-file 拿 `address_line_1` 当列名**完全合理**
+    （规则自己的文档就写着：这类「语义名 vs 资料列名」的错位它判不了）。
+
+    ⚠️ 真阳性**一个都不许松**：名字与标签对不上的照旧报（下一格就是）。
+    """
+    for label, source in (("Address line 1", "address_line_1"),
+                          ("I confirm I am 18 or over and I accept t",
+                           "i_confirm_i_am_18_or_over_and_i_accept_t")):
+        src = _artifact([ONE_GATED_STATE],
+                        [{"name": source, "source": source, "label": label,
+                          "target": {"selectors": ["#x"]}, "fallback": []}])
+        assert "judge-source-autoname" not in _codes(src), (source, lint.check(src))
+    #: 反向：标签与名字对不上（`textfield_173838` 那种）照旧报
+    src = _artifact([ONE_GATED_STATE],
+                    [{"name": "postcode", "source": "textfield_173838", "label": "ZIP code",
+                      "target": {"selectors": ["input#postcode"]},
+                      "fallback": [{"random": "postcode"}]}])
+    assert "judge-source-autoname" in _codes(src), lint.check(src)
+
+
 #: I 的三族脆地址（判据与骨架 `template._GENERATED_ID` / `_RENDER_INDEX_ID` / `_HOPS_LOW`
 #: 是**同一份**）：框架渲染序号 id、以 `-数字` 结尾的自造 id、跳数 > 3 的 nth 链。
 FRAGILE_ONLY = [

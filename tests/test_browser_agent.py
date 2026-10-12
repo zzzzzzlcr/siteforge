@@ -5685,3 +5685,23 @@ def test_a_fill_that_names_the_element_by_an_attribute_value_still_finds_it():
     #: **短 token 不参与比对**：`[id="na"]` 归一化只剩两个字符，拿去"包含"任何一条 label
     #: 都会命中（`lastname` 里就有 `na`）—— 那不是身份，是噪声。
     assert browser_agent._find_element(pages, "field", 'input[id="na"]') is None
+
+
+def test_an_address_field_is_named_street_not_the_label_slug():
+    """★ 2026-10-12（真事 `job-7c0cb8a45c25` · nitrouscompetitions.com/auth）：`Address line 1`
+    那格原先**认不出种类** ⇒ 名字退回标签蛇形化（`address_line_1`）⇒ 既不是语义名、也不在别名表里、
+    又带数字 ⇒ lint 规则 G 连打三轮把整单卡停（三种触面都对得上：`Address line 1` 的 `1`）。
+
+    骨架那边**本来就有** `street` 这个种类（`_ALIASES` 的键 + `_pool("street")` 那一支），
+    缺的只是**这张词表里没有 `address`/`street`** 这两个词 —— 于是语义名永远轮不到它。
+    """
+    assert browser_agent._field_kind("Address line 1", {"type": "text"}) == "street"
+    assert browser_agent._field_kind("Street address", {"type": "text"}) == "street"
+    #: 反向：**「Email address」还是 email**（`email` 那条词表排在前面，别被 address 抢走）
+    assert browser_agent._field_kind("Email address", {"type": "email"}) == "email"
+    #: 反向：`Years at address` 要的是**个位数**，不许被 address 认成街道
+    assert browser_agent._field_kind("Years at address", {"type": "number"}) != "street"
+
+    journey = browser_agent.Journey()
+    name = browser_agent._fill_name("Address line 1", {"type": "text"}, journey)
+    assert name == "street", "地址那格的名字该是语义名 `street`（资料能对、池子也有），拿到 %r" % name

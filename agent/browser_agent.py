@@ -2805,8 +2805,20 @@ _RANDOM_HINTS = (
     #: ⚠️ **不许**放 `count` 这种短词：这一档是**子串**匹配，`count` 会命中 `Country` ✗✗
     #: （2026-09-28 当场撞上：`country` 那一格被这条判成了 `number`）。要加词先想一遍「它会不会
     #: 出现在别的字段名里」（`account` / `discount` / `country` 都含 count）。
+    #: ⚠️ `years`（复数）是 2026-10-12 跟着下面那条 `address` 一起加的：`Years at address`
+    #: 要的是**个位数**，而它原先哪一条都不命中 ⇒ 加了 `address` 之后会被认成街道
+    #: （往「住了几年」里填一整串门牌）。复数写法不会误伤 `Vehicle year` / `Year of birth`
+    #: （`year` 单数、且后者排在更前面）。
     (("how many", "household", "occupants", "people", "persons", "number of",
-      "quantity"), "number"),
+      "quantity", "years"), "number"),
+    #: ★ 2026-10-12（真事 `job-7c0cb8a45c25` · nitrouscompetitions.com/auth）：**地址那一格没有这一条** ——
+    #: 骨架那边本来就有 `street` 这个种类（`_ALIASES` 的键 + `_pool("street")` 那一支），
+    #: 只有这张词表里没有 `address`/`street` 两个词 ⇒ 语义名永远轮不到它 ⇒ 退回**标签蛇形化**
+    #: （`Address line 1` → `address_line_1`）⇒ 既不是语义名、也不在别名表里、又带数字 ⇒
+    #: lint 规则 G 连打三轮（「形状不像运营资料的列名（带数字串）」）把整单卡停。
+    #: ⚠️ **排在 `email` / `number` 之后**：`Email address` 先命中 `email`；而
+    #: `Years at address` 要的是**个位数**，先命中 `number`（顺序反了就会把它认成街道）。
+    (("address", "street"), "street"),
     # 「整名」这一族。原先**没有这一条** —— 于是 `Full Name:` 判不出种类，
     # 靠 `_fallback` 的兜底默认值**碰巧**也给了 `full_name`（真站实测：
     # 那一格的名字对得上运营的键，但那是巧合，不是判据）。

@@ -373,6 +373,41 @@ def _rule_f(states: list, src: str) -> list[Violation]:
         snippet=_snippet(_line_text(src, line)))]
 
 
+#: 名字尾巴上那个去重后缀（`street-2` / `field-3`）—— 它不是名字的一部分。
+_DEDUPE_SUFFIX = re.compile(r"-\d+$")
+
+
+def _named_after_its_own_label(source: str, fill: dict) -> bool:
+    """这个名字是不是**这一格自己的标签**蛇形化来的（含截断与 `-2` 那类去重后缀）。
+
+    ★ 2026-10-12（真事 `job-7c0cb8a45c25` · nitrouscompetitions.com/auth）：
+    `Address line 1` → `address_line_1`、`I confirm I am 18 or over…` →
+    `i_confirm_i_am_18_or_over_and_i_accept_t` —— 这两格只因为**标签里本来就有数字**
+    （`1` / `18`）就中了下面那条「带数字串 = 机器起的名」，连着三轮把整单卡停。
+
+    而 `AUTONAME` 那条要抓的是 `textfield_173838` 那种**与页面文字毫无关系**的机器名；
+    标签名不是那一类：运营的 form-file 拿 `address_line_1` 当列名**完全合理**，
+    而「语义名 vs 资料列名」那种错位，这条规则的文档自己就写着**判不了**
+    （没有资料库键的真相源）。⇒ 判据是**量得到的**：名字与这一格记下来的 `label`
+    蛇形化之后对得上（截断与去重后缀都算对得上），就不报。
+
+    ⚠️ 真阳性一个都不松：名字与标签对不上的（`textfield_173838` + 标签「ZIP code」）照旧报。
+    """
+    from agent import browser_agent as ba          # 局部 import：与 _rule_g 同一条路
+
+    label = str((fill or {}).get("label") or "")
+    if not label:
+        return False
+    slug = ba._snake(label)
+    if not slug:
+        return False
+    stem = _DEDUPE_SUFFIX.sub("", str(source or ""))
+    if not stem:
+        return False
+    #: 两个方向都算：名字是标签的前缀（标签被截断）或标签是名字的前缀（名字被截断）。
+    return stem == slug or slug.startswith(stem) or stem.startswith(slug)
+
+
 def _rule_g(fills, src: str) -> list[Violation]:
     """G 资料键名：`FILLS[*].source` **认不出语义**，形状也**不像运营资料的列名**。
 
@@ -421,6 +456,8 @@ def _rule_g(fills, src: str) -> list[Violation]:
             continue
         if ba._kind_by_words(source) or source in alias:
             continue
+        if _named_after_its_own_label(source, fill):
+            continue                             # 标签蛇形化来的名字 —— 不是框架自造名（见那个函数）
         if not AUTONAME.search(source):
             continue                             # 人写的列名形状（`username` 那种）—— 不报
         out.append(Violation(
