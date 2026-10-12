@@ -576,6 +576,28 @@ COVER_WAIT_SECONDS = 35.0
 #: 等蒙版期间每隔多久再量一次（秒）
 COVER_POLL_SECONDS = 0.4
 
+#: ★ 2026-10-12：声明里那根地址**没找到**时，先等多久（秒）再试**同一根地址**。
+#:
+#: 为什么要这一格（真事 `job-d57366d0cf35` · ic.com 的选国家抽屉，读数在
+#: `docs/缺陷单-2026-10-12-选国家点不动-影子宿主.md` 的姊妹篇里）：点开抽屉之后
+#: **2 秒里**那个搜索框还没进 DOM（那一页当时还没 `readyState=complete`）⇒ 产物当场判
+#: 「第 1 个选择器没成」⇒ 掉进「重新 observe + 按意图重找」那一支；而重找在
+#: 「账本里没有可比的身份信号」时**按意图猜**（把握 0.50）⇒ 把「United Kingdom」
+#: 填进了 `#firstname`，后面整组跟着歪（列表没被过滤 ⇒ 那根位置链点到的国家是 Albania）。
+#: 而在同一状态下把那条命令再发一次：**rc=0、ok=true**，列表从 175 项过滤成 1 项 ——
+#: **地址一直是对的**，差的就是那两秒。
+#:
+#: 与 `COVER_WAIT_SECONDS` 是**两个问题**、两笔预算，别合并：
+#:   那一笔问「**我要点的那个东西**在不在最上面」（被盖着）；
+#:   这一笔问「**它进 DOM 了没有**」（还没渲出来）。
+#: 预算同样**按步共用**（不按候选数翻倍），而且只重试**同一根地址** ——
+#: 等到头还没出来，就把第一次那个失败原样交回去，换候选 / 重找 / 整组重走一个字不变。
+NOT_FOUND_WAIT_SECONDS = 6.0
+
+#: 等它出现期间每隔多久再试一次（秒）。与 `COVER_POLL_SECONDS` 分开写：那个是「量一眼」，
+#: 这个是「**重发一次动作**」—— 代价不同（一次 cdp 调用 vs 一次 eval），调的时候心里有数。
+NOT_FOUND_POLL_SECONDS = 0.6
+
 #: **动手之前**最多等多久（秒）等「整页加载完」（`_page_ready`）。
 #:
 #: 为什么要这一格（2026-09-18 真站对照，这是它的全部理由）：
@@ -2412,6 +2434,49 @@ class Filler:
         self._run_step(index, step)
         return True
 
+    def _wait_until_present(self, action, selector, value, kind, frame, label, level, until):
+        """同一条地址**没找到**时：先等一等，再试它**自己**（等到这笔预算用完为止）。
+
+        成功返回那次的回执；预算用完还没出来返回 `None`（调用方把**第一次那个失败**
+        原样留着，后面的路一个字不变）。
+
+        为什么值得等（而不是立刻换候选 / 掉进重找）：那两条路的代价都大得多 ——
+        重找可能**猜错**（真事里就猜错了：见 `NOT_FOUND_WAIT_SECONDS` 那段），
+        整组重走更要在真页面上多做一串动作；而这儿只是把**同一根地址**再发一次。
+        ⚠️ 只重试同一根地址；等到头还没出来就交回去 —— 不猜、不换。
+        """
+        waited = 0.0
+        announced = False
+        while True:
+            left = until - time.monotonic()
+            if left <= 0:
+                if announced:
+                    self.log.info("[%s] 等了 %.1f 秒它还是没出来 —— 不等了，照旧往下试别的路",
+                                  self.cid, waited)
+                return None
+            if not announced:
+                announced = True
+                self.log.info("[%s] 第 %d 个选择器**没找到**（不是被盖着）—— 可能是还没渲出来，"
+                              "先等一等：最多 %.0f 秒，一直重试**同一根地址**",
+                              self.cid, level + 1, NOT_FOUND_WAIT_SECONDS)
+            nap = min(NOT_FOUND_POLL_SECONDS, left)
+            time.sleep(nap)
+            waited += nap
+            out = self._do(action, selector, value, kind, frame, label)
+            if _ok(out):
+                self._miss_waited = waited
+                self.log.info("[%s] 等了 %.1f 秒，它出来了 —— 还是这一根地址做成的",
+                              self.cid, waited)
+                return out
+
+    def _miss_note(self):
+        """「第一次没找到、等了一会儿它才出来」说给人听的那半句（没有就是空串）。"""
+        waited = getattr(self, "_miss_waited", 0.0)
+        if not waited:
+            return ""
+        return ("；**第一次没找到它，等了 %.1f 秒它才出来**（元素是异步渲出来的 —— 地址没错）"
+                % waited)
+
     def _tab_note(self):
         """「点完新开了一个 tab 并切了过去」说给人听的那半句（没有就是空串）。"""
         if not getattr(self, "_followed_tab", ""):
@@ -3012,20 +3077,39 @@ class Filler:
         # 遮挡预算**按步开一次**（快路 + 重找那条路共用）：被盖住时先等加载蒙版走，
         # 但整步只赔这一笔，不按候选数翻倍（见 COVER_WAIT_SECONDS）。
         cover_until = time.monotonic() + COVER_WAIT_SECONDS
+        #: ★ 2026-10-12：「没找到」那一支的预算（与上面那笔分开，见 `NOT_FOUND_WAIT_SECONDS`）。
+        #: 同样按步开一次。`_miss_waited` 也在这儿清零 —— `_miss_note` 那半句只属于
+        #: **等过的那一步**（与 `_followed_tab` 同一条规矩）。
+        miss_until = time.monotonic() + NOT_FOUND_WAIT_SECONDS
+        self._miss_waited = 0.0
         for level, selector in enumerate(selectors):
             # **快路也要接遮挡判据**（真站实测的那条链）：不看一眼就点，
             # 点到盖着它的东西上（consent 弹层那类）cdp 照样回 ok —— 「点了个寂寞」
             # 被记成做成了。盖着就不点它，换下一个候选；全都被盖着就是这一步没做成。
             cover = self._covered_by(selector, frame, until=cover_until)
-            if cover:
+            if cover and not self._cover_is_own_widget(action, kind, selector, cover):
                 self.log.info("[%s] 第 %d 个选择器指的元素被 %s 盖着 —— 这一下不点"
                               "（点了等于点到盖着它的东西上）", self.cid, level + 1, cover)
                 continue
+            if cover:
+                #: ★ 2026-10-08：盖着的是**这一格自己的**自定义控件（select2 那类把原生
+                #: `<select>` 包起来的壳子）⇒ 照填，交给底下的 cdp 去认那条自定义下拉。
+                #: 见 `_cover_is_own_widget`（只放 `form` + `kind=select` 这一种）。
+                self.log.info("[%s] 第 %d 个选择器指的元素被 %s 盖着 —— 但那是**这一格自己的**"
+                              "（`select` 的自定义控件），照填（底下的 cdp 认得出这种下拉）",
+                              self.cid, level + 1, cover)
             out = self._do(action, selector, value, kind, frame, label)
+            if not _ok(out) and not cover:
+                #: ★ 2026-10-12：**没找到**先等一等再试同一根地址（见 NOT_FOUND_WAIT_SECONDS）。
+                #: `cover` 那一支不走这儿 —— 它有自己的预算（`_covered_by` 里已经等过了）。
+                again = self._wait_until_present(action, selector, value, kind, frame, label,
+                                                 level, miss_until)
+                if again is not None:
+                    out = again
             if _ok(out):
                 return (True, selector, level,
                         _say(action, label, True, level, landing=_landing_say(out))
-                        + self._tab_note()
+                        + self._tab_note() + self._miss_note()
                         + (self._value_note() if action == "form" else ""), frame)
             self.log.info("[%s] 第 %d 个选择器没成：%s", self.cid, level + 1, selector)
 

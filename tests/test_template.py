@@ -338,6 +338,12 @@ def _load(name: str, src: str, sandbox: pathlib.Path):
         spec.loader.exec_module(module)  # 这里会 NameError 就说明发的是 JSON 字面量
     finally:
         sys.path[:] = before  # 收掉产物自己 insert 的那条
+    #: ★ 2026-10-12：把「**没找到先等一等**」那笔预算（`NOT_FOUND_WAIT_SECONDS`，默认 6 秒/步）
+    #: 在这一份里**关掉** —— 这一份里几十条用例是**故意**让选择器挂掉来演回退链的，
+    #: 每步白赔 6 秒能把整份从几十秒拖成十几分钟（实测：一条 60 秒的用例里有 30 秒是它）。
+    #: 要量「等」这件事本身的那一条会自己把它设回去
+    #: （`test_a_selector_that_is_not_there_yet_is_retried_before_relocating` 的两臂）。
+    module.NOT_FOUND_WAIT_SECONDS = 0.0
     return module, path
 
 
@@ -3060,6 +3066,59 @@ def _group(n_steps, selectors=("#a", "#b")):
          "target": {"text": sel, "role": "button", "near": None, "selectors": [sel]}}
         for i, sel in enumerate(selectors[:n_steps], start=1)
     ]}]
+
+
+def test_a_selector_that_is_not_there_yet_is_retried_before_relocating(sandbox, form_file, caplog):
+    """★ 2026-10-12（真事 `job-d57366d0cf35` · ic.com 的选国家抽屉）：
+    声明里那根地址**第一次没找到**（元素还没渲出来）⇒ 先等一等、**重试同一根地址**，
+    不许当场掉进「重找」。
+
+    现场逐字（222 上重放那一版产物，日志在盘上）：`第 8 步：点了「Select your country」`
+    → **2 秒后** `第 1 个选择器没成：input[placeholder="Search..."]`
+    → `声明里的选择器都失效了，重新 observe 找到 12 个候选`
+    → 按意图猜（把握 0.50）⇒ 把值填进了 `#firstname`，后面整组跟着歪。
+    而在同一状态下把那条命令**再发一次**：`rc=0、ok=true`（列表从 175 项过滤成 1 项）
+    —— **地址一直是对的**，差的就是那两秒。
+
+    ② 那一半是**反例**，也正好是「改之前的行为」：把预算给 0（= 不等）时，当场换路
+    —— 会去调那一次 `observe`（重找那一跳）。两半合起来才钉得住「等」这件事是**新加的**。
+    """
+    steps = [{"action": "form", "fill": "postcode", "note": "填好了「Postcode」",
+              "target": {"label": "Postcode", "selectors": ["#late"], "frame_id": ""}}]
+    #: 自带的 fills：**只有一根**地址（`form` 那一路的 target 由 fill 自己的 target 说了算，
+    #: 所以这一格才是产物真正会去试的那根）—— 两根的话「第一根挂了」会被第二根吸收，
+    #: 这条用例就测不到「换路」了。
+    fills = [{"name": "postcode", "source": "zip", "kind": "value", "label": "Postcode",
+              "target": {"text": None, "label": "Postcode", "role": None, "near": None,
+                         "selectors": ["#late"]}}]
+    src = template.render("example-late-element", "Thank you",
+                          [{"name": "w", "when": None, "steps": steps}], fills, SAMPLE_PROVENANCE)
+    module, _ = _load("run_late_element", src, sandbox)
+
+    def once(plan, budget):
+        caplog.clear()
+        common = _stub(sandbox, observe={"url": "https://example.test/", "actions": [], "fields": []})
+        common.STATE.texts = ["Walk", "Thank you"]
+        common.STATE.fail_plan = dict(plan)
+        module.NOT_FOUND_WAIT_SECONDS = budget
+        module.NOT_FOUND_POLL_SECONDS = 0.05
+        with caplog.at_level(logging.INFO):
+            module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+        return common
+
+    # ① 会等：头一次「element not found」⇒ 重试**同一根地址**就成
+    common = once({"#late": 1}, 2.0)
+    assert ("form", "#late") in [(a[0], a[1]) for a in common.STATE.actions], common.STATE.actions
+    said = [r.getMessage() for r in caplog.records]
+    assert any("没找到" in m and "同一根地址" in m for m in said), said
+    assert any("等了" in m and "出来了" in m for m in said), said
+    assert not [c for c in _cdp_calls(sandbox) if c.startswith("observe")], (
+        "等一下就成的事，不该走到「重找」那一跳：%s" % _cdp_calls(sandbox))
+
+    # ② 反例：预算给 0（= 改之前的行为）⇒ 不等，当场换路（重找那一跳会调 observe）
+    once({"#late": 1}, 0.0)
+    assert any(c.startswith("observe") for c in _cdp_calls(sandbox)), (
+        "把预算关掉之后应当退回老路（重找）：%s" % _cdp_calls(sandbox))
 
 
 def test_a_failed_step_replays_its_whole_state_group(sandbox, form_file, caplog):

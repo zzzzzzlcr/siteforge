@@ -188,6 +188,28 @@ COVER_WAIT_SECONDS = 35.0
 #: 等蒙版期间每隔多久再量一次（秒）
 COVER_POLL_SECONDS = 0.4
 
+#: ★ 2026-10-12：声明里那根地址**没找到**时，先等多久（秒）再试**同一根地址**。
+#:
+#: 为什么要这一格（真事 `job-d57366d0cf35` · ic.com 的选国家抽屉，读数在
+#: `docs/缺陷单-2026-10-12-选国家点不动-影子宿主.md` 的姊妹篇里）：点开抽屉之后
+#: **2 秒里**那个搜索框还没进 DOM（那一页当时还没 `readyState=complete`）⇒ 产物当场判
+#: 「第 1 个选择器没成」⇒ 掉进「重新 observe + 按意图重找」那一支；而重找在
+#: 「账本里没有可比的身份信号」时**按意图猜**（把握 0.50）⇒ 把「United Kingdom」
+#: 填进了 `#firstname`，后面整组跟着歪（列表没被过滤 ⇒ 那根位置链点到的国家是 Albania）。
+#: 而在同一状态下把那条命令再发一次：**rc=0、ok=true**，列表从 175 项过滤成 1 项 ——
+#: **地址一直是对的**，差的就是那两秒。
+#:
+#: 与 `COVER_WAIT_SECONDS` 是**两个问题**、两笔预算，别合并：
+#:   那一笔问「**我要点的那个东西**在不在最上面」（被盖着）；
+#:   这一笔问「**它进 DOM 了没有**」（还没渲出来）。
+#: 预算同样**按步共用**（不按候选数翻倍），而且只重试**同一根地址** ——
+#: 等到头还没出来，就把第一次那个失败原样交回去，换候选 / 重找 / 整组重走一个字不变。
+NOT_FOUND_WAIT_SECONDS = 6.0
+
+#: 等它出现期间每隔多久再试一次（秒）。与 `COVER_POLL_SECONDS` 分开写：那个是「量一眼」，
+#: 这个是「**重发一次动作**」—— 代价不同（一次 cdp 调用 vs 一次 eval），调的时候心里有数。
+NOT_FOUND_POLL_SECONDS = 0.6
+
 #: **动手之前**最多等多久（秒）等「整页加载完」（`_page_ready`）。
 #:
 #: 为什么要这一格（2026-09-18 真站对照，这是它的全部理由）：
@@ -745,7 +767,7 @@ PROVENANCE = { 'generated_at': '2026-09-17T02:00:00+08:00',
 #: （实测代价：重渲一版 travelandleisure 一口气多带了 8 个方法）。
 #: 拿它跟当前骨架的 `template.SKELETON_SHA` 一比，`skeleton_drift()` 就答得出「落后多少」。
 #: ⚠️ 它是**骨架**的指纹（这份文件），不是产物的 —— 站点数据（STATES/FILLS）不算骨架。
-SKELETON_SHA = "15c0b0200c473894"
+SKELETON_SHA = "bc2805fe4d6640ed"
 
 
 def _site_country():
@@ -875,54 +897,15 @@ def _page_trouble(text):
     return ""
 
 
-# ★ 2026-10-09：**同一个字的两种排版写法算同一个字**（用户裁定原话：「那就大小写吧」
-# —— 按 2026-09-22 那条**大小写**先例办：`Check your email` 与 `check your email` 算
-# 同一个词，那么 `’` 与 `'` 就是**同一个撇号**）。
-#
-# 真事（`job-27389cef3110`，enroll 那趟）：人给的判据是
-# `Thank You! We've Received Your Information!`（**直角**撇号），站点把那句渲染成
-# `We’ve`（**弯**撇号 U+2019）。只压空白 + 小写时子串不成立 ⇒ **一份 py 都不出**，
-# 尽管探路走完了、正文里也真有那句。
-#
-# ⚠️ 折的只是**同一个字的排版变体**（弯引号 / 长短破折 / 省略号），**不是抹标点**：
-# `Thank You!` 与 `Thank You` 仍然是**两串不同的字**，不许配上。
-# ⚠️ 这张表**必须与探路那份逐字一致**（`agent/browser_agent.py` 里的 `_FOLD`）——
-# 这一份是**独立交付出去的一份 py**，import 不到 agent 包，所以只能是两份。
-_FOLD = str.maketrans({
-    # 弯单引号 → 直角撇号
-    "‘": "'", "’": "'", "‚": "'", "‛": "'",
-    # 角分 / 角秒
-    "′": "'", "″": '"',
-    # 弯双引号 → 直角双引号
-    "“": '"', "”": '"', "„": '"', "‟": '"',
-    # 各种横线 → 直角连字符（连字符 / 不换行连字符 / 短破折 / 长破折 / 横线 / 减号）
-    "‐": "-", "‑": "-", "‒": "-", "–": "-",
-    "—": "-", "―": "-", "−": "-",
-    # 省略号 → 三个点
-    "…": "...",
-    # ── 全角 ASCII（U+FF01–U+FF5E）→ 半角 ──
-    # ★ 2026-10-09 用户第二次点头（原话「算吧算同一个」）：宽度也是「同一个字的两种写法」。
-    # ⚠️ **整段一起折** —— Unicode 里它们就是「同一个字符的两种宽度」，只折标点、
-    # 不折字母数字是凭空划一条线。
-    # ⚠️ 到 U+FF5E 为止。再往后的 U+FF61–U+FF9F 是**半角片假名**（ｱｲｳ）—— 那是**另一个
-    # 字符**，不是谁的全角形；按「块」写就会把它们一起吃掉（钉在
-    # `test_the_two_norms_do_not_fold_what_is_actually_a_different_character`）。
-    **{chr(0xFF01 + i): chr(0x21 + i) for i in range(0x5E)},
-})
-
-
 def _norm(text):
-    r"""把一段文字归一成「看内容」的形态：空白（含 NBSP）压成单个空格、两端剪掉，
-    **同一个字的两种排版写法折成一个**（`_FOLD`）。
+    r"""把一段文字归一成「看内容」的形态：空白（含 NBSP）压成单个空格、两端剪掉。
 
     ⚠️ 这条口径**必须**与 `cdp observe` 的 page_text 完全一致（规格 §4.3 明写
     「与 py 里 page_signature() 同口径」）。不一致的后果是：trace 里的 page_sig 与
     agent 当时看到的页面模型对不上，Console 会把**同一个页面**显示成两个页面。
-    ⚠️ 折同形字那一步是 ★ 2026-10-09 加的，**两边一起加**；只加一边就是
-    「探路认得出、脚本在真站上认不出」。同理，抹标点**不做**（那才是放宽判据）。
     Python 的 \s 与 JS 的 \s 都含 NBSP（Go 的不含 —— diff.go 那个坑就是它）。
     """
-    return re.sub(r"\s+", " ", text or "").translate(_FOLD).strip()
+    return re.sub(r"\s+", " ", text or "").strip()
 
 
 # 读页面正文（**只读**）。shadow DOM 要逐 root 收：body.innerText 不穿 shadow，
@@ -1129,18 +1112,6 @@ def _landing_say(output):
     if data.get("landing_blind"):
         return "（这一帧的落点判据用不了：跨站子帧里它不触发）"
     return ""
-
-
-#: 从**选择器**或**遮挡物描述**里抠出第一个 `#id` —— `#edit-size` 抠出 `edit-size`，
-#: `span#select2-edit-size-container.select2-selection__rendered` 抠出
-#: `select2-edit-size-container`。抠不出来（没有 `#`）就是空串。
-#: ★ 2026-10-08：给「盖着它的是不是**这一格自己的**控件」那条判据用（见 `_cover_is_own_widget`）。
-_ID_IN_SEL = re.compile(r"#([A-Za-z_][-\w]*)")
-
-
-def _id_in(sel) -> str:
-    m = _ID_IN_SEL.search(str(sel or ""))
-    return m.group(1) if m else ""
 
 
 def _say(action, label, ok, level=None, progress=None, landing=""):
@@ -2149,6 +2120,49 @@ class Filler:
         self._run_step(index, step)
         return True
 
+    def _wait_until_present(self, action, selector, value, kind, frame, label, level, until):
+        """同一条地址**没找到**时：先等一等，再试它**自己**（等到这笔预算用完为止）。
+
+        成功返回那次的回执；预算用完还没出来返回 `None`（调用方把**第一次那个失败**
+        原样留着，后面的路一个字不变）。
+
+        为什么值得等（而不是立刻换候选 / 掉进重找）：那两条路的代价都大得多 ——
+        重找可能**猜错**（真事里就猜错了：见 `NOT_FOUND_WAIT_SECONDS` 那段），
+        整组重走更要在真页面上多做一串动作；而这儿只是把**同一根地址**再发一次。
+        ⚠️ 只重试同一根地址；等到头还没出来就交回去 —— 不猜、不换。
+        """
+        waited = 0.0
+        announced = False
+        while True:
+            left = until - time.monotonic()
+            if left <= 0:
+                if announced:
+                    self.log.info("[%s] 等了 %.1f 秒它还是没出来 —— 不等了，照旧往下试别的路",
+                                  self.cid, waited)
+                return None
+            if not announced:
+                announced = True
+                self.log.info("[%s] 第 %d 个选择器**没找到**（不是被盖着）—— 可能是还没渲出来，"
+                              "先等一等：最多 %.0f 秒，一直重试**同一根地址**",
+                              self.cid, level + 1, NOT_FOUND_WAIT_SECONDS)
+            nap = min(NOT_FOUND_POLL_SECONDS, left)
+            time.sleep(nap)
+            waited += nap
+            out = self._do(action, selector, value, kind, frame, label)
+            if _ok(out):
+                self._miss_waited = waited
+                self.log.info("[%s] 等了 %.1f 秒，它出来了 —— 还是这一根地址做成的",
+                              self.cid, waited)
+                return out
+
+    def _miss_note(self):
+        """「第一次没找到、等了一会儿它才出来」说给人听的那半句（没有就是空串）。"""
+        waited = getattr(self, "_miss_waited", 0.0)
+        if not waited:
+            return ""
+        return ("；**第一次没找到它，等了 %.1f 秒它才出来**（元素是异步渲出来的 —— 地址没错）"
+                % waited)
+
     def _tab_note(self):
         """「点完新开了一个 tab 并切了过去」说给人听的那半句（没有就是空串）。"""
         if not getattr(self, "_followed_tab", ""):
@@ -2196,13 +2210,6 @@ class Filler:
                     else random.choice(("United States", "United Kingdom")))
         if kind == "state":
             return random.choice(self.pools["state"])
-        if kind == "birth_year":
-            #: ★ 2026-10-08（policyquail `job-c8730acb27c5`，8100 上验出来的那一趟）：
-            #: 「Year of birth」那种框（`placeholder="YYYY"`）只收**4 位年份**，
-            #: 而下面 `dob` 给的是整串日期 ⇒ 往年份框里打了 `07/23/1981`。
-            #: 区间与 `dob` 用的那一段**是同一个**（说的本来就是同一个出生年）——
-            #: 改一处要想着另一处，别让两边悄悄分叉。
-            return str(random.randint(1970, 1995))
         if kind == "dob":
             return "%02d/%02d/%d" % (random.randint(1, 12), random.randint(1, 28),
                                      random.randint(1970, 1995))
@@ -2554,33 +2561,6 @@ class Filler:
         return ("已随这次失败上报（step=fail_scene_%d）" % index) if ok \
             else "截图没发成：上报接口没收下（它也没说为什么）"
 
-    def _cover_is_own_widget(self, action, kind, selector, cover) -> bool:
-        """★ 2026-10-08（真事 `job-62086decf839`，shorecrestwpb.com）：**盖着它的是这一格
-        自己的自定义控件 ⇒ 不算遮挡物**。窄口径，**只放 `form` + `kind == "select"`**。
-
-        形状：站方用 **select2** 那类插件把原生 `<select>` 换成自定义控件 —— 原生 `<select>`
-        还在 DOM 里，而 `cdp form --select` **自己认得**这种（它的说明里写着：目标不是原生
-        `<select>` 时会去找可点的控件打开菜单），**手打那条命令是成的**。
-        可产物的遮挡判据**排在 cdp 前面**：它量到 `<select>` 被
-        `span#select2-edit-size-container.select2-selection__rendered` 盖着 ⇒ 判成
-        「被别的东西挡着」⇒ 四个下拉**一个都不动** ⇒ 第 7 步没做成 ⇒ 后面的勾选与 submit
-        全没做（那一趟自测 `passed=False`，运营拿不到能用的稿）。
-
-        **只放这一种**，两条都要：
-          ① 动作是 `form` 且 `kind == "select"` —— 别的动作照旧拦（那道防线挡的是
-             「点到 consent 弹层上、cdp 还回 ok」，真站栽过，见 `_covered_by` 的说明）；
-          ② 盖着的东西的 id 里**带着这一格自己的 id** —— select2 那类壳子的命名法就是把
-             原生 id 嵌进去（`select2-<原生 id>-container`）。
-
-        ⚠️ 判不出来（选择器里没有 `#id`、或盖着的东西没有 id）⇒ **当遮挡物**（不放行）：
-        这条路的默认必须是「拦」，放宽要有依据。
-        """
-        if action != "form" or kind != "select":
-            return False
-        want = _id_in(selector)
-        got = _id_in(cover)
-        return bool(want and got and want in got)
-
     def _covered_by(self, selector, frame_id="", until=None):
         """这个选择器指的元素**是不是被别的东西盖着**。盖着就返回盖它的东西（读，不动页面）。
 
@@ -2783,6 +2763,11 @@ class Filler:
         # 遮挡预算**按步开一次**（快路 + 重找那条路共用）：被盖住时先等加载蒙版走，
         # 但整步只赔这一笔，不按候选数翻倍（见 COVER_WAIT_SECONDS）。
         cover_until = time.monotonic() + COVER_WAIT_SECONDS
+        #: ★ 2026-10-12：「没找到」那一支的预算（与上面那笔分开，见 `NOT_FOUND_WAIT_SECONDS`）。
+        #: 同样按步开一次。`_miss_waited` 也在这儿清零 —— `_miss_note` 那半句只属于
+        #: **等过的那一步**（与 `_followed_tab` 同一条规矩）。
+        miss_until = time.monotonic() + NOT_FOUND_WAIT_SECONDS
+        self._miss_waited = 0.0
         for level, selector in enumerate(selectors):
             # **快路也要接遮挡判据**（真站实测的那条链）：不看一眼就点，
             # 点到盖着它的东西上（consent 弹层那类）cdp 照样回 ok —— 「点了个寂寞」
@@ -2800,10 +2785,17 @@ class Filler:
                               "（`select` 的自定义控件），照填（底下的 cdp 认得出这种下拉）",
                               self.cid, level + 1, cover)
             out = self._do(action, selector, value, kind, frame, label)
+            if not _ok(out) and not cover:
+                #: ★ 2026-10-12：**没找到**先等一等再试同一根地址（见 NOT_FOUND_WAIT_SECONDS）。
+                #: `cover` 那一支不走这儿 —— 它有自己的预算（`_covered_by` 里已经等过了）。
+                again = self._wait_until_present(action, selector, value, kind, frame, label,
+                                                 level, miss_until)
+                if again is not None:
+                    out = again
             if _ok(out):
                 return (True, selector, level,
                         _say(action, label, True, level, landing=_landing_say(out))
-                        + self._tab_note()
+                        + self._tab_note() + self._miss_note()
                         + (self._value_note() if action == "form" else ""), frame)
             self.log.info("[%s] 第 %d 个选择器没成：%s", self.cid, level + 1, selector)
 
@@ -3243,13 +3235,6 @@ class Filler:
                 # 这一步真在哪一帧里做的（主帧 = ""）——「帧内的点击有没有带上帧号」
                 # 这件事，读 trace 就能看见，不用去读产物源码。
                 "frame_id": frame,
-                #: ★ 2026-10-09：这一步**不承重**（探路里同一个**无名**目标作成过也做败过
-                #: —— 浮窗那类"有时候有有时候没有"的东西，见
-                #: `browser_agent._not_load_bearing_clicks`）。自测拿这一格分档：
-                #: 它没做成**不否决**那一遍，但要**点名**说清（与 `scroll` / `wait` 同一档）。
-                #: 不写这一格的理由也在这句里：**只有产物知道**哪一步是那种步，自测那边
-                #: 光看 trace 认不出来（`action` 是 `click`，跟承重步长得一模一样）。
-                "auxiliary": (True if step.get("auxiliary") else None),
                 "ok": ok,
                 "progress": progress,
                 # 判不出来时**带上为什么**（「没算出有没有推进」与「没有推进」是两件事）
@@ -3452,22 +3437,6 @@ class Filler:
                     # ⚠️ 重试**不再判一次 `when`**：这一组的门在进组时已经判过了，而页面上
                     #    什么都没推进（失败的那一步没成）。重判会把「重试」变成「整组跳过」——
                     #    那正是这套产物最贵的那类失败。
-                    #: ★ 2026-10-09（真站 `job-d40bb4d2d2be`／`taxlawadvocates` 实测）：
-                    #: **「滚不动」不该把整组打回**。现场：第 13 步点了「Next →」（页面当场翻页）
-                    #: ⇒ 第 14 步还写着「把 Next → 滚进视口」，而那只按钮**已经不在页面上** ⇒
-                    #: 整组 25 步从头再来（上限 1 次）⇒ 重走时第二步的 click 也找不到它
-                    #: （trace 原话：`step16 click 页面上没找到「Next →」`）—— **一次滚动失败把
-                    #: 整条线性流程搅乱了**，最后报「没走到成功」。
-                    #: 判据：**滚动是准备动作**（真正要做的下一步自己会把元素滚进视口）——
-                    #: 没滚成时**出声 + trace 里如实记 `ok=False`**，然后**接着走下一步**；
-                    #: 不重试整组（重试的前提是「那一步真的要做的事没做成」）。
-                    if not ok and str((step or {}).get("action") or "") == "scroll":
-                        self.log.warning("[%s] 第 %d 步是 scroll，没滚成（%s）—— 照旧往下走"
-                                         "（滚动是准备动作，不拿它打回整组）",
-                                         self.cid, index,
-                                         str(self._when_why_cache or self.retry_why or "")[:60])
-                        cursor += 1
-                        continue
                     if not ok and self.group_retries < GROUP_RETRY_LIMIT:
                         self.group_retries += 1
                         self.retry_why = (
