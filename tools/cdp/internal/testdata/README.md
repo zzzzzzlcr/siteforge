@@ -14,6 +14,8 @@
 | `viewport.html` | `cmd/observe_e2e_test.go`（Defect 1 新增，不来自探针） | 撑出**滚动条**的页面（3000×3000） |
 | `observe_reads.html` | `cmd/observe_reads_e2e_test.go`（2026-09-17 新增，不来自探针） | 三样回读（value / selected / aria_label）的各态 |
 | `click_target.html` | `cmd/click_target_e2e_test.go` + `cmd/mcp_click_e2e_test.go`（2026-09-17 新增，不来自探针） | click 的目标解析：歧义选择器（点到了 Back）+ 两种禁用的目标 |
+| `mcp_form_landing.html` | `cmd/form_landing_receipt_e2e_test.go` + `cmd/mcp_form_landing_e2e_test.go` | 自定义下拉 + 一层 backdrop（落点判据的回执） |
+| `radix_select.html` | `cmd/form_select_menu_e2e_test.go`（2026-10-10 新增，不来自探针） | **「谁开的谁关」**：Radix 那种下拉（按下即开、菜单 Portal 到 body、**开着时 `body{pointer-events:none}`**）+ 两条失败路径（选项不存在 / 选项够不着） |
 
 ## `click_target.html`（2026-09-17 新增，**不是探针产物**，真站形态的复刻）
 

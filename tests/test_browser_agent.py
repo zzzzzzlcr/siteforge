@@ -1284,6 +1284,109 @@ def test_a_trailing_unread_observation_is_not_a_page_either():
     assert browser_agent._gates_that_hold_elsewhere(pages.pages) == [], "并掉之后还报 = 还是一份 py 都不出"
 
 
+# ── ★ 2026-10-12：「判据钉不出来」的那一眼，**往哪边并**由「上一页的门还成不成立」定 ──
+#
+# 真事（`job-e7906a6c65d0` · freshstartrelief.org · 8099，现场在盘上）：
+# 那是个**单页漏斗**（一个地址、一屏一题）。第 2 屏上把年份选好之后那一屏的判据**钉不出来**
+# （剪到的那段跨了两个元素：`'3 years 1 year 2 years 3 years 4 years 5 years'` ——
+# 触发件那句 `3 years` 接上底下那串选项，页面上根本不是一句话）⇒ 它只剩 URL 一条 ⇒
+# 被「并进紧接着那个读到了正文的状态」——**在这里那就是下一屏**（Step 3 of 7）。
+# 而挂在它名下的那一步是**第 2 屏上那颗 Continue**（`… form > div:nth-of-type(3) > button:nth-of-type(2)`）：
+# 合并之后它成了「门 = `Step 3 of 7`」那一组的第一步 —— 而那句话**正是这一步自己点出来的** ⇒
+# 门永远不成立 ⇒ 整组跳过 ⇒ 后面每一组跟着跳过（自测 28 步里 **17 步**跳过，四趟一个形状）。
+#
+# 判据（量得到、不猜）：**上一页的门，在这一眼的正文里还成立吗** ——
+#   成立 ⇒ 页面是**原地变的**（还在同一屏上）⇒ 并回**上一页**（判据用它的）；
+#   不成立 / 读不到 ⇒ 那是**它接下来变成的那一页**（正常的「观测撞上刚跳转的加载中页面」）⇒ 照旧并往前。
+# ⚠️ 不能用「上一页与它同址吗」当判据：**单页漏斗上每一屏都同址**，那条判据在这儿恒真。
+def _one_url_funnel_models():
+    """单页漏斗那四眼（照真站的正文形状抄的：一屏一题、年份那题底下带一串选项）。
+
+    ⚠️ 比真站那几页短，但**四个关键形状一个不少**：① 同一屏上「答前 / 答后」只差
+    `Select number of years` → `3 years` 这一点；② 答后那一屏的判据**剪不出来**
+    （那串选项紧跟着 `3 years`，剪到的那段跨了两个元素）；③ 答后那一屏的正文里
+    **还留着上一屏的门**（同一屏嘛）；④ 下一屏是另一道题、判据读得出来。
+    """
+    url = "https://freshstartrelief.test/eligibility-form"
+    head = "Menu FREE ELIGIBILITY ASSESSMENT {} Explore Your Tax Relief Eligibility "
+    years = ("1 year 2 years 3 years 4 years 5 years 6 years 7 years 8 years 9 years "
+             "10 years 10+ years")
+    #: ⚠️ 第 1 屏**故意不带那截公用页头**：带了的话「答前那一眼」的判据会从
+    #: `Step 2 of 7` 的**中间**（那个数字）开始剪 ⇒ 它也变成「只有 URL」⇒ 夹具里
+    #: 就没有一条读得出来的门可用了（真站上它的门是 `Step 2 of 7`）。
+    step1 = "Step 1 of 7 How much do you owe in federal taxes? Back Continue"
+    step2 = (head.format("Step 2 of 7") + "Do you have any unfiled federal tax returns? "
+             "Yes No Not sure How many years of unfiled returns? Select number of years "
+             + years + " Back Continue")
+    #: 答完那一眼：**只差 `Select number of years` → `3 years`**（剪判据就从这一处不同开始）
+    answered = step2.replace("Select number of years", "3 years")
+    step3 = (head.format("Step 3 of 7") + "Did you get an IRS notice? Yes No Back Continue")
+    nodes = ["Menu", "Step 2 of 7", "Do you have any unfiled federal tax returns?",
+             "How many years of unfiled returns?", "3 years", "1 year", "2 years",
+             "Back", "Continue"]
+    return [{"url": url, "title": "Eligibility", "page_text": step1},
+            {"url": url, "title": "Eligibility", "page_text": step2, "node_texts": nodes},
+            {"url": url, "title": "Eligibility", "page_text": answered, "node_texts": nodes},
+            {"url": url, "title": "Eligibility", "page_text": step3}]
+
+
+def test_a_gate_that_could_not_be_pinned_goes_back_to_the_screen_it_happened_on():
+    """钉住：那一屏的步**留在那一屏的组里** —— 不许被挂到下一屏的门下。
+
+    这一条就是 `job-e7906a6c65d0` 那个死法的**形状**（四个状态、一个地址）。
+    红的时候它会把 Continue 挂到 `Step 3 of 7` 那组（门永远不成立）；修完必须挂回第 2 屏那组。
+    """
+    models = _one_url_funnel_models()
+    pages, steps = _split_one_page_into_states(models)
+    names = [p["name"] for p in pages.pages]
+    assert len(names) == 4, names
+    step2_name, answered_name, step3_name = names[1], names[2], names[3]
+    #: 前提：那一屏的判据**真钉不出来**（只剩 URL）—— 不然这条用例造的不是那个形状
+    answered_page = [p for p in pages.pages if p["name"] == answered_name][0]
+    assert not (answered_page["when"] or {}).get("text_contains"), answered_page["when"]
+    #: 前提二：上一屏的门在**这一屏的正文里还成立**（同一屏，只是多答了一题）
+    step2_page = [p for p in pages.pages if p["name"] == step2_name][0]
+    assert browser_agent.when_holds(step2_page["when"], models[2]), step2_page["when"]
+    #: 账上：在那**一屏**上做的那一步（真站是「点了 Continue」）挂在这个状态名下
+    steps.append({"state": answered_name, "step_no": 7, "action": "click"})
+
+    gone = browser_agent._merge_one_page_states(pages.pages, steps)
+
+    merged = {g["name"]: g for g in gone}
+    assert merged[answered_name]["into"] == step2_name, gone
+    assert merged[answered_name]["kind"] == "unread", gone
+    #: 那一屏上做的那一步，现在挂在**那一屏的组**名下（不是下一屏）
+    hit = [s for s in steps if s["step_no"] == 7]
+    assert [s["state"] for s in hit] == [step2_name], \
+        "那一屏的步被挂到了别的门的下面（重放时那道门永远不成立）：%r" % (steps,)
+    assert answered_name not in {s["state"] for s in steps}, steps
+    assert step3_name in {p["name"] for p in pages.pages}, "下一屏那一组被牵连了"
+    #: 留下的那条门，在**那一屏**上必须成立（不然重放时整组静默跳过）
+    kept = [p for p in pages.pages if p["name"] == step2_name][0]["when"]
+    assert browser_agent.when_holds(kept, models[2]), (kept, models[2])
+
+
+def test_a_loading_look_is_still_merged_forward():
+    """反面：**观测撞上刚跳转的加载中页面**（正文一个字没读到）照旧并**往前**。
+
+    那种一眼里，上一页的门在这页的正文里**不成立**（一个字的正文都没有）⇒ 它是「接下来变成的
+    那一页」，并进那个读到正文的状态 —— 2026-09-30 那条的形状，一个字不许改。
+    """
+    url = "https://fubgb.test/FUBGB/"
+    models = [{"url": url, "title": "FUBGB",
+               "page_text": "PIECE 1 / 12 YOUR BUILDER How do you identify? Male Female"},
+              {"url": url, "title": "FUBGB", "page_text": ""},          # ← 加载中
+              {"url": url, "title": "FUBGB",
+               "page_text": "PIECE 2 / 12 EXPERIENCE RANK What's your age range? 18-24 25-34"}]
+    pages, steps = _split_one_page_into_states(models)
+    loading = [p["name"] for p in pages.pages][1]
+
+    gone = browser_agent._merge_one_page_states(pages.pages, steps)
+
+    assert [(g["name"], g["into"], g["kind"]) for g in gone] == [
+        (loading, "fubgb-3", "unread")], gone
+
+
 def test_two_stays_on_one_url_are_not_reported_as_other_pages():
     """★ 2026-09-30（现场逮到的第三个形状，`zekear` 那趟）：**同一地址的两次停留不算「别的页」**。
 

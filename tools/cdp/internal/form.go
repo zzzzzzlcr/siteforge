@@ -934,6 +934,12 @@ func (c *Client) SelectOption(selector, option, frameID string, track bool) erro
 	}
 
 	// Custom dropdown flow: find control → click → find option → click
+	//
+	// ★ 2026-10-11（真事 `job-e7906a6c65d0` / freshstartrelief.org）：**谁开的谁关**。
+	// 下面那一下 mousedown 就会把菜单打开（Radix/MUI 那一类都是按下即开），
+	// 而从那一刻起，**这一条路上每一条失败路径都必须先把菜单关掉再回去** ——
+	// 理由与做法见 `CloseOpenMenu` 那段注释（不关的话：整页只剩菜单自己能命中，
+	// 后面的每一步点击都会被判「那一点上站着的是 <html>」而拒绝，真站为此跑死过一整趟）。
 	var controlResultStr string
 	if err := c.EvalInFrame(frameID, findControlJS(selector), &controlResultStr); err != nil {
 		return err
@@ -955,8 +961,23 @@ func (c *Client) SelectOption(selector, option, frameID string, track bool) erro
 	if err != nil {
 		return fmt.Errorf("failed to map control coords to the main frame: %w", err)
 	}
+	//: 从下发这一下起，菜单**可能已经被我们点开了** —— 后面每一条失败路径都走它：
+	//: 先看一眼开着没有，开着就关掉，并把「关没关成」如实附在那句话后面。
+	//: （关成了、或本来就没开着 ⇒ 一个字都不加：常驻的提示等于没有提示。）
+	fail := func(err error) error {
+		had, closed, why := c.CloseOpenMenu(frameID)
+		if !had {
+			return err
+		}
+		if closed {
+			return fmt.Errorf("%s（这一次的菜单是我们点开的 —— 已经按 Escape 关掉了，"+
+				"页面照旧能用）", err)
+		}
+		return fmt.Errorf("%s（⚠️ 这一次点开的菜单**没关掉**：%s —— 页面可能还是点不动的，"+
+			"后面每一次点击都会被判「那一点上站着的是别人」而拒绝）", err, why)
+	}
 	if err := c.DispatchMouseClick(cx, cy); err != nil {
-		return fmt.Errorf("failed to click control: %w", err)
+		return fail(fmt.Errorf("failed to click control: %w", err))
 	}
 
 	// Small delay for menu to appear
@@ -965,26 +986,128 @@ func (c *Client) SelectOption(selector, option, frameID string, track bool) erro
 	// Find and click the matching option
 	var optionResultStr string
 	if err := c.EvalInFrame(frameID, findCustomOptionJS(selector, option), &optionResultStr); err != nil {
-		return err
+		return fail(err)
 	}
 	var optionResult map[string]interface{}
 	if err := json.Unmarshal([]byte(optionResultStr), &optionResult); err != nil {
-		return fmt.Errorf("failed to parse option result: %w", err)
+		return fail(fmt.Errorf("failed to parse option result: %w", err))
 	}
 	if errMsg, ok := optionResult["error"]; ok {
-		return fmt.Errorf("%v", errMsg)
+		return fail(fmt.Errorf("%v", errMsg))
 	}
 
 	ox, oy, err := c.frameClickCoords(frameID,
 		optionResult["centerX"].(float64), optionResult["centerY"].(float64))
 	if err != nil {
-		return fmt.Errorf("failed to map option coords to the main frame: %w", err)
+		return fail(fmt.Errorf("failed to map option coords to the main frame: %w", err))
 	}
 	if err := c.DispatchMouseClick(ox, oy); err != nil {
-		return fmt.Errorf("failed to click option: %w", err)
+		return fail(fmt.Errorf("failed to click option: %w", err))
 	}
 
 	return nil
+}
+
+// menuOpenJS 读「页面上现在有没有**开着的下拉菜单**」，顺带把 body 的 pointer-events 读回来
+// （那是「页面还能不能用」的直接证据：Radix 那一类打开时会把它设成 none）。
+//
+// ⚠️ 认的容器是 `findCustomOptionJS` 找选项时那两族里**菜单的那两族**
+// （`[role=listbox]` / `[role=menu]`）—— 它那三族里还认 `[role=dialog]`，
+// 这里**故意不认**：对话不是下拉，而 Escape 落到对话上 = 替站点「取消」它
+// （可能丢掉页面上已经填了的东西）。**只关自己认得出来的菜单**。
+const menuOpenJS = `(function(){
+	var open = null;
+	var list = document.querySelectorAll('[role=listbox],[role=menu]');
+	for (var i = 0; i < list.length; i++) {
+		var r = list[i].getBoundingClientRect();
+		if (r.width > 0 && r.height > 0) { open = list[i]; break; }
+	}
+	var d = '';
+	if (open) { d = open.tagName.toLowerCase() + (open.id ? '#' + open.id : ''); }
+	return JSON.stringify({open: !!open, desc: d,
+	                       pe: (document.body && document.body.style.pointerEvents) || ''});
+})()`
+
+type menuState struct {
+	Open bool   `json:"open"`
+	Desc string `json:"desc"`
+	PE   string `json:"pe"`
+}
+
+// openMenuNow 读一眼「现在开着吗」（只读，不动页面）。
+func (c *Client) openMenuNow(frameID string) menuState {
+	var raw string
+	if err := c.EvalInFrame(frameID, menuOpenJS, &raw); err != nil {
+		return menuState{}
+	}
+	var st menuState
+	if err := json.Unmarshal([]byte(raw), &st); err != nil {
+		return menuState{}
+	}
+	return st
+}
+
+// CloseOpenMenu 关掉页面上开着的那个下拉菜单（**按一下 Escape，再读回确认**）。
+//
+// 返回 (关之前开着吗, 关成了吗, 一句人话)。
+//
+// ★ 2026-10-11（真事 `job-e7906a6c65d0` / freshstartrelief.org）：为什么这件事必须由
+// **开菜单的那一方**来做 —— shadcn/Radix 那一类下拉打开时会把 `document.body` 设成
+// `pointer-events:none`（整页只剩菜单自己能命中）。真站实测（`runtime-222/_probe_pointer_events.js`）：
+// 那个 combobox 按钮中心的命中栈**只回 `["html"]`**（`html` 自己是 auto，所以站着的就是它）。
+//
+// 后果是**整趟跑死**，不是「这一步没做成」：
+//   - 那一下 `form --select` 值**真选上了**（页面文案都对），可菜单留着；
+//   - 从那一步起，每一次点击都被判「那一点上站着的是 `<html>`」而**拒绝** ——
+//     实测原话 `拒绝点击…它中心的整摞里没有它 —— 那一点上站着的是 0:<html>`；
+//   - 真站那一趟：自测 28 步里 **17 步被跳过**，运营看到的是「选完没收回、盖住了按钮」。
+//
+// 为什么不在产物那一侧修（试过了，不行）：菜单开着的时候**整页只有菜单自己能命中**，
+// 产物手上那三件工具（click / form / scroll）**没有一件**碰得到那颗按钮 ——
+// 实测 `cdp click '[role=combobox][aria-expanded="true"]'` 当场被落点判据拒掉。
+// 唯一关得掉它的东西是 Escape（实测：一个 `Input.dispatchKeyEvent(Escape)` →
+// body 的 pointer-events 当场回到 auto、按钮又命中得到），而 Escape 只有这一侧发得出来。
+//
+// ⚠️ 为什么敢按下去：这一次 eval 只在**我们自己刚点开过控件之后**的失败路径上调用。
+// 页面上还开着菜单 = **对我们来说整页已经点不动了**，Escape 是手上破坏性最小的那一手
+// （它只会关掉那一层，不选任何选项、不提交任何东西）。
+//
+// ⚠️ 已知没覆盖的一格：**原生 `<select>` 弹的那个系统菜单**（`isSelect` 那一支）
+// 不在这个判据的认法里（它不是 DOM 里的 `[role=listbox]`），所以那一支的路一条都没走。
+// 留在这儿是为了别让人以为「都管了」（要管得先有量得到它的判据）。
+func (c *Client) CloseOpenMenu(frameID string) (had, closed bool, say string) {
+	before := c.openMenuNow(frameID)
+	if !before.Open {
+		// 没开着就什么都不做 —— 连 Escape 都不发（这一步本来就没成，不许多做一件事）
+		return false, false, ""
+	}
+	if err := c.pressEscape(); err != nil {
+		return true, false, fmt.Sprintf("按 Escape 没发出去（%v）", err)
+	}
+	time.Sleep(80 * time.Millisecond) // 关菜单是页面自己的事（Radix 还有一段出场动画）
+	after := c.openMenuNow(frameID)
+	if after.Open {
+		return true, false, fmt.Sprintf("按了 Escape，可 %s 还开着", after.Desc)
+	}
+	return true, true, ""
+}
+
+// pressEscape 发一对 Escape（keyDown + keyUp）。
+//
+// 用 key 而不是坐标点击：菜单开着的时候页面上**没有一处可点的坐标**（整页
+// `pointer-events:none`），而 Radix 那一类下拉都认 Escape（真站同一个组件实测过）。
+func (c *Client) pressEscape() error {
+	return chromedp.Run(c.ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		for _, typ := range []input.KeyType{input.KeyDown, input.KeyUp} {
+			if err := input.DispatchKeyEvent(typ).
+				WithKey("Escape").WithCode("Escape").
+				WithWindowsVirtualKeyCode(27).WithNativeVirtualKeyCode(27).
+				Do(ctx); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
 }
 
 // ─────────────────── `--strict` 的消歧闸（2026-09-17）───────────────────

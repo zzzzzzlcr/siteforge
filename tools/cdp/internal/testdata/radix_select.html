@@ -1,0 +1,66 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Radix 那种下拉（「谁开的谁关」的 e2e 夹具）</title></head>
+<body style="margin:0">
+<!--
+  复刻真站 shadcn/Radix `<Select>` 的三条事实（2026-10-10 · job-e7906a6c65d0 ·
+  freshstartrelief.org，量到的原文见 runtime-222/_probe_pointer_events.js）：
+
+   ① 触发件是一个 `[role=combobox]` 的按钮，**mousedown 就把菜单打开**（不是 click）；
+   ② 菜单 Portal 到 body（与触发件没有祖先关系）；
+   ③ ★ **菜单开着的时候 `document.body` 被设成 `pointer-events:none`** ——
+      整页除菜单自己外**一律命中不到**。实测：那个按钮中心取命中栈只回 `["html"]`
+      （`html` 的 pointer-events 是 auto，所以站着的就是它）。
+      后果：**只有开菜单的那一方能把它关掉**（Escape 一下即可，实测），
+      别的动作想点任何东西都会被判「那一点上站着的是 <html>」而拒绝。
+
+  三格给断言用：
+    · `window.__rsState()` 吐 `{value, open, bodyPE}`；
+    · `Nope` 是一个**不存在**的选项 → 走 cdp 的「option not found」那条失败路径；
+    · `2 years` 那一项**自己 pointer-events:none**（点击交给容器代理 —— 真站常见的写法）
+      → 走 cdp 的「option is covered by … — 拒绝」那条失败路径（真站那一下正是后者）。
+-->
+<div id="rs-trigger" role="combobox" aria-haspopup="listbox" aria-expanded="false"
+     style="position:fixed;left:60px;top:60px;width:300px;height:48px;line-height:48px;background:#eee;border:1px solid #ccc">Select number of years</div>
+<script>
+  window.__rsValue = '';
+  window.__rsMenuUps = 0;
+  window.__rsState = function () {
+    return JSON.stringify({
+      value: window.__rsValue,
+      open: !!document.getElementById('rs-menu'),
+      bodyPE: document.body.style.pointerEvents || '',
+      triggerPE: getComputedStyle(document.getElementById('rs-trigger')).pointerEvents
+    });
+  };
+  window.__rsClose = function () {
+    var m = document.getElementById('rs-menu'); if (m) m.parentNode.removeChild(m);
+    document.body.style.pointerEvents = '';                     // ← 关掉就还回去
+    document.getElementById('rs-trigger').setAttribute('aria-expanded', 'false');
+  };
+  window.__rsOpen = function () {
+    if (document.getElementById('rs-menu')) return;
+    var m = document.createElement('div');
+    m.id = 'rs-menu';
+    m.setAttribute('role', 'listbox');
+    m.style.cssText = 'position:fixed;left:60px;top:110px;width:300px;background:#fff;' +
+                      'z-index:6000;pointer-events:auto';
+    [['1 year', ''], ['2 years', 'pointer-events:none']].forEach(function (pair) {
+      var o = document.createElement('div');
+      o.setAttribute('role', 'option');
+      o.textContent = pair[0];
+      o.style.cssText = 'height:36px;line-height:36px;' + pair[1];
+      // Radix 是在**抬起**上选的（按下不算）—— 夹具照这个来
+      o.addEventListener('mouseup', function () { window.__rsValue = pair[0]; window.__rsClose(); });
+      m.appendChild(o);
+    });
+    document.body.appendChild(m);
+    document.body.style.pointerEvents = 'none';                 // ← ★ 真站那一条
+    document.getElementById('rs-trigger').setAttribute('aria-expanded', 'true');
+  };
+  document.getElementById('rs-trigger').addEventListener('mousedown', window.__rsOpen);
+  // Radix 的下拉认 Escape（实测：一个 Input.dispatchKeyEvent(Escape) 就关掉了）
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Escape') window.__rsClose();
+  });
+</script>
+</body></html>

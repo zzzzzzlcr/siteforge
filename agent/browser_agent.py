@@ -5106,14 +5106,33 @@ def _merge_one_page_states(pages: list, steps: list) -> list:
         readable = [q for q in pages
                     if _stable_url(q.get("url") or "") == url
                     and (q.get("when") or {}).get("text_contains")]
-        #: ★ 2026-09-30（现场逮到的第二个形状）：**先往后找，再往前找** ——
-        #: 「没读到正文」的那一眼可能落在**这一页的最后一眼**上（`zekear` 那趟：
-        #: `…_cleaner-2` 是那一页的最后一眼，后面直接去了别的地址）⇒ 只往后找的话它活下来，
-        #: 那一组就带着一条「只有地址」的门，§1 照旧报「分不开页」、还是一份 py 都不出。
-        #: 往后那是「它接下来变成的那一页」（正常形状：观测撞上刚跳转的加载中页面）；
-        #: 往前那是「它就是这一页的又一次观测」（落在最后那一眼的形状）。两边都不在 ⇒ 留着。
-        target = next((q for q in pages[here + 1:] if q in readable), None) \
-            or next((q for q in reversed(pages[:here]) if q in readable), None)
+        #: ★ 2026-10-12（真事 `job-e7906a6c65d0` · freshstartrelief.org）：**方向先看上一页**。
+        #:
+        #: 现场：单页漏斗（一个地址、一屏一题）上，把年份选好之后那一屏的判据**钉不出来**
+        #: （剪到的那段跨了两个元素：触发件的 `3 years` 接上底下那串选项）⇒ 它只剩 URL ⇒
+        #: 按「往前后找」的旧规矩并进了**下一屏**（`Step 3 of 7`）。可挂在它名下的那一步是
+        #: **这一屏上**那颗 Continue（`… form > div:nth-of-type(3) > button:nth-of-type(2)`）——
+        #: 合并之后它成了「门 = `Step 3 of 7`」那一组的第一步，而那句话**正是这一步自己点出来的**
+        #: ⇒ 门永远不成立 ⇒ 整组跳过 ⇒ 后面每组跟着跳过（自测 28 步里 **17 步**被跳过，四趟一个形状）。
+        #:
+        #: 判据（量得到、不猜）：**上一页的门，在这一眼的正文里还成立吗** ——
+        #:   · 成立 ⇒ 页面是**原地变的**（还在同一屏上，只是多答了一题）⇒ 并回**上一页**
+        #:     （判据用它那条；步骤也跟着它，重放时在那道门成立的那一屏上做，正是它们当初做的位置）；
+        #:   · 不成立 / 读不到 ⇒ 那是「它接下来变成的那一页」（正常的形状：观测撞上刚跳转的
+        #:     加载中页面，那一眼的正文是空的）⇒ 照旧并往前。
+        #: ⚠️ **不许**拿「上一页与它同址吗」当判据：单页漏斗上**每一屏都同址**，那条判据恒真，
+        #: 会把「刚跳转的加载中页面」也并回上一屏去（那正是上面第二条要防的）。
+        prev = pages[here - 1] if here > 0 else None
+        if prev is not None and when_holds(prev.get("when") or {}, pg.get("model") or {}):
+            target = prev
+        else:
+            #: ★ 2026-09-30（现场逮到的第二个形状）：**先往后找，再往前找** ——
+            #: 「没读到正文」的那一眼可能落在**这一页的最后一眼**上（`zekear` 那趟：
+            #: `…_cleaner-2` 是那一页的最后一眼，后面直接去了别的地址）⇒ 只往后找的话它活下来，
+            #: 那一组就带着一条「只有地址」的门，§1 照旧报「分不开页」、还是一份 py 都不出。
+            #: 两边都不在 ⇒ 留着。
+            target = next((q for q in pages[here + 1:] if q in readable), None) \
+                or next((q for q in reversed(pages[:here]) if q in readable), None)
         if target is None:
             continue
         merged.append({"name": pg.get("name") or "", "into": target.get("name") or "",
