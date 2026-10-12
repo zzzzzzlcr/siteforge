@@ -16,6 +16,7 @@
 | `click_target.html` | `cmd/click_target_e2e_test.go` + `cmd/mcp_click_e2e_test.go`（2026-09-17 新增，不来自探针） | click 的目标解析：歧义选择器（点到了 Back）+ 两种禁用的目标 |
 | `mcp_form_landing.html` | `cmd/form_landing_receipt_e2e_test.go` + `cmd/mcp_form_landing_e2e_test.go` | 自定义下拉 + 一层 backdrop（落点判据的回执） |
 | `radix_select.html` | `cmd/form_select_menu_e2e_test.go`（2026-10-10 新增，不来自探针） | **「谁开的谁关」**：Radix 那种下拉（按下即开、菜单 Portal 到 body、**开着时 `body{pointer-events:none}`**）+ 两条失败路径（选项不存在 / 选项够不着） |
+| `shadow_pe_none.html` | `cmd/click_shadow_pe_none_e2e_test.go`（2026-10-12 新增，不来自探针） | **影子宿主从 body 继承 `pointer-events:none`**（模态锁）而影子树里写回 `auto`：落点判据把宿主当透明层跳过 ⇒ 落在 `<html>` 上 ⇒ 拒点。+ 反向对照（真透明的影子层不许变成遮挡） |
 
 ## `click_target.html`（2026-09-17 新增，**不是探针产物**，真站形态的复刻）
 

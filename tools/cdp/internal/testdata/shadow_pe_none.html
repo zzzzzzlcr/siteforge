@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>影子宿主继承 pointer-events:none、影子树里写回 auto（落点判据的 e2e 夹具）</title></head>
+<body style="margin:0">
+<!--
+  复刻真站量到的形态（2026-10-12 · job-5b01fdf771e0 · ic.com 注册页选国家那一步）。
+  量到的原文在盘上：runtime-222/_probe_ic_country2.{js,out}、_probe_ic_country4.out。
+
+  四条事实，缺一条这条链就复现不出来：
+
+   ① 关卡的**内容在影子树里**：`document.querySelectorAll('button[role="option"]')`
+      在主文档里回 **0** 个 —— cdp 的解析穿 shadow（`__cdpQ`/`__cdpQAIn`）照样找得到它，
+      而 `document.elementsFromPoint` **不穿 shadow**：那一点上回的是**宿主**。
+   ② 打开抽屉时 `body` 被设成 `pointer-events:none`（Radix 的模态锁，inline 写的）⇒
+      **整页所有东西的 computed pe 都变成 none**（含影子宿主，它是继承来的）。
+   ③ 影子树里那一层**显式写回 auto**（真站是 `div#radix-_r_4_.group/drawer-content`）——
+      所以真人点得动它：实测裸鼠标在选项中心按一下，`#country` 就变成了 United Kingdom。
+   ④ 宿主自己的盒子**可以是 0 高**（真站那个 `div.icm-ios` 是 [0,2691,377,0]），
+      影子内容照样画在 (189,318) —— 所以夹具的宿主也不给高度。
+
+  于是落点判据面对的是这么一摞：主文档那边 `[宿主 pe=none, html pe=auto]`，
+  而**真正会收到点击的那个元素在宿主里面**。判据要是把 pe:none 的宿主当透明层跳过去，
+  就会落在 `html` 上，把一次本来能成的点击判成「会点到别人身上」而拒点。
+
+  三格给断言用：
+    · `window.__clicks` —— **实际**点到的是哪一个（用事件目标记，不是闭包变量）；
+    · `#drawer`/`#opt` —— ①②③ 那条链；
+    · `#veil`/`#behind` —— **反向对照**：一个**真透明**的影子层（子树里没有一处写回 auto）
+      盖在 `#behind` 上。它必须**不算遮挡**（2026-09-28 ukg 那条老保护：跳过
+      pointer-events:none 的层），`#behind` 那一下照旧点得成。
+-->
+<div id="country" role="button"
+     style="position:fixed;left:20px;top:60px;width:320px;height:41px;line-height:41px;background:#eee;border:1px solid #ccc">Select your country</div>
+
+<!-- 影子宿主（真站那个抽屉的宿主；自己 0 高，内容画在别处） -->
+<div id="drawer"></div>
+
+<!-- 反向对照：真透明的影子层（**宿主自己**就写着 pointer-events:none —— 「一个空遮罩」
+     的本体是 none；子树里一处 auto 都没有）盖着 behind -->
+<div id="veil" style="pointer-events:none"></div>
+<button id="behind" style="position:fixed;left:20px;top:400px;width:200px;height:40px">Behind</button>
+
+<script>
+  window.__clicks = [];
+  window.__optClicked = false;
+  // 「实际点到的是哪一个」的唯一证据：用事件目标记（闭包变量记的是「我想点的那个」）。
+  // ⚠️ 影子树里来的点击在**文档这一层**会被**重定向**成宿主（影子 DOM 的规矩）——
+  //    所以这条记到的 id 是宿主，真正「点到按钮了没有」要看下面那个按钮自己的监听。
+  document.addEventListener('click', function (ev) {
+    var t = ev.target;
+    window.__clicks.push((t && (t.id || t.tagName.toLowerCase())) || '?');
+  }, true);
+
+  // ① + ③：抽屉 —— 影子树里那一层显式 pointer-events:auto
+  var sr = document.getElementById('drawer').attachShadow({mode: 'open'});
+  sr.innerHTML = '<div id="sheet" style="position:fixed;left:20px;top:120px;width:320px;' +
+                 'background:#fff;box-shadow:0 0 0 1px #ccc;pointer-events:auto">' +
+                 '<div style="height:24px;line-height:24px;text-align:center;color:#888">Country of Residence</div>' +
+                 '<button id="opt" style="display:block;width:100%;height:44px;border:0;background:#fff">United Kingdom</button>' +
+                 '</div>';
+  sr.querySelector('#opt').addEventListener('click', function () { window.__optClicked = true; });
+
+  // ②：整页的锁（真站是模态打开时 inline 写上去的）
+  window.__lock = function (on) { document.body.style.pointerEvents = on ? 'none' : ''; };
+  window.__lock(true);
+
+  // 反向对照：真透明的影子层（宿主 none、子树里一处 auto 都没有）
+  var vsr = document.getElementById('veil').attachShadow({mode: 'open'});
+  vsr.innerHTML = '<div id="veil-fill" style="position:fixed;left:0;top:0;width:100%;height:100%"></div>';
+
+  window.__state = function () {
+    var opt = sr.querySelector('#opt');
+    var r = opt.getBoundingClientRect();
+    return JSON.stringify({
+      bodyPE: document.body.style.pointerEvents || '',
+      hostPE: getComputedStyle(document.getElementById('drawer')).pointerEvents,
+      optPE: getComputedStyle(opt).pointerEvents,
+      optRect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+      veilPE: getComputedStyle(document.getElementById('veil')).pointerEvents,
+      behindPE: getComputedStyle(document.getElementById('behind')).pointerEvents,
+      optClicked: window.__optClicked,
+      clicks: window.__clicks
+    });
+  };
+</script>
+</body></html>

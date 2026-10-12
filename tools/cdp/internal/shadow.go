@@ -80,8 +80,41 @@ var __cdpDescribe = function(el) {
 	if (cls) s += ' class="' + cls.slice(0, 60) + '"';
 	return s + '>';
 };
+// __cdpShadowTop 在**某个宿主的影子树里**回答「这一点上会收到点击的是谁」。
+//
+// 口径与外面那一层**必须是同一份**（整摞命中、跳过 pointer-events:none 的空遮罩、
+// 逐层下钻嵌套的影子根）—— 两处各写一遍必然漂移，而漂移的后果是「判据说点不到、
+// 浏览器其实点得到」这种最难查的错。整棵子树都不可命中（一层都挑不出、或取不到点）
+// 时返回 null：调用方据此**照旧把这一层跳过**（老保护，见 __cdpTopAt 里那条注释）。
+var __cdpShadowTop = function(host, x, y) {
+	var root = host.shadowRoot, el = null;
+	for (var depth = 0; depth < 32 && root; depth++) {
+		var stack = null;
+		try { stack = root.elementsFromPoint(x, y); } catch (e) { return null; }
+		if (!stack || !stack.length) return null;
+		var pick = null;
+		for (var i = 0; i < stack.length; i++) {
+			var pe = '';
+			try { pe = getComputedStyle(stack[i]).pointerEvents; } catch (e) {}
+			if (pe === 'none') {
+				if (stack[i].shadowRoot) {
+					var deep = __cdpShadowTop(stack[i], x, y);
+					if (deep) return deep;
+				}
+				continue;
+			}
+			pick = stack[i];
+			break;
+		}
+		if (!pick) return null;
+		el = pick;
+		if (!pick.shadowRoot) return el;
+		root = pick.shadowRoot;
+	}
+	return el;
+};
 // __cdpTopAt 回答「这一点上**真的会收到点击**的最上面那个元素」。
-// 两条讲究：
+// 三条讲究：
 //   - 不用 elementFromPoint 单点：它只回最上面一个，而那一个常常是 pointer-events:none
 //     的空遮罩（2026-09-28 ukg 实测：一个空遮罩被当成了「遮挡」，于是每一步都不点）——
 //     所以走 elementsFromPoint 整摞、跳过 pointer-events:none 的层；
@@ -90,6 +123,18 @@ var __cdpDescribe = function(el) {
 //     的，两边的「那一点上是谁」必须对得上 —— 2026-09-29 本机实测：两层嵌套的 shadow
 //     fixture 上只下一层会让落点判据**恒判不是目标**，一次本来正常的点击被拒
 //     （TestClickPiercesShadowRoot）。
+//   - ★ **2026-10-12（真事 job-5b01fdf771e0 · ic.com 注册页选国家）：
+//     pointer-events:none 的**影子宿主不许当透明层跳过去**。宿主的 none 常常不是
+//     它自己写的，而是从 body **继承**来的 —— 站点一开模态就给 body 上
+//     pointer-events:none（Radix 那一类），而模态内容那一层**显式写回 auto**。
+//     于是命中栈是 [宿主 pe=none, html pe=auto]（elementsFromPoint **不穿 shadow**，
+//     那一点上回的就是宿主），而真正会收到点击的元素**在宿主里面**。
+//     老实现一路跳过 ⇒ 落在 html 上 ⇒ 判「不是它」⇒ **拒点**。
+//     实测代价：那一趟 57 步里 5 步是这个拒点原文（…站着的是 0:html.icm-ios），
+//     AI 只会往搜索框打字（文字那一路不发坐标点击）、点不动选项，最后靠 goto 重来两趟也没出去。
+//     ⇒ 遇见 pe:none 且带 shadowRoot 的层，**先钻进去问一遍**（__cdpShadowTop）：
+//       问得出来 ⇒ 那才是真会收到点击的那个（它上面全是 none，挡不住）；
+//       问不出来 ⇒ 这层确实是透明的 ⇒ 照旧跳过（ukg 那条老保护一个字不动）。
 var __cdpTopAt = function(x, y) {
 	var root = document, el = null;
 	for (var depth = 0; depth < 32; depth++) {
@@ -100,7 +145,13 @@ var __cdpTopAt = function(x, y) {
 		for (var i = 0; i < stack.length; i++) {
 			var pe = '';
 			try { pe = getComputedStyle(stack[i]).pointerEvents; } catch (e) {}
-			if (pe === 'none') continue;
+			if (pe === 'none') {
+				if (stack[i].shadowRoot) {
+					var inner = __cdpShadowTop(stack[i], x, y);
+					if (inner) return inner;
+				}
+				continue;
+			}
 			pick = stack[i];
 			break;
 		}
