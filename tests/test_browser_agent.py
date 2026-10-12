@@ -1366,6 +1366,67 @@ def test_a_gate_that_could_not_be_pinned_goes_back_to_the_screen_it_happened_on(
     assert browser_agent.when_holds(kept, models[2]), (kept, models[2])
 
 
+def test_a_readable_look_without_a_pinnable_gate_is_not_merged_forward():
+    """★ 2026-10-12（真事 `job-d1232badf5f6` · nitrouscompetitions.com/auth）：那一屏**读到了正文**、
+    只是**钉不出单元素判据**（正文头是 Cookie 条那串跨元素拼出来的）⇒ 它**是一页** ——
+    在它名下做的那些步，留在**它这一屏**的组里，不许被往前并给下一屏。
+
+    红的时候是这么死的：它被并进「注册屏」那一组（判据用注册屏的正文），而组里第一步正是
+    **把注册屏点出来**的那一下（`Create account`）⇒ 那道门永远不成立 ⇒ 自测 23 步里 **17 步被跳过**
+    （页面从没走到注册屏）。真账本的三条读数和这里逐条对齐：
+
+      · `auth`   —— 判据是**页脚**那句（那一屏的主区是空的、只有 Cookie 条与页脚可剪）；
+      · `auth-2` —— 同一屏的第二眼：剪出来的那段是跨元素拼的 ⇒ **判据只剩 URL**（账本原话：
+        「这个状态的判据**只有 URL**…这一页**找不到**任何单个元素能顶替它」）；
+      · `auth-3` —— 注册屏；`auth-2` 名下那两步（Accept / Create account）是**在 Sign in 那屏上做的**。
+
+    ⚠️ 与 `test_a_loading_look_is_still_merged_forward` 的分界：那一条是**一个字都没读到**
+    （观测撞上加载中），**照旧往前并**；这一条是**读到了正文、只是判据钉不出来**，方向相反。
+    """
+    url = "https://nitrous.test/auth"
+    footer = "The UK's transparent prize competition platform"
+    banner_text = ("Cookies Say yes and we'll remember your entries, keep you signed in, and show you "
+                   "competitions you actually care about instead of ones you don't. "
+                   "Sign in Welcome back. Sign in to your account.")
+    #: 那一屏（主区是空的 ⇒ 判据剪到了页脚那句）
+    signin = {"name": "auth", "url": url, "title": "Nitrous",
+              "when": {"url_contains": url, "text_contains": [footer]},
+              "key": (url, "nitrous", footer), "model": {"url": url, "page_text": footer}}
+    #: 同一屏的第二眼：**读到了正文**（Cookie 条），跨元素拼 ⇒ 判据只有 URL。
+    #: ⚠️ `page_text` 里**不许**出现页脚那句 —— 真站那一趟正文头被截在页脚之前，
+    #: 而「上一页的门在这一眼里成不成立」正是原来那条判据问的问题（它因此问不出答案）。
+    banner = {"name": "auth-2", "url": url, "title": "Nitrous",
+              "when": {"url_contains": url},
+              "key": (url, "nitrous", banner_text),
+              "model": {"url": url, "page_text": banner_text}}
+    register = {"name": "auth-3", "url": url, "title": "Nitrous",
+                "when": {"url_contains": url,
+                         "text_contains": ["Set up your account to enter competitions and"]},
+                "key": (url, "nitrous", "register"),
+                "model": {"url": url, "page_text": "Create account Set up your account to enter competitions and play games. Email Password"}}
+    pages = [signin, banner, register]
+    steps = [
+        {"state": "auth", "step_no": 11, "action": "scroll"},
+        {"state": "auth-2", "step_no": 14, "action": "click", "target": {"text": "Accept"}},
+        {"state": "auth-2", "step_no": 15, "action": "click", "target": {"text": "Create account"}},
+        {"state": "auth-3", "step_no": 16, "action": "observe"},
+    ]
+    #: 前提：原来那条判据（「上一页的门在这一眼里还成立吗」）在这里**问不出答案** ——
+    #: 页脚那句不在这一眼的正文头里。不然这条用例造的不是那个形状。
+    assert not browser_agent.when_holds(signin["when"], banner["model"]), signin["when"]
+
+    gone = browser_agent._merge_one_page_states(pages, steps)
+
+    assert [(g["name"], g["kind"]) for g in gone] == [("auth-2", "unread")], gone
+    assert [g["into"] for g in gone] == ["auth"], \
+        "那一屏的步被往前并给了注册屏 —— 那道门正是这两步自己点出来的：%r" % (gone,)
+    assert [s["state"] for s in steps if s["step_no"] in (14, 15)] == ["auth", "auth"], steps
+    #: **不变式**：沾着这两步的那一组，判据不是那两步自己点出来的那一屏（不然门永远不成立）
+    kept = [p for p in pages if p["name"] == "auth"][0]["when"]
+    assert not browser_agent.when_holds(kept, register["model"]), \
+        "这一组的门在**它自己那两步之后**才成立的页面上也成立 ⇒ 重放时整组静默跳过"
+
+
 def test_a_loading_look_is_still_merged_forward():
     """反面：**观测撞上刚跳转的加载中页面**（正文一个字没读到）照旧并**往前**。
 

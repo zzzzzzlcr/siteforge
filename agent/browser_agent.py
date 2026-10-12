@@ -5017,6 +5017,21 @@ UNREAD_MERGED_SAY = (
     "该有的门）。")
 
 
+def _read_something_but_no_pinnable_gate(prev, pg: dict, url: str) -> bool:
+    """这一眼**读到了正文**、只是钉不出单元素判据，而且上一页就在同一个稳定地址上、它自己有门吗。
+
+    见 `_merge_one_page_states` 里 ② 那段：这三条都成立时，这一眼是一条**真屏**的停留，
+    并进上一页（`test_a_readable_look_without_a_pinnable_gate_is_not_merged_forward` 钉着它）。
+    """
+    if prev is None or not url:
+        return False
+    if _stable_url(prev.get("url") or "") != url:
+        return False
+    if not (prev.get("when") or {}).get("text_contains"):
+        return False                       # 上一页只有 URL ⇒ 并过去等于这一组没有门
+    return bool(_norm((pg.get("model") or {}).get("page_text") or ""))
+
+
 def _page_pair_indistinguishable(a: dict, b: dict) -> bool:
     """这两页**说不清谁是谁**吗 —— 两边都**有正文判据**，且至少**一个方向**成立（`when_holds`）。
 
@@ -5124,6 +5139,20 @@ def _merge_one_page_states(pages: list, steps: list) -> list:
         #: 会把「刚跳转的加载中页面」也并回上一屏去（那正是上面第二条要防的）。
         prev = pages[here - 1] if here > 0 else None
         if prev is not None and when_holds(prev.get("when") or {}, pg.get("model") or {}):
+            target = prev
+        elif _read_something_but_no_pinnable_gate(prev, pg, url):
+            #: ★ 2026-10-12（真事 `job-d1232badf5f6` · nitrouscompetitions.com/auth）：
+            #: 「没读到正文」有**两副面孔**，原来这一支只认第一副 ——
+            #:   ① 那一眼**一个字都没读到**（观测撞上加载中的页面）⇒ 它不是一页，并进**接着变成**
+            #:      的那一页（照旧往前；`test_a_loading_look_is_still_merged_forward` 钉着它）；
+            #:   ② 那一眼**读到了正文、只是钉不出单元素判据**（正文头是跨元素拼的、或正文头被
+            #:      截断）⇒ 它**是一页**，在它名下做的那些步就发生在**它这一屏上** ⇒ 并进
+            #:      同一地址上的**上一页**（那一屏）。
+            #: 往前并的代价（本单实测）：把「下一屏的门」交给了一步**制造那扇门**的动作 —— 那一组里
+            #: 第一步是「点 Create account」，而门 =「注册屏正文」⇒ 门永远不成立 ⇒ 自测 23 步里
+            #: **17 步被跳过**（页面从没走到注册屏、日志每一步都写着「跳过」）。
+            #: 判据都是**量得到的**：这一眼有没有正文 + 上一页在不在同一个稳定地址上 + 上一页**自己
+            #: 有没有一段钉得住的判据**（只有 URL 的那条不许当门 —— 那等于这一组在任何一屏上都成立）。
             target = prev
         else:
             #: ★ 2026-09-30（现场逮到的第二个形状）：**先往后找，再往前找** ——
