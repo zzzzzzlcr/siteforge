@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>选择器里带撇号（cdp 的夹具）</title></head>
+<body style="margin:0;font-family:sans-serif">
+<!--
+  复刻真站那条选择器（2026-10-12 · `job-9e2250b60c19` · nitrouscompetitions.com/auth）：
+
+      form:has(input[placeholder="A friend's code"]) input[type=text]
+
+  它里面那个**撇号**会被原样塞进 JS 的单引号串 —— `internal/client.go` 有两处
+  （`GetElementCenter`、`ScrollIntoView`）漏了 `escapeJS`，别的构造器都套了
+  ⇒ 求值当场 SyntaxError：`scroll mouse wheel failed: JS exception:
+  SyntaxError: missing ) after argument list`。
+
+  真站上这一下的代价不是"那一步没做成"那么轻：模型因此**弃掉那根好选择器**、
+  改用 `body:nth-of-type(1) > … > label:nth-of-type(4) > input:nth-of-type(1)`
+  这种位置链（后来 lint 点名拦"只有一根随时会漂的地址"拦的正是那串）。
+
+  夹具把框放在**两屏以外**（上面 900px 的空白）—— 这样 scroll 那条路真的要滚，
+  `ScrollMouseWheel → GetElementCenter` 那段绕不过去。
+-->
+<div style="height:900px"></div>
+<form>
+  <label>Referral code <input type="text" placeholder="A friend's code"></label>
+  <button type="button" id="go">Go</button>
+</form>
+<div style="height:900px"></div>
+<script>
+  window.__clicks = 0;
+  document.getElementById('go').addEventListener('click', function () { window.__clicks++; });
+  window.__state = function () {
+    var inp = document.querySelector('input[placeholder="A friend\'s code"]');
+    return JSON.stringify({value: inp ? inp.value : null, clicks: window.__clicks});
+  };
+</script>
+</body></html>

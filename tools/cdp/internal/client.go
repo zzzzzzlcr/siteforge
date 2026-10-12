@@ -971,6 +971,10 @@ func (c *Client) GetElementCenter(selector, frameId string) (map[string]float64,
 	if bID, ok := iframeNodeBackendID(selector); ok {
 		return c.elementRectByBackendID(bID)
 	}
+	// ⚠️ 选择器一律走 escapeJS 再进 JS 串：地址里带撇号（真站那根
+	// `form:has(input[placeholder="A friend's code"]) …`）会把单引号串**当场打断**，
+	// 报的是 `SyntaxError: missing ) after argument list` —— 2026-10-12 job-9e2250b60c19
+	// 第 16、18 步就是这个（`_probe_dob_nitrous.py` 照原样复现过）。
 	js := withPierce(fmt.Sprintf(`(function(){
 		var el;
 		el = __cdpQ('%[1]s');
@@ -978,7 +982,7 @@ func (c *Client) GetElementCenter(selector, frameId string) (map[string]float64,
 		var rect = el.getBoundingClientRect();
 		if (!rect) return null;
 		return JSON.stringify({x: rect.x, y: rect.y, centerX: rect.x + rect.width/2, centerY: rect.y + rect.height/2, width: rect.width, height: rect.height});
-	})()`, selector))
+	})()`, escapeJS(selector)))
 	var resultStr string
 	err := c.EvalInFrame(frameId, js, &resultStr)
 	if err != nil {
@@ -1049,12 +1053,13 @@ func visibleRatio(rect map[string]float64, vw, vh float64) float64 {
 
 // ScrollIntoView executes scrollIntoView on element
 func (c *Client) ScrollIntoView(selector, frameID string) error {
+	// 同 GetElementCenter：带撇号的地址必须先 escapeJS（2026-10-12 job-9e2250b60c19）。
 	js := withPierce(fmt.Sprintf(`(function(){
 		var el = __cdpQ('%s');
 		if (!el) return {error: 'element not found'};
 		el.scrollIntoView({ block: "center" });
 		return {success: true};
-	})()`, selector))
+	})()`, escapeJS(selector)))
 	var result map[string]interface{}
 	return c.EvalInFrame(frameID, js, &result)
 }

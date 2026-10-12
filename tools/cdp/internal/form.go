@@ -72,11 +72,17 @@ func parseDateValue(s string) (year, month, day int, ok bool) {
 	return year, month, day, true
 }
 
-// isDatePickerJS generates JS to detect whether a form element has an attached
-// datepicker (MUI-style: type=tel + date-pattern placeholder + calendar button).
-// Resolves wrapper->input if needed, searches the input's container for a
-// calendar trigger button via aria-label and onclick attributes.
-func isDatePickerJS(selector string) string {
+// fieldKindJS 一次问清这根框的两件事：
+//
+//	① 它是不是 MUI 那型「假日期框」（type=tel + 日期占位 + 旁边一个日历按钮）
+//	   —— 是就走「点按钮开日历、翻月、点日」那条路；
+//	② 它自己的 `type` 是什么（`inputType`）—— **原生**的日期/时间那几型
+//	   （date / time / month / week / datetime-local）不吃 insertText，
+//	   要另走一条路（见 fillTypedValue）。
+//
+// 名字原来只叫 isDatePickerJS：②是 2026-10-12 那单（job-9e2250b60c19 的生日框）
+// 之后加的，一个只答「是不是日历框」的名字留不住这件事。
+func fieldKindJS(selector string) string {
 	escaped := escapeJS(selector)
 	return withPierce(fmt.Sprintf(`(function(){
 		var el = __cdpQ('%s');
@@ -94,26 +100,27 @@ func isDatePickerJS(selector string) string {
 		}
 		if (!input) return JSON.stringify({error: 'no input found in wrapper'});
 
+		var inputType = input.type || '';
 		// Step 1: check input characteristics
-		if (!(input.type === 'tel')) return JSON.stringify({'isDatePicker': false});
+		if (inputType !== 'tel') return JSON.stringify({'isDatePicker': false, 'inputType': inputType});
 		var ph = (input.placeholder || '').toLowerCase();
-		if (!/mm-dd-yyyy|yyyy-mm-dd/i.test(ph)) return JSON.stringify({'isDatePicker': false});
+		if (!/mm-dd-yyyy|yyyy-mm-dd/i.test(ph)) return JSON.stringify({'isDatePicker': false, 'inputType': inputType});
 
 		// Step 2: search for calendar button in container
 		var container = input.closest('[class*="MuiInputBase"], [class*="InputBase"], .MuiFormControl-root, form, .field');
 		if (!container || container === input) container = input.parentElement;
 		var btn = __cdpQIn(container, '[aria-label*="date"], [aria-label*="calendar"], [aria-label*="choose"], [onclick*="calendar"], [onclick*="toggle"], [onclick*="picker"]');
-		if (!btn) return JSON.stringify({'isDatePicker': false});
+		if (!btn) return JSON.stringify({'isDatePicker': false, 'inputType': inputType});
 
 		var r = btn.getBoundingClientRect();
-		if (r.width === 0 || r.height === 0) return JSON.stringify({'isDatePicker': false});
+		if (r.width === 0 || r.height === 0) return JSON.stringify({'isDatePicker': false, 'inputType': inputType});
 		// 动手前先问落点：日历按钮的中心压着别的东西就拒点（同 docs/交接-2026-09-29 §3）。
 		var g = __cdpReachesAt(btn, r.x+r.width/2, r.y+r.height/2);
 		if (!g.reach) return JSON.stringify({error: '日历按钮的中心压着别的东西（' + (g.at || '?') + '）—— 点它会落到那上面，拒绝'});
 
 		// Return unique selector for the input for later use
 		var inputId = input.id ? ('#' + input.id) : '';
-		return JSON.stringify({'isDatePicker': true, inputSelector: inputId, buttonX: r.x, buttonY: r.y, centerX: r.x+r.width/2, centerY: r.y+r.height/2, width: r.width, height: r.height});
+		return JSON.stringify({'isDatePicker': true, 'inputType': inputType, inputSelector: inputId, buttonX: r.x, buttonY: r.y, centerX: r.x+r.width/2, centerY: r.y+r.height/2, width: r.width, height: r.height});
 	})()`, escaped))
 }
 
@@ -382,8 +389,9 @@ func (c *Client) insertText(text string) error {
 
 // FillText types text into a form element using human-like gestures.
 // For datepicker inputs: detects MUI-style date fields and uses click-to-open/pick flow.
+// For native date/time inputs: sets the value (these controls drop insertText, see fillTypedValue).
 // For plain inputs: uses existing scroll → focus → clear → type-char-by-char → blur flow.
-// Workflow: scroll into view → detect datepicker → (date flow | plain flow).
+// Workflow: scroll into view → detect datepicker → (date flow | typed-value flow | plain flow).
 func (c *Client) FillText(selector, text, frameID string, track bool) error {
 	scrollSelector := selector
 	if frameID != "" {
@@ -406,7 +414,7 @@ func (c *Client) FillText(selector, text, frameID string, track bool) error {
 
 	// Detect datepicker: DOM-driven check for MUI-style date inputs
 	var dpResultStr string
-	if err := c.EvalInFrame(frameID, isDatePickerJS(selector), &dpResultStr); err != nil {
+	if err := c.EvalInFrame(frameID, fieldKindJS(selector), &dpResultStr); err != nil {
 		return err
 	}
 	var dpResult map[string]interface{}
@@ -419,6 +427,12 @@ func (c *Client) FillText(selector, text, frameID string, track bool) error {
 
 	if isDP, _ := dpResult["isDatePicker"].(bool); isDP {
 		return c.fillDatePicker(selector, text, frameID, dpResult)
+	}
+
+	// 原生日期/时间那几型框**不吃 insertText**（见 fillTypedValue 的注释）——
+	// 这里是它们的岔路。零回归：别的 type 一个字都不变，还是下面那条普填路。
+	if inputType, _ := dpResult["inputType"].(string); typedValueInputs[inputType] {
+		return c.fillTypedValue(selector, text, frameID, inputType)
 	}
 
 	// Plain text input — existing flow
@@ -442,6 +456,93 @@ func (c *Client) FillText(selector, text, frameID string, track bool) error {
 	}
 
 	return c.EvalInFrame(frameID, buildBlurJS(selector), nil)
+}
+
+// typedValueInputs 是「值有自己的线格式、insertText 进不去」的那几型原生控件。
+var typedValueInputs = map[string]bool{
+	"date": true, "time": true, "month": true, "week": true, "datetime-local": true,
+}
+
+// typedWireValue 把要填的文本换算成框认的**线格式**。
+//
+// 为什么只收短横线那三种写法：`parseDateValue` 认 YYYY-MM-DD / MM-DD-YYYY / MM-DD，
+// 而**斜杠写法一律拒**——"05/06/1990" 这种在英美之间是有歧义的，猜错就是**静默填错**
+// （ic.com 那单的教训：站点收下了错值，判据看不见）。拒了会带上认得的写法，模型照着重发一次就好。
+func typedWireValue(inputType, text string) (string, error) {
+	if inputType == "date" {
+		year, month, day, ok := parseDateValue(text)
+		if !ok {
+			return "", fmt.Errorf("%s 框要的是 YYYY-MM-DD（也认 MM-DD-YYYY / MM-DD），%q 认不出来 —— "+
+				"斜杠写法不收（05/06 这种猜错就是静默填错，宁可不填）", inputType, text)
+		}
+		if year == 0 {
+			year = time.Now().Year() // 只有月日 ⇒ 补当年（与日历那条路同一个口径）
+		}
+		return fmt.Sprintf("%04d-%02d-%02d", year, month, day), nil
+	}
+	// time / month / week / datetime-local 这四型先不替人换算格式：
+	// 文本原样交给浏览器，**收不下就报错**（回读那一步管着）——不静默就行。
+	return text, nil
+}
+
+// setTypedValueJS 给原生日期/时间那几型框设值，并把**读回来的值**一起交回。
+//
+// 两条都是真站量出来的（2026-10-12 · job-9e2250b60c19 · nitrouscompetitions.com/auth）：
+//
+//	① 必须走 `HTMLInputElement.prototype` 上那个**原生 setter**，不能 `el.value = x`：
+//	   React 的受控框在实例上自己 defineProperty 了 value（值追踪器），走实例那个
+//	   setter 的话追踪器认为「没变」⇒ 随后那次 input 事件被 React 丢掉。
+//	   实测：原生 setter 之后 `__reactProps.value` 同步变成 1990-01-01，再逼一次重渲染值还在。
+//	② 必须**回读**：浏览器对收不下的值是**静默 sanitize 成空串**——不回读，
+//	   这里就是第二个空枪（第一个是 insertText，见 fillTypedValue）。
+func setTypedValueJS(selector, wire string) string {
+	return withPierce(fmt.Sprintf(`(function(){
+		var el = __cdpQ('%s');
+		if (!el) return JSON.stringify({error: 'element not found'});
+		el.focus();
+		var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+		setter.call(el, '%s');
+		el.dispatchEvent(new Event('input', {bubbles: true}));
+		el.dispatchEvent(new Event('change', {bubbles: true}));
+		el.blur();
+		return JSON.stringify({value: el.value});
+	})()`, escapeJS(selector), escapeJS(wire)))
+}
+
+// fillTypedValue 走原生日期/时间那几型框的填值路。
+//
+// 为什么不能沿用「清空 → 逐字符 insertText → blur」（= 普填那条路）：
+// 真站实测（2026-10-12 · nitrouscompetitions.com/auth 的生日框）——
+// 给那根框装了 watcher 之后，`cdp form --value 1990-01-01` 只留下**清空那一下**的
+// input 事件（值 ""）和 blur 的 change（""）；打字那 10 个字符**一个事件都没发出来**，
+// 值恒空。而命令**不回读**，于是每次都回 {"ok":true} —— 那趟模型试了 7 种写法、
+// 全"成功"、全没进去，29 步烧在这根框上。所以这里：先把线格式算出来
+// （**算不出就在碰框之前失败**，一个字都不动），设值，回读，对不上就大声失败。
+func (c *Client) fillTypedValue(selector, text, frameID, inputType string) error {
+	wire, err := typedWireValue(inputType, text)
+	if err != nil {
+		return err
+	}
+
+	var out string
+	if err := c.EvalInFrame(frameID, setTypedValueJS(selector, wire), &out); err != nil {
+		return err
+	}
+	var res struct {
+		Error string `json:"error"`
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		return fmt.Errorf("failed to parse typed-value result: %w", err)
+	}
+	if res.Error != "" {
+		return fmt.Errorf("%s", res.Error)
+	}
+	if res.Value != wire {
+		return fmt.Errorf("这个 %s 框收不下 %q（读回来是 %q）—— **没有当成填好了**（值可能被框的 min/max 挡了）",
+			inputType, wire, res.Value)
+	}
+	return nil
 }
 
 // fillDatePicker handles the datepicker flow: parse date → click calendar button

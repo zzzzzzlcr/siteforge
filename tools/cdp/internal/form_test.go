@@ -1,8 +1,10 @@
 package internal
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEscapeJS(t *testing.T) {
@@ -280,10 +282,15 @@ func TestPickCalendarDayJS(t *testing.T) {
 	}
 }
 
-func TestIsDatePickerJS(t *testing.T) {
-	js := isDatePickerJS("#dob-field")
-	if !strings.Contains(js, `type === 'tel'`) {
+func TestFieldKindJS(t *testing.T) {
+	js := fieldKindJS("#dob-field")
+	// 2026-10-12：type 先取进 `inputType`（原生日期/时间那几型要靠它岔路），
+	// 所以这句从 `type === 'tel'` 变成 `inputType !== 'tel'` —— 判的还是同一件事。
+	if !strings.Contains(js, `!== 'tel'`) {
 		t.Errorf("missing tel type check: %s", js)
+	}
+	if !strings.Contains(js, `'inputType': inputType`) {
+		t.Errorf("missing inputType key —— 原生 date/time 那几型靠它岔到 fillTypedValue: %s", js)
 	}
 	if !strings.Contains(js, "placeholder") {
 		t.Errorf("missing placeholder check: %s", js)
@@ -308,5 +315,58 @@ func TestIsDatePickerJS(t *testing.T) {
 	}
 	if !strings.Contains(js, `closest`) {
 		t.Errorf("missing closest() container search: %s", js)
+	}
+}
+
+// 钉住「原生日期框要的线格式」：给它的文本先换算，**换算不出来就必须报错**。
+//
+// 真站（2026-10-12 · `job-9e2250b60c19` · nitrouscompetitions.com/auth）那趟模型自己
+// 试过 1990-05-14 / 05/14/1990 / 05141990 / 14051990 四种写法 —— 全是白试
+// （insertText 根本进不去，见 fillTypedValue）。换算这一层现在把话说清楚：
+// 短横线那三种认（与 parseDateValue 同一口径），**斜杠和连写一律拒**，
+// 拒的时候把认得的写法带上 —— 猜一个歧义写法（05/06/1990）就是静默填错。
+func TestTypedWireValue(t *testing.T) {
+	thisYear := time.Now().Year()
+	cases := []struct {
+		in, want string
+		ok       bool
+	}{
+		{"1990-05-14", "1990-05-14", true},                                  // YMD（管线给的就是这个）
+		{"05-14-1990", "1990-05-14", true},                                  // MDY
+		{"05-14", fmt.Sprintf("%d-05-14", thisYear), true},                  // MD ⇒ 补当年
+		{"05/14/1990", "", false},                                           // 斜杠不收（歧义）
+		{"05141990", "", false},                                             // 连写不收
+		{"14-05-1990", "", false},                                           // DD-MM-YYYY 不在列（月 14 不存在）
+		{"not-a-date", "", false},                                           //
+	}
+	for _, c := range cases {
+		got, err := typedWireValue("date", c.in)
+		if c.ok && err != nil {
+			t.Errorf("typedWireValue(%q) 报错 %v —— 这一种该认", c.in, err)
+			continue
+		}
+		if !c.ok {
+			if err == nil {
+				t.Errorf("typedWireValue(%q) = %q，没报错 —— 认不出来就得拒，别猜", c.in, got)
+			} else if !strings.Contains(err.Error(), c.in) {
+				t.Errorf("拒 %q 时没说清是哪个值（err=%v）", c.in, err)
+			}
+			continue
+		}
+		if got != c.want {
+			t.Errorf("typedWireValue(%q) = %q，想要 %q", c.in, got, c.want)
+		}
+	}
+}
+
+// time / month / week / datetime-local 这四型：不替人换算，原样交出去（收不下由回读那一步报错）。
+func TestTypedWireValuePassesOtherTypesThrough(t *testing.T) {
+	for _, c := range []struct{ typ, in string }{
+		{"time", "14:30"}, {"month", "1990-05"}, {"week", "1990-W20"}, {"datetime-local", "1990-05-14T14:30"},
+	} {
+		got, err := typedWireValue(c.typ, c.in)
+		if err != nil || got != c.in {
+			t.Errorf("typedWireValue(%q, %q) = %q, %v —— 这四型该原样过", c.typ, c.in, got, err)
+		}
 	}
 }

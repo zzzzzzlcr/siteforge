@@ -1,0 +1,62 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>原生日期框（cdp form 的夹具）</title></head>
+<body style="margin:0;font-family:sans-serif">
+<!--
+  复刻真站量到的形状（2026-10-12 · `job-9e2250b60c19` · nitrouscompetitions.com/auth 注册屏）：
+  一根**原生** `<input type="date" required>`（**没有 id**，与真站一致），React 控的。
+
+  两个关键点，都是真站量出来的（`runtime-222/_probe_dob_nitrous*.py`）：
+
+   ① 浏览器的日期框**不收 CDP 的 `Input.insertText`**。cdp 的普填是
+      「清空 → 逐字符 insertText → blur」；真站上装了 watcher 记下来的原文是：
+      只有**清空那一下**的 input 事件（值 ""）和 blur 的 change（""）——
+      打字那 10 个字符**一个事件都没发出来**，值恒空。而命令**不回读**，
+      于是 `{"ok":true}` 是**空枪**（那一趟模型试了 7 种写法、全"成功"、全没进去）。
+   ② React 的受控框在**实例上**自己 `defineProperty` 了 `value`（值追踪器，见
+      react-dom 的 inputValueTracking）：`el.value = x` 走的是实例那个 setter，
+      追踪器因此认为"没变" ⇒ 随后那次 input 事件被 React **丢掉**；
+      只有走 `HTMLInputElement.prototype` 上那个**原生 setter** 才算改过
+      （真站实测：原生 setter 之后 `__reactProps.value` 同步变成 1990-01-01，
+      再逼一次重渲染值还在）。
+
+  所以夹具把②按 React 的算法照搬了一小段：`reactValue` 就是"React 那边记下来的值"。
+  判据要的是**它也跟着变**，而不是只有 DOM 皮变了。
+-->
+<label>Full name <input type="text" id="name"></label>
+<label>Date of birth <input type="date" required autocomplete="bday"></label>
+<div style="height:1200px"></div>
+<label>Postcode <input type="text" id="postcode"></label>
+<script>
+  var dob = document.querySelector('input[type=date]');
+
+  // —— React 值追踪器的照搬（inputValueTracking 就这几行）——
+  var reactValue = '';
+  var desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+  Object.defineProperty(dob, 'value', {
+    configurable: true,
+    get: function () { return desc.get.call(this); },
+    set: function (v) { reactValue = '' + v; desc.set.call(this, v); }
+  });
+
+  window.__events = [];
+  dob.addEventListener('input', function () {
+    // React 的做法：事件来了先比追踪器，一样就当这次没发生
+    var seen = reactValue !== dob.value;
+    if (seen) reactValue = dob.value;
+    window.__events.push({kind: 'input', value: dob.value, seenByReact: seen});
+  });
+  dob.addEventListener('change', function () {
+    window.__events.push({kind: 'change', value: dob.value});
+  });
+
+  window.__state = function () {
+    return JSON.stringify({
+      dob: dob.value,
+      reactValue: reactValue,
+      name: document.getElementById('name').value,
+      postcode: document.getElementById('postcode').value,
+      events: window.__events
+    });
+  };
+</script>
+</body></html>

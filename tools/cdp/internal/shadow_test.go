@@ -26,7 +26,7 @@ func TestSelectorBuildersPierceShadowRoots(t *testing.T) {
 		name string
 		js   string
 	}{
-		{"isDatePickerJS", isDatePickerJS("#field")},
+		{"fieldKindJS", fieldKindJS("#field")},
 		{"buildClearJS", buildClearJS("#field")},
 		{"buildBlurJS", buildBlurJS("#field")},
 		{"buildCheckStateJS", buildCheckStateJS("#field")},

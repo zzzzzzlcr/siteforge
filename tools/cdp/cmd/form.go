@@ -26,6 +26,14 @@ Datepicker detection (--value):
   automatically opens the calendar, navigates to the target month,
   and clicks the day. Supports YMD, MDY, and MD formats.
 
+Native date/time inputs (--value):
+  A native <input type=date|time|month|week|datetime-local> silently
+  drops CDP insertText, so typing at it fills nothing while the
+  command used to still report success. These set the value instead
+  (native prototype setter, so React's value tracker sees it) and
+  read it back: a value the control refuses fails the command.
+  --value for type=date takes YYYY-MM-DD / MM-DD-YYYY / MM-DD.
+
 Custom dropdown detection (--select):
   When the target is not a native <select>, searches for a
   clickable control (aria-label or onclick) to open the menu,

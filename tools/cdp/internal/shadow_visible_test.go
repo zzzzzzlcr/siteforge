@@ -30,11 +30,11 @@ func TestPierceResolver_HasOneLandingVerdict(t *testing.T) {
 	}
 }
 
-// 2026-09-28 georgiapower 真站实测：<textarea> 被 isDatePickerJS 当成「wrapper」
+// 2026-09-28 georgiapower 真站实测：<textarea> 被 fieldKindJS 当成「wrapper」
 // 进去找 input ⇒ 必然报 no input found in wrapper ⇒ FillText 连填值的路都没走到
 // （两个不同选择器的 *Street 字段报同一个错）。补丁：把 TEXTAREA 排除出 wrapper 分支。
-func TestIsDatePickerJS_DoesNotTreatTextareaAsWrapper(t *testing.T) {
-	js := isDatePickerJS("textarea#street")
+func TestFieldKindJS_DoesNotTreatTextareaAsWrapper(t *testing.T) {
+	js := fieldKindJS("textarea#street")
 	if !strings.Contains(js, "el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA'") {
 		t.Fatalf("textarea 还在 wrapper 分支里 —— 填值会在找 input 那一步就报错：%s", js)
 	}
