@@ -50,6 +50,15 @@ func TestFormFillsANativeDateInput(t *testing.T) {
 			"（要写 HTMLInputElement.prototype 上那个原生 setter，不是 el.value =）", st["reactValue"])
 	}
 
+	// ①b **产物池的写法**（`MM/DD/YYYY`）：产物 `_pool("dob")` 吐的就是这个形状，
+	// 而它一度被拒（真站实测 rc=1）⇒ 产物的生日那一步必挂。见 `_probe_dob_slash.py`。
+	if _, errOut, code := e.run(t, "form", sel, "--value", "05/14/1990"); code != 0 {
+		t.Fatalf("产物 dob 池那种写法（MM/DD/YYYY）填不进去 —— 产物的生日那一步会当场失败\nstderr: %s", errOut)
+	}
+	if st := dateInputState(t, e); st["dob"] != iso {
+		t.Errorf("斜杠写法没换算对：dob=%v 想要 %q（与 --value 1990-05-14 同一个日子）", st["dob"], iso)
+	}
+
 	// ② 对照：同一页的文本框
 	if _, errOut, code := e.run(t, "form", "#name", "--value", "Harriet Clarke"); code != 0 {
 		t.Fatalf("对照的文本框都没成 —— 先查夹具，别怪日期那条支路\nstderr: %s", errOut)

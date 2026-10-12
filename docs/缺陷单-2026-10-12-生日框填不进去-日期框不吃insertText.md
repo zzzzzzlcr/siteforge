@@ -128,6 +128,55 @@ Error: scroll mouse wheel failed: JS exception: SyntaxError: missing ) after arg
 
 ⚠️ 上线的那一份**就是真站验收过的那一份**（`/tmp/cdp_dob_main` 与线上 `cdp` 逐字节同指纹 `ab026def…`）。
 
+## 八·补（2026-10-12 18:2x）：上线之后**产物的生日依旧没填** —— 我那条「斜杠不收」把产物自己的池拒了
+
+**现场**：重跑那一单（8100 · `job-637e9af30400`）探路一遍过（生日第 27 步一次填好），
+可**产出的 py** 一跑——`nitrouscompetitions-20261012-101720/baseline` 那份 trace——
+第 9 步又是 `ok=false`、`note: 没找到「Date of birth」这个输入框，没填成`。
+
+**根因不在选择器**（trace 里 `recovery.primary_selector` 就是那根好地址、`confidence 1.0`；
+「没找到」这句是**所有候选都失败**之后的那半句，不是"元素不在 DOM 里"）：
+
+> 产物自己生成的生日值是 `agent/template.py::_pool("dob")` 的
+> `"%02d/%02d/%d"` ⇒ **`MM/DD/YYYY`**（例如 `07/23/1981`），
+> 而 §五 那条新路**只认短横线**（`斜杠一律拒`）⇒ `cdp form` 当场 rc=1 ⇒ 每个候选都失败 ⇒ 那半句。
+
+**真站钉死**（`runtime-222/_probe_dob_slash.py`，同一根选择器）：
+
+```
+--value 07/23/1981   （产物池的写法）→ rc=1  Error: date 框要的是 YYYY-MM-DD…"07/23/1981" 认不出来 —— 斜杠写法不收…
+--value 1981-07-23   （ISO）        → rc=0  {"ok":true}   读回 value="1981-07-23"
+```
+
+**修**：`parseDateValue` 里 `strings.ReplaceAll(s, "/", "-")` —— **斜杠与短横线同一套读法**
+（YMD / MDY / MD），别的分隔符还是不认。两条注：
+
+- 为什么不再坚持"斜杠会引起歧义"：**短横线那条老规矩本来就是 MDY 优先**
+  （`05-06-1990` 早就读成 5 月 6 日）——为一件事立两套读法才是真的坑；
+  真在乎歧义的调用方给 ISO（管线给的就是 ISO）。
+- 拒它的代价是**产物必挂**（值是我们自己生成的），而"猜错"的代价只是
+  一个**假生日**差一两个月 —— 两边一比，方向很清楚。
+
+用例先红后绿：`TestParseDateValue` 里那一格从 `false` 改成 `(2026,7,4,true)` 并补
+`07/23/1981`（`2026.07.04` 仍拒）；`TestTypedWireValue` 补 `07/23/1981` / `05/14/1990` /
+`05/06/1990`；e2e `TestFormFillsANativeDateInput` 多一臂「用产物池那种写法填」。
+
+**复验（都在这台 222 上）**：
+
+| 验什么 | 读数 |
+|---|---|
+| 真站、产物池那种写法（`_probe_dob_slash.py`） | `--value 07/23/1981` ⇒ **rc=0**、读回 `1981-07-23` |
+| 拿**产出的那份 py** 直接跑自测（`_selftest_nitrous.py` → `runtime/selftest/nitrouscompetitions-20261012-103645/`） | **`passed = True`**；**19/19 步全 ok**；**第 8 步 `Date of birth` ok=True**（值来自随机池「dob」） |
+
+**换二进制（第二轮，18:3x）**：`cdp` `ab026def` → **`3213e8e9`**、`cdp-mcp` `73ee4b02` → **`000a8284`**、
+农场那份 `ab026def` → **`3213e8e9`**；备份分别是同目录的 `*.bak-20261012-preDateSlash`
+（回滚：把 `-preDateSlash` 那几个 `mv` 回去）。`go test ./...` 全绿（cmd 333.8s）。
+
+⚠️ 顺带记一条**不是缺陷**的事：那单（`job-637e9af30400`）自测超时后窗口死了（Bit 窗口只活几分钟），
+人在 `diagnose` 闸上按「停」⇒ 盘上那份 py **被收掉了** —— 这是**设计**：`graph._drop_candidate`
+的文档写着「交付目录里只该有交付物」，源码在 checkpoint 的 `src` 里。要复验就把
+`runtime/_nitrous_preDiagnose2.py`（与停手那一刻逐字节同 md5 的留档）拷回去。
+
 ## 九、还开着的
 
 - **`job-9e2250b60c19` 本身还停在 8099**（第 46 步被人喊停、没交付 py）。修的是工具，

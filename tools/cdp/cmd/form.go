@@ -32,7 +32,8 @@ Native date/time inputs (--value):
   command used to still report success. These set the value instead
   (native prototype setter, so React's value tracker sees it) and
   read it back: a value the control refuses fails the command.
-  --value for type=date takes YYYY-MM-DD / MM-DD-YYYY / MM-DD.
+  --value for type=date takes YYYY-MM-DD / MM-DD-YYYY / MM-DD;
+  a slash means the same as a dash (07/23/1981 = 1981-07-23).
 
 Custom dropdown detection (--select):
   When the target is not a native <select>, searches for a

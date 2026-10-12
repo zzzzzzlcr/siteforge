@@ -23,12 +23,18 @@ func escapeJS(s string) string {
 	return s
 }
 
-// parseDateValue parses a dash-separated date string into year, month, day.
+// parseDateValue parses a date string into year, month, day.
 // Supports YMD (2026-07-04), MDY (07-04-2026), and MD (07-04) formats.
 // For MD-only input, year is returned as 0 — caller fills in current year.
 // When format is ambiguous (no 4-digit year), YMD is preferred.
+//
+// ★ 2026-10-12：`/` 与 `-` **同一套读法**（原来只认 `-`）。改的原因是**产物自己的
+// dob 池**吐的就是 `MM/DD/YYYY`（`agent/template.py::_pool("dob")` 的 `"%02d/%02d/%d"`）——
+// 日期框那条路拒了斜杠之后，产物的生日那一步在真站当场失败
+// （实测：`07/23/1981` rc=1 / `1981-07-23` rc=0，`runtime-222/_probe_dob_slash.py`）。
+// 别的分隔符（`.` 之类）还是不认 —— 见 `TestParseDateValue` 里那一格。
 func parseDateValue(s string) (year, month, day int, ok bool) {
-	parts := strings.Split(s, "-")
+	parts := strings.Split(strings.ReplaceAll(s, "/", "-"), "-")
 	if len(parts) < 2 || len(parts) > 3 {
 		return 0, 0, 0, false
 	}
@@ -465,15 +471,18 @@ var typedValueInputs = map[string]bool{
 
 // typedWireValue 把要填的文本换算成框认的**线格式**。
 //
-// 为什么只收短横线那三种写法：`parseDateValue` 认 YYYY-MM-DD / MM-DD-YYYY / MM-DD，
-// 而**斜杠写法一律拒**——"05/06/1990" 这种在英美之间是有歧义的，猜错就是**静默填错**
-// （ic.com 那单的教训：站点收下了错值，判据看不见）。拒了会带上认得的写法，模型照着重发一次就好。
+// 认的写法：`YYYY-MM-DD` / `MM-DD-YYYY` / `MM-DD`，**斜杠同义**（`MM/DD/YYYY` 等）。
+// 两条注解：
+//   - 为什么收斜杠：**产物自己的 dob 池吐的就是 `MM/DD/YYYY`**（见 parseDateValue 的注释）。
+//   - 为什么两个都 ≤12 时按 MDY 读（`05/06/1990` ⇒ 5 月 6 日）：与**短横线那条老规矩
+//     一模一样**（`parseDateValue` 的既有口径）—— 不为一件事立两套读法。真在乎这个歧义的
+//     调用方，给 ISO（管线给的就是 ISO）。
 func typedWireValue(inputType, text string) (string, error) {
 	if inputType == "date" {
 		year, month, day, ok := parseDateValue(text)
 		if !ok {
-			return "", fmt.Errorf("%s 框要的是 YYYY-MM-DD（也认 MM-DD-YYYY / MM-DD），%q 认不出来 —— "+
-				"斜杠写法不收（05/06 这种猜错就是静默填错，宁可不填）", inputType, text)
+			return "", fmt.Errorf("%s 框要的是 YYYY-MM-DD（也认 MM-DD-YYYY / MM-DD，斜杠同义），%q 认不出来",
+				inputType, text)
 		}
 		if year == 0 {
 			year = time.Now().Year() // 只有月日 ⇒ 补当年（与日历那条路同一个口径）

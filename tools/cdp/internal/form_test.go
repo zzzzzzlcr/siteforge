@@ -213,7 +213,14 @@ func TestParseDateValue(t *testing.T) {
 		{"12-25-2025", 2025, 12, 25, true},  // MDY
 		{"01-02-03",   2003, 1, 2, true},    // ambiguous → YMD preferred
 		{"07-04",      0, 7, 4, true},       // MD only, year=0 (caller fills current year)
-		{"2026/07/04", 0, 0, 0, false},      // invalid separator
+		// ★ 2026-10-12：**斜杠与短横线同一套读法**。原来这一格是 false（"invalid separator"），
+		// 改的原因是**产物自己的 dob 池**吐的就是 `MM/DD/YYYY`（`template.py::_pool("dob")`
+		// 的 `"%02d/%02d/%d"`）—— 日期框那条路把它拒了之后，产物的生日那一步当场失败
+		// （真站实测：`07/23/1981` rc=1 / `1981-07-23` rc=0，见 _probe_dob_slash.py）。
+		// 读法一个字节没另立：还是 YMD / MDY / MD 那三条。
+		{"2026/07/04", 2026, 7, 4, true},    // YMD，斜杠
+		{"07/23/1981", 1981, 7, 23, true},   // MDY，斜杠（产物池的写法）
+		{"2026.07.04", 0, 0, 0, false},      // 别的分隔符还是不收
 		{"abc",        0, 0, 0, false},       // not a date
 		{"2026-13-01", 0, 0, 0, false},      // invalid month
 	}
@@ -322,9 +329,11 @@ func TestFieldKindJS(t *testing.T) {
 //
 // 真站（2026-10-12 · `job-9e2250b60c19` · nitrouscompetitions.com/auth）那趟模型自己
 // 试过 1990-05-14 / 05/14/1990 / 05141990 / 14051990 四种写法 —— 全是白试
-// （insertText 根本进不去，见 fillTypedValue）。换算这一层现在把话说清楚：
-// 短横线那三种认（与 parseDateValue 同一口径），**斜杠和连写一律拒**，
-// 拒的时候把认得的写法带上 —— 猜一个歧义写法（05/06/1990）就是静默填错。
+// （insertText 根本进不去，见 fillTypedValue）。换算这一层把话说清楚：
+// 短横线与**斜杠**是同一套读法（YMD / MDY / MD 三条），**连写一律拒**。
+//
+// ⚠️ 斜杠那一条是**改过的**（原来拒）：产物的 `dob` 池吐的就是 `MM/DD/YYYY`
+// （见 `_probe_dob_slash.py` 的真站实测），拒它 = 产物的生日那一步必挂。
 func TestTypedWireValue(t *testing.T) {
 	thisYear := time.Now().Year()
 	cases := []struct {
@@ -334,9 +343,12 @@ func TestTypedWireValue(t *testing.T) {
 		{"1990-05-14", "1990-05-14", true},                                  // YMD（管线给的就是这个）
 		{"05-14-1990", "1990-05-14", true},                                  // MDY
 		{"05-14", fmt.Sprintf("%d-05-14", thisYear), true},                  // MD ⇒ 补当年
-		{"05/14/1990", "", false},                                           // 斜杠不收（歧义）
+		{"07/23/1981", "1981-07-23", true},                                  // ★ 产物 dob 池的写法
+		{"05/14/1990", "1990-05-14", true},                                  // 斜杠 = 短横线
+		{"05/06/1990", "1990-05-06", true},                                  // 两个都 ≤12 ⇒ 照 MDY（与短横线同一条规矩，不另立一套）
 		{"05141990", "", false},                                             // 连写不收
-		{"14-05-1990", "", false},                                           // DD-MM-YYYY 不在列（月 14 不存在）
+		{"14/05/1990", "", false},                                           // 月 14 不存在
+		{"14-05-1990", "", false},                                           //
 		{"not-a-date", "", false},                                           //
 	}
 	for _, c := range cases {
