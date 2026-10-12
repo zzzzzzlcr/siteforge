@@ -5766,3 +5766,73 @@ def test_a_running_clock_is_never_a_gate_candidate():
     model2 = {"url": "https://x.test/a", "page_text": "2025 KTM SX 85 - Big Wheel 倒计时 01:11:45",
               "node_texts": ["2025 KTM SX 85 - Big Wheel", "01:11:45"]}
     assert browser_agent._unique_snippet_for(model2, []) == "2025 KTM SX 85 - Big Wheel"
+
+
+def test_a_positional_selector_from_the_model_is_tied_by_its_unique_tail():
+    """★ 2026-10-12（真事 `job-bcb1863324f4` · nitrouscompetitions.com/auth）：那几格（地址/城市/
+    邮编/勾选…）**没有 id、没有 name、type 又是 `text`** ⇒ `observe` 给它们的选择器只能是**位置链**，
+    没有任何可用的 alternate；而模型填的时候写的是**同一个元素的另一种写法**
+    （`form:has(…) > label:nth-of-type(7) > input` vs 观测的
+    `body:… > label:nth-of-type(7) > input`）——**尾巴一样、前缀不同** ⇒ `_find_element` 三档
+    全对不上 ⇒ 那一格的 `label/hint/placeholder/nearby_text` 全丢 ⇒ 名字退成 `field-2`…
+    （重放时资料对不上、只能吃随机池；lint 那条规则 G 骂的就是这件事）。
+
+    判据（与既有各档同一条纪律：**认错比认不回来坏**）：**尾段唯一**才认 ——
+    池子里有两格尾巴一样时，一条都不认（宁可退回「只有选择器」）。
+    """
+    head = "body:nth-of-type(1) > main:nth-of-type(1) > form:nth-of-type(1) > "
+    pool = [
+        {"selector": head + "label:nth-of-type(3) > input", "label": "Full name", "type": "text"},
+        {"selector": head + "label:nth-of-type(7) > input", "label": "Address line 1", "type": "text"},
+    ]
+    pages = browser_agent._Pages()
+    pages._current = {"name": "auth", "model": {"fields": pool}, "when": {}, "key": (), "url": ""}
+    model_sel = 'form:has(input[placeholder="A friend\'s code"]) > label:nth-of-type(7) > input'
+
+    got = browser_agent._find_element(pages, "field", model_sel, "")
+    assert got is pool[1], "尾段唯一的那个没认回来：%r" % (got,)
+
+    #: 反例：**两格尾巴一样**（`label:nth-of-type(1) > input` 出现在两处）⇒ 一条都不认
+    pool2 = [{"selector": "body:nth-of-type(1) > div:nth-of-type(1) > label:nth-of-type(1) > input",
+              "label": "A", "type": "text"},
+             {"selector": "body:nth-of-type(2) > div:nth-of-type(1) > label:nth-of-type(1) > input",
+              "label": "B", "type": "text"}]
+    pages2 = browser_agent._Pages()
+    pages2._current = {"name": "x", "model": {"fields": pool2}, "when": {}, "key": (), "url": ""}
+    assert browser_agent._find_element(
+        pages2, "field", "form:nth-of-type(1) > label:nth-of-type(1) > input", "") is None, \
+        "尾巴一样还认了一个 —— 那是把这一步指到**别的元素**上，比认不回来坏得多"
+
+    #: 同一天的第二个形状：模型写 `form:has(…) select`（光标签名），观测写
+    #: `… > label:nth-of-type(10) > select:nth-of-type(1)` ⇒ **这种标签池子里只有一个** ⇒ 认它
+    pool_sel = [{"selector": head + "label:nth-of-type(10) > select:nth-of-type(1)",
+                 "label": "How did you hear about us?", "type": "select-one"},
+                {"selector": head + "label:nth-of-type(3) > input:nth-of-type(1)",
+                 "label": "Full name", "type": "text"}]
+    pages_sel = browser_agent._Pages()
+    pages_sel._current = {"name": "auth", "model": {"fields": pool_sel}, "when": {}, "key": (), "url": ""}
+    assert browser_agent._find_element(
+        pages_sel, "field", 'form:has(input[placeholder="A friend\'s code"]) select', "") is pool_sel[0], \
+        "池子里唯一的 `select` 没认回来"
+
+    #: 反例：**满页都是的标签**（`input`）不许靠「光标签名」这一条认（唯一性挡着）
+    pool_many = [{"selector": "body:nth-of-type(1) > label:nth-of-type(3) > input:nth-of-type(1)",
+                  "label": "A", "type": "text"},
+                 {"selector": "body:nth-of-type(1) > label:nth-of-type(7) > input:nth-of-type(1)",
+                  "label": "B", "type": "text"}]
+    pages_many = browser_agent._Pages()
+    pages_many._current = {"name": "z", "model": {"fields": pool_many}, "when": {}, "key": (), "url": ""}
+    assert browser_agent._find_element(pages_many, "field", "form:nth-of-type(1) > input", "") is None, \
+        "`input` 满页都是，靠光标签名认了一个"
+
+    #: 反例：尾段**没有鉴别力**（`div > input` 这种到处都有的）⇒ 那一条（`nth-of-type`/`#`/`[`
+    #: 那种鉴别力）不成立；而「光标签名」那一副面孔也要**唯一性**才认 —— 池子里两格都收在
+    #: `div > input` 下 ⇒ 一条都不认。
+    pool3 = [{"selector": "body:nth-of-type(1) > div:nth-of-type(1) > input",
+              "label": "A", "type": "text"},
+             {"selector": "body:nth-of-type(2) > div:nth-of-type(1) > input",
+              "label": "B", "type": "text"}]
+    pages3 = browser_agent._Pages()
+    pages3._current = {"name": "y", "model": {"fields": pool3}, "when": {}, "key": (), "url": ""}
+    assert browser_agent._find_element(pages3, "field", "section:nth-of-type(2) > div > input", "") is None, \
+        "`div > input` 这种尾巴没有鉴别力、标签也不唯一 ⇒ 不该认"

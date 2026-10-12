@@ -2457,6 +2457,75 @@ def _token_key(text) -> str:
 _MIN_TOKEN_KEY = 4
 
 
+#: 尾段里要有**鉴别力**的那一段（`label:nth-of-type(7)` 这种）才算证据：
+#: `nth-of-type(k)` / `#id` / `[attr=…]`。`div > input` 那种到处都有，认它是噪声。
+_TAIL_DISTINCTIVE = re.compile(r"nth-of-type\(|#|\[")
+
+
+#: `:nth-of-type(1)` 与**不写**是**同一个元素**（第一个同标签的兄弟）—— 归一化时去掉它，
+#: 两边的写法才可比。真站实测（`job-bcb1863324f4`）：观测写
+#: `… > label:nth-of-type(7) > input:nth-of-type(1)`、模型写 `… > label:nth-of-type(7) > input`
+#: —— 只差这一处，尾巴就「不等」了。
+_TAIL_FIRST_OF_TYPE = re.compile(r":nth-of-type\(1\)")
+
+
+def _selector_parts(selector) -> list:
+    """把选择器切成几段 —— `>` 与**空白**都算组合符（都是「后代/子」），
+    但**括号、方括号、引号里的**不算（`[placeholder="A friend's code"]` 里那个空格
+    与 `:has(…)` 里那些都不许当组合符 —— 切碎了就再也对不上）。
+
+    为什么连空格也要切（真站 `job-bcb1863324f4`·同一天的 `select` 那格）：模型写的是
+    `form:has(input[placeholder="A friend's code"]) select`（**空格后代**写法），
+    只按 `>` 切的话整串算一段、尾段恒为空 ⇒ 那一格永远认不回来。
+    """
+    text = str(selector or "")
+    parts, depth, quote, cur = [], 0, "", []
+    for ch in text:
+        if quote:
+            cur.append(ch)
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "\"'":
+            quote = ch
+            cur.append(ch)
+            continue
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth = max(0, depth - 1)
+        if depth == 0 and (ch == ">" or ch.isspace()):
+            if cur:
+                parts.append("".join(cur))
+                cur = []
+            continue
+        cur.append(ch)
+    if cur:
+        parts.append("".join(cur))
+    return parts
+
+
+def _selector_tail(selector, n: int = 2) -> tuple:
+    """选择器的**尾段**（最后 `n` 段，**原样**，不归一化）：
+    `… > label:nth-of-type(7) > input:nth-of-type(1)` → `("label:nth-of-type(7)", "input:nth-of-type(1)")`。
+    段数不够给空元组（那就不算证据）。
+
+    ⚠️ **原始尾段用来判「有没有鉴别力」**（`_TAIL_DISTINCTIVE`）—— 归一化会把
+    `label:nth-of-type(1)` 抹成 `label`，鉴别力跟着被抹掉（真站那格就卡在这条缝里：
+    它明明有 `nth-of-type(1)`，抹完只剩 `label` ⇒ 两条规则都不认 ✗）。
+    比相等走 `_tail_key`（见那儿）。
+    """
+    parts = [p for p in _selector_parts(selector) if p]
+    return tuple(parts[-n:]) if len(parts) >= n else ()
+
+
+def _tail_key(tail: tuple) -> tuple:
+    """尾段**比相等用的钥匙**：`:nth-of-type(1)` 去掉 —— 它与不写是**同一个元素**
+    （第一个同标签的兄弟）。真站：观测写 `… > label:nth-of-type(7) > input:nth-of-type(1)`、
+    模型写 `… > label:nth-of-type(7) > input` —— 只差这一处。"""
+    return tuple(_TAIL_FIRST_OF_TYPE.sub("", p) for p in tail)
+
+
 def _id_is_the_elements_hint(element: dict, selector: str, frame_id: str = ""):
     """选择器里那个 `#id` 与这条元素自报的 id（`hint`）对得上到什么程度（`None` = 对不上）。
 
@@ -2527,12 +2596,46 @@ def _find_element(pages: "_Pages", kind: str, selector: str, frame_id: str = "")
     if not model or not selector:
         return None
     pool = (model.get("fields") if kind == "field" else model.get("actions")) or []
+    #: ★ 2026-10-12（真事 `job-bcb1863324f4` · nitrouscompetitions.com/auth）：**尾段唯一就能认**。
+    #:
+    #: 现场：地址 / 城市 / 邮编 / 勾选那几格**没有 id、没有 name、type 又是 `text`** ⇒ `observe`
+    #: 给它们的选择器只能是**位置链**，而模型填的时候用的是**同一个元素的另一种写法**
+    #: （`form:has(…) > label:nth-of-type(7) > input` vs 观测的
+    #: `body:… > label:nth-of-type(7) > input`）——**尾巴一样、前缀不同**。前几档看的是
+    #: 「整串 / token（`#id` 与 `[attr="值"]`）」，于是**全对不上** ⇒ 那一格的
+    #: `label/hint/placeholder/nearby_text` 全丢 ⇒ 名字退成 `field-2`…（重放时资料对不上、
+    #: 只能吃随机池，而日志照样写「填好了」）。而 `input[type=email]` / `[type=date]` 那几格
+    #: 有**唯一属性** ⇒ 原样对得上 ⇒ 它们从来没丢过 —— 丢的正是这份「没有唯一属性」的。
+    #:
+    #: ⚠️ **判据是「唯一」**（与 `_id_is_the_elements_hint` 那条纪律同一句：认错比认不回来坏
+    #: 得多）：池子里有两格尾巴一样 ⇒ **一条都不认**；尾段里没有鉴别力的（`div > input`）也不认。
+    tail = _selector_tail(selector)
+    tail_owner = None
+    if tail and _TAIL_DISTINCTIVE.search(">".join(tail)):
+        key = _tail_key(tail)
+        same = [e for e in pool
+                if isinstance(e, dict) and _tail_key(_selector_tail(e.get("selector"))) == key]
+        if len(same) == 1:
+            tail_owner = same[0]
+    if tail_owner is None and tail and re.fullmatch(r"[a-z][a-z0-9-]*", tail[-1]):
+        #: ⚠️ 另一副面孔（真站同一天的 `select` 那格）：模型写的是
+        #: `form:has(…) select`（**光秃秃一个标签名**，尾巴没有鉴别力），
+        #: 观测写的是 `… > label:nth-of-type(10) > select:nth-of-type(1)`。
+        #: 判据照旧是**唯一**：这种标签在池子里**只有一个** ⇒ 认它。
+        #: （`input` 那种满页都是的标签永远不会走到这儿 —— 唯一性先把它挡了。）
+        same_tag = [e for e in pool
+                    if isinstance(e, dict)
+                    and _tail_key(_selector_tail(e.get("selector"), 1)) == (tail[-1],)]
+        if len(same_tag) == 1:
+            tail_owner = same_tag[0]
     best, best_rank = None, 99
     for element in pool:
         if not isinstance(element, dict):
             continue
         if element.get("selector") == selector or selector in (element.get("alternates") or []):
             rank = 0 if _frame_id_of_path(element.get("frame_path")) == frame_id else 1
+        elif element is tail_owner:
+            rank = 6 if _frame_id_of_path(element.get("frame_path")) == frame_id else 7
         else:
             rank = _id_is_the_elements_hint(element, selector, frame_id)
         if rank is None:
@@ -2816,6 +2919,11 @@ _RANDOM_HINTS = (
     #: 只有这张词表里没有 `address`/`street` 两个词 ⇒ 语义名永远轮不到它 ⇒ 退回**标签蛇形化**
     #: （`Address line 1` → `address_line_1`）⇒ 既不是语义名、也不在别名表里、又带数字 ⇒
     #: lint 规则 G 连打三轮（「形状不像运营资料的列名（带数字串）」）把整单卡停。
+    #: ★ 2026-10-12（真数据复验当场逮到的）：`Town / City` 那一格**本来一个词条都不命中** ⇒
+    #: 落到 ③ 的 `nearby_text` 上，而那一格旁边写着**邻格的** `Address line 2 (optional)`
+    #: ⇒ 被下面那条 `address` 认成街道 ✗（真账本 `job-bcb1863324f4` 步 28）。
+    #: 骨架的池子与 `_ALIASES` 里本来就有 `city` 这个种类，缺的只是这张表里没有词。
+    (("town", "city"), "city"),
     #: ⚠️ **排在 `email` / `number` 之后**：`Email address` 先命中 `email`；而
     #: `Years at address` 要的是**个位数**，先命中 `number`（顺序反了就会把它认成街道）。
     (("address", "street"), "street"),
