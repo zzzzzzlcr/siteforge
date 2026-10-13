@@ -2699,6 +2699,18 @@ def _target_of(element, action: str, selector: str, frame_id: str = "") -> dict:
         "text": (element or {}).get("text") or None,
         "role": (element or {}).get("role") or None,
         "near": (element or {}).get("region") or None,
+        #: ★ 2026-10-13（真站 `job-37d8e6bfa080` 那一族）：「**身上没字、标签在隔壁**」的
+        #: 控件（compareinsulation 那排 `role=radio` 的圆点：`text` 空、id 是
+        #: `#option-<时间戳>`）—— 只摘 text/role/near 的话，旁边那列标签**永远回不来**：
+        #: 地址一漂，重放那一跳（`_relocate` → `_intent_score`）手里只剩 role 可用，
+        #: 同一排里**挑中谁是运气**（先红用例实测：`#option-2` 被点成了上一颗）。
+        #: form 那一支 2026-09-17 起就带这四样；click 这一支补上同一组 ——
+        #: 重放那边本来就认 `nearby_text`，缺的只是它从没进过账本。
+        #: `aria-label` 也是页面上印着的名字（只有它的按钮照样拿得到锚）。
+        "label": ((element or {}).get("label") or (element or {}).get("aria_label")) or None,
+        "hint": (element or {}).get("hint") or None,
+        "placeholder": (element or {}).get("placeholder") or None,
+        "nearby_text": list((element or {}).get("nearby_text") or []) or None,
         "selectors": _selectors_of(element, selector),
         "above_fold_only": False,
         "frame_id": frame_id,
@@ -3306,6 +3318,15 @@ def _label_of(target) -> str:
     for key in ("text", "label", "name"):
         if target.get(key):
             return str(target[key])
+    #: ★ 2026-10-13（真站那一趟：一排 `role=radio` 的圆点全没文字，账本里六步都叫
+    #: 「没写名字的元素」——**挑对了也看不出挑的是哪一颗**）：**标签也算名字**，取写在
+    #: 这颗**旁边**的那一句（`nearby_text` 的第一条 = 离它最近的那句）。
+    #: 与「取值名不许退成 field-N」同一族：名字是给运营和诊断读的那一格。
+    #: ⚠️ 有 text/label/name 时**仍用它们**（这里是兜底，不抢位）；取的是页面上写着的字，
+    #: 所以也不碰下面那条 F3（它禁的是把**选择器**端出来）。
+    near = [str(x).strip() for x in (target.get("nearby_text") or []) if str(x).strip()]
+    if near:
+        return near[0]
     # ⚠️ 没有文字名字时**不许**把选择器端给人看（2026-09-18 复审 F3）：这句话进的是
     # `_say` → `step["note"]` → 时间线的 `events[].say` **和**轮次卡片 —— 那一屏是给
     # 运营看的（D16：主视图里没有选择器）。选择器**本来就在** `target["selectors"]` 里

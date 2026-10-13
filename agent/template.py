@@ -1400,6 +1400,14 @@ def _label(target, step=None):
             return str(value)
     if step and step.get("fill"):
         return str(step["fill"])
+    #: ★ 2026-10-13：**标签也算名字** —— 取写在这颗**旁边**的那一句（`nearby_text` 第一条）。
+    #: 真站那一趟的原话：`点了「没写名字的元素」（换了第 3 个找法才找到）【恢复】…` ——
+    #: **挑对了，但读日志的人看不出挑的是哪一颗**；名字改成「Electric」就够了。
+    #: `fill` 那一档排在它前面（字段名比旁边的字更像它的名字）。
+    near = [str(x).strip() for x in ((target or {}).get("nearby_text") or [])
+            if str(x).strip()]
+    if near:
+        return near[0]
     return "没写名字的元素"
 
 
@@ -2114,7 +2122,10 @@ class Filler:
         # 而这里是「**这个元素**是不是账本里那个」—— 认错元素的代价（点到别的框/别的按钮）
         # 比地址脆得多。地址脆还有 alternates 与下一次重找兜着。
         rank = {"high": 0, "medium": 1, "low": 2}
-        hits.sort(key=lambda t: (-t[0], rank.get((t[2].get("stability") or "").lower(), 3),
+        # ★ 2026-10-13：分数并列时，**多对上一条 `nearby_text` 的排前面**（见 `_nearby_hits`）——
+        # 一排同 role 的圆点里人人靠「邻居那句」凑上 nearby_text，不数条数就等于没分。
+        hits.sort(key=lambda t: (-t[0], -self._nearby_hits(t[2], target),
+                                 rank.get((t[2].get("stability") or "").lower(), 3),
                                  _below_fold(t[2])))
         if hits:
             self.resolve_score, self.resolve_why = hits[0][0], hits[0][1]
@@ -2138,6 +2149,23 @@ class Filler:
                 if selector and (selector, frame) not in out:
                     out.append((selector, frame))
         return out
+
+    def _nearby_hits(self, element, target):
+        """账本那一列 `nearby_text` 里**对上了几条**（0 = 一条都没对上）。
+
+        为什么要数条数、而不只是「有没有对上」（★ 2026-10-13，真站 `job-37d8e6bfa080`
+        那一族）：一排同 role 的候选（compareinsulation 那六颗圆点）里，每颗的
+        `nearby_text` 都带着**邻居那一句**（自己那句在前、邻居那句在后）——
+        「有没有对上」人人有份、`_intent_score` 并列，排序就退化回池子顺序 =
+        **按页面上谁在前点谁**（先红用例实测：`#option-2` 被点成了上一颗）。
+        自己那一句也在里面 ⇒ 对上的**条数**才是分得开的那把尺子。
+        """
+        want = [_norm(str(x)).lower() for x in (target.get("nearby_text") or [])
+                if str(x).strip()]
+        if not want:
+            return 0
+        have = " ".join(_norm(str(x)).lower() for x in (element.get("nearby_text") or []))
+        return sum(1 for w in want if w in have)
 
     def _intent_score(self, element, target, kind):
         """这个候选**像不像**账本里记的那一个：命中的身份信号越多，分越高（0~1）。

@@ -765,6 +765,57 @@ def test_above_fold_only_target_skips_below_the_fold_candidate(sandbox, form_fil
     assert common.STATE.actions == [], common.STATE.actions
 
 
+def test_relocate_picks_the_option_whose_label_is_the_recorded_one(sandbox, form_file):
+    """一排「同 role、没文字、只有脆 id」的圆点里，按账本那一列 `nearby_text` 挑**对的那一颗**。
+
+    真站形状（compareinsulation quiz 第二屏）：六颗 `role=radio` 的 16×16 圆点，`text`
+    全空、选择器全是 `#option-<时间戳>`；标签只写在每颗**旁边** ——
+    `nearby_text: ["Electric", "Gas boiler"]`（自己那一句在前、**邻居那句也在里面**）。
+
+    没有这一条：三颗候选的 `_intent_score` 会**并列**（都靠「邻居的字」凑上 `nearby_text`），
+    排序退化回池子顺序 ⇒ **按页面上谁在前点谁**，1/6 概率点错**还不吭声**。
+    """
+    module, common = _relocate_only(
+        sandbox, "option-label",
+        [
+            _observe_action("#option-1", text="", role="radio", region="main",
+                            nearby_text=["Gas boiler", "How do you heat your home?"]),
+            _observe_action("#option-2", text="", role="radio", region="main",
+                            nearby_text=["Electric", "Gas boiler"]),
+            _observe_action("#option-3", text="", role="radio", region="main",
+                            nearby_text=["Oil boiler", "Electric"]),
+        ],
+        target_extra={"text": None, "role": "radio", "near": "main",
+                      "nearby_text": ["Electric", "Gas boiler"]},
+    )
+    f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))
+    f.run()
+    assert ("click", "#option-2") in common.STATE.actions, common.STATE.actions
+
+
+def test_the_artifact_names_a_nameless_step_after_the_label_next_to_it(sandbox):
+    """产物那一份「名字」也要认 `nearby_text`（trace 的 `target` 与日志都读它）。
+
+    真站那一趟的输出原话：`点了「没写名字的元素」（换了第 3 个找法才找到）【恢复】…` ——
+    **挑对了，但读日志的人看不出挑的是哪一颗**。名字改成「Electric」就够了。
+    ⚠️ 兜底与 `fill` 那一档都不动（两条正控）。
+    """
+    src = template.render("example-nearby-name", "Thank you", _one_click_states(), [],
+                          SAMPLE_PROVENANCE)
+    module, _ = _load("run_nearby_name", src, sandbox)
+
+    assert module._label({"text": None, "role": "radio",
+                          "nearby_text": ["Electric", "Gas boiler"]}) == "Electric"
+    # 正控①：有文字 ⇒ 仍用文字
+    assert module._label({"text": "Continue", "nearby_text": ["下一题"]}) == "Continue"
+    # 正控②：什么都没有 ⇒ 照旧兜底（且不端选择器）
+    bare = module._label({"text": None, "selectors": ["#option-1"]})
+    assert bare == "没写名字的元素" and "#option-1" not in bare
+    # 正控③：FILLS 那一步仍按字段名走（`fill` 比旁边的字更像它的名字）
+    assert module._label({"text": None, "nearby_text": ["邮编"]},
+                         {"fill": "postcode"}) == "postcode"
+
+
 def test_goto_and_wait_are_supported(sandbox, form_file):
     """`goto` 走 cdp navi（**不经 eval** —— 写路径不许用 eval，§5.2）。"""
     steps = [

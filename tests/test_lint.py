@@ -570,3 +570,40 @@ def test_a_fragile_chain_with_a_text_anchor_is_not_a_violation():
     assert say({"selectors": [frag], "label": "i agree"}) == []
     assert say({"selectors": [frag], "text": "i agree"}) == []
     assert say({"selectors": [frag]}) == ["judge-fragile-selectors"]
+
+
+# ─── ★ 2026-10-13：「身上没字、标签在隔壁」的控件也算**有锚**（compareinsulation 那排圆点）──
+
+def test_a_fragile_click_with_a_nearby_label_and_a_role_is_not_a_violation():
+    """「身上没字、标签在隔壁」的控件也算**有锚**（compareinsulation 那排圆点的形状）。
+
+    现场形状（2026-10-13，`job-37d8e6bfa080` 那一族）：一排 `role=radio` 的 16×16 圆点，
+    `text` 空、标签（`Gas boiler` / `Electric` …）**只写在旁边**（`nearby_text`）。
+    重放那一跳（产物 `_relocate` → `_intent_score`）**本来就认 `nearby_text`** ——
+    缺的只是这里不认，于是「只有一根漂的线」照旧打回、draft ↔ lint 空转。
+
+    ⚠️ **代表地址选哪一族**要跟闸对齐：那排圆点的 id 是 `#option-<时间戳>`（`-数字` 族），
+    而按 2026-10-13 的裁定它**不进这道硬闸**（`_fragile` 的 docstring 写着：只留
+    「框架渲染序号 id」与「>3 跳 nth 链」两族）。所以这里请 `#__BVID__408` 当代表 ——
+    形状同族（无名 + 标签在旁 + role），地址是闸真会拦的那一族。
+
+    尺度（用户当面定）：`nearby_text` **且** `role` 才算锚 —— 仓里实测过 nearby_text
+    可能是**邻居的字**（隔壁 State 下拉、邻格的 `Address line 2`），role 是那道分辨器；
+    缺一个就照旧打回（下面两条正控钉着）。
+    """
+    from agent import lint as lint_mod
+
+    frag = "#__BVID__408"                 # 闸真认的那一族（Vue 渲染序号）
+
+    def say(target):
+        states = [{"name": "quiz-2",
+                   "steps": [{"action": "click", "target": target}]}]
+        return [v.code for v in lint_mod._rule_i(states, {}, "x = 1\n")]
+
+    strip = {"selectors": [frag], "text": None, "role": "radio", "near": None}
+    assert say(dict(strip, nearby_text=["Electric", "Gas boiler"])) == []
+    # 正控①：只有裸 nearby_text、**没有 role** ⇒ 照旧打回（尺度不许悄悄放宽）
+    assert say(dict(strip, role=None,
+                    nearby_text=["Electric", "Gas boiler"])) == ["judge-fragile-selectors"]
+    # 正控②：四样全空 ⇒ 照旧打回
+    assert say(strip) == ["judge-fragile-selectors"]

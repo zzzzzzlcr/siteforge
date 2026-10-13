@@ -495,9 +495,21 @@ def _has_text_anchor(target: dict) -> bool:
     产物本来就能按 label 找得到。
     ⇒ 「一条稳的都没有」这句话里的**稳**，本来就不止 CSS 那一条路（`_selector_rank`
     把脆的排最后，正是因为它只是**最后一条路**）：有文字/标签锚的格不算「只剩一根漂的线」。
+
+    ★ 2026-10-13：「**身上没字、标签在隔壁**」的控件也算有锚 —— `nearby_text` **且** `role`。
+    现场是 compareinsulation 那排 `role=radio` 的 16×16 圆点（`text` 空、id 是
+    `#option-<时间戳>`、标签只写在旁边）。⚠️ 那一族的 id 按同一天的裁定**不进这道硬闸**
+    （`_fragile` 只剩渲染序号 id 与长 nth 链两族）—— 这条收的是**形状同族**的那些：
+    只有渲染序号 id / 长链可依、而标签写在隔壁的无名控件。为什么不放宽成「nearby_text 非空就算」：
+    仓里实测过它可能是**邻居的字**（隔壁 State 下拉、邻格的 `Address line 2`）——
+    `role` 是那道分辨器；重放那一跳（产物 `_relocate` → `_intent_score`）认的也正是
+    「role 先筛、标签再分」。缺一个就照旧打回。
     """
     t = target or {}
-    return bool(str(t.get("label") or "").strip() or str(t.get("text") or "").strip())
+    if str(t.get("label") or "").strip() or str(t.get("text") or "").strip():
+        return True
+    near = [x for x in (t.get("nearby_text") or []) if str(x).strip()]
+    return bool(near and str(t.get("role") or "").strip())
 
 
 def _rule_i(states: list, fills, src: str) -> list[Violation]:

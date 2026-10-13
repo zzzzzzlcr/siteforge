@@ -3546,6 +3546,60 @@ def test_the_frame_rides_along_only_when_the_ledger_wrote_one_down(tmp_path):
     assert all(c["args"].get("frame_id") != "main" for c in calls2), calls2
 
 
+def test_a_click_target_keeps_the_label_written_next_to_it():
+    """「身上没字、标签在隔壁」的控件：标签要**跟账本一起存下来**（compareinsulation 那排圆点）。
+
+    真站实测（2026-10-13）：那六颗 `role=radio` 的 16×16 圆点 `text` 是空的、id 是
+    `#option-<时间戳>`，而标签（`Gas boiler` / `Electric` …）写在旁边 —— `_target_of` 的
+    click 那一支原先只摘 `text/role/near/selectors`，**旁边那列就此永远回不来**；
+    而重放那一跳（产物 `_relocate` → `_intent_score`）本来就认 `nearby_text`。
+    这一条钉住「录的时候收进来」这半边。
+    """
+    element = {
+        "text": "", "role": "radio", "region": "main",
+        "selector": "#option-1758085787838-2", "alternates": [],
+        "nearby_text": ["Electric", "Gas boiler"],
+        "label": None, "hint": None, "placeholder": None,
+    }
+    target = browser_agent._target_of(element, "click", "#option-1758085787838-2")
+    assert target["nearby_text"] == ["Electric", "Gas boiler"]
+    assert target["text"] is None and target["role"] == "radio"
+    assert target["selectors"] == ["#option-1758085787838-2"]
+
+    # 正控①：没有标签的那一类 —— 键在、值是 None，**不凭空造一个锚出来**
+    bare = browser_agent._target_of(
+        {"text": "", "role": "radio", "region": "main"}, "click", "#option-1")
+    assert bare["nearby_text"] is None and bare["label"] is None
+
+    # 正控②：`aria-label` 也是页面上印着的名字 —— 只有它的按钮照样拿得到锚
+    aria = browser_agent._target_of(
+        {"text": "", "role": "button", "region": "main", "aria_label": "Close"},
+        "click", "#close")
+    assert aria["label"] == "Close"
+
+
+def test_a_nameless_step_is_named_after_the_label_written_next_to_it():
+    """「身上没字、标签在隔壁」的那一步，名字要写**标签**，不许退成「没写名字的元素」。
+
+    真站那一趟（2026-10-13，compareinsulation quiz）：六颗 `role=radio` 的圆点全没文字，
+    日志里六步都叫「没写名字的元素」——**挑对了也看不出挑的是哪一颗**。
+    与「取值名不许退成 field-N」同一族：名字是给运营和诊断读的那一格。
+    ⚠️ 兜底仍在：连标签都没有时照旧「没写名字的元素」（正控钉着）；
+    ⚠️ 也不许把**选择器**端出来（2026-09-18 复审 F3 那条，没动）。
+    """
+    named = browser_agent._label_of(
+        {"text": None, "role": "radio", "nearby_text": ["Electric", "Gas boiler"],
+         "selectors": ["#option-1758085787838-2"]})
+    assert named == "Electric"
+
+    # 正控①：有文字时**仍用文字**（标签是兜底，不是抢位）
+    assert browser_agent._label_of(
+        {"text": "Continue", "nearby_text": ["下一题"]}) == "Continue"
+    # 正控②：连标签都没有 ⇒ 照旧那句兜底，且句子里没有选择器
+    bare = browser_agent._label_of({"text": None, "selectors": ["#option-1"]})
+    assert bare == "没写名字的元素" and "#option-1" not in bare
+
+
 def test_a_fill_replays_the_value_the_ledger_recorded(tmp_path):
     """填表重放的是**账上记的那个值**，不是重新随机一个（§1.4.1 的由头）。
 
