@@ -69,18 +69,28 @@ STUB_SERVER = ROOT / "tests" / "stub_mcp_server.py"
 
 
 def _reply(content: str = "", calls: list | None = None):
-    tool_calls = [
-        types.SimpleNamespace(
-            id=f"call_{i}",
-            function=types.SimpleNamespace(name=name, arguments=json.dumps(args, ensure_ascii=False)),
-        )
-        for i, (name, args) in enumerate(calls or [])
-    ]
-    msg = types.SimpleNamespace(content=content, tool_calls=tool_calls or None)
-    return types.SimpleNamespace(
-        choices=[types.SimpleNamespace(message=msg, finish_reason="tool_calls" if tool_calls else "stop")],
-        usage=None,
-    )
+    """一轮回复 → **一股流**（`run_tool_loop` 自 2026-10-14 起走流式，见 `agent/llm.read_stream`）。
+
+    形状照**网关实测**，不是照文档：`content` 一片片来；`id` / `name` 只在 tool_call 的
+    **首片**上，`arguments` 是**碎片**。
+    ⚠️ 这里**故意把 `arguments` 切成两片** —— 拼碎片是流式最容易错的那一处，
+    让这一族的每个用例都顺手压它一遍（切了不影响任何判据：拼回来必须逐字相同）。
+    """
+    chunks: list = []
+    if content:
+        chunks.append({"choices": [{"delta": {"content": content}, "finish_reason": None}]})
+    for i, (name, args) in enumerate(calls or []):
+        raw = json.dumps(args, ensure_ascii=False)
+        head = max(1, len(raw) // 2)
+        chunks.append({"choices": [{"delta": {"tool_calls": [
+            {"index": i, "id": f"call_{i}", "function": {"name": name, "arguments": raw[:head]}}]},
+            "finish_reason": None}]})
+        chunks.append({"choices": [{"delta": {"tool_calls": [
+            {"index": i, "function": {"arguments": raw[head:]}}]}, "finish_reason": None}]})
+    chunks.append({"choices": [{"delta": {},
+                                "finish_reason": "tool_calls" if calls else "stop"}],
+                   "usage": None})
+    return iter(chunks)
 
 
 class FakeLLM:

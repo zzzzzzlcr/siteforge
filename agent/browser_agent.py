@@ -2276,12 +2276,26 @@ class _Gate:
         self._check()
         if self._watch is not None:
             self._watch.round_boundary()
-        resp = self._inner.chat.completions.create(**kwargs)
-        content = _content_of(resp)
-        self._note(content)
+        return self._watched(self._inner.chat.completions.create(**kwargs))
+
+    def _watched(self, stream):
+        """把流**原样**放过去；收流那一刻记下这一轮模型说了什么。
+
+        ★ 2026-10-14：`run_tool_loop` 改走**流式**了（治网关那层 60 秒读超时，
+        见 `llm.read_stream`）—— `create` 回的是**一股流**、不是一句回复，
+        内容要**收完**才拼得出来。所以「记人话」这一步跟着挪到**收流之后**
+        （原先是在 `create` 返回处读 `resp.choices[0].message.content`）。
+        ⚠️ 拼话用的是 `llm.delta_content` —— **与 `read_stream` 同一个口**，
+        这里不另写一份解析（两份迟早会漂，而叙述是要给人看的那一份）。
+        """
+        said: list = []
+        for chunk in stream:
+            said.append(llm.delta_content(chunk))
+            yield chunk
+        text = "".join(said).strip()
+        self._note(text)
         if self._watch is not None:
-            self._watch.note_round(content)
-        return resp
+            self._watch.note_round(text)
 
     def _note(self, content: str) -> None:
         if not content:
@@ -2304,16 +2318,6 @@ class _Gate:
                 "⚠️ 旁路（模型这一轮的话没送到时间线）没记成：%s: %s —— "
                 "探路照常往下走（旁路坏掉不许带塌主路），但这一趟的时间线上会少掉它的推理。"
                 % (type(exc).__name__, exc))
-
-
-def _content_of(resp) -> str:
-    """模型这一轮说的话（**形状不对就给空串**，不在这一步把循环带塌）。"""
-    try:
-        return (resp.choices[0].message.content or "").strip()
-    except (AttributeError, IndexError, TypeError, KeyError):
-        # 真形状由 llm.py 保证，它就在下一步读同一片。这里吞的只是「记不上人话」这件事，
-        # 不是任何一条错误。
-        return ""
 
 
 class _Namespace:

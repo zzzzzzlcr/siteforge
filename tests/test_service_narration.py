@@ -879,14 +879,24 @@ class _StubSession:
 
 
 def _reply(content="", calls=None):
-    tool_calls = [
-        types.SimpleNamespace(
-            id="call_%d" % i,
-            function=types.SimpleNamespace(name=n, arguments=json.dumps(a, ensure_ascii=False)))
-        for i, (n, a) in enumerate(calls or [])]
-    msg = types.SimpleNamespace(content=content, tool_calls=tool_calls or None)
-    return types.SimpleNamespace(
-        choices=[types.SimpleNamespace(message=msg, finish_reason="stop")], usage=None)
+    """一轮回复 → **一股流**（`run_tool_loop` 自 2026-10-14 起走流式，见 `agent/llm.read_stream`）。
+
+    形状照网关实测：`content` 一片片来；`id` / `name` 只在 tool_call 首片上，
+    `arguments` 是碎片（这里**故意切开** —— 拼碎片是流式最容易错的那一处）。
+    """
+    chunks: list = []
+    if content:
+        chunks.append({"choices": [{"delta": {"content": content}, "finish_reason": None}]})
+    for i, (n, a) in enumerate(calls or []):
+        raw = json.dumps(a, ensure_ascii=False)
+        head = max(1, len(raw) // 2)
+        chunks.append({"choices": [{"delta": {"tool_calls": [
+            {"index": i, "id": "call_%d" % i,
+             "function": {"name": n, "arguments": raw[:head]}}]}, "finish_reason": None}]})
+        chunks.append({"choices": [{"delta": {"tool_calls": [
+            {"index": i, "function": {"arguments": raw[head:]}}]}, "finish_reason": None}]})
+    chunks.append({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": None})
+    return iter(chunks)
 
 
 class _FakeLLM:

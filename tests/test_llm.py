@@ -100,12 +100,17 @@ class _Resp:
 
 
 def _spy_client():
-    """一个只记账的 OpenAI 客户端替身（`run_tool_loop` 认 `_client=`）。"""
+    """一个只记账的 OpenAI 客户端替身（`run_tool_loop` 认 `_client=`）。
+
+    ★ 2026-10-14：它回的**是一股流**，不是一个响应 —— `run_tool_loop` 改走流式了
+    （见本文件「流式」那一节）。这一格跟着契约改，不改判据。
+    """
     seen: dict = {}
 
     def create(**kwargs):
         seen.update(kwargs)
-        return _Resp("看过了，没什么问题")
+        return iter([{"choices": [{"delta": {"content": "看过了，没什么问题"},
+                                   "finish_reason": "stop"}], "usage": None}])
 
     chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
     return types.SimpleNamespace(chat=chat), seen
@@ -125,6 +130,254 @@ def test_run_tool_loop_honours_the_env_budget(monkeypatch):
     cli, seen = _spy_client()
     llm.run_tool_loop("sys", "usr", [], lambda name, args: None, max_rounds=1, _client=cli)
     assert seen["max_tokens"] == 9000, seen
+
+
+# ── 模型这一跳挂了的**现场**（★ 2026-10-14）───────────────────────────
+
+def _boom_client(exc, attempts=None):
+    """一个**一定抛**的客户端替身；`attempts` 模拟 SDK 那几个重试请求。"""
+    def create(**kwargs):
+        raise exc
+
+    chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
+    fake = types.SimpleNamespace(chat=chat)
+    if attempts is not None:
+        fake._siteforge_attempts = attempts
+    return fake
+
+
+def test_the_clients_timeout_and_retries_are_written_down_not_inherited():
+    """★ 2026-10-14：这两个值原先**藏在 SDK 默认里**（`OpenAI(base_url=…, api_key=…)` 裸着建）。
+
+    为什么值一条测试：8 趟 job 被 `nginx 504` 打死，而「跑了多久 / 试了几次」这两格
+    **一个都没记** ⇒ `__error__` 里只剩一页 HTML，三个假设（生成久 / 输入大 / SDK 在重试）
+    一个都证不了。**默认值可以就是 SDK 那两个**，但它得**写在我们这儿** ——
+    不然下一个人（或下一次调参）得先去翻库。
+    """
+    assert llm.DEFAULT_TIMEOUT_SECONDS == 600.0, llm.DEFAULT_TIMEOUT_SECONDS
+    assert llm.DEFAULT_MAX_RETRIES == 2, llm.DEFAULT_MAX_RETRIES
+
+
+def test_the_clients_timeout_and_retries_can_be_turned_by_env(monkeypatch):
+    """要能**不改代码**把它们调下来 —— 那正是「闸按下 → 180 秒 → 504」这条线索的下一步。"""
+    monkeypatch.setenv("SITEFORGE_LLM_TIMEOUT", "45")
+    monkeypatch.setenv("SITEFORGE_LLM_RETRIES", "0")
+    fresh = importlib.reload(llm)
+    assert fresh.timeout_seconds() == 45.0
+    assert fresh.max_retries() == 0
+
+
+def test_a_bad_env_value_keeps_the_safe_default_for_llm_knobs(monkeypatch):
+    """读不出来 / 不是正数 ⇒ **留默认值**（与 `SPIKE_MAX_TOKENS` 同一条口径）。"""
+    monkeypatch.setenv("SITEFORGE_LLM_TIMEOUT", "  ")
+    monkeypatch.setenv("SITEFORGE_LLM_RETRIES", "-3")
+    fresh = importlib.reload(llm)
+    assert fresh.timeout_seconds() == llm.DEFAULT_TIMEOUT_SECONDS
+    assert fresh.max_retries() == llm.DEFAULT_MAX_RETRIES
+    monkeypatch.setenv("SITEFORGE_LLM_TIMEOUT", "abc")
+    fresh = importlib.reload(fresh)
+    assert fresh.timeout_seconds() == llm.DEFAULT_TIMEOUT_SECONDS
+
+
+class _Req:
+    """一个假的 httpx 请求（钩子只读这两样）。"""
+    def __init__(self, retry_count=None, body=b""):
+        self.headers = {} if retry_count is None else {"x-stainless-retry-count": retry_count}
+        self.content = body
+
+
+def test_every_request_the_sdk_sends_is_counted():
+    """记账钩子：**SDK 每次重试 = 一次新请求**，而它自己把第几次打在头上
+    （`x-stainless-retry-count`）—— 读它比自己数更可信。
+
+    这一格是「180 秒 = 3 × 60」那条线索的唯一量具：没有它，就分不清
+    「一次跑了 180 秒」和「三次各跑了 60 秒」。
+    """
+    box: list = []
+    llm._note_attempt(_Req("0", b"x" * 10), box)
+    llm._note_attempt(_Req("1", b"x" * 20), box)
+    llm._note_attempt(_Req(None, b"x" * 30), box)      # 老 SDK 不打这个头 ⇒ 也得记
+    assert [a["retry_count"] for a in box] == ["0", "1", None], box
+    assert [a["body_chars"] for a in box] == [10, 20, 30], box
+
+
+def test_a_failed_call_says_how_long_and_how_many_requests_went_out():
+    """★★ 这条是那件事的**第一段**：挂的时候要把现场带出来。
+
+    落进 job 状态的只有 `str(exc)` ⇒ 现场必须**写进消息里**。要四样：
+    耗时、**发出去几个 HTTP 请求**（= SDK 有没有在默默重试）、这次客户端的旋钮、原错。
+    """
+    boom = RuntimeError("<html><head><title>504 Gateway Time-out</title></head>"
+                        "<body><center><h1>504 Gateway Time-out</h1></center>"
+                        "<hr><center>nginx</center></body></html>")
+    cli = _boom_client(boom)
+    with pytest.raises(llm.ModelCallFailed) as e:
+        llm.run_tool_loop("sys", "usr", [], lambda name, args: None,
+                          max_rounds=1, _client=cli)
+    said = str(e.value)
+    assert "耗时" in said, said
+    assert "504 Gateway Time-out" in said, ("原错不许吞掉", said)
+    assert isinstance(e.value.__cause__, RuntimeError), "原错挂 __cause__，一个字节没丢"
+
+
+def test_the_call_context_says_the_attempt_count_and_the_knobs():
+    """现场那句话本身：**几次请求 / 旋钮是什么 / 请求多大**，一个都不许少。"""
+    box = [{"retry_count": "0", "body_chars": 111},
+           {"retry_count": "1", "body_chars": 111},
+           {"retry_count": "2", "body_chars": 111}]
+    said = llm.format_call_context(box, 181.4, "deepseek-v4-flash",
+                                   [{"role": "user", "content": "x" * 50}])
+    assert "耗时 181.4 秒" in said, said
+    assert "3 个 HTTP 请求" in said, ("要能一眼看出「试了 3 次」—— 那正是 180 秒的来历", said)
+    assert "max_retries=2" in said, said
+    assert "timeout=600" in said, said
+    assert "deepseek-v4-flash" in said, said
+
+
+def test_the_call_context_says_so_when_no_request_ever_went_out():
+    """**一个请求都没发出去**是另一件事（连不上 / 被拦下），不许读成「重试了 0 次」。"""
+    said = llm.format_call_context([], 12.0, "m", [{"role": "user", "content": "x"}])
+    assert "一个都没发出去" in said, said
+    assert "0 个 HTTP 请求" not in said, said
+
+
+def test_a_stop_from_the_human_is_not_wrapped():
+    """`_Stop`（人喊停）是 **BaseException 而不是 Exception** —— 它必须**原样**往上走。
+
+    包装它 = 把「人按了停」变成「模型挂了」，屏幕上两件事长得一样而意思相反。
+    """
+    class _Stop(BaseException):
+        pass
+
+    cli = _boom_client(_Stop("人喊停了"))
+    with pytest.raises(_Stop):
+        llm.run_tool_loop("sys", "usr", [], lambda name, args: None,
+                          max_rounds=1, _client=cli)
+
+
+# ── 流式（★ 2026-10-14）：治「60 秒 nginx 读超时」─────────────────────
+#
+# 现场：`llm.3tkj.cn` 前面那层 nginx 读超时 **60 秒**（实测 60.1s → 504、42.8s → 200），
+# 而**非流式在生成完成之前一个字节都不吐** ⇒ 只要这一次生成超过 60 秒就被掐；
+# SDK 默认重试 2 次 ⇒ 3 × 60 ≈ 180 秒后整个 job 死（8 趟实测，全死在 `draft`）。
+# 流式**一秒钟就开始吐字节**（实测首字节 1.3s）⇒ 那条「读」的超时永远不触发。
+
+def _tc(index, cid=None, name=None, args=None):
+    """tool_calls 的一片增量（形状照网关实测：`id`/`name` 只在首片，`arguments` 分片给）。"""
+    fn = {}
+    if name is not None: fn["name"] = name
+    if args is not None: fn["arguments"] = args
+    piece = {"index": index}
+    if cid is not None: piece["id"] = cid
+    if fn: piece["function"] = fn
+    return piece
+
+
+def _chunk(content=None, tool_calls=None, finish=None, usage=None, with_choice=True):
+    """一片 chunk。`with_choice=False` = 实测里那一片**只带 usage、`choices` 是空数组**的收尾片。"""
+    msg = {"choices": [], "usage": usage}
+    if with_choice:
+        delta = {}
+        if content is not None: delta["content"] = content
+        if tool_calls is not None: delta["tool_calls"] = tool_calls
+        msg["choices"] = [{"delta": delta, "finish_reason": finish}]
+    return msg
+
+
+def _stream_client(chunks):
+    """一个**只会流**的客户端替身（`run_tool_loop` 认 `_client=`）；`seen` 记下 kwargs。"""
+    seen: dict = {}
+
+    def create(**kwargs):
+        seen.update(kwargs)
+        return iter(chunks)
+
+    chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
+    return types.SimpleNamespace(chat=chat), seen
+
+
+def test_the_call_asks_for_a_stream():
+    """★★ 这一条**就是那个修法本身**：请求必须走流式。
+
+    非流式 = 生成完成前一个字节都不吐 ⇒ 网关前面那层 nginx 的 60 秒读超时必然触发。
+    少了 `stream=True`，后面所有拼装都是白搭。
+    """
+    cli, seen = _stream_client([_chunk("你好", finish="stop")])
+    llm.run_tool_loop("sys", "usr", [], lambda name, args: None, max_rounds=1, _client=cli)
+    assert seen.get("stream") is True, seen
+    assert (seen.get("stream_options") or {}).get("include_usage") is True, (
+        "不点名要 usage，流式就**拿不到 token 账** —— 那是预算那条线（C1）的依据", seen)
+
+
+def test_a_streamed_reply_is_put_back_together():
+    """content 是一片一片来的 —— 拼回去必须与一次给全**逐字相同**。"""
+    cli, _ = _stream_client([
+        _chunk("我看"), _chunk("了一眼"), _chunk("，没什么问题", finish="stop")])
+    rounds = llm.run_tool_loop("sys", "usr", [], lambda name, args: None,
+                               max_rounds=1, _client=cli)
+    assert rounds[0]["content"] == "我看了一眼，没什么问题", rounds[0]["content"]
+
+
+def test_tool_call_arguments_arriving_in_pieces_are_joined():
+    """★ 流式最经典的坑：`arguments` 是一段一段来的，**拼错了模型就调不动工具**。
+
+    `id` 与 `name` 只在**第一片**上有，后面全是 `arguments` 的碎片。
+    """
+    cli, _ = _stream_client([
+        _chunk(tool_calls=[_tc(0, cid="call_1", name="observe", args="")]),
+        _chunk(tool_calls=[_tc(0, args='{"wh')]),
+        _chunk(tool_calls=[_tc(0, args='y": "看')]),
+        _chunk(tool_calls=[_tc(0, args='一眼"}')]),
+        _chunk(finish="tool_calls"),
+    ])
+    seen: list = []
+
+    def dispatch(name, args):
+        seen.append((name, args))
+        return "ok"
+
+    rounds = llm.run_tool_loop("sys", "usr", [], dispatch, max_rounds=1, _client=cli)
+    assert seen == [("observe", {"why": "看一眼"})], seen
+    call = rounds[0]["tool_calls"][0]
+    assert call["id"] == "call_1", call
+    assert call["args_raw"] == '{"why": "看一眼"}', call
+    assert call["error"] is None, call
+
+
+def test_two_tool_calls_in_one_reply_stay_separate():
+    """一次回复里调两个工具时，两串碎片是**交错**来的 —— 分开靠 `index`，不是靠顺序。"""
+    cli, _ = _stream_client([
+        _chunk(tool_calls=[_tc(0, cid="a", name="observe", args='{"p"')]),
+        _chunk(tool_calls=[_tc(1, cid="b", name="screenshot", args='{"q"')]),
+        _chunk(tool_calls=[_tc(0, args=': 1}')]),
+        _chunk(tool_calls=[_tc(1, args=': 2}')]),
+        _chunk(finish="tool_calls"),
+    ])
+    got: list = []
+    rounds = llm.run_tool_loop("sys", "usr", [], lambda n, a: got.append((n, a)) or "ok",
+                               max_rounds=1, _client=cli)
+    assert [c["name"] for c in rounds[0]["tool_calls"]] == ["observe", "screenshot"], rounds[0]
+    assert got == [("observe", {"p": 1}), ("screenshot", {"q": 2})], got
+
+
+def test_the_usage_only_chunk_does_not_break_the_assembly():
+    """收尾那一片**只带 usage、`choices` 是空数组**（网关实测就是这样）——
+    按 `choices[0]` 硬取的地方会 IndexError。"""
+    cli, _ = _stream_client([
+        _chunk("好", finish="stop"),
+        _chunk(usage={"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9},
+               with_choice=False),
+    ])
+    rounds = llm.run_tool_loop("sys", "usr", [], lambda n, a: None, max_rounds=1, _client=cli)
+    assert rounds[0]["usage"]["total_tokens"] == 9, rounds[0]["usage"]
+    assert rounds[0]["finish_reason"] == "stop", rounds[0]["finish_reason"]
+
+
+def test_a_reply_that_calls_no_tool_still_stops_the_loop():
+    """「模型直接说话」= 没调工具 ⇒ 停。这条是**要量的那件事**，流式不许把它弄丢。"""
+    cli, _ = _stream_client([_chunk("说完了", finish="stop")])
+    rounds = llm.run_tool_loop("sys", "usr", [], lambda n, a: None, max_rounds=3, _client=cli)
+    assert len(rounds) == 1, rounds
 
 
 # ── spike 的 runner（矩阵就是它跑出来的）─────────────────────────────

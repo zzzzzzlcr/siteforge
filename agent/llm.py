@@ -12,6 +12,7 @@ LLM 能不能稳定地「调 `observe` → 读结果 → 决定下一步 → 再
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import time
@@ -125,6 +126,115 @@ def _tell_steer(steer, *, went_out: bool) -> None:
         hook()
 
 
+# ── 模型这一跳挂了的**现场**（★ 2026-10-14）─────────────────────────────────
+#
+# 现场：8 趟 job 被 `nginx 504 Gateway Time-out` 打死（8099 五趟 / 8100 三趟，
+# 10-09 → 10-14），而落进 `__error__` 的**只有一页 nginx HTML** —— 没有耗时、
+# 没有第几次尝试、没有请求多大。于是三个假设**一个都证不了、也否不了**：
+#
+#   · 生成太久？—— 拿真网关实测：4000 tokens 输出只要 **17 秒**。
+#   · 输入太大？—— 17.3 万 tokens 输入只要 **2.9 秒**。
+#   · SDK 在默默重试？—— `OpenAI(base_url=…, api_key=…)` 是裸着建的 ⇒ `max_retries=2`
+#     藏在库里，而「闸按下 → 约 180 秒 → 504」**恰好**是 3 × 60（nginx 的默认读超时）。
+#
+# 三个都**没量到**，因为这三格一个都没记。所以这一段先补**量具**，不动修法：
+# 下一次 504 自己会说是哪一类。**修法（超时值 / 走流式 / 网关那层 nginx）等这批数。**
+#
+# ⚠️ 这两个默认值**就等于 SDK 的默认值** —— 这一刀**不改变行为**，只是别再让它藏在库里。
+
+#: 一次模型调用的读超时（秒）。= `openai` SDK 的默认。env：`SITEFORGE_LLM_TIMEOUT`。
+DEFAULT_TIMEOUT_SECONDS = 600.0
+#: SDK 自己重试几次。= `openai` SDK 的默认。env：`SITEFORGE_LLM_RETRIES`。
+DEFAULT_MAX_RETRIES = 2
+
+
+def _positive_env(name: str, default):
+    """env 里的一个非负数；读不出来 / 是负数 ⇒ **留默认值**（与 `SPIKE_MAX_TOKENS` 同一条口径）。
+
+    ⚠️ `0` 是**合法值**（`SITEFORGE_LLM_RETRIES=0` = 「别重试」正要用它）——
+    所以判的是 `< 0`，不是「非正数」。
+    """
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        v = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    if v < 0:
+        return default
+    if isinstance(default, int):
+        return int(v) if v == int(v) else default
+    return v
+
+
+def timeout_seconds() -> float:
+    return float(_positive_env("SITEFORGE_LLM_TIMEOUT", DEFAULT_TIMEOUT_SECONDS))
+
+
+def max_retries() -> int:
+    return int(_positive_env("SITEFORGE_LLM_RETRIES", DEFAULT_MAX_RETRIES))
+
+
+class ModelCallFailed(RuntimeError):
+    """模型这一跳挂了 —— 但**带着现场**（耗时 / 发出去几次 / 旋钮 / 原错）。
+
+    ⚠️ 为什么要单独一个类：落进 job 状态的只有 `str(exc)` —— 原样往上抛的话，
+    `__error__` 里就只剩一页 nginx HTML，而那三格**正是分辨那三个假设的唯一依据**。
+    原错挂在 `__cause__` 上，**一个字节没丢**（另见 `client()` 那段）。
+    ⚠️ 人喊停（`_Stop`）**不走这里**：它是 BaseException 而不是 Exception，
+    包装它 = 把「人按了停」变成「模型挂了」，屏幕上两件事长得一样而意思相反。
+    """
+
+
+#: 这一次调用发出去的 HTTP 请求 —— 只在**这一次** `create()` 前后有效。
+#: 用 `ContextVar` 而不是模块级列表：job 跑在**各自的工作线程**上，两条线不许串账。
+_ATTEMPTS: contextvars.ContextVar = contextvars.ContextVar("siteforge_llm_attempts", default=None)
+#: 长期复用的 httpx client（**每次调用新建一个 = 漏连接池**；而它的钩子只认当前这一次）。
+_HTTP = None
+
+
+def _note_attempt(request, box: list) -> None:
+    """记一次 HTTP 请求。SDK 每次重试 = 一次新请求，而**它自己把第几次打在头上**
+    （`x-stainless-retry-count`）—— 读它比自己数更可信：那就是 SDK 认的那一次。
+    老 SDK 不打这个头 ⇒ 记 `None`，**照样计数**（「几次」仍然量得到）。
+    """
+    box.append({"retry_count": request.headers.get("x-stainless-retry-count"),
+                "body_chars": len(request.content or b"")})
+
+
+def _http_client():
+    """一个**长期复用**的 httpx client，挂一个把请求记进 `_ATTEMPTS` 的钩子。"""
+    global _HTTP
+    if _HTTP is None:
+        import httpx
+
+        def _hook(request):
+            box = _ATTEMPTS.get()
+            if box is not None:
+                _note_attempt(request, box)
+
+        _HTTP = httpx.Client(event_hooks={"request": [_hook]})
+    return _HTTP
+
+
+def format_call_context(attempts: list, seconds: float, model: str, messages: list) -> str:
+    """这一次调用的现场 → 一段人话（**要进 `__error__`**，所以都在消息里）。"""
+    n = len(attempts)
+    if not n:
+        sent = "**一个都没发出去**（连不上 / 被拦下 —— 与「发出去又超时」不是一回事）"
+    else:
+        counts = [str(a.get("retry_count")) for a in attempts]
+        sizes = sorted({a.get("body_chars") or 0 for a in attempts})
+        sent = ("%d 个 HTTP 请求（SDK 的重试计数 %s；请求体 %s 字节）"
+                % (n, "/".join(counts), "/".join(str(s) for s in sizes)))
+    chars = sum(len(str((m or {}).get("content") or "")) for m in messages)
+    return ("耗时 %.1f 秒；发出去 %s；%d 条消息（正文约 %d 字符）；模型 %s；"
+            "这一次客户端的 timeout=%gs、max_retries=%d"
+            % (seconds, sent, len(messages), chars, model,
+               timeout_seconds(), max_retries()))
+
+
 def client():
     """按 env 建 OpenAI 兼容客户端。key 只从 env 读，**不落任何文件**。"""
     from openai import OpenAI
@@ -152,7 +262,85 @@ def client():
             "  ③ 核对：`docker exec <容器名> printenv OPENAI_BASE_URL` —— 与你要的那条对得上才算换成了。\n"
             "（这一格**故意没有默认值**：兜一个官方地址会让「env 没带上」变成「静默打到别处」，"
             "而那件事在这块屏幕上跟「模型答不好」长得一样，没人看得出来。）")
-    return OpenAI(base_url=base, api_key=key)
+    #: ★ 2026-10-14：**这两格显式写出来**（原先裸着建 ⇒ 两个值都藏在 SDK 默认里，
+    #: 而「查 504 的那三格」里有两格就是它们）。值**与 SDK 默认相同** ⇒ 行为不变；
+    #: env 能拧（`SITEFORGE_LLM_TIMEOUT` / `SITEFORGE_LLM_RETRIES`）⇒ 调参不必改代码。
+    #: `http_client` 那一个是**量具**：SDK 每次重试都过它 ⇒ 「发出去几次」量得到。
+    return OpenAI(base_url=base, api_key=key,
+                  timeout=timeout_seconds(), max_retries=max_retries(),
+                  http_client=_http_client())
+
+
+def as_dict(chunk) -> dict:
+    """SDK 的 chunk 对象 / 朴素 dict → dict。读流的那两处**走同一个口**，不许各写一份。"""
+    return chunk if isinstance(chunk, dict) else chunk.model_dump()
+
+
+def delta_content(chunk) -> str:
+    """一片 chunk 里模型**说的话**（拼起来才是这一轮的全部）。
+
+    ⚠️ 只读 `delta.content` —— `reasoning_content` 是**思考**不是答案（与 `read_stream` 同一条口径）。
+    给 `browser_agent._RoundGate` 用：那一层**每轮都在场**，模型的叙述归它记
+    （人被打断时 `run_tool_loop` 的 records 会随异常丢掉）；而它不该自己再写一份解析
+    —— 两份解析迟早会漂。
+    """
+    out: list = []
+    for ch in (as_dict(chunk).get("choices") or []):
+        said = ((ch or {}).get("delta") or {}).get("content")
+        if said:
+            out.append(str(said))
+    return "".join(out)
+
+
+def read_stream(chunks) -> dict:
+    """把一股流拼回**一次 reply** 的形状（朴素 dict）。
+
+    ★ 2026-10-14 为什么要走流式：`llm.3tkj.cn` 前面那层 nginx 读超时 **60 秒**
+    （实测：60.1 秒 → 504、42.8 秒 → 200），而**非流式在生成完成之前一个字节都不吐**
+    ⇒ 只要这一次生成超过 60 秒就被掐断；SDK 再默认重试两次 ⇒ **3 × 60 ≈ 180 秒**
+    后整个 job 死（8 趟实测，全死在生成最长的 `draft`）。流式**一秒多就开始吐字节**
+    （实测首字节 1.3 秒）⇒ 那条「读」的超时**永远不触发**。
+
+    形状照**网关实测**（不是照文档）：
+
+      · `content` 一片一片来，要拼；
+      · `tool_calls` 按 `index` 分股 —— `id` 与 `function.name` **只在第一片**上，
+        `function.arguments` 是**碎片**，按股拼（拼错 = 模型调不动工具）；
+      · 收尾那一片**只带 `usage`、`choices` 是空数组** —— 按 `choices[0]` 硬取会 IndexError；
+      · 要 `usage` 得在请求里点名 `stream_options={"include_usage": True}`（见 `run_tool_loop`）。
+
+    ⚠️ `reasoning_content`（deepseek 那一族）**不进 `content`** —— 与非流式那条路一致：
+    它是思考不是答案，它的量在 `usage.completion_tokens_details.reasoning_tokens` 里。
+    """
+    content: list = []
+    calls: dict = {}
+    finish = None
+    usage = None
+    for chunk in chunks:
+        d = as_dict(chunk)
+        if d.get("usage"):
+            usage = d["usage"]
+        if said := delta_content(d):
+            content.append(said)
+        for ch in (d.get("choices") or []):
+            if ch.get("finish_reason"):
+                finish = ch["finish_reason"]
+            delta = ch.get("delta") or {}
+            for piece in (delta.get("tool_calls") or []):
+                idx = piece.get("index")
+                slot = calls.setdefault(0 if idx is None else int(idx),
+                                        {"id": "", "name": "", "arguments": ""})
+                if piece.get("id"):
+                    slot["id"] = piece["id"]
+                fn = piece.get("function") or {}
+                if fn.get("name"):
+                    slot["name"] = fn["name"]
+                if fn.get("arguments"):
+                    slot["arguments"] += fn["arguments"]
+    return {"content": "".join(content),
+            "tool_calls": [calls[k] for k in sorted(calls)],
+            "finish_reason": finish,
+            "usage": usage}
 
 
 def run_tool_loop(
@@ -220,47 +408,64 @@ def run_tool_loop(
                 messages.append(steer_message(said))
                 steered = said
         t0 = time.time()
+        #: ★ 2026-10-14：**这一次调用发出去几个请求**记在这儿（见 `format_call_context`）。
+        box: list = []
+        _tok = _ATTEMPTS.set(box)
         try:
-            resp = cli.chat.completions.create(
+            #: ★ 2026-10-14：**流式** —— 治「60 秒 nginx 读超时」（见 `read_stream`）。
+            #: `include_usage` 不点名就要不到 token 账（那是预算那条线 C1 的依据）。
+            #: ⚠️ 流**在这里就消费掉**：中途被掐（nginx 切断）也落在同一个 `try` 里，
+            #: 照样被包成带现场的 `ModelCallFailed`。
+            reply = read_stream(cli.chat.completions.create(
                 model=model,
                 messages=messages,
                 tools=tool_specs or None,
                 max_tokens=max_tokens,
-            )
-        except BaseException:                      # noqa: BLE001 —— `_Stop`（人喊停）也是 BaseException
+                stream=True,
+                stream_options={"include_usage": True},
+            ))
+        except BaseException as exc:               # noqa: BLE001 —— `_Stop`（人喊停）也是 BaseException
             # 这一次调用**没发出去** —— 那根线要据此把「已经交给它了」收回去（`missed`）。
             _tell_steer(steer, went_out=False)
-            raise
+            #: ⚠️ 人喊停（`_Stop`）是 **BaseException 而不是 Exception** —— 原样往上走。
+            if not isinstance(exc, Exception):
+                raise
+            #: ★ 2026-10-14：**带着现场往上抛** —— `__error__` 里只留得住 `str(exc)`，
+            #: 而「耗时 / 发出去几次 / 旋钮」正是分辨那三个假设的唯一依据。
+            raise ModelCallFailed(
+                "模型这一跳挂了（%s）：%s\n  · %s"
+                % (type(exc).__name__, str(exc)[:400],
+                   format_call_context(box, time.time() - t0, model, messages))) from exc
+        finally:
+            _ATTEMPTS.reset(_tok)
         if steered:
             # 真的发出去了（模型看到这一轮了）—— 这才算「交给它了」（复审 F2③）。
             _tell_steer(steer, went_out=True)
         elapsed_ms = int((time.time() - t0) * 1000)
 
-        choice = resp.choices[0]
-        msg = choice.message
-        usage = resp.usage.model_dump() if resp.usage else None
-
-        raw_calls = list(msg.tool_calls or [])
+        content = reply["content"]
+        usage = reply["usage"]
+        raw_calls = reply["tool_calls"]
         record: dict = {
             "round": i,
-            "content": msg.content or "",
+            "content": content,
             "tool_calls": [],
             "usage": usage,
             "elapsed_ms": elapsed_ms,
-            "finish_reason": choice.finish_reason,
+            "finish_reason": reply["finish_reason"],
             "messages": [],
             "steered": steered,
         }
 
         # 原样把 assistant message 追加进对话（OpenAI 要求 tool 消息必须紧跟带
         # tool_calls 的 assistant 消息，缺了它下一轮会 400）。
-        assistant_msg: dict = {"role": "assistant", "content": msg.content or ""}
+        assistant_msg: dict = {"role": "assistant", "content": content}
         if raw_calls:
             assistant_msg["tool_calls"] = [
                 {
-                    "id": c.id,
+                    "id": c["id"],
                     "type": "function",
-                    "function": {"name": c.function.name, "arguments": c.function.arguments},
+                    "function": {"name": c["name"], "arguments": c["arguments"]},
                 }
                 for c in raw_calls
             ]
@@ -268,9 +473,9 @@ def run_tool_loop(
         record["messages"].append(assistant_msg)
 
         for c in raw_calls:
-            name = c.function.name
-            args_raw = c.function.arguments
-            call: dict = {"id": c.id, "name": name, "args_raw": args_raw, "args": None,
+            name = c["name"]
+            args_raw = c["arguments"]
+            call: dict = {"id": c["id"], "name": name, "args_raw": args_raw, "args": None,
                           "result": None, "error": None, "elapsed_ms": None}
 
             t1 = time.time()
@@ -299,7 +504,7 @@ def run_tool_loop(
                 if call["error"] is None
                 else json.dumps({"error": call["error"]}, ensure_ascii=False)
             )
-            tool_msg = {"role": "tool", "tool_call_id": c.id, "content": payload}
+            tool_msg = {"role": "tool", "tool_call_id": c["id"], "content": payload}
             messages.append(tool_msg)
             record["messages"].append(tool_msg)
             record["tool_calls"].append(call)

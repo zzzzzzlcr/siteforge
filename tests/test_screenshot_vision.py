@@ -57,8 +57,10 @@ SHOT = {
 class SpyLLM:
     """按剧本回话的假模型，**把每次收到的东西原样留住**。
 
-    与 `test_browser_agent.FakeLLM` 同一片 OpenAI 形状，只是这里不需要桩 MCP：
-    要验的是「工具结果 → tool message」这一段，所以 dispatch 直接回那份 `Shot`。
+    与 `test_browser_agent.FakeLLM` 同一片形状（**一股流**，不是一句回复 ——
+    `run_tool_loop` 自 2026-10-14 起走流式，见 `agent/llm.read_stream`），
+    只是这里不需要桩 MCP：要验的是「工具结果 → tool message」这一段，
+    所以 dispatch 直接回那份 `Shot`。
     """
 
     def __init__(self, turns: list):
@@ -76,19 +78,25 @@ class SpyLLM:
     def create(self, **kwargs):
         self.calls.append(kwargs)
         turn = self.turns[min(len(self.calls) - 1, len(self.turns) - 1)]
-        calls = [
-            types.SimpleNamespace(
-                id=f"call_{i}",
-                function=types.SimpleNamespace(name=name, arguments=json.dumps(args)),
-            )
-            for i, (name, args) in enumerate(turn.get("calls") or [])
-        ]
-        msg = types.SimpleNamespace(content=turn.get("content", ""), tool_calls=calls or None)
-        return types.SimpleNamespace(
-            choices=[types.SimpleNamespace(message=msg,
-                                           finish_reason="tool_calls" if calls else "stop")],
-            usage=None,
-        )
+        content = turn.get("content", "")
+        calls = list(turn.get("calls") or [])
+        chunks: list = []
+        if content:
+            chunks.append({"choices": [{"delta": {"content": content}, "finish_reason": None}]})
+        for i, (name, args) in enumerate(calls):
+            raw = json.dumps(args)
+            head = max(1, len(raw) // 2)          # 碎片切开给 —— 拼碎片是流式最容易错的一处
+            chunks.append({"choices": [{"delta": {"tool_calls": [
+                {"index": i, "id": f"call_{i}",
+                 "function": {"name": name, "arguments": raw[:head]}}]},
+                "finish_reason": None}]})
+            chunks.append({"choices": [{"delta": {"tool_calls": [
+                {"index": i, "function": {"arguments": raw[head:]}}]},
+                "finish_reason": None}]})
+        chunks.append({"choices": [{"delta": {},
+                                    "finish_reason": "tool_calls" if calls else "stop"}],
+                       "usage": None})
+        return iter(chunks)
 
 
 def _loop(result, *, tool="screenshot", turns=None):
