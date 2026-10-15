@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import json
 import re
 import urllib.request
@@ -44,7 +45,9 @@ from agent import plan as plan_mod
 __all__ = ["from_py", "repair_states", "REQUIRED_CLI_FLAGS",
            "PATCH_SYSTEM", "shape_of", "check_patch", "patch_user", "extract_source",
            "patch_from_rounds", "apply_diff", "apply_edits", "source_from_reply",
-           "STATES_SYSTEM", "LOOP_KEYS", "states_user", "states_from_reply"]
+           "STATES_SYSTEM", "LOOP_KEYS", "states_user", "states_from_reply",
+           #: ★ 2026-10-15 修站那一刀：**原始观察**那一族（见下面那一节）
+           "CARD_KEYS", "card_of", "observed_of", "find_observed", "card_fingerprint"]
 
 #: 取站方配置的超时（秒）。**短** —— 它是可选层，拿不到就往下走，不能把整趟拖住。
 CONFIG_TIMEOUT = 8.0
@@ -1023,3 +1026,118 @@ def http_get(url: str, timeout: float = CONFIG_TIMEOUT) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": "siteforge/1.0"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", "replace")
+
+
+# ── 原始观察：探路那一刻量到的那几样（★ 2026-10-15 修站那一刀）──────────────
+#
+# 为什么要有这一节（spec `docs/superpowers/specs/2026-10-15-修复py-证据与判据-design.md` §3.6b/§3.7）：
+# `lint` 要判「这根地址是不是量到的」，而**判据跑在待检查的那份 src 上**。
+# 待检查的那份是**改稿那双手写的** ⇒ 拿它当证据就是**循环证明**：
+#   模型编一根 `header a` → 写进 states → 判据从 states 读证据 → 认为有出处 → 放行。
+# 所以证据必须是**另一份**、而且是模型**写不到**的一份：探路收尾时冻的 `observed`。
+#
+# ⚠️ 冻的是 `states` + `fills` 两张表的**整份拷贝**（不是只抽卡）：
+#   · 卡从它里面读（判据只读卡字段与 `selectors`，见 `card_of`）；
+#   · 整份拷的代价是多几百 KB 的 checkpoint —— 换来的是「以后要读别的格」不用再改冻结协议。
+
+#: 一张「卡」里放哪几样 —— **探路那一刻量到的身份证据**。
+#: ⚠️ `selectors` 在里头：它装的就是工具当时给的 `selector` + `alternates`
+#: （`_selectors_of` 搬进来的），而 `tools/cdp` 那边的 `address()` 已经把
+#: **每一条都验过唯一**（唯一不了就如实降 `stability: low`）。
+CARD_KEYS = ("label", "aria_label", "hint", "placeholder", "nearby_text",
+             "text", "role", "selectors")
+
+
+def card_of(target) -> dict:
+    """一个 target → 那张卡（**只有卡字段**；值为空的不进来）。
+
+    空 / 不是 dict ⇒ 空 dict（那张卡就是「什么都没有」—— 与「读不出来」在这一层同义，
+    判据那边按「没量到」处理）。
+    """
+    if not isinstance(target, dict):
+        return {}
+    out: dict = {}
+    for key in CARD_KEYS:
+        value = target.get(key)
+        if value in (None, "", [], {}):
+            continue
+        out[key] = copy.deepcopy(value)
+    return out
+
+
+def observed_of(states, fills) -> dict:
+    """把探路那一版的两张表**冻一份** → `{"states": [...], "fills": {...}}`。
+
+    ⚠️ **深拷贝**：不深拷的话，改稿那双手改的是同一批对象，这份「证据」跟着一起变
+    （那正是这一节要防的事，而且是**静默**的 —— 没有任何地方会响）。
+    """
+    return {"states": copy.deepcopy(list(states or [])),
+            "fills": copy.deepcopy(dict(fills or {}))}
+
+
+def card_fingerprint(card) -> tuple:
+    """**整张卡**的指纹（`selectors` + 那几样锚的值）—— 「接受」拿它当失效判据（Task 6）。
+
+    ⚠️ 与 `_selector_key` **不是一回事**，别混：
+      · `_selector_key` 只比 `selectors` —— 它是**找路**用的（模型改了别的、地址没动，还找得回）；
+      · `card_fingerprint` 比全部 —— 它是**判失效**用的（证据变了，人那次点头就不算数了）。
+    """
+    return _selector_key(card) + tuple(sorted(
+        (key, _norm_card_value(card.get(key)))
+        for key in ("label", "aria_label", "hint", "placeholder", "text")
+        if _norm_card_value((card or {}).get(key))))
+
+
+def _selector_key(card) -> tuple:
+    """只比 `selectors`（去空白、排序）—— `find_observed` 第 ② 步找路用的那一把尺子。"""
+    return tuple(sorted(str(s or "").strip() for s in ((card or {}).get("selectors") or [])
+                        if str(s or "").strip()))
+
+
+def _norm_card_value(value) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def find_observed(observed, state_name: str, index: int, card) -> Optional[dict]:
+    """当前这一步那张卡，**回原件里**找对应的那一步 → 原件那张卡（找不到给 `None`）。
+
+    两步对法（顺序要紧）：
+      ① 按 **(状态名, 组内步序)** —— 这是全仓既有的「这一步是谁」的把手
+         （`_rule_i` 报的就是「组「X」第 N 步」，`_keep_repair_local` 也按它钉）；
+      ② ① 落空 ⇒ 在原件**那一组**里按**卡的指纹**找一步（模型把两步调了个个儿、
+         或在前面插了一步，都靠这一条救）。
+      ③ 都落空 ⇒ `None` = **这一步没有可依的原始观察**（判据照这个如实说）。
+
+    ⚠️ ② **不能作弊**：指纹必须命中**原件里真实存在**的一步 —— 编出来的卡在原件里找不到
+    （`test_find_observed_returns_none_for_invented_card` 钉的就是这一条）。
+    ⚠️ 这一层**只负责找**，不判级别 —— 级别是 `lint.address_basis` 的活（单一职责）。
+    """
+    if not isinstance(observed, dict):
+        return None
+    groups = observed.get("states")
+    if not isinstance(groups, list):
+        return None
+    group = None
+    for one in groups:
+        if isinstance(one, dict) and str(one.get("name") or "") == str(state_name or ""):
+            group = one
+            break
+    if group is None:
+        return None
+    steps = [s for s in (group.get("steps") or []) if isinstance(s, dict)]
+    # ① 按步序
+    if 0 <= index < len(steps):
+        got = card_of(steps[index].get("target"))
+        if got and _selector_key(got) == _selector_key(card):
+            return got
+        if not got and not _selector_key(card):
+            return got                     # 两边都空 ⇒ 就是这一步（它本来就没 target）
+    # ② 按地址的指纹（**只比 selectors** —— 模型改了别的、地址没动，照样找得回）
+    want = _selector_key(card)
+    if not want:
+        return None
+    for one in steps:
+        got = card_of(one.get("target"))
+        if got and _selector_key(got) == want:
+            return got
+    return None

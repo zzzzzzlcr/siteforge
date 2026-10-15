@@ -1083,6 +1083,18 @@ def _loop_source(state, deps: Deps, *, report) -> str:
         busy_timeout=int(spec.get("busy_timeout") or template_loop.LOOP_BUSY_TIMEOUT))
 
 
+def _freeze_observed(state, states, fills) -> dict:
+    """把**探路那一刻**的两张表冻一份（`state["observed"]`）。**只冻一次**。
+
+    冻在这一刻的理由：这是账本第一次进 state，**还没经过任何改稿**（`_draft` 里
+    `spec` 刚拼出来、`deps.write` 还没叫）。后面几版 draft 进来时这一格已经有值 ⇒ 空 dict。
+    ⚠️ **纯函数**（不读图、不碰 `deps`）—— 图那一层有 `interrupt()`，直接调 `_draft` 测不了它。
+    """
+    if state.get("observed") is not None:
+        return {}
+    return {"observed": fix_mod.observed_of(states, fills)}
+
+
 def _draft(state, deps: Deps, caps: Caps) -> dict:
     """把账本翻译成 py 源码（`template.render`），**带上回灌的证据**。
 
@@ -1139,6 +1151,8 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
         spec = {"site": state["site"], "success_text": state.get("success_text"),
                 "success_urls": state.get("success_urls"),
                 "states": journey.states(), "fills": journey.fills()}
+    #: ★ 2026-10-15：**探路那一刻的原始观察，就在这一刻冻**（spec §3.6b）。
+    out.update(_freeze_observed(state, spec["states"], spec["fills"]))
     #: ★ 形态分派（2026-09-24，交接文档欠账 ④）：**单页漏斗/问卷 ⇒ 步进循环型** ——
     #: 固定步骤表那一族在这类站上会**静默跳过整组**（它只记下走过的那一条路，下一问变了 ⇒
     #: `when` 不成立 ✗）；多页导航型照旧固定步骤表。判据只有一条、而且是**量到的**：

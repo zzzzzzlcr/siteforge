@@ -2467,3 +2467,57 @@ def test_the_final_lint_sentence_does_not_claim_nothing_was_written_when_it_was(
         assert claim not in said, (
             "这一版真落了盘，给人看的那句话却写着「%s」—— 运营读到就不会去勾「照样传」：\n%s"
             % (claim, said))
+
+
+# ── 原始观察冻进 state（2026-10-15 修站那一刀）──────────────────────────────
+
+def test_freeze_observed_takes_a_deep_copy():
+    from agent import graph as g
+
+    states = [{"name": "auth", "steps": [{"action": "click",
+                                          "target": {"selectors": ["#a"]}}]}]
+    fills = {"k": {"target": {"label": "Postcode"}}}
+    out = g._freeze_observed({}, states, fills)
+    states[0]["steps"][0]["target"]["selectors"].append("header a")
+    fills["k"]["target"]["label"] = "改花了"
+    assert out["observed"]["states"][0]["steps"][0]["target"]["selectors"] == ["#a"]
+    assert out["observed"]["fills"]["k"]["target"]["label"] == "Postcode"
+
+
+def test_freeze_observed_is_a_no_op_when_already_frozen():
+    """**只冻一次** —— 后面几版 draft 进来时不许重冻（spec §3.6b）。"""
+    from agent import graph as g
+
+    out = g._freeze_observed({"observed": {"states": [], "fills": {}}},
+                             [{"name": "改花了", "steps": []}], {})
+    assert out == {}
+
+
+def test_the_frozen_observation_survives_the_whole_run(tmp_path, monkeypatch):
+    """走完一整趟之后，`observed` 还是**探路那一版** —— 改稿改花了也不动它。
+
+    打桩照本文件既有的手法（`tests/test_graph.py:1118` 那一族）：
+    `monkeypatch.setattr(_ba.Journey, "states", …)`。
+    ⚠️ `_build` 返回的是**三元组** `(app, cfg, saver)`（`tests/test_graph.py:223`），别当图用。
+    ⚠️ 桩每次给**新的深拷贝** —— 给同一个对象的话，`_draft` 后面就地改它会把断言也改了。
+    """
+    import copy
+
+    from agent import browser_agent as _ba
+
+    ledger = [{"name": "auth", "steps": [{"action": "click",
+                                          "target": {"selectors": ["#a"]}}]}]
+    monkeypatch.setattr(_ba.Journey, "states", lambda self: copy.deepcopy(ledger))
+    monkeypatch.setattr(_ba.Journey, "fills", lambda self: {})
+
+    #: ⚠️ 任务书那一行原样写的是 `_build(deps=_deps())` —— 那是一处笔误：`_deps()` 返回的是
+    #: **(Deps, Rec) 一对**（本文件 `:171`），把这一对当 `deps` 交进去，图跑第一个节点就
+    #: `AttributeError: 'tuple' object has no attribute 'set_viewport'`（实测，见 Task 1 报告）。
+    #: 按本文件那一族的写法拆开：
+    deps, _rec = _deps()                             # `_deps` / `_build` 都是本文件既有的桩
+    app, cfg, _saver = _build(deps=deps)
+    _drive(app, cfg, {"url": "https://x.test/", "goal": "走完", "mode": "build",
+                      "site": "x", "success_text": "thanks"})
+    snap = app.get_state(cfg).values
+    assert snap["observed"]["states"] == ledger      # 冻的是探路那一版
+    assert snap["states"] is not ledger              # 而且不是同一个对象（深拷）

@@ -201,3 +201,70 @@ def test_a_draft_with_no_readable_criterion_is_not_guessed():
     assert "is_success" in fix.success_clue_from_source(func_only)
     #: 说不出靠什么判时**回空串**（调用方那边有兜底那句话）—— 不编一句。
     assert fix.success_clue_from_source("x = 1\n") == ""
+
+
+# ── 原始观察：抽取 / 对回原件（2026-10-15 修站那一刀）────────────────────────
+
+def _card_src():
+    return {
+        "states": [{"name": "auth", "steps": [
+            {"action": "scroll", "target": {"role": "a", "near": "header",
+                                            "selectors": ["body:nth-of-type(1) > header:nth-of-type(1) > div:nth-of-type(1) > a:nth-of-type(1)"],
+                                            "text": None}},
+            {"action": "form", "target": {"label": "Postcode", "hint": "postcode",
+                                          "selectors": ['input[name="postcode"]'],
+                                          "nearby_text": ["Where do you live?"]}},
+        ]}],
+        "fills": {"postcode": {"source": "postcode",
+                               "target": {"label": "Postcode", "hint": "postcode",
+                                          "selectors": ['input[name="postcode"]']}}},
+    }
+
+
+def test_card_of_takes_only_card_keys():
+    got = fix.card_of({"label": "Postcode", "hint": "postcode", "selectors": ["input#a"],
+                       "above_fold_only": False, "frame_id": ""})
+    assert got == {"label": "Postcode", "hint": "postcode", "selectors": ["input#a"]}
+    assert "above_fold_only" not in got and "frame_id" not in got
+
+
+def test_card_of_empty_target_is_empty_dict():
+    assert fix.card_of(None) == {}
+    assert fix.card_of({}) == {}
+
+
+def test_observed_of_is_a_deep_copy():
+    src = _card_src()
+    got = fix.observed_of(src["states"], src["fills"])
+    # 改原件不许动到冻的那份（反过来也一样）
+    src["states"][0]["steps"][0]["target"]["selectors"].append("header a")
+    src["fills"]["postcode"]["target"]["label"] = "改花了"
+    assert got["states"][0]["steps"][0]["target"]["selectors"] == [
+        "body:nth-of-type(1) > header:nth-of-type(1) > div:nth-of-type(1) > a:nth-of-type(1)"]
+    assert got["fills"]["postcode"]["target"]["label"] == "Postcode"
+
+
+def test_find_observed_by_state_and_index():
+    obs = fix.observed_of(**_card_src())
+    card = fix.card_of(obs["states"][0]["steps"][1]["target"])
+    assert fix.find_observed(obs, "auth", 1, card)["hint"] == "postcode"
+
+
+def test_find_observed_falls_back_to_card_fingerprint_when_reordered():
+    """模型把两步调了个个儿 ⇒ 按 (状态名, 步序) 对不上，但卡的指纹能救回来。"""
+    obs = fix.observed_of(**_card_src())
+    postcode = fix.card_of(obs["states"][0]["steps"][1]["target"])
+    # 现在去问「auth 的第 0 步，它的卡是 postcode 那张」——原件第 0 步不是它
+    got = fix.find_observed(obs, "auth", 0, postcode)
+    assert got is not None and got["hint"] == "postcode"
+
+
+def test_find_observed_returns_none_for_invented_card():
+    """编出来的卡在原件里找不到 —— 这一步就是「没有可依的原始观察」。"""
+    obs = fix.observed_of(**_card_src())
+    invented = {"role": "a", "near": "header", "selectors": ["header a"]}
+    assert fix.find_observed(obs, "auth", 0, invented) is None
+
+
+def test_find_observed_returns_none_when_observed_is_missing():
+    assert fix.find_observed(None, "auth", 0, {"selectors": ["#a"]}) is None

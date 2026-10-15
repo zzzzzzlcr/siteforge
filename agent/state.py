@@ -190,6 +190,13 @@ class SiteState(TypedDict, total=False):
     fix_fills: Optional[dict]
     fix_notes: Optional[list]
     fix_plan_steps: Optional[int]
+    #: ★ 2026-10-15 修站那一刀：**探路那一刻的原始观察**（`fix.observed_of` 冻的那份）。
+    #:
+    #: 为什么必须有这一格：lint 要判「这根地址是不是量到的」，而判据跑在**待检查的** `src` 上，
+    #: 那一份是**改稿那双手写的** ⇒ 拿它当证据就是**循环证明**（编一根 → 写进表 → 判据从表里
+    #: 读到「有出处」→ 放行）。证据必须是模型**写不到**的一份，就是这一格。
+    #: ⚠️ 只在**第一次** `_draft` 里冻（`if state.get("observed") is None`），后面几版不许重冻。
+    observed: Optional[dict]
     #: **底稿是哪一种写法**（`fix.shape_of()` 量出来的）：`"legacy"` = 线上那一族
     #: （没有 `STATES/FILLS` 那张数据表，改稿走整份源码出补丁）。模板形这一格是空的。
     #: ⚠️ 必须**在这里声明**：langgraph 按字段名过滤，没声明的键进不了状态、**而且不报错**。
