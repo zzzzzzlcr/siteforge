@@ -1101,6 +1101,12 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             fails = 0
             # 第 3 格 `receipt`：工具**回来了** —— 转抄它的原文（超长只标注、不过滤）。
             step["receipt"] = _receipt_of(name, raw)
+            #: ★ 2026-10-15：**回执那一行里就有名字** —— 空卡那几步从它自己这条回执里捡回来
+            #: （见 `_card_from_receipt_into`；`job-3e99eb67519e` 那三步的病）。
+            #: 挂在这一处是因为**回执到手的那一刻**只有这里有：它一收进 `step["receipt"]`
+            #: 就被 `_receipt_of` 按上限削过（`target` 那一格超过 200 字符的会被换成一句
+            #: 「有多大、没抄」），再往后就没有原文可读了。
+            _card_from_receipt_into(step, raw)
             # 第 5 格 `sig_after`：只有 `observe` 这一步**当场**量得出来 —— 那一眼就是
             # 量它的动作（`_raw_sig(raw)`）。别的动作（click / form / scroll / goto）
             # 动手那一下**手上没有新的一页**：页面变没变要等下一次观测，
@@ -2384,6 +2390,62 @@ def _describe(name: str, args: dict, pages: "_Pages", journey: Journey) -> tuple
         if name == "form":
             fill = _fill_info(args, step["target"], element, journey)
     return step, fill
+#: 回执那一行里**捡回来**的那几样，按落位顺序（`label` 在前：判据先认它）。
+#: ⚠️ 只有这两样 —— 键名是 `target` 这份契约里**本来就有**的
+#: （`_target_of` 的两支都发它们），不是新键。
+_CARD_FROM_RECEIPT_KEYS = ("label", "text")
+
+
+def _card_from_receipt_into(step: dict, raw) -> list:
+    """回执到手那一刻：把回执那一行里的名字**捡**进这一步的身份卡，返回补上的键。
+
+    ★ 2026-10-15（`job-3e99eb67519e` · wildnutrition 账本第 30/32/37 步）：**同一个元素、
+    同一次工具调用** —— 回执里 `aria-label="Every now and then"` 印得清清楚楚，而账本里
+    那张卡 `text`/`role`/`near` 三个 `null`。根因在摘卡那一跳（`_describe`）：判据是
+    `_find_element(上一次观测的模型, 选择器)`，它**在那份模型里没找到这个元素** ⇒
+    `_target_of(None, …)` 出来一张空卡 ⇒ 下游判据说这一步「量不到更稳的地址」
+    （`lint._has_text_anchor` 认的 `label` / `text` 一个都没有）。
+
+    纪律（三条，别松）：
+
+    - **只在卡是空的那一刻补** —— 「上一次观测里没找到这个元素」正是 `_describe` 写下
+      `why["card"]` 的那一种（它就是这里那道闸）。**找到了的那些步一个字节都不动**：
+      那张卡是从上一次观测里摘的（同一份证据），而回执说的是「cdp 解析选择器之后点到
+      的那一个」—— 选择器有歧义时两者可能不是同一个元素，盖掉就是拿另一份证据换掉这份，
+      而屏幕上什么都不会说。
+    - **只补空着的那几样**（`target` 里已有值的照原样留着），**不加别的键** ——
+      `target` 是产物契约的一部分（`label` / `text` 本来就在这份契约里）。
+    - **认不出就不补**（`card_from_receipt` 给 `None`）：宁可留一张空卡，也不猜一个名字。
+
+    `aria-label` 落 `label` 是照 `_target_of` 的既有约定（那一支写的是
+    `label = element.get("label") or element.get("aria_label")`）。**判据认的键是 `label`
+    不是 `aria_label`** —— 落错地方等于白补。
+    """
+    if not (step.get("why") or {}).get("card"):
+        return []                       # 上一次观测里**找到**了 ⇒ 卡不是空的 ⇒ 什么都不动
+    target = step.get("target")
+    if not isinstance(target, dict):
+        return []                       # 这一步没有卡可补（goto / observe / eval 那几步）
+    told = raw.get("target") if isinstance(raw, dict) else None
+    card = card_from_receipt(told)
+    if not card:
+        return []
+    filled = []
+    for key in _CARD_FROM_RECEIPT_KEYS:
+        if str(target.get(key) or "").strip():
+            continue                    # 已有值 ⇒ 一个字节都不动
+        if card.get(key):
+            target[key] = card[key]
+            filled.append(key)
+    if not filled:
+        return []
+    got = "、".join("`%s`" % key for key in filled)
+    step["why"]["card"] += (
+        "—— 不过这一张**从回执里捡回来了**：这一下点到的元素，回执那一行把它叫什么"
+        "写下来了（补上了 %s：`%s`）。" % (got, told))
+    return filled
+
+
 
 
 #: `observe` 用这个名字表示**主帧**（规格 §4.3：单帧 observe 给 `[frameID]`，`""` → `["main"]`）。
@@ -4600,6 +4662,66 @@ def _raw_sig(raw) -> dict | None:
     return {"url": str(raw.get("url") or ""),
             "text": hashlib.sha1(text.encode("utf-8")).hexdigest()[:12],
             "visible": visible}
+
+
+#: 回执里那一行身份描述的形状（Go 侧 `ClickCandidate.Describe()`，`tools/cdp/internal/click.go`）：
+#:
+#:     <tag> ["文本"] [aria-label="标签"] [x,y,w,h] [disabled]
+#:
+#: ⚠️ 两个引号段在 Go 那侧是 `%q`（双引号 + 反斜杠转义），`文本` / `标签` 各按**字符**截到
+#: 32 并加 `…`。这里**不做反转义**（见 `card_from_receipt` 的 docstring）：宁可认不出。
+_RECEIPT_CARD = re.compile(
+    r"^<(?P<tag>[A-Za-z][A-Za-z0-9]*)>"
+    r"(?: (?P<text>\"[^\"\\]*\"))?"
+    r"(?: aria-label=(?P<label>\"[^\"\\]*\"))?"
+    r" \[(?P<box>-?\d+,-?\d+,-?\d+,-?\d+)\]"
+    r"(?: disabled)?$")
+
+
+def card_from_receipt(text) -> Optional[dict]:
+    """回执里那一行描述 → **身份卡**（`{"label": …, "text": …}`，只放有值的那几样）。
+
+    ★ 2026-10-12 现场（`job-3e99eb67519e` · wildnutrition，账本 `runtime/explore/
+    job-3e99eb67519e/attempt-1.jsonl` 第 30/32/37 步），逐字：
+
+        步 30  target={"text": null, "role": null, "near": null, "selectors": ["…li:nth-of-type(3)"]}
+               receipt={"match_count": 1, "target": "<li> \\"Every now and thenEvery now and \\""
+                                              " aria-label=\\"Every now and then\\" [61,252,240,45]", …}
+
+    **同一个元素、同一次工具调用** —— 回执里连 `aria-label` 都印出来了，账本里那张卡却是
+    空的（根因见 `_card_from_receipt_into`：摘卡那一跳在上一次观测的模型里没找到它）。
+    名字**当时就量到了**，只是没留下来 —— 这个函数是留下它那一跳。
+
+    键名照 `_target_of` 的既有约定：**`aria-label` 落 `label`**（判据认的键是 `label`，
+    落成 `aria_label` 等于白补）；`text` 是元素自己的 innerText，**照抄原话**
+    （真站上它会重复几遍 —— 那是事实，别替它洗）。
+
+    ⚠️ **认不出 ⇒ `None`，一个字都不许猜**（这段文本是**证据**，下游判据与重放都拿它当
+    「量到的事实」用）。具体挡在这儿的是：
+      · `tag` 必须有（`<` 开头 `>` 结尾）、bbox 必须有且是四个整数；
+      · 尾巴上的 `disabled` 可以有（Go 侧只在禁用时印它），多出别的词就不认；
+      · 两个引号段里**不许有反斜杠** —— Go 的 `%q` 在这里会转义（`\\"` / `\\n` / `\\uXXXX`），
+        而这一层**不做反转义**：转义表写错一格，捡回来的就是一个**假**名字，
+        比没有名字更坏（判据会说「量到了」）。
+      · 解出来 `text` / `label` 一个都没有（例：`<div> [1,2,3,4]`）⇒ 也是 `None`：
+        什么都不带的卡不是卡。
+    """
+    if not isinstance(text, str) or len(text) > RECEIPT_STR_CHARS:
+        #: 长度那条与逐字转抄**同一把尺子**（`RECEIPT_STR_CHARS`，见 `_receipt_of`）：
+        #: Go 那侧那一行最长也就 ~130 字符（tag + 32 字符的文本 + 32 字符的标签 + bbox）
+        #: —— 比它还长的「同一形状」，只能是从别处来的东西，不捡。
+        return None
+    m = _RECEIPT_CARD.match(text)
+    if not m:
+        return None
+    card: dict = {}
+    label = m.group("label")
+    if label is not None and label[1:-1].strip():
+        card["label"] = label[1:-1]
+    raw_text = m.group("text")
+    if raw_text is not None and raw_text[1:-1].strip():
+        card["text"] = raw_text[1:-1]
+    return card or None
 
 
 def _receipt_of(name: str, raw) -> Any:

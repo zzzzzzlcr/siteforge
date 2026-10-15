@@ -5927,3 +5927,111 @@ def test_click_target_already_carries_the_card():
     assert got["label"] == "Menu"
     assert got["nearby_text"] == ["Competitions"]
 
+# ───────── ★ 2026-10-15：回执里那一行名字 —— 探路**当场读到了**，账本里却是空卡 ─────────
+#
+# 真事（`job-3e99eb67519e` · wildnutrition，账本 `runtime/explore/job-3e99eb67519e/
+# attempt-1.jsonl` 第 30/32/37 步）：**同一个元素、同一次工具调用** —— 回执里连
+# `aria-label="Every now and then"` 都印出来了，而卡里三个 `null`。
+# 根因不在工具那一侧：摘卡的判据是 `_find_element(上一次观测的模型, 选择器)`，它**在那份
+# 模型里没找到这个元素** ⇒ `_target_of(None, …)` 出来一张空卡 ⇒ 下游判据说这一步
+# 「量不到更稳的地址」（`lint._has_text_anchor` 认的 `label` / `text` 一个都没有）。
+#
+# 回执那一行是 Go 侧 `ClickCandidate.Describe()` 写的（`tools/cdp/internal/click.go`）：
+#
+#     <tag> ["文本"] [aria-label="…"] [x,y,w,h] [disabled]
+#
+# 解析要**严格**：认不出就 `None` —— 猜一个名字写进身份卡，下游会把它当**量到的**事实用。
+
+#: 真语料（逐字抄自上面那趟的账本；第 1/3 条是那三步里的两条）。
+_REAL_CARD_LINES = [
+    ('<li> "Every now and thenEvery now and " aria-label="Every now and then" [61,252,240,45]',
+     {"label": "Every now and then", "text": "Every now and thenEvery now and "}),
+    ('<button> "Continue" [130,254,101,41]', {"text": "Continue"}),
+    ('<li> "Anything goesAnything goesAnythi" aria-label="Anything goes" [61,344,240,45]',
+     {"label": "Anything goes", "text": "Anything goesAnything goesAnythi"}),
+    ('<button> "SUBMIT" [139,254,85,41]', {"text": "SUBMIT"}),
+]
+
+
+def test_card_from_receipt_reads_the_real_lines():
+    """真回执解出来要对 —— `aria-label` 落 **`label`**（判据认的是它，落成 `aria_label` 等于白补）。"""
+    for line, want in _REAL_CARD_LINES:
+        got = browser_agent.card_from_receipt(line)
+        assert got == want, "解错了：%r → %r（要 %r）" % (line, got, want)
+
+
+def test_card_from_receipt_refuses_what_it_cannot_read():
+    """**认不出 ⇒ `None`**（fail-closed，一个字都不许猜）。
+
+    scroll 的回执不是这一行；空的、没有 bbox 的、报错那几条都不是 —— 猜出来的名字
+    会让判据/重放把它当证据（本项目最忌讳的那类谎）。
+    """
+    for bad in ({"ok": True, "note": "动作已下发（没有报错）。它有没有推进页面，用 diff 比一比才知道"},
+                "",
+                "<div>",
+                "McpToolError: scroll mouse wheel failed: element not found",
+                None,
+                42,
+                '<button> "Continue" [130,254,101]',              # bbox 只有三个数
+                '<button> "Continue" [130,254,101,41] oops',      # 尾巴上多出来的词
+                '<button> "Continue" aria-label="Continue" [1,2,3,4] "x"',   # 两段引号反了序
+                '<button> "他说\\"继续\\"" [1,2,3,4]'):           # 带转义的引号：不做反转义
+        assert browser_agent.card_from_receipt(bad) is None, bad
+
+
+def test_a_nameless_click_gets_its_card_back_from_its_own_receipt(tmp_path):
+    """★ 那三步的病：**回执里有名字、卡里是空的** ⇒ 从这一步**自己那条回执**捡回来。
+
+    只补 `target` 里空着的那两样（`label` 来自 `aria-label`、`text` 来自那一行里的文本），
+    并在 `why` 里说清出处（那一格本来就是为「看不见 / 量不到」准备的）。
+    """
+    journey, _, _ = _run(
+        tmp_path,
+        {
+            "observe": [{"structured": PAGE_LANDING}],
+            "click": [{"structured": {
+                "match_count": 1, "match_index": 0,
+                "target": '<li> "Every now and thenEvery now and " '
+                          'aria-label="Every now and then" [61,252,240,45]',
+                "target_disabled": False, "x": 171.5, "y": 285.0}}],
+        },
+        [{"calls": [("observe", {}),
+                    ("click", {"selector": "#quiz > ul:nth-of-type(1) > li:nth-of-type(3)"})]},
+         {"content": "走完了"}],
+    )
+    click = journey.steps[-1]
+    assert click["action"] == "click"
+    #: 上一次观测里没有它 ⇒ 卡本来是空的（选择器原样留着 —— 那不是我们改的东西）
+    assert click["target"]["selectors"] == ["#quiz > ul:nth-of-type(1) > li:nth-of-type(3)"]
+    assert click["target"]["label"] == "Every now and then"
+    assert click["target"]["text"] == "Every now and thenEvery now and "
+    assert "回执" in click["why"]["card"], click["why"]
+
+
+def test_a_click_whose_element_was_found_is_not_touched_by_the_receipt(tmp_path):
+    """回归（**一个字节都不许变**）：`_find_element` 找到的那些步，回执**不许**改它们。
+
+    那张卡是从**上一次观测**里摘的（同一份证据），而回执说的是「cdp 解析选择器之后点到
+    的那一个」—— 选择器有歧义时两者可能不是同一个元素。盖掉就是拿另一份证据换掉这份，
+    而屏幕上什么都不会说（判据与重放会跟着变）。
+    """
+    journey, _, _ = _run(
+        tmp_path,
+        {
+            "observe": [{"structured": PAGE_LANDING}],
+            "click": [{"structured": {
+                "match_count": 1, "match_index": 0,
+                "target": '<button> "Continue" aria-label="Continue" [130,254,101,41]',
+                "target_disabled": False}}],
+        },
+        [{"calls": [("observe", {}), ("click", {"selector": "#get-started"})]},
+         {"content": "走完了"}],
+    )
+    click = journey.steps[-1]
+    assert click["target"]["text"] == "Get Started"          # ← 回执说的是 Continue
+    assert click["target"]["role"] == "button"
+    assert click["target"]["near"] == "hero"
+    assert click["target"]["selectors"][:2] == ["#get-started", "a.btn-primary"]
+    assert click["target"].get("label") is None, "找到了的那张卡被回执盖了"
+    assert not click["why"].get("card"), click["why"]
+
