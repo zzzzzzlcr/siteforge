@@ -1380,7 +1380,10 @@ def _lint(state, deps: Deps, caps: Caps) -> dict:
     if _held(out):
         return out
 
-    violations = [_violation_dict(v) for v in (deps.lint(state["src"]) or [])]
+    #: ★ 2026-10-15：判据连**探路那一刻的原始观察**一起看（`observed` 只读、而且是冻结那份）。
+    #: 不传的调用点（老 job / 别的调用方）与从前逐字节一致 —— `lint.check` 的默认就是 `None`。
+    violations = [_violation_dict(v)
+                  for v in (deps.lint(state["src"], observed=state.get("observed")) or [])]
     out["violations"] = violations
     if not violations:
         return out
@@ -1688,7 +1691,9 @@ def _deliver(state, deps: Deps, caps: Caps) -> dict:
         out.update({"end_reason": END_DRAFT_FAILED, "end_note": "交付前重渲失败：%s" % exc})
         return out
 
-    dirty = [_violation_dict(v) for v in (deps.lint(src) or [])]
+    #: ★ 2026-10-15：与 `_lint` 同一把尺子 —— 交付前那一道也带上冻结的原始观察（`observed`）。
+    dirty = [_violation_dict(v)
+             for v in (deps.lint(src, observed=state.get("observed")) or [])]
     if dirty:
         #: ★ 2026-10-08：交付前那一遍契约检查没过 —— 照样写下去，写清它没过什么。
         _keep_unverified(state, out, "要写出去的那串字节自己没过契约检查",

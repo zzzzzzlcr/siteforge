@@ -503,13 +503,19 @@ def test_a_stable_candidate_beside_a_fragile_one_is_not_flagged():
     assert lint.check(src) == [], lint.check(src)
 
 
-def test_judge_rule_table_is_the_mounted_eight():
-    """挂进生成期出口的判据规则就这**八条**（C/D/H + A/E/F/G/I）——
-    多一条 / 少一条都要有人来解释（与上面 `RULES` 那张表同一条规矩）。"""
+def test_judge_rule_table_is_the_mounted_nine():
+    """挂进生成期出口的判据规则就这**九条**（C/D/H + A/E/F/G/I）——
+    多一条 / 少一条都要有人来解释（与上面 `RULES` 那张表同一条规矩）。
+
+    ★ 2026-10-15（修站那一刀④，spec §3.1）：I 那一格的**另一种判决**单列一条
+    （`judge-fragile-no-basis` = 无据可依）—— 与 `judge-fragile-selectors`
+    （有据但没用上）**分开**：两族的出路完全不同（一个改稿能修，一个只能删/请人/接受），
+    `tools/fam_report.py` / `docs/根因库.md` 要分别计数。
+    """
     assert list(lint.JUDGE_RULES) == [
         "judge-transient", "judge-fill-value", "judge-url-only",
         "judge-strict-unguarded", "judge-ungated-click", "judge-no-follow-tab",
-        "judge-source-autoname", "judge-fragile-selectors",
+        "judge-source-autoname", "judge-fragile-selectors", "judge-fragile-no-basis",
     ]
 
 
@@ -720,3 +726,160 @@ def test_a_hash_or_dot_inside_a_value_is_not_an_id_or_a_class():
     assert ('id', 'top') not in lint.assertions_of('a[href="#top"]')
     assert ('class', 'b') not in lint.assertions_of('[data-x="a.b"]')
     assert lint.address_basis("#top", {}, ['a[href="#top"]'])[0] == lint.UNSUPPORTED
+
+
+# ── ★ 2026-10-15 修站那一刀 · Task 4：判据先验出处，再判脆不脆（spec §3.1）─────
+
+def _src_with(state_name, selector_line, header=True):
+    return (
+        "STATES = [\n"
+        "  { 'name': '%s',\n"
+        "    'steps': [ { 'action': 'click',\n"
+        "                 'target': { 'role': 'a', 'near': 'header',\n"
+        "                             'selectors': [ %s ] } } ] } ]\n"
+        % (state_name, selector_line)
+    ) + ("FILLS = {}\n" if header else "")
+
+
+_FRAGILE = "'body:nth-of-type(1) > header:nth-of-type(1) > div:nth-of-type(1) > a:nth-of-type(1)'"
+_OBS = {"states": [{"name": "auth", "steps": [
+    {"action": "click", "target": {"role": "a", "near": "header", "text": None,
+                                   "selectors": ["body:nth-of-type(1) > header:nth-of-type(1) > div:nth-of-type(1) > a:nth-of-type(1)"]}}]}],
+    "fills": {}}
+
+
+def test_no_basis_when_the_frozen_observation_has_nothing():
+    """无据可依那一支：不许再喊「补一条稳的」（那句只能逼出编的）。"""
+    src = _src_with("auth", _FRAGILE)
+    got = [v for v in lint.check(src, observed=_OBS) if v.code == "judge-fragile-no-basis"]
+    assert len(got) == 1
+    assert "补一条" not in got[0].message
+    assert "删掉" in got[0].message and "请人" in got[0].message and "接受" in got[0].message
+
+
+def test_fabricated_selector_does_not_escape_the_judge():
+    """★ 三步回归：把编的那根塞进候选，**仍然**不算原始观察证据（spec §6）。"""
+    src = _src_with("auth", "%s, 'header a'" % _FRAGILE)
+    got = [v for v in lint.check(src, observed=_OBS) if v.code == "judge-fragile-no-basis"]
+    assert len(got) == 1, "编了一根『看着稳的』就逃出判据 —— 这正是这一刀要堵的路"
+
+
+def test_with_evidence_the_old_message_stays():
+    """有据但没用上那一支：还是老码、还是「补一条稳的」，但**把卡摆出来**。"""
+    obs = {"states": [{"name": "auth", "steps": [
+        {"action": "click", "target": {"role": "a", "near": "header", "label": "Competitions",
+                                       "selectors": [_FRAGILE.strip("'")]}}]}], "fills": {}}
+    src = _src_with("auth", _FRAGILE)
+    got = [v for v in lint.check(src, observed=obs) if v.code == "judge-fragile-selectors"]
+    assert len(got) == 1
+    assert "Competitions" in got[0].message           # 卡摆到眼前了
+
+
+def test_without_observed_behaviour_is_byte_identical():
+    """不传 `observed` ⇒ 与今天**逐字节一致**（老 job / 老调用点一点不受影响）。
+
+    ⚠️ **钉法**（任务书的断言与实测冲突，这里如实改成能钉住同一件事的写法）：
+    任务书写的是 `[v.code for v in lint.check(src)] == ["judge-fragile-selectors"]`，
+    可这份样例 src 是一段**碎片**（有 `click`、没有 `_follow_new_tab(`）——
+    今天的 `lint.check` 在它身上本来就会**另外**命中 `judge-no-follow-tab`
+    （实测：`[(5, 'judge-fragile-selectors'), (5, 'judge-no-follow-tab')]`），
+    那是**另一条规则**的事，与本刀无关，整表相等永远钉不住。
+    所以这里钉的是**这一条违规本身**（行号 / message / snippet 逐字节）+
+    「新码在没有冻结观察时一次都不许出现」。
+    """
+    src = _src_with("auth", _FRAGILE)
+    got = [v for v in lint.check(src) if v.code == "judge-fragile-selectors"]
+    assert len(got) == 1
+    assert (got[0].line, got[0].snippet) == (5, _FRAGILE.strip("'"))
+    #: message **一个字不动**（老话照旧，不含新加的「探路那一刻量到的是…」那半句）
+    assert got[0].message == (
+        "组「auth」第 1 步**只有一根随时会漂的地址**（框架自造 id / 超长"
+        "nth-of-type 链）：同一格重渲一次就换号（真站实测 `#input-167` →"
+        "`#input-163`），换了分辨率的长链还会整条挂 —— 到那时这一步就是"
+        "「页面上没找到」，整组步骤被静默跳过。给它补一条**稳的**地址"
+        "（`input[name=…]` / `input[aria-label=…]` 这类）。")
+    assert "judge-fragile-no-basis" not in [v.code for v in lint.check(src)]
+
+
+def test_the_same_fragile_selector_in_two_states_is_reported_twice():
+    """同一根地址在两处 ⇒ 报两条，**一处被接受不许顺带放行另一处**（Review Focus ③）。
+
+    ⚠️ **钉在哪一层**（任务书的断言与实测冲突，这里如实说明）：任务书写的是
+    `len(lint.check(src, observed=obs) …) == 2`，而这一条在 `check` 那一层**永远不成立** ——
+    `_line_of_any` 对**同一根地址**永远给「它第一次出现的行」（这份 src 里两处都落在第 2 行），
+    而 `check` 有一条**既有**的去重规矩：「同一行同一条规则只报一次」
+    （实测：`_rule_i` 层两条、`check` 层一条）。那条规矩是本刀**不许动**的老行为。
+    ⇒ 所以在**判据自己**那一层钉（与上面那两条「有锚不挂」的用例同一层）：
+    去重按 `(组名, 步序)`、**不按地址** —— 同一根地址在两处各自成案，
+    所以「接受了一处」在结构上不可能顺带放行另一处。
+
+    ⚠️ 任务书这一段的末尾还调了 `lint.check(src, observed=obs, accepted=[…])` ——
+    **`accepted=` 是 Task 6 的参数**（本 Task 的 ③ 那条自己写着「这一刀先不加」），
+    那半条用例随 Task 6 一起落。这里钉的是它的前提。
+    """
+    src = (
+        "STATES = [\n"
+        "  { 'name': 'a', 'steps': [ { 'action': 'click', 'target': { 'selectors': [%s] } } ] },\n"
+        "  { 'name': 'b', 'steps': [ { 'action': 'click', 'target': { 'selectors': [%s] } } ] } ]\n"
+        "FILLS = {}\n" % (_FRAGILE, _FRAGILE)
+    )
+    states = [{"name": "a", "steps": [{"action": "click", "target": {"selectors": [_FRAGILE.strip("'")]}}]},
+              {"name": "b", "steps": [{"action": "click", "target": {"selectors": [_FRAGILE.strip("'")]}}]}]
+    obs = {"states": states, "fills": {}}
+    got = [v for v in lint._rule_i(states, {}, src, obs)
+           if v.code == "judge-fragile-no-basis"]
+    assert len(got) == 2
+    assert "组「a」第 1 步" in got[0].message and "组「b」第 1 步" in got[1].message
+    #: 顺带钉住 `check` 那一层的**既有**行为没被这一刀改掉（同一行同一条只报一次）
+    assert len([v for v in lint.check(src, observed=obs)
+                if v.code == "judge-fragile-no-basis"]) == 1
+
+
+def test_steps_without_a_target_are_never_reported():
+    """`goto` / `observe` 那些步没有 target —— 判据不许在它们身上报出处问题（Review Focus ④）。"""
+    src = ("STATES = [ { 'name': 'a', 'steps': [ { 'action': 'goto', 'target': { 'url': 'https://x.test/' } } ] } ]\n"
+           "FILLS = {}\n")
+    assert [v.code for v in lint.check(src, observed={"states": [], "fills": {}}) ] == []
+
+
+def test_the_new_code_walks_the_same_switchboard(monkeypatch):
+    """新码同样走 `JUDGE_RULES` 那张表（与那五条同一条规矩：表里没有的不报）。
+
+    ⚠️ 它进不了 `test_each_new_judge_rule_is_load_bearing` 那张参数表：那一族跑的是
+    `lint.check(src)`（**不传** `observed`），而这一支只在有冻结观察时才存在。
+    """
+    src = _src_with("auth", _FRAGILE)
+    assert "judge-fragile-no-basis" in [v.code for v in lint.check(src, observed=_OBS)]
+    monkeypatch.setattr(lint, "JUDGE_RULES",
+                        tuple(n for n in lint.JUDGE_RULES if n != "judge-fragile-no-basis"))
+    assert "judge-fragile-no-basis" not in [v.code for v in lint.check(src, observed=_OBS)]
+
+
+# ── 同一个判据的**字段那一支**（`FILLS`）：卡从**冻结那份**的 `fills` 里取 ───────────
+
+_FILL_SRC = ("STATES = []\n"
+             "FILLS = { 'postcode': { 'name': 'postcode',\n"
+             "                        'target': { 'selectors': [ %s ] } } }\n" % _FRAGILE)
+
+
+def test_a_fill_with_no_basis_gets_the_same_verdict_but_field_wording():
+    """字段那一支的「无据可依」：判决与 states 那支一致，**话按字段说**，而且
+    ①不说「补一条稳的」（那句只能逼出编的）；②**不许**教人「接受地址 X#N」——
+    接受那个口子（`no_basis_slots` / `_accept_from_note`）是按 `(组名, 步序)` 认的，
+    **字段这一支没有对应的名字可认**：写一句做不到的话，正是这一刀要治的病。
+    """
+    frozen_card = {"fills": {"postcode": {"target": {"selectors": [_FRAGILE.strip("'")]}}}}
+    got = [v for v in lint.check(_FILL_SRC, observed=dict(frozen_card, states=[]))
+           if v.code == "judge-fragile-no-basis"]
+    assert len(got) == 1
+    assert got[0].message.startswith("字段「postcode」："), got[0].message
+    assert "补一条" not in got[0].message
+    assert "接受地址" not in got[0].message
+    assert "删掉" in got[0].message and "请人" in got[0].message
+    # 冻结那份里**根本没有这一格** ⇒ 取不到卡 ⇒ 照样本判决（fail-closed）
+    gone = [v for v in lint.check(_FILL_SRC, observed={"states": [], "fills": {}})
+            if v.code == "judge-fragile-no-basis"]
+    assert len(gone) == 1 and "它身上没有名字" in gone[0].message, gone
+    # 不传 observed ⇒ 老路：还是老码、还是老话（与 states 那一支同一条规矩）
+    old = [v for v in lint.check(_FILL_SRC) if v.code == "judge-fragile-selectors"]
+    assert len(old) == 1 and "字段「postcode」" in old[0].message and "补一条" in old[0].message

@@ -793,6 +793,50 @@ def test_relocate_picks_the_option_whose_label_is_the_recorded_one(sandbox, form
     assert ("click", "#option-2") in common.STATE.actions, common.STATE.actions
 
 
+def test_relocate_finds_the_step_back_from_the_anchors_alone(sandbox, form_file):
+    """★ 判据放行「有锚但地址脆」的那一步，**全部依据**是「重放能按语义把它找回来」——
+    这条路要是走不到，那条裁定（`lint._has_text_anchor` 那一支）就是空的，
+    所以它得有一条自己的用例（spec §5 验收第 2 条）。
+
+    形状：`label` + `nearby_text` + `role` 都在、地址是一条 4 跳的 nth 链（判据认它脆）
+    ⇒ 产物跑起来那根链**果然**失效（`fail_selectors` 逼它失效），它得靠那几样语义锚
+    把这一格找回来、把值填进去。
+
+    ⚠️ 这一条测的是**既有能力**（`_relocate` → `_intent_score`，`agent/template.py`），
+    不改产品代码 —— 红了说明「有锚就不报」这条裁定站不住，不是去改这条用例。
+    """
+    frag = ("body:nth-of-type(1) > header:nth-of-type(1) > div:nth-of-type(1) > "
+            "input:nth-of-type(1)")
+    target = {"text": None, "label": "Postcode", "role": "textbox", "near": None,
+              "nearby_text": ["Where do you live?"], "selectors": [frag], "frame_id": ""}
+    steps = [{"action": "form", "fill": "postcode", "note": "填好了「Postcode」",
+              "target": dict(target)}]
+    #: ⚠️ `form` 那一路的 target **由 fills 自己那一格说了算**（见上面那条「等它出来」的用例）
+    #: ⇒ 这一格也得是同一根脆链，不然「声明失效」这件事根本不会发生。
+    fills = [{"name": "postcode", "source": "zip", "kind": "value", "label": "Postcode",
+              "target": dict(target)}]
+    src = template.render("example-anchor-relocate", "Thank you",
+                          [{"name": "w", "when": None, "steps": steps}], fills,
+                          SAMPLE_PROVENANCE)
+    module, _ = _load("run_anchor_relocate", src, sandbox)
+    common = _stub(sandbox, diff={"actionable": True}, observe={
+        "url": "https://example.test/", "actions": [],
+        "fields": [{"selector": "input.postcode-x", "tag": "input", "role": "textbox",
+                    "label": "Postcode", "nearby_text": ["Where do you live?"],
+                    "region": "main", "visible": True, "occluded_by": None,
+                    "above_fold": True, "alternates": []}]})
+    common.STATE.texts = ["Walk"]
+    common.STATE.fail_selectors = (frag,)          # 声明里那根链真失效（不失效就测不到这一跳）
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+
+    filled = [(a[0], a[1]) for a in common.STATE.actions if a[0] == "form"]
+    assert ("form", "input.postcode-x") in filled, (
+        "按 label / nearby_text / role 一个都没找回来 —— 「有锚就不报」那条裁定站不住：%r"
+        % (filled,))
+    assert any(c.startswith("observe") for c in _cdp_calls(sandbox)), _cdp_calls(sandbox)
+
+
 def test_the_artifact_names_a_nameless_step_after_the_label_next_to_it(sandbox):
     """产物那一份「名字」也要认 `nearby_text`（trace 的 `target` 与日志都读它）。
 

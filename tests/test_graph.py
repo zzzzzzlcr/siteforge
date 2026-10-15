@@ -193,9 +193,11 @@ def _deps(*, journey=None, explores=None, reports=None, write=None, rec=None, **
             return write(copy.deepcopy(spec), copy.deepcopy(feedback), len(rec.write))
         return spec
 
-    def lint_stub(src):
+    def lint_stub(src, observed=None):
         rec.lint.append(src)
-        return lint.check(src)
+        #: ★ 2026-10-15：`_lint` / `_deliver` 现在把冻结的原始观察一起递进来
+        #: （`observed=`）—— 桩照收照传，这样它测的仍是**真** `lint.check`。
+        return lint.check(src, observed=observed)
 
     def selftest_stub(py_path, ws_url, form_file, site, **kw):
         rec.tested_src = pathlib.Path(py_path).read_text(encoding="utf-8")
@@ -1239,12 +1241,12 @@ def test_the_final_bytes_are_lint_checked_before_they_are_written(tmp_path):
     deps, rec = _deps()
     app, cfg, _ = _build(deps=deps)
 
-    def lint_stub(src):
+    def lint_stub(src, observed=None):
         rec.lint.append(src)
         if len(rec.lint) == 2:                  # 第 1 次 = lint 节点；第 2 次 = 交付前
             return [{"line": 1, "code": "js-click", "message": "这段用 JavaScript 直接点了一下",
                      "snippet": "el.click()"}]
-        return lint.check(src)
+        return lint.check(src, observed=observed)
 
     deps.lint = lint_stub
     _, out = _drive(app, cfg, _brief(tmp_path))
@@ -2448,12 +2450,12 @@ def test_the_final_lint_sentence_does_not_claim_nothing_was_written_when_it_was(
     deps, rec = _deps()
     app, cfg, _ = _build(deps=deps)
 
-    def lint_stub(src):
+    def lint_stub(src, observed=None):
         rec.lint.append(src)
         if len(rec.lint) == 2:                  # 第 1 次 = lint 节点；第 2 次 = 交付前
             return [{"line": 1, "code": "js-click", "message": "这段用 JavaScript 直接点了一下",
                      "snippet": "el.click()"}]
-        return lint.check(src)
+        return lint.check(src, observed=observed)
 
     deps.lint = lint_stub
     _, out = _drive(app, cfg, _brief(tmp_path))
