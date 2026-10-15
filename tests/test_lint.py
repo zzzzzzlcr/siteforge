@@ -818,6 +818,85 @@ def test_the_no_basis_message_carries_the_values_not_only_the_keys():
     assert "selectors=%s" % _FRAGILE.strip("'") in got[0].message, got[0].message
 
 
+@pytest.mark.parametrize("card,needle", [
+    pytest.param({"label": "Competitions", "selectors": ["#get-started"]},
+                 "`label=Competitions`", id="有锚"),
+    pytest.param({"role": "a", "selectors": ["a[href='/comp']"]},
+                 "`selectors=a[href='/comp']`", id="只有一根不脆的地址"),
+])
+def test_no_basis_with_a_card_that_has_something_says_to_use_it(card, needle):
+    """★ Ruling 14：卡上**有货**、而这一版的地址一条都不是量到的 ⇒ 人话不许打脸。
+
+    病（我自报、控制方裁的那条）：卡上有锚 + 一根不脆的地址，产物那几根却**全被判「不是量到的」
+    剔掉**（落第二格 `not kept`）⇒ 人话是「这一步探路那一刻**量不到更稳的地址** —— 量到的只有
+    `selectors=#get-started」—— **前半句被自己后半句打脸**，而且三条正路里没有最该说的那条
+    「**把卡上那根拿来用**」。
+
+    ⚠️ 路由**不动**：这一格仍然报 `judge-fragile-no-basis`（spec §3.1 第二格 ——
+    「你这一版的地址无据可依」这个读法本来就对），这一条换的只是**话**。
+    ⚠️ 「卡上有没有货」用的就是第一格那把尺子（`_card_has_nothing`），不另造口径 ——
+    所以 nitrous 那族（卡上只有那根脆链）**不会**被引到这句「先把卡上那根拿来用」上。
+    """
+    src = _src_with("auth", "'a#made-up'")          # 编的 id ⇒ 候选一条不剩
+    obs = {"states": [{"name": "auth", "steps": [
+        {"action": "click", "target": dict(card, near="header")}]}], "fills": {}}
+    got = [v for v in lint.check(src, observed=obs) if v.code == "judge-fragile-no-basis"]
+    assert len(got) == 1, [v.message for v in lint.check(src, observed=obs)]
+    said = got[0].message
+    assert "量不到更稳的地址" not in said, said       # 前半句不许再打自己的后半句
+    assert "先把卡上那根拿来用" in said, said
+    assert needle in said, said                     # 卡上的值摆到眼前（能照它改）
+    #: 三条正路仍在 —— 它们是「实在没有能用的」时候的兜底
+    assert "删掉" in said and "请人" in said and "接受" in said
+
+
+def test_no_basis_with_a_card_that_has_nothing_keeps_todays_wording():
+    """★ Ruling 14 的另一半：卡上**什么都没有** ⇒ 今天那两句**一个字都不许动**。
+
+    「什么都没有」用的是与第一格同一把尺子（`_card_has_nothing`：没锚、卡上也没有不脆的候选）。
+    那时说的「量不到更稳的地址」是**真话**（真没有更稳的），「补一条稳的」也**没有正确答案**
+    （只能逼出编的）⇒ 两句原话都逐字节钉在这里：
+      · 空卡（连 selectors 都没有）⇒ 「它身上没有名字、旁边没有字、也没有一条验过唯一的候选」；
+      · 只有一根脆链（nitrous 那族）⇒ 「量到的只有 `role=a`、`selectors=<那根链>`」——
+        这一支里列的全是**不能用**的东西（role + 那根脆链），所以也不打脸；
+        它还是 `Minor #3` 刚把**值**带上的那一句，不许被新话挤掉。
+    """
+    head = ("组「auth」第 1 步：这一步探路那一刻**量不到更稳的地址** —— %s。"
+            "**别编一根**：编出来的地址没人验过，而它会让「这一步还能不能重放」这件事"
+            "在屏幕上看起来是好的。三条正路，任选其一："
+            "① 这一步若只是辅助动作（把某个东西滚进视口那类）⇒ **删掉它**；"
+            "② **请人给一根**（在闸上说一句，人正看着那一页）；"
+            "③ 如实**接受**（在闸上说「接受地址 auth#0」—— 只有人能接受，且地址或证据一变就失效）。")
+    empty = {"states": [{"name": "auth", "steps": [{"action": "click", "target": {}}]}], "fills": {}}
+    for obs, said in ((empty, "它身上没有名字、旁边没有字、也没有一条验过唯一的候选"),
+                      (_OBS, "量到的只有 `role=a`、`selectors=%s`" % _FRAGILE.strip("'"))):
+        got = [v for v in lint.check(_src_with("auth", _FRAGILE), observed=obs)
+               if v.code == "judge-fragile-no-basis"]
+        assert len(got) == 1
+        assert got[0].message == head % said, got[0].message
+
+
+def test_the_field_wording_says_to_use_the_card_when_the_card_has_something():
+    """★ Ruling 14 的**字段那一支**：同一条病（打脸 + 没说出「把卡上那根拿来用」），
+    同一条改法、同一把「有没有货」的尺子 —— 而**两条正路**照旧（字段这一支没有「接受」）。
+    """
+    frozen = {"states": [], "fills": {"postcode": {"target": {
+        "label": "Postcode", "hint": "postcode", "selectors": ['input[name="postcode"]']}}}}
+    src = _FILL_SRC.replace(_FRAGILE, "'#made-up'")     # 编的 id ⇒ 候选一条不剩
+    got = [v for v in lint.check(src, observed=frozen) if v.code == "judge-fragile-no-basis"]
+    assert len(got) == 1, [v.message for v in lint.check(src, observed=frozen)]
+    said = got[0].message
+    assert said.startswith("字段「postcode」："), said
+    assert "量不到更稳的地址" not in said, said
+    assert "先把卡上那根拿来用" in said, said
+    assert 'input[name="postcode"]' in said, said
+    assert "接受地址" not in said, said       # 字段这一支没有那个口子，不许写做不到的话
+    #: 卡上什么都没有那一支照旧（不因为这次改动被带上新话）
+    gone = [v for v in lint.check(_FILL_SRC, observed={"states": [], "fills": {}})
+            if v.code == "judge-fragile-no-basis"]
+    assert len(gone) == 1 and "它身上没有名字" in gone[0].message, gone
+
+
 def test_an_address_that_touches_the_card_is_let_through():
     """★ Ruling 13 的兑现点：模型按 spec §3.3 换成一根**沾着卡的**地址 ⇒ 判据**放行**。
 

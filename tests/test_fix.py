@@ -298,6 +298,29 @@ def test_find_observed_finds_the_step_back_when_the_address_was_rewritten():
     assert fix.find_observed(obs, "auth", 0, rewritten) == want_card
 
 
+def test_find_observed_prefers_the_step_at_that_index_when_the_address_alone_ties():
+    """★ Ruling 15：同一组里两步的 `selectors` **逐字相同**、锚不同 ⇒ 指纹会**并列**，
+    这时取 **(状态名, 步序) 那一张** —— 不是「第一个命中的」。
+
+    复审给的确切复现：原件两步都是 `input.cell`（`First name` / `Last name`），
+    问 `(auth, 1)` 带第 2 步那张卡 ⇒ 旧实现返回的是**卡 0**。
+    后果不是「找错了步」这么轻：`_rule_i` 拿这张卡判出处、并把它**摆进 message** ——
+    摆出来的会是**兄弟步**的锚（「探路那一刻量到的是 `First name`」）。
+    ⚠️ 并列**之外**仍是「先命中的先赢」（见本用例最后一句）。
+    """
+    obs = {"states": [{"name": "auth", "steps": [
+        {"action": "form", "target": {"label": "First name", "selectors": ["input.cell"]}},
+        {"action": "form", "target": {"label": "Last name", "selectors": ["input.cell"]}}]}],
+        "fills": {}}
+    first = fix.card_of(obs["states"][0]["steps"][0]["target"])
+    last = fix.card_of(obs["states"][0]["steps"][1]["target"])
+    assert fix._selector_key(first) == fix._selector_key(last)     # 真的是并列那一格
+    got = fix.find_observed(obs, "auth", 1, last)
+    assert got == last and got["label"] == "Last name", got
+    #: 并列之外：步序对不上（越界）⇒ 第一个命中的就是答案（不因为带了别的卡就乱挑）
+    assert fix.find_observed(obs, "auth", 9, last)["label"] == "First name"
+
+
 def test_find_observed_is_none_when_the_step_is_gone_and_the_address_is_unknown():
     """③ 步序越界、指纹也落空 ⇒ `None` = **这一步没有可依的原始观察**（fail-closed）。"""
     obs = fix.observed_of(**_card_src())

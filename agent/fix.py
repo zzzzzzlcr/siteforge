@@ -1101,16 +1101,25 @@ def _norm_card_value(value) -> str:
 def find_observed(observed, state_name: str, index: int, card) -> Optional[dict]:
     """当前这一步那张卡，**回原件里**找对应的那一步 → 原件那张卡（找不到给 `None`）。
 
-    两步对法（顺序要紧）：
-      ① 按 **(状态名, 组内步序)** —— 这是全仓既有的「这一步是谁」的把手
-         （`_rule_i` 报的就是「组「X」第 N 步」，`_keep_repair_local` 也按它钉）；
-      ② ① 落空 ⇒ 在原件**那一组**里按**卡的指纹**找一步（模型把两步调了个个儿、
-         或在前面插了一步，都靠这一条救）。
-      ③ 都落空 ⇒ `None` = **这一步没有可依的原始观察**（判据照这个如实说）。
+    两步对法（**顺序要紧**，★ 2026-10-15 修复轮 1 / Ruling 13 **调头**）：
+      ① 按**卡的指纹**（`_selector_key`，**只比 `selectors`**）在原件**那一组**里找一步
+         —— 命中就返回它的卡。地址一个字没动就精确命中「这一步是谁」，
+         而且**表被重排**（模型把两步调了个个儿、或在前面插了一步）照样认得出。
+         ⚠️ 指纹**并列**时（同一组里两步的 `selectors` 逐字相同、锚不同）取
+         **(状态名, 步序) 那一张** —— 见下面 ①a（Ruling 15）；
+      ② ① 落空 ⇒ **按 (状态名, 组内步序) 那一张卡**，**不再要求地址相等**
+         —— 地址被改写（模型按 spec §3.3 换成一根**沾着卡的**地址）时，这一步还是这一步；
+      ③ 步序越界、① 也没命中 ⇒ `None` = **这一步没有可依的原始观察**（判据照这个如实说）。
 
-    ⚠️ ② **不能作弊**：指纹必须命中**原件里真实存在**的一步 —— 编出来的卡在原件里找不到
-    （`test_find_observed_returns_none_for_invented_card` 钉的就是这一条）。
-    ⚠️ 这一层**只负责找**，不判级别 —— 级别是 `lint.address_basis` 的活（单一职责）。
+    ★ 为什么**必须**调头（旧版正是反过来的：先按步序、且要求地址相等）：那样一改，
+      **地址一被改写，卡就取不到** ⇒ 卡为空 / `kept` 为空 ⇒ 判 `judge-fragile-no-basis`。
+      实测后果：spec §3.3 要求模型「换成一根沾着卡的地址」，模型照做之后**下一趟 lint 照样
+      报无据可依** ⇒ `draft ↔ lint` 两趟就 `lint_cap` —— **正是 spec 自己要躲的那个死循环**。
+    ★ 为什么这不重新打开洞（判据那一侧的关键）：**卡仍然来自冻结那份** —— 模型注入不进来
+      （① 的指纹必须命中原件里**真实存在**的一步；② 给的也是**原件**那一步的卡）。
+      改的只是「**这一步是谁**」怎么认；而被改写的那根地址照样要**逐条断言**过
+      `lint.address_basis` 那一关（`header a` 这种编出来的仍然判 `UNSUPPORTED`）。
+      单一职责也照旧：这一层**只负责找**，不判级别。
     """
     if not isinstance(observed, dict):
         return None
@@ -1128,6 +1137,15 @@ def find_observed(observed, state_name: str, index: int, card) -> Optional[dict]
     # ① 按地址的指纹（**只比 selectors** —— 地址没动就精确命中；表被重排也认得出）
     want = _selector_key(card)
     if want:
+        #: ①a ★ 2026-10-15 修复轮 2（Ruling 15）：指纹**并列**时（同一组里两步的 `selectors`
+        #: 逐字相同、锚不同）取 **(状态名, 步序)** 那一张 —— 不能让「第一个命中的」把**兄弟步**
+        #: 的卡塞过来。后果不是「找错了步」这么轻：`lint._rule_i` 拿这张卡判出处、并把它
+        #: **摆进 message** ⇒ 摆出来的会是兄弟步的锚（「探路那一刻量到的是 First name」）。
+        if 0 <= index < len(steps):
+            got = card_of(steps[index].get("target"))
+            if got and _selector_key(got) == want:
+                return got
+        #: ①b 并列**之外**：先命中的先赢（模型把两步调了个个儿、或在前面插了一步，靠这条救）
         for one in steps:
             got = card_of(one.get("target"))
             if got and _selector_key(got) == want:
