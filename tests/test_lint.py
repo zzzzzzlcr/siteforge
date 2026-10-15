@@ -1175,3 +1175,107 @@ def test_unverified_does_not_crash_on_a_source_whose_tables_are_unreadable():
     assert lint.check("STATES = 5\nFILLS = {}\n", observed=obs) == []      # 今天就不炸
     assert lint.check_unverified("STATES = 5\nFILLS = {}\n", obs) == []
     assert lint.check_unverified("STATES = []\nFILLS = [1]\n", obs) == []
+
+
+# ── ★ 2026-10-15 修站那一刀 · Task 6：**接受只能由人给**（spec §3.5）─────────────
+#
+# 判据这一侧只有三件事：① 人接受过（且四元组没变）⇒ **不报**；② 四元组一变 ⇒ **回到报**；
+# ③ 把「现在有哪几处等着被接受」写下来（`no_basis_slots`）——`_accept_from_note` 认的
+# 就是这一份（Ruling 2：没人写它，那句约定**永远空转**）。
+
+
+def test_no_basis_slots_says_which_address_the_gate_can_accept():
+    """`no_basis_slots` = 「现在有哪几处等着被接受」，每条绑死四元组（spec §3.5）。
+
+    ⚠️ 只有 `states` 那一支有它：`FILLS` 那一格的把手是**键**、不是 (组名, 步序)，
+    `_fill_no_basis_say` 因此**只写两条正路**（那条「接受」写上去就是一句做不到的话）。
+    """
+    src = _src_with("auth", _FRAGILE)
+    [slot] = lint.no_basis_slots(src, _OBS)
+    assert (slot["state"], slot["index"]) == ("auth", 0)
+    assert slot["selector"] == _FRAGILE.strip("'")
+    assert isinstance(slot["card"], str) and slot["card"], slot     # 卡指纹（要进 state 的那份）
+    #: 没有冻结那份 ⇒ **没人能接受**（不猜：连绑哪一根都不知道）
+    assert lint.no_basis_slots(src, None) == []
+    #: 已经接受过的那一格**不再等**（人再说一遍也只是原地覆盖）
+    assert lint.no_basis_slots(src, _OBS, accepted=[slot]) == []
+
+
+def test_a_step_that_has_something_to_use_is_not_a_slot_to_accept():
+    """口径与 `_rule_i` **同一支**：卡上有一根验过唯一的地址时，这一格**根本不报**无据可依
+    （`test_a_card_with_a_stable_selector_is_not_called_no_basis` 钉着那一半）——
+    这里钉的是同一条判决的另一半：它也**不进待接受清单**（否则人会去接受一处没人问过的东西）。
+    """
+    obs = {"states": [{"name": "auth", "steps": [
+        {"action": "click", "target": {"role": "a", "near": "header",
+                                       "selectors": ["a[href='/comp']"]}}]}], "fills": {}}
+    src = _src_with("auth", _FRAGILE)
+    assert [v.code for v in lint.check(src, observed=obs)
+            if v.code == "judge-fragile-no-basis"] == []          # 那一半：不报
+    assert lint.no_basis_slots(src, obs) == []                     # 这一半：不等接受
+
+
+def test_accepted_step_is_not_reported():
+    """人接受过 ⇒ **不报**（spec §3.5）。
+
+    ⚠️ 任务书那一行原样写的是 `"card": "x"` —— 实测**对不上**（Task 6 报告里那条最小复现）：
+    判据绑的是 `fix.card_fingerprint(card)`，这一格的指纹是
+    `('body:nth-of-type(1) > … > a:nth-of-type(1)',)`（**元组**，`fix.py:1190`），
+    手写一个 `"x"` 永远不命中 ⇒ 这条用例**无论实现怎么写都不可能绿**。
+    照真相改：那一格走**真生产者** `no_basis_slots`（`_no_basis_say` 报的 handle 就是它写的）。
+    """
+    src = _src_with("auth", _FRAGILE)
+    [slot] = lint.no_basis_slots(src, _OBS)
+    got = lint.check(src, observed=_OBS, accepted=[slot])
+    assert [v.code for v in got if v.code == "judge-fragile-no-basis"] == []
+
+
+def test_acceptance_blocks_the_judge_in_both_no_basis_cells():
+    """★ 两格**都**要被接受挡住：同一处接受，落在哪一格都不许再报。
+
+    `judge-fragile-no-basis` 有**两种形状**（spec §3.1 第③步两格）：
+      · **第一格** `_card_has_nothing(card, kept)` —— 卡上什么都没有（`_OBS` 那一份）；
+      · **第二格** `not kept` —— 卡上**有锚**，可候选**一根采信的都不剩**（编的那根地址）。
+    只挡住一处的话：人在闸上点头接受的那一步、落到**另一格**照样被打回 ——
+    **接受永远不生效**，而屏幕上看起来一切正常（本刀最忌讳的形状，见控制方那一条）。
+    ⚠️ 实现上两格走的是**同一处**（`_no_basis_sel`，合并的那一句）—— 这条用例钉的是
+    「合并之后两格都还挡得住」，不是「又加了一句 if」。
+    """
+    cases = {
+        "卡上什么都没有": (_src_with("auth", _FRAGILE), _OBS),
+        "一根采信的都不剩": (_src_with("auth", "'#made-up'"),
+                             {"states": [{"name": "auth", "steps": [
+                                 {"action": "click",
+                                  "target": {"label": "Sign in",
+                                             "selectors": ["button[type='submit']"]}}]}],
+                              "fills": {}}),
+    }
+    for said, (src, obs) in cases.items():
+        before = [v.code for v in lint.check(src, observed=obs)
+                  if v.code == "judge-fragile-no-basis"]
+        assert len(before) == 1, (said, before)          # 这一份确实落在那一格上
+        [slot] = lint.no_basis_slots(src, obs)
+        after = [v.code for v in lint.check(src, observed=obs, accepted=[slot])
+                 if v.code == "judge-fragile-no-basis"]
+        assert after == [], (said, after)
+
+
+def test_an_acceptance_whose_quartet_changed_does_not_silence_the_judge():
+    """四元组**任一**变了就不算接受 ⇒ 判据回到报，那一格也回到待接受清单（spec §3.5「失效」）。
+
+    ⚠️ 方向不许反：错的这一边是「**人没同意的事被记成同意了**」—— 屏幕上一切正常，
+    产物却带着一根没人认过的地址出闸（`_acceptance_holds` 只是那把尺子，见 test_graph.py）。
+    """
+    src = _src_with("auth", _FRAGILE)
+    [slot] = lint.no_basis_slots(src, _OBS)
+    assert [v.code for v in lint.check(src, observed=_OBS, accepted=[slot])
+            if v.code == "judge-fragile-no-basis"] == []            # 原样那一份 ⇒ 认
+    for changed in (dict(slot, selector="header a"),                 # 那根地址被改稿换了
+                    dict(slot, card="('原始观察重渲了',)"),            # 证据变了（卡指纹）
+                    dict(slot, state="别的组"),                       # 换了别的组
+                    dict(slot, index=1)):                            # 步序挪了
+        got = [v for v in lint.check(src, observed=_OBS, accepted=[changed])
+               if v.code == "judge-fragile-no-basis"]
+        assert len(got) == 1, changed
+        #: ★ 「失效 = 回到闸上重新问」：那一格要**重新出现在待接受清单里**
+        assert len(lint.no_basis_slots(src, _OBS, accepted=[changed])) == 1, changed

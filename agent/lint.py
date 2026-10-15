@@ -840,7 +840,74 @@ def _has_text_anchor(target: dict) -> bool:
     return bool(near and str(t.get("role") or "").strip())
 
 
-def _rule_i(states: list, fills, src: str, observed=None) -> list[Violation]:
+def _as_int(value) -> Optional[int]:
+    """读成整数；**读不出来给 `None`**（不是 `0` —— 「读不懂」与「第 0 步」在判据里是两件事）。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fp_text(card_fp) -> str:
+    """指纹 → **能比、能进 state** 的那个字符串（`None` 与「空卡」不当同一件事）。
+
+    ⚠️ 为什么不能写成 `str(card_fp or "")`：空卡的指纹是**空元组** `()`，它**是假的**
+    ⇒ `or ""` 把它变成 `""`，而 `no_basis_slots` 存进 state 的是 `str(())` = `"()"` ——
+    两边对不上，于是「卡上什么都没有」那一格的接受**永远不会生效**：人点了头、屏幕上说
+    「记下了」、判据照报（正是这一刀要治的那种「屏幕上一切正常」）。
+    """
+    return "" if card_fp is None else str(card_fp)
+
+
+def _acceptance_holds(accepted, state_name, index, selector, card_fp) -> bool:
+    """这一处现在还算被接受吗 —— **四元组逐项比**（spec §3.5「失效」）。
+
+    ⚠️ 四样任一变了就 `False`：那根地址被改稿换了 / 原始观察重渲了（`card_fp` 变）/
+    步序挪了 / 换了别的组。**失效 = 回到闸上重新问**，不是沿用上一次那声「行」。
+    ⚠️ 它住 `lint`（判据这一侧），不住 `graph`：判据要用它，而 `graph` 已经 import 了
+    `lint`，反过来 import 就是循环引用。人在闸上那句话怎么**变成**一条 `accepted`，
+    那一半在 `graph._accept_from_note`（唯一入口）。
+    ⚠️ 读不懂的那一条（不是 dict / 步序读不成数）**一律不算接受**：这一侧的方向只有一个 ——
+    判「不成立」（⇒ 照旧报 ⇒ 回到闸上重新问）。这里**不许抛**（判据每一趟都走它，
+    在这儿抛就是整趟运行死在一条手改的旧账上；文件里同一条纪律见 `check_unverified`）。
+    """
+    want = _as_int(index)
+    if want is None:
+        return False
+    for one in (accepted or []):
+        if not isinstance(one, dict):
+            continue
+        if (str(one.get("state")) != str(state_name)
+                or _as_int(one.get("index") or 0) != want):
+            continue
+        return (str(one.get("selector") or "") == str(selector or "")
+                and _fp_text(one.get("card")) == _fp_text(card_fp))
+    return False
+
+
+def _no_basis_sel(card, sels, kept, accepted, state_name, index) -> Optional[str]:
+    """这一步**现在**还算不算「无据可依」→ 是就回**要绑的那根地址**，不是回 `None`。
+
+    这一支**只有一个定义**，两个调用方是同一件事的两半（★ 2026-10-15 Task 6）：
+      · `_rule_i`：报 `judge-fragile-no-basis` 之前问一句（人接受过、四元组没变 ⇒ 不报）；
+      · `no_basis_slots`：把「现在有哪几处等着被接受、各绑哪一根」写下来（人话里的 handle、
+        与 `addr_accepted` 的四元组**从这里出**）。
+    两处各写一遍的话，「人接受过的那一步」与「判据还在报的那一步」会**各说各的**
+    —— 接受完还在报 / 报着却接受不了 —— 而屏幕上两边看起来都正常。
+
+    ⚠️ 「人接受过」这一条**只删掉报**（这一格的结论换成放行），四元组任一变了就回到报；
+    它**不放松**别的任何一格（无据可依这个判断本身一个字没动）。
+    """
+    if not (_card_has_nothing(card, kept) or not kept):
+        return None
+    sel = kept[0] if kept else sels[0]
+    from agent import fix                  # 局部 import：与 `_observed_card` 同一条理由
+    if _acceptance_holds(accepted, state_name, index, sel, fix.card_fingerprint(card)):
+        return None                        # 人点头接受过，且四元组一项没变
+    return sel
+
+
+def _rule_i(states: list, fills, src: str, observed=None, accepted=None) -> list[Violation]:
     """I 脆地址：这一格的候选**全是**「随时会漂」的那种，没有一条稳的可依。
 
     真站实测（缺陷单《产物判据跨元素拼接》§四.1，2026-09-28）：georgiapower 同一天量到的
@@ -866,6 +933,13 @@ def _rule_i(states: list, fills, src: str, observed=None) -> list[Violation]:
     ⚠️ `observed` 只该影响**出处那一件事**：去重照旧按 `(组名, 步序)`（与老路同一把尺子）、
     有语义锚照旧不挂 —— 这两条在两支里都留着。
     不传 `observed` ⇒ 走老路（与从前逐字节一致）。
+
+    ★ 2026-10-15 Task 6：`accepted` = **人点头接受过的那几处地址**（spec §3.5）。它只干一件事：
+    「这一步**无据可依**、但人接受过、且四元组一项没变」⇒ **不报**这一格。⚠️ 它**不放松**
+    别的任何一格（无据可依这个判断本身一个字没动）；四元组任一变了就回到报。
+    ⚠️ **`FILLS` 那一支没有它**：那一格的把手是**键**、不是 (组名, 步序)，没有对应的口子
+    （`_fill_no_basis_say` 因此只写两条正路 —— 写上去就是一句做不到的话）。
+    不传 `accepted` ⇒ 与从前逐字节一致。
     """
     out: list[Violation] = []
     seen: set = set()
@@ -897,16 +971,12 @@ def _rule_i(states: list, fills, src: str, observed=None) -> list[Violation]:
                 #: 与观测原文**逐字相同** ⇒ 它是 `OBSERVED`、是「采信的候选」，
                 #: 只按候选判会掉进「有据但没用上」⇒ 报「从这几样里挑一条稳的」，
                 #: 可**那几样一样都没有** —— 那句人话自相矛盾，又回到逼人编。
-                if _card_has_nothing(card, kept):
-                    seen.add(handle)
-                    out.append(Violation(
-                        line=_line_of_any(src, sels[0], sels[0][-24:], name),
-                        code="judge-fragile-no-basis",
-                        message=_no_basis_say(name, index, card),
-                        snippet=_snippet(sels[0])))
-                    continue
-                if not kept:
-                    #: ③ 一根采信的都不剩（卡上有锚，可候选全是没依据的）⇒ 无据可依
+                #: ★ 2026-10-15 Task 6：这一格与下面 ③ 那一格（**卡上有锚、候选全没依据**）
+                #: **合成一句** —— 两条身子逐字节相同（同一个 handle、同一句话、同一根地址），
+                #: 而「人接受过 ⇒ 不报」必须**两处都问**（漏一处就成了「接受了还在报」，
+                #: 屏幕上看不出来）。「算不算无据可依、要绑哪一根」因此**只有一处定义**：
+                #: `_no_basis_sel`（`no_basis_slots` 那份待接受清单走的是同一支）。
+                if _no_basis_sel(card, sels, kept, accepted, name, index) is not None:
                     seen.add(handle)
                     out.append(Violation(
                         line=_line_of_any(src, sels[0], sels[0][-24:], name),
@@ -1150,12 +1220,13 @@ def _fill_with_evidence_say(key: str, card) -> str:
             "（`input[name=…]` / `input[placeholder=…]` / 文字锚那几类）。"
             % (key, said or "**什么都没有**"))
 
-def _judge_violations(src: str, observed=None) -> list[Violation]:
+def _judge_violations(src: str, observed=None, accepted=None) -> list[Violation]:
     """判据与产物形状那一族（C/D/H + A/E/F/G/I）。
 
     读不出来的那几条（坏 py / 动态构造）⇒ **不猜**。
     ★ 2026-10-15：`observed` = **探路那一刻的原始观察**（只读、且必须是冻结的那一份）——
     它只递给 `_rule_i`（I 那一格的出处判定）。不传（`None`）⇒ 与从前**逐字节一致**。
+    ★ 2026-10-15 Task 6：`accepted` = 人点头接受过的那几处（spec §3.5）——同样只递给 `_rule_i`。
     """
     from agent import fix                      # 局部 import：避免与 fix 循环引用
 
@@ -1212,7 +1283,7 @@ def _judge_violations(src: str, observed=None) -> list[Violation]:
     out.extend(_rule_e(states, src))
     out.extend(_rule_f(states, src))
     out.extend(_rule_g(fills, src))
-    out.extend(_rule_i(states, fills, src, observed))
+    out.extend(_rule_i(states, fills, src, observed, accepted))
     #: 表就是开关：`JUDGE_RULES` 里没有的不报 —— 变异验证（摘掉一条 ⇒ 对应用例不再红）
     #: 靠的就是这一行，与上面那族 `RULES` 同一条规矩。
     return [one for one in out if one.code in JUDGE_RULES]
@@ -1226,7 +1297,7 @@ def _snippet(raw: str) -> str:
     return text
 
 
-def check(src: str, observed=None) -> list[Violation]:
+def check(src: str, observed=None, accepted=None) -> list[Violation]:
     """扫一份产物源码，返回违规列表（按行号升序；同一行同一条规则只报一次）。
 
     **空列表 = 通过**。负例（合法产物零违规）比正例重要：一个什么都抓的 lint
@@ -1235,6 +1306,11 @@ def check(src: str, observed=None) -> list[Violation]:
     ★ 2026-10-15 修站那一刀：`observed` = **探路那一刻的原始观察**（`fix.observed_of` 冻的那份，
     spec §3.6b）。⚠️ 它**只读**，而且**必须是冻结的那一份** —— 不许从 `src` / 当前 spec 里取，
     否则就是循环证明（模型编一根写进表，判据再从表里读到「有出处」）。
+    不传（`None`）⇒ 与从前**逐字节一致**。
+
+    ★ 2026-10-15 Task 6：`accepted` = **人点头接受过的那几处地址**（spec §3.5，
+    形状与 `no_basis_slots` 每一条相同；只有人能写它 —— `graph._accept_from_note` 是唯一入口）。
+    它只让「无据可依、但人接受过、且四元组一项没变」的那一步**不报**；四元组任一变了就回到报。
     不传（`None`）⇒ 与从前**逐字节一致**。
     """
     violations: list[Violation] = []
@@ -1248,7 +1324,7 @@ def check(src: str, observed=None) -> list[Violation]:
             violations.append(Violation(line=lineno, code=rule.code,
                                         message=rule.message, snippet=_snippet(raw)))
     # 第二族：判据与产物形状那八条（C/D/H + A/E/F/G/I）。同一行同一条只报一次 —— 与上面同一条规矩。
-    for one in _judge_violations(src, observed):
+    for one in _judge_violations(src, observed, accepted):
         key = (one.line, one.code)
         if key in seen:
             continue
@@ -1353,4 +1429,66 @@ def check_unverified(src: str, observed) -> list[str]:
                    "自测跑到它才算数（跑到了也只记「运行验证通过」，"
                    "**不得**把它当成量到的）。"
                    % (key, "、".join("`%s`" % one for one in derived), why))
+    return out
+
+
+def no_basis_slots(src: str, observed, accepted=None) -> list[dict]:
+    """这一版里**无据可依**的那几处 → `[{"state": 名, "index": 步序, "selector": 那根, "card": 卡指纹}]`。
+
+    为什么要有它（★ Ruling 2）：人在闸上说「接受地址 X#N」时，`_accept_from_note` 得知道
+    X#N 指的是**哪一根**，否则只能不认（**不许猜** —— 猜的后果是「人没同意的事被记成同意了」，
+    而屏幕上一切正常）。这一格就是那个「指的是哪一根」：`_no_basis_say` 报的那个 handle
+    与这里写下来的键**同源**（`(组名, 步序)` 拼的 `%s#%d`），两边不会各说各的。
+
+    ⚠️ 判「算不算无据可依、要绑哪一根」走的是 `_no_basis_sel`（与 `_rule_i` 报那一格
+    **同一支**）—— 各写一遍的话，「人接受过的那一步」与「判据还在报的那一步」会对不上，
+    而屏幕上两边看起来都正常。
+    ⚠️ 只覆盖 `states` 那一支：`FILLS` 那一格的把手是**键**、`(组名, 步序)` 认不出来
+    （`_fill_no_basis_say` 因此只写两条正路 —— 写一句做不到的话正是这一刀要治的病）。
+    ⚠️ **卡指纹存字符串**（`fix.card_fingerprint` 本来给的是**元组**，`fix.py:1190`）：
+    这一格要进 state、要过 checkpoint（JSON），元组过一趟就成了 list ⇒ 同一张卡前后
+    `str()` 不等，人那次点头会**无声失效**（屏幕上还写着「接受过」）。存字符串就只有一种形状。
+    ⚠️ 坏 py / 动态构造 ⇒ 与 `_judge_violations` 那条**同一规矩**：读不出来**不猜**（空表）。
+    ⚠️ 没给 `observed`（没有冻结那份）⇒ 空表：连绑哪一根都不知道，没人能接受（不编一条出来）。
+    """
+    if observed is None:
+        return []
+    from agent import fix
+    states, fills = fix._literals(src)
+    if not isinstance(states, list):
+        states = []
+    out: list[dict] = []
+    seen: set = set()
+    for state in states:
+        if not isinstance(state, dict):
+            continue
+        name = str(state.get("name") or "?")
+        for index, step in enumerate(state.get("steps") or []):
+            if not isinstance(step, dict):
+                continue
+            target = step.get("target") or {}
+            sels = _selectors(target)
+            if not sels:
+                continue
+            handle = "%s#%d" % (name, index)
+            if handle in seen:
+                continue
+            #: ⚠️ 卡一律走 `_observed_card`（= `_rule_i` 那一支的同一个调用）：`find_observed`
+            #: 的返回值**按 falsy 判**，而且卡**必须**来自冻结那份 —— 见 `_observed_card`。
+            card = _observed_card(observed, name, index, target)
+            #: ⚠️ 与 `_rule_i` 那一支**同一个滤法**（`UNSUPPORTED` 的**不算采信**）：
+            #: 那边还要 `levels`（"全靠 Derived 撑着" 那一支要用），所以它自己那个循环留着 ——
+            #: 改一处必须改两处。
+            kept = []
+            for one in sels:
+                level, _why = address_basis(
+                    one, card or {}, (card or {}).get("selectors") or [])
+                if level != UNSUPPORTED:
+                    kept.append(one)
+            sel = _no_basis_sel(card, sels, kept, accepted, name, index)
+            if sel is None:
+                continue
+            seen.add(handle)
+            out.append({"state": name, "index": index, "selector": sel,
+                        "card": str(fix.card_fingerprint(card))})
     return out

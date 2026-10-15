@@ -254,6 +254,10 @@ class Deps:
     #: ★ 2026-10-15：**有据但没验过**那一族（`lint.check_unverified`）。
     #: 与 `lint` 分开一格：那一格是**判**（进不进环），这一格是**记**（标注给人看）。
     lint_unverified: Callable = lint_mod.check_unverified
+    #: ★ 2026-10-15 Task 6：**现在有哪几处等着被人接受**（`lint.no_basis_slots`）。
+    #: 与 `lint` 分开一格的理由同上（那一格是判，这一格是**写给人看的那份清单**）——
+    #: 而且必须走 `Deps`：测试里它是桩，直调 `lint` 会让桩失效。
+    lint_no_basis: Callable = lint_mod.no_basis_slots
     selftest: Callable = selftest_mod.run
     provenance: Callable = runtime.provenance
     should_pause: Optional[Callable] = None
@@ -297,6 +301,58 @@ def _held(out: dict) -> bool:
     return bool(out.get("end_reason") or out.get("revised_at"))
 
 
+#: 人接受一处「无据可依」地址时写的那句话（spec §3.5）。**逐字**，认不出就不认。
+#: ⚠️ 组名与步序之间就是那个 `#`（`lint.no_basis_slots` 写下来的键同形）——
+#: `_no_basis_say` 教人说的也正是这一句。
+_ACCEPT_RE = re.compile(r"^接受地址\s+(\S+?)#(\d+)\s*$")
+
+
+def _same_slot(a, b) -> bool:
+    """两条接受是不是**同一格**（组名 + 步序）—— 同一格只留一条（后来的那个赢）。
+
+    ⚠️ 读不懂的那一条**不算同一格**：这是**去重**用的尺子，不是判据那把 —— 拿它当判据
+    会把「读不懂」当成「接受过」（判据那把是 `lint._acceptance_holds`，它比四元组、方向相反：
+    读不懂 ⇒ **不算接受**）。这里也不抛（`_enter` 每一道闸都走它）。
+    """
+    if not (isinstance(a, dict) and isinstance(b, dict)):
+        return False
+    try:
+        return (str(a.get("state")) == str(b.get("state"))
+                and int(a.get("index") or 0) == int(b.get("index") or 0))
+    except (TypeError, ValueError):
+        return False
+
+
+def _accept_from_note(state, note) -> dict:
+    """人在闸上那句 `接受地址 组名#步序` → `addr_accepted` 里的一条。**认不出就不认**。
+
+    ⚠️ 三条不许松（spec §3.5）：
+      ① **只有人能写它** —— 这一格的唯一入口是 `_enter` 收到的 `note`（模型碰不到）；
+         「模型自己写一个 `{"accepted": true}`」不算接受：那只是把「编一根地址」换成
+         「**编一份风险接受**」，病没治。
+      ② **绑死四元组** —— 状态名 + 组内步序 + 那根地址 + 卡的指纹；地址或证据一变，
+         这条接受就失效（见 `lint._acceptance_holds`，判据那一侧用的就是它）。
+      ③ **认不出不许猜** —— 写错一个字符就是没写（`test_a_mis_typed_note_is_not_an_acceptance`）。
+         第 ③ 条为什么这么严：猜的后果是「**人没同意的事被记成同意了**」，而屏幕上一切正常。
+    ⚠️ 找不到对应的那一步（`addr_candidates` 里没有那个键）⇒ 也**不认**，而且**不编一条出来**：
+    那一格是 `lint.no_basis_slots` 写下来的「现在有哪几处等着被接受」，它不在里面就说明
+    这一处不是判据问过的那一格（写漏一个字符、或那一处压根不无据可依）。
+    ⚠️ 认不出 ⇒ **回空 dict**（这一趟的 `hints` 照旧收下那句话，一个字都不改）——
+    不许顺手把它记成接受、也不许在这儿编一句人话（闸上那句话进 feedback 给人看）。
+    """
+    m = _ACCEPT_RE.match(str(note or "").strip())
+    if not m:
+        return {}
+    key = "%s#%d" % (m.group(1), int(m.group(2)))
+    cand = (state.get("addr_candidates") or {}).get(key)
+    if not isinstance(cand, dict) or not cand.get("selector"):
+        return {}                       # 没有待接受的那一步 ⇒ 不认（也不编一条出来）
+    one = {"state": m.group(1), "index": int(m.group(2)),
+           "selector": cand["selector"], "card": cand.get("card") or ""}
+    kept = [a for a in (state.get("addr_accepted") or []) if not _same_slot(a, one)]
+    return {"addr_accepted": kept + [one]}
+
+
 def _enter(state, caps: Caps, step: str, say: str, facts: Optional[dict] = None) -> dict:
     """**节点开工之前**过这道闸（§6.2）。返回该写回状态的那部分。
 
@@ -316,6 +372,11 @@ def _enter(state, caps: Caps, step: str, say: str, facts: Optional[dict] = None)
     out: dict = {"visits": _visited(state, step)}
     if note:
         out["hints"] = list(state.get("hints") or []) + [note]
+        #: ★ 2026-10-15 Task 6：人那句「接受地址 X#N」**只在这一刻落地**（唯一入口）。
+        #: 认不出就不认（见 `_accept_from_note` 第 ③ 条：猜的后果是「人没同意的事被记成同意了」）。
+        #: ⚠️ 它在**每一道**闸上都问一句 —— 但只有 `addr_candidates` 里真有那一格时才认
+        #: （那份清单由 `_lint` 写，别处说的话一律落空，也就不会凭空记下一条接受）。
+        out.update(_accept_from_note(state, note))
     if action == STOP:
         out["end_reason"] = END_HUMAN_STOP
         out["end_note"] = ("人喊停：在「%s」这一步**之前**停下来，这一步没有做，页面与文件都保持原样。"
@@ -1111,6 +1172,11 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
                         #: 它不影响放行，但「这一版有一处地址是从证据推的、没人验过」这件事
                         #: 必须看得见，否则人就以为它是量到的。
                         "未证实的地址": state.get("addr_unverified"),
+                        #: ★ 2026-10-15 Task 6：**人接受过的地址**也要一直摆着（spec §3.5「可见」）
+                        #: —— 与上面那一格同一个理由：不说出来，人就以为那一根是量到的
+                        #: （而它是**人点的头**，不是量到的）。「失效」那一半**不另编人话**：
+                        #: 四元组一变，`judge-fragile-no-basis` 就照旧出现在这一格的 `violations` 里。
+                        "人接受过的地址": state.get("addr_accepted"),
                         "第几版": list(state.get("visits") or []).count("draft") + 1,
                         # ★ 给模型的那份证据，人也看得见（不然闸上判不了「这稿有没有依据」）
                         "给模型的证据（旧脚本停在哪儿）": state.get("fix_evidence"),
@@ -1389,14 +1455,27 @@ def _lint(state, deps: Deps, caps: Caps) -> dict:
 
     #: ★ 2026-10-15：判据连**探路那一刻的原始观察**一起看（`observed` 只读、而且是冻结那份）。
     #: 不传的调用点（老 job / 别的调用方）与从前逐字节一致 —— `lint.check` 的默认就是 `None`。
+    #: ★ Task 6：`accepted` = **人点头接受过的那几处**（spec §3.5）—— 同一条规矩：
+    #: 没传就跟从前逐字节一致。⚠️ 用的是 `state`（这一趟**进来时**的那份），不是 `out`：
+    #: 人在**这道闸**上刚说的那句落进 `out`、随本节点的返回值并进状态，**下一趟 lint** 生效。
     violations = [_violation_dict(v)
-                  for v in (deps.lint(state["src"], observed=state.get("observed")) or [])]
+                  for v in (deps.lint(state["src"], observed=state.get("observed"),
+                                      accepted=state.get("addr_accepted")) or [])]
     out["violations"] = violations
     #: ★ 2026-10-15（spec §3.3a）：**有据但没验过**的那几处**不报违规**（报了就到不了自测），
     #: 但**要记一笔** —— 走 `Deps` 注入（与 `lint` 同一格），**不在这里直调 `lint`**：
     #: 测试里这两格都是桩，直调会让桩失效。
     out["addr_unverified"] = list(deps.lint_unverified(state["src"],
                                                        observed=state.get("observed")) or [])
+    #: ★ 2026-10-15 Task 6（Ruling 2）：**「现在有哪几处等着被接受」要写下来**（与 `violations`
+    #: 同一时刻算、同一份 `src`）。没有它，`_no_basis_say` 教人说的那句「接受地址 X#N」
+    #: 会**永远空转**：`_accept_from_note` 找不到对应的那一步只能不认（不认是对的 —— 不许猜）。
+    #: ⚠️ 也走 `Deps` 注入（与上面两格同一条规矩：测试里是桩）。
+    out["addr_candidates"] = {
+        "%s#%d" % (one["state"], one["index"]): {"selector": one["selector"],
+                                                 "card": one["card"]}
+        for one in (deps.lint_no_basis(state["src"], observed=state.get("observed"),
+                                       accepted=state.get("addr_accepted")) or [])}
     if not violations:
         return out
 
@@ -1703,9 +1782,13 @@ def _deliver(state, deps: Deps, caps: Caps) -> dict:
         out.update({"end_reason": END_DRAFT_FAILED, "end_note": "交付前重渲失败：%s" % exc})
         return out
 
-    #: ★ 2026-10-15：与 `_lint` 同一把尺子 —— 交付前那一道也带上冻结的原始观察（`observed`）。
+    #: ★ 2026-10-15：与 `_lint` 同一把尺子 —— 交付前那一道也带上冻结的原始观察（`observed`）
+    #: 与**人接受过的那几处**（`accepted`）。少一样就是两把尺子：这一趟 `lint` 放行的
+    #: 那一版，交付前那一道又要报（运营读到的是「要写出去的那串字节自己没过契约检查」，
+    #: 而它其实只在**没带接受**这件事上不同）。
     dirty = [_violation_dict(v)
-             for v in (deps.lint(src, observed=state.get("observed")) or [])]
+             for v in (deps.lint(src, observed=state.get("observed"),
+                                 accepted=state.get("addr_accepted")) or [])]
     if dirty:
         #: ★ 2026-10-08：交付前那一遍契约检查没过 —— 照样写下去，写清它没过什么。
         _keep_unverified(state, out, "要写出去的那串字节自己没过契约检查",

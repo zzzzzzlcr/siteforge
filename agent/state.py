@@ -202,6 +202,16 @@ class SiteState(TypedDict, total=False):
     #: 自测（验证落在那一跳），所以它不进 `draft ↔ lint` 那个环。
     #: ⚠️ 「可见」是它的全部用处：闸上一直摆着，不许接受完就不提。
     addr_unverified: Optional[list]
+    #: ★ 2026-10-15：**人点头接受**的那几处地址（spec §3.5）。只有人能写它 ——
+    #: 「模型自己写一个 accepted: true」只是把「编一根地址」换成「编一份风险接受」，病没治。
+    #: 每条绑死四元组：状态名 + 组内步序 + 那根地址 + 卡的指纹。**任一变了就失效**
+    #: （地址被改稿换了 / 原始观察重渲了 / 步序挪了，都算）⇒ 回到闸上重新问。
+    #: ⚠️ 唯一入口是 `graph._accept_from_note`（`_enter` 收到的那句 `note`，模型碰不到）。
+    addr_accepted: Optional[list]
+    #: 闸上那一句「接受地址 X#N」要认的那一步现在是哪一根（`lint.no_basis_slots` 报过的那些）。
+    #: ⚠️ 没有它，那句话就**永远空转**：`_accept_from_note` 找不到对应的那一步只能不认
+    #: （不认是对的 —— 不许猜），于是前面那句约定等于白写（Ruling 2）。
+    addr_candidates: Optional[dict]
     #: **底稿是哪一种写法**（`fix.shape_of()` 量出来的）：`"legacy"` = 线上那一族
     #: （没有 `STATES/FILLS` 那张数据表，改稿走整份源码出补丁）。模板形这一格是空的。
     #: ⚠️ 必须**在这里声明**：langgraph 按字段名过滤，没声明的键进不了状态、**而且不报错**。

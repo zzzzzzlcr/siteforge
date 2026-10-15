@@ -193,11 +193,13 @@ def _deps(*, journey=None, explores=None, reports=None, write=None, rec=None, **
             return write(copy.deepcopy(spec), copy.deepcopy(feedback), len(rec.write))
         return spec
 
-    def lint_stub(src, observed=None):
+    def lint_stub(src, observed=None, accepted=None):
         rec.lint.append(src)
         #: ★ 2026-10-15：`_lint` / `_deliver` 现在把冻结的原始观察一起递进来
         #: （`observed=`）—— 桩照收照传，这样它测的仍是**真** `lint.check`。
-        return lint.check(src, observed=observed)
+        #: ★ Task 6：人接受过的那几处（`accepted=`）同一条规矩：照收照传
+        #: （桩**不吞掉**它，否则「接受完还报不报」这一半在图上就永远测不到）。
+        return lint.check(src, observed=observed, accepted=accepted)
 
     def selftest_stub(py_path, ws_url, form_file, site, **kw):
         rec.tested_src = pathlib.Path(py_path).read_text(encoding="utf-8")
@@ -1241,12 +1243,12 @@ def test_the_final_bytes_are_lint_checked_before_they_are_written(tmp_path):
     deps, rec = _deps()
     app, cfg, _ = _build(deps=deps)
 
-    def lint_stub(src, observed=None):
+    def lint_stub(src, observed=None, accepted=None):    # Task 6：`accepted=` 照收（见 `_deps`）
         rec.lint.append(src)
         if len(rec.lint) == 2:                  # 第 1 次 = lint 节点；第 2 次 = 交付前
             return [{"line": 1, "code": "js-click", "message": "这段用 JavaScript 直接点了一下",
                      "snippet": "el.click()"}]
-        return lint.check(src, observed=observed)
+        return lint.check(src, observed=observed, accepted=accepted)
 
     deps.lint = lint_stub
     _, out = _drive(app, cfg, _brief(tmp_path))
@@ -1328,6 +1330,8 @@ def test_the_real_wiring_is_what_compiles(tmp_path):
     assert real.explore is browser_agent.explore
     assert real.selftest is selftest.run
     assert real.lint is lint.check
+    #: ★ Task 6：那份「现在有哪几处等着被接受」的清单也是默认接上的（`lint.no_basis_slots`）。
+    assert real.lint_no_basis is lint.no_basis_slots
     assert real.write is not None and real.should_pause is None
     # 默认**没有**窗口层那根线：图不许自己发明一个（发明出来的那个会让第 4 遍扰动静默跳过，
     # 而「跳过」不算过 —— R-5/R-31）。缺了它，图在 intake 停下点名。
@@ -2450,12 +2454,12 @@ def test_the_final_lint_sentence_does_not_claim_nothing_was_written_when_it_was(
     deps, rec = _deps()
     app, cfg, _ = _build(deps=deps)
 
-    def lint_stub(src, observed=None):
+    def lint_stub(src, observed=None, accepted=None):    # Task 6：`accepted=` 照收（见 `_deps`）
         rec.lint.append(src)
         if len(rec.lint) == 2:                  # 第 1 次 = lint 节点；第 2 次 = 交付前
             return [{"line": 1, "code": "js-click", "message": "这段用 JavaScript 直接点了一下",
                      "snippet": "el.click()"}]
-        return lint.check(src, observed=observed)
+        return lint.check(src, observed=observed, accepted=accepted)
 
     deps.lint = lint_stub
     _, out = _drive(app, cfg, _brief(tmp_path))
@@ -2571,3 +2575,96 @@ def test_the_draft_gate_keeps_showing_the_unverified_addresses(monkeypatch):
     g._draft({"addr_unverified": ["组「auth」第 1 步：地址 `#x` 放行，但按「未证实」记"]},
              deps, g.Caps())
     assert seen.get("未证实的地址") == ["组「auth」第 1 步：地址 `#x` 放行，但按「未证实」记"]
+
+
+# ── ★ 2026-10-15 修站那一刀 · Task 6：**接受只能由人给**（spec §3.5）────────────
+#
+# ⚠️ 任务书那三条用例里写着 `_FRAGILE`，可**本文件没有这根夹具**（Task 6 报告里那张
+# 「最小复现」记着这一处）：原样抄下来先炸的是 `NameError: name '_FRAGILE' is not defined`，
+# 而不是任务书 Step 2 说的 `AttributeError: ... has no attribute '_accept_from_note'`。
+# 这里照 test_lint.py 那一根补上（用例要的是「原样绑回去」，写哪一根都行）。
+
+_FRAGILE = "body:nth-of-type(1) > header:nth-of-type(1) > div:nth-of-type(1) > a:nth-of-type(1)"
+
+
+def test_human_note_accepts_one_address_and_binds_it():
+    """只有人能接受；绑死 (状态名, 步序, 那根地址, 卡的指纹)（spec §3.5）。"""
+    from agent import graph as g
+
+    state = {"addr_candidates": {"auth#0": {"selector": _FRAGILE, "card": "fp-1"}}}
+    out = g._accept_from_note(state, "接受地址 auth#0")
+    assert out["addr_accepted"] == [{"state": "auth", "index": 0,
+                                     "selector": _FRAGILE, "card": "fp-1"}]
+
+
+def test_a_mis_typed_note_is_not_an_acceptance():
+    """写错一个字符**不许猜** —— 不认，并把「没认出来」说出来。"""
+    from agent import graph as g
+
+    state = {"addr_candidates": {"auth#0": {"selector": _FRAGILE, "card": "fp-1"}}}
+    assert g._accept_from_note(state, "接受地址 auth#O") == {}
+
+
+def test_acceptance_expires_when_the_selector_changes():
+    """地址变了 / 证据变了 ⇒ 接受失效（spec §3.5「失效」）。
+
+    ⚠️ `_acceptance_holds` 住在 **`lint`** 里，不在 `graph` —— 判据要用它，
+    而 `graph` 已经 import 了 `lint`，反过来 import 就是循环引用。
+    """
+    accepted = [{"state": "auth", "index": 0, "selector": _FRAGILE, "card": "fp-1"}]
+    assert lint._acceptance_holds(accepted, "auth", 0, "header a", "fp-1") is False
+    assert lint._acceptance_holds(accepted, "auth", 0, _FRAGILE, "fp-2") is False
+    assert lint._acceptance_holds(accepted, "auth", 0, _FRAGILE, "fp-1") is True
+
+
+def test_the_lint_stage_writes_the_slots_the_human_can_accept(monkeypatch):
+    """★ Ruling 2：`_no_basis_say` 教人说「接受地址 组名#步序」，**得有人把那份清单写下来** ——
+    没人写，`_accept_from_note` 那种「认不出就不认」（那是对的）就变成「那句约定永远空转」。
+    所以 `_lint` 每一趟都落 `addr_candidates`（**与 `violations` 同一时刻**）。
+
+    ⚠️ 这里连**端到端**一起钉：清单写出来的 handle（`auth#0`）与人在闸上说的那句话，
+    必须**是同一个键** —— 两边各写各的（一个 `auth#0`、一个 `auth:0`）时，屏幕上看着都正常。
+    """
+    from agent import graph as g
+
+    monkeypatch.setattr(g, "_enter", lambda state, caps, step, say, facts=None: {})
+    src = ("STATES = [ { 'name': 'auth', 'steps': [ { 'action': 'click',\n"
+           "   'target': { 'role': 'a', 'near': 'header',\n"
+           "               'selectors': [%r] } } ] } ]\n"
+           "FILLS = {}\n"
+           "def _follow_new_tab(self):\n    pass\n" % _FRAGILE)
+    state = {"src": src, "states": [], "fills": {},
+             "observed": {"states": [{"name": "auth", "steps": [
+                 {"action": "click", "target": {"role": "a", "near": "header",
+                                                "selectors": [_FRAGILE]}}]}], "fills": {}}}
+    deps, _rec = _deps()
+    out = g._lint(state, deps, g.Caps())
+    got = out["addr_candidates"]
+    assert list(got) == ["auth#0"]                       # 人话里报的就是这个 handle
+    assert got["auth#0"]["selector"] == _FRAGILE
+    assert got["auth#0"]["card"]                         # 卡指纹（四元组的第四样）
+    accepted = g._accept_from_note({"addr_candidates": got}, "接受地址 auth#0")
+    assert accepted["addr_accepted"] == [{"state": "auth", "index": 0,
+                                          "selector": _FRAGILE,
+                                          "card": got["auth#0"]["card"]}]
+
+
+def test_the_draft_gate_keeps_showing_the_accepted_addresses(monkeypatch):
+    """★ 「接受被记下……屏幕上要看得出来」（spec §3.5）—— 与 `addr_unverified` 同一格位置、
+    **同一个理由**：不摆出来，人就以为那一根是量到的（而它是**人点的头**，不是量到的）。
+    ⚠️ 「失效」那一半不许另编一句人话：四元组一变，`judge-fragile-no-basis` 照旧出现在
+    同一格 facts 的 `violations` 里（闸上本来就摆着）。
+    """
+    from agent import graph as g
+
+    seen: dict = {}
+
+    def _enter_stub(state, caps, step, say, facts=None):
+        seen.update(facts or {})
+        return {"end_reason": "human_stop"}      # 闸上就停：这一条只问 facts 摆没摆出来
+
+    monkeypatch.setattr(g, "_enter", _enter_stub)
+    deps, _rec = _deps()
+    one = {"state": "auth", "index": 0, "selector": "#x", "card": "fp-1"}
+    g._draft({"addr_accepted": [one]}, deps, g.Caps())
+    assert seen.get("人接受过的地址") == [one]
