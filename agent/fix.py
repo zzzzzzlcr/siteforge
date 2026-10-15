@@ -1089,7 +1089,7 @@ def card_fingerprint(card) -> tuple:
 
 
 def _selector_key(card) -> tuple:
-    """只比 `selectors`（去空白、排序）—— `find_observed` 第 ② 步找路用的那一把尺子。"""
+    """只比 `selectors`（去空白、排序）—— `find_observed` 第 ① 步找路用的那一把尺子。"""
     return tuple(sorted(str(s or "").strip() for s in ((card or {}).get("selectors") or [])
                         if str(s or "").strip()))
 
@@ -1125,19 +1125,15 @@ def find_observed(observed, state_name: str, index: int, card) -> Optional[dict]
     if group is None:
         return None
     steps = [s for s in (group.get("steps") or []) if isinstance(s, dict)]
-    # ① 按步序
-    if 0 <= index < len(steps):
-        got = card_of(steps[index].get("target"))
-        if got and _selector_key(got) == _selector_key(card):
-            return got
-        if not got and not _selector_key(card):
-            return got                     # 两边都空 ⇒ 就是这一步（它本来就没 target）
-    # ② 按地址的指纹（**只比 selectors** —— 模型改了别的、地址没动，照样找得回）
+    # ① 按地址的指纹（**只比 selectors** —— 地址没动就精确命中；表被重排也认得出）
     want = _selector_key(card)
-    if not want:
-        return None
-    for one in steps:
-        got = card_of(one.get("target"))
-        if got and _selector_key(got) == want:
-            return got
+    if want:
+        for one in steps:
+            got = card_of(one.get("target"))
+            if got and _selector_key(got) == want:
+                return got
+    # ② ① 落空 ⇒ 按 (状态名, 步序) 那张卡（**不再要求地址相等**：地址被改写也是这一步）
+    if 0 <= index < len(steps):
+        return card_of(steps[index].get("target"))
+    # ③ 步序越界、① 也没命中 ⇒ 没有可依的原始观察
     return None

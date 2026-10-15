@@ -764,6 +764,80 @@ def test_fabricated_selector_does_not_escape_the_judge():
     assert len(got) == 1, "编了一根『看着稳的』就逃出判据 —— 这正是这一刀要堵的路"
 
 
+def test_a_card_with_a_stable_selector_is_not_called_no_basis():
+    """★ 修复轮 1（Minor #1）：卡上有一根**验过唯一**的地址 ⇒ 不许说「量不到更稳的地址」。
+
+    卡上那几根是 `tools/cdp` 的 `address()` **验过唯一**才记下来的，判「有没有答案」时漏看它
+    就会**对外说假话**：卡上明明有 `a[href='/comp']`，人话却说这一步「量不到更稳的地址」，
+    模型也因此拿不到那条正路（该说的是「把卡上那根拿来用」——`_with_evidence_say` 把卡摆出来）。
+
+    ⚠️ 这一格在 `find_observed` 「地址相等」那版下够不着（卡根本取不到）；Ruling 13 落地后立刻可达。
+    """
+    src = _src_with("auth", _FRAGILE)
+    obs = {"states": [{"name": "auth", "steps": [
+        {"action": "click", "target": {"role": "a", "near": "header",
+                                       "selectors": ["a[href='/comp']"]}}]}], "fills": {}}
+    got = lint.check(src, observed=obs)
+    assert [v.code for v in got if v.code == "judge-fragile-no-basis"] == [], \
+        [v.message for v in got]
+    one = [v for v in got if v.code == "judge-fragile-selectors"]
+    assert len(one) == 1
+    assert "a[href='/comp']" in one[0].message        # 卡摆到模型眼前了
+
+
+def test_a_card_with_only_the_fragile_chain_still_has_no_basis():
+    """★ 修复轮 1 的**不许放松**那一半：卡上没有不脆的候选 ⇒ 照旧「无据可依」。
+
+    上一条与本条是同一次改动的两面（卡上的候选**只有不脆的**才算答案）——
+    nitrous 那族（卡上只有那根脆链、产物那根与观测原文逐字相同）与空卡那族都不得被顺带放宽。
+    """
+    # ① nitrous 那族：卡上只有那根脆链
+    got = [v for v in lint.check(_src_with("auth", _FRAGILE), observed=_OBS)
+           if v.code == "judge-fragile-no-basis"]
+    assert len(got) == 1 and "量不到更稳的地址" in got[0].message
+    # ② 空卡那族（原件里那一步本来就没有 target / 找不到这一步）
+    empty = {"states": [{"name": "auth", "steps": [{"action": "click", "target": {}}]}], "fills": {}}
+    gone = [v for v in lint.check(_src_with("auth", _FRAGILE), observed=empty)
+            if v.code == "judge-fragile-no-basis"]
+    assert len(gone) == 1 and "它身上没有名字" in gone[0].message
+
+
+def test_the_no_basis_message_carries_the_values_not_only_the_keys():
+    """★ 修复轮 1（Minor #3）：卡上有东西时，「量到的只有 …」要把**值**带上。
+
+    只说键名（会印成「量到的只有 `role`、`selectors`」）模型拿不到值，也就没法照它改 ——
+    这一刀治的正是「说了等于没说」。⚠️ **空卡那一支的人话一个字没动**（上一条钉着）。
+    """
+    obs = {"states": [{"name": "auth", "steps": [
+        {"action": "click", "target": {"role": "link", "selectors": [_FRAGILE.strip("'")]}}]}],
+        "fills": {}}
+    got = [v for v in lint.check(_src_with("auth", _FRAGILE), observed=obs)
+           if v.code == "judge-fragile-no-basis"]
+    assert len(got) == 1
+    assert "`role=link`" in got[0].message, got[0].message
+    assert "selectors=%s" % _FRAGILE.strip("'") in got[0].message, got[0].message
+
+
+def test_an_address_that_touches_the_card_is_let_through():
+    """★ Ruling 13 的兑现点：模型按 spec §3.3 换成一根**沾着卡的**地址 ⇒ 判据**放行**。
+
+    病：`find_observed` 旧版第①步还要求地址相等 ⇒ 地址一被改写就取不到卡 ⇒ 卡为空 ⇒
+    `judge-fragile-no-basis` ⇒ `draft ↔ lint` 两趟 `lint_cap`（**spec 自己要躲的那个死循环**）。
+    这里钉的是「沾着卡的地址」这一条正路**真的走得通**（不是靠放宽验地址 —— 见下一条：
+    编出来的那根照样 `UNSUPPORTED`）。
+    """
+    src = _src_with("auth", "'a#get-started'")
+    obs = {"states": [{"name": "auth", "steps": [
+        {"action": "click", "target": {"role": "a", "near": "header",
+                                       "selectors": ["#get-started"]}}]}], "fills": {}}
+    assert [v.code for v in lint.check(src, observed=obs) if v.code.startswith("judge-fragile")] == [], \
+        [v.message for v in lint.check(src, observed=obs)]
+    #: 反过来：**没沾卡的**改写（卡上没有的东西）照旧算没量到过 —— 放行不是放宽
+    bad = _src_with("auth", "'a#made-up'")
+    got = [v for v in lint.check(bad, observed=obs) if v.code == "judge-fragile-no-basis"]
+    assert len(got) == 1, [v.message for v in lint.check(bad, observed=obs)]
+
+
 def test_with_evidence_the_old_message_stays():
     """有据但没用上那一支：还是老码、还是「补一条稳的」，但**把卡摆出来**。"""
     obs = {"states": [{"name": "auth", "steps": [
@@ -775,30 +849,36 @@ def test_with_evidence_the_old_message_stays():
     assert "Competitions" in got[0].message           # 卡摆到眼前了
 
 
+def _dump(src, **kw):
+    """整表快照：`(行号, 码, message, snippet)` —— 一条一条逐字节，别只挑一条看。"""
+    return [(v.line, v.code, v.message, v.snippet) for v in lint.check(src, **kw)]
+
+
 def test_without_observed_behaviour_is_byte_identical():
     """不传 `observed` ⇒ 与今天**逐字节一致**（老 job / 老调用点一点不受影响）。
 
     ⚠️ **钉法**（任务书的断言与实测冲突，这里如实改成能钉住同一件事的写法）：
     任务书写的是 `[v.code for v in lint.check(src)] == ["judge-fragile-selectors"]`，
-    可这份样例 src 是一段**碎片**（有 `click`、没有 `_follow_new_tab(`）——
-    今天的 `lint.check` 在它身上本来就会**另外**命中 `judge-no-follow-tab`
-    （实测：`[(5, 'judge-fragile-selectors'), (5, 'judge-no-follow-tab')]`），
-    那是**另一条规则**的事，与本刀无关，整表相等永远钉不住。
-    所以这里钉的是**这一条违规本身**（行号 / message / snippet 逐字节）+
-    「新码在没有冻结观察时一次都不许出现」。
+    而这份样例 src 是一段**碎片**（有 `click`、没有 `_follow_new_tab(`）⇒ 它本来还会命中
+    `judge-no-follow-tab`（那是**另一条规则**的事），逐字相等永远钉不住。
+    但**整表相等是可钉的**，而那是本 Task 的硬验收 ⇒ 改成整表比（`_dump`）：
+    `check(src)` 与 `check(src, observed=None)` 的 dump 完全相等，且整表里没有新码。
     """
     src = _src_with("auth", _FRAGILE)
-    got = [v for v in lint.check(src) if v.code == "judge-fragile-selectors"]
-    assert len(got) == 1
-    assert (got[0].line, got[0].snippet) == (5, _FRAGILE.strip("'"))
-    #: message **一个字不动**（老话照旧，不含新加的「探路那一刻量到的是…」那半句）
-    assert got[0].message == (
+    plain, frozen = _dump(src), _dump(src, observed=None)
+    assert plain == frozen, "不传 observed 与传 observed=None 必须是同一份输出（逐字节）"
+    assert [one[:2] for one in plain] == [(5, "judge-fragile-selectors"),
+                                          (5, "judge-no-follow-tab")]
+    assert "judge-fragile-no-basis" not in [one[1] for one in plain]
+    #: 那一条违规本身：行号 / snippet / **message 一个字不动**（老话照旧，不含新那半句）
+    got = [one for one in plain if one[1] == "judge-fragile-selectors"][0]
+    assert (got[0], got[3]) == (5, _FRAGILE.strip("'"))
+    assert got[2] == (
         "组「auth」第 1 步**只有一根随时会漂的地址**（框架自造 id / 超长"
         "nth-of-type 链）：同一格重渲一次就换号（真站实测 `#input-167` →"
         "`#input-163`），换了分辨率的长链还会整条挂 —— 到那时这一步就是"
         "「页面上没找到」，整组步骤被静默跳过。给它补一条**稳的**地址"
         "（`input[name=…]` / `input[aria-label=…]` 这类）。")
-    assert "judge-fragile-no-basis" not in [v.code for v in lint.check(src)]
 
 
 def test_the_same_fragile_selector_in_two_states_is_reported_twice():

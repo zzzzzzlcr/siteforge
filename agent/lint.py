@@ -999,11 +999,36 @@ def _card_has_nothing(card, kept) -> bool:
     ⚠️ 判「有没有答案」**要看卡**，不能只看产物那几根 —— 产物那根脆链与观测原文**逐字相同**时
     它是 `OBSERVED`（那是对的），可那**并不意味着「有更好的答案」**（spec §3.1 第③步第一条）。
     卡是 `None`（原件里找不到对应这一步）也走这一支：fail-closed。
+    ★ 2026-10-15 修复轮 1（Minor #1）：卡**自己的 `selectors`** 也算「不脆的候选」那一侧 ——
+    卡上那几根是 `tools/cdp` 的 `address()` **验过唯一**才记下来的。原来看漏了这一格，
+    Ruling 13 一落地它立刻可达，而且会**对外说假话**：卡上明明有一根 `a[href='/comp']`，
+    人话却说这一步「量不到更稳的地址」（模型也因此拿不到那条正路 —— 该说的是「把卡上那根
+    拿来用」，`_with_evidence_say` 会把卡摆出来）。
+    ⚠️ 这一条**不放松**任何东西：卡仍然来自冻结那份（模型注入不进来），被改写的那根地址照样
+    要逐条断言过 `address_basis`；nitrous 那族（卡上只有那根脆链）与空卡那族照旧「无据可依」。
     """
     if card and any(card.get(k) not in (None, "", [], {}) for k in
                     ("label", "aria_label", "hint", "placeholder", "nearby_text", "text")):
         return False
+    if card and any(not _fragile(s) for s in (card.get("selectors") or [])):
+        return False          #: 卡上有一根验过唯一、又不在脆那一族的地址 ⇒ 有答案
     return not [s for s in (kept or []) if not _fragile(s)]
+
+
+def _card_facts_say(card) -> str:
+    """卡上的东西**连值一起**说：`` `role=link` `` / `` `selectors=a[href='/comp']` ``。
+
+    ⚠️ 只说键名（会印成「量到的只有 `role`、`selectors`」）**模型拿不到值，也就没法照它改**
+    —— 这一刀治的正是「说了等于没说」（走这条路的人每一句都得是能落地的）。
+    有多根时照原样、按顺序列出来（`、` 分隔），不做任何压缩或改写。
+    """
+    said = []
+    for key in sorted(card or {}):
+        value = (card or {}).get(key)
+        if isinstance(value, (list, tuple)):
+            value = "、".join(str(one) for one in value)
+        said.append("`%s=%s`" % (key, value))
+    return "、".join(said)
 
 
 def _no_basis_say(name: str, index: int, card) -> str:
@@ -1013,6 +1038,7 @@ def _no_basis_say(name: str, index: int, card) -> str:
     ① 删掉 → `draft` 删一步是它能做的；② 请人 → 人在闸上说的那句话进 feedback；
     ③ 接受 → 落地在 Task 6（`no_basis_slots` + 人在闸上说「接受地址 X#N」），
     四元组任一变即失效。
+    ⚠️ **空卡那一支的人话一个字都不动**（另有测试钉着）—— 那一支说的是实话：真什么都没有。
     """
     return (
         "组「%s」第 %d 步：这一步探路那一刻**量不到更稳的地址** —— %s。"
@@ -1024,7 +1050,7 @@ def _no_basis_say(name: str, index: int, card) -> str:
         % (name, index + 1,
            "它身上没有名字、旁边没有字、也没有一条验过唯一的候选"
            if not card else
-           "量到的只有 %s" % "、".join("`%s`" % k for k in sorted(card)),
+           "量到的只有 %s" % _card_facts_say(card),
            name, index))
 
 
@@ -1054,7 +1080,7 @@ def _fill_no_basis_say(key: str, card) -> str:
         "① 这一格**本来就不该填**（页面没要求，或它已经在别处填过）⇒ **把这一步删掉**；"
         "② **请人给一根**（在闸上说一句，人正看着那一页）。"
         % (key, "它身上没有名字、旁边没有字、也没有一条验过唯一的候选"
-           if not card else "量到的只有 %s" % "、".join("`%s`" % k for k in sorted(card))))
+           if not card else "量到的只有 %s" % _card_facts_say(card)))
 
 
 def _fill_with_evidence_say(key: str, card) -> str:

@@ -22,7 +22,7 @@ from langgraph.types import Command
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import fix, graph  # noqa: E402
+from agent import fix, graph, lint  # noqa: E402
 
 #: 一份「像真站上那份」的坏产物：州那一格的名字是个不透明 id，兜底填人名。
 CANDIDATE = '''
@@ -259,11 +259,51 @@ def test_find_observed_falls_back_to_card_fingerprint_when_reordered():
     assert got is not None and got["hint"] == "postcode"
 
 
-def test_find_observed_returns_none_for_invented_card():
-    """编出来的卡在原件里找不到 —— 这一步就是「没有可依的原始观察」。"""
+def test_find_observed_returns_the_original_card_not_the_injected_one():
+    """★ 注入进来的卡**取不到「这一步是谁」**：返回的永远是**原件那张**。
+
+    ⚠️ **钉法**（Ruling 13 之前这条用例钉错了东西，这里如实改成能钉住同一件事的写法）：
+    它原来断言 `find_observed(obs, "auth", 0, invented) is None` —— 那是拿 `(auth, 0)` 这个
+    **合法步序**去问，靠「地址不相等」判 `None`，等于把**找步**与**验地址**混成了一件事。
+    两件事现在是分开的，也各有各的主：
+      · **找步**（本函数）：指纹（只比 `selectors`）优先，(状态名, 步序) 兜底 ——
+        地址被改写也照样认得出「这一步是谁」；
+      · **验地址**（`lint.address_basis`）：逐条断言比卡 —— 编出来的那根照样 `UNSUPPORTED`。
+    ⇒ 正确的钉法是下面两句，合起来才说明「注入不进来」：**返回的是原件那张卡**，
+    **而被注入的那根地址仍被判 `UNSUPPORTED`**（不是靠「找不到卡」挡住的 —— 那一条
+    顺带把「地址一被改写就判无据可依」这个死循环也带进来，是 Ruling 13 要治的病）。
+    """
     obs = fix.observed_of(**_card_src())
     invented = {"role": "a", "near": "header", "selectors": ["header a"]}
-    assert fix.find_observed(obs, "auth", 0, invented) is None
+    got = fix.find_observed(obs, "auth", 0, invented)
+    assert got == fix.card_of(obs["states"][0]["steps"][0]["target"])
+    assert got != invented and invented["selectors"][0] not in (got or {}).get("selectors", [])
+    #: 后半句：注入的那根地址照样过不了 `address_basis`（**逐条断言**那一关，不是找路那一关）
+    level, why = lint.address_basis(invented["selectors"][0], got, (got or {}).get("selectors") or [])
+    assert level == lint.UNSUPPORTED, "编的那根地址照样要判无据可依：%s" % why
+
+
+def test_find_observed_finds_the_step_back_when_the_address_was_rewritten():
+    """★ Ruling 13：地址被改写（指纹落空）⇒ 按 (状态名, 步序) 照样认得出这一步，**卡照给**。
+
+    真站那一格（spec §3.3 要求模型「换成一根**沾着卡的**地址」）：模型照做之后地址与观测原文
+    不再逐字相同 ⇒ 指纹落空。旧实现把这一格当「步序也对不上」⇒ 卡为空 / `kept` 为空 ⇒
+    判 `judge-fragile-no-basis` ⇒ `draft ↔ lint` 两趟就 `lint_cap` ——
+    **正是 spec 自己要躲的那个死循环**。
+    """
+    obs = fix.observed_of(**_card_src())
+    want_card = fix.card_of(obs["states"][0]["steps"][0]["target"])
+    rewritten = {"role": "a", "near": "header", "selectors": ["a#get-started"]}
+    assert fix._selector_key(rewritten) != fix._selector_key(want_card)   # 真的是「指纹落空」那一格
+    assert fix.find_observed(obs, "auth", 0, rewritten) == want_card
+
+
+def test_find_observed_is_none_when_the_step_is_gone_and_the_address_is_unknown():
+    """③ 步序越界、指纹也落空 ⇒ `None` = **这一步没有可依的原始观察**（fail-closed）。"""
+    obs = fix.observed_of(**_card_src())
+    assert fix.find_observed(obs, "auth", 9, {"selectors": ["#nothing-like-this"]}) is None
+    #: 组名也对不上 ⇒ 同样是 None（不跨组乱认）
+    assert fix.find_observed(obs, "elsewhere", 0, {"selectors": ["#nothing-like-this"]}) is None
 
 
 def test_find_observed_returns_none_when_observed_is_missing():
