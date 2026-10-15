@@ -227,6 +227,155 @@ def _selectors(target) -> list[str]:
     return [str(s) for s in ((target or {}).get("selectors") or []) if str(s or "").strip()]
 
 
+# ── 出处三级：这根地址是不是**量到的**（★ 2026-10-15 修站那一刀，spec §3.2）────
+#
+# 为什么要有这一层：判据要的是「给它补一条稳的地址」，而**那个答案可能根本不存在**
+# （探路那一刻这个元素身上没名字、旁边没字）。今天闸不管有没有答案，一律要 —— 于是模型
+# 只能编；编完形状一查是「稳的」，就放过去了（实测 job-d1232badf5f6：`header a` 就是这么过的，
+# 它大概率命中不止一个 `<a>`，**比被换掉的那根更坏**）。
+#
+# 这一层只做一件事：把待检查的地址拆成「断言」，逐条回**冻结的原始观察**里找出处。
+# ⚠️ **只判出处，不判对错** —— 对不对由自测和人说了算（与 `fix.check_patch` 同一条立场）。
+
+OBSERVED = "observed"
+DERIVED = "derived"
+UNSUPPORTED = "unsupported"
+
+_ATTR_IN_SEL = re.compile(r'\[\s*([A-Za-z_:][-A-Za-z0-9_:]*)\s*=\s*["\']?([^"\'\]]*)["\']?\s*\]')
+_ID_IN_SEL = re.compile(r'#([A-Za-z_][-A-Za-z0-9_]*)')
+_CLASS_IN_SEL = re.compile(r'\.([A-Za-z_][-A-Za-z0-9_]*)')
+#: 标签名只在**它自己就是一个简单选择器**时才算一句主张（`header a` 那一族）——
+#: 所以要求后面紧跟组合子或到头：被 `[属性]` / `#id` / `.cls` / `:伪类` 限定的都不算
+#: （`input[name=…]` 里的 `input`、`body:nth-of-type(1)` 里的 `body`，身份是属性/位置给的）。
+_TAG_IN_SEL = re.compile(r'(?:^|[\s>+~])([a-zA-Z][a-zA-Z0-9]*)(?=$|[\s>+~])')
+#: 剥 `[属性]` / `#id` 时留下的占位符：**不能**用空白 —— 那会把 `input[name=x]` 剥成 `input `，
+#: 标签又变回「裸的」。用一个既不是字母也不是组合子的字符，把「这一处被限定过」留在原地。
+_QUALIFIED = "."
+_TEXT_ANCHOR = re.compile(r'^(?:text|label|nearby_text)\s*=\s*(.+)$', re.S)
+
+
+def _norm_text(value) -> str:
+    """比文字用的一把尺子：去首尾空白、压掉连续空白、撇号归一（与 `template` 那边同一个理由：
+    同一个字的两种排版写法算同一个字）。"""
+    text = str(value or "").replace("’", "'").replace("‘", "'")
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def assertions_of(selector) -> list:
+    """一条选择器 → 它**断言了哪些事实**（`(种类, 值)` 的列表，保序去重）。
+
+    只有这几类算断言（位置**不算** —— `:nth-of-type` / 结构组合子不主张任何身份，
+    脆不脆是 `_fragile` 的活，两件事别混）：
+      · `("attr", "name=email")` —— 属性名与值
+      · `("id", "postcode-field")`
+      · `("class", "btn")`
+      · `("tag", "input")`
+      · `("text", "Sign in")` —— 文字锚（产物重放认的那一套，见 `template._relocate`）
+
+    ⚠️ 标签名只在**它自己就是一个简单选择器**时才算（`header a` 那一族）：`input[name=…]` 里的
+    `input` 被属性限定、`body:nth-of-type(1)` 里的 `body` 被位置限定 —— 那两处的身份主张是
+    属性与位置，不是标签（spec §3.2：位置不算断言）。
+    """
+    text = str(selector or "").strip()
+    out: list = []
+    m = _TEXT_ANCHOR.match(text)
+    if m:
+        return [("text", _norm_text(m.group(1)))]
+    for attr, value in _ATTR_IN_SEL.findall(text):
+        out.append(("attr", "%s=%s" % (attr.lower(), _norm_text(value))))
+    for ident in _ID_IN_SEL.findall(text):
+        out.append(("id", _norm_text(ident)))
+    for cls in _CLASS_IN_SEL.findall(text):
+        out.append(("class", _norm_text(cls)))
+    for tag in _TAG_IN_SEL.findall(
+            _ATTR_IN_SEL.sub(_QUALIFIED, _ID_IN_SEL.sub(_QUALIFIED, text))):
+        out.append(("tag", _norm_text(tag)))
+    seen, uniq = set(), []
+    for one in out:
+        if one not in seen:
+            seen.add(one)
+            uniq.append(one)
+    return uniq
+
+
+def _observed_facts_and_hint(card, observed_selector_text) -> tuple:
+    """原始观察里**能当事实用**的那些（同一套拆法：把当时那几条选择器拆开，再加上卡上那几样）。
+
+    ⚠️ 返回的是**二元组** `(facts, hint)`，不是光一个集合 —— `hint` 要单独拎出来降一档用
+    （它把 `name` 与 `id` 合并了，见下面那段）。名字里带 `_and_hint` 就是为了不让读的人
+    以为它只回一个集合（那会让 `DERIVED` 那两条分支永远走不到，而测试全绿）。
+    """
+    facts: set = set()
+    for one in (observed_selector_text or []):
+        facts.update(assertions_of(one))
+    card = card or {}
+    for key, kind in (("label", "text"), ("aria_label", "text"),
+                      ("text", "text"), ("placeholder", "text")):
+        if _norm_text(card.get(key)):
+            facts.add((kind, _norm_text(card.get(key))))
+    for one in (card.get("nearby_text") or []):
+        if _norm_text(one):
+            facts.add(("text", _norm_text(one)))
+    #: `hint` 是 **`el.name || el.id`**（cdp 合并了，见下面那段）—— 两个属性都有可能，
+    #: 所以它同时记成 `id` 与 `attr name=` 两条**线索**（级别由 `address_basis` 降一档）。
+    hint = _norm_text(card.get("hint"))
+    return facts, hint
+
+
+def address_basis(selector, card, observed_selector_text) -> tuple:
+    """这一根地址的**出处** → `(级别, 人话)`。
+
+    三级（spec §3.2）：
+      · `OBSERVED`    —— 每一条断言都能在原始观察里找到**同一个属性名 + 同一个值**；
+      · `DERIVED`     —— 值观察过，但**属性名**只在同一来源的合法形式里二选一（今天只有 `hint` 这一族）；
+      · `UNSUPPORTED` —— 有任何一条断言在原始观察里找不到依据。
+
+    ⚠️ **文字只证明文字存在**：`nearby_text` / `text` / `label` 只能支持**文字锚**那一类断言
+    （产物重放本来就认它），**不能**支持任何属性断言 —— 评审给的反例正是这一条：
+    `nearby_text: "Choose your preferred plan"` ⇒ `input[name="preferred_plan"]`
+    里的 `name` 从没观察过，值也是编的。
+    ⚠️ 返回的「人话」是给**模型和人**读的（进 `Violation.message`）——说清缺哪一条依据。
+    """
+    asserts = assertions_of(selector)
+    if not asserts:
+        return OBSERVED, "这条地址**只说了位置、没主张任何身份**（位置不算断言）。"
+    facts, hint = _observed_facts_and_hint(card, observed_selector_text)
+    unknown, derived = [], []
+    for one in asserts:
+        if one in facts:
+            continue
+        # `hint` 那条线索**同时**管两样形状：`("id", <值>)` 与 `("attr", "name=<值>")`
+        # （`hint` = `el.name || el.id`，两个属性都有可能）—— 两条都要能对上。
+        # ⚠️ 属性断言的值是 `assertions_of` 拼出来的 `属性名=值`，比之前先把 `name=` 摘掉：
+        # 不摘的话这一支只有 `#X` 那一半走得通，`[name=X]` 那一半会掉进「没依据」。
+        value = str(one[1])
+        if one[0] == "attr" and value.startswith("name="):
+            value = value[len("name="):]
+        # `hint` 那一族：值对得上 ⇒ 降一档（属性名二选一），不是「没依据」
+        if hint and value == hint and one[0] in ("id", "attr"):
+            if one[0] == "attr" and not str(one[1]).startswith("name="):
+                unknown.append(one)
+            else:
+                derived.append(one)
+            continue
+        if one[1] == hint and one[0] == "id":
+            derived.append(one)
+            continue
+        unknown.append(one)
+    if unknown:
+        return UNSUPPORTED, ("这条地址里有**原始观察里没有的东西**：%s。"
+                             "探路那一刻量到的只有：%s。"
+                             % ("、".join("`%s`" % v for _, v in unknown[:4]),
+                                "、".join("`%s`" % f for f in sorted(
+                                    "%s:%s" % (k, v) for k, v in facts)[:6]) or "**什么都没有**"))
+    if derived:
+        return DERIVED, ("这条地址里的值是观察到的，但**属性名是二选一**（%s）："
+                         "工具当时把 `name` 与 `id` 合并成一个 `hint` 报了（cdp 那边 `el.name || el.id`），"
+                         "所以 `[name=…]` 与 `#…` 哪个是真的**没人验过**。"
+                         % "、".join("`%s`" % v for _, v in derived[:4]))
+    return OBSERVED, "每一条都回原始观察里对上了。"
+
+
 def _alias_names() -> set[str]:
     """骨架自己那张别名表（`_ALIASES`）里的名字 —— 键与值都算。
 

@@ -607,3 +607,53 @@ def test_a_fragile_click_with_a_nearby_label_and_a_role_is_not_a_violation():
                     nearby_text=["Electric", "Gas boiler"])) == ["judge-fragile-selectors"]
     # 正控②：四样全空 ⇒ 照旧打回
     assert say(strip) == ["judge-fragile-selectors"]
+
+
+# ── 出处三级（2026-10-15 修站那一刀，spec §3.2）─────────────────────────────
+
+_CARD = {"label": "Postcode", "hint": "postcode", "placeholder": "SW1A 1AA",
+         "nearby_text": ["Where do you live?"], "role": "textbox",
+         "selectors": ['input[name="postcode"]', '#postcode-field',
+                       'body:nth-of-type(1) > div:nth-of-type(2) > input:nth-of-type(1)']}
+
+
+def test_observed_when_the_attribute_and_value_are_both_in_the_card():
+    level, _ = lint.address_basis('input[name="postcode"]', _CARD, _CARD["selectors"])
+    assert level == lint.OBSERVED
+
+
+def test_unsupported_when_the_attribute_was_never_observed():
+    """评审给的反例：文字能证明文字存在，**不能**证明一个没观察到的属性存在。"""
+    card = {"nearby_text": ["Choose your preferred plan"]}
+    level, why = lint.address_basis('input[name="preferred_plan"]', card, [])
+    assert level == lint.UNSUPPORTED
+    assert "name" in why or "属性" in why
+
+
+def test_text_anchor_is_observed_because_replay_uses_it():
+    card = {"label": "Continue", "role": "button"}
+    level, _ = lint.address_basis("text=Continue", card, [])
+    assert level == lint.OBSERVED
+
+
+def test_derived_when_the_value_is_observed_but_the_attribute_is_a_guess():
+    """`hint` = `el.name || el.id`（cdp 那边合并了）⇒ `[name=X]` 与 `#X` 都只是二选一。"""
+    card = {"hint": "textField-173862"}
+    level, why = lint.address_basis('input[name="textField-173862"]', card, [])
+    assert level == lint.DERIVED
+    assert "二选一" in why or "推" in why
+    assert lint.address_basis("#textField-173862", card, [])[0] == lint.DERIVED
+
+
+def test_position_only_selector_has_no_assertions():
+    """纯位置不主张任何身份 —— 它不进出处判定（脆不脆是 `_fragile` 的活）。"""
+    card = {"selectors": ["body:nth-of-type(1) > header:nth-of-type(1) > a:nth-of-type(1)"]}
+    level, _ = lint.address_basis(
+        "body:nth-of-type(1) > header:nth-of-type(1) > a:nth-of-type(1)", card,
+        card["selectors"])
+    assert level == lint.OBSERVED
+    assert lint.assertions_of("body:nth-of-type(1) > a:nth-of-type(1)") == []
+
+
+def test_empty_card_makes_anything_unsupported():
+    assert lint.address_basis("header a", {}, [])[0] == lint.UNSUPPORTED
