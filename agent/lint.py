@@ -63,7 +63,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Pattern
 
-__all__ = ["Violation", "Rule", "RULES", "check"]
+__all__ = ["Violation", "Rule", "RULES", "check", "check_unverified", "no_basis_slots"]
 
 
 @dataclass(frozen=True)

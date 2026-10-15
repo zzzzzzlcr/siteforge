@@ -1612,6 +1612,13 @@ def _selftest(state, deps: Deps, caps: Caps) -> dict:
                   "**自测通过 ≠ 生产一定过** —— 工具侧跑的浏览器与生产 worker 的代理出口/"
                   "指纹/时序不是一套（规格 §10）。"),
                  facts={"窗口": state.get("ws_url"), "表单数据": state.get("form_file"),
+                        #: ★ 2026-10-15 修站那一刀 · I2（spec §3.5「可见」）：**一次就过 lint
+                        #: 的那条路**（`_draft` → `_lint` 干净 → `_after_lint` **直去自测**）
+                        #: 不会再有第二道 draft 闸 ⇒ 这两格只挂在 `_draft` 上时，人在这条路上
+                        #: **再也看不到**自己那句「接受」落没落地、也看不出这一版带着一处
+                        #: 没人验过的地址出门。与 `_draft` 同两格、同一份取法（`deliver` 同）。
+                        "未证实的地址": state.get("addr_unverified"),
+                        "人接受过的地址": state.get("addr_accepted"),
                         # ★ 老写法那一版：人在这儿才第一次能看见「它到底改了什么」——
                         # 这一道「继续」是**放它去跑真页面**的那一下（见 `_patch_diff`）。
                         "这一版改了什么": state.get("src_diff"),
@@ -1755,6 +1762,12 @@ def _deliver(state, deps: Deps, caps: Caps) -> dict:
                                                 datetime.datetime.now().astimezone()
                                                 .isoformat(timespec="seconds")),
                         "这一版改了什么": state.get("src_diff"),
+                        #: ★ 2026-10-15 修站那一刀 · I2（spec §3.5「可见」）：**写出去之前的
+                        #: 最后一眼** —— 「未证实 / 已接受」这两格必须在交付闸上也摆着。理由
+                        #: 同 `_selftest` 那道闸：一次就过 lint 的那条路上不会再有第二道
+                        #: draft 闸，`deliver` 是这两格最后能被人看见的地方。
+                        "未证实的地址": state.get("addr_unverified"),
+                        "人接受过的地址": state.get("addr_accepted"),
                         "要写进哪": str(_delivery_path(state))})
     if _held(out):
         return out

@@ -95,6 +95,31 @@ def test_no_frozen_evidence_means_no_claim_at_all():
     assert classify(src, {}) == "②历史证据缺失"
 
 
+def test_the_tool_takes_the_card_the_way_the_judge_does(tmp_path):
+    """★ 评审 M6：取卡必须**与判据同一把尺子**（`fix.find_observed`，**指纹优先**）。
+
+    真形状：**表被重排**（模型把一步挪到前面 / 删掉了前面那一步）。
+    冻结那份里：第 0 步**有锚**、第 1 步只有那根脆链；产物把「脆链那一步」挪到了第 0 位。
+      · 判据按**指纹**找「这一步是谁」⇒ 取到**原件第 1 步**那张卡（只有脆链、没锚）⇒ **②**（交人裁）；
+      · 照 `(状态名, 步序)` 取 ⇒ 取到**原件第 0 步**那张卡（有锚）⇒ **①** —— 一条**假回归**。
+    这一处是「① 必须是 0」那条硬线**唯一执行处**：两边分家时，屏幕上那个 ① 与判据的实际
+    判决对不上，而硬线的意义就是这一条数字。
+    """
+    from tools.addr_basis_report import classify
+
+    _FRAG = ("body:nth-of-type(1) > header:nth-of-type(1) > div:nth-of-type(1) "
+             "> a:nth-of-type(1)")
+    frozen = {"states": [{"name": "a", "steps": [
+        {"action": "click", "target": {"label": "Menu", "role": "a",
+                                       "selectors": ["a[href='/comp']"]}},
+        {"action": "click", "target": {"role": "a", "near": "header",
+                                       "selectors": [_FRAG]}}]}], "fills": {}}
+    #: 产物：那根脆链那一步挪到了第 0 位（原件里它在第 1 位）——判据按指纹认得出它
+    src = ("STATES = [ {'name': 'a', 'steps': [ {'action': 'click',\n"
+           "  'target': {'selectors': ['%s']}} ]} ]\nFILLS = {}\n" % _FRAG)
+    assert classify(src, frozen) == "②历史证据缺失"
+
+
 #: 合成账本用的两族源码 / 卡（与上面那条用例同源，只是走**账本**那条路）。
 #: ⚠️ 变量名一律 ASCII：`①` 那一类字符**不是**合法标识符（`SyntaxError`，实测）。
 _SRC_A = ("STATES = [ {'name': 'a', 'steps': [ {'action': 'click',\n"

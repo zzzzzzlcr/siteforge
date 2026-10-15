@@ -2715,3 +2715,71 @@ def test_the_draft_gate_keeps_showing_the_accepted_addresses(monkeypatch):
     one = {"state": "auth", "index": 0, "selector": "#x", "card": "fp-1"}
     g._draft({"addr_accepted": [one]}, deps, g.Caps())
     assert seen.get("人接受过的地址") == [one]
+
+
+# ── ★ 2026-10-15 修站那一刀 · I2：**成功路径上那两道闸也要看得见** ──────────────
+#
+# 现象（终审）：`addr_unverified` / `addr_accepted` 原先**只挂在 `_draft` 那道闸上**。
+# 而「一次就过 lint」那条路上：draft 闸之后是 `_lint` → 干净 → `_after_lint` **直接去
+# 自测**，**不会再有第二次 draft 闸** ⇒ 人**再也看不到**自己那句「接受」落没落地、
+# 也看不出这一版带着一处没人验过的地址出门。下面两条各钉一道闸（`deliver` 最关键 ——
+# 那是写出去之前最后一眼）。
+
+
+def test_the_selftest_gate_keeps_showing_the_unverified_and_accepted_addresses(monkeypatch):
+    """★ I2：`selftest` 那道闸上也要摆着这两格 —— 一次就过 lint 的那条路上，
+    它是这两格能被人看见的**第一道**闸（`_draft` 之后不会再有第二次 draft 闸）。"""
+    from agent import graph as g
+
+    seen: dict = {}
+
+    def _enter_stub(state, caps, step, say, facts=None):
+        seen.update(facts or {})
+        return {"end_reason": "human_stop"}      # 闸上就停：这一条只问 facts 摆没摆出来
+
+    monkeypatch.setattr(g, "_enter", _enter_stub)
+    deps, _rec = _deps()
+    unverified = ["组「auth」第 1 步：地址 `#x` 放行，但按「未证实」记"]
+    one = {"state": "auth", "index": 0, "selector": "#x", "card": "fp-1"}
+    g._selftest({"addr_unverified": unverified, "addr_accepted": [one]}, deps, g.Caps())
+    assert seen.get("未证实的地址") == unverified
+    assert seen.get("人接受过的地址") == [one]
+
+
+def test_the_deliver_gate_keeps_showing_the_unverified_and_accepted_addresses(monkeypatch):
+    """★ I2：`deliver` 那道闸是**写出去之前的最后一眼** —— 这两格必须在那儿
+    （与 `_draft` / `_selftest` 同两格、同一份取法）。"""
+    from agent import graph as g
+
+    seen: dict = {}
+
+    def _enter_stub(state, caps, step, say, facts=None):
+        seen.update(facts or {})
+        return {"end_reason": "human_stop"}      # 闸上就停：这一条只问 facts 摆没摆出来
+
+    monkeypatch.setattr(g, "_enter", _enter_stub)
+    deps, _rec = _deps()
+    unverified = ["组「auth」第 1 步：地址 `#x` 放行，但按「未证实」记"]
+    one = {"state": "auth", "index": 0, "selector": "#x", "card": "fp-1"}
+    g._deliver({"site": "x", "addr_unverified": unverified, "addr_accepted": [one]},
+               deps, g.Caps())
+    assert seen.get("未证实的地址") == unverified
+    assert seen.get("人接受过的地址") == [one]
+
+
+def test_the_four_addr_keys_are_declared_in_the_state_schema():
+    """★ 评审 M8：那四格必须在 `SiteState` 的**声明表**里 —— langgraph 按字段名过滤，
+    **没声明的键静默丢**（`agent/state.py` 自己写着这句：`fix_py` 就是这么消失过一次）。
+
+    这四格撑的是同一条链：`observed`（探路那一刻的冻结 —— 判据的凭据）、
+    `addr_unverified`（有据但没验过）、`addr_accepted`（人点头过的）、
+    `addr_candidates`（现在哪几处等着被接受）。漏声明时：闸上什么都不摆、
+    `_accept_from_note` 永远认不出、「接受」那句约定空转 —— **每一处都静默**
+    （与 `fix_py` 那一课同一个形状：接上了不响，比没接更坏）。
+    ⚠️ 放在这一份（而不是 `test_states_writer.py`）：这四格是**图**读写的那几格，
+    撑的也正是上面那两道闸。
+    """
+    from agent.state import SiteState
+
+    for name in ("observed", "addr_unverified", "addr_accepted", "addr_candidates"):
+        assert name in SiteState.__annotations__, name

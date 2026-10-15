@@ -5,11 +5,11 @@
 
 盘上交付过的产物**本来就缺证据**（click/scroll 带锚 09-28～10-12 全 0），所以新判据
 有理由在它们身上报 no-basis —— 那既不是回归，也不能靠放宽新规则去消掉。
-分法就一句话：**看冻结那份里到底有没有那几样**。
+分法就一句话：**看冻结那份里到底有没有可依的**（锚那一族 / 一根不脆的候选，见 `has_evidence`）。
 
 | 子线 | 判据 | 处置 |
 |---|---|---|
-| **① 错误新增**（**硬线 = 0**） | 冻结那份里**有**锚，而判据仍报了 | 就是回归：改判据，不许改验收 |
+| **① 错误新增**（**硬线 = 0**） | 冻结那份里**有**锚（`label`/`aria_label`/`hint`/`placeholder`/`nearby_text`/`text`）**或**有一根验过唯一、**不脆**的候选，而判据仍报了 | 就是回归：改判据，不许改验收 |
 | **② 历史证据缺失**（**单列**） | 冻结那份里**确实没有** ⇒ 报得对 | 不静默放行、也不放宽规则：逐条列出来交人裁 |
 
 ⚠️ **不许为了让子线 ② 变绿而放宽规则** —— 那是这条硬线的全部意义。
@@ -89,27 +89,38 @@ def classify(src: str, observed) -> str:
     slots = lint.no_basis_slots(src, observed)
     if not slots:
         return ""
+    #: ⚠️ ★ 2026-10-15（评审 M6）：取卡要**与判据同一把尺子** —— 判据拿的是
+    #: `fix.find_observed(observed, 名, 步序, fix.card_of(产物那一步的 target))`（指纹优先）。
+    #: 所以这里先把**产物那张表**读回来（与 `no_basis_slots` 同一处解析），按同一个把手取卡。
+    states, _fills = fix._literals(src)
     for one in slots:
         # 报的那一步，在冻结那份里**有可依的** ⇒ 判据本可以给出路（却报了）= 回归
-        if has_evidence(_card_at(observed, one.get("state"), int(one.get("index") or 0))):
+        if has_evidence(_card_at(observed, states, one.get("state"),
+                                 int(one.get("index") or 0))):
             return "①错误新增"
     return "②历史证据缺失"
 
 
-def _card_at(observed, state_name, index):
-    """`(状态名, 组内步序)` → **原件那张卡**（认不出给 `{}` = 当作没证据）。
+def _card_at(observed, states, state_name, index):
+    """(冻结那份, **产物那张表**, 状态名, 步序) → **原件那张卡**（认不出给 `{}` = 当作没证据）。
 
-    ⚠️ 与判据那边**同一个把手**：`(状态名, 步序)` 是全仓既有的「这一步是谁」
-    （`_keep_repair_local` 按它钉、`_no_basis_say` 按它报、`_accept_from_note` 按它认）。
+    ⚠️ ★ 2026-10-15（评审 M6）：**直接接到 `fix.find_observed` 上** —— 那是判据自己取卡的
+    那一个把手（判据走 `lint._observed_card`，薄薄一层，里面就是它）：**指纹优先**
+    （`selectors` 归一化后相同），表被重排 / 地址被改写时才认得出「这一步是谁」。
+    这里原先自己按 `(状态名, 组内步序)` 取卡：与判据**两把尺子**，两者在「表被重排」时
+    会取到**不同的卡** —— 而这一处是那条硬线（① 必须是 0）**唯一执行处**，分家就会把
+    历史欠账记成回归、把真回归记成「交人裁」。从此两边只认同一个把手，不可能分家。
+    ⚠️ fail-closed 的方向照旧：取不到（表里没有这一步 / 冻结那份对不上）⇒ `{}` ⇒ 不算「有证据」。
     """
-    for group in ((observed or {}).get("states") or []):
-        if not isinstance(group, dict) or str(group.get("name") or "") != str(state_name or ""):
+    target = {}
+    for group in (states or []):
+        if not isinstance(group, dict) or str(group.get("name") or "?") != str(state_name or ""):
             continue
         steps = [s for s in (group.get("steps") or []) if isinstance(s, dict)]
         if 0 <= int(index) < len(steps):
-            return fix.card_of(steps[int(index)].get("target"))
-        return {}
-    return {}
+            target = steps[int(index)].get("target") or {}
+        break
+    return fix.find_observed(observed, state_name, index, fix.card_of(target)) or {}
 
 
 def _unpack(blob):
