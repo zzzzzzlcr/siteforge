@@ -26,6 +26,7 @@ lint，必须**零违规**；还有一条钉住它**不是空的**（否则零�
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import pathlib
 import sys
 
@@ -1383,12 +1384,25 @@ def test_autoname_without_card_says_it_cannot_be_judged():
     assert len(bare) == 1 and "判不出" in bare[0].message, bare
 
 
+#: ★ 修复轮 1（评审 Minor）：老话的**哈希** —— 取一次、钉在带外，来源是**这一刀之前那一版**
+#: 的 `lint.py`（`be3daa7`），**不是**从现在的实现里抄的：
+#:   `git show be3daa7:agent/lint.py` → 跑 `check(src)` → 那条 `judge-source-autoname` 的 message
+#:   → `sha256` = `4c2c0b9f54a2709cdf55f75d09ce4c23b405b50d10fafff575607114891b273c`（205 字节）。
+#: 为什么光钉字面量不够：字面量是**从实现里抄的**，实现里打错一个字、字面量跟着抄错 ⇒
+#: 这条钉子只在「改了一处没改另一处」时才红（自己不会红）。哈希是外来的，改了就是改了。
+_AUTONAME_OLD_BE3DAA7_SHA256 = \
+    "4c2c0b9f54a2709cdf55f75d09ce4c23b405b50d10fafff575607114891b273c"
+
+
 def test_autoname_without_observed_keeps_the_old_wording_verbatim():
     """不传 `observed`（老 job / 老调用点）⇒ 那一句**逐字节还是老话**（本任务书的硬验收）。
 
     ⚠️ 老那句收场话里就有「回到探路那侧」—— 它**只许留在这条老路上**
     （两条新话都不许出现它）。这一条是**钉子**（改前改后都绿）：谁把老那半句
     顺手换成新话，它立刻红。
+    ⚠️ 两条断言各管一件事：**字面量**让人一眼读得懂老话是什么（并钉住 205 字节一个字不差）；
+    **哈希**是**带外**的（来自 `be3daa7`，见上面那个常量）—— 只有它能在
+    「实现与字面量一起被改错」时还红。两条都在，才既读得懂又真能红。
     """
     old = [v for v in lint.check(_AUTONAME_SRC % "'selectors': ['input#x']")
            if v.code == "judge-source-autoname"]
@@ -1399,3 +1413,73 @@ def test_autoname_without_observed_keeps_the_old_wording_verbatim():
         "（带数字串 = 框架自造的名字）。重放时这一格取不到资料、别名表也兜不住，"
         "值直接掉进随机池，而日志里写着「填好了」—— 真站代价是整单被站点拒收。"
         "回到探路那侧把这一格的**语义**认出来（标签 / 例子值 / 题目正文）再重渲。")
+    assert hashlib.sha256(old[0].message.encode("utf-8")).hexdigest() \
+        == _AUTONAME_OLD_BE3DAA7_SHA256, "老话变了 —— 老 job 的 message 与从前不再逐字节一致"
+    assert len(old[0].message) == 205, len(old[0].message)
+
+
+#: ★ 修复轮 1（评审 Important）：**真站那一张机器名卡**的形状 ——
+#: 这一族的文档里那个字段（gowizard 的 ZIP 框）探路那一刻能记下来的只有
+#: 框架自造的名字与一根机器地址，**一样都说不出这一格问什么**。
+#: ⚠️ 这不是角落：它是这一族的**主流形状**（认不出语义的格，多半也就没有像样的标签）。
+_AUTONAME_MACHINE_CARD = {"label": "textField-173838",
+                          "selectors": ["input#textfield_173838"]}
+
+
+@pytest.mark.parametrize("card", [
+    _AUTONAME_MACHINE_CARD,                                     # 真站那张卡（label = 自造名）
+    {"hint": "textfield_173838", "selectors": ["input#textfield_173838"]},
+    {"label": "textField-173838"},
+    {"placeholder": "field-2"},
+])
+def test_a_card_carrying_only_machine_names_still_cannot_be_judged(card):
+    """★ 修复轮 1（Important）：卡上**只有框架自造的名字**时一样**判不出**，
+    而且要说清「**量到了什么**」（`label=textField-173838`），**不准**说成「什么都没留下」。
+
+    ⚠️ 不治的话 fail-closed 就**反了**：这一支会告诉模型「照着这几样把这一格的语义判出来」，
+    可那几样里**没有一样**说得出这一格问什么 ⇒ 模型只能**编一个 `source`**，
+    而编出来的名字**恰好过得了形状闸、静默放行** —— 正是这一刀存在要堵的那条路
+    （「认不出 ⇒ 当没量到」，不是「认不出 ⇒ 当量到了」）。
+    """
+    message = _autoname_msg(card)
+    assert "判不出" in message, message
+    assert "请人" in message, message                    # 那条**做得到**的路要在（原来这一支没有）
+    assert "没有留下" not in message, message             # 卡上明明有东西 ⇒ 不准说成什么都没留下
+    needle = card.get("label") or card.get("hint") or card.get("placeholder")
+    assert needle in message, message                    # 量到的是那**一句机器名**，摆出来
+
+
+def test_a_semantic_name_on_the_card_still_reads_as_semantics():
+    """反例（★ 滤法别收太宽）：卡上**有**一样说得出这一格问什么 ⇒ 照旧走「照着判」那一支。
+
+    `hint: 'zip'` 是页面上人给这格起的名字 —— 判据认得出（`_kind_by_words`），
+    模型照着它就能把 `source` 定成 `zip`。把它一起滤掉就是把「够得着」说成「够不着」。
+    """
+    message = _autoname_msg({"hint": "zip", "selectors": ["input#zip"]})
+    assert "判不出" not in message, message
+    assert "zip" in message, message
+
+
+def test_one_semantic_anchor_beside_a_machine_name_is_enough():
+    """混合：机器名（`label: 'textField-173838'`）+ 语义名（`hint: 'zip'`）⇒ **照着判**。
+
+    ⚠️ 滤法要**逐样**滤，不是「只要卡上有自造名就整张作废」—— 那会把这一格里
+    本来够得着的那一样也一起丢掉（模型于是又只能编）。
+    """
+    message = _autoname_msg(dict(_AUTONAME_MACHINE_CARD, hint="zip"))
+    assert "判不出" not in message, message
+    assert "zip" in message, message
+
+
+@pytest.mark.parametrize("label", ["Address line 1",
+                                   "I confirm I am 18 or over and I accept t"])
+def test_a_human_label_with_a_digit_in_it_is_not_a_machine_name(label):
+    """★ 「**带数字 ≠ 自造名**」那两课（`_named_after_its_own_label` 的现场）在**卡**这一侧同样算数。
+
+    `Address line 1`（标签里那个 `1` 是人写的）与那句含 `18` 的勾选说明都是**人写的字** ——
+    真站上正是这两格被「带数字串 = 机器起的名」误伤、连打三轮把整单卡停。
+    ⚠️ 这条是**反例钉子**：滤法只看「有没有数字」的话，它立刻红。
+    """
+    message = _autoname_msg({"label": label, "selectors": ["input#x"]})
+    assert "判不出" not in message, message
+    assert label in message, message

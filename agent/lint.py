@@ -1155,20 +1155,60 @@ def _card_has_nothing(card, kept) -> bool:
     return not [s for s in (kept or []) if not _fragile(s)]
 
 
+def _machine_made_name(value) -> bool:
+    """这个值（标签 / 提示 / 名字 / 旁边的文字）**本身长着框架自造名那个形状**吗。
+
+    ★ 2026-10-15 修复轮 1（评审 Important）：`_card_has_semantics` 拿它把「根本不是语义证据」
+    的那些**逐样滤掉** —— 这一格问的是「这几样说不说得清这一格在问什么」，而
+    `label: 'textField-173838'`（页面没给标签时工具拿框架名兜的那个）一个字也说不出。
+
+    ⚠️ 两把尺子都是**现成的**（`AUTONAME` / `ba._kind_by_words`，`_rule_g` 判 `source` 用的
+    就是它们），两课也都是这一族**真站上踩过**的（`_named_after_its_own_label` 的现场）：
+      · 数字是**语义词**的一部分（`Address line 1` / `Year of birth` / `zip2`）
+        ⇒ `_kind_by_words` 认得出 ⇒ **不是**自造名；
+      · 数字只是人写那句话里的一个词（`I confirm I am 18 or over…`，**有空格**）⇒ 也不是。
+    ⇒ 自造名的形状只剩「**一个词 + 数字**」那一种（`textField-173838` / `textfield_173838` /
+    `field-2` / `__BVID__408`）：换一次构建就换号，说不出这一格问什么。
+    ⚠️ 判得**窄**：拿捏不准的一律**当语义证据用** —— 这一侧判错的代价是把「够得着」说成
+    「够不着」（模型于是只能去请人；可惜，但不是假的）。
+    """
+    from agent import browser_agent as ba      # 局部 import：与 `_rule_g` 同一条路
+
+    text = str(value or "").strip()
+    if not text or not AUTONAME.search(text):
+        return False                           # 没有数字 ⇒ 不长这个形状（`zip` / `ZIP code`）
+    if ba._kind_by_words(text):
+        return False                           # 数字长在语义词里：`Address line 1` 那一族
+    return not re.search(r"\s", text)          # 有空格 ⇒ 人写的句子：`…18 or over…` 那一族
+
+
 def _card_has_semantics(card) -> bool:
     """卡上有没有**说得出这一格是什么**的那几样（`_CARD_ANCHOR_KEYS` 里至少一样有值）。
 
     ★ 2026-10-15 Task 7（`judge-source-autoname` 那一族的收场话按它分两支）：
     有 ⇒ 「用这几样把这一格的语义判出来，再重渲」；没有 ⇒ 「判不出」，请人给一句。
 
+    ★ 修复轮 1（评审 Important）：**逐样过一遍 `_machine_made_name`** —— 「有值」不等于
+    「有语义证据」。真站那张卡（`_AUTONAME_MACHINE_CARD` 那个形状）上唯一有值的那样是
+    `label: 'textField-173838'`（页面没给标签、工具拿框架名兜的）：照它「判语义」只能**编**一个
+    `source` 出来，而编出来的名字**恰好过得了形状闸、静默放行** —— 正是这一刀要堵的那条路。
+    ⇒ 滤完一样都不剩就**当没量到**（fail-closed；失败的方向不许反）。
+
     ⚠️ **不是** `_card_has_nothing` 那把尺子原样照搬（虽然锚那一半是**同一份表**）：
     那把尺子还认「卡上有一根不脆的候选」也算「有货」—— 那是判**地址**用的。这一格判的是
     **语义**：地址说明这一格**在哪**，不说明它**问什么**（`selectors` / `role` 因此都不算
     —— 说了「有」就等于让模型拿一根地址去猜它填什么，正是这一刀要治的那种「够不着」）。
+    ⚠️ `nearby_text` 这类**列表逐条**判：一条语义都判不出就算是没有（一条说得出就算有）。
     ⚠️ 卡取不到时给的是 `{}`（`fix.card_of`），一样落在「没有」那一支：fail-closed ——
     **认不出 ⇒ 当「没量到」**。
     """
-    return any((card or {}).get(k) not in (None, "", [], {}) for k in _CARD_ANCHOR_KEYS)
+    for key in _CARD_ANCHOR_KEYS:
+        value = (card or {}).get(key)
+        for one in (value if isinstance(value, (list, tuple)) else [value]):
+            text = str(one or "").strip()
+            if text and not _machine_made_name(text):
+                return True                    # 有一样说得出这一格问什么 ⇒ 够得着
+    return False
 
 
 def _card_facts_say(card) -> str:
@@ -1296,6 +1336,14 @@ _AUTONAME_HEAD = (
 #: 那是让它去够一个够不着的东西（与 `judge-fragile-selectors` 是**同一条病**）。
 _AUTONAME_OLD_TAIL = "回到探路那侧把这一格的**语义**认出来（标签 / 例子值 / 题目正文）再重渲。"
 
+#: 「判不出」那半句的**共同尾句**（两种形状共用：卡上什么都没量到 / 卡上的东西一样都说不出语义）。
+#: ⚠️ 两条正路都是**做得到**的：判据判不出就**别猜**（猜出来的名字恰好过得了形状闸），
+#: 请人在闸上说一句 —— 人正看着那一页，他说的那句话进 feedback，改稿那双手照着定 `source`。
+_AUTONAME_CANNOT_JUDGE_TAIL = (
+    "判据**判不出**它是什么，也就说不出该给它填什么。**别猜一个名字** —— 猜错正是"
+    "这一条要治的那个病（取不到资料、静默掉进随机池）。请人在闸上说清"
+    "**这一格填什么**（人正看着那一页），照那句话把 `source` 定下来，再重渲。")
+
 
 def _autoname_say(key: str, source: str, card) -> str:
     """`judge-source-autoname` 那一句人话 —— 诊断那半句照旧，**收场那半句看卡说话**（两支）。
@@ -1303,11 +1351,19 @@ def _autoname_say(key: str, source: str, card) -> str:
     ★ 2026-10-15 Task 7（spec §3.1 第二族）：老收场话是「回到探路那侧把这一格的语义认出来
     再重渲」，与 `judge-fragile-selectors` 那一族是**同一条病** —— 模型**打不开页面**，
     让它在探路那侧「认一认」就是让它去够一个够不着的东西。改法与那一族**同一把尺子**：
-      · **有卡**（`_card_has_semantics`：卡上说得出「这一格是什么」的那几样至少一样有值）
-        ⇒ **把卡摆到眼前**（`_card_facts_say`，与 `judge-fragile-selectors` 那一族**同一处写法**
-        —— 两处各写一份的话，屏幕上同一个东西会长得不一样），照着这几样判语义；
-      · **没卡**（探路那一刻什么都没留下）⇒ 直说**判不出**，并给那条**做得到**的路：
+      · **有卡**（`_card_has_semantics`：卡上说得出「这一格是什么」的那几样至少一样有值，
+        且不只是一个框架自造的名字）⇒ **把卡摆到眼前**（`_card_facts_say`，与
+        `judge-fragile-selectors` 那一族**同一处写法** —— 两处各写一份的话，屏幕上同一个东西
+        会长得不一样），照着这几样判语义；
+      · **判不出** ⇒ 直说**判不出**，并给那条**做得到**的路：
         **请人在闸上说清这一格填什么**（人正看着那一页，他说的那句话进 feedback）。
+
+    ★ 修复轮 1（评审 Important）：**「判不出」这一支也要把量到的东西摆出来**（`_card_facts_say`）
+    —— 卡上明明有一个东西（真站那张卡上就是一句框架自造的名字）时说成「什么都没留下」是**假话**，
+    而这一刀治的正是「说了等于没说 / 说了做不到的话」。两种形状分开说：
+      · 卡**非空**但一样都说不出语义 ⇒ 「**探路那一刻量到的是**：… —— 可这几样一样都说不出
+        这一格在问什么」（✅ 诚实，且模型仍然看得见那条机器名）；
+      · 卡**是空的** ⇒ 才说「没有留下标签、提示或旁边的文字」。
 
     ⚠️ **旧路不经过这一层**：`observed is None`（老 job / 老调用点）⇒ `_AUTONAME_OLD_TAIL`，
     与从前逐字节一致（见 `_rule_g`）。
@@ -1319,11 +1375,13 @@ def _autoname_say(key: str, source: str, card) -> str:
             "**探路那一刻量到的是**：%s —— 用这几样把这一格的**语义**判出来"
             "（这一格到底在问什么），把 `source` 换成对得上的那个名字，再重渲。"
             % _card_facts_say(card))
-    return head + (
-        "这一格**没有语义证据**（探路那一刻没有留下标签、提示或旁边的文字）："
-        "判据**判不出**它是什么，也就说不出该给它填什么。**别猜一个名字** —— 猜错正是"
-        "这一条要治的那个病（取不到资料、静默掉进随机池）。请人在闸上说清"
-        "**这一格填什么**（人正看着那一页），照那句话把 `source` 定下来，再重渲。")
+    if card:
+        return head + (
+            "**探路那一刻量到的是**：%s —— 可这几样**一样都说不出这一格在问什么**"
+            "（地址只说明它在哪；框架自造的名字换一次构建就换号）。"
+            % _card_facts_say(card)) + _AUTONAME_CANNOT_JUDGE_TAIL
+    return head + ("这一格**没有语义证据**（探路那一刻没有留下标签、提示或旁边的文字）："
+                   + _AUTONAME_CANNOT_JUDGE_TAIL)
 
 
 def _judge_violations(src: str, observed=None, accepted=None) -> list[Violation]:
