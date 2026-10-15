@@ -57,6 +57,24 @@ def has_anchors(card) -> bool:
     return any((card or {}).get(k) not in (None, "", [], {}) for k in ANCHOR_KEYS)
 
 
+def has_evidence(card) -> bool:
+    """冻结那份里**有没有可依的** ⇒ 「判据本可以给出路，却报了」= ①。
+
+    ⚠️ **两句**，与 `lint._card_has_nothing` 的**卡那一侧**逐句对齐（spec §5 的表也是两样：
+    「有**那几样锚** / **有 Observed 候选**」）：
+      ① 卡上有锚（`label`/`aria_label`/`hint`/`placeholder`/`nearby_text`/`text`）；
+      ② 卡上有一根**验过唯一、又不在脆那一族**的候选（`tools/cdp` 的 `address()` 验过才记下来的）。
+    ★ 2026-10-15 评审（Important）：原来只写了第 ① 句 ⇒ `{"role": "link",
+      "selectors": ["a[href='/comp']"]}` 这种卡（**没锚、但有一根好候选**）上的真回归
+      会被记进「②历史证据缺失 = 交人裁」那一节 —— 而那正是这条硬线唯一要抓的东西。
+    ⚠️ **不**把 `_card_has_nothing` 的第三句（产物自己那几根 `kept`）算进来：那是**被审的那份
+      产物**的地址，用它当判据就成了自己证自己（产物那根若真站得住，判据本来就**不会报**）。
+    """
+    if has_anchors(card):
+        return True
+    return any(not lint._fragile(s) for s in ((card or {}).get("selectors") or []))
+
+
 def classify(src: str, observed) -> str:
     """这一份产物报出来的 no-basis，算**回归**还是**历史欠账**。
 
@@ -72,8 +90,8 @@ def classify(src: str, observed) -> str:
     if not slots:
         return ""
     for one in slots:
-        # 报的那一步，在冻结那份里**有**锚 ⇒ 判据本可以给出路（却报了）= 回归
-        if has_anchors(_card_at(observed, one.get("state"), int(one.get("index") or 0))):
+        # 报的那一步，在冻结那份里**有可依的** ⇒ 判据本可以给出路（却报了）= 回归
+        if has_evidence(_card_at(observed, one.get("state"), int(one.get("index") or 0))):
             return "①错误新增"
     return "②历史证据缺失"
 
@@ -108,8 +126,11 @@ def _rows(ledger: str):
     """账本里每一趟的 `src` 与（有就给的）`observed`。**只读**。"""
     con = sqlite3.connect("file:%s?mode=ro" % ledger, uri=True)
     per = collections.defaultdict(dict)
+    #: ⚠️ **`order by rowid` 是承重的**，不是装饰：下面「只看最后一版 `src`」与
+    #: 「最早的 `states`/`fills`」都按**追加顺序**读 —— 不写死这一句，那两条就依赖
+    #: SQLite 恰好的扫描顺序（今天对得上，是运气，不是保证）。
     for tid, ch, ty, val in con.execute(
-            "select thread_id, channel, type, value from writes"):
+            "select thread_id, channel, type, value from writes order by rowid"):
         if ch not in ("src", "observed", "states", "fills", "site", "end_reason"):
             continue
         data = _unpack(val) if ty == "msgpack" else val
@@ -140,7 +161,12 @@ def main(argv=None) -> int:
         if not srcs:
             continue
         # 老 job 没冻过 `observed` ⇒ 拿它**最早那一条** states/fills 重建（重建不出就如实记）
-        observed = (ch.get("observed") or [None])[0]
+        #: ⚠️ `observed` 取**最后一条不是 `None`** 的（★ 评审 ④）：这一格与 `site`/`end_reason`
+        #: **同形状**（先写一条空的、再写真那份）。照 `[0]` 取的话，第一个值是 `None` 时冻结那份
+        #: 会被**静默跳过**、退回重建那条路 —— 两条路给出的卡不一定一样，而屏幕上什么都看不出来。
+        #: ⚠️ 只跳 `None`、**不跳空 `{}`**：空的那份也是「真冻过的一份」（判据按「没量到」处理 ⇒ ②）；
+        #: 把它跳过去退回重建，反而可能**凭空造出一条 ①**（这条硬线最怕的方向）。
+        observed = next((x for x in reversed(ch.get("observed") or []) if x is not None), None)
         if observed is None:
             states = (ch.get("states") or [None])[0]
             fills = (ch.get("fills") or [None])[0]

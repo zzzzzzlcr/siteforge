@@ -63,6 +63,26 @@ def test_report_splits_the_two_sublines(tmp_path):
     assert classify(src_二, card_没锚) == "②历史证据缺失"
 
 
+def test_a_card_with_a_non_fragile_selector_is_a_regression_too(tmp_path):
+    """★ 评审 A5：卡上**没有锚**、但有一根**验过唯一的不脆候选**，而产物那根是**编的** ⇒ **①**。
+
+    为什么它是硬线那一侧（而不是「交人裁」）：判据这一格本来**有路可走**
+    （把卡上那根拿来用），报「无据可依」就是**误阻断**。spec §5 的表写的是两样：
+    「有**那几样锚** / **有 Observed 候选**」—— 只看第一样的话，这种形状的真回归会被
+    记进「交人裁」那一节，而那正是这条硬线唯一存在的理由。
+    ⚠️ 两句都要算（`_has_evidence`），各自与 `lint._card_has_nothing` 的**卡那一侧**逐句对齐；
+    这一条钉的是**第二句**（上一版只写了第一句，这条用例当时是红的）。
+    """
+    from tools.addr_basis_report import classify
+
+    src = ("STATES = [ {'name': 'a', 'steps': [ {'action': 'click',\n"
+           "  'target': {'selectors': ['header a']}} ]} ]\nFILLS = {}\n")
+    card = {"states": [{"name": "a", "steps": [
+        {"action": "click", "target": {"role": "link", "selectors": ["a[href='/comp']"]}}]}],
+        "fills": {}}
+    assert classify(src, card) == "①错误新增"
+
+
 def test_no_frozen_evidence_means_no_claim_at_all():
     """**没有冻结那份 ⇒ 一个 ① 都不许报**（报了就说明这条硬线是恒真的，等于没量）。"""
     from tools.addr_basis_report import classify
@@ -132,3 +152,24 @@ def test_the_ledger_run_really_reads_the_ledger(tmp_path, capsys):
     assert "'③没冻过也没账本': 1" in out, out
     #: 人裁那一节要能一眼看出**是哪一趟**（不然「逐条交人裁」无从裁起）。
     assert "t-old-b2" in out and "site-b" in out, out
+
+
+def test_a_null_observed_cell_does_not_fall_back_silently(tmp_path, capsys):
+    """★ 评审 ④：`observed` 那一格**先写一条 `None`、再写真那份** ⇒ 要用真那份。
+
+    ⚠️ 照 `[0]` 取的话，后果是**无声降级**：冻结那份被跳过去、退回「从最早的
+    `states`/`fills` 重建」那条路 —— 两条路给出的卡**不一定一样**，而屏幕上什么都看不出来。
+    这里量的就是那个差：这一趟真那份里有锚（⇒ **①**），照 `[0]` 取会落到 ③（连重建都没有）。
+    """
+    from tools.addr_basis_report import main
+
+    p = _ledger(tmp_path / "ckpt.sqlite", [
+        ("t-null-then-real", [("src", _SRC_A), ("site", ""), ("site", "site-e"),
+                              ("observed", None),
+                              ("observed", {"states": _STATES_A, "fills": {}})]),
+    ])
+    assert main(["--ledger", p]) == 0
+    out = capsys.readouterr().out
+
+    assert "'①错误新增': 1" in out, out
+    assert "③" not in out, out
