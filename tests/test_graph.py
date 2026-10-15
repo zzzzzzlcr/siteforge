@@ -2649,6 +2649,52 @@ def test_the_lint_stage_writes_the_slots_the_human_can_accept(monkeypatch):
                                           "card": got["auth#0"]["card"]}]
 
 
+def test_the_only_entry_is_the_sentence_the_human_says_at_the_gate(monkeypatch):
+    """★ **唯一入口**（spec §3.5）：这一格只有人在闸上说的那句话能写（模型碰不到）。
+
+    这里走**真的那道闸**（`_enter`，只把 `interrupt` 换成「人回了一句话」）——
+    直接调 `_accept_from_note` 那三条用例钉的是它自己的规矩，这一条钉的是**它接上了**：
+    那句话同时进 `hints`（照旧，一个字不变）与 `addr_accepted`（新的一格）。
+    """
+    from agent import graph as g
+
+    monkeypatch.setattr(g, "interrupt",
+                        lambda payload: {"action": "continue", "note": "接受地址 auth#0"})
+    out = g._enter({"addr_candidates": {"auth#0": {"selector": _FRAGILE, "card": "fp-1"}}},
+                   g.Caps(), "draft", "说给人听的那一句", {})
+    assert out["hints"] == ["接受地址 auth#0"]
+    assert out["addr_accepted"] == [{"state": "auth", "index": 0,
+                                     "selector": _FRAGILE, "card": "fp-1"}]
+
+
+def test_the_lint_stage_honours_the_accepted_addresses(monkeypatch):
+    """★ 那条约定要**真的送到判据手上**（`_lint` → `deps.lint(accepted=…)`）。
+
+    这是整条链的最后一截：清单写了、人在闸上说了、四元组也没变 —— 可要是这一趟 lint
+    没把 `accepted` 递下去，判据照旧报。屏幕上一切正常（「接受完还在报」，正是这一格
+    最忌讳的形状：做成什么样都看不出来）。
+    """
+    from agent import graph as g
+
+    monkeypatch.setattr(g, "_enter", lambda state, caps, step, say, facts=None: {})
+    src = ("STATES = [ { 'name': 'auth', 'steps': [ { 'action': 'click',\n"
+           "   'target': { 'role': 'a', 'near': 'header',\n"
+           "               'selectors': [%r] } } ] } ]\n"
+           "FILLS = {}\n"
+           "def _follow_new_tab(self):\n    pass\n" % _FRAGILE)
+    obs = {"states": [{"name": "auth", "steps": [
+        {"action": "click", "target": {"role": "a", "near": "header",
+                                       "selectors": [_FRAGILE]}}]}], "fills": {}}
+    [slot] = lint.no_basis_slots(src, obs)              # 真生产者：人在闸上要接受的就是它
+    deps, _rec = _deps()
+    out = g._lint({"src": src, "states": [], "fills": {}, "observed": obs,
+                   "addr_accepted": [slot]}, deps, g.Caps())
+    assert [v["code"] for v in out["violations"]
+            if v["code"] == "judge-fragile-no-basis"] == []
+    #: 已经接受过的那一格**不再等**（同一支口径：报与不报、等与不等是一件事的两半）
+    assert out["addr_candidates"] == {}
+
+
 def test_the_draft_gate_keeps_showing_the_accepted_addresses(monkeypatch):
     """★ 「接受被记下……屏幕上要看得出来」（spec §3.5）—— 与 `addr_unverified` 同一格位置、
     **同一个理由**：不摆出来，人就以为那一根是量到的（而它是**人点的头**，不是量到的）。
