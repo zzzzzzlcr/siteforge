@@ -4,8 +4,10 @@
 LLM 能不能稳定地「调 `observe` → 读结果 → 决定下一步 → 再调」，而不是凭常识编一个答案。
 规格 §1.1 记着上一条路（规则折叠）正是死在盲猜页面上，所以这条能力是本设计的生死判据。
 
-**它刻意做得很薄**：没有重试、没有兜底、没有「模型忘了调工具就提醒它」的补救 ——
+**它刻意做得很薄**：没有兜底、没有「模型忘了调工具就提醒它」的补救 ——
 那会把要量的东西量没。默认状态下模型什么样，这里就如实记什么样。
+（★ 2026-10-15 加的**长退避重试**是唯一的例外：它只治「上游那一刻没空」，
+一个字都不碰「模型答什么」—— 见 `_worth_waiting` 那一节。）
 
 对外只有一个函数，见 `run_tool_loop`。
 """
@@ -174,6 +176,75 @@ def timeout_seconds() -> float:
 
 def max_retries() -> int:
     return int(_positive_env("SITEFORGE_LLM_RETRIES", DEFAULT_MAX_RETRIES))
+
+
+# ── ★ 2026-10-15：上游抖一下，**等一等再打** ──────────────────────────────
+#
+# 现场：2026-10-15 09:25–09:38，8099 上四趟 job（charmingtalks ×3、gizmodo ×1）
+# **全死在第一个模型调用**上 —— 上游回 503「Service is too busy」，SDK 那两次重试
+# 在 **2.2 秒**里打完、全部被拒 ⇒ `ModelCallFailed` ⇒ 整趟 `failed`。
+# 而重试**只有那一层**：`graph.py` 里没有任何 `retry_policy`（节点抛异常不重试），
+# 服务也不会自动重起（人得手按「重新来一遍」，而那是**新的一趟、从零走**）。
+# ⇒ 「等一会儿再试」这件事，**没有任何一层在做**：上游抖两秒，前面十几分钟探好的路一起报废。
+#
+# 这一层**只治「上游那一刻没空」**，一个字都不碰「模型答什么」——
+# 所以它不违反这个文件开头那句「刻意做得很薄」（那说的是不许兜底模型的判断）。
+
+#: 每一次长重试之前**等几秒**。这张表**就是全部的重试预算**：3 次、一共 85 秒。
+#: env：`SITEFORGE_LLM_BACKOFF`（逗号分隔的秒数；`off` = 整个关掉）。
+DEFAULT_BACKOFF_SECONDS = (5.0, 20.0, 60.0)
+
+#: 值得等一等再打的那几档 HTTP 状态码。
+#: - 408/409/425/429：**明确是「现在不行」**（超时 / 冲突 / 太频繁）；
+#: - 500/502/503/504：上游或中间那层自己出问题。
+#: ⚠️ 其余 4xx **一律不等**：密钥错 / 参数错 / 模型名错，等多久都是同一个结果。
+RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+
+
+def backoff_seconds() -> tuple:
+    """长重试的退避表（秒）。读不出来 / 有负数 ⇒ **留默认值**（与上面两个旋钮同一条口径）；
+    `off`（不分大小写）⇒ **空表 = 整个关掉**（这一层是新加的，要能一刀切回去）。"""
+    raw = str(os.environ.get("SITEFORGE_LLM_BACKOFF", "") or "").strip()
+    if not raw:
+        return DEFAULT_BACKOFF_SECONDS
+    if raw.lower() in ("off", "none"):
+        return ()
+    got = []
+    for piece in raw.split(","):
+        try:
+            secs = float(piece.strip())
+        except ValueError:
+            return DEFAULT_BACKOFF_SECONDS
+        if secs < 0:
+            return DEFAULT_BACKOFF_SECONDS
+        got.append(secs)
+    return tuple(got)
+
+
+def _worth_waiting(exc) -> bool:
+    """这个错**值不值得等一等再打**。
+
+    只认**结构化的证据**（HTTP 状态码 / SDK 那两个连接类异常），**不认字样** ——
+    拿消息里有没有「503」去猜的话，我们自己的代码缺陷（消息里恰好带这几个数字）
+    也会被当成上游抖动，一路等下去。那正是「把真错拖成慢错」。
+    """
+    code = getattr(exc, "status_code", None)
+    if isinstance(code, int) and code in RETRYABLE_STATUS:
+        return True
+    from openai import APIConnectionError, APITimeoutError   # 与 `client()` 同一条：用时才导
+    return isinstance(exc, (APIConnectionError, APITimeoutError))
+
+
+def _long_retry_note(tries: int, waited: float) -> str:
+    """长重试那一段（**没等过就是空串** —— 不留一句「等了 0 秒」的噪声）。
+
+    为什么非要写出来：读报告的人得能分开「上游一直没空」与「我们一次都没等」——
+    这两件事在 `__error__` 里长得一模一样，而处置完全不同。
+    """
+    if not tries:
+        return ""
+    return ("\n  · 长重试 %d 次、一共等了 %.1f 秒（上游一直没空；退避表见 "
+            "`SITEFORGE_LLM_BACKOFF`）" % (tries, waited))
 
 
 class ModelCallFailed(RuntimeError):
@@ -409,33 +480,55 @@ def run_tool_loop(
                 steered = said
         t0 = time.time()
         #: ★ 2026-10-14：**这一次调用发出去几个请求**记在这儿（见 `format_call_context`）。
+        #: ⚠️ 它在**所有**长重试之间共用一份 —— 最后报出来的「几个 HTTP 请求」是**这一次调用
+        #: 一共打出去多少**（含每次尝试里 SDK 自己那几下），而不是最后一下的。
         box: list = []
         _tok = _ATTEMPTS.set(box)
+        waits = backoff_seconds()
+        tries, waited = 0, 0.0
         try:
-            #: ★ 2026-10-14：**流式** —— 治「60 秒 nginx 读超时」（见 `read_stream`）。
-            #: `include_usage` 不点名就要不到 token 账（那是预算那条线 C1 的依据）。
-            #: ⚠️ 流**在这里就消费掉**：中途被掐（nginx 切断）也落在同一个 `try` 里，
-            #: 照样被包成带现场的 `ModelCallFailed`。
-            reply = read_stream(cli.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=tool_specs or None,
-                max_tokens=max_tokens,
-                stream=True,
-                stream_options={"include_usage": True},
-            ))
-        except BaseException as exc:               # noqa: BLE001 —— `_Stop`（人喊停）也是 BaseException
-            # 这一次调用**没发出去** —— 那根线要据此把「已经交给它了」收回去（`missed`）。
-            _tell_steer(steer, went_out=False)
-            #: ⚠️ 人喊停（`_Stop`）是 **BaseException 而不是 Exception** —— 原样往上走。
-            if not isinstance(exc, Exception):
-                raise
-            #: ★ 2026-10-14：**带着现场往上抛** —— `__error__` 里只留得住 `str(exc)`，
-            #: 而「耗时 / 发出去几次 / 旋钮」正是分辨那三个假设的唯一依据。
-            raise ModelCallFailed(
-                "模型这一跳挂了（%s）：%s\n  · %s"
-                % (type(exc).__name__, str(exc)[:400],
-                   format_call_context(box, time.time() - t0, model, messages))) from exc
+            while True:
+                try:
+                    #: ★ 2026-10-14：**流式** —— 治「60 秒 nginx 读超时」（见 `read_stream`）。
+                    #: `include_usage` 不点名就要不到 token 账（那是预算那条线 C1 的依据）。
+                    #: ⚠️ 流**在这里就消费掉**：中途被掐（nginx 切断）也落在同一个 `try` 里，
+                    #: 照样被包成带现场的 `ModelCallFailed`。
+                    reply = read_stream(cli.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        tools=tool_specs or None,
+                        max_tokens=max_tokens,
+                        stream=True,
+                        stream_options={"include_usage": True},
+                    ))
+                    break
+                except BaseException as exc:       # noqa: BLE001 —— `_Stop`（人喊停）也是 BaseException
+                    #: ⚠️ 人喊停（`_Stop`）是 **BaseException 而不是 Exception** ——
+                    #: **原样往上走，连等都不等**（等 85 秒再抛，屏幕上就是
+                    #: 「我按了停，它还在那儿」——那条承诺当场变假话）。
+                    if not isinstance(exc, Exception):
+                        raise
+                    #: ★ 2026-10-15：**认得出来的瞬态错误 ⇒ 等一等再打**（`_worth_waiting`）。
+                    #: 这一支是那段现场（09:25 四趟全死在 503 上）唯一的治法：
+                    #: SDK 那两次重试是**同一瞬间**打完的，对「上游这一刻没空」等于没重试。
+                    #: ⚠️ 重试的只是**这一次调用**（messages 一个字没动）——
+                    #: 人插进来的那句话、工具结果、轮次账都不受影响。
+                    if tries < len(waits) and _worth_waiting(exc):
+                        pause = waits[tries]
+                        tries += 1
+                        waited += pause
+                        time.sleep(pause)
+                        continue
+                    # 这一次调用**没发出去** —— 那根线要据此把「已经交给它了」收回去（`missed`）。
+                    _tell_steer(steer, went_out=False)
+                    #: ★ 2026-10-14：**带着现场往上抛** —— `__error__` 里只留得住 `str(exc)`，
+                    #: 而「耗时 / 发出去几次 / 旋钮」正是分辨那三个假设的唯一依据。
+                    #: ★ 2026-10-15 再补一格：**长重试了几次、等了多久**（没等过就是空串）。
+                    raise ModelCallFailed(
+                        "模型这一跳挂了（%s）：%s\n  · %s%s"
+                        % (type(exc).__name__, str(exc)[:400],
+                           format_call_context(box, time.time() - t0, model, messages),
+                           _long_retry_note(tries, waited))) from exc
         finally:
             _ATTEMPTS.reset(_tok)
         if steered:

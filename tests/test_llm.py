@@ -21,6 +21,8 @@ import pathlib
 import sys
 import types
 
+import httpx
+import openai
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -323,6 +325,163 @@ def test_tool_call_arguments_arriving_in_pieces_are_joined():
 
     `id` 与 `name` 只在**第一片**上有，后面全是 `arguments` 的碎片。
     """
+    cli, _ = _stream_client([
+        _chunk(tool_calls=[_tc(0, cid="call_1", name="observe", args="")]),
+        _chunk(tool_calls=[_tc(0, args='{"wh')]),
+        _chunk(tool_calls=[_tc(0, args='y": "看')]),
+        _chunk(tool_calls=[_tc(0, args='一眼"}')]),
+        _chunk(finish="tool_calls"),
+    ])
+    seen: list = []
+
+    def dispatch(name, args):
+        seen.append((name, args))
+        return "ok"
+
+    rounds = llm.run_tool_loop("sys", "usr", [], dispatch, max_rounds=1, _client=cli)
+    assert seen == [("observe", {"why": "看一眼"})], seen
+    call = rounds[0]["tool_calls"][0]
+    assert call["id"] == "call_1", call
+    assert call["args_raw"] == '{"why": "看一眼"}', call
+    assert call["error"] is None, call
+
+
+# ── 上游抖一下：**等一等再打**，别把整趟打死（★ 2026-10-15）─────────────
+#
+# 现场：2026-10-15 09:25–09:38，8099 上四趟 job（charmingtalks ×3、gizmodo ×1）
+# **全死在第一个模型调用**上：上游回 503「Service is too busy」，SDK 那两次重试
+# 在 **2.2 秒**里打完、全被拒 ⇒ `ModelCallFailed` ⇒ 整趟 `failed`。
+# 而重试**只有那一层**（`graph.py` 里没有 `retry_policy`、服务也不自动重起）——
+# 上游抖两秒，前面十几分钟探好的路一起报废。
+#
+# 这一节加的是**第二层**：认得出来的瞬态错误**等一等再打**（退避写在明面上、
+# env 可调）；**认不出来的一律不等** —— 不许把真错拖成慢错。
+
+
+def _busy(status=503, msg="Service is too busy. We advise users to temporarily "
+                          "switch to alternative LLM API providers."):
+    """上游「没空」那一类：**带 HTTP 状态码**的 SDK 异常（body 照网关实测那句）。"""
+    req = httpx.Request("POST", "https://llm.3tkj.cn/v1/chat/completions")
+    return openai.InternalServerError(msg, response=httpx.Response(status, request=req),
+                                      body=None)
+
+
+def _flaky_client(exc, fail_times=1):
+    """前 `fail_times` 次抛 `exc`，之后照常回一股流；`calls` 记账。"""
+    calls = {"n": 0}
+
+    def create(**kwargs):
+        calls["n"] += 1
+        if calls["n"] <= fail_times:
+            raise exc
+        return iter([{"choices": [{"delta": {"content": "好了"}, "finish_reason": "stop"}],
+                      "usage": None}])
+
+    chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
+    return types.SimpleNamespace(chat=chat), calls
+
+
+def test_a_busy_upstream_is_waited_out_instead_of_killing_the_whole_job(monkeypatch):
+    """上游说「没空」⇒ **等一等再打**，而不是当场把整趟判死。"""
+    monkeypatch.setenv("SITEFORGE_LLM_BACKOFF", "0,0")     # 两次等待都取 0 秒（用例不睡）
+    fresh = importlib.reload(llm)
+    cli, calls = _flaky_client(_busy(), fail_times=2)
+    rounds = fresh.run_tool_loop("sys", "usr", [], lambda name, args: None,
+                                 max_rounds=1, _client=cli)
+    assert calls["n"] == 3, ("前两次被拒、第三次该打出去", calls)
+    assert rounds[0]["content"] == "好了", rounds
+
+
+def test_a_failure_nobody_recognises_is_not_waited_out(monkeypatch):
+    """**认不出来的错一律不等**：没有状态码的异常照旧当场判死。
+
+    这条是「不许把真错拖成慢错」那把尺子 —— 我们那些代码缺陷（KeyError/TypeError）
+    与上游抖动在屏幕上长得像，而等它们没有任何用。
+    """
+    monkeypatch.setenv("SITEFORGE_LLM_BACKOFF", "5,20,60")
+    fresh = importlib.reload(llm)
+    cli, calls = _flaky_client(RuntimeError("'NoneType' object is not subscriptable"),
+                               fail_times=99)
+    with pytest.raises(fresh.ModelCallFailed):
+        fresh.run_tool_loop("sys", "usr", [], lambda name, args: None,
+                            max_rounds=1, _client=cli)
+    assert calls["n"] == 1, ("认不出来的错不许等、也不许多打", calls)
+
+
+def test_our_own_mistake_is_not_waited_out(monkeypatch):
+    """4xx 里除了 408/409/425/429，都是**我们自己的错**（密钥 / 参数 / 模型名）——
+    等多久都没用，当场判死。"""
+    monkeypatch.setenv("SITEFORGE_LLM_BACKOFF", "0,0")
+    fresh = importlib.reload(llm)
+    cli, calls = _flaky_client(_busy(status=400, msg="No available channel for model x"),
+                               fail_times=99)
+    with pytest.raises(fresh.ModelCallFailed):
+        fresh.run_tool_loop("sys", "usr", [], lambda name, args: None,
+                            max_rounds=1, _client=cli)
+    assert calls["n"] == 1, calls
+
+
+def test_a_dropped_connection_is_waited_out_too(monkeypatch):
+    """连不上 / 读超时**没有状态码**，但同样是瞬态 —— 也等。"""
+    monkeypatch.setenv("SITEFORGE_LLM_BACKOFF", "0")
+    fresh = importlib.reload(llm)
+    req = httpx.Request("POST", "https://llm.3tkj.cn/v1/chat/completions")
+    cli, calls = _flaky_client(openai.APITimeoutError(request=req), fail_times=1)
+    rounds = fresh.run_tool_loop("sys", "usr", [], lambda name, args: None,
+                                 max_rounds=1, _client=cli)
+    assert calls["n"] == 2, calls
+    assert rounds[0]["content"] == "好了", rounds
+
+
+def test_a_stop_from_the_human_is_never_waited_out(monkeypatch):
+    """人喊停 = `BaseException` —— **等都不等**，原样往上走（一次都不许多打）。
+
+    等它 85 秒再抛，屏幕上就是「我按了停，它还在那儿」—— 那条承诺当场变假话。
+    """
+    class _Stop(BaseException):
+        pass
+
+    monkeypatch.setenv("SITEFORGE_LLM_BACKOFF", "5,20,60")
+    fresh = importlib.reload(llm)
+    cli, calls = _flaky_client(_Stop("人喊停了"), fail_times=99)
+    with pytest.raises(_Stop):
+        fresh.run_tool_loop("sys", "usr", [], lambda name, args: None,
+                            max_rounds=1, _client=cli)
+    assert calls["n"] == 1, calls
+
+
+def test_the_backoff_schedule_is_written_down_and_tunable(monkeypatch):
+    """退避表**写在明面上**、env 能调（与 `SITEFORGE_LLM_TIMEOUT`/`RETRIES` 同一套约定）。
+
+    `off` = 整个关掉（这层新加的东西，要能一刀切回去）。
+    """
+    assert llm.DEFAULT_BACKOFF_SECONDS == (5.0, 20.0, 60.0), llm.DEFAULT_BACKOFF_SECONDS
+    monkeypatch.setenv("SITEFORGE_LLM_BACKOFF", "1,2,3")
+    fresh = importlib.reload(llm)
+    assert fresh.backoff_seconds() == (1.0, 2.0, 3.0)
+    monkeypatch.setenv("SITEFORGE_LLM_BACKOFF", "off")
+    fresh = importlib.reload(fresh)
+    assert fresh.backoff_seconds() == (), "要能整个关掉"
+    for bad in ("", "   ", "abc", "-1", "5,x"):
+        monkeypatch.setenv("SITEFORGE_LLM_BACKOFF", bad)
+        fresh = importlib.reload(fresh)
+        assert fresh.backoff_seconds() == fresh.DEFAULT_BACKOFF_SECONDS, bad
+
+
+def test_giving_up_after_waiting_says_so(monkeypatch):
+    """等过了还是不行 ⇒ 那句话里要说**等了几次** —— 否则读报告的人分不清
+    「上游一直没空」与「我们一次都没等」。"""
+    monkeypatch.setenv("SITEFORGE_LLM_BACKOFF", "0,0")
+    fresh = importlib.reload(llm)
+    cli, calls = _flaky_client(_busy(), fail_times=99)
+    with pytest.raises(fresh.ModelCallFailed) as e:
+        fresh.run_tool_loop("sys", "usr", [], lambda name, args: None,
+                            max_rounds=1, _client=cli)
+    said = str(e.value)
+    assert calls["n"] == 3, calls
+    assert "长重试 2 次" in said, said
+    assert "Service is too busy" in said, ("原错不许吞掉", said)
+
     cli, _ = _stream_client([
         _chunk(tool_calls=[_tc(0, cid="call_1", name="observe", args="")]),
         _chunk(tool_calls=[_tc(0, args='{"wh')]),
