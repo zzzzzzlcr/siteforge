@@ -197,6 +197,11 @@ class SiteState(TypedDict, total=False):
     #: 读到「有出处」→ 放行）。证据必须是模型**写不到**的一份，就是这一格。
     #: ⚠️ 只在**第一次** `_draft` 里冻（`if state.get("observed") is None`），后面几版不许重冻。
     observed: Optional[dict]
+    #: ★ 2026-10-15：**有据但没验过**的那几处地址（`lint.check_unverified` 产的人话）。
+    #: 与 `violations` 分开：它是**标注**不是打回 —— 全靠 Derived 撑着的那一步要能往下走到
+    #: 自测（验证落在那一跳），所以它不进 `draft ↔ lint` 那个环。
+    #: ⚠️ 「可见」是它的全部用处：闸上一直摆着，不许接受完就不提。
+    addr_unverified: Optional[list]
     #: **底稿是哪一种写法**（`fix.shape_of()` 量出来的）：`"legacy"` = 线上那一族
     #: （没有 `STATES/FILLS` 那张数据表，改稿走整份源码出补丁）。模板形这一格是空的。
     #: ⚠️ 必须**在这里声明**：langgraph 按字段名过滤，没声明的键进不了状态、**而且不报错**。

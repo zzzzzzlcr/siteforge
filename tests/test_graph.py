@@ -2523,3 +2523,51 @@ def test_the_frozen_observation_survives_the_whole_run(tmp_path, monkeypatch):
     snap = app.get_state(cfg).values
     assert snap["observed"]["states"] == ledger      # 冻的是探路那一版
     assert snap["states"] is not ledger              # 而且不是同一个对象（深拷）
+
+
+def test_lint_stage_records_unverified_on_the_state(monkeypatch):
+    """`_lint` 把「有据但没验过」那几处记进 state —— **不打回**（spec §3.3a）。"""
+    from agent import graph as g
+
+    # ⚠️ 直接调节点会撞上 `_enter` 的 `interrupt()`（脱离图跑必炸）⇒ 把这道闸打掉。
+    # 这是**单测这个节点**的写法；图那一层照本文件既有用例用 `_drive` 走闸。
+    monkeypatch.setattr(g, "_enter", lambda state, caps, step, say, facts=None: {})
+    src = ('STATES = [ { \'name\': \'auth\', \'steps\': [ { \'action\': \'click\',\n'
+           '   \'target\': { \'selectors\': [\'input[name="textField-173862"]\'] } } ] } ]\n'
+           'FILLS = {}\n'
+           #: ⚠️ 这一行是补的：判据 F（`judge-no-follow-tab`，`agent/lint.py:671`）见「有 click、
+           #: 却不见 `_follow_new_tab(` 这个骨架标记」就报 —— 手写的小 src 过不了它，
+           #: 任务书那行 `assert out["violations"] == []` 就**永远达不到**（实测报的是
+           #: `judge-no-follow-tab`，与这一步的地址毫无关系，见 Task 5 报告）。
+           'def _follow_new_tab(self):\n    pass\n')
+    state = {"src": src, "states": [], "fills": {},
+             "observed": {"states": [{"name": "auth", "steps": [
+                 {"action": "click", "target": {"hint": "textField-173862", "role": "a"}}]}],
+                 "fills": {}}}
+    #: ⚠️ 任务书那一行原样写的是 `g._lint(state, _deps(), g.Caps())` —— 与上一条用例同一处笔误：
+    #: `_deps()` 返回的是 **(Deps, Rec) 一对**（本文件 `:171`），当 `deps` 交进去会在
+    #: `deps.lint(...)` 那行 `AttributeError: 'tuple' object has no attribute 'lint'`（实测，见 Task 5 报告）。
+    #: 按本文件那一族的写法拆开：
+    deps, _rec = _deps()
+    out = g._lint(state, deps, g.Caps())
+    assert out["violations"] == []                       # 不放打回那一栈
+    assert out["addr_unverified"] and "textField-173862" in out["addr_unverified"][0]
+
+
+def test_the_draft_gate_keeps_showing_the_unverified_addresses(monkeypatch):
+    """★ 「可见」是 `addr_unverified` 的**全部用处**：它要一直在 `_draft` 那道闸上摆着
+    （spec §3.3a / §3.5）—— 不然人就以为那一根是量到的。
+    """
+    from agent import graph as g
+
+    seen: dict = {}
+
+    def _enter_stub(state, caps, step, say, facts=None):
+        seen.update(facts or {})
+        return {"end_reason": "human_stop"}      # 闸上就停：这一条只问 facts 摆没摆出来
+
+    monkeypatch.setattr(g, "_enter", _enter_stub)
+    deps, _rec = _deps()
+    g._draft({"addr_unverified": ["组「auth」第 1 步：地址 `#x` 放行，但按「未证实」记"]},
+             deps, g.Caps())
+    assert seen.get("未证实的地址") == ["组「auth」第 1 步：地址 `#x` 放行，但按「未证实」记"]

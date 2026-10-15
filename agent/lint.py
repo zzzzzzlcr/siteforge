@@ -61,7 +61,7 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass
-from typing import Pattern
+from typing import Optional, Pattern
 
 __all__ = ["Violation", "Rule", "RULES", "check"]
 
@@ -1255,3 +1255,102 @@ def check(src: str, observed=None) -> list[Violation]:
         seen.add(key)
         violations.append(one)
     return sorted(violations, key=lambda v: (v.line, v.code))
+
+
+def _derived_only_say(card, sels) -> Optional[tuple]:
+    """这一处地址是不是**全靠 Derived 撑着** → 是就给 `(判据那句话, 全靠它撑着的那几根)`。
+
+    ★ 口径**就是** `_rule_i` 里「全靠 Derived 撑着 ⇒ 放行」那一支（`states` 与 `fills`
+    两处同一条判决）—— 两边是同一件事的两半，**改一处必须改两处**：
+      · `UNSUPPORTED` 那几根**不算采信**（`_rule_i` 压根不把它们放进 `kept`）⇒ 判之前先滤掉；
+      · 滤完一根不剩 ⇒ **不是这一支**（那是「一根采信的都没有」，`_rule_i` 报
+        `judge-fragile-no-basis`，不归这一笔）；
+      · 只要**还有一根 Observed 撑着** ⇒ 也不算（那一步有量到的地址，本来就不靠推的）。
+    ⚠️ **没卡**（`not card`）⇒ 不是这一支：「推出来的」的前提是**有据**（有 Observation 可推）。
+    ⚠️ 级别一律走 `address_basis`（**不自己另判一遍**）：它的**第 0 步**是「与观测原文
+    逐字相同 ⇒ `OBSERVED`」（★ Ruling 16）—— 另判一遍就会把「原样抄回来的那一根」
+    误报成「推出来的」。
+    """
+    if not card:
+        return None
+    levels, derived = [], []
+    for one in sels:
+        level, why = address_basis(one, card, card.get("selectors") or [])
+        levels.append(level)
+        if level == DERIVED:
+            derived.append((one, why))
+    #: 与 `_rule_i` 那一支**同一个滤法**：`UNSUPPORTED` 的**不算采信**，滤掉再判。
+    #: ⚠️ 变量名不与那边同形：那边 `kept` 装的是**地址**，这里装的是**级别**。
+    credible = [one for one in levels if one != UNSUPPORTED]
+    if not credible:
+        return None                 # 一根采信的都不剩 ⇒ `_rule_i` 报无据可依，不归这一笔
+    #: ⚠️ 下面这一句**照 `_rule_i` 那一行写**（两处是同一件事的两半，改一处必须改两处）。
+    if not all(one == DERIVED for one in levels if one != UNSUPPORTED):
+        return None                 # 还有 Observed 撑着 ⇒ 那一步不是「全靠推的」
+    return (derived[0][1], [one for one, _ in derived])
+
+
+def check_unverified(src: str, observed) -> list[str]:
+    """这一版里**有据但没验过**的那几处（Derived）→ 一行一句的人话。**不报违规**。
+
+    ★ 2026-10-15（spec §3.3a）：全靠 Derived 撑着的那一步**放行，但不当作「稳」**。
+    为什么不报违规：报了它就停在 `draft ↔ lint` 环里、**永远到不了自测** ——
+    而 Derived 的验证恰恰落在自测那一跳。所以这里只**记一笔**，让它带着标注往下走。
+
+    ⚠️ 自测跑到了 ⇒ 记「运行验证通过」；**不得改写成 Observed**（一次跑通 ≠ 属性来源已证实）。
+    ⚠️ 人话不许编：那几句**出处的话**取自 `address_basis`（判据自己说的那一句），
+    这里只加「这一格是哪儿」+「它要往哪儿走」。
+    """
+    if observed is None:
+        return []
+    from agent import fix
+    states, fills = fix._literals(src)
+    #: ⚠️ 坏 py / 动态构造 / 标量：与 `_judge_violations` 那条**同一规矩** —— 读不出来**不猜**。
+    #: 这里**不是**新判据，是那一格自己不许崩：`_lint` 每一趟都走这一步，在这里抛
+    #: `TypeError` 就是整趟运行死在读不懂的产物上（读不懂 = 不说，不是崩）。
+    if not isinstance(states, list):
+        states = []
+    if not isinstance(fills, dict):
+        fills = {}
+    out: list = []
+    for state in states:
+        if not isinstance(state, dict):
+            continue
+        name = str(state.get("name") or "?")
+        for index, step in enumerate(state.get("steps") or []):
+            if not isinstance(step, dict):
+                continue
+            target = step.get("target") or {}
+            sels = _selectors(target)
+            if not sels:
+                continue
+            #: ⚠️ 卡一律走 `_observed_card`（= `_rule_i` 那一支的同一个调用）：`find_observed`
+            #: 的返回值**按 falsy 判**，而且卡**必须**来自冻结那份 —— 见 `_observed_card`。
+            card = _observed_card(observed, name, index, target)
+            got = _derived_only_say(card, sels) if card else None
+            if not got:
+                continue
+            why, derived = got
+            out.append("组「%s」第 %d 步：地址 %s **放行，但按「未证实」记** —— %s"
+                       "自测跑到它才算数（跑到了也只记「运行验证通过」，"
+                       "**不得**把它当成量到的）。"
+                       % (name, index + 1,
+                          "、".join("`%s`" % one for one in derived), why))
+    for key, fill in fills.items():
+        target = (fill or {}).get("target") or {}
+        sels = _selectors(target)
+        if not sels:
+            continue
+        #: ⚠️ 与 `_rule_i` 的 fills 那一支**同一个取卡方式**：`src` 是待检查的那一份，
+        #: 拿它当证据就是循环证明 —— 冻结那份里按 `fills` 的**键**找（键是这一格唯一的名字）。
+        frozen = ((observed or {}).get("fills") or {}).get(key)
+        card = fix.card_of((frozen or {}).get("target"))
+        got = _derived_only_say(card, sels) if card else None
+        if not got:
+            continue
+        why, derived = got
+        out.append("字段「%s」：地址 %s **放行，但按「未证实」记** —— %s"
+                   "自测跑到它才算数（跑到了也只记「运行验证通过」，"
+                   "**不得**把它当成量到的）。"
+                   % (key, "、".join("`%s`" % one for one in derived), why))
+    return out

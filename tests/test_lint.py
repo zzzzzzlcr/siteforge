@@ -1095,3 +1095,83 @@ def test_a_fill_with_no_basis_gets_the_same_verdict_but_field_wording():
     # 不传 observed ⇒ 老路：还是老码、还是老话（与 states 那一支同一条规矩）
     old = [v for v in lint.check(_FILL_SRC) if v.code == "judge-fragile-selectors"]
     assert len(old) == 1 and "字段「postcode」" in old[0].message and "补一条" in old[0].message
+
+
+# ── Task 5：Derived 的标注通道 —— 放行，但按「未证实」记（spec §3.3a）─────────────
+#
+# 为什么不报 violation：报了它就停在 `draft ↔ lint` 环里、**永远到不了自测** ——
+# 而 Derived 的验证恰恰落在自测那一跳。所以这一格只**记一笔**，让它带着标注往下走。
+
+
+def test_unverified_lists_derived_only_steps():
+    obs = {"states": [{"name": "auth", "steps": [
+        {"action": "click", "target": {"hint": "textField-173862", "role": "a"}}]}], "fills": {}}
+    src = _src_with("auth", "'input[name=\"textField-173862\"]'")
+    got = lint.check_unverified(src, obs)
+    assert len(got) == 1
+    assert "textField-173862" in got[0] and "二选一" in got[0]
+
+
+def test_unverified_is_empty_without_observed():
+    assert lint.check_unverified(_src_with("auth", "'input#x'"), None) == []
+
+
+def test_unverified_does_not_misread_the_verbatim_observed_selector():
+    """★ Ruling 16：与观测原文**逐字相同**的那一根是**量到的**（`OBSERVED`）。
+
+    `check_unverified` 必须走**同一个** `address_basis`（不另判一遍）—— 另判一遍的话，
+    「把观测原文原样抄回来」那一根会被说成「推出来的」（它的值确实等于 `hint`）。
+    """
+    src = _src_with("auth", "'#textField-173862'")
+    obs = {"states": [{"name": "auth", "steps": [
+        {"action": "click", "target": {"hint": "textField-173862",
+                                       "selectors": ["#textField-173862"]}}]}], "fills": {}}
+    assert lint.check_unverified(src, obs) == []
+
+
+def test_unverified_is_reported_beside_a_fabricated_sibling():
+    """「全靠 Derived 撑着」的口径**就是** `_rule_i` 那一支：`UNSUPPORTED` 的**不算采信**
+    （那边压根不把它放进 `kept`）⇒ 旁边还挂着一根编的，照样是「全靠推的撑着」、照样要记一笔。
+
+    实测（Task 5，对着计划里那版只判 `all(one == DERIVED for one in levels)` 的实现跑）：
+    这一格 `lint.check` **一根地址违规都不报**（`_rule_i` 放行了），而那版回的是 `[]`
+    —— **放了却不记**，正是 §3.3a 要治的那件事。
+    """
+    src = _src_with("auth", "'input[name=\"textField-173862\"]', 'div[data-junk=\"1\"]'")
+    obs = {"states": [{"name": "auth", "steps": [
+        {"action": "click", "target": {"hint": "textField-173862"}}]}], "fills": {}}
+    # 脆弱那两条一条都不响（`_src_with` 那份小 src 会撞上 `judge-no-follow-tab`，与地址无关）
+    assert [v.code for v in lint.check(src, observed=obs)
+            if v.code.startswith("judge-fragile")] == []
+    got = lint.check_unverified(src, obs)
+    assert len(got) == 1 and "textField-173862" in got[0]
+
+
+def test_unverified_covers_the_field_side_too():
+    """`FILLS` 那一支是**同一条判决的另一半**（`_rule_i` 字段那格本来就写着「由
+    `check_unverified` 记一笔」）：只记 states 的话，字段那一支就是**放了却不记**。
+
+    实测（Task 5，对着计划里那版只走 states 的实现跑）：`lint.check` 回空、那版也回 `[]`。
+    """
+    src = ("STATES = []\n"
+           "FILLS = { 'postcode': { 'name': 'postcode',\n"
+           "  'target': { 'selectors': ['input[name=\"textField-173862\"]'] } } }\n")
+    obs = {"states": [], "fills": {"postcode": {"target": {"hint": "textField-173862"}}}}
+    assert lint.check(src, observed=obs) == []
+    got = lint.check_unverified(src, obs)
+    assert len(got) == 1 and got[0].startswith("字段「postcode」：") \
+        and "textField-173862" in got[0]
+
+
+def test_unverified_does_not_crash_on_a_source_whose_tables_are_unreadable():
+    """坏 py / 动态构造 ⇒ **不猜**（与 `_judge_violations` 那条同一规矩：读不出来就不报）。
+
+    `STATES` 写成标量时 `_judge_violations` 把它归一成空表（判据**不炸**）——
+    `check_unverified` 必须同一条待遇：它是 `_lint` 每一趟都要走的一步，
+    在这里抛 `TypeError` 就是**整趟运行死在读不懂的产物上**（而那正是判据
+    「不猜」那条纪律要躲的事：读不懂 = 不说，不是崩）。
+    """
+    obs = {"states": [], "fills": {}}
+    assert lint.check("STATES = 5\nFILLS = {}\n", observed=obs) == []      # 今天就不炸
+    assert lint.check_unverified("STATES = 5\nFILLS = {}\n", obs) == []
+    assert lint.check_unverified("STATES = []\nFILLS = [1]\n", obs) == []

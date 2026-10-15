@@ -251,6 +251,9 @@ class Deps:
     #: 「这一族今天修不了」不许被写成「读不出 STATES/FILLS」（那是两件事）。
     patch_source: Optional[Callable] = None
     lint: Callable = lint_mod.check
+    #: ★ 2026-10-15：**有据但没验过**那一族（`lint.check_unverified`）。
+    #: 与 `lint` 分开一格：那一格是**判**（进不进环），这一格是**记**（标注给人看）。
+    lint_unverified: Callable = lint_mod.check_unverified
     selftest: Callable = selftest_mod.run
     provenance: Callable = runtime.provenance
     should_pause: Optional[Callable] = None
@@ -1104,6 +1107,10 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     was = _feedback(state)
     out = _enter(state, caps, "draft", _draft_say(state, was),
                  facts={"violations": was["violations"], "diagnosis": was["diagnosis"],
+                        #: ★ 2026-10-15：**未证实的地址**要一直在闸上摆着（spec §3.5「可见」）——
+                        #: 它不影响放行，但「这一版有一处地址是从证据推的、没人验过」这件事
+                        #: 必须看得见，否则人就以为它是量到的。
+                        "未证实的地址": state.get("addr_unverified"),
                         "第几版": list(state.get("visits") or []).count("draft") + 1,
                         # ★ 给模型的那份证据，人也看得见（不然闸上判不了「这稿有没有依据」）
                         "给模型的证据（旧脚本停在哪儿）": state.get("fix_evidence"),
@@ -1385,6 +1392,11 @@ def _lint(state, deps: Deps, caps: Caps) -> dict:
     violations = [_violation_dict(v)
                   for v in (deps.lint(state["src"], observed=state.get("observed")) or [])]
     out["violations"] = violations
+    #: ★ 2026-10-15（spec §3.3a）：**有据但没验过**的那几处**不报违规**（报了就到不了自测），
+    #: 但**要记一笔** —— 走 `Deps` 注入（与 `lint` 同一格），**不在这里直调 `lint`**：
+    #: 测试里这两格都是桩，直调会让桩失效。
+    out["addr_unverified"] = list(deps.lint_unverified(state["src"],
+                                                       observed=state.get("observed")) or [])
     if not violations:
         return out
 
