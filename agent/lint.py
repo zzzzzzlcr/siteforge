@@ -251,6 +251,13 @@ _TAG_IN_SEL = re.compile(r'(?:^|[\s>+~])([a-zA-Z][a-zA-Z0-9]*)(?=$|[\s>+~])')
 #: 剥 `[属性]` / `#id` 时留下的占位符：**不能**用空白 —— 那会把 `input[name=x]` 剥成 `input `，
 #: 标签又变回「裸的」。用一个既不是字母也不是组合子的字符，把「这一处被限定过」留在原地。
 _QUALIFIED = "."
+#: 位置：`:nth-of-type(…)` / `:nth-child(…)` —— **不算断言**（spec §3.2），但也不算「没读懂」
+#: （与 `template._HOPS` 同一族的词）。**其余伪类一律进 `unparsed`**。
+_POSITIONAL_IN_SEL = re.compile(r':(?:nth-of-type|nth-child)\([^()]*\)', re.I)
+#: 顶层组合子（切「简单选择器」用；括号里与引号里的分隔符不算，见 `_segments`）。
+_SEPARATOR_IN_SEL = re.compile(r'[\s>+~]+')
+#: 一段简单选择器开头的标签名（`input[name=…]` ⇒ `input`）。
+_SEG_TAG = re.compile(r'^([a-zA-Z][a-zA-Z0-9]*)')
 _TEXT_ANCHOR = re.compile(r'^(?:text|label|nearby_text)\s*=\s*(.+)$', re.S)
 
 
@@ -261,35 +268,108 @@ def _norm_text(value) -> str:
     return re.sub(r"\s+", " ", text).strip().casefold()
 
 
+def _segments(text: str) -> list:
+    """按**顶层**组合子（空白 / `>` / `+` / `~`）切出几段「简单选择器」。
+
+    括号里与引号里的分隔符不算：`input[placeholder="Where do you live?"]` 是**一段**，不是三段
+    （否则属性值里的字会被当成标签读出来）。切它是为了让「带锚的简单选择器挂在哪个标签上」
+    这句能问得出来（I2，见 `_anchor_tags`）。
+    """
+    out: list = []
+    buf: list = []
+    depth, quote = 0, ""
+    for ch in str(text or ""):
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = ""
+            continue
+        if ch in "\"'":
+            quote = ch
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth = max(0, depth - 1)
+        elif depth == 0 and (ch.isspace() or ch in ">+~"):
+            if buf:
+                out.append("".join(buf))
+                buf = []
+            continue
+        buf.append(ch)
+    if buf:
+        out.append("".join(buf))
+    return out
+
+
+def _leftover(text: str) -> str:
+    """把**读得懂**的东西全换成空白之后剩下的那段 —— 它就是「判据没读懂的构造」（空串 = 全读懂）。
+
+    读得懂的：`[属性=值]`、`#id`、`.class`、光标签、顶层组合子，加上**位置**
+    （`:nth-of-type(…)` / `:nth-child(…)` —— 它不算断言，但也不是「没读懂」，spec §3.2）。
+    剩下的（`input[data-x]` 那种属性存在性、`[name^="post"]` 那种非 `=` 运算符、`:has(…)`、
+    `*`、逗号……）不是「零断言」，是**没读懂** —— 两者的处置完全不同，见 `assertions_of`。
+    """
+    rest = _ATTR_IN_SEL.sub(" ", str(text or ""))
+    rest = _ID_IN_SEL.sub(" ", rest)
+    rest = _CLASS_IN_SEL.sub(" ", rest)
+    rest = _POSITIONAL_IN_SEL.sub(" ", rest)
+    rest = _TAG_IN_SEL.sub(" ", rest)
+    rest = _SEPARATOR_IN_SEL.sub(" ", rest)
+    return re.sub(r"\s+", " ", rest).strip()
+
+
 def assertions_of(selector) -> list:
     """一条选择器 → 它**断言了哪些事实**（`(种类, 值)` 的列表，保序去重）。
 
     只有这几类算断言（位置**不算** —— `:nth-of-type` / 结构组合子不主张任何身份，
     脆不脆是 `_fragile` 的活，两件事别混）：
       · `("attr", "name=email")` —— 属性名与值
-      · `("id", "postcode-field")`
+      · `("id", "postcode-field")` —— `#id` 与 `[id=id]` **归一成同一件事**（spec §3.2）
       · `("class", "btn")`
       · `("tag", "input")`
       · `("text", "Sign in")` —— 文字锚（产物重放认的那一套，见 `template._relocate`）
+      · `("unparsed", 原文)` —— **判据读不懂的构造**（见下）
 
     ⚠️ 标签名只在**它自己就是一个简单选择器**时才算（`header a` 那一族）：`input[name=…]` 里的
     `input` 被属性限定、`body:nth-of-type(1)` 里的 `body` 被位置限定 —— 那两处的身份主张是
-    属性与位置，不是标签（spec §3.2：位置不算断言）。
+    属性与位置，不是标签（spec §3.2：位置不算断言）。光秃秃的标签不同：`header a` 里那两个字
+    就是它说的**全部内容**，那是一次结构性改写、没人验过它命中几个。
+
+    ⚠️ **读不懂的构造不许静默变成「零断言」**（★ 2026-10-15 评审实测的 fail-open）：
+    `input[data-x]`（属性存在性、没有 `=`）、`input[name^="post"]`（非 `=` 运算符）、
+    `a[href*=signin]`、`[name~=postcode]`、`div:has(> a)`、`*`、逗号、空串 —— 判据一个都不认识。
+    它们以前**吐空**，而 `address_basis` 那边「零断言 ⇒ 只说了位置」的前提是
+    **「零断言 ⟺ 纯位置」** ⇒ 于是这些「看着稳、主张了身份、只是没人读懂」的地址对着一张
+    **空卡**也能判 `OBSERVED`，还配一句假人话（fail-open 方向被反 + 人话在编）。
+    所以这里一律以 `("unparsed", 原文)` 落进断言，`address_basis` 见到就 `UNSUPPORTED`：
+    **读不懂 = 不算量到过**。
     """
     text = str(selector or "").strip()
     out: list = []
+    if not text:
+        return [("unparsed", "")]
     m = _TEXT_ANCHOR.match(text)
     if m:
         return [("text", _norm_text(m.group(1)))]
     for attr, value in _ATTR_IN_SEL.findall(text):
-        out.append(("attr", "%s=%s" % (attr.lower(), _norm_text(value))))
-    for ident in _ID_IN_SEL.findall(text):
+        name = attr.lower()
+        # `#id` 与 `[id=id]` 是同一件事（spec §3.2）—— 归一成同一个 kind，两种写法才比得上
+        if name == "id":
+            out.append(("id", _norm_text(value)))
+        else:
+            out.append(("attr", "%s=%s" % (name, _norm_text(value))))
+    # `#id` / `.cls` 只在**括号外**那一层找：`a[href="#top"]` 里的 `#top` 是**值**，不是 id。
+    # （不这样遮一下，解析器会自己编出 `("id","top")` —— 它甚至会给观测侧凭空添一条证据。）
+    outside = _ATTR_IN_SEL.sub(" ", text)
+    for ident in _ID_IN_SEL.findall(outside):
         out.append(("id", _norm_text(ident)))
-    for cls in _CLASS_IN_SEL.findall(text):
+    for cls in _CLASS_IN_SEL.findall(outside):
         out.append(("class", _norm_text(cls)))
     for tag in _TAG_IN_SEL.findall(
             _ATTR_IN_SEL.sub(_QUALIFIED, _ID_IN_SEL.sub(_QUALIFIED, text))):
         out.append(("tag", _norm_text(tag)))
+    if _leftover(text):
+        out.append(("unparsed", _norm_text(text)))
     seen, uniq = set(), []
     for one in out:
         if one not in seen:
@@ -298,12 +378,51 @@ def assertions_of(selector) -> list:
     return uniq
 
 
+def _anchor_tags(text: str) -> dict:
+    """这条地址里**带锚的简单选择器**各自挂在哪个标签上（`div[name=…]` ⇒ `{("attr","name=…"): "div"}`）。
+
+    只认**它自己那一段**里的标签（`form input[name=…]` 认 `input`，段的切法见 `_segments`）；
+    那一段没写出标签（`[name=…]` / `#id` / `.cls`）就不记 —— 没写标签就没有可比的。
+    """
+    out: dict = {}
+    for seg in _segments(text):
+        tag = _SEG_TAG.match(seg)
+        if not tag:
+            continue
+        for one in assertions_of(seg):
+            if one[0] in ("attr", "id", "class"):
+                out.setdefault(one, _norm_text(tag.group(1)))
+    return out
+
+
+def _observed_anchor_tags(observed_selector_text) -> dict:
+    """观测原文里**带锚的简单选择器**各自挂在哪些标签上：`input[name=…]` ⇒ `{("attr","name=…"): {"input"}}`。
+
+    I2（★ 2026-10-15 评审）：锚对上了还不够 —— **标签也要对得上**。标签本身不单独算断言
+    （它只是「范围限定」，见 `assertions_of`），但重放那边是 `Element.matches(原始串)`：
+    `div[name="postcode"]` 对着一张观测原文是 `input[name="postcode"]` 的卡，页面上真有
+    `div[name=postcode]` 时就会**静默点到另一个元素**。
+
+    ⚠️ 判法要**窄**：只在**观测侧确实写出了一个标签**时比（`[name=…]` 这种没带标签的锚没有可比的，
+    「提案比观测更泛」不算错）；**也绝不**把「观测原文里出现过的标签」整体倒进 facts ——
+    那会把 `header a` 放回来（观测链里 `header`/`a` 都在），正好把这个 Task 要堵的路重新打开。
+    """
+    out: dict = {}
+    for one in (observed_selector_text or []):
+        for anchor, tag in _anchor_tags(str(one or "")).items():
+            out.setdefault(anchor, set()).add(tag)
+    return out
+
+
 def _observed_facts_and_hint(card, observed_selector_text) -> tuple:
     """原始观察里**能当事实用**的那些（同一套拆法：把当时那几条选择器拆开，再加上卡上那几样）。
 
     ⚠️ 返回的是**二元组** `(facts, hint)`，不是光一个集合 —— `hint` 要单独拎出来降一档用
     （它把 `name` 与 `id` 合并了，见下面那段）。名字里带 `_and_hint` 就是为了不让读的人
     以为它只回一个集合（那会让 `DERIVED` 那两条分支永远走不到，而测试全绿）。
+
+    ⚠️ 标签那件事（I2）**不在**这个二元组里：它是「锚挂在哪个标签上」的**旁注**，不是一条事实
+    （混进 `facts` 会让 `header a` 变 `OBSERVED`）—— 单独走 `_observed_anchor_tags`。
     """
     facts: set = set()
     for one in (observed_selector_text or []):
@@ -330,6 +449,11 @@ def address_basis(selector, card, observed_selector_text) -> tuple:
       · `DERIVED`     —— 值观察过，但**属性名**只在同一来源的合法形式里二选一（今天只有 `hint` 这一族）；
       · `UNSUPPORTED` —— 有任何一条断言在原始观察里找不到依据。
 
+    另有两条**直接 `UNSUPPORTED`** 的，它们不是「找不到依据」，是「根本没读懂 / 对不上」：
+      · 任何一条 `("unparsed", …)`（★ C1：读不懂的构造不算量到过，见 `assertions_of`）；
+      · 锚在原始观察里对上了、但**标签对不上**（★ I2：`div[name=…]` 对观测 `input[name=…]`，
+        重放会静默点到另一个元素，见 `_observed_anchor_tags`）。
+
     ⚠️ **文字只证明文字存在**：`nearby_text` / `text` / `label` 只能支持**文字锚**那一类断言
     （产物重放本来就认它），**不能**支持任何属性断言 —— 评审给的反例正是这一条：
     `nearby_text: "Choose your preferred plan"` ⇒ `input[name="preferred_plan"]`
@@ -339,10 +463,26 @@ def address_basis(selector, card, observed_selector_text) -> tuple:
     asserts = assertions_of(selector)
     if not asserts:
         return OBSERVED, "这条地址**只说了位置、没主张任何身份**（位置不算断言）。"
+    # 读不懂的构造**一律不算量到过** —— 这一条要在看 `facts` 之前（观测侧写了同一串也一样：
+    # 判据没法拿一个它读不懂的构造去比）。fail-closed 的方向就落在这一句上。
+    unreadable = [v for k, v in asserts if k == "unparsed"]
+    if unreadable:
+        return UNSUPPORTED, ("这条地址里有**判据读不懂的构造**：%s。读不懂就**不算量到过** —— "
+                             "判据只认 `[属性=值]` / `#id`（或 `[id=值]`，两者是同一件事）/ "
+                             "`.class` / 光标签 / 文字锚这几样（`:nth-of-type(…)` / `:nth-child(…)` "
+                             "是位置、不算断言，那几个照写）。"
+                             % "、".join("`%s`" % (v or "（空地址）") for v in unreadable[:4]))
     facts, hint = _observed_facts_and_hint(card, observed_selector_text)
-    unknown, derived = [], []
+    obs_tags = _observed_anchor_tags(observed_selector_text)
+    cand_tags = _anchor_tags(str(selector or "").strip())
+    unknown, mistag, derived = [], [], []
     for one in asserts:
         if one in facts:
+            # 锚对上了、**标签还要对得上**（I2，见 `_observed_anchor_tags`）：重放是整串
+            # `Element.matches()`，标签换一个就会静默点到另一个元素。两边都写了标签才比。
+            want, got = obs_tags.get(one), cand_tags.get(one)
+            if want and got and got not in want:
+                mistag.append((one, got, sorted(want)))
             continue
         # `hint` 那条线索**同时**管两样形状：`("id", <值>)` 与 `("attr", "name=<值>")`
         # （`hint` = `el.name || el.id`，两个属性都有可能）—— 两条都要能对上。
@@ -368,6 +508,14 @@ def address_basis(selector, card, observed_selector_text) -> tuple:
                              % ("、".join("`%s`" % v for _, v in unknown[:4]),
                                 "、".join("`%s`" % f for f in sorted(
                                     "%s:%s" % (k, v) for k, v in facts)[:6]) or "**什么都没有**"))
+    if mistag:
+        return UNSUPPORTED, ("这条地址里的**元素类型对不上原始观察**：%s。"
+                             "重放是按整串 `Element.matches()` 找元素的 —— 标签换一个就会"
+                             "**静默点到另一个元素**；照观测到的那个标签写，或者把标签去掉、"
+                             "只留那个沾着卡的锚。"
+                             % "、".join("`%s`（写的是 `%s`、观察里是 %s）"
+                                         % (v, got, " / ".join("`%s`" % w for w in want))
+                                         for v, got, want in mistag[:4]))
     if derived:
         return DERIVED, ("这条地址里的值是观察到的，但**属性名是二选一**（%s）："
                          "工具当时把 `name` 与 `id` 合并成一个 `hint` 报了（cdp 那边 `el.name || el.id`），"

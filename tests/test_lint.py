@@ -657,3 +657,66 @@ def test_position_only_selector_has_no_assertions():
 
 def test_empty_card_makes_anything_unsupported():
     assert lint.address_basis("header a", {}, [])[0] == lint.UNSUPPORTED
+
+
+# ── 修复轮 1（2026-10-15 评审：1 Critical + 2 Important）────────────────────
+
+def test_unreadable_constructs_are_never_observed():
+    """★ C1（评审实测的 fail-open）：判据**读不懂**的构造不许静默变成「零断言」。
+
+    这几种都**看着稳**（`_fragile` 只认自造 id 与长 nth 链，拦不到）、都**主张了身份**，
+    只是判据一个都不认识。以前它们吐空断言，而 `address_basis` 那边「零断言 ⇒ 只说了位置」
+    的前提是「零断言 ⟺ 纯位置」—— 前提被踩穿，于是对着一张**空卡**也判 `OBSERVED`，
+    还配一句「没主张任何身份」的假人话。读不懂 = **不算量到过**。
+    """
+    for sel in ('input[data-x]',            # 属性存在性：没有 `=`
+                'input[name^="post"]',      # 非 `=` 运算符
+                'a[href*=signin]',
+                '[name~=postcode]',
+                'div:has(> a)',             # 位置以外的伪类
+                '*',
+                ''):
+        level, why = lint.address_basis(sel, {}, [])
+        assert level == lint.UNSUPPORTED, sel
+        assert level != lint.OBSERVED, sel
+        assert why.strip(), sel
+
+
+def test_pseudo_positional_ones_are_still_not_assertions():
+    """C1 的反向钉子：`:nth-of-type(…)` / `:nth-child(…)` 是**位置**，照旧不算断言（也别卷进 unparsed）。"""
+    assert lint.assertions_of("body:nth-of-type(1) > a:nth-of-type(1)") == []
+    assert lint.assertions_of("li:nth-child(2n+1)") == []
+    assert "unparsed" not in [k for k, _ in lint.assertions_of("li:nth-child(2n+1)")]
+
+
+def test_id_and_attribute_id_are_the_same_thing():
+    """★ I1（spec §3.2）：`#id` 与 `[id=id]` 是**同一件事** —— 两个方向都要能对上。"""
+    assert lint.address_basis(
+        "#postcode-field", {}, ['[id="postcode-field"]'])[0] == lint.OBSERVED
+    assert lint.address_basis(
+        'input[id="postcode-field"]', {}, ["#postcode-field"])[0] == lint.OBSERVED
+    assert ('id', 'postcode-field') in lint.assertions_of('[id="postcode-field"]')
+
+
+def test_the_tag_must_match_the_observed_anchor():
+    """★ I2：锚对上还不够 —— **标签也要对得上**（重放是整串 `Element.matches()`）。
+
+    `div[name="postcode"]` 对观测原文 `input[name="postcode"]`：页面上真有
+    `div[name=postcode]` 时就会**静默点到另一个元素**（比被换掉的那根更坏）。
+    判法要**窄**：只在观测侧确实写出了标签时比 —— `[name=…]` 这种没带标签的锚没有可比的。
+    """
+    obs = ['input[name="postcode"]']
+    assert lint.address_basis('div[name="postcode"]', {}, obs)[0] == lint.UNSUPPORTED
+    assert lint.address_basis('input[name="postcode"]', {}, obs)[0] == lint.OBSERVED
+    assert lint.address_basis('div[name="postcode"]', {}, ['[name="postcode"]'])[0] == lint.OBSERVED
+
+
+def test_a_hash_or_dot_inside_a_value_is_not_an_id_or_a_class():
+    """同族的 fail-open（自审补的）：`a[href="#top"]` 里的 `#top` 是**值**，不是 id。
+
+    解析器自己编出 `("id","top")` 的话，它甚至会给**观测侧**凭空添一条证据 ——
+    于是编的地址又有了「出处」。与 C1 同一条立场：判据不许自己造事实。
+    """
+    assert ('id', 'top') not in lint.assertions_of('a[href="#top"]')
+    assert ('class', 'b') not in lint.assertions_of('[data-x="a.b"]')
+    assert lint.address_basis("#top", {}, ['a[href="#top"]'])[0] == lint.UNSUPPORTED
