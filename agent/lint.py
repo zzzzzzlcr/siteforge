@@ -885,26 +885,42 @@ def _acceptance_holds(accepted, state_name, index, selector, card_fp) -> bool:
     return False
 
 
-def _no_basis_sel(card, sels, kept, accepted, state_name, index) -> Optional[str]:
-    """这一步**现在**还算不算「无据可依」→ 是就回**要绑的那根地址**，不是回 `None`。
+def _no_basis_sel(card, sels, kept) -> Optional[str]:
+    """这一步**是不是**「无据可依」→ 是就回**要绑的那根地址**，不是回 `None`。**纯谓词**。
 
     这一支**只有一个定义**，两个调用方是同一件事的两半（★ 2026-10-15 Task 6）：
-      · `_rule_i`：报 `judge-fragile-no-basis` 之前问一句（人接受过、四元组没变 ⇒ 不报）；
+      · `_rule_i`：报 `judge-fragile-no-basis` 之前问一句；
       · `no_basis_slots`：把「现在有哪几处等着被接受、各绑哪一根」写下来（人话里的 handle、
         与 `addr_accepted` 的四元组**从这里出**）。
     两处各写一遍的话，「人接受过的那一步」与「判据还在报的那一步」会**各说各的**
     —— 接受完还在报 / 报着却接受不了 —— 而屏幕上两边看起来都正常。
 
-    ⚠️ 「人接受过」这一条**只删掉报**（这一格的结论换成放行），四元组任一变了就回到报；
-    它**不放松**别的任何一格（无据可依这个判断本身一个字没动）。
+    ⚠️ **它不看 `accepted`**（★ 2026-10-15 修复轮 1）：原来它把「不是这一格」与「人接受过」
+    混成同一个 `None`，于是 `_rule_i` 里那句 `if ... is not None` 在**已接受**这条路上
+    **不 `continue`**，控制流掉进下面那几条（`all(one == DERIVED …)` → `not all(_fragile …)`
+    → `_has_text_anchor`），最后被 **`judge-fragile-selectors`** 重新拦住（实测：空卡 + 产物那根
+    脆链是 `OBSERVED` + 那个 target 没有语义锚 ⇒ 接受完违规表里换成这一条）⇒ 人话里承诺的
+    第 ③ 条路对这类形状是**死胡同**（那一步同时从 `addr_candidates` 里消失，再说一遍无效 ⇒
+    一路爬到 `lint_cap`）。判定「接受生效」是 `_accepted` 那一支的事（它管**整步跳过**）。
     """
     if not (_card_has_nothing(card, kept) or not kept):
         return None
-    sel = kept[0] if kept else sels[0]
+    return kept[0] if kept else sels[0]
+
+
+def _accepted(card, sels, kept, accepted, state_name, index) -> bool:
+    """这一步无据可依，**而且人接受过、四元组一项没变** ⇒ `True`（★ 2026-10-15 Task 6）。
+
+    ⚠️ `True` 的含义是「**这一步不再被任何一条判据拦**」——调用方一律**整步跳过**，
+    不只是不报 `judge-fragile-no-basis` 那一条（理由见 `_no_basis_sel` 里那段实测）。
+    ⚠️ 四元组任一变了（地址被改稿换了 / 原始观察重渲了 / 步序挪了 / 换了别的组）⇒ `False`
+    ⇒ 照旧报、也照旧进 `no_basis_slots` 那份待接受清单（「失效 = 回到闸上重新问」）。
+    """
+    sel = _no_basis_sel(card, sels, kept)
+    if sel is None:
+        return False
     from agent import fix                  # 局部 import：与 `_observed_card` 同一条理由
-    if _acceptance_holds(accepted, state_name, index, sel, fix.card_fingerprint(card)):
-        return None                        # 人点头接受过，且四元组一项没变
-    return sel
+    return _acceptance_holds(accepted, state_name, index, sel, fix.card_fingerprint(card))
 
 
 def _rule_i(states: list, fills, src: str, observed=None, accepted=None) -> list[Violation]:
@@ -935,8 +951,11 @@ def _rule_i(states: list, fills, src: str, observed=None, accepted=None) -> list
     不传 `observed` ⇒ 走老路（与从前逐字节一致）。
 
     ★ 2026-10-15 Task 6：`accepted` = **人点头接受过的那几处地址**（spec §3.5）。它只干一件事：
-    「这一步**无据可依**、但人接受过、且四元组一项没变」⇒ **不报**这一格。⚠️ 它**不放松**
-    别的任何一格（无据可依这个判断本身一个字没动）；四元组任一变了就回到报。
+    「这一步**无据可依**、但人接受过、且四元组一项没变」⇒ **整步跳过**（这一条的每一格都不再问）。
+    ⚠️ 必须是**整步**：落在无据可依那一格的那一步同时也在下面几条的射程里（真站实测那个形状：
+    空卡 + 产物那根脆链是 `OBSERVED` + target 没有语义锚 ⇒ 只「不报 no-basis」的话，它会被
+    `judge-fragile-selectors` 接着拦住 ⇒ 那句「接受」等于没说）。见 `_no_basis_sel` 里那段实测。
+    ⚠️ 它**不放松**别的任何一格（无据可依这个判断本身一个字没动）；四元组任一变了就回到报。
     ⚠️ **`FILLS` 那一支没有它**：那一格的把手是**键**、不是 (组名, 步序)，没有对应的口子
     （`_fill_no_basis_say` 因此只写两条正路 —— 写上去就是一句做不到的话）。
     不传 `accepted` ⇒ 与从前逐字节一致。
@@ -976,7 +995,15 @@ def _rule_i(states: list, fills, src: str, observed=None, accepted=None) -> list
                 #: 而「人接受过 ⇒ 不报」必须**两处都问**（漏一处就成了「接受了还在报」，
                 #: 屏幕上看不出来）。「算不算无据可依、要绑哪一根」因此**只有一处定义**：
                 #: `_no_basis_sel`（`no_basis_slots` 那份待接受清单走的是同一支）。
-                if _no_basis_sel(card, sels, kept, accepted, name, index) is not None:
+                #: ★ 修复轮 1：接受**整步跳过**（`continue`）—— 落在这一格的那一步同时也在
+                #: 别的判据的射程里（实测：`judge-fragile-selectors` 就在下面几行），
+                #: 只「不报 no-basis」等于接受没生效（详见 `_no_basis_sel` 里那段实测）。
+                #: ⚠️ 这里**不 `seen.add`**：`seen` 是「同一个 handle 只报一次」的账，
+                #: 接受不是「报过」—— 同名重复组里那一步要按它自己的四元组判（与
+                #: `no_basis_slots` 同一条时机）。
+                if _accepted(card, sels, kept, accepted, name, index):
+                    continue
+                if _no_basis_sel(card, sels, kept) is not None:
                     seen.add(handle)
                     out.append(Violation(
                         line=_line_of_any(src, sels[0], sels[0][-24:], name),
@@ -1440,9 +1467,9 @@ def no_basis_slots(src: str, observed, accepted=None) -> list[dict]:
     而屏幕上一切正常）。这一格就是那个「指的是哪一根」：`_no_basis_say` 报的那个 handle
     与这里写下来的键**同源**（`(组名, 步序)` 拼的 `%s#%d`），两边不会各说各的。
 
-    ⚠️ 判「算不算无据可依、要绑哪一根」走的是 `_no_basis_sel`（与 `_rule_i` 报那一格
-    **同一支**）—— 各写一遍的话，「人接受过的那一步」与「判据还在报的那一步」会对不上，
-    而屏幕上两边看起来都正常。
+    ⚠️ 判「算不算无据可依、要绑哪一根」走的是 `_no_basis_sel`、判「人接受过没有」走的是
+    `_accepted`（与 `_rule_i` 报那一格**同一支**）—— 各写一遍的话，「人接受过的那一步」
+    与「判据还在报的那一步」会对不上，而屏幕上两边看起来都正常。
     ⚠️ 只覆盖 `states` 那一支：`FILLS` 那一格的把手是**键**、`(组名, 步序)` 认不出来
     （`_fill_no_basis_say` 因此只写两条正路 —— 写一句做不到的话正是这一刀要治的病）。
     ⚠️ **卡指纹存字符串**（`fix.card_fingerprint` 本来给的是**元组**，`fix.py:1190`）：
@@ -1485,7 +1512,11 @@ def no_basis_slots(src: str, observed, accepted=None) -> list[dict]:
                     one, card or {}, (card or {}).get("selectors") or [])
                 if level != UNSUPPORTED:
                     kept.append(one)
-            sel = _no_basis_sel(card, sels, kept, accepted, name, index)
+            #: ★ 修复轮 1：与 `_rule_i` **同一条判决**（那边是「整步跳过」，这边是「不再等」）——
+            #: 已经接受过的那一格不该再出现在待接受清单里（人再说一遍也只是原地覆盖）。
+            if _accepted(card, sels, kept, accepted, name, index):
+                continue
+            sel = _no_basis_sel(card, sels, kept)
             if sel is None:
                 continue
             seen.add(handle)

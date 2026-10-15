@@ -2673,6 +2673,8 @@ def test_the_lint_stage_honours_the_accepted_addresses(monkeypatch):
     这是整条链的最后一截：清单写了、人在闸上说了、四元组也没变 —— 可要是这一趟 lint
     没把 `accepted` 递下去，判据照旧报。屏幕上一切正常（「接受完还在报」，正是这一格
     最忌讳的形状：做成什么样都看不出来）。
+    ⚠️ 断言是**整张表**（★ 修复轮 1）：只滤 `judge-fragile-no-basis` 看不见另一条 ——
+    同一格上 `judge-fragile-selectors` 会接着报（接受等于没生效）。
     """
     from agent import graph as g
 
@@ -2689,8 +2691,7 @@ def test_the_lint_stage_honours_the_accepted_addresses(monkeypatch):
     deps, _rec = _deps()
     out = g._lint({"src": src, "states": [], "fills": {}, "observed": obs,
                    "addr_accepted": [slot]}, deps, g.Caps())
-    assert [v["code"] for v in out["violations"]
-            if v["code"] == "judge-fragile-no-basis"] == []
+    assert out["violations"] == []          # ★ 整张表：这一步不再被**任何一条**判据拦
     #: 已经接受过的那一格**不再等**（同一支口径：报与不报、等与不等是一件事的两半）
     assert out["addr_candidates"] == {}
 
