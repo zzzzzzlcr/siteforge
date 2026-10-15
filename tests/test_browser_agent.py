@@ -5900,3 +5900,30 @@ def test_a_positional_selector_from_the_model_is_tied_by_its_unique_tail():
     pages3._current = {"name": "y", "model": {"fields": pool3}, "when": {}, "key": (), "url": ""}
     assert browser_agent._find_element(pages3, "field", "section:nth-of-type(2) > div > input", "") is None, \
         "`div > input` 这种尾巴没有鉴别力、标签也不唯一 ⇒ 不该认"
+
+
+def test_describe_says_why_when_the_element_is_not_found():
+    """找不到元素时**不许静默**给一张空卡 —— `why` 本来就是为「看不见」准备的。"""
+    # 一眼都还没看过（`pages.pages` 是空的，见 `_Pages.__init__`）⇒ `_find_element` 必返 None。
+    pages = browser_agent._Pages(site_url="https://x.test/", journey=None)
+    step, _ = browser_agent._describe("click", {"selector": "header a"}, pages,
+                                      browser_agent.Journey(steps=[]))
+    assert step["target"]["selectors"] == ["header a"]        # 行为不变
+    assert step["why"].get("card")                            # 但要说出来
+    assert "没找到" in step["why"]["card"] or "找不到" in step["why"]["card"]
+
+
+def test_click_target_already_carries_the_card():
+    """**回归钉**：click 那一支带身份证据这件事 2026-10-13 就落了（本计划起初以为没落、要补）。
+
+    钉住它免得以后被谁顺手删掉 —— 下游两件事都靠这张卡：判据判「这根地址是不是量到的」
+    （`lint.address_basis`）、重放按语义把那一格找回来（`template` 的 `_relocate`）。
+    ⚠️ 这一条**一开始就该是绿的**（钉的是既有行为），它红 = 有人把那四行删了。
+    """
+    element = {"selector": "button.nav-toggle", "alternates": ["header button"],
+               "label": "Menu", "aria_label": "Menu", "nearby_text": ["Competitions"],
+               "role": "button", "region": "header", "text": None}
+    got = browser_agent._target_of(element, "click", "button.nav-toggle", "")
+    assert got["label"] == "Menu"
+    assert got["nearby_text"] == ["Competitions"]
+

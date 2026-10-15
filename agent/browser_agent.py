@@ -2370,6 +2370,17 @@ def _describe(name: str, args: dict, pages: "_Pages", journey: Journey) -> tuple
         element = _find_element(pages, "field" if name == "form" else "action",
                                 selector, frame_id)
         step["target"] = _target_of(element, name, selector, frame_id)
+        if element is None:
+            #: ★ 2026-10-15：**找不到元素要说出来**（不许静默给一张空卡）。
+            #: 为什么：这一张卡是下游两件事的唯一依据 —— 判据判「这根地址是不是量到的」、
+            #: 重放按语义把这一格找回来。它静默变空的时候，那两件事都变成「凭感觉」，
+            #: 而屏幕上一切正常（`agent/browser_agent.py:2903` 那段注释记着同一形状的四个症状：
+            #: 判不出格子是什么 ⇒ 值掉进随机池 ⇒ 名字退化成 field-N）。
+            #: `why` 这一格本来就是为「看不见」准备的：「看不见」是一等值，**必须**配一句话。
+            step["why"]["card"] = ("上一次观测里**没找到**这一步指的那个元素"
+                                   "（选择器 `%s`）—— 这一格的**身份证据量不到**："
+                                   "它身上/旁边有什么字、自报的名字是什么，账本里都没有。"
+                                   % (selector or "（空）"))
         if name == "form":
             fill = _fill_info(args, step["target"], element, journey)
     return step, fill
