@@ -736,7 +736,7 @@ def _named_after_its_own_label(source: str, fill: dict) -> bool:
     return stem == slug or slug.startswith(stem) or stem.startswith(slug)
 
 
-def _rule_g(fills, src: str) -> list[Violation]:
+def _rule_g(fills, src: str, observed=None) -> list[Violation]:
     """G 资料键名：`FILLS[*].source` **认不出语义**，形状也**不像运营资料的列名**。
 
     真站实测（两次，都是「键名对不上 ⇒ 静默掉进随机池」这一个病）：
@@ -771,6 +771,12 @@ def _rule_g(fills, src: str) -> list[Violation]:
     含 `_RANDOM_HINTS` 那些词的（`zip_2` / `state2` / `email2` / `phone1`）放过，
     不带的（`age-2` / `full_name-2` / `textfield_173838`）报 —— 后者多半也真取不到资料，
     但「`-2` 那种去重后缀该不该写进 `source`」是另一件事，不在这条规则里判（不装作抓到了）。
+
+    ★ 2026-10-15 Task 7（spec §3.1 第二族）：**收场那半句看卡说话**（有卡 / 没卡两支，
+    见 `_autoname_say`）—— 老那句「回到探路那侧把这一格的语义认出来」与
+    `judge-fragile-selectors` 是**同一条病**（模型打不开页面）。
+    ⚠️ `observed`（探路那一刻的原始观察，**冻结的那一份**）在这一条里只用来取**卡**；
+    不传 ⇒ 尾句仍是老那一个，与从前**逐字节一致**（老 job / 老调用点不受影响）。
     """
     from agent import browser_agent as ba      # 局部 import：语义词表的真相源在它那儿
 
@@ -788,15 +794,21 @@ def _rule_g(fills, src: str) -> list[Violation]:
             continue                             # 标签蛇形化来的名字 —— 不是框架自造名（见那个函数）
         if not AUTONAME.search(source):
             continue                             # 人写的列名形状（`username` 那种）—— 不报
+        if observed is None:
+            #: ── 没传 observed：老路，尾句**一个字都不改**（老 job / 老调用点照旧）──────
+            message = _AUTONAME_HEAD % (key, source) + _AUTONAME_OLD_TAIL
+        else:
+            from agent import fix              # 局部 import：与 `_observed_card` 同一条理由
+            #: ⚠️ 与 `_rule_i` 的 fills 那一支**同一个取卡方式**（`lint.py` 里那一处就在
+            #: `judge-fragile-no-basis` 上面）：冻结那份里按 `fills` 的**键**找 ——
+            #: 键就是这一格唯一的名字，模型换不掉，而 `FILLS` 这一支没有「步序」那个把手
+            #: （`fix.find_observed` 只认 states）。**不许**从 `src` 取卡：`src` 是待检查的
+            #: 那一份，拿它当证据就是循环证明（模型编一张卡写进产物，判据再读出来）。
+            frozen_fill = ((observed or {}).get("fills") or {}).get(key)
+            message = _autoname_say(key, source, fix.card_of((frozen_fill or {}).get("target")))
         out.append(Violation(
             line=_line_of(src, source), code="judge-source-autoname",
-            message=("字段「%s」要拿去任务资料里取值的那个名字叫 `%s`：它**认不出语义**"
-                     "（不是邮编/邮箱/电话那类名字），形状也**不像运营资料的列名**"
-                     "（带数字串 = 框架自造的名字）。重放时这一格取不到资料、别名表也兜不住，"
-                     "值直接掉进随机池，而日志里写着「填好了」—— 真站代价是整单被站点拒收。"
-                     "回到探路那侧把这一格的**语义**认出来（标签 / 例子值 / 题目正文）再重渲。"
-                     % (key, source)),
-            snippet=_snippet(source)))
+            message=message, snippet=_snippet(source)))
     return out
 
 
@@ -1115,6 +1127,13 @@ def _observed_card(observed, state_name, index, target):
     return fix.find_observed(observed, state_name, index, fix.card_of(target))
 
 
+#: 卡上**说得出这一格是什么**的那几样（锚）。⚠️ **一份**，两处用：
+#: `_card_has_nothing`（判地址有没有可依的）与 `_card_has_semantics`（判语义说得出说不出）。
+#: 两处各写一遍的话，一边加了字段、另一边没加，屏幕上就会出现「有卡却说没卡」（或反过来），
+#: 而两边各自看起来都正常。
+_CARD_ANCHOR_KEYS = ("label", "aria_label", "hint", "placeholder", "nearby_text", "text")
+
+
 def _card_has_nothing(card, kept) -> bool:
     """这一步**探路那一刻有没有可依的**：卡上没锚、也没有一根不脆的采信候选。
 
@@ -1129,12 +1148,27 @@ def _card_has_nothing(card, kept) -> bool:
     ⚠️ 这一条**不放松**任何东西：卡仍然来自冻结那份（模型注入不进来），被改写的那根地址照样
     要逐条断言过 `address_basis`；nitrous 那族（卡上只有那根脆链）与空卡那族照旧「无据可依」。
     """
-    if card and any(card.get(k) not in (None, "", [], {}) for k in
-                    ("label", "aria_label", "hint", "placeholder", "nearby_text", "text")):
+    if card and any(card.get(k) not in (None, "", [], {}) for k in _CARD_ANCHOR_KEYS):
         return False
     if card and any(not _fragile(s) for s in (card.get("selectors") or [])):
         return False          #: 卡上有一根验过唯一、又不在脆那一族的地址 ⇒ 有答案
     return not [s for s in (kept or []) if not _fragile(s)]
+
+
+def _card_has_semantics(card) -> bool:
+    """卡上有没有**说得出这一格是什么**的那几样（`_CARD_ANCHOR_KEYS` 里至少一样有值）。
+
+    ★ 2026-10-15 Task 7（`judge-source-autoname` 那一族的收场话按它分两支）：
+    有 ⇒ 「用这几样把这一格的语义判出来，再重渲」；没有 ⇒ 「判不出」，请人给一句。
+
+    ⚠️ **不是** `_card_has_nothing` 那把尺子原样照搬（虽然锚那一半是**同一份表**）：
+    那把尺子还认「卡上有一根不脆的候选」也算「有货」—— 那是判**地址**用的。这一格判的是
+    **语义**：地址说明这一格**在哪**，不说明它**问什么**（`selectors` / `role` 因此都不算
+    —— 说了「有」就等于让模型拿一根地址去猜它填什么，正是这一刀要治的那种「够不着」）。
+    ⚠️ 卡取不到时给的是 `{}`（`fix.card_of`），一样落在「没有」那一支：fail-closed ——
+    **认不出 ⇒ 当「没量到」**。
+    """
+    return any((card or {}).get(k) not in (None, "", [], {}) for k in _CARD_ANCHOR_KEYS)
 
 
 def _card_facts_say(card) -> str:
@@ -1247,13 +1281,59 @@ def _fill_with_evidence_say(key: str, card) -> str:
             "（`input[name=…]` / `input[placeholder=…]` / 文字锚那几类）。"
             % (key, said or "**什么都没有**"))
 
+
+#: `judge-source-autoname` 那一句人话的**前半句**（诊断）—— 两支共用，一个字都不许变：
+#: 名字认不出语义、形状也不像运营资料的列名，后果是取不到资料、静默掉进随机池。
+#: ⚠️ 换的只是**收场那半句**（见 `_autoname_say`）：老那半句在 `_AUTONAME_OLD_TAIL`。
+_AUTONAME_HEAD = (
+    "字段「%s」要拿去任务资料里取值的那个名字叫 `%s`：它**认不出语义**"
+    "（不是邮编/邮箱/电话那类名字），形状也**不像运营资料的列名**"
+    "（带数字串 = 框架自造的名字）。重放时这一格取不到资料、别名表也兜不住，"
+    "值直接掉进随机池，而日志里写着「填好了」—— 真站代价是整单被站点拒收。")
+
+#: ★ 老那句收场话 —— **只留给「没传 `observed`」那一条路**（逐字节钉在 `test_lint.py` 上）。
+#: 它教模型「回到探路那侧把这一格的语义认出来」，而**模型打不开页面**：
+#: 那是让它去够一个够不着的东西（与 `judge-fragile-selectors` 是**同一条病**）。
+_AUTONAME_OLD_TAIL = "回到探路那侧把这一格的**语义**认出来（标签 / 例子值 / 题目正文）再重渲。"
+
+
+def _autoname_say(key: str, source: str, card) -> str:
+    """`judge-source-autoname` 那一句人话 —— 诊断那半句照旧，**收场那半句看卡说话**（两支）。
+
+    ★ 2026-10-15 Task 7（spec §3.1 第二族）：老收场话是「回到探路那侧把这一格的语义认出来
+    再重渲」，与 `judge-fragile-selectors` 那一族是**同一条病** —— 模型**打不开页面**，
+    让它在探路那侧「认一认」就是让它去够一个够不着的东西。改法与那一族**同一把尺子**：
+      · **有卡**（`_card_has_semantics`：卡上说得出「这一格是什么」的那几样至少一样有值）
+        ⇒ **把卡摆到眼前**（`_card_facts_say`，与 `judge-fragile-selectors` 那一族**同一处写法**
+        —— 两处各写一份的话，屏幕上同一个东西会长得不一样），照着这几样判语义；
+      · **没卡**（探路那一刻什么都没留下）⇒ 直说**判不出**，并给那条**做得到**的路：
+        **请人在闸上说清这一格填什么**（人正看着那一页，他说的那句话进 feedback）。
+
+    ⚠️ **旧路不经过这一层**：`observed is None`（老 job / 老调用点）⇒ `_AUTONAME_OLD_TAIL`，
+    与从前逐字节一致（见 `_rule_g`）。
+    ⚠️ 两支里**都不许**出现「回到探路那侧…」那句：模型的处境没变，它够不着就是够不着。
+    """
+    head = _AUTONAME_HEAD % (key, source)
+    if _card_has_semantics(card):
+        return head + (
+            "**探路那一刻量到的是**：%s —— 用这几样把这一格的**语义**判出来"
+            "（这一格到底在问什么），把 `source` 换成对得上的那个名字，再重渲。"
+            % _card_facts_say(card))
+    return head + (
+        "这一格**没有语义证据**（探路那一刻没有留下标签、提示或旁边的文字）："
+        "判据**判不出**它是什么，也就说不出该给它填什么。**别猜一个名字** —— 猜错正是"
+        "这一条要治的那个病（取不到资料、静默掉进随机池）。请人在闸上说清"
+        "**这一格填什么**（人正看着那一页），照那句话把 `source` 定下来，再重渲。")
+
+
 def _judge_violations(src: str, observed=None, accepted=None) -> list[Violation]:
     """判据与产物形状那一族（C/D/H + A/E/F/G/I）。
 
     读不出来的那几条（坏 py / 动态构造）⇒ **不猜**。
     ★ 2026-10-15：`observed` = **探路那一刻的原始观察**（只读、且必须是冻结的那一份）——
-    它只递给 `_rule_i`（I 那一格的出处判定）。不传（`None`）⇒ 与从前**逐字节一致**。
-    ★ 2026-10-15 Task 6：`accepted` = 人点头接受过的那几处（spec §3.5）——同样只递给 `_rule_i`。
+    它递给 `_rule_i`（I 那一格的出处判定）与 `_rule_g`（G 那一格的卡：有卡摆卡 / 没卡判不出）。
+    不传（`None`）⇒ 与从前**逐字节一致**。
+    ★ 2026-10-15 Task 6：`accepted` = 人点头接受过的那几处（spec §3.5）——只递给 `_rule_i`。
     """
     from agent import fix                      # 局部 import：避免与 fix 循环引用
 
@@ -1309,7 +1389,7 @@ def _judge_violations(src: str, observed=None, accepted=None) -> list[Violation]
     out.extend(_rule_a(src))
     out.extend(_rule_e(states, src))
     out.extend(_rule_f(states, src))
-    out.extend(_rule_g(fills, src))
+    out.extend(_rule_g(fills, src, observed))
     out.extend(_rule_i(states, fills, src, observed, accepted))
     #: 表就是开关：`JUDGE_RULES` 里没有的不报 —— 变异验证（摘掉一条 ⇒ 对应用例不再红）
     #: 靠的就是这一行，与上面那族 `RULES` 同一条规矩。

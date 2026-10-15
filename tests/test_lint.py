@@ -1288,3 +1288,114 @@ def test_an_acceptance_whose_quartet_changed_does_not_silence_the_judge():
         assert len(got) == 1, changed
         #: ★ 「失效 = 回到闸上重新问」：那一格要**重新出现在待接受清单里**
         assert len(lint.no_basis_slots(src, _OBS, accepted=[changed])) == 1, changed
+
+
+# ── ★ 2026-10-15 修站那一刀 · Task 7：第二族（认不出语义）也看卡说话 ──────────────
+#
+# `judge-source-autoname`（`FILLS[*].source` 认不出语义）的老收场话是
+# 「**回到探路那侧**把这一格的**语义**认出来（标签 / 例子值 / 题目正文）再重渲」——
+# 与 `judge-fragile-selectors` 那一族是**同一条病**：**模型打不开页面**，
+# 让它在探路那侧「认一认」就是让它去够一个够不着的东西。
+# 改法与那一族**同一把尺子**：有卡 ⇒ 把卡摆到眼前照着判；没卡 ⇒ 如实说「判不出」+ 请人给一句。
+#
+# ⚠️ **任务书给的样例 src 与实测冲突**（与上面 `test_without_observed_behaviour_is_byte_identical`
+# 那条同一条纪律：如实改成能钉住同一件事的写法，而不改要钉的那件事）——
+# 任务书用的是 `source: 'address_line_1'`，而它**一次都不会命中这一族**：
+# `_rule_g` 的第一格 `ba._kind_by_words(source)` 认得出 `address`/`street`
+# （`_RANDOM_HINTS` 里那一行），于是直接 `continue`（实测 `lint.check(src)` == `[]`）。
+# ⇒ 这里换成**真站那一个**机器名（gowizard 的 ZIP 框，见 `_rule_g` 的 docstring 与
+# `docs/生成脚本-取值缺陷-2026-09-17.md`）：`textfield_173838`。
+# 钉的是同一件事（有卡摆卡 / 没卡判不出），只是样例得**先真的命中**。
+
+_AUTONAME_SRC = ("FILLS = {'postcode': {'source': 'textfield_173838',\n"
+                 "  'target': { %s } } }\n"
+                 "STATES = []\n")
+
+
+def _autoname_msg(frozen_target, src_target="'selectors': ['input#x']"):
+    """跑一遍、取这一族那**一条** message（`FILLS` 的键是这一格唯一的名字）。
+
+    ⚠️ 两个 target 是**两份**：`src_target` 是产物那一格（待检查的那一份）、
+    `frozen_target` 是冻结那份里探路那一刻量到的卡 —— 卡只许从后者取。
+    """
+    src = _AUTONAME_SRC % src_target
+    obs = {"states": [], "fills": {"postcode": {"target": frozen_target}}}
+    got = [v for v in lint.check(src, observed=obs) if v.code == "judge-source-autoname"]
+    assert len(got) == 1, got
+    return got[0].message
+
+
+def test_autoname_with_card_points_at_the_card():
+    """有卡 ⇒ **把卡摆出来**照着判（`_card_facts_say` 连值一起说，与 fragile 那一族同一处写法）。
+
+    ★ 这一格是 gowizard 那个 ZIP 框的形状：机器名 `textfield_173838` 认不出语义，
+    而**探路那一刻量到了**「ZIP code」这个标签 —— 判语义要的那几样本来就在手上。
+    ⚠️ 卡从**冻结那份**（`observed`）取，不从 `src` 取（`src` 是待检查的那一份，拿它当证据
+    就是循环证明）—— 所以下面 src 那一格的 target **故意不写**标签，纸上摆出来的那几样
+    只可能来自冻结那份。
+    """
+    message = _autoname_msg(
+        {"label": "ZIP code", "nearby_text": ["What is your ZIP code?"],
+         "selectors": ["input#x"]},
+        src_target="'selectors': ['input#x']")
+    assert "ZIP code" in message                  # 卡摆出来了（连值）
+    assert "What is your ZIP code?" in message    # 旁边那行字也摆出来
+    assert "回到探路那侧" not in message            # 不再让人去够一个够不着的东西
+
+
+@pytest.mark.parametrize("key, value", [
+    ("label", "ZIP code"),
+    ("aria_label", "ZIP code"),
+    ("hint", "zip"),
+    ("placeholder", "e.g. 06801"),
+    ("nearby_text", ["What is your ZIP code?"]),
+    ("text", "ZIP code"),
+])
+def test_every_anchor_on_the_card_counts_as_semantics(key, value):
+    """卡上这几样**任何一样**都算「说得出这一格是什么」⇒ 一律走「照着卡判」那一支。
+
+    ⚠️ `selectors` / `role` **不算** —— 地址说明这一格**在哪**，不说明它**问什么**
+    （下一个用例钉的就是这一半：卡上只有一根地址 ⇒ 仍然是「判不出」）。
+    ⚠️ 这张表与 `_card_has_nothing` 第一格是**同一份**（`lint._CARD_ANCHOR_KEYS`）：
+    两处各写一遍的话，一边加了字段、另一边没加，屏幕上就会出现「有卡却说没卡」（或反过来），
+    而两边各自看起来都正常。
+    """
+    message = _autoname_msg({"selectors": ["input#x"], key: value})
+    needle = value if isinstance(value, str) else value[0]
+    assert needle in message, message
+    assert "回到探路那侧" not in message, message
+
+
+def test_autoname_without_card_says_it_cannot_be_judged():
+    """没卡（探路那一刻什么都没留下）⇒ **如实说判不出**，不许再教模型去够一个够不着的东西。
+
+    ⚠️ fail-closed 的方向：**认不出 ⇒ 当「没量到」** —— 卡取不到（冻结那份里没这一格）
+    也走这一支（见下）。
+    """
+    message = _autoname_msg({"selectors": ["input#x"]})
+    assert "判不出" in message or "没有语义证据" in message, message
+    assert "回到探路那侧" not in message, message
+    assert "请人" in message                      # 那条**做得到**的路要给出来
+    #: 冻结那份里**根本没有这一格** ⇒ 取不到卡 ⇒ 与空卡同一支（fail-closed，不编一张卡出来）
+    bare = [v for v in lint.check(_AUTONAME_SRC % "'selectors': ['input#x']",
+                                  observed={"states": [], "fills": {}})
+            if v.code == "judge-source-autoname"]
+    assert len(bare) == 1 and "判不出" in bare[0].message, bare
+
+
+def test_autoname_without_observed_keeps_the_old_wording_verbatim():
+    """不传 `observed`（老 job / 老调用点）⇒ 那一句**逐字节还是老话**（本任务书的硬验收）。
+
+    ⚠️ 老那句收场话里就有「回到探路那侧」—— 它**只许留在这条老路上**
+    （两条新话都不许出现它）。这一条是**钉子**（改前改后都绿）：谁把老那半句
+    顺手换成新话，它立刻红。
+    """
+    old = [v for v in lint.check(_AUTONAME_SRC % "'selectors': ['input#x']")
+           if v.code == "judge-source-autoname"]
+    assert len(old) == 1, old
+    assert old[0].message == (
+        "字段「postcode」要拿去任务资料里取值的那个名字叫 `textfield_173838`：它**认不出语义**"
+        "（不是邮编/邮箱/电话那类名字），形状也**不像运营资料的列名**"
+        "（带数字串 = 框架自造的名字）。重放时这一格取不到资料、别名表也兜不住，"
+        "值直接掉进随机池，而日志里写着「填好了」—— 真站代价是整单被站点拒收。"
+        "回到探路那侧把这一格的**语义**认出来（标签 / 例子值 / 题目正文）再重渲。")
