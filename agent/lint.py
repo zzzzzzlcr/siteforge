@@ -447,8 +447,27 @@ def _observed_facts_and_hint(card, observed_selector_text) -> tuple:
     return facts, hint
 
 
+def _verbatim(selector, observed_selector_text) -> bool:
+    """这一根地址与观测原文里某一条**逐字相同**吗（★ Ruling 16 的「第 0 步」）。
+
+    归一**只有**两下：压掉连续空白、去首尾 —— **别做别的归一**（归一越多，「逐字」这个保证越弱）。
+    大小写 / 撇号那一套是 `_norm_text` 的活（比**文字**用的），在**地址**这一格**不算逐字**。
+    """
+    want = re.sub(r"\s+", " ", str(selector or "")).strip()
+    if not want:
+        return False
+    said = observed_selector_text if isinstance(observed_selector_text, (list, tuple)) \
+        else [observed_selector_text]
+    return any(want == re.sub(r"\s+", " ", str(one or "")).strip() for one in said)
+
+
 def address_basis(selector, card, observed_selector_text) -> tuple:
     """这一根地址的**出处** → `(级别, 人话)`。
+
+    ★ **第 0 步（Ruling 16）：逐字相等就是量到的** —— 与观测原文某一条逐字相同 ⇒ `OBSERVED`。
+    它排在下面 `unparsed` 判定**之前**：产物用的**就是探路那一刻量到的那一根**时，
+    判据自己读不懂 `:has(` 那类构造**不是产物的错**（「我读不懂」是判据的局限 ——
+    真语料 47 份里 18 条正是这么被误阻断的，与「量到了不许当成量不到」同一条纪律）。
 
     三级（spec §3.2）：
       · `OBSERVED`    —— 每一条断言都能在原始观察里找到**同一个属性名 + 同一个值**；
@@ -466,6 +485,12 @@ def address_basis(selector, card, observed_selector_text) -> tuple:
     里的 `name` 从没观察过，值也是编的。
     ⚠️ 返回的「人话」是给**模型和人**读的（进 `Violation.message`）——说清缺哪一条依据。
     """
+    #: ★ 第 0 步（见 docstring）。⚠️ **不重新打开洞**：编的地址（`header a` 那类）**不在卡里**
+    #: ⇒ 逐字不等 ⇒ 照走 unparsed/断言那一套 ⇒ 仍被拦；nitrous 那根脆链**在**卡里 ⇒ 逐字命中、
+    #: 进 `kept` ⇒ 仍落**第一格**（卡上没锚、也没有不脆的候选）⇒ 照旧 `judge-fragile-no-basis`；
+    #: 「把卡上那根原样抄回来」算过 —— 那**正是对的**（用探路量到的那根地址），卡又来自冻结那份。
+    if _verbatim(selector, observed_selector_text):
+        return OBSERVED, "**这就是探路那一刻量到的那一根**（与观测原文逐字相同）。"
     asserts = assertions_of(selector)
     if not asserts:
         return OBSERVED, "这条地址**只说了位置、没主张任何身份**（位置不算断言）。"

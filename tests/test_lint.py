@@ -897,6 +897,59 @@ def test_the_field_wording_says_to_use_the_card_when_the_card_has_something():
     assert len(gone) == 1 and "它身上没有名字" in gone[0].message, gone
 
 
+# ── ★ 2026-10-15 修复轮 3（Ruling 16）：**逐字相等就是量到的** ────────────────────
+# 病：产物用的**就是探路那一刻量到的那一根**，只因为判据自己的解析器读不懂 `:has(`
+# 就被判「无据可依」—— **误阻断**，而且落在交付过的真产物上（47 份里 18 条）。
+# 错在我们这一侧：「我读不懂」是判据的局限，不该记到产物头上（与「量到了不许当成量不到」同一条纪律）。
+
+_HAS_CARD = {"selectors": ["label:has(#mco-5e266a84)"]}
+
+
+def test_an_address_that_is_the_observed_one_verbatim_is_observed():
+    """★ Ruling 16：逐字相同 ⇒ `OBSERVED`（排在 `unparsed` 判定**之前**）。"""
+    level, why = lint.address_basis("label:has(#mco-5e266a84)", _HAS_CARD,
+                                    _HAS_CARD["selectors"])
+    assert level == lint.OBSERVED, why
+    assert "这就是探路那一刻量到的那一根" in why, why
+
+
+def test_the_verbatim_match_only_norms_whitespace():
+    """⚠️ 归一**只有**压空白 + 去首尾 —— 归一越多，「逐字」这个保证越弱。"""
+    card, text = _HAS_CARD, _HAS_CARD["selectors"]
+    assert lint.address_basis("  label:has(#mco-5e266a84)\n", card, text)[0] == lint.OBSERVED
+    #: 大小写不一样 ⇒ **不算**逐字（不做 casefold）
+    assert lint.address_basis("LABEL:has(#mco-5e266a84)", card, text)[0] == lint.UNSUPPORTED
+    #: 值不一样 ⇒ 不算逐字 ⇒ 照旧走「读不懂 = 不算量到过」那一套
+    assert lint.address_basis("label:has(#mco-other)", card, text)[0] == lint.UNSUPPORTED
+
+
+def test_the_observed_address_itself_is_never_reported():
+    """★ Ruling 16 的正面：卡上只有一根**判据读不懂**的地址、而产物用的就是它 ⇒ **不报**。
+
+    （`_src_with` 造的是碎片，会另外命中 `judge-no-follow-tab` —— 那是另一条规则，与本条无关；
+    这里钉的是**判据那一族一条都不许出**。）
+    """
+    src = _src_with("auth", "'label:has(#mco-5e266a84)'")
+    obs = {"states": [{"name": "auth", "steps": [
+        {"action": "click", "target": {"role": "a", "near": "header",
+                                       "selectors": ["label:has(#mco-5e266a84)"]}}]}], "fills": {}}
+    codes = [v.code for v in lint.check(src, observed=obs) if v.code.startswith("judge-fragile")]
+    assert codes == [], codes
+
+
+def test_an_invented_address_beside_the_same_card_is_still_reported():
+    """★ Ruling 16 的**反向钉**：同一张卡，产物用一根**编的**地址 ⇒ 照旧报。
+
+    （逐字相等这条捷径**只认卡里有的那一根**；编的 `a#made-up` 不在卡里 ⇒ 走 unparsed/断言那一套。）
+    """
+    src = _src_with("auth", "'a#made-up'")
+    obs = {"states": [{"name": "auth", "steps": [
+        {"action": "click", "target": {"role": "a", "near": "header",
+                                       "selectors": ["label:has(#mco-5e266a84)"]}}]}], "fills": {}}
+    got = [v for v in lint.check(src, observed=obs) if v.code == "judge-fragile-no-basis"]
+    assert len(got) == 1, [v.message for v in lint.check(src, observed=obs)]
+
+
 def test_an_address_that_touches_the_card_is_let_through():
     """★ Ruling 13 的兑现点：模型按 spec §3.3 换成一根**沾着卡的**地址 ⇒ 判据**放行**。
 
