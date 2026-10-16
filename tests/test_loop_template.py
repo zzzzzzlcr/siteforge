@@ -806,3 +806,203 @@ def test_the_cover_probe_is_wrapped_at_the_call_site_and_the_recenter_is_not(
     assert not rec[-1].startswith("(function(){(function(){"), (
         "`_RECENTER_JS` **自带** IIFE 壳，再包一层就是双层包裹（行为当场坏）：%r" % rec[-1][:120])
     assert rec[-1].count("(function(){") == 1, "双层包裹：%r" % rec[-1][:120]
+
+
+# ── 弹窗钩子表（★ 2026-10-16 Task 4：循环型也按**形状**认弹层 —— 与表那套**同一张表**）────
+#
+# 形状照 `tests/test_template.py` 的 A / B 那两条（同一副骨架、同一批纪律）：
+#   · 空串 = 表里一条都没答应（**正常情况**，页面上就是没有这类东西）⇒ 静默；
+#   · 非空但拆不出三格 = **形状不认识** ⇒ 说出来（一行 log），但不当成「有弹层」去点；
+#   · **永不失败**：探不动 / 点不动只记一行 INFO，它挨着每一步，不许自己变成新的失败点。
+# ⚠️ 桩回的是 `json.dumps(...)`（**带引号**）—— 真站 `cdp eval` 的 stdout 是 JSON：
+#    桩回裸字符串就是把生产不认的契约钉成绿的（2026-10-16 Task 3 复核逮到的那一条）。
+
+#: 探针的答复：`"<钩子名>|<选择器|TEXT>|<按钮文字>"`（三格，表见 `_POPUP_HOOKS`）
+CONSENT_ANSWER = "同意条|#onetrust-accept-btn-handler|Accept Cookies"
+CONSENT_SELECTOR = "#onetrust-accept-btn-handler"
+#: 挑中的那颗选项（`click()` 是「JS 打标记 → `cdp click` 那个标记」）
+PICK_SELECTOR = '[data-sf-pick="1"]'
+#: 桩靠它认出**弹窗探针**那一段 JS（`_popup_probe_js` 拼出来的那句「谁答应了」）。
+#: ⚠️ 别用 `privacy` / `boxW` 认它：**读取器**那段 JS 里也有 `privacy`（它要读回「这一屏
+#: 有没有同意层」）⇒ 拿它分流会把读这一屏也截走 ⇒ `read()` 恒 None ⇒ 用例全假红。
+PROBE_MARK = "var hit=(function"
+#: 桩靠它认出「按文字打标记」那一段（`_MARK_CONSENT_BY_TEXT_JS`）。
+MARK_MARK = "var want="
+#: 一个「一屏有选项」的假页面（每一轮都会走到 ② 挑一个并点它）
+PICK_PAGE = {"url": "https://funnel.test/quiz", "head": "Pick one", "progress": "50%",
+             "inputs": [], "options": ["\u0001Yes"], "nextVisible": False, "nextTxt": ""}
+
+
+def _loop_product(tmp_path, monkeypatch, tag, page, calls, fills=None):
+    """渲一份循环稿、装个假 common、把 `Filler` 造出来（新增那几条弹层用例共用这一小段）。
+
+    ⚠️ 返回的 `mod` 是**假的 common 模块** —— 桩要改就在它上面改
+    （`mod.CDPHelper.eval = …`），改完再 `filler.run(…)`。
+    """
+    mod = _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop("selsite", "Thank you", "thank-you",
+                                    dict(fills or {}), dict(PROV))
+    path = tmp_path / ("%s.py" % tag)
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("%s_product" % tag, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    filler = module.Filler("ws://x/1", str(form), "cid",
+                           trace_path=str(tmp_path / ("%s.jsonl" % tag)), no_report=True)
+    return mod, module, filler, src
+
+
+def test_the_loop_dismisses_a_consent_overlay_before_it_starts(tmp_path, monkeypatch):
+    """A（照表那套那条）：开跑之前**自己**把同意弹层点掉 —— 不许指望账本里恰好有这一步。
+
+    为什么循环型也要它：生产**每单都是新窗口**、每次都清 cookie ⇒ 每单都会遇到同意弹层；
+    而探索那一趟跑在一个「弹层已经点掉」的会话里 ⇒ 账本学的是**没有弹层的世界**。
+    弹层盖住答题区时，`cdp click` 照样回 ok（那句回话说的是「选择器命中 1 个」，**不是**
+    「点到的就是它」）⇒ 这一步被记成做成了、后面全塌。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    mod, module, filler, src = _loop_product(tmp_path, monkeypatch, "popup_start",
+                                             PICK_PAGE, calls)
+    assert "\n_POPUP_PROBE_JS = " in src, "产物里没那个常量 —— 一跑就是 NameError"
+    popup_js: list = []
+    seen = {"probes": 0}
+    _orig = mod.CDPHelper.eval
+
+    def eval_(self, js, *a, **kw):
+        if PROBE_MARK in js:                   # 弹窗探针（钩子表那一段）
+            popup_js.append(js)
+            seen["probes"] += 1
+            #: 第 1 次（开跑前）就答应；点掉之后照旧答「没有」（空串 = 正常情况）
+            return json.dumps(CONSENT_ANSWER if seen["probes"] == 1 else "")
+        return _orig(self, js, *a, **kw)
+
+    mod.CDPHelper.eval = eval_
+    filler.run(max_steps=2)
+
+    clicks = calls["click"]
+    assert CONSENT_SELECTOR in clicks, ("开跑前的弹层没点掉：%r" % clicks)
+    assert clicks.index(CONSENT_SELECTOR) < clicks.index(PICK_SELECTOR), (
+        "弹层要在**第一步动手之前**点掉（否则那一下就是点在它上面）：%s" % clicks)
+    #: Ruling 6：`_POPUP_PROBE_JS` 是**裸语句序列**（表那套的 `_ev` 替它包壳）——
+    #: 循环型的 `cdp.eval` 不包 ⇒ **调用处自己包**（不包 = 浏览器 SyntaxError ⇒ 恒返空）
+    assert popup_js and all(j.startswith("(function(){") for j in popup_js), (
+        "弹窗探针没在调用处包 IIFE：%r" % (popup_js[:1],))
+
+
+def test_a_consent_overlay_that_shows_up_late_is_cleared_before_the_next_pick(
+        tmp_path, monkeypatch):
+    """B（travelandleisure 生产：25 条里 18 条一个形状）：弹层**是页面加载完之后才异步冒出来**的
+    —— 只在「开跑前」看一眼**不够**，**每一次动手之前**都得再看一眼。
+
+    真站日志原话（那 18 条）：
+      第 2 个选择器指的元素被 div#onetrust-group-container.ot-sdk-eight 盖着 —— 这一下不点
+      第 6 步：页面上没找到「Join Now」，这一步没做成
+    ⇒ 这一条让弹层**只在前两次探针之后**才出现：开跑前那次、`run_pre()` 之后那次都答「没有」，
+    到「动手之前」那次它才在 ⇒ 那一下必须先清掉它、再点选项。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    mod, module, filler, _src_ = _loop_product(tmp_path, monkeypatch, "popup_late",
+                                               PICK_PAGE, calls)
+    seq = ["", "", CONSENT_ANSWER]             # 前两次「没有」；动手之前那一次才冒出来
+    popup_js: list = []
+    _orig = mod.CDPHelper.eval
+
+    def eval_(self, js, *a, **kw):
+        if PROBE_MARK in js:
+            popup_js.append(js)
+            return json.dumps(seq.pop(0) if seq else "")
+        return _orig(self, js, *a, **kw)
+
+    mod.CDPHelper.eval = eval_
+    filler.run(max_steps=2)
+
+    clicks = calls["click"]
+    assert CONSENT_SELECTOR in clicks, ("动手之前那一次没探到弹层：%r" % clicks)
+    assert clicks.index(CONSENT_SELECTOR) < clicks.index(PICK_SELECTOR), (
+        "弹层要在**这一步动手之前**点掉 —— 否则那一下就是点在它上面：%s" % clicks)
+    assert len(popup_js) >= 3, ("探针只问了 %d 次 —— 每一步动手之前那一处没挂上？"
+                                % len(popup_js))
+
+
+def test_an_answer_in_a_shape_we_do_not_know_is_spoken_but_not_clicked(
+        tmp_path, monkeypatch, caplog):
+    """表那套那条纪律照搬：**形状不认识 ≠ 没有弹层** —— 说出来（一行 log），但**不去点**。
+
+    为什么不能点：拆不出三格就不知道「点谁」；猜一个选择器去点 = 「点到别的东西」，
+    而那正是弹层这一整套要治的病。所以当它「没答」，照旧走这一步自己的判据。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    mod, module, filler, _src_ = _loop_product(tmp_path, monkeypatch, "popup_shape",
+                                               PICK_PAGE, calls)
+    _orig = mod.CDPHelper.eval
+
+    def eval_(self, js, *a, **kw):
+        if PROBE_MARK in js:                   # 只有两格（真站上「量不出来」就是这种半截答复）
+            return json.dumps("同意条|#onetrust-accept-btn-handler")
+        return _orig(self, js, *a, **kw)
+
+    mod.CDPHelper.eval = eval_
+    with caplog.at_level(logging.INFO):
+        filler.run(max_steps=1)
+
+    assert calls["click"] == [PICK_SELECTOR], (
+        "形状不认识的答复被当成「有弹层」去点了：%r" % (calls["click"],))
+    assert "形状不认识" in caplog.text, (
+        "答复形状不认识却一句话都没说（读日志的人会以为页面上没有这类东西）：\n%s"
+        % caplog.text)
+    assert "点掉了" not in caplog.text, (
+        "形状不认识的答复被记成「点掉了」—— 那句话只有真点下去才许说：\n%s" % caplog.text)
+
+
+def test_the_loop_wraps_the_popup_probe_and_the_mark_js_and_never_throws(
+        tmp_path, monkeypatch):
+    """`clear_popups()` 的三条硬规矩（表那套逐字搬过来的）各钉一下：
+
+    ① **包壳在调用处**：`_POPUP_PROBE_JS` 与 `_MARK_CONSENT_BY_TEXT_JS` **都是裸语句序列**
+       （里面有裸 `return`）⇒ 都必须包一层 IIFE 才喂 `cdp eval`；
+    ② 点了返回 `True`、空串（表里一条都没答应）返回 `False` —— 空串是**正常情况**；
+    ③ **永不抛**：探针读炸了也只是一行 INFO，不往上抛（它挨着每一步，往上抛会把这**一步**
+       判成「产物自己出错了」—— 而弹层只是环境带来的噪声，不该有这种权力）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    mod, module, filler, _src_ = _loop_product(tmp_path, monkeypatch, "popup_wrap",
+                                               PICK_PAGE, calls)
+    sent: list = []
+    answer = {"now": json.dumps("")}
+    _orig = mod.CDPHelper.eval
+
+    def eval_(self, js, *a, **kw):
+        sent.append(js)
+        if PROBE_MARK in js:
+            return answer["now"]
+        if MARK_MARK in js:                    # 按文字打标记那一段（`_MARK_CONSENT_BY_TEXT_JS`）
+            calls.setdefault("marks", []).append(js)
+            return json.dumps("marked")
+        return _orig(self, js, *a, **kw)
+
+    mod.CDPHelper.eval = eval_
+
+    assert filler.clear_popups() is False, "空串（表里一条都没答应）不是失败，但也不是「点掉了」"
+    answer["now"] = json.dumps(CONSENT_ANSWER)
+    assert filler.clear_popups() is True, "点掉了要返回 True"
+    assert calls["click"] == [CONSENT_SELECTOR], calls["click"]
+
+    answer["now"] = json.dumps("同意条|TEXT|Accept All Cookies")   # 只有文字、没有 id
+    assert filler.clear_popups() is True, "按文字打标记再点 —— 那也算点掉了"
+    assert '[data-sf-consent="1"]' in calls["click"], (
+        "没 id 的那颗要走「打标记再点」：%r" % calls["click"])
+    assert calls.get("marks"), "没按文字打标记就点了？"
+
+    answer["now"] = json.dumps("形状不认识的答复")                  # 一眼不是三格
+    assert filler.clear_popups() is False, "形状不认识时不许乱点，也不许抛"
+
+    def boom(self, js, *a, **kw):
+        raise RuntimeError("cdp 挂了")         # 探针坏掉时的真站形状
+
+    mod.CDPHelper.eval = boom
+    assert filler.clear_popups() is False, "探不动就当成「没有」，**绝不往上抛**"
+    assert all(j.startswith("(function(){") and j.endswith("})()")
+               for j in sent if PROBE_MARK in j or MARK_MARK in j), (
+        "裸语句序列直喂 `cdp eval` = SyntaxError ⇒ 恒返空：%r" % (sent[:2],))

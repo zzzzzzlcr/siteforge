@@ -24,7 +24,8 @@ from __future__ import annotations
 
 import json
 
-from agent.template import _COVER_JS, _RECENTER_JS, _json_lit, _lit, _provenance_literal
+from agent.template import (_COVER_JS, _POPUP_MACHINERY_SRC, _RECENTER_JS, _json_lit, _lit,
+                            _provenance_literal)
 
 __all__ = ["render_loop", "funnel_states", "LOOP_PROVENANCE_KEEP", "DEFAULT_READ_JS",
            "LOOP_MIN_STATES", "LOOP_IDLE_LIMIT", "LOOP_MAX_STEPS", "LOOP_BUSY_TIMEOUT"]
@@ -148,6 +149,11 @@ def render_loop(site, success_text, success_urls, fills, provenance, *,
     #: 所以放在 `__DEEP__` 这一步**之后**同样安全。
     src = src.replace("__COVER_JS__", _lit(_COVER_JS))
     src = src.replace("__RECENTER_JS__", _lit(_RECENTER_JS))
+    #: ★ 2026-10-16（Task 4）：同意层 / 弹层那一整块（钩子表 `_POPUP_HOOKS` + `_POPUP_PROBE_JS`
+    #: + `_MARK_CONSENT_BY_TEXT_JS`）**与固定步骤表同一份** —— 贴的是**原文**（不是字面量），
+    #: 就是 `agent/template.py` 里从骨架搬出去的那一段（spec §3.1：判据只写一份，不各写一套）。
+    #: ⚠️ 放最后（`__DEEP__` 之后）：那一段里**既没有 `$` 也没有 `__DEEP__`** —— 不会串味。
+    src = src.replace("__POPUP_MACHINERY__", _POPUP_MACHINERY_SRC)
     return src
 
 
@@ -312,6 +318,16 @@ _COVER_JS = __COVER_JS__
 #: ⇒ 调用处**不要**再包一层（双层包裹当场坏，见 `_recenter`）。
 _RECENTER_JS = __RECENTER_JS__
 
+#: ★ 2026-10-16（Task 4）：同意层 / 弹层那一整块 —— **与固定步骤表是同一份**（贴的是**原文**，
+#: 不是另抄一份）：钩子表 `_POPUP_HOOKS`、拼好的探针 `_POPUP_PROBE_JS`、按文字打标记的
+#: `_MARK_CONSENT_BY_TEXT_JS`。发源地在 `agent/template.py` 的 `_POPUP_MACHINERY_SRC`
+#: （那一段是从它那边的骨架里原样搬出来的，两套骨架渲的时候取同一份 —— spec §3.1
+#: 「判据只写一份」）。
+#: ⚠️ `_POPUP_PROBE_JS` 与 `_MARK_CONSENT_BY_TEXT_JS` **都是裸语句序列**（里面有裸 `return`）：
+#: 表那套的 `_ev` 替它们包 `(function(){…})()`，而这一份的 `cdp.eval` 不替调用方包
+#: ⇒ **调用处自己包**（见 `clear_popups`）—— 与 `_COVER_JS` 同一条规矩，**别在这儿包**。
+__POPUP_MACHINERY__
+
 
 def _clean_eval(raw):
     """cdp eval 的 stdout 是 JSON（字符串会带引号）；cobra 的报错行会混在 stderr 里。"""
@@ -402,6 +418,84 @@ class Filler:
             self.log.info("[%s] 同意条清不掉（复读说它还在）—— 交回去如实说", self.cid)
         return ok
 
+    def clear_popups(self, why="") -> bool:
+        """把**挡路的弹层**点掉：问一遍钩子表（`_POPUP_HOOKS`），谁先答应就点谁。**永不抛**。
+
+        ★ 2026-10-16（Task 4）：**逐字搬固定步骤表的 `_clear_obstructions`**（同一个由头、
+        同一张表、同一套纪律），只换「怎么读」：那边走 `self._ev(...)`（它替调用方包
+        `(function(){…})()` **并** `_clean_eval` 脱引号），这边的 `cdp.eval` **两件都不做**
+        ⇒ 两件都在**调用处**补上。**要加一类弹窗，改表**（`_POPUP_HOOKS`），不改这里。
+
+        为什么要产物自带（2026-09-17 真站实测，链条闭合）：生产**每一单都是新窗口**、
+        每次都清 cookie —— 所以**每单都会遇到同意弹层**；而探索那一趟跑在一个「弹层已经
+        被自己点掉」的会话里，**账本学的是「没有弹层的世界」**，产物里也就没有那一步。
+        自测换到干净会话（R-F1）之后弹层盖住答题区，下一步的点击**点到弹层上**、
+        cdp 照样回 ok（`match_count: 1` 说的是「选择器命中 1 个」，不是「点到的就是它」），
+        于是「点了个寂寞」被记成做成了、后面全塌。
+        ⚠️ **不能指望账本里恰好有这一步** —— 弹层是环境带来的，不是站点流程的一部分。
+
+        判据（与 `cdp observe` 的 obstructions **同一套词汇**：文字 / id / class 里有没有
+        `cookie|consent|gdpr|privacy`）—— 为什么不用 observe：**生产那个 cdp 没有 observe**，
+        而弹层恰恰在生产每单都出现。所以这里走 `eval`（**读**，§5.2 允许），点还是走 cdp 的 click。
+
+        只做**有把握**的那一下：得在一个可见的同意类容器里找到一个按钮，它的文字属于
+        「接受/同意/关闭/拒绝」那一族 —— **带 id 就点 `#id`**，**只有文字就按文字打标记再点**
+        （★ 2026-09-28，用户看到的现场「有个弹窗挡住了」；原来那种「没 id 就什么都不做」
+        等于把弹层留在页面上挡住后面每一步 ✗）。两条都走不通就**什么都不做**（宁可不做），
+        由 `_covered_by` 保证「点到弹层上」不会被记成做成了。
+
+        ★ 2026-09-29（travelandleisure 生产：25 条里 18 条一个形状）：弹层**是页面加载完之后
+        才异步冒出来**的 ⇒ **每一次动手之前**（`fill` / `click` 开头那一处）都要再问一遍，
+        只在「开跑前 / 前置之后」看一眼是不够的。既然它现在挨着**每一步**，它就**不许自己
+        变成新的失败点**：探不动 / 点不动一律只记一行 INFO 走人（与表那套的
+        `_dismiss_consent` 同一条口径：它是为了修失败才加的，自己再变成失败点就本末倒置）。
+        """
+        try:
+            #: ⚠️ `_POPUP_PROBE_JS` 是**裸语句序列** ⇒ 调用处自己包 `(function(){…})()`；
+            #: ⚠️ 而 `cdp eval` 的 stdout 是 **JSON**（字符串带引号）⇒ 必须 `_clean_eval` 脱引号
+            #: （2026-10-16 复核逮到的那条：不脱引号 ⇒ 三格恒拆不出来 ⇒ 真站上一次都不点）。
+            raw = _clean_eval(self.cdp.eval("(function(){%s})()" % _POPUP_PROBE_JS, "")).strip()
+            #: 答复是 `"<钩子名>|<选择器|TEXT>|<按钮文字>"`（三格，表见 `_POPUP_HOOKS`）。
+            parts = raw.split("|", 2)
+            if len(parts) != 3:
+                #: 空串 = 表里一条都没答应（**正常情况**，页面上就是没有这类东西）—— 静默是对的。
+                #: 但**形状不认识 ≠ 没有弹层**：那是「量不出来」，说出来（与本文件里
+                #: `COOKIE_GONE_JS` 那类前缀同一个道理），只是不当成「有弹层」去点。
+                if raw:
+                    self.log.info("[%s] 弹窗探针的答复形状不认识（%r）—— 当它没答，"
+                                  "照旧走这一步自己的判据", self.cid, raw[:60])
+                return False
+            who, how, text = parts
+            if how == "TEXT":           # 只有文字：打标记再点（点还是走 cdp）
+                marked = _clean_eval(self.cdp.eval(
+                    "(function(){%s})()" % (_MARK_CONSENT_BY_TEXT_JS % json.dumps(text)), ""))
+                if "marked" not in str(marked or ""):
+                    self.log.info("[%s] 「%s」那颗按钮（%r）没有 id、按文字也没标记上 —— 不猜，"
+                                  "留给 `_covered_by` 兜（下一步会被挡住并如实失败）",
+                                  self.cid, who, text[:30])
+                    return False
+                selector = '[data-sf-consent="1"]'
+            else:
+                selector = how
+            out = self.cdp.click(selector)   # 动作一律走 cdp（§5.2）
+            if how == "TEXT":
+                #: 标记用完就清（不清的话下一屏上会留一个 `[data-sf-consent="1"]`，那是脏状态）
+                self.cdp.eval("(function(){%s})()"
+                              % ("var a=document.getElementsByTagName('*');"
+                                 "for(var i=0;i<a.length;i++){if(a[i].removeAttribute)"
+                                 "a[i].removeAttribute('data-sf-consent');}return 'clean';"), "")
+            self.log.info("[%s] %s把「%s」点掉了（%s，%r）：%s", self.cid,
+                          ("%s之后 " % why) if why else "开跑前 ", who, selector, text[:30],
+                          "看起来成了" if self._filled_ok(out) else "**没成**")
+            return True
+        except Exception as exc:                           # noqa: BLE001
+            #: **永不失败**：读不到 / 点不动都只记一行，绝不往上抛 ——
+            #: 往上抛会把这**一步**判成「产物自己出错了」，而弹层只是环境带来的噪声，
+            #: 不该有这种权力。
+            self.log.info("[%s] 看/点弹层这一下没成（%s: %s）—— 当它没有，照旧往下走",
+                          self.cid, type(exc).__name__, exc)
+            return False
+
     def read(self):
         """读这一屏。**读不到返回 None** —— 那是「看不见」，不是「做完了」。
 
@@ -439,7 +533,12 @@ class Filler:
         `[data-testid=…]` 找 ⇒ `cdp form` 报 `element not found`，而这里**照样 return True** ⇒
         表单永远是空的、提交被拒、页面一动不动（而 trace 上写着「填了」✗✗）。
         所以这一版：① id 来源用 `[id=…]`；② **回话里有 Error 就算没填上**（不许谎报）。
+        ★ 2026-10-16（Task 4）：**动手之前先清一次弹层** —— 与下面那条落点判据**同一处**，
+        次序是「先清弹层、再量落点」（表那套 `_perform` 里也是这两句、这个次序）：
+        先把弹层点掉，`_covered_by` 才不必为它白等一轮（等的是加载蒙版，弹层等不走）。
         """
+        #: ⚠️ 它**永不算失败**（探不动 / 点不动只记一行），见 `clear_popups`。
+        self.clear_popups(why="这一步动手之前")
         token = str(token or "")
         if token.startswith(BY_PLACEHOLDER):
             want = token[len(BY_PLACEHOLDER):]
@@ -674,7 +773,14 @@ class Filler:
         ★ 稳定性那一招（`lastingpowerofattorney.before.py` 的原话：「这些按钮**没有稳定的
         CSS 选择器**」—— 选项 id 是 `option-<epoch毫秒>`、类名一长串）⇒ 找用 JS、点还是
         `cdp click`（真人手势那一层不能省）。
+        ★ 2026-10-16（Task 4）：**动手之前先清一次弹层** —— 与下面那条落点判据**同一处**，
+        次序是「先清弹层、再量落点」（表那套 `_perform` 里也是这两句、这个次序）：
+        弹层**是页面加载完之后才异步冒出来**的（travelandleisure 那 18 条生产失败），
+        只在「开跑前 / 前置之后」看一眼不够 ⇒ 每一次动手之前都再看一眼。
+        ⚠️ 它**永不算失败**（探不动 / 点不动只记一行），见 `clear_popups`。
         """
+        #: ⚠️ 次序要紧：先清弹层、再量落点（见上面那段）。
+        self.clear_popups(why="这一步动手之前")
         token = str(token or "")
         if token.startswith(BY_TEXT):
             text = token[len(BY_TEXT):]
@@ -1021,6 +1127,13 @@ class Filler:
         try:
             self.log.info("[%s] loop: site=%s provenance=%s", self.cid, SITE,
                           PROVENANCE.get("site"))
+            #: ★ 2026-10-16（Task 4）：**开跑之前先清一次弹层**（与固定步骤表 `run()` 里
+            #: 那一处同源）—— 生产每单都是新窗口、每单都会遇到同意弹层，而账本学的是
+            #: 「没有弹层的世界」（见 `clear_popups` 的 docstring）。
+            #: ⚠️ 位置在导航**之前**：平台开好的那一页上（不导航那一支）弹层可能已经在——
+            #:    导航之后还有 `run_pre()` 之后那一次，三步互补。
+            #: ⚠️ 它**永不算失败**（清不掉也照旧往下走）。
+            self.clear_popups()
             if ENTRY_URL:
                 self.log.info("[%s] navi -> %s", self.cid, ENTRY_URL)
                 try:
@@ -1053,6 +1166,12 @@ class Filler:
                 self._rpt("step", "pre-steps failed")
                 self._stop(0, "give_up", "前置没走成（没等到 %s）" % ARRIVE_URL[:40])
                 return False
+
+            #: ★ 2026-10-16（Task 4）：**前置那几步点完之后再看一眼** —— 前置本身就在点
+            #: （清横幅 / 点进问卷的 CTA），同意层常常正是被那几下**唤出来**的；而下一处探针
+            #: 要等到第一次动手（`fill` / `click`）才跑，中间隔着「读这一屏」。
+            #: ⚠️ 同一条纪律：它**永不算失败**（清不掉照旧往下走）。
+            self.clear_popups(why="前置之后")
 
             answered = 0
             idle = 0
