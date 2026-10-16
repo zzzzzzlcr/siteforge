@@ -692,6 +692,59 @@ _CONSENT_HOOK_JS = (
 )
 
 
+#: ★ 2026-10-16：**广告 creative** 那一型（blavity 2026-10-10 / kotzheating 2026-10-09 两份产物
+#: 的判据交集）。它与上面三条的差别：**没有**模态语义、也**不一定是**同意那件事 ——
+#: 认它靠「**有一颗明确的关闭键**」这件事本身。
+#: ⚠️ 三条窄口径（缺一不可，与前三条同一套「宁可不做，不可错点」）：
+#:   ① 关闭语义：属性名带 `close`（如 `data-click="close"`）、或 aria-label 命中 close 那族、
+#:      或文字命中 close/关闭/×（**短**）；
+#:   ② 它自己**可见**、尺寸 ≥8×8、**中心点的落点是它自己/祖先/后代**（blavity 那把尺子：
+#:      同页 6 个候选里只有 1 个可见，直接点会点空气）；
+#:   ③ 找不到 ⇒ 空串（**正常情况**）。
+#: ## 未验（真弹窗上没再次观察到）
+#: 2026-10-16（Task 6）：照 `docs/probes/2026-10-10-blavity-ad-popup/README.md`「复现第 7 条」
+#: 在 Bit `192.168.1.222` 上开窗重试了一次**只读**观察（21:29:51 开窗 → 21:39:27 关窗，
+#: 20 眼、每眼约 27 秒，第 3 眼起每 3 眼滑动诱发一次）：那段窗口里**一次都没再弹** ——
+#: `[data-click="close"]` 候选 20/20 眼恒为 0（`{"n":0,"vis":[]}`），钩子 19/20 眼恒返空串
+#: （剩 1 眼是一次 `DOM.documentUpdated` 传输错），与 10-10 那次「点掉之后 28 分钟没再弹
+#: （疑频次抑制）」同形。⇒ 这一行是**照两份产物的判据交集收窄出来的，真弹窗上没再次观察到**
+#: （**不许**当成验过了）。原始读数见报告的「前置验证」那一节。
+#: ⚠️ 另按真站那份现场（README 表格：`<button id="bx-close-inside-…" data-click="close">`）
+#: 拿 node + 假 DOM 核过语义：那颗按钮**不带 aria-label、也没有文字**时，光靠「属性名带
+#: close」**命不中**（名字是 `data-click`，`close` 是它的**值**）—— 要靠 aria-label / 文字
+#: 那两条才认得出。如实记在这儿，**不**在这条注释里偷偷放宽判据（等裁决）。
+_AD_CREATIVE_JS = (
+    "var closeAttr=function(e){var as=e.attributes||[];"
+    "for(var i=0;i<as.length;i++){var n=String(as[i].name||'').toLowerCase();"
+    "var v=String(as[i].value||'').trim().toLowerCase();"
+    "if(/(^|[-_])close([-_]|$)/.test(n)&&(v===''||v==='true'||v==='1'||v==='close'))return true;"
+    "if(n==='aria-label'&&/^(close|dismiss|关闭)/.test(v))return true;}return false;};"
+    # ② 文字那条（× / close / 关闭，且要短 —— 长句子不是关闭键）
+    "var closeT=function(s){s=String(s||'').trim().toLowerCase();if(!s)return false;"
+    "if(s==='×'||s==='✕'||s==='✖')return true;"
+    "return /^(close|dismiss|关闭)/.test(s)&&s.length<=24;};"
+    # ③ 逐元素：可见 + ≥8×8 + **落点是它自己/祖先/后代**（blavity 那把尺子：同页 6 个候选
+    #    里只有 1 个可见，直接点会点空气）—— 只在**有落点**的那一个上动手
+    "for(var i=0;i<all.length;i++){var e=all[i];"
+    "var tg=String(e.tagName||'').toLowerCase();"
+    "if(tg!=='button'&&tg!=='a'&&tg!=='div'&&tg!=='span'&&tg!=='input')continue;"
+    "if(!vis(e))continue;"
+    "var r=e.getBoundingClientRect();"
+    "if(r.width<8||r.height<8)continue;"
+    "var x=r.left+r.width/2,y=r.top+r.height/2;"
+    "if(x<0||y<0||x>window.innerWidth||y>window.innerHeight)continue;"
+    "var mark=(e.getAttribute&&e.getAttribute('aria-label'))||'';"
+    "var txt=String(e.innerText||e.value||'').trim();"
+    "if(!(closeAttr(e)||closeT(mark)||closeT(txt)))continue;"
+    "var stack=document.elementsFromPoint(x,y)||[],ok=false;"
+    "for(var k=0;k<stack.length;k++){var h=stack[k];"
+    "if(h===e||e.contains(h)||h.contains(e)){ok=true;break;}}"
+    "if(!ok)continue;"                       # ← 落点不是它 ⇒ 不点（宁可不做）
+    "return (e.id?('#'+e.id):'TEXT')+'|'+(mark||txt).slice(0,40);}"
+    "return '';"
+)
+
+
 #: ★ 2026-10-10（用户问的那句：「假如会出现某些弹窗的钩子函数」）：**弹窗钩子表**。
 #:
 #: 这一段原来是一根用 `+` 拼起来的字符串（同意条那段 + 模态那段 + 兜底 `return ''`）：
@@ -716,6 +769,9 @@ _CONSENT_HOOK_JS = (
 _POPUP_HOOKS = (
     ("同意条", _CONSENT_HOOK_JS),
     ("盖住整页的模态", _MODAL_BOX_JS),
+    #: ★ 2026-10-16：广告 creative（blavity 那型）—— 排在**最后**：它比同意条软、也比模态软
+    #: （它的容器**没有**语义，只靠「有一颗明确的关闭键」）。判据见 `_AD_CREATIVE_JS`。
+    ("广告 creative", _AD_CREATIVE_JS),
 )
 
 

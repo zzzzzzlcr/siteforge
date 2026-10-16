@@ -2062,6 +2062,68 @@ def test_an_answer_in_a_shape_we_do_not_know_is_not_a_popup(sandbox, form_file):
 
 
 
+def _ad_creative_segment(src: str) -> str:
+    """从**产物文本**里切出 `_AD_CREATIVE_JS` 那颗常量自己的正文（切到表那段之前为止）。
+
+    ⚠️ 「那段 JS 在不在 / 里面有什么」不许按**整份**源码找记号：`template.py` 里
+    `elementsFromPoint` 本来就有好几处（`_COVER_JS` 那些）—— 那样数必红。
+    **只切这一颗常量**，再在它里面数（`test_the_cover_js_is_one_module_level_constant` 的读法）。
+    """
+    i = src.index("_AD_CREATIVE_JS = (")
+    j = src.index("_POPUP_HOOKS = (", i)
+    return src[i:j]
+
+
+def _popup_hook_rows(src: str) -> list:
+    """把表那一块的**行名**按序读出来（`_POPUP_HOOKS = (` 到它那个右括号为止）。
+
+    ⚠️ 只读表那一块，别按整份源码找名字：那些名字在注释 / 日志文案里也出现。
+    ⚠️ **不写死表里有几条**（别人手上那张表可能比我看到的多一条）：这一条只问
+    「新那条在不在、是不是**最后**一条」—— 次序 = 优先级，这才是要钉的性质。
+    """
+    block = src[src.index("_POPUP_HOOKS = ("):]
+    block = block[:block.index("\n)")]
+    return re.findall(r'\("([^"]+)", _[A-Z_]+\)', block)
+
+
+def test_the_ad_creative_hook_is_one_row_and_both_skeletons_get_it():
+    """★ 本刀（Task 6）：blavity 那型（`data-click="close"`、**没有**模态语义）进表 ⇒ 两套骨架都受益。
+
+    读法照本节其他几条（`test_a_new_popup_kind_is_one_row_in_the_hook_table`）：读**产物**，
+    不读渲染器。
+      ① 那段 JS 与**那一行**都在产物里；
+      ② 表序 = 优先级：它要排在**最后**一条（它的容器没有语义、只靠「有一颗明确的关闭键」，
+         比同意条软、也比模态软）；
+      ③ 三条窄口径各有记号：`closeAttr`/`closeT`（关闭语义：属性 / aria / 文字）、
+         `elementsFromPoint`（落点是自己/祖先/后代 —— blavity 那把尺子：同页 6 个候选里
+         只有 1 个可见，直接点 = 点空气）、尺寸 ≥8×8、兜底 `return '';`。
+
+    ⚠️ 为什么读产物、不读 `template._POPUP_HOOKS`：2026-10-16（Task 4）同意/弹层那一整块
+    搬进了模块级 `template._POPUP_MACHINERY_SRC`，渲的时候原样贴回 —— 表**不在模块级**
+    （`template._POPUP_HOOKS` 这个属性**根本不存在**；plan 里那句 `T._POPUP_HOOKS` 是搬之前写的）。
+    循环型那半在同源那一条里（`tests/test_loop_template.py::test_the_loop_carries_…`）。
+
+    ⚠️ 顺带钉住「站点知识只许是数据」（spec §1）：这段里**不许**出现 blavity 专有的字面
+    （`data-click` 那种）—— 判据只能是通用的关闭语义。
+    """
+    src = render_sample()
+    assert "_AD_CREATIVE_JS = (" in src, "那段 JS 得在产物里"
+    assert '("广告 creative", _AD_CREATIVE_JS),' in src, "表里得有这一行"
+    rows = _popup_hook_rows(src)
+    assert "广告 creative" in rows, "表里没有这一行：%r" % (rows,)
+    assert rows[-1] == "广告 creative", (
+        "表序 = 优先级：它比那几条都软（容器没有语义），要排在**最后**：%r" % (rows,))
+    seg = _ad_creative_segment(src)
+    assert "closeAttr" in seg and "closeT" in seg, (
+        "关闭语义那两条（属性名带 close / aria-label / 文字）得在：%s" % seg[:200])
+    assert seg.count("elementsFromPoint") == 1, (
+        "落点那条判据得有、且只有一条（blavity 那把尺子）：%s" % seg[:200])
+    assert "r.width<8||r.height<8" in seg, "尺寸门槛（≥8×8）得在"
+    assert "return '';" in seg, "找不到就返回空串（宁可不做）—— 兜底那句得在"
+    assert "data-click" not in seg and "bx-" not in seg, (
+        "站点专有的字面不许写进骨架（只许作为数据）：%s" % seg[:200])
+
+
 def test_a_failed_step_records_the_scene_and_a_successful_one_does_not(sandbox, form_file):
     """★ 2026-09-23（用户：「最后画面的截图不好分析，运营懵、我们 AI 也懵」）：
     **没做成**的那一步把现场录进 trace —— 「**点到的其实是 X**」这句话的全部证据。

@@ -33,7 +33,7 @@ import pytest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import fix, selftest, template_loop  # noqa: E402
+from agent import fix, selftest, template, template_loop  # noqa: E402
 
 FILLS = {"email": {"kind": "email"}, "postcode": {"kind": "postcode"}}
 PROV = {"site": "solarincentives", "entry_url": "https://solarincentives.io/article-1/"}
@@ -1116,3 +1116,47 @@ def test_a_round_that_did_nothing_because_of_a_cover_says_so(tmp_path, monkeypat
         "被挡着被说成了「没有可动作的东西」—— 屏幕上明明有东西：%r" % (idle,))
     assert not any("没找到" in "%s %s" % (r.get("note") or "", r.get("progress_why") or "")
                    for r in rows), "把「被挡着」说成了「没找到」：%r" % (rows,)
+
+
+# ── 钩子表第 4 行「广告 creative」：两套骨架**同一份**（★ 2026-10-16：Task 6）──────────
+
+def _ad_creative_segment(src: str) -> str:
+    """从一段**产物文本**里切出 `_AD_CREATIVE_JS` 那颗常量自己的正文（切到表那段之前）。
+
+    ⚠️ 不按整份源码找记号（`elementsFromPoint` 在产物里本来就有好几处）—— 只切这一颗。
+    """
+    i = src.index("_AD_CREATIVE_JS = (")
+    j = src.index("_POPUP_HOOKS = (", i)
+    return src[i:j]
+
+
+def _popup_hook_rows(src: str) -> list:
+    """表那一块的**行名**，按序（`_POPUP_HOOKS = (` 到它那个右括号为止）。
+
+    ⚠️ **不写死表里有几条**（工作区比 HEAD 多别人未提交的那条）：只问
+    「新那条在不在、是不是**最后**一条」—— 次序 = 优先级，这才是要钉的性质。
+    """
+    block = src[src.index("_POPUP_HOOKS = ("):]
+    block = block[:block.index("\n)")]
+    return re.findall(r'\("([^"]+)", _[A-Z_]+\)', block)
+
+
+def test_the_loop_carries_the_same_ad_creative_row_the_table_does():
+    """★ 本刀（Task 6）：表里那第 4 行**两套骨架共用同一份** —— 循环型这份也得带它。
+
+    同源怎么证：循环型产物里那一段与**发源地**（`template._POPUP_MACHINERY_SRC`）里那一段
+    **逐字节相同** —— `render_loop` 就是把这个常量原样贴进 `__POPUP_MACHINERY__`
+    （Task 4 那一刀的账）。表那套渲出来的另一半住在
+    `tests/test_template.py::test_the_ad_creative_hook_is_one_row_and_both_skeletons_get_it`。
+
+    ⚠️ 循环型**不另抄一份判据**（spec §3.1「判据只写一份」）：它只从 `agent.template` 取；
+    这里比的正是「取的是不是同一份」，不是「长得像不像」。
+    """
+    src = _src()
+    assert "_AD_CREATIVE_JS = (" in src, "循环型产物里没有那颗常量（同源破了）"
+    assert '("广告 creative", _AD_CREATIVE_JS),' in src, "循环型产物的表里没有第 4 行"
+    rows = _popup_hook_rows(src)
+    assert rows and rows[-1] == "广告 creative", (
+        "表序 = 优先级：它要排在**最后**（与表那套同一份表）：%r" % (rows,))
+    assert _ad_creative_segment(src) == _ad_creative_segment(template._POPUP_MACHINERY_SRC), (
+        "循环型那份与发源地不是同一段（两把尺子分家了）：各自从产物里切出来比一比")
