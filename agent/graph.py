@@ -1172,6 +1172,11 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
                         #: 它不影响放行，但「这一版有一处地址是从证据推的、没人验过」这件事
                         #: 必须看得见，否则人就以为它是量到的。
                         "未证实的地址": state.get("addr_unverified"),
+                        #: ★ 2026-10-16 第二刀（spec §3.5）：**上一版有哪几步的锚被观测改写过** ——
+                        #: 那是「改稿那双手在编锚」唯一看得见的地方（覆写本身是静默的）。
+                        #: ⚠️ 读 `state` ⇒ 摆的是**上一版**的结果：第一次出稿那道闸上还没有它。
+                        #: ⚠️ 摆的是**位置清单**不是一个计数（报数要连口径一起报）。
+                        "锚被观测改写的步": state.get("anchors_overwritten"),
                         #: ★ 2026-10-15 Task 6：**人接受过的地址**也要一直摆着（spec §3.5「可见」）
                         #: —— 与上面那一格同一个理由：不说出来，人就以为那一根是量到的
                         #: （而它是**人点的头**，不是量到的）。「失效」那一半**不另编人话**：
@@ -1226,6 +1231,14 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
                 "states": journey.states(), "fills": journey.fills()}
     #: ★ 2026-10-15：**探路那一刻的原始观察，就在这一刻冻**（spec §3.6b）。
     out.update(_freeze_observed(state, spec["states"], spec["fills"]))
+    #: ★ 2026-10-16 第二刀：**这一版认的那份观察** —— 下面两处（`template.render` 与最后那格
+    #: 「哪几步的锚被改写过」）必须用**同一个值**，否则「清单」与「产物」会各说各的
+    #: （spec §3.5 要的正是「清单讲得出产物里那一处」）。
+    #: ⚠️ 为什么不是光读 `state`：**第一次** `_draft` 里那份是上面刚冻进去的
+    #: （写进了 `out`，随本节点的返回值**才**并进状态 —— 这一刻 `state` 里还没有它，
+    #: 读 `state` 会拿到 `None` ⇒ 这一版渲出来就是**模型编的那张表**，正是本刀要堵的那条路）；
+    #: 后面几版 `_freeze_observed` 回空 dict ⇒ 落到 `state` 里那份（**只冻一次**，不许重冻）。
+    _observed = out.get("observed") or state.get("observed")
     #: ★ 形态分派（2026-09-24，交接文档欠账 ④）：**单页漏斗/问卷 ⇒ 步进循环型** ——
     #: 固定步骤表那一族在这类站上会**静默跳过整组**（它只记下走过的那一条路，下一问变了 ⇒
     #: `when` 不成立 ✗）；多页导航型照旧固定步骤表。判据只有一条、而且是**量到的**：
@@ -1394,7 +1407,8 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
             src = template.render(spec["site"], spec["success_text"], spec["states"],
                                   spec["fills"],
                                   provenance=_provenance(state, deps, report=None),
-                                  success_urls=spec.get("success_urls") or "")
+                                  success_urls=spec.get("success_urls") or "",
+                                  observed=_observed)
     except ValueError as exc:
         # 最常见的一种：没人说「什么算成功」。**不猜** —— 猜出来的成功判据就是
         # 「跑到底再谎报成功」的入口（template.py 也拒这种产物）。
@@ -1443,6 +1457,23 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
         _keep_unverified(state, out,
                          "结构检查没过（这一版**照样留给运营**，可以「照样传」去试）：%s"
                          % _hard_said, src=src)
+    #: ★ 2026-10-16 第二刀（spec §3.5）：这一版**哪几步的锚被观测改写过**。
+    #: ⚠️ 拿同一把**纯函数**、**同一份 `_observed`** 再算一遍（不是第二份实现）——
+    #: 宁可多算一次，也不给「清单与产物不一致」留缝。
+    #: ⚠️ 位置在**最后**：`spec["states"]` 一路上被上面那几道钉回去的闸
+    #: （`_keep_step_sequences` / `_keep_repair_local` / `ir.repair_required`）改过，
+    #: 要算的是**最终那两张表**（就是刚渲进产物、也写进 `out["states"]` 的那两张）。
+    #: ⚠️ **空就不写**（不写一个空列表）：这一格读出来是给闸上摆的，
+    #: 空列表会摆成「改写过、但是空的」—— 那与「没改写过」是两件事，别让人看错。
+    #: ⚠️ **循环型那一支不算**：上面渲的时候走的是 `_loop_source`（`template.render` 那
+    #: 一处**压根没跑**），而它只吃 `fills` / `loop_spec`、**根本不读 `states`**
+    #: （见那一支自己的注释）⇒ 那一族里「锚被观测改写」这件事**没有发生过**。
+    #: 照 `spec["states"]` 算一份摆出来，人问「哪一步」时对着产物一个都对不上 —— 那是编人话。
+    if _observed is not None and shape != "loop":
+        _, _, overwritten = fix_mod.anchors_from_observed(
+            spec["states"], spec["fills"], _observed)
+        if overwritten:
+            out["anchors_overwritten"] = overwritten
     return out
 
 
@@ -1790,7 +1821,8 @@ def _deliver(state, deps: Deps, caps: Caps) -> dict:
             src = _loop_source(state, deps, report=state.get("report"))
         else:
             src = template.render(state["site"], state.get("success_text"),
-                                  state.get("states"), state.get("fills"), provenance=prov)
+                                  state.get("states"), state.get("fills"), provenance=prov,
+                                  observed=state.get("observed"))
     except ValueError as exc:                                  # spec 里少了东西（不该到这）
         out.update({"end_reason": END_DRAFT_FAILED, "end_note": "交付前重渲失败：%s" % exc})
         return out

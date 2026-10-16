@@ -2783,3 +2783,69 @@ def test_the_four_addr_keys_are_declared_in_the_state_schema():
 
     for name in ("observed", "addr_unverified", "addr_accepted", "addr_candidates"):
         assert name in SiteState.__annotations__, name
+
+
+# ── 锚只认观测：两个渲染点（2026-10-16 第二刀，spec §3.1 / §3.5）────────────
+
+
+def test_the_frozen_anchor_reaches_both_the_linted_and_the_delivered_bytes(tmp_path):
+    """★ 两处渲染点各传一次；判据是**产物字节**，不是代码字面（spec §5.2 ⑥）。
+
+    默认账本（`_journey()`）第 0 步的卡是 `{text: "Get Started", role: "button",
+    selectors: ["#get-started"]}`。写稿桩照模型那一手**编一根、改一根**：
+
+      · `rec.tested_src` 是**自测跑的那一份** ⇒ 它干净 = `_draft` 那一点传了；
+      · **落盘那份**是 `_deliver` 重渲的 ⇒ 它也干净 = `_deliver` 那一点也传了。
+        （`_deliver` 若不传，它读的是 `state["states"]` = **模型那张表**，编的就落盘了。）
+
+    ⚠️ 两份字节**不是**逐字相同的（`PROVENANCE` 那一块是 lint 之后才写进去的，
+    `test_the_final_bytes_are_lint_checked_before_they_are_written` 钉着这件事）
+    ⇒ 所以两处**各断言各的**，别拿它们互比。
+    """
+    def fabricate(spec, feedback, round_no):
+        target = spec["states"][0]["steps"][0]["target"]
+        target["label"] = "I made this up"      # 编一根卡上没有的
+        target["text"] = "也是编的"              # 改一根卡上有的
+        return spec
+
+    deps, rec = _deps(write=fabricate)
+    app, cfg, _ = _build(deps=deps)
+    _drive(app, cfg, _brief(tmp_path))
+
+    assert "I made this up" not in rec.tested_src
+    assert "也是编的" not in rec.tested_src
+    assert "Get Started" in rec.tested_src          # 卡上那根回去了
+    written = (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).read_text(encoding="utf-8")
+    assert "I made this up" not in written
+    assert "也是编的" not in written
+    assert "Get Started" in written
+
+
+def test_the_gate_says_which_steps_had_their_anchors_overwritten(tmp_path):
+    """★ spec §3.5：闸上摆一格 —— 「改稿那双手在编锚」唯一看得见的地方。
+
+    ⚠️ 它读的是 `state`（**这一趟进来时**的那份）⇒ 摆的是**上一版**的结果：
+    第一次出稿那道闸上还没有它（那时候还没写过稿）。所以这里驱动**两版**：
+    第二道 draft 闸的 facts 里要看得到第一版被改写过的那一步。
+    """
+    def fabricate(spec, feedback, round_no):
+        spec["states"][0]["steps"][0]["target"]["text"] = "也是编的"
+        if round_no == 1:
+            spec["states"][0]["steps"][0]["note"] = "顺手用 el.click() 补了一下"  # 让 lint 打回
+        return spec
+
+    deps, rec = _deps(write=fabricate)
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+    second = [p for p in payloads if p["step"] == "draft"][1]
+    #: ⚠️ `facts` 是**嵌在** payload 里的一格（`interrupt({"step", "say", "facts", "can"})`），
+    #: 不是摊平的 —— 别写成 `second.get("锚被观测改写的步")`。
+    assert "landing#0" in str(second["facts"].get("锚被观测改写的步")), second
+
+
+def test_without_an_overwrite_the_gate_row_is_not_there(tmp_path):
+    """**空就不摆**（与邻居那几格同一个习惯）—— 别摆一个空列表让人以为「改写过、但是空的」。"""
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    payloads, _ = _drive(app, cfg, _brief(tmp_path))
+    assert all(not p["facts"].get("锚被观测改写的步") for p in payloads if p["step"] == "draft")
