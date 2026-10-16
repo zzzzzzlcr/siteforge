@@ -1483,3 +1483,48 @@ def test_a_human_label_with_a_digit_in_it_is_not_a_machine_name(label):
     message = _autoname_msg({"label": label, "selectors": ["input#x"]})
     assert "判不出" not in message, message
     assert label in message, message
+
+
+# ── M2：零断言的地址不给空卡背书（2026-10-16 第二刀，spec §3.3）─────────────
+
+#: 空卡 = 观测那一步存在、`target` 是空的（`find_observed` 给 `{}`）。
+_EMPTY_CARD = {"states": [{"name": "g", "steps": [{"action": "click", "target": {}}]}]}
+
+
+def _codes_for(selector):
+    src = "STATES = [{'name': 'g', 'steps': [{'action': 'click',\n  'target': {'selectors': [%r]}}]}]\n" % selector
+    states = [{"name": "g", "steps": [{"action": "click", "target": {"selectors": [selector]}}]}]
+    return [v.code for v in lint._rule_i(states, {}, src, observed=_EMPTY_CARD)]
+
+
+@pytest.mark.parametrize("selector", [
+    "li:nth-child(2n+1)",
+    "div:nth-child(1) > a:nth-child(1)",
+    "body:nth-of-type(1) > a:nth-of-type(1)",
+])
+def test_a_position_only_address_no_longer_silences_an_empty_card(selector):
+    """★ M2 的正身：零断言的地址**证明不了任何事** ⇒ 空卡上要报无据可依。"""
+    assert _codes_for(selector) == ["judge-fragile-no-basis"]
+
+
+def test_a_bare_tag_address_is_still_reported_the_same_way():
+    """`div > a:nth-of-type(1)` 报的是**同一个码** —— 它靠的是裸标签，不是 `_fragile`（判词不许变）。"""
+    assert _codes_for("div > a:nth-of-type(1)") == ["judge-fragile-no-basis"]
+
+
+def test_a_card_with_an_anchor_still_passes_a_position_only_address():
+    """★ 边界（spec §3.3）：卡**上有锚**、地址是纯位置的 ⇒ **照旧不报**（重放能按锚找回）。"""
+    frozen = {"states": [{"name": "g", "steps": [
+        {"action": "click", "target": {"label": "Competitions", "role": "a",
+                                       "selectors": ["#__BVID__408"]}}]}]}
+    src = "STATES = [{'name': 'g', 'steps': [{'action': 'click',\n  'target': {'selectors': ['li:nth-child(2n+1)']}}]}]\n"
+    states = [{"name": "g", "steps": [{"action": "click",
+                                       "target": {"selectors": ["li:nth-child(2n+1)"]}}]}]
+    assert [v.code for v in lint._rule_i(states, {}, src, observed=frozen)] == []
+
+
+def test_no_basis_slots_and_the_verdict_agree_on_the_same_step():
+    """一处定义、两个消费者：报的那一步与「等着被接受」的那一步**必须是同一根地址**。"""
+    src = "STATES = [{'name': 'g', 'steps': [{'action': 'click',\n  'target': {'selectors': ['li:nth-child(2n+1)']}}]}]\n"
+    slots = lint.no_basis_slots(src, _EMPTY_CARD)
+    assert [one["selector"] for one in slots] == ["li:nth-child(2n+1)"]

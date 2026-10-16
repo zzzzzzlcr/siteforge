@@ -1147,12 +1147,23 @@ def _card_has_nothing(card, kept) -> bool:
     拿来用」，`_with_evidence_say` 会把卡摆出来）。
     ⚠️ 这一条**不放松**任何东西：卡仍然来自冻结那份（模型注入不进来），被改写的那根地址照样
     要逐条断言过 `address_basis`；nitrous 那族（卡上只有那根脆链）与空卡那族照旧「无据可依」。
+
+    ★ 2026-10-16 第二刀（spec §3.3）：末句多问一句 `assertions_of(s)` ——
+    **零断言的地址（`li:nth-child(2n+1)` 那一族，纯位置）不算「有答案」**。
+    理由是 `address_basis` 自己那句人话：「只说了位置、没主张任何身份」——
+    什么都没主张的东西，证明不了任何事。⚠️ **不动 `_fragile`**：给它补 `:nth-child` 一族会连带把
+    `ul li:nth-child(2) a[href="/x"]` 这种**带真锚**的地址也判脆（扩大打击面）。
     """
     if card and any(card.get(k) not in (None, "", [], {}) for k in _CARD_ANCHOR_KEYS):
         return False
     if card and any(not _fragile(s) for s in (card.get("selectors") or [])):
         return False          #: 卡上有一根验过唯一、又不在脆那一族的地址 ⇒ 有答案
-    return not [s for s in (kept or []) if not _fragile(s)]
+    #: ★ 2026-10-16 第二刀（spec §3.3）：「采信的候选」得**说了点什么**才算数。
+    #: 位置不是断言（`address_basis` 自己那张嘴就是这么说的：「只说了位置、没主张任何身份」）——
+    #: 而原来它把这种零断言的地址**记成「有据」** ⇒ 空卡上成了「有答案」⇒ 判据自己给自己背书。
+    #: ⚠️ 只在**这一格**收：卡上有锚 / 卡上有不脆候选那两条前置分支一个字不动
+    #: （所以「卡上有锚 + 纯位置地址」照旧不报，重放按锚找回）。
+    return not [s for s in (kept or []) if not _fragile(s) and assertions_of(s)]
 
 
 def _machine_made_name(value) -> bool:
