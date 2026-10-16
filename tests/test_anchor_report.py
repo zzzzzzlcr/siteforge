@@ -146,6 +146,68 @@ def test_a_step_that_is_already_unfindable_is_not_new(tmp_path):
     assert got["③只差大小写的标识"] == [], got
 
 
+def test_the_already_unfindable_guard_is_per_step_not_per_version(tmp_path):
+    """① 的守卫要落在**这一步**上：按整版判一次 ⇒ 一条坏兄弟步就把整版的新账**一起漏掉**。
+
+    ⚠️ 形状（修复轮 1 评审的复现）：交付那一版第 0 步本来就认不出来（`click {}` —— render
+    当初就拒过它），第 1 步**合并前**认得出（只有 `text`）、**合并后**卡是空的 ⇒ **真·新拒**。
+    整版判一次的结果是：`_findable(交付版)` 为假 ⇒ 整版跳过 ⇒ ① 报**假 0** ——
+    而这个 0 恰恰是这条硬线唯一要数的东西（假 0 比虚报坏：屏幕上与「真干净」长得一模一样）。
+    """
+    from tools.anchor_report import measure
+
+    ledger = tmp_path / "ck.sqlite"
+    _ledger(ledger, [
+        {"thread_id": "t7", "channel": "site", "value": "seven"},
+        {"thread_id": "t7", "channel": "states",
+         "value": [{"name": "g", "steps": [{"action": "click", "target": {}},
+                                           {"action": "click", "target": {}}]}]},
+        {"thread_id": "t7", "channel": "fills", "value": {}},
+        {"thread_id": "t7", "channel": "states",
+         "value": [{"name": "g", "steps": [{"action": "click", "target": {}},
+                                           {"action": "click",
+                                            "target": {"text": "Continue"}}]}]},
+    ])
+    got = measure(str(ledger))
+    #: 第 0 步：交付那版本来就认不出 ⇒ 与合并无关、不算新账；第 1 步：合并把它掏空 ⇒ **必须**报
+    assert [one[2] for one in got["①合并后新拒的步"]] == ["g#1"], got
+
+
+def test_the_fills_branch_is_measured_too(tmp_path):
+    """②③ 要把 `FILLS` 那一支一起量 —— `_rule_i` 的 FILLS 分支**同样**调 `_card_has_nothing`。
+
+    ⚠️ M2/M3 那两处改动落在 `_card_has_nothing` 与 `address_basis` 上，而这两样是
+    **states / FILLS 两支共用**的 ⇒ 只循环 `states` 的话，「②③ = 0」这句话就比它读起来**窄**：
+    FILLS 那一支的槽位一个都没数，而生产那边照样新报 `judge-fragile-no-basis`。
+    ⚠️ 卡要照**生产那一句**取（`_rule_i` 的 FILLS 支）：`card_of(冻结那一格.get("target"))` ——
+    fill 那一格自己带着 `label`（产物写的那份名字），拿**整格**去当卡，就是把产物自己的话
+    当成证据（与那边「这里**不许**用 `fix._literals(src)` 取卡」同一条规矩）。
+    """
+    from tools.anchor_report import measure
+
+    ledger = tmp_path / "ck.sqlite"
+    _ledger(ledger, [
+        {"thread_id": "t8", "channel": "site", "value": "eight"},
+        {"thread_id": "t8", "channel": "states",
+         "value": [{"name": "g", "steps": []}]},
+        # 冻结那一份：`postcode` 那格的 target 是空的（**量过、什么都没有**）；`email` 观测量到 `#Email`
+        {"thread_id": "t8", "channel": "fills",
+         "value": {"postcode": {"label": "Postcode", "target": {}},
+                   "email": {"label": "Email", "target": {"selectors": ["#Email"]}}}},
+        # 交付那一版：`postcode` 只剩一根纯位置地址（②）；`email` 写成了 `#email`（③，只差大小写）
+        {"thread_id": "t8", "channel": "fills",
+         "value": {"postcode": {"label": "Postcode",
+                                "target": {"selectors": ["li:nth-child(2n+1)"]}},
+                   "email": {"label": "Email", "target": {"selectors": ["#email"]}}}},
+    ])
+    got = measure(str(ledger))
+    assert [one[2] for one in got["②空卡上的纯位置地址"]], got
+    assert "FILLS:postcode" in got["②空卡上的纯位置地址"][0][2], got
+    assert [one[2] for one in got["③只差大小写的标识"]], got
+    assert "FILLS:email" in got["③只差大小写的标识"][0][2], got
+    assert got["①合并后新拒的步"] == [], got      # 这一趟没有 click 步，① 与它无关
+
+
 def test_a_made_up_address_does_not_hide_the_position_only_one(tmp_path):
     """**编的地址不算答案**：它不许把纯位置那根压下去（生产先剔 `UNSUPPORTED` 才问卡）。
 
