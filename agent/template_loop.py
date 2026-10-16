@@ -418,6 +418,49 @@ class Filler:
             self.log.info("[%s] 同意条清不掉（复读说它还在）—— 交回去如实说", self.cid)
         return ok
 
+    def _popup_trace(self, ok, why):
+        """弹层这一下**如实**落一行（`ok`：True = 关掉了 / False = 它还在 / None = 这一次没量到）。
+
+        ★ 2026-10-16（Task 5）三条纪律钉在这一处：
+          ① **不许**拿 `cdp click` 的回话当做成 —— `ok` 只由**复核**给（再问一遍同一张表）。
+             那句回话说的是「**选择器命中 1 个**」，**不是**「点到的就是它」（blavity 那条口径）；
+          ② `soft=True`：弹层是**环境噪声**（新窗口有、上一趟点掉过就没有、还可能是后冒出来的）
+             ⇒ 与 `browser_agent` 给「点掉同意条」那类步标的记号同一档：自测**不拿它否决**那一遍
+             （`selftest._verdict` 的 `hard_rows` 排除 `soft`），但照旧点名 —— spec §3.5：
+             探针自己**永远不许变成新的失败点**；
+          ③ **两格都写**（`note` + `progress_why`）：同 `_stop` 那条 2026-10-14 的规矩 ——
+             「为什么没做成」那一路读 `note`、「有没有推进」那一路读 `progress_why`。
+        """
+        self._trace(step=self._step, action="popup", ok=ok, progress=None, soft=True,
+                    note=why, progress_why=why)
+
+    def _popup_answer(self) -> str:
+        """问一遍钩子表（探针只读，不动页面）：**脱引号后**的原文 —— 空串 = 表里一条都没答应。
+
+        ⚠️ 包壳与脱引号**都在这一处**（`cdp eval` 两件都不做，见表那套的 `_ev`）：
+        「探之前」与「探之后」（复核）走的是**同一个函数** —— 复核必须是同一把尺子，
+        不然 `ok` 那一格量的是另一件事，写它就没有意义了。
+        """
+        return _clean_eval(self.cdp.eval("(function(){%s})()" % _POPUP_PROBE_JS, "")).strip()
+
+    def _popup_still_there(self):
+        """复核：**再问一遍同一张表**，返回还在的那一个（空串 = 这一屏没有它了）。
+
+        三种结果，**不许并成两种**：
+          · 空串 = 没有它了；
+          · 非空 = 它还在（返回钩子表点名的那个）；
+          · `None` = **这一次没量到**（读炸了 / 答复形状不认识）—— 量不到就如实说量不到，
+            把它读成「关掉了」正是这一刀要治的病。
+        """
+        try:
+            raw = self._popup_answer()
+        except Exception:                                   # noqa: BLE001 —— 外面世界
+            return None
+        if not raw:
+            return ""
+        parts = raw.split("|", 2)
+        return parts[0] if len(parts) == 3 else None
+
     def clear_popups(self, why="") -> bool:
         """把**挡路的弹层**点掉：问一遍钩子表（`_POPUP_HOOKS`），谁先答应就点谁。**永不抛**。
 
@@ -449,12 +492,20 @@ class Filler:
         只在「开跑前 / 前置之后」看一眼是不够的。既然它现在挨着**每一步**，它就**不许自己
         变成新的失败点**：探不动 / 点不动一律只记一行 INFO 走人（与表那套的
         `_dismiss_consent` 同一条口径：它是为了修失败才加的，自己再变成失败点就本末倒置）。
+
+        ★ 2026-10-16（Task 5）：**关掉之后要复核**（spec §3.4）—— `cdp click` 的回话**不算做成**
+        （它说的是「选择器命中 1 个」），点完**再问一遍同一张表**，把「还在不在」如实写进账本
+        （`_popup_trace` 那三分）。⚠️ **「探针返空」分不清两件事**（Task 1 真站量到：同一个站
+        首载有同意层、来回趟一趟之后**同一条探针返空**）⇒ 只见「没有它」时**只写 `ok=None`**
+        并说明「它本来就不在」—— **不许**写成「关掉了」：这一刀治的就是「把量不到当成做成了」，
+        在这一格上自己犯同一条病最讽刺。
         """
         try:
             #: ⚠️ `_POPUP_PROBE_JS` 是**裸语句序列** ⇒ 调用处自己包 `(function(){…})()`；
             #: ⚠️ 而 `cdp eval` 的 stdout 是 **JSON**（字符串带引号）⇒ 必须 `_clean_eval` 脱引号
             #: （2026-10-16 复核逮到的那条：不脱引号 ⇒ 三格恒拆不出来 ⇒ 真站上一次都不点）。
-            raw = _clean_eval(self.cdp.eval("(function(){%s})()" % _POPUP_PROBE_JS, "")).strip()
+            #: 这两件都在 `_popup_answer` 里 —— 复核那一次也走它（**同一把尺子**）。
+            raw = self._popup_answer()
             #: 答复是 `"<钩子名>|<选择器|TEXT>|<按钮文字>"`（三格，表见 `_POPUP_HOOKS`）。
             parts = raw.split("|", 2)
             if len(parts) != 3:
@@ -464,6 +515,12 @@ class Filler:
                 if raw:
                     self.log.info("[%s] 弹窗探针的答复形状不认识（%r）—— 当它没答，"
                                   "照旧走这一步自己的判据", self.cid, raw[:60])
+                    self._popup_trace(None, "弹窗探针答复形状不认识（%r）—— **量不出来**"
+                                            "（这一次没量到覆盖现场），不当成做成" % raw[:40])
+                else:
+                    #: ★ 2026-10-16（Task 5）：**返空分不清两件事** —— 只许如实写 `ok=None`。
+                    self._popup_trace(None, "这一屏没探到它 —— **它本来就不在**（这一次没量到"
+                                            "覆盖现场），只如实记「没量到」，不当成做成")
                 return False
             who, how, text = parts
             if how == "TEXT":           # 只有文字：打标记再点（点还是走 cdp）
@@ -473,6 +530,8 @@ class Filler:
                     self.log.info("[%s] 「%s」那颗按钮（%r）没有 id、按文字也没标记上 —— 不猜，"
                                   "留给 `_covered_by` 兜（下一步会被挡住并如实失败）",
                                   self.cid, who, text[:30])
+                    #: 探之前**有**、而我们**没动手** ⇒ 它当然还在（不用再探一次也知道）。
+                    self._popup_trace(False, "「%s」还在（认不出该点哪一颗 —— 没敢点）" % who)
                     return False
                 selector = '[data-sf-consent="1"]'
             else:
@@ -484,9 +543,21 @@ class Filler:
                               % ("var a=document.getElementsByTagName('*');"
                                  "for(var i=0;i<a.length;i++){if(a[i].removeAttribute)"
                                  "a[i].removeAttribute('data-sf-consent');}return 'clean';"), "")
-            self.log.info("[%s] %s把「%s」点掉了（%s，%r）：%s", self.cid,
+            self.log.info("[%s] %s把「%s」点掉了（%s，%r）—— cdp 回话：%s", self.cid,
                           ("%s之后 " % why) if why else "开跑前 ", who, selector, text[:30],
                           "看起来成了" if self._filled_ok(out) else "**没成**")
+            #: ★ 2026-10-16（Task 5）：**复核** —— 上面那句只是 cdp 的**回话**，不是做成。
+            #: 再问一遍**同一张表**：探之前有、探之后没有 ⇒ True；探之后**还有** ⇒ False；
+            #: 复核探不动（读炸了 / 答复形状不认识）⇒ None（量不到就如实说量不到）。
+            still = self._popup_still_there()
+            if still is None:
+                self._popup_trace(None, "点完复核不了：探不动（这一次没量到覆盖现场）—— "
+                                        "不当成做成")
+            elif still:
+                self._popup_trace(False, "点完复核：这一屏**还有**「%s」（探之前有、探之后还有）"
+                                         "—— 这一下没能关掉" % still)
+            else:
+                self._popup_trace(True, "点完复核：这一屏没有它了（探之前有、探之后没有）")
             return True
         except Exception as exc:                           # noqa: BLE001
             #: **永不失败**：读不到 / 点不动都只记一行，绝不往上抛 ——
@@ -494,6 +565,10 @@ class Filler:
             #: 不该有这种权力。
             self.log.info("[%s] 看/点弹层这一下没成（%s: %s）—— 当它没有，照旧往下走",
                           self.cid, type(exc).__name__, exc)
+            #: ⚠️ 这一格 `ok=None`（**没量到**）：探针自己炸了、或点那一下炸了 ⇒ 既不能说
+            #: 「关掉了」（没量过）也不能说「还在」（没看见）—— 三等分里就剩这一格。
+            self._popup_trace(None, "看/点弹层这一下没成（%s: %s）—— 没量到，不当成做成"
+                                    % (type(exc).__name__, str(exc)[:40]))
             return False
 
     def read(self):
@@ -830,6 +905,12 @@ class Filler:
     #: 这一步**因为被盖着而没能动手**时，盖着它的那个东西（空串 = 不是这个原因）——
     #: 每一轮开头清零（见 `run()`），报文那边照它说「被挡着」而不是「没找到」。
     cover_why = ""
+    #: ★ 2026-10-16（Task 5）：**这一趟走到第几步** —— 弹层那一行（`_popup_trace`）要带上它。
+    #: 为什么它得住在类上：`clear_popups` 被 `run()` 从几处叫（开跑前 / 前置之后 / 每步动手
+    #: 之前），它自己不知道步号，而账本里**每一行都带步号**（不带的话自测那句点名会写成
+    #: 「第 None 步」）。默认 0 = 「开跑前 / 前置那几步」（与 `run_pre` 里那些行同一个步号），
+    #: `object.__new__(Filler)` 那种实例也够得着。
+    _step = 0
 
     def _cover_once(self, selector, frame_id=""):
         """**量一次**：这个选择器指的元素是不是被别的东西盖着。盖着就返回盖它的东西，否则空串。"""
@@ -1177,6 +1258,9 @@ class Filler:
             idle = 0
             busy_since = None
             for step in range(1, max_steps + 1):
+                #: ★ 2026-10-16（Task 5）：账本里每一行都带步号 —— `clear_popups` 那几行
+                #: 由它读（它自己没有步号，见类属性那一处）。
+                self._step = step
                 #: ★ 2026-09-30（用户裁定「Py 必须通过稳定性测试才能交付」）：`--stop-at` 在这个族里
                 #: 就是「**跑到第 N 步就停**」（循环稿没有固定步表，一步 = 看过一屏）。
                 #: 形状与平铺那一族**逐字对齐**：先落一行 `{"stopped_at": N}`、再走，退出码非 0
@@ -1409,6 +1493,15 @@ class Filler:
                 #: ★ 2026-09-26：**已经答过、但没有「下一步」可点** —— 这是最容易被误读的一种空转
                 #: （屏幕上明明有选项，却说「没有可动作的东西」）。把真正的原因说出来。
                 why = "没有可动作的东西（%d）" % idle
+                #: ★ 2026-10-16（Task 5）**报文纪律：被挡着 ≠ 没有可动作的东西** ——
+                #: 这一轮之所以一件都没做，可能正是因为有东西盖着。`cover_why` 是**这一步
+                #: 动手之前**量的读数（每轮开头清零、每次动手前清零 —— Ruling 13）⇒ 走到
+                #: 这一句时它还是**这一步**的值，照实点名「谁盖着」，并说清**等过 / 挪过**。
+                #: 为什么非说不可（与 2026-09-18 gowizard 同一个病）：账本上写着「没有可动作的
+                #: 东西」⇒ 读的人只会去查选择器，而那一刻屏幕上明明有东西、只是被盖着。
+                if self.cover_why:
+                    why = ("%s 一直盖着这一屏能点的东西（等过、也把它往视口正中挪过，它没走）"
+                           "—— 这一下没敢点（%d）" % (self.cover_why, idle))
                 if getattr(self, "_answered_but_stuck", False):
                     self._answered_but_stuck = False
                     why = ("这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（%d）"
@@ -1424,8 +1517,13 @@ class Filler:
                         self._answered_sig = ""
                         why += "｜放行再答一次（第 %d 次）" % self._stuck_retries
                 self.log.info("[%s] step %d: %s | %s", self.cid, step, why, head[:50])
+                #: ⚠️ 为什么这句话**两格都写**（同 `_stop` 那条 2026-10-14 的规矩）：
+                #: `progress_why` 是「有没有推进」那一路读的，`note` 是「为什么没做成」那一路
+                #: 读的（`selftest._verdict` 的 `step_said`）—— 只写前者，诊断会落成兜底话
+                #: 「trace 里那一步没写为什么」。★ Task 5 起这一句**不再**只可能是「没有可动作
+                #: 的东西」：被挡着时它点名遮挡物，读的人一眼看得出该去查谁。
                 self._trace(step=step, action="none", ok=None, progress=False,
-                            progress_why=why)
+                            progress_why=why, note=why)
                 if idle >= IDLE_LIMIT:
                     self.log.error("[%s] 连 %d 步没有可动作的东西（答过 %d 题）—— 如实报失败",
                                    self.cid, idle, answered)

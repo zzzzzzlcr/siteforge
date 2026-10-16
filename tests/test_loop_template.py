@@ -1006,3 +1006,113 @@ def test_the_loop_wraps_the_popup_probe_and_the_mark_js_and_never_throws(
     assert all(j.startswith("(function(){") and j.endswith("})()")
                for j in sent if PROBE_MARK in j or MARK_MARK in j), (
         "裸语句序列直喂 `cdp eval` = SyntaxError ⇒ 恒返空：%r" % (sent[:2],))
+
+
+# ── 关掉之后**复核** + 空转的报文纪律（★ 2026-10-16：Task 5）──────────────────────────
+
+def _popup_rows(trace):
+    """账本里 `action="popup"` 的那几行（`clear_popups` 复核那一行就在里面）。"""
+    if not trace.exists():
+        return []
+    return [r for r in (json.loads(ln) for ln in
+                        trace.read_text(encoding="utf-8").splitlines() if ln.strip())
+            if r.get("action") == "popup"]
+
+
+def _last_popup_row(trace):
+    """最后一「关掉/复核」那一行 —— 没有就说清「一行都没落」，别让它长成 IndexError。"""
+    rows = _popup_rows(trace)
+    assert rows, '账本里一行 `action="popup"` 都没有 —— `clear_popups` 没落复核那一行'
+    return rows[-1]
+
+
+def test_the_popup_recheck_says_which_of_the_three_things_is_true(tmp_path, monkeypatch):
+    """★ 本刀：**`cdp click` 回话不算做成** —— 点完要**再问一遍同一张表**，把「还在不在」如实写进账本。
+
+    为什么不许拿回话当做成（blavity 那条口径）：`cdp click` 的那句 ok 说的是
+    「**选择器命中 1 个**」，**不是**「点到的就是它」—— 弹层盖着的时候点了个寂寞，账上照旧是做成。
+
+    三分（由头是 Task 1 在真站上量到的那条「覆盖是**间歇**的」：同一个站**首载有同意层、
+    来回趟一趟之后同一条探针返空**）：
+      · 探之前有、探之后没有 ⇒ `ok=True`（真关掉了）；
+      · 探针**返空** ⇒ `ok=None` + 说清「**它本来就不在**」—— **不许**写成「关掉了」
+        （返空分不清「我关掉了」与「它本来就没弹」）；
+      · 探之后**还有** ⇒ `ok=False`（点了个寂寞）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    mod, module, filler, _src_ = _loop_product(tmp_path, monkeypatch, "popup_recheck",
+                                               PICK_PAGE, calls)
+    trace = tmp_path / "popup_recheck.jsonl"
+    seq: list = []
+    _orig = mod.CDPHelper.eval
+
+    def eval_(self, js, *a, **kw):
+        if PROBE_MARK in js:            # 弹窗探针：按剧本答（`json.dumps` = 真站的带引号形状）
+            return json.dumps(seq.pop(0) if seq else "")
+        return _orig(self, js, *a, **kw)
+
+    mod.CDPHelper.eval = eval_
+
+    #: ① 探之前有、探之后没有 ⇒ True
+    seq[:] = [CONSENT_ANSWER, ""]
+    assert filler.clear_popups() is True, "点掉了要返回 True（返回值只说「点了」，判据在账上）"
+    assert calls["click"] == [CONSENT_SELECTOR], calls["click"]
+    row = _last_popup_row(trace)
+    assert row["ok"] is True, "关掉了却没写 True：%r" % (row,)
+    assert row["progress"] is None, row
+    assert "没有" in str(row.get("progress_why") or ""), row
+
+    #: ② 探针**返空** ⇒ None + 说清「它本来就不在」（**不许**当成「关掉了」）
+    seq[:] = [""]
+    assert filler.clear_popups() is False, "空串（表里一条都没答应）不是失败，也不是「点掉了」"
+    row = _last_popup_row(trace)
+    assert row["ok"] is None, ("「探针返空」被当成了「关掉了」或「还在」——"
+                              "Task 1 量到的那条间歇性要的就是这一格：%r" % (row,))
+    assert "本来就不在" in str(row.get("progress_why") or ""), row
+
+    #: ③ 点完**还有** ⇒ False —— 就算 cdp 回话是「点上了」，也不许写成做成
+    seq[:] = [CONSENT_ANSWER, CONSENT_ANSWER]
+    assert filler.clear_popups() is True, "这一下**是发出去了**（返回值只说这个）"
+    row = _last_popup_row(trace)
+    assert row["ok"] is False, ("cdp 回话是「点上了」就写成了做成？—— 点了个寂寞：%r" % (row,))
+    assert "还有" in str(row.get("note") or ""), row
+    #: ⚠️ 这一行是 `soft` 的：弹层是**环境噪声**（新窗口有、上一趟点掉过就没有、还可能后冒出来）
+    #: ⇒ 与 `browser_agent` 给「点掉同意条」那类步标的记号同一档 —— 自测不拿它否决那一遍
+    #: （`selftest._verdict` 的 `hard_rows` 排除 `soft`），但照旧点名（spec §3.5：探针自己
+    #: **永远不许变成新的失败点**）。
+    assert row.get("soft") is True, "复核那一行不许否决整趟自测：%r" % (row,)
+
+
+def test_a_round_that_did_nothing_because_of_a_cover_says_so(tmp_path, monkeypatch):
+    """★ 本刀：空转那一句**先看 `cover_why`** —— 被挡着就照实说「X 一直盖着…」，
+    **不许**落成「没有可动作的东西」。
+
+    为什么（2026-09-18 gowizard，与 Task 3 那条同一个病）：那一趟诊断全花在改选择器上 ——
+    账本里写着「没有可动作的东西」，而那一刻屏幕上明明有东西，只是**被盖着**。
+    `cover_why` 是**这一步动手之前**量的读数（每轮开头清零、每次动手前清零 —— Ruling 13）
+    ⇒ 走到这句话时它还是**这一步**的值。
+    """
+    page = {"url": "https://funnel.test/quiz", "head": "Pick one", "progress": "50%",
+            "inputs": [], "options": ["\u0001Yes"], "nextVisible": False, "nextTxt": ""}
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    mod, module, filler, _src_ = _loop_product(tmp_path, monkeypatch, "covered_note",
+                                               page, calls)
+    module.COVER_WAIT_SECONDS = 0.3          # 别让用例真等 35 秒
+    module.COVER_POLL_SECONDS = 0.02
+    _orig = mod.CDPHelper.eval
+    mod.CDPHelper.eval = lambda self, js, *a, **kw: (
+        json.dumps("COVER|div#onetrust-banner") if "elementsFromPoint" in js
+        else _orig(self, js, *a, **kw))
+
+    trace = tmp_path / "covered_note.jsonl"
+    filler.run(max_steps=2)
+
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    idle = [r for r in rows if r.get("action") == "none"]
+    assert idle, "这一趟一步都没动、账上却连一行空转都没有：%r" % (rows,)
+    said = " ".join("%s %s" % (r.get("note") or "", r.get("progress_why") or "") for r in idle)
+    assert "盖着" in said, ("被挡着却没说「谁盖着」（读的人只会去查选择器）：%r" % (idle,))
+    assert "没有可动作的东西" not in said, (
+        "被挡着被说成了「没有可动作的东西」—— 屏幕上明明有东西：%r" % (idle,))
+    assert not any("没找到" in "%s %s" % (r.get("note") or "", r.get("progress_why") or "")
+                   for r in rows), "把「被挡着」说成了「没找到」：%r" % (rows,)
