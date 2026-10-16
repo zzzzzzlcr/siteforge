@@ -1497,6 +1497,13 @@ def _codes_for(selector):
     return [v.code for v in lint._rule_i(states, {}, src, observed=_EMPTY_CARD)]
 
 
+def _verdicts_for(selector):
+    """同 `_codes_for`，但把**判词**一起带出来（要钉「判词一个字不变」时用这个）。"""
+    src = "STATES = [{'name': 'g', 'steps': [{'action': 'click',\n  'target': {'selectors': [%r]}}]}]\n" % selector
+    states = [{"name": "g", "steps": [{"action": "click", "target": {"selectors": [selector]}}]}]
+    return [(v.code, v.message) for v in lint._rule_i(states, {}, src, observed=_EMPTY_CARD)]
+
+
 @pytest.mark.parametrize("selector", [
     "li:nth-child(2n+1)",
     "div:nth-child(1) > a:nth-child(1)",
@@ -1508,8 +1515,20 @@ def test_a_position_only_address_no_longer_silences_an_empty_card(selector):
 
 
 def test_a_bare_tag_address_is_still_reported_the_same_way():
-    """`div > a:nth-of-type(1)` 报的是**同一个码** —— 它靠的是裸标签，不是 `_fragile`（判词不许变）。"""
-    assert _codes_for("div > a:nth-of-type(1)") == ["judge-fragile-no-basis"]
+    """`div > a:nth-of-type(1)` 报的是**同一个码**，而且**判词一个字不变**（它靠的是裸标签，不是 `_fragile`）。
+
+    ⚠️ ★ 2026-10-16 终审：原来只钉了码，而 spec §5.2 #8 要的是「**判词一个字不变**」——
+    终审把 `_card_has_nothing` 逆回旧实现，证明过两者 `(code, message)` **逐字节相同**
+    ⇒ 把判词一起钉上是**免费的**（这条用例从此连「人话被改掉」也拦得住）。
+    """
+    assert _verdicts_for("div > a:nth-of-type(1)") == [(
+        "judge-fragile-no-basis",
+        "组「g」第 1 步：这一步探路那一刻**量不到更稳的地址** —— 它身上没有名字、旁边没有字、"
+        "也没有一条验过唯一的候选。**别编一根**：编出来的地址没人验过，而它会让"
+        "「这一步还能不能重放」这件事在屏幕上看起来是好的。三条正路，任选其一："
+        "① 这一步若只是辅助动作（把某个东西滚进视口那类）⇒ **删掉它**；"
+        "② **请人给一根**（在闸上说一句，人正看着那一页）；"
+        "③ 如实**接受**（在闸上说「接受地址 g#0」—— 只有人能接受，且地址或证据一变就失效）。")]
 
 
 def test_a_card_with_an_anchor_still_passes_a_position_only_address():
@@ -1549,20 +1568,46 @@ def test_an_identifier_that_differs_only_in_case_is_not_observed(selector, froze
 
 
 def test_the_verbatim_observed_address_is_still_observed():
-    """`_verbatim` 排在前面 ⇒ 「把卡上那根原样抄回来」照旧放行（收的是**改写**，不是照抄）。"""
+    """`_verbatim` 排在前面 ⇒ 「把卡上那根原样抄回来」照旧放行（收的是**改写**，不是照抄）。
+
+    ⚠️ ★ 2026-10-16 终审：原来只拿 `#Postcode` 试 —— 那一根**不靠 `_verbatim` 也过**
+    （断言从卡上就找得到）⇒ 把 `_verbatim` 短路掉它**照样绿**（钉的是空气）。
+    所以补一条**只有它救得回来**的：判据**自己读不懂**的构造（`assertions_of` 判 `unparsed`，
+    走那条路必 `unsupported`），与观测原文**逐字相同** ⇒ `_verbatim` 排在最前 ⇒ 照旧 `observed`。
+    末一条是对照：同一根构造、观测原文里没有它 ⇒ `unsupported`（说明前一条确实靠的是 `_verbatim`）。
+    """
     level, why = lint.address_basis("#Postcode", {"selectors": ["#Postcode"]}, ["#Postcode"])
     assert level == lint.OBSERVED, why
+    level, why = lint.address_basis("input[data-x]", {}, ["input[data-x]"])
+    assert level == lint.OBSERVED, why
+    level, why = lint.address_basis("input[data-x]", {}, [])
+    assert level == lint.UNSUPPORTED, why
 
 
 def test_a_text_anchor_is_still_case_insensitive():
-    """文字锚那一支**一个字不动**：同一个字的两种排版写法算同一个字。"""
-    assert lint._norm_text("Sign   In") == lint._norm_text("sign in")
+    """文字锚那一支**一个字不动**：同一个字的两种排版写法算同一个字。
+
+    ⚠️ ★ 2026-10-16 终审：原来那一版拿 `_norm_text` **跟自己比**（根本没穿过 `address_basis`）
+    ⇒ `assertions_of` 里 `("text", _norm_text(…))` 那条接线（`lint.py:372`）被改成
+    `_norm_ident` 它**照样绿**（钉的是空气）。现在喂**真输入**：候选是 `text=Sign In`、
+    观测原文是 `text=sign in` —— 判定就落在「文字那一支 casefold 不 casefold」上；
+    第二组钉「压空白」那一半（同一个字的两种排版算同一个字）。
+    """
+    level, why = lint.address_basis("text=Sign In", {}, ["text=sign in"])
+    assert level == lint.OBSERVED, why
+    level, why = lint.address_basis("text=Sign   In", {}, ["text=sign in"])
+    assert level == lint.OBSERVED, why
 
 
 def test_a_tag_name_is_still_case_insensitive():
-    """标签名不分大小写（HTML 本来就这样）—— `:376` / `:400` 那两处保留 casefold。"""
-    frozen = {"selectors": ["input[name=zip]"]}
-    level, why = lint.address_basis("INPUT[name=zip]", frozen, ["input[name=zip]"])
+    """标签名不分大小写（HTML 本来就这样）—— `assertions_of` 里那两处保留 casefold。
+
+    ⚠️ ★ 2026-10-16 终审：原来用 `INPUT[name=zip]` —— 标签**被属性限定了**
+    ⇒ `assertions_of` **根本不吐** `("tag", …)`（它只在标签自成一段时才算，见 `lint.py:387`）
+    ⇒ 把那一行改成 `_norm_ident` 它**照样绿**（钉的是空气）。换成**裸标签**：
+    候选 `INPUT`、观测原文 `input` —— 今天 `observed`，那一行一改就翻 `unsupported`。
+    """
+    level, why = lint.address_basis("INPUT", {}, ["input"])
     assert level == lint.OBSERVED, why
 
 
