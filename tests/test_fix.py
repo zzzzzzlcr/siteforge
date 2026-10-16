@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import pathlib
 import sys
@@ -331,3 +332,150 @@ def test_find_observed_is_none_when_the_step_is_gone_and_the_address_is_unknown(
 
 def test_find_observed_returns_none_when_observed_is_missing():
     assert fix.find_observed(None, "auth", 0, {"selectors": ["#a"]}) is None
+
+
+# ── 锚只认观测：合并（2026-10-16 第二刀，spec §3.1）──────────────────────────
+
+#: 冻结那份：第 0 步有锚（`Competitions`），第 1 步**什么都没有**（量过、没东西）。
+_OBS = {
+    "states": [
+        {"name": "g", "steps": [
+            {"action": "click", "target": {"label": "Competitions", "role": "a",
+                                           "selectors": ["#__BVID__408"]}},
+            {"action": "click", "target": {"selectors": ["li:nth-child(2n+1)"]}},
+            {"action": "click", "target": {}},
+        ]},
+    ],
+    "fills": {"email": {"source": "email", "kind": "value", "label": "Email",
+                        "target": {"label": "Email", "selectors": ["#e1"]}}},
+}
+
+
+def _steps(*targets):
+    return [{"name": "g", "when": None,
+             "steps": [{"action": "click", "target": t} for t in targets]}]
+
+
+def test_a_made_up_anchor_is_overwritten_by_the_card():
+    """★ 这一刀的正身：编的锚进不了产物（spec §1.2 ①）。"""
+    out, _, changes = fix.anchors_from_observed(
+        _steps({"label": "I made this up", "selectors": ["#__BVID__408"]}), {}, _OBS)
+    target = out[0]["steps"][0]["target"]
+    assert target["label"] == "Competitions"
+    assert target["role"] == "a"
+    assert changes == ["g#0"]
+
+
+def test_an_anchor_key_the_card_lacks_is_deleted():
+    """只补不删等于白干：卡上没有 `label` ⇒ 产物里也不许有 `label`。
+
+    （第 1 步的卡是 `{"selectors": ["li:nth-child(2n+1)"]}` —— 一根锚都没有。）
+    """
+    out, _, _ = fix.anchors_from_observed(
+        _steps({"selectors": ["#__BVID__408"]},
+               {"label": "也编的", "selectors": ["li:nth-child(2n+1)"]}), {}, _OBS)
+    assert out[0]["steps"][1]["target"] == {"selectors": ["li:nth-child(2n+1)"]}
+
+
+def test_a_rewritten_address_still_finds_its_card():
+    """★ Review Focus 4：地址被改写**正是要找的那件事**，不许因此当成「没量过」。
+
+    这一步在冻结那份里是 `#__BVID__408`，模型按 spec §3.3 换成了 `a[href='/comp']`
+    ⇒ 指纹对不上，但 (组名, 步序) 那一张卡照旧是它的 ⇒ 锚照旧合进去、地址一个字不动。
+    """
+    out, _, changes = fix.anchors_from_observed(
+        _steps({"label": "编的", "selectors": ["a[href='/comp']"]}), {}, _OBS)
+    target = out[0]["steps"][0]["target"]
+    assert target["label"] == "Competitions" and target["role"] == "a"
+    assert target["selectors"] == ["a[href='/comp']"]
+    assert changes == ["g#0"]
+
+
+def test_the_same_address_in_two_groups_is_merged_per_step():
+    """★ Review Focus 5：同一根地址出现在两处 ⇒ 各归各的卡，不许串。"""
+    frozen = {"states": [
+        {"name": "a", "steps": [{"action": "click",
+                                 "target": {"label": "第一处", "selectors": ["#x"]}}]},
+        {"name": "b", "steps": [{"action": "click",
+                                 "target": {"label": "第二处", "selectors": ["#x"]}}]},
+    ], "fills": {}}
+    live = [{"name": "a", "when": None,
+             "steps": [{"action": "click",
+                        "target": {"label": "编的 A", "selectors": ["#x"]}}]},
+            {"name": "b", "when": None,
+             "steps": [{"action": "click",
+                        "target": {"label": "编的 B", "selectors": ["#x"]}}]}]
+    out, _, changes = fix.anchors_from_observed(live, {}, frozen)
+    assert out[0]["steps"][0]["target"]["label"] == "第一处"
+    assert out[1]["steps"][0]["target"]["label"] == "第二处"
+    assert changes == ["a#0", "b#0"]
+
+
+def test_filling_in_a_missing_anchor_is_not_an_overwrite():
+    """★「**补**」与「**编**」不是一回事 —— 那一格（spec §3.5）报的是**编**。
+
+    模型什么都没写、卡上补上 ⇒ 产物变好了，但**不算「改写过」**。
+    不收窄这一刀，账本里那些 `None` 占位键会让**每一版**都记成「改写过」⇒ 常亮的灯没人看。
+    """
+    out, _, changes = fix.anchors_from_observed(
+        _steps({"label": None, "text": "", "selectors": ["#__BVID__408"]}), {}, _OBS)
+    assert out[0]["steps"][0]["target"]["label"] == "Competitions"   # 补上了
+    assert changes == []                                             # 但没「改写」
+
+
+def test_selectors_are_never_touched():
+    """候选归改稿那双手（spec §3.7）—— 换一根稳的地址正是这一刀**要**它做的事。"""
+    out, _, _ = fix.anchors_from_observed(
+        _steps({"selectors": ["a[href='/comp']"]}), {}, _OBS)
+    assert out[0]["steps"][0]["target"]["selectors"] == ["a[href='/comp']"]
+
+
+def test_a_step_that_was_never_observed_is_left_byte_identical():
+    """卡找不到（步序越界 / 没这一组）⇒ 那一步一个字不动（spec §3.1 规则 ②）。"""
+    live = [{"name": "别的组", "when": None,
+             "steps": [{"action": "click", "target": {"label": "新加的步",
+                                                      "selectors": ["#x"]}}]}]
+    out, _, changes = fix.anchors_from_observed(live, {}, _OBS)
+    assert out[0]["steps"][0]["target"] == {"label": "新加的步", "selectors": ["#x"]}
+    assert changes == []
+
+
+def test_an_observed_step_with_an_empty_target_wipes_the_anchors():
+    """★ **「量过、什么都没有」与「没量过这一步」不是一件事**（Review Focus 2）。
+
+    这一步在冻结那份里**存在**、`target` 是空的 ⇒ 它是「量过、什么都没有」⇒
+    模型给它编的锚要**删掉**（`find_observed` 给 `{}`，不是 `None`）。
+    """
+    frozen = {"states": [{"name": "g", "steps": [{"action": "click", "target": {}}]}],
+              "fills": {}}
+    #: 「这一步没有选择器」用**没有这个键**表示，**不写** `selectors: []` —— 空表也是表，
+    #: 规则 ③（候选归改稿那双手）要求它一个字不动，`{"selectors": []}` 会原样留在产物里。
+    out, _, changes = fix.anchors_from_observed(
+        _steps({"label": "编的"}), {}, frozen)
+    assert out[0]["steps"][0]["target"] == {}
+    assert changes == ["g#0"]
+
+
+def test_fill_targets_are_merged_too():
+    """`FILLS[*].target` 一起合 —— `lint._rule_i` 的 FILLS 那一支读的正是它。"""
+    out_states, out_fills, changes = fix.anchors_from_observed(
+        [], {"email": {"source": "email", "kind": "value", "label": "Email",
+                       "target": {"label": "编的", "selectors": ["#e1"]}}}, _OBS)
+    assert out_fills["email"]["target"]["label"] == "Email"
+    assert changes == ["FILLS[email]"]
+
+
+def test_without_observed_nothing_changes():
+    """不传 `observed` ⇒ 原样返回、`changes` 空（老 job / 老调用点一个字不变）。"""
+    live = _steps({"label": "编的", "selectors": ["#__BVID__408"]})
+    for frozen in (None, {}):
+        out, _, changes = fix.anchors_from_observed(live, {}, frozen)
+        assert out == live and changes == []
+
+
+def test_the_input_tables_are_not_mutated():
+    """纯函数：入参一个字节不动（改稿那双手的那张表还得留着）。"""
+    live = _steps({"label": "编的", "selectors": ["#__BVID__408"]})
+    before = copy.deepcopy(live)
+    fix.anchors_from_observed(live, {}, _OBS)
+    assert live == before

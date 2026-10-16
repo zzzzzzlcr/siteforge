@@ -47,7 +47,9 @@ __all__ = ["from_py", "repair_states", "REQUIRED_CLI_FLAGS",
            "patch_from_rounds", "apply_diff", "apply_edits", "source_from_reply",
            "STATES_SYSTEM", "LOOP_KEYS", "states_user", "states_from_reply",
            #: ★ 2026-10-15 修站那一刀：**原始观察**那一族（见下面那一节）
-           "CARD_KEYS", "card_of", "observed_of", "find_observed", "card_fingerprint"]
+           "CARD_KEYS", "card_of", "observed_of", "find_observed", "card_fingerprint",
+           #: ★ 2026-10-16 修站第二刀：锚只认观测（合并那一步）
+           "CARD_ANCHOR_KEYS", "anchors_from_observed"]
 
 #: 取站方配置的超时（秒）。**短** —— 它是可选层，拿不到就往下走，不能把整趟拖住。
 CONFIG_TIMEOUT = 8.0
@@ -1155,3 +1157,101 @@ def find_observed(observed, state_name: str, index: int, card) -> Optional[dict]
         return card_of(steps[index].get("target"))
     # ③ 步序越界、① 也没命中 ⇒ 没有可依的原始观察
     return None
+
+
+#: 产物里**从观测来的那几样**（锚）= `CARD_KEYS` 去掉 `selectors`。
+#: `selectors` 不在里头是**故意的**：它是**候选**，是改稿那双手要换的东西（spec §3.7）。
+#: ⚠️ 与 `lint._CARD_ANCHOR_KEYS`（6 个，没有 `role`）**不是同一把尺子**，别并：
+#: 那边问「这张卡说得出这一格是什么吗」，这边问「这一步的 target 该写哪几样」。
+CARD_ANCHOR_KEYS = ("label", "aria_label", "hint", "placeholder", "nearby_text", "text", "role")
+
+
+def _merge_anchors(target, card):
+    """一个 target → `(照卡覆写锚的那一份, 有没有**改写**过)`。**新 dict**，入参不动。
+
+    ⚠️ **「改写」的定义是窄的**（spec §3.5 那一格的全部信噪比都在这两句上）：
+      · **模型写过一根非空的锚，而卡上不是那一根**（含「卡上压根没有 ⇒ 删掉」）⇒ **算**；
+      · 模型没写、卡上补上 ⇒ **不算**（那是**补**，不是编）；
+      · 模型写的是 `None` / 空串 / 空表 ⇒ **不算**（那是空值，不是主张）。
+    不收窄的话，账本里那几样锚键大量是 `None` 占位（`{"text": None, "label": None, …}`），
+    照卡一覆写就「有差异」⇒ **每一版都记成「改写过」**⇒ 那一格成了常亮的灯，人就不看了。
+    """
+    src = target if isinstance(target, dict) else {}
+    out = dict(src)
+    overwrote = False
+    for key in CARD_ANCHOR_KEYS:
+        before = src.get(key)
+        after = copy.deepcopy(card[key]) if key in (card or {}) else None
+        if after is None:
+            out.pop(key, None)          # 卡上没有 ⇒ 产物里也不许有
+        else:
+            out[key] = after
+        if before not in (None, "", [], {}) and before != after:
+            overwrote = True
+    return out, overwrote
+
+
+def anchors_from_observed(states, fills, observed):
+    """把**冻结那份**的锚合进产物那两张表（spec §3.1，本刀 I1）。→ `(states, fills, changes)`
+
+    三条规则（别外推）：
+      ① **卡找得到** ⇒ `target` 里那 7 个锚键（`CARD_ANCHOR_KEYS`）**整份照卡覆写** ——
+         卡上有就写卡上的值，**卡上没有就把键删掉**；
+      ② **卡找不到**（新加的步 / 步序越界 / 没这一组）⇒ **那一步一个字不动**；
+      ③ `selectors` 一个字不动（§3.7：候选归改稿那双手）。
+
+    ⚠️ **`{}` 与 `None` 在这里不是一件事**（判据那边同义，见 `lint._observed_card` 的 Ruling 8）：
+      · `None` = **没量过这一步**（原件里找不到对应的一步）⇒ 一个字不动；
+      · `{}`  = **量过、什么都没有**（原件那一步存在、`target` 是空的）⇒ 模型的锚**全删**。
+    写成 `if not card` 会把后者当成前者 ⇒ 「空卡上编一根」那条路又开了（spec §1.2 ② 正是它）。
+
+    ⚠️ **`fills` 只认 dict**：`observed_of` 那边就是 `dict(fills or {})`（list 形状在那里就炸了），
+    所以能走到这一行的 `fills` 一定是 dict；不是就原样返回（**不猜、不静默改形状**）。
+
+    ⚠️ **纯函数**：入参两张表一个字节不动（`anchors_from_observed` 的调用方是 `render`，
+    而 `render` 上游还拿着那张可改的表）。
+    """
+    if not isinstance(observed, dict) or not observed:
+        return states, fills, []
+    changes: list = []
+    frozen_states = observed.get("states")
+    if not isinstance(frozen_states, list):
+        frozen_states = []
+    out_states: list = []
+    for group in (states or []):
+        if not isinstance(group, dict):
+            out_states.append(group)
+            continue
+        name = str(group.get("name") or "?")
+        steps: list = []
+        for index, step in enumerate(group.get("steps") or []):
+            if not isinstance(step, dict):
+                steps.append(step)
+                continue
+            target = step.get("target")
+            card = find_observed({"states": frozen_states}, name, index, card_of(target))
+            if card is None:                       # 没量过这一步 ⇒ 一个字不动（规则 ②）
+                steps.append(step)
+                continue
+            merged, overwrote = _merge_anchors(target, card)
+            if overwrote:
+                changes.append("%s#%d" % (name, index))
+            steps.append(dict(step, target=merged))
+        out_states.append(dict(group, steps=steps))
+    if not isinstance(fills, dict):
+        return out_states, fills, changes
+    frozen_fills = observed.get("fills")
+    if not isinstance(frozen_fills, dict):
+        return out_states, fills, changes
+    out_fills: dict = {}
+    for key, fill in fills.items():
+        frozen = frozen_fills.get(key)
+        if not isinstance(fill, dict) or not isinstance(frozen, dict):
+            out_fills[key] = fill               # 冻结那份里没这一格 ⇒ 原样（规则 ②）
+            continue
+        merged_target, overwrote = _merge_anchors(fill.get("target"),
+                                                  card_of(frozen.get("target")))
+        if overwrote:
+            changes.append("FILLS[%s]" % key)
+        out_fills[key] = dict(fill, target=merged_target)
+    return out_states, out_fills, changes
