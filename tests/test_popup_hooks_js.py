@@ -13,9 +13,10 @@
 
 ## 射程（**先说不钉什么**）
 
-钉得住：七格里那段探针**真跑**出来的答复 —— 同意条（带 id / 只有文字）、
+钉得住：八格里那段探针**真跑**出来的答复 —— 同意条（带 id / 只有文字）、
 盖住整页的模态、干净页面、两者同时在（表序 = 优先级）、
-★ 广告 creative（`data-click="close"`：6 个候选里只认可见那一颗 / 超界的容器不许点）。
+★ 广告 creative（`data-click="close"`：6 个候选里只认可见那一颗 / 超界的容器不许点 /
+aria-label 是散文：「Do not close this window」不许认）。
 
 钉不住（照实说）：
 - **真站**：假 DOM 只有探针会碰到的那几样（`getElementsByTagName` / `getBoundingClientRect`
@@ -83,7 +84,7 @@ def _probe_js(tmp_path: pathlib.Path) -> str:
 
 
 def _drive(tmp_path: pathlib.Path, js: str) -> dict:
-    """把一段探针 JS 丢给假 DOM 跑一遍，读回那七格的结果。"""
+    """把一段探针 JS 丢给假 DOM 跑一遍，读回那八格的结果。"""
     p = tmp_path / "probe.js"
     p.write_text(js, encoding="utf-8")
     r = subprocess.run([NODE, str(DRIVER), str(p)], capture_output=True, text=True, timeout=60)
@@ -92,16 +93,16 @@ def _drive(tmp_path: pathlib.Path, js: str) -> dict:
 
 
 def test_the_probe_answers_the_three_fields_python_reads(tmp_path):
-    """产物那段探针在假 DOM 里**真跑**：七格，一格不许差。
+    """产物那段探针在假 DOM 里**真跑**：八格，一格不许差。
 
-    七格 = 同意条（带 id / 只有文字）、盖住整页的模态、干净页面、两者同时在、
-    广告 creative（可见那一颗恒命中 / 超界的容器恒不点）。
+    八格 = 同意条（带 id / 只有文字）、盖住整页的模态、干净页面、两者同时在、
+    广告 creative（可见那一颗恒命中 / 超界的容器恒不点 / 散文的 aria-label 恒不认）。
     答复的形状就是 `_clear_obstructions` 拆的那三格
     （`"<钩子名>|<选择器|TEXT>|<按钮文字>"`）—— 名字、选择器、按钮文字，
     少一格那边就退化成「量不出来」（什么都不点）。
     """
     out = _drive(tmp_path, _probe_js(tmp_path))
-    assert out["total"] == 7, out
+    assert out["total"] == 8, out
     assert out["failed"] == 0, [r for r in out["results"] if not r["ok"]]
 
 
@@ -121,4 +122,5 @@ def test_the_fixture_can_actually_fire(tmp_path):
     assert out["failed"] == 5, out["results"]
     passed = [r["name"] for r in out["results"] if r["ok"]]
     assert passed == ["干净页面：一条都不答应",
-                      "广告 creative：超界的容器（300×300，class/aria 带 close）不许点"], passed
+                      "广告 creative：超界的容器（300×300，class/aria 带 close）不许点",
+                      "广告 creative：aria-label 是散文 —— 「Do not close this window」不许认"], passed

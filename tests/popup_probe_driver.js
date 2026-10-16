@@ -132,6 +132,17 @@ const CASES = [
     pg.document.elementsFromPoint = () => [pg.nodes[0]];
     return pg;
   }, ''],
+
+  // ★ 2026-10-16（Ruling 23）：`aria-label` 是**散文**，要**锚定**（`^(close|dismiss|关闭)`）——
+  // 子串那条只许用在 `id`/`class`（它们是**标识符**，`#cwCloseButton` 这种驼峰只能靠子串）。
+  // 小件、可见、落点是它自己 ⇒ 尺寸闸拦不住它，只有「锚定」这一条能拦。
+  ['广告 creative：aria-label 是散文 —— 「Do not close this window」不许认', () => {
+    const pg = page([['button', { id: 'keep-open',
+                                  attrs: { 'aria-label': 'Do not close this window' },
+                                  rect: { width: 88, height: 24, top: 100, bottom: 124 } }]]);
+    pg.document.elementsFromPoint = () => [pg.nodes[0]];
+    return pg;
+  }, ''],
 ];
 
 const results = [];

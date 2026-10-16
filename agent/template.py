@@ -700,8 +700,11 @@ _CONSENT_HOOK_JS = (
 #:      · 属性**名**带 close（`data-close="1"` 那种）且值 ∈ {"",true,1,close}；
 #:      · 属性**值****精确等于** close/dismiss/关闭 —— blavity 现场 `data-click="close"`
 #:        就是这一条（`close` 是它的**值**、名字叫 `data-click`）；
-#:      · `id` / `class` / `aria-label` 命中关闭词（`#cwCloseButton` / `.op2-close` 那种）、
-#:        或文字命中 close/关闭/×（**短**）；
+#:      · `id` / `class` 命中关闭词 —— **子串**（`#cwCloseButton` 那种驼峰靠词边界正则会漏；
+#:        `.op2-close` 两边都中）；
+#:      · `aria-label` / 文字 —— **锚定** `^(close|dismiss|关闭)`（散文里出现 close 不算：
+#:        「Do not close this window」是**别关**的意思 —— Ruling 23 抓的就是这一条），
+#:        或 `×/✕/✖`，且要**短**；
 #:   ② 它自己**可见**、尺寸 ≥8×8、**中心点的落点是它自己/祖先/后代**（blavity 那把尺子：
 #:      同页 6 个候选里只有 1 个可见，直接点会点空气）；
 #:   ③ 找不到 ⇒ 空串（**正常情况**）。
@@ -721,6 +724,11 @@ _CONSENT_HOOK_JS = (
 #: 拿 node + 假 DOM 核过语义：那颗按钮**不带 aria-label、也没有文字**时，光靠「属性名带
 #: close」**命不中**（名字是 `data-click`，`close` 是它的**值**）—— 要靠 aria-label / 文字
 #: 那两条才认得出。如实记在这儿，**不**在这条注释里偷偷放宽判据（等裁决）。
+#: ⚠️ Ruling 22 之后那条「属性值精确等于 close」就是为它加的；Ruling 23 又把 aria-label 那支
+#: 从子串**收回锚定**（散文里出现 close 不算）。
+#: ⚠️ 尺寸闸 **≤120×120 是一个「接受的赌」**（Ruling 24）：那个界是照 2026-10-09 产物那一刀取的，
+#: **真控件 rect 从来没量到过**（10-10 只量到候选计数），而真弹窗这一刀又观察不到
+#: ⇒ **不编数**、也不假装它量过：这条界就是这么来的，真站上它是**假设**。
 _AD_CREATIVE_JS = (
     # ①-a 属性**名**带 close（值可信）—— 本来就够 specific，**不加**尺寸上限
     "var closeAttr=function(e){var as=e.attributes||[];"
@@ -732,10 +740,12 @@ _AD_CREATIVE_JS = (
     "var closeVal=function(e){var as=e.attributes||[];"
     "for(var i=0;i<as.length;i++){var v=String(as[i].value||'').trim().toLowerCase();"
     "if(v==='close'||v==='dismiss'||v==='关闭')return true;}return false;};"
-    # ①-c id / class / aria-label 命中关闭词（`#cwCloseButton` / `.op2-close` 那种形状）
+    # ①-c `id` / `class` 命中关闭词 —— 子串（它们是**标识符**：`#cwCloseButton` 这种驼峰，
+    #      词边界正则会漏；`.op2-close` 两边都能中）
     "var closeWord=function(s){s=String(s||'').toLowerCase();"
     "return s.indexOf('close')>=0||s.indexOf('dismiss')>=0||s.indexOf('关闭')>=0;};"
-    # ①-c 文字那条（× / close / 关闭，且要短 —— 长句子不是关闭键）
+    # ①-c `aria-label` / 文字：**锚定**（散文里出现 close 不算 —— 「Do not close this window」
+    #      是**别关**的意思；Ruling 23 抓的就是这一条），× 那三个单字符也算，且要短。
     "var closeT=function(s){s=String(s||'').trim().toLowerCase();if(!s)return false;"
     "if(s==='×'||s==='✕'||s==='✖')return true;"
     "return /^(close|dismiss|关闭)/.test(s)&&s.length<=24;};"
@@ -756,7 +766,7 @@ _AD_CREATIVE_JS = (
     #   `small` 只挡后两条，①-a 不挡。
     "var small=(r.width<=120&&r.height<=120);"
     "if(!(closeAttr(e)||(small&&(closeVal(e)||closeWord(e.id)||closeWord(cls)"
-    "||closeWord(mark)||closeT(txt)))))continue;"
+    "||closeT(mark)||closeT(txt)))))continue;"
     "var stack=document.elementsFromPoint(x,y)||[],ok=false;"
     "for(var k=0;k<stack.length;k++){var h=stack[k];"
     "if(h===e||e.contains(h)||h.contains(e)){ok=true;break;}}"
