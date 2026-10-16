@@ -312,6 +312,20 @@ _COVER_JS = __COVER_JS__
 #: ⇒ 调用处**不要**再包一层（双层包裹当场坏，见 `_recenter`）。
 _RECENTER_JS = __RECENTER_JS__
 
+
+def _clean_eval(raw):
+    """cdp eval 的 stdout 是 JSON（字符串会带引号）；cobra 的报错行会混在 stderr 里。"""
+    text = (raw or "").strip()
+    if not text or text.startswith(("Error:", "ERROR:", "Usage:", "Flags:")):
+        return ""
+    if text.startswith('"'):
+        try:
+            return json.loads(text)
+        except ValueError:
+            return text.strip('"')
+    return text
+
+
 class Filler:
     def __init__(self, ws_url, form_file, correlation_id, task_id="",
                  trace_path="", no_report=False, stop_at=0):
@@ -714,13 +728,16 @@ class Filler:
     def _cover_once(self, selector, frame_id=""):
         """**量一次**：这个选择器指的元素是不是被别的东西盖着。盖着就返回盖它的东西，否则空串。"""
         js = _COVER_JS
-        #: ⚠️ 这一份的 `cdp.eval` 是 `subprocess.run([CDP_PATH,"eval",script])`，**不替调用方包**
-        #: `(function(){…})()`；而 `_COVER_JS` 是**裸语句序列**（里面一句裸 `return '';`）
-        #: ⇒ **在这儿包一层**（表那套靠 `_ev` 包，这一份得自己来）。不包 = 浏览器那边的
-        #: SyntaxError ⇒ 恒返空 ⇒ 落点判据永远「量不到」，而账上看起来一切正常
-        #: （2026-10-10 blavity 那次的假通过就是这个形状）。
-        got = str(self.cdp.eval("(function(){%s})()" % (js % json.dumps(selector)),
-                                frame_id) or "").strip()
+        #: ⚠️ 表那套的 `_ev` 干**两件**事：包 `(function(){…})()` **和** `_clean_eval`（脱引号）。
+        #: 这一份的 `cdp.eval` 是 `subprocess.run([CDP_PATH,"eval",script])`，**两件都不做**
+        #: ⇒ 两件都得在调用处补上（2026-10-16 复核点出来的第二条）：
+        #:   ① 包壳：`_COVER_JS` 是**裸语句序列**（里面一句裸 `return '';`）—— 不包 = 浏览器
+        #:      那边的 SyntaxError ⇒ 恒返空（2026-10-10 blavity 那次的假通过就是这个形状）；
+        #:   ② 脱引号：`cdp eval` 的 stdout 是 **JSON**，字符串结果**带引号**（`"COVER|…"`）——
+        #:      不脱的话 `startswith("COVER|")` 恒假 ⇒ **闸门在真站一次都不会开**，而账本上
+        #:      跟「没被盖着」一模一样（同一种假通过；桩回裸字符串的用例永远测不出来）。
+        got = _clean_eval(self.cdp.eval("(function(){%s})()" % (js % json.dumps(selector)),
+                                        frame_id)).strip()
         # ⚠️ **只认带 `COVER|` 前缀的答复**。空串 / `null` / 任何别的形状都是「量不出来」——
         # 一律**不当成盖着**（当成盖着会让每一步都无缘无故不点；不认前缀则会在
         # 「这条 cdp 的 eval 根本不会跑这段」时把它的乱答复读成遮挡）。
@@ -805,8 +822,10 @@ class Filler:
         js = _RECENTER_JS
         #: ⚠️ `_RECENTER_JS` **自带** `(function(){…})()` 壳 ⇒ 这一处**不要再包一层**
         #: （双层包裹当场坏：外层的返回值被丢掉，判据拿不到 `ok`）。
+        #: ⚠️ 但**脱引号这一件照旧要做**（同 `_cover_once` ②）：真站回的是 `"ok"`（带引号）；
+        #: 不脱的话「没挪动」（回 `""`）也会被读成挪动了 —— 表那套的 `_ev` 两件都做。
         try:
-            got = self.cdp.eval(js % json.dumps(selector), frame_id).strip()
+            got = _clean_eval(self.cdp.eval(js % json.dumps(selector), frame_id)).strip()
         except Exception:                                   # noqa: BLE001
             return ""
         if got:
@@ -1105,6 +1124,11 @@ class Filler:
                                                                            todo.index(tid))
                         if not val or (tid, val) in self._filled:
                             continue
+                        #: ★ 2026-10-16 复核修：**动手之前清零** —— `cover_why` 是**这一次动手**
+                        #: 的读数，不许外借给同一轮里别的失败（一轮里最多 3 填 + 1 点；
+                        #: 表那套的守卫是 `if self.cover_why and not tried_any:`，这边靠这一行
+                        #: 拿到同一个语义：没量过落点的失败，不许拿遮挡物背锅）。
+                        self.cover_why = ""
                         if not self.fill(tid, val):
                             self.log.info("[%s] step %d: %s 没填上 ⇒ 下一轮再看", self.cid,
                                           step, tid)
@@ -1151,6 +1175,9 @@ class Filler:
                 pick = self.pick_option(page.get("options"))
                 if pick and answered_sig != getattr(self, "_answered_sig", ""):
                     self._empty = 0
+                    #: ★ 2026-10-16 复核修：同上 —— 这一下动手之前清零（`click()` 打标记返
+                    #: `none` / 别的早退路径压根不量落点 ⇒ 上一步的遮挡物会串味到这里）。
+                    self.cover_why = ""
                     if self.click(pick):
                         answered += 1
                         idle = 0

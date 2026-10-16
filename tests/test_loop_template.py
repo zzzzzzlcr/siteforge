@@ -596,9 +596,11 @@ def test_a_covered_pick_is_not_clicked_and_the_step_is_not_reported_ok(
     calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
     mod = _fake_common(monkeypatch, page, calls)
     _orig = mod.CDPHelper.eval
-    #: 打标记那一段照旧回 `marked`；**量落点那一段**回「被盖着」
+    #: 打标记那一段照旧回 `marked`；**量落点那一段**回「被盖着」。
+    #: ⚠️ 回的是 `json.dumps(...)`（**带引号**）—— 真站 `cdp eval` 的 stdout 是 JSON，
+    #: 字符串结果就是带引号的（见另一条「答复带引号 ⇒ 闸照样开」的用例）。
     mod.CDPHelper.eval = lambda self, js, *a, **kw: (
-        "COVER|div#onetrust-banner" if "elementsFromPoint" in js
+        json.dumps("COVER|div#onetrust-banner") if "elementsFromPoint" in js
         else _orig(self, js, *a, **kw))
 
     src = template_loop.render_loop("selsite", "Thank you", "thank-you", {}, dict(PROV))
@@ -634,8 +636,9 @@ def test_a_covered_field_is_not_filled_and_the_row_names_the_cover(
     calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
     mod = _fake_common(monkeypatch, page, calls)
     _orig = mod.CDPHelper.eval
+    #: ⚠️ 同上面那条：回**带引号**的 JSON 字符串（真站 `cdp eval` 就是这么吐的）
     mod.CDPHelper.eval = lambda self, js, *a, **kw: (
-        "COVER|div#cookiescript_injected" if "elementsFromPoint" in js
+        json.dumps("COVER|div#cookiescript_injected") if "elementsFromPoint" in js
         else _orig(self, js, *a, **kw))
 
     src = template_loop.render_loop("selsite", "Thank you", "thank-you",
@@ -657,6 +660,95 @@ def test_a_covered_field_is_not_filled_and_the_row_names_the_cover(
     fills = [r for r in rows if r.get("action") == "form"]
     assert fills and all(r.get("ok") is False for r in fills), fills
     assert any("盖着" in str(r.get("note") or "") for r in fills), fills
+
+
+def test_a_quoted_eval_answer_still_opens_the_gate(tmp_path, monkeypatch):
+    """★ 2026-10-16 **复核 Critical**：`cdp eval` 的 stdout 是 **JSON**，字符串结果**带引号**
+    ⇒ 表那套的 `_ev` 干**两件**事：包 `(function(){…})()` **和** `_clean_eval`（脱引号）。
+
+    循环型这边 `cdp.eval` 两件都不做 ⇒ 两件都得在调用处补。只补了包壳那件的话，真站上
+    `got == '"COVER|div#onetrust-banner"'` ⇒ `startswith("COVER|")` 恒假 ⇒ **闸门一次都不会开**，
+    而账本上跟「没被盖着」一模一样（正是 blavity 那次假通过的形状）。
+
+    这一条把**真站的答复形状**（`json.dumps(...)`，带引号）喂进去钉死它 ——
+    用裸字符串当桩的话，这条闸永远测不出来（那正是第一版三条用例全绿的假象）。
+    """
+    page = {"url": "https://funnel.test/quiz", "head": "Pick one", "progress": "50%",
+            "inputs": [], "options": ["\u0001Yes"], "nextVisible": False, "nextTxt": ""}
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    mod = _fake_common(monkeypatch, page, calls)
+    _orig = mod.CDPHelper.eval
+    mod.CDPHelper.eval = lambda self, js, *a, **kw: (
+        json.dumps("COVER|div#onetrust-banner") if "elementsFromPoint" in js
+        else _orig(self, js, *a, **kw))
+
+    src = template_loop.render_loop("selsite", "Thank you", "thank-you", {}, dict(PROV))
+    path = tmp_path / "quoted_loop.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("quoted_loop_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.COVER_WAIT_SECONDS = 0.3          # 别让用例真等
+    module.COVER_POLL_SECONDS = 0.02
+    trace = tmp_path / "quoted_loop.jsonl"
+    form = tmp_path / "form.json"; form.write_text("{}", encoding="utf-8")
+    f = module.Filler("ws://x/1", str(form), "cid",
+                      trace_path=str(trace), no_report=True)
+
+    #: ① 读回来的**形状**：带引号的答复要脱引号（返回的是遮盖物本身，不是 `'"COVER|…"'`）
+    got = f._cover_once('[data-sf-pick="1"]')
+    assert got == "div#onetrust-banner", \
+        "带引号的答复没被脱引号 ⇒ 真站上这条闸恒假：%r" % (got,)
+    #: ② 闸**照样开**：被盖着就不动手（这一趟一步都不许点/填出去）
+    f.run(max_steps=4)
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert not [c for c in calls["click"]], "被盖着还点下去了：%r" % calls["click"]
+    picks = [r for r in rows if r.get("action") == "click"]
+    assert picks and all(r.get("ok") is False for r in picks), picks
+
+
+def test_a_failure_that_was_not_the_cover_does_not_blame_the_cover(tmp_path, monkeypatch):
+    """★ 2026-10-16 **复核 Important**：`cover_why` 是**这一次动手**的读数，不许外借。
+
+    现场（复核用合成桩复现过）：① 那一格（email）真被 `div#onetrust-banner` 挡下 —— 这一行对 ✓；
+    同一轮 ② 挑选项时 `click` **连一次落点都没量**（页面上根本没那段文字，打标记返 `none`
+    就早退了）—— trace 却写「挑中的那一颗被 div#onetrust-banner 盖着」，**该说的是「没找到」**。
+
+    表那套的守卫是 `if self.cover_why and not tried_any:`（试过并且失败了，那是另一回事），
+    循环型这边靠**每次动手之前清零**拿到同一个语义。
+    """
+    page = {"url": "https://funnel.test/quiz", "head": "Pick one", "progress": "10%",
+            "inputs": [["email", ""]], "options": ["\u0001Yes"], "nextVisible": False, "nextTxt": ""}
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    mod = _fake_common(monkeypatch, page, calls)
+    _orig = mod.CDPHelper.eval
+    #: 落点那一段：① 的那一格**真的**被挡着；打标记那一段：那段文字页面上**没有**（回 `none`）
+    mod.CDPHelper.eval = lambda self, js, *a, **kw: (
+        json.dumps("COVER|div#onetrust-banner") if "elementsFromPoint" in js
+        else ("none" if "data-sf-pick" in js else _orig(self, js, *a, **kw)))
+
+    src = template_loop.render_loop("selsite", "Thank you", "thank-you",
+                                    {"email": {"kind": "email"}}, dict(PROV))
+    path = tmp_path / "mixed_loop.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("mixed_loop_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.COVER_WAIT_SECONDS = 0.3          # 别让用例真等
+    module.COVER_POLL_SECONDS = 0.02
+    trace = tmp_path / "mixed_loop.jsonl"
+    form = tmp_path / "form.json"; form.write_text("{}", encoding="utf-8")
+    module.Filler("ws://x/1", str(form), "cid",
+                  trace_path=str(trace), no_report=True).run(max_steps=3)
+
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    fills = [r for r in rows if r.get("action") == "form"]
+    assert any("盖着" in str(r.get("note") or "") for r in fills), \
+        "① 那一格真被挡着，这一行该点名遮挡物：%r" % (fills,)
+    picks = [r for r in rows if r.get("action") == "click"]
+    assert picks, rows
+    assert all("盖着" not in str(r.get("note") or "") for r in picks), \
+        "② 这一下**没量过落点**（文字没找到），却拿①的遮挡物背锅：%r" % (picks,)
 
 
 def test_the_cover_probe_is_wrapped_at_the_call_site_and_the_recenter_is_not(

@@ -52,3 +52,31 @@ def test_both_skeletons_carry_the_obstruction_machinery():
     for name, src in (("固定步骤表", table), ("循环型", loop)):
         for need in ("_covered_by", "_POPUP_PROBE_JS", "elementFromPoint"):
             assert need in src, "%s 产物里没有 %s" % (name, need)
+
+
+def _top_level_function(src, name):
+    """从**骨架文本**里切出一个模块级函数的正文（到下一个顶层定义前 —— 两个空行分隔）。"""
+    i = src.index("\ndef %s(" % name) + 1
+    j = src.find("\n\n\n", i)
+    assert j > i, "没找到 %s 的结尾（骨架里没有两个空行的分隔？）" % name
+    return src[i:j + 1]
+
+
+def test_both_skeletons_clean_an_eval_answer_with_the_same_code():
+    """★ 2026-10-16 复核 Critical 的钉子：**脱引号那段代码，两套骨架必须逐字节相同**。
+
+    为什么要紧（真事就在这一刀里）：`cdp eval` 的 stdout 是 **JSON**，字符串结果**带引号**；
+    表那套的 `_ev` 干两件事（包 IIFE + `_clean_eval` 脱引号）。循环型移植时只补了包壳那件
+    ⇒ 真站上 `got == '"COVER|…"'` ⇒ `startswith("COVER|")` 恒假 ⇒ **闸门一次都不会开**，
+    而账本上跟「没被盖着」一模一样（blavity 那次假通过的形状）。
+
+    这一条钉的是「**同一份代码**」：谁改了一边、忘了另一边，它先红。
+    （行为那一半住在 `tests/test_loop_template.py::test_a_quoted_eval_answer_still_opens_the_gate`。）
+    """
+    a = _top_level_function(T.SKELETON.template, "_clean_eval")
+    b = _top_level_function(L._LOOP_SKELETON, "_clean_eval")
+    assert a.strip() and b.strip(), "有一边没有 `_clean_eval`"
+    assert a == b, ("两套骨架的 `_clean_eval` 不是同一份代码：\n--- 固定步骤表 ---\n%s\n"
+                    "--- 循环型 ---\n%s" % (a, b))
+    assert 'startswith(("Error:", "ERROR:", "Usage:", "Flags:")' in a, \
+        "脱引号那一段里**报错行要说成「量不出来」**那句丢了？"
