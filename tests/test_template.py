@@ -2116,12 +2116,22 @@ def test_the_ad_creative_hook_is_one_row_and_both_skeletons_get_it():
     seg = _ad_creative_segment(src)
     assert "closeAttr" in seg and "closeT" in seg, (
         "关闭语义那两条（属性名带 close / aria-label / 文字）得在：%s" % seg[:200])
+    #: ★ Ruling 22（2026-10-16）：关闭语义要**三条路**（属性名 / 属性值 / id·class·aria-label），
+    #: 且后两条必须过 ≤120×120 那道尺寸闸 —— 不然 `close-banner-wrapper` 那种**容器**会被点掉。
+    #: 行为那一半（6 个候选认可见那颗 / 超界容器不点）在 `tests/popup_probe_driver.js` 的假 DOM 里真跑。
+    assert "closeVal" in seg and "closeWord" in seg, (
+        "Ruling 22 的那两条路（属性值精确相等 / id·class·aria-label）不见了：%s" % seg[:200])
+    assert "r.width<=120&&r.height<=120" in seg, (
+        "①的后两条路没有尺寸闸（≤120×120）—— 容器会被当成关闭键点掉：%s" % seg[:200])
     assert seg.count("elementsFromPoint") == 1, (
         "落点那条判据得有、且只有一条（blavity 那把尺子）：%s" % seg[:200])
     assert "r.width<8||r.height<8" in seg, "尺寸门槛（≥8×8）得在"
     assert "return '';" in seg, "找不到就返回空串（宁可不做）—— 兜底那句得在"
-    assert "data-click" not in seg and "bx-" not in seg, (
-        "站点专有的字面不许写进骨架（只许作为数据）：%s" % seg[:200])
+    #: 站点专有的字面不许写进**判据**（只许作为数据）—— ⚠️ 只看**代码**、不看注释：
+    #: 注释里点名现场形状（`data-click="close"`）是在解释「为什么这么窄」，那不是判据。
+    code = "\n".join(ln.split("#", 1)[0] for ln in seg.splitlines())
+    assert "data-click" not in code and "bx-" not in code, (
+        "站点专有的字面写进判据里了（只许作为数据）：%s" % code[:200])
 
 
 def test_a_failed_step_records_the_scene_and_a_successful_one_does_not(sandbox, form_file):

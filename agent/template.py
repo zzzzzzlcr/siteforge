@@ -696,11 +696,19 @@ _CONSENT_HOOK_JS = (
 #: 的判据交集）。它与上面三条的差别：**没有**模态语义、也**不一定是**同意那件事 ——
 #: 认它靠「**有一颗明确的关闭键**」这件事本身。
 #: ⚠️ 三条窄口径（缺一不可，与前三条同一套「宁可不做，不可错点」）：
-#:   ① 关闭语义：属性名带 `close`（如 `data-click="close"`）、或 aria-label 命中 close 那族、
-#:      或文字命中 close/关闭/×（**短**）；
+#:   ① 关闭语义 —— **三条路都收窄**（Ruling 22；不许变成「凡带 close 字样就点」）：
+#:      · 属性**名**带 close（`data-close="1"` 那种）且值 ∈ {"",true,1,close}；
+#:      · 属性**值****精确等于** close/dismiss/关闭 —— blavity 现场 `data-click="close"`
+#:        就是这一条（`close` 是它的**值**、名字叫 `data-click`）；
+#:      · `id` / `class` / `aria-label` 命中关闭词（`#cwCloseButton` / `.op2-close` 那种）、
+#:        或文字命中 close/关闭/×（**短**）；
 #:   ② 它自己**可见**、尺寸 ≥8×8、**中心点的落点是它自己/祖先/后代**（blavity 那把尺子：
 #:      同页 6 个候选里只有 1 个可见，直接点会点空气）；
 #:   ③ 找不到 ⇒ 空串（**正常情况**）。
+#: ★ Ruling 22（2026-10-16）：①的后两条路（值那条 / id·class·aria·文字那条）**必须**再
+#: 过一道 **≤120×120** 的尺寸闸（照 2026-10-09 那一刀的界）—— 否则 `close-banner-wrapper`
+#: 那种**容器**会被当成关闭键点掉（假 DOM 里实测：没闸的时候它真答 `#close-banner-wrapper|close`）。
+#: ①的第一条（属性名那条）**不要**闸：它本来就够 specific（名字里带 close 的东西不会是容器）。
 #: ## 未验（真弹窗上没再次观察到）
 #: 2026-10-16（Task 6）：照 `docs/probes/2026-10-10-blavity-ad-popup/README.md`「复现第 7 条」
 #: 在 Bit `192.168.1.222` 上开窗重试了一次**只读**观察（21:29:51 开窗 → 21:39:27 关窗，
@@ -714,16 +722,24 @@ _CONSENT_HOOK_JS = (
 #: close」**命不中**（名字是 `data-click`，`close` 是它的**值**）—— 要靠 aria-label / 文字
 #: 那两条才认得出。如实记在这儿，**不**在这条注释里偷偷放宽判据（等裁决）。
 _AD_CREATIVE_JS = (
+    # ①-a 属性**名**带 close（值可信）—— 本来就够 specific，**不加**尺寸上限
     "var closeAttr=function(e){var as=e.attributes||[];"
     "for(var i=0;i<as.length;i++){var n=String(as[i].name||'').toLowerCase();"
     "var v=String(as[i].value||'').trim().toLowerCase();"
-    "if(/(^|[-_])close([-_]|$)/.test(n)&&(v===''||v==='true'||v==='1'||v==='close'))return true;"
-    "if(n==='aria-label'&&/^(close|dismiss|关闭)/.test(v))return true;}return false;};"
-    # ② 文字那条（× / close / 关闭，且要短 —— 长句子不是关闭键）
+    "if(/(^|[-_])close([-_]|$)/.test(n)&&(v===''||v==='true'||v==='1'||v==='close'))return true;}"
+    "return false;};"
+    # ①-b 属性**值精确等于**关闭词 —— blavity 的 `data-click="close"` 走这一条
+    "var closeVal=function(e){var as=e.attributes||[];"
+    "for(var i=0;i<as.length;i++){var v=String(as[i].value||'').trim().toLowerCase();"
+    "if(v==='close'||v==='dismiss'||v==='关闭')return true;}return false;};"
+    # ①-c id / class / aria-label 命中关闭词（`#cwCloseButton` / `.op2-close` 那种形状）
+    "var closeWord=function(s){s=String(s||'').toLowerCase();"
+    "return s.indexOf('close')>=0||s.indexOf('dismiss')>=0||s.indexOf('关闭')>=0;};"
+    # ①-c 文字那条（× / close / 关闭，且要短 —— 长句子不是关闭键）
     "var closeT=function(s){s=String(s||'').trim().toLowerCase();if(!s)return false;"
     "if(s==='×'||s==='✕'||s==='✖')return true;"
     "return /^(close|dismiss|关闭)/.test(s)&&s.length<=24;};"
-    # ③ 逐元素：可见 + ≥8×8 + **落点是它自己/祖先/后代**（blavity 那把尺子：同页 6 个候选
+    # ② 逐元素：可见 + ≥8×8 + **落点是它自己/祖先/后代**（blavity 那把尺子：同页 6 个候选
     #    里只有 1 个可见，直接点会点空气）—— 只在**有落点**的那一个上动手
     "for(var i=0;i<all.length;i++){var e=all[i];"
     "var tg=String(e.tagName||'').toLowerCase();"
@@ -735,7 +751,12 @@ _AD_CREATIVE_JS = (
     "if(x<0||y<0||x>window.innerWidth||y>window.innerHeight)continue;"
     "var mark=(e.getAttribute&&e.getAttribute('aria-label'))||'';"
     "var txt=String(e.innerText||e.value||'').trim();"
-    "if(!(closeAttr(e)||closeT(mark)||closeT(txt)))continue;"
+    "var cls=String((e.getAttribute&&e.getAttribute('class'))||e.className||'');"
+    # ★ Ruling 22：①-b / ①-c 那两条路**必须**过 ≤120×120 这道闸（不然容器会被点掉）；
+    #   `small` 只挡后两条，①-a 不挡。
+    "var small=(r.width<=120&&r.height<=120);"
+    "if(!(closeAttr(e)||(small&&(closeVal(e)||closeWord(e.id)||closeWord(cls)"
+    "||closeWord(mark)||closeT(txt)))))continue;"
     "var stack=document.elementsFromPoint(x,y)||[],ok=false;"
     "for(var k=0;k<stack.length;k++){var h=stack[k];"
     "if(h===e||e.contains(h)||h.contains(e)){ok=true;break;}}"

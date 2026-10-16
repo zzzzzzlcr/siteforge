@@ -23,7 +23,8 @@ if (!probePath) {
 const PROBE = '(function(){' + fs.readFileSync(probePath, 'utf8') + '})()';
 
 // ── 假 DOM（只实现探针真会碰到的那几样：getElementsByTagName / getBoundingClientRect
-//    / getAttribute / innerText / id / className / shadowRoot）────────────────────
+//    / getAttribute / **attributes** / **contains** / innerText / id / className / shadowRoot
+//    ＋ `document.elementsFromPoint`（落点那把尺子 —— 「广告 creative」那一行要用））──────
 let all = [];
 const parent = new Map();
 
@@ -36,10 +37,14 @@ function el(tag, p) {
     innerText: p.text || '',
     value: p.value || '',
     attrs: p.attrs || {},
+    //: 真 DOM 的 `attributes` 是一串 {name,value}（钩子那几条路读的就是它）
+    attributes: Object.keys(p.attrs || {}).map(k => ({ name: k, value: String(p.attrs[k]) })),
     shadowRoot: null,
     children: [],
     getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
     getBoundingClientRect() { return p.rect || { width: 100, height: 40, top: 10, bottom: 50 }; },
+    //: 「落点是它自己/祖先/后代」那条问的就是这个 —— 假 DOM 里只认它自己（够这一格用）
+    contains(other) { return other === e; },
     getElementsByTagName() { return all.filter(x => under(x, e)); },
     querySelectorAll() { return all.filter(x => under(x, e)); },
   };
@@ -62,7 +67,12 @@ function page(elems) {
   const nodes = elems.map(([t, p]) => el(t, p));
   return {
     nodes,
-    document: { getElementsByTagName: () => all, body: { innerText: '' } },
+    document: {
+      getElementsByTagName: () => all,
+      body: { innerText: '' },
+      //: 默认「这一点上没有东西」；要验落点那一格的用例自己摆（`pg.document.elementsFromPoint = () => […]`）
+      elementsFromPoint: () => [],
+    },
     window: { innerWidth: 390, innerHeight: 844 },
   };
 }
@@ -97,6 +107,31 @@ const CASES = [
     attach(pg.nodes[1], el('button', { id: 'accept-all', text: 'Accept' }));
     return pg;
   }, '同意条|#accept-all|Accept'],
+
+  // ★ 2026-10-16（Ruling 22）：`data-click="close"` 那一型 —— **只认可见的那一颗**。
+  // 现场就是这样：同页 6 个候选（3 个 campaign × inside/outside），**5 个 0×0 的隐藏件
+  // 排在文档顺序前面**，只有 1 个可见 ⇒ 当年「直接 `cdp click '[data-click="close"]'`」
+  // 点的是文档顺序第一个 = 点空气（blavity README 的 1 号用例）。
+  ['广告 creative：6 个候选里只认**可见**那一颗（隐藏件排在文档顺序前面）', () => {
+    const hid = i => ['button', { id: 'bx-close-inside-hidden-' + i,
+                                  attrs: { 'data-click': 'close' },
+                                  rect: { width: 0, height: 0, top: 0, bottom: 0 } }];
+    const pg = page([hid(1), hid(2), hid(3), hid(4), hid(5),
+                     ['button', { id: 'bx-close-inside-1', attrs: { 'data-click': 'close' },
+                                  rect: { width: 88, height: 54, top: 225, bottom: 279 } }]]);
+    pg.document.elementsFromPoint = () => [pg.nodes[5]];      // 可见那一颗在顶上
+    return pg;
+  }, '广告 creative|#bx-close-inside-1|'],
+
+  // 负控：**容器**（300×300，id/class 里带 close）不许被当成关闭键 —— ②③ 那两条路
+  // 收窄不了的形状，只能靠尺寸闸（≤120×120，照 2026-10-09 那一刀的界）。
+  ['广告 creative：超界的容器（300×300，class/aria 带 close）不许点', () => {
+    const pg = page([['div', { id: 'close-banner-wrapper', cls: 'close-banner-wrapper',
+                               attrs: { 'aria-label': 'close' },
+                               rect: { width: 300, height: 300, top: 0, bottom: 300 } }]]);
+    pg.document.elementsFromPoint = () => [pg.nodes[0]];
+    return pg;
+  }, ''],
 ];
 
 const results = [];
