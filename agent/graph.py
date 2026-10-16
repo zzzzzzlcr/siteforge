@@ -124,7 +124,8 @@ from agent import template_loop
 from agent.state import (
     END_DELIVERED, END_DELIVER_LINT, END_DRAFT_FAILED, END_EXPLORE_UNFINISHED, END_FIX_OLD_PASSES,
     END_HUMAN_STOP, END_LINT_CAP, END_MISSING_KNOB, END_NO_BRIEF, END_NO_SUCCESS_TEXT,
-    END_NO_WINDOW, END_PAUSED, END_REVISION_CAP, END_SELFTEST_CAP, END_WINDOW_GONE,
+    END_NO_WINDOW, END_PAUSED, END_REPAIR_NOOP, END_REVISION_CAP, END_SELFTEST_CAP,
+    END_WINDOW_GONE,
     FINISHED_EXPLORATION, GENERATOR, MODE_BUILD, MODE_FIX, REVISE, STOP, Caps, SiteState,
     human_reply,
 )
@@ -977,6 +978,23 @@ def _spent_after(spent: dict, journeys: list) -> dict:
 #: （套用那层严格拒了 —— 拒得对）。两次都过不了就停下，把原因摆出来。
 PATCH_ATTEMPTS = 3
 
+#: ★ 2026-10-16（用户裁定「先堵空转」）：**账本这一族的改稿最多问几回**。
+#: 判据是 `_same_as_the_tested_one`（交回来的那份跟被测那版**产物一模一样**）——
+#: 头一回撞上时，照 `_patch_draft` 那条先例给它**一次改口**的机会再停：
+#: 回话被判无效（JSON 没写对 / 少了 `note`）时表也会原样退回，而那一多半是**那一次**没说好。
+#: ⚠️ 与 `PATCH_ATTEMPTS` 分开写：那一个是老写法那份**补丁**的次数（那一路试三回，实测一答
+#: 4 秒）；这两双手的价钱与回话形状都不一样，共用一个数迟早会被改坏一头。
+WRITE_ATTEMPTS = 2
+
+#: ★ 2026-10-16：改口那一回递给模型的那句话（走 `feedback["violations"]` —— 与
+#: `_patch_draft` 回灌没过闸的原因**同一格、同一写法**）。措辞对着 `fix.check_patch`
+#: 那条老判据（「一处都没改」的稿不是修）：两双手说的是同一件事，不许各说一套。
+_SAID_NO_CHANGE = ("**一处都没改**：你交回来的这一版跟被测的那一版**逐值相同**"
+                   "（`states` / `fills` / 形态 / 成功判据）—— 键序与 `PROVENANCE` 里"
+                   "那个生成时间戳不算改动。「一处都没改」的稿不是修：拿它往下走，"
+                   "过的还是上一遍那一关。挑一处**真的一样不了**的地方改"
+                   "（选择器 / 判据 / 取值 / 步骤本身），再交一次。")
+
 
 #: 老写法那一版的改动最多摆多少字（给人看的，见 `_patch_diff`）。
 PATCH_DIFF_CHARS = 4000
@@ -1268,11 +1286,33 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     #: 账本里那一组的动作顺序（含「先登录」这一步）是**那一趟真做过的事实**，
     #: 动了它，重放就会在错的页上做事（`zekear` 3 遍自测就是栽在这儿）。
     _spec_before_write = copy.deepcopy(spec)
-    spec = deps.write(spec, feedback)
-    spec["states"], _reverted = _keep_step_sequences(_spec_before_write.get("states") or [],
-                                                    spec.get("states") or [])
-    #: 空列表也要落（不是只在退回时才写）—— 读它的人（统计、面板）不必再判「这一格在不在」。
-    out["steps_reverted"] = _reverted
+    #: ★ 2026-10-16（用户裁定「先堵空转」）：**交回来的一版跟被测那版一样 ⇒ 先给一次改口的机会，
+    #: 再一样就停**（判据 `_same_as_the_tested_one`）。真事 `job-04029445a391`：三版逐值相同
+    #: （只差时间戳与键序），图认不出来 ⇒ 拿同一份脚本又跑了**两轮**自测，末了还说
+    #: 「修了 3 轮还是不过」。这一趟省下的就是那两轮（每轮 ~7 分钟）。
+    #: ⚠️ 每一回都从 `_spec_before_write` **重新出发**：上一回那份是被两道闸钉回去过的，
+    #: 拿它当底 = 把「退回」当成了模型的改动（下一回就再也判不出「一处都没改」）。
+    _noop = False
+    for _ask in range(1, WRITE_ATTEMPTS + 1):
+        spec = copy.deepcopy(_spec_before_write)
+        spec = deps.write(spec, feedback)
+        spec["states"], _reverted = _keep_step_sequences(_spec_before_write.get("states") or [],
+                                                         spec.get("states") or [])
+        #: 空列表也要落（不是只在退回时才写）—— 读它的人（统计、面板）不必再判「这一格在不在」。
+        out["steps_reverted"] = _reverted
+        _noop = _same_as_the_tested_one(state, spec, shape, loop_spec)
+        if not _noop or _ask >= WRITE_ATTEMPTS:
+            break
+        #: 改口那一回：原因走 `feedback["violations"]`（模型看得到的那条线）——
+        #: 与 `_patch_draft` 回灌没过闸的原因**同一格、同一写法**（`hints` / `diagnosis` 原样留着）。
+        feedback = dict(feedback, violations=[_SAID_NO_CHANGE])
+    if _noop:
+        #: **不再往下走**（不渲、不 lint、不跑自测）：这一版跟被测那版一个字节都不差，
+        #: 往下走一遍买不到任何新东西。⚠️ 盘上那份**一个字都不动** —— 留给人拿的
+        #: 就是被测的那一版（`_leave_it_where_the_operator_can_take_it` 不给 `end_reason`
+        #: 非空的那一档留料，上一版早就留在那儿了）。
+        out.update({"end_reason": END_REPAIR_NOOP, "end_note": _repair_noop_note(state, deps)})
+        return out
     #: ★ 2026-10-07（用户：「探路不是探出来了吗？不能自己修正？」）：**能补就补，补不了才拦** ——
     #: 与紧跟着的那段 `FILLS` 是同一句话，只是这一处补的是**必填格那一步**：账本里**真填过**、
     #: 而产物里没有一步在填 ⇒ 照账本把它补回去，别把一份本来能跑的稿拦在编译之前。
@@ -1757,6 +1797,62 @@ def _keep_step_sequences(before: list, after: list) -> tuple:
         else:
             out.append(st)
     return out, sorted(set(reverted))
+
+
+# ── ★ 2026-10-16（用户裁定「先堵空转」）：**「一处都没改」的稿不是修** ────────────────
+#
+# 判据**只比产物真正读的那几格**，不比渲出来的字节：
+#   · `==` **不看 dict 的键序** —— 那趟事故里两刀的差别正是「键序翻了」
+#     （`fix.states_from_reply` 收下的是模型自己那份 dict，键序跟着它走）；
+#   · `PROVENANCE` 里那个生成时间戳**压根不在这几格里** —— 比字节就得先抹掉它，脆。
+# 而且要比得跟**产物读什么**对齐：`shape == "loop"` 那一支根本不读 `states`
+# （见 `_draft` 里那句 ponytail）—— 不读的东西改了不算改，否则「在那一格上乱动」
+# 会让我们白跑一轮自测，而那正是这一刀要堵的。
+def _what_the_artifact_reads(states, fills, success_text, success_urls, shape, loop_spec) -> dict:
+    """这一版**产物真正读**的那几格（判「改没改」只认它们）。**纯函数**。"""
+    out = {"success_text": success_text, "success_urls": success_urls or "", "shape": shape}
+    if shape == "loop":
+        return dict(out, fills=fills or {}, loop=loop_spec or {})
+    return dict(out, states=states or [], fills=fills or {})
+
+
+def _same_as_the_tested_one(state, spec: dict, shape: str, loop_spec: dict) -> bool:
+    """这一版跟**被测的那一版**是不是同一份（判据与理由见上面那一段）。**纯函数**。
+
+    ⚠️ 还没有「被测的那一版」（第一次出稿 —— `shape` 还没写过）⇒ 恒 `False`：
+        拿头一版跟自己比会让图**一开跑就停**，而那一趟什么都还没干过。
+    """
+    if state.get("shape") is None:
+        return False
+    now = _what_the_artifact_reads(spec.get("states"), spec.get("fills"),
+                                   spec.get("success_text"), spec.get("success_urls"),
+                                   shape, loop_spec)
+    was = _what_the_artifact_reads(state.get("states"), state.get("fills"),
+                                   state.get("success_text"), state.get("success_urls"),
+                                   state.get("shape"), state.get("loop_spec"))
+    return now == was
+
+
+def _repair_noop_note(state, deps) -> str:
+    """`repair_noop` 停住时摆在闸上那句话。
+
+    **四件事**（与 `_old_passes_say` 同一副骨架）：这是什么、为什么没改成、
+    盘上现在是什么、人手里那两条出路。⚠️ 「没接那双手」与「手接了、可它一处都没改」
+    **必须分开说**：出路不一样（接上那根线 vs 人给一句话）。
+    """
+    if deps.write is _writer_from_journey:
+        why = ("⚠️ 这一趟**没接「改稿那双手」**（这个部署没有 `OPENAI_API_KEY`）—— "
+               "它交回来的**永远是原样**，再叫几回也一样（那一格自己的 docstring 就是这么写的）。")
+    else:
+        why = ("改稿那双手**连着 %d 回交回同一份** —— 键序、`PROVENANCE` 里那个生成时间戳"
+               "都不算改动。" % WRITE_ATTEMPTS)
+    return ("停：这一版**一处都没改** —— 跟被测的那一版**产物一模一样**"
+            "（`states` / `fills` / 形态 / 成功判据逐值相同）。\n%s\n"
+            "⇒ **没有往下走**：往下走（`lint` / 自测）也还是同一份稿 —— 而它刚刚才**没过**"
+            "（就是把它叫回来的那一次），再走一趟买不到任何新东西。\n"
+            "盘上留着的是**被测的那一版**（一个字节没被替换，面板上照样能下载、照样传）。\n"
+            "出路两条：① 在闸上说一句「哪儿不对 / 该怎么改」，它会带着这句话重写一版；"
+            "② 按「重新来一遍」（重探一遍，这一趟学到的会带过去）。" % why)
 
 
 def _nav_failed_note(report) -> str:

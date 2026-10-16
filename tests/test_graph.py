@@ -132,6 +132,50 @@ def _dirty(spec):
     return dirty
 
 
+def _dirty_again(spec, feedback, n):
+    """弄脏，且**每一版脏得不一样**（`_dirty` 是纯函数：连交两回会是同一份）。
+
+    ⚠️ 为什么要「不一样」：★ 2026-10-16 起，交回来的那一版跟被测那版**逐值相同**会被
+    `repair_noop` 当场拦下（「一处都没改」的稿不是修）—— 而 lint 触顶那一族要验的是
+    「一直脏也会停在上限」，得让每一版真是新的。
+    ⚠️ 不改 `_dirty` 本身（`tests/test_template.py` 的钉子锁着它）。
+    """
+    dirty = _dirty(spec)
+    dirty["states"][0]["steps"][0]["note"] += "（第 %d 版）" % n
+    return dirty
+
+
+def _flip_the_key_order(spec, feedback, n):
+    """把表**原样**交回，只把每一组的键序倒过来（内容一个字不改）。
+
+    这就是那趟事故两刀的真实形状：`fix.states_from_reply` 收下的是模型自己那份 dict，
+    键序跟着它走 ⇒ 渲出来的 py 与上一版**逐字不同**、而语义一字不差。
+    """
+    return dict(spec, states=[{k: st[k] for k in reversed(list(st))}
+                              for st in (spec.get("states") or [])])
+
+
+def _change_one_thing_where_it_was_told(spec, feedback, n):
+    """**真改一处**（换一句 note —— lint 不抓的那种）：「该继续改下去」那几条用例的改稿手。
+
+    改在诊断指的锚上（拿不到锚 = 整版重写那一档 ⇒ 改第一组第一步）—— 与真那双手
+    拿到的东西一致：`feedback["diagnosis"]["局部修复"]` 就是递给它的那一格。
+    """
+    scope = ((feedback.get("diagnosis") or {}).get("局部修复") or {})
+    states = copy.deepcopy(spec.get("states") or [])
+    hit = None
+    for st in states:
+        if st.get("name") == scope.get("state"):
+            hit = st
+            break
+    hit = hit if hit is not None else (states[0] if states else None)
+    if hit is not None and hit.get("steps"):
+        i = int(scope.get("index") or 0)
+        hit["steps"][i if 0 <= i < len(hit["steps"]) else 0]["note"] = \
+            "第 %d 版：按诊断把这一步重看了一遍" % n
+    return dict(spec, states=states)
+
+
 def _viewport_cb(width, height):
     """窗口层那根线（`POST /browser/update` 的替身）—— Task 8 的服务该给的就是它。"""
     return None
@@ -530,7 +574,7 @@ def test_a_lint_violation_is_handed_back_to_draft_with_its_lines(tmp_path):
 
 def test_lint_that_never_passes_stops_at_the_cap_instead_of_spinning(tmp_path):
     """一条永远过不了 lint 的产物：走到上限就**停**，不许无限循环（§6.5）。"""
-    deps, rec = _deps(write=lambda spec, fb, n: _dirty(spec))
+    deps, rec = _deps(write=_dirty_again)
     app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_lint_bounces=2))
     payloads, out = _drive(app, cfg, _brief(tmp_path))
 
@@ -552,7 +596,8 @@ def test_lint_that_never_passes_stops_at_the_cap_instead_of_spinning(tmp_path):
 
 def test_a_selftest_failure_goes_through_diagnose_and_carries_the_failed_step(tmp_path):
     """自测挂了：先 `diagnose` 定位，再回 `draft` —— 回去的时候**带着 failed_step**。"""
-    deps, rec = _deps(reports=[_fail_report(failed_step=6), _pass_report()])
+    deps, rec = _deps(reports=[_fail_report(failed_step=6), _pass_report()],
+                      write=_change_one_thing_where_it_was_told)
     app, cfg, _ = _build(deps=deps)
     payloads, out = _drive(app, cfg, _brief(tmp_path))
 
@@ -587,7 +632,8 @@ def test_the_gate_facts_report_how_many_times_this_round_submitted(tmp_path):
       - `diagnose` 那道闸（自测没过时人落在那儿）的 `facts["证据"]` **与人话**里；
       - `deliver` 那道闸的 `facts["自测"]` 里（同一份还跟着产物进 PROVENANCE）。
     """
-    deps, rec = _deps(reports=[_fail_report(failed_step=6), _pass_report()])
+    deps, rec = _deps(reports=[_fail_report(failed_step=6), _pass_report()],
+                      write=_change_one_thing_where_it_was_told)
     app, cfg, _ = _build(deps=deps)
     payloads, out = _drive(app, cfg, _brief(tmp_path))
 
@@ -606,7 +652,8 @@ def test_a_run_nobody_allowed_to_skip_is_handed_over_as_not_run(tmp_path):
         runs=(_run("baseline", "passed", ok=True),
               _run("viewport", "skipped", ok=None, note="没人给换窗口大小的回调，这一遍没验到")),
         passed=False, allowed_skips=("country",), cdp_bin=None, site=SITE, py_path="x.py")
-    deps, rec = _deps(reports=[unresolved, _pass_report()])
+    deps, rec = _deps(reports=[unresolved, _pass_report()],
+                      write=_change_one_thing_where_it_was_told)
     app, cfg, _ = _build(deps=deps)
     payloads, out = _drive(app, cfg, _brief(tmp_path))
 
@@ -621,7 +668,8 @@ def test_a_run_nobody_allowed_to_skip_is_handed_over_as_not_run(tmp_path):
 
 def test_selftest_that_never_passes_stops_at_the_cap_instead_of_spinning(tmp_path):
     """自测永远不过：diagnose 也有上限，到顶就停（不是无限修下去）。"""
-    deps, rec = _deps(reports=[_fail_report()])         # 每一遍都挂同一处
+    deps, rec = _deps(reports=[_fail_report()],         # 每一遍都挂同一处
+                      write=_change_one_thing_where_it_was_told)
     app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_diagnoses=2))
     payloads, out = _drive(app, cfg, _brief(tmp_path))
 
@@ -638,6 +686,128 @@ def test_selftest_that_never_passes_stops_at_the_cap_instead_of_spinning(tmp_pat
     assert out.get("py_path"), out
     assert out.get("unverified") and "自测" in out["unverified"][0], out.get("unverified")
     assert "自测" in out["end_note"] or "扰动" in out["end_note"]
+
+
+# ── ★ 2026-10-16：**「一处都没改」的稿不是修**（空转那一刀）────────────────────
+#
+# 现场（8099 · `job-04029445a391` · zekear）：自测没过 ⇒ 回 draft ⇒ 模型交回来的那一版
+# **与被测那版逐字相同** —— 三版都是 190,585 字符，`ast.dump` 比下来只差两处：
+# `PROVENANCE` 的生成时间戳、`signin` 那一组两个键的先后顺序。图**认不出来**，把同一份
+# 脚本又拿去自测了一遍（7 分钟）、再叫一次、再测一遍……三轮烧完，最后报「自测挂了 3 次、
+# 修了 3 轮还是不过」—— 听着像试了三种改法，其实是**同一份脚本测了三遍**。
+# 同一批样本里还有三趟同一个形状（`job-05e69588fcd5` / `job-a968a4a3be34` /
+# `job-5da77a5c1c70`，各自至少一刀「只差时间戳」）。
+#
+# 判据**在老路上早就有**（`fix.check_patch`：「**与原稿不一样** —— 「一处都没改」的稿
+# **不是修**」，配着 2026-09-21 的真事、还带一次改口的机会）；账本这一族（`Deps.write`）
+# 从来没堵过 —— 这一组钉的就是把同一条补到那条路上。
+#
+# 两处刻意的设计，都在用例里钉着：
+#   · 判据比的是**产物真正读的那几格**（`states` / `fills` / 形态 / 成功判据），
+#     不是渲出来的字节 —— `==` 不看键序，时间戳压根不在里面；
+#   · 停下**之前先给它一次改口的机会**（照 `_patch_draft` 那条先例），
+#     而且**不再跑自测**（跑了也只是把上一遍的结果重放一次）。
+#
+# 那两个改稿手（`_flip_the_key_order` / `_change_one_thing_where_it_was_told`）与
+# `_dirty` 摆在一起（fixture 那一段）—— 后面好几条老用例也要用「真改一处」那个。
+
+
+
+
+def test_a_repair_that_hands_back_the_same_table_stops_instead_of_burning_a_selftest(tmp_path):
+    """**交回来的表跟被测那版逐值相同 ⇒ 停**：不许再拿它跑一遍自测。
+
+    真代价（`job-04029445a391`）：三轮自测（每轮 ~7 分钟）跑的是**同一份脚本**，
+    末了那句「修了 3 轮还是不过」还把人往「试过三种改法」上带。
+    这一条钉四样：停因是 `repair_noop`、自测**只跑了一遍**、闸上那句话说得清
+    「一处都没改」、以及**给它改口的机会只有一次**（叫两回就够）。
+    """
+    deps, rec = _deps(reports=[_fail_report(failed_step=2)], write=_flip_the_key_order)
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_diagnoses=4))
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "repair_noop", (out.get("end_reason"), out.get("end_note"))
+    assert len(rec.selftest) == 1, "自测只该跑首版那一遍；多一遍就是把同一份脚本重放一次"
+    assert len(rec.write) == 3, "首版一次 + 打回后问了两次（原样 + 改口）；再问下去还是同一份"
+    assert "一处都没改" in out["end_note"], out["end_note"]
+    #: 这一版**一个字节都没被替换**：往下走/留给人拿的仍然是**被测的那一版**
+    #: （判据钉在 `src` 上，不钉盘上那个文件 —— 「闸前留料」是另一处的行为）。
+    assert out["src"] == rec.tested_src, "被测那一版被换掉了？"
+
+
+def test_a_repair_that_really_changed_something_still_runs_the_selftest(tmp_path):
+    """**负控**：真改了东西（哪怕只改一句 note）⇒ 照旧往下跑自测，别把「推进」误停。"""
+    deps, rec = _deps(reports=[_fail_report(failed_step=2), _pass_report()],
+                      write=_change_one_thing_where_it_was_told)
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_diagnoses=4))
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "delivered", (out.get("end_reason"), out.get("end_note"))
+    assert len(rec.selftest) == 2, "改过了就得真拿去测"
+    assert "按诊断把这一步重看了一遍" in out["src"], "改的那一处要真进产物"
+
+
+def test_the_second_ask_carries_the_reason_and_the_run_goes_on(tmp_path):
+    """**先给一次改口的机会**（照 `_patch_draft` 那条先例）：第二次真改了 ⇒ 不停。
+
+    理由是死的：回话被判无效（JSON 没写对 / 少了 `note`）时表也会原样退回，
+    而那多半是**那一次**没说好 —— 再问一遍就对了。所以第一次一样**不判死**。
+    """
+    def silent_on_the_first_ask(spec, feedback, n):
+        """打回之后**头一回**原样交回；带着「一处都没改」那句再问时才真改。"""
+        told = " ".join(str(v) for v in (feedback.get("violations") or []))
+        if "一处都没改" not in told:
+            return spec
+        return _change_one_thing_where_it_was_told(spec, feedback, n)
+
+    deps, rec = _deps(reports=[_fail_report(failed_step=2), _pass_report()],
+                      write=silent_on_the_first_ask)
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_diagnoses=4))
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "delivered", (out.get("end_reason"), out.get("end_note"))
+    assert len(rec.write) == 3, "首版一次 + 打回后的两回（原样那一回 + 改口那一回）"
+    said = [str(x) for x in (rec.write[2]["feedback"].get("violations") or [])]
+    assert said and "一处都没改" in " ".join(said), said
+
+
+def test_the_default_writer_stops_on_the_first_repair_too(tmp_path):
+    """**没接改稿那双手**的部署（`Deps.write` 还是默认的那个恒等翻译器）⇒ 同样当场停。
+
+    生产里没有模型 key 时就是这个样子（`service._build_graph`：`write` 是 None 就**不盖**，
+    `Deps.write` 留着默认值）—— 那台机器上每一刀都交回原样，原先要烧满三轮自测才停。
+    """
+    deps, rec = _deps(reports=[_fail_report(failed_step=2)])
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_diagnoses=4))
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "repair_noop", (out.get("end_reason"), out.get("end_note"))
+    assert len(rec.selftest) == 1, "这条路上再测一遍也还是同一份脚本"
+
+
+def test_the_stop_note_names_the_missing_hand_when_there_is_none():
+    """那句话要点名**是哪种没改**：恒等翻译器（没接那双手）还是真那双手没改成。
+
+    出路不一样：接上那根线 vs 人给一句话 —— 写成同一句就是把两件事混成一件。
+    """
+    none_wired = graph._repair_noop_note({}, graph.Deps(write=graph._writer_from_journey))
+    assert "一处都没改" in none_wired and "没接" in none_wired, none_wired
+    hand_wired = graph._repair_noop_note({}, graph.Deps(write=lambda spec, fb: spec))
+    assert "一处都没改" in hand_wired and "没接" not in hand_wired, hand_wired
+
+
+def test_the_first_version_is_never_judged_against_itself():
+    """**第一版没有「被测的那一版」可比** ⇒ 这个判据对它必须恒为 False。
+
+    （判错了的后果是**头一版就停**：那是「什么都没干就报一处都没改」，比空转更坏。）
+    """
+    spec = {"states": [{"name": "landing", "steps": []}], "fills": {},
+            "success_text": SUCCESS}
+    assert graph._same_as_the_tested_one({}, spec, "table", {}) is False
+    #: 已经把一版渲出去之后，同样的表就该判 True（否则这道闸永远是摆设）。
+    state = {"states": spec["states"], "fills": spec["fills"], "shape": "table",
+             "success_text": SUCCESS, "success_urls": "", "loop_spec": {}}
+    assert graph._same_as_the_tested_one(state, spec, "table", {}) is True
 
 
 # ─────────────────────────── 停：不是无限转下去 ───────────────────────────
@@ -719,7 +889,7 @@ def test_a_revision_at_a_late_gate_goes_back_to_draft_and_that_step_does_not_run
     这是规格 §6 里 `review` 那一行的正身（「人否 → 回 `draft` 带人的纠正」）：
     原先这三道闸上「否」只被记进 `hints`，然后**照写不误** —— 人说了不行，产物还是出去了。
     """
-    deps, rec = _deps()
+    deps, rec = _deps(write=_change_one_thing_where_it_was_told)
     app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_revisions=2))
     payloads, out = _drive(app, cfg, _brief(tmp_path),
                            reply=lambda p: ({"action": "revise", "note": "这一步不对，重来"}
@@ -2219,7 +2389,7 @@ def test_auto_does_not_change_what_lint_lets_through(tmp_path):
     ⚠️ 别改 `_dirty` 那个 fixture（`tests/test_template.py` 的钉子锁着它）。
     """
     def _end(*, auto):
-        deps, _rec = _deps(write=lambda spec, fb, n: _dirty(spec))   # 每版都脏 ⇒ 打回到底
+        deps, _rec = _deps(write=_dirty_again)   # 每版都脏、且每版都是**新的一版** ⇒ 打回到底
         app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_lint_bounces=2))
         _drive(app, cfg, _brief(tmp_path, auto=auto))
         return app.get_state(cfg).values.get("end_reason")
@@ -2233,7 +2403,7 @@ def test_an_auto_run_that_never_delivers_has_nothing_to_upload(tmp_path):
     这一条与上面那条是一对：上面说「闸不放松」，这条说「所以自动上传也到不了」——
     两件事合起来才是「auto 绝不把手拼 JS 的稿子送上去」。
     """
-    deps, _rec = _deps(write=lambda spec, fb, n: _dirty(spec))
+    deps, _rec = _deps(write=_dirty_again)
     app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_lint_bounces=1))
     _drive(app, cfg, _brief(tmp_path, auto=True))
     reason = app.get_state(cfg).values.get("end_reason")

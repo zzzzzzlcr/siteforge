@@ -84,6 +84,7 @@ FAMILY_SAY = {
     "lint_cap": "lint 打回 3 次",
     "deliver_lint": "交付前自检没过",
     "repair_stuck": "同一处修不动（图自己停的）",
+    "repair_noop": "改稿那双手一处都没改",
     "missing_knob": "缺一根线",
 }
 
