@@ -13,11 +13,13 @@
 
 ## 射程（**先说不钉什么**）
 
-钉得住：十格里那段探针**真跑**出来的答复 —— 同意条（带 id / 只有文字）、
+钉得住：十一格里那段探针**真跑**出来的答复 —— 同意条（带 id / 只有文字）、
 盖住整页的模态、干净页面、两者同时在（表序 = 优先级）、
-★ 广告 creative（`data-click="close"`：6 个候选里只认可见那一颗 / **可见但被盖着 ⇒ 返空** /
+★ 广告 creative（`data-click="close"`：6 个候选里只认可见那一颗 / **可见但被盖着 ⇒ 返空**
+（★ 2026-10-17 Ruling 27 换过形状：候选**在**那一摞里、只是盖着它的那层排在前面）/
 超界的容器不许点 / aria-label 是散文：「Do not close this window」（24 字）与
-「Do not close」（12 字，≤24）都不许认）。
+「Do not close」（12 字，≤24）都不许认 / **`visibility:hidden` 的关闭键不许认**
+（★ Ruling 28-①））。
 
 钉不住（照实说）：
 - **真站**：假 DOM 只有探针会碰到的那几样（`getElementsByTagName` / `getBoundingClientRect`
@@ -94,18 +96,18 @@ def _drive(tmp_path: pathlib.Path, js: str) -> dict:
 
 
 def test_the_probe_answers_the_three_fields_python_reads(tmp_path):
-    """产物那段探针在假 DOM 里**真跑**：十格，一格不许差。
+    """产物那段探针在假 DOM 里**真跑**：十一格，一格不许差。
 
-    十格 = 同意条（带 id / 只有文字）、盖住整页的模态、干净页面、两者同时在、
-    广告 creative（可见那一颗恒命中 / **可见但被盖着 ⇒ 恒返空**（blavity 矩阵第 4 格）/
-    超界的容器恒不点 / 散文的 aria-label 恒不认 ——
-    含**≤24 字**那格：那一格才区分得开「锚定」与「长度闸」，见 Ruling 26）。
+    十一格 = 同意条（带 id / 只有文字）、盖住整页的模态、干净页面、两者同时在、
+    广告 creative（可见那一颗恒命中 / **可见但被盖着 ⇒ 恒返空**（blavity 矩阵第 4 格，
+    ★ Ruling 27 换过形状）/ 超界的容器恒不点 / 散文的 aria-label 恒不认 ——
+    含**≤24 字**那格，见 Ruling 26 / **`visibility:hidden` 恒不认**，见 Ruling 28-①）。
     答复的形状就是 `_clear_obstructions` 拆的那三格
     （`"<钩子名>|<选择器|TEXT>|<按钮文字>"`）—— 名字、选择器、按钮文字，
     少一格那边就退化成「量不出来」（什么都不点）。
     """
     out = _drive(tmp_path, _probe_js(tmp_path))
-    assert out["total"] == 10, out
+    assert out["total"] == 11, out
     assert out["failed"] == 0, [r for r in out["results"] if not r["ok"]]
 
 
@@ -117,15 +119,16 @@ def test_the_fixture_can_actually_fire(tmp_path):
     **同一个病的另一个条数**：把**整段探针**套进一层函数。病一样（`return` 出不来），
     而且是**从真探针变异出来的**，钩子表怎么改它都跟着在。
 
-    ⇒ 五格该有答复的必须**当场空掉**；本来就该是空的那五格**不该跟着响**
+    ⇒ **该有答复的那几格必须当场空掉**；本来就该是空的那几格**不该跟着响**
     —— 否则这条正控自己就分不清「夹具在响」还是「夹具恒红」。
     """
     broken = "(function(){%s})();return '';" % _probe_js(tmp_path)
     out = _drive(tmp_path, broken)
-    assert out["failed"] == 5, out["results"]
+    assert out["failed"] == 5, out["results"]       # 该有答复的那五格
     passed = [r["name"] for r in out["results"] if r["ok"]]
     assert passed == ["干净页面：一条都不答应",
-                      "广告 creative：可见但**被盖着**（落点那一摞里没有它）不许认",
+                      "广告 creative：可见但**被盖着**（最顶上那个不是它）不许认",
                       "广告 creative：超界的容器（300×300，class/aria 带 close）不许点",
                       "广告 creative：aria-label 是散文 —— 「Do not close this window」不许认",
-                      "广告 creative：aria-label 是散文（12 字 ≤24）—— 「Do not close」不许认"], passed
+                      "广告 creative：aria-label 是散文（12 字 ≤24）—— 「Do not close」不许认",
+                      "广告 creative：`visibility:hidden` 的关闭键不许认"], passed

@@ -499,6 +499,12 @@ class Filler:
         首载有同意层、来回趟一趟之后**同一条探针返空**）⇒ 只见「没有它」时**只写 `ok=None`**
         并说明「它本来就不在」—— **不许**写成「关掉了」：这一刀治的就是「把量不到当成做成了」，
         在这一格上自己犯同一条病最讽刺。
+
+        ★ 2026-10-17（终审那一波，两条与表那套逐字同义 —— 两套骨架一个口径）：
+          · **C2 · Ruling 30**：表里带 `_REPORT_ONLY` 的那一行**只报不点**（认得出、记一行
+            INFO + 一行账，**不动手**）：真站上已经量到它误点（实测 §1.3）；
+          · **Ruling 28-②**：答复是 `TEXT|` 而**文字是空的** ⇒ **不点**（那是「指向不确定
+            元素的地址」，与「形状不认识」同一处置）。
         """
         try:
             #: ⚠️ `_POPUP_PROBE_JS` 是**裸语句序列** ⇒ 调用处自己包 `(function(){…})()`；
@@ -523,6 +529,29 @@ class Filler:
                                             "覆盖现场），只如实记「没量到」，不当成做成")
                 return False
             who, how, text = parts
+            if _popup_report_only(who):
+                #: ★ 2026-10-17（终审 C2 · Ruling 30）：这一行**只报不点**（表里那格带
+                #: `_REPORT_ONLY`）—— 真站上已经量到它误点（实测 §1.3：把站点自己的抽屉控件
+                #: `Close filters drawer` 当成关闭键点了），而「加容器锚」那把尺子对**这一型**
+                #: 还没有正向证据 ⇒ 认得出、说出来、**不动手**。与「形状不认识」同一处置。
+                self.log.info("[%s] 认出了「%s」（%s，%r）—— 但**没有动手**：这一型还没有"
+                              "真站正向证据，按 Ruling 30 **只报不点**（照 `_REPORT_ONLY`）",
+                              self.cid, who, how, text[:30])
+                self._popup_trace(None, "认出了「%s」（%s，%r）但**没有动手**：这一型还没有"
+                                        "真站正向证据，按 Ruling 30 只报不点"
+                                        % (who, how, text[:30]))
+                return False
+            if how == "TEXT" and not text.strip():
+                #: ★ 2026-10-17（终审 Ruling 28-②）：`TEXT|` 而**文字是空的** ——
+                #: 那是「**指向不确定元素的地址**」（按空串找一颗空文字的按钮，页面上这种
+                #: 按钮可能有好几颗）⇒ 与「形状不认识」同处置：说出来、**不点**。
+                #: 真站实测（实测文档 §1.3）：`广告 creative|TEXT|` 就是这么答的。
+                self.log.info("[%s] 「%s」答的是 `TEXT|` 而**文字是空的** —— 那是一个"
+                              "**指向不确定元素的地址**（按空文字打标记可能点到别的东西）："
+                              "不猜、不点", self.cid, who)
+                self._popup_trace(None, "「%s」答的是 `TEXT|` 而文字是空的 —— **指向不确定"
+                                        "元素的地址**：没敢点" % who)
+                return False
             if how == "TEXT":           # 只有文字：打标记再点（点还是走 cdp）
                 marked = _clean_eval(self.cdp.eval(
                     "(function(){%s})()" % (_MARK_CONSENT_BY_TEXT_JS % json.dumps(text)), ""))

@@ -43,8 +43,10 @@ function el(tag, p) {
     children: [],
     getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
     getBoundingClientRect() { return p.rect || { width: 100, height: 40, top: 10, bottom: 50 }; },
-    //: 「落点是它自己/祖先/后代」那条问的就是这个 —— 假 DOM 里只认它自己（够这一格用）
-    contains(other) { return other === e; },
+    //: 「落点是它自己/祖先/后代」那条问的就是这个 —— ★ 2026-10-17（终审 Ruling 27）：
+    //: 原来这里是**恒假桩**（`other === e`），于是「祖先/后代」那半**从来没被走过**：
+    //: 落点那一条只被「那一摞里没有我」钉着。现在按**真祖先/后代语义**走（`under`）。
+    contains(other) { return other === e || under(other, e); },
     getElementsByTagName() { return all.filter(x => under(x, e)); },
     querySelectorAll() { return all.filter(x => under(x, e)); },
   };
@@ -124,21 +126,26 @@ const CASES = [
   }, '广告 creative|#bx-close-inside-1|'],
 
   // ★ 2026-10-16（Task 7 = blavity 验证矩阵第 4 格「读那半」）：候选**看得见**、尺寸也过闸
-  // （88×54），可疑度全落在 `data-click="close"` 上 —— 可是**落点是盖着它的那一层**
+  // （88×54），可疑度全落在 `data-click="close"` 上 —— 可是**落点最顶上那个不是它**
   // （合成页里就是 `#page-cover`：`position:fixed; inset:0`，z-index 压在 creative 上）。
   // 探针必须返空：点下去只是「点了个寂寞」（`cdp click` 照样回 ok），宁可不做。
-  // ⚠️ 这一格钉的是 `_AD_CREATIVE_JS` 里 `elementsFromPoint` 那一摞判据（自家/祖先/后代）——
-  //    2026-10-16 变异体实测：把那一摞整段删掉，**其余九格全绿**，只有这一格会红。
+  // ⚠️ ★ 2026-10-17（终审 Ruling 27）：这一摞**换形状了** —— 候选**在**那一摞里
+  //    （真浏览器就是这么给的：`elementsFromPoint` 给整摞、**最顶上那个在前**），
+  //    只是**盖着它的那一层排在它前面**。原来是「那一摞里压根没有我」，那只能钉住旧判据
+  //    （旧判据是 `复数 elementsFromPoint + any(自己/祖先/后代)`：被盖着的候选**仍在摞里**
+  //    ⇒ 它照样会认）；换成这个形状之后，**只有新判据**（整摞 + 跳过 `pointer-events:none`
+  //    + 看第一个**别的**元素 —— 与 `_COVER_JS` 同一把尺子）才返空。
   // ⚠️ 而这一摞是**用例自己摆的**（假 DOM 里没有真浏览器的完整命中链）：这一格说的是
-  //    「这一摞里**没有**我 ⇒ 不认」这条字面判据，**不等于**「真站上被盖着一定返空」——
-  //    真站上「被盖着」归 `_covered_by`（它判的是 `stack[0]`）与 Task 5 的复核兜。
-  ['广告 creative：可见但**被盖着**（落点那一摞里没有它）不许认', () => {
+  //    「最顶上那个不是它 ⇒ 不认」这条字面判据，**不等于**「真站上被盖着一定返空」——
+  //    真站上「被盖着」归 `_covered_by` 与复核兜。
+  ['广告 creative：可见但**被盖着**（最顶上那个不是它）不许认', () => {
     const pg = page([
       ['button', { id: 'bx-close-inside-pop', attrs: { 'data-click': 'close' },
                    rect: { width: 88, height: 54, top: 4, bottom: 58 } }],
       ['div', { id: 'page-cover', cls: 'page-cover', rect: rect_full }],   // 它身上一个 close 词都没有
     ]);
-    pg.document.elementsFromPoint = () => [pg.nodes[1]];   // 落点是**盖着那一下**的那一层
+    //: 真浏览器的次序：**最顶上那个在前**（盖着它的那一层压在 creative 上）
+    pg.document.elementsFromPoint = () => [pg.nodes[1], pg.nodes[0]];
     return pg;
   }, ''],
 
@@ -163,14 +170,32 @@ const CASES = [
     return pg;
   }, ''],
 
-  // ★ Ruling 26：上面那格是 **26 字** ⇒ 光靠「≤24 字」那道长度闸就能让它返空 ⇒
-  // **它分辨不出「锚定」和「长度闸」**（把 aria-label 改回**子串**匹配，那格照样绿）。
-  // 这一格 **12 字**（≤24）：只有**锚定**能拦住它 —— 子串的话它会答 `#keep-open2|Do not close`。
+  // ★ Ruling 26 那一格的**订正**（★ 2026-10-17 终审 M1）：上面那格是 **24 字**（不是 26 ——
+  // 当初把引号也数进去了），而长度闸是 `≤24` ⇒ **24 ≤ 24 过闸** ⇒ 「光靠长度闸就能返空」
+  // 这条推导**不成立**。真正成立的是**支配关系**：那格逮得住「子串 + 长度闸 ≥24」的实现，
+  // 这一格（**12 字**）逮得住「子串 + 长度闸 ≥12」的；两道合起来覆盖 ≥12 的全部
+  // ⇒ 这条**覆盖面严格更宽**，任何「子串」实现都逃不掉（只有**锚定**能同时过这两格）。
+  // 子串的话它会答 `#keep-open2|Do not close`。
   ['广告 creative：aria-label 是散文（12 字 ≤24）—— 「Do not close」不许认', () => {
     const pg = page([['button', { id: 'keep-open2',
                                   attrs: { 'aria-label': 'Do not close' },
                                   rect: { width: 88, height: 24, top: 160, bottom: 184 } }]]);
     pg.document.elementsFromPoint = () => [pg.nodes[0]];
+    return pg;
+  }, ''],
+
+  // ★ 2026-10-17（终审 Ruling 28-①）：`_VIS_JS` 原来**只判矩形** ⇒ `visibility:hidden`
+  // 的关闭键被当成可见（真站实测：wildnutrition 那一屏有两颗这样的键进了候选）。
+  // 这一格：矩形完全正常、`data-click="close"` 也在，**只有 computedStyle 说它藏着**
+  // ⇒ 必须返空。⚠️ 假 DOM 里 `getComputedStyle` **默认不存在**（node 里就是 undefined）——
+  // 探针那两处都得 try/catch 得住；这一格**临时挂上**它（见下面 loop 里的安装/卸载），
+  // 别的格照旧走「没有这个 API」那条路。
+  ['广告 creative：`visibility:hidden` 的关闭键不许认', () => {
+    const pg = page([['button', { id: 'bx-close-inside-hidden',
+                                  attrs: { 'data-click': 'close' },
+                                  rect: { width: 88, height: 54, top: 300, bottom: 354 } }]]);
+    pg.document.elementsFromPoint = () => [pg.nodes[0]];
+    pg.getComputedStyle = () => ({ visibility: 'hidden', display: 'block' });
     return pg;
   }, ''],
 ];
@@ -179,11 +204,19 @@ const results = [];
 let failed = 0;
 for (const [name, build, want] of CASES) {
   const pg = build();
+  //: ★ 2026-10-17（终审 Ruling 28-①）：`getComputedStyle` 是**浏览器的全局函数**（产物那两段
+  //: JS 直接裸调它），而 node 里**没有**这个全局 —— 所以默认那几格走的正是「探针得 try/catch
+  //: 得住」那条路。要演 `visibility:hidden` 的格自己挂一个（跑完**卸载**，别漏给下一格）。
+  const had = Object.prototype.hasOwnProperty.call(globalThis, 'getComputedStyle');
+  const saved = globalThis.getComputedStyle;
+  if (pg.getComputedStyle) globalThis.getComputedStyle = pg.getComputedStyle;
   let got, err = '';
   try {
     got = new Function('document', 'window', 'return ' + PROBE)(pg.document, pg.window);
   } catch (e) {
     got = '<抛了>'; err = String(e && e.message || e);
+  } finally {
+    if (had) globalThis.getComputedStyle = saved; else delete globalThis.getComputedStyle;
   }
   const ok = got === want;
   if (!ok) failed++;

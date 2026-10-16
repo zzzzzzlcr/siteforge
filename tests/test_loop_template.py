@@ -1008,6 +1008,61 @@ def test_the_loop_wraps_the_popup_probe_and_the_mark_js_and_never_throws(
         "裸语句序列直喂 `cdp eval` = SyntaxError ⇒ 恒返空：%r" % (sent[:2],))
 
 
+def test_the_loop_never_acts_on_the_report_only_row_or_on_an_empty_text(
+        tmp_path, monkeypatch):
+    """★ 2026-10-17（**终审 C2 · Ruling 30 + Ruling 28-②**）：两条「**不点**」的口径。
+
+    表那套那半在 `tests/test_template.py`（`test_the_report_only_row_is_reported_but_never_
+    clicked` / `test_a_text_answer_with_no_text_is_never_clicked`）—— 这一条钉的是
+    **循环型同一把尺子**（两套骨架一个口径，谁也不许只说不做）：
+      · 表里带 `_REPORT_ONLY` 的那一行（今天：广告 creative）⇒ 只报不点 ——
+        真站上已经量到它误点（实测 §1.3），而这一型还没有真站正向证据；
+      · 答复是 `TEXT|` 而**文字是空的** ⇒ 不点（那是「指向不确定元素的地址」）；
+      · 负控：**表里没有那个名字**的同形状答复 ⇒ 照旧点 —— 挡住它的必须是
+        「名字 + 标志」，不是「答复的形状」。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    mod, module, filler, _src_ = _loop_product(tmp_path, monkeypatch, "popup_report_only",
+                                               PICK_PAGE, calls)
+    answer = {"now": json.dumps("广告 creative|#bx-close-inside-1|Close")}
+    _orig = mod.CDPHelper.eval
+
+    def eval_(self, js, *a, **kw):
+        if PROBE_MARK in js:
+            return answer["now"]
+        if MARK_MARK in js:                    # 按文字打标记那一段
+            calls.setdefault("marks", []).append(js)
+            return json.dumps("marked")
+        return _orig(self, js, *a, **kw)
+
+    mod.CDPHelper.eval = eval_
+    trace = tmp_path / "popup_report_only.jsonl"
+
+    # ① `_REPORT_ONLY` 那一行：认得出、说得清、**不动手**
+    assert filler.clear_popups() is False, "只报不点 ⇒ 没有「关掉了」这回事"
+    assert calls["click"] == [], (
+        "带 `_REPORT_ONLY` 的那一行**不许动手**（真站上量到过误点）：%r" % (calls["click"],))
+    assert not calls.get("marks"), "连标记那一半也不该做（不动手就是不动手）"
+    row = _last_popup_row(trace)
+    assert row.get("ok") is None and "只报不点" in (row.get("note") or ""), (
+        "账上要记一行、并说清为什么没点：%r" % (row,))
+
+    # ② `TEXT|` 而文字是空的：指向不确定元素的地址 ⇒ 不点
+    #: ⚠️ 挑「同意条」那一行（**没有** `_REPORT_ONLY` 标志）—— 用「广告 creative」的话先命中
+    #: 「只报不点」那一支，两条路都**不点**，但**为什么**不点是两件事。
+    answer["now"] = json.dumps("同意条|TEXT|")
+    assert filler.clear_popups() is False
+    assert calls["click"] == [] and not calls.get("marks"), calls
+    row2 = _last_popup_row(trace)
+    assert row2.get("ok") is None and "不确定" in (row2.get("note") or ""), (
+        "账上照实记：那是个指向不确定元素的地址、没敢点：%r" % (row2,))
+
+    # ③ 负控：同一句话、**表里没有那个名字** ⇒ 照旧点（挡住它的是名字+标志，不是形状）
+    answer["now"] = json.dumps(CONSENT_ANSWER)
+    assert filler.clear_popups() is True, "表里没有那一行 ⇒ 照旧点（不许被上面两条顺带挡住）"
+    assert calls["click"] == [CONSENT_SELECTOR], calls["click"]
+
+
 # ── 关掉之后**复核** + 空转的报文纪律（★ 2026-10-16：Task 5）──────────────────────────
 
 def _popup_rows(trace):
@@ -1135,10 +1190,12 @@ def _popup_hook_rows(src: str) -> list:
 
     ⚠️ **不写死表里有几条**（工作区比 HEAD 多别人未提交的那条）：只问
     「新那条在不在、是不是**最后**一条」—— 次序 = 优先级，这才是要钉的性质。
+    ⚠️ ★ 2026-10-17（终审 C2）：行是**两格或三格** —— 第三格 = `_REPORT_ONLY`
+    ⇒ 正则里那第三格**可选**（否则带标志的那一行会从表里「消失」）。
     """
     block = src[src.index("_POPUP_HOOKS = ("):]
     block = block[:block.index("\n)")]
-    return re.findall(r'\("([^"]+)", _[A-Z_]+\)', block)
+    return re.findall(r'\("([^"]+)", _[A-Z_]+(?:, _[A-Z_]+)?\)', block)
 
 
 def test_the_loop_carries_the_same_ad_creative_row_the_table_does():
@@ -1154,7 +1211,11 @@ def test_the_loop_carries_the_same_ad_creative_row_the_table_does():
     """
     src = _src()
     assert "_AD_CREATIVE_JS = (" in src, "循环型产物里没有那颗常量（同源破了）"
-    assert '("广告 creative", _AD_CREATIVE_JS),' in src, "循环型产物的表里没有第 4 行"
+    #: ★ 2026-10-17（终审 C2 · Ruling 30）：这一行**带第三格标志**（只报不点）——
+    #: 两套骨架贴的是同一份机器码 ⇒ 这一格也得一模一样。
+    assert '("广告 creative", _AD_CREATIVE_JS, _REPORT_ONLY),' in src, (
+        "循环型产物的表里没有第 4 行（或者丢了 `_REPORT_ONLY` 那个标志）")
+    assert "def _popup_report_only(" in src, "按名字查标志的那个函数得在（同源破了）"
     rows = _popup_hook_rows(src)
     assert rows and rows[-1] == "广告 creative", (
         "表序 = 优先级：它要排在**最后**（与表那套同一份表）：%r" % (rows,))

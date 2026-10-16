@@ -1018,6 +1018,19 @@ def _half_executed_states(lines: list) -> list:
 AUXILIARY_ACTIONS = ("scroll", "wait", "popup")
 
 
+def _aux_row(ln) -> bool:
+    """这一行是不是**辅助档**（三样任一命中 ⇒ 是）：动作名在 `AUXILIARY_ACTIONS` 里 /
+    产物自己标了 `auxiliary` / 产物自己标了 `soft`。
+
+    ★ 2026-10-17（**终审 C1**）：**一处一张嘴** —— `hard_rows` 与 `walked_rows` 原来是
+    **各写一遍**同一串判据，`first_bad` 又一遍都没写（所以它才会被辅助行顶掉）。
+    现在三处都走这一个函数：谁加一档辅助记号，三处一起变。
+    """
+    return (str((ln or {}).get("action") or "").strip().lower() in AUXILIARY_ACTIONS
+            or bool((ln or {}).get("auxiliary"))
+            or bool((ln or {}).get("soft")))
+
+
 def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
              err: str, out: str, timeout: float, stopped_at: int = 0) -> tuple:
     """一遍的证据 → (ok, failed_step, note)。**这一处就是「诚实」本身**，别把它做软。
@@ -1070,7 +1083,17 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
                     and not ln.get("auxiliary")
                     and ln.get("success_in_page") is not True]
                    if ended_in_success else [])
-    first_bad = bad_rows[0] if bad_rows else None
+    #: ★ 2026-10-17（**终审 C1**）：`first_bad` **跳过辅助档** —— 它原来是 `bad_rows[0]`
+    #: （trace 里第一条 `ok is False` 的**行**，不过滤），而循环型产物**每次动手之前**先落
+    #: 一行 `action="popup"`（`_popup_trace`，`soft=True`、三值）⇒ 它常常排在真失败**前面**
+    #: 且 `ok=False`。后果不是难看，是**假话**：`step_said` 只取 `first_bad.note` ⇒
+    #: `note` 成了「卡在第 9 步：点完复核：这一屏**还有**「同意条」…」，而真失败那句
+    #: 「连着 3 步没做成，收摊」**一个字都读不到**；下游 `graph._failure_family` 只吃 `note`，
+    #: 它的正则里有 `同意|弹层|盖着` ⇒ 判成 `overlay` ⇒ 「改稿治不了」⇒ 图停下交给人（指错方向）。
+    #: 判据与 `hard_rows` / `walked_rows` **同一把尺子**（`_aux_row`：辅助动作名 / `auxiliary` /
+    #: `soft`）；一条非辅助的都没挑到就**回退第一条**（老形状：宁可挑一条，也不交白卷）。
+    first_bad = (next((ln for ln in bad_rows if not _aux_row(ln)), None)
+                 or (bad_rows[0] if bad_rows else None))
     first_hard = hard_rows[0] if hard_rows else None
     failed_step = first_hard.get("step") if first_hard else None
     step_said = (first_bad or {}).get("note") or "trace 里那一步没写为什么"

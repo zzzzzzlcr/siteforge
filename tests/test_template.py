@@ -2061,6 +2061,173 @@ def test_an_answer_in_a_shape_we_do_not_know_is_not_a_popup(sandbox, form_file):
     assert clicks == ["#go"], clicks
 
 
+def _popup_rows(path):
+    """账本里 `action="popup"` 的那几行（`_popup_row` 复核那一行就在里面）。"""
+    if not path.exists():
+        return []
+    return [r for r in (json.loads(ln) for ln in
+                        path.read_text(encoding="utf-8").splitlines() if ln.strip())
+            if r.get("action") == "popup"]
+
+
+def test_a_popup_is_rechecked_after_the_click_and_the_ledger_says_which(tmp_path, sandbox,
+                                                                        form_file):
+    """★ 2026-10-17（**终审 C3** · spec §3.4）：**cdp 回 ok 不算做成** —— 表那套也要复核。
+
+    这一条之前，表那套点完只按 cdp 的回话记一句日志（「看起来成了 / 没成」），而
+    spec §3.4 第一句就是「**cdp 回 ok 不算做成** —— 要**再探一次**」（循环型那侧 Task 5
+    已经是三值）。这里钉三件：
+      ① 点完**再探一次**（同一张表、同一把尺子）；
+      ② 三值**不许并成两种**：探之前有 + 探之后没有 ⇒ `True`；探之后**还有** ⇒ `False`；
+         复核**量不出来**（答复形状不认识）⇒ `None`（量不到就如实说量不到，
+         把它读成「关掉了」正是这一刀要治的病）；
+      ③ 那一行**落进 trace**（`action="popup"`、`soft=True`）—— 只在日志里说不算账。
+
+    ⚠️ 与循环型那条同形（`tests/test_loop_template.py::test_the_popup_recheck_says_which_of_
+    the_three_things_is_true`）：两套骨架一个口径，谁也不许只说不做。
+    """
+    module, _ = _load(
+        "run_popup_recheck",
+        template.render("example-popup-recheck", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    good = "同意条|#onetrust-accept-btn-handler|Accept Cookies"
+    #: ⚠️ 直接叫那一个方法（**不走整趟 `run()`**）：这一条量的是**复核那一格**本身，
+    #: 而整趟跑完要白等一次 `SUCCESS_WAIT_SECONDS`（30 秒/趟）—— 三支就要 90 秒。
+    #: 「跑起来会不会用它」由既有那些用例守着（`test_the_product_dismisses_a_consent_
+    #: overlay_before_it_starts` 等）。
+
+    def _once(path, seq, fixed):
+        common.STATE.consent_seq = list(seq)
+        common.STATE.consent = fixed
+        common.STATE.actions = []
+        f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(path))
+        f._clear_obstructions()
+        return _popup_rows(path)[-1]
+
+    # ① 探之前有、探之后没有 ⇒ True（`consent_seq` 只够第一次探针，复核退回 `consent`）
+    trace = tmp_path / "popup_true.jsonl"
+    row = _once(trace, [good], "")
+    assert "#onetrust-accept-btn-handler" in [a[1] for a in common.STATE.actions], (
+        common.STATE.actions)
+    assert row.get("ok") is True, row
+    assert "探之前有、探之后没有" in row.get("note", ""), row
+    assert row.get("soft") is True, ("弹层是环境噪声 ⇒ 这一行不许否决整趟自测：%r" % (row,))
+
+    # ② 探之后**还有** ⇒ False：这一下没能关掉（不许因为 cdp 回了 ok 就写成成了）
+    row2 = _once(tmp_path / "popup_false.jsonl", [], good)
+    assert row2.get("ok") is False, row2
+    assert "这一下没能关掉" in row2.get("note", ""), row2
+
+    # ③ 复核**量不出来**（答复形状不认识）⇒ None —— 不许把它读成「关掉了」
+    row3 = _once(tmp_path / "popup_none.jsonl", [good, "形状不认识的答复"], "")
+    assert row3.get("ok") is None, row3
+    assert "探不动" in row3.get("note", ""), row3
+
+
+def test_the_report_only_row_is_reported_but_never_clicked(tmp_path, sandbox, form_file,
+                                                           caplog):
+    """★ 2026-10-17（**终审 C2 · Ruling 30**）：第 4 行「广告 creative」**只报不点**。
+
+    真站上已经**量到误点**（实测文档 §1.3）：这一行把站点自己的抽屉控件
+    `Close filters drawer` 当成了关闭键，产物照着答就点了。终审的处置是**不点** ——
+    探针照认（「认得出哪一颗」那一半归探针与合成页矩阵），但消费者**不动手**，
+    只记一行 INFO 与一行账（与「形状不认识」同一处置），**直到真 creative 上验过
+    「可见 + 有落点」**。
+
+    两半都钉：
+      · 带那个标志的行 ⇒ **一下都不点**，而且日志/账本**说清为什么没点**；
+      · **同一句话换个名字**（表里没这一行的『假弹窗』）⇒ 照旧点 —— 挡住它的是
+        `_REPORT_ONLY` 那个标志，**不是**答复的形状（否则「只报不点」就成了
+        「凡答 `TEXT` 都不点」，那是另一件事）。
+    """
+    module, _ = _load(
+        "run_popup_report_only",
+        template.render("example-popup-report-only", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.consent = "广告 creative|#bx-close-inside-1|Close"
+
+    #: ⚠️ 只叫那一个方法（不走整趟 `run()`）：整趟跑完要白等一次 `SUCCESS_WAIT_SECONDS`。
+    trace = tmp_path / "report_only.jsonl"
+    with caplog.at_level(logging.INFO):
+        module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                      trace=str(trace))._clear_obstructions()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert "#bx-close-inside-1" not in clicks, (
+        "带 `_REPORT_ONLY` 的那一行**不许动手**（真站上量到过误点）：%s" % clicks)
+    assert not [a for a in common.STATE.actions if a[0] == "mark"], (
+        "连标记那一半也不该做（不动手就是不动手）：%s" % (common.STATE.actions,))
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "只报不点" in said and "广告 creative" in said, (
+        "日志要说清为什么没点（不然读的人以为探针没答）：%s" % said)
+    row = _popup_rows(trace)[-1]
+    assert row.get("ok") is None and "只报不点" in row.get("note", ""), (
+        "账上也要记一行、并说清为什么没点：%r" % (row,))
+
+    #: 负控：**同一句话、换个表里没有的名字** ⇒ 照旧点（挡住它的是标志，不是形状）
+    common2 = _stub(sandbox,
+                    observe={"url": "https://example.test/", "actions": [], "fields": []},
+                    diff={"actionable": True})
+    common2.STATE.texts = ["Walk"]
+    common2.STATE.consent = "假弹窗|#bx-close-inside-2|Close"
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0))._clear_obstructions()
+    clicks2 = [a[1] for a in common2.STATE.actions if a[0] == "click"]
+    assert clicks2 and clicks2[0] == "#bx-close-inside-2", (
+        "负控：没有那个标志的行照旧点（否则「只报不点」被做成了「凡答 TEXT 都不点」）：%s"
+        % clicks2)
+
+
+def test_a_text_answer_with_no_text_is_never_clicked(tmp_path, sandbox, form_file, caplog):
+    """★ 2026-10-17（**终审 Ruling 28-②**）：答复是 `TEXT|` 而**文字是空的** ⇒ **不点**。
+
+    真站实测（实测文档 §1.3）：那一屏上探针答的就是 `广告 creative|TEXT|` —— 空文字。
+    那是一个「**指向不确定元素的地址**」：`TEXT` 那条路是**按文字打标记**，而空串会把
+    「文字是空的」那颗按钮（页面上可能有好几颗）标上 ⇒ 点到哪一颗全看文档顺序。
+    ⇒ 与「形状不认识」同一处置：**说出来、不点**（宁可不做，不可错点）。
+
+    ⚠️ 正控在既有那条里（`test_a_consent_button_without_an_id_is_still_clicked`：
+    `TEXT|Accept All Cookies` 照旧走「打标记再点」）—— 这一条只加**空文字**那一格。
+    """
+    module, _ = _load(
+        "run_popup_empty_text",
+        template.render("example-popup-empty-text", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    #: ⚠️ 挑的是**「同意条」那一行**（表里没有那个 `_REPORT_ONLY` 标志）—— 用「广告 creative」
+    #: 那一行的话，先命中「只报不点」那一支，这一格就成了另一条判据的复读（两条路都**不点**，
+    #: 但**为什么**不点是两件事）。
+    common.STATE.consent = "同意条|TEXT|"
+
+    trace = tmp_path / "empty_text.jsonl"
+    with caplog.at_level(logging.INFO):
+        module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                      trace=str(trace))._clear_obstructions()
+    assert not [a for a in common.STATE.actions if a[0] == "mark"], (
+        "空文字还去打标记 = 把不确定的那一颗标上：%s" % (common.STATE.actions,))
+    assert '[data-sf-consent="1"]' not in [a[1] for a in common.STATE.actions], (
+        common.STATE.actions)
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "空" in said, "这件事要说出来（不许静默）：%s" % said
+    row = _popup_rows(trace)[-1]
+    assert row.get("ok") is None and "不确定" in row.get("note", ""), (
+        "账上照实记：那是个指向不确定元素的地址、没敢点：%r" % (row,))
+
 
 def _ad_creative_segment(src: str) -> str:
     """从**产物文本**里切出 `_AD_CREATIVE_JS` 那颗常量自己的正文（切到表那段之前为止）。
@@ -2080,10 +2247,12 @@ def _popup_hook_rows(src: str) -> list:
     ⚠️ 只读表那一块，别按整份源码找名字：那些名字在注释 / 日志文案里也出现。
     ⚠️ **不写死表里有几条**（别人手上那张表可能比我看到的多一条）：这一条只问
     「新那条在不在、是不是**最后**一条」—— 次序 = 优先级，这才是要钉的性质。
+    ⚠️ ★ 2026-10-17（终审 C2）：行是**两格或三格** —— 第三格 = `_REPORT_ONLY`（「报但不点」）
+    ⇒ 正则里那第三格**可选**（否则带标志的那一行会从表里「消失」，而它恰恰是本刀那一行）。
     """
     block = src[src.index("_POPUP_HOOKS = ("):]
     block = block[:block.index("\n)")]
-    return re.findall(r'\("([^"]+)", _[A-Z_]+\)', block)
+    return re.findall(r'\("([^"]+)", _[A-Z_]+(?:, _[A-Z_]+)?\)', block)
 
 
 def test_the_ad_creative_hook_is_one_row_and_both_skeletons_get_it():
@@ -2108,7 +2277,12 @@ def test_the_ad_creative_hook_is_one_row_and_both_skeletons_get_it():
     """
     src = render_sample()
     assert "_AD_CREATIVE_JS = (" in src, "那段 JS 得在产物里"
-    assert '("广告 creative", _AD_CREATIVE_JS),' in src, "表里得有这一行"
+    #: ★ 2026-10-17（终审 C2 · Ruling 30）：这一行**带第三格标志** ⇒ 「报但不点」
+    #: （真站上已经量到误点，实测 §1.3）。标志与名字在**同一个元组**里 ⇒ 丢不了。
+    assert '("广告 creative", _AD_CREATIVE_JS, _REPORT_ONLY),' in src, (
+        "表里得有这一行、而且得带 `_REPORT_ONLY`（Ruling 30：只报不点）")
+    assert '_REPORT_ONLY = "report_only"' in src, "标志那个常量得在产物里"
+    assert "def _popup_report_only(" in src, "按名字查标志的那个函数得在产物里"
     rows = _popup_hook_rows(src)
     assert "广告 creative" in rows, "表里没有这一行：%r" % (rows,)
     assert rows[-1] == "广告 creative", (
@@ -2123,7 +2297,10 @@ def test_the_ad_creative_hook_is_one_row_and_both_skeletons_get_it():
         "Ruling 22 的那两条路（属性值精确相等 / id·class·aria-label）不见了：%s" % seg[:200])
     assert "r.width<=120&&r.height<=120" in seg, (
         "①的后两条路没有尺寸闸（≤120×120）—— 容器会被当成关闭键点掉：%s" % seg[:200])
-    assert seg.count("elementsFromPoint") == 1, (
+    #: ⚠️ 数的是**代码**（剥掉注释）：Ruling 27 之后那一段注释里也会提到 `elementsFromPoint`
+    #: （它要解释「改用与 `_COVER_JS` 同一把尺子」这件事）—— 按整段数会数成 2，那不是判据多了一条。
+    _seg_code = "\n".join(ln.split("#", 1)[0] for ln in seg.splitlines())
+    assert _seg_code.count("elementsFromPoint") == 1, (
         "落点那条判据得有、且只有一条（blavity 那把尺子）：%s" % seg[:200])
     assert "r.width<8||r.height<8" in seg, "尺寸门槛（≥8×8）得在"
     assert "return '';" in seg, "找不到就返回空串（宁可不做）—— 兜底那句得在"

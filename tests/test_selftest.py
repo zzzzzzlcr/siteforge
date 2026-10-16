@@ -1041,6 +1041,65 @@ def test_a_failed_popup_row_does_not_take_the_run_down():
     assert ok2 is False and step2 == 4, (ok2, step2, note2)
 
 
+def test_the_real_failure_is_read_even_when_a_popup_row_comes_first():
+    """★ 2026-10-17（**终审 C1**）：辅助行排在**真失败前面**时，`note` 必须是真失败那句话。
+
+    现场（复核在干净 HEAD 上实测复现的形状）：循环型**每次动手之前**先落一行
+    `action="popup"`（可以是 `ok=False`），而 `first_bad` 原来就是 `bad_rows[0]`
+    （trace 里第一条 `ok is False` 的**行**）⇒ `step_said` 取的是**那一行**的话：
+
+        [popup  ok=False「点完复核：这一屏**还有**「同意条」…」
+         give_up ok=False「连着 3 步没做成，收摊」]
+        ⇒ note =「卡在第 9 步：点完复核：这一屏**还有**「同意条」…」
+
+    **「连着 3 步没做成，收摊」一个字都没出现** —— 这不是难看，是**假话**：读的人
+    （和改稿的模型）会去查弹层，而真正的失败原因一个字都读不到。
+
+    ⚠️ **下游比 note 本身更重**：`graph._failure_family` 只吃 `note`，它的正则里有
+    `同意|弹层|盖着` ⇒ 那一句话把这一趟判成 `overlay` ⇒ `_FAMILY_WHY` 说
+    「不是改稿能改出来的」⇒ 图**停下交给人**。所以这一格钉两件：note 是后者，
+    **族也不再是 `overlay`**（下面第三段断言的就是这一条链）。
+
+    ⚠️ 现有那条（`test_a_failed_popup_row_does_not_take_the_run_down`）只走「跑通 + 带瑕疵」
+    那一支（rc=0），**碰不到这里** —— 这一条补的正是 `rc != 0` 那一支。
+    """
+    lines = [
+        {"step": 8, "action": "click", "ok": True, "note": "答了第 8 题"},
+        {"step": 9, "action": "popup", "ok": False, "soft": True,
+         "note": "点完复核：这一屏**还有**「同意条」（探之前有、探之后还有）—— 这一下没能关掉"},
+        {"step": 9, "action": "give_up", "ok": False,
+         "note": "连着 3 步没做成，收摊", "progress_why": "连着 3 步没做成，收摊"},
+    ]
+    ok, failed_step, note = selftest._verdict(1, False, lines, 0, "", "", 600)
+    assert ok is False, "真失败（give_up）照旧否决这一趟：%s" % note
+    assert failed_step == 9, (failed_step, note)
+    assert "连着 3 步没做成，收摊" in note, (
+        "note 读的是**辅助行**那句、真失败那句一个字都没出现（终审 C1）：%s" % note)
+    assert "同意条" not in note, (
+        "note 把辅助行（弹层）的话当成了失败原因 —— 读的人会去查错的东西：%s" % note)
+    #: 下游那一环（这才是「假话」真正的代价）：判族只吃 note。
+    #: ⚠️ `graph._failure_family` 在**提交态不存在**（它是工作区别人未提交那半里的东西）——
+    #: 所以「有就量它」**并且**「没有就量同一把尺子的字面判据」（它那几条正则点名的词：
+    #: 同意 / 弹层 / 盖着 / consent / overlay…）。两件都在：这一条在哪种树上都钉得住，
+    #: 别把后半句删掉（删了它，提交态这一格就退化成「跳过」）。
+    from agent import graph as G
+    _fam = getattr(G, "_failure_family", None)
+    if _fam is not None:
+        assert _fam({"note": note, "failed_step": failed_step}) != "overlay", (
+            "note 里还留着弹层那套词 ⇒ 判成 overlay ⇒ 「不是改稿能改出来的」⇒ 图停下交给人：%s"
+            % note)
+    assert not [w for w in ("同意", "弹层", "盖着", "consent", "overlay") if w in note], (
+        "note 里还留着判族正则点名的那几个词（同意/弹层/盖着/consent/overlay）—— 它们会把这一趟"
+        "判成 `overlay`（判族只吃 note）：%s" % note)
+
+    #: 负控（同一格的反面）：**只有辅助行坏**时，那句「带瑕疵」仍然要点名它 —— 放行 ≠ 不说。
+    blemished = [lines[0], lines[1],
+                 {"step": 10, "action": "success", "ok": True, "note": "到了成功页"}]
+    ok2, _step2, note2 = selftest._verdict(0, False, blemished, 0, "", "", 600)
+    assert ok2 is True and "popup" in note2 and "同意条" in note2, (
+        "辅助行没在「带瑕疵」那句里被点名（放行不等于不说）：%s" % note2)
+
+
 def test_the_blemished_count_counts_steps_not_rows():
     """★ 2026-10-16（Task 5 复核 Ruling 19-③）：那句「有 N **步**是带瑕疵过的」**数步不数行**。
 
