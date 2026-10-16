@@ -1462,18 +1462,27 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     #: 宁可多算一次，也不给「清单与产物不一致」留缝。
     #: ⚠️ 位置在**最后**：`spec["states"]` 一路上被上面那几道钉回去的闸
     #: （`_keep_step_sequences` / `_keep_repair_local` / `ir.repair_required`）改过，
-    #: 要算的是**最终那两张表**（就是刚渲进产物、也写进 `out["states"]` 的那两张）。
-    #: ⚠️ **空就不写**（不写一个空列表）：这一格读出来是给闸上摆的，
-    #: 空列表会摆成「改写过、但是空的」—— 那与「没改写过」是两件事，别让人看错。
+    #: 要算的是**最终那两张表** —— 也就是**刚渲进产物**的那两张。
+    #: ⚠️ **产物里那两张与 `out["states"]` / `out["fills"]` 故意不一样**：`out` 存的是
+    #: **模型那张表**（observed **没合过**的），产物里那份是合过的 —— 面板上要看得见
+    #: 「它想写什么」，产物里是「实际写成什么」。别把两者当同一份（更别顺手把合并结果写回
+    #: state：那会让 `_deliver` 的用例变成恒真式，人也就再也看不见模型在编锚了）。
+    #: ⚠️ **空也要写**（写 `None`，不是 `[]`）—— 原先写成 `if overwritten:` 是**错的**：
+    #: 这一格读的是 `state`（= **上一版**的结果），只写非空 ⇒ 上一版那串清单**会赖着不走**。
+    #: 真链条：v1 编了锚、且被打回 ⇒ v2 把锚改干净了、`overwritten` 是空 ⇒ 什么都不写
+    #: ⇒ v3 闸上还挂着 v1 的 `["landing#0"]`，而 v2 其实一处都没改写 ——
+    #: **那一格的全部意义就是告诉人「当前这双手还在不在编锚」**，说反了比不摆更坏。
+    #: 写 `None` 而不是 `[]`：面板把空数组渲染成「（空的）」，读起来像「改写过、但是空的」；
+    #: `None` 与「第一版还没算过」是同一种显示（`console.html` 拿它当没有）。
     #: ⚠️ **循环型那一支不算**：上面渲的时候走的是 `_loop_source`（`template.render` 那
     #: 一处**压根没跑**），而它只吃 `fills` / `loop_spec`、**根本不读 `states`**
-    #: （见那一支自己的注释）⇒ 那一族里「锚被观测改写」这件事**没有发生过**。
-    #: 照 `spec["states"]` 算一份摆出来，人问「哪一步」时对着产物一个都对不上 —— 那是编人话。
+    #: （见那一支自己的注释）⇒ 那一族里「锚被观测改写」这件事**没有发生过**，
+    #: 照 `spec["states"]` 摆一份出来就是**编人话**（人问「哪一步」时产物里一个都对不上）。
+    #: ⚠️ 所以这一条判据是 `shape != "loop"`，**不是**「那一支的 `states` 自然是空表」——
+    #: 那一支的 `states` 来自 `fix_states` / `journey.states()`，**不一定空**。
     if _observed is not None and shape != "loop":
-        _, _, overwritten = fix_mod.anchors_from_observed(
-            spec["states"], spec["fills"], _observed)
-        if overwritten:
-            out["anchors_overwritten"] = overwritten
+        _, _, overwritten = fix_mod.anchors_from_observed(spec["states"], spec["fills"], _observed)
+        out["anchors_overwritten"] = overwritten or None
     return out
 
 

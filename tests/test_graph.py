@@ -2841,11 +2841,83 @@ def test_the_gate_says_which_steps_had_their_anchors_overwritten(tmp_path):
     #: ⚠️ `facts` 是**嵌在** payload 里的一格（`interrupt({"step", "say", "facts", "can"})`），
     #: 不是摊平的 —— 别写成 `second.get("锚被观测改写的步")`。
     assert "landing#0" in str(second["facts"].get("锚被观测改写的步")), second
+    #: ⚠️ 还要钉**形状**：`str(...) in ...` 这种写法对**裸字符串** `"landing#0"` 也成立，
+    #: 而那一条契约是「**位置清单**，不是计数、不是一句话」。
+    assert out["anchors_overwritten"] == ["landing#0"]
 
 
-def test_without_an_overwrite_the_gate_row_is_not_there(tmp_path):
-    """**空就不摆**（与邻居那几格同一个习惯）—— 别摆一个空列表让人以为「改写过、但是空的」。"""
+def test_an_empty_overwrite_list_clears_the_row_instead_of_lingering(tmp_path):
+    """★ **空也要写 `None`**：上一版那串清单不许赖着不走（see 上面那段裁定）。
+
+    ⚠️ 原来那条 `assert all(not p["facts"].get(...) …)` **不可能失败** ——
+    键不在、值是 `None`、值是 `[]`、乃至**整个功能被删掉**，它都绿 ⇒ 钉的是空气。
+    改成钉 `_drive` 返回的**最终状态**（`_drive` 回 `(payloads, out)`，别把 `out` 丢了）。
+    """
     deps, rec = _deps()
     app, cfg, _ = _build(deps=deps)
-    payloads, _ = _drive(app, cfg, _brief(tmp_path))
-    assert all(not p["facts"].get("锚被观测改写的步") for p in payloads if p["step"] == "draft")
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+    assert out.get("anchors_overwritten") is None        # 键在、值是 None（不是 `[]`）
+    assert all(p["facts"].get("锚被观测改写的步") is None
+               for p in payloads if p["step"] == "draft")
+
+
+def test_a_version_that_stops_fabricating_clears_the_row(tmp_path):
+    """★ 钉「**空也要写**」那一条**本身**（评审 Important 1 的修复钉子）。
+
+    ⚠️ 上面那条（`out.get(...) is None`）**分不出**「键不在」与「值是 `None`」——
+    只写非空那份实现它照样绿。真正会红的是这根链条：
+
+      v1 编了锚、且被 lint 打回 ⇒ v2 一处都没编 ⇒ 最终那格必须**当场擦成 `None`**。
+
+    只写非空的话 v2 什么都不写 ⇒ state 里一直挂着 v1 的 `["landing#0"]` ——
+    而那一格的全部意义就是告诉人「**当前**这双手还在不在编锚」，说反了比不摆更坏。
+    """
+    def fabricate(spec, feedback, round_no):
+        if round_no == 1:                       # v2 收手：一处都不编
+            spec["states"][0]["steps"][0]["target"]["text"] = "也是编的"
+            spec["states"][0]["steps"][0]["note"] = "顺手用 el.click() 补了一下"  # 让 lint 打回
+        return spec
+
+    deps, rec = _deps(write=fabricate)
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert [p["step"] for p in payloads].count("draft") >= 2, "没跑到第二版，这条就白钉了"
+    assert "anchors_overwritten" in out, "v2 把锚改干净了 ⇒ 那一格得**当场擦掉**（不是不写）"
+    assert out["anchors_overwritten"] is None, out["anchors_overwritten"]
+
+
+def test_the_loop_shape_has_no_anchors_overwritten_row(tmp_path):
+    """★ 循环型那一支**不算**（`shape != "loop"` 那个守卫是**承重**的）。
+
+    那一支走的是 `_loop_source`（`template.render` **压根没跑**），而它只吃 `fills` /
+    `loop_spec`、**根本不读 `states`** ⇒ 那一族里「锚被观测改写」这件事**没有发生过**，
+    照 `spec["states"]` 摆一份出来就是**编人话**（人问「哪一步」时产物里一个都对不上）。
+    ⚠️ 计划原来给的理由（「循环型 `spec["states"]` 是空表，`changes` 自然是空」）**是假的**：
+    那一支的 `states` 来自 `fix_states` / `journey.states()`，**不一定空** ——
+    所以判据不能靠「自然是空」，得靠这个守卫（这一条就是钉它的：
+    写稿桩**每一版都编一根**，守卫被删掉时第二道 draft 闸上就会挂着 `["landing#0"]`）。
+    ⚠️ 为什么能跑到第二版：循环型的产物**不读 `states`** ⇒ 往 `states` 的 `note` 里塞手拼 JS
+    也没用（渲不出来、lint 抓不到）⇒ 只能靠**人在第一道 lint 闸上打回**（`revise`）逼出第二版。
+    """
+    def fabricate(spec, feedback, round_no):
+        spec["states"][0]["steps"][0]["target"]["text"] = "也是编的"
+        return spec
+
+    fired = []
+
+    def reply(last):
+        if last["step"] == "lint" and not fired:      # 只打回一次（第二次是正常过闸）
+            fired.append(1)
+            return {"action": "revise", "note": "重来一版"}
+        return "continue"
+
+    deps, rec = _deps(journey=_funnel_journey(), write=fabricate)
+    app, cfg, _ = _build(deps=deps)
+    payloads, out = _drive(app, cfg, _brief(tmp_path, success_urls="thank-you"), reply=reply)
+
+    assert out["shape"] == "loop", out.get("shape_why")           # 前提：这一趟真是循环型
+    assert [p["step"] for p in payloads].count("draft") >= 2, "没跑到第二版，这条就白钉了"
+    second = [p for p in payloads if p["step"] == "draft"][1]     # 第二道 draft 闸
+    assert second["facts"].get("锚被观测改写的步") is None, second
+    assert out.get("anchors_overwritten") is None
