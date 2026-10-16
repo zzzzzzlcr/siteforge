@@ -123,6 +123,25 @@ const CASES = [
     return pg;
   }, '广告 creative|#bx-close-inside-1|'],
 
+  // ★ 2026-10-16（Task 7 = blavity 验证矩阵第 4 格「读那半」）：候选**看得见**、尺寸也过闸
+  // （88×54），可疑度全落在 `data-click="close"` 上 —— 可是**落点是盖着它的那一层**
+  // （合成页里就是 `#page-cover`：`position:fixed; inset:0`，z-index 压在 creative 上）。
+  // 探针必须返空：点下去只是「点了个寂寞」（`cdp click` 照样回 ok），宁可不做。
+  // ⚠️ 这一格钉的是 `_AD_CREATIVE_JS` 里 `elementsFromPoint` 那一摞判据（自家/祖先/后代）——
+  //    2026-10-16 变异体实测：把那一摞整段删掉，**其余九格全绿**，只有这一格会红。
+  // ⚠️ 而这一摞是**用例自己摆的**（假 DOM 里没有真浏览器的完整命中链）：这一格说的是
+  //    「这一摞里**没有**我 ⇒ 不认」这条字面判据，**不等于**「真站上被盖着一定返空」——
+  //    真站上「被盖着」归 `_covered_by`（它判的是 `stack[0]`）与 Task 5 的复核兜。
+  ['广告 creative：可见但**被盖着**（落点那一摞里没有它）不许认', () => {
+    const pg = page([
+      ['button', { id: 'bx-close-inside-pop', attrs: { 'data-click': 'close' },
+                   rect: { width: 88, height: 54, top: 4, bottom: 58 } }],
+      ['div', { id: 'page-cover', cls: 'page-cover', rect: rect_full }],   // 它身上一个 close 词都没有
+    ]);
+    pg.document.elementsFromPoint = () => [pg.nodes[1]];   // 落点是**盖着那一下**的那一层
+    return pg;
+  }, ''],
+
   // 负控：**容器**（300×300，id/class 里带 close）不许被当成关闭键 —— ②③ 那两条路
   // 收窄不了的形状，只能靠尺寸闸（≤120×120，照 2026-10-09 那一刀的界）。
   ['广告 creative：超界的容器（300×300，class/aria 带 close）不许点', () => {
