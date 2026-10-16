@@ -1528,3 +1528,54 @@ def test_no_basis_slots_and_the_verdict_agree_on_the_same_step():
     src = "STATES = [{'name': 'g', 'steps': [{'action': 'click',\n  'target': {'selectors': ['li:nth-child(2n+1)']}}]}]\n"
     slots = lint.no_basis_slots(src, _EMPTY_CARD)
     assert [one["selector"] for one in slots] == ["li:nth-child(2n+1)"]
+
+
+# ── M3：标识逐字比（2026-10-16 第二刀，spec §3.4）────────────────────────────
+
+@pytest.mark.parametrize("selector,frozen", [
+    ("#postcode", "#Postcode"),
+    ("[id=postcode]", "[id=Postcode]"),
+    ("input[name=postcode]", "input[name=Postcode]"),
+    (".postcode", ".Postcode"),
+    ("a[href='/signin']", "a[href='/SignIn']"),
+])
+def test_an_identifier_that_differs_only_in_case_is_not_observed(selector, frozen):
+    """★ M3 的正身：HTML 里 id / class / 属性值**大小写敏感**，而重放是 `matches()`。
+
+    判据说「对上了」而真站上找不到 —— 那正是这一刀要治的那一类假话。
+    """
+    level, why = lint.address_basis(selector, {"selectors": [frozen]}, [frozen])
+    assert level == lint.UNSUPPORTED, why
+
+
+def test_the_verbatim_observed_address_is_still_observed():
+    """`_verbatim` 排在前面 ⇒ 「把卡上那根原样抄回来」照旧放行（收的是**改写**，不是照抄）。"""
+    level, why = lint.address_basis("#Postcode", {"selectors": ["#Postcode"]}, ["#Postcode"])
+    assert level == lint.OBSERVED, why
+
+
+def test_a_text_anchor_is_still_case_insensitive():
+    """文字锚那一支**一个字不动**：同一个字的两种排版写法算同一个字。"""
+    assert lint._norm_text("Sign   In") == lint._norm_text("sign in")
+
+
+def test_a_tag_name_is_still_case_insensitive():
+    """标签名不分大小写（HTML 本来就这样）—— `:376` / `:400` 那两处保留 casefold。"""
+    frozen = {"selectors": ["input[name=zip]"]}
+    level, why = lint.address_basis("INPUT[name=zip]", frozen, ["input[name=zip]"])
+    assert level == lint.OBSERVED, why
+
+
+def test_the_hint_ladder_uses_one_ruler_on_both_sides():
+    """★ `hint` 那一格（= `el.name || el.id`）：**两边同一把尺子**，而且那把尺子是**标识**那把。
+
+    实现时逮到的：`hint` 原来是 `_norm_text`（会 casefold），而跟它比的**断言的值**已经换成
+    `_norm_ident` ⇒ **一次比较两把尺子** —— 逐字节相同的一对反而**对不上**
+    （实测 `hint="textField-173862"` vs `[name="textField-173862"]` 判 `unsupported`）。
+    **两个方向都要钉**（旧尺子两个方向都错）：逐字相同 ⇒ 派生；只差大小写 ⇒ **不许**派生。
+    """
+    card = {"hint": "textField-173862", "selectors": ["#other"]}
+    level, why = lint.address_basis("[name=textField-173862]", card, ["#other"])
+    assert level == lint.DERIVED, why
+    level, why = lint.address_basis("[name=textfield-173862]", card, ["#other"])
+    assert level == lint.UNSUPPORTED, why

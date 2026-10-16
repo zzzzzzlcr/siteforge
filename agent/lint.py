@@ -274,6 +274,19 @@ def _norm_text(value) -> str:
     return re.sub(r"\s+", " ", text).strip().casefold()
 
 
+def _norm_ident(value) -> str:
+    """比**标识**（id / class / 属性值）用的一把尺子：去首尾 + 压掉连续空白。
+
+    ⚠️ **不 casefold、不撇号归一** —— 这一把与 `_norm_text` 是**两把尺子**，别并（spec §3.4）：
+      · 文字锚（页面上**印出来**的那句话）⇒ `_norm_text`（同一个字的两种排版算同一个字）；
+      · 标识（**代码里的名字**：id / class / 属性值）⇒ 这一把 —— HTML 里它们**大小写敏感**，
+        而重放那边是 `Element.matches()`（实测：判据说「每一条都回原始观察里对上了」，
+        真站上 `matches("#postcode")` 在 `#Postcode` 上找不到）。
+      · 标签名**不在此列**：HTML 的标签名本来就不分大小写，那两处照旧 `casefold()`。
+    """
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
 def _segments(text: str) -> list:
     """按**顶层**组合子（空白 / `>` / `+` / `~`）切出几段「简单选择器」。
 
@@ -361,16 +374,16 @@ def assertions_of(selector) -> list:
         name = attr.lower()
         # `#id` 与 `[id=id]` 是同一件事（spec §3.2）—— 归一成同一个 kind，两种写法才比得上
         if name == "id":
-            out.append(("id", _norm_text(value)))
+            out.append(("id", _norm_ident(value)))
         else:
-            out.append(("attr", "%s=%s" % (name, _norm_text(value))))
+            out.append(("attr", "%s=%s" % (name, _norm_ident(value))))
     # `#id` / `.cls` 只在**括号外**那一层找：`a[href="#top"]` 里的 `#top` 是**值**，不是 id。
     # （不这样遮一下，解析器会自己编出 `("id","top")` —— 它甚至会给观测侧凭空添一条证据。）
     outside = _ATTR_IN_SEL.sub(" ", text)
     for ident in _ID_IN_SEL.findall(outside):
-        out.append(("id", _norm_text(ident)))
+        out.append(("id", _norm_ident(ident)))
     for cls in _CLASS_IN_SEL.findall(outside):
-        out.append(("class", _norm_text(cls)))
+        out.append(("class", _norm_ident(cls)))
     for tag in _TAG_IN_SEL.findall(
             _ATTR_IN_SEL.sub(_QUALIFIED, _ID_IN_SEL.sub(_QUALIFIED, text))):
         out.append(("tag", _norm_text(tag)))
@@ -443,7 +456,12 @@ def _observed_facts_and_hint(card, observed_selector_text) -> tuple:
             facts.add(("text", _norm_text(one)))
     #: `hint` 是 **`el.name || el.id`**（cdp 合并了，见下面那段）—— 两个属性都有可能，
     #: 所以它同时记成 `id` 与 `attr name=` 两条**线索**（级别由 `address_basis` 降一档）。
-    hint = _norm_text(card.get("hint"))
+    #: ★ 这一格用**标识**那把尺子（`_norm_ident`，不 casefold）：`hint` 是**代码里的名字**、不是
+    #: 页面上印出来的字，而它比的是**断言的值**（`address_basis` 的 DERIVED 支：`value == hint`，
+    #: `value` 出自 `assertions_of`）—— 那边已经是 `_norm_ident` 了，这边再 casefold 就是
+    #: **一次比较两把尺子**：逐字节相同的一对反而对不上（任何 `hint` 带大写的 job 被凭空打回），
+    #: 而只差大小写的反倒照样派生（M3 要堵的就是这一条）。两个方向都由这把尺子一起收掉。
+    hint = _norm_ident(card.get("hint"))
     return facts, hint
 
 
