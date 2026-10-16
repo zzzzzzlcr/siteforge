@@ -347,19 +347,38 @@ def _steps_must_be_findable(states) -> list:
     return states
 
 
-def render(site, success_text, states, fills, provenance, success_urls=None) -> str:
+def render(site, success_text, states, fills, provenance, success_urls=None, *,
+           observed=None) -> str:
     """把「怎么走」渲染成一条完整的 py 源码（文件级，可直接落盘进 `forms/sites/`）。
 
     ★ 2026-09-24：`success_urls`（判据的**第二格** —— 网址里出现哪一截）可有可无；
     **两格都空**时照旧抛（没有判据的产物会「跑到底再说自己成功」，本项目最忌讳的那类谎）。
     ⚠️ 它**不是**把文字那格放宽成「正文+网址」—— 是**另外一格**
     （「判据一个字没放宽，要不要改得人点头」是这条链上的老口径）。
+
+    ★ 2026-10-16（第二刀 spec §3.1）：`observed` = **探路那一刻冻的那份**
+    （`state["observed"]`，只读）。**产物里那几步的锚只认它** —— 卡找得到就照卡整份覆写
+    （卡上没有的键删掉），卡找不到那一步一个字不动。`selectors` 一个字不动
+    （它是候选，是改稿那双手要换的东西）。
+    ⚠️ 合并排在 `_steps_must_be_findable` **之前**：判就该判**要写出去的那一份**
+    —— 合完认不出来的步当场拒稿、点名第几步（spec §3.2）。
+    ⚠️ **不传 = 与从前逐字节相同**（老 job / `tools/rerender_site.py` 那条重渲的路）。
     """
     if not site or not str(site).strip():
         raise ValueError("site 不能空")
     site = str(site).strip()
     if not states:
         raise ValueError("states 不能空：没有「怎么走」的产物跑起来只会站在那儿")
+    if observed is not None:
+        from agent import fix              # 局部 import：与 `lint` 那边同一条理由（避免环）
+        #: ⚠️ `render` 的 `fills` 收 **list（带 name）也收 dict**（见 `_fills_map`），而
+        #: `anchors_from_observed` 只认 dict（它**不猜形状**：不是 dict 就原样返回）⇒
+        #: 「表是 list」这一支会在**静默**里跳过合并 —— 编的锚照样进产物（本刀要治的病）。
+        #: 归一化因此是 `render` 的责任（它本来就是那个懂两种形状的地方）：只在这一支里做，
+        #: **不传 `observed` 的路一个字节都不碰**。
+        if not isinstance(fills, dict):
+            fills = _fills_map(fills)
+        states, fills, _ = fix.anchors_from_observed(states, fills, observed)
     states = _steps_must_be_findable(states)   # ★ 见上面那条：没有落点的一步不许进产物
     #: ⚠️ 文字那格**只在人/底稿真给了字**时才走 `_success_texts`：它自己会在「剥完什么都不剩」
     #: 时抛（只写「出现」那种）—— 那一抛是对的，**别为了网址那格把它吞掉**。

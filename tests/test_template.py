@@ -4072,3 +4072,93 @@ def test_a_site_with_no_country_says_so_rather_than_guessing(sandbox, form_file,
     assert f.country == "" and f.pools is module.UNKNOWN_POOLS, f.country
     assert f.pools["postcode"] is module.POSTCODES, "「不知道」那一档的池子不许被换掉"
     assert common.STATE.shots == 0
+
+
+# ── 锚只认观测：渲染取数点（2026-10-16 第二刀，spec §3.1）────────────────────
+
+def _anchored(**anchor):
+    target = {"selectors": ["#__BVID__408"]}
+    target.update(anchor)
+    return [{"name": "g", "when": None, "steps": [{"action": "click", "target": target}]}]
+
+
+_ANCHORED_FROZEN = {"states": _anchored(label="Competitions", role="a"), "fills": {}}
+
+
+def test_the_product_carries_the_frozen_anchor_not_the_made_up_one():
+    """★ 正身：表里写着编的锚，产物里是卡上的（spec §1.2 ①）。"""
+    src = template.render("sample-anchors", "Thank you", _anchored(label="I made this up"),
+                          [], SAMPLE_PROVENANCE, observed=_ANCHORED_FROZEN)
+    assert "I made this up" not in src
+    assert "Competitions" in src
+
+
+def test_leaving_the_anchor_out_and_making_one_up_converge():
+    """★ 反向激励消失：**漏写**与**编一根**收敛到同一个产物（spec §5.2 ①）。"""
+    common = ("sample-anchors", "Thank you")
+    left_out = template.render(*common, _anchored(), [], SAMPLE_PROVENANCE,
+                               observed=_ANCHORED_FROZEN)
+    made_up = template.render(*common, _anchored(label="I made this up"), [], SAMPLE_PROVENANCE,
+                              observed=_ANCHORED_FROZEN)
+    assert left_out == made_up
+
+
+def test_without_observed_the_table_is_rendered_verbatim():
+    """不传 `observed` ⇒ 那把合并整个不跑（老 job / `tools/rerender_site.py` 一个字不变）。"""
+    src = template.render("sample-anchors", "Thank you", _anchored(label="I made this up"),
+                          [], SAMPLE_PROVENANCE)
+    assert "I made this up" in src
+
+
+def test_an_anchor_key_the_card_lacks_does_not_reach_the_product():
+    """卡上没有的锚键 ⇒ 产物里没有那个键（spec §5.2 ②）。"""
+    src = template.render("sample-anchors", "Thank you", _anchored(label="编的", text="也编的"),
+                          [], SAMPLE_PROVENANCE, observed=_ANCHORED_FROZEN)
+    assert "也编的" not in src
+
+
+def test_a_step_emptied_by_the_merge_is_refused_with_its_index():
+    """★ Review Focus 3：合完认不出来 ⇒ **当场拒稿、点名第几步**，别放它去真站上挂。"""
+    frozen = {"states": [{"name": "g", "when": None,
+                          "steps": [{"action": "click", "target": {}}]}], "fills": {}}
+    live = [{"name": "g", "when": None,
+             "steps": [{"action": "click", "target": {"text": "继续"}}]}]
+    with pytest.raises(ValueError) as caught:
+        template.render("sample-anchors", "Thank you", live, [], SAMPLE_PROVENANCE,
+                        observed=frozen)
+    assert "第 1 步" in str(caught.value)
+
+
+def test_a_step_that_was_never_observed_keeps_its_intent():
+    """卡找不到 ⇒ 原样（「声明里不给选择器、靠运行期 observe 认池子」那一族不许被误杀）。
+
+    ⚠️ 组名要用冻结那份里**没有**的：**同一组、同一步序是找得到卡的**（`find_observed` ②，
+    见 Review Focus 4）—— 那种形状由 `test_a_step_emptied_by_the_merge_is_refused_with_its_index`
+    管，别混。
+    """
+    live = [{"name": "新加的组", "when": None,
+             "steps": [{"action": "click", "target": {"text": "Continue"}}]}]
+    src = template.render("sample-anchors", "Thank you", live, [], SAMPLE_PROVENANCE,
+                          observed=_ANCHORED_FROZEN)
+    assert "Continue" in src
+
+
+def test_fill_targets_are_merged_in_the_rendered_source():
+    """`FILLS[*].target` 一起合（不一起改就是留半扇门）。"""
+    frozen = {"states": [], "fills": {"postcode": {"source": "zip", "kind": "value",
+                                                   "label": "Postcode",
+                                                   "target": {"label": "Postcode",
+                                                              "selectors": ["#postcode"]}}}}
+    #: ⚠️ 哨兵字用 `我编的`、**别用光秃秃的 `编的`**：`编的` 是**骨架自己的正文**里的词
+    #: （`"照真站收过的那个值的形状"编的` 那句在 SKELETON 里）⇒ `assert "编的" not in src`
+    #: **恒假**，跟合并跑没跑一点关系都没有（断言钉的应当是「这一根编的锚」）。
+    live = [{"name": "postcode", "source": "zip", "kind": "value", "label": "Postcode",
+             "target": {"label": "我编的", "selectors": ["#postcode"]}}]
+    #: ⚠️ `states` 不能给空表：`render` 里那条既有的「states 不能空」前置条件会先抛
+    #: （它是**今天的行为**，本刀一个字都没动它 —— 放宽它就改了不传 `observed` 的老调用点）。
+    #: 这条用例的主语是 FILLS 那一半，`states` 只要是个走得过 `_steps_must_be_findable` 的
+    #: 最小非空组即可（冻结那份的 `states` 是空的 ⇒ 这组不被合并，不影响本条断言）。
+    src = template.render("sample-anchors", "Thank you", _one_click_states(), live,
+                          SAMPLE_PROVENANCE, observed=frozen)
+    assert "我编的" not in src
+    assert "'label': 'Postcode'" in src or '"label": "Postcode"' in src
