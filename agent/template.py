@@ -391,7 +391,7 @@ def render(site, success_text, states, fills, provenance, success_urls=None, *,
                          "网址那一格也没给 —— 没有判据的产物会跑到底再说自己成功")
     summary = ("siteforge 从真页面探索出来的重放脚本：按 STATES 走一遍，"
                "见到成功判据（页面上的那串字，或网址里的那一截）就算成功。")
-    return SKELETON.substitute(
+    src = SKELETON.substitute(
         site=site,
         summary=summary,
         success_texts=_lit(texts),
@@ -402,11 +402,61 @@ def render(site, success_text, states, fills, provenance, success_urls=None, *,
         skeleton_sha=SKELETON_SHA,
         stuck_limit=DEFAULT_STUCK_LIMIT,
     )
+    #: ★ 2026-10-16：两段 JS（`_COVER_JS` / `_RECENTER_JS`）是**本模块的常量**，在这儿替进产物。
+    #: 为什么不进 `substitute` 的参数表：那九个是「每趟都不同」那一族，而这两份是骨架自己的常量 ——
+    #: `__TOKEN__` 这一招与 `_LOOP_SKELETON`（`__DEEP__`）同一条路子。
+    #: ⚠️ 替的是 `_lit(...)` 出来的**字面量**：产物那边要有 `_COVER_JS` 这个**名字**（方法体引用它）。
+    return (src.replace("__COVER_JS__", _lit(_COVER_JS))
+               .replace("__RECENTER_JS__", _lit(_RECENTER_JS)))
 
 
 # ⚠️ 骨架里的 $ 只有 `render()` 填的那九个（site / summary / success_texts / **success_urls** /
 #    states / fills / provenance / **skeleton_sha** / stuck_limit）—— `string.Template` 会把任何别的 $ 也当占位符。
 #    其余部分请当作「生成出来的源码」读：注释是给将来读产物的人看的（D16：人话）。
+#: ★ 2026-10-16：那段「谁盖着这一点」的 JS 从 `_cover_once` 里提出来 ——
+#: **循环型骨架（`agent/template_loop.py`）也要用同一把尺子**。
+#: 判据一个字没改：`elementsFromPoint` 整摞、跳 `pointer-events:none`、自己/祖先/后代都算同一个东西。
+#:
+#: ★ 2026-09-28（ukg 真站实测）：用整摞 `elementsFromPoint`，跳过点得穿的。
+#: 单问 `elementFromPoint` 会把 `pointer-events:none` 的透明空遮罩也报成遮挡 ——
+#: 真事：`#qualified-multimodal-host`（967x905、全透明、z-index 拉满、
+#: **pointer-events:none**）盖在整页上，产物于是「礼貌地」拒绝点击，
+#: 后面几个字段全空 ⇒ 提交被站点打回 `The Title field is required`。
+#: 而同一页 `cdp observe` 的 occluded_by 是 None（它判对了）——
+#: 两把尺子对不上就说明这把量错了：**点得穿的，不算盖着**。
+#:
+#: ⚠️ `%s` 吃一个**已 json.dumps 过**的选择器（调用方给）。**只此一份**，不许再拷一份。
+#: ⚠️ 它是**裸语句序列**，**不带** `(function(){…})()` 壳 —— 表那套的 `_ev` 在调用时替它包
+#: （循环型那侧 `cdp.eval` 不包，由调用处自己包；别在这儿包，包了表那套就成了双层包裹）。
+_COVER_JS = (
+    "var all=document.getElementsByTagName('*'), el=null;"
+    "for(var i=0;i<all.length;i++){try{if(all[i].matches(%s)){el=all[i];break;}}catch(e){}}"
+    "if(!el) return '';"
+    "var r=el.getBoundingClientRect();"
+    "if(!r||r.width<=0||r.height<=0) return '';"
+    "var x=r.left+r.width/2, y=r.top+r.height/2;"
+    "if(x<0||y<0||x>window.innerWidth||y>window.innerHeight) return '';"
+    "var stack=document.elementsFromPoint(x,y)||[];"
+    "for(var k=0;k<stack.length;k++){var h=stack[k];var pe='';"
+    "try{pe=getComputedStyle(h).pointerEvents||'';}catch(e){}"
+    "if(pe==='none') continue;"
+    "if(h===el||el.contains(h)||h.contains(el)) return '';"
+    "return 'COVER|'+(h.tagName||'').toLowerCase()+(h.id?('#'+h.id):'')"
+    "+'.'+String(h.className||'').split(' ')[0];}"
+    "return '';"
+)
+
+#: ★ 2026-10-16：`_recenter` 那段（「把目标挪到视口正中」）同理提到模块级 —— 循环型共用。
+#: ⚠️ 它**自带** `(function(){…})()` 壳（本来就那样，一个字符都没动）——
+#: 别顺手「统一」成裸语句：统一就是改判据。
+_RECENTER_JS = (
+    "(function(){var all=document.getElementsByTagName('*');"
+    "for(var i=0;i<all.length;i++){try{if(all[i].matches(%s)){"
+    "all[i].scrollIntoView({block:'center'});return 'ok';}}catch(e){}}"
+    "return '';})()"
+)
+
+
 SKELETON = Template(r'''#!/usr/bin/env python3
 """$site —— siteforge 产出的站点脚本。
 
@@ -1482,6 +1532,13 @@ def _say(action, label, ok, level=None, progress=None, landing=""):
     if progress is False:
         line += "；页面没有变化"
     return line
+
+
+#: ★ 2026-10-16：两段 JS 提到模块级 —— 「谁盖着这一点」与「把目标挪到视口正中」。
+#: 为什么：循环型骨架要用**同一份**（同一把尺子）；它 import 的是 `agent/template.py`
+#: 里那两份常量，渲染时替到这里，**不是**另抄一遍。
+_COVER_JS = __COVER_JS__
+_RECENTER_JS = __RECENTER_JS__
 
 
 class Filler:
@@ -2789,28 +2846,7 @@ class Filler:
 
     def _cover_once(self, selector, frame_id=""):
         """**量一次**：这个选择器指的元素是不是被别的东西盖着。盖着就返回盖它的东西，否则空串。"""
-        js = ("var all=document.getElementsByTagName('*'), el=null;"
-              "for(var i=0;i<all.length;i++){try{if(all[i].matches(%s)){el=all[i];break;}}catch(e){}}"
-              "if(!el) return '';"
-              "var r=el.getBoundingClientRect();"
-              "if(!r||r.width<=0||r.height<=0) return '';"
-              "var x=r.left+r.width/2, y=r.top+r.height/2;"
-              "if(x<0||y<0||x>window.innerWidth||y>window.innerHeight) return '';"
-              #: ★ 2026-09-28（ukg 真站实测）：改用整摞 elementsFromPoint，跳过点得穿的。
-              #: 单问 elementFromPoint 会把 pointer-events:none 的透明空遮罩也报成遮挡 ——
-              #: 真事：`#qualified-multimodal-host`（967x905、全透明、z-index 拉满、
-              #: **pointer-events:none**）盖在整页上，产物于是「礼貌地」拒绝点击，
-              #: 后面几个字段全空 ⇒ 提交被站点打回 `The Title field is required`。
-              #: 而同一页 `cdp observe` 的 occluded_by 是 None（它判对了）——
-              #: 两把尺子对不上就说明这把量错了：**点得穿的，不算盖着**。
-              "var stack=document.elementsFromPoint(x,y)||[];"
-              "for(var k=0;k<stack.length;k++){var h=stack[k];var pe='';"
-              "try{pe=getComputedStyle(h).pointerEvents||'';}catch(e){}"
-              "if(pe==='none') continue;"
-              "if(h===el||el.contains(h)||h.contains(el)) return '';"
-              "return 'COVER|'+(h.tagName||'').toLowerCase()+(h.id?('#'+h.id):'')"
-              "+'.'+String(h.className||'').split(' ')[0];}"
-              "return '';")
+        js = _COVER_JS
         got = self._ev(js % json.dumps(selector), frame_id).strip()
         # ⚠️ **只认带 `COVER|` 前缀的答复**。空串 / `null` / 任何别的形状都是「量不出来」——
         # 一律**不当成盖着**（当成盖着会让每一步都无缘无故不点；不认前缀则会在

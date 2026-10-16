@@ -4166,3 +4166,49 @@ def test_fill_targets_are_merged_in_the_rendered_source():
                           live, SAMPLE_PROVENANCE, observed=frozen)
     assert "我编的" not in src
     assert "'label': 'Postcode'" in src or '"label": "Postcode"' in src
+
+
+# ── 判据同源：那段 JS **只有一份**（循环型也要用同一把尺子）★ 2026-10-16 ──────
+
+def _skeleton_method_body(method: str) -> str:
+    """从**骨架文本**里切出某个方法的正文（含缩进）。
+
+    ⚠️ **别用 `inspect.getsource(template.Filler._cover_once)`**：`Filler` **不是本模块的类** ——
+    `agent/template.py` 第 421 行起是一整段 `string.Template`（**产物**的源码），
+    那个 `class Filler` 是产物里的类，`template.Filler` 这个属性**根本不存在**。
+    「方法体里还有没有第二份 JS」问的就是**这段骨架文本**。
+    """
+    src = template.SKELETON.template
+    i = src.index("    def %s(" % method)
+    j = src.find("\n    def ", i + 1)          # 下一个同级方法 = 本方法的末尾
+    return src[i:] if j < 0 else src[i:j]
+
+
+def test_the_cover_js_is_one_module_level_constant():
+    """★ 本刀：那段 JS 抽出去 = **共享的同一份**（循环型也要用同一把尺子）。
+
+    判据两条：① 常量在、且带 `%s` 占位（调用方 `% json.dumps(sel)`）；
+    ② `_cover_once` 用的**就是它**（不是另一份逐字拷贝 —— 那正是「两把尺子」的病根）。
+    ⚠️ **不许**按整份源码数 `elementsFromPoint`：`template.py` 里本来就有好几处
+    （注释 / 别的 JS），那样数必红。**只数这一份 JS 自己**，再确认调用点引用它。
+    """
+    from agent import template as T
+    assert isinstance(T._COVER_JS, str) and "%s" in T._COVER_JS
+    assert T._COVER_JS.count("elementsFromPoint") == 1
+    assert "pointerEvents" in T._COVER_JS
+    body = _skeleton_method_body("_cover_once")
+    assert "_COVER_JS" in body, "`_cover_once` 没用那份共享常量（另抄了一份？）"
+    assert "elementsFromPoint" not in body, "方法体里还留着第二份 JS"
+
+
+def test_the_rendered_product_defines_those_same_constants():
+    """⭐ 只搬字符串那一刀**最容易漏**的一格：模板里提出来了、产物里没人定义 ⇒ `NameError`。
+
+    产物跑起来真要的是**产物自己**有 `_COVER_JS` / `_RECENTER_JS`（骨架是 `string.Template`，
+    两个常量在 `render()` 里替进去）。所以这一条钉「渲出来的源码里有定义」，不只是「模板里有」。
+    """
+    src = template.render("sample-cover", "Thank you", _one_click_states(selectors=["#go"]), [],
+                          SAMPLE_PROVENANCE)
+    for name in ("_COVER_JS", "_RECENTER_JS"):
+        assert "\n%s = " % name in src, "产物里没定义 %s —— 它一跑就是 NameError" % name
+    assert "elementsFromPoint" in src and "scrollIntoView" in src

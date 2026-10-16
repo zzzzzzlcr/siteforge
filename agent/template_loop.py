@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 
-from agent.template import _json_lit, _lit, _provenance_literal
+from agent.template import _COVER_JS, _RECENTER_JS, _json_lit, _lit, _provenance_literal
 
 __all__ = ["render_loop", "funnel_states", "LOOP_PROVENANCE_KEEP", "DEFAULT_READ_JS",
            "LOOP_MIN_STATES", "LOOP_IDLE_LIMIT", "LOOP_MAX_STEPS", "LOOP_BUSY_TIMEOUT"]
