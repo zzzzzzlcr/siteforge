@@ -143,6 +143,17 @@ const CASES = [
     pg.document.elementsFromPoint = () => [pg.nodes[0]];
     return pg;
   }, ''],
+
+  // ★ Ruling 26：上面那格是 **26 字** ⇒ 光靠「≤24 字」那道长度闸就能让它返空 ⇒
+  // **它分辨不出「锚定」和「长度闸」**（把 aria-label 改回**子串**匹配，那格照样绿）。
+  // 这一格 **12 字**（≤24）：只有**锚定**能拦住它 —— 子串的话它会答 `#keep-open2|Do not close`。
+  ['广告 creative：aria-label 是散文（12 字 ≤24）—— 「Do not close」不许认', () => {
+    const pg = page([['button', { id: 'keep-open2',
+                                  attrs: { 'aria-label': 'Do not close' },
+                                  rect: { width: 88, height: 24, top: 160, bottom: 184 } }]]);
+    pg.document.elementsFromPoint = () => [pg.nodes[0]];
+    return pg;
+  }, ''],
 ];
 
 const results = [];
