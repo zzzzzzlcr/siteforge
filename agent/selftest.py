@@ -50,7 +50,8 @@
    「卡在第几步」= trace 里第一条**承重步** `ok == false` 的行的 `step` ——
    **不读 `progress`**（老 cdp 上它恒 `null`，旁边有 `progress_why`）。
    ★ 2026-09-23（用户裁定，拿 vogue 那趟当案子）：**辅助步**（`AUXILIARY_ACTIONS`：
-   `scroll` / `wait`）的失败**不否决**这一遍 —— 它们只做「把元素滚进视口 / 等一下」，
+   `scroll` / `wait` / **`popup`**（★ 2026-10-16：循环型那行弹层 —— 环境噪声，
+   同见那个常量那一处的理由））的失败**不否决**这一遍 —— 它们只做「把元素滚进视口 / 等一下」，
    没成时**后面那一步自己也会滚到位**（真站：`滚不动「GET DIGITAL ACCESS」`，
    而流程照样推到成功页、退出码 0）。把它判成「没过」的代价是**一个实际成功的脚本
    卡住上传按钮**，运营只能回来问人 —— 那正是这个模块要消灭的形状。
@@ -433,6 +434,22 @@ def _read_trace(path) -> tuple:
     return lines, bad
 
 
+#: ★ 2026-10-16（Task 5 复核 Important 2）：**这一行有没有「现场」可搬**。
+#: 由头：循环型产物**每次动手之前**先落一行弹层（`action="popup"` —— 它只有
+#: `note` / `progress_why`，**没有** `target` / `selector_used` / `url` / `page_sig` / `scene`），
+#: 而它**永远排在这一步自己那一行之前** ⇒ 「取该步第一行」会挑中它，递给改稿模型的是
+#: **一行空证据**（`动作 popup` / 实际用的选择器 `None` / 当时网址 `None` / 现场 `None`），
+#: 而真正那一行就在它**后面一行**被跳过。表那套根本不写这一类行 ⇒ 这是循环型新引入的形状。
+_SCENE_FIELDS = ("scene", "selector_used", "url", "page_sig", "target")
+
+
+def _has_scene_material(row) -> bool:
+    """这一行有没有可搬的「现场」（见 `_SCENE_FIELDS`）。"""
+    if not isinstance(row, dict):
+        return False
+    return any(row.get(k) for k in _SCENE_FIELDS)
+
+
 def scene_of(run) -> Optional[dict]:
     """**卡住那一刻的现场** —— 这一遍的 trace 里，最该给人（和改稿那双手）看的那一行。
 
@@ -465,7 +482,12 @@ def scene_of(run) -> Optional[dict]:
         return None
     step = getattr(run, "failed_step", None)
     if step is not None:
-        row = next((r for r in rows if r.get("step") == step), None)
+        #: ★ 2026-10-16（Task 5 复核 Important 2）：这一**步**里**优先挑有现场可搬的那一行**
+        #: （弹层那种 meta 行全空 —— 挑中它等于把「现场」整格交白卷）；
+        #: ⚠️ 整步都没得搬就退回**第一行**（老形状）：**不许**越过这一步去拿别步的行 ——
+        #: 那比不给更坏（读的人以为那就是判它没过的那一步，见下面那条负控）。
+        cand = [r for r in rows if r.get("step") == step]
+        row = next((r for r in cand if _has_scene_material(r)), cand[0] if cand else None)
         why = "这一遍卡在第 %s 步（trace 里第一条**承重步**没做成的那行）" % step
     else:
         row = rows[-1]
@@ -985,7 +1007,15 @@ def _half_executed_states(lines: list) -> list:
 #: 辅助步：它们**不为「做成某件事」负责**，只为「把它弄到能做成的位置」——
 #: 所以它们没做成时，不许拿它们否决整遍（见 `_verdict` 与模块 docstring 第 1 条）。
 #: ★ 2026-09-23 用户裁定：判据要能分开「某一步没做成」与「这一趟没成」。
-AUXILIARY_ACTIONS = ("scroll", "wait")
+#: ★ 2026-10-16（Task 5 复核 Important 1）：**`popup` 也是辅助步** —— 循环型产物**每次动手
+#: 之前**先落一行弹层（`action="popup"`，`ok` 是三值），它与 `scroll`/`wait` 同一档：
+#: 弹层是**环境噪声**（新窗口有、上一趟点掉过就没有、还可能后冒出来）⇒ 「点完复核：这一屏
+#: **还有**它」那一行**不许否决整趟**（spec §3.5：探针自己永远不许变成新的失败点）。
+#: ⚠️ 它照旧**点名**（辅助档都会进那句「带瑕疵」的 `note`）—— 放行不等于不说。
+#: ⚠️ **只放这一类**：多放一个动作名就是把真信号静音（负控钉在
+#: `test_a_failed_popup_row_does_not_take_the_run_down` 里）。
+#: （产物那行**另带** `soft` 那一格 = 「这一类天生看会话脸色」的记号 —— 两者是**与**关系。）
+AUXILIARY_ACTIONS = ("scroll", "wait", "popup")
 
 
 def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
@@ -1075,8 +1105,14 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
                 % (failed_step, str((first_hard or {}).get("action") or "?"), step_said))
     elif rc == 0 and first_bad is not None:
         # 只有辅助步没做成 ⇒ **过了**，但按上面那条规矩点名（不点名就是把失败藏起来）。
+        #: ★ 2026-10-16（Task 5 复核 Ruling 19-③）：**数「步」不数「行」** —— 同一个 `step`
+        #: 上可能有两行（循环型：那行弹层 + 这一步自己的动作行）⇒ 照行数报，会把「一步里
+        #: 两次瑕疵」说成「两步」。没有 `step` 的行**各算一步**（老形状：宁可多数，也不并）。
+        #: ⚠️ 下面那串**逐行点名**不动：哪一行都得看得见（放行 ≠ 不说）。
+        _bad_steps = (len({ln.get("step") for ln in bad_rows if ln.get("step") is not None})
+                      + sum(1 for ln in bad_rows if ln.get("step") is None))
         note = ("**跑通了**（退出码 0）；但有 %d 步是**带瑕疵**过的 —— %s"
-                % (len(bad_rows), "；".join(
+                % (_bad_steps, "；".join(
                     "第 %s 步（%s）没做成：%s" % (ln.get("step"), str(ln.get("action") or "?"),
                                                 str(ln.get("note") or "")[:80])
                     for ln in bad_rows)))

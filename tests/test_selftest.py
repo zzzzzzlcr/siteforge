@@ -267,6 +267,48 @@ def test_the_scene_comes_from_the_step_that_was_judged_hard_failed(tmp_path):
     assert "text" not in scene["现场"], scene
 
 
+def test_the_scene_skips_the_popup_meta_row_and_takes_the_real_one(tmp_path):
+    """★ 2026-10-16（Task 5 复核 Important 2）：挑「现场」那一行时**要跳过弹层那种 meta 行**。
+
+    由头：循环型产物**每次动手之前**先落一行弹层（`fill` / `click` 的第一句）⇒ 它**永远排在
+    这一步自己那一行之前**，而这儿原来取的是该步**第一行** ⇒ 递给改稿模型的是**一行空证据**
+    （`动作 popup` / 实际用的选择器 `None` / 当时网址 `None` / 现场 `None`），
+    而真正那一行（被盖着不点，带 `selector_used` / `url` / `page_sig` / `scene`）**就在它
+    后面一行**被跳过。表那套**根本不写**这一类行 ⇒ 这是循环型新引入的形状。
+
+    判据：那一行有没有**现场可搬**（`scene` / `selector_used` / `url` / `page_sig` / `target`
+    任一非空）—— 全空就接着往下找；整步都没得搬就退回**第一行**（老形状，不乱挑）。
+    """
+    rows = [
+        {"step": 2, "action": "popup", "ok": None, "progress": None, "soft": True,
+         "note": "这一屏没探到它 —— **它本来就不在**（这一次没量到覆盖现场）",
+         "progress_why": "这一屏没探到它 —— **它本来就不在**（这一次没量到覆盖现场）"},
+        {"step": 2, "action": "click", "ok": False, "target": {"token": "\u0001Yes"},
+         "selector_used": '[data-sf-pick="1"]', "progress": None,
+         "url": "https://funnel.test/quiz", "page_sig": "Pick one … Yes …",
+         "scene": {"ready": "complete", "overlay": "div#onetrust-banner", "at_point": "",
+                   "texts": ["Yes", "No"], "trouble": ""},
+         "note": "挑中的那一颗被 div#onetrust-banner 盖着 —— 这一下不点"},
+    ]
+    scene = selftest.scene_of(_run_pointing_at(tmp_path, rows, failed_step=2))
+    assert scene["动作"] == "click", ("摆的是那行弹层（空证据）—— 真正那行就在它后面：%r" % scene)
+    assert scene["实际用的选择器"] == '[data-sf-pick="1"]', scene
+    assert "盖着" in scene["脚本自己那句话"], scene
+    assert scene["现场"]["盖在上面的是什么"] == "div#onetrust-banner", scene
+    assert scene["当时网址"] == "https://funnel.test/quiz", scene
+
+    #: 负控①：整步都是 meta 行（没有一行有现场可搬）⇒ 退回**第一行**（老形状，不乱挑别步的）
+    only_meta = [{"step": 1, "action": "click", "ok": True, "selector_used": "#a", "note": "点了"},
+                 {"step": 2, "action": "popup", "ok": None, "note": "这一屏没探到它"},
+                 {"step": 2, "action": "none", "ok": None, "note": "没有可动作的东西（1）"}]
+    got = selftest.scene_of(_run_pointing_at(tmp_path, only_meta, failed_step=2, name="meta"))
+    assert got["动作"] == "popup", ("整步都没得搬 ⇒ 照旧取第一行（不许越过这一步去拿别步的）：%r"
+                                    % got)
+    #: 负控②：**号对不上**照旧 `None`（这一条不许被「往下找」弄丢）
+    assert selftest.scene_of(_run_pointing_at(tmp_path, only_meta, failed_step=9,
+                                              name="off")) is None
+
+
 def test_without_a_failed_step_the_scene_is_the_last_one_and_says_so(tmp_path):
     """★ 没有哪一步「没做成」时（真事：d037 那趟 `failed_step` 就是空的）：摆**最后一步**。
 
@@ -963,6 +1005,60 @@ def test_a_run_that_walked_on_to_success_passes_even_though_a_load_bearing_step_
            dict(lines[3]), dict(lines[4], success_in_page=False)]
     ok3, step3, _n3 = selftest._verdict(0, False, mid, 0, "", "", 600)
     assert ok3 is False and step3 == 11, (ok3, step3)
+
+
+def test_a_failed_popup_row_does_not_take_the_run_down():
+    """★ 2026-10-16（Task 5 复核 Important 1）：**循环型那行弹层（`action="popup"`）是辅助档**。
+
+    由头：Task 5 起，循环型产物**每次动手之前**先落一行弹层（`action="popup"`，`ok` 是三值）。
+    它没做成那一次（「点完复核：这一屏**还有**「同意条」…」）`ok=False` ⇒ 那一行原先被判
+    **承重步失败** ⇒ 「退出码说成功，但 trace 里第 2 步（**承重步** popup）没做成（…）——
+    按没做成算」：**一趟跑通的自测被一行环境噪声否决**。它与 `scroll` / `wait` **同一档**：
+    弹层是**环境噪声**（新窗口有、上一趟点掉过就没有、还可能后冒出来）—— spec §3.5：
+    探针自己**永远不许变成新的失败点**。
+
+    ⚠️ 产物那行**还带 `soft: true`**（工作区那份 `selftest.py` 认它）—— 这一条**故意不写那一格**：
+    要钉的是「**弹层这一类进 `AUXILIARY_ACTIONS`**」，而这一件在**提交态**是唯一的保护
+    （`soft` 过滤属别人未提交那半）。两处是**与**关系，哪一边在都成立。
+    """
+    lines = [
+        {"step": 1, "action": "click", "ok": True, "note": "答了第 1 题"},
+        {"step": 2, "action": "popup", "ok": False, "progress": None,
+         "note": "点完复核：这一屏**还有**「同意条」（探之前有、探之后还有）—— 这一下没能关掉"},
+        {"step": 2, "action": "click", "ok": True, "note": "答了第 2 题"},
+        {"step": 3, "action": "success", "ok": True, "note": "到了成功页"},
+    ]
+    ok, failed_step, note = selftest._verdict(0, False, lines, 0, "", "", 600)
+    assert ok is True, ("弹层那一行的失败把整趟自测否决了（它是环境噪声，不该有这种权力）：%s"
+                        % note)
+    assert failed_step is None, "辅助档的失败 ≠ 卡在第几步"
+    assert "popup" in note, "辅助档照旧**点名** —— 不点名就是把失败藏起来：%s" % note
+
+    #: 负控：**真承重步**失败照旧否决（辅助档只放「弹层」这一类，不许顺手放别的）
+    hard = lines + [{"step": 4, "action": "click", "ok": False,
+                     "note": "页面上没找到「Continue」，这一步没做成"}]
+    ok2, step2, note2 = selftest._verdict(0, False, hard, 0, "", "", 600)
+    assert ok2 is False and step2 == 4, (ok2, step2, note2)
+
+
+def test_the_blemished_count_counts_steps_not_rows():
+    """★ 2026-10-16（Task 5 复核 Ruling 19-③）：那句「有 N **步**是带瑕疵过的」**数步不数行**。
+
+    同一个 `step` 上可能有两行（循环型：那行弹层 + 这一步自己的动作行）⇒ 照行数报，
+    就会把「一步里的两次瑕疵」说成「两步」。没有 `step` 的行**各算一步**（老形状：
+    宁可多数，也不把它们并成一个）。
+    """
+    lines = [
+        {"step": 1, "action": "click", "ok": True, "note": "答了第 1 题"},
+        {"step": 2, "action": "popup", "ok": False, "note": "点完复核：这一屏**还有**「同意条」"},
+        {"step": 2, "action": "scroll", "ok": False, "note": "滚不动"},
+        {"step": 3, "action": "wait", "ok": False, "note": "等超时"},
+        {"step": 4, "action": "success", "ok": True, "note": "到了成功页"},
+    ]
+    ok, _step, note = selftest._verdict(0, False, lines, 0, "", "", 600)
+    assert ok is True, note
+    assert "有 2 步是**带瑕疵**过的" in note, (
+        "第 2 步上两行、第 3 步上一行 ⇒ 是**2 步**，不是 3「步」：%s" % note)
 
 
 def test_a_run_that_walked_everything_but_never_saw_success_is_a_failure(env):
