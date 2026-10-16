@@ -4144,21 +4144,25 @@ def test_a_step_that_was_never_observed_keeps_its_intent():
 
 
 def test_fill_targets_are_merged_in_the_rendered_source():
-    """`FILLS[*].target` 一起合（不一起改就是留半扇门）。"""
-    frozen = {"states": [], "fills": {"postcode": {"source": "zip", "kind": "value",
-                                                   "label": "Postcode",
-                                                   "target": {"label": "Postcode",
-                                                              "selectors": ["#postcode"]}}}}
-    #: ⚠️ 哨兵字用 `我编的`、**别用光秃秃的 `编的`**：`编的` 是**骨架自己的正文**里的词
-    #: （`"照真站收过的那个值的形状"编的` 那句在 SKELETON 里）⇒ `assert "编的" not in src`
-    #: **恒假**，跟合并跑没跑一点关系都没有（断言钉的应当是「这一根编的锚」）。
+    """`FILLS[*].target` 一起合（不一起改就是留半扇门）。
+
+    ⚠️ 两处**别照我第一版写**（都是它的坑）：
+      · `states=[]` 会先撞 `render` 那句「states 不能空」⇒ 给一个最小的非空组；
+      · 哨兵字**别用光秃秃的 `编的`** —— `编的` 是**骨架自己的正文**里的词
+        （`"照真站收过的那个值的形状"编的` 那句就在 SKELETON 里）⇒ `assert "编的" not in src`
+        **恒假**，跟合并跑没跑一点关系都没有。用 `我编的`。
+      · `fills` 用 **list 形状**（老产物里就有这一族）—— 它同时钉住「合并前要先用
+        `_fills_map` 归一化」（见下面 Step 3 那条）。
+    """
+    frozen = {"states": [{"name": "g", "when": None,
+                          "steps": [{"action": "click", "target": {"text": "Go"}}]}],
+              "fills": {"postcode": {"source": "zip", "kind": "value",
+                                     "label": "Postcode",
+                                     "target": {"label": "Postcode",
+                                                "selectors": ["#postcode"]}}}}
     live = [{"name": "postcode", "source": "zip", "kind": "value", "label": "Postcode",
              "target": {"label": "我编的", "selectors": ["#postcode"]}}]
-    #: ⚠️ `states` 不能给空表：`render` 里那条既有的「states 不能空」前置条件会先抛
-    #: （它是**今天的行为**，本刀一个字都没动它 —— 放宽它就改了不传 `observed` 的老调用点）。
-    #: 这条用例的主语是 FILLS 那一半，`states` 只要是个走得过 `_steps_must_be_findable` 的
-    #: 最小非空组即可（冻结那份的 `states` 是空的 ⇒ 这组不被合并，不影响本条断言）。
-    src = template.render("sample-anchors", "Thank you", _one_click_states(), live,
-                          SAMPLE_PROVENANCE, observed=frozen)
+    src = template.render("sample-anchors", "Thank you", _anchored(label="Competitions"),
+                          live, SAMPLE_PROVENANCE, observed=frozen)
     assert "我编的" not in src
     assert "'label': 'Postcode'" in src or '"label": "Postcode"' in src

@@ -362,7 +362,9 @@ def render(site, success_text, states, fills, provenance, success_urls=None, *,
     （它是候选，是改稿那双手要换的东西）。
     ⚠️ 合并排在 `_steps_must_be_findable` **之前**：判就该判**要写出去的那一份**
     —— 合完认不出来的步当场拒稿、点名第几步（spec §3.2）。
-    ⚠️ **不传 = 与从前逐字节相同**（老 job / `tools/rerender_site.py` 那条重渲的路）。
+    ⚠️ **不传 = 与从前逐字节相同**（老 job / `tools/rerender_site.py` 那条重渲的路；
+    **同一份 `agent/template.py` 版本内** —— 跨版本只差 `SKELETON_SHA` 那一行，
+    而它就是**本文件的 sha256 前 16 位**（`_skeleton_sha()`）⇒ 改本文件它必变）。
     """
     if not site or not str(site).strip():
         raise ValueError("site 不能空")
