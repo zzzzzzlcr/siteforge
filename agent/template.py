@@ -425,6 +425,12 @@ def render(site, success_text, states, fills, provenance, success_urls=None, *,
 #: 而同一页 `cdp observe` 的 occluded_by 是 None（它判对了）——
 #: 两把尺子对不上就说明这把量错了：**点得穿的，不算盖着**。
 #:
+#: ⚠️ **今天不穿 shadow，量到要用再说**（2026-10-16 定的）：这一段走的是
+#: `document.getElementsByTagName('*')`，而循环型自己那套 JS 是 `deepAll`（**穿**）。
+#: 真站上量过（读数在 `docs/probes/2026-10-16-loop-cover/`）：**影子里一个可点都没有**
+#: （闭 shadow 一次没见过）⇒ 穿与不穿**量不出差别**，今天照不穿这版走；
+#: 将来真量到「落点长在 shadow 里」，这里要跟着改（改的是**判据**，两套骨架一起变）。
+#:
 #: ⚠️ `%s` 吃一个**已 json.dumps 过**的选择器（调用方给）。**只此一份**，不许再拷一份。
 #: ⚠️ 它是**裸语句序列**，**不带** `(function(){…})()` 壳 —— 表那套的 `_ev` 在调用时替它包
 #: （循环型那侧 `cdp.eval` 不包，由调用处自己包；别在这儿包，包了表那套就成了双层包裹）。

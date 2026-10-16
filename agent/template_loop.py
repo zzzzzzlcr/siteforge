@@ -141,6 +141,13 @@ def render_loop(site, success_text, success_urls, fills, provenance, *,
     #: ⚠️ 这一下放在**最后**：`__READ_JS__` 那一格到这儿已经是一个 **JSON 字符串字面量**了，
     #: 替进去的是**原文**（所以 `DEEP_JS` 里不许有 `"` / `\`）。
     src = src.replace("__DEEP__", DEEP_JS)
+    #: ★ 2026-10-16：落点判据那两段 JS **与固定步骤表同一份**（`agent/template.py` 里那两个
+    #: 模块级常量就是它们）—— 在这儿替成**产物的常量**（与 `render()` 里那一处同一条路：
+    #: 产物那边要有 `_COVER_JS` / `_RECENTER_JS` 这两个**名字**，方法体引用它们）。
+    #: ⚠️ 替的是 `_lit(...)` 出来的**字面量**；两段 JS 里既没有 `$` 也没有 `__DEEP__`，
+    #: 所以放在 `__DEEP__` 这一步**之后**同样安全。
+    src = src.replace("__COVER_JS__", _lit(_COVER_JS))
+    src = src.replace("__RECENTER_JS__", _lit(_RECENTER_JS))
     return src
 
 
@@ -284,6 +291,27 @@ COOKIE_GONE_JS = r"""(function(){__DEEP__
       if(s===words[j]&&e.tagName!=='BODY')return 'still-here';}}
   return 'gone';})()"""
 
+#: ★ 2026-10-16：**落点判据**那几笔预算 —— 与固定步骤表**同一套数**（`agent/template.py` 里
+#: 同名的几个常量就是它们，那边的量证也是这几个数的来路）。**一个数都不许改**：
+#: 两套骨架量的是同一件事，数不一样就又是「两把尺子」。
+#: ⚠️ `COVER_WAIT_SECONDS` 是「**目标被盖着时最多等它多久**」（等的是加载蒙版 ——
+#: 它自己会走；35.0 是两趟真站量出来的寿命上界，不是拍的）；
+#: `COVER_POLL_SECONDS` 是等的时候每隔多久再量一眼；`RECENTER_TRIES` 是等的同时
+#: 最多把目标往视口正中挪几次（粘性页眉那类只站错地方，挪一下就躲开了 —— **有界**）。
+COVER_WAIT_SECONDS = 35.0
+COVER_POLL_SECONDS = 0.4
+RECENTER_TRIES = 2
+
+#: ★ 2026-10-16：那两段 JS 是**模块级源字符串**（`agent/template.py` 里同名的那两份 ——
+#: 表那套在用，这边**同一把尺子**：判据只写一份，改一次两套都变）。
+#: ⚠️ `_COVER_JS` 是**裸语句序列**（**不带** `(function(){…})()` 壳）：表那套的 `_ev` 在
+#: 调用时替它包，而这一份的 `cdp.eval` **不替调用方包** ⇒ **调用处自己包**（见 `_cover_once`）。
+#: 别在这儿包：包了表那套那边就成了双层包裹。
+_COVER_JS = __COVER_JS__
+#: ⚠️ `_RECENTER_JS` 相反 —— 它**自带** `(function(){…})()` 壳（本来就那样，一个字符没动）
+#: ⇒ 调用处**不要**再包一层（双层包裹当场坏，见 `_recenter`）。
+_RECENTER_JS = __RECENTER_JS__
+
 class Filler:
     def __init__(self, ws_url, form_file, correlation_id, task_id="",
                  trace_path="", no_report=False, stop_at=0):
@@ -412,10 +440,19 @@ class Filler:
                   "e.setAttribute('data-sf-fill','1');return 'marked';}}return 'none';})()")
             if "marked" not in (self.cdp.eval(js, "") or ""):
                 return False
+            #: ★ 本刀：动手之前先量落点 —— 被盖着就不动手，并**如实报**（不是「没找到」）
+            if self._covered_before_acting('[data-sf-fill="1"]', "填"):
+                return False
             return self._filled_ok(self.cdp.form('[data-sf-fill="1"]', value=value))
         if token.startswith(BY_ID):
-            return self._filled_ok(self.cdp.form('[id="%s"]' % token[len(BY_ID):], value=value))
-        return self._filled_ok(self.cdp.form('[data-testid="%s"]' % token, value=value))
+            sel = '[id="%s"]' % token[len(BY_ID):]
+            if self._covered_before_acting(sel, "填"):
+                return False
+            return self._filled_ok(self.cdp.form(sel, value=value))
+        sel = '[data-testid="%s"]' % token
+        if self._covered_before_acting(sel, "填"):
+            return False
+        return self._filled_ok(self.cdp.form(sel, value=value))
 
     @staticmethod
     def _filled_ok(out) -> bool:
@@ -639,13 +676,157 @@ class Filler:
                   "e.setAttribute('data-sf-pick','1');return 'marked';}}return 'none';})()")
             if "marked" not in (self.cdp.eval(js, "") or ""):
                 return False
+            #: ★ 本刀：动手之前先量落点 —— 被盖着就不动手，并**如实报**（不是「没找到」）
+            if self._covered_before_acting('[data-sf-pick="1"]', "点"):
+                return False
             self.cdp.click('[data-sf-pick="1"]')
             return True
         if token.startswith(BY_ID):
             #: 只有 `id` 的元素（见 `BY_ID` 那段）：按 `[id=…]` 点。
-            self.cdp.click('[id="%s"]' % token[len(BY_ID):])
+            sel = '[id="%s"]' % token[len(BY_ID):]
+            if self._covered_before_acting(sel, "点"):
+                return False
+            self.cdp.click(sel)
             return True
-        self.cdp.click('[data-testid="%s"]' % token)
+        sel = '[data-testid="%s"]' % token
+        if self._covered_before_acting(sel, "点"):
+            return False
+        self.cdp.click(sel)
+        return True
+
+    # ── 落点判据（★ 2026-10-16：循环型第一次有它 —— 与固定步骤表**同一把尺子**）──────
+    #
+    # 判据（那段 JS）**只写一份**：它住在 `agent/template.py` 里，两套骨架渲的时候取同一份；
+    # 这边只有**挂点**与**报文**。为什么循环型也要它（与表那套同一条真站证据）：
+    # 拿 token 直接动手、不看目标上有没有盖着东西 —— 点到 consent 弹层上，`cdp` 照样回 ok
+    # （那句回话说的是「选择器命中 1 个」，**不是**「点到的就是它」）⇒ 这一步被记成做成了、
+    # 页面纹丝不动，后面全塌（2026-09-18 gowizard）。
+    #
+    #: 这一趟里等过、但没等到它走的遮挡物（`"tag#id.class"`）—— 与表那套同一个字段名。
+    #: ⚠️ 类默认值用**不可变**的 `frozenset()`、赋值时**重新绑一个集合**（见 `_covered_by`）：
+    #: `object.__new__(Filler)` 那种实例也要够得着；可变对象当类默认值会让所有实例共享一份
+    #: （老坑）。
+    _stuck_covers = frozenset()
+    #: 这一步**因为被盖着而没能动手**时，盖着它的那个东西（空串 = 不是这个原因）——
+    #: 每一轮开头清零（见 `run()`），报文那边照它说「被挡着」而不是「没找到」。
+    cover_why = ""
+
+    def _cover_once(self, selector, frame_id=""):
+        """**量一次**：这个选择器指的元素是不是被别的东西盖着。盖着就返回盖它的东西，否则空串。"""
+        js = _COVER_JS
+        #: ⚠️ 这一份的 `cdp.eval` 是 `subprocess.run([CDP_PATH,"eval",script])`，**不替调用方包**
+        #: `(function(){…})()`；而 `_COVER_JS` 是**裸语句序列**（里面一句裸 `return '';`）
+        #: ⇒ **在这儿包一层**（表那套靠 `_ev` 包，这一份得自己来）。不包 = 浏览器那边的
+        #: SyntaxError ⇒ 恒返空 ⇒ 落点判据永远「量不到」，而账上看起来一切正常
+        #: （2026-10-10 blavity 那次的假通过就是这个形状）。
+        got = str(self.cdp.eval("(function(){%s})()" % (js % json.dumps(selector)),
+                                frame_id) or "").strip()
+        # ⚠️ **只认带 `COVER|` 前缀的答复**。空串 / `null` / 任何别的形状都是「量不出来」——
+        # 一律**不当成盖着**（当成盖着会让每一步都无缘无故不点；不认前缀则会在
+        # 「这条 cdp 的 eval 根本不会跑这段」时把它的乱答复读成遮挡）。
+        if not got.startswith("COVER|"):
+            return ""
+        return got[len("COVER|"):]
+
+    def _covered_by(self, selector, frame_id="", until=None):
+        """这个选择器指的元素**是不是被别的东西盖着**。盖着就返回盖它的东西（读，不动页面）。
+
+        **盖着不立刻下结论**：先等一等（`until`，单调时钟的截止点；`None` = 不等）。
+        等的是**加载蒙版** —— 页面还没加载完，它自己会走（用户 2026-09-18：
+        「他不就是加载蒙版吗？没加载完而已」）。**等到头了还不走，才真的当它盖着。**
+
+        `until` 由调用方按**步**给（同一歩所有候选共享一笔预算，见 `COVER_WAIT_SECONDS`）：
+        不共享的话，一个被盖住的候选就赔一份，十来步会慢到没法用。
+
+        为什么要它（同一条真站证据）：快路点击拿声明选择器**直接点**，不看目标上有没有盖着
+        东西 —— 点到 consent 弹层上，cdp 照样回 ok（`match_count: 1` 说的是「选择器命中 1 个」，
+        **不是**「点到的就是它」）。于是这一步被记成做成了，页面纹丝不动，后面全塌。
+        表那套的 `_usable` 那条遮挡闸只在回退链上（要 observe 模型），快路没有；
+        循环型更干脆：**一支落点闸都没有**（拿到 token 就直接发 cdp）—— 这个函数就是补那一格。
+
+        判据与表那套的 `_usable` 同源（**盖着 = 不能动手**），只是换成在页面上直接量：
+        取元素中心点，问「那个点上站着的是谁」，接受自己 / 自己的后代 / 自己的祖先
+        （文字节点、label 包 input 这类都是「同一个东西」），别的一律算盖着。
+        量不出来（元素不在、零尺寸、点在视口外）**返回空串**（= 不加判断）——
+        那种情况由 cdp 自己的滚动与报错去说，不在这里替它下结论。
+        """
+        waited = False
+        recentered = 0
+        while True:
+            cover = self._cover_once(selector, frame_id)
+            # 「没盖着」与「量不出来」都是空串 —— 两种都**不拦**，直接放行。
+            if not cover:
+                return ""
+            # 这个东西**这一趟里已经赖着不走过了** —— 它不是加载蒙版，是真挡路。
+            # 不再等（加载蒙版会走，赖过一次的不会）：不然每步白赔一笔，
+            # 十来步就是一分多钟的空等。
+            if cover in self._stuck_covers:
+                return cover
+            if until is None or time.monotonic() >= until:
+                if waited:
+                    # 等过还没走 —— 它已经不是「还没好」，是「挡住了」。记下来（上面那条），
+                    # 并把这件事说出来：别让读日志的人以为我们压根没等。
+                    # **重新绑一个新集合**，不去改手上那个 —— 类默认值是 `frozenset`
+                    # （见类属性那里），`object.__new__(Filler)` 的实例拿到的就是它；
+                    # 而可变对象当类默认值会让所有实例共享一份（老坑）。
+                    self._stuck_covers = self._stuck_covers | {cover}
+                    self.log.info("[%s] 等了 %.1f 秒，%s 还盖着这个元素 —— "
+                                  "不等了（它这一趟里已经不是加载蒙版了）",
+                                  self.cid, COVER_WAIT_SECONDS, cover)
+                return cover
+            if not waited:
+                waited = True
+                self.log.info("[%s] 这个元素现在被 %s 盖着（多半是加载蒙版）—— "
+                              "先等它自己走，最多 %.0f 秒", self.cid, cover, COVER_WAIT_SECONDS)
+            # ★ 2026-10-13：**等的同时把它挪出遮挡物底下**（见 `_recenter`）——
+            # 粘性页眉那类遮挡不是「还没好」，等一辈子也不会走，可它只压住视口顶上那一条：
+            # 挪到正中就躲开了（人在那儿就是这么做的）。有界（`RECENTER_TRIES`）：
+            # 真弹层挪几次也没用，别把预算花在空滚上 —— 预算到点照旧不动手、照旧失败。
+            if recentered < RECENTER_TRIES:
+                recentered += 1
+                self._recenter(selector, frame_id)
+            time.sleep(COVER_POLL_SECONDS)
+
+    def _recenter(self, selector, frame_id=""):
+        """把目标**挪到视口正中**（滚一下）。挪不动 / 找不着都**不报错**：它只是「多试一下」。
+
+        ★ 2026-10-13（真事 `job-a6954761e657` · healthinsurancewatch.com.au）：**遮挡物不都是
+        「不能碰」—— 有的只是「站错地方了」**。真站实测（读数 `_probe_hiw_cover.py`）：
+        填完上一格之后站点自己滚动，`#postcode` 的**中心点正好落在粘性页眉**底下
+        （`div.h-full`，[0,0,360,98] —— 视口顶上那一条），于是产物等满 35 秒、**一个候选都没试**，
+        报文却只有一句「没找到…没填成」；自测三轮都死在这一步。
+
+        **为什么是「正中」**：粘性页眉只压住顶上那一条、固定页脚只压住底下那一条，正中一定躲得开。
+        **为什么不动用 cdp**：这一下只是「把页面挪一挪」，JS 的 `scrollIntoView` 就够，
+        不必为它多起一个进程（生产重跑那条路越便宜越好）。
+        **量不出来就当没做**（返回空串）：判据仍然是 `_cover_once` 那一把尺子 ——
+        这一格改的只是「有没有资格再看一眼」，不是「算不算盖着」。
+        """
+        js = _RECENTER_JS
+        #: ⚠️ `_RECENTER_JS` **自带** `(function(){…})()` 壳 ⇒ 这一处**不要再包一层**
+        #: （双层包裹当场坏：外层的返回值被丢掉，判据拿不到 `ok`）。
+        try:
+            got = self.cdp.eval(js % json.dumps(selector), frame_id).strip()
+        except Exception:                                   # noqa: BLE001
+            return ""
+        if got:
+            self.log.info("[%s] 把它挪到视口正中再看一眼（遮挡物是页眉/页脚那类就躲开了）",
+                          self.cid)
+        return got
+
+    def _covered_before_acting(self, selector, doing):
+        """动手**之前**量一次落点：被盖着就**不动手**，并把「谁盖着」记在这一步上（如实报）。
+
+        ★ 2026-10-16 本刀：循环型第一次有落点判据（由头同 `_covered_by` 里那条 ——
+        2026-09-18 gowizard：点到盖着它的东西上，`cdp` 照样回 ok ⇒ 被记成做成了）。
+        返回 `True` = **这一下别动手**：调用方照实把这一步记成没做成，报文里点名
+        `self.cover_why`（**不许**写成「没找到」—— 两件事说成一句话，读的人只会去查选择器）。
+        """
+        cover = self._covered_by(selector, "", until=time.monotonic() + COVER_WAIT_SECONDS)
+        if not cover:
+            return False
+        self.cover_why = cover
+        self.log.info("[%s] 挑中的那一颗被 %s 盖着 —— 这一下不%s", self.cid, cover, doing)
         return True
 
     # ---------- 主循环 ----------
@@ -872,6 +1053,10 @@ class Filler:
                     return False
                 self._dly(0.6, 1.8)
                 page = self.read()
+                #: ★ 2026-10-16 本刀：**每一轮开头清零** —— 「这一步被谁盖着」是**这一轮的读数**，
+                #: 不外借：上一轮那一颗遮挡物这一轮还在不在，由这一轮自己量了再说
+                #: （报文那边靠它把「被挡着」和「没找到」分开说）。
+                self.cover_why = ""
                 if page is None:
                     idle += 1
                     self.log.info("[%s] step %d: 页面读不到（%d）", self.cid, step, idle)
@@ -923,9 +1108,19 @@ class Filler:
                         if not self.fill(tid, val):
                             self.log.info("[%s] step %d: %s 没填上 ⇒ 下一轮再看", self.cid,
                                           step, tid)
-                            self._trace(step=step, action="form", ok=False, progress=None,
-                                        target={"testid": tid},
-                                        progress_why="这一格没填上（不是「填过了」）")
+                            if self.cover_why:
+                                #: ★ 2026-10-16 本刀：**「被盖着」不是「没找到」**（同 ② 那段）
+                                self._trace(step=step, action="form", ok=False, progress=None,
+                                            target={"testid": tid},
+                                            note="这一格被 %s 盖着 —— 这一下不填"
+                                                 % self.cover_why,
+                                            progress_why="这一格被 %s 盖着（等过、也把它往"
+                                                         "视口正中挪过，它没走）—— 没敢填"
+                                                         % self.cover_why)
+                            else:
+                                self._trace(step=step, action="form", ok=False, progress=None,
+                                            target={"testid": tid},
+                                            progress_why="这一格没填上（不是「填过了」）")
                             continue             # 填不上就下一轮再看（绝不谎报填了）
                         self._field_value[tid] = val
                         self._field_tries[tid] = tries + 1
@@ -969,11 +1164,22 @@ class Filler:
                                     target={"token": str(pick)[:48]},
                                     note="答了第 %d 题" % answered)
                         continue
-                    self.log.info("[%s] step %d: 「%s」这一下没点到（页面上没找到那段文字）⇒ 下一轮再看",
-                                  self.cid, step, str(pick)[:32])
-                    self._trace(step=step, action="click", ok=False, progress=None,
-                                target={"token": str(pick)[:48]},
-                                progress_why="挑中的选项在页面上没找到（点了没点到）")
+                    if self.cover_why:
+                        #: ★ 2026-10-16 本刀：**「被盖着」不是「没找到」** —— 两件事说成
+                        #: 同一句话，读的人只会去查选择器（而这里连一次 cdp 都没发出去）。
+                        self.log.info("[%s] step %d: 「%s」被 %s 盖着 —— 这一下不点",
+                                      self.cid, step, str(pick)[:32], self.cover_why)
+                        self._trace(step=step, action="click", ok=False, progress=None,
+                                    target={"token": str(pick)[:48]},
+                                    note="挑中的那一颗被 %s 盖着 —— 这一下不点" % self.cover_why,
+                                    progress_why="挑中的选项被 %s 盖着（等过、也把它往视口"
+                                                 "正中挪过，它没走）—— 没敢点" % self.cover_why)
+                    else:
+                        self.log.info("[%s] step %d: 「%s」这一下没点到（页面上没找到那段文字）"
+                                      "⇒ 下一轮再看", self.cid, step, str(pick)[:32])
+                        self._trace(step=step, action="click", ok=False, progress=None,
+                                    target={"token": str(pick)[:48]},
+                                    progress_why="挑中的选项在页面上没找到（点了没点到）")
                 elif pick:
                     #: ★ 2026-09-26：**这一屏已经答过了**（② 故意不再挑）⇒ 下一轮该去点下一步；
                     #: 要是它就是没有「下一步」可点，⑤ 那句「没有可动作的东西」会误导人

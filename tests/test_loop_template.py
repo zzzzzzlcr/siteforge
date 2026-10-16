@@ -582,3 +582,135 @@ def test_a_screen_the_light_reader_cannot_see_is_read_by_the_snapshot_fallback(t
     rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
     assert any("结构化快照" in str(r.get("note") or "") for r in rows), \
         "兜底动手了却没记 trace：%r" % (rows[-3:],)
+
+# ── 落点判据（★ 2026-10-16：循环型第一次有它 —— 与固定步骤表**同一把尺子**）──────────
+
+def test_a_covered_pick_is_not_clicked_and_the_step_is_not_reported_ok(
+        tmp_path, monkeypatch):
+    """★ 本刀：循环型第一次有落点判据 —— 被盖着就**不点**，而且这一行照实写 `ok=False`。
+
+    由头是 2026-09-18 gowizard 那条：点到盖着它的东西上，cdp 照样回 ok ⇒ 被记成做成了。
+    """
+    page = {"url": "https://funnel.test/quiz", "head": "Pick one", "progress": "50%",
+            "inputs": [], "options": ["\u0001Yes"], "nextVisible": False, "nextTxt": ""}
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    mod = _fake_common(monkeypatch, page, calls)
+    _orig = mod.CDPHelper.eval
+    #: 打标记那一段照旧回 `marked`；**量落点那一段**回「被盖着」
+    mod.CDPHelper.eval = lambda self, js, *a, **kw: (
+        "COVER|div#onetrust-banner" if "elementsFromPoint" in js
+        else _orig(self, js, *a, **kw))
+
+    src = template_loop.render_loop("selsite", "Thank you", "thank-you", {}, dict(PROV))
+    path = tmp_path / "covered_loop.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("covered_loop_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.COVER_WAIT_SECONDS = 0.3          # 别让用例真等
+    module.COVER_POLL_SECONDS = 0.02
+    trace = tmp_path / "covered_loop.jsonl"
+    form = tmp_path / "form.json"; form.write_text("{}", encoding="utf-8")
+    module.Filler("ws://x/1", str(form), "cid",
+                  trace_path=str(trace), no_report=True).run(max_steps=4)
+
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert not [c for c in calls["click"]], "被盖着还点下去了：%r" % calls["click"]
+    picks = [r for r in rows if r.get("action") == "click"]
+    assert picks and all(r.get("ok") is False for r in picks), picks
+    assert any("盖着" in str(r.get("note") or "") for r in picks), picks
+
+
+def test_a_covered_field_is_not_filled_and_the_row_names_the_cover(
+        tmp_path, monkeypatch):
+    """★ 本刀的另一半：`fill` 也是「动手」—— 被盖着就**不填**，这一格照实写 `ok=False`+点名。
+
+    与上面那条同一个由头：**「被盖着」不是「没找到」** —— 一格填不上时，读日志的人得看得出
+    是**谁**挡着（真事 `job-a6954761e657` 那三轮诊错全在改选择器，而那一刻产物连一次
+    `cdp form` 都没发出去、框一直好好地在那儿）。
+    """
+    page = {"url": "https://funnel.test/quiz", "head": "Q", "progress": "10%",
+            "inputs": [["email", ""]], "options": [], "nextVisible": False, "nextTxt": ""}
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    mod = _fake_common(monkeypatch, page, calls)
+    _orig = mod.CDPHelper.eval
+    mod.CDPHelper.eval = lambda self, js, *a, **kw: (
+        "COVER|div#cookiescript_injected" if "elementsFromPoint" in js
+        else _orig(self, js, *a, **kw))
+
+    src = template_loop.render_loop("selsite", "Thank you", "thank-you",
+                                    {"email": {"kind": "email"}}, dict(PROV))
+    path = tmp_path / "covered_fill.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("covered_fill_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.COVER_WAIT_SECONDS = 0.3          # 别让用例真等
+    module.COVER_POLL_SECONDS = 0.02
+    trace = tmp_path / "covered_fill.jsonl"
+    form = tmp_path / "form.json"; form.write_text("{}", encoding="utf-8")
+    module.Filler("ws://x/1", str(form), "cid",
+                  trace_path=str(trace), no_report=True).run(max_steps=3)
+
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert not [c for c in calls["form"]], "被盖着还填下去了：%r" % calls["form"]
+    fills = [r for r in rows if r.get("action") == "form"]
+    assert fills and all(r.get("ok") is False for r in fills), fills
+    assert any("盖着" in str(r.get("note") or "") for r in fills), fills
+
+
+def test_the_cover_probe_is_wrapped_at_the_call_site_and_the_recenter_is_not(
+        tmp_path, monkeypatch):
+    """★ Ruling 6：那两段 JS 搬进循环型之后，**包不包由调用处负责**（两条都要钉住）。
+
+    为什么要紧（这仓栽过）：循环型的 `CDPHelper.eval` 是 `subprocess.run([CDP_PATH,"eval",…])`，
+    **不替调用方包** IIFE；而 `_COVER_JS` 是**裸语句序列**（里面一句裸 `return '';`）——
+    直喂 `cdp eval` = `SyntaxError` ⇒ **恒返空** ⇒ 落点判据永远「量不到」，而账上看起来一切正常
+    （2026-10-10 blavity 那次「负向对照通过」就是这么假通过的）。
+
+    ⇒ · `_cover_once` 发出去的 JS **必须以 `(function(){` 开头**（调用处给它包了一层）；
+       · `_recenter` 发出去的 JS **不许**再包一层（`_RECENTER_JS` **自带**壳，双层包裹当场坏）。
+    顺带钉「产物里那两个常量有定义」—— 只搬字符串那一刀最容易漏的一格（漏了一跑就是 `NameError`）。
+    """
+    calls: dict = {}
+    mod = _fake_common(monkeypatch, {"url": "https://x.test/", "head": "", "progress": "",
+                                     "inputs": [], "options": [], "nextVisible": False,
+                                     "nextTxt": ""}, calls)
+    sent: list = []
+    _orig = mod.CDPHelper.eval
+
+    def eval_(self, js, *a, **kw):
+        sent.append(js)
+        #: 量落点那一段回「没被盖着」—— 这一条只钉**发出去的形状**，不钉答话
+        return "" if "elementsFromPoint" in js else _orig(self, js, *a, **kw)
+
+    mod.CDPHelper.eval = eval_
+
+    src = template_loop.render_loop("wrap-site", "Thank you", "thank-you", {}, dict(PROV))
+    for name in ("_COVER_JS", "_RECENTER_JS"):
+        assert "\n%s = " % name in src, "产物里没定义 %s —— 它一跑就是 NameError" % name
+        assert "__%s__" % name not in src, "占位符没替掉（产物里留了一串 %s）" % name
+
+    path = tmp_path / "wrap.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("wrap_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"; form.write_text("{}", encoding="utf-8")
+    f = module.Filler("ws://x/1", str(form), "cid",
+                      trace_path=str(tmp_path / "wrap.jsonl"), no_report=True)
+
+    f._cover_once('[data-sf-pick="1"]')
+    cover = [js for js in sent if "elementsFromPoint" in js]
+    assert cover, "那一下没量落点：%r" % (sent,)
+    assert cover[-1].startswith("(function(){") and cover[-1].endswith("})()"), (
+        "裸语句序列直喂 `cdp eval` = SyntaxError ⇒ 恒返空（blavity 那次的假通过）：%r"
+        % cover[-1][:120])
+    assert cover[-1].count("(function(){") == 1, "包了两层：%r" % cover[-1][:120]
+
+    f._recenter("#go")
+    rec = [js for js in sent if "scrollIntoView" in js]
+    assert rec, "那一下没挪动：%r" % (sent,)
+    assert not rec[-1].startswith("(function(){(function(){"), (
+        "`_RECENTER_JS` **自带** IIFE 壳，再包一层就是双层包裹（行为当场坏）：%r" % rec[-1][:120])
+    assert rec[-1].count("(function(){") == 1, "双层包裹：%r" % rec[-1][:120]
