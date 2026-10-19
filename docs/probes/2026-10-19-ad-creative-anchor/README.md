@@ -36,10 +36,13 @@
     有锚时只能答 `#bx-close-inside-1`，不许答站点控件；
   - **负控**：只有站点控件 ⇒ 锚不匹配，返空。
 - 表那套 / 循环型各一条「第 4 行带空锚」的断言 + 行名解析器支持 4 格。
+- ★ 2026-10-19 补（**Ruling 34 的格子钉**）：node 夹具加到 **19 格** —— 新增「落点是候选
+  **里面的子元素**」（`#bx-close-inside-nested` 包一颗空 span），钉 `contains` 的真祖先/后代语义。
+  把假 DOM 的 `contains` 改回恒假桩（`other===e`）时这一格**当场红**（`got:''`），恢复真语义后绿。
 
 ## 读数
 
-- 宿主：`test_popup_hooks_js.py` **5 passed**；`test_template.py` 聚焦 **14 passed**；
+- 宿主：`test_popup_hooks_js.py` **5 passed**（19 格探针）；`test_template.py` 聚焦 **14 passed**；
   `test_loop_template.py` **39 passed**。
 - 8100 容器：同样 **5 / 14 / 39 passed**。
 

@@ -231,6 +231,23 @@ const CASES = [
     return pg;
   }, ''],
 
+  // ★ 2026-10-19（Ruling 34 的格子钉）：落点那一摞的最顶上不是**候选自己**，而是它
+  // **里面的子元素**（真 creative 的关闭键常是 `div#… > span×`）—— `contains` 必须走
+  // 真祖先/后代语义（`e.contains(h)`），不许是恒假桩。恒假桩下这一格会返空 ⇒ 当场红。
+  // 子元素故意**没有任何关闭语义**（空 span）：这样恒假桩不会在下一轮把子元素自己认成候选。
+  ['广告 creative：落点是它里面的子元素（`contains` 真语义）', () => {
+    const pg = page([['div', { id: 'bx-close-inside-nested', cls: 'bx-close',
+                              attrs: { 'data-click': 'close' },
+                              text: 'Close',
+                              rect: { width: 88, height: 54, left: 100, right: 188,
+                                      top: 225, bottom: 279 } }]]);
+    const child = attach(pg.nodes[0], el('span', {
+      text: '', rect: { width: 16, height: 16, left: 136, right: 152,
+                        top: 244, bottom: 260 } }));
+    pg.document.elementsFromPoint = () => [child];
+    return pg;
+  }, '广告 creative|#bx-close-inside-nested|Close'],
+
   // ─────────── ★ 2026-10-19：同意控件的 tag 白名单（div/span）───────────
   // 真事：compareinsulation 的 CookieScript 把 accept/reject 做成 `<div>`，三条钩子
   // 只认 button/a/input ⇒ 同意层看得见、关不掉（实测 §2.3）。这一格就是那个形状。
