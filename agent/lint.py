@@ -1529,6 +1529,15 @@ def check(src: str, observed=None, accepted=None) -> list[Violation]:
             key = (lineno, rule.code)
             if key in seen or not rule.pattern.search(raw):
                 continue
+            #: ★ 2026-10-19（wildnutrition）：**产品自己的 markets offcanvas hook** 例外。
+            #: 那一型关闭键被 sticky header 盖住 ⇒ `cdp click` 的落点判据点不到（点下去是
+            #: 点在那个盖着它的东西上）；钩子只能自己用 JS `.click()` 关掉。它是**前提层**
+            #: 的产品代码，不是 agent 手拼的步骤 JS —— 只认这两行**逐字**，别处的 `.click()`
+            #: 照旧报（模型的稿里那两行原样抄过来也只能关一个 markets 抽屉）。
+            if rule.code == "js-click" and (
+                    "try{b.click();}catch(e){continue;}" in raw
+                    or "try{d.click();}catch(e){continue;}" in raw):
+                continue
             seen.add(key)
             violations.append(Violation(line=lineno, code=rule.code,
                                         message=rule.message, snippet=_snippet(raw)))

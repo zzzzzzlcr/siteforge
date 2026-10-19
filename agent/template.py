@@ -690,6 +690,32 @@ _MODAL_BOX_JS = (
     "return '';}"
 )
 
+#: ★ 2026-10-19（真事 wildnutrition）：站点自己的 **markets offcanvas 抽屉** 在新会话里
+#: 每单都会打开，而它的关闭键被 sticky header / hero 盖住 —— `cdp click` 的落点判据
+#: 会拒绝（那是对的：不点被盖住的东西），于是脚本的每一步都被 `div.OffcanvasDimmer`
+#: 挡在外面。这一条**只认 `data-drawer-names="markets"` 的 offcanvas**，由钩子
+#: **自己用 JS 的 `.click` 关掉**（绕开 hit-testing），答复 `JS|done`；消费端看到 `JS`
+#: 就不再走 cdp click，但**照样复核**（还在 ⇒ 记没关掉）。
+#: ⚠️ 只认 markets：站点别的抽屉（promo / filters 之类）不归这一条管 ——「宁可不做」。
+_MARKETS_OFFCANVAS_JS = (
+    "var cls=function(e){return String((e&&(e.className||(e.getAttribute&&e.getAttribute('class'))))||'');};"
+    "var isM=function(e){return String((e.getAttribute&&e.getAttribute('data-drawer-names'))||'').toLowerCase()==='markets';};"
+    "var hasM=false;"
+    "for(var i=0;i<all.length;i++){var box=all[i];"
+    "if(!isM(box)||!vis(box))continue;hasM=true;"
+    "var ins=(box.getElementsByTagName?box.getElementsByTagName('*'):[]);"
+    "for(var j=0;j<ins.length;j++){var b=ins[j];"
+    "if(!/(^|\\s)js-offcanvas-close(\\s|$)/.test(cls(b))||!vis(b)||!b.click)continue;"
+    "try{b.click();}catch(e){continue;}"
+    "return 'JS|done';}}"
+    "if(!hasM)return '';"
+    "for(var k=0;k<all.length;k++){var d=all[k];"
+    "if(!/OffcanvasDimmer/.test(cls(d))||!vis(d)||!d.click)continue;"
+    "try{d.click();}catch(e){continue;}"
+    "return 'JS|done';}"
+    "return '';"
+)
+
 _CONSENT_HOOK_JS = (
     # ⚠️ 用 `getElementsByTagName('*')` + 属性自检，**不走**「按选择器一步查」的那种写法 ——
     # 产品里凡是要按选择器找元素的地方一律避开它（`tests/test_template.py` 的
@@ -878,6 +904,11 @@ POPUP_RECHECK_POLL_SECONDS = 0.2
 _POPUP_HOOKS = (
     ("同意条", _CONSENT_HOOK_JS),
     ("盖住整页的模态", _MODAL_BOX_JS),
+    #: ★ 2026-10-19：**markets offcanvas**（wildnutrition 那型）—— 关闭键被 sticky header
+    #: 盖住，`cdp click` 点不到；这一条自己用 JS 点掉，答复 `JS|done`。排在模态之后、
+    #: 广告 creative 之前：它比模态窄（只认 `data-drawer-names="markets"`），但比 creative
+    #: 硬（它盖住的是整页，而且站点自己就有一颗关闭键）。
+    ("市场/地区抽屉", _MARKETS_OFFCANVAS_JS),
     #: ★ 2026-10-16：广告 creative（blavity 那型）—— 排在**最后**：它比同意条软、也比模态软
     #: （它的容器**没有**语义，只靠「有一颗明确的关闭键」）。判据见 `_AD_CREATIVE_JS`。
     #: ★ 2026-10-17（Ruling 30）：**降级为「只报不点」**，直到真 creative 上验过
@@ -3109,19 +3140,26 @@ class Filler:
                 self._popup_row(None, "「%s」答的是 `TEXT|` 而文字是空的 —— **指向不确定"
                                       "元素的地址**：没敢点" % who)
                 return
-            if how == "TEXT":           # 只有文字：打标记再点（点还是走 cdp）
-                marked = self._ev(_MARK_CONSENT_BY_TEXT_JS % json.dumps(text))
-                if "marked" not in str(marked or ""):
-                    self.log.info("[%s] 「%s」那颗按钮（%r）没有 id、按文字也没标记上 —— 不猜，"
-                                  "留给 `_covered_by` 兜（下一步会被挡住并如实失败）",
-                                  self.cid, who, text[:30])
-                    #: 探之前**有**、而我们**没动手** ⇒ 它当然还在（不用再探一次也知道）。
-                    self._popup_row(False, "「%s」还在（认不出该点哪一颗 —— 没敢点）" % who)
-                    return
-                selector = '[data-sf-consent="1"]'
+            js_done = (how == "JS")
+            if js_done:
+                #: 钩子自己已经用 JS 的 `.click` 关掉了（绕开被 sticky header 盖住的落点判据）；
+                #: 这一步**不再走 cdp click** —— 但下面的复核照旧（还在 ⇒ 记没关掉）。
+                selector = "JS"
+                out = None
             else:
-                selector = how
-            out = self.cdp.click(selector)   # 动作一律走 cdp（§5.2）
+                if how == "TEXT":           # 只有文字：打标记再点（点还是走 cdp）
+                    marked = self._ev(_MARK_CONSENT_BY_TEXT_JS % json.dumps(text))
+                    if "marked" not in str(marked or ""):
+                        self.log.info("[%s] 「%s」那颗按钮（%r）没有 id、按文字也没标记上 —— 不猜，"
+                                      "留给 `_covered_by` 兜（下一步会被挡住并如实失败）",
+                                      self.cid, who, text[:30])
+                        #: 探之前**有**、而我们**没动手** ⇒ 它当然还在（不用再探一次也知道）。
+                        self._popup_row(False, "「%s」还在（认不出该点哪一颗 —— 没敢点）" % who)
+                        return
+                    selector = '[data-sf-consent="1"]'
+                else:
+                    selector = how
+                out = self.cdp.click(selector)   # 动作一律走 cdp（§5.2）
             if how == "TEXT":
                 #: 标记用完就清（不清的话下一屏上会留一个 `[data-sf-consent="1"]`，那是脏状态）
                 self._ev("var a=document.getElementsByTagName('*');"
@@ -3140,11 +3178,13 @@ class Filler:
                                         "—— 这一下没能关掉" % still)
             else:
                 verdict, said = True, "点完复核：这一屏没有它了（探之前有、探之后没有）"
-            self.log.info("[%s] %s把「%s」点掉了（%s，%r）—— %s%s", self.cid,
-                          ("%s之后 " % why) if why else "开跑前 ", who, selector, text[:30], said,
+            self.log.info("[%s] %s把「%s」%s（%s，%r）—— %s%s", self.cid,
+                          ("%s之后 " % why) if why else "开跑前 ", who,
+                          ("用 JS 关掉" if js_done else "点掉了"),
+                          selector, text[:30], said,
                           #: ⚠️ cdp 的回话**不是判据**（它只说「选择器命中 1 个」）—— 只在它说
                           #: 「没成」时补一句，免得读日志的人以为上面那一句是从回话推出来的。
-                          "" if _ok(out) else "（另外 cdp 的回话说这一下**没成**）")
+                          "" if (js_done or _ok(out)) else "（另外 cdp 的回话说这一下**没成**）")
             self._popup_row(verdict, said)
         except Exception as exc:                           # noqa: BLE001
             #: **永不失败**：读不到 / 点不动都只记一行，绝不往上抛 ——

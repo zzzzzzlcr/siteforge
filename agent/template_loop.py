@@ -577,18 +577,27 @@ class Filler:
                     self._popup_trace(False, "「%s」还在（认不出该点哪一颗 —— 没敢点）" % who)
                     return False
                 selector = '[data-sf-consent="1"]'
+            elif how == "JS":
+                #: 钩子自己已经用 JS 的 `.click` 关掉了（绕开被盖住的落点判据）；
+                #: 不再走 cdp click —— 复核照旧。
+                selector = "JS"
+                out = None
             else:
                 selector = how
-            out = self.cdp.click(selector)   # 动作一律走 cdp（§5.2）
+            if how != "JS":
+                out = self.cdp.click(selector)   # 动作一律走 cdp（§5.2）
             if how == "TEXT":
                 #: 标记用完就清（不清的话下一屏上会留一个 `[data-sf-consent="1"]`，那是脏状态）
                 self.cdp.eval("(function(){%s})()"
                               % ("var a=document.getElementsByTagName('*');"
                                  "for(var i=0;i<a.length;i++){if(a[i].removeAttribute)"
                                  "a[i].removeAttribute('data-sf-consent');}return 'clean';"), "")
-            self.log.info("[%s] %s把「%s」点掉了（%s，%r）—— cdp 回话：%s", self.cid,
-                          ("%s之后 " % why) if why else "开跑前 ", who, selector, text[:30],
-                          "看起来成了" if self._filled_ok(out) else "**没成**")
+            self.log.info("[%s] %s把「%s」%s（%s，%r）—— %s", self.cid,
+                          ("%s之后 " % why) if why else "开跑前 ", who,
+                          ("用 JS 关掉" if how == "JS" else "点掉了"),
+                          selector, text[:30],
+                          "JS 直接点（不等 cdp 回话）" if how == "JS"
+                          else ("看起来成了" if self._filled_ok(out) else "**没成**"))
             #: ★ 2026-10-16（Task 5）：**复核** —— 上面那句只是 cdp 的**回话**，不是做成。
             #: 再问一遍**同一张表**：探之前有、探之后没有 ⇒ True；探之后**还有** ⇒ False；
             #: 复核探不动（读炸了 / 答复形状不认识）⇒ None（量不到就如实说量不到）。

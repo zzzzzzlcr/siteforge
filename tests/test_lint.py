@@ -102,6 +102,22 @@ def test_write_pattern_is_rejected(code, src, line):
     assert v.snippet == src.splitlines()[line - 1], "snippet 要是那一行的原文：%r" % (v,)
 
 
+def test_the_markets_hook_js_click_is_exempt_but_normal_js_clicks_are_not():
+    """★ 2026-10-19（wildnutrition）：产品自己的 markets offcanvas hook 那两行
+    `try{...click();}` 是**前提层**的产品代码（关闭键被 sticky header 盖住，cdp 点不到），
+    不进 `js-click` 的违规；别处的 `.click()` 照旧报。
+    """
+    src = (
+        "def _clear(self):\n"
+        "    js = \"try{b.click();}catch(e){continue;}\"\n"
+        "    js = \"try{d.click();}catch(e){continue;}\"\n"
+        "    other = \"document.querySelector('.cta').click()\"\n"
+    )
+    violations = lint.check(src)
+    assert [v.code for v in violations] == ["js-click"], violations
+    assert violations[0].line == 4, violations
+
+
 @pytest.mark.parametrize("code, src, line", CASES)
 def test_message_is_human_words(code, src, line):
     """D16：给非技术人员看的文字必须是**人话**，不是错误码、不是选择器。

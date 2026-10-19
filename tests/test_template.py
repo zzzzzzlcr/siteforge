@@ -1978,6 +1978,34 @@ def test_a_covered_element_is_not_clicked_and_does_not_report_ok(sandbox, form_f
 # 现在：**一条钩子 = 表里一行**（函数体，签名 `(all, vis)`，回 `"<选择器|TEXT>|<按钮文字>"`）。
 
 
+def test_a_js_closed_popup_does_not_get_a_cdp_click(sandbox, form_file, caplog):
+    """★ 2026-10-19（wildnutrition）：钩子自己用 JS 点掉（`JS|done`）⇒ 不再走 cdp click；
+    复核照旧（同一张表，探之后没有 ⇒ 关掉了）。
+
+    为什么要有这条分支：markets offcanvas 的关闭键被 sticky header 盖住，`cdp click` 的
+    落点判据会拒绝 —— 钩子只能自己用 JS `.click()` 关掉。它**不是**「绕过判据去 cdp click」：
+    cdp 那一下**一次都不发**；成没成仍由复核（同一把尺子）说了算。
+    """
+    module, _ = _load(
+        "run_popup_js",
+        template.render("example-popup-js", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    #: 第一次探：钩子自己关掉了；复核再探：不在了。
+    common.STATE.consent_seq = ["市场/地区抽屉|JS|done", ""]
+    with caplog.at_level(logging.INFO):
+        module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert clicks == ["#go"], clicks           # 弹层那一下没有 cdp click
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "市场/地区抽屉" in said and "用 JS 关掉" in said, said
+
+
 def test_a_new_popup_kind_is_one_row_in_the_hook_table(sandbox, form_file):
     """★ 2026-10-10：**加一类弹窗 = 表里加一行** —— 这条钉住「表驱动」这件事本身。
 

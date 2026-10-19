@@ -134,8 +134,23 @@ def test_the_probe_answers_the_three_fields_python_reads(tmp_path):
     少一格那边就退化成「量不出来」（什么都不点）。
     """
     out = _drive(tmp_path, _probe_js(tmp_path))
-    assert out["total"] == 21, out
+    assert out["total"] == 23, out
     assert out["failed"] == 0, [r for r in out["results"] if not r["ok"]]
+
+
+def test_the_markets_offcanvas_is_closed_by_the_hook_itself(tmp_path):
+    """★ 2026-10-19（wildnutrition）：markets 抽屉的关闭键被 sticky header 盖住 ——
+    钩子自己用 JS `.click()` 关掉（答复 `JS|done`），不是交给 cdp click 去撞落点判据。
+
+    负控：**不是 markets** 的 offcanvas 不碰（宁可不做）。
+    """
+    out = _drive(tmp_path, _probe_js(tmp_path))
+    hit = next(r for r in out["results"] if r["name"].startswith("市场/地区抽屉：markets"))
+    assert hit["got"] == "市场/地区抽屉|JS|done", hit
+    assert hit["clicks"] == ["markets-close"], hit
+    neg = next(r for r in out["results"] if "不是 markets" in r["name"])
+    assert neg["got"] == "", neg
+    assert neg["clicks"] == [], neg
 
 
 def test_the_fixture_can_actually_fire(tmp_path):
@@ -151,9 +166,10 @@ def test_the_fixture_can_actually_fire(tmp_path):
     """
     broken = "(function(){%s})();return '';" % _probe_js(tmp_path)
     out = _drive(tmp_path, broken)
-    assert out["failed"] == 12, out["results"]      # 该有答复的那十二格
+    assert out["failed"] == 13, out["results"]      # 该有答复的那十三格
     passed = [r["name"] for r in out["results"] if r["ok"]]
-    assert passed == ["干净页面：一条都不答应",
+    assert passed == ["市场/地区抽屉：不是 markets 的 offcanvas 不许点",
+                      "干净页面：一条都不答应",
                       "广告 creative：可见但**被盖着**（最顶上那个不是它）不许认",
                       "广告 creative：超界的容器（300×300，class/aria 带 close）不许点",
                       "广告 creative：aria-label 是散文 —— 「Do not close this window」不许认",

@@ -35,6 +35,9 @@ const PROBE = '(function(){' + fs.readFileSync(probePath, 'utf8') + '})()';
 //    / getAttribute / **attributes** / **contains** / innerText / id / className / shadowRoot
 //    ＋ `document.elementsFromPoint`（落点那把尺子 —— 「广告 creative」那一行要用））──────
 let all = [];
+//: ★ 2026-10-19：markets offcanvas 那条钩子**自己用 JS 点**（关闭键被 sticky header 盖住，
+//: cdp click 点不到）—— 假 DOM 得真的记下这一下，不然「点没点」只能靠 mock 自说自话。
+let clicks = [];
 const parent = new Map();
 
 function el(tag, p) {
@@ -78,6 +81,9 @@ function el(tag, p) {
       delete this.attrs[k];
       this.attributes = this.attributes.filter(a => a.name !== k);
     },
+    //: ★ 2026-10-19：markets offcanvas 那条钩子**自己用 JS 点**（关闭键被 sticky header
+    //: 盖住，cdp click 点不到）—— 假 DOM 得真的记下这一下。
+    click() { clicks.push(this.id || this.className || this.tagName); },
     getBoundingClientRect() { return p.rect || { width: 100, height: 40, top: 10, bottom: 50 }; },
     //: 「落点是它自己/祖先/后代」那条问的就是这个 —— ★ 2026-10-17（终审 Ruling 27）：
     //: 原来这里是**恒假桩**（`other === e`），于是「祖先/后代」那半**从来没被走过**：
@@ -101,10 +107,11 @@ function attach(box, node) { parent.set(node, box); box.children.push(node); ret
 const rect_full = { width: 390, height: 844, top: 0, bottom: 844 };
 
 function page(elems) {
-  all = []; parent.clear();
+  all = []; parent.clear(); clicks = [];
   const nodes = elems.map(([t, p]) => el(t, p));
   return {
     nodes,
+    clicks,
     document: {
       getElementsByTagName: () => all,
       body: { innerText: '' },
@@ -133,6 +140,27 @@ const CASES = [
     attach(pg.nodes[0], el('button', { attrs: { 'aria-label': 'close' } }));
     return pg;
   }, '盖住整页的模态|TEXT|close'],
+
+  // ★ 2026-10-19（wildnutrition）：markets offcanvas 的关闭键被 sticky header 盖住 ——
+  // 「可见 + 有落点」那把尺子会拒绝 cdp click；这一条**只认 markets 抽屉**，由钩子自己
+  // 用 JS `.click()` 关掉，答复 `JS|done`。正控还钉「那一下真的点了」（`clicks`）。
+  ['市场/地区抽屉：markets offcanvas 的关闭键被盖着 —— 钩子自己 JS 点掉', () => {
+    const pg = page([['div', { cls: 'js-offcanvas js-offcanvas--open',
+                               attrs: { 'data-drawer-names': 'markets' }, rect: rect_full }]]);
+    attach(pg.nodes[0], el('button', { id: 'markets-close', cls: 'js-offcanvas-close',
+                                       rect: { width: 40, height: 40, top: 0, bottom: 40 } }));
+    //: sticky header 盖住它（钩子不走 elementsFromPoint；这一格量的就是「JS 点击绕开落点」）
+    pg.document.elementsFromPoint = () => [pg.nodes[0]];
+    return pg;
+  }, '市场/地区抽屉|JS|done'],
+
+  // 负控：**不是 markets** 的 offcanvas 不许碰（宁可不做）。
+  ['市场/地区抽屉：不是 markets 的 offcanvas 不许点', () => {
+    const pg = page([['div', { cls: 'js-offcanvas', attrs: { 'data-drawer-names': 'promo' },
+                               rect: rect_full }]]);
+    attach(pg.nodes[0], el('button', { cls: 'js-offcanvas-close' }));
+    return pg;
+  }, ''],
 
   ['干净页面：一条都不答应', () => page([['div', { text: 'Get Started' }]]), ''],
 
@@ -376,7 +404,7 @@ for (const [name, build, want] of CASES) {
   }
   const ok = got === want;
   if (!ok) failed++;
-  results.push({ name, got: got, want: want, ok: ok, err: err });
+  results.push({ name, got: got, want: want, ok: ok, err: err, clicks: pg.clicks || [] });
 }
 // ★ 2026-10-19：`_MARK_CONSENT_BY_TEXT_JS` 也是同一条路（钩子答 `TEXT` ⇒ 按文字打标记）。
 // 第二个参数给了就顺手跑一遍：页面里放一颗没有 id 的 `<div>Accept all</div>`，
