@@ -822,7 +822,12 @@ _AD_CREATIVE_JS = (
     "for(var k=0;k<stack.length;k++){var h=stack[k];var pe='';"
     "try{pe=getComputedStyle(h).pointerEvents||'';}catch(err){}"
     "if(pe==='none')continue;"
-    "if(h===e||e.contains(h)||h.contains(e))break;"
+    #: ★ 2026-10-19：影子宿主在 `elementsFromPoint` 里只以**宿主**出现，而
+    #: `host.contains(影子里的 e)` 是 **false** —— 必须看 `host.shadowRoot.contains(e)`；
+    #: 否则影子里的 ad creative 会被误判成「被盖着」（合成页 `data:` + open shadow 复现）。
+    #: `_COVER_JS` 不遍历 shadow（找不到目标就返回空 = 静默放行），这里只补 ad 的落点尺子。
+    "if(h===e||e.contains(h)||h.contains(e)"
+    "||(h.shadowRoot&&h.shadowRoot.contains(e)))break;"
     "covered=true;break;}"
     "if(covered)continue;"                   # ← 被盖着 ⇒ 不认（宁可不做）
     "return (e.id?('#'+e.id):'TEXT')+'|'+(mark||txt).slice(0,40);}"

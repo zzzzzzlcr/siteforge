@@ -264,6 +264,26 @@ const CASES = [
     return pg;
   }, '广告 creative|#bx-close-inside-nested|Close'],
 
+  // ★ 2026-10-19（影子宿主）：`document.elementsFromPoint` 在影子边界上只返回**宿主**；
+  // `host.contains(影子里的按钮)` 是 false —— 落点尺子必须看 `host.shadowRoot.contains(e)`，
+  // 否则影子里的 ad creative 会被误判成「被盖着」。合成页 `data:` + open shadow 真浏览器复现过。
+  ['广告 creative：落点在 open shadow 里（宿主是落点）', () => {
+    const pg = page([['div', { id: 'shadow-host',
+                              rect: { left: 100, top: 200, width: 88, height: 54,
+                                      right: 188, bottom: 254 } }]]);
+    const btn = el('button', { id: 'shadow-close', attrs: { 'data-click': 'close' },
+                               text: 'Close',
+                               rect: { left: 100, top: 200, width: 88, height: 54,
+                                       right: 188, bottom: 254 } });
+    pg.nodes[0].shadowRoot = {
+      contains: (x) => x === btn,
+      getElementsByTagName: () => [btn],
+      querySelectorAll: () => [btn],
+    };
+    pg.document.elementsFromPoint = () => [pg.nodes[0]];
+    return pg;
+  }, '广告 creative|#shadow-close|Close'],
+
   // ─────────── ★ 2026-10-19：同意控件的 tag 白名单（div/span）───────────
   // 真事：compareinsulation 的 CookieScript 把 accept/reject 做成 `<div>`，三条钩子
   // 只认 button/a/input ⇒ 同意层看得见、关不掉（实测 §2.3）。这一格就是那个形状。

@@ -116,9 +116,9 @@ def _drive(tmp_path: pathlib.Path, js: str, marker_js: str | None = None,
 
 
 def test_the_probe_answers_the_three_fields_python_reads(tmp_path):
-    """产物那段探针在假 DOM 里**真跑**：二十格，一格不许差。
+    """产物那段探针在假 DOM 里**真跑**：二十一格，一格不许差。
 
-    二十格 = 同意条（带 id / 只有文字 / **按钮是 div（CookieScript 形状）** /
+    二十一格 = 同意条（带 id / 只有文字 / **按钮是 div（CookieScript 形状）** /
     **wrapper 合并文字也很短 —— 不许点 wrapper** / **按钮是 span（没有 id）** /
     **容器里的长散文不许认**）、盖住整页的模态
     （按钮 / **关闭键是 span** / **关闭键包在 wrapper 里 —— 不许点 wrapper**）、
@@ -126,14 +126,15 @@ def test_the_probe_answers_the_three_fields_python_reads(tmp_path):
     干净页面、两者同时在、
     广告 creative（可见那一颗恒命中 / **可见但被盖着 ⇒ 恒返空**（blavity 矩阵第 4 格，
     ★ Ruling 27 换过形状）/ **落点是候选里面的子元素（`contains` 真语义，Ruling 34）** /
-    **没有站点锚的 `TEXT|×` 不许认** / 超界的容器恒不点 / 散文的 aria-label 恒不认 ——
+    **落点在 open shadow 里（宿主是落点）** / **没有站点锚的 `TEXT|×` 不许认** /
+    超界的容器恒不点 / 散文的 aria-label 恒不认 ——
     含**≤24 字**那格，见 Ruling 26 / **`visibility:hidden` 恒不认**，见 Ruling 28-①）。
     答复的形状就是 `_clear_obstructions` 拆的那三格
     （`"<钩子名>|<选择器|TEXT>|<按钮文字>"`）—— 名字、选择器、按钮文字，
     少一格那边就退化成「量不出来」（什么都不点）。
     """
     out = _drive(tmp_path, _probe_js(tmp_path))
-    assert out["total"] == 20, out
+    assert out["total"] == 21, out
     assert out["failed"] == 0, [r for r in out["results"] if not r["ok"]]
 
 
@@ -150,7 +151,7 @@ def test_the_fixture_can_actually_fire(tmp_path):
     """
     broken = "(function(){%s})();return '';" % _probe_js(tmp_path)
     out = _drive(tmp_path, broken)
-    assert out["failed"] == 11, out["results"]      # 该有答复的那十一格
+    assert out["failed"] == 12, out["results"]      # 该有答复的那十二格
     passed = [r["name"] for r in out["results"] if r["ok"]]
     assert passed == ["干净页面：一条都不答应",
                       "广告 creative：可见但**被盖着**（最顶上那个不是它）不许认",
