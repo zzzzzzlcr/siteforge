@@ -54,14 +54,18 @@ function el(tag, p) {
     //: ★ 2026-10-19：站点锚用 `matches(anchor)` 读（与产物同一条 API）。假 DOM 只需要
     //: 够覆盖测试里那两个形状：`.op2-close` 与 `[data-click="close"]`。
     matches(sel) {
-      sel = String(sel || '').trim();
-      if (!sel) return false;
-      if (sel[0] === '.') {
-        return String(this.className || '').split(/\s+/).includes(sel.slice(1));
-      }
-      const m = sel.match(/^\[([\w-]+)="([^"]*)"\]$/);
-      if (m) return String(this.attrs[m[1]] === undefined ? '' : this.attrs[m[1]]) === m[2];
-      return false;
+      //: 站点锚可能是并集（默认 row 的 `[data-click="close"], .op2-close`）⇒ 按逗号拆开，
+      //: 任一段命中即可；假 DOM 只需支持 `.class` 与 `[attr="value"]` 两种。
+      return String(sel || '').split(',').some(part => {
+        const s = part.trim();
+        if (!s) return false;
+        if (s[0] === '.') {
+          return String(this.className || '').split(/\s+/).includes(s.slice(1));
+        }
+        const m = s.match(/^\[([\w-]+)="([^"]*)"\]$/);
+        if (m) return String(this.attrs[m[1]] === undefined ? '' : this.attrs[m[1]]) === m[2];
+        return false;
+      });
     },
     //: ★ 2026-10-19：`_MARK_CONSENT_BY_TEXT_JS` 会打/清 `data-sf-consent` —— 假 DOM 得真的存住它，
     //: 不然「标记上了没有」只能靠 mock 自说自话。
@@ -228,6 +232,18 @@ const CASES = [
                                   rect: { width: 88, height: 54, top: 300, bottom: 354 } }]]);
     pg.document.elementsFromPoint = () => [pg.nodes[0]];
     pg.getComputedStyle = () => ({ visibility: 'hidden', display: 'block' });
+    return pg;
+  }, ''],
+
+  // ★ 2026-10-19（毕业）：广告 row 只认站点锚（blavity `[data-click="close"]` /
+  // kotzheating `.op2-close`）。站点自己的 `TEXT|×`（CookieScript 的关闭键）**没有锚** ⇒
+  // 必须返空；以前 broad 判据会把它答成 `广告 creative|#cookiescript_close|×`。
+  ['广告 creative：没有站点锚的 TEXT|× 不许认（站点控件）', () => {
+    const pg = page([['div', { id: 'cookiescript_close', cls: 'cookiescript_pre_header',
+                              text: '×',
+                              rect: { width: 15, height: 15, left: 332, right: 347,
+                                      top: 556, bottom: 571 } }]]);
+    pg.document.elementsFromPoint = () => [pg.nodes[0]];
     return pg;
   }, ''],
 

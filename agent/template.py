@@ -877,10 +877,13 @@ _POPUP_HOOKS = (
     #: （它的容器**没有**语义，只靠「有一颗明确的关闭键」）。判据见 `_AD_CREATIVE_JS`。
     #: ★ 2026-10-17（Ruling 30）：**降级为「只报不点」**，直到真 creative 上验过
     #: 「可见 + 有落点」为止（消费端照 `_REPORT_ONLY` 只记一行 INFO，见 `_clear_obstructions`）。
-    #: ★ 2026-10-19：**第 4 格 = 站点锚**（CSS 选择器；空串 = 不设锚）。站点补丁可以把它填成
-    #: `[data-click="close"]`（blavity）或 `.op2-close`（kotzheating）—— 钩子就只认匹配锚
-    #: 的候选；`_REPORT_ONLY` 仍是第三格：锚只改「哪一颗才算」，**不改「点不点」**。
-    ("广告 creative", _AD_CREATIVE_JS, _REPORT_ONLY, ""),
+    #: ★ 2026-10-19（**毕业**）：row 不再只报不点 —— **第三格 = 站点锚**（CSS 选择器）。
+    #: 已知的两个锚取并集：blavity `[data-click="close"]` / kotzheating `.op2-close`。
+    #: 真站证据：blavity 10-10 真弹窗那颗 close 点掉、kotzheating 10-09 真 `.op2-close`
+    #: 浮层点掉（都用的是这两个精确控件）；合成锚测试证明站点自己的 `Close filters drawer`
+    #: / 没有锚的 `TEXT|×` 会被挡在外面。第四格仍保留「只报不点 + 锚」的写法，留给以后
+    #: 还想先观察的站点。
+    ("广告 creative", _AD_CREATIVE_JS, '[data-click="close"], .op2-close'),
 )
 
 
@@ -912,9 +915,16 @@ def _popup_probe_js(hooks=None):
     out = [_CONSENT_ROOTS_JS, _VIS_JS]      # `all` / `vis`：只算一遍，所有钩子共用
     for row in (_POPUP_HOOKS if hooks is None else hooks):
         name, js = row[0], row[1]
-        #: ★ 2026-10-19：第 4 格是**站点锚**（空串 = 不设锚）。所有钩子都多收一个
-        #: `anchor` 参数；不用它的钩子直接忽略（JS 允许多传实参）。
-        anchor = row[3] if len(row) > 3 else ""
+        #: ★ 2026-10-19：**站点锚**。行形有三种：
+        #:   `(name, js)` ⇒ 可点、不设锚；`(name, js, _REPORT_ONLY)` ⇒ 只报不点、不设锚；
+        #:   `(name, js, _REPORT_ONLY, anchor)` ⇒ 只报不点 + 锚；
+        #:   `(name, js, anchor)` ⇒ **可点 + 锚**（第三格不是标志就是锚）。
+        #: 所有钩子都多收一个 `anchor` 参数；不用它的钩子直接忽略（JS 允许多传实参）。
+        anchor = ""
+        if len(row) > 3:
+            anchor = row[3]
+        elif len(row) > 2 and row[2] != _REPORT_ONLY:
+            anchor = row[2]
         #: ⚠️ 钩子的 `return` 只在**它自己那个函数**里有效，而「第一个答应的就此打住」
         #: 要的是**探针这一层**的 return ⇒ `if(hit)` 那半句必须留在外面这一层。
         #: （写成 `(function(){…if(hit)return…})()` 的话，那一下只返回给那个空壳、

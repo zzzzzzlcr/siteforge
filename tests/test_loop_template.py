@@ -1015,8 +1015,8 @@ def test_the_loop_never_acts_on_the_report_only_row_or_on_an_empty_text(
     表那套那半在 `tests/test_template.py`（`test_the_report_only_row_is_reported_but_never_
     clicked` / `test_a_text_answer_with_no_text_is_never_clicked`）—— 这一条钉的是
     **循环型同一把尺子**（两套骨架一个口径，谁也不许只说不做）：
-      · 表里带 `_REPORT_ONLY` 的那一行（今天：广告 creative）⇒ 只报不点 ——
-        真站上已经量到它误点（实测 §1.3），而这一型还没有真站正向证据；
+      · 表里带 `_REPORT_ONLY` 的测试行（广告 creative 2026-10-19 已毕业）⇒ 只报不点 ——
+        真站上曾经量到它误点（实测 §1.3）；
       · 答复是 `TEXT|` 而**文字是空的** ⇒ 不点（那是「指向不确定元素的地址」）；
       · 负控：**表里没有那个名字**的同形状答复 ⇒ 照旧点 —— 挡住它的必须是
         「名字 + 标志」，不是「答复的形状」。
@@ -1024,7 +1024,11 @@ def test_the_loop_never_acts_on_the_report_only_row_or_on_an_empty_text(
     calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
     mod, module, filler, _src_ = _loop_product(tmp_path, monkeypatch, "popup_report_only",
                                                PICK_PAGE, calls)
-    answer = {"now": json.dumps("广告 creative|#bx-close-inside-1|Close")}
+    #: ★ 2026-10-19：广告 creative 那一行**已毕业**（可点 + 站点锚）⇒ 用临时测试行钉标志机制。
+    hook = "return '#fake-report|Close';"
+    module._POPUP_HOOKS = module._POPUP_HOOKS + (("假只报", hook, module._REPORT_ONLY),)
+    module._POPUP_PROBE_JS = module._popup_probe_js(module._POPUP_HOOKS)
+    answer = {"now": json.dumps("假只报|#fake-report|Close")}
     _orig = mod.CDPHelper.eval
 
     def eval_(self, js, *a, **kw):
@@ -1048,7 +1052,7 @@ def test_the_loop_never_acts_on_the_report_only_row_or_on_an_empty_text(
         "账上要记一行、并说清为什么没点：%r" % (row,))
 
     # ② `TEXT|` 而文字是空的：指向不确定元素的地址 ⇒ 不点
-    #: ⚠️ 挑「同意条」那一行（**没有** `_REPORT_ONLY` 标志）—— 用「广告 creative」的话先命中
+    #: ⚠️ 挑「同意条」那一行（**没有** `_REPORT_ONLY` 标志）—— 用测试只报行的话先命中
     #: 「只报不点」那一支，两条路都**不点**，但**为什么**不点是两件事。
     answer["now"] = json.dumps("同意条|TEXT|")
     assert filler.clear_popups() is False
@@ -1097,6 +1101,11 @@ def test_the_popup_recheck_says_which_of_the_three_things_is_true(tmp_path, monk
     calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
     mod, module, filler, _src_ = _loop_product(tmp_path, monkeypatch, "popup_recheck",
                                                PICK_PAGE, calls)
+    #: ★ 2026-10-19：广告 creative 那一行**已毕业**（可点 + 站点锚）⇒ 复核「只报不点」那一格
+    #: 改用一条临时测试行；否则 `_popup_report_only` 不再认它，测试的前提就翻了。
+    hook = "return '#fake-report|Close';"
+    module._POPUP_HOOKS = module._POPUP_HOOKS + (("假只报", hook, module._REPORT_ONLY),)
+    module._POPUP_PROBE_JS = module._popup_probe_js(module._POPUP_HOOKS)
     trace = tmp_path / "popup_recheck.jsonl"
     seq: list = []
     _orig = mod.CDPHelper.eval
@@ -1133,10 +1142,10 @@ def test_the_popup_recheck_says_which_of_the_three_things_is_true(tmp_path, monk
     assert row["ok"] is False, ("cdp 回话是「点上了」就写成了做成？—— 点了个寂寞：%r" % (row,))
     assert "还有" in str(row.get("note") or ""), row
     #: ④ 复核只答「只报不点」那一行 ⇒ 不算「还有」：True
-    #: ★ 2026-10-19（真站 wildnutrition）：点掉同意条之后，复核的整张表先答的是第 4 行
-    #: `广告 creative|TEXT|Close filters drawer`（`_REPORT_ONLY`，本来就不挡路）——
+    #: ★ 2026-10-19（真站 wildnutrition）：点掉同意条之后，复核的整张表先答的是一个
+    #: `_REPORT_ONLY` 行（当时是广告 creative；它 2026-10-19 已毕业，这里用测试行）——
     #: 它把一次**真的关掉了**记成了 `ok:false`。复核只认**可点**的那几行。
-    seq[:] = [CONSENT_ANSWER, "广告 creative|#bx-close-inside-1|Close"]
+    seq[:] = [CONSENT_ANSWER, "假只报|#fake-report|Close"]
     assert filler.clear_popups() is True, "这一下**是发出去了**（返回值只说这个）"
     row = _last_popup_row(trace)
     assert row["ok"] is True, (
@@ -1217,7 +1226,8 @@ def _popup_hook_rows(src: str) -> list:
     """
     block = src[src.index("_POPUP_HOOKS = ("):]
     block = block[:block.index("\n)")]
-    return re.findall(r'\("([^"]+)", _[A-Z_]+(?:, _[A-Z_]+)?(?:, "(?:[^"]*)")?\)', block)
+    pattern = r'''\("([^"]+)", _[A-Z_]+(?:, (?:_[A-Z_]+|'[^']*'|"[^"]*"))?(?:, "[^"]*")?\)'''
+    return re.findall(pattern, block)
 
 
 def test_the_loop_carries_the_same_ad_creative_row_the_table_does():
@@ -1233,10 +1243,11 @@ def test_the_loop_carries_the_same_ad_creative_row_the_table_does():
     """
     src = _src()
     assert "_AD_CREATIVE_JS = (" in src, "循环型产物里没有那颗常量（同源破了）"
-    #: ★ 2026-10-17（终审 C2 · Ruling 30）：这一行**带第三格标志**（只报不点）——
+    #: ★ 2026-10-17（终审 C2 · Ruling 30）：这一行曾经带第三格标志（只报不点）。
+    #: ★ 2026-10-19（毕业）：**第三格 = 站点锚**（可点，两个已知锚并集）——
     #: 两套骨架贴的是同一份机器码 ⇒ 这一格也得一模一样。
-    assert '("广告 creative", _AD_CREATIVE_JS, _REPORT_ONLY, ""),' in src, (
-        "循环型产物的表里没有第 4 行（或丢了 `_REPORT_ONLY` 标志 / 第四格站点锚）")
+    assert ("(\"广告 creative\", _AD_CREATIVE_JS, '[data-click=\"close\"], .op2-close'),"
+            in src), "循环型产物的表里没有第 4 行（或丢了站点锚）"
     assert "def _popup_report_only(" in src, "按名字查标志的那个函数得在（同源破了）"
     rows = _popup_hook_rows(src)
     assert rows and rows[-1] == "广告 creative", (

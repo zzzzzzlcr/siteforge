@@ -2110,6 +2110,11 @@ def test_a_popup_is_rechecked_after_the_click_and_the_ledger_says_which(tmp_path
     common = _stub(sandbox,
                    observe={"url": "https://example.test/", "actions": [], "fields": []},
                    diff={"actionable": True})
+    #: ★ 2026-10-19：广告 creative 那一行**已毕业**（可点 + 站点锚）⇒ 复核「只报不点」那一格
+    #: 改用一条临时测试行；否则 `_popup_report_only` 不再认它，测试的前提就翻了。
+    hook = "return '#fake-report|Close';"
+    module._POPUP_HOOKS = module._POPUP_HOOKS + (("假只报", hook, module._REPORT_ONLY),)
+    module._POPUP_PROBE_JS = module._popup_probe_js(module._POPUP_HOOKS)
     common.STATE.texts = ["Walk"]
     good = "同意条|#onetrust-accept-btn-handler|Accept Cookies"
     #: ⚠️ 直接叫那一个方法（**不走整趟 `run()`**）：这一条量的是**复核那一格**本身，
@@ -2145,11 +2150,11 @@ def test_a_popup_is_rechecked_after_the_click_and_the_ledger_says_which(tmp_path
     assert "探不动" in row3.get("note", ""), row3
 
     # ④ 复核只答「只报不点」那一行 ⇒ 不算「还有」：True
-    #: ★ 2026-10-19（真站 wildnutrition）：点掉同意条之后，复核的整张表先答的是第 4 行
-    #: `广告 creative|TEXT|Close filters drawer`（`_REPORT_ONLY`，本来就不挡路）——
+    #: ★ 2026-10-19（真站 wildnutrition）：点掉同意条之后，复核的整张表先答的是一个
+    #: `_REPORT_ONLY` 行（当时是广告 creative；它 2026-10-19 已毕业，这里用测试行）——
     #: 它把一次**真的关掉了**记成了 `ok:false`。复核只认**可点**的那几行。
     row4 = _once(tmp_path / "popup_report_only.jsonl",
-                 [good, "广告 creative|#bx-close-inside-1|Close"], "")
+                 [good, "假只报|#fake-report|Close"], "")
     assert row4.get("ok") is True, (
         "复核答的是 `_REPORT_ONLY` 行（它本来就不挡路）—— 不许记成「还有」：%r" % (row4,))
     assert "探之前有、探之后没有" in row4.get("note", ""), row4
@@ -2166,16 +2171,14 @@ def test_a_popup_is_rechecked_after_the_click_and_the_ledger_says_which(tmp_path
 
 def test_the_report_only_row_is_reported_but_never_clicked(tmp_path, sandbox, form_file,
                                                            caplog):
-    """★ 2026-10-17（**终审 C2 · Ruling 30**）：第 4 行「广告 creative」**只报不点**。
+    """★ 2026-10-17（**终审 C2 · Ruling 30**）：带 `_REPORT_ONLY` 的行**只报不点**。
 
-    真站上已经**量到误点**（实测文档 §1.3）：这一行把站点自己的抽屉控件
-    `Close filters drawer` 当成了关闭键，产物照着答就点了。终审的处置是**不点** ——
-    探针照认（「认得出哪一颗」那一半归探针与合成页矩阵），但消费者**不动手**，
-    只记一行 INFO 与一行账（与「形状不认识」同一处置），**直到真 creative 上验过
-    「可见 + 有落点」**。
+    真站历史：第 4 行「广告 creative」曾经把站点自己的抽屉控件 `Close filters drawer`
+    当成关闭键点了。2026-10-19 那一行**已毕业**（可点 + 站点锚），所以这一条改用一条
+    **临时测试行**（`假只报`）来钉「标志机制」本身。
 
     两半都钉：
-      · 带那个标志的行 ⇒ **一下都不点**，而且日志/账本**说清为什么没点**；
+      · 带那个标志的测试行 ⇒ **一下都不点**，而且日志/账本**说清为什么没点**；
       · **同一句话换个名字**（表里没这一行的『假弹窗』）⇒ 照旧点 —— 挡住它的是
         `_REPORT_ONLY` 那个标志，**不是**答复的形状（否则「只报不点」就成了
         「凡答 `TEXT` 都不点」，那是另一件事）。
@@ -2186,11 +2189,17 @@ def test_the_report_only_row_is_reported_but_never_clicked(tmp_path, sandbox, fo
                         _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
         sandbox,
     )
+    #: ★ 2026-10-19：广告 creative 那一行**已毕业**（可点 + 站点锚）⇒ 这一条改用一条
+    #: 临时测试行来钉「带 `_REPORT_ONLY` 就不动手」这个机制本身；否则它测的就是
+    #: 一条已经被翻掉标志的行，什么都钉不住。
+    hook = "return '#fake-report|Close';"
+    module._POPUP_HOOKS = module._POPUP_HOOKS + (("假只报", hook, module._REPORT_ONLY),)
+    module._POPUP_PROBE_JS = module._popup_probe_js(module._POPUP_HOOKS)
     common = _stub(sandbox,
                    observe={"url": "https://example.test/", "actions": [], "fields": []},
                    diff={"actionable": True})
     common.STATE.texts = ["Walk"]
-    common.STATE.consent = "广告 creative|#bx-close-inside-1|Close"
+    common.STATE.consent = "假只报|#fake-report|Close"
 
     #: ⚠️ 只叫那一个方法（不走整趟 `run()`）：整趟跑完要白等一次 `SUCCESS_WAIT_SECONDS`。
     trace = tmp_path / "report_only.jsonl"
@@ -2198,12 +2207,12 @@ def test_the_report_only_row_is_reported_but_never_clicked(tmp_path, sandbox, fo
         module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
                       trace=str(trace))._clear_obstructions()
     clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
-    assert "#bx-close-inside-1" not in clicks, (
+    assert "#fake-report" not in clicks, (
         "带 `_REPORT_ONLY` 的那一行**不许动手**（真站上量到过误点）：%s" % clicks)
     assert not [a for a in common.STATE.actions if a[0] == "mark"], (
         "连标记那一半也不该做（不动手就是不动手）：%s" % (common.STATE.actions,))
     said = " ".join(r.getMessage() for r in caplog.records)
-    assert "只报不点" in said and "广告 creative" in said, (
+    assert "只报不点" in said and "假只报" in said, (
         "日志要说清为什么没点（不然读的人以为探针没答）：%s" % said)
     row = _popup_rows(trace)[-1]
     assert row.get("ok") is None and "只报不点" in row.get("note", ""), (
@@ -2368,7 +2377,8 @@ def _popup_hook_rows(src: str) -> list:
     """
     block = src[src.index("_POPUP_HOOKS = ("):]
     block = block[:block.index("\n)")]
-    return re.findall(r'\("([^"]+)", _[A-Z_]+(?:, _[A-Z_]+)?(?:, "(?:[^"]*)")?\)', block)
+    pattern = r'''\("([^"]+)", _[A-Z_]+(?:, (?:_[A-Z_]+|'[^']*'|"[^"]*"))?(?:, "[^"]*")?\)'''
+    return re.findall(pattern, block)
 
 
 def test_the_ad_creative_hook_is_one_row_and_both_skeletons_get_it():
@@ -2393,11 +2403,14 @@ def test_the_ad_creative_hook_is_one_row_and_both_skeletons_get_it():
     """
     src = render_sample()
     assert "_AD_CREATIVE_JS = (" in src, "那段 JS 得在产物里"
-    #: ★ 2026-10-17（终审 C2 · Ruling 30）：这一行**带第三格标志** ⇒ 「报但不点」
-    #: （真站上已经量到误点，实测 §1.3）。标志与名字在**同一个元组**里 ⇒ 丢不了。
-    #: ★ 2026-10-19：**第四格 = 站点锚**（默认空串 = 不设锚，宽判据仍只报不点）。
-    assert '("广告 creative", _AD_CREATIVE_JS, _REPORT_ONLY, ""),' in src, (
-        "表里得有这一行、带 `_REPORT_ONLY`，且第四格是空的站点锚（Ruling 30 先不点）")
+    #: ★ 2026-10-17（终审 C2 · Ruling 30）：这一行曾经带第三格标志 ⇒ 「报但不点」。
+    #: ★ 2026-10-19（毕业）：**第三格 = 站点锚**（可点）；两个已知锚取并集：
+    #: blavity `[data-click="close"]` / kotzheating `.op2-close`。第四格仍留给
+    #: 「只报不点 + 锚」的站点写法。
+    assert ("(\"广告 creative\", _AD_CREATIVE_JS, '[data-click=\"close\"], .op2-close'),"
+            in src), "表里得有这一行（可点 + 站点锚并集）"
+    assert '("广告 creative", _AD_CREATIVE_JS, _REPORT_ONLY,' not in src, (
+        "这一行已经毕业：不再带 `_REPORT_ONLY`")
     assert '_REPORT_ONLY = "report_only"' in src, "标志那个常量得在产物里"
     assert "def _popup_report_only(" in src, "按名字查标志的那个函数得在产物里"
     rows = _popup_hook_rows(src)

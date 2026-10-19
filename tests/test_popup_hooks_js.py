@@ -116,9 +116,9 @@ def _drive(tmp_path: pathlib.Path, js: str, marker_js: str | None = None,
 
 
 def test_the_probe_answers_the_three_fields_python_reads(tmp_path):
-    """产物那段探针在假 DOM 里**真跑**：十九格，一格不许差。
+    """产物那段探针在假 DOM 里**真跑**：二十格，一格不许差。
 
-    十九格 = 同意条（带 id / 只有文字 / **按钮是 div（CookieScript 形状）** /
+    二十格 = 同意条（带 id / 只有文字 / **按钮是 div（CookieScript 形状）** /
     **wrapper 合并文字也很短 —— 不许点 wrapper** / **按钮是 span（没有 id）** /
     **容器里的长散文不许认**）、盖住整页的模态
     （按钮 / **关闭键是 span** / **关闭键包在 wrapper 里 —— 不许点 wrapper**）、
@@ -126,14 +126,14 @@ def test_the_probe_answers_the_three_fields_python_reads(tmp_path):
     干净页面、两者同时在、
     广告 creative（可见那一颗恒命中 / **可见但被盖着 ⇒ 恒返空**（blavity 矩阵第 4 格，
     ★ Ruling 27 换过形状）/ **落点是候选里面的子元素（`contains` 真语义，Ruling 34）** /
-    超界的容器恒不点 / 散文的 aria-label 恒不认 —— 含**≤24 字**那格，见 Ruling 26 /
-    **`visibility:hidden` 恒不认**，见 Ruling 28-①）。
+    **没有站点锚的 `TEXT|×` 不许认** / 超界的容器恒不点 / 散文的 aria-label 恒不认 ——
+    含**≤24 字**那格，见 Ruling 26 / **`visibility:hidden` 恒不认**，见 Ruling 28-①）。
     答复的形状就是 `_clear_obstructions` 拆的那三格
     （`"<钩子名>|<选择器|TEXT>|<按钮文字>"`）—— 名字、选择器、按钮文字，
     少一格那边就退化成「量不出来」（什么都不点）。
     """
     out = _drive(tmp_path, _probe_js(tmp_path))
-    assert out["total"] == 19, out
+    assert out["total"] == 20, out
     assert out["failed"] == 0, [r for r in out["results"] if not r["ok"]]
 
 
@@ -158,6 +158,7 @@ def test_the_fixture_can_actually_fire(tmp_path):
                       "广告 creative：aria-label 是散文 —— 「Do not close this window」不许认",
                       "广告 creative：aria-label 是散文（12 字 ≤24）—— 「Do not close」不许认",
                       "广告 creative：`visibility:hidden` 的关闭键不许认",
+                      "广告 creative：没有站点锚的 TEXT|× 不许认（站点控件）",
                       "同意条：容器里的长散文不许认（div/span 新白名单）",
                       "盖满视口的同意弹层：满视口的 body 不许当容器"], passed
 
@@ -193,7 +194,8 @@ def test_the_ad_creative_anchor_is_a_table_cell(tmp_path, anchor):
     rows = []
     for row in module._POPUP_HOOKS:
         if row[0] == "广告 creative":
-            rows.append((row[0], row[1], row[2], anchor))
+            #: 可点 + 锚：第三格就是锚（不是 `_REPORT_ONLY`）
+            rows.append((row[0], row[1], anchor))
         else:
             rows.append(row)
     probe = module._popup_probe_js(tuple(rows))
