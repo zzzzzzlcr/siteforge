@@ -273,6 +273,26 @@ def test_a_transient_error_string_as_a_judge_is_refused():
     assert "judge-transient" in _codes(src), lint.check(src)
 
 
+def test_a_global_header_as_a_judge_is_refused():
+    """★ 2026-10-19（wildnutrition `job-8d517747bdb6`）：判据取到**全站页眉** ⇒ 组会匹到 quiz。
+
+    页眉「Toggle menu SEARCH … ACCOUNT」在 offer / quiz 两页都成立，地址一漂就进错组。
+    命中两个以上页眉/菜单词 ⇒ `judge-chrome`；页独有促销语不报。
+    """
+    header = "Toggle menu SEARCH Wild Nutrition® Ltd ACCOUNT"
+    src = _artifact([{"name": "collagen_scoop_offer",
+                      "when": {"url_contains": "/pages/collagen-scoop-offer",
+                               "text_contains": [header]},
+                      "steps": [{"action": "click", "target": {"selectors": ["#a"]}}]}])
+    assert "judge-chrome" in _codes(src), lint.check(src)
+
+    unique = _artifact([{"name": "collagen_scoop_offer",
+                         "when": {"url_contains": "/pages/collagen-scoop-offer",
+                                  "text_contains": ["50% off Collagen 500 Plus"]},
+                         "steps": [{"action": "click", "target": {"selectors": ["#a"]}}]}])
+    assert "judge-chrome" not in _codes(unique), lint.check(unique)
+
+
 def test_a_judge_containing_the_value_we_are_going_to_fill_is_refused():
     """D：判据里含**要填进去的值** ⇒ 与随机池自相矛盾（真站：`123 Peachtree St NE … 123`）。"""
     src = _artifact(
@@ -504,19 +524,21 @@ def test_a_stable_candidate_beside_a_fragile_one_is_not_flagged():
     assert lint.check(src) == [], lint.check(src)
 
 
-def test_judge_rule_table_is_the_mounted_nine():
-    """挂进生成期出口的判据规则就这**九条**（C/D/H + A/E/F/G/I）——
+def test_judge_rule_table_is_the_mounted_ten():
+    """挂进生成期出口的判据规则就这**十条**（C/D/H + A/E/F/G/I + chrome）——
     多一条 / 少一条都要有人来解释（与上面 `RULES` 那张表同一条规矩）。
 
     ★ 2026-10-15（修站那一刀④，spec §3.1）：I 那一格的**另一种判决**单列一条
     （`judge-fragile-no-basis` = 无据可依）—— 与 `judge-fragile-selectors`
     （有据但没用上）**分开**：两族的出路完全不同（一个改稿能修，一个只能删/请人/接受），
     `tools/fam_report.py` / `docs/根因库.md` 要分别计数。
+    ★ 2026-10-19：`judge-chrome` —— `when` 取到全站页眉/菜单（wildnutrition 那单）。
     """
     assert list(lint.JUDGE_RULES) == [
         "judge-transient", "judge-fill-value", "judge-url-only",
         "judge-strict-unguarded", "judge-ungated-click", "judge-no-follow-tab",
-        "judge-source-autoname", "judge-fragile-selectors", "judge-fragile-no-basis",
+        "judge-source-autoname", "judge-fragile-selectors", "judge-chrome",
+        "judge-fragile-no-basis",
     ]
 
 

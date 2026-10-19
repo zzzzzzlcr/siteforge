@@ -106,6 +106,7 @@ START → intake → explore → draft → lint → selftest → deliver → END
 from __future__ import annotations
 
 import datetime
+import json
 import pathlib
 import copy
 import difflib
@@ -1868,13 +1869,93 @@ def _nav_failed_note(report) -> str:
             "（探路的账本还在，**不用**重新来一遍）。" % (said or "（它没说什么）"))
 
 
+def _sig(text) -> str:
+    """比较正文用：空白压成一个空格、casefold。"""
+    return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+
+
+def _field(obj, name, default=None):
+    """报告可能是 dict（服务序列化）也可能是 `selftest.Report`/`Run` 对象（图里）。"""
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def _failed_trace_row(report):
+    """从自测报告的第一条失败 run 的 trace 里取**失败那一步**那一行。读不到 ⇒ None。"""
+    for run in _field(report, "runs", []) or []:
+        path = str(_field(run, "trace_path", "") or "")
+        if not path:
+            continue
+        try:
+            rows = [json.loads(x) for x in
+                    pathlib.Path(path).read_text(encoding="utf-8").splitlines() if x.strip()]
+        except Exception:                                  # noqa: BLE001 —— 读不到就不收紧
+            continue
+        step = _field(run, "failed_step")
+        for row in rows:
+            if step is not None and row.get("step") == step and row.get("ok") is False:
+                return row
+        for row in rows:
+            if row.get("ok") is False:
+                return row
+    return None
+
+
+def _tighten_state_when(states, report):
+    """★ 2026-10-19（wildnutrition `job-8d517747bdb6`）：**组匹到错页**时自动收紧 `when`。
+
+    判据只认报告里现成的两格：失败那一行的 `page_sig` 与 `url`。某个组的
+    `when.text_contains` 在**失败页**上也成立、而失败页 URL **不**匹配该组的
+    `url_contains` ⇒ 这一组是会匹错页的那一组：把那段正文从判据里去掉，退回
+    **URL 严格**（并写一句 `text_why`，否则 lint 的 `judge-url-only` 会把它打回）。
+
+    返回 `(新 states, 被收紧的组名)`；没有命中就原样返回。只读 trace、不碰页面。
+    """
+    row = _failed_trace_row(report)
+    if not row:
+        return states, []
+    sig = _sig(row.get("page_sig"))
+    url = str(row.get("url") or "")
+    if not sig or not url:
+        return states, []
+    new = copy.deepcopy(states or [])
+    names = []
+    for st in new:
+        if not isinstance(st, dict):
+            continue
+        when = st.get("when")
+        if not isinstance(when, dict):
+            continue
+        want = str(when.get("url_contains") or "")
+        if not want or want in url:
+            continue
+        texts = [str(t) for t in (when.get("text_contains") or [])]
+        hit = [t for t in texts if _sig(t) and _sig(t) in sig]
+        if not hit:
+            continue
+        keep = [t for t in texts if t not in hit]
+        when["text_contains"] = keep
+        if not keep:
+            when["text_why"] = ("失败页上也命中原文（全站页眉/菜单）；按 URL 严格，"
+                                "不拿这段正文当判据")
+        names.append(str(st.get("name") or "?"))
+    return new, names
+
+
 def _diagnose(state, deps: Deps, caps: Caps) -> dict:
     """从自测报告里定位「哪一遍、卡在第几步、什么错」——**只说报告里真有的东西**。"""
     evidence = _diagnosis(state.get("report"))
+    #: ★ 2026-10-19：失败页也命中**别的组**的正文判据 ⇒ 先把那一组收紧（见 `_tighten_state_when`）。
+    tightened, tightened_names = _tighten_state_when(state.get("fix_states"),
+                                                     state.get("report"))
     # R-84：**这一轮往站方提交了几次**要摆在人眼前。一次提交 = 产物把整个漏斗走一遍
     # = 一次真实的 lead 提交；裁定之前它固定是 3 次/轮，而**没有人看得见这个数**。
     say = ("自测没过：这一轮往站方提交了 %d 次。%s 接下来要拿这份记录去定位，"
            "定位完回 draft 改一版。" % (evidence["submissions"], evidence["say"]))
+    if tightened_names:
+        say = say + ("\n已自动收紧组「%s」的判据：失败页也命中原文 ⇒ 去掉正文、按 URL 严格。"
+                     % "、".join(tightened_names))
     out = _enter(state, caps, "diagnose", say, facts={"逐遍结果": evidence["per_run"],
                                                      "证据": evidence,
                                                      # 跑的条件（R-F1）：不是干净会话时，
@@ -1882,6 +1963,9 @@ def _diagnose(state, deps: Deps, caps: Caps) -> dict:
                                                      "会话": state.get("session")})
     if _held(out):
         return out
+    if tightened_names:
+        out["fix_states"] = tightened
+        out.setdefault("facts", {})["自动收紧判据"] = tightened_names
     out["diagnosis"] = evidence
     return out
 

@@ -5772,6 +5772,34 @@ class Service:
         except fmr.FmrUnmeasured as exc:
             raise self._unmeasured_to_http(exc)
 
+    def _config_status(self, key: str):
+        """`form_config_sites` 里这一行的 `status`（1=启用 / 0=停用 / `None`=没量到）。
+
+        ★ 2026-10-19（真站 FMR 实测）：源码写进去**不等于**启用 —— 这一格要单独读；
+        读不到就如实给 `None`，**不许**拿「上传成功」冒充「已启用」。
+        """
+        try:
+            rows = self._fmr.form_config_sites()
+        except Exception:                                  # noqa: BLE001 —— 读不到 ≠ 已启用
+            return None
+        for row in rows or []:
+            if str(row.get("site") or "") == str(key):
+                return row.get("status")
+        return None
+
+    @staticmethod
+    def _config_status_say(status, *, after: bool = False) -> str:
+        """把 `status` 翻成一句人话；`after=False` 用在预检，`True` 用在写完确认。"""
+        if status == 1:
+            return "\n后端这一行**启用**（status=1）。"
+        if status == 0:
+            return ("\n⚠️ **源码写进去了，但这一行仍是停用（status=0）** —— 去面板启用，"
+                    "启用后才会跑。")
+        return ("\n⚠️ 启用状态**没量到**（`form_config_sites` 读不到）—— 去面板确认。"
+                if after else
+                "\n⚠️ 后端这一行的启用状态**没量到**（`form_config_sites` 读不到）—— "
+                "传完去面板确认它是不是启用。")
+
     def py_upload_prepare(self, job_id: str, operator: Any, force: Any = False) -> dict:
         """预检：把「要传什么 / 后端现在是什么」摆出来，发一张一次性票据。**这一阶段绝不写。**"""
         what = self._what_to_upload(job_id, force=bool(force))
@@ -5787,6 +5815,7 @@ class Service:
                 detail="**一个字都没写**：这个部署**没配写用的 token**（`%s`，没配就退回 `%s`）"
                        "—— 请求一个都没发出去。" % (fmr.WRITE_TOKEN_ENV, fmr.TOKEN_ENV))
         original, fresh = self._backend_script(what["key"])
+        backend_status = self._config_status(what["key"])
         same = pywrite.sha256_text(original) == pywrite.sha256_text(what["source"])
         if same:
             raise HTTPException(
@@ -5800,16 +5829,15 @@ class Service:
         #: 反过来，已有的那一份说成「新建」也是假话（那是**换掉**它）。
         if fresh:
             said = ("预检过了：本地那份 **%d 字节 / sha `%s`**；后端**还不认识这个键**"
-                    "（或那一行是空的）—— 确认之后是**新建/写满**一份（实测过：带 `status: 1` "
-                    "写一个新键，后端建了一行、回读 sha 逐字节一致 ✓）。**再确认一次才会上传**；"
-                    "⚠️ 传上去它会真跑（`status: 1`）。" % (n_bytes, item.source_sha256[:16]))
+                    "（或那一行是空的）—— 确认之后是**新建/写满**一份（源码）；"
+                    "**再确认一次才会上传**。"
+                    % (n_bytes, item.source_sha256[:16]))
         else:
             said = ("预检过了：本地那份 **%d 字节 / sha `%s`**；后端现在那份 sha `%s`。"
                     "**再确认一次才会上传**（上传会换掉后台那份，生产按接口下载就变成新这一份）。"
-                    "⚠️ 这一下**也带着启用**（`status: 1`）—— 传上去它就会真跑；"
-                    "⚠️ 那一行若是**被人停用**的，会被**重新启用**。后端回执不回显这一格，"
-                    "要确认就再读一次（正常读、不加 debug）✓。"
+                    "上传**只写源码**；**是否启用由后端那一行决定**。"
                     % (n_bytes, item.source_sha256[:16], item.original_sha256[:16]))
+        said += self._config_status_say(backend_status)
         if what.get("undelivered"):
             #: ★ 2026-09-28：**先说**「这一版没走到交付/没经过自测」，再说键与指纹那一段 ——
             #: 顺序是有意的：人要按「确认上传」之前，必须先看到这一句。
@@ -5819,7 +5847,8 @@ class Service:
             returned = {}
         return {"ticket": item.ticket, "site": item.key, "path": item.path,
                 "bytes": n_bytes, "local_sha256": item.source_sha256,
-                "backend_sha256": item.original_sha256, "say": said, **returned}
+                "backend_sha256": item.original_sha256, "backend_status": backend_status,
+                "say": said, **returned}
 
     def py_upload_commit(self, job_id: str, ticket: Any) -> dict:
         """消费票据 → 写前防覆盖 → 上传 → **回读校验**；不一致就传回原来那份。"""
@@ -5862,11 +5891,16 @@ class Service:
                        % ("回读核对通过 ✓" if pywrite.sha256_text(restored) == item.original_sha256
                           else "⚠️ 回滚也没核对上，**去后端看一眼**", backup_id),
                 "backup_id": backup_id, "rollback": back.as_dict()})
+        config_status = self._config_status(item.key)
+        said = ("**上传好了，而且回读核对过**：后端那份现在 sha `%s`，与本地那份"
+                "逐字节一致。写前那份备份在 `%s`（要回滚就按「回滚」。）"
+                % (item.source_sha256[:16], backup_id))
+        said += self._config_status_say(config_status, after=True)
         return {"ok": True, "site": item.key, "sha256": item.source_sha256,
                 "bytes": len(item.source.encode("utf-8")), "backup_id": backup_id,
-                "say": ("**上传好了，而且回读核对过**：后端那份现在 sha `%s`，与本地那份"
-                        "逐字节一致。写前那份备份在 `%s`（要回滚就按「回滚」。）"
-                        % (item.source_sha256[:16], backup_id))}
+                "config_status": config_status,
+                "enabled": (None if config_status is None else config_status == 1),
+                "say": said}
 
     def py_upload_rollback(self, job_id: str, backup_id: Any, operator: Any) -> dict:
         """人工回滚：把**上传前那份**传回去（先核对「后端现在是不是我们传上去的那一份」）。"""

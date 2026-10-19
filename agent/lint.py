@@ -158,7 +158,7 @@ RULES: tuple[Rule, ...] = (
 JUDGE_RULES: tuple[str, ...] = (
     "judge-transient", "judge-fill-value", "judge-url-only",
     "judge-strict-unguarded", "judge-ungated-click", "judge-no-follow-tab",
-    "judge-source-autoname", "judge-fragile-selectors",
+    "judge-source-autoname", "judge-fragile-selectors", "judge-chrome",
     #: ★ 2026-10-15（修站那一刀④，spec §3.1）：I 那一格的**另一种判决** —— 产品里那根
     #: 脆地址**在探路那一刻根本没有更稳的可依**（卡上没锚、也没有一条不脆的采信候选）。
     #: 与上面那一条**分开**报，是因为两族的出路完全不同：一个改稿能修（补一条稳的），
@@ -166,6 +166,13 @@ JUDGE_RULES: tuple[str, ...] = (
     #: ⚠️ 这一条只在**传了 `observed`** 时才可能报（没有冻结的观察就没有「出处」可判）。
     "judge-fragile-no-basis",
 )
+
+#: ★ 2026-10-19（wildnutrition `job-8d517747bdb6`）：`when.text_contains` 可以取到**全站页眉**
+#: —— 它在 quiz / offer 两页都成立，组就匹到错页。命中**两个以上**这类词 ⇒ 报 `judge-chrome`。
+#: 一个词不算（「Account settings」「Search results」那种业务页本身可能就有）；两个以上基本就是
+#: 页眉/菜单整段。
+CHROME_WORDS = ("toggle menu", "search our store", "account", "basket",
+                "shopping cart", "skip to content")
 
 #: 瞬时/校验类文案（C）。与 `docs/probes/2026-09-28-georgiapower/artifact_lint.py` 的
 #: `TRANSIENT` 同一套词 —— 两处对不上就会出现「体检说有问题、闸说没有」那种不一致。
@@ -1460,6 +1467,14 @@ def _judge_violations(src: str, observed=None, accepted=None) -> list[Violation]
                     line=_line_of(src, text), code="judge-transient",
                     message=("组「%s」的判据是**瞬时文案**（%r）—— 校验报错/加载中那种，"
                              "只在某一刻出现。换成这一屏**稳定**的文字。" % (name, text[:40])),
+                    snippet=_snippet(text)))
+            chrome = [w for w in CHROME_WORDS if w in _norm_text(text)]
+            if len(chrome) >= 2:
+                out.append(Violation(
+                    line=_line_of(src, text), code="judge-chrome",
+                    message=("组「%s」的判据像**全站页眉/菜单**（命中 %s）—— 它在别的页上也成立，"
+                             "组会匹到错页。换这一页独有的文字（或去掉正文、只留地址）。"
+                             % (name, "、".join(chrome))),
                     snippet=_snippet(text)))
             for literal in literals:
                 if literal in text:

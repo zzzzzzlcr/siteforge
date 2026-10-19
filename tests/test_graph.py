@@ -3091,3 +3091,35 @@ def test_the_loop_shape_has_no_anchors_overwritten_row(tmp_path):
     second = [p for p in payloads if p["step"] == "draft"][1]     # 第二道 draft 闸
     assert second["facts"].get("锚被观测改写的步") is None, second
     assert out.get("anchors_overwritten") is None
+
+
+def test_a_when_that_also_holds_on_the_failed_page_is_tightened_to_url_only(tmp_path):
+    """★ 2026-10-19（wildnutrition `job-8d517747bdb6`）：组匹到错页 ⇒ 自动把通用正文判据去掉。
+
+    失败页是 quiz、组是 offer；组的正文判据是全站页眉（quiz 页也有）⇒ 把正文去掉，
+    退回 URL 严格，并写 `text_why`（否则 lint 的 `judge-url-only` 会打回）。
+    失败页上那个组（URL 匹配失败页）**不许**动；原 states 也不许被改。
+    """
+    import json                       # 干净检出上这一份没有顶层 import json
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(json.dumps({
+        "step": 2, "ok": False, "url": "https://x/quiz",
+        "page_sig": "Toggle menu SEARCH ACCOUNT What's your main health goal",
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+    states = [
+        {"name": "collagen_scoop_offer",
+         "when": {"url_contains": "https://x/offer",
+                  "text_contains": ["Toggle menu SEARCH ACCOUNT"]},
+         "steps": []},
+        {"name": "quiz",
+         "when": {"url_contains": "https://x/quiz",
+                  "text_contains": ["What's your main health goal"]},
+         "steps": []},
+    ]
+    report = {"runs": [{"trace_path": str(trace), "failed_step": 2}]}
+    new, names = graph._tighten_state_when(states, report)
+    assert names == ["collagen_scoop_offer"], names
+    assert new[0]["when"]["text_contains"] == [], new[0]
+    assert "URL 严格" in new[0]["when"].get("text_why", ""), new[0]
+    assert new[1]["when"]["text_contains"] == ["What's your main health goal"], new[1]
+    assert states[0]["when"]["text_contains"], "原 states 被就地改了"

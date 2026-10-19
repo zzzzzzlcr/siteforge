@@ -33,6 +33,8 @@ class Backend:
     configured = True
     write_token = "write-token-for-test"
     base = "https://fmr.example"
+    #: 上传之后 `form_config_sites` 里这一行的 status（1=启用 / 0=停用）
+    config_status = 1
 
     def __init__(self, *, content: str = ORIGINAL, store_instead: str = None):
         self.content = content
@@ -42,6 +44,9 @@ class Backend:
     def form_script(self, site, *, allow_disabled: bool = False):
         assert site == KEY, site
         return {"type": "py", "source": self.content, "sha256": pywrite.sha256_text(self.content)}
+
+    def form_config_sites(self):
+        return [{"site": KEY, "config_id": 7, "status": self.config_status}]
 
     def update_form_script(self, key, source, *, operator):
         self.writes.append((key, source, operator))
@@ -152,6 +157,47 @@ def test_prepare_never_writes_and_commit_uploads_with_a_readback(tmp_path, monke
     backup = tmp_path / "backups" / (done.json()["backup_id"] + ".py")
     assert backup.is_file() and backup.read_text(encoding="utf-8") == ORIGINAL
     assert "回读" in done.json()["say"], done.json()["say"]
+
+
+def test_commit_reports_the_config_status_and_never_claims_enabled(tmp_path, monkeypatch):
+    """★ 2026-10-19（wildnutrition FMR 实测）：源码写进去了，`form_config_sites` 仍是 status=0。
+
+    原来预检/确认都说「这一下也带着启用（status: 1）」「停用行会被重新启用」—— 实测**假话**。
+    现在：预检给 `backend_status`，确认给 `config_status` / `enabled`；仍是 0 就明说「停用，
+    去面板启用」，不许再说「带着启用」。
+    """
+    # ① 停用行：源码写成功，但 config 仍 0
+    backend = Backend()
+    backend.config_status = 0
+    app, _svc, _p = _app(tmp_path / "disabled", backend, monkeypatch)
+    prepared = _prepare(app)
+    assert prepared.status_code == 200, prepared.text
+    body = prepared.json()
+    assert body["backend_status"] == 0, body
+    assert "带启用" not in body["say"], body["say"]
+    assert "会被重新启用" not in body["say"], body["say"]
+    done = app.post(service.PYWRITE_COMMIT_PATH.format(job_id=JOB),
+                    json={"ticket": body["ticket"]})
+    assert done.status_code == 200, done.text
+    got = done.json()
+    assert got["config_status"] == 0, got
+    assert got["enabled"] is False, got
+    assert "停用" in got["say"], got["say"]
+
+    # ② 启用行：对照（配置本来就是 1）
+    backend2 = Backend()
+    backend2.config_status = 1
+    app2, _svc2, _p2 = _app(tmp_path / "enabled", backend2, monkeypatch,
+                            source=SOURCE + "\n# enabled\n")
+    prepared2 = _prepare(app2)
+    assert prepared2.status_code == 200, prepared2.text
+    done2 = app2.post(service.PYWRITE_COMMIT_PATH.format(job_id=JOB),
+                      json={"ticket": prepared2.json()["ticket"]})
+    assert done2.status_code == 200, done2.text
+    got2 = done2.json()
+    assert got2["config_status"] == 1, got2
+    assert got2["enabled"] is True, got2
+    assert "启用" in got2["say"], got2["say"]
 
 
 def test_the_ticket_is_one_shot(tmp_path, monkeypatch):
