@@ -1141,6 +1141,20 @@ COVER_WAIT_SECONDS = 35.0
 #: 等蒙版期间每隔多久再量一次（秒）
 COVER_POLL_SECONDS = 0.4
 
+#: ★ 2026-10-13：等遮挡物自己走的同时，**最多**把目标挪到视口正中几次（见 `_recenter`）。
+#:
+#: 为什么要这一格（真事 `job-a6954761e657` · healthinsurancewatch.com.au，读数在
+#: `_probe_hiw_cover.py`）：填完上一格之后**站点自己滚动**，`#postcode` 的中心点正好落在
+#: **粘性页眉**（`div.h-full`，视口顶上那一条：[0,0,360,98]）底下 ⇒ 产物「礼貌地」不动手：
+#: 等满 35 秒、两个声明地址 + 两个重找候选**一个都没试** ⇒ 报文只有一句
+#: 「没找到「Your postcode」这个输入框，没填成」。自测三轮都死在这一步，各花 50.1/49.8/50.1 秒
+#: （= 35 秒空等 + 开销；第 9 步只花 14.5 秒 —— 遮挡物已经进了「赖着不走」名单）。
+#:
+#: **粘性页眉不是「不能碰」，是「站错地方了」** —— 人在那儿只会把页面往回滚一点就填了。
+#: 但这条口子**有界**：真弹层（consent 那类）挪几次也没用 ⇒ 预算到点照旧不动手、照旧失败；
+#: 也就是「多滚两下」，不是「放开遮挡判据」。
+RECENTER_TRIES = 2
+
 #: ★ 2026-10-12：声明里那根地址**没找到**时，先等多久（秒）再试**同一根地址**。
 #:
 #: 为什么要这一格（真事 `job-d57366d0cf35` · ic.com 的选国家抽屉，读数在
@@ -1717,6 +1731,18 @@ def _landing_say(output):
     return ""
 
 
+#: 从**选择器**或**遮挡物描述**里抠出第一个 `#id` —— `#edit-size` 抠出 `edit-size`，
+#: `span#select2-edit-size-container.select2-selection__rendered` 抠出
+#: `select2-edit-size-container`。抠不出来（没有 `#`）就是空串。
+#: ★ 2026-10-08：给「盖着它的是不是**这一格自己的**控件」那条判据用（见 `_cover_is_own_widget`）。
+_ID_IN_SEL = re.compile(r"#([A-Za-z_][-\w]*)")
+
+
+def _id_in(sel) -> str:
+    m = _ID_IN_SEL.search(str(sel or ""))
+    return m.group(1) if m else ""
+
+
 def _say(action, label, ok, level=None, progress=None, landing=""):
     """给人看的一句话（D16：使用者是非技术人员 —— 不是错误码、不是选择器）。"""
     if action == "click":
@@ -1798,6 +1824,14 @@ class Filler:
     #: 后面再遇到**不再等**（见 `_covered_by`）—— 不然每步白赔一笔。
     #: 同样给一个类默认值：`object.__new__(Filler)` 那种实例上也够得着这一格。
     _stuck_covers = frozenset()
+
+    #: ★ 2026-10-13：这一步**因为被盖着而一个候选都没试**时，盖着它的那个东西
+    #: （`"tag#id.class"`，空串 = 不是这个原因）。只属于触发它的那一步（`_perform` 开头清零）。
+    #: 为什么要它：报文原来把「没敢动手」与「找不到框」说成同一句
+    #: （`job-a6954761e657` 三轮自测都只留下「没找到「Your postcode」这个输入框，没填成」，
+    #: 而那一刻产物**连一次 cdp form 都没发出去**）⇒ 三轮诊错全在改选择器。
+    #: 类默认值同上：`object.__new__(Filler)` 那种实例也要够得着。
+    cover_why = ""
 
     #: 最近一次 `goto` 时 cdp 在 stderr 上说的话（见 `__init__` 与 `_do` 里 goto 那段）。
     #: 类默认值同上：`object.__new__(Filler)` 的实例够得着这一格。
@@ -3291,6 +3325,33 @@ class Filler:
         return ("已随这次失败上报（step=fail_scene_%d）" % index) if ok \
             else "截图没发成：上报接口没收下（它也没说为什么）"
 
+    def _cover_is_own_widget(self, action, kind, selector, cover) -> bool:
+        """★ 2026-10-08（真事 `job-62086decf839`，shorecrestwpb.com）：**盖着它的是这一格
+        自己的自定义控件 ⇒ 不算遮挡物**。窄口径，**只放 `form` + `kind == "select"`**。
+
+        形状：站方用 **select2** 那类插件把原生 `<select>` 换成自定义控件 —— 原生 `<select>`
+        还在 DOM 里，而 `cdp form --select` **自己认得**这种（它的说明里写着：目标不是原生
+        `<select>` 时会去找可点的控件打开菜单），**手打那条命令是成的**。
+        可产物的遮挡判据**排在 cdp 前面**：它量到 `<select>` 被
+        `span#select2-edit-size-container.select2-selection__rendered` 盖着 ⇒ 判成
+        「被别的东西挡着」⇒ 四个下拉**一个都不动** ⇒ 第 7 步没做成 ⇒ 后面的勾选与 submit
+        全没做（那一趟自测 `passed=False`，运营拿不到能用的稿）。
+
+        **只放这一种**，两条都要：
+          ① 动作是 `form` 且 `kind == "select"` —— 别的动作照旧拦（那道防线挡的是
+             「点到 consent 弹层上、cdp 还回 ok」，真站栽过，见 `_covered_by` 的说明）；
+          ② 盖着的东西的 id 里**带着这一格自己的 id** —— select2 那类壳子的命名法就是把
+             原生 id 嵌进去（`select2-<原生 id>-container`）。
+
+        ⚠️ 判不出来（选择器里没有 `#id`、或盖着的东西没有 id）⇒ **当遮挡物**（不放行）：
+        这条路的默认必须是「拦」，放宽要有依据。
+        """
+        if action != "form" or kind != "select":
+            return False
+        want = _id_in(selector)
+        got = _id_in(cover)
+        return bool(want and got and want in got)
+
     def _covered_by(self, selector, frame_id="", until=None):
         """这个选择器指的元素**是不是被别的东西盖着**。盖着就返回盖它的东西（读，不动页面）。
 
@@ -3313,6 +3374,7 @@ class Filler:
         那种情况由 cdp 自己的滚动与报错去说，不在这里替它下结论。
         """
         waited = False
+        recentered = 0
         while True:
             cover = self._cover_once(selector, frame_id)
             # 「没盖着」与「量不出来」都是空串 —— 两种都**不拦**，直接放行。
@@ -3339,7 +3401,39 @@ class Filler:
                 waited = True
                 self.log.info("[%s] 这个元素现在被 %s 盖着（多半是加载蒙版）—— "
                               "先等它自己走，最多 %.0f 秒", self.cid, cover, COVER_WAIT_SECONDS)
+            # ★ 2026-10-13：**等的同时把它挪出遮挡物底下**（见 `_recenter`）——
+            # 粘性页眉那类遮挡不是「还没好」，等一辈子也不会走，可它只压住视口顶上那一条：
+            # 挪到正中就躲开了（人在那儿就是这么做的）。有界（`RECENTER_TRIES`）：
+            # 真弹层挪几次也没用，别把预算花在空滚上 —— 预算到点照旧不动手、照旧失败。
+            if recentered < RECENTER_TRIES:
+                recentered += 1
+                self._recenter(selector, frame_id)
             time.sleep(COVER_POLL_SECONDS)
+
+    def _recenter(self, selector, frame_id=""):
+        """把目标**挪到视口正中**（滚一下）。挪不动 / 找不着都**不报错**：它只是「多试一下」。
+
+        ★ 2026-10-13（真事 `job-a6954761e657` · healthinsurancewatch.com.au）：**遮挡物不都是
+        「不能碰」—— 有的只是「站错地方了」**。真站实测（读数 `_probe_hiw_cover.py`）：
+        填完上一格之后站点自己滚动，`#postcode` 的**中心点正好落在粘性页眉**底下
+        （`div.h-full`，[0,0,360,98] —— 视口顶上那一条），于是产物等满 35 秒、**一个候选都没试**，
+        报文却只有一句「没找到…没填成」；自测三轮都死在这一步。
+
+        **为什么是「正中」**：粘性页眉只压住顶上那一条、固定页脚只压住底下那一条，正中一定躲得开。
+        **为什么不动用 cdp**：这一下只是「把页面挪一挪」，JS 的 `scrollIntoView` 就够，
+        不必为它多起一个进程（生产重跑那条路越便宜越好）。
+        **量不出来就当没做**（返回空串）：判据仍然是 `_cover_once` 那一把尺子 ——
+        这一格改的只是「有没有资格再看一眼」，不是「算不算盖着」。
+        """
+        js = _RECENTER_JS
+        try:
+            got = self._ev(js % json.dumps(selector), frame_id).strip()
+        except Exception:                                   # noqa: BLE001
+            return ""
+        if got:
+            self.log.info("[%s] 把它挪到视口正中再看一眼（遮挡物是页眉/页脚那类就躲开了）",
+                          self.cid)
+        return got
 
     def _scroll(self, step, target, label):
         """把这一步的元素滚进视口。返回 `(ok, selector_used, level, note, frame_used)`。
@@ -3493,10 +3587,19 @@ class Filler:
         # 遮挡预算**按步开一次**（快路 + 重找那条路共用）：被盖住时先等加载蒙版走，
         # 但整步只赔这一笔，不按候选数翻倍（见 COVER_WAIT_SECONDS）。
         cover_until = time.monotonic() + COVER_WAIT_SECONDS
+        #: ★ 2026-10-13：「被盖着所以一个候选都没试」这件事**只属于这一步**（与
+        #: `resolve_why` / `goto_echo` 同一条规矩）：进来先清零，报文要用它。
+        self.cover_why = ""
+        #: 这一步**到底有没有真动过手**（发过一次 cdp 动作）。报文只在「一个都没试」时
+        #: 才把原因归到遮挡上 —— 试过、并且失败了，那是另一回事（别拿遮挡背锅）。
+        tried_any = False
         #: ★ 2026-10-12：「没找到」那一支的预算（与上面那笔分开，见 `NOT_FOUND_WAIT_SECONDS`）。
         #: 同样按步开一次。`_miss_waited` 也在这儿清零 —— `_miss_note` 那半句只属于
         #: **等过的那一步**（与 `_followed_tab` 同一条规矩）。
-        miss_until = time.monotonic() + NOT_FOUND_WAIT_SECONDS
+        #: ★ 2026-10-13：账本标了 `late_element` 的那一组换成**长预算**（见那一格的注释）——
+        #: 弹窗那类站等的是定时器，6 秒不够，而「它是不是后出来的」账本里有证据。
+        miss_until = time.monotonic() + (LATE_ELEMENT_WAIT_SECONDS if step.get("late_element")
+                                         else NOT_FOUND_WAIT_SECONDS)
         self._miss_waited = 0.0
         for level, selector in enumerate(selectors):
             # **快路也要接遮挡判据**（真站实测的那条链）：不看一眼就点，
@@ -3504,6 +3607,7 @@ class Filler:
             # 被记成做成了。盖着就不点它，换下一个候选；全都被盖着就是这一步没做成。
             cover = self._covered_by(selector, frame, until=cover_until)
             if cover and not self._cover_is_own_widget(action, kind, selector, cover):
+                self.cover_why = cover
                 self.log.info("[%s] 第 %d 个选择器指的元素被 %s 盖着 —— 这一下不点"
                               "（点了等于点到盖着它的东西上）", self.cid, level + 1, cover)
                 continue
@@ -3542,10 +3646,12 @@ class Filler:
             # 与快路**同一笔预算**（`cover_until` 在上面开的那一笔），不另开一份。
             cover = self._covered_by(selector, cand_frame, until=cover_until)
             if cover:
+                self.cover_why = cover
                 self.log.info("[%s] 重找出来的第 %d 个候选也被 %s 盖着 —— 这一下不点",
                               self.cid, extra + 1, cover)
                 continue
             out = self._do(action, selector, value, kind, cand_frame)
+            tried_any = True
             if _ok(out):
                 note = (_say(action, label, True, level, landing=_landing_say(out))
                         + self._tab_note()
@@ -3565,6 +3671,13 @@ class Filler:
             if handled:
                 self.log.info("[%s] %s", self.cid, why)
                 return True, "", None, why, frame
+        # ★ 2026-10-13：**「没敢动手」不是「没找到」** —— 两个原因说成同一句话，读的人
+        # 只会往选择器上查（真事 `job-a6954761e657`：三轮诊错全在改选择器，而那一刻
+        # 产物**连一次 cdp form 都没发出去**，框一直好好地在那儿）。
+        if self.cover_why and not tried_any:
+            return False, "", None, (
+                "%s 一直盖着「%s」（等过、也把它往视口正中挪过，它没走）—— 这一下没敢%s"
+                % (self.cover_why, label, "点" if action == "click" else "填")), frame
         return False, "", None, _say(action, label, False), frame
 
     # ── 一步的执行 ──────────────────────────────────────────

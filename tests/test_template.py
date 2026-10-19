@@ -1408,6 +1408,13 @@ class _State:
         #: **加载蒙版**那条判据要靠它 —— 「第一次量还盖着、再量就没了」正是蒙版走掉的样子；
         #: 用固定值只能演「一直盖着」，演不出「等一等就好了」。
         self.cover_seq = []
+        #: ★ 2026-10-13：产物等遮挡物的时候会把目标**挪到视口正中**（`_recenter`）——
+        #: 粘性页眉/固定页脚那类遮挡等是等不走的（真事 `job-a6954761e657`：
+        #: `#postcode` 的中心点落在页眉 `div.h-full` [0,0,360,98] 底下）。
+        #: 这里记它挪了几次、挪的什么 JS。
+        self.recenters = []
+        #: 挪一下就躲开了（**粘性页眉**那种）—— 真弹层挪不走，别把它打开。
+        self.cover_clears_on_recenter = False
         #: 「**整页还在加载**」的答复（`"LOADER|<选择器>"`，空串 = 这一页好了）——
         #: 产物动手**之前**问的那一句（`_page_ready`）。与 `cover` 是**两个问题**：
         #: `cover` 问「我要点的那个东西被盖着吗」，它问「**整页**好了吗」。
@@ -1527,6 +1534,14 @@ class CDPHelper:
         # （跳过 `pointer-events:none` 的透明空遮罩），而它**不是** `elementFromPoint`
         # 的子串（`element|s|FromPoint`）—— 只认旧拼写的话，假页面会干脆**不答遮挡问题**，
         # 于是「被盖着就不点」那几条用例**静默失效**（2026-09-29 全量 4 红逮到的）。
+        # ★ 2026-10-13：产物「把目标挪到视口正中」那一下（`_recenter`）。**排在遮挡那条前面**：
+        # 两段 JS 都带 `matches(`，将来谁多写一个词就可能被截走（与上面两条同一条顺序规矩）。
+        if "scrollIntoView" in script and "block:'center'" in script:
+            STATE.recenters.append(script)
+            if STATE.cover_clears_on_recenter:
+                STATE.cover = ""
+                STATE.cover_seq = []
+            return json.dumps("ok")
         if "elementsFromPoint" in script or "elementFromPoint" in script:   # 遮挡判据那个探针
             if STATE.cover_seq:
                 return json.dumps(STATE.cover_seq.pop(0))
@@ -2248,6 +2263,87 @@ def test_a_text_answer_with_no_text_is_never_clicked(tmp_path, sandbox, form_fil
         "账上照实记：那是个指向不确定元素的地址、没敢点：%r" % (row,))
 
 
+def test_a_covered_element_is_not_clicked_and_does_not_report_ok(sandbox, form_file):
+    """C：目标被别的东西盖着 → **不点**，而且这一步**不算做成**（不许静默假成功）。
+
+    真站实测的形状：干净会话里同意弹层盖住答题区，`Sedan` 那一下点到弹层上、
+    cdp 回 `ok`（`match_count: 1` 说的是「选择器命中 1 个」，不是「点到的就是它」）。
+    """
+    module, _ = _load(
+        "run_covered",
+        template.render("example-covered", "Thank you",
+                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.cover = "COVER|div#onetrust-banner"      # 盖着它的是同意弹层
+    # 生产那个 20 秒预算是给**加载蒙版**的（真站量出来的）。这条用例量的是**另一件事**
+    # ——「盖着就不点、不许记成做成」，遮挡是**永久**的那种。别让它真等 20 秒。
+    module.COVER_WAIT_SECONDS = 0.3
+    module.COVER_POLL_SECONDS = 0.02
+
+    trace = sandbox / "covered.jsonl"
+    ok = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                       trace=str(trace)).run()
+    assert ok is False, "点到被盖住的元素上不许算做成"
+    assert not [a for a in common.STATE.actions if a[1] == "#go"], (
+        "被盖着就不该点下去：%s" % common.STATE.actions)
+    line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert line["ok"] is False, line
+
+
+def test_a_select_covered_by_its_own_widget_is_still_filled(sandbox, form_file, tmp_path):
+    """★ 2026-10-08（真事 `job-62086decf839`，shorecrestwpb.com）：**盖着它的是这一格
+    自己的自定义控件 ⇒ 不算遮挡物** —— 窄口径，**只对 `form` + `kind == "select"` 生效**。
+
+    真事：那站用 **select2** 把四个原生 `<select>` 换成了自定义控件。原生 `<select>` 还在
+    DOM 里（`cdp form --select` **自己认得自定义下拉** —— 手打那条命令是成的），可产物的
+    遮挡判据排在 cdp 前面：它量到 `<select>` 被
+    `span#select2-edit-size-container.select2-selection__rendered` 盖着 ⇒ 四个下拉
+    **一个都不动** ⇒ 第 7 步没做成 ⇒ 后面的勾选与 submit 全没做（自测 `passed=False`，
+    运营拿不到能用的稿）。
+
+    ⚠️ **只放这一种**：盖着的东西**是这一格自己的**（id 里带着这一格的 id）才放行；
+    别的一律照旧不点 —— 上面那条用例钉的就是另一半（同意弹层盖着 = 不点、不算做成）。
+
+    判据两条：① 那一格**真被填了**（`form` 那一下发到了底下的 cdp）；
+    ② trace 里那一步判成 `ok`（没被记成失败）。
+    """
+    fills = [{
+        "name": "size", "source": "size", "kind": "select", "label": "Residence Size",
+        "target": {"text": None, "label": "Residence Size", "role": None, "near": None,
+                   "selectors": ["#edit-size"]},
+        "fallback": ["Two Bedrooms"],
+    }]
+    states = [{"name": "form", "when": None,
+               "steps": [{"action": "form", "fill": "size", "note": "选房型"}]}]
+    module, _ = _load("run_select_own_widget",
+                      template.render("example-select2", "Thank you", states, fills,
+                                      SAMPLE_PROVENANCE), sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Thank you"]
+    #: 盖着它的是**这一格自己的**控件（select2 的壳子 —— id 里带着原生 select 的 id）
+    common.STATE.cover = "COVER|span#select2-edit-size-container.select2-selection__rendered"
+    module.COVER_WAIT_SECONDS = 0.3
+    module.COVER_POLL_SECONDS = 0.02
+
+    trace = tmp_path / "select2.jsonl"
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                  trace=str(trace)).run()
+
+    forms = [a for a in common.STATE.actions if a[0] == "form"]
+    assert forms == [("form", "#edit-size", "Two Bedrooms")], (
+        "被自己那层 select2 壳子盖着的那一格**要填**（底下的 cdp 认得出自定义下拉）：%s"
+        % (common.STATE.actions,))
+    line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert line["ok"] is True, line
+
+
 def _ad_creative_segment(src: str) -> str:
     """从**产物文本**里切出 `_AD_CREATIVE_JS` 那颗常量自己的正文（切到表那段之前为止）。
 
@@ -2488,6 +2584,76 @@ def test_the_relocated_candidate_is_checked_for_a_cover_too(sandbox, form_file):
     assert ok is False, "重找出来的候选被盖着，不许算做成"
     assert ("click", "#below-cta") not in common.STATE.actions, (
         "重找那条路也要过遮挡判据 —— 被盖着就不许点：%s" % common.STATE.actions)
+
+
+def _stuck_cover_run(sandbox, form_file, tmp_path, tag, *, clears_on_recenter):
+    """一个「被盖着」的现场：一格的填值 + 一个**不走的**遮挡物。返回 (module, common, trace 行)。"""
+    fills = [{
+        "name": "postcode", "source": "postcode", "kind": "value", "label": "Your postcode",
+        "target": {"text": None, "label": "Your postcode", "role": None, "near": None,
+                   "selectors": ["#postcode"]},
+        "fallback": [{"random": "postcode"}],
+    }]
+    states = [{"name": "form", "when": None,
+               "steps": [{"action": "form", "fill": "postcode", "note": "填邮编"}]}]
+    module, _ = _load("run_%s" % tag,
+                      template.render("example-%s" % tag, "Thank you", states, fills,
+                                      SAMPLE_PROVENANCE), sandbox)
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Thank you"]
+    common.STATE.cover = "COVER|div.h-full"
+    common.STATE.cover_clears_on_recenter = clears_on_recenter
+    module.COVER_WAIT_SECONDS = 0.3        # 别让用例真等 35 秒
+    module.COVER_POLL_SECONDS = 0.02
+
+    trace = tmp_path / ("%s.jsonl" % tag)
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace)).run()
+    line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    return module, common, line
+
+
+def test_a_field_under_a_sticky_header_is_scrolled_free_and_filled(sandbox, form_file, tmp_path):
+    """★ 2026-10-13（真事 `job-a6954761e657` · healthinsurancewatch.com.au）：**粘性页眉**
+    压住目标 ⇒ 先把它挪到视口正中，再填 —— 这种遮挡**等是等不走的**。
+
+    真站实测（8100/222 窗口，产物自己的跑法跑到第 7 步，`_probe_hiw_cover.py` 量的）：
+    填完上一格之后站点自己滚动，`#postcode` 的**中心点正好落在页眉**（`div.h-full`，
+    视口顶上那一条：[0,0,360,98]）底下 —— 产物于是「礼貌地」不动手：等 35 秒，
+    两个声明地址 + 两个重找候选**一个都没试**，报文只有一句「没找到「Your postcode」这个
+    输入框，没填成」。自测三轮都死在这一步，耗时 **50.1 / 49.8 / 50.1 秒**
+    （= 35 秒空等 + 开销），而第 9 步只花 14.5 秒（遮挡物已经进了「赖着不走」名单）。
+
+    人在那儿只会把页面往回滚一点就填了 —— 这一格钉的就是那一下：
+    **盖着的东西不一定是「不能碰」，有些只是「站错地方了」。**
+    ⚠️ 与下面那条的分界：真弹层挪不走 ⇒ 行为一个字不改。
+    """
+    _, common, line = _stuck_cover_run(sandbox, form_file, tmp_path, "sticky_header",
+                                       clears_on_recenter=True)
+    assert common.STATE.recenters, "该先把目标挪到视口正中再看一眼（页眉那种躲得开）"
+    forms = [a for a in common.STATE.actions if a[0] == "form"]
+    assert forms == [("form", "#postcode", forms[0][2])] if forms else False, (
+        "挪开之后就该照常填：%s" % (common.STATE.actions,))
+    assert line["ok"] is True, line
+
+
+def test_a_modal_that_will_not_move_is_still_not_touched_and_says_why(sandbox, form_file, tmp_path):
+    """反面：**真弹层挪不走** ⇒ 照旧不动手（这一刀没把「宁可不填」那条纪律放宽），
+    而且**报文要把原因说出来** —— 「没敢动手」与「找不到框」不是一回事。
+
+    为什么报文也要钉：那一单三轮自测都只留下「没找到「Your postcode」这个输入框，没填成」，
+    而它真正的意思是「每个候选都被 div.h-full 盖着」，于是三轮诊错全在改选择器
+    （产物那一刻**连一次 cdp form 都没发出去**）。
+    """
+    _, common, line = _stuck_cover_run(sandbox, form_file, tmp_path, "stuck_modal",
+                                       clears_on_recenter=False)
+    assert not [a for a in common.STATE.actions if a[0] == "form"], (
+        "挪不走的遮挡物盖着 ⇒ 一个候选都不许试：%s" % (common.STATE.actions,))
+    assert line["ok"] is False, line
+    assert "盖着" in line["note"], line["note"]
+    assert "没找到" not in line["note"], (
+        "「没敢动手」不许说成「没找到」—— 那句话把人往选择器上引：%s" % line["note"])
 
 
 def test_a_step_does_not_act_while_the_whole_page_is_still_loading(sandbox, form_file):
@@ -4474,6 +4640,23 @@ def test_the_cover_js_is_one_module_level_constant():
     body = _skeleton_method_body("_cover_once")
     assert "_COVER_JS" in body, "`_cover_once` 没用那份共享常量（另抄了一份？）"
     assert "elementsFromPoint" not in body, "方法体里还留着第二份 JS"
+
+
+def test_the_recenter_js_is_one_module_level_constant():
+    """同一刀的另一半：`_recenter` 那段也**只此一份**（循环型要搬的是同一份）。
+
+    ⚠️ 它**自带** `(function(){…})()` 壳（本来就那样）—— 一个字没动，别顺手「统一」掉：
+    统一就是改判据（`_ev` 会在调用时再包一层，行为当场变）。
+    ⚠️ 「方法体里还有没有第二份 JS」**别拿 `scrollIntoView` 当记号**：方法自己的 docstring
+    里就写着 `scrollIntoView`（「JS 的 scrollIntoView 就够」）⇒ 那样写**恒红**，跟搬没搬无关。
+    记号要用**只在 JS 里出现**的那一段：`getElementsByTagName`。
+    """
+    from agent import template as T
+    assert isinstance(T._RECENTER_JS, str) and "%s" in T._RECENTER_JS
+    assert "scrollIntoView" in T._RECENTER_JS
+    body = _skeleton_method_body("_recenter")
+    assert "_RECENTER_JS" in body, "`_recenter` 没用那份共享常量（另抄了一份？）"
+    assert "getElementsByTagName" not in body, "方法体里还留着第二份 JS"
 
 
 def test_the_rendered_product_defines_those_same_constants():
