@@ -451,15 +451,29 @@ class Filler:
           · 非空 = 它还在（返回钩子表点名的那个）；
           · `None` = **这一次没量到**（读炸了 / 答复形状不认识）—— 量不到就如实说量不到，
             把它读成「关掉了」正是这一刀要治的病。
+
+        ★ 2026-10-19：**短轮询**（有界）—— 同意层的关闭是异步的（真站 compareinsulation：
+        点 accept 之后紧接的那一次再探还会看到它，再晚一点点才没了）。只在「复核还答**可点**
+        行」时等；返空 / 只答 `_REPORT_ONLY` 都立即收。带 `_REPORT_ONLY` 的行（表尾的
+        「广告 creative」）本来就不挡路 —— 不排掉它，一次真的关掉了会被记成 `ok:false`
+        （真站 wildnutrition 量到：`Close filters drawer`）。
         """
         try:
-            raw = self._popup_answer()
+            deadline = time.time() + POPUP_RECHECK_WAIT_SECONDS
+            while True:
+                raw = self._popup_answer()
+                if not raw:
+                    return ""
+                parts = raw.split("|", 2)
+                if len(parts) != 3:
+                    return None
+                if _popup_report_only(parts[0]):
+                    return ""
+                if time.time() >= deadline:
+                    return parts[0]
+                time.sleep(POPUP_RECHECK_POLL_SECONDS)
         except Exception:                                   # noqa: BLE001 —— 外面世界
             return None
-        if not raw:
-            return ""
-        parts = raw.split("|", 2)
-        return parts[0] if len(parts) == 3 else None
 
     def clear_popups(self, why="") -> bool:
         """把**挡路的弹层**点掉：问一遍钩子表（`_POPUP_HOOKS`），谁先答应就点谁。**永不抛**。

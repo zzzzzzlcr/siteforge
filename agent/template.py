@@ -828,6 +828,12 @@ _AD_CREATIVE_JS = (
 #: 这一型**还没有正向证据** ⇒ **不点**是唯一「不需要再验就不会做错事」的那条路。
 _REPORT_ONLY = "report_only"
 
+#: ★ 2026-10-19：点完复核的**短轮询** —— 同意层的关闭常常是异步的（真站 compareinsulation：
+#: 点 accept 之后紧接的那一次再探还会看到它，再晚一点点才没了）。只在「复核还答**可点**行」
+#: 时等；返空 / 只答 `_REPORT_ONLY` 都立即收（那两件事都已经有结论了）。
+POPUP_RECHECK_WAIT_SECONDS = 1.0
+POPUP_RECHECK_POLL_SECONDS = 0.2
+
 
 #: ★ 2026-10-10（用户问的那句：「假如会出现某些弹窗的钩子函数」）：**弹窗钩子表**。
 #:
@@ -2934,15 +2940,29 @@ class Filler:
           · `None` = **这一次没量到**（读炸了 / 答复形状不认识）—— 量不到就如实说量不到，
             把它读成「关掉了」正是这一刀要治的病（Task 1 真站量到：同一站首载有同意层、
             来回一趟之后同一条探针返空 ⇒ 「返空」分不清「关掉了」与「本来就不在」）。
+
+        ★ 2026-10-19：**短轮询**（有界）—— 同意层的关闭是异步的（真站 compareinsulation：
+        点 accept 之后紧接的那一次再探还会看到它，再晚一点点才没了）。只在「复核还答**可点**
+        行」时等；返空 / 只答 `_REPORT_ONLY` 都立即收。带 `_REPORT_ONLY` 的行（表尾的
+        「广告 creative」）本来就不挡路 —— 不排掉它，一次真的关掉了会被记成 `ok:false`
+        （真站 wildnutrition 量到：`Close filters drawer`）。
         """
         try:
-            raw = str(self._ev(_POPUP_PROBE_JS) or "").strip()
+            deadline = time.time() + POPUP_RECHECK_WAIT_SECONDS
+            while True:
+                raw = str(self._ev(_POPUP_PROBE_JS) or "").strip()
+                if not raw:
+                    return ""
+                parts = raw.split("|", 2)
+                if len(parts) != 3:
+                    return None
+                if _popup_report_only(parts[0]):
+                    return ""
+                if time.time() >= deadline:
+                    return parts[0]
+                time.sleep(POPUP_RECHECK_POLL_SECONDS)
         except Exception:                                  # noqa: BLE001 —— 外面世界
             return None
-        if not raw:
-            return ""
-        parts = raw.split("|", 2)
-        return parts[0] if len(parts) == 3 else None
 
     def _clear_obstructions(self, why=""):
         """开跑（以及每次导航之后）把**挡路的弹层**点掉：问一遍钩子表（`_POPUP_HOOKS`），

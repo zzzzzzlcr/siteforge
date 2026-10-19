@@ -2129,6 +2129,25 @@ def test_a_popup_is_rechecked_after_the_click_and_the_ledger_says_which(tmp_path
     assert row3.get("ok") is None, row3
     assert "探不动" in row3.get("note", ""), row3
 
+    # ④ 复核只答「只报不点」那一行 ⇒ 不算「还有」：True
+    #: ★ 2026-10-19（真站 wildnutrition）：点掉同意条之后，复核的整张表先答的是第 4 行
+    #: `广告 creative|TEXT|Close filters drawer`（`_REPORT_ONLY`，本来就不挡路）——
+    #: 它把一次**真的关掉了**记成了 `ok:false`。复核只认**可点**的那几行。
+    row4 = _once(tmp_path / "popup_report_only.jsonl",
+                 [good, "广告 creative|#bx-close-inside-1|Close"], "")
+    assert row4.get("ok") is True, (
+        "复核答的是 `_REPORT_ONLY` 行（它本来就不挡路）—— 不许记成「还有」：%r" % (row4,))
+    assert "探之前有、探之后没有" in row4.get("note", ""), row4
+
+    # ⑤ 复核第一次还答「同意条」、紧接着答空 ⇒ True（同意层的关闭是异步的）
+    #: ★ 2026-10-19（真站 compareinsulation）：点 accept 之后，紧接的那一次再探还会
+    #: 看到 `#cookiescript_accept`；再晚一点点就没了。立即判 False 会把一次真的关掉了
+    #: 记成「这一下没能关掉」—— 复核要等一个**短的**有界时间，不是只探一眼。
+    row5 = _once(tmp_path / "popup_delayed.jsonl", [good, good], "")
+    assert row5.get("ok") is True, (
+        "复核第一次还答、紧接着答空——这是异步关掉，不许记成「还有」：%r" % (row5,))
+    assert "探之前有、探之后没有" in row5.get("note", ""), row5
+
 
 def test_the_report_only_row_is_reported_but_never_clicked(tmp_path, sandbox, form_file,
                                                            caplog):

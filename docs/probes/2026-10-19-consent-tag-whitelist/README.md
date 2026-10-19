@@ -1,14 +1,18 @@
-# 同意钩子的 tag 白名单（`div`/`span`）—— 2026-10-19 真站验收
+# 同意钩子 tag 白名单 + 复核口径 —— 2026-10-19 真站验收
 
 **一句话**：把 `div`/`span` 放进三条同意钩子（+「按文字打标记」）的 tag 白名单后，
 `compareinsulation` 的 CookieScript 同意层**真被关掉了**，复核如实返空（trace `ok:true`）——
 这是 spec §5.3「循环型真站能关掉同意层、并如实复核」的**第一条正向证据**。
+同日第二小刀又修了复核口径：只认可点行（`_REPORT_ONLY` 不算「还有」）+ 1s/0.2s 短轮询
+（同意层异步消失），两站最终都 `ok:true`（§2.5）。
 
 ## 0. 机器 / 窗口 / 产物
 
 - **真站**：Bit **`192.168.1.222`**（容器 `siteforge-222` / **8100**）。8099 没碰。
 - **窗口**：09:35 开（compareinsulation）→ 09:37 换窗（wildnutrition）→ 09:38 关；
-  09:49 第三窗（hook-2-only 变体）→ 09:50 关。三趟都 `bit.sh close` 过，事后没有残留窗口。
+  09:49 第三窗（hook-2-only 变体）→ 09:50 关；10:26 第四窗（复核口径首测，看到异步假阴性）→
+  10:36 第五窗（最终 compareinsulation）→ 10:37 第六窗（最终 wildnutrition）→ 10:38 关。
+  每趟都 `bit.sh close` 过，事后没有残留窗口。
 - **出口**：当前 `gost :1081` 链是 **US**（`gate-us.ipoasis.com`），**没有切链**。
   与 2026-10-16 那一趟同一条思路（「出口国家没量、也没切链」）；这一趟同样**不声称**国家口径。
 - **产物**（都是**当前骨架**重渲的）：
@@ -140,14 +144,33 @@ trace（`tag_whitelist_wn.trace.jsonl`）：
  "progress_why": "点完复核：这一屏**还有**「广告 creative」（探之前有、探之后还有）—— 这一下没能关掉"}
 ```
 
+## 2.5 复核口径（同一天的第二小刀）
+
+### 2.5.1 真站（最终两趟）
+
+- **compareinsulation**（新窗，完整骨架）：`_CONSENT_MODAL_JS` 排掉 `body`/`html` 后，第 1 行返空；
+  第 2 行答 `同意条|#cookiescript_accept|ACCEPT ALL` → 点掉 → 复核 `<空>`，trace `ok:true`
+  （`recheck_poll_ci.trace.jsonl`）。
+- **wildnutrition**（新窗）：第 2 行答 `同意条|TEXT|Accept All` → 点掉 → 复核 `ok:true`
+  （`recheck_poll_wn.trace.jsonl`）—— 第 4 行 `Close filters drawer` 不再被算成「还有」。
+- ⚠️ **关键现场**：compareinsulation 点 accept 之后，**紧接的一次再探仍看到它**（同意层异步消失）；
+  立即判 False 会假阴性。复核改成 `1.0s` / `0.2s` 的**短轮询**；返空或只答 `_REPORT_ONLY` 立即收。
+- `_CONSENT_BOX_JS` 仍答 `'1'`：那是 `#cookiescript_badge`（36×36 可见徽标），它只被探针/诊断引用，
+  **不在产物路径上**；本刀不动。
+
+### 2.5.2 单测
+
+- node 18 格（新增「满视口 body 不许当容器」）；template/loop 的复核用例各加
+  「只答 `_REPORT_ONLY` ⇒ True」与「第一次还答、紧接着答空 ⇒ True」两格。
+
 ## 3. 单测（先红后绿）
 
-- `tests/popup_probe_driver.js`：11 → **17 格**。新增 5 条正控
+- `tests/popup_probe_driver.js`：11 → **18 格**。新增 5 条正控
   （CookieScript div、wrapper 合并文字短、无 id 的 span、模态里的 span 关闭键、
-  模态里包在 wrapper 里的 span）+ 1 条负控（同意容器里的长散文不许认）。
+  模态里包在 wrapper 里的 span）+ 2 条负控（同意容器里的长散文；满视口的 `body` 不许当容器）。
   wrapper 那格是**真站逼出来的形状**：改之前它返 `#cookiescript_buttons`，
   改之后返 `#cookiescript_accept`；模态 wrapper 那格同理（返 `TEXT|Close`，不是 `#close-wrapper`）。
-- `tests/test_popup_hooks_js.py`：3 passed（17 格探针 + 正控 + `_MARK_CONSENT_BY_TEXT_JS`
+- `tests/test_popup_hooks_js.py`：3 passed（18 格探针 + 正控 + `_MARK_CONSENT_BY_TEXT_JS`
   真跑，div 无 id 也能打上 `data-sf-consent="1"`）。**宿主 / 8100 容器 / 干净 HEAD+本刀补丁
   三处都跑过**，全绿。
 - `tests/test_loop_template.py`：**39 passed**（宿主 + 8100 容器）。
@@ -156,6 +179,7 @@ trace（`tag_whitelist_wn.trace.jsonl`）：
 - 整份 `tests/test_template.py`：**1 failed / 144 passed**（1870.23s）。唯一红的是
   `test_reference_fixture_is_current` —— **既知 fixture 取法代价**（交接单 §②：fixture 不提交、
   压着别人 390/21 行；模板一动就要重渲染，这次不重渲），不是本刀的功能失败。
+  ⚠️ 这次整份是在**第一小刀**代码上跑的；第二小刀的复核用例（含异步短轮询）已随聚焦 13 条复跑。
 
 ## 4. 复现命令
 
@@ -186,11 +210,11 @@ python3 -I hook_by_hook.py /company/siteforge/forms-222/sites/wildnutrition.rend
 
 ## 5. 残余（别读成「都验过了」）
 
-- `_CONSENT_MODAL_JS` 的 `full()` 会命中 `body`/`html`（见 §1.4-2）—— 本刀没改，下一刀收窄。
-- `_CONSENT_BOX_JS` 在 compareinsulation 点完之后仍答 `'1'`：DOM 节点还在、只是
-  rect 归零 / `display:none`；这条老判据只看「容器在不在」，不看「还盖不盖人」。
-  复核走的是**同一张钩子表**（Ruling 17），所以 trace 是准的；这条老判据留给下一刀。
-- wildnutrition 的复核 `ok:false` 是只报不点那一行造成的（见 §2）；C3 复核是否应该
-  跳过 `_REPORT_ONLY` 行，下一刀定。
+- `_CONSENT_MODAL_JS` 的 `full()` 命中 `body`/`html` —— **第二小刀已排掉**（工作区 Fides 块内；
+  最终真站：第 1 行返空、第 2 行点掉，见 §2.5）。
+- `_CONSENT_BOX_JS` 点完仍答 `'1'`：那是 `#cookiescript_badge`（36×36 可见徽标），不是「弹层还在」；
+  它只被探针/诊断引用，**不在产物路径上**，本刀不改。
+- wildnutrition 的 C3 复核把 `_REPORT_ONLY` 行算成「还有」—— **第二小刀已修**；复核现在只认可点行，
+  并加 1s/0.2s 短轮询（§2.5）。
 - ≤40 字与「只认叶子」都是**接受的赌**：文字超过 40 的真实控件、或文字直接挂在
   带图标子元素的 div 上、且没有可点的叶子，都会漏（漏的后果是如实「没敢点」，不是点错）。

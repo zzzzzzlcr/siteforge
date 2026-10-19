@@ -269,6 +269,17 @@ const CASES = [
                                         + 'of cookies on this site.' }));
     return pg;
   }, ''],
+
+  // ★ 2026-10-19（真站 compareinsulation）：`_CONSENT_MODAL_JS` 的 `full()` 会命中
+  // `body`/`html` —— 它们是满视口的**根节点**，不是「盖满视口的弹层」。这一格：满视口
+  // body + 里面一颗 "Accept all"（没有 cookie/consent 语境，只有 strongW 撑住）⇒
+  // 第 1 行不许把 body 当容器（期望空；否则它会去点 body 里的任意 accept 文字）。
+  // ⚠️ 这格依赖工作区里那块 Fides 钩子；干净检出上第 1 行不存在，它会 trivially 绿。
+  ['盖满视口的同意弹层：满视口的 body 不许当容器', () => {
+    const pg = page([['body', { text: 'Accept all', rect: rect_full }]]);
+    attach(pg.nodes[0], el('div', { text: 'Accept all' }));
+    return pg;
+  }, ''],
 ];
 
 const results = [];

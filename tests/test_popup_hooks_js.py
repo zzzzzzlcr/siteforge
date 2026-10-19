@@ -110,12 +110,13 @@ def _drive(tmp_path: pathlib.Path, js: str, marker_js: str | None = None) -> dic
 
 
 def test_the_probe_answers_the_three_fields_python_reads(tmp_path):
-    """产物那段探针在假 DOM 里**真跑**：十七格，一格不许差。
+    """产物那段探针在假 DOM 里**真跑**：十八格，一格不许差。
 
-    十七格 = 同意条（带 id / 只有文字 / **按钮是 div（CookieScript 形状）** /
+    十八格 = 同意条（带 id / 只有文字 / **按钮是 div（CookieScript 形状）** /
     **wrapper 合并文字也很短 —— 不许点 wrapper** / **按钮是 span（没有 id）** /
     **容器里的长散文不许认**）、盖住整页的模态
     （按钮 / **关闭键是 span** / **关闭键包在 wrapper 里 —— 不许点 wrapper**）、
+    **满视口的 body 不许当「盖满视口的同意弹层」的容器**、
     干净页面、两者同时在、
     广告 creative（可见那一颗恒命中 / **可见但被盖着 ⇒ 恒返空**（blavity 矩阵第 4 格，
     ★ Ruling 27 换过形状）/ 超界的容器恒不点 / 散文的 aria-label 恒不认 ——
@@ -125,7 +126,7 @@ def test_the_probe_answers_the_three_fields_python_reads(tmp_path):
     少一格那边就退化成「量不出来」（什么都不点）。
     """
     out = _drive(tmp_path, _probe_js(tmp_path))
-    assert out["total"] == 17, out
+    assert out["total"] == 18, out
     assert out["failed"] == 0, [r for r in out["results"] if not r["ok"]]
 
 
@@ -150,7 +151,8 @@ def test_the_fixture_can_actually_fire(tmp_path):
                       "广告 creative：aria-label 是散文 —— 「Do not close this window」不许认",
                       "广告 creative：aria-label 是散文（12 字 ≤24）—— 「Do not close」不许认",
                       "广告 creative：`visibility:hidden` 的关闭键不许认",
-                      "同意条：容器里的长散文不许认（div/span 新白名单）"], passed
+                      "同意条：容器里的长散文不许认（div/span 新白名单）",
+                      "盖满视口的同意弹层：满视口的 body 不许当容器"], passed
 
 
 def test_the_text_marker_can_mark_a_div_button(tmp_path):

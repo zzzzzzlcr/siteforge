@@ -1126,11 +1126,32 @@ def test_the_popup_recheck_says_which_of_the_three_things_is_true(tmp_path, monk
     assert "本来就不在" in str(row.get("progress_why") or ""), row
 
     #: ③ 点完**还有** ⇒ False —— 就算 cdp 回话是「点上了」，也不许写成做成
-    seq[:] = [CONSENT_ANSWER, CONSENT_ANSWER]
+    #: （给足应答：复核现在会在短有界时间内多探几次，别让脚本在半路「用完了」）
+    seq[:] = [CONSENT_ANSWER] * 10
     assert filler.clear_popups() is True, "这一下**是发出去了**（返回值只说这个）"
     row = _last_popup_row(trace)
     assert row["ok"] is False, ("cdp 回话是「点上了」就写成了做成？—— 点了个寂寞：%r" % (row,))
     assert "还有" in str(row.get("note") or ""), row
+    #: ④ 复核只答「只报不点」那一行 ⇒ 不算「还有」：True
+    #: ★ 2026-10-19（真站 wildnutrition）：点掉同意条之后，复核的整张表先答的是第 4 行
+    #: `广告 creative|TEXT|Close filters drawer`（`_REPORT_ONLY`，本来就不挡路）——
+    #: 它把一次**真的关掉了**记成了 `ok:false`。复核只认**可点**的那几行。
+    seq[:] = [CONSENT_ANSWER, "广告 creative|#bx-close-inside-1|Close"]
+    assert filler.clear_popups() is True, "这一下**是发出去了**（返回值只说这个）"
+    row = _last_popup_row(trace)
+    assert row["ok"] is True, (
+        "复核答的是 `_REPORT_ONLY` 行（它本来就不挡路）—— 不许记成「还有」：%r" % (row,))
+    assert "没有" in str(row.get("progress_why") or ""), row
+    #: ⑤ 复核第一次还答「同意条」、紧接着答空 ⇒ True（同意层的关闭是异步的）
+    #: ★ 2026-10-19（真站 compareinsulation）：点 accept 之后，紧接的那一次再探还会
+    #: 看到 `#cookiescript_accept`；再晚一点点就没了。立即判 False 会把一次真的关掉了
+    #: 记成「这一下没能关掉」—— 复核要等一个**短的**有界时间，不是只探一眼。
+    seq[:] = [CONSENT_ANSWER, CONSENT_ANSWER, ""]
+    assert filler.clear_popups() is True, "这一下**是发出去了**（返回值只说这个）"
+    row = _last_popup_row(trace)
+    assert row["ok"] is True, (
+        "复核第一次还答、紧接着答空——这是异步关掉，不许记成「还有」：%r" % (row,))
+    assert "没有" in str(row.get("progress_why") or ""), row
     #: ⚠️ 这一行是 `soft` 的：弹层是**环境噪声**（新窗口有、上一趟点掉过就没有、还可能后冒出来）
     #: ⇒ 与 `browser_agent` 给「点掉同意条」那类步标的记号同一档 —— 自测不拿它否决那一遍
     #: （`selftest._verdict` 的 `hard_rows` 排除 `soft`），但照旧点名（spec §3.5：探针自己
