@@ -70,11 +70,8 @@ def _node_is_a_hard_dependency():
             "并记账 —— **不要退回 `skipif`**。")
 
 
-def _probe_js(tmp_path: pathlib.Path) -> str:
-    """从**真渲染出来的产物**里把那段探针切出来（`_POPUP_PROBE_JS`，产物 import 时才拼）。
-
-    ⚠️ 切的是产物里**当前那一版**：钩子表、包装、兜底只要动一个字，这一份量到的就跟着动。
-    """
+def _product(tmp_path: pathlib.Path):
+    """渲一份产物并 import 回来（探针 / 标记两段 JS 都从它身上切）。"""
     sandbox = tmp_path / "sandbox"
     (sandbox / "forms").mkdir(parents=True)
     (sandbox / "forms" / "common.py").write_text(STUB_COMMON, encoding="utf-8")
@@ -83,22 +80,43 @@ def _probe_js(tmp_path: pathlib.Path) -> str:
     fake.write_text(STUB_CDP, encoding="utf-8")
     fake.chmod(0o755)
     module, _ = _load("probe_under_test", render_sample(), sandbox)
-    return module._POPUP_PROBE_JS
+    return module
 
 
-def _drive(tmp_path: pathlib.Path, js: str) -> dict:
-    """把一段探针 JS 丢给假 DOM 跑一遍，读回那十格的结果。"""
+def _probe_js(tmp_path: pathlib.Path) -> str:
+    """从**真渲染出来的产物**里把那段探针切出来（`_POPUP_PROBE_JS`，产物 import 时才拼）。
+
+    ⚠️ 切的是产物里**当前那一版**：钩子表、包装、兜底只要动一个字，这一份量到的就跟着动。
+    """
+    return _product(tmp_path)._POPUP_PROBE_JS
+
+
+def _drive(tmp_path: pathlib.Path, js: str, marker_js: str | None = None) -> dict:
+    """把一段探针 JS 丢给假 DOM 跑一遍，读回那几格的结果。
+
+    `marker_js` 给了就再跑一遍「按文字打标记」（`_MARK_CONSENT_BY_TEXT_JS`）——
+    读半（探针）与动作半（标记）是同一道 tag 闸，两半都得钉。
+    """
     p = tmp_path / "probe.js"
     p.write_text(js, encoding="utf-8")
-    r = subprocess.run([NODE, str(DRIVER), str(p)], capture_output=True, text=True, timeout=60)
+    cmd = [NODE, str(DRIVER), str(p)]
+    if marker_js is not None:
+        m = tmp_path / "marker.js"
+        m.write_text(marker_js, encoding="utf-8")
+        cmd.append(str(m))
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, "夹具自己挂了（rc=%s）：\n%s\n%s" % (r.returncode, r.stdout, r.stderr)
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
 def test_the_probe_answers_the_three_fields_python_reads(tmp_path):
-    """产物那段探针在假 DOM 里**真跑**：十一格，一格不许差。
+    """产物那段探针在假 DOM 里**真跑**：十七格，一格不许差。
 
-    十一格 = 同意条（带 id / 只有文字）、盖住整页的模态、干净页面、两者同时在、
+    十七格 = 同意条（带 id / 只有文字 / **按钮是 div（CookieScript 形状）** /
+    **wrapper 合并文字也很短 —— 不许点 wrapper** / **按钮是 span（没有 id）** /
+    **容器里的长散文不许认**）、盖住整页的模态
+    （按钮 / **关闭键是 span** / **关闭键包在 wrapper 里 —— 不许点 wrapper**）、
+    干净页面、两者同时在、
     广告 creative（可见那一颗恒命中 / **可见但被盖着 ⇒ 恒返空**（blavity 矩阵第 4 格，
     ★ Ruling 27 换过形状）/ 超界的容器恒不点 / 散文的 aria-label 恒不认 ——
     含**≤24 字**那格，见 Ruling 26 / **`visibility:hidden` 恒不认**，见 Ruling 28-①）。
@@ -107,7 +125,7 @@ def test_the_probe_answers_the_three_fields_python_reads(tmp_path):
     少一格那边就退化成「量不出来」（什么都不点）。
     """
     out = _drive(tmp_path, _probe_js(tmp_path))
-    assert out["total"] == 11, out
+    assert out["total"] == 17, out
     assert out["failed"] == 0, [r for r in out["results"] if not r["ok"]]
 
 
@@ -124,11 +142,27 @@ def test_the_fixture_can_actually_fire(tmp_path):
     """
     broken = "(function(){%s})();return '';" % _probe_js(tmp_path)
     out = _drive(tmp_path, broken)
-    assert out["failed"] == 5, out["results"]       # 该有答复的那五格
+    assert out["failed"] == 10, out["results"]      # 该有答复的那十格
     passed = [r["name"] for r in out["results"] if r["ok"]]
     assert passed == ["干净页面：一条都不答应",
                       "广告 creative：可见但**被盖着**（最顶上那个不是它）不许认",
                       "广告 creative：超界的容器（300×300，class/aria 带 close）不许点",
                       "广告 creative：aria-label 是散文 —— 「Do not close this window」不许认",
                       "广告 creative：aria-label 是散文（12 字 ≤24）—— 「Do not close」不许认",
-                      "广告 creative：`visibility:hidden` 的关闭键不许认"], passed
+                      "广告 creative：`visibility:hidden` 的关闭键不许认",
+                      "同意条：容器里的长散文不许认（div/span 新白名单）"], passed
+
+
+def test_the_text_marker_can_mark_a_div_button(tmp_path):
+    """★ 2026-10-19：没有 id 的 div/span 候选要走「按文字打标记」那条路。
+
+    钩子答 `TEXT|<文字>` 之后，真正落点的是 `_MARK_CONSENT_BY_TEXT_JS` —— 它原来也有
+    同一道 `button/a/input` 闸。只放钩子不放标记 ⇒ 探针答得出来、动作永远落不下去
+    （真站上就是「没敢点」）。这一条让那段 JS 真跑：页面里一颗没有 id 的
+    `<div>Accept all</div>`，标记要能打上 `data-sf-consent="1"`。
+    """
+    module = _product(tmp_path)
+    marker = module._MARK_CONSENT_BY_TEXT_JS % json.dumps("Accept all")
+    out = _drive(tmp_path, module._POPUP_PROBE_JS, marker_js=marker)
+    assert out["marker"]["got"] == "marked", out["marker"]
+    assert out["marker"]["attr"] == "1", out["marker"]

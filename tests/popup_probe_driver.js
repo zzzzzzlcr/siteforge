@@ -42,6 +42,17 @@ function el(tag, p) {
     shadowRoot: null,
     children: [],
     getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
+    //: ★ 2026-10-19：`_MARK_CONSENT_BY_TEXT_JS` 会打/清 `data-sf-consent` —— 假 DOM 得真的存住它，
+    //: 不然「标记上了没有」只能靠 mock 自说自话。
+    setAttribute(k, v) {
+      this.attrs[k] = String(v);
+      this.attributes = this.attributes.filter(a => a.name !== k)
+        .concat([{ name: k, value: String(v) }]);
+    },
+    removeAttribute(k) {
+      delete this.attrs[k];
+      this.attributes = this.attributes.filter(a => a.name !== k);
+    },
     getBoundingClientRect() { return p.rect || { width: 100, height: 40, top: 10, bottom: 50 }; },
     //: 「落点是它自己/祖先/后代」那条问的就是这个 —— ★ 2026-10-17（终审 Ruling 27）：
     //: 原来这里是**恒假桩**（`other === e`），于是「祖先/后代」那半**从来没被走过**：
@@ -198,6 +209,66 @@ const CASES = [
     pg.getComputedStyle = () => ({ visibility: 'hidden', display: 'block' });
     return pg;
   }, ''],
+
+  // ─────────── ★ 2026-10-19：同意控件的 tag 白名单（div/span）───────────
+  // 真事：compareinsulation 的 CookieScript 把 accept/reject 做成 `<div>`，三条钩子
+  // 只认 button/a/input ⇒ 同意层看得见、关不掉（实测 §2.3）。这一格就是那个形状。
+  ['同意条：按钮是 div（CookieScript 形状，带 id）', () => {
+    const pg = page([['div', { id: 'cookiescript_injected', cls: 'cookiescript',
+                               text: 'This website uses cookies' }]]);
+    attach(pg.nodes[0], el('div', { id: 'cookiescript_accept', text: 'ACCEPT ALL' }));
+    return pg;
+  }, '同意条|#cookiescript_accept|ACCEPT ALL'],
+
+  // ★ 2026-10-19 真站逼出来的形状：accept/reject 外面还套着一层 `#cookiescript_buttons`，
+  // 它的**合并文字**是 `"ACCEPT ALL\nDECLINE ALL"`（22 字）—— ≤40 的短文本闸拦不住它，
+  // 钩子会先挑中 wrapper，点下去是点空气。必须再加一道「div/span 只认**叶子**（子元素里
+  // 没有文字）」：wrapper 跳过，落到真正的 `#cookiescript_accept`。
+  ['同意条：wrapper 的合并文字也很短 —— 不许点 wrapper', () => {
+    const pg = page([['div', { id: 'cookiescript_injected', cls: 'cookiescript',
+                               text: 'This website uses cookies' }]]);
+    const wrap = attach(pg.nodes[0], el('div', {
+      id: 'cookiescript_buttons', text: 'ACCEPT ALL\nDECLINE ALL' }));
+    attach(wrap, el('div', { id: 'cookiescript_accept', text: 'ACCEPT ALL' }));
+    attach(wrap, el('div', { id: 'cookiescript_reject', text: 'DECLINE ALL' }));
+    return pg;
+  }, '同意条|#cookiescript_accept|ACCEPT ALL'],
+
+  // 没有 id 的 div/span 必须走「按文字打标记」那条路（`_MARK_CONSENT_BY_TEXT_JS`）——
+  // 所以那条路的 tag 闸也得一起放，否则钩子答得出来、动作落不下去。
+  ['同意条：按钮是 span（没有 id，按文字打标记）', () => {
+    const pg = page([['div', { cls: 'cookie-consent', text: 'We use cookies' }]]);
+    attach(pg.nodes[0], el('span', { text: 'Accept all' }));
+    return pg;
+  }, '同意条|TEXT|Accept all'],
+
+  // 模态那条也有同一道 tag 闸：关闭键做成 `<span>Close</span>` 时，原来在 tag 那一步就没了。
+  ['盖住整页的模态：关闭键是 span', () => {
+    const pg = page([['div', { cls: 'MuiDialog-root', attrs: { role: 'dialog' },
+                               rect: rect_full }]]);
+    attach(pg.nodes[0], el('span', { text: 'Close' }));
+    return pg;
+  }, '盖住整页的模态|TEXT|Close'],
+
+  // 与同意条同一道「只认叶子」：wrapper 自己带 id、文字也是 "Close"（很短）——
+  // 不跳过它就会答 `#close-wrapper|Close`，点下去是点空气；叶子 span 才是那颗键。
+  ['盖住整页的模态：关闭键包在 wrapper 里 —— 不许点 wrapper', () => {
+    const pg = page([['div', { cls: 'MuiDialog-root', attrs: { role: 'dialog' },
+                               rect: rect_full }]]);
+    const wrap = attach(pg.nodes[0], el('div', { id: 'close-wrapper', text: 'Close' }));
+    attach(wrap, el('span', { text: 'Close' }));
+    return pg;
+  }, '盖住整页的模态|TEXT|Close'],
+
+  // ★ 负控（新白名单的代价）：同意容器里的**整段说明文字**也会命中 accept/reject 那些词。
+  // 放进 div/span 之后，必须靠「短文本」那道闸把它挡在外面 —— 否则会去点一段散文。
+  ['同意条：容器里的长散文不许认（div/span 新白名单）', () => {
+    const pg = page([['div', { id: 'cookiescript_injected', cls: 'cookiescript',
+                               text: 'This website uses cookies' }]]);
+    attach(pg.nodes[0], el('div', { text: 'By clicking ACCEPT ALL you agree to the storing '
+                                        + 'of cookies on this site.' }));
+    return pg;
+  }, ''],
 ];
 
 const results = [];
@@ -222,4 +293,23 @@ for (const [name, build, want] of CASES) {
   if (!ok) failed++;
   results.push({ name, got: got, want: want, ok: ok, err: err });
 }
-process.stdout.write(JSON.stringify({ total: results.length, failed: failed, results: results }) + '\n');
+// ★ 2026-10-19：`_MARK_CONSENT_BY_TEXT_JS` 也是同一条路（钩子答 `TEXT` ⇒ 按文字打标记）。
+// 第二个参数给了就顺手跑一遍：页面里放一颗没有 id 的 `<div>Accept all</div>`，
+// 看它能不能被标记上。只测**动作那半**（读半在探针那几格）。
+let marker = null;
+const markerPath = process.argv[3];
+if (markerPath) {
+  const markerJs = '(function(){' + fs.readFileSync(markerPath, 'utf8') + '})()';
+  const pg = page([['div', { cls: 'cookie-consent', text: 'We use cookies' }]]);
+  const hit = attach(pg.nodes[0], el('div', { text: 'Accept all' }));
+  let got, err = '';
+  try {
+    got = new Function('document', 'window', 'return ' + markerJs)(pg.document, pg.window);
+  } catch (e) {
+    got = '<抛了>'; err = String(e && e.message || e);
+  }
+  marker = { got: got, attr: hit.getAttribute('data-sf-consent'), err: err };
+}
+
+process.stdout.write(JSON.stringify({ total: results.length, failed: failed, results: results,
+                                      marker: marker }) + '\n');

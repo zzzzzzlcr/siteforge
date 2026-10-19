@@ -652,6 +652,10 @@ def _is_consent_step(label: str) -> bool:
 #:
 #: ★ 2026-10-10 起它是**钩子表里的一条**（`_POPUP_HOOKS` 第二行）：签名 `(all, vis)` ——
 #: 用调用方穿好 shadow root 的那份元素表，**不再**吃上一条钩子的局部变量（原来那是个暗扣）。
+#:
+#: ★ 2026-10-19：关闭键也认 `div`/`span` —— 同意控件不一定是 `button/a/input`（真事
+#: compareinsulation 的 CookieScript 把 accept/reject 做成 `<div>`）。`closeW` 的 ≤24 字闸
+#: 已经把散文挡在外面，这里不再加第二条长度闸。
 _MODAL_BOX_JS = (
     "var isModal=function(e){"
     "var lab=String(e.id||'')+' '+String(e.className||'')+' '"
@@ -670,7 +674,14 @@ _MODAL_BOX_JS = (
     "if(!isModal(mb))continue;"
     "var mi=(mb.getElementsByTagName?mb.getElementsByTagName('*'):mb.querySelectorAll('*'));"
     "for(var n=0;n<mi.length;n++){var cb=mi[n],ct=String(cb.tagName||'').toLowerCase();"
-    "if(ct!=='button'&&ct!=='a'&&ct!=='input')continue;"
+    "var ctl=(ct==='button'||ct==='a'||ct==='input');"
+    "if(!ctl&&ct!=='div'&&ct!=='span')continue;"
+    #: ★ 2026-10-19：新加的 div/span **只认叶子** —— 子元素里带文字的是容器，
+    #: 点它是点空气（真站 `#cookiescript_buttons` 就是这个形状）。
+    "if(!ctl&&cb.children&&cb.children.length){var tc=false;"
+    "  for(var q=0;q<cb.children.length;q++){var ch=cb.children[q];"
+    "    if(String(ch.innerText||ch.value||'').trim()){tc=true;break;}}"
+    "  if(tc)continue;}"
     "if(!vis(cb))continue;"
     "var ca=String((cb.getAttribute&&cb.getAttribute('aria-label'))||'').trim();"
     "var cx=String(cb.innerText||cb.value||'').trim();"
@@ -691,11 +702,21 @@ _CONSENT_HOOK_JS = (
     "  var inner=(box.getElementsByTagName?box.getElementsByTagName('*'):box.querySelectorAll('*'));"
     "  for(var j=0;j<inner.length;j++){"
     "    var b=inner[j], tag=String(b.tagName||'').toLowerCase();"
-    "    if(tag!=='button'&&tag!=='a'&&tag!=='input') continue;"
+    "    var ctl=(tag==='button'||tag==='a'||tag==='input');"
+    "    if(!ctl&&tag!=='div'&&tag!=='span') continue;"
+    #: ★ 2026-10-19（真站 compareinsulation）：`#cookiescript_buttons` 这个 **wrapper** 的
+    #: 合并文字是 `"ACCEPT ALL\nDECLINE ALL"`（22 字）—— ≤40 的短文本闸拦不住它，钩子会
+    #: 先挑中 wrapper、点下去是点空气。新加的 div/span **只认叶子**：子元素里带文字的
+    #: 是容器，跳过；真正的 accept/reject（或它们里面那颗 span）才留下。
+    "    if(!ctl&&b.children&&b.children.length){var tc=false;"
+    "      for(var q=0;q<b.children.length;q++){var ch=b.children[q];"
+    "        if(String(ch.innerText||ch.value||'').trim()){tc=true;break;}}"
+    "      if(tc) continue;}"
     #: ★ 2026-09-28：**按钮也得是可见的** —— 藏起来的那颗（有的是给读屏用的）点不到，
     #: 点了也是白点（`cdp click` 会回错误 ⇒ 白搭一步）。
     "    if(!vis(b)) continue;"
     "    var t=String(b.innerText||b.value||(b.getAttribute&&b.getAttribute('aria-label'))||'').trim();"
+    "    if(!ctl&&t.length>40) continue;"
     "    if(!btnW.test(t)) continue;"
     #: 有稳定地址 ⇒ 直接用；只有文字 ⇒ 交回一句「按文字点」（调用方打标记再点）
     "    return (b.id?('#'+b.id):'TEXT')+'|'+t.slice(0,40);"
@@ -892,12 +913,16 @@ _POPUP_PROBE_JS = _popup_probe_js()
 
 #: 按文字给同意按钮**打标记**（只有文字的那种）—— 与产物里「按占位符填」同一招：
 #: 找用 JS、点还是走 `cdp click`（§5.2），标记属性用完就清。
+#:
+#: ★ 2026-10-19：tag 白名单与三条钩子同源 —— 钩子答 `TEXT` 的 div/span 要靠这里落点；
+#: 不放它，探针答得出来、动作永远落不下去（真站上就是「没敢点」）。
+#: 这里是**精确文字匹配**（`t===want`），不需要长度闸。
 _MARK_CONSENT_BY_TEXT_JS = (
     "var want=%s;"
     + _CONSENT_ROOTS_JS +
     "var hit=null;"
     "for(var i=0;i<all.length;i++){var b=all[i],tag=String(b.tagName||'').toLowerCase();"
-    "if(tag!=='button'&&tag!=='a'&&tag!=='input')continue;"
+    "if(tag!=='button'&&tag!=='a'&&tag!=='input'&&tag!=='div'&&tag!=='span')continue;"
     "var t=String(b.innerText||b.value||(b.getAttribute&&b.getAttribute('aria-label'))||'').trim();"
     "if(t===want){hit=b;break;}}"
     "if(!hit)return 'none';"
