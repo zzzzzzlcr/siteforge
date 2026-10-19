@@ -14,9 +14,18 @@
 'use strict';
 const fs = require('fs');
 
-const probePath = process.argv[2];
-if (!probePath) {
-  console.error('用法：node popup_probe_driver.js <probe.js>');
+//: 用法：node popup_probe_driver.js <probe.js> [--marker <marker.js>] [--anchor <anchor-probe.js>]
+//: `--anchor` 用**同一份假 DOM** 再跑两个「站点锚」页（站点控件 + 真锚候选 / 只有站点控件）。
+const ARGS = process.argv.slice(2);
+const probePath = ARGS[0];
+const flagValue = (name) => {
+  const i = ARGS.indexOf(name);
+  return i >= 0 && i + 1 < ARGS.length ? ARGS[i + 1] : null;
+};
+const markerPath = flagValue('--marker');
+const anchorPath = flagValue('--anchor');
+if (!probePath || probePath.startsWith('--')) {
+  console.error('用法：node popup_probe_driver.js <probe.js> [--marker <marker.js>] [--anchor <anchor-probe.js>]');
   process.exit(2);
 }
 // 与产物 `_ev` 的包法一致：`(function(){…})()`（`return` 才有地方可返）
@@ -42,6 +51,18 @@ function el(tag, p) {
     shadowRoot: null,
     children: [],
     getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
+    //: ★ 2026-10-19：站点锚用 `matches(anchor)` 读（与产物同一条 API）。假 DOM 只需要
+    //: 够覆盖测试里那两个形状：`.op2-close` 与 `[data-click="close"]`。
+    matches(sel) {
+      sel = String(sel || '').trim();
+      if (!sel) return false;
+      if (sel[0] === '.') {
+        return String(this.className || '').split(/\s+/).includes(sel.slice(1));
+      }
+      const m = sel.match(/^\[([\w-]+)="([^"]*)"\]$/);
+      if (m) return String(this.attrs[m[1]] === undefined ? '' : this.attrs[m[1]]) === m[2];
+      return false;
+    },
     //: ★ 2026-10-19：`_MARK_CONSENT_BY_TEXT_JS` 会打/清 `data-sf-consent` —— 假 DOM 得真的存住它，
     //: 不然「标记上了没有」只能靠 mock 自说自话。
     setAttribute(k, v) {
@@ -308,7 +329,6 @@ for (const [name, build, want] of CASES) {
 // 第二个参数给了就顺手跑一遍：页面里放一颗没有 id 的 `<div>Accept all</div>`，
 // 看它能不能被标记上。只测**动作那半**（读半在探针那几格）。
 let marker = null;
-const markerPath = process.argv[3];
 if (markerPath) {
   const markerJs = '(function(){' + fs.readFileSync(markerPath, 'utf8') + '})()';
   const pg = page([['div', { cls: 'cookie-consent', text: 'We use cookies' }]]);
@@ -322,5 +342,48 @@ if (markerPath) {
   marker = { got: got, attr: hit.getAttribute('data-sf-consent'), err: err };
 }
 
+// ★ 2026-10-19：站点锚（表里第 4 格）—— 同一份假 DOM 上再加两页：
+//   正控：站点控件 `Close filters drawer` 在文档顺序**前面**（无锚的 broad 钩子会先挑中它），
+//         真锚候选 `[data-click="close"]` 在后面 ⇒ 有锚时只能答后者；
+//   负控：只有站点控件 ⇒ 锚不匹配，必须返空。
+let anchor = null;
+if (anchorPath) {
+  const anchorJs = '(function(){' + fs.readFileSync(anchorPath, 'utf8') + '})()';
+  const R = { left: 10, top: 10, width: 100, height: 40, right: 110, bottom: 50 };
+  const C = { left: 200, top: 200, width: 88, height: 54, right: 288, bottom: 254 };
+  const inside = (r, x, y) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+  const run = (pg) => {
+    try { return new Function('document', 'window', 'return ' + anchorJs)(pg.document, pg.window); }
+    catch (e) { return '<抛了>:' + String(e && e.message || e); }
+  };
+  //: ⚠️ 假 DOM 的 `all` 是**全局的**（`page()` 会重置它）⇒ 必须**建一页、跑一页**，
+  //: 不能两页都建好再跑（那样第一页的 `getElementsByTagName` 会看到第二页的元素）。
+  const posPage = () => {
+    const pg = page([
+      ['button', { id: 'filters-close', cls: 'close-drawer',
+                   text: 'Close filters drawer', rect: R }],
+      //: 两个已知站点锚（blavity `[data-click="close"]` / kotzheating `.op2-close`）
+      //: 都挂在这颗候选上 —— 测试用哪个锚，它都该被认出来。
+      ['div', { id: 'bx-close-inside-1', cls: 'op2-close',
+                attrs: { 'data-click': 'close' }, text: '', rect: C }],
+    ]);
+    pg.document.elementsFromPoint = (x, y) => inside(R, x, y) ? [pg.nodes[0]]
+      : inside(C, x, y) ? [pg.nodes[1]] : [];
+    return pg;
+  };
+  const negPage = () => {
+    const pg = page([
+      ['button', { id: 'filters-close', cls: 'close-drawer',
+                   text: 'Close filters drawer', rect: R }],
+    ]);
+    pg.document.elementsFromPoint = (x, y) => inside(R, x, y) ? [pg.nodes[0]] : [];
+    return pg;
+  };
+  anchor = {
+    positive: { got: run(posPage()), want: '广告 creative|#bx-close-inside-1|' },
+    negative: { got: run(negPage()), want: '' },
+  };
+}
+
 process.stdout.write(JSON.stringify({ total: results.length, failed: failed, results: results,
-                                      marker: marker }) + '\n');
+                                      marker: marker, anchor: anchor }) + '\n');

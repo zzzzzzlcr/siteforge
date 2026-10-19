@@ -2268,10 +2268,11 @@ def _popup_hook_rows(src: str) -> list:
     「新那条在不在、是不是**最后**一条」—— 次序 = 优先级，这才是要钉的性质。
     ⚠️ ★ 2026-10-17（终审 C2）：行是**两格或三格** —— 第三格 = `_REPORT_ONLY`（「报但不点」）
     ⇒ 正则里那第三格**可选**（否则带标志的那一行会从表里「消失」，而它恰恰是本刀那一行）。
+    ⚠️ ★ 2026-10-19：第四格 = **站点锚**（字符串，默认空串）—— 正则里也**可选**。
     """
     block = src[src.index("_POPUP_HOOKS = ("):]
     block = block[:block.index("\n)")]
-    return re.findall(r'\("([^"]+)", _[A-Z_]+(?:, _[A-Z_]+)?\)', block)
+    return re.findall(r'\("([^"]+)", _[A-Z_]+(?:, _[A-Z_]+)?(?:, "(?:[^"]*)")?\)', block)
 
 
 def test_the_ad_creative_hook_is_one_row_and_both_skeletons_get_it():
@@ -2298,8 +2299,9 @@ def test_the_ad_creative_hook_is_one_row_and_both_skeletons_get_it():
     assert "_AD_CREATIVE_JS = (" in src, "那段 JS 得在产物里"
     #: ★ 2026-10-17（终审 C2 · Ruling 30）：这一行**带第三格标志** ⇒ 「报但不点」
     #: （真站上已经量到误点，实测 §1.3）。标志与名字在**同一个元组**里 ⇒ 丢不了。
-    assert '("广告 creative", _AD_CREATIVE_JS, _REPORT_ONLY),' in src, (
-        "表里得有这一行、而且得带 `_REPORT_ONLY`（Ruling 30：只报不点）")
+    #: ★ 2026-10-19：**第四格 = 站点锚**（默认空串 = 不设锚，宽判据仍只报不点）。
+    assert '("广告 creative", _AD_CREATIVE_JS, _REPORT_ONLY, ""),' in src, (
+        "表里得有这一行、带 `_REPORT_ONLY`，且第四格是空的站点锚（Ruling 30 先不点）")
     assert '_REPORT_ONLY = "report_only"' in src, "标志那个常量得在产物里"
     assert "def _popup_report_only(" in src, "按名字查标志的那个函数得在产物里"
     rows = _popup_hook_rows(src)
@@ -2314,6 +2316,11 @@ def test_the_ad_creative_hook_is_one_row_and_both_skeletons_get_it():
     #: 行为那一半（6 个候选认可见那颗 / 超界容器不点）在 `tests/popup_probe_driver.js` 的假 DOM 里真跑。
     assert "closeVal" in seg and "closeWord" in seg, (
         "Ruling 22 的那两条路（属性值精确相等 / id·class·aria-label）不见了：%s" % seg[:200])
+    #: ★ 2026-10-19：站点锚的过滤代码也得在（空串不过滤；非空只认 `matches(anchor)`）——
+    #: 它是把「站点自己的 Close filters drawer」挡在外面的那道闸。锚的值是**表里数据**，
+    #: 所以这段通用代码里仍然不许出现 `data-click` 那种站点字面。
+    assert "var anchored=function(e)" in seg and "e.matches(anchor)" in seg, (
+        "站点锚的过滤代码不见了（第 4 格成了摆设）：%s" % seg[:200])
     assert "r.width<=120&&r.height<=120" in seg, (
         "①的后两条路没有尺寸闸（≤120×120）—— 容器会被当成关闭键点掉：%s" % seg[:200])
     #: ⚠️ 数的是**代码**（剥掉注释）：Ruling 27 之后那一段注释里也会提到 `elementsFromPoint`

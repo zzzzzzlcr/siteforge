@@ -91,11 +91,13 @@ def _probe_js(tmp_path: pathlib.Path) -> str:
     return _product(tmp_path)._POPUP_PROBE_JS
 
 
-def _drive(tmp_path: pathlib.Path, js: str, marker_js: str | None = None) -> dict:
+def _drive(tmp_path: pathlib.Path, js: str, marker_js: str | None = None,
+           anchor_js: str | None = None) -> dict:
     """把一段探针 JS 丢给假 DOM 跑一遍，读回那几格的结果。
 
     `marker_js` 给了就再跑一遍「按文字打标记」（`_MARK_CONSENT_BY_TEXT_JS`）——
     读半（探针）与动作半（标记）是同一道 tag 闸，两半都得钉。
+    `anchor_js` 给了就再跑两页「站点锚」（站点控件 + 真锚候选 / 只有站点控件）。
     """
     p = tmp_path / "probe.js"
     p.write_text(js, encoding="utf-8")
@@ -103,7 +105,11 @@ def _drive(tmp_path: pathlib.Path, js: str, marker_js: str | None = None) -> dic
     if marker_js is not None:
         m = tmp_path / "marker.js"
         m.write_text(marker_js, encoding="utf-8")
-        cmd.append(str(m))
+        cmd += ["--marker", str(m)]
+    if anchor_js is not None:
+        a = tmp_path / "anchor.js"
+        a.write_text(anchor_js, encoding="utf-8")
+        cmd += ["--anchor", str(a)]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, "夹具自己挂了（rc=%s）：\n%s\n%s" % (r.returncode, r.stdout, r.stderr)
     return json.loads(r.stdout.strip().splitlines()[-1])
@@ -168,3 +174,28 @@ def test_the_text_marker_can_mark_a_div_button(tmp_path):
     out = _drive(tmp_path, module._POPUP_PROBE_JS, marker_js=marker)
     assert out["marker"]["got"] == "marked", out["marker"]
     assert out["marker"]["attr"] == "1", out["marker"]
+
+
+@pytest.mark.parametrize("anchor", ['[data-click="close"]', '.op2-close'])
+def test_the_ad_creative_anchor_is_a_table_cell(tmp_path, anchor):
+    """★ 2026-10-19：广告 creative 的「站点锚」是表里第 4 格（空 = broad / 只报不点）。
+
+    真站：wildnutrition 的 `Close filters drawer`（站点控件）与 blavity 的
+    `[data-click="close"]`、kotzheating 的 `.op2-close` 在 broad 判据下长得一样。
+    这一格钉两半（两个已知锚各跑一遍）：
+      · 表里第 4 格填了站点锚 ⇒ 站点控件不许被答，真锚候选才答；
+      · 只有站点控件 ⇒ 返空。
+    ⚠️ 锚**不改变** `_REPORT_ONLY`：这次只是把「哪一颗才算」做成可配数据，仍不点；
+    真站毕业（可见 + 有落点）之前，那一格一直是 `_REPORT_ONLY`。
+    """
+    module = _product(tmp_path)
+    rows = []
+    for row in module._POPUP_HOOKS:
+        if row[0] == "广告 creative":
+            rows.append((row[0], row[1], row[2], anchor))
+        else:
+            rows.append(row)
+    probe = module._popup_probe_js(tuple(rows))
+    out = _drive(tmp_path, probe, anchor_js=probe)
+    assert out["anchor"]["positive"]["got"] == out["anchor"]["positive"]["want"], out["anchor"]
+    assert out["anchor"]["negative"]["got"] == out["anchor"]["negative"]["want"], out["anchor"]

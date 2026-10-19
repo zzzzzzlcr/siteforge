@@ -1213,10 +1213,11 @@ def _popup_hook_rows(src: str) -> list:
     「新那条在不在、是不是**最后**一条」—— 次序 = 优先级，这才是要钉的性质。
     ⚠️ ★ 2026-10-17（终审 C2）：行是**两格或三格** —— 第三格 = `_REPORT_ONLY`
     ⇒ 正则里那第三格**可选**（否则带标志的那一行会从表里「消失」）。
+    ⚠️ ★ 2026-10-19：第四格 = **站点锚**（字符串，默认空串）—— 正则里也**可选**。
     """
     block = src[src.index("_POPUP_HOOKS = ("):]
     block = block[:block.index("\n)")]
-    return re.findall(r'\("([^"]+)", _[A-Z_]+(?:, _[A-Z_]+)?\)', block)
+    return re.findall(r'\("([^"]+)", _[A-Z_]+(?:, _[A-Z_]+)?(?:, "(?:[^"]*)")?\)', block)
 
 
 def test_the_loop_carries_the_same_ad_creative_row_the_table_does():
@@ -1234,8 +1235,8 @@ def test_the_loop_carries_the_same_ad_creative_row_the_table_does():
     assert "_AD_CREATIVE_JS = (" in src, "循环型产物里没有那颗常量（同源破了）"
     #: ★ 2026-10-17（终审 C2 · Ruling 30）：这一行**带第三格标志**（只报不点）——
     #: 两套骨架贴的是同一份机器码 ⇒ 这一格也得一模一样。
-    assert '("广告 creative", _AD_CREATIVE_JS, _REPORT_ONLY),' in src, (
-        "循环型产物的表里没有第 4 行（或者丢了 `_REPORT_ONLY` 那个标志）")
+    assert '("广告 creative", _AD_CREATIVE_JS, _REPORT_ONLY, ""),' in src, (
+        "循环型产物的表里没有第 4 行（或丢了 `_REPORT_ONLY` 标志 / 第四格站点锚）")
     assert "def _popup_report_only(" in src, "按名字查标志的那个函数得在（同源破了）"
     rows = _popup_hook_rows(src)
     assert rows and rows[-1] == "广告 creative", (
