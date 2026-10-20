@@ -590,6 +590,46 @@ def test_scroll_falls_back_to_relocate_when_its_selectors_are_dead(sandbox, form
     assert any(c.startswith("observe") for c in _cdp_calls(sandbox)), _cdp_calls(sandbox)
 
 
+def test_a_scroll_that_cannot_move_does_not_walk_the_whole_group_again(sandbox, form_file, caplog):
+    """★ 2026-10-09（真站 `job-d40bb4d2d2be`／`taxlawadvocates` 实测）：
+    **「滚不动」不许把整组打回** —— 滚动是准备动作，没滚成就出声、接着走下一步。
+
+    现场（那一趟的 trace 原话）：第 13 步点了「Next →」页面当场翻页 ⇒ 第 14 步还写着
+    「把 Next → 滚进视口」，那只按钮已经不在页面上 ⇒ 原来会把整组 **25 步**从头再走一遍
+    ⇒ 重走时第二步的 click 也找不到它（`step16 click 页面上没找到「Next →」`）——
+    **一次滚动失败把整条线性流程搅乱了**，最后报「没走到成功」。
+    """
+    import logging as _logging
+    steps = [
+        {"action": "scroll", "note": "把「Next →」滚进视口",
+         "target": {"text": "Next →", "role": "button", "near": "body",
+                    "selectors": ["#gone"], "frame_id": ""}},
+        {"action": "click", "note": "点「Go」",
+         "target": {"text": "Go", "role": "button", "near": None, "selectors": ["#go"],
+                    "above_fold_only": False, "frame_id": ""}},
+    ]
+    module, _ = _load(
+        "run_scroll_not_fatal",
+        template.render("example-scroll-not-fatal", "Thank you",
+                        [{"name": "w", "when": None, "steps": steps}], [], SAMPLE_PROVENANCE),
+        sandbox)
+    common = _stub(sandbox, diff={"actionable": True},
+                   observe={"url": "https://example.test/", "fields": [],
+                            "actions": [{"selector": "#go", "text": "Go", "role": "button",
+                                         "region": "body", "visible": True, "occluded_by": None,
+                                         "above_fold": True, "alternates": []}]})
+    common.STATE.texts = ["Walk"]
+    common.STATE.fail_selectors = ("#gone",)
+    with caplog.at_level(_logging.WARNING):
+        module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+
+    assert ("click", "#go") in common.STATE.actions, \
+        "滚动失败把后面那一步也带没了 —— 这正是要修的那条：%r" % (common.STATE.actions,)
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "没滚成" in said, said                       # 出声（不许静默）
+    assert "重试" not in said, "还是把整组打回了：%s" % said
+
+
 def _walk_states(n_steps, spec):
     """一条没有 `when` 门的状态：n 步，按 spec 造。早停/截图那两条用它，
     免得被 SAMPLE 的状态跳转搅乱步号。"""
@@ -1937,38 +1977,6 @@ def test_a_broken_consent_probe_never_breaks_the_step(sandbox, form_file):
     clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
     assert clicks == ["#go"], clicks            # 这一步照做，没被弹层那一下带塌
 
-
-
-def test_a_covered_element_is_not_clicked_and_does_not_report_ok(sandbox, form_file):
-    """C：目标被别的东西盖着 → **不点**，而且这一步**不算做成**（不许静默假成功）。
-
-    真站实测的形状：干净会话里同意弹层盖住答题区，`Sedan` 那一下点到弹层上、
-    cdp 回 `ok`（`match_count: 1` 说的是「选择器命中 1 个」，不是「点到的就是它」）。
-    """
-    module, _ = _load(
-        "run_covered",
-        template.render("example-covered", "Thank you",
-                        _one_click_states(selectors=["#go"]), [], SAMPLE_PROVENANCE),
-        sandbox,
-    )
-    common = _stub(sandbox,
-                   observe={"url": "https://example.test/", "actions": [], "fields": []},
-                   diff={"actionable": True})
-    common.STATE.texts = ["Walk"]
-    common.STATE.cover = "COVER|div#onetrust-banner"      # 盖着它的是同意弹层
-    # 生产那个 20 秒预算是给**加载蒙版**的（真站量出来的）。这条用例量的是**另一件事**
-    # ——「盖着就不点、不许记成做成」，遮挡是**永久**的那种。别让它真等 20 秒。
-    module.COVER_WAIT_SECONDS = 0.3
-    module.COVER_POLL_SECONDS = 0.02
-
-    trace = sandbox / "covered.jsonl"
-    ok = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
-                       trace=str(trace)).run()
-    assert ok is False, "点到被盖住的元素上不许算做成"
-    assert not [a for a in common.STATE.actions if a[1] == "#go"], (
-        "被盖着就不该点下去：%s" % common.STATE.actions)
-    line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
-    assert line["ok"] is False, line
 
 # ─────────── ★ 2026-10-10：弹窗**钩子表**（`_POPUP_HOOKS`）───────────────
 #
@@ -3463,7 +3471,7 @@ def test_a_flow_that_reports_no_url_keeps_the_old_ruler(sandbox, form_file):
 #                   ② 此刻页面上**看不到**同意类容器。
 # 弹层要真还在，② 不成立 → 照旧算失败（下面那条反例钉住它）。
 
-def _trace_of(sandbox, form_file, name, states, fail_selectors, consent):
+def _trace_of(sandbox, form_file, name, states, fail_selectors, consent, cover=""):
     """跑一遍产物，落一份 trace，返回 (最后一行的 trace 字典按步号索引, STATE)。
 
     ⚠️ 这里**不看 `run()` 的返回值**：产物的 `run()` 只要见到成功文案就收手，
@@ -3476,6 +3484,8 @@ def _trace_of(sandbox, form_file, name, states, fail_selectors, consent):
     common.STATE.texts = ["Walk"]                      # 成功文案**不在**场上：让它走完每一步
     common.STATE.consent = consent
     common.STATE.fail_selectors = fail_selectors
+    #: ★ 2026-10-13：要演「有个东西盖着我要点的那个元素」时给 `"COVER|<谁盖的>"`。
+    common.STATE.cover = cover
     trace = str(sandbox / (name + ".trace.jsonl"))
     module.Filler(WS, form_file, "cid_1", "task_1", trace=trace,
                   delay=(0, 0)).run()
@@ -3515,21 +3525,57 @@ def test_a_consent_step_whose_banner_is_gone_is_a_soft_skip(sandbox, form_file):
     assert "#go" in clicks, clicks
 
 
-def test_a_consent_step_whose_banner_is_still_there_is_still_a_failure(sandbox, form_file):
-    """反例（同一格）：弹层**还在**页面上却找不到那个按钮 → 照旧算失败。
+def test_a_consent_step_is_skipped_even_if_the_container_is_still_there(sandbox, form_file):
+    """★ 2026-10-13（用户裁定「都收吧」）：**认出来是同意步骤就软跳过** —— 原来还有第二道否决
+    （「此刻页面上还看得见同意容器吗」），拿掉了。
 
-    这是软跳过最危险的翻车方向（把真失败读成跳过）。判据的第二道就是为它设的。
+    为什么拿掉（真事 `job-c02d5768e535` · compareinsulation）：账本里模型对**同一条同意条**
+    点了两次（`Accept all` / `Accept All Cookies`）⇒ 编成步骤表就是两步；产物开跑前钩子已经
+    把它点掉过一次 ⇒ 第 1 步豁免、第 2 步**栽在那道否决上**判死 ⇒ 整组重试 ⇒ 自测挂两遍
+    ⇒ 人只能喊停。而自绘的同意条常常留着**空壳容器**：那道量出来的从来不是
+    「这一步该不该承重」。真正的兜底在**观测**上（见下一条：弹层真还在，后面那步会红）。
     """
-    rows, _ = _trace_of(
+    rows, common = _trace_of(
         sandbox, form_file, "example-consent-still",
         [{"name": "walk", "when": None, "steps": [
             {"action": "click", "note": "点「Reject All」",
              "target": {"text": "Reject All", "role": "button", "near": None,
-                        "selectors": ["#onetrust-reject-all-handler"]}}]}],
+                        "selectors": ["#onetrust-reject-all-handler"]}},
+            {"action": "click", "note": "点「Get Started」",
+             "target": {"text": "Get Started", "role": "button", "near": None,
+                        "selectors": ["#go"]}}]}],
         ("#onetrust-reject-all-handler",),
-        "同意条|#onetrust-accept-btn-handler|Accept Cookies")     # 弹层还在
-    assert rows[1]["ok"] is False, (
-        "弹层还在页面上时，那一步找不到元素**就是失败**，不许软跳过: %s" % rows.get(1))
+        "同意条|#onetrust-accept-btn-handler|Accept Cookies")     # 容器还在页面上
+    assert rows[1]["ok"] is True, (
+        "同意步骤找不到就是软跳过（那道否决已拿掉）: %s" % rows.get(1))
+    assert "跳过" in (rows[1].get("note") or ""), rows.get(1)
+    #: 软跳过只作用于这一步：**后面那一步照做**（也正是它能兜住「弹层真还在」的原因）
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert "#go" in clicks, clicks
+
+
+def test_a_banner_that_really_covers_the_page_still_fails_the_run(sandbox, form_file):
+    """那道否决拿掉之后，「把真失败读成跳过」这条路**照样堵着** —— 靠观测，不靠猜。
+
+    弹层真还在页面上时，**后面那一步**会被 `_covered_by` 挡住并失败（`_consent_step_handled`
+    的 docstring 里那句「真正的兜底不在这一格」）。这一条就是它的负控：
+    同一个产物，把「有个东西盖着我要点的元素」摆出来 ⇒ 那一步 `ok=False`、这一遍红。
+    """
+    rows, _ = _trace_of(
+        sandbox, form_file, "example-consent-covers",
+        [{"name": "walk", "when": None, "steps": [
+            {"action": "click", "note": "点「Reject All」",
+             "target": {"text": "Reject All", "role": "button", "near": None,
+                        "selectors": ["#onetrust-reject-all-handler"]}},
+            {"action": "click", "note": "点「Get Started」",
+             "target": {"text": "Get Started", "role": "button", "near": None,
+                        "selectors": ["#go"]}}]}],
+        ("#onetrust-reject-all-handler",),
+        "同意条|#onetrust-accept-btn-handler|Accept Cookies",
+        cover="COVER|div.fides-modal-overlay")                   # 弹层真盖着
+    assert rows[2]["ok"] is False, (
+        "弹层真还在 ⇒ 后面那一步要被盖住并失败（这才是「真失败不会被抹掉」的那道兜底）: %s"
+        % rows.get(2))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3698,6 +3744,60 @@ def test_a_selector_that_is_not_there_yet_is_retried_before_relocating(sandbox, 
         "把预算关掉之后应当退回老路（重找）：%s" % _cdp_calls(sandbox))
 
 
+def test_a_group_whose_fields_show_up_late_waits_past_the_short_budget(sandbox, form_file, caplog):
+    """★ 2026-10-13（真事 `job-4d12a95edf34` · innovatingcanada 的 Hustle 弹窗）：
+    **这一页的表格是加载后约 25~31 秒才弹出来的**（触发是一次 25 秒的定时器），
+    而「没找到」的默认预算只有 6 秒 ⇒ 第一趟自测第 1 步就挂：
+
+        第 1 个选择器**没找到**（不是被盖着）—— 可能是还没渲出来，先等一等：最多 6 秒
+        等了 3.6 秒它还是没出来 —— 不等了，照旧往下试别的路
+        第 1 步：没找到「field」这个输入框，没填成
+
+    账本标了 `late_element` 的那一组（第一眼里没有那一格、后面的眼有了 ——
+    见 `browser_agent.Journey.late_states`），预算换成 `LATE_ELEMENT_WAIT_SECONDS`。
+
+    两臂：**带标记** ⇒ 等到了、同一根地址做成；**不带标记**（其余一个字不动）⇒ 当场换路。
+    """
+    def src_for(late):
+        step = {"action": "form", "fill": "postcode", "note": "填好了「Postcode」",
+                "target": {"label": "Postcode", "selectors": ["#late"], "frame_id": ""}}
+        if late:
+            step["late_element"] = True
+        fills = [{"name": "postcode", "source": "zip", "kind": "value", "label": "Postcode",
+                  "target": {"text": None, "label": "Postcode", "role": None, "near": None,
+                             "selectors": ["#late"]}}]
+        return template.render("example-late-popup", "Thank you",
+                               [{"name": "w", "when": None, "steps": [step]}], fills,
+                               SAMPLE_PROVENANCE)
+
+    def once(late, name):
+        caplog.clear()
+        module, _ = _load(name, src_for(late), sandbox)
+        common = _stub(sandbox, observe={"url": "https://example.test/", "actions": [], "fields": []})
+        common.STATE.texts = ["Walk", "Thank you"]
+        common.STATE.fail_plan = {"#late": 1}          # ← 头一次没找到，第二次才在
+        #: 短预算关掉（默认那个 6 秒这条路**照样在**，只是这里要量的是**长预算**那一格）：
+        module.NOT_FOUND_WAIT_SECONDS = 0.0
+        module.LATE_ELEMENT_WAIT_SECONDS = 1.0
+        module.NOT_FOUND_POLL_SECONDS = 0.05
+        with caplog.at_level(logging.INFO):
+            module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+        return common, [r.getMessage() for r in caplog.records]
+
+    # ① 账本说是「后出来的」⇒ 等（短预算是 0，所以等到的一定是那一格长预算）
+    common, said = once(True, "run_late_popup")
+    assert ("form", "#late") in [(a[0], a[1]) for a in common.STATE.actions], common.STATE.actions
+    assert any("没找到" in m and "同一根地址" in m for m in said), said
+    assert any("等了" in m and "出来了" in m for m in said), said
+
+    # ② 反例：账本**没**说它是后出来的 ⇒ 不带那一格 ⇒ 当场换路（走到「重找」那一跳）
+    before = len(_cdp_calls(sandbox))
+    _common, _said = once(False, "run_late_popup_control")
+    fresh = _cdp_calls(sandbox)[before:]
+    assert any(c.startswith("observe") for c in fresh), (
+        "没标 `late_element` 的那一组必须照旧（短预算一到就换路）：%s" % fresh)
+
+
 def test_a_failed_step_replays_its_whole_state_group(sandbox, form_file, caplog):
     """★ 线③：一步没做成 ⇒ **把它那一组从头再走一遍**（一次为限）。
 
@@ -3812,6 +3912,90 @@ def test_the_product_matches_the_success_words_without_case(rendered):
               if isinstance(n, ast.FunctionDef) and n.name == "_succeeded")
     src = ast.get_source_segment(rendered, fn) or ""
     assert src.count(".lower()") >= 2, src
+
+
+# ── 同一个字的两种排版写法（★ 2026-10-09）────────────────────────────────
+
+
+#: 判据那格人敲的是**直角**撇号，页面是站点渲染出来的**弯**撇号（U+2019）。
+_TYPO_CRITERION = "Thank You! We've Received Your Information!"
+_TYPO_PAGE = "Privacy policy. Thank You! We’ve Received Your Information! Call us on 555-0100."
+
+
+def _rendered_pieces(src, *names):
+    """从**渲染出来的那份产物源码**里抠几个定义（含类里的方法），真编译一遍再交给用例。
+
+    ⚠️ 抠的是**交付出去那份 py 的真字节**，不是另抄的一份（另抄 = 又一个「同一个事实
+    两个名字」）—— 与 `tests/test_browser_agent.py::_artifact_norm` 同一个道理。
+    ⚠️ `_succeeded` 是**类里的方法**（`ast.walk` 才看得见），抠出来的那段带着缩进 ⇒
+    要 `dedent` 才编译得了；编译出来的是一个普通的 `self` 函数，正好配
+    `_JustEnoughProduct` 那个假身。
+    """
+    import textwrap                           # 只在这一处用
+    ns: dict = {"re": re}
+    keep = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Assign, ast.AnnAssign)
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, keep):
+            continue
+        name = getattr(node, "name", "") or next(
+            (t.id for t in getattr(node, "targets", []) if isinstance(t, ast.Name)), "")
+        if name in names:
+            block = textwrap.dedent(ast.get_source_segment(src, node))
+            exec(compile(block, "<artifact:%s>" % name, "exec"), ns)
+    missing = [n for n in names if n not in ns]
+    assert not missing, "渲染出来的产物里没有 %s" % missing
+    return ns
+
+
+class _JustEnoughProduct:
+    """`_succeeded()` 只会问两件事：这一页现在长什么样、现在的地址是什么。
+
+    ⚠️ `page_signature()` 交出去的是**过了一遍 `_norm` 的**正文（产物里它就是那么写的：
+    `_norm(self._ev(_PAGE_TEXT_JS))` 逐帧拼起来），所以这里也拿**真抠出来的那个 `_norm`**
+    过一遍 —— 拿生正文去比，比的就不是同一件事了（而这一格问的正是「过完之后还认不认得出」）。
+    """
+
+    def __init__(self, norm, text, url="https://example.test/thank-you"):
+        self._norm, self._text, self._url_now = norm, text, url
+
+    def page_signature(self):
+        return self._norm(self._text)
+
+    def _url(self):
+        return self._url_now
+
+
+def _the_product_judges(page_text, criterion):
+    """拿**真渲染出来的** `_succeeded()` 判这一页算不算成了。"""
+    src = template.render(SAMPLE_SITE, [criterion], SAMPLE_STATES, SAMPLE_FILLS,
+                          SAMPLE_PROVENANCE)
+    ns = _rendered_pieces(src, "_FOLD", "_norm", "SUCCESS_TEXTS", "SUCCESS_URLS", "_succeeded")
+    return ns["_succeeded"](_JustEnoughProduct(ns["_norm"], page_text))
+
+
+def test_the_product_sees_the_success_words_a_site_rendered_with_the_other_punctuation():
+    """★ 2026-10-09 `job-27389cef3110`（enroll）真事的**产物那一面**。
+
+    探路那一侧修好了还不够：产物是**独立交付出去的一份 py**（import 不到 agent 包，
+    所以 `_norm` 天然是两份），它在真站上照样要认这句文案。两边不一起折的后果是
+    「探路认得出、脚本在真站上永远认不出」—— 产物会一路说「每一步都做成了」，
+    最后报「没走到成功」，而那一头**没有人看得出是撇号的形状不对**。
+    """
+    assert _the_product_judges(_TYPO_PAGE, _TYPO_CRITERION) is True
+
+
+def test_the_product_still_needs_the_punctuation_that_was_asked_for():
+    """**负控** —— 折的是「同一个字的两种写法」，**不是**把标点抹掉。
+
+    用户 2026-10-09 的裁定是「按大小写那条先例办」：`’` 与 `'` 是**同一个撇号**，
+    就像 `Check` 与 `check` 是**同一个词**。而 `Thank You!` 与 `Thank You` 是
+    **两串不同的字** —— 那一条要是也放过，判据就从「见到那句」松成「见到差不多那句」。
+    这一格钉住它不许再松（正控是后半条：一模一样时照旧算成）。
+    """
+    assert _the_product_judges("Thank You Weve Received Your Information",
+                               _TYPO_CRITERION) is False
+    assert _the_product_judges("Thank You! We've Received Your Information!",
+                               _TYPO_CRITERION) is True
 
 
 # ── 候选顺序：框架生成的 id 排最后（★ 2026-09-23 用户实测）──────────────
@@ -4327,6 +4511,68 @@ def _country_product(country):
                            dict(SAMPLE_PROVENANCE, env=env))
 
 
+def test_a_value_with_no_task_data_keeps_the_shape_the_site_accepted(sandbox, tmp_path):
+    """★ 2026-10-13（真事 `job-a5f74744a7f9` · healthinsurancewatch.com.au）：**资料里没有这一格
+    时，兜底值要照「真站收过的那个值」的形状编**，而不是走按代理出口国家分的池子。
+
+    现场：探路那趟在真站上填的是 `0412345678`（澳洲手机 —— 页面认了、提交也过了），而重放走
+    随机池；池子照 `PROVENANCE['env']['proxy_country']`（**代理出口**）分档，那趟是 `US`
+    ⇒ 一个美国形状的号填进 `04xx xxx xxx` 的框 ⇒ 站方红字 `Please enter a valid mobile
+    number`、**提交那一下卡死**，而每一步的日志都写着「填好了」。
+
+    ⚠️ 「站点在哪」与「出口在哪」是两件事 —— 而真站收过的那条值**不必猜**。
+    """
+    fills = [{"name": "phone", "source": "phone", "kind": "value", "label": "Mobile number",
+              "sample": "0412345678",
+              "target": {"text": None, "label": "Mobile number", "role": None, "near": None,
+                         "selectors": ["input#phone"]},
+              "fallback": [{"random": "phone"}]}]
+    steps = [{"action": "form", "fill": "phone", "note": "填手机"}]
+    env = {"dpr": 1, "ua": "Mozilla/5.0 (stub)", "viewport": [1280, 800], "proxy_country": "US"}
+    product = template.render("example-shape", "Thank you",
+                              [{"name": "walk", "when": None, "steps": steps}], fills,
+                              dict(SAMPLE_PROVENANCE, env=env))
+    module, _ = _load("run_shape", product, sandbox)
+    common = _stub(sandbox)
+    empty = tmp_path / "empty.json"
+    empty.write_text("{}", encoding="utf-8")
+
+    module.Filler(WS, str(empty), "cid_1", "task_1", delay=(0, 0)).run()
+    got = [v for (kind, _sel, v) in common.STATE.actions if kind == "form"]
+    assert got and re.fullmatch(r"04\d{8}", got[0]), (
+        "兜底要照真站收过的形状（`04` + 8 位），不是美国那一档池子：%s" % (got,))
+    assert got[0] != "0412345678", "尾段要随机（每趟填同一个号，站方的去重看得见）"
+
+    #: 反面：**任务资料里有值** ⇒ 照旧用资料，一个字都不许改。
+    module2, _ = _load("run_shape_given", product, sandbox)
+    common2 = _stub(sandbox)
+    given = tmp_path / "given.json"
+    given.write_text(json.dumps({"phone": "0499888777"}), encoding="utf-8")
+    module2.Filler(WS, str(given), "cid_1", "task_1", delay=(0, 0)).run()
+    got2 = [v for (kind, _sel, v) in common2.STATE.actions if kind == "form"]
+    assert got2 == ["0499888777"], got2
+
+
+def test_the_shape_fallback_copies_the_prefix_and_never_guesses_dates(sandbox):
+    """`_shaped_like` 那把尺子：头两位/前缀照抄、尾段随机；**日期与姓名不编**。
+
+    ⚠️ 它住在**产物骨架里**（`SKELETON` 那段）—— 所以要从**渲染出来的产物**上拿它，
+    不是从 `agent.template` 模块上（模块上当然没有：那是发给别处的 py）。
+    """
+    module, _ = _load("run_shape_unit", template.render(
+        "example-shape-unit", "Thank you", [{"name": "walk", "when": None, "steps": []}], [],
+        SAMPLE_PROVENANCE), sandbox)
+    for sample, pat in (("0412345678", r"04\d{8}"), ("2000", r"\d{4}"),
+                        ("98101", r"98\d{3}"), ("+61 412 345 678", r"\+61 412 \d{3} \d{3}")):
+        got = module._shaped_like(sample)
+        assert re.fullmatch(pat, got), (sample, got)
+        #: 尾段要**真随机**：同一个样本连取 20 次不该每次都是同一个值
+        #: （⚠️ 不断言「必不等于样本」—— `2000` 的尾段只有两位，撞上原值有 1/100 的概率）
+        assert len({module._shaped_like(sample) for _ in range(20)}) > 1, sample
+    for untouched in ("07/23/1981", "Sarah Lee", "sarah.lee1980@gmail.com", "", "12"):
+        assert module._shaped_like(untouched) == "", (untouched, module._shaped_like(untouched))
+
+
 def test_the_random_pools_follow_the_country_of_the_site(sandbox, tmp_path):
     """★★ 美国站与英国站各跑一次 ⇒ **拿到不同池子**（交接《骨架还缺什么》「别处」）。
 
@@ -4343,7 +4589,12 @@ def test_the_random_pools_follow_the_country_of_the_site(sandbox, tmp_path):
         mod[country], _ = _load("run_country_%s" % country, _country_product(country), sandbox)
         common = _stub(sandbox, diff={"actionable": True},
                        observe={"url": "https://example.test/", "actions": [], "fields": []})
-        common.STATE.texts = ["Walk"]
+        #: ⚠️ 正文按**已记录动作数**往后走一格（替身 `current_text()`）⇒ 这里少写几格就等于
+        #: 「第一步刚填完就吐成功文案」：`_succeeded()` 当场成立、后两格（phone/state）一个都不走，
+        #: 下面那三条断言就 KeyError（2026-10-13 实测：写成两元素那版红、这条绿）。
+        #: 照邻居那几处（`["Walk"] * 3 + ["Thank you"]`，本文件 4165/4198-4200 行）写：
+        #: **三格都填完**才吐成功文案。
+        common.STATE.texts = ["Walk"] * 3 + ["Thank you"]
         mod[country].Filler(WS, str(ff), "cid_1", "task_1", delay=(0, 0)).run()
         filled[country] = {a[1]: a[2] for a in common.STATE.actions if a[0] == "form"}
 
@@ -4356,6 +4607,54 @@ def test_the_random_pools_follow_the_country_of_the_site(sandbox, tmp_path):
     assert filled["GB"]["input#phone"] in mod["GB"].PHONES, filled["GB"]
     assert filled["US"]["input#state"] in mod["US"].US_STATES, filled["US"]
     assert filled["GB"]["input#state"] in mod["GB"].GB_COUNTIES, filled["GB"]
+
+
+def test_a_birth_year_pool_gives_a_year_and_the_dob_pool_still_gives_a_date(sandbox, tmp_path):
+    """★★ 2026-10-08（policyquail `job-c8730acb27c5` 那份产物在 8100 上验出来的那一趟）。
+
+    那一格是「**Year of birth**」（`placeholder="YYYY"`），要 4 位年份；探路也**填对了**
+    （账本里是 `"1975"`）。可产物复跑时填的是随机池 `dob`，而 `dob` 池吐 `MM/DD/YYYY`
+    ⇒ 往年份框里打了整串日期 ⇒ 每步都 ok、成功文案一直没出现。
+
+    这条钉**产物那一侧**（`_random_value`）：`browser_agent._RANDOM_HINTS` 那张表判出
+    种类名，产物运行期得**认得出**它 —— 只改一边，产物拿到 `{"random": "birth_year"}`
+    会当场抛「不认识这个随机值类型」。
+
+    判两半，缺一半能靠「反正填上了东西」蒙过去：
+      · `birth_year` ⇒ **4 位数字**（且落在合理的出生年区间里）；
+      · `dob` ⇒ **照旧整串日期**（这一改不许把真要生日的格子带走）。
+    """
+    ff = tmp_path / "form.json"
+    #: ⚠️ 这份资料里**没有**这两格 —— 只有这样它们才落到随机池上（正是要量的事）。
+    ff.write_text(json.dumps({"email": "sam@example.test"}), encoding="utf-8")
+
+    def _target(label, sel):
+        return {"text": None, "label": label, "role": None, "near": None, "selectors": [sel]}
+
+    fills = [
+        {"name": "birth_year", "source": "birth_year", "kind": "value", "label": "Year of birth",
+         "target": _target("Year of birth", "input#birth-year"),
+         "fallback": [{"random": "birth_year"}]},
+        {"name": "dob", "source": "dob", "kind": "value", "label": "Date of birth",
+         "target": _target("Date of birth", "input#dob"), "fallback": [{"random": "dob"}]},
+    ]
+    steps = [{"action": "form", "fill": f["name"], "note": "填 %s" % f["label"]} for f in fills]
+    prod = template.render("example-year", "Thank you",
+                           [{"name": "walk", "when": None, "steps": steps}], fills,
+                           SAMPLE_PROVENANCE)
+    module, _ = _load("run_birth_year", prod, sandbox)
+    common = _stub(sandbox, diff={"actionable": True},
+                   observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common.STATE.texts = ["Walk"] * 2 + ["Thank you"]
+
+    assert module.Filler(WS, str(ff), "cid_1", "task_1", delay=(0, 0)).run() is True
+    filled = {a[1]: a[2] for a in common.STATE.actions if a[0] == "form"}
+
+    year = filled["input#birth-year"]
+    assert re.fullmatch(r"\d{4}", year), "年份框里填的不是 4 位年份：%r" % year
+    assert 1900 <= int(year) <= 2010, "这个「出生年」不像人：%r" % year
+    assert re.fullmatch(r"\d{2}/\d{2}/\d{4}", filled["input#dob"]), \
+        "`dob` 那一档被带走了（它该照旧给整串日期）：%r" % filled["input#dob"]
 
 
 def test_a_canadian_site_gets_canadian_pools_not_the_uk_ones(sandbox, tmp_path):
@@ -4583,6 +4882,100 @@ def test_a_site_with_no_country_says_so_rather_than_guessing(sandbox, form_file,
     assert f.country == "" and f.pools is module.UNKNOWN_POOLS, f.country
     assert f.pools["postcode"] is module.POSTCODES, "「不知道」那一档的池子不许被换掉"
     assert common.STATE.shots == 0
+
+
+
+# ─────────── ★ 2026-10-13：「软步骤」与「同意条不该判死」───────────
+#
+# 三堵真墙同一个根（`job-c02d5768e535` · compareinsulation＋`job-708dfae74b73` · lovesac）：
+#   · 账本里「点掉同意条」那一步是**环境噪声**，编成硬步骤 ⇒ 找不到就判死、还打回整组；
+#   · 同一条同意条被记了两步 ⇒ 一条豁免、一条判死（豁免那条还要过「页面上还看得见容器吗」）；
+#   · 盖满视口的同意弹层（Fides 那类）**两条钩子都认不出** ⇒ 每一步都被它盖着 ⇒ 撞 600 秒上限。
+
+
+def _soft_states():
+    """两步：先一步**会挂的软步骤**（点同意条那类），再一步**承重**的。"""
+    return [{"name": "walk", "when": None, "steps": [
+        {"action": "click", "note": "点掉同意条", "soft": True,
+         "target": {"text": "Accept All Cookies", "role": None, "near": None,
+                    "selectors": ["#si-accept"]}},
+        {"action": "click", "note": "点「Get Started」",
+         "target": {"text": "Get Started", "role": "button", "near": None,
+                    "selectors": ["#go"]}}]}]
+
+
+def test_a_soft_step_that_cannot_be_found_does_not_restart_the_group(sandbox, form_file):
+    """★ 2026-10-13：标了 `soft` 的那一步找不到 ⇒ 与 `scroll` 同一档 —— 出声、接着走、**不打回整组**。
+
+    判据取「承重那一步被点了**几次**」：整组重试会把游标打回 0、把 `#go` 再点一遍；
+    软跳过只点一次。这就是「一步没做成把整组搅乱」那类代价的最小探针。
+    """
+    module, _ = _load(
+        "run_soft_step",
+        template.render("example-soft", "Thank you", _soft_states(), [], SAMPLE_PROVENANCE),
+        sandbox)
+    common = _stub(sandbox, diff={"actionable": True},
+                   observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common.STATE.texts = ["Walk"]
+    common.STATE.fail_selectors = ("#si-accept",)
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert clicks.count("#go") == 1, ("软步骤不该把整组打回：%s" % clicks)
+
+
+def test_a_consent_step_is_skipped_even_when_the_page_still_shows_a_consent_box(sandbox, form_file):
+    """★ 2026-10-13：**认出来是同意步骤就软跳过** —— 不再问「此刻页面上还看得见同意容器吗」。
+
+    为什么拿掉那道否决（真事 `job-c02d5768e535`）：账本里模型对**同一条同意条**点了两次，
+    编成表就是两步；产物开跑前钩子已经点掉过一次 ⇒ 第 1 步豁免、第 2 步（那一格量的「容器
+    还在不在」）判死 ⇒ 整组重试 ⇒ 自测挂两遍 ⇒ 人只能喊停。而「容器还在不在」根本不该有
+    否决权：自绘的同意条常留着空壳；弹层真要还在，**下一步**会被 `_covered_by` 挡住并失败。
+    这一条把「容器还在」（`STATE.consent` 非空）摆出来，断言这一步**照样跳过**、后面那步照走。
+    """
+    states = [{"name": "walk", "when": None, "steps": [
+        {"action": "click", "note": "点「Accept all」",
+         "target": {"text": "Accept all", "role": None, "near": None,
+                    "selectors": ["#cookiescript_accept"]}},
+        {"action": "click", "note": "点「Get Started」",
+         "target": {"text": "Get Started", "role": "button", "near": None,
+                    "selectors": ["#go"]}}]}]
+    module, _ = _load(
+        "run_consent_skip",
+        template.render("example-consent-skip", "Thank you", states, [], SAMPLE_PROVENANCE),
+        sandbox)
+    common = _stub(sandbox, diff={"actionable": True},
+                   observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common.STATE.texts = ["Walk"]
+    common.STATE.fail_selectors = ("#cookiescript_accept",)
+    common.STATE.consent = "同意条|#cookiescript_accept|Accept all"    # 页面上还看得见同意容器
+
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert clicks.count("#go") == 1, ("同意步骤该软跳过、不打回整组：%s" % clicks)
+
+
+def test_the_consent_modal_hook_is_the_strongest_signal():
+    """★ 2026-10-13：**盖满视口的同意弹层**排在最前（Fides 那类）。
+
+    形状就是判据（供应商的名字追不完）：盖住大半个视口 + 里面有「对同意做个决定」的按钮，
+    优先点**拒绝/不同意**那一颗。这一条钉住表序与那段 JS 真的在产物里
+    （`test_a_new_popup_kind_is_one_row_in_the_hook_table` 那种读法：读**产物**，不读渲染器）。
+
+    ⚠️ 2026-10-16（Task 4）：同意 / 弹层那一整块从 `SKELETON.template` 里搬到了模块级
+    `template._POPUP_MACHINERY_SRC`（循环型骨架要取**同一份** —— spec §3.1「判据只写一份」），
+    渲的时候再原样贴回产物（表那套渲染出来的字节**一个都没变**）⇒ 这一条改成读
+    **渲出来的产物** —— 这正是它 docstring 里本来就写着的那个读法，原来落成了读模板串。
+    """
+    src = render_sample()
+    assert "_CONSENT_MODAL_JS = (" in src, "那段 JS 得在产物里"
+    assert '("盖满视口的同意弹层", _CONSENT_MODAL_JS),' in src, "表里得有这一行"
+    #: 表序：新那条在「同意条」之前（次序 = 优先级）
+    assert (src.index('("盖满视口的同意弹层", _CONSENT_MODAL_JS)')
+            < src.index('("同意条", _CONSENT_HOOK_JS)')), "最硬的那一类要最先问"
+    #: 形状判据与「先挑拒绝那一颗」都在那段 JS 里
+    seg = src[src.index("_CONSENT_MODAL_JS = ("):src.index("_CONSENT_HOOK_JS = (")]
+    assert "0.8" in seg and "strongW" in seg and "badW" in seg, seg[:300]
 
 
 # ── 锚只认观测：渲染取数点（2026-10-16 第二刀，spec §3.1）────────────────────

@@ -19,7 +19,7 @@ import (
 //	        ↓
 //	   internal.NewClient(host, port)  →  http://host:port/json/version → webSocketDebuggerUrl
 //
-// ⚠️ 窗口的存活只有几分钟（规格 §4.6）。所以「连不上」要**立刻、明确**地说出来
+// ⚠️ 窗口会自己到点（实测 25~33 分钟，规格 §4.6）。所以「连不上」要**立刻、明确**地说出来
 // （由 Connector.Dial 负责），不许挂着等 —— 调用方拿到明确错误才能重开窗口。
 // 这也是 P6 那条风险的落地：窗口没了必须是一种**可失败的前置**，不是一次超时。
 

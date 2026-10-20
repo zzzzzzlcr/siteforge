@@ -185,7 +185,7 @@ WINDOW_WHEN = ("**它正在跑（running）的时候不要动手** —— agent 
                "**停在闸上（waiting）是唯一适合动手的时刻**（图没在动，接管不会跟它抢），"
                "但你动过页面之后，下一步就是在**你留下的那个页面**上跑的 —— "
                "**用「说一句」告诉它你动过**。\n"
-               "窗口只活几分钟，去看它**不会让它活更久**；把它**关掉** = 这一趟的窗口没了"
+               "窗口会自己到点（实测 25~33 分钟），去看它**不会让它活更久**；把它**关掉** = 这一趟的窗口没了"
                "（图会停在「自测那一步没有窗口」，那是一条正常的路，不是 bug）。")
 
 # ── 「这个窗口现在是死是活」（Task 12）────────────────────────────────────
@@ -241,6 +241,15 @@ REOPEN_NO_WINDOW_LAYER_SAY = (
 REOPEN_OPEN_FAILED_SAY = ("服务自己去开一个新窗口**没成**：\n%s\n"
                           "（它没有把任何一个旧窗口交出去顶替 —— 开不出来就是开不出来。）")
 
+#: ★ 2026-10-13：「重开窗口」那一下要自己开一个新窗口，而**别人正用着那一个**时不许开
+#: （先关后开 = 把别人正在跑的那趟打死）。`%s` = 正用着的那一趟。
+REOPEN_WINDOW_BUSY_SAY = (
+    "现在开不了新窗口：**另一趟正用着那个窗口**（%s）—— 换窗是**先关、后开**，"
+    "那一下会把正在跑的那一趟的窗口关掉（实测：它随后全找不到元素、跑满 600 秒超时）。\n"
+    "两条路：① **等它跑完**（它一到闸口就会停下来），再按这一下；"
+    "② 你自己开一个窗口，把那一串 `ws_url` 跟这次请求一起发过来 —— "
+    "那样服务**不用关**别人那个窗。")
+
 #: ★ **开一趟**时服务自己去开窗口、没开成（2026-09-22 真事）。
 #: 运营按「开一趟」看到的是一条「收到了，排队开跑」+ 一条「探不了路：这一趟没有窗口」——
 #: 而**外面为什么开不出来**（`/tmp/svc.log`：一次是 bit 回「浏览器正在打开中」的竞态、
@@ -257,6 +266,11 @@ RUN_OPEN_FAILED_SAY = ("开不了这一趟：服务自己去开窗口**没成** 
 #: ⚠️ 下划线开头 ⇒ **进不了图**（`_payload` 是白名单，只认列出来的那些键）。
 WINDOW_OPEN_FAILED = "_window_open_failed"
 
+#: ★ 2026-10-13：**提交那一下被推迟的换窗**（那会儿有别的趟正在用窗口 —— 见
+#: `_clean_window_for_explore`）。值 = 当时占着窗口的那一趟（记账用）。
+#: ⚠️ 同样下划线开头 ⇒ 进不了图；它只活在 `brief` 上（`_explore_for` 那个闭包看得见）。
+WINDOW_DEFER_CLEAN = "_window_defer_clean"
+
 #: 窗口没了、人却按了「继续」时那条 409 的人话（`%s` = job id）。
 #:
 #: ★ Task 12 改的是**顺序与醒目程度**，实质一个字没动（它说的全是真事）：
@@ -271,7 +285,7 @@ WINDOW_GONE_REPLY_SAY = (
     "  ① 按「停下」：把这一趟收在闸上（这一步不做，页面与文件都保持原样）。\n"
     "  ② 等它变成「跑完了」，按「重新来一遍」：那个按钮到那一档才出现 —— "
     "新的一趟会**自己开一个干净窗口**、从零再走（探到的账本还在 checkpoint 里）。\n"
-    "为什么不能就这么接着走：这个窗口**已经不在了**（§4.6：Bit 窗口只活几分钟，"
+    "为什么不能就这么接着走：这个窗口**已经不在了**（实测窗口活 25~33 分钟，"
     "而这一步可能跑很久）。现在接着走的话，自测会拿着一个死窗口跑，"
     "报告会把「连不上」说成产物的问题 —— 那是误导。\n"
     "（**为什么第一步不是「重开一个窗口接着走」**：那条路接得住的是**图已经停下来**的两种停法"
@@ -279,6 +293,38 @@ WINDOW_GONE_REPLY_SAY = (
     "给它换窗口就得把闸上那一步推下去，那等于**替你按了「继续」**，服务不做这件事。"
     "这一档原先那句「重开一个窗口，再从这里接着走」是**做不到的**（2026-09-20 实测："
     "走到这里再发 `POST /job/%s/reopen` 会被回一句「不用重开」）。）")
+
+#: `POST /job/{id}/reply` **收下了**那一句人话（`reply()` 把 job 挪出「停住」时就写它，
+#: 那一刻 `_view` 回的 `say` 就是这句）。它是**服务说成了的那句话**，不是坏消息
+#: ⇒ 页面上走的也是 `setErr(…, "act", ok=True)` 那一格（底色是「说成了」，字一个字不加工）。
+#:
+#: ★ 2026-10-10（用户报的「点了继续也没任何反馈」）：这一句**一直是存在的**，
+#:   而页面拿到 `res.obj` 就扔 —— 成功那条路上只清了一下输入框，而按「继续」时
+#:   输入框**按定义就是空的**（闸上不写也能按），清了等于没清。抽成常量是为了让用例
+#:   直接引用**服务这一句**：它改一个字，`tests/test_console_js.py` 那份跟着变，
+#:   不会两边漂（与 `AGAIN_SAY` / `NO_ART_SAY` 同一个做法）。
+#: ★ 2026-10-10（用户：「验证回没写清楚，点继续运营不知道啥情况」）：`%s` = **它接下来
+#: 要跑的那一步的人话**。这一句原先只有「收到你的话，接着跑」—— **不说是哪一步**，
+#: 而每一次按下它都**一字不差** ⇒ 运营读到的是一句客套话：按了跟没按一样，
+#: 而他想知道的恰恰是「**它现在到底在干什么**」。
+#: 材料本来就在手边：`reply()` 读的那个 `view` 里，`gate.step` **就是运营刚放行的那一步**。
+REPLY_ACCEPTED_SAY = ("收到你的话 —— 它正在跑「%s」这一步（就是你刚放行的那一步）。"
+                      "跑完会停在下一道闸上等你。")
+#: 那一步认不出来时说的那一句（与**从前那句一字不差**）。
+#: ⚠️ 认不出就**不编一个步名**：这话是真的（它确实接着跑），编一个名字就是假的。
+REPLY_ACCEPTED_STEP_UNKNOWN_SAY = "收到你的话，接着跑（下一个要你拿主意的地方会再停下来）。"
+
+
+def _reply_accepted_say(view: dict) -> str:
+    """「收到你的话」那一句 —— **点名它接下来要跑的那一步**（认不出就不编）。
+
+    ⚠️ `view` 必须是**改 job 状态之前**读的那一份（`reply()` 里就是那个顺序）：
+    它的 `gate.step` 就是**人刚放行的那一步** —— 改完状态再读，读到的是「正在跑」那一档，
+    `gate` 已经没了（`_view` 的 RUNNING 分支给 `gate: None`）。
+    """
+    step = str((((view or {}).get("gate") or {}).get("step")) or "")
+    where = STEP_SAY.get(step, step) if step else ""
+    return (REPLY_ACCEPTED_SAY % where) if where else REPLY_ACCEPTED_STEP_UNKNOWN_SAY
 
 #: **降级 B** 那句话（设计注 §5.5）：关掉每步抓拍时，页面上**一直**显示它。
 #: ⚠️ 不许静默降级 —— 运营看到一次「没有逐步图」的运行，必须同时看到「为什么」。
@@ -323,8 +369,8 @@ STEP_FAILED_SAY = ("这一步没跑成，停下了：%s\n"
 #: 目录表第 7 行
 RECOVERED_SAY = "（服务重启过：这个任务是从 checkpoint 里捡回来的）"
 #: 目录表第 1 行。`%s` = 它停在哪一步**之前**（从快照里读出来的人话步骤名）
-WINDOW_DEAD_SAY = ("窗口没了 —— Bit 的窗口只活几分钟。它停在「%s」之前；"
-                   "接着走之前得先重开一个窗口。")
+WINDOW_DEAD_SAY = ("窗口没了 —— 它已经不在（Bit 窗口会自己到点，实测活 25~33 分钟；跑长活会撞上）。"
+                   "它停在「%s」之前；接着走之前得先重开一个窗口。")
 #: 目录表第 8 行：**说了就要让人知道这句话去哪了**
 HUMAN_SAID_THROUGH_SAY = "这句话会一路带进「写这一版 py」。"
 #: 没有 note 的那次「继续」：不能说「这句话带进去了」（没有话）
@@ -570,10 +616,65 @@ def _artifact_say(values: dict, state: dict) -> str:
     #: ★ 2026-09-28（用户点名「上传别只认交付过那一趟」）：这一趟**没走到交付、但确实写下了
     #: 一版**时，光说「没有可交付的产物」等于把人堵死 —— 把**出路**一起说清（勾「照样传」）。
     #: ⚠️ 这一句放在**这一处**（两处出口共用同一拼法），别在 `_artifact_state` 里再来一遍。
-    way = ("（这一趟**确实写下了这一版**：把「照样传这一版」勾上再预检一次，就能拿它上传 —— "
-           "那是你自己的判断，服务不替你做。）") if _recorded_bytes(values) is not None else ""
+    way = ((
+        #: ★ 2026-10-10（用户：「反馈回的信息不足，运营压根不知道要咋操作」）：
+        #: 这一句原先只到「就能拿它上传 —— **那是你自己的判断，服务不替你做**」就完了。
+        #: **它把决定推给运营，却没给他做决定要的那件东西**：他面前摆着两条路
+        #: （按「继续」往下走 / 现在就传），而**哪条稳、各要付什么**一句没说 ⇒
+        #: 只能卡在那儿回来找人。这两条路系统**自己就是这么设计的**，它全知道 ——
+        #: 差的只是把它说出来。**「你自己判断」不带料 = 把人堵死**（与 §6.4 那张清单同一条）。
+        "（这一趟**确实写下了这一版**。两条路，你挑一条：\n"
+        "  · **先按「继续」** —— 让它把这一版验完。验过了它会自己走到「写出去」那一步，"
+        "到时候这一栏就能下载、也能上传，传上去的是**验过的**那一版（稳）。\n"
+        "  · **现在就要** —— 把「照样传这一版」勾上、填「谁确认的」，再按「预检上传」。"
+        "传上去的是**没验过**的这一版，而且它接着往前走**还会被改**。\n"
+        "  两条路只差一件事：**传的那一版验过没有**。）")
+    ) if _recorded_bytes(values) is not None else ""
     head = ("%s\n%s" % (why, state["say"])) if why else state["say"]
     return ("%s\n%s" % (head, way)) if way else head
+
+
+def _kept_a_version(values: dict) -> bool:
+    """这一趟**是不是自己记着「我把这一版留下了」** —— ★ 2026-10-08（运营真撞上
+    `job-c8730acb27c5`，policyquail.com）。
+
+    加它是因为面板**自己打自己的脸**：同一格既说「**为什么没有 py**」「记录里没有它写下
+    py 的证据」，末一行又说「确实写下了这一版」—— ①② 是假的。运营读到「白跑了」⇒ 回来找人
+    过一手。「老是产不出 py、得这边再过一次」就是这么来的：**不是没产出，是面板不说。**
+
+    ⚠️ 判据是 **`unverified` 非空**，不是 `src` 在不在：`graph._keep_unverified` 在**同一次
+    `out.update`** 里写下 `py_path` / `src` / `unverified` 三格 ⇒ 那一格有话说就等于
+    「这一版是**这一趟**留下的」。单看 `src` 不行 —— 跑挂那趟的 state 里可能留着**上一次**
+    真跑留下的（`_delivered_path` 那道闸防的正是它：`tests/test_service_artifact.py::
+    test_a_dead_run_does_not_hand_over_the_py_of_an_earlier_one`）。
+    ⚠️ 这里**只管「留下了」**（= 文件落到交付路径上了）。「**能不能照样传**」是另一件事、
+    另一个判据（`src` 在不在）—— 那是 `_artifact_say` 里那句**出口**的事，别在这儿混进来：
+    混成一个 `and` 会多出一条两种情况都说不清的支路（变异测试当场验过：那条支路谁也钉不住）。
+    ⚠️ 就一句 `bool(...)`，**别加「剥空白 / 有没有内容」那种守卫**：`_keep_unverified` 四个
+    调用点传进去的都是拼好的整句，空白条目到不了 —— 变异测试同样当场验过：那种守卫**谁也
+    钉不住**（把它加回来，没有任何一条用例会红）。加不钉得住的守卫，等于给自己记一笔假账。
+    """
+    return bool((values or {}).get("unverified"))
+
+
+#: 自测之前那次「换干净会话」**没换成**时，`session` 那一格给的那句话里一定有它
+#: （`graph._fresh_session` 的两个兜底分支都这么写）。判据用它 = 「这一次不是干净会话」。
+SESSION_NOT_CLEAN_SAY = "不是干净会话"
+
+
+def _session_why_tail(values: dict) -> str:
+    """这一趟「为什么没有窗口」**它自己交代的那一句**（有就说，没有就不编）。
+
+    ★ 2026-10-13（真因）：`_fresh_session` 换干净会话时 `fresh_open()` 是**先关后开** ——
+    关成了、开被 Bit **限流**挡下（它原话：`打开窗口失败，请尝试降低接口请求频率重试`）⇒
+    旧窗已没了、新窗没起来，而图兜底「照旧跑」= 拿着**死地址**去自测，屏幕上只剩
+    「窗口连不上」。**真因写在 `session` 那一格**里，不把它摆出来，读的人只会去
+    重开窗口（那能救，但每次都白跑一趟自测，而且没人知道为什么老是这样）。
+    """
+    said = str((values or {}).get("session") or "").strip()
+    if not said or SESSION_NOT_CLEAN_SAY not in said:
+        return ""
+    return "\n它自己交代的是：%s" % said
 
 
 def _no_py_say(values: dict) -> str:
@@ -590,6 +691,19 @@ def _no_py_say(values: dict) -> str:
     两句一起摆在产物那一块里 —— 它们的拼法只有 `_artifact_say` 一处。
     """
     reason = str((values or {}).get("end_reason") or "")
+    if _kept_a_version(values):
+        if not reason:
+            #: ★ 2026-10-09（闸前留料）：**还没结束**时就留了料。这一支比下面那句还要早一层 ——
+            #: 「为什么**没有** py」在这一档问得**更错**（它还在走，那一版还会变），
+            #: 而且下面那句的括号（「没过的是这一趟自己的检查」）在这一档也不成立：
+            #: 刚写完那一版**根本还没检查过**。⇒ 这一句**一个字都不给**，让 `_no_artifact_say`
+            #: 去说这一档自己的那句话（`NO_ARTIFACT_KEPT_RUNNING`）。
+            return ""
+        #: ★ 2026-10-08：留了一版时，「**为什么没有 py**」这一问**本身就问错了** —— 有 py，
+        #: 只是没被当成「交付」（`graph._keep_unverified` 的口径：落料 ≠ 放行）。照停因翻译
+        #: 就会与同一格最后那句「确实写下了这一版」打脸。⚠️ 按停因那句照旧在下面（else 那支）。
+        return ("**这一版 py 它留下了**（没过的是这一趟自己的检查，原因写在下面它自己那句话里）"
+                "—— 下一步：看那句话，缺什么补什么。")
     return {
         END_EXPLORE_UNFINISHED: (
             "**为什么没有 py**：探路**没走完** —— 规矩是**不许拿半份账本写 py**"
@@ -597,9 +711,9 @@ def _no_py_say(values: dict) -> str:
             "窗口没了就「重开窗口，接着走」；判据没在页面上见到就改「什么算成功」那一格。"),
         END_NO_WINDOW: (
             "**为什么没有 py**：这一趟**没有窗口**可用 —— 两种情形都算：①开跑时就没开起来；"
-            "②窗口起来过、**后来没了**（Bit 窗口只活几分钟，自测那一步常常撞上）。"
+            "②窗口起来过、**后来没了**（Bit 窗口会自己到点 —— 实测活 25~33 分钟，跑长活常常撞上）。"
             "下一步：**先按「重新开一个窗口，接着走」**（探路的账本还在，不用重来）；"
-            "那一跳要是不在（开跑时就没起来），才重新发起一趟。"),
+            "那一跳要是不在（开跑时就没起来），才重新发起一趟。" + _session_why_tail(values)),
         END_PAUSED: (
             "**为什么没有 py**：**人喊停**了（探路被人从浏览器那一侧叫停）—— "
             "停下就是停下，页面与文件保持原样。下一步：要接着做就「重新来一遍」。"),
@@ -857,7 +971,10 @@ ARTIFACT_READY_SAY = "这一趟的 py 写下来了 —— 点文件名下载，�
 #: 那天真撞上：改好的那一版**真站跑通过**，却因为「这一趟没有可交付的产物」传不上去 ✗。
 #: 现在放行，但**必须明说**它没经过流水线自测（人要按「确认上传」那一下自己的判断）。
 ARTIFACT_UNDELIVERED_SAY = (
-    "这一趟**没走到「交付」**（所以它没有落盘、也没有自测报告），但它**确实写下了这一版 py**。"
+    #: ⚠️ 那句「**所以它没有落盘**」2026-10-08 删掉了 —— `graph._keep_unverified` 之后，
+    #: 这一档（没走到交付）**是会落盘的**（落在交付路径上）。旧话与事实反着说。
+    "这一趟**没走到「交付」**（没经过流水线自测、记录里也没记成「交付」），"
+    "但它**确实写下了这一版 py**。"
     "⚠️ 传上去的是**没经过流水线自测**的那一版 —— 它可能在真站上还没验过；"
     "**确认要传就按「确认上传」**，不放心就先去把它验一遍（自测那一步按「继续」）。")
 # ── 盘上那一份**现在是什么**：一句**信息**（端出去的是记录里那一串，与它无关）──
@@ -900,10 +1017,22 @@ ARTIFACT_UNVERIFIABLE_SAY = ("这一趟的结局说它**交付过**（%s），�
 #: 不说「没跑到写下那个文件那一步」（服务不知道，而且它可能是假的）。
 NO_ARTIFACT_HEAD_DONE = "这一趟**没有可交付的产物**（它到头了，记录里没有它写下 py 的证据）"
 NO_ARTIFACT_HEAD_FAILED = "这一趟**没有可交付的产物**（它跑挂了，记录里没有它写下 py 的证据）"
+#: ★ 2026-10-08：这一趟**确实留了一版**（`_keep_unverified`）时的头 —— 上面那两句里
+#: 「记录里没有它写下 py 的证据」在这一档是**假的**（证据就在 `unverified` / `src` 里）。
+#: 「没交付」与「没产出」是两件事：这一句只说前一件（后一件由 `_kept_a_version` 决定说不说）。
+NO_ARTIFACT_HEAD_KEPT = ("这一趟**没有把它当成「交付」**（记录里那一版没过它自己的检查），"
+                         "但它**确实留下了一版 py**")
 #: 「还没跑到写 py 那一步」那句（在跑 / 排队 / 停在闸上）。⚠️ 与上面两格**不是一回事**：
 #: 一个是「它还没写到那儿」，一个是「它跑完了但没有」—— 混成一个就是编话。
 NO_ARTIFACT_YET_SAY = ("这一趟还没有产物（它现在是「%s」）—— 产物要等它走到「写下了 py」"
                        "那一步才有。这条路只看**这一趟自己记下的**那个路径。")
+#: ★ 2026-10-09（**闸前留料**带出来的新组合）：**还没跑完**（停在闸上等人）**而那一版已经落盘**。
+#: 与 `NO_ARTIFACT_HEAD_KEPT` 是两件事，别混：那一句说的是「**到头了**，但这一版留下来了」，
+#: 这一句说的是「**还在走**，这一版还会变」—— 人要不要现在就拿走，取决于知不知道这件事。
+#: ⚠️ 这一档**不许**走 `NO_ARTIFACT_YET_SAY`（「还没有产物」）：那一句在这一档是假的，
+#: 而且它会和同一格末了那句「确实写下了这一版」当场打脸（真事 `job-cb0197a79539`）。
+NO_ARTIFACT_KEPT_RUNNING = ("这一趟**已经写下了一版 py**，但它**还没跑完**（它现在是「%s」）"
+                            "—— 再往前走，这一版还会被改。")
 #: 到头了、可它一个字没说 —— 明说「它没说」，不替它编一个原因。
 NO_ARTIFACT_UNSAID_SAY = "（它没留下说明为什么的那句话 —— 这本身就不正常。）"
 #: 「没这个任务」（404）：`/job/{id}`、`/live`、`/artifact` 三处**同一句**
@@ -1279,7 +1408,7 @@ class BitWindow:
     只做两件事，都是 `POST {worker}:54345/browser/...`：
       - `set_viewport(w, h)` —— 换窗口大小（扰动自测的第 4 遍要用；`bit.sh update` 不能用，
         它是残缺包装）。**不走 `bit.sh`**：直接 POST。
-      - `alive()` —— 窗口还活着吗（`/browser/pids/alive`）。窗口只活几分钟（§4.6/P6），
+      - `alive()` —— 窗口还活着吗（`/browser/pids/alive`）。窗口会自己到点（实测 25~33 分钟，§4.6/P6），
         所以在「等人回话」之后、下一步之前值得再问一次。
 
     字段名与行为都是**量出来的**（2026-09-16 在真 worker 上量的，不是猜的）：
@@ -1355,27 +1484,95 @@ class BitWindow:
         ws = self.open()
         return ws
 
+    #: 开窗时下发的 Chromium 参数。⚠️ `--remote-debugging-port` **写死 61129**，
+    #: 手里的 `host:port`（`ws_url` 拆出来那串）全靠它才长期成立 —— 换端口等于把
+    #: 所有拿着旧地址的人一次性断开。【2026-10-13 实测】`/browser/open` 回的
+    #: `data.ws` 就是 `ws://0.0.0.0:61129/devtools/browser/<uuid>`（Bit 照下发的来）。
+    OPEN_ARGS = ("--remote-debugging-address=0.0.0.0", "--remote-debugging-port=61129",
+                 "--remote-allow-origins=*", "--disable-session-crashed-bubble")
+
+    #: 回环地址的**三种写法都要换**（★ 2026-09-28）：原先只换 `127.0.0.1`/`0.0.0.0`，
+    #: 而 Bit 回的那串有时是 `ws://[::1]:61129/…` ⇒ 原样交出去的话，谁都连不上它
+    #: （真跑撞过：`[::1]` 那串交给自测，`cdp eval` 一直连不上、白白烧掉一轮的等待）。
+    _LOOPBACK_RE = re.compile(r"(\[::1\]|localhost|127\.0\.0\.1|0\.0\.0\.0)")
+
+    def _rewrite_ws(self, ws) -> str:
+        """Bit 回的 ws → agent 能用的那串（把回环换成 worker_ip）。"""
+        return self._LOOPBACK_RE.sub(self.worker_ip, str(ws))
+
+    #: Bit 的窗口服务**会限流**：open 太密时它回
+    #: `{"success": false, "msg": "打开窗口失败，请尝试降低接口请求频率重试"}`。
+    #: ★【现场·2026-10-13】这就是「自测那一步没有窗口」的**真因**：`fresh_open()` 是
+    #: **先关、后开** —— 关成了、开被限流挡下 ⇒ 旧窗口已经没了、新窗口没起来，
+    #: 而图拿着**旧** `ws_url` 去自测（`_fresh_session` 的兜底就是「照旧跑」），
+    #: 报出来的是「窗口连不上」—— 一句**指错方向**的话（读的人去查窗口寿命 / 重开窗口，
+    #: 而真因在开窗那一下）。Bit 自己那句话就是「请重试」，所以按它说的**退避重试**。
+    #: ⚠️ **只对限流重试**：别的失败（比如 SKILL 里那条「内存使用率超出 95%」）照旧当场抛 ——
+    #: 拿重试去糊一个真错误，只是把「开不出来」拖成「开得很慢」。
+    RATE_LIMIT_MARKS = ("降低接口请求频率", "接口请求频率", "请求频率")
+    OPEN_TRIES = 3
+    OPEN_GAP_SECONDS = 6.0
+
+    @classmethod
+    def _rate_limited(cls, out) -> bool:
+        """这次开窗失败是不是**限流**（认 Bit 那句话；认不出来 = 不是，不猜）。"""
+        msg = str((out or {}).get("msg") or "") if isinstance(out, dict) else ""
+        return any(mark in msg for mark in cls.RATE_LIMIT_MARKS)
+
     def open(self) -> str:
-        """开窗口，返回 ws_url（`.data.ws`，并把回环地址换成 worker_ip —— SKILL 里写着这步）。"""
-        out = self._post("/browser/open", {
-            "id": self.bit_id,
-            "args": ["--remote-debugging-address=0.0.0.0", "--remote-debugging-port=61129",
-                     "--remote-allow-origins=*", "--disable-session-crashed-bubble"],
-            "queue": True,
-        })
+        """开窗口，返回 ws_url（`.data.ws`，并把回环地址换成 worker_ip —— SKILL 里写着这步）。
+
+        ★ 2026-10-13：被 Bit **限流**时按它自己说的**退避重试**（`OPEN_TRIES` 次）。
+        这一下直接抛的后果不是「慢一点」，是**旧窗已经关了、手上一串死地址**
+        （`fresh_open` 先关后开）—— 见 `RATE_LIMIT_MARKS` 上面那段。
+        """
+        said = ""
+        for attempt in range(self.OPEN_TRIES):
+            out = self._post("/browser/open", {"id": self.bit_id,
+                                               "args": list(self.OPEN_ARGS), "queue": True})
+            data = out.get("data") if isinstance(out, dict) else None
+            ws = (data or {}).get("ws") if isinstance(data, dict) else None
+            if isinstance(out, dict) and out.get("success") is True and ws:
+                ws = self._rewrite_ws(ws)
+                probe = self.probe()
+                if probe["alive"] is not True:
+                    raise RuntimeError("窗口开了但**探活说它不是活的**（%s）—— 不把这种窗口交出去"
+                                       "（SKILL：alive 与 close 都可能骗人，开完必须回读）" % probe)
+                return ws
+            said = str(out)[:200]
+            if not self._rate_limited(out) or attempt == self.OPEN_TRIES - 1:
+                break
+            time.sleep(self.OPEN_GAP_SECONDS)
+        raise RuntimeError("开窗口没成：%s" % said)
+
+    def current_ws(self) -> Optional[str]:
+        """这个窗口**现在**的地址；它没开着就给 `None`（**绝不**顺手开一个新的）。
+
+        为什么需要它（2026-10-13，运营反馈「窗口连不上」的那一趟）：手里的 `ws_url` 是
+        **开窗那一刻**拿到的，而它可能**过期** —— 浏览器进程换过之后，同一个
+        `bit_id` 的地址会是另一串（2026-09-24 的账里记着这一族：拿着旧号的客户端
+        全程连不上，而报出来的话是「窗口没了」/「连不上」，**指错方向**）。
+
+        两个实测出来的事实（2026-10-13，worker 192.168.1.197）：
+        1. `/browser/open` 对一个**已经开着**的窗口是**幂等**的 —— 连开两次回同一个
+           `ws`、同一个 `pid`（6564）。所以「再问一次当前地址」不需要关窗、也不会
+           多开一个窗口。
+        2. `pids/alive` 的 `data` 是空 dict 时那个窗口**不在**了 —— 这时候**不许**调
+           `/browser/open`：那会**真开一个新窗口**，而「要不要开新窗口」是图和人的
+           决定（`reopen`），不是一次重连该做的事。所以先探活，再看地址。
+        """
+        if self.probe()["alive"] is not True:
+            return None
+        try:
+            out = self._post("/browser/open", {"id": self.bit_id,
+                                               "args": list(self.OPEN_ARGS), "queue": True})
+        except RuntimeError:
+            return None
         data = out.get("data") if isinstance(out, dict) else None
         ws = (data or {}).get("ws") if isinstance(data, dict) else None
         if not (isinstance(out, dict) and out.get("success") is True and ws):
-            raise RuntimeError("开窗口没成：%s" % str(out)[:200])
-        #: ★ 2026-09-28：**回环的三种写法都要换** —— 原先只换 `127.0.0.1`/`0.0.0.0`，
-        #: 而 Bit 回的那串有时是 `ws://[::1]:61129/…` ⇒ 原样交出去的话，谁都连不上它
-        #: （真跑撞过：`[::1]` 那串交给自测，`cdp eval` 一直连不上、白白烧掉一轮的等待）。
-        ws = re.sub(r"(\[::1\]|localhost|127\.0\.0\.1|0\.0\.0\.0)", self.worker_ip, str(ws))
-        probe = self.probe()
-        if probe["alive"] is not True:
-            raise RuntimeError("窗口开了但**探活说它不是活的**（%s）—— 不把这种窗口交出去"
-                               "（SKILL：alive 与 close 都可能骗人，开完必须回读）" % probe)
-        return ws
+            return None
+        return self._rewrite_ws(ws)
 
     def close(self) -> None:
         """关窗口，并且**确认真死了**（SKILL：close 返回成功 ≠ 窗口真关了）。
@@ -1887,6 +2084,13 @@ class RunRequest(_Intake):
                           "见 `_stage_fix_source`；不给就拿 `url` 去问")
     fix_site_url: Optional[str] = Field(
         None, description="上面那个键**跟着来的那一串网址** —— 只在 `url` 还是这一串时算数")
+    #: ★★ 2026-10-14（用户：「那些 Py 没办法修复？我还得重跑？」）：**修盘上那一份**。
+    #: 上面那条「底稿从后端来」的理由是「**后端那份才是生产在跑的**」—— 而**刚生成出来、
+    #: 自测没过**的那一份**还没上生产**，后端根本没有它。于是「拿这份 py 再修一轮」在
+    #: 那条路上无门，只能重开一趟**重新探路**（真窗口 + 跑模型 + 把已有的证据丢掉重买一次）。
+    #: 给了这一格 ⇒ **不去问后端**。⚠️ 只认**交付目录里**那一份（见 `_stage_local_draft`）。
+    fix_local_py: Optional[str] = Field(
+        None, description="修**盘上这一份** py（刚生成、还没上生产的那份）—— 给了它就不问后端")
     ws_url: Optional[str] = Field(None, description="§4.6 前提层开出来的窗口（bit.sh open 吐的那串）")
     form_file: Optional[str] = Field(None, description="表单数据文件（自测用）")
     #: ★ 面板上那一格（2026-09-21）：人糊一段 JSON 就行 —— 服务把它落成一份文件，
@@ -1925,6 +2129,13 @@ class RunRequest(_Intake):
         False, description="把**窗口层那根线**接上（第 4 遍扰动要换窗口大小，`POST /browser/update`）。"
                            "尺寸由自测那一步定（`selftest.DEFAULT_VIEWPORT`）；这个部署没接窗口层时"
                            "给 true 会被拒 —— 不替你默认放过那一遍（R-5）")
+    #: ★ 2026-10-13（用户点名 compareinsulation）：「手机号不要用资料给的，就用 `0207xxxxxxx`
+    #: 格式，后几位随机」—— **这一站**要的号段（`"0207"`）。空串 = 没这个规矩
+    #: （号码按池子自带的那一串号段现编）。⚠️ 尾数照旧随机；「不许取资料里那个号」是所有站的
+    #: 口径，不靠这一格（见 `state.SiteState.phone_area_code`）。
+    phone_area_code: str = Field(
+        "", description="**这一站**的电话号段（例 `0207` = 伦敦座机，后 7 位随机）。"
+                        "空串 = 按池子现编。它只管号段，不管「取不取资料」那件事")
     # ── Task 8 加的两个（**加**字段不是改既有形状**：既有形状那条约束管的是 `/job/{id}` 的响应）──
     hints: Optional[list] = Field(
         None, description="人说过的话**播种**进这一趟的 state（`/again` 带过来的那几句，R5）。"
@@ -2467,6 +2678,11 @@ class Service:
                  country_runner: Optional[Callable] = None,
                  country_tool: Optional[str] = None,
                  country_autofill: bool = False):
+        #: ★ 2026-10-13：**此刻谁在用窗口**（`None` = 没人在用）。判据 = 「有一趟的某一步
+        #: 正在跑」（`_advance` 那一整段 —— 它是单飞的）。换窗（`fresh_open`）**先关后开**，
+        #: 而窗口全局只有一个 ⇒ 有人用着时不许换。见 `_window_in_use_by`。
+        self._window_used_by: Optional[str] = None
+        self._window_use_lock = threading.Lock()
         self._jobs: dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
         self._queue: "queue.Queue[tuple]" = queue.Queue()
@@ -2630,15 +2846,51 @@ class Service:
         为什么不图在 `run_dir`/`cdp_bin` 旁边直接写死：时间线挂在**这个 job** 上，
         没有 `job_id` 就无处可记（空字符串 = 今天那条路，不接这条线）。
         同上用 `setdefault`：显式给了 `on_run` 的调用方（测试 / 计划三的 Console）赢。
+
+        第四样（★ 2026-10-13，运营反馈「窗口连不上」的那一族）：`refresh_ws` —— 自测
+        **连不上的时候**问一句「这个窗口**现在**的地址是什么」（`BitWindow.current_ws`）。
+        为什么由服务给而不是让自测自己去问：**窗口层只有服务手上这一份**（worker/bit_id
+        是构造时定死的；自测那一层不认识 Bit），而「服务是窗口层的供给方」是既有形状
+        （与 `set_viewport` / `explore` 同一条）。⚠️ 窗口层没接（桩窗口 / 没配）⇒ 不接这条线，
+        自测回到老行为一个字不变。
         """
 
         def run_selftest(py_path, ws_url, form_file, site, **kw):
             kw.setdefault("run_dir", str(selftest.default_run_dir(site, root=self._selftest_root)))
             if job_id:
                 kw.setdefault("on_run", self._run_teller(job_id))
+            refresh = self._refresh_ws_cb()
+            if refresh is not None:
+                kw.setdefault("refresh_ws", refresh)
             return selftest.run(py_path, ws_url, form_file, site, cdp_bin=self._cdp_bin, **kw)
 
         return run_selftest
+
+    def _refresh_ws_cb(self) -> Optional[Callable]:
+        """`Deps.selftest(refresh_ws=…)`：**重读这个窗口现在的地址**（`() -> str | None`）。
+
+        为什么要这一根线（★ 2026-10-13）：手里的 `ws_url` 是**开窗那一刻**拿到的，而它可能
+        过期（浏览器进程换过之后同一个 `bit_id` 的地址是另一串）—— 那时连不上报出来的话
+        会变成「窗口没了」，**指错方向**。`current_ws()` 只在这个窗口**开着**的时候问
+        （问不出来 / 已经没了 ⇒ `None`）：它**绝不会顺手开一个新窗口** —— 开不开新窗口是
+        图和人的决定（`reopen`），不是一次重连该做的事。
+
+        ⚠️ 窗口层没接（测试的桩 / `BIT_WORKER_IP` 没配）⇒ 返回 `None` = **不接这条线**，
+        自测那一边一个字节不变（同 `set_viewport` 的取向：缺旋钮不是错，是不接）。
+        ⚠️ 问不动（窗口服务抖了）**吞掉异常**并回 `None`：这是旁路，不许带塌自测。
+        """
+        win = self._window
+        if win is None or not hasattr(win, "current_ws"):
+            return None
+
+        def refresh() -> Optional[str]:
+            try:
+                return win.current_ws()
+            except Exception:                      # noqa: BLE001 —— 外面世界，不许带塌自测
+                traceback.print_exc()
+                return None
+
+        return refresh
 
     # ── ★ 换代理国家（2026-09-22）────────────────────────────────────────
     def _country_cb(self) -> Optional[Callable]:
@@ -2900,7 +3152,11 @@ class Service:
             rounds = llm.run_tool_loop(
                 fix.STATES_SYSTEM,
                 fix.states_user(spec,
-                                diagnosis=str((diag or {}).get("say") or ""),
+                                # ★ 2026-10-10：递**整套**诊断，不是 `say` 那一句。
+                                # 只递一句时，`failed_step` / `note` / `per_run` / `现场`
+                                # 全被挡在门外 —— 而 `states_user` 那一侧本来就写着
+                                # 「诊断逐字贴」。见 `fix.diagnosis_for_prompt`。
+                                diagnosis=fix.diagnosis_for_prompt(diag),
                                 page_evidence=str(fb.get("fix_evidence") or brief_evidence),
                                 violations=fix.violations_for_prompt(fb.get("violations")),
                                 hints=list(fb.get("hints") or [])),
@@ -2931,6 +3187,12 @@ class Service:
         （**写**的那一侧），根与闸拍同一个（服务构造时定死的那个）。
         """
         ws_url = str(brief.get("ws_url") or "").strip()
+        #: ★ 2026-10-13：提交那一下**窗口被别的趟占着**时，换窗推迟到了这儿 ——
+        #: 此刻正在跑的就是这一趟（`_advance` 里登的记），换它自己的窗口是安全的。
+        #: 见 `_clean_window_for_explore` 开头那一段。
+        if brief.get(WINDOW_DEFER_CLEAN):
+            self._clean_window_for_explore(brief, job_id)
+            ws_url = str(brief.get("ws_url") or "").strip()
         if not ws_url:
             return None                       # 没人给窗口 → 用默认（图会在自测那步停下点名）
         #: 步拍落在哪（这一趟探路的 job 级目录）。**算不出来就不接** ——
@@ -3448,9 +3710,18 @@ class Service:
         加 `CAP_SAY_PREFIX`（`_note_end`）—— 一处口径，两处显示。
         """
         status = str(view.get("status") or "")
+        kept = _kept_a_version(values)
+        #: ★ 2026-10-09（闸前留料）：**「留没留料」要排在「跑没跑完」前面判**。
+        #: 从前那个顺序看不出问题 —— `_keep_unverified` 的四个出口**全是终局**
+        #: （`done` / `failed`），「没跑完」与「留了料」根本碰不到一起。
+        #: 闸前留料让 `waiting`（停在闸上等人）也能留一版 ⇒ 再按老顺序走，这一格会同时说
+        #: 「确实写下了这一版」与「还没有产物」，**自己打自己的脸**（真事 `job-cb0197a79539`，
+        #: 停在 `lint` 闸上、盘上 223354 字节那一版）。
         if status not in (DONE, FAILED):
-            return NO_ARTIFACT_YET_SAY % self._status_say(status)
-        head = NO_ARTIFACT_HEAD_DONE if status == DONE else NO_ARTIFACT_HEAD_FAILED
+            return (NO_ARTIFACT_KEPT_RUNNING % self._status_say(status)) if kept \
+                else (NO_ARTIFACT_YET_SAY % self._status_say(status))
+        head = NO_ARTIFACT_HEAD_KEPT if kept else (
+            NO_ARTIFACT_HEAD_DONE if status == DONE else NO_ARTIFACT_HEAD_FAILED)
         said = str(view.get("say") or "").strip() or NO_ARTIFACT_UNSAID_SAY
         if status == DONE and str((view.get("result") or {}).get("end_reason") or "") in CAP_END_REASONS:
             said = CAP_SAY_PREFIX + said
@@ -3469,16 +3740,30 @@ class Service:
 
         ⚠️ 判据是 `_artifact_state`（与端点**同一处**）—— 「能下」这四个字只有一个来源，
         不然就会出现「页面说能下、点下去 409」那种点了没反应的按钮。
+        ⚠️ ★ 2026-10-09（**闸前留料**）：**这一格的门不能只看「跑没跑完」。**
+        原先那一读法没错 —— `_keep_unverified` 只在**终局**发生，所以「有产物」与「跑完了」
+        一直是同一件事。闸前留料之后 `waiting`（停在闸上等人）也能有产物 ⇒ 只看 `status`
+        的话那一档**连那一步都不摆**（`console.html` 是 `artifact` 为 `null` 就不摆），
+        运营根本看不见盘上那份 —— 整条改动在页面上等于白做。
+        ⇒ 判据改成「跑完了 **或** 这一趟已经留了一版」。那一档照旧**不给下载地址**
+        （`_artifact_state` 走 `_delivered_path`，它只认 `delivered`）—— 与端点那句 409
+        同一句、同一处拼法。
         """
-        if str(view.get("status") or "") not in (DONE, FAILED):
+        if str(view.get("status") or "") not in (DONE, FAILED) and not _kept_a_version(values):
             return None
         state = self._artifact_state(view, values)
+        #: ★ 2026-10-09（闸前留料）：**「这一趟留了一版」要显式带出去。**
+        #: 页面只看得见 `url` 空不空，而「留了一版没交付」与「真的一版都没有」**两种情况
+        #: `url` 都是空** —— 不给这个记号，页面就只能靠猜，而那两档该说的话**正好相反**
+        #: （「有一版可以照样传」vs「没有 py 可传」）。猜错的那一半会对着一个**有稿的趟**
+        #: 说「没有 py 可传」，同时又把服务那句「就能拿它上传」原样摆在后面，同栏打脸。
+        kept = _kept_a_version(values)
         if not state["bytes"]:
             #: ★ 「为什么没有 py」那一句摆在**第一行**（按停因分类）—— 见 `_no_py_say`。
-            return {"url": None, "filename": None, "path": None,
+            return {"url": None, "filename": None, "path": None, "kept": kept,
                     "say": _artifact_say(values, state)}
         return {"url": ARTIFACT_URL % job_id, "filename": state["filename"],
-                "path": state["path"], "say": state["say"]}
+                "path": state["path"], "kept": kept, "say": state["say"]}
 
     # ── 两块接线信息（页面不自己编）────────────────────────────────
 
@@ -3754,7 +4039,34 @@ class Service:
             traceback.print_exc()
         self._write_baseline(job_id, end=end)
 
-    def _clean_window_for_explore(self, brief: dict) -> None:
+    # ── ★ 2026-10-13：**这一个窗口一次只归一趟用**（运营：「开新一趟没问题，但正在跑的那趟就废了」）
+    #
+    # 病：这个部署只有**一个** Bit 档案，而「换干净窗口 / 换干净会话」有三处会**先关后开**
+    # （开新一趟的 `_clean_window_for_explore`、自测前的 `_fresh_session`、`reopen`）。
+    # 关掉的是**全局那个窗口** —— 谁正在用就打死谁：实测那一趟探到第 12 步时窗口被换成
+    # pid 5232、页面被换回 Bit 自己的工作台页，第 13 步当然找不到元素，最后跑满 600 秒超时。
+    # 而「开一趟没问题」是因为开新趟那一下没人跟它抢。
+    #
+    # 处置（判据只有一条）：**有人正在用窗口时，不许别人换窗**。谁在用 = 有一趟的某一步
+    # 正在跑（`_advance` 那一整段；图的每一步都是它推的，而它是单飞的）——
+    # 开新一趟时被占着就**推迟**到这一趟自己的探路那一步（那时它才是正在跑的那一趟）。
+
+    def _window_in_use_by(self) -> Optional[str]:
+        """此刻**正在用窗口**的那一趟（`None` = 没有人在用）。"""
+        with self._window_use_lock:
+            return self._window_used_by
+
+    def _begin_window_use(self, job_id: str) -> None:
+        with self._window_use_lock:
+            self._window_used_by = str(job_id)
+
+    def _end_window_use(self, job_id: str) -> None:
+        """收工。⚠️ 只清**自己的**那一格：别人接手之后不要替它清（否则占位会凭空消失）。"""
+        with self._window_use_lock:
+            if self._window_used_by == str(job_id):
+                self._window_used_by = None
+
+    def _clean_window_for_explore(self, brief: dict, job_id: str = "") -> None:
         """**探路也要在干净会话里跑**（R-F1 的另一半，2026-09-17 裁定）。
 
         为什么：生产**每一单都是新窗口**（`clearCookiesBeforeLaunch` 只在启动那一刻生效），
@@ -3772,7 +4084,20 @@ class Service:
         `brief[WINDOW_OPEN_FAILED]`，由 `start()` **在开 job 之前**用 502 挡下来 ——
         不这么办的话，那一趟会**注定死**（探路那格现在会如实停，但人看不到外面那句原话、
         也没有可做的动作）。
+        ★ 2026-10-13：**有人正在用窗口时不许换**（见上面那一节）。`job_id` 是**这一趟自己**
+        的号 —— 探路那一步拿它再进来一次时就该换（那会儿正在跑的就是它）；
+        提交那一下不带 `job_id`（那时它还没登记）⇒ 「有人在用就一定推迟」。
         """
+        #: ★ 2026-10-13：这一趟自己的那次推迟（提交时窗口被别的趟占着）——
+        #: 进来先把它清掉：换窗**这一趟只做一次**（探路最多重探 3 趟，第二次再换一次窗
+        #: 就是把刚开好的那个关掉）。
+        brief.pop(WINDOW_DEFER_CLEAN, None)
+        busy = self._window_in_use_by()
+        if busy and busy != str(job_id or ""):
+            brief[WINDOW_DEFER_CLEAN] = busy
+            print("[siteforge] 现在有活正在用那个窗口（%s）—— 这一次的换窗"
+                  "推迟到这一趟自己的探路那一步（不关别人的窗口）" % busy)
+            return
         self._align_window_size()
         if self._window is None or not hasattr(self._window, "fresh_open"):
             return
@@ -4651,6 +4976,21 @@ class Service:
 
 
     def _advance(self, job: Job, payload) -> None:
+        """把图往前推一步，并**在整段里登记「这个窗口现在归这一趟用」**（★ 2026-10-13）。
+
+        为什么这一层：`fresh_open()` 是**先关后开**，而窗口全局只有一个 ——
+        别人在这段时间里换窗就是把这一趟的窗口关掉（实测：正在跑的自测被换成 Bit 的工作台页，
+        那一步全找不到、最后跑满 600 秒超时）。占位只在这一段里成立：
+        图每一步都由这里推，而它是**单飞**的（一个工作线程）。
+        ⚠️ `finally` 必须收：不收 = 从此谁都不许换窗（比原来的病更难查）。
+        """
+        self._begin_window_use(job.job_id)
+        try:
+            self._advance_step(job, payload)
+        finally:
+            self._end_window_use(job.job_id)
+
+    def _advance_step(self, job: Job, payload) -> None:
         """把图往前推一步 —— **这是唯一一个 job 会动的地方**（单飞）。
 
         抛出来的东西一律变成 `failed`：一个跑挂的 job **绝不许**被读成跑成了
@@ -4820,7 +5160,7 @@ class Service:
             return None
         keep = ("url", "goal", "mode", "success_text", "success_urls", "evidence", "site",
                 "ws_url", "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url",
-                "fingerprint")
+                "phone_area_code", "fingerprint")
         brief = {k: values[k] for k in keep if values.get(k) is not None}
         brief["set_viewport"] = bool(self._window is not None
                                      and hasattr(self._window, "set_viewport"))
@@ -5999,6 +6339,36 @@ class Service:
         return problems
 
     # ── 三个动作 ──────────────────────────────────────────────────
+    def _stage_local_draft(self, local: str, out_dir: str) -> str:
+        """盘上那份 py（`fix_local_py`）→ 底稿路径。**两种拿不到都在这儿抛**。
+
+        与后端那条**同一条纪律**（见 `_stage_fix_source` 那段）：底稿拿不到却放它过去
+        ⇒ `fix_py` 空着 ⇒ 图走**非修站**那一支 ⇒ **悄悄退化成从头重新探索**
+        （开真窗口、跑模型、把已有的证据丢掉重买一次）—— 而它在日志上与修站**长得一样**。
+
+        ⚠️ **只认交付目录里那一份**：这个口挂在网络上，不许变成「读任意文件」。
+        相对路径按交付目录解（省得调用方自己拼绝对路径拼错）。
+        """
+        root = pathlib.Path(out_dir).resolve()
+        p = pathlib.Path(local)
+        if not p.is_absolute():
+            p = root / p
+        try:
+            real = p.resolve()
+            real.relative_to(root)
+        except (OSError, ValueError):
+            raise HTTPException(status_code=400, detail=(
+                "修不了这一份：`fix_local_py` 指的路径**不在交付目录里**（%s）。"
+                "这个口只认这个目录里那一份 —— 别的路径一律不读。你给的是：%s"
+                % (root, local)))
+        if not real.is_file():
+            raise HTTPException(status_code=400, detail=(
+                "修不了这一份：**盘上没有这个文件**（%s）。"
+                "⚠️ 这一条挡的是「路径写错了却悄悄退化成**重新探索**」——"
+                "那一路会开真窗口、跑模型、把已有的证据丢掉重买一次，"
+                "而它在日志上与修站**长得一样**。" % real))
+        return str(real)
+
     def _stage_fix_source(self, body: "RunRequest", brief: dict) -> Optional[str]:
         """修站那条路的**底稿**：把后端那份 py 落成一个文件，返回它的路径。
 
@@ -6038,6 +6408,12 @@ class Service:
         """
         if str(getattr(body, "mode", "") or "") != MODE_FIX:
             return None
+        #: ★★ 2026-10-14：**修盘上那一份** —— 见 `RunRequest.fix_local_py` 那段。
+        #: 摆在最前：给了它，下面那条「切国家 / 问后端 / 判 type」**一条都不走**
+        #: （后端那份根本不存在，问它只会得到一个 404，而那个 404 会把一件好事读成坏事）。
+        local = str(getattr(body, "fix_local_py", "") or "").strip()
+        if local:
+            return self._stage_local_draft(local, str(brief.get("out_dir") or self._out_dir))
         #: ★ T3（2026-09-24）：**开修之前先切到那一单的国家**（核到了才开 job）——
         #: 排在这儿的道理与下面那几条同一条：判在**服务这一层**、判在**一个 job 都没开**的时候。
         self._fix_country_gate(body)
@@ -6216,20 +6592,6 @@ class Service:
         return SUBMITTED_SAY
 
     @staticmethod
-    def _took_success_say(taken: str) -> str:
-        """「这两格你没填，服务按底稿自己那一条走」那句（空串 = 没有这回事）。
-
-        ★ 2026-09-24（用户点名「没说就按之前那个脚本来」）：搬了就得**说出来** ——
-        不说的话，运营以为判据是**自己**填的那条，而它其实是**老脚本**那条；
-        两条不一样时，屏幕上**没有任何地方**看得出来。
-        """
-        if not taken:
-            return ""
-        return ("\n「什么算成功」这一趟**你没填** —— 服务按**这一趟的底稿**（后端那份 py）里"
-                "老脚本自己声明的那一条走：%s。⚠️ 要换成别的，就在下一次发起之前填上那两格；"
-                "这一趟已经按它判了。" % taken)
-
-    @staticmethod
     def _took_country_say(code: str) -> str:
         """「这一趟你没说国家，服务按**现在这条出口链**实测到的那一国填了」那句。
 
@@ -6244,6 +6606,20 @@ class Service:
                 "换链、再开一趟。" % code)
 
     @staticmethod
+    def _took_success_say(taken: str) -> str:
+        """「这两格你没填，服务按底稿自己那一条走」那句（空串 = 没有这回事）。
+
+        ★ 2026-09-24（用户点名「没说就按之前那个脚本来」）：搬了就得**说出来** ——
+        不说的话，运营以为判据是**自己**填的那条，而它其实是**老脚本**那条；
+        两条不一样时，屏幕上**没有任何地方**看得出来。
+        """
+        if not taken:
+            return ""
+        return ("\n「什么算成功」这一趟**你没填** —— 服务按**这一趟的底稿**（后端那份 py）里"
+                "老脚本自己声明的那一条走：%s。⚠️ 要换成别的，就在下一次发起之前填上那两格；"
+                "这一趟已经按它判了。" % taken)
+
+    @staticmethod
     def _payload(brief: dict) -> dict:
         """开场白 → 图认得的那几个键（服务这一层的开关，比如 `set_viewport`，不往里塞）。
 
@@ -6252,8 +6628,8 @@ class Service:
         """
         keep = ("url", "goal", "mode", "success_text", "success_urls", "evidence", "site",
                 "ws_url", "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url",
+                "phone_area_code",
                 "hints",
-                #: ★ B 线 py 支（2026-09-21）：修站那条路的**底稿路径**。
                 #: ⚠️ 少了它，服务算出来、也落了盘，却**发不到图里** ——
                 #: `graph.py:346` 那个 `if fix_py:` 恒为假，那条路「接上了但不响」
                 #: （`state.py:176` 记的正是上一次这么栽的）。
@@ -6282,7 +6658,7 @@ class Service:
                                 "跑到头了就另起一个任务；要它接着走，先看 `say` 里说了什么。"
                                 % self._status_say(view["status"]))
 
-        # P6：窗口只活几分钟，而人可能过了十分钟才回话。先问一句窗口还在不在 ——
+        # P6：窗口会自己到点（实测 25~33 分钟），而人可能过了十分钟才回话。先问一句它还在不在 ——
         # 不先问的后果是自测拿着一个死窗口跑，报告把「连不上」记成**产物的问题**。
         values = dict((self._snapshot(job_id).values or {}))
         dead = self._window_is_gone(values.get("ws_url"))
@@ -6298,7 +6674,8 @@ class Service:
         # **一步在没人看着的情况下跑掉了**（§6.2/D16 的核心承诺）。
         with job.lock:
             job.status = RUNNING
-            job.say = "收到你的话，接着跑（下一个要你拿主意的地方会再停下来）。"
+            # ⚠️ `view` 是上面**改状态之前**读的那一份（它的 `gate.step` = 刚放行的那一步）。
+            job.say = _reply_accepted_say(view)
         # 送这一句会怎么改变队里那些话（**先算、不改**）：送出去的 + 不再摆给他的。
         # 算在这一步，是因为下面那条时间线要把「那一句不再摆给他了」一起说出来
         # （同一件事的两半，并进他**这一条**气泡里）。
@@ -6815,6 +7192,12 @@ class Service:
             raise HTTPException(status_code=409, detail=self._cannot_reopen_say(job_id, view))
         ws_url = str(body.ws_url or "").strip()
         if not ws_url:
+            #: ★ 2026-10-13：**别人正用着那一个窗口**时不许自己开 —— 换窗是先关后开，
+            #: 那一下会把正在跑的那一趟打死（实测：它随后全找不到元素、跑满 600 秒超时）。
+            #: 自己带一串 `ws_url` 来的人不受这条管（他不关别人的窗）。
+            busy = self._window_in_use_by()
+            if busy and busy != job_id:
+                raise HTTPException(status_code=409, detail=REOPEN_WINDOW_BUSY_SAY % busy)
             if self._window is None or not hasattr(self._window, "fresh_open"):
                 raise HTTPException(status_code=400, detail=REOPEN_NO_WINDOW_LAYER_SAY)
             try:

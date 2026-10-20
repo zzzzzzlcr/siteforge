@@ -654,6 +654,8 @@ def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
     | 人在它探路跑着的时候插了一句话，那句话进了它的下一轮 | `steer_landed`（Task 9 加的，⑪） |
     | 人插的那句话**没送到**（这一趟到头了） | `steer_missed`（Task 9 回归 1 加的，⑫） |
     | 人按了「关掉这个窗口」（它停在闸上） | `window_closed`（Task 12 加的，⑬） |
+    | 自动那条路到闸替人按「继续」 | `auto_replied`（Task 1 加的，⑭） |
+    | 自动那条路停在**同一个地方**第二遍 | `auto_stuck`（Task 2 加的，⑮） |
 
     **要盯住的名字是「从调用点长出来的」**（`_kinds_the_service_narrates` AST 扫
     `agent/service.py`），不是手抄的：复审 2026-09-18 实测，手抄的名单对「按规矩加一个
@@ -817,6 +819,17 @@ def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
     assert closed.json()["state"] == "dead", closed.json()
     seen |= set(_kinds(c13, j13))
 
+    # ⑭ / ⑮ 自动那条路的两句话 —— `auto_replied`（Task 1 加的）与 `auto_stuck`（Task 2 加的）。
+    #     同一个道理（⑧⑨⑩⑪⑫⑬）：它们也是**从调用点长出来的词**，只有一条走真链的场景逼得出来。
+    #     ⚠️ 本体写在 `tests/test_service_auto.py`，这里**借它** —— 借，不抄第二份
+    #     （⑪⑫ 借 `test_steer` 时立的规矩：抄第二份就是两份口径）。
+    #     ⚠️ **2026-10-08 补的**：在这之前 `auto_stuck` 全仓**一个用例都没有** —— 这条并集判据
+    #     一直红着，而它**红得对**：代码有调用点、缺口在用例上（不是该把词删掉）。
+    from test_service_auto import (  # noqa: PLC0415
+        auto_replied_over_the_real_chain, auto_stuck_over_the_real_chain)
+    seen |= auto_replied_over_the_real_chain(tmp_path)
+    seen |= auto_stuck_over_the_real_chain(tmp_path)
+
     # ── 机械断言（三条，名字都从调用点推出来）──────────────────────
     derived = _kinds_the_service_narrates()
     assert set(events.KINDS) - derived == set(), (
@@ -977,7 +990,11 @@ def test_a_dead_window_is_narrated_once_and_names_the_step_it_stopped_before(tmp
     svc._advance(job, None)
     died = [e for e in job.timeline.all() if e["kind"] == "window_died"]
     assert len(died) == 1, died
-    assert "窗口没了" in died[0]["say"] and "Bit 的窗口只活几分钟" in died[0]["say"]
+    #: ⚠️ 这句话里**不许**再写「Bit 的窗口只活几分钟」：那是**错的**（实测 25~33 分钟，
+    #: `skills/bit-window/SKILL.md` 自己写着「早先写的『只活几分钟』是错的，已改」）——
+    #: 一句错的原因会把读账的人带去重开窗口，而那多半不是那一件事（2026-10-13 的账）。
+    assert "窗口没了" in died[0]["say"] and "它已经不在" in died[0]["say"]
+    assert "只活几分钟" not in died[0]["say"], died[0]["say"]
     assert "写这一版 py" in died[0]["say"], "停在**哪一步**之前要说出来：%r" % died[0]["say"]
     assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", died[0]["at"]), died[0]["at"]
     assert died[0]["data"]["where"] == "draft", died[0]["data"]

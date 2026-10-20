@@ -25,6 +25,7 @@ from __future__ import annotations
 import ast
 import copy
 import importlib.util
+import json
 import pathlib
 import sys
 import time
@@ -622,6 +623,55 @@ def test_a_selftest_failure_goes_through_diagnose_and_carries_the_failed_step(tm
     assert "delay" not in diag["say"] and "failed_step" not in diag["say"], diag["say"]
 
 
+def test_the_diagnosis_carries_the_scene_of_the_step_that_failed(tmp_path):
+    """★ 2026-10-10（`job-d037348fba4d` / `job-bbc57727025c`）：诊断里要带**那一行的现场**。
+
+    在这之前，`_diagnosis` 给下游的是**结论**（哪遍挂了、卡在第几步、一句为什么），
+    而找到病根要的是**那一行本身**：这一步真用的是哪个选择器、页面当时写着什么、
+    那一步往前推了没有 —— 它们全在 trace 里，谁都没搬过。
+
+    为什么非要有它（两趟真账本量出来的）：改稿那双手只看得见「卡在第 N 步」时，
+    它只会去改「找元素」那一层；而真相是**用的那条选择器指到了另一个元素**
+    （d037：邮件填进了页脚的订阅框，弹窗那格是空的）。
+    """
+    trace = tmp_path / "delay.trace.jsonl"
+    trace.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in [
+        {"step": 5, "action": "click", "ok": True, "selector_used": "#step5", "note": "点了"},
+        {"step": 6, "action": "form", "target": "E-mail", "ok": True,
+         "selector_used": "#input-sections--1__footer--contactemail",
+         "progress": False,
+         "page_sig_tail": "…Please try again. ⚠️ Verify EN",
+         "note": "填好了「E-mail」"},
+    ]) + "\n", encoding="utf-8")
+    run = selftest.Run(name="delay", label="第 3 遍", status="failed", ok=False,
+                       failed_step=6, trace_path=str(trace), note="卡在第 6 步：页面没动")
+    report = selftest.Report(runs=(run,), passed=False, allowed_skips=("country",),
+                             cdp_bin=None, site=SITE, py_path="/tmp/%s.py" % SITE)
+
+    diag = graph._diagnosis(report)
+    assert diag["failed_step"] == 6, diag
+    scene = diag["现场"]
+    assert scene and scene["哪一步"] == 6, diag
+    #: 这一格就是病根 —— 「它真用的是哪条」必须原样摆出来，不许概括成「找元素失败」。
+    assert scene["实际用的选择器"] == "#input-sections--1__footer--contactemail", scene
+    assert "Please try again" in scene["当时页面上这段字（末尾 240 字）"], scene
+
+
+def test_a_diagnosis_with_no_readable_trace_still_has_the_scene_key(tmp_path):
+    """**负控**：读不到 trace ⇒ `现场` 是 `None`，而**键在**（形状稳定）。
+
+    键时有时无的话，下游（闸口 facts / 提示词 / 用例）就得**猜**它在不在；
+    而「这一遍没有现场」本来就是一件要说出来的事，不是省一格的理由。
+    """
+    deps, rec = _deps(reports=[_fail_report(failed_step=6), _pass_report()])
+    app, cfg, _ = _build(deps=deps)
+    _drive(app, cfg, _brief(tmp_path))
+    fb = rec.write[1]["feedback"]
+    assert "现场" in fb["diagnosis"], fb["diagnosis"]
+    #: `_fail_report` 那条 run 的 `trace_path` 指向一个**不存在**的文件 ⇒ 现场读不到。
+    assert fb["diagnosis"]["现场"] is None, fb["diagnosis"]
+
+
 def test_the_gate_facts_report_how_many_times_this_round_submitted(tmp_path):
     """**R-84：闸口的 facts 必须报出「这一轮往站方提交了几次」。**
 
@@ -667,8 +717,18 @@ def test_a_run_nobody_allowed_to_skip_is_handed_over_as_not_run(tmp_path):
 
 
 def test_selftest_that_never_passes_stops_at_the_cap_instead_of_spinning(tmp_path):
-    """自测永远不过：diagnose 也有上限，到顶就停（不是无限修下去）。"""
-    deps, rec = _deps(reports=[_fail_report()],         # 每一遍都挂同一处
+    """自测永远不过：diagnose 也有上限，到顶就停（不是无限修下去）。
+
+    ⚠️ 这一条喂的是**每次都不一样**的失败（第 6 / 7 / 8 步，三句不同的话）——
+    因为 ★ 2026-10-13 起「**同一处、同一句话连着两次**」会**更早**停下
+    （`repair_stuck`，见 `test_the_same_failure_twice_stops_instead_of_rewriting_again`）。
+    上限这一档仍然要在：它管的是「每版都换一处、可就是过不了」那种。
+    """
+    deps, rec = _deps(reports=[_fail_report(failed_step=6),
+                               _fail_report(failed_step=7,
+                                            note="卡在第 7 步：点了「Continue」之后页面没动"),
+                               _fail_report(failed_step=8,
+                                            note="卡在第 8 步：页面上没找到「Submit」")],
                       write=_change_one_thing_where_it_was_told)
     app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_diagnoses=2))
     payloads, out = _drive(app, cfg, _brief(tmp_path))
@@ -687,6 +747,141 @@ def test_selftest_that_never_passes_stops_at_the_cap_instead_of_spinning(tmp_pat
     assert out.get("unverified") and "自测" in out["unverified"][0], out.get("unverified")
     assert "自测" in out["end_note"] or "扰动" in out["end_note"]
 
+
+def test_the_same_failure_twice_stops_instead_of_rewriting_again(tmp_path):
+    """★ 2026-10-13（用户裁定「都收吧」）：**同一处、同一句话连着两次 ⇒ 停，不再回 draft**。
+
+    真事 `job-c02d5768e535`（compareinsulation）：自测两次都卡在
+    「第 2 步：页面上没找到「Accept All Cookies」，这一步没做成；页面没有变化」，
+    两条诊断**逐字相同**，图照样回去写第三版 —— 而那一族（弹层/时序）缺的是**能力**，
+    不是数据，第三版必撞同一堵墙，最后只能人喊停。这一条钉住「不收敛即停」：
+      · `end_reason == repair_stuck`，`diagnoses == 2`（第二次就停，不烧到上限）；
+      · 自测只跑**两遍**（第三遍本来就没必要）；
+      · 停下时那句话里点名**族**（这里是「弹层」）并给出路（重探 / 给人一句话）；
+      · 这一版照旧留在盘上等人拿（触顶那一档的既有口径不变）。
+    """
+    same = "卡在第 2 步：页面上没找到「Accept All Cookies」，这一步没做成；页面没有变化"
+    deps, rec = _deps(reports=[_fail_report(failed_step=2, note=same)],
+                      write=_change_one_thing_where_it_was_told)
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_diagnoses=4))
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "repair_stuck", (out.get("end_reason"), out.get("end_note"))
+    assert out["diagnosis"]["family"] == "overlay", out["diagnosis"]
+    assert [p["step"] for p in payloads].count("diagnose") == 2, [p["step"] for p in payloads]
+    assert len(rec.selftest) == 2, "同一堵墙只该撞两次：首版 + 一次修"
+    assert "同一处连着两次" in out["end_note"] and "弹层" in out["end_note"], out["end_note"]
+    assert (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).exists(), "这一版照旧留给人拿"
+
+
+# ── ★ 2026-10-14：那道闸的**指纹**换成了「抱怨点名了哪个元素」 ────────────────
+#
+# 第一版指纹是 `"<第几步>|<那句话>"`。上真数据一量，两样**都会变**，于是闸几乎不触发
+# （10-14 之前的趟跑的还是没这道闸的代码，对不了账；10-14 重启后有 3 趟样本，
+# 其中 `job-cf1d84521a09` 就是活的反例：第 1 轮 `0|…`、第 2 轮 `100|…` ⇒ 认成两处 ⇒
+# 回 draft 改稿，可它的病是「我们自己没记下来」，改稿治不了）。
+
+
+def test_the_failure_identity_ignores_the_step_number():
+    """身份里**不许有步号** —— 它是跨轮最不稳的那一格（修完重写整份 py 就重编号）。
+
+    真事四个：`job-cedaca6eaa52` 4→3、`job-d40bb4d2d2be` 19→16、
+    `job-c053e0b049f3` 9→60、`job-cf1d84521a09` 0→100。
+    """
+    ident = graph.failure_identity
+    assert ident({"note": "卡在第 4 步：滚不动「Buy now」；页面没有变化"}) == \
+           ident({"note": "卡在第 3 步：滚不动「Buy now」；页面没有变化"})
+
+
+def test_a_report_with_no_named_element_falls_back_to_the_words_without_the_step():
+    """没点名（记账类抱怨）⇒ 退回**抹掉步号后的正文**；没话说 ⇒ 空串 = 量不到。"""
+    ident = graph.failure_identity
+    assert ident({"note": "卡在第 9 步：trace 里那一步没写为什么"}) == \
+           ident({"note": "卡在第 60 步：trace 里那一步没写为什么"})
+    assert ident({"note": ""}) == "", "没话说 = 量不到，**不许**编一个身份出来"
+
+
+def test_the_same_wall_is_recognized_when_the_wording_changed(tmp_path):
+    """**点名的是同一个元素、只是说法前后缀不同** ⇒ 仍是同一堵墙，停。
+
+    真事 `job-c02d5768e535`（compareinsulation）两轮的原文逐字：
+      ① 「退出码说成功，但 trace 里第 2 步（**承重步** click）没做成
+          （页面上没找到「Accept All Cookies」，这一步没做成；页面没有变化）—— 按没做成算」
+      ② 「卡在第 2 步：页面上没找到「Accept All Cookies」，这一步没做成；页面没有变化」
+    第一版拿整句当指纹 ⇒ 认成两处 ⇒ 回去写了第三版（撞同一堵墙）。
+    """
+    deps, rec = _deps(reports=[
+        _fail_report(failed_step=2,
+                     note="退出码说成功，但 trace 里第 2 步（**承重步** click）没做成"
+                          "（页面上没找到「Accept All Cookies」，这一步没做成；页面没有变化）—— 按没做成算"),
+        _fail_report(failed_step=2,
+                     note="卡在第 2 步：页面上没找到「Accept All Cookies」，这一步没做成；页面没有变化")],
+        write=_change_one_thing_where_it_was_told)
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_diagnoses=4))
+    payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "repair_stuck", (out.get("end_reason"), out.get("end_note"))
+    assert [p["step"] for p in payloads].count("diagnose") == 2, [p["step"] for p in payloads]
+    assert len(rec.selftest) == 2, "同一堵墙只该撞两次（首版 + 一次修）"
+
+
+def test_the_same_wall_is_recognized_when_the_step_number_moved(tmp_path):
+    """**步号往回走也算同一堵墙** —— 重编号不是进展。
+
+    真事 `job-cedaca6eaa52`：第 4 步「滚不动「Buy now」」→ 第 3 步「没找到「Buy now」」。
+    """
+    deps, rec = _deps(reports=[
+        _fail_report(failed_step=4, note="卡在第 4 步：滚不动「Buy now」；页面没有变化"),
+        _fail_report(failed_step=3, note="卡在第 3 步：页面上没找到「Buy now」，这一步没做成；页面没有变化")],
+        write=_change_one_thing_where_it_was_told)
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_diagnoses=4))
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "repair_stuck", (out.get("end_reason"), out.get("end_note"))
+    assert len(rec.selftest) == 2, "步号漂了也是同一堵墙 —— 两遍就该停，不许烧到第三遍"
+
+
+def test_a_report_with_no_step_number_still_recognizes_the_same_wall(tmp_path):
+    """`failed_step=None`（「每一步都做成了，但没走到成功」）那一档**也要能判同一堵墙**。
+
+    ⚠️ 第一版写成 `"%s|%s" % (step, note) if step is not None else ""` —— 步号缺失时
+    指纹**恒为空串** ⇒ `same` 恒 False ⇒ **这一族永远判不到同一堵墙**。
+    真事 `job-5d7c20fbfe14`（fleet-solutions）：两轮一字不差，照样烧到人喊停。
+    """
+    wall = "每一步都做成了，但页面上一直没出现成功文案（退出码 1）—— 不是卡在哪一步，是没走到成功"
+    deps, rec = _deps(reports=[_fail_report(failed_step=None, note=wall)],
+                      write=_change_one_thing_where_it_was_told)
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_diagnoses=4))
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "repair_stuck", (out.get("end_reason"), out.get("end_note"))
+
+
+def test_a_round_that_moves_to_a_different_element_keeps_rewriting(tmp_path):
+    """**负控**：点名换了个元素 ⇒ 那不是同一堵墙 ⇒ 照旧改稿（别把「推进」误停）。
+
+    这一条是给上一组当反例的：如果指纹松到「什么听起来都像同一处」，它就红了。
+    """
+    deps, rec = _deps(reports=[
+        _fail_report(failed_step=5, note="卡在第 5 步：没找到「Email」这个输入框"),
+        _fail_report(failed_step=9, note="卡在第 9 步：没找到「Phone number」这个输入框"),
+        _pass_report()],
+        write=_change_one_thing_where_it_was_told)
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_diagnoses=4))
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] != "repair_stuck", out.get("end_note")
+    assert len(rec.write) >= 2, "换了元素 ⇒ 该继续改稿，不该停在第一次"
+
+
+def test_the_failure_family_is_read_from_the_report_not_invented():
+    """族的判据**只吃报告里现成的字**（说不清 ⇒ `unknown`，不编一个族出来）。"""
+    fam = graph._failure_family
+    assert fam({"note": "页面上没找到「Accept All Cookies」"}) == "overlay"
+    assert fam({"note": "窗口连不上"}) == "precondition"
+    assert fam({"note": "这一遍没跑完就超时了（>600 秒）—— 卡在第 7 步；没找到"}) == "timing"
+    assert fam({"note": "页面上没找到「Continue」，这一步没做成"}) == "selector"
+    assert fam({"note": "说不清的一句"}) == "unknown"
 
 # ── ★ 2026-10-16：**「一处都没改」的稿不是修**（空转那一刀）────────────────────
 #
@@ -1153,7 +1348,7 @@ def test_a_required_field_the_ledger_filled_is_restored_instead_of_blocking_the_
 def test_a_self_test_that_could_not_reach_the_window_is_not_a_product_failure(tmp_path):
     """★ 2026-09-30（用户问「那为啥不导航呢」）：**自测没跑成 ≠ 自测跑不过**。
 
-    窗口连不上（Bit 窗口只活几分钟，探路 + lint 走完它常常就没了）时，这一趟该落在
+    窗口连不上（窗口会自己到点 —— 实测 25~33 分钟，探路 + lint 走完常常就撞上）时，这一趟该落在
     **窗口那一档**（`no_window`）——那一档在服务侧允许「**重开一个窗口，接着走**」
     （`service.WINDOW_END_REASONS["selftest"]`），探路的账本还在，不用重来。
     改前它落在 `diagnose`（“自测没过…回 draft 改一版”）⇒ 人被逼着「重新来一遍」，
@@ -2479,10 +2674,12 @@ def test_a_multi_page_site_keeps_the_fixed_step_table(tmp_path):
 
 
 def test_a_funnel_without_a_url_criterion_stays_a_fixed_table_and_says_why(tmp_path):
-    """★ 循环型那一族**只看网址** ⇒ 人没给网址判据时**不许硬切**（切了就是 `draft_failed`）。
+    """★ 循环型那一族**只看网址** ⇒ 网址判据**一个都没有**时**不许硬切**（切了就是 `draft_failed`）。
 
-    钉的是**回退的方向**：判据不够 ⇒ 照旧固定步骤表（它至少能靠正文判），
-    而且「为什么」要在 `shape_why` 里看得见 —— 看不见的话下一个人只会以为判据没生效。
+    ★ 2026-10-13 补：这一格的判据现在有**两个来源** —— 人给的、或**账本里量到的**（探路那趟
+    真走到了成功页，见 `graph._success_urls_from_journey`）。这一条用的是**两个都没有**的那侧：
+    判据不够 ⇒ 照旧固定步骤表（它至少能靠正文判），而且「为什么」要在 `shape_why` 里看得见 ——
+    看不见的话下一个人只会以为判据没生效。
     """
     deps, _rec = _deps(journey=_funnel_journey())
     app, cfg, _ = _build(deps=deps)
@@ -2643,6 +2840,487 @@ def test_the_final_lint_sentence_does_not_claim_nothing_was_written_when_it_was(
         assert claim not in said, (
             "这一版真落了盘，给人看的那句话却写着「%s」—— 运营读到就不会去勾「照样传」：\n%s"
             % (claim, said))
+
+
+# ───────── 停在闸上等人的那一版，也要留在运营拿得到的地方 ─────────
+#
+# ★ 2026-10-08（用户：「**尽量让运营能直接出 py 脚本并上传，有问题我们这边再修**」）的
+# 延长线：`_keep_unverified` 已经给四个**终局**出口开了口子（lint 触顶 / 自测触顶 /
+# IR 硬拦 / 交付前没过检查）。**没开的那个口子恰恰是量最大的一个**：图**停在闸上等人回话**。
+#
+# 真事（8099，`runtime/checkpoints.sqlite` 里 80 趟图运行量的）：
+#   · 25 趟「未结束」（没有 `end_reason`）= 31%，其中 **17 趟 `src` 里有完整的一版稿**
+#     （11 万～16 万字符）、`py_path` 空、`unverified` 空 —— 运营那边显示「什么都没有」。
+#   · `visits` 一律停在 `selftest`（13 趟）或 `draft` / `lint`（4 趟）。
+#     停在 `selftest` 是因为下一个节点 `diagnose` 的**第一行就是 `_enter` → `interrupt()`**
+#     —— 节点还没跑完，所以 `diagnose` 进不了 `visits`。**图停在 `diagnose` 开头的闸上等人。**
+#   · `job-b9f0c6a74cbd` / `job-9c5b17be2629` / `job-cfefcd7a3aef` 就是 auto.py 注释里
+#     点名的那三趟：「src 里有稿、unverified 是空的，运营看到的是『什么都没有』」。
+#
+# ⚠️ **挂点必须落在「节点的返回值」上，不能落在 `interrupt()` 之前。**
+# （实验钉过：节点函数在 `interrupt()` 之前写进局部变量的东西，resume 之后**一个字节都不进
+# state** —— `interrupt()` 抛异常、节点从头重跑，只有 `return` 出去的值被 checkpoint 收下。
+# 副作用写盘能留下、**state 更新留不下**。）而这一档要治的正是「人永远不回话」，
+# 那时节点从没跑完 ⇒ 写在闸前的 `py_path` / `unverified` 永远传不出去，
+# 盘上有文件、面板照旧说「没有可交付的产物」—— 等于没改。
+# 所以留料挂在**产出/持有那一版的节点返回时**（`_draft` / `_selftest`），
+# 那是「下一个闸之前」的同一条时间线上的同一个时刻，但**是持久的**。
+
+
+def _park_at(app, cfg, initial, step, limit=40):
+    """一路把人该说的都说了，**第一次**开到 `step` 这道闸上就住手 —— 也就是「人没回话」。
+
+    与 `_drive` 的唯一差别：`_drive` 会替人回「继续」直到图自己结束；这里到闸就停，
+    交给调用方去读**停住那一刻**的 state 与盘面。
+    """
+    out = app.invoke(initial, cfg)
+    for _ in range(limit):
+        assert out.get("__interrupt__"), "图没停在闸上就结束了（这条路不该走到 END）"
+        if out["__interrupt__"][0].value["step"] == step:
+            return out
+        out = app.invoke(Command(resume="continue"), cfg)
+    raise AssertionError("连着 %d 次都没开到「%s」那道闸" % (limit, step))
+
+
+def test_a_run_parked_at_the_diagnose_gate_leaves_the_version_on_the_delivery_path(tmp_path):
+    """★ 图停在 `diagnose` 闸上等人回话 —— 那一版**此刻**就该在运营拿得到的地方。
+
+    复现的是 8099 上那 13 趟的死法（自测没过 → 路由到 `diagnose` → 节点第一行过闸 →
+    停住 → 人没回来）。今天盘上只有 `<site>.candidate.py`（`_stage_candidate` 写的候选），
+    而运营拿的是 `<out_dir>/<site>.py` 那一条路径 —— 且 `py_path` 是 `None`，
+    所以面板说「没有可交付的产物」。稿子明明在手上。
+    """
+    deps, _rec = _deps(reports=[_fail_report()])
+    app, cfg, _ = _build(deps=deps)
+
+    out = _park_at(app, cfg, _brief(tmp_path), "diagnose")
+
+    assert str(out.get("src") or "").strip(), "前提不成立：这一刻手上没有稿"
+    landed = pathlib.Path(str(out.get("py_path") or ""))
+    want = pathlib.Path(_brief(tmp_path)["out_dir"]) / ("%s.py" % SITE)
+    assert landed == want, (
+        "停在闸上那一刻，这一版没落在运营拿的那条路径上：py_path=%r，应该是 %s"
+        % (out.get("py_path"), want))
+    assert landed.is_file(), "落了名字但盘上没有这个文件：%s" % landed
+    assert landed.read_text(encoding="utf-8") == out["src"], (
+        "盘上那份和记录里的那一版不是同一串字节 —— 运营拿到的会是别的东西")
+    assert out.get("unverified"), (
+        "落了却没在记录里说清它为什么还不算交付：面板会把它当成验过的")
+
+
+def test_a_run_parked_before_the_first_gate_leaves_nothing_because_there_is_no_version_yet(
+        tmp_path):
+    """手上连一版都没有时，**盘上一个字节都不该多** —— 留料不是「每个闸都写个文件」。
+
+    `_keep_unverified` 自己那条规矩：`text` 空 ⇒ 照旧什么也不留。
+    停在 `explore` 闸上就是这一档（图还没探路，`src` 是空的）。
+    """
+    deps, _rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+
+    out = _park_at(app, cfg, _brief(tmp_path), "explore")
+
+    assert not str(out.get("src") or "").strip(), "前提不成立：这一刻不该有稿"
+    assert not out.get("py_path"), "手上没稿却写了个 py_path：%r" % (out.get("py_path"),)
+    outdir = pathlib.Path(_brief(tmp_path)["out_dir"])
+    left = sorted(p.name for p in outdir.glob("*.py")) if outdir.exists() else []
+    assert not left, "手上没稿，交付目录里却多了：%r" % (left,)
+
+
+def test_saying_stop_at_a_parked_gate_takes_the_version_back_off_the_disk(tmp_path):
+    """人喊停 ⇒ **「页面与文件都保持原样」这句话得是真的**。
+
+    `_enter` 的 STOP 那一支一直承诺这句（`_drop_candidate` 就是为它写的）。
+    可留料一旦提前到闸上，盘上**已经有一份了** —— 那一支必须把它收回去，
+    否则承诺当场变成假话，而且比原先更严重（原先只是候选文件，现在是交付路径上那份）。
+    """
+    deps, _rec = _deps(reports=[_fail_report()])
+    app, cfg, _ = _build(deps=deps)
+
+    out = _park_at(app, cfg, _brief(tmp_path), "diagnose")
+    kept = pathlib.Path(str(out.get("py_path") or ""))
+    assert kept.is_file(), "前提不成立：闸上那一刻它本该在盘上（上一条用例钉着）"
+
+    out = app.invoke(Command(resume=graph.STOP), cfg)
+
+    assert out["end_reason"] == "human_stop", out.get("end_note")
+    assert not kept.exists(), (
+        "人喊停了，交付路径上却还留着这一版：%s —— 而那句承诺说的是「页面与文件都保持原样」"
+        % kept)
+
+
+def test_a_delivery_after_a_parked_attempt_clears_the_unverified_note(tmp_path):
+    """停过闸、后来又真交付了 ⇒ 记录里**不许**还挂着「没验过」。
+
+    留料点从「终局」挪到「闸上」之后，`unverified` 就不再只和「这一趟没成」绑在一起了：
+    它会**先写上、后来又被推翻**。今天那四处全是终局（写完就 return），所以这条不变量
+    一直是白送的；加了闸上留料之后它得有人守 —— 守它的是 `_deliver`。
+
+    不自打脸的要求是对称的：手上有一版时不许说「什么都没有」（上面两条钉着），
+    真交付了也不许说「没验过」。
+    """
+    deps, rec = _deps(reports=[_fail_report(), _pass_report()],
+                      write=_change_one_thing_where_it_was_told)
+    app, cfg, _ = _build(deps=deps)
+
+    _payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert len(rec.selftest) == 2, "前提不成立：该是「先没过、后过了」两趟，实际 %d" % len(rec.selftest)
+    assert out["end_reason"] == "delivered", out.get("end_note")
+    assert not out.get("unverified"), (
+        "这一版真交付了，记录里却还挂着「没验过」的理由：%r" % (out.get("unverified"),))
+
+
+def test_parking_more_than_once_does_not_stack_the_unverified_note(tmp_path):
+    """同一趟里停过不止一次闸 ⇒ `unverified` **只有当前那一条**，不许越攒越多。
+
+    为什么必须是「当前那一条」而不是「攒起来」：这一格的语义是**这一版现在为什么还不算
+    交付**。攒起来的话，第二次停下来时人读到的第一条是上一次的理由 —— 一句**过时的话**
+    挂在一份已经改过的稿上，而那正是 2026-10-08 那张缺陷单骂的病（话和事实打架）。
+
+    这条路会停两次（自测没过 → 诊断 → 改一版 → 自测又没过 → 诊断），
+    一直开到图自己触顶（`selftest_cap`），末了那一条该是触顶那一句。
+    """
+    #: ⚠️ ★ 2026-10-13 起要喂**每次都不一样**的失败：同一处连着两次会走 `repair_stuck`
+    #: 更早停下（见 `test_the_same_failure_twice_stops_instead_of_rewriting_again`）——
+    #: 而这一条要验的是「停过不止一次闸时 `unverified` 不越攒越多」，得让它真停够两次。
+    deps, rec = _deps(reports=[_fail_report(failed_step=6),
+                               _fail_report(failed_step=7,
+                                            note="卡在第 7 步：点了「Continue」之后页面没动"),
+                               _fail_report(failed_step=8,
+                                            note="卡在第 8 步：页面上没找到「Submit」")],
+                      write=_change_one_thing_where_it_was_told)
+    app, cfg, _ = _build(deps=deps)
+
+    _payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "selftest_cap", out.get("end_note")
+    assert len(rec.selftest) > 1, "前提不成立：只跑了一趟自测，就没「停不止一次」可言"
+    assert len(out.get("unverified") or []) == 1, (
+        "停过 %d 次，理由却攒成了 %d 条：%r"
+        % (len(rec.selftest), len(out.get("unverified") or []), out.get("unverified")))
+
+
+
+# ── ★ 2026-10-13（用户裁定「先局部修复再按吧」）──────────────────────────────
+#
+# 现场（`job-37d8e6bfa080` · compareinsulation）：自测挂第 6 步 ⇒ 回去**重写一整版**
+# ⇒ 那一版把**别的**步骤也换了（第 6 步原本好用的 `#option-…` 变成一个「没写名字的元素」）
+# ⇒ 重试也挂、后面每组的 `when` 全不成立 ⇒ 比上一版**更差**。
+# 契约：**有锚（自测报了第几步）就只许改那一处**，别处按被测的那一版钉回去；
+# 没锚（「步都做了就是没走到成功」）⇒ 整版重写（要补的就是「少一步 / 换判据」）。
+
+
+def _two_group_spec(*, extra_target="", second_step_target="#go"):
+    """两组各两步的计划（第 6 步 = 第二组的第 2 步，锚就落在那儿）。"""
+    return {
+        "site": SITE, "success_text": SUCCESS, "success_urls": "",
+        "states": [
+            {"name": "one", "when": None, "steps": [
+                {"action": "click", "note": "点 A",
+                 "target": {"text": "A", "role": "button", "near": None,
+                            "selectors": ["#a%s" % extra_target]}},
+                {"action": "click", "note": "点 B",
+                 "target": {"text": "B", "role": "button", "near": None,
+                            "selectors": ["#b"]}}]},
+            {"name": "two", "when": None, "steps": [
+                {"action": "click", "note": "点 C",
+                 "target": {"text": "C", "role": "button", "near": None,
+                            "selectors": ["#c"]}},
+                {"action": "click", "note": "点 D",
+                 "target": {"text": "D", "role": "button", "near": None,
+                            "selectors": [second_step_target]}}]},
+        ], "fills": {},
+    }
+
+
+def test_the_repair_scope_maps_the_failed_step_back_into_the_plan():
+    """`failed_step`（产物里第几步）→ 「哪一组、组内第几步」—— 数不到就**不编一个锚**。"""
+    states = _two_group_spec()["states"]
+    assert graph._repair_scope({"states": states}, 1) == {"state": "one", "index": 0, "global": 1}
+    assert graph._repair_scope({"states": states}, 4) == {"state": "two", "index": 1, "global": 4}
+    assert graph._repair_scope({"states": states}, 9) == {}
+    assert graph._repair_scope({"states": states}, None) == {}
+
+
+def test_a_repair_with_an_anchor_pins_everything_but_the_failed_step():
+    """★ 有锚的修复：**别处一律按被测的那一版钉回去**，只有锚点那一步吃新版的改动。
+
+    这一条钉的就是 `job-37d8e6bfa080` 那类事故：整表重写把**别的**好步骤改坏。
+    """
+    before = _two_group_spec()
+    after = _two_group_spec(extra_target="-CHANGED", second_step_target="#option-…-new")
+    merged, pinned = graph._keep_repair_local(before["states"], after["states"],
+                                              {"state": "two", "index": 1, "global": 4})
+    first_group = merged[0]["steps"][0]["target"]["selectors"]
+    assert first_group == ["#a"], "别的组被改了 ⇒ 必须按旧版钉回去：%s" % first_group
+    assert "one" in pinned, pinned
+    scoped = merged[1]["steps"]
+    assert scoped[0]["target"]["selectors"] == ["#c"], "锚点**之前**的步也要钉住"
+    assert scoped[1]["target"]["selectors"] == ["#option-…-new"], "锚点那一步吃新版的改动"
+
+
+def test_a_repair_without_an_anchor_leaves_the_rewrite_alone():
+    """没锚（报告没说第几步）⇒ 一个字节不钉 —— 那一族要补的就是「少一步 / 换判据」。"""
+    before, after = _two_group_spec(), _two_group_spec(extra_target="-NEW")
+    merged, pinned = graph._keep_repair_local(before["states"], after["states"], {})
+    assert merged == after["states"] and pinned == []
+
+
+def test_the_draft_pins_the_untouched_steps_when_the_diagnosis_has_an_anchor(tmp_path):
+    """端到端那半格：诊断带锚 ⇒ 改稿那双手改到的**别处**被钉回去，并写明「这一版是局部修复」。
+
+    用桩账本那一组（它是 2 步：点一下 + 填一格）⇒ 锚落在第 2 步（组内下标 1），
+    于是「锚点**之前**的第 1 步」就是被越权改的那一处。
+
+    ⚠️ **改稿改出来的地址要「不主张任何身份」**（★ 2026-10-15 修站那一刀④，判据接上 `observed` 之后）：
+    原先那两个随手编的值（`#tampered` / `#ok-new`）现在会被判 `judge-fragile-no-basis`
+    ⇒ `lint` 那道闸把这一版打回 draft ⇒ 来回两趟就 `lint_cap`，**钉回去根本轮不到**。
+    根因是 `fix.find_observed` 按**地址**认步（选择器与原件不完全一样就找不到卡 ⇒ 无出处），
+    所以「带断言的地址被改写」在今天的判据下就是「无据可依」——
+    那是另一件事（Task 4 报告里点了名），**不是这条用例要测的东西**。
+    这里测的是**钉回去**，所以改稿换成**纯位置**（`:nth-of-type` 链、不主张任何身份）：
+    判据对「只说了位置」的地址不拦 ⇒ 流程照旧走到钉回去那一步。
+    """
+    def rewrite(spec, feedback, n):
+        out = copy.deepcopy(spec)
+        if n < 2:
+            #: 第 1 版是原始翻译：别动它，好让「锚点之前那一步」有个干净的对照
+            return out
+        #: 越权那一步：换成一条两跳的 nth 链（纯位置、零断言 ⇒ 判据不出声）
+        out["states"][0]["steps"][0]["target"]["selectors"] = [
+            "body:nth-of-type(1) > a:nth-of-type(1)"]
+        #: 锚点那一步（允许改）：同上，纯位置
+        out["states"][0]["steps"][1]["target"]["selectors"] = [
+            "div:nth-of-type(1) > input:nth-of-type(1)"]
+        return out
+
+    deps, rec = _deps(write=rewrite, reports=[_fail_report(failed_step=2)])
+    app, cfg, _ = _build(deps=deps, caps=graph.Caps(max_diagnoses=1))
+    _payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    steps = out["states"][0]["steps"]
+    assert steps[0]["target"]["selectors"] == ["#get-started"], (
+        "锚点**之前**那一步被改了 ⇒ 必须按被测的那一版钉回去：%s" % steps[0])
+    assert steps[1]["target"]["selectors"] == ["div:nth-of-type(1) > input:nth-of-type(1)"], (
+        "锚点那一步的改动要留下（不然局部修复等于什么也没修）：%s" % steps[1])
+    assert out.get("repair_local") and "局部修复" in out["repair_local"], out.get("repair_local")
+    assert "landing" in (out.get("steps_reverted") or []), out.get("steps_reverted")
+
+
+# ── ★ 2026-10-09：闸上那句「先怀疑判据」（真站 `job-196682353b03`）──────────────────────
+# 报告里那句人话长得像流程问题（「15 步里真做了 15 步……从头到尾没有出现过成功判据」），
+# 于是三轮修的方向全落在选择器上、判据一个字没动。这一句把方向掰回来 —— 它必须
+# **只在「没卡在某一步」+「报告自己说没走到成功」** 时出现（卡在某一步的就是流程/选择器）。
+
+
+def test_the_diagnose_gate_says_to_suspect_the_criterion_first():
+    said = graph._criterion_suspect_say({
+        "failed_step": None,
+        "note": "没走到成功：15 步里真做了 15 步、被 when 判据跳过 0 步；页面上**从头到尾"
+                "没有出现过成功判据**"})
+    assert "先怀疑判据那句话" in said, said
+    assert "SUCCESS_TEXTS" in said, said
+
+
+def test_the_diagnose_gate_does_not_blame_the_criterion_when_something_did_not_work():
+    # 卡在第 14 步 ⇒ 那是流程/选择器那一支，别往判据上引
+    assert graph._criterion_suspect_say({"failed_step": 14, "note": "没走到成功"}) == ""
+    # 报告里没说「没走到成功」这件事 ⇒ 也不引（别的失败有别的解释）
+    assert graph._criterion_suspect_say({"failed_step": None, "note": "窗口没了"}) == ""
+
+
+# ── ★ 2026-10-13：账本里**已经量到的成功网址**（真事 `job-37d8e6bfa080`）──────────────────────
+# 那一趟探路**真走到了** `check.compareinsulation.io/thank-you`，可人只给了正文判据 ⇒
+# `success_urls` 空 ⇒ 形态分派判「没给网址判据」⇒ 退回**固定步骤表**；而那一站是**单页问卷**：
+# 一屏一道门、题目一换就整组静默跳过 ⇒ 一遍下来 0 个成功。循环型只差这一格，而这一格账本里有。
+
+
+def _ledger_reaching_success(*, entry_url="https://shop.test/article-1", last_url=None):
+    """账本尾巴那两行的**真形状**：地址记在 `observe` 那行、成功文案落在收尾那次 `eval` 那行。"""
+    last = last_url if last_url is not None else "https://funnel.test/thank-you?sid=1&fbc=x"
+    return browser_agent.Journey(
+        steps=[{"state": "landing", "action": "observe", "note": "看了一眼页面",
+                "result": {"ok": True, "url": entry_url,
+                           "page_text_head": "No Upfront Costs Free Checker"}},
+               {"state": "quiz-3", "action": "observe", "note": "看了一眼页面",
+                "result": {"ok": True, "url": last, "page_text_head": "No Upfront Costs"}},
+               {"state": "quiz-3", "action": "eval", "note": "看一眼收尾的整页正文",
+                "result": {"ok": True, "success_line": "Thank you, John Smith!"}}],
+        notes=[], stop_reason="reached_success")
+
+
+def test_the_success_url_is_read_back_from_the_ledger():
+    got = graph._success_urls_from_journey(_ledger_reaching_success(), SUCCESS)
+    # 查询串要砍掉（`?sid=&fbc=…` 每趟都不同，留着会把判据钉死在那一趟上）
+    assert got == "https://funnel.test/thank-you", got
+
+
+def test_a_ledger_url_that_would_call_the_whole_site_a_success_is_not_taken():
+    """两条**退化判据**不许认 —— 认了就等于「凡本站在哪都算成功」（本套最忌讳的那类谎）。"""
+    # ① 成功文案落在**入口那一页**上 ⇒ 判据退化
+    entry = _ledger_reaching_success(entry_url="https://funnel.test/thank-you?x=1",
+                                     last_url="https://funnel.test/thank-you?x=1")
+    assert graph._success_urls_from_journey(entry, SUCCESS) == ""
+    # ② 地址只剩域名 ⇒ 太松
+    assert graph._success_urls_from_journey(
+        _ledger_reaching_success(last_url="https://funnel.test/"), SUCCESS) == ""
+    # ③ 连成功文案都没给 ⇒ 判不了就不认（绝不拿「最后停在哪一页」当成功页）
+    assert graph._success_urls_from_journey(_ledger_reaching_success(), "") == ""
+
+
+# ── ★ 2026-10-14：**认出来的判据要有东西复核**（用户裁定）─────────────────────
+#
+# 上面那个函数是「人没给网址判据时，从账本里认一条」—— 它是为了救 compareinsulation
+# 加的（那一趟认对了）。可在 foodandwine 上它认出了**注册页**：那一站**交单后地址不变**、
+# 只在原地把「Check your email」显示出来 ⇒ 产物一进注册页就报成功（**第 1 步假过、还交付了**）。
+# 光看「读到成功文案的那一行」，那条地址**是合格的**（不是只有域名、也不是入口页）——
+# 所以复核得看**那一行之外**的账本。
+
+def test_a_url_that_is_the_arrival_screen_is_not_taken_as_a_success_url():
+    """复核①：认出来的地址**不许等于 `arrive_url`**（「到了问卷」那一屏）。
+
+    真事里这两格**是同一个地址** —— 成功文案在**刚进门那一屏**上就读到，不是终点特征。
+    """
+    book = _ledger_reaching_success()
+    assert graph._success_urls_from_journey(book, SUCCESS) == "https://funnel.test/thank-you"
+    #: 同一个账本，把「到了问卷那一屏」告诉它 ⇒ 同一格地址，这次**不许认**。
+    assert graph._success_urls_from_journey(
+        book, SUCCESS, arrive_url="https://funnel.test/thank-you?sid=1") == "", \
+        "就是「进问卷那一屏」—— 那文案在那儿读到不算数"
+
+
+def test_a_url_we_kept_acting_on_afterwards_is_not_a_success_url():
+    """复核②：**读到成功文案之后账本里还在动** ⇒ 那一屏是**中途**。
+
+    ⚠️ 与 `is_look` 是**两把尺子**：`is_look` 把「提交那一下的 `click`」也算成「一眼」
+    （那一行带着 `success_line`）—— 那对「有没有看见成功」是对的，对「后面还动不动页面」
+    恰恰相反（那一下正是最该算成「还在动」的）。
+    """
+    book = browser_agent.Journey(
+        steps=[{"state": "landing", "action": "observe",
+                "result": {"ok": True, "url": "https://shop.test/article-1",
+                           "page_text_head": "No Upfront Costs Free Checker"}},
+               #: 在**中途**那一屏上就读到了「Thank you」（注册页那种形状）
+               {"state": "form-1", "action": "observe",
+                "result": {"ok": True, "url": "https://shop.test/registration?tab=1",
+                           "page_text_head": "Thank you — 请继续填"}},
+               #: ⚠️ 之后**还在动** ⇒ 上面那一屏不是终点
+               {"state": "form-1", "action": "form", "note": "填了邮箱",
+                "result": {"ok": True, "url": "https://shop.test/registration?tab=1"}},
+               {"state": "form-2", "action": "click", "note": "点了提交",
+                "result": {"ok": True, "url": "https://shop.test/registration?tab=2"}}],
+        notes=[], stop_reason="reached_success")
+    assert graph._success_urls_from_journey(book, SUCCESS) == "", \
+        "读到之后还在点/填 ⇒ 那一屏是中途，不许当成功页"
+
+
+def test_the_later_reading_wins_when_the_first_one_was_mid_funnel():
+    """复核不过 ⇒ **接着找下一个**匹配（成功文案可能读了好几次，最后那次才算）。"""
+    book = browser_agent.Journey(
+        steps=[{"state": "landing", "action": "observe",
+                "result": {"ok": True, "url": "https://shop.test/article-1",
+                           "page_text_head": "No Upfront Costs"}},
+               #: ① 中途那次：读到之后还有动作 ⇒ 不合格
+               {"state": "form-1", "action": "observe",
+                "result": {"ok": True, "url": "https://shop.test/registration",
+                           "page_text_head": "Thank you — 请继续填"}},
+               {"state": "form-1", "action": "click", "note": "点了提交",
+                "result": {"ok": True, "url": "https://shop.test/registration"}},
+               #: ② 真终点那次：之后一步都没有 ⇒ 合格
+               {"state": "done", "action": "observe",
+                "result": {"ok": True, "url": "https://shop.test/thank-you",
+                           "page_text_head": "Thank you for subscribing"}}],
+        notes=[], stop_reason="reached_success")
+    assert graph._success_urls_from_journey(book, SUCCESS) == "https://shop.test/thank-you"
+
+
+def test_a_funnel_the_ledger_shows_success_on_is_written_as_the_stepping_loop(tmp_path):
+    """★ 这一条钉的就是那一趟真事：**量到过成功网址的单页问卷 ⇒ 循环型**（不再退固定步骤表）。"""
+    book = _funnel_journey()
+    book.steps.append({"state": "quiz-3", "action": "observe", "note": "看了一眼页面",
+                       "result": {"ok": True, "url": "https://funnel.test/thank-you?sid=1",
+                                  "page_text_head": "No Upfront Costs"}})
+    book.steps.append({"state": "quiz-3", "action": "eval", "note": "看一眼收尾的整页正文",
+                       "result": {"ok": True, "success_line": "Thank you, John Smith!"}})
+    deps, _rec = _deps(journey=book)
+    app, cfg, _ = _build(deps=deps)
+    _payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert out["end_reason"] == "delivered", out.get("end_note")
+    assert out["success_urls"] == "https://funnel.test/thank-you", out["success_urls"]
+    assert out["shape"] == "loop", out.get("shape_why")
+    assert "从账本里认的" in (out.get("shape_why") or ""), out.get("shape_why")
+    src = pathlib.Path(out["py_path"]).read_text(encoding="utf-8")
+    assert "步进循环型" in src, src[:400]
+
+
+def test_a_criterion_the_human_gave_is_never_overwritten_by_the_ledger(tmp_path):
+    """人给了**说了算**（`fix.py:673` 同一条口径）—— 账本里那个只是**没人给时**的兜底。"""
+    book = _funnel_journey()
+    book.steps.append({"state": "quiz-3", "action": "observe", "note": "看了一眼页面",
+                       "result": {"ok": True, "url": "https://funnel.test/thank-you?sid=1",
+                                  "page_text_head": "No Upfront Costs"}})
+    book.steps.append({"state": "quiz-3", "action": "eval", "note": "看一眼收尾的整页正文",
+                       "result": {"ok": True, "success_line": "Thank you, John Smith!"}})
+    deps, _rec = _deps(journey=book)
+    app, cfg, _ = _build(deps=deps)
+    _payloads, out = _drive(app, cfg, _brief(tmp_path, success_urls="/my-own/route"))
+
+    assert out["success_urls"] == "/my-own/route", out["success_urls"]
+    assert "从账本里认的" not in (out.get("shape_why") or ""), out.get("shape_why")
+
+
+# ── ★ 2026-10-13：**这一站的号段**（用户点名 compareinsulation）──────────────────────────
+# 「手机号不要用资料给的。就用 0207xxxxxxx 格式，后几位随机就行」
+# 「不许取资料里那个号」是所有站的口径（骨架那一支一律现编，`test_loop_template` 钉着）；
+# 这里钉的是**号段**这一格：人给的 `phone_area_code` 得真的落到产物那一格上。
+
+
+def _funnel_with_a_phone():
+    """一份**带号码那一格**的单页漏斗（形状照 `_funnel_journey`，多一步填电话）。"""
+    book = _funnel_journey()
+    book.steps.append(
+        {"state": "quiz-2", "action": "form", "note": "填好了「Phone」（07xxx xxx xxx）",
+         "target": {"text": None, "label": "07xxx xxx xxx", "role": None, "near": None,
+                    "selectors": ['input[placeholder="07xxx xxx xxx"]'], "above_fold_only": False},
+         "result": {"ok": True, "selector": 'input[placeholder="07xxx xxx xxx"]',
+                    "fill": {"name": "phone", "source": "phone", "kind": "value",
+                             "label": "07xxx xxx xxx", "value": "07880539011",
+                             "fallback": [{"random": "phone"}]}}})
+    return book
+
+
+def _fills_in(py_path):
+    """产物里那张 `FILLS` 表（按**落盘那份字节**算 —— 换了形态/漏了一格都在这儿看得见）。"""
+    tree = ast.parse(pathlib.Path(py_path).read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "FILLS":
+            return ast.literal_eval(node.value)
+    raise AssertionError("产物里没有 FILLS 表")
+
+
+def test_the_area_code_the_human_gave_lands_on_the_phone_fill(tmp_path):
+    deps, _rec = _deps(journey=_funnel_with_a_phone())
+    app, cfg, _ = _build(deps=deps)
+    _payloads, out = _drive(app, cfg, _brief(tmp_path, success_urls="thank-you",
+                                             phone_area_code="0207"))
+
+    assert out["end_reason"] == "delivered", out.get("end_note")
+    fills = _fills_in(out["py_path"])
+    assert fills["phone"].get("prefix") == "0207", \
+        "人给的号段没落到号码那一格上：%r" % (fills.get("phone"),)
+
+
+def test_without_that_field_the_artifact_gets_no_area_code(tmp_path):
+    """没给这一格 ⇒ **一个字节都不动**（号码按池子自己那一串号段现编）。"""
+    deps, _rec = _deps(journey=_funnel_with_a_phone())
+    app, cfg, _ = _build(deps=deps)
+    _payloads, out = _drive(app, cfg, _brief(tmp_path, success_urls="thank-you"))
+
+    assert out["end_reason"] == "delivered", out.get("end_note")
+    fills = _fills_in(out["py_path"])
+    assert "prefix" not in fills["phone"], fills["phone"]
 
 
 # ── 原始观察冻进 state（2026-10-15 修站那一刀）──────────────────────────────

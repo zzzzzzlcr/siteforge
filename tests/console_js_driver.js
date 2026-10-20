@@ -241,7 +241,10 @@ async function pyUploadScenario(out) {
                     rollbackDisabled: el("btnPyRollback").disabled,
                     why: el("pyUploadWhy").innerHTML,
                     facts: el("pyUploadFacts").innerHTML,
-                    note: el("pyUploadNote").innerHTML };
+                    note: el("pyUploadNote").innerHTML,
+                    //: ★ 2026-10-10：**时间线里产物那一步**也量回来 —— 「盘上有稿但没交付」
+                    //: 那一档，服务那句话叫你去传，而那个入口从前不画（`artifactStep`）。
+                    timeline: el("timeline").innerHTML };
   el("pyUploadOperator").value = payload.operator || "值班员 A";
   fire("btnPyPrepare", "click");
   await settle(); await settle();
@@ -305,6 +308,29 @@ async function runRefusedScenario(out) {
   out.afterRepaint = { errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
                        who: el("whoJob").textContent, timeline: el("timeline").innerHTML,
                        errScrolls: errScrolls };
+}
+
+//: ★ 「在闸上按继续」那一下（2026-10-10，用户报的「点了继续也没任何反馈」）：
+//: 服务**回了话**，而页面拿到 `res.obj` 就扔 —— 成功那条路上只清了一下输入框，
+//: 而按「继续」时输入框**按定义就是空的**，清了等于没清。
+//:
+//: ⚠️ 这一份的关键是**点完不给 tick**：真机上 `lint` 只跑 3 秒、`diagnose` 1 秒，
+//: 而 `/live` 每 3 秒才拉一次 ⇒ `running` 那一档整个夹在两次轮询之间，
+//: 连按钮变灰都看不见。所以「按下去之后、下一拍之前」那一屏**必须**有那句话 ——
+//: 等到重画才显示，真机上就是「点了没反应」。
+async function continueScenario(out) {
+  let errScrolls = 0;
+  el("errBox").scrollIntoView = function () { errScrolls++; };
+  out.beforeClick = { disabled: el("btnContinue").disabled,
+                      errHidden: el("errBox").hidden, errBox: el("errBox").textContent };
+  fire("btnContinue", "click");
+  await settle();                                   // 那一跳落地 —— **不给 tick**
+  out.afterClick = { errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
+                     errClass: el("errBox").className, errScrolls: errScrolls,
+                     disabled: el("btnContinue").disabled };
+  await ticks(3);                                   // 那句话要**活过重画**（而且重画不许再滚）
+  out.afterRepaint = { errBox: el("errBox").textContent, errHidden: el("errBox").hidden,
+                       errScrolls: errScrolls, disabled: el("btnContinue").disabled };
 }
 
 //: 窗口那两下（Task 12）：人按「关掉这个窗口」→ 服务回 200 + 一句人话（服务说成了）；
@@ -667,9 +693,13 @@ async function autoScenario(out) {
   else if (payload.scenario === "artifact") { await artifactScenario(out); }
   else if (payload.scenario === "run") { await runScenario(out); }
   else if (payload.scenario === "run-steps") { await runStepsScenario(out); }
+  //: 三档**同一段驱动**，只差载荷里 `artifact` 那一格（交付了 / 一版都没有 / 留了一版没交付）
+  //: —— 第三档是 2026-10-09 闸前留料带出来的，与第二档 `url` 一样是空的。
   else if (payload.scenario === "py-upload" ||
-           payload.scenario === "py-upload-nothing") { await pyUploadScenario(out); }
+           payload.scenario === "py-upload-nothing" ||
+           payload.scenario === "py-upload-kept") { await pyUploadScenario(out); }
   else if (payload.scenario === "run-refused") { await runRefusedScenario(out); }
+  else if (payload.scenario === "continue") { await continueScenario(out); }
   else if (payload.scenario === "window") { await windowScenario(out); }
   else if (payload.scenario === "page-view") { await pageViewScenario(out); }
   else if (payload.scenario === "country" ||

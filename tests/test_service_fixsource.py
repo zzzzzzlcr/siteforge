@@ -541,3 +541,62 @@ def test_build_mode_still_needs_a_criterion_from_the_human(tmp_path):
 
     assert r.status_code == 400, r.text
     assert "什么算成功" in r.text, r.text
+
+
+# ── 修**盘上那一份**（2026-10-14 开的口）─────────────────────────────
+#
+# 为什么需要它：上面那条「底稿从后端来」的理由是「**后端那份才是生产在跑的**」。
+# 而**刚生成出来、自测没过**的那一份**还没上生产** —— 后端根本没有它。
+# 于是「拿这份 py 再修一轮」在那条路上无门，只能重开一趟**重新探路**
+# （真窗口 + 跑模型 + 把已有的证据丢掉重买一次）。
+
+
+def _draft(tmp_path, name="foodandwine.py", src="#!/usr/bin/env python3\nSTATES = []\n"):
+    sites = tmp_path / "sites"
+    sites.mkdir(exist_ok=True)
+    p = sites / name
+    p.write_text(src, encoding="utf-8")
+    return p
+
+
+def test_a_local_draft_is_used_without_asking_the_backend(tmp_path):
+    """喂一份盘上的 py ⇒ 就用它，**不去问后端**。"""
+    mine = _draft(tmp_path)
+    rec = Recorder(_script_body())
+    app = _client(tmp_path, fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec))
+
+    r = app.post("/run", json=_brief(tmp_path, fix_local_py=str(mine)))
+
+    assert r.status_code == 202, r.text
+    assert not [u for u in rec.urls if "formScript" in u], (
+        "喂了本地那份就不该再去问后端", rec.urls)
+
+
+def test_a_local_draft_outside_the_delivery_dir_is_refused(tmp_path):
+    """**只认交付目录里那一份** —— 这个口挂在网络上，不许变成「读任意文件」。"""
+    outside = tmp_path / "elsewhere.py"
+    outside.write_text("x", encoding="utf-8")
+    rec = Recorder(_script_body())
+    app = _client(tmp_path, fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec))
+
+    r = app.post("/run", json=_brief(tmp_path, fix_local_py=str(outside)))
+
+    assert r.status_code == 400, r.text
+    assert "交付目录" in r.json()["detail"], r.json()["detail"]
+
+
+def test_a_local_draft_that_is_not_there_is_named_not_silently_ignored(tmp_path):
+    """路径写了、文件不在 ⇒ **400 + 人话**。
+
+    ⚠️ 挡的是那个最贵的后果：底稿拿不到却放它过去 ⇒ `fix_py` 空着 ⇒ 图走**非修站**那一支
+    ⇒ **悄悄退化成从头重新探索**（开真窗口、跑模型、证据重买一次），而它在日志上与修站
+    **长得一样**。这一条与上面那三种「修不了」是同一条纪律。
+    """
+    rec = Recorder(_script_body())
+    app = _client(tmp_path, fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec))
+    missing = tmp_path / "sites" / "nope.py"
+
+    r = app.post("/run", json=_brief(tmp_path, fix_local_py=str(missing)))
+
+    assert r.status_code == 400, r.text
+    assert "nope.py" in r.json()["detail"], r.json()["detail"]

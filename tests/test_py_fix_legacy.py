@@ -889,3 +889,39 @@ def test_the_runtime_writes_the_trace_line_and_can_stop_reporting(tmp_path, monk
     monkeypatch.delenv("SITEFORGE_TRACE")
     module._trace_step("step-b", "https://example.test/b")
     assert not trace.exists()
+
+
+# ── ★ 2026-10-14：**只有 `FILLS` 的那一族**（步进循环型）───────────────
+#
+# 那一族**本来就没有 `STATES`**（每轮现读页面）。老判据把它当「读不出来」⇒ 判 legacy
+# ⇒ 修站把**整份 57 KB 源码**丢给模型重写 ⇒ 超网关 180 秒 ⇒ `504`。
+# 真事：`foodandwine`(1069 行) / `goldenromances`(1151 行)。
+
+#: 一份「只有 FILLS」的最小步进循环型记号（结构照真产物缩）。
+LOOP_PY = """#!/usr/bin/env python3
+FILLS = {'email': {'name': 'email', 'source': 'email', 'kind': 'email',
+                   'label': 'Email Address',
+                   'target': {'text': None, 'label': 'Email Address', 'role': None,
+                              'near': None, 'hint': 'email', 'placeholder': None,
+                              'nearby_text': None, 'selectors': ['#email'],
+                              'above_fold_only': False, 'frame_id': ''},
+                   'fallback': [{'random': 'email'}], 'sample': 'chef@example.com'}}
+MAX_STEPS = 60
+"""
+
+
+def test_a_script_with_only_fills_takes_the_table_path_not_the_whole_source_one(tmp_path):
+    """★ 只有 `FILLS` 的 py ⇒ 走**改数据表**那条路，**不是**整份源码重写。"""
+    out_dir = tmp_path / "forms" / "sites"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    staged = out_dir / ("%s.before.py" % SITE)
+    staged.write_text(LOOP_PY, encoding="utf-8")
+    brief = _brief(tmp_path, mode="fix", fix_py=str(staged))
+    deps, rec = _deps()
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, brief)
+
+    assert out.get("fix_style") != "legacy", (
+        "它不该走整份源码重写那条路（那一跳要吐 57 KB，必超时）", out.get("fix_style"))
+    assert out.get("fix_fills"), ("数据表要带上 —— 那就是模型要改的东西", out.get("fix_fills"))
+    assert out.get("fix_states") == [], "它确实没有 STATES（空表是这一族的正常样子）"

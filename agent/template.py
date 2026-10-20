@@ -242,6 +242,17 @@ _GENERATED_ID = re.compile(r"^#(?:__[A-Za-z]+__\d+$|:r[0-9a-z]+:|mui-\d|radix-"
 #: ⚠️ 代价说清楚：`#step-2`、`#section-3` 这种**人写的**序号 id 也会被一起贬到最后一档 ——
 #: 它仍然**留着**（页面真没给别的地址时它是唯一够得着的路），只是不再排第一。
 _RENDER_INDEX_ID = re.compile(r"^#[-\w]*-\d+$")
+
+#: ★ 2026-10-13（用户裁定，lovesac `job-0ccb5c33624d` 现场）：**「`xxx+数字` 不是不允许，是最后的优先级」**。
+#: 上面这条 `_RENDER_INDEX_ID` 是按 georgiapower 那一族的实测写的（`#input-167` → `#input-163`：
+#: 那族的数字是**每次渲染递增的全局计数**）。而服务端渲染的表单（Wufoo 这类）给的是
+#: `id="Field10-1"`：`Field10` 是**表单定义里的字段号**、`-1` 是这一格里的第几个输入 ——
+#: 【我量的·2026-10-13】三次不同的探路会话（iframe 实例号每次都换：`A3D3…`/`4E01…`/`DFB8…`）
+#: 拿到的**是同一串 id**，它不随渲染漂。两者在字符串上长得一模一样。
+#: ⇒ **这一族不再当硬闸**（`lint._rule_i` 那份「只有它一条就不许交」里撤了）：
+#:   允许交付，**只保留**这里的降档 —— 「先试谁」它排最后（页面真没给别的地址时它是唯一够得着的路）。
+#: ⚠️ 代价：真会漂的那种（georgiapower 实测）也不再被打回，会在真站上以「页面上没找到」失败。
+
 #: `:nth-of-type` / `:nth-child` 的**跳数**：跳数越多越像「位置」而不像「身份」。
 #: 阈值与 cdp 那边**同一份判据**（`tools/cdp/internal/observe.go` 的 `stability()`：
 #: hops 0 且带锚点 = high、≤3 = medium、**>3 = low**）—— 两处对不上就会出现
@@ -690,6 +701,64 @@ _MODAL_BOX_JS = (
     "return '';}"
 )
 
+#: ★ 2026-10-13（用户裁定「都收吧」；真事 `job-708dfae74b73` · lovesac 的 Fides 弹层）：
+#: **盖满视口的同意弹层** —— 上面那条「同意条」是**按容器身份**认的（`cookie|consent|gdpr|privacy`），
+#: 这条改按**形状**认，因为供应商的名字追不完：Fides 那个容器叫 `div.fides-modal-overlay`
+#: / `div#fides-banner`，名字里一个同意词都没有 ⇒ 两条钩子都从它身上滑过去（模态那条又要求
+#: 有一颗写着 `close/×` 的按钮，而它有 `Allow All`/`Reject All`）。
+#: 现场代价：产物每一步都在填 Wufoo 的那 12 格，而重找出来的 **16 个候选全部
+#: 「被 div.fides-modal-overlay 盖着 —— 这一下不点」** ⇒ 撞 600 秒上限，整趟白跑。
+#:
+#: 三条窄口径（缺一不可，与模态那条同一套「宁可不做，不可错点」）：
+#:   ① **盖住大半个视口**（宽高都 ≥80%）—— 形状就是判据：小浮标、抽屉不算；
+#:   ② 容器自己**带同意语境**（`boxLabel` 里的前 200 字命中 cookie/consent/privacy/隐私/跟踪…），
+#:      **或**里面那颗按钮是**强同意短语**（`allow all` / `reject all` / `accept cookies`
+#:      / 全部接受 / 全部拒绝）—— `Accept` 一个字不算：那是「Accept offer」那种业务按钮；
+#:   ③ 按钮文字得是**对同意做个决定**（优先点「拒绝 / 不同意」那一颗：它副作用最小，
+#:      与账本里 `#fides-reject-all` 那一版选择同一条路）。
+#:
+#: ★ 2026-10-19：与「同意条」同一道 tag 白名单（`div`/`span`）+ 同一条 ≤40 字闸（只查新 tag）。
+#: 这一条扫的是**满视口容器的全部后代**，散文更像按钮，所以那道长度闸在这里更要紧。
+_CONSENT_MODAL_JS = (
+    "var decW=/(reject|decline|deny|accept|agree|allow|同意|接受|拒绝|不同意)/i;"
+    "var badW=/(reject|decline|deny|拒绝|不同意)/i;"
+    "var ctxW=/(cookie|consent|gdpr|privacy|tracking|同意|隐私|跟踪)/i;"
+    "var strongW=/(reject|accept|allow|deny|decline)\\s+(all|cookies?)|全部接受|全部拒绝/i;"
+    "var full=function(e){var r=e.getBoundingClientRect();"
+    "return r.width>=window.innerWidth*0.8&&r.height>=window.innerHeight*0.8;};"
+    "var out='',outT='';"
+    "for(var i=0;i<all.length;i++){var box=all[i];"
+    #: ★ 2026-10-19（真站 compareinsulation）：`full()` 会命中 `body`/`html` —— 它们是
+    #: 满视口的**根节点**，不是「盖满视口的弹层」。排掉它们，这一行才会按设计卡在
+    #: 真正容器的尺寸闸（那站 `#cookiescript_injected` 只占视口高 28%），落到第 2 行。
+    "  var bt=String(box.tagName||'').toLowerCase();"
+    "  if(bt==='body'||bt==='html')continue;"
+    "  if(!vis(box)||!full(box))continue;"
+    "  var ctx=ctxW.test(boxLabel(box));"
+    "  var inner=(box.getElementsByTagName?box.getElementsByTagName('*'):box.querySelectorAll('*'));"
+    "  for(var j=0;j<inner.length;j++){var b=inner[j],t=String(b.tagName||'').toLowerCase();"
+    "    var ctl=(t==='button'||t==='a'||t==='input');"
+    "    if(!ctl&&t!=='div'&&t!=='span')continue;"
+    #: ★ 2026-10-19（真站 compareinsulation）：wrapper 的合并文字也可能很短
+    #: （`#cookiescript_buttons` = "ACCEPT ALL\nDECLINE ALL"）—— 新加的 div/span 只认叶子，
+    #: 子元素里带文字的是容器，跳过（与「同意条」那条同一道闸）。
+    "    if(!ctl&&b.children&&b.children.length){var tc=false;"
+    "      for(var q=0;q<b.children.length;q++){var ch=b.children[q];"
+    "        if(String(ch.innerText||ch.value||'').trim()){tc=true;break;}}"
+    "      if(tc)continue;}"
+    "    if(!vis(b))continue;"
+    "    var x=String(b.innerText||b.value||(b.getAttribute&&b.getAttribute('aria-label'))||'').trim();"
+    "    if(!ctl&&x.length>40)continue;"
+    "    if(!decW.test(x))continue;"
+    "    if(!ctx&&!strongW.test(x))continue;"
+    "    var sel=(b.id?('#'+b.id):'TEXT');"
+    "    if(badW.test(x))return sel+'|'+x.slice(0,40);"
+    "    if(!out){out=sel;outT=x;}}"
+    "}"
+    "return out?(out+'|'+outT.slice(0,40)):'';"
+)
+
+
 #: ★ 2026-10-19（真事 wildnutrition）：站点自己的 **markets offcanvas 抽屉** 在新会话里
 #: 每单都会打开，而它的关闭键被 sticky header / hero 盖住 —— `cdp click` 的落点判据
 #: 会拒绝（那是对的：不点被盖住的东西），于是脚本的每一步都被 `div.OffcanvasDimmer`
@@ -716,6 +785,10 @@ _MARKETS_OFFCANVAS_JS = (
     "return '';"
 )
 
+#: ★ 2026-10-19（真事 compareinsulation）：同意控件不一定是 `button/a/input` —— CookieScript
+#: 的 accept/reject 是 `<div>`。tag 白名单加 `div`/`span`；**新加的两种 tag 还要过一道 ≤40 字**：
+#: 同意容器里那段 "By clicking ACCEPT ALL…" 的散文也命中 `btnW`，长度闸把它挡在动作之外
+#: （`button/a/input` 的老判据不动 —— 它们本来就是控件）。
 _CONSENT_HOOK_JS = (
     # ⚠️ 用 `getElementsByTagName('*')` + 属性自检，**不走**「按选择器一步查」的那种写法 ——
     # 产品里凡是要按选择器找元素的地方一律避开它（`tests/test_template.py` 的
@@ -893,7 +966,9 @@ POPUP_RECHECK_POLL_SECONDS = 0.2
 #:   ② **宁可不做，不可错点**：找不到就返回空串，点歪了由 `_covered_by` 兜
 #:      （它保证「点了个寂寞」不会被记成做成了）；
 #:   ③ 钩子只许**读**页面：动手那一下一律交回选择器，由调用方走 `cdp click`（§5.2）。
-#: 每一条的「为什么这么窄」写在它自己的注释里（下面两条就是）。
+#: 每一条的「为什么这么窄」写在它自己的注释里（下面三条就是）。
+#: ★ 2026-10-13：**次序 = 优先级** —— 「盖满视口的同意弹层」放最前（它最硬：底下什么都点不到），
+#: 然后是窄的同意条，最后是只认「关闭」控件的通用模态。
 #:
 #: ★ 2026-10-17（终审 C2 · Ruling 30）：**行可以带第三格 = 「报但不点」的标志**
 #: （`(名字, 钩子 JS)` 是普通行，`(名字, 钩子 JS, _REPORT_ONLY)` 是「认得出、但不动手」）。
@@ -902,6 +977,7 @@ POPUP_RECHECK_POLL_SECONDS = 0.2
 #: ⚠️ 标志**按名字回来**（`_popup_report_only(who)`），**答复的形状一个字符都不动** ——
 #: 那三格被两套消费端的 `split("|", 2)` 与十条假 DOM 夹具钉着，动它 = 全线改判据。
 _POPUP_HOOKS = (
+    ("盖满视口的同意弹层", _CONSENT_MODAL_JS),
     ("同意条", _CONSENT_HOOK_JS),
     ("盖住整页的模态", _MODAL_BOX_JS),
     #: ★ 2026-10-19：**markets offcanvas**（wildnutrition 那型）—— 关闭键被 sticky header
@@ -1110,11 +1186,59 @@ _ALIASES = {
     "city": ("town",),
     "street": ("address", "address1", "street_address"),
     "country": ("country_code",),
+    #: 任务资料里出生日期叫 `birthday`（formMessage 的键），产物里常按页面叫 `dob`。
+    "dob": ("birthday", "date_of_birth", "birthdate"),
 }
 #: 资料只给**一个全名**（`username: "Lin Cameron"`）时，这两格从它按空格拆。
 #: 页面上是 First / Last 两个框、资料库里是一个字段 —— 这是**结构差**，
 #: 光靠别名对不上（真事：那一站 `first_name` 曾经被填进整个 "Lin Cameron"）。
 _SPLIT_FROM = {"first_name": "username", "last_name": "username"}
+
+#: 值里**最后那一串**数字（`\d{3,}` 且后面不再有数字）—— `_shaped_like` 拿它当「可变尾段」。
+_TAIL_DIGITS = re.compile(r"\d{3,}(?!.*\d)")
+
+
+def _shaped_like(sample: str) -> str:
+    """照 `sample`（**真站收过的那个值**）的形状编一个新的，前面照抄、尾段数字随机。返回空串 = 不编。
+
+    ★ 2026-10-13（真事 `job-a5f74744a7f9` · healthinsurancewatch.com.au）：探路那趟在真站上
+    填的是 `0412345678`（澳洲手机 —— 页面认了、提交也过了），而重放那一格走的是随机池，
+    池子照 `PROVENANCE['env']['proxy_country']`（**代理出口**在哪）分档，那趟是 US
+    ⇒ 一个美国形状的号填进 `04xx xxx xxx` 的框 ⇒ 站方红字 `Please enter a valid mobile
+    number`、**提交那一下卡死**，而每一步的日志都写着「填好了」。
+
+    **站点在哪**与**出口在哪**是两件事；而「真站收过的那条值」是**不必猜**的那份证据 ——
+    这条兜底只为「没取到任务资料」的那一趟准备（正常那一趟资料里有值，走不到这儿）。
+
+    规则（两个形状，够覆盖邮编/手机/ZIP 这几族）：
+      · **通体是数字**（`0412345678` / `2000` / `98101`）⇒ 头 **2 位**照抄、其余随机
+        （`04` 是澳洲手机的前缀、`20` 是澳洲邮编的城市段 —— 头两位正是「形状」的所在）；
+      · **数字前还有别的东西**（`+61 412 345 678` / `SW1A 1AA`）⇒ 最后那串数字随机、前面照抄。
+
+    ⚠️ **不编**的三种：一个数字都没有（姓名那类，交给池子）；带 `/`（日期那类，`07/23/1981`
+    的尾段是**年份**，随机成 `0231` 比池子更坏）；尾段太短（<3 位，随机等于没形状）。
+    ⚠️ 尾段**随机**是故意的：每趟都填同一个号，站方的去重/风控看得见（与那两个池子同一条理由）。
+    """
+    text = str(sample or "").strip()
+    if not text or "/" in text:
+        return ""
+    digits = [c for c in text if c.isdigit()]
+    if not digits:
+        return ""
+    if all(c.isdigit() or c.isspace() for c in text):
+        body = text.replace(" ", "")
+        if len(body) < 3:
+            return ""
+        return body[:2] + "".join(random.choice("0123456789") for _ in range(len(body) - 2))
+    m = _TAIL_DIGITS.search(text)
+    if not m or text[m.end():].strip():
+        #: 那串数字**不在末尾**（`sarah.lee1980@gmail.com` —— 后面还跟着域名）⇒ **不编**：
+        #: 照「前缀 + 随机数字」编出来会把它**截断**（实测编成 `sarah.lee4150`，邮箱没了）。
+        #: 这一族的兜底交给池子（邮箱/姓名本来就有池子）。
+        return ""
+    run = m.group(0)
+    return (text[:m.start()]
+            + "".join(random.choice("0123456789") for _ in range(len(run))))
 ERR_MARKERS = ("Error:", "error:", "not found", "BugError", "no page target",
                "failed to create client", "Usage:", "Flags:", "panic:")
 
@@ -1218,6 +1342,23 @@ RECENTER_TRIES = 2
 #: 预算同样**按步共用**（不按候选数翻倍），而且只重试**同一根地址** ——
 #: 等到头还没出来，就把第一次那个失败原样交回去，换候选 / 重找 / 整组重走一个字不变。
 NOT_FOUND_WAIT_SECONDS = 6.0
+
+#: ★ 2026-10-13：**账本说这一组的东西是「后出来的」**时，「没找到」等多久（秒）。
+#:
+#: 为什么要单开一笔（真事 `job-4d12a95edf34` · innovatingcanada 的 Hustle 弹窗）：
+#: 那一页的表格是**加载后约 25~31 秒**才弹出来的（触发是一次 25 秒的定时器）——
+#: 上面那 6 秒根本不够，第一趟自测第 1 步就挂：
+#: `第 1 步：没找到「field」这个输入框，没填成`（日志：`等了 3.6 秒它还是没出来`）。
+#:
+#: 而「该不该多等」这件事**不用猜**：账本里有证据 —— 落到那一页的**第一眼**里没有这一格、
+#: 后面的眼里有了（`browser_agent.Journey.late_states`）⇒ 那一组标上 `late_element`，
+#: 预算换成这一笔。⚠️ 反例（哪一眼里都没有 = 选择器压根不对）**不标**、照旧 6 秒：
+#: 生产上 249 趟自测日志里「没找到」等到头的是 28 次、等出来的是 2 次 —— 给那 28 次加预算
+#: 就是白等，而它们是失败路径上最常见的形状。
+#:
+#: 45 这个数的来处：本站实测 31.8 秒（25 秒定时器 + 渲染），留一个量级的余量；
+#: 它是**只落在标了那一格的组**上的预算，不标的一步都不多花。
+LATE_ELEMENT_WAIT_SECONDS = 45.0
 
 #: 等它出现期间每隔多久再试一次（秒）。与 `COVER_POLL_SECONDS` 分开写：那个是「量一眼」，
 #: 这个是「**重发一次动作**」—— 代价不同（一次 cdp 调用 vs 一次 eval），调的时候心里有数。
@@ -1411,6 +1552,11 @@ def _random_gb_landline() -> str:
             return got
 
 
+def _random_au_mobile() -> str:
+    """澳洲**手机**形状：`04` + 8 位随机数字（共 10 位，站方那格要的就是这个形状）。"""
+    return "04" + "".join(str(random.randint(0, 9)) for _ in range(8))
+
+
 def _phone_pool(make) -> list:
     """现生成 `PHONE_POOL_SIZE` 个**互不相同**的值（重复的丢掉重抽）。"""
     out: list = []
@@ -1423,6 +1569,9 @@ def _phone_pool(make) -> list:
 
 #: 英国那一档（同时是「不知道」那一档，见上面那段）。
 PHONES = _phone_pool(_random_gb_landline)
+AU_PHONES = _phone_pool(_random_au_mobile)
+AU_POSTCODES = ("2000", "3000", "4000", "5000", "6000", "7000", "0800", "0820", "2250", "4217")
+AU_STATES = ("New South Wales", "Victoria", "Queensland", "Western Australia", "South Australia", "Tasmania", "Australian Capital Territory", "Northern Territory")
 # ── 随机池按**站点国家**分流（★ 2026-09-29，交接《骨架还缺什么》「别处」那条）──────
 #
 # 为什么非分流不可（真站代价，`forms/common.py` 的 `_ALIASES` 注释里记着那一次）：
@@ -1475,6 +1624,8 @@ COUNTRY_POOLS = {
            "postcode": POSTCODES, "phone": PHONES},
     "CA": {"country": "Canada", "state": CA_PROVINCES,
            "postcode": CA_POSTCODES, "phone": CA_PHONES},
+    "AU": {"country": "Australia", "state": AU_STATES,
+           "postcode": AU_POSTCODES, "phone": AU_PHONES},
 }
 #: 「不知道这个站在哪一国」时用的兜底 —— 邮编仍是英国那一套、州仍是美国那一套，
 #: 手机与英国那一档**共用 `PHONES`**（见 `PHONES` 上面那段：真跑起来常常就是这一档）。
@@ -1552,15 +1703,54 @@ def _page_trouble(text):
     return ""
 
 
+# ★ 2026-10-09：**同一个字的两种排版写法算同一个字**（用户裁定原话：「那就大小写吧」
+# —— 按 2026-09-22 那条**大小写**先例办：`Check your email` 与 `check your email` 算
+# 同一个词，那么 `’` 与 `'` 就是**同一个撇号**）。
+#
+# 真事（`job-27389cef3110`，enroll 那趟）：人给的判据是
+# `Thank You! We've Received Your Information!`（**直角**撇号），站点把那句渲染成
+# `We’ve`（**弯**撇号 U+2019）。只压空白 + 小写时子串不成立 ⇒ **一份 py 都不出**，
+# 尽管探路走完了、正文里也真有那句。
+#
+# ⚠️ 折的只是**同一个字的排版变体**（弯引号 / 长短破折 / 省略号），**不是抹标点**：
+# `Thank You!` 与 `Thank You` 仍然是**两串不同的字**，不许配上。
+# ⚠️ 这张表**必须与探路那份逐字一致**（`agent/browser_agent.py` 里的 `_FOLD`）——
+# 这一份是**独立交付出去的一份 py**，import 不到 agent 包，所以只能是两份。
+_FOLD = str.maketrans({
+    # 弯单引号 → 直角撇号
+    "‘": "'", "’": "'", "‚": "'", "‛": "'",
+    # 角分 / 角秒
+    "′": "'", "″": '"',
+    # 弯双引号 → 直角双引号
+    "“": '"', "”": '"', "„": '"', "‟": '"',
+    # 各种横线 → 直角连字符（连字符 / 不换行连字符 / 短破折 / 长破折 / 横线 / 减号）
+    "‐": "-", "‑": "-", "‒": "-", "–": "-",
+    "—": "-", "―": "-", "−": "-",
+    # 省略号 → 三个点
+    "…": "...",
+    # ── 全角 ASCII（U+FF01–U+FF5E）→ 半角 ──
+    # ★ 2026-10-09 用户第二次点头（原话「算吧算同一个」）：宽度也是「同一个字的两种写法」。
+    # ⚠️ **整段一起折** —— Unicode 里它们就是「同一个字符的两种宽度」，只折标点、
+    # 不折字母数字是凭空划一条线。
+    # ⚠️ 到 U+FF5E 为止。再往后的 U+FF61–U+FF9F 是**半角片假名**（ｱｲｳ）—— 那是**另一个
+    # 字符**，不是谁的全角形；按「块」写就会把它们一起吃掉（钉在
+    # `test_the_two_norms_do_not_fold_what_is_actually_a_different_character`）。
+    **{chr(0xFF01 + i): chr(0x21 + i) for i in range(0x5E)},
+})
+
+
 def _norm(text):
-    r"""把一段文字归一成「看内容」的形态：空白（含 NBSP）压成单个空格、两端剪掉。
+    r"""把一段文字归一成「看内容」的形态：空白（含 NBSP）压成单个空格、两端剪掉，
+    **同一个字的两种排版写法折成一个**（`_FOLD`）。
 
     ⚠️ 这条口径**必须**与 `cdp observe` 的 page_text 完全一致（规格 §4.3 明写
     「与 py 里 page_signature() 同口径」）。不一致的后果是：trace 里的 page_sig 与
     agent 当时看到的页面模型对不上，Console 会把**同一个页面**显示成两个页面。
+    ⚠️ 折同形字那一步是 ★ 2026-10-09 加的，**两边一起加**；只加一边就是
+    「探路认得出、脚本在真站上认不出」。同理，抹标点**不做**（那才是放宽判据）。
     Python 的 \s 与 JS 的 \s 都含 NBSP（Go 的不含 —— diff.go 那个坑就是它）。
     """
-    return re.sub(r"\s+", " ", text or "").strip()
+    return re.sub(r"\s+", " ", text or "").translate(_FOLD).strip()
 
 
 # 读页面正文（**只读**）。shadow DOM 要逐 root 收：body.innerText 不穿 shadow，
@@ -2700,6 +2890,19 @@ class Filler:
                 self._value_from = "任务资料「%s」拆出（%r → %s）" % (
                     _SPLIT_FROM[source], whole, source)
                 return got
+        #: ★ 2026-10-13：**没取到任务资料，就先照「真站收过的那个值」的形状编一个** ——
+        #: 排在随机池**前面**。为什么（真事 `job-a5f74744a7f9` · healthinsurancewatch.com.au）：
+        #: 探路那趟在真站上填的是 `0412345678`（澳洲手机，页面认了），重放时那一格走了随机池，
+        #: 而池子是照 `PROVENANCE['env']['proxy_country']`（**代理出口**在哪）分的 —— 那趟是 US
+        #: ⇒ 一个美国形状的号填进 `04xx xxx xxx` 的框 ⇒ 站方红字 `Please enter a valid mobile
+        #: number`、**提交那一下卡死**，而每一步的日志都写着「填好了」（最难查的那种）。
+        #: **站点在哪**与**出口在哪**是两件事，而「真站收过的那条值」是**不必猜**的那份证据。
+        #: ⚠️ 只在自由输入格（`kind == "value"`）上走这一支；下拉/勾选照旧吃账本里真选过的那个值。
+        shaped = _shaped_like(str(fill.get("sample") or "")
+                              if str(fill.get("kind") or "value") == "value" else "")
+        if shaped:
+            self._value_from = "**照真站收过的那个值的形状**编的（避开了随机池的国家档）"
+            return shaped
         candidates = list(fill.get("fallback") or [])
         if not candidates:
             self.log.warning("[%s] 「%s」既没有 form-file 的值也没有 fallback", self.cid, source or "?")
@@ -2883,9 +3086,11 @@ class Filler:
                 return None
             if not announced:
                 announced = True
+                #: ⚠️ 报**这一笔真正剩多少**，不报常数：预算有两档（6 / `LATE_ELEMENT_WAIT_SECONDS`，
+                #: 见 `late_element`），读日志的人得看得出这一组用的是哪一档。
                 self.log.info("[%s] 第 %d 个选择器**没找到**（不是被盖着）—— 可能是还没渲出来，"
                               "先等一等：最多 %.0f 秒，一直重试**同一根地址**",
-                              self.cid, level + 1, NOT_FOUND_WAIT_SECONDS)
+                              self.cid, level + 1, max(0.0, until - time.monotonic()))
             nap = min(NOT_FOUND_POLL_SECONDS, left)
             time.sleep(nap)
             waited += nap
@@ -2951,10 +3156,24 @@ class Filler:
                     else random.choice(("United States", "United Kingdom")))
         if kind == "state":
             return random.choice(self.pools["state"])
+        if kind == "birth_year":
+            #: ★ 2026-10-08（policyquail `job-c8730acb27c5`，8100 上验出来的那一趟）：
+            #: 「Year of birth」那种框（`placeholder="YYYY"`）只收**4 位年份**，
+            #: 而下面 `dob` 给的是整串日期 ⇒ 往年份框里打了 `07/23/1981`。
+            #: 区间与 `dob` 用的那一段**是同一个**（说的本来就是同一个出生年）——
+            #: 改一处要想着另一处，别让两边悄悄分叉。
+            return str(random.randint(1970, 1995))
         if kind == "dob":
             return "%02d/%02d/%d" % (random.randint(1, 12), random.randint(1, 28),
                                      random.randint(1970, 1995))
+        if kind == "dob_dmy":
+            #: ★ 2026-10-20（belong）：站点 label 明确要 **DD/MM/YYYY**（日/月/年）。
+            #: 年份取 [今年-68, 今年-19] ⇒ 不论生日过没过，年龄都落在 18-68
+            #: （今年-19 且生日未到 = 18；今年-68 且生日已过 = 68）。
+            year = time.localtime().tm_year - random.randint(19, 68)
+            return "%02d/%02d/%d" % (random.randint(1, 28), random.randint(1, 12), year)
         if kind == "password":
+            #: 至少 8 位，含大写/小写/数字/特殊字符；`!` 在站点要求的 `!@#$%^&*` 里。
             return "Test%d!" % random.randint(1000, 9999)
         raise ValueError("产物写错了：不认识这个随机值类型「%s」" % kind)
 
@@ -3226,24 +3445,27 @@ class Filler:
         「接着再跑一遍」）时弹层**根本不在页面上** → 找不到 → 记一次失败 → 整遍挂。
         第 1 遍却过（那一遍弹层在）。同一条产物在两遍里表现相反，差别只在环境的残留。
 
-        判据（两道，都要）：
-          ① 这一步的名字属于「对同意做个决定」那一族（`_is_consent_step`）；
-          ② 此刻页面上**看不到**同意类容器（`_CONSENT_BOX_JS`）。
-        ②量不出来（eval 不可用）时**照软跳过**，但把这件事写进 note —— 因为真正的
-        兜底不在这一格：弹层要真还在，**下一步**会被 `_covered_by` 挡住并失败，
-        整遍照样挂。所以这里放宽读不出「这一次」的风险，换不到「把真失败抹掉」的后果。
+        判据（★ 2026-10-13 改成一条）：
+          这一步的名字属于「对同意做个决定」那一族（`_is_consent_step`）⇒ 找不到就是软跳过。
 
-        返回 `(算做成了吗, 一句人话)`；不是同意步骤 → `(False, "")`（交回原判据）。
-        """
+        ★★ 2026-10-13（用户裁定「都收吧」；真事 `job-c02d5768e535` · compareinsulation）：
+        **原来还有第二道否决**（「此刻页面上还看得见同意容器吗」，`_CONSENT_BOX_JS`）——
+        它把同一件事读成了两种结果：账本里模型对**同一条同意条**点了两次（`Accept all` /
+        `Accept All Cookies`），编成步骤表就是两条步骤；产物开跑前钩子已经把它点掉过一次，
+        于是第 1 条豁免、第 2 条**判死**（`没找到 ⇒ 这一步没做成`）⇒ 整组重试 ⇒ 自测挂两遍
+        ⇒ 人只能喊停。那道否决量的东西（「容器还在不在」）与「这一步该不该承重」根本不是一件事：
+        自绘的同意条常常**留着空壳容器**，而「还在不在」这件事**下一步自己会说**——
+        弹层真要还在，下一步会被 `_covered_by` 挡住并失败（这正是下面最后一段写着的兜底）。
+        所以：**认出是同意步骤就算软跳过**，把否决权交给真正的观测。
+
+        返回 `(算做成了吗, 一句人话)`；不是同意步骤 → `(False, "")`（交回原判据）。"""
         if not _is_consent_step(label):
             return False, ""
-        raw = self._ev(_CONSENT_BOX_JS, frame)
-        still = str(raw or "").strip().strip('"').strip("'").strip()
-        if still:
-            return False, ""            # 弹层还在页面上 —— 那这是**真找不到**，照旧算失败
         return True, ("「%s」这一步：页面上已经没有同意弹层了（前面那次会话把它点掉过，"
                       "或者这一单本来就是干净会话没有弹层）—— 跳过，不算没做成。"
-                      "产物开跑前本来就会自己清一次弹层（`_clear_obstructions`）。" % label)
+                      "产物开跑前本来就会自己清一次弹层（`_clear_obstructions`），"
+                      "每一步动手前后也会再问一遍（`_POPUP_HOOKS`）。" % label)
+
     def _page_ready(self, until=None):
         """**整页**能不能动手。不能 → 返回一句**为什么**（人话）；能 → 空串。
 
@@ -3694,6 +3916,7 @@ class Filler:
                               "（`select` 的自定义控件），照填（底下的 cdp 认得出这种下拉）",
                               self.cid, level + 1, cover)
             out = self._do(action, selector, value, kind, frame, label)
+            tried_any = True
             if not _ok(out) and not cover:
                 #: ★ 2026-10-12：**没找到**先等一等再试同一根地址（见 NOT_FOUND_WAIT_SECONDS）。
                 #: `cover` 那一支不走这儿 —— 它有自己的预算（`_covered_by` 里已经等过了）。
@@ -4153,6 +4376,19 @@ class Filler:
                 # 这一步真在哪一帧里做的（主帧 = ""）——「帧内的点击有没有带上帧号」
                 # 这件事，读 trace 就能看见，不用去读产物源码。
                 "frame_id": frame,
+                #: ★ 2026-10-09：这一步**不承重**（探路里同一个**无名**目标作成过也做败过
+                #: —— 浮窗那类"有时候有有时候没有"的东西，见
+                #: `browser_agent._not_load_bearing_clicks`）。自测拿这一格分档：
+                #: 它没做成**不否决**那一遍，但要**点名**说清（与 `scroll` / `wait` 同一档）。
+                #: 不写这一格的理由也在这句里：**只有产物知道**哪一步是那种步，自测那边
+                #: 光看 trace 认不出来（`action` 是 `click`，跟承重步长得一模一样）。
+                "auxiliary": (True if step.get("auxiliary") else None),
+                #: ★ 2026-10-13（用户裁定「都收吧」）：**这一步是软的**（`soft`）—— 与 `auxiliary`
+                #: 同一档：自测**不拿它否决那一遍**，但那样本行里照样点名。区别只在「凭什么」：
+                #: `auxiliary` 认的是**观察**（探路里同一目标作成过也做败过），`soft` 认的是
+                #: **这一类东西天生看会话脸色**（同意条/弹层：新窗口有、上一趟点掉过就没有），
+                #: 由生成侧标（`browser_agent._replay_step`），这一档只读记号。
+                "soft": (True if step.get("soft") else None),
                 "ok": ok,
                 "progress": progress,
                 # 判不出来时**带上为什么**（「没算出有没有推进」与「没有推进」是两件事）
@@ -4357,6 +4593,47 @@ class Filler:
                     # ⚠️ 重试**不再判一次 `when`**：这一组的门在进组时已经判过了，而页面上
                     #    什么都没推进（失败的那一步没成）。重判会把「重试」变成「整组跳过」——
                     #    那正是这套产物最贵的那类失败。
+                    #: ★ 2026-10-09（真站 `job-d40bb4d2d2be`／`taxlawadvocates` 实测）：
+                    #: **「滚不动」不该把整组打回**。现场：第 13 步点了「Next →」（页面当场翻页）
+                    #: ⇒ 第 14 步还写着「把 Next → 滚进视口」，而那只按钮**已经不在页面上** ⇒
+                    #: 整组 25 步从头再来（上限 1 次）⇒ 重走时第二步的 click 也找不到它
+                    #: （trace 原话：`step16 click 页面上没找到「Next →」`）—— **一次滚动失败把
+                    #: 整条线性流程搅乱了**，最后报「没走到成功」。
+                    #: 判据：**滚动是准备动作**（真正要做的下一步自己会把元素滚进视口）——
+                    #: 没滚成时**出声 + trace 里如实记 `ok=False`**，然后**接着走下一步**；
+                    #: 不重试整组（重试的前提是「那一步真的要做的事没做成」）。
+                    #: ★ 2026-10-13（用户裁定「都收吧」；真事 `job-c02d5768e535` ·
+                    #: compareinsulation 与 `job-708dfae74b73` · lovesac）：**`soft` 那一步
+                    #: 没做成不算失败，也不打回整组** —— 它与上面的 scroll 同一档。
+                    #: 什么步被标 `soft`：**环境噪声**，不是业务动作 —— 「点掉同意条 / 弹层」那一类。
+                    #: 它天生**有时有有时没有**（新窗口清 cookie ⇒ 有时有；上一趟已经点掉过 ⇒
+                    #: 有时没有；弹层还可能是**后冒出来的**）。账本忠实记下「探路那趟点过」，
+                    #: 于是它进了步骤表；可它是一条**条件**，写成无条件步骤就是两堵墙：
+                    #:   · compareinsulation 那趟：同一条同意条被编成两条步骤（模型点了两次），
+                    #:     第 1 条豁免、第 2 条判死（`_is_consent_step` 认出来了却栽在「此刻
+                    #:     页面上还看得见同意容器吗」那道上）⇒ 自测挂、改两版稿还是同一堵墙；
+                    #:   · 那条真话是：**弹层本来就归前提层管**（`_clear_obstructions` /
+                    #:     `_POPUP_HOOKS`：开跑前 + 每一步动手前后各问一遍）。表里这一步是**冗余**的，
+                    #:     冗余就该是软的 —— 页面上真还有弹层时，**下一步**会被 `_covered_by` 挡住
+                    #:     而失败，那时候的失败才是承重的。
+                    #: ⚠️ scroll 那条的**话**一个字不改（`test_a_scroll_that_cannot_move_does_not_
+                    #: walk_the_whole_group_again` 按「没滚成」这三个字钉着它）—— `soft` 另开一条。
+                    if not ok and str((step or {}).get("action") or "") == "scroll":
+                        self.log.warning("[%s] 第 %d 步是 scroll，没滚成（%s）—— 照旧往下走"
+                                         "（滚动是准备动作，不拿它打回整组）",
+                                         self.cid, index,
+                                         str(self._when_why_cache or self.retry_why or "")[:60])
+                        cursor += 1
+                        continue
+                    if not ok and (step or {}).get("soft"):
+                        self.log.warning(
+                            "[%s] 第 %d 步是**软步骤**（弹层那类：有就点掉、没有就算了），"
+                            "没做成（%s）—— 照旧往下走（它是环境噪声、不是业务动作，"
+                            "不拿它打回整组）",
+                            self.cid, index,
+                            str(self._when_why_cache or self.retry_why or "")[:60])
+                        cursor += 1
+                        continue
                     if not ok and self.group_retries < GROUP_RETRY_LIMIT:
                         self.group_retries += 1
                         self.retry_why = (

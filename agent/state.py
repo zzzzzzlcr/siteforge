@@ -31,7 +31,7 @@ __all__ = ["SiteState", "Caps", "GENERATOR", "MODE_BUILD", "MODE_FIX",
            "END_MISSING_KNOB", "END_REVISION_CAP", "END_EXPLORE_UNFINISHED", "END_FIX_OLD_PASSES",
            "END_WINDOW_GONE", "END_PAUSED", "END_DRAFT_FAILED", "END_LINT_CAP",
            "END_SELFTEST_CAP",
-           "END_NO_WINDOW", "END_DELIVER_LINT", "FINISHED_EXPLORATION"]
+           "END_NO_WINDOW", "END_DELIVER_LINT", "END_REPAIR_STUCK", "FINISHED_EXPLORATION"]
 
 #: §5.3 的 `generator`。与 `fixtures/reference_site.py` 里那份参考产物同一个值。
 GENERATOR = "siteforge/v0.1"
@@ -121,7 +121,12 @@ END_SELFTEST_CAP = "selftest_cap"
 END_NO_WINDOW = "no_window"
 #: 交付前最后一道自检没过（要落盘的那串字节自己脏了）—— 一个字节都不落
 END_DELIVER_LINT = "deliver_lint"
-
+#: ★ 2026-10-13（用户裁定「都收吧」）：**同一处、同一句话连着两次** ⇒ 修 py 治不了这一类。
+#: 真事 `job-c02d5768e535`（compareinsulation）：自测两次都卡在「第 2 步：页面上没找到
+#: 「Accept All Cookies」」，`diagnoses` 两条**逐字相同** —— 图照样回去重写一版，
+#: 第三版必撞同一堵墙（缺的是能力/时序，不是数据），最后只能人喊停。
+#: 停在这一档：把证据与「这一类为什么不靠改稿」摆出来，出路是**重探一遍**或**人给一句 hints**。
+END_REPAIR_STUCK = "repair_stuck"
 #: ★ 2026-10-16（用户裁定「先堵空转」）：**交回来的那一版一处都没改** ⇒ 停。
 #: 真事 `job-04029445a391`（zekear，8099）：自测没过 ⇒ 回 draft ⇒ 模型交回的那一版
 #: **与被测那版逐值相同**（三版都是 190,585 字符，`ast.dump` 比下来只差 `PROVENANCE`
@@ -230,6 +235,13 @@ class SiteState(TypedDict, total=False):
     #: （没有 `STATES/FILLS` 那张数据表，改稿走整份源码出补丁）。模板形这一格是空的。
     #: ⚠️ 必须**在这里声明**：langgraph 按字段名过滤，没声明的键进不了状态、**而且不报错**。
     fix_style: Optional[str]
+    #: ★ 2026-10-14：底稿**本来就是步进循环型**时，它那几格（`fix.loop_spec_from_source`
+    #: 从**底稿自己**读回来的：元数据在 `PROVENANCE`、旋钮在模块常量）——
+    #: 修站**不切形态**（那一版的形状是人交进来的），所以这一版还得按循环型渲。
+    #: ⚠️ 同样**必须在这里声明**：没声明 = 被静默丢掉 = `shape` 掉成 `"table"`，
+    #: 而循环型的 `STATES` 本来就是空的 ⇒ 产出一份走不动的表，**下游不会响**。
+    #: （实测踩过：加了 `fix_read["fix_loop"]`、忘了这一格，图里读到的永远是 None。）
+    fix_loop: Optional[dict]
     #: **这一版的底稿是哪一份**（2026-09-21）：线上启用那份 / **停用那份**（走 debug 读回来的，
     #: 也就是 `allow_disabled` 那条路）。它必须上闸 —— 「拿停用那份改出来的补丁」与
     #: 「拿线上那份改的」在屏幕上长得一样，而它们是两件不同的事（前者可能改的是一个
@@ -258,6 +270,14 @@ class SiteState(TypedDict, total=False):
     #: 「走通之后网址里会出现哪一截」（`/wizard` 那种）。与上面那格并列、**或**的关系；
     #: 老脚本本来就常这么判（`japansdates` / `warthunder`），而正文那格搬不过来它们。
     success_urls: Any
+    #: ★ 2026-10-13（用户点名 compareinsulation）：「手机号**不要用资料给的**。就用
+    #: `0207xxxxxxx` 格式，后几位随机就行」—— **这一站**要的号段（`"0207"`）。
+    #: 空串 = 没这个规矩，号码按池子自带的那一串号段现编（见 `template_loop._pool`）。
+    #: ⚠️ 它**只**管号段：尾数照旧随机；「不许取资料里那个号」是**所有**站的口径
+    #: （`template_loop.value_for` 里那一支**一律现编**），不靠这一格。
+    #: ⚠️ 必须在这个 schema 里声明：langgraph 按字段名过滤，没声明的键**进不了状态、还不报错**
+    #: （`fix_py` 当年就是这么无声消失的，见 `hints` 上面那条注释）。
+    phone_area_code: str
     evidence: str                 # fix 模式：失败证据的引用（FMR formLog / formStep）
     #: §4.6 前提层的产物：窗口、代理指纹、表单数据。都是**外面**给的，图不自己弄
     ws_url: Optional[str]
@@ -346,6 +366,11 @@ class SiteState(TypedDict, total=False):
     #: ⚠️ 必须在这里声明：langgraph 按字段名过滤，**没声明的键进不了状态、还不报错**
     #: （`fix_py` / `fix_loop` 当年就是这么无声消失的，见上面那几条注释）。
     anchors_overwritten: Optional[list]
+    #: ★ 2026-10-13（用户裁定「先局部修复再按吧」）：这一版是**局部修复**时说一句人话
+    #: （锚在哪一组哪一步、别处它动过什么被钉回去了）。空串 = 整版重写（或头一版）。
+    #: ⚠️ 与 `required_restored` 同一条坑：**不在这儿声明就进不了状态，而且不报错**
+    #: （2026-10-13 实测：`graph._draft` 写了它，闸上与 `out` 里都读不到）。
+    repair_local: str
     #: ★ 2026-10-07：**从账本补回来的必填格那几步**（账本里真填过、而产物里没有一步在填 ⇒
     #: 照账本把那一步补回去，别把一份本来能跑的稿拦在编译之前）。空列表 = 没补过。
     #: 与 `fills_restored` 是同一族、同一个道理：**补回去了 ≠ 静默修**，这件事得看得见。
@@ -358,6 +383,14 @@ class SiteState(TypedDict, total=False):
     #: ⚠️ 落了 ≠ 验过了 —— 这一格就是让运营看得见差别的那一格，**不许省**。
     #: ⚠️ 不在这儿声明就**进不了状态**，而且**不报错**（`fix_style` 那个坑同一族）。
     unverified: list
+    #: ★ 2026-10-09（**闸前留料**，`graph._leave_it_where_the_operator_can_take_it`）：
+    #: `unverified` 里**那一条是「图停在闸上等人」写下的** —— 单独记一份，因为它是**过程**的
+    #: 一句话，不是**产物**的一句话：这一版后来被人回话救活、真交付了，那一条就该消失
+    #: （交付的那一版没停在闸上）。而 `unverified` 里另外那些（`_draft` 写的软码
+    #: 「结构检查没过（照旧出了这一版）」）说的是**产物自己的缺口**，**必须活过交付** ——
+    #: 两者混在一个 list 里，`_deliver` 清的时候只能靠这一格认出前者。
+    #: ⚠️ 空串 = 这一版不是停在闸上留下的。`_deliver` / 人喊停 / 人打回三处都要把它收掉。
+    parked_why: str
 
     # ── lint / selftest ───────────────────────────────────────
     violations: list              # 打回的行（`{line, code, message, snippet}`）
@@ -374,6 +407,12 @@ class SiteState(TypedDict, total=False):
     lint_bounces: int
     diagnoses: int
     diagnosis: Optional[dict]     # 回灌给 draft 的证据：{run, failed_step, say, note}
+    #: ★ 2026-10-13（用户裁定「都收吧」）：**上一轮自测失败的那一处**（`"<第几步>|<那句话>"`）。
+    #: 为什么另开一格、不复用 `diagnosis`：`diagnosis` 是**回灌给 draft 的证据**，
+    #: draft 收下就清掉（`graph._draft` 里那两处 `"diagnosis": None`）—— 拿它判「同一处连着
+    #: 两次」永远判不到（2026-10-13 实测：`same` 恒为 False、照样烧到 `selftest_cap`）。
+    #: 这一格只增不减：它答的是「**是不是又撞了同一堵墙**」（`END_REPAIR_STUCK`）。
+    repair_fingerprint: str
 
     # ── 收尾 ──────────────────────────────────────────────────
     visits: list                  # 走过的节点（人看路线用，§6.4）

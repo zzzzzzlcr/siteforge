@@ -94,7 +94,12 @@ def _literals(src: str):
                 try:
                     found[name] = ast.literal_eval(node.value)
                 except Exception:
-                    return None, None
+                    #: ★ 2026-10-14：**这一个抠不出来，别的已经读到的照旧留着。**
+                    #: 原来这里 `return None, None` —— 把**已经读到的**一起丢了
+                    #: （「量到了不许当成量不到」这条纪律的**反面**）。
+                    #: 真事：步进循环型那份只有 `FILLS`，`FILLS` 抠出来了，
+                    #: 可要是文件里还有个动态构造的赋值，就连它也一起没了。
+                    continue
     return found.get("STATES"), found.get("FILLS")
 
 
@@ -109,8 +114,13 @@ URL_JUDGE_NAMES = ("SUCCESS_URL_MARKERS", "SUCCESS_URL_MARK")
 HASH_JUDGE_NAMES = ("HASH_SUCCESS_STATES",)
 
 
-def _module_literals(src: str) -> dict:
-    """模块级那几格的**字面量**（名字 → 值，`_` 前缀去掉）。
+def _module_literals(src: str, names=None) -> dict:
+    """模块级那几格的**字面量**（名字 → 值）。
+
+    `names` 不给 ⇒ 只认**成功判据**那几格（`SUCCESS_NAMES + URL_JUDGE_NAMES +
+    HASH_JUDGE_NAMES`），键**去掉 `_` 前缀**（手写的脚本常写 `_SUCCESS_TEXT`）。
+    `names` 给了 ⇒ 只认给的那几个、**名字与键都逐字**（循环型那几格 —— `PROVENANCE` /
+    `MAX_STEPS` 这种定名，剥前缀反而与 `template_loop` 那一边读的键对不上）。
 
     读不动 / 动态构造的那几格**不进这张表**（不猜）。坏 py 一律当「读不出来」，不抛 ——
     与 `_literals` 同一个规矩。
@@ -119,17 +129,19 @@ def _module_literals(src: str) -> dict:
         tree = ast.parse(src or "")
     except Exception:                      # noqa: BLE001 —— 坏 py = 读不出来
         return {}
+    strip = names is None
+    want = set(SUCCESS_NAMES + URL_JUDGE_NAMES + HASH_JUDGE_NAMES) if strip else set(names)
     out: dict = {}
     for node in tree.body:
         if isinstance(node, ast.Assign):
-            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            names = [node.target.id]
+            targets = [node.target.id]
         else:
             continue
-        for name in names:
-            key = name.lstrip("_")
-            if key in out or key not in SUCCESS_NAMES + URL_JUDGE_NAMES + HASH_JUDGE_NAMES:
+        for name in targets:
+            key = name.lstrip("_") if strip else name
+            if key in out or key not in want:
                 continue
             try:
                 out[key] = ast.literal_eval(node.value)
@@ -335,7 +347,14 @@ def from_py(src: str, *, url_get: Optional[Callable[[str], str]] = None):
     """
     plan = plan_mod.from_states(src)
     states, fills = _literals(src)
-    if states is None or fills is None:
+    #: ★ 2026-10-14：**两个都读不出来才算读不出来**（原来是 `or`）。
+    #: 为什么改：**步进循环型**那一族（`template_loop` 产的）**本来就没有 `STATES`**
+    #: —— 它是每轮现读页面的 —— 所以「没有 STATES」不是「读不出来」，
+    #: 是**这一种形状的正常样子**。老写法把它判成「坏 py 或动态构造」⇒ 走 `legacy`
+    #: ⇒ 修站把 **57 KB 的整份源码**丢给模型重写 ⇒ 超网关 180 秒 ⇒ `504`。
+    #: 真事：`foodandwine`（1069 行）/ `goldenromances`（1151 行）那几份。
+    #: 改成走数据表之后那一跳是 **1653 字**（差 35 倍）。
+    if states is None and fills is None:
         return plan, None, None, ["这份 py 里的 STATES/FILLS 读不出来（坏 py 或动态构造）—— 修不了"]
     states, fills, notes = repair_states(states, fills, url_get=url_get)
     return plan, states, fills, notes
@@ -421,6 +440,42 @@ def shape_of(src: str) -> dict:
         why.append("没有 `sys.exit(0 if … else 1)` 那个收尾 —— 退出码就是生产的成功判据，"
                    "少了它这一趟就没有判据了")
     return {"kind": "legacy" if not why else "unknown", "why": why}
+
+
+#: 步进循环型（`template_loop` 产的）那几个**行为旋钮**的模块级常量名 —— 逐字读。
+#: ⚠️ 它们与 `PROVENANCE` 分两处拿：元数据（`arrive_url` / `pre_steps` / …）在
+#: `PROVENANCE` 里，是**探路事实**；旋钮是**这一份现在的行为**（手调过 max_steps 就该照新的）。
+LOOP_KNOB_NAMES = ("PICK", "MAX_STEPS", "IDLE_LIMIT", "BUSY_TIMEOUT")
+
+
+def loop_spec_from_source(src: str):
+    """底稿**本来就是步进循环型**时，把它那几格读回来 → dict；不是 / 读不出 ⇒ `None`。
+
+    ★ 2026-10-14（真事 `job-d29e4c847c1c` foodandwine）：修站那条路原先**保不住形状** ——
+    `graph._draft` 的修站支把 `journey` 置 `None` ⇒ `funnel` 也是 `None` ⇒ `shape` 恒为
+    `"table"` ⇒ 一份循环型的底稿会被渲成**固定步骤表**，而它的 `STATES` 本来就是空的
+    （循环型每轮现读页面）⇒ 产出一份走不动的表。
+    而「修站**不切形态**：那一版的形状是人交进来的」（`_draft` 里那段注释）是这条链上的
+    老规矩 —— 要保住它，就得把循环型那几格从**底稿自己身上**读回来。
+
+    判据是 `PROVENANCE["shape"] == "loop"` —— **量出来的记号**，不看文件名、不看类名
+    （与 `shape_of` 同一条立场）。⚠️ 读不出这一格 ⇒ `None`：**不猜** —— 形态切错在下游
+    看不出来（产物照样跑，只是走的是另一条路）。
+    """
+    lit = _module_literals(src, names=("PROVENANCE",) + LOOP_KNOB_NAMES)
+    prov = lit.get("PROVENANCE")
+    if not isinstance(prov, dict) or str(prov.get("shape") or "") != "loop":
+        return None
+    out = {"arrive_url": str(prov.get("arrive_url") or ""),
+           "pre_steps": list(prov.get("pre_steps") or []),
+           "fill_order": list(prov.get("fill_order") or []),
+           "examples": dict(prov.get("examples") or {}),
+           "why": str(prov.get("why") or "")}
+    for key, name in (("pick", "PICK"), ("max_steps", "MAX_STEPS"),
+                      ("idle_limit", "IDLE_LIMIT"), ("busy_timeout", "BUSY_TIMEOUT")):
+        if name in lit:
+            out[key] = lit[name]
+    return out
 
 
 def _undefined_self_calls(tree) -> list:
@@ -709,6 +764,63 @@ _JSON_FENCE = re.compile(r"```[a-zA-Z]*\s*\n(.*?)```", re.S)
 def _table(spec: dict) -> dict:
     """摆给模型的那张表（**逐字**，不概括）。"""
     return {k: spec.get(k) for k in _TABLE_KEYS if k in spec}
+
+
+#: ★ 2026-10-13（用户裁定「先局部修复再按吧」）：**有锚就只许改那一处** ——
+#: 这一句进提示词；判据由 `graph._keep_repair_local` 兜（改了别处会被按被测那一版钉回去）。
+LOCAL_REPAIR_SAY = (
+    "**这一轮只许动一处**：下面那个锚点指的**那一步**"
+    "（「{state}」那一组的第 {index} 步，产物里的第 {n} 步）。"
+    "别处的步骤、顺序、判据**一个字节都不要改** —— 整表重写干过一次坏事：真事"
+    "（compareinsulation `job-37d8e6bfa080`）里第 6 步原本是 "
+    "`#option-1758085787838-2`，重写之后变成一个「没写名字的元素」，越修越坏。"
+    "框架会把你改到的别处按上一版钉回去（并记一笔），所以别浪费这一轮。"
+)
+
+
+def diagnosis_for_prompt(diag: Optional[dict]) -> str:
+    """一份诊断 → **逐字**贴进提示词的那一段（`states_user(diagnosis=…)` 的载荷）。
+
+    ★ 2026-10-10（`job-d037348fba4d` / `job-bbc57727025c` 两趟查出来的）：
+    在这之前 `service.write` 只把 `diag["say"]` **那一句**递进来 ——
+    `graph._diagnosis` 算出来的另外几格（`failed_step` / `note` / `per_run`，以及
+    新的 `现场`）**一格都没到模型眼前**。而 `states_user` 的规矩本来就是
+    「诊断逐字贴进去，这一层替它概括一次，模型就再也看不到原文里那些细节了」
+    ⇒ 只递一句话，那句规矩等于空转：改稿那双手看得见「卡在第 6 步」，
+    看不见「这一步真用的是哪个选择器、页面当时写着什么」。
+
+    ⚠️ **不许在这儿替它概括**（与 `states_user` / `patch_user` 同一条规矩）：
+    结构化那几格一律 `json.dumps` 原样摆，读的人是模型，不是要一段漂亮的报告。
+    ⚠️ 空（`None` / `{}`）⇒ 空串 —— `states_user` 见到空串就**不摆**那一段，
+    而不是摆一个空标题（「没有诊断」与「诊断是空的」在这一层不是一回事）。
+    """
+    if not isinstance(diag, dict) or not diag:
+        return ""
+    parts = []
+    say = str(diag.get("say") or "").strip()
+    if say:
+        parts.append(say)
+    if str(diag.get("note") or "").strip():
+        parts.append("它自己那句话（逐字）：%s" % str(diag["note"]).strip())
+    if diag.get("submissions") is not None:
+        parts.append("这一轮往站方**真提交**了 %s 次。" % diag.get("submissions"))
+    per_run = diag.get("per_run") or []
+    if per_run:
+        parts.append("每一遍（逐字）：\n%s"
+                     % json.dumps(per_run, ensure_ascii=False, indent=1))
+    scene = diag.get("现场")
+    if scene:
+        parts.append("**卡住那一刻的现场**（trace 里那一行，逐字 —— 这一步真发出去的是"
+                     "哪个选择器、页面当时写着什么，都在这儿）：\n%s"
+                     % json.dumps(scene, ensure_ascii=False, indent=1))
+    #: ★ 2026-10-13：有锚 ⇒ 把「只许动这一处」明说（判据在 `graph._keep_repair_local`）。
+    #: `index` 是**组内 0 起**的下标，说给人/模型听要 +1。
+    scope = diag.get("局部修复")
+    if isinstance(scope, dict) and scope:
+        parts.append(LOCAL_REPAIR_SAY.format(
+            state=scope.get("state"), index=int(scope.get("index") or 0) + 1,
+            n=scope.get("global")))
+    return "\n\n".join(parts)
 
 
 def states_user(spec: dict, *, diagnosis: str = "", page_evidence: str = "",

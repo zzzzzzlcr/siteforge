@@ -93,13 +93,27 @@ DEFAULT_READ_JS = r"""(function(){""" + DEEP_JS + r"""
     if(/^\s*(next|continue|get results|submit|install|finish|done|complete)\b/i.test(s)
        || /[\u2192\u00bb\u203a]\s*$/.test(s)){nextVisible=true;nextTxt=s;return;}
     if(NAVISH.test(s))return;
+    // ★ 2026-10-13（用户口径：**修系统**）：「同意条**啥时候冒出来都不确定**」⇒ 同意那几颗
+    //   **不许被当成「这一屏的一道题」**：它出来得晚（异步注入），混进选项里就会被随机挑 ——
+    //   挑中「Accept All」算运气，挑中「管理偏好 / 设置」就点进一个弹窗里空转 ✗。
+    //   这一类交给**动手之前那一段**（`run()` 里读 `consent` 那一格 ⇒ `clear_cookies()`）。
+    if(/^\s*(accept|agree|allow|got it|close|reject|decline|deny|manage|settings|preferences|more options|customi[sz]e)\b/i.test(s)
+       || /(cookie|consent|gdpr|privacy|同意|接受|拒绝|隐私|设置|偏好)/i.test(s))return;
     var t=tid(e);
     if(t) options.push(t); else options.push("\u0001"+s);});
+  //: 「这一屏有没有同意层」—— 同意层这类**看得见的、命中那几组字样**的元素算（与上面那条
+  //: 排除规则同一套词）：有 ⇒ 调用方动手之前先清掉它。**只读，不动手**。
+  var consent=false;
+  deepAll('div,section,aside,footer,[role=dialog]').forEach(function(e){
+    if(!vis(e))return; var lab=String(e.id||'')+' '+String(e.className||'')+' '
+      +String((e.getAttribute&&e.getAttribute('aria-label'))||'')+' '
+      +String(e.innerText||'').replace(/\s+/g,' ').slice(0,120);
+    if(/(cookie|consent|gdpr)/i.test(lab))consent=true;});
   var pm=(document.body.innerText.match(/\b\d{1,3}\s*%/)||[])[0]; var prog=pm?pm:'';
   var head=(document.querySelector('h1,h2,h3')||document.body).innerText||'';
   return JSON.stringify({url:location.href, head:head.replace(/\s+/g,' ').trim().slice(0,300),
                          progress:prog, inputs:inputs, options:options, nextVisible:nextVisible,
-                         nextTxt:nextTxt});})()"""
+                         nextTxt:nextTxt, consent:consent});})()"""
 
 
 def render_loop(site, success_text, success_urls, fills, provenance, *,
@@ -107,9 +121,18 @@ def render_loop(site, success_text, success_urls, fills, provenance, *,
                 idle_limit: int = 6, busy_timeout: int = 90) -> str:
     """把「怎么读这一屏、每格填什么、选项挑哪个」渲染成一条**步进循环型**的完整 py。
 
-    `success_urls` 是**主判据**（这一族只看网址 —— 老手的原话：「正文判据是这一族栽跟头的
-    老地方」，见 `lastingpowerofattorney.before.py` 的头注释）。`success_text` 给了就**加一条**
-    兜底判据（URL 判据不成立、纯 SPA 不改地址时用得上），没给就不写。
+    `success_urls` 是**主判据**；`success_text` 是**兜底判据**（URL 判据不成立、
+    纯 SPA 不改地址时用得上）。**两格至少要有一样** —— 都没有的产物会「跑到底再说自己成功」，
+    那是这一套里最忌讳的那类谎。
+
+    ⚠️ ★ 2026-10-14（用户裁定「网址或正文至少有一个」）：护栏原先写的是「**只看网址**」
+    （老手的原话：「正文判据是这一族栽跟头的**老地方**」，见 `lastingpowerofattorney.before.py`
+    的头注释）—— 而**运行期本来就两条都认**（骨架里 `SUCCESS(url)` 与 `SUCCESS(text)` 并排，
+    见 `_LOOP_SKELETON` 里那两段）。于是留了个**自己跟自己打架**的口子：一份**交单后地址不变、
+    只在原地显示成功文案**的站（foodandwine 就是），正文判据读得出来、网址判据**没有**
+    ⇒ 修站那条路在这一格**必然卡死**。现在按运行期的真实口径统一：**至少一样**。
+    （老手那句话仍然成立：正文判据**单独用**不牢靠 —— 所以它是**兜底**，不是替掉网址。）
+
     `pick`：`random`（反检测那一族）或 `first`。
     `fills`：`{字段名: {kind, label, fallback}}` —— 形状与 `template.render` **同源**。
     """
@@ -117,9 +140,9 @@ def render_loop(site, success_text, success_urls, fills, provenance, *,
         raise ValueError("site 不能空")
     urls = [u for u in ([success_urls] if isinstance(success_urls, str) else (success_urls or []))
             if str(u or "").strip()]
-    if not urls:
-        raise ValueError("成功判据不能空：这一族**只看网址** —— 没有网址判据的产物"
-                         "会「跑到底再说自己成功」，那是这一套里最忌讳的那类谎")
+    if not urls and not str(success_text or "").strip():
+        raise ValueError("成功判据不能空：**网址那格与正文那格至少要有一样** —— "
+                         "两格都空的产物会「跑到底再说自己成功」，那是这一套里最忌讳的那类谎")
     if str(pick) not in ("random", "first"):
         raise ValueError("pick 只能是 random 或 first（给的是 %r）" % (pick,))
     for name, spec in (fills or {}).items():
@@ -237,6 +260,8 @@ MAX_STEPS = __MAX_STEPS__
 IDLE_LIMIT = __IDLE_LIMIT__
 BUSY_TIMEOUT = __BUSY_TIMEOUT__
 READ_PAGE_JS = __READ_JS__
+#: 每轮先清一遍 —— 见 `run()` 里「动手之前」那一段（`clear_cookies`）；判据是读取器读回来的
+#: `consent` 那一格，**不额外往返**（那一读本来就有）。
 #: 蜜罐：这些字样命中的输入框**永远不填**（真人看不见它、机器人会填 ⇒ 整单判垃圾）。
 SKIP_FIELDS = ("company", "company_url", "website", "url", "fax")
 #: 页面「在处理」的文案（忙 ≠ 空转；与 goldenagesouls 同一套思路）。
@@ -282,10 +307,16 @@ STUCK_RETRIES = 2
 #: （不这么办 ⇒ 页面正把题画出来的那两轮里它抢先点 Continue ⇒ 22 秒就被自己的闸误杀 ✓ 真发生过）。
 EMPTY_ROUNDS_BEFORE_NEXT = 2
 
-#: 同意条上那几个「接受」长什么样（两份样本都先清它：`goldenagesouls` 的第一句就是
+#: 同意层上那几个「接受/拒绝」长什么样（两份样本都先清它：`goldenagesouls` 的第一句就是
 #: `self.cdp.click(COOKIE_BTN)` ✓ `lastingpowerofattorney` 的 `_clear_cookies` 同一条路 ✓）。
 #: ⚠️ 它**异步注入** ⇒ 得上限内等它出现 ✓。
-COOKIE_TEXTS = ("Accept All Cookies", "Accept All", "Accept Cookies", "I Accept", "Got it")
+#: ★ 2026-10-13（用户口径：**修系统**）：两头都收宽 —— ① 盖满视口那种同意弹层的按钮
+#: （`Allow All` / `Reject All` / `Agree` / 中文那几颗）；② 补几个**只关掉**它的说法
+#: （`Close` / `关闭`）—— 清不掉的那一次**不算失败**（`clear_cookies` 只记一行），
+#: 但能清就清，弹层留在页面上后面每一步都受影响。
+COOKIE_TEXTS = ("Accept All Cookies", "Accept All", "Accept Cookies", "I Accept", "Got it",
+                "Allow All", "Allow all", "Accept all", "Agree", "Reject All", "Decline",
+                "同意", "接受", "全部接受", "关闭", "Close")
 #: 「同意条还在吗」——**按文字**问页面上有没有那几句（复读确认用 ✓ 不猜）。
 COOKIE_GONE_JS = r"""(function(){__DEEP__
   var words=__WORDS__;
@@ -388,7 +419,14 @@ class Filler:
         ★ 2026-09-24 立的规矩：任何 `continue` / 收摊路径都先落一行 —— 那一天「看不见
         却不说」出现了三次，每次都让诊断慢一大截（trace 里全是「再看一眼」，看不出
         那一屏到底有什么）。
+
+        ★ 2026-10-14：那句话**两格都写**。原来只写 `progress_why`（「有没有推进」那一路
+        读的），而「为什么没做成」那一路（`selftest._verdict` 的 `step_said`）读的是
+        `note` ⇒ 收摊那一步的诊断落成兜底话「trace 里那一步没写为什么」⇒ 模型拿着那句话
+        去改稿、**改不出任何东西**。实测 4 趟就是这么丢的。调用方若自己点名给了 `note`
+        （今天没有这样的调用点），以调用方为准。
         """
+        kw.setdefault("note", why)
         self._trace(step=step, action=action, ok=False, progress=None,
                     progress_why=why, **kw)
 
@@ -660,6 +698,7 @@ class Filler:
         `[data-testid=…]` 找 ⇒ `cdp form` 报 `element not found`，而这里**照样 return True** ⇒
         表单永远是空的、提交被拒、页面一动不动（而 trace 上写着「填了」✗✗）。
         所以这一版：① id 来源用 `[id=…]`；② **回话里有 Error 就算没填上**（不许谎报）。
+
         ★ 2026-10-16（Task 4）：**动手之前先清一次弹层** —— 与下面那条落点判据**同一处**，
         次序是「先清弹层、再量落点」（表那套 `_perform` 里也是这两句、这个次序）：
         先把弹层点掉，`_covered_by` 才不必为它白等一轮（等的是加载蒙版，弹层等不走）。
@@ -738,12 +777,18 @@ class Filler:
             if ((label and label in hay) or (kind and kind in hay)
                     or (hay and hay in blob)):
                 if self._is_phone(name, kind):
-                    #: ★ 2026-09-26 用户点名（solarincentives 那一站）：「**手机号别取资料**」——
-                    #: 那一格永远是**现编的号码**：资料里那份是别人填过的真实号，同一串在站上
-                    #: 反复出现迟早被认出来。账本里那一趟真用过的值还能用（那是**这一站**收过的
-                    #: 形状，比如美国号），再不然就按池子现编。
-                    return (EXAMPLES.get(name) or EXAMPLES.get(kind)
-                            or self._pool(name) or self._pool(kind))
+                    #: ★ 2026-09-26 用户点名（solarincentives）：「**手机号别取资料**」——
+                    #: ★ 2026-10-13 用户再点名（compareinsulation）：「手机号**不要用资料给的**，
+                    #: 就用 `0207xxxxxxx` 格式、后几位随机」。
+                    #: ⇒ 这一格**一律现编**：账本里那份（`EXAMPLES`）是探路时从**资料**里拿的
+                    #: 真号，同一串在同一个站上反复出现迟早被认出来。
+                    #: ⚠️ 原来这里**先查 `EXAMPLES`** —— 与上面那句「永远是现编的号码」**打架**
+                    #: （注释说 A、代码做 B），用户这次点名的就是这个。
+                    #: `prefix`（`FILLS[name]['prefix']`，例：`'0207'`）= **这一站**要的号段；
+                    #: 不给就按池子自带的那一串号段挑（见 `_pool` 里 2026-10-08 那段：
+                    #: 别锁死一个号段）。
+                    _p = str(spec.get("prefix") or "")
+                    return self._pool(name, _p) or self._pool(kind, _p)
                 for key in (name, kind):
                     got = p.get(key) or EXAMPLES.get(key)
                     if got:
@@ -757,9 +802,9 @@ class Filler:
             name = FILL_ORDER[int(index)]
             spec = (FILLS or {}).get(name) or {}
             kind = str(spec.get("kind") or name)
-            if self._is_phone(name, kind):        # 同上：号码那一格**不取资料**
-                return (EXAMPLES.get(name) or EXAMPLES.get(kind)
-                        or self._pool(name) or self._pool(kind))
+            if self._is_phone(name, kind):        # 同上：号码那一格**一律现编**，不取资料
+                _p = str(spec.get("prefix") or "")
+                return self._pool(name, _p) or self._pool(kind, _p)
             got = p.get(name) or p.get(kind) or EXAMPLES.get(name) or EXAMPLES.get(kind)
             return str(got) if got else (self._pool(name) or self._pool(kind))
         return ""
@@ -769,7 +814,7 @@ class Filler:
         """这一格是不是**电话号**（`phone` / `tel` / `mobile` 任何一种写法都算）。"""
         return any(s in ("%s %s" % (name, kind)).lower() for s in ("phone", "tel", "mobile"))
 
-    def _pool(self, kind):
+    def _pool(self, kind, prefix=""):
         kind = (kind or "").lower()
         if "first" in kind or "last" in kind or "name" in kind:
             return random.choice(("James", "Sarah", "David", "Emma", "Michael", "Laura"))
@@ -783,11 +828,14 @@ class Filler:
             #: 每站每趟都是伦敦 `0207`，那本身就是个可疑的常量。口径与 `template.py` 那边
             #: 同一张表（`_GB_AREA_CODES` / `_GB_DRAMA_PREFIXES`），顺带避开 Ofcom 的
             #: **影视保留段**（格式合法、一眼是假的）。
+            #: ★ 2026-10-13（用户点名的**这一站**）：「就用 `0207xxxxxxx` 格式，后几位随机」
+            #: ⇒ 号段由 `FILLS[name]['prefix']` 给（`'0207'` = 这一站要伦敦号段），
+            #: **尾数照旧随机**；不给前缀的站照旧从上面那一串里挑（别把上一行那个口径弄丢）。
+            area = str(prefix or "") or random.choice(("0203", "0207", "0208", "0113", "0114",
+                                                       "0115", "0116", "0117", "0118", "0121",
+                                                       "0131", "0141", "0151", "0161", "0191"))
             while True:
-                got = (random.choice(("0203", "0207", "0208", "0113", "0114", "0115",
-                                      "0116", "0117", "0118", "0121", "0131", "0141",
-                                      "0151", "0161", "0191"))
-                       + "".join(str(random.randint(0, 9)) for _ in range(7)))
+                got = area + "".join(str(random.randint(0, 9)) for _ in range(7))
                 if not got.startswith(("02079460", "0113496", "0114496", "0115496",
                                        "0116496", "0117496", "0118496", "0121496",
                                        "0131496", "0141496", "0151496", "0161496",
@@ -894,12 +942,21 @@ class Filler:
             return None
         return random.choice(pool) if PICK == "random" else pool[0]
 
-    def click(self, token):
+    def click(self, token, scroll_first=False):
         """点一个「选项/按钮」：有 `data-testid` 就用它；没有就**按文字打标记再点**。
 
         ★ 稳定性那一招（`lastingpowerofattorney.before.py` 的原话：「这些按钮**没有稳定的
         CSS 选择器**」—— 选项 id 是 `option-<epoch毫秒>`、类名一长串）⇒ 找用 JS、点还是
         `cdp click`（真人手势那一层不能省）。
+
+        `scroll_first=True` = 点之前**先把这一颗挪进视口**（`cdp scroll`）。
+        ★ 2026-10-13（`job-e8bbc9b2612a`，compareinsulation 的问卷）真事：那一屏手势连点 3 次
+        没进，而 `cdp click` 自己的回话里写着 `landing_blind: true`（「那个坐标上取不到节点
+        —— 点可能在**视口外**」）⇒ 抬手发出去了，却不一定落在按钮上。读取器那一层只判
+        `offsetWidth/Height > 0`，**在视口外它也判「可见」** ⇒ 空点的根就在这儿。
+        ⚠️ 手势照旧是**唯一**的点法（契约 §5.2：动页面一律走 cdp，手拼 JS 点击会被 lint 打回）
+        —— 这一条只是把它挪到看得见的地方再点。
+
         ★ 2026-10-16（Task 4）：**动手之前先清一次弹层** —— 与下面那条落点判据**同一处**，
         次序是「先清弹层、再量落点」（表那套 `_perform` 里也是这两句、这个次序）：
         弹层**是页面加载完之后才异步冒出来**的（travelandleisure 那 18 条生产失败），
@@ -926,6 +983,8 @@ class Filler:
             #: ★ 本刀：动手之前先量落点 —— 被盖着就不动手，并**如实报**（不是「没找到」）
             if self._covered_before_acting('[data-sf-pick="1"]', "点"):
                 return False
+            if scroll_first:
+                self.cdp.scroll('[data-sf-pick="1"]')
             self.cdp.click('[data-sf-pick="1"]')
             return True
         if token.startswith(BY_ID):
@@ -1359,6 +1418,24 @@ class Filler:
                     self._rpt("success", text[:60])
                     return True
 
+                #: ★ 2026-10-13（用户口径：**修系统**，不是修某一份）：「同意条这类
+                #: **啥时候冒出来都不确定**」⇒ 每一轮**动手之前**先看这一屏有没有同意层，
+                #: 有就清掉、这一轮到此为止（下一轮重读，免得刚点掉的东西还留在读数里）。
+                #: ⚠️ 判据是读取器**这一读**带回来的 `consent` 那一格 —— **不额外往返**。
+                #: ⚠️ 位置在**成功判据之后**：已经到成功页了就别再动页面。
+                #: ⚠️ `clear_cookies()` 清不掉**不算失败**（它自己只记一行）—— 与「那一步
+                #: 是软步骤」同一条口径：同意层是环境噪声，不该有结束整趟的权力。
+                if page.get("consent"):
+                    self.log.info("[%s] step %d: 这一屏有同意层 —— 先清掉再动手", self.cid, step)
+                    self._trace(step=step, action="popup", ok=None, progress=None,
+                                progress_why="这一屏有同意层（cookies/consent/privacy），先清掉",
+                                target={"consent": True})
+                    self.clear_cookies()
+                    idle = 0
+                    busy_since = None
+                    continue
+
+
                 # ① 有空的可填 ⇒ 填第一个（「空了才填」⇒ 一格/两格的形态切换天然不怕）
                 todo = [t for t, v in (page.get("inputs") or []) if t and not v
                         and not any(s in str(t).lower() for s in SKIP_FIELDS)]
@@ -1482,12 +1559,21 @@ class Filler:
                                             "inputs": len(page.get("inputs") or []),
                                             "nextTxt": str(page.get("nextTxt") or "")[:24]})
                         continue
-                    sig = answered_sig          # ← 与 ② 那把尺子同一处（别各拼一份）
-                    if sig == getattr(self, "_last_next_sig", ""):
+                    #: ★ 2026-10-13（真事 `job-e8bbc9b2612a`）：这一道闸原来拿 `answered_sig`
+                    #: （题面 + 选项）当「同一屏」的判据，而那一族的 `head` 是**页面标题** ——
+                    #: 每一屏都长一样（「Free Eligibility Checker」）⇒ 计数器**跨屏累加**：
+                    #: 那一趟在 postcode/name 两屏上点过之后，**第一次**点 email 那一屏的 Continue
+                    #: 就直接收摊 ✗（trace 里 step 11/14 都写着 `retry: True` —— 它们根本不在同一屏上）。
+                    #: ⇒ 换成**看得见的形状**：题面 + 选项 + **进度** + **这一屏有哪几个格**。
+                    #: ⚠️ ② 挑选项那边**照旧不含 progress/inputs**（答完一题站点常把百分比往上推，
+                    #: 带上它「同一屏」会被读成新屏 ⇒ 又答一次 ✗）—— 这把尺子只给 ③ 用。
+                    next_sig = "%s|%s|%s" % (answered_sig, page.get("progress") or "",
+                                             "|".join(str(t) for t, _v in (page.get("inputs") or []))[:120])
+                    if next_sig == getattr(self, "_last_next_sig", ""):
                         self._same_next = getattr(self, "_same_next", 0) + 1
                     else:
                         self._same_next = 0
-                    self._last_next_sig = sig
+                    self._last_next_sig = next_sig
                     if self._same_next >= SAME_NEXT_LIMIT:
                         self.log.error("[%s] 连着 %d 次点 Next、页面还是那一屏 —— 如实报失败",
                                        self.cid, self._same_next)
@@ -1495,14 +1581,27 @@ class Filler:
                         self._stop(step, "click", "连着 %d 次点 Next、页面还是那一屏"
                                    % self._same_next)
                         return False
-                    self.click(BY_TEXT + str(page.get("nextTxt") or "Next"))
+                    #: ★ 2026-10-13（真事 `job-e8bbc9b2612a` 的问卷）：这一屏**已经点过一次、
+                    #: 页面还是没变** ⇒ 这一下换两样东西再试一次：**先让站点那边落定**（等几秒，
+                    #: 它这一屏在做异步校验），**再把按钮挪进视口**（`scroll_first` —— 那一趟
+                    #: `cdp click` 自己就报了 `landing_blind`：坐标上取不到节点、抬手空放了）。
+                    #: ⚠️ 点法**还是手势**（契约 §5.2）—— 不许改成 JS 点击（lint 会打回）。
+                    #: ⚠️ `ok` 报的是**这一下有没有点出去**（原来写死 `True` ⇒ trace 里每一次 Next
+                    #: 都是「成功」，失败那几次在账上一点痕迹都没有，诊断只能判「不知道」✗）。
+                    retrying = self._same_next >= 1
+                    if retrying:
+                        self._dly(2.0, 4.0)
+                    clicked = self.click(BY_TEXT + str(page.get("nextTxt") or "Next"),
+                                         scroll_first=retrying)
                     idle = 0
                     busy_since = None
-                    self.log.info("[%s] step %d: Next（%s）", self.cid, step,
-                                  (page.get("head") or "")[:40])
-                    self._trace(step=step, action="click", ok=True, progress=None,
-                                progress_why="点了 Next，页面变没变由下一轮读出来",
-                                target={"text": str(page.get("nextTxt") or "Next")}, note="Next")
+                    self.log.info("[%s] step %d: Next（%s）%s", self.cid, step,
+                                  (page.get("head") or "")[:40], "（重试：先落定、挪进视口）" if retrying else "")
+                    self._trace(step=step, action="click", ok=bool(clicked), progress=None,
+                                progress_why="点了 Next（%s），页面变没变由下一轮读出来"
+                                             % ("重试：先落定、挪进视口" if retrying else "第一次"),
+                                target={"text": str(page.get("nextTxt") or "Next"),
+                                        "retry": (True if retrying else None)}, note="Next")
                     continue
 
                 # ④ 没得点：先分清「页面在处理」还是「真的没事干」

@@ -864,6 +864,138 @@ def test_a_dead_run_does_not_hand_over_the_py_of_an_earlier_one(tmp_path):
     assert "跑挂" in cell["say"], cell["say"]
 
 
+def test_a_run_that_kept_a_version_says_so_instead_of_denying_it(tmp_path):
+    """★ 2026-10-08（运营真撞上：`job-c8730acb27c5`，policyquail.com）。
+
+    那一趟是 IR 硬拦（`draft_failed`）**但稿子留下来了**（`_keep_unverified`：同一次 update
+    里写下 `py_path` / `src` / `unverified`）。可运营在面板上读到的是：
+
+        ① **为什么没有 py**：写这一版 py 那一步没能产出一份过得了闸的稿……
+        ② 这一趟**没有可交付的产物**（它到头了，记录里没有它写下 py 的证据）。
+        ④ （这一趟**确实写下了这一版**：把「照样传这一版」勾上再预检一次……）
+
+    —— ①② 与 ④ **摆在同一格、互相打脸**，①② 是假的。运营读到「白跑了」⇒ 回来找人过一手。
+    「老是产不出 py、得这边再过一次」就是这么来的：**不是没产出，是面板不说。**
+
+    这一条钉：**留下的那一版必须被说出来**，而且
+      ① 「为什么没有 py」那一路的话**一个字都不许有**（问错了）；
+      ② 那句头**不许**再说「记录里没有它写下 py 的证据」（证据就在记录里）；
+      ③ 出口那句（照样传）**照旧在** —— 这次只改口径，不动路；
+      ④ 端点那条 409 与这一格**同一句**（`test_the_live_cell_and_the_endpoint_say_the_
+         very_same_thing` 钉的另一半，这里再量一次免得绕开）。
+    """
+    kept = "# KEPT EVEN THOUGH THE STRUCTURE CHECK FAILED\n"
+    note = "先别写 py：卡在「把账本变成「可编译的步骤表」那一层」 —— 这一趟的账本还编译不出来。"
+    client = _client(tmp_path, _factory(
+        reason=END_DRAFT_FAILED, note=note,
+        extra={"src": kept, "py_path": str(_out_dir(tmp_path) / ("%s.py" % SITE)),
+               "unverified": ["结构检查没过（这一版**照样留给运营**，可以「照样传」去试）：…"]}))
+    job_id, view = _run_to_the_end(client, tmp_path)
+    assert view["status"] == "done" and view["delivered"] is False, view
+
+    cell = _live(client, job_id)["artifact"]
+    #: ③ 路没动：还是不给下载（上传那道闸只认 `delivered`，要人明确点「照样传」）
+    assert cell is not None and not cell["url"], cell
+    said = cell["say"]
+    assert "为什么没有 py" not in said, said
+    assert "记录里没有它写下 py 的证据" not in said, said
+    assert "留下了一版" in said, said
+    assert "照样传" in said, said
+    assert note in said, said          # 照旧照抄它自己那句话（不编原因）
+
+    r = client.get("/job/%s/artifact" % job_id)
+    assert r.status_code == 409, (r.status_code, r.text)
+    assert r.json()["detail"] == said, (r.status_code, r.text)
+
+
+def test_a_run_parked_at_a_gate_that_kept_a_version_does_not_say_it_has_none_yet(tmp_path):
+    """★ 2026-10-09（**闸前留料**带出来的新组合）：**停在闸上（还没跑完）** + **那一版已经落盘**。
+
+    `_no_artifact_say` 原先的顺序是「**先看跑没跑完，再看留没留料**」—— 那条顺序从前看不出
+    问题，因为 `_keep_unverified` 的四个出口**全是终局**（`done` / `failed`），
+    「没跑完」与「留了料」根本碰不到一起。闸前留料让 `waiting` 也能留一版 ⇒ 那一档会同时说：
+
+        这一版 py 它留下了（没过的是这一趟自己的检查，…）
+        这一趟**还没有产物**（它现在是「在等人回话」）—— 产物要等它走到「写下了 py」那一步才有。
+
+    两句摆在同一格、互相打脸 —— 正是 2026-10-08 那张缺陷单骂的病（**不是没产出，是面板不说**），
+    只是换了个入口进来。
+
+    真事 `job-cb0197a79539`（8100，policyquail.com，2026-10-09）：停在 `lint` 闸上、
+    盘上是 223354 字节那一版（`ast.parse` 过得去），`/job/{id}/artifact` 却说「还没有产物」。
+
+    ⚠️ 判的是**一致性**：说「还没跑完、这一版还会变」**可以**；说「还没有产物」**不行**——
+    运营读到会以为手上什么都没有。
+    """
+    from langgraph.types import Interrupt
+    kept = "# 停在闸上留下的那一版\n"
+    g = FakeGraph(steps=[_Snap(
+        values={"site": SITE, "visits": ["intake", "explore", "draft"],
+                "src": kept,
+                "py_path": str(_out_dir(tmp_path) / ("%s.py" % SITE)),
+                "unverified": ["刚写完，还没跑自测 —— 图停在下一道闸上等人"]},
+        interrupts=(Interrupt(value={"step": "lint", "say": "接下来过一遍契约检查。",
+                                     "facts": {}, "can": ["让它继续"]}, id="i-1"),))])
+    client = _client(tmp_path, lambda brief, deps: g)
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    view = _wait(client, job_id)
+    assert view["status"] == "waiting", view
+
+    r = client.get("/job/%s/artifact" % job_id)
+    assert r.status_code == 409, (r.status_code, r.text)
+    said = r.json()["detail"]
+    assert "还没有产物" not in said, (
+        "这一版就躺在交付路径上，面板却说「还没有产物」—— 运营读到会以为白跑了：\n%s" % said)
+    assert "已经写下了一版 py" in said, said
+    assert "还没跑完" in said, said          # 「会变」这件事也得说出来，不然人以为这就是终稿
+
+
+def test_a_parked_run_that_kept_a_version_shows_up_on_the_page(tmp_path):
+    """★ 2026-10-09（闸前留料）：**停在闸上**但**已经写了一版** ⇒ 页面上**要摆出「产物」那一步**。
+
+    `_artifact_cell` 判的是「跑到写 py 那一步没有」，而它原先的读法**只看跑没跑完**
+    （`status in (DONE, FAILED)`）。从前那样读没错：`_keep_unverified` 只在终局发生。
+    闸前留料之后 `waiting` 也能有产物 ⇒ 再只看 status，**页面上那一步根本不出现**
+    —— 运营看不见盘上那份，这一整条改动在 console 上等于白做（`console.html:1120`：
+    `artifact` 是 `null` 就**不摆那一步**，页面不自己推）。
+
+    ⚠️ 但**不给下载地址**（`url` 为空）：上传那道闸只认 `delivered`（`_delivered_path`），
+    给了就是一个「点下去 409」的按钮 —— 那正是 §15.2 / A14 点名不许的。
+    这一格与那端点回的 409 **同一句**（同一处拼法，`test_the_live_cell_and_the_endpoint_
+    say_the_very_same_thing` 钉的另一半）。
+    """
+    from langgraph.types import Interrupt
+    kept = "# 停在闸上留下的那一版\n"
+    g = FakeGraph(steps=[_Snap(
+        values={"site": SITE, "visits": ["intake", "explore", "draft"],
+                "src": kept,
+                "py_path": str(_out_dir(tmp_path) / ("%s.py" % SITE)),
+                "unverified": ["刚写完，还没跑自测 —— 图停在下一道闸上等人"]},
+        interrupts=(Interrupt(value={"step": "lint", "say": "接下来过一遍契约检查。",
+                                     "facts": {}, "can": ["让它继续"]}, id="i-1"),))])
+    client = _client(tmp_path, lambda brief, deps: g)
+    job_id = client.post("/run", json=_brief(tmp_path)).json()["job_id"]
+    view = _wait(client, job_id)
+    assert view["status"] == "waiting", view
+
+    cell = _live(client, job_id)["artifact"]
+    assert cell is not None, (
+        "这一版就躺在交付路径上，页面上却**连那一步都没有** —— 运营根本看不见它")
+    assert not cell["url"] and not cell["filename"] and not cell["path"], (
+        "还没交付却给了下载地址 —— 那会点出一个 409：%r" % (cell,))
+    #: ★ 2026-10-09：**「留了一版」这个记号要显式给**。页面只看得见 `url` 空不空，而
+    #: 「留了一版没交付」与「真的一版都没有」**两种情况 `url` 都是空** —— 不给记号，
+    #: 页面就只能靠猜，而那两档该说的话**正好相反**（「有一版可以照样传」vs「没有 py 可传」）。
+    assert cell.get("kept") is True, (
+        "格子没带「这一趟留了一版」这个记号 —— 页面分不出它和「真的一版都没有」：%r" % (cell,))
+    assert "已经写下了一版 py" in cell["say"], cell["say"]
+
+    got = client.get("/job/%s/artifact" % job_id)
+    assert got.status_code == 409, (got.status_code, got.text)
+    assert got.json()["detail"] == cell["say"], (
+        "页面那句与端点那句不是同一句：\n页面：%r\n端点：%r" % (cell["say"], got.json()["detail"]))
+
+
 # ══════════════ 4b. 复核点名的三条：跑挂 ≠ 没交付 / 核对过的就是端出去的 / 读不出来 ══════════════
 
 
@@ -1038,4 +1170,45 @@ def test_the_live_cell_says_nothing_about_a_file_when_there_is_none(tmp_path):
     job_id, _ = _run_to_the_end(client, tmp_path)
     cell = _live(client, job_id)["artifact"]
     assert not cell["url"] and not cell["filename"], cell
+    #: ★ 2026-10-09：这一档**真的一版都没有**（没留料）⇒ 记号必须是假的。
+    #: 页面靠它选那一句标题（「没有 py 可传」还是「留了一版、要传先勾照样传」）——
+    #: 记号给反了，页面就会对着一个有稿的趟说「没有 py 可传」。
+    assert not cell.get("kept"), (
+        "这一趟一版都没留，格子却说它留了一版：%r" % (cell,))
     assert "撞上限" in cell["say"], cell["say"]
+
+
+def test_the_way_out_says_which_road_to_take_not_just_that_it_is_your_call(tmp_path):
+    """★ 2026-10-10（用户：「反馈回的信息不足，运营压根不知道要咋操作」）。
+
+    运营卡住的那一句（原文，他贴过来的）：
+
+        这一趟**已经写下了一版 py**，但它**还没跑完**（它现在是「在等人回话」）—— 再往前走，这一版还会被改。
+        （这一趟**确实写下了这一版**：把「照样传这一版」勾上再预检一次，就能拿它上传 ——
+         **那是你自己的判断，服务不替你做**。）
+
+    —— 最后那半句把决定**推**给运营，却没给他**做决定要的那件东西**：他面前摆着两条路
+    （按「继续」往下走 / 现在就传），而**哪条稳、各要付什么代价**，一句都没说。
+    能读到的只有「你自己判断」⇒ 他就卡在这儿，回来找人。
+
+    ⚠️ 这两条路系统**自己就是这么设计的**，它全知道 —— 差的只是**把它说出来**。
+    这一条钉三件：① 两条路都在屏上；② **哪条传上去的是验过的**说清了；
+    ③ 「只推决定、不给料」那种写法（「那是你自己的判断，服务不替你做」）不许回来。
+    """
+    kept = "# KEPT EVEN THOUGH IT NEVER GOT CHECKED\n"
+    client = _client(tmp_path, _factory(
+        reason=END_DRAFT_FAILED, note="先别写 py：这一趟的账本还编译不出来。",
+        extra={"src": kept, "py_path": str(_out_dir(tmp_path) / ("%s.py" % SITE)),
+               "unverified": ["结构检查没过（这一版**照样留给运营**，可以「照样传」去试）：…"]}))
+    job_id, _view = _run_to_the_end(client, tmp_path)
+    said = _live(client, job_id)["artifact"]["say"]
+
+    #: ① 两条路都在（一条是「先继续」，一条是「现在就传」）
+    assert "继续" in said, "没给「先让它验完」那条路：%r" % said
+    assert "照样传这一版" in said, "没给「现在就传」那条路：%r" % said
+    #: ② 两条路的**代价**说清了 —— 一条传的是验过的、一条传的是没验过的
+    assert "验过" in said, "没说清哪一条传上去的是**验过**的那一版：%r" % said
+    assert "没验过" in said, "没说清「现在就要」那条传上去的是**没验过**的：%r" % said
+    #: ③ 只推决定、不给料
+    assert "那是你自己的判断，服务不替你做" not in said, (
+        "又把决定推回去、不给做决定要的那两样（两条路 + 各自代价）：%r" % said)

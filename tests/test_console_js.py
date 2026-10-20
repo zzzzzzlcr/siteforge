@@ -90,6 +90,12 @@ STOP_HINT_STILL = "没请求成"
 #: 服务对 `/again` 回的那句人话 —— **从服务自己的常量算出来**（不在这里手抄一遍：
 #: 那句话改一个字，这一份就会跟着变，不会两边漂）。
 AGAIN_SAY = service.AGAIN_SAY % ("job-2", "job-1", 2)
+#: 服务对 `/reply` 回的那句人话 —— 同上，**从服务自己的常量来**（不在这儿手抄一遍）。
+#: ★ 2026-10-10：这一句服务一直在说，而页面拿到就扔（成功那条路上只清了一下输入框）。
+#: ★ 2026-10-10 第二处：它还**点名了「它接下来要跑的那一步」**（用户：「点继续运营不知道
+#: 啥情况」）—— 所以这里要按**夹具那道闸的步名**把它算出来。夹具的闸是 `deliver`
+#: （`_live()` 里那一格），两边对不上这条就会红，那正是要的。
+REPLY_ACCEPTED_SAY = service.REPLY_ACCEPTED_SAY % service.STEP_SAY["deliver"]
 #: 两趟事件人话里的**记号**（修复轮 2 / D1）：时间线上是哪一趟的事件，靠它分。
 OLD_TAG = "旧那一趟"
 NEW_TAG = "新那一趟"
@@ -295,6 +301,42 @@ def _again_payloads() -> dict:
     }
 
 
+def _continue_payloads() -> dict:
+    """「在闸上按继续」那一跳的响应（2026-10-10 用户报的「点了继续也没任何反馈」）。
+
+    开页时**停在闸上**（只有这一档 `btnContinue` 才按得动）→ 人按「继续」→
+    服务回的那句 `say` 是**它自己写好的原话**（`service.REPLY_ACCEPTED_SAY`，
+    用例直接引用它，两边不会漂）。
+
+    ⚠️ 下面那几份 `/live` 与开页那份**不一样**（夹具的牙挂在「正文变了才重画」上）——
+    但这一条用例量的是**按下去之后、下一拍之前**那一屏，所以驱动脚本点了之后
+    **不给 tick**。真机上 `lint` 只跑 3 秒、`diagnose` 1 秒，而轮询每 3 秒一次：
+    `running` 那一档整个夹在两次轮询之间 ⇒ **靠重画给反馈，运营根本看不见**。
+    """
+    gate = _live("waiting", "gate", n=1)
+    later = _live("running", "queue", n=2, tag="之后")
+    _assert_all_different([gate, later], "两份 `/live` 的正文")
+    return {
+        "scenario": "continue",
+        "search": "?job=job-1",
+        "responses": {
+            "/runs": [{"body": {"note": "", "runs": [
+                {"job_id": "job-1", "site": "example-funnel", "status": "waiting",
+                 "say": "停下来了，在等你一句话。",
+                 "created_at": "2026-09-19T21:00:00+08:00",
+                 "rounds": 7, "delivered": False}]}}],
+            "/job/job-1/live": [{"body": gate}, {"body": later}],
+            #: `/reply` 回的**就是 `_view(job_id)`**（`service.reply` 最后那一行）：
+            #: job 已经被挪出「停住」⇒ 这一份是 `running` 那一档，`say` 是服务那句话。
+            "/job/job-1/reply": [{"body": {"job_id": "job-1", "status": "running",
+                                           "delivered": False, "error": None,
+                                           "result": None, "gate": None,
+                                           "site": "example-funnel",
+                                           "say": REPLY_ACCEPTED_SAY}}],
+        },
+    }
+
+
 def _assert_all_different(bodies: list, what: str) -> None:
     """那些正文**两两不同** —— 夹具的牙挂在这个前提上（页面只在正文变了才重画）。"""
     seen = {json.dumps(b, sort_keys=True) for b in bodies}
@@ -341,6 +383,8 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
     if scenario in ("runs-why", "runs-why-none"):
         #: 两趟**同一个驱动**，只差「那两格给不给」（与 artifact / artifact-missing 同一路数）。
         payload = _payloads(final_mode=None, with_why=(scenario == "runs-why"))
+    elif scenario == "continue":
+        payload = _continue_payloads()
     elif scenario == "again":
         payload = _again_payloads()
     elif scenario == "artifact":
@@ -362,6 +406,8 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _py_upload_payloads()
     elif scenario == "py-upload-nothing":
         payload = _py_upload_payloads(with_nothing=True)
+    elif scenario == "py-upload-kept":
+        payload = _py_upload_payloads(with_kept=True)
     elif scenario == "run-refused":
         payload = _run_refused_payloads()
     elif scenario == "window":
@@ -597,6 +643,49 @@ def test_the_again_button_really_changes_the_screen(tmp_path):
     assert out["afterAgain"]["errBox"] == "" and out["afterAgain"]["errHidden"] is True, out["afterAgain"]
 
 
+def test_the_continue_button_says_something_back(tmp_path):
+    """**「点了继续也没任何反馈」那一条**（2026-10-10 用户报的）。
+
+    现场：运营停在闸上按「继续」，屏幕上**逐像素没变** —— 既不知道那一下有没有送出去，
+    也不知道它现在在干什么，只能回来问人。
+
+    修之前那一屏：`act()` 成功那条路上**只做一件事** —— `box.value = ""`。而按「继续」时
+    输入框**按定义就是空的**（闸上不写也能按），清了等于没清；服务明明回了话
+    （`reply()` 回的就是 `_view()`，`say` 是 `REPLY_ACCEPTED_SAY`），页面拿到 `res.obj`
+    **直接扔掉**。而 `lint` 只跑 3 秒、`diagnose` 1 秒，`/live` 每 3 秒才拉一次 ⇒
+    `running` 那一档整个夹在两次轮询之间，连按钮变灰都看不见。
+
+    ⚠️ 这一条**只在「按下去之后、下一拍之前」量**（驱动里点了**不给 tick**）：
+    靠重画给反馈，真机上根本来不及。与 `run-refused`（2026-09-23、「点了没反应」那一族）
+    量的是同一个位置 —— **人按的那一下要把服务那句话带到眼前**；差别只在那一族量的是
+    失败那条路（红杠），这一条量的是**说成了**那条路（`ok` 那一格）。
+    """
+    out = _drive(tmp_path, scenario="continue")
+
+    # 量具**不是瞎的**：开页真的停在闸上（不然那一按根本发不出去，下面全是空步）
+    assert out["beforeClick"]["disabled"] is False, out["beforeClick"]
+    assert out["urls"].count("/job/job-1/reply") == 1, out["urls"]
+
+    after = out["afterClick"]
+    # ① 有东西摆出来了（修之前这一格是 `hidden=True`）
+    assert after["errHidden"] is False, "按下去之后屏幕上一条都没摆：%r" % after
+    # ② 摆的是**服务给的原话** —— 一字不差（页面不自己编一句「已送出」）
+    assert after["errBox"] == REPLY_ACCEPTED_SAY, (
+        "那一句不是服务给的原话（页面自己编了一句，或者压根没摆）：%r" % after["errBox"])
+    # ③ 底色是「**说成了**」，不是坏消息（`setErr` 的 `ok` 那一格 —— 同一句话两处不许两副面孔）
+    assert "done" in after["errClass"], (
+        "服务**说成了**的那句话被当成坏消息摆出来（底色是错的）：%r" % after["errClass"])
+    # ④ 带到眼前（人的眼睛在按钮这儿 —— 与 `run-refused` 同一条纪律）
+    assert after["errScrolls"] >= 1, "那句话没被带到眼前（红杠在页面最上面）：%r" % after
+
+    # ⑤ 那句话要**活过重画**（每 3 秒一次轮询，擦掉就退回「按下去什么都没发生」）
+    assert out["afterRepaint"]["errBox"] == REPLY_ACCEPTED_SAY, out["afterRepaint"]
+    # ⚠️ 而重画那几次**不许再滚**：`paint()` 每 3 秒也走到 `setErr`，
+    #    在那儿滚就是跟人抢滚动条（比看不见更坏）—— `run-refused` 钉的是同一条。
+    assert out["afterRepaint"]["errScrolls"] == after["errScrolls"], (
+        "重画那几次也跟着滚了 —— 每 3 秒跟人抢一次滚动条：%r" % out["afterRepaint"])
+
+
 def test_the_download_is_not_there_until_the_artifact_really_is(tmp_path):
     """**产物出现之前那个位置不存在；出现了就是真的能下；而且它活得过重画**（Task 11 / §15.4）。
 
@@ -813,21 +902,36 @@ ART_DELIVERED = {"url": "/job/job-py/artifact", "filename": "qualify.py",
                  "say": "这一趟写下的那串字节拿到了。"}
 #: 「没有 py」那一格：`url` 空 + 服务自己交代的那句话（**为什么没有 py**）——
 #: 这正是运营撞到的形状：自测没带 url ⇒ 没落盘 ⇒ 面板上什么也不说。
-ART_NOTHING = {"url": None, "filename": None, "path": None,
+ART_NOTHING = {"url": None, "filename": None, "path": None, "kept": False,
                "say": "**为什么没有 py**：探路**没走完** —— 规矩是不许拿半份账本写 py。"}
+#: ★ 2026-10-09（**闸前留料**）：停在闸上、可**那一版已经在盘上了**（`kept` 非空）。
+#: 与 `ART_NOTHING` **`url` 一样是空的** —— 差别只在 `kept` 这个记号上。
+#: 两档该说的话**正好相反**：这一档是「有一版，要传先勾照样传」，那一档是「一版都没有」。
+ART_KEPT = {"url": None, "filename": None, "path": None, "kept": True,
+            "say": ("这一趟**已经写下了一版 py**，但它**还没跑完**（它现在是「在等人回话」）"
+                    "—— 再往前走，这一版还会被改。\n"
+                    "（这一趟**确实写下了这一版**：把「照样传这一版」勾上再预检一次，"
+                    "就能拿它上传 —— 那是你自己的判断，服务不替你做。）")}
 
 
-def _py_upload_payloads(*, with_nothing: bool = False) -> dict:
+def _py_upload_payloads(*, with_nothing: bool = False, with_kept: bool = False) -> dict:
     """那一栏的三下：地址 + 载荷 + 服务那三句话上屏。
 
     `with_nothing=True`：这一趟**没有 py**（`artifact.url` 空）—— 那一栏必须**说清为什么**，
     而不是继续摆三个按不动的按钮（2026-09-22 用户原话：「到底能不能上传 py 的我不知道」）。
+
+    ★ 2026-10-09（闸前留料）：`with_kept=True` 是**同一段驱动、同一档 `url` 空**的第三种情形
+    —— 停在闸上、可那一版**已经在盘上**。它与 `with_nothing` 只差 `artifact.kept` 一个记号，
+    而两档该说的话**正好相反**（「有一版，要传先勾照样传」vs「一版都没有」）——
+    所以这条用例量的就是**页面有没有照那个记号分岔**。
     """
-    art = ART_NOTHING if with_nothing else ART_DELIVERED
+    art = ART_KEPT if with_kept else (ART_NOTHING if with_nothing else ART_DELIVERED)
+    scenario = "py-upload-kept" if with_kept else (
+        "py-upload-nothing" if with_nothing else "py-upload")
     lives = [{"body": _live("done", "over", n=1 + i, tag="这一趟", artifact=art)}
              for i in range(6)]
     _assert_all_different([x["body"] for x in lives], "`/live` 的正文")
-    return {"scenario": "py-upload-nothing" if with_nothing else "py-upload",
+    return {"scenario": scenario,
             "search": "?job=%s" % PY_JOB,
             "py_job": PY_JOB,
             "responses": {
@@ -1220,6 +1324,65 @@ def test_the_upload_panel_says_why_there_is_nothing_to_upload(tmp_path):
     assert "半份账本" in why, "服务那句原因没原样上屏：%s" % why
     #: 页面**自己不许**编原因（那是编话）：它那句外壳之外，原因必须来自服务
     assert "为什么没有 py" in why, why
+
+
+def test_the_upload_panel_does_not_deny_a_version_that_was_kept(tmp_path):
+    """★ 2026-10-09（**闸前留料**）：停在闸上、可**那一版已经在盘上了** —— 那一栏**不许说「没有 py」**。
+
+    这一档与上一条**只差一个记号**（`artifact.kept`）：两档的 `url` **都是空的**，
+    而该说的话**正好相反** —— 这一档是「有一版，要传先勾『照样传』」，那一档是「一版都没有」。
+    页面原来只有 `url` 空不空这一个信号 ⇒ 它只能猜，而猜错的那一半会对着一个**有稿的趟**
+    说「这一趟没有 py 可传」，同时又把服务那句「**就能拿它上传**」原样摆在后面 ——
+    同一栏里两句话互相打脸（真事 `job-cb0197a79539`，8100，policyquail.com）。
+    """
+    out = _drive(tmp_path, scenario="py-upload-kept")
+    why = out["beforeAny"]["why"]
+    assert "没有 py 可传" not in why, (
+        "这一版就躺在交付路径上，上传那一栏却说「没有 py 可传」—— 运营读到就不会去传：\n%s" % why)
+    #: 服务那句（含出路）**原样上屏** —— 页面这一档一个字都不加
+    assert "确实写下了这一版" in why, why
+    assert "留下了一版" in why or "已经写下了一版" in why, why
+
+
+def test_a_kept_version_gets_the_upload_entry_next_to_the_artifact(tmp_path):
+    """★ 2026-10-10（用户报的：**「说 py 有了也不出上传的」**）。
+
+    现象（原话）：「也不知道成没成功，就说 py 有了，也不出上传的」。
+
+    修之前那一屏：`console.html` 的 `artifactStep` 把**下载**与**上传**整块挂在**同一个**
+    `if (url)` 上 —— 而 `url` 为空**正是**「盘上留了一版、但这趟没走到交付」那一档
+    （`artifact.kept` 真）。于是：**下载没有（对的，`url` 才是「能下」的判据）、
+    上传那个入口也没有**。可同一屏服务那句话的尾巴正说着
+    「把「照样传这一版」勾上再预检一次，**就能拿它上传**」——
+    **一句话叫人去按一个不存在的东西。** 运营只能回来问人。
+
+    这一条钉的是：**两件事有两个判据** —— 下载看 `url`，上传看「盘上有没有这一版」
+    （`url` 或 `kept`）。负控在同一趟里：`DL_MARK` **不许**出现（`url` 空还摆下载，
+    那是 A14 点名不许的形状）。
+    """
+    out = _drive(tmp_path, scenario="py-upload-kept")
+    box = _artifact_li(out["beforeAny"]["timeline"])
+    assert box, "产物那一步压根没画出来：%r" % out["beforeAny"]["timeline"]
+    assert UP_MARK in box, (
+        "盘上留了一版、服务那句也叫人拿去传，可「上传到后台」这个入口**没画**出来：\n%r" % box)
+    #: 负控：没有 `url` 就**不许**摆下载 —— 「传得出去」与「下得下来」是两件事，
+    #: 页面不许因为补了前者就把后者也补上。
+    assert DL_MARK not in box, (
+        "`url` 是空的却摆了一条下载（A14 点名不许的形状）：\n%r" % box)
+
+
+def test_a_run_with_no_artifact_still_gets_no_upload_entry(tmp_path):
+    """**负控**：一版都没有那一趟，**连上传入口也不许有**（`kept` 假）。
+
+    为什么非钉不可：上面那条把判据从「只有 `url`」放宽到「`url` 或 `kept`」——
+    放宽过头就是把「一版都没有」也画上一个按不动的上传入口，
+    而那正是 A14 要消灭的形状（点了没反应 / 传上去一个空文件）。
+    """
+    out = _drive(tmp_path, scenario="py-upload-nothing")
+    box = _artifact_li(out["beforeAny"]["timeline"])
+    assert box, "产物那一步压根没画出来：%r" % out["beforeAny"]["timeline"]
+    assert UP_MARK not in box, "一版都没有，却摆了个上传入口：\n%r" % box
+    assert DL_MARK not in box, box
 
 
 def test_the_panel_can_upload_the_fixed_script_three_clicks(tmp_path):

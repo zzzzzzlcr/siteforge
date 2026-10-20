@@ -838,16 +838,23 @@ def _rule_g(fills, src: str, observed=None) -> list[Violation]:
 
 
 def _fragile(selector) -> bool:
-    """这条选择器是不是「换次构建就漂」（★ 与骨架**同一份判据**）。
+    """这条选择器**到了「只有它一条就不许交」**那一档吗。
 
-    三族都定死在 `agent/template.py`：框架渲染序号 id（`_GENERATED_ID`）、以 `-数字` 结尾的
-    自造 id（`_RENDER_INDEX_ID`）、跳数 > `_HOPS_LOW` 的 nth 链。**不在这里另写一份模式** ——
-    两处对不上就会出现「评级说它脆、闸说它没事」那种不一致，而它正是要躲的东西。
+    ★ 2026-10-13（用户裁定，lovesac 现场）：「**`xxx+数字` 不是不允许，是最后的优先级**」。
+    ⇒ 「以 `-数字` 结尾的自造 id」这一族**从这道硬闸里撤掉**了：
+      允许交付（页面真没给别的地址时它是唯一够得着的路），**只保留** `agent/template.py`
+      那一侧的降档（`_selector_rank` 把它排到最后先试谁的最后）。
+    这道闸只剩两族 —— 它们**没有兜底可言**：
+      · 框架渲染序号 id（`_GENERATED_ID`：`__BVID__408` / `:r…` / mui / radix / headlessui …）；
+      · 跳数 > `_HOPS_LOW` 的 nth 链（实测那个 9 跳长链**换个分辨率整条挂**）。
+    ⚠️ 代价说清楚：georgiapower 那一族实测会漂的 `#input-167`（→ `#input-163`）以后**不再被打回** ——
+    它会带着兜底地址交出去，真站上以「页面上没找到」的形式失败（那张缺陷单当初拦的就是它）。
+    判据的来源只有一处：`agent/template.py`（别在这儿另写模式）。
     """
     from agent import template
 
     text = str(selector or "")
-    return bool(template._GENERATED_ID.match(text) or template._RENDER_INDEX_ID.match(text)
+    return bool(template._GENERATED_ID.match(text)
                 or len(template._HOPS.findall(text)) > template._HOPS_LOW)
 
 

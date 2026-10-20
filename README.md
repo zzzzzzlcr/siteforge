@@ -131,7 +131,7 @@ docker run -d --name siteforge -p 8080:8080 \
 | `POST /run` | 收开场白 → `{job_id}`（立刻返回，活在一个工作线程上排队跑）。载荷要带 `success_text`（什么算成功，只有人知道）与窗口层的旋钮（`set_viewport` / `allow_skips` / `entry_url`） |
 | `GET /job/{id}` | 走到哪了、在问你什么、结果是什么 —— **人话**，不是错误码 |
 | `POST /job/{id}/reply` | 回答图停下来的那个问题（继续 / 喊停 / 一句纠正 / 这版不行） |
-| `POST /job/{id}/reopen` | 窗口没了（P6：Bit 窗口只活几分钟）→ 重开一个，**从断点接着跑** |
+| `POST /job/{id}/reopen` | 窗口没了（P6：窗口会自己到点，实测 25~33 分钟）→ 重开一个，**从断点接着跑** |
 
 三条设计上的硬规矩（都有测试与变异钉着，见 `tests/test_service.py`）：
 

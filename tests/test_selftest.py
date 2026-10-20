@@ -872,6 +872,28 @@ def test_the_trace_outranks_a_success_exit_code(env):
     assert "trace" in first.note, first.note
 
 
+def test_the_artifacts_own_words_are_kept_next_to_its_trace(env):
+    """★ 2026-10-13（`job-a6954761e657` 的现场）：一遍挂了，**产物在页面上到底说了什么**
+    只在它的 stdout/stderr 里 —— trace 那句「没找到「Your postcode」这个输入框，没填成」
+    是 form 动作的**通用话术**（找不到框 / 严格闸拒填 / 被盖着 / 位置不稳，都长这样）。
+    原来这一趟跑完就把话说丢了：查「为什么填不进去」只能**再跑一趟真提交**
+    （而每一趟都往真站交一份真 lead）。
+
+    证据线那一趟早就在落盘（`run_evidence` 的 `<site>.evidence.log`）—— 这一趟照做：
+    `<run_dir>/<遍名>/<site>.<遍名>.log`，内容 = 产物的 stdout + stderr 原样。
+    """
+    bad = _Script(rc=1, oks=(True, False),
+                  stdout="[c] 第 7 步：没找到「Your postcode」这个输入框，没填成\n",
+                  stderr="[c] 第 1 个选择器没成：#postcode（cdp 原话：strict 命中 2 个）\n")
+    report = _run(env, _scripts(baseline=bad, rerun=bad))
+    assert report.passed is False
+    path = env["dir"] / "baseline" / ("%s.baseline.log" % SITE)
+    assert path.is_file(), "产物自己的话没落盘 —— 现场就只剩一句通用话术"
+    text = path.read_text(encoding="utf-8")
+    assert "第 1 个选择器没成：#postcode" in text
+    assert "没找到「Your postcode」" in text
+
+
 def test_a_soft_step_failing_does_not_take_a_successful_run_down():
     """★ 2026-09-23（用户裁定，vogue 那趟当案子）：**辅助步**（scroll / wait）没做成、
     而这一遍**真的走到了成功**（退出码 0）⇒ 算**过了**（带瑕疵），不当挂。
@@ -917,6 +939,61 @@ def test_an_auxiliary_step_failing_does_not_take_a_successful_run_down():
     assert ok is True, note
     assert failed_step is None, "带瑕疵过 ≠ 卡在第几步"
     assert "带瑕疵" in note and "14" in note, note
+
+
+def test_a_soft_step_failing_does_not_take_a_successful_run_down():
+    """★ 2026-10-13（用户裁定「都收吧」）：**`soft` 的行**与辅助步/`auxiliary` 同一档 ——
+    这一遍仍算过，但照样点名。
+
+    谁标的、凭什么：`browser_agent._replay_step` —— 「点掉同意条 / 弹层」那一类**环境噪声**。
+    它天生有时有有时没有：生产每单都是新窗口（清 cookie）⇒ 有；上一趟已经点掉过 ⇒ 没有；
+    lovesac 的 Fides 还是**请求之后才插进来**的。真事 `job-c02d5768e535`（compareinsulation）：
+    同一条同意条被编成两条步骤，第 1 条豁免、第 2 条判死 ⇒ 自测挂两遍、改稿也过不去。
+    ⚠️ 与 `auxiliary` 的差别只在**判据从哪来**：那个看观察（同一目标作成过也做败过），
+    这个看「它就是弹层那类」（生成侧标）。判据的**读法**是同一档。
+    """
+    lines = [{"step": 1, "action": "click", "ok": True},
+             {"step": 2, "action": "click", "ok": False, "soft": True,
+              "note": "页面上没找到「Accept All Cookies」，这一步没做成"}]
+    ok, failed_step, note = selftest._verdict(0, False, lines, 0, "", "", 600)
+    assert ok is True, note
+    assert failed_step is None, "带瑕疵过 ≠ 卡在第几步"
+    assert "带瑕疵" in note and "2" in note, note
+
+
+def test_a_hard_step_still_takes_the_run_down_even_next_to_a_soft_one():
+    """负控（同一格）：**没标 `soft` 的那一步**照旧否决 —— 别把「软」读成「这一遍什么都放行」。"""
+    lines = [{"step": 1, "action": "click", "ok": False, "soft": True,
+              "note": "页面上没找到「Accept All Cookies」，这一步没做成"},
+             {"step": 2, "action": "click", "ok": False,
+              "note": "页面上没找到「Submit」，这一步没做成"}]
+    ok, failed_step, note = selftest._verdict(0, False, lines, 0, "", "", 600)
+    assert ok is False
+    assert failed_step == 2, (failed_step, note)
+
+
+def test_a_row_that_says_why_in_progress_why_is_not_read_as_having_said_nothing():
+    """★ 2026-10-14：**「trace 里那一步没写为什么」是假的 —— 产物写了，写在 `progress_why` 里。**
+
+    真事（`easystorebuilderpro-20260925-192239` 的 trace，逐字）：
+        {"step": 60, "action": "give_up", "ok": false, "progress": null,
+         "progress_why": "走满 60 步还没到成功"}
+
+    `_stop` 把话写进 `progress_why`（`self._trace(..., progress_why=why, **kw)`），
+    而这一处只读 `note` ⇒ 诊断落成兜底话。**后果不是难看**：模型拿着
+    「trace 里那一步没写为什么」去改稿，**改不出任何东西**（它不知道要改什么）——
+    实测 4 趟（`job-0efb84117920` / `job-c053e0b049f3` / `job-cf1d84521a09` /
+    `job-fc0d7a398eff`）的诊断就是这么丢的，而其中一趟的 `note` 后来还被
+    「同一处连着两次」那道闸读了。
+    """
+    lines = [{"step": 1, "action": "click", "ok": True},
+             {"step": 60, "action": "give_up", "ok": False, "progress": None,
+              "progress_why": "走满 60 步还没到成功"}]
+    ok, failed_step, note = selftest._verdict(0, False, lines, 0, "", "", 600)
+
+    assert ok is False
+    assert "走满 60 步还没到成功" in note, note
+    assert "没写为什么" not in note, ("产物说了，就别再说它没说", note)
 
 
 def test_a_step_that_failed_after_the_page_already_showed_success_does_not_take_the_run_down():
@@ -1160,6 +1237,83 @@ def test_a_run_where_most_steps_were_skipped_says_which_step_and_what_to_do():
     only_done = [dict(lines[0]), dict(lines[1])]
     _ok, _step, note2 = selftest._verdict(1, False, only_done, 0, "", "", 600)
     assert "每一步都做成了" in note2, note2
+
+
+def test_a_click_that_did_not_move_the_page_is_named_before_the_first_skip():
+    """★ 2026-10-20（真事 `job-7427b3e7cc41` · belong）：**没有 `ok=false` 的硬失败**时，
+    第一条「点了但页面没动」的承重 click 才是真凶；「第一处跳过」只是下游症状。
+
+    现场逐字：第 3 步点 `div[data-testid="ESIM"]`，`ok=true` / `progress=false`
+    （eSIM 的 radio 实际没选中）；第 4 步点 Next，页面只弹
+    `You must select a SIM type to continue`，URL 仍停在 `/new/pick-a-sim/mobile`；
+    第 5 步起 login/register 全因地址不匹配被跳过。诊断原来只报
+    「第一处跳过：第 5 步（login 地址对不上）」⇒ 改稿模型顺着第 5 步改，改不动；
+    两版一样 ⇒ `repair_noop`。这条钉：**第 3 步要先被点名**，并带上它的
+    `selector_used` 与第 4 步页面上那句校验文案。
+    """
+    lines = [
+        {"step": 1, "action": "scroll", "ok": True, "progress": False,
+         "note": "把「Select 25GB SIM plan」滚进了视口"},
+        {"step": 2, "action": "click", "ok": True, "progress": True,
+         "selector_used": "a[href]", "url": "https://www.belong.com.au/new/pick-a-sim/mobile",
+         "page_sig": "Pick a SIM", "note": "点了「Select 25GB SIM plan」"},
+        {"step": 3, "action": "click", "ok": True, "progress": False,
+         "selector_used": 'div[data-testid="ESIM"]',
+         "url": "https://www.belong.com.au/new/pick-a-sim/mobile",
+         "page_sig": "Pick a SIM … eSIM … Physical SIM …",
+         "note": "点了「eSIM」；页面没有变化"},
+        {"step": 4, "action": "click", "ok": True, "progress": True,
+         "selector_used": 'form:has(input[name="simType"]) button[type=submit]',
+         "url": "https://www.belong.com.au/new/pick-a-sim/mobile",
+         "page_sig": ("Pick a SIM … eSIM … Physical SIM … "
+                      "You must select a SIM type to continue … Next … Back"),
+         "note": "点了「Next」"},
+        {"step": 5, "action": "click", "ok": None,
+         "progress_why": ("第 5 步跳过：这一页不像「login」那个状态"
+                          "（地址对不上：要含「https://www.belong.com.au/new/login」）")},
+        {"step": 6, "action": "form", "ok": None,
+         "progress_why": "第 6 步跳过：这一页不像「register」那个状态（地址对不上）"},
+    ]
+    ok, failed_step, note = selftest._verdict(1, False, lines, 0, "", "", 600)
+
+    assert ok is False
+    assert failed_step == 3, ("嫌疑步应当是第 3 步（点了 eSIM 没推进），不是第 5 步：%r / %s"
+                              % (failed_step, note))
+    assert "第 3 步" in note, note
+    assert 'div[data-testid' in note, "要点名它真发出去的选择器：%s" % note
+    assert "You must select a SIM type to continue" in note, (
+        "要把第 4 步页面上的校验文案带给模型（它才是可操作的那一半）：%s" % note)
+    assert "第一处跳过：第 5 步" in note, "第一处跳过仍然要说（它是下游证据）：%s" % note
+    assert "能配合的" in note and "它会带着这句话重改一版" in note, note
+
+    #: 负控：**scroll** 的 progress=false 不算「点了没动」（它本来就不推进页面）
+    no_click = [lines[0], dict(lines[4]), dict(lines[5])]
+    _ok2, step2, note2 = selftest._verdict(1, False, no_click, 0, "", "", 600)
+    assert step2 is None, ("scroll 没推进不是嫌疑步：%r / %s" % (step2, note2))
+    assert "第一处跳过：第 5 步" in note2, note2
+
+
+def test_without_a_failed_step_the_scene_takes_the_last_executed_row_not_a_skipped_one(tmp_path):
+    """★ 2026-10-20（同一趟 belong）：`failed_step` 为空时，`scene` 原来取 `rows[-1]`。
+    可最后几行往往是**被跳过**的状态（`ok=None`、现场全空）⇒ 递给模型一格白卷；
+    真正有证据的是**最后一条真正执行过**的行（这里第 4 步，页面上写着
+    `You must select a SIM type to continue`）。
+    """
+    rows = [
+        {"step": 4, "action": "click", "ok": True, "selector_used": "#next",
+         "progress": True, "url": "https://www.belong.com.au/new/pick-a-sim/mobile",
+         "page_sig": "Pick a SIM … You must select a SIM type to continue … Next … Back",
+         "note": "点了「Next」"},
+        {"step": 5, "action": "click", "ok": None,
+         "note": "第 5 步跳过：这一页不像「login」那个状态（地址对不上）"},
+        {"step": 6, "action": "form", "ok": None,
+         "note": "第 6 步跳过：这一页不像「register」那个状态（地址对不上）"},
+    ]
+    scene = selftest.scene_of(_run_pointing_at(tmp_path, rows, failed_step=None))
+    assert scene["哪一步"] == 4, ("取到了最后的跳过行（现场是空的）：%r" % scene)
+    assert "You must select a SIM type to continue" in scene["当时页面上这段字（前 600 字）"], scene
+    assert "没有哪一步报「没做成」" in scene["为什么是这一步"], scene
+    assert "真正执行过" in scene["为什么是这一步"], scene
 
 
 def test_a_run_that_never_wrote_a_trace_is_still_a_failure(env):
@@ -1665,6 +1819,109 @@ def test_a_navi_that_fails_while_the_window_is_still_starting_is_retried(monkeyp
                               "https://x.test/", {})
     assert len(calls) == selftest.NAVI_TRIES, len(calls)
     assert "连不上" in said and "could not unmarshal" not in said, said
+
+
+def test_a_navi_that_cannot_connect_rereads_the_address_once_and_tries_it(monkeypatch):
+    """★ 2026-10-13（运营反馈那一族「窗口连不上」）：手里的地址**可能过期** ——
+    连不上的时候问一次窗口层「这个窗口**现在**的地址是什么」，拿到不一样的就换上去接着试。
+
+    为什么不是「拿同一个地址再多试几次」：浏览器进程换过之后，同一个 `bit_id` 的地址是
+    **另一串**，拿旧地址重试多少次都连不上 —— 而报出来的话会变成「窗口没了」，
+    **指错方向**（读账的人去查选择器 / 重开窗口，都不是那一件事）。
+    """
+    calls: list = []
+    asked: list = []
+
+    class _Done:
+        def __init__(self, rc, err=""):
+            self.returncode, self.stdout, self.stderr = rc, "", err
+
+    def port_of(cmd):
+        return cmd[cmd.index("--port") + 1]
+
+    def fake_run(cmd, **kw):
+        calls.append(list(cmd))
+        if port_of(cmd) == "61129":                  # 换上新地址之后才通
+            return _Done(0)
+        return _Done(1, 'Error: failed to create client: failed to connect to Chrome: Get '
+                        '"http://1.2.3.4:9222/json/version": context deadline exceeded '
+                        '(Client.Timeout exceeded while awaiting headers)')
+
+    def refresh():
+        asked.append(True)
+        return "ws://1.2.3.4:61129/devtools/browser/other"
+
+    monkeypatch.setattr(selftest.subprocess, "run", fake_run)
+    monkeypatch.setattr(selftest.time, "sleep", lambda s: None)
+    why = selftest._navigate("/bin/true", "ws://1.2.3.4:9222/devtools/browser/x",
+                             "https://x.test/", {}, refresh)
+    assert why is None, why
+    assert len(asked) == 1, "连不上时该问**一次**窗口层（真问了 %d 次）" % len(asked)
+    assert port_of(calls[0]) == "9222", calls[0]
+    assert port_of(calls[-1]) == "61129", "换上的新地址要真用上：%s" % (calls,)
+
+    #: ① 拿回来的地址**一样** ⇒ 不许编一句「已重读」（没变化就没有那句话），照旧重试完
+    calls.clear()
+    asked.clear()
+
+    def same_address():
+        asked.append(True)
+        return "ws://1.2.3.4:9222/devtools/browser/x"
+
+    said = selftest._navigate("/bin/true", "ws://1.2.3.4:9222/devtools/browser/x",
+                              "https://x.test/", {}, same_address)
+    assert (len(asked), len(calls)) == (1, selftest.NAVI_TRIES), (len(asked), len(calls))
+    assert "重读" not in said, said
+
+    #: ② 不给 `refresh` = 老行为一个字不变（连问都不问）
+    calls.clear()
+    said = selftest._navigate("/bin/true", "ws://1.2.3.4:9222/devtools/browser/x",
+                              "https://x.test/", {})
+    assert len(calls) == selftest.NAVI_TRIES and "重读" not in said, said
+
+    #: ③ 不是「连不上」的那种失败**不许**换地址 —— 那会把一次真的判据问题说成接线问题
+    calls.clear()
+    asked.clear()
+    monkeypatch.setattr(selftest.subprocess, "run",
+                        lambda cmd, **kw: (calls.append(list(cmd)) or
+                                           _Done(1, "Cannot navigate to invalid URL (-32000)")))
+    said = selftest._navigate("/bin/true", "ws://1.2.3.4:9222/devtools/browser/x",
+                              "https://x.test/", {}, refresh)
+    assert asked == [] and "重读" not in said, (asked, said)
+
+
+def test_run_asks_for_the_current_window_address_before_it_runs_anything(env, monkeypatch):
+    """★ 2026-10-13：开跑之前先问一次窗口层「这个窗口现在的地址是什么」，拿到不一样的
+    就**换上去**（`_navigate` 那一次重读只管连不上的那一下，这一次管**后面每一遍** ——
+    产物的每一遍都是拿这个地址自己去连的）。
+    """
+    seen: dict = {}
+
+    def fake_navigate(cdp_bin, ws_url, entry_url, env_, refresh=None):
+        seen["navi"] = (ws_url, refresh is not None)
+        return None
+
+    def fake_execute(name, *args, **kw):
+        seen["execute"] = (args[1], kw.get("refresh") is not None)
+        return selftest.Run(name=name, label="第 1 遍", status="passed", ok=True,
+                            failed_step=None, trace_path=None, note="")
+
+    monkeypatch.setattr(selftest, "_navigate", fake_navigate)
+    monkeypatch.setattr(selftest, "_execute", fake_execute)
+    fresh = "ws://1.2.3.4:61129/devtools/browser/new"
+    rep = selftest.run(str(env["py"]), WS, env["form"], SITE, run_dir=env["dir"],
+                       cdp_bin=env["cdp"], start_url=ENTRY, only=("baseline",),
+                       refresh_ws=lambda: fresh)
+    assert rep.passed is True, rep.summary()
+    assert seen["navi"] == (fresh, True), seen
+    assert seen["execute"] == (fresh, True), seen
+
+    #: 反向钉子：窗口层**没接**（回调给 `None`）⇒ 照旧用给的那串（那是条件差一点，不是不能跑）
+    seen.clear()
+    selftest.run(str(env["py"]), WS, env["form"], SITE, run_dir=env["dir"],
+                 cdp_bin=env["cdp"], start_url=ENTRY, only=("baseline",),
+                 refresh_ws=lambda: None)
+    assert seen["navi"] == (WS, True) and seen["execute"] == (WS, True), seen
 
 
 def test_a_bare_host_entry_url_gets_a_scheme_before_navi(monkeypatch):

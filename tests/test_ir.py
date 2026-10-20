@@ -164,11 +164,17 @@ def test_a_step_that_fills_something_the_fills_table_does_not_declare_is_caught(
 #   ① 这一页观察到的 `required` 格，产物里没有一步在填它；
 #   ② 账本里真填成功过的那一格（`journey.fills()`），步骤表里一步都没引用。
 
-def _book(*, states: list, fields: dict | None = None, fills: dict | None = None):
-    """带上「这一页见过哪些格 / 账本真填成功过哪些格」的账本（`validate` 只读这三样）。"""
+def _book(*, states: list, fields: dict | None = None, fills: dict | None = None,
+          observed: list | None = None):
+    """带上「这一页见过哪些格 / 账本真填成功过哪些格 / 每一眼看到什么」的账本。
+
+    `observed` 是**每一次 `observe` 各一条**（`Journey.observed_pages()` 的形状，按时间序）——
+    「看过时那格空不空」只有它有（`fields_by_state` 按**第一次**看见去重，答不了这个问题）。
+    """
     book = _journey_with(states)
     book.fields_by_state = lambda: dict(fields or {})      # type: ignore[assignment]
     book.fills = lambda: dict(fills or {})                 # type: ignore[assignment]
+    book.observed_pages = lambda: list(observed or [])     # type: ignore[assignment]
     return book
 
 
@@ -206,6 +212,59 @@ def test_a_required_field_the_product_has_no_step_for_is_an_ir_problem():
 
     #: 正控三：**循环型**这一条必须关掉（运行期按页面挑格，静态对不上号 ⇒ 全是误杀）
     assert ir.validate(_book(states=_one_screen(), fields=fields), shape="loop") == []
+
+
+def test_a_field_seen_empty_with_no_step_filling_it_is_an_ir_problem():
+    """★ 2026-10-08（policyquail `job-c8730acb27c5`）：**看过时它空着，而产物里一步都不填它**。
+
+    与上一条的分工：那条认的是 DOM 自己说的 `required`，这条认的是**观察到的空**——
+    这一趟两格 `required` 都是 `false`（页面没标），所以上一条一个字都报不出来。
+
+    为什么必须收窄成「**空**」（而不是「见过这个框」）：同一个页面上 `#zip` 是站点按 IP
+    **自己填好**的（实测 `92582`）—— 拿「见过」当判据会把这一趟**本来对的产物**拦死。
+    分得开这两者，靠的是账本里那一格 `empty`（`browser_agent._field_row`）。
+    ⚠️ 判据取**最后一次**看见它时是什么样：早先那一眼的空不算数（后面可能被站点填上了）。
+    """
+    #: ⚠️ 这两格**走真那条路造**（`browser_agent._field_row`：`observe` 的原始形状 → 账本那一行）。
+    #: 手写 `"empty": True` 的话，这条用例只钉得住 IR 这一半 —— 「探路真把那个键写进账本」
+    #: 那半的接缝没人管（变异测试当场验过：把 `_field_row` 里的标记去掉，这条照样绿）。
+    year = browser_agent._field_row({"label": "Year of birth", "hint": "birth_year", "type": "text",
+                                     "selector": "#birth-year", "value": ""})
+    zip_ = browser_agent._field_row({"label": "Zip code", "hint": "zip", "type": "text",
+                                     "selector": "#zip", "value": "92582"})
+    fields = {"start": [year]}
+    seen = [{"state": "start", "fields": [zip_, year]}]
+    book = _book(states=_one_screen(), fields=fields, observed=seen)
+    got = ir.validate(book)
+    assert [p.code for p in got] == ["trace_incomplete.empty_field_without_step"], got
+    assert got[0].layer == "ir" and got[0].name == "start", got[0]
+    assert "Year of birth" in got[0].say and "空" in got[0].say, got[0].say
+
+    #: 正控一：产物里有一步在填它 ⇒ 一条都不报
+    covered = [dict(_one_screen()[0],
+                    steps=[{"action": "form", "fill": "birth_year",
+                            "target": {"selectors": ["#birth-year"]}}])]
+    assert ir.validate(_book(states=covered, fields=fields, observed=seen)) == []
+
+    #: 正控二：**站点自己填好的那一格**（账本里没有 `empty`）⇒ 不报。
+    #: 这条就是这个洞的反面：拿「见过这个框」当判据的话，这一条会红。
+    prefilled = {"start": [{"label": "Zip code", "hint": "zip", "type": "text",
+                            "selector": "#zip"}]}
+    assert ir.validate(_book(states=_one_screen(), fields=prefilled, observed=seen)) == []
+
+    #: 正控三：**最后一次**看见它时不空了（站点后来自己填上了）⇒ 不报 —— 早先那一眼不算数
+    filled_later = [{"state": "start", "fields": [
+        {"label": "Year of birth", "hint": "birth_year", "selector": "#birth-year", "empty": True}]},
+        {"state": "start", "fields": [
+        {"label": "Year of birth", "hint": "birth_year", "selector": "#birth-year",
+         "value": "1985"}]}]
+    assert ir.validate(_book(states=_one_screen(), fields=fields, observed=filled_later)) == []
+
+    #: 正控四：**循环型**照旧关掉（与上一条同一条纪律：运行期挑格，静态对不上号）
+    assert ir.validate(book, shape="loop") == []
+
+    #: 正控五：只观察过、账本里**一个格都没记**（老账本没有这一格）⇒ 不报（没证据不拦）
+    assert ir.validate(_book(states=_one_screen(), fields={}, observed=seen)) == []
 
 
 def test_a_required_field_whose_only_handle_is_a_data_label_is_not_blocked():

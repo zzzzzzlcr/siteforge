@@ -30,8 +30,9 @@ func (c Connector) Dial() (Browser, func(), error) {
 	client, err := internal.NewClient(c.Target.Host, c.Target.Port)
 	if err != nil {
 		return nil, nil, fmt.Errorf("连不上浏览器 %s：%w\n"+
-			"（Bit 窗口只活几分钟，很可能已经关了 —— 重新 `bit.sh open` 拿到新的 --ws-url 再试；"+
-			"别重试同一地址，它不会自己回来）", c.Target.Address(), err)
+			"（这个地址连不上，而窗口**可能还活着** —— 窗口会自己到点（实测 25~33 分钟），"+
+			"地址也可能已经过期（浏览器换过进程）。别拿旧地址一直试：重新 `bit.sh open`，"+
+			"或者问窗口层要它**现在**的地址）", c.Target.Address(), err)
 	}
 	// ⚠️ 释放用 Disconnect，**不是** Close：Close 会关掉 Chrome 的页面
 	// （commit 18cfd23，CLAUDE.md 里那条）。

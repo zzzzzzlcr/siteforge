@@ -224,10 +224,16 @@ def test_the_whole_console_loop_from_looking_to_saying_to_stopping(tmp_path):
     client = _client(tmp_path, graph_factory=lambda brief, deps: g,
                      capture=_capture(blob, capture_calls))
 
-    # ── ① GET /runs（**跑之前**）：空列表 + 那句「这个列表是这个进程记得的那些」──
+    # ── ① GET /runs（**跑之前**）：空列表 + 那句「这一句只在认不出任何账本时出现」──
     before = client.get("/runs").json()
     assert before["runs"] == [], before
-    assert "还没有任何运行" in before["note"] and "这个进程" in before["note"], before["note"]
+    #: ⚠️ 这句的措辞 **2026-09-24（`9d00b52`）改过**：列表不再说自己是「这个进程记得的那些」
+    #: —— 它现在是**从盘上的账本重建**的（重启不等于清空），所以后半句换了说法。
+    #: 这条用例当时没跟着改，于是从那天起一直红着（2026-10-08 清存量时改准）。
+    #: 判的东西**一个字没变**：空列表那会儿必须把「空」是什么意思说清楚 ——
+    #: 不说的话，人会把「空」读成「什么都没提交过」。
+    assert "还没有任何运行" in before["note"], before["note"]
+    assert "认不出任何账本" in before["note"], before["note"]
 
     # ── ② POST /run → 202 + job_id ──
     r = client.post("/run", json=_brief(tmp_path))
@@ -301,6 +307,14 @@ def test_the_whole_console_loop_from_looking_to_saying_to_stopping(tmp_path):
     assert r.json()["status"] == "running", (
         "回完话的响应说「还在等人」—— 调用方会再回一次，而那一句会落到**下一道闸**上：%r"
         % r.json())
+    #: ★ 2026-10-10（用户：「验证回没写清楚，点继续运营不知道啥情况」）：
+    #: 回话要把**它接下来要跑的那一步**说出来。「收到你的话，接着跑」不说是哪一步 ——
+    #: 按了跟没按一样，运营读到的只有一句每次按下都一样的客套话。
+    #: ⚠️ 材料本来就在手边：`reply()` 在改状态**之前**读的那个 `view` 里，
+    #: `gate.step` **就是运营刚放行的那一步**。
+    where = service.STEP_SAY[live["stage"]]
+    assert where in r.json()["say"], (
+        "回话没说是哪一步（只有「接着跑」）—— 运营当然不知道啥情况：%r" % r.json()["say"])
 
     # ── ⑧ 放它跑到第 2 道闸 → 第 2 轮出现，输入框里是**我刚说的那句话** ──
     hold_second.set()

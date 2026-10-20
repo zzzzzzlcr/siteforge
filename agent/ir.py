@@ -323,6 +323,52 @@ def _field_problems(states: list, journey) -> list:
                            {"fields": [r.get("label") or r.get("hint") or r.get("selector")
                                        for _, r in missed[:8]],
                             "selectors": [r.get("selector") for _, r in missed[:8]]}))
+    #: ③ ★ 2026-10-08（policyquail `job-c8730acb27c5`）：**看过时它空着**（账本里那一格
+    #: `empty`，见 `browser_agent._field_row`），而产物里**一步都没填它**。
+    #: 与 ① 的分工：① 认的是 DOM 自己说的 `required`，这一条认的是**观察到的空** ——
+    #: 这一趟两格 `required` 都是 `false`（页面没标），① 一个字都报不出来。
+    #: ⚠️ 判据**只能是「空」**，不能是「见过这个框」：同一页上 `#zip` 是站点按 IP **自己填好**的
+    #: （实测 `92582`），探路**正确地**没动它 —— 拿「见过」当判据会把这一趟**本来对的产物**拦死。
+    #: ⚠️ 取**最后一次**看见它时的样子：早先那一眼的空不算数（后面可能被站点自己填上了）。
+    #: 循环型照旧整条关掉（`validate` 那个口子）：运行期挑格，静态对不上号。
+    #: 局部 import：`_field_id` 的真相源在 `browser_agent` 那边（与 `lint.py` 同一族做法）——
+    #: 「是不是同一格」只能有一处判法，不然「见过哪些格」与「看过时空不空」会对不上号。
+    from agent import browser_agent                        # noqa: PLC0415
+    try:
+        seen_fields = dict(journey.fields_by_state() or {})     # 与 ① 同一份（一处口径）
+    except Exception:                                  # noqa: BLE001 —— 读不出来不拦（没证据）
+        seen_fields = {}
+    every_step = [s for st in states for s in (st.get("steps") or [])]
+    seen_last: dict = {}
+    try:
+        for page in journey.observed_pages():
+            for row in page.get("fields") or []:
+                key = browser_agent._field_id(row)
+                if any(key):
+                    seen_last[key] = row
+    except Exception:                                  # noqa: BLE001 —— 读不出来不拦（没证据）
+        seen_last = {}
+    blank: list = []
+    for where, rows in seen_fields.items():
+        for row in rows:
+            key = browser_agent._field_id(row)
+            if not any(key) or _step_covers(row, every_step):
+                continue
+            if (seen_last.get(key) or row).get("empty"):
+                blank.append((where, row))
+    if blank:
+        who = "、".join("「%s」（%s 那一页）" % (
+            r.get("label") or r.get("hint") or r.get("selector"), where)
+            for where, r in blank[:4])
+        out.append(Problem("ir", "trace_incomplete.empty_field_without_step",
+                           "账本里有 %d 个**看过时是空的**输入框，而产物里**一步都没填它们**：%s —— "
+                           "交出去站方多半直接退回（缺必填项），而日志看上去「每一步都做成了」。"
+                           "（⚠️ 只报**空着的**：站点自己填好的那种不算 —— 那是有意的。）"
+                           % (len(blank), who),
+                           str(blank[0][0]),
+                           {"fields": [r.get("label") or r.get("hint") or r.get("selector")
+                                       for _, r in blank[:8]],
+                            "selectors": [r.get("selector") for _, r in blank[:8]]}))
     try:
         ledger_fills = dict(journey.fills() or {})
     except Exception:                                  # noqa: BLE001
@@ -351,7 +397,12 @@ def _field_problems(states: list, journey) -> list:
 #:     「真做 2 步、跳过 23 步」）⇒ 用户 2026-09-30 定的口径是「**宁可没有**，也不交一份
 #:     看着在跑、其实在别的页上乱点的产物」。
 #: ⚠️ 这两类是两码事（一个**看得见**、一个**静默**），别图省事一起放。
-SOFT_CODES = ("trace_incomplete.required_field_without_step",)
+SOFT_CODES = ("trace_incomplete.required_field_without_step",
+              #: ★ 2026-10-08（同一条裁定的延长线）：**看过时是空的**输入框、产物里一步都没填
+              #: —— 与上面那条同族（都是「账本证明了这一格要填，产物没填」），真代价也一样
+              #: （站方当面退回、看得见），所以同样**不砍整趟**：放行出稿 + 写进 `unverified`。
+              #: ⚠️ 它比上面那条**更紧**（只认「空」，站点自己填好的不算）—— 见 `_field_problems` ③。
+              "trace_incomplete.empty_field_without_step")
 
 
 def validate(journey, values: dict | None = None, shape: str | None = None,
@@ -371,19 +422,27 @@ def validate(journey, values: dict | None = None, shape: str | None = None,
     """
     values = dict(values or {})
     out: list = []
-    if journey is None:
+    #: ★ 2026-10-14：**修站那条路没有账本**（它不探路）—— 原先这里无条件早退，
+    #: 于是「拿一份有 `STATES/FILLS` 的现成 py 去修」走到这一层**必然卡死**
+    #: （在 `job-d29e4c847c1c` 之前没人走到过这儿：它中途掉进了生成支）。
+    #: 新口径：**手上有东西可判就照判** —— `states` 由调用方交进来（修站那支交
+    #: `spec["states"]`），**一条都不给**（`None`）才真的是「没有账本、也没有步骤」。
+    #: 与 docstring 那条「只在 IR 这一层判」同一条立场：没有账本**不是 IR 的问题**
+    #: （那是 `explore` 那一层的事 —— `graph` 自己会拦「修站读不出东西」）。
+    if journey is None and states is None:
         return [Problem("ir", "ir_unexpressible.no_ledger",
                         "这一趟没有账本（探路那一层就没留下东西）—— 没有账本就没有「怎么走」。")]
 
-    try:
-        if states is None:
+    if states is None:
+        try:
             states = journey.states()
-    except Exception as exc:                      # noqa: BLE001 —— 读不出来也要**归类**，不许炸给上层
-        return [Problem("ir", "ir_unexpressible.states_raised",
-                        "账本读不成 IR（`states()` 自己抛了：%s：%s）—— 这是 IR 这一层的代码问题，"
-                        "不是站点的问题。" % (type(exc).__name__, exc))]
+        except Exception as exc:                  # noqa: BLE001 —— 读不出来也要**归类**，不许炸给上层
+            return [Problem("ir", "ir_unexpressible.states_raised",
+                            "账本读不成 IR（`states()` 自己抛了：%s：%s）—— 这是 IR 这一层的代码问题，"
+                            "不是站点的问题。" % (type(exc).__name__, exc))]
 
-    if not states:
+    #: ⚠️ 循环型**本来就没有固定的步骤表**（它每轮现读页面）⇒ 这一条对它不成立。
+    if not states and str(shape or "") != "loop":
         out.append(Problem("ir", "trace_incomplete.no_steps",
                            "账本里**一步可重放的都没有**（全是「看一眼」这类感知动作）—— "
                            "没有可重放步骤就没有产物可谈。"))
@@ -456,7 +515,11 @@ def validate(journey, values: dict | None = None, shape: str | None = None,
                                        {"step": i, "goto": where}))
     #: ⑤ ★ 2026-09-30（用户裁定「IR 必须先证明完整」）：**这一页的必填格，产物有没有去填**。
     #: ⚠️ 只看平铺型：循环型的填法是运行期挑的，静态对不上号（口径写在 `_field_problems`）。
-    if shape in (None, "table"):
+    #: ⚠️ ★ 2026-10-14：这三条判据**全要账本**（`journey.fills()` / `fields_by_state()` /
+    #: `observed_pages()`）—— 修站那条路没有账本，跳过。**这不是「放行」**：修站那一版
+    #: 的 `FILLS` 是从**底稿**读出来又重判过身份的（`fix.repair_states`），
+    #: 而「步骤引用的格子有没有声明」那一条仍在（`missing_fills`，排在渲之前）。
+    if shape in (None, "table") and journey is not None:
         out.extend(_field_problems(states, journey))
     #: ⑥ ★ 2026-09-30（同一裁定的第二半）：**闸门够不够用**（判据分不开页那一条，搬进 IR 层）。
     #: 循环型由 `_gate_problems` 自己关掉（它靠地址判、运行期自己找）。

@@ -298,6 +298,13 @@ WHEN_TEXT_SPLICED_AWAY = ("剪出来的那一段是**跨两个元素拼**的（�
 WHEN_TEXT_AVOIDED = ("原来剪到的那段（%r）在**前面走过的那几页**上也有 ⇒ 门分不出两页 ——"
                      "已经换成这一页自己的一段：%r")
 
+#: ★ 2026-10-09：判据剪在了**公用那一层**上（页头/导航/页脚/弹窗）时说的话。
+#: 与 `WHEN_TEXT_AVOIDED`（躲开「别的页上也有的那段」）**不是同一件事**：那一句讲的是
+#: 「按别的页避让」，这一句讲的是「**那段本身就是壳**（页头那种全站每页都有的）——
+#: 改从这一页自己的话里剪了」。读账本的人靠它分辨「是避让换的」还是「是壳换的」。
+WHEN_TEXT_FROM_PUBLIC = ("这一段判据原来剪在**公用那一层**上（%r，页头/导航那类全站每页都有的）"
+                         "——已经改从这一页**自己**的话里剪：%r")
+
 #: ★ 2026-10-08（用户：「探路的时候告诉我们这个对应的文本到底是在啥元素找到的」）：
 #: 判据那一段**是从哪个元素剪的**（`标签@区域`，如 `a@body`、`h1@main`）。
 #: 为什么光有那段文字不够：`Skip to main content` 可以是页头那个无障碍跳转链接
@@ -854,6 +861,12 @@ class Journey:
         order: list[str] = []
         groups: dict[str, list] = {}
         alias = _same_address_same_state(self.steps)
+        #: ★ 2026-10-09：**探路自己就作成过也做败过**的那些目标（见 `_not_load_bearing_clicks`）。
+        #: 整趟算一次（要看全每一趟的记录才知道谁不稳）。
+        flaky = _not_load_bearing_clicks(self.steps)
+        #: ★ 2026-10-13：**东西是后出来的**那些状态（见 `late_states`）—— 它们那几步带上
+        #: `late_element`，产物据此把「没找到」的等待预算给足（弹窗那类站：等的是定时器）。
+        late = self.late_states()
         for step in self.steps:
             name = step.get("state") or START_STATE
             if name not in groups:
@@ -863,6 +876,14 @@ class Journey:
             if replay is not None:
                 if replay.get("fill"):
                     replay["fill"] = alias.get(replay["fill"], replay["fill"])
+                #: ★ 2026-10-09：两条都满足才标 —— ① 目标**没名字**（有名字的是漏斗的一部分，
+                #: 它失败必须照样否决）；② 同一趟里**同一目标作成过也做败过**。
+                target = replay.get("target") or {}
+                if (replay.get("action") == "click" and not _has_a_name(target)
+                        and _target_key(target) in flaky):
+                    replay["auxiliary"] = True
+                if name in late:
+                    replay["late_element"] = True
                 groups[name].append(replay)
         groups = {name: _last_fill_wins(steps) for name, steps in groups.items()}
         whens = {page.get("name"): page.get("when") for page in self.pages}
@@ -898,8 +919,72 @@ class Journey:
                 "label": info["label"],
                 "target": step.get("target") or {},
                 "fallback": list(info.get("fallback") or []),
+                #: ★ 2026-10-13：**探路那趟在真站上真填进去、页面认了的那个值** ——
+                #: 产物在「资料里没有这一格」时照它的**形状**编一个新的（`template._shaped_like`），
+                #: 而不是走按国家分的池子。为什么：`proxy_country` 说的是**代理出口**在哪，
+                #: 站点在哪是另一件事 —— 真事 `job-a5f74744a7f9`（US 出口 + 澳洲站）：池子给美国
+                #: 手机形状 ⇒ 站方红字拒收、**提交那一下卡死**，而每一步日志都写着「填好了」。
+                #: 只给 `kind == "value"` 的自由输入格（下拉/勾选的值是**页面上真有的**，见上）。
+                "sample": (str(info.get("value") or "").strip() if info.get("kind") == "value"
+                           else ""),
             }
         return out
+
+    def late_states(self) -> set:
+        """哪些状态的东西是**后出来的**（落到这一页的**第一眼**里没有那一格，后来有一步真用上了它）。
+
+        ★ 2026-10-13（`job-4d12a95edf34` · innovatingcanada 的 Hustle 弹窗）：那一页的表格是
+        **加载后约 25~31 秒**才弹出来的（触发是一次 25 秒的定时器）。产物据此把那一组的
+        「没找到」等待预算给足（`template.LATE_ELEMENT_WAIT_SECONDS`）—— 而「该不该多等」
+        这件事**不用猜**，账本里有两半证据：
+
+          ① **第一眼里没有它**：那一页的第一条 `observe` 的 `page_fields` 里没有这一格；
+          ② **后来有一步真用上了它**：同状态里某一步 `form` **填成过**，`result.selector` 就是它。
+
+        两半都要。只有 ①（没出现过）不算 —— 那是「选择器压根不对」，给它加预算就是白等
+        （生产上 249 趟自测日志里「没找到」等到头的是 28 次、等出来的是 2 次，正是这种占多数）。
+
+        ⚠️ ②用的是**步自己**的凭据而不是「后面的眼里有没有」：真账本 `job-5ca190173123`
+        整整一趟只有两行 `observe`（都是文章页那个下拉），弹窗的格**一眼都没进过**
+        `page_fields` —— 只认眼的话这一趟会被判成「没证据」而漏掉，可它明明填成了两步。
+        ⚠️ 判据的最细粒度是**状态**（账本每一眼只存**格**的清单，动作只有个数，见 `_summarize`）
+        ⇒ 标的是整组（那一组里的提交按钮也是弹窗里的东西，该一起给足）。
+        ⚠️ 归属走 `observed_pages()`（按账本自己的判据算归属，与 `states()` 同一把尺子）；
+        某个状态一眼都没分到（同页两屏时后一屏常把两眼都收走）⇒ 退回**全趟第一眼**当基准。
+        """
+        #: 基准按**地址**收口，不按状态：同一页上常有好几屏（同意条一屏 / 弹窗一屏），
+        #: 状态分得开、地址分不开 —— 而归到状态上会被「后一屏把两眼都收走」骗过去
+        #: （真事 `job-b9653c77ecec`：那个状态的「第一眼」已经是**带弹窗**的那一眼 ⇒
+        #: 判成「不晚」⇒ 长预算一格没挂上，那一趟是**蒙**过去的）。
+        first_on_page: dict = {}
+        for step in self.steps:
+            if str(step.get("action") or "") != "observe":
+                continue
+            result = step.get("result") or {}
+            key = _url_key(result.get("url"))
+            if not key or key in first_on_page:
+                continue
+            got = {str((r or {}).get("selector") or "")
+                   for r in (result.get("page_fields") or [])}
+            got.discard("")
+            first_on_page[key] = got
+        #: 这个状态在哪一页上（`pages` 里那一格的模型记着地址）。
+        where = {str((p or {}).get("name") or ""): _url_key(((p or {}).get("model") or {}).get("url"))
+                 for p in self.pages}
+        #: 兜底：地址认不出来（老账本 / 没记 url）⇒ 拿**全趟第一眼**当基准。
+        run_first = next(iter(first_on_page.values()), set())
+        used: dict = {}
+        for step in self.steps:
+            if str(step.get("action") or "") != "form":
+                continue
+            result = step.get("result") or {}
+            if not result.get("fill"):
+                continue              # 没填成的一步不算凭据：它没证明那一格存在过
+            selector = str(result.get("selector") or "")
+            if selector:
+                used.setdefault(str(step.get("state") or START_STATE), set()).add(selector)
+        return {state for state, sels in used.items()
+                if sels - first_on_page.get(where.get(state, ""), run_first)}
 
     def observed_pages(self) -> list:
         """`[{state, url, text, fields}]` —— 账本里**真看过的那几眼**（每一眼一条）。
@@ -961,6 +1046,17 @@ def when_holds(when, model: dict) -> bool:
     判据与产物里的 `_applies` **逐条对齐**（url 子串 + 正文里含任一段文字），
     因为「生成时的 `when`」与「重放时的 `when`」不是两件事：一条当时就不成立的 when，
     在重放时会让整组步骤**静默跳过**。
+
+    ⚠️ ★ 2026-10-09 **更正**：「逐条对齐」说的是**算法**（那两条怎么与、怎么或），
+    **不是取材宽度** —— 两者其实不一样，别把这句话读成「正文那份也一样」：
+      · 这里读的是 `page_text`，而它是工具**硬切 600 字**的（`observe.go`）；
+      · 产物那边 `page_signature()` 的 docstring 原话是「**不裁长度** —— 成功文案可能在
+        第 600 字之后」。
+    ⇒ **这一把比产物那把窄**。所以它只适合当**反面**的尺子（「别的页上也有吗」——
+    窄尺子说「有」就一定真有；说「没有」则未必），**不许**拿它验正例
+    （「自己这页上成立吗」—— 那会把排在第 600 字之后的好判据判成不成立）。
+    正例那一向用 `_one_page_text`（正文 **加逐元素正文**）。这条区分是 2026-10-09
+    真账本逼出来的（shorecrestwpb 五趟 / policyquail 两趟都是栽在把两者当成同一把上）。
     """
     if not when:
         return True
@@ -1265,6 +1361,12 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             # 这个副作用 —— 运气对，不是判据对）。
             # 落地地址没有丢：它一直在 `result.url` 上（`_summarize`），这里只是**不再复制一份**。
             step["note"] = _say(name, step["target"], True)
+            #: ★ 2026-10-13（`job-4d12a95edf34`）：**系统自己**再读一眼整页正文 ——
+            #: `observe` 那份被工具硬切 600 字，够不着挂在文档末尾的浮层文案。
+            #: ⚠️ 排在 `journey.steps.append` **之前**：这一格是这一步的一部分
+            #: （账本那行、checkpoint、判据三处读的是同一份 dict）。
+            #: ⚠️ 它**不落步、不花预算**（不是 `dispatch`）：一步还是一行。
+            _watch_the_page(session, journey, step, name, success_text)
             journey.steps.append(step)
             if name == "observe":
                 # ★ 2026-09-29：逐元素正文**并进了 `cdp observe` 的模型**（`node_texts`）——
@@ -1654,6 +1756,128 @@ def _frames_used(journey) -> list:
     return out[:4]
 
 
+#: ★ 2026-10-13（`job-4d12a95edf34`）：**每一步**都由系统自己再读一眼**整页可见正文**。
+#:
+#: 为什么非有这一手：判据要的那串字常常**不在 `observe` 给的那 600 字里**
+#: （`observe.go` 的 `pageText.slice(0, 600)`）—— 弹窗/通知条那种**浮层挂在文档末尾**，
+#: 于是它在 `body.innerText` 里排在整页正文的**尾部**。真账本实测（innovatingcanada 的
+#: Hustle 弹窗）：「Thank You!」落在**第 12,968 字**（全页 12,978），三趟探路各 observe 了
+#: 7~8 次，**一次都没够着它** ⇒ 判「没见着成功」⇒ 图那边不出 py、还自动重探
+#: （每趟重探 = 往站方**再交一次真表单**）。
+#:
+#: 读回来的**不进模型上下文**（模型看不见，省 token）；账本上只留**判据那一截**
+#: （`success_line`）—— 每步都留整页的话账本会涨十倍，而判据只认那一截。
+#: 没给正文判据时**一次都不读**（没有要找的东西，白花）。
+_STEP_READ_FRAMES = 2
+
+#: 动手之后**盯多久**、隔多久读一眼（秒）。见 `_watch_the_page`。
+#:
+#: 为什么不能只读「动手那一下」：真站实测（同一趟）点完提交 **5.8 秒**才出那句成功文案，
+#: 出现 **7 秒**后弹窗自己收走（`display:none`）—— 而模型下一步常常比它早
+#: （那三趟的下一步都在 +1~4 秒）。
+WATCH_SECONDS = 8.0
+WATCH_EVERY_SECONDS = 1.2
+
+#: 哪几个动作之后要**盯一会儿**（其余动作只读一眼）。
+#: `click` / `goto` 是「会提交 / 会走」的那两个；`form` / `scroll` **不盯** ——
+#: 填一格通常不动正文（值不进 `innerText`），盯它等于每一步白等满 `WATCH_SECONDS`。
+_WATCH_AFTER = ("click", "goto")
+
+#: 判据那一截在账本里前后各留多少字（够人一眼看出它落在哪句话里）。
+SUCCESS_LINE_PAD = 120
+
+
+def _step_read_frames(journey) -> list:
+    """每一步那一读读哪些帧：主帧 + 这一趟动手用过的帧（与收尾那一读**同一条规矩**）。
+
+    ⚠️ 帧数收到 `_STEP_READ_FRAMES`：收尾那一读是一趟一次（读满没事），这一读是**每步**一次。
+    """
+    return ["", *_frames_used(journey)[:_STEP_READ_FRAMES]]
+
+
+def _read_page_text(session, journey, wants) -> str:
+    """读一眼**整页可见正文**（`_FULL_TEXT_JS`，只读、逐帧）→ 归一化后的文字；读不到给空串。
+
+    ⚠️ `session.call_tool` 而**不是** `dispatch`：它不落步、不花预算、模型看不见 ——
+    它是**旁路**（与步拍、账本同一条规矩），坏掉不许把这一趟带塌 ⇒ 一律吞成空串。
+    「没读到」与「页面上没有」在调用方那里是两件事（空串不写进账本）。
+
+    ⚠️ 判据已经在手里了（`wants`）⇒ **见到就收手**，剩下的帧不读了：这一读的读者几乎只为那一串字。
+    """
+    parts: list = []
+    for frame_id in _step_read_frames(journey):
+        try:
+            raw = session.call_tool("eval", dict(
+                {"code": _FULL_TEXT_JS % FINAL_TEXT_CHARS},
+                **({"frame_id": frame_id} if frame_id else {})))
+        except Exception:                          # noqa: BLE001 —— 读不到不是错，是没读到
+            continue
+        got = _norm(raw if isinstance(raw, str)
+                    else ((raw or {}).get("result") or (raw or {}).get("value") or ""))
+        if got:
+            parts.append(got)
+            if wants and any(w in got.lower() for w in wants):
+                break
+    return _norm(" ".join(parts))
+
+
+def _success_line_in(text: str, wants) -> str:
+    """判据在这份正文里的**那一截**（前后各留 `SUCCESS_LINE_PAD` 字）；没有给空串。"""
+    low = (text or "").lower()
+    for word in wants or []:
+        at = low.find(word)
+        if at >= 0:
+            return text[max(0, at - SUCCESS_LINE_PAD):at + len(word) + SUCCESS_LINE_PAD]
+    return ""
+
+
+def _watch_the_page(session, journey, step, name: str, success_text: str) -> None:
+    """这一步走完之后，**系统自己**读一眼整页正文；会走页面的那几个动作还要**盯一小会儿**。
+
+    写进账本的只有**判据那一截**（`step["result"]["success_line"]`）—— 见那两组常数的注释。
+    判据那一把尺子（`row_text`）认这一格，所以 `_success_hit` / `graph._explore_reached_success`
+    / R3 三处看到的**是同一个事实**（这是这个项目里最容易裂的地方）。
+
+    盯的规矩（`_WATCH_AFTER` 那几个动作）：
+      · 读到了判据 ⇒ 记下来、收工；
+      · **页面回话了**（正文变了）⇒ 收工 —— 盯是为了等它回话，不是为了白等满 8 秒；
+      · 到 `WATCH_SECONDS` 为止（有界；它是**产物**跑在生产的那条路上的东西，不许无限等）。
+
+    ⚠️ 盯的这一会儿里**不动页面**（只有读）—— 所以「停是安全的，它不让任何一步发生」
+    那条不变量原样成立；人这时候喊停，最多晚 `WATCH_SECONDS` 秒停在下一道闸上。
+    """
+    wants = [w.lower() for w in wanted_texts(success_text)]
+    if not wants:
+        return                                    # 没有要找的东西 ⇒ 一次都不读
+    #: 这一步**自己**读到的正文里就有判据（`observe` 那 600 字里就写着）⇒ 不必再读整页：
+    #: 它已经在账本上了，三个读者（活的闸 / R3 / 结算）都在这一行上认得出它。
+    if _success_line_in(row_text(step), wants):
+        return
+    first = _read_page_text(session, journey, wants)
+    seen = _success_line_in(first, wants)
+    if seen:
+        step["result"]["success_line"] = seen
+        return
+    #: 第一读就没读到（窗口正在导航 / 求值失败）⇒ **没有基准**，不盯：
+    #: 没有基准时「正文变了」这一条恒真，盯下去只会每一步白等满 `WATCH_SECONDS` 秒。
+    if name not in _WATCH_AFTER or not first:
+        return
+    #: 次数上限与墙钟**双保险**：`time.sleep` 在测试里被换成 no-op（全项目的规矩），
+    #: 只靠 `time.monotonic()` 会让这个循环空转。
+    polls = int(WATCH_SECONDS / WATCH_EVERY_SECONDS) + 1
+    deadline = time.monotonic() + WATCH_SECONDS
+    while polls > 0 and time.monotonic() < deadline:
+        polls -= 1
+        time.sleep(WATCH_EVERY_SECONDS)
+        got = _read_page_text(session, journey, wants)
+        seen = _success_line_in(got, wants)
+        if seen:
+            step["result"]["success_line"] = seen
+            return
+        if got and got != first:
+            return                                # 页面回话了（换了一屏）—— 盯到头了
+
+
 def _final_success_check(journey, dispatch, limits, success_text: str,
                          success_urls: str = "", *, specs=(), gate=None) -> None:
     """收摊前**系统自己**看一眼那一页 —— 判据用**这一眼**（真读数），而不是「模型看没看」。
@@ -1948,17 +2172,22 @@ def wanted_urls(success_urls) -> list:
 
 
 def row_text(row) -> str:
-    """一行账**读到的正文**（`observe` 的摘要 或 收尾那次**全文**读）。
+    """一行账**读到的正文** —— **判据唯一的那把尺子**（三个读者都走这里）。
 
-    ⚠️ 两处必须是同一个函数：`page_text_head` 是 `observe` 那一手的（cdp 自己**截到 600 字**，
-    `tools/cdp/internal/observe.go` 的 `pageText.slice(0, 600)`），`page_text_full` 是收尾
-    那次 `eval` 取的**整页正文**（2026-09-22：用户要求「让**代码**判断……有个可以提取文字的」
-    —— 600 字装不下很多真实页面，判据就是在这上面栽的）。
-    判据读的是**加起来**的那份文字，所以两处都算。
+    ⚠️ 三处必须是同一个函数（分家过一次就够贵了：活的探路说见着了、结算说没见着）：
+      · `page_text_head`：`observe` 那一手的（cdp 自己**截到 600 字**，`observe.go` 的
+        `pageText.slice(0, 600)`）；
+      · `page_text_full`：收尾那次 `eval` 取的**整页正文**（2026-09-22：用户要求
+        「让**代码**判断……有个可以提取文字的」—— 600 字装不下很多真实页面）；
+      · `success_line`：**每一步**那一读里**含判据的那一截**（★ 2026-10-13，见
+        `_watch_the_page`）—— 浮层文案常在整页正文的**尾部**，600 字够不着，
+        而每步都留整页账本会涨十倍，所以只留判据那一截。
+    判据读的是**加起来**的那份文字，所以三处都算。
     """
     result = (row or {}).get("result") or {}
-    return _norm("%s %s" % (result.get("page_text_head") or "",
-                            result.get("page_text_full") or ""))
+    return _norm("%s %s %s" % (result.get("page_text_head") or "",
+                               result.get("page_text_full") or "",
+                               result.get("success_line") or ""))
 
 
 def row_url(row) -> str:
@@ -1974,15 +2203,20 @@ def row_url(row) -> str:
 def is_look(row) -> bool:
     """这一行**算不算「一眼」**（判据只在「看过」的行里找）。
 
-    两条都算：`observe`（模型或系统看的）与**任何带着 `page_text_full` 的行**
+    三条都算：`observe`（模型或系统看的）、**任何带着 `page_text_full` 的行**
     （收尾那次 `eval` 读的整页正文 —— ⚠️ 它读的**也是正文**，只是那一手比 `observe`
-    取的多；把它排除在外，就等于判据看不见自己刚读回来的那两万字）。
+    取的多；把它排除在外，就等于判据看不见自己刚读回来的那两万字），
+    以及**任何带着 `success_line` 的行**（★ 2026-10-13：每一步那一读里含判据的那一截 ——
+    最常见的载体就是**提交那一下的 `click` 行**，而它恰恰是最要紧的那一眼：
+    把它排除在外，结算就会说「没见着成功」而活的探路当场就见了）。
     ⚠️ `page_text_head` 仍然只有 `observe` 行才写（R3 的前提，`_only_looks_carry_the_text`
     会当场抛）—— 这一条判的是「算不算一眼」，不是「谁写了哪个键」。
     """
     if str((row or {}).get("action") or "") == "observe":
         return True
-    return bool((((row or {}).get("result") or {}).get("page_text_full") or "").strip())
+    result = (row or {}).get("result") or {}
+    return bool((result.get("page_text_full") or "").strip()
+                or (result.get("success_line") or "").strip())
 
 
 def _success_hit(steps: list, success_text: str, success_urls: str = "") -> int | None:
@@ -2526,6 +2760,8 @@ def _describe(name: str, args: dict, pages: "_Pages", journey: Journey) -> tuple
         if name == "form":
             fill = _fill_info(args, step["target"], element, journey)
     return step, fill
+
+
 #: 回执那一行里**捡回来**的那几样，按落位顺序（`label` 在前：判据先认它）。
 #: ⚠️ 只有这两样 —— 键名是 `target` 这份契约里**本来就有**的
 #: （`_target_of` 的两支都发它们），不是新键。
@@ -2580,8 +2816,6 @@ def _card_from_receipt_into(step: dict, raw) -> list:
         "—— 不过这一张**从回执里捡回来了**：这一下点到的元素，回执那一行把它叫什么"
         "写下来了（补上了 %s：`%s`）。" % (got, told))
     return filled
-
-
 
 
 #: `observe` 用这个名字表示**主帧**（规格 §4.3：单帧 observe 给 `[frameID]`，`""` → `["main"]`）。
@@ -3380,8 +3614,15 @@ MAX_LEDGER_FIELDS = 30
 #: 【我量的·2026-10-08】真站一份 `observe` 回执（policyquail，`/tmp/pq-observe.json`）：
 #: 45 条 / 共 1844 字（均 ~41 字一条）—— 而工具那边上限是 600 条（`nodeTextsLimit`，
 #: 子帧多的页面才够得着），600 × 41 字 ≈ 24KB/行，比 `PAGE_HEAD_CHARS`(8000) 还大。
-#: 120 条 ≈ 5KB 封顶，而这一格要服务的那道纠正（`_snippet_in_one_node`）找的是**页头那
-#: 48 字**落在哪个元素里 ⇒ 那一段本来就在前面几条里。超出的**不静默丢**（见下面那两个键）。
+#: 120 条 ≈ 5KB 封顶。
+#: ⚠️ ★ 2026-10-09 **更正**：这段原先还写着「这一格要服务的那道纠正（`_snippet_in_one_node`）
+#: 找的是页头那 48 字落在哪个元素里」——**那句话是假的**，而且它当场误导过读代码的人
+#: （2026-10-09 有人照着它推出「重挑只能从这 120 条里挑」，差点去改一个**修不了任何东西**的地方）。
+#: 判据那一侧（`_when_for` / `_snippet_in_one_node` / `_unique_snippet_for`）读的是**模型里的
+#: 那一份** —— `note_page(raw)` 收的是工具原始返回（单帧 400、合并多帧 600），**不是账本这一格**；
+#: 全仓**没有任何一处**读账本的 `node_texts`（只有 `lint.py` 的一句注释提到它）。
+#: 这一格是**给人看、供事后查**的 ⇒ 它只受「账本别涨太大」这一条约束。超出的**不静默丢**
+#: （见下面那两个键）。
 MAX_LEDGER_NODES = 120
 
 #: 账本里**只有 `observe` 行**许写的那几个键（R3 的**前提**，破了当场抛 —— 见 `_summarize`
@@ -3446,10 +3687,12 @@ def _summarize(name: str, args: dict, raw: Any, elapsed_ms: int, fill: dict | No
         out["page_fields"] = rows[:MAX_LEDGER_FIELDS]
         if len(rows) > MAX_LEDGER_FIELDS:
             out["page_fields_capped"] = len(rows)
-        #: ★ 2026-10-08：**逐元素正文**（`node_texts`）—— 判据那道「落在**单个元素**里吗」的
-        #: 纠正（`_snippet_in_one_node`）唯一的原料。它一直在回执里，却没进账本 ⇒ 盘上
-        #: 任何一本账本都回答不了「这条判据当时为什么是这么剪的」（形状 A 那一趟就卡在这儿），
-        #: 只能重跑一趟真站。同 `page_fields` 的纪律：白名单 + 上限 + **超了记一个数**。
+        #: ★ 2026-10-08：**逐元素正文**（`node_texts`）—— 抄进账本是为了**能事后回答
+        #: 「这条判据当时为什么是这么剪的」**（形状 A 那一趟就卡在这儿：盘上任何一本账本都
+        #: 答不出来，只能重跑一趟真站）。同 `page_fields` 的纪律：白名单 + 上限 + **超了记一个数**。
+        #: ⚠️ ★ 2026-10-09：原先这里写着它是「判据那道纠正（`_snippet_in_one_node`）**唯一的
+        #: 原料**」——**假的**。那道纠正读的是**模型里的** `node_texts`（`note_page(raw)` 那一份），
+        #: 账本这一格**没有任何判据逻辑在读**（见 `MAX_LEDGER_NODES` 那段更正）。
         raw_nodes = [_norm(t) for t in (raw.get("node_texts") or [])]
         #: ★ 2026-10-08：**每一段正文配一个「它是啥元素」**（标签@区域）—— 与 `node_texts`
         #: 逐条对应（工具那边同一个循环产出的，见 `PageModel.NodeElements`）。
@@ -3612,6 +3855,123 @@ def _has_usable_target(target) -> bool:
     return any(str(t.get(k) or "").strip() for k in ("text", "role", "near"))
 
 
+#: 一个 click 的目标**叫不叫得出名字**（判 `auxiliary` 的第一条，见 `_not_load_bearing_clicks`）。
+_TARGET_NAME_KEYS = ("text", "label", "placeholder", "aria_label", "name", "hint")
+
+
+def _has_a_name(target: dict) -> bool:
+    """这个目标**叫得出名字**吗（文字 / label / placeholder / aria-label / name / hint 之一）。
+
+    ⚠️ 为什么这一条是 `auxiliary` 的**前提**：有名字的（`Submit` / `Schedule Online`）是漏斗
+    的一部分，它失败**必须**照样否决 —— 否则「产物其实没走通」会被判成「过了」。
+    """
+    return any(str((target or {}).get(k) or "").strip() for k in _TARGET_NAME_KEYS)
+
+
+def _target_key(target: dict) -> tuple:
+    """一个目标的**身份**（重放时拿什么去认它）—— 就是它那串选择器。"""
+    sel = (target or {}).get("selectors")
+    return tuple(str(s) for s in sel) if isinstance(sel, (list, tuple)) else ()
+
+
+def _not_load_bearing_clicks(steps) -> set:
+    """**探路自己就作成过、也做败过**的那些目标 —— 它们那一步不承重。
+
+    ★ 2026-10-09（用户：「浮窗本来就是类似弹窗有时候有有时候没有，不能把它认为不做就
+    继续不下去」）。现场（`job-22e8c86afe10` 的账本，逐字）：
+      step 30  click 「没写名字的元素」  ok=True    ← 浮窗那个 ✕，当时挡住了 Submit，顺手关掉
+      step 45  click 「没写名字的元素」  ok=False   ← 同一趟里**又碰到它、没找着**
+    产物忠实地把 step 30 抄成一步 ⇒ 自测时浮窗没出来 ⇒ 那一步没做成 ⇒ `selftest` 判
+    「**承重步**失败」⇒ **整趟否决**（而产物自己一路跑到成功页、退出码 0）。
+
+    为什么这条是**量出来的**、不是猜的：它说的是「**这一次探路里它自己就不稳**」。
+    另一条路（认「这一下点的是不是遮挡物」）现场走不通 —— `observe` 的 `obstructions`
+    在那一页上报的是**空**（`[]`），没有可靠的来源。
+
+    ⚠️ 只在**同一个目标**上比（`_target_key`），不是「这一趟有失败就都松」。
+    """
+    failed: set = set()
+    for step in steps or []:
+        if step.get("action") != "click":
+            continue
+        if (step.get("result") or {}).get("ok"):
+            continue                       # 只收**没做成**的那些
+        key = _target_key(step.get("target") or {})
+        if key:
+            failed.add(key)
+    return failed
+
+
+def _target_for_replay(step: dict, target: dict) -> dict:
+    """重放用的 target：把**这一步实际命中过的那个选择器**提到候选最前面。
+
+    ★ 2026-10-10（`job-d037348fba4d` 那趟 agemate；用户报的是「点了继续一直不动」）。
+
+    运行期的规矩是「`selectors[0]` 试起，**第一个命中就停**」—— 所以**顺序就是那个决定**，
+    而声明顺序是 `_selectors_of` 拼出来的（`element.selector` + `alternates` + 兜底），
+    **它不是「哪一条真的管用」**。这两件事能岔开：真站那一步的候选里，页脚的订阅框排第 0、
+    弹窗里那个排第 5，而账本 `result.selector`（这一次真发出去、也真成了的那个）是第 5 个。
+    照原顺序重放 ⇒ 当场命中页脚那格 ⇒ 邮件填错框、弹窗提交被站方顶回
+    （`Please try again / Verify Email`）⇒ 自测永远走不到成功 ⇒ `diagnose` → `draft` 重写
+    ⇒ **重写出来的还是同一份（同一个顺序）** ⇒ 三版稿撞同一堵墙，图停在闸上等人点「继续」。
+
+    ⚠️ 依据是**账本自己记的那一格**（`result.selector` = 这一次真发出去的参数），不是猜：
+    没记（老账本 / 工具没这一步）就**原样返回**，一条都不动 —— 那时候编一个顺序出来
+    就是拿猜当证据（负控钉在 `test_a_step_with_no_recorded_selector_keeps_the_declared_order`）。
+    ⚠️ 命中的那条**不在候选里**也照样提到最前：它在这页上真成过，比候选里任何一条都硬。
+    候选**一条都不丢**，只是顺序变了（它们仍然是「这一格还可能在哪」的证据）。
+    ⚠️ 这里**只管「先用哪条」**：脆不脆由 `template._stable_first` 另判
+    （它按渲染序号 / `nth-of-type` 跳数把那几族贬到最后一档）—— 两件事，别混。
+    """
+    used = str((step.get("result") or {}).get("selector") or "").strip()
+    declared = [s for s in (target.get("selectors") or []) if s]
+    if not used or not declared:
+        return target
+    return dict(target, selectors=[used] + [s for s in declared if s != used])
+
+
+# ── 「这一步是环境噪声」的判据（★ 2026-10-13）────────────────────────────
+#
+#: ★ 2026-10-13（用户裁定「都收吧」）：**「点掉同意条 / 弹层」那一类点击是环境噪声，不是业务动作。**
+#:
+#: 为什么它在步骤表里是个错：这类东西**天生有时有有时没有** —— 生产每单都是新窗口（清 cookie）
+#: ⇒ 有；上一趟已经点掉过 ⇒ 没有；它还可能**后冒出来**（lovesac 的 Fides 是请求之后才插进来的）。
+#: 而产物的**前提层**本来每步都在问一遍钩子表（`template._POPUP_HOOKS`：开跑前 + 每一步动手前后）
+#: —— 所以表里那一步是**冗余**的；冗余还硬（找不到就判死、还打回整组）就是两堵墙。
+#:
+#: 真事 `job-c02d5768e535`（compareinsulation）：模型对**同一条同意条**点了两次
+#: （`Accept all` / `Accept All Cookies`）⇒ 表里两条步骤 ⇒ 产物开跑前钩子已经点掉过一次
+#: ⇒ 第 1 条豁免、**第 2 条判死** ⇒ 整组重试 ⇒ 自测挂两遍 ⇒ 人只能喊停。
+#:
+#: 判据（**宁可漏，不可误标** —— 标错 = 真失败被读成跳过）：
+#:   ① **强同意短语**（`allow all` / `reject all` / `accept cookies` / 全部接受 / 全部拒绝）；
+#:   ② 或者文字里**同时**有「同意语境」（cookie/consent/gdpr/privacy/同意/隐私 + 常见供应商
+#:      slug：fides / onetrust / osano / trustarc / cookieyes / usercentrics / didomi / klaro …）
+#:      与「对同意做个决定」的动作词（accept / agree / allow / reject / decline / deny / 接受 / 拒绝）。
+#: 光一个 `Accept`（业务按钮，比如「Accept offer」）**不算** —— 那就是要漏掉的那种。
+#: 判的文本 = 这一步的 note + 目标的文字 + 它声明的选择器（三者里任意一处带证据就算）。
+_CONSENT_STRONG = re.compile(
+    r"(?:reject|accept|allow|deny|decline)\s+(?:all|cookies?)"
+    r"|(?:全部|接受全部|拒绝全部)\s*(?:接受|拒绝)?", re.I)
+_CONSENT_CTX = re.compile(
+    r"cookie|consent|gdpr|privacy|tracking|同意|隐私|fides|onetrust|osano|trustarc|cookieyes"
+    r"|usercentrics|didomi|klaro|termly|iubenda|quantcast|cassie|complianz|borlabs|securiti"
+    r"|sf-consent|cc-dismiss|\bcmp\b", re.I)
+_CONSENT_DECIDE = re.compile(
+    r"accept|agree|allow|reject|decline|deny|接受|同意|拒绝", re.I)
+
+
+def _consent_click_like(note: str, target: dict) -> bool:
+    """这一步是不是「对同意做个决定」（见上面那段：标 `soft` 用）。判据与理由都在那儿。"""
+    text = " ".join([str(note or ""),
+                     str((target or {}).get("text") or ""),
+                     str((target or {}).get("label") or ""),
+                     " ".join(str(s) for s in ((target or {}).get("selectors") or []))])
+    if _CONSENT_STRONG.search(text):
+        return True
+    return bool(_CONSENT_CTX.search(text) and _CONSENT_DECIDE.search(text))
+
+
 def _replay_step(step: dict):
     """一个 Journey 步骤 → 产物里的一步（不可重放的返回 None）。"""
     action = step.get("action")
@@ -3619,7 +3979,7 @@ def _replay_step(step: dict):
         return None
     if not (step.get("result") or {}).get("ok"):
         return None                      # 没做成的动作不该在重放里再来一遍
-    target = step.get("target") or {}
+    target = _target_for_replay(step, step.get("target") or {})
     note = step.get("note") or ""
     if action == "click":
         #: ★ 2026-09-24（真站逼出来的）：点一个**认不出来**的元素 ⇒ 这一步**不可重放**。
@@ -3628,7 +3988,13 @@ def _replay_step(step: dict):
         #: 「不可重放」这个概念本来就有（返回 `None`）✓ —— 不用新造机制。
         if not _has_usable_target(target):
             return None
-        return {"action": "click", "note": note, "target": target}
+        out = {"action": "click", "note": note, "target": target}
+        #: ★ 2026-10-13：**「点掉同意条/弹层」那一步标 `soft`** —— 它有就点、没有就算了，
+        #: 找不到时**不算这一步没做成、也不打回整组**（产物那一侧的执行支见
+        #: `template.py` 的 `soft` 那段）。判据与理由见上面 `_consent_click_like`。
+        if _consent_click_like(note, target):
+            out["soft"] = True
+        return out
     if action == "form":
         fill = (step.get("result") or {}).get("fill") or {}
         if not fill.get("name"):
@@ -3695,9 +4061,16 @@ def _only_looks_carry_the_text(rows: list) -> None:
     所以这里**不猜也不静默**：宁可当场停下说话，也不放一个可能重复提交的前缀出去。
 
     今天成立（三层核过，复审 2026-09-17）：`_summarize` 只在 `observe` 那一支写这一键；
-    MCP 工具表是固定的 7 个（`tools/cdp/internal/mcp/registry_test.go`），其余工具的结果里
+    MCP 工具表是固定的那 8 个（`tools/cdp/internal/mcp/registry.go`），其余工具的结果里
     没有那一段（`diff` 只回 `actionable`，`PageText` 只长在 observe 的 `PageModel` 上）；
     盘上真账本 342 行里，非 `observe` 行带这一键的 **0 行**。
+
+    ★ 2026-10-13（`job-4d12a95edf34`）：`success_line`（每一步那一读里含判据的那一截）
+    **是故意长在非 `observe` 行上的**，而且**不在** `_TEXT_KEYS` 里 —— 所以这一问照旧不响。
+    那不是绕开它，是上面那条推导在它身上**方向相反**：那一键只会让 `first_hit` **更早**
+    （多出来的文字不会让它变晚）⇒ R3 更早停下 ⇒ 前缀更短，「提交留在前缀里」这种危险
+    **没有**。前提那句「带正文的行 == 落点认的那些行」今天要读成：
+    「带 `_TEXT_KEYS` 的行 == 落点认的那些行」。
     """
     for i, row in enumerate(rows or []):
         res = (row or {}).get("result")
@@ -3742,11 +4115,13 @@ def replayable_prefix(steps: list, success_text: str, *,
     几处**读法**（都是判断，摆在这里，不当默认）：
 
     - **R2 认不认 `screenshot`**：不认。见 `_SEEN_ACTIONS`。
-    - **R3 读哪份文字**：账上**按顺序**记下的 `observe` 的正文（`page_text_head`，
-      `PAGE_HEAD_CHARS` 那么长 —— ⚠️ 别在这儿写死一个数：它改过一次，写死就成假的了）。
-      两个刻意的选择：① 用**有序**的步骤，不用 `pages[]`（那份没有位置 —— 拿它判
-      「这条线是什么时候过的」只能得到「一过就整段作废」，而设计只要「过线之后的动作不许重放」）；
-      ② 只看得见**头 200 字**（`_summarize` 的截断）—— 比这更长的成功文案 R3 看不见。
+    - **R3 读哪份文字**：账上**按顺序**记下的每一天的正文 —— `row_text(row)`，
+      **与活着那一趟的 `_success_hit`、与结算的 `graph._explore_reached_success`
+      是同一个函数**（★ 2026-10-13 之前这里只累计 `page_text_head`，而那把头 600 字的尺子
+      够不着挂在文档末尾的浮层文案 ⇒ 出现「活的探路见着了、重放说没见着」⇒ 重放会把
+      **提交**当成可重放的一步）。一个刻意的选择留着：用**有序**的步骤，不用 `pages[]`
+      （那份没有位置 —— 拿它判「这条线是什么时候过的」只能得到「一过就整段作废」，
+      而设计只要「过线之后的动作不许重放」）。
     - **R4 看不看落地 URL**：不看。设计注那行括号里写着「（或其落地 URL）」，本实现
       **不采纳**：一条 goto 的落地 URL **按定义**就写在它后面那条 observe 上（`pages` 就是
       这么攒出来的）⇒ 拿它当判据的话，**只要这条 goto 后面有过观察，R4 就恒真** ——
@@ -3784,7 +4159,12 @@ def replayable_prefix(steps: list, success_text: str, *,
     seen_at: list = []
     blob = ""
     for row in rows:
-        blob = (blob + " " + _norm((row.get("result") or {}).get("page_text_head") or "")).strip()
+        #: ★ 2026-10-13：读的是 `row_text`（**与活着那一趟、与结算同一把尺子**）——
+        #: 原先只累计 `page_text_head`（头 600 字），于是「活的探路当场见着了、
+        #: 重放这边说没见着」，而重放会把**提交**当成可重放的一步 = 再交一次真表单。
+        #: ⚠️ 只会**更早**看见那条线（多读到的文字不会让 `first_hit` 变晚）⇒ 前缀只会更短，
+        #: 方向是安全的那一边。
+        blob = (blob + " " + row_text(row)).strip()
         seen_text.append(blob)
         seen_at.append(row_url(row).lower())
     #: 判据**最早**在第几行那次观察里出现（None = 这一趟压根没出现过）。
@@ -5117,6 +5497,9 @@ def _when_for(model: dict, avoid: str = "", others=()) -> dict | None:
             #: 读账本的人要能看见「门原来是那句公用文案、现在换成这一页自己的」——
             #: 不然「这一组为什么是这个门」在账上又变成一个查不出来的问题。
             when["text_why"] = WHEN_TEXT_AVOIDED % (avoided[:60], snippet[:60])
+        if from_public:
+            #: ★ 2026-10-09：改道这件事同样**必须说**（有改就要说）。
+            when["text_why"] = WHEN_TEXT_FROM_PUBLIC % (from_public[:60], snippet[:60])
         return when
     # ── 退化成「**只有 URL**」那一条 ────────────────────────────────────
     # ⚠️ 这一支是**有损**的（判据少了一半，站点改文案就整组跳过）⇒ **有损必须说**
@@ -5840,9 +6223,54 @@ def _slug(model: dict) -> str:
 # ─────────────────────── 小工具 ───────────────────────
 
 
+#: ★ 2026-10-09：**同一个字的两种排版写法算同一个字**（用户裁定原话：「那就大小写吧」
+#: —— 按 2026-09-22 那条**大小写**先例办：`Check your email` 与 `check your email` 算
+#: 同一个词，那么 `’` 与 `'` 就是**同一个撇号**）。
+#:
+#: 真事（`job-27389cef3110`，enroll 那趟）：人给的判据是
+#: `Thank You! We've Received Your Information!`（**直角**撇号），站点把那句渲染成
+#: `We’ve`（**弯**撇号 U+2019）。代码**真读到了**那句（2339 字的整页正文里就是它），
+#: 可两边只压空白 + 小写 ⇒ 子串不成立 ⇒ `_explore_reached_success` 返回 `False`
+#: ⇒ `explore_unfinished` ⇒ **一份 py 都不出** —— 尽管探路 30 步走完、收尾那一眼
+#: 也照着截图看见那句了。
+#:
+#: ⚠️ 折的只是**同一个字的排版变体**（弯引号 / 长短破折 / 省略号），**不是抹标点**：
+#: `Thank You!` 与 `Thank You` 仍然是**两串不同的字**（钉在 `tests/test_template.py`
+#: 的 `test_the_product_still_needs_the_punctuation_that_was_asked_for`）。
+#: ⚠️ 这张表**必须与产物里那份逐字一致**（`SKELETON.template` 里那个 `_FOLD`）——
+#: 交付出去的 py import 不到 agent 包，所以只能是两份。钉在
+#: `tests/test_browser_agent.py::test_the_two_norms_are_one_yardstick`。
+_FOLD = str.maketrans({
+    # 弯单引号 → 直角撇号
+    "‘": "'", "’": "'", "‚": "'", "‛": "'",
+    # 角分 / 角秒
+    "′": "'", "″": '"',
+    # 弯双引号 → 直角双引号
+    "“": '"', "”": '"', "„": '"', "‟": '"',
+    # 各种横线 → 直角连字符（连字符 / 不换行连字符 / 短破折 / 长破折 / 横线 / 减号）
+    "‐": "-", "‑": "-", "‒": "-", "–": "-",
+    "—": "-", "―": "-", "−": "-",
+    # 省略号 → 三个点
+    "…": "...",
+    # ── 全角 ASCII（U+FF01–U+FF5E）→ 半角 ──
+    # ★ 2026-10-09 用户第二次点头（原话「算吧算同一个」）：宽度也是「同一个字的两种写法」。
+    # ⚠️ **整段一起折** —— Unicode 里它们就是「同一个字符的两种宽度」，只折标点、
+    # 不折字母数字是凭空划一条线。
+    # ⚠️ 到 U+FF5E 为止。再往后的 U+FF61–FF9F 是**半角片假名**（ｱｲｳ）—— 那是**另一个
+    # 字符**，不是谁的全角形；按「块」写就会把它们一起吃掉（钉在
+    # `test_the_two_norms_do_not_fold_what_is_actually_a_different_character`）。
+    **{chr(0xFF01 + i): chr(0x21 + i) for i in range(0x5E)},
+})
+
+
 def _norm(text: str) -> str:
-    """与 `cdp observe` 的 page_text / 产物的 `page_signature()` **同一口径**。"""
-    return re.sub(r"\s+", " ", str(text or "")).strip()
+    """与 `cdp observe` 的 page_text / 产物的 `page_signature()` **同一口径**。
+
+    压空白（含 NBSP）+ **折同一个字的两种排版写法**（`_FOLD`）。后一半之所以必须与
+    产物里那份一致：`page_text` 到了比较的那一步**两边都会再过一次这个函数**
+    （`row_text` / `page_signature`），一边折一边不折就等于两把尺子。
+    """
+    return re.sub(r"\s+", " ", str(text or "")).translate(_FOLD).strip()
 
 
 def _snake(text: str) -> str:

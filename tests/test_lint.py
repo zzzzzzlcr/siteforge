@@ -506,13 +506,38 @@ def test_a_source_named_after_the_fields_own_label_is_not_a_machine_name():
     assert "judge-source-autoname" in _codes(src), lint.check(src)
 
 
-#: I 的三族脆地址（判据与骨架 `template._GENERATED_ID` / `_RENDER_INDEX_ID` / `_HOPS_LOW`
-#: 是**同一份**）：框架渲染序号 id、以 `-数字` 结尾的自造 id、跳数 > 3 的 nth 链。
+#: 「只有它一条就不许交」那两族（与骨架 `template._GENERATED_ID` / `_HOPS_LOW` 是**同一份**）：
+#: 框架渲染序号 id、跳数 > 3 的 nth 链。
+#: ★ 2026-10-13（用户裁定）：「**`xxx+数字` 不是不允许，是最后的优先级**」——
+#: 所以原先在这张表里的 `#input-174` **挪到下面那条「不拦」的用例**去了。
 FRAGILE_ONLY = [
     "#__BVID__408",
-    "#input-174",
     "#a > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > a:nth-of-type(2)",
 ]
+
+
+#: ★ 2026-10-13（用户裁定）：「**`xxx+数字` 不是不允许，是最后的优先级**」——
+#: 这一族（含 georgiapower 实测会漂的 `#input-174`）**都不再被这道闸拦**：
+#: 允许交付，只保留 `template._selector_rank` 那边的降档（排最后先试谁）。
+NOT_BLOCKED = [
+    "#Field10-1",          # Wufoo：Field10 = 表单定义里的字段号、-1 = 这格里的第几个输入
+    "#Field10-2",
+    "#input-174",          # 实测会漂的那一族 —— 也**不拦**了（代价写在 `lint._fragile` 里）
+    "#step-2",             # 人写的序号 id
+]
+
+
+@pytest.mark.parametrize("selector", NOT_BLOCKED)
+def test_a_numeric_tail_is_the_last_priority_not_a_refusal(selector):
+    """★ 2026-10-13：拦它 = 把一份**没毛病**的稿永远打回 —— lovesac 那趟就是打回 3 次、
+    同一处不过，最后撞上限停下。现在这一族只降档（最后一条路），不打回。
+    """
+    src = _artifact([{"name": "go", "when": {"url_contains": "/a", "text_contains": ["Go"]},
+                      "steps": [{"action": "click", "target": {"selectors": [selector]}}]}])
+    assert lint.check(src) == [], lint.check(src)
+    #: 降档还在：它照旧排最后一条路（这是「先试谁」，不是「能不能交」）
+    from agent import template
+    assert template._selector_rank(selector) == 2, selector
 
 
 @pytest.mark.parametrize("selector", FRAGILE_ONLY)
@@ -566,10 +591,13 @@ G_AUTONAME_SRC = _artifact([ONE_GATED_STATE],
                            [{"name": "postcode", "source": "textfield_173838",
                              "target": {"selectors": ["input#postcode"]},
                              "fallback": [{"random": "postcode"}]}])
+#: ★ 2026-10-13：样例原来用的是 `#input-174` —— 那一族按用户裁定**不再被拦**
+#: （「`xxx+数字` 不是不允许，是最后的优先级」），所以这里换成**仍然被拦**的那一族：
+#: 框架渲染序号 id（`#__BVID__408`，判据 `template._GENERATED_ID`）。
 I_FRAGILE_SRC = _artifact([{"name": "go", "when": {"url_contains": "/a",
                                                   "text_contains": ["Go"]},
                             "steps": [{"action": "click",
-                                       "target": {"selectors": ["#input-174"]}}]}])
+                                       "target": {"selectors": ["#__BVID__408"]}}]}])
 
 NEW_JUDGE_CASES = [
     pytest.param("judge-strict-unguarded",

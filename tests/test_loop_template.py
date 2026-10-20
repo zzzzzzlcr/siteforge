@@ -70,11 +70,32 @@ def test_the_selftest_never_reports_into_production():
     assert "if self.no_report:" in src, "没有把 --no-report 用在 `_rpt` 上"
 
 
-def test_the_url_criterion_is_required_because_this_family_judges_by_url():
-    """这一族**只看网址**（正文判据是它栽跟头的老地方）⇒ 没给网址判据就不许产。"""
+def test_at_least_one_criterion_is_required_and_the_text_one_can_stand_alone():
+    """★ 2026-10-14（**用户裁定**「网址或正文至少有一个」）：**两格都空**才拒。
+
+    ⚠️ 逐行交代（这一条原先写的是「这一族**只看网址** ⇒ 没给网址判据就不许产」）：
+    那条护栏与**运行期**打架 —— 骨架里 `SUCCESS(url)` 与 `SUCCESS(text)` 本来就并排
+    （同一轮里先判网址、再判正文），而 `render_loop` 自己的 docstring 也写着
+    「`success_text` 给了就加一条兜底判据（URL 判据不成立、纯 SPA 不改地址时用得上）」。
+    撞出这个口子的真事：`foodandwine` —— **交单之后地址不变**、只在原地把
+    「Check your email」显示出来 ⇒ 正文判据读得出来、网址判据**没有**
+    ⇒ 修站那条路在这一格**必然卡死**（而它连的是「修一份现成的 py」这条主路）。
+
+    老手那句「正文判据是这一族栽跟头的**老地方**」仍然成立 —— 所以它是**兜底**，
+    不是替掉网址：两格都给时网址仍是主判据。
+    """
+    #: ① 只有正文判据 ⇒ **许产**（这一版就是给「地址不变」那种站用的）
+    src = _src(success_text="Check your email", success_urls="")
+    assert "Check your email" in src, "正文判据要逐字写进去"
+    assert "SUCCESS_URL_MARKERS = []" in src, \
+        "网址那格空着就该是空的 —— 不许拿正文那串**冒充**网址判据（那会让它永远不成立）"
+    #: ② 两格都空 ⇒ **照旧拒**：「跑到底再说自己成功」那个入口没被打开
     with pytest.raises(ValueError) as got:
-        _src(success_urls="")
+        _src(success_text="", success_urls="")
     assert "成功判据不能空" in str(got.value)
+    #: ③ 两格都给 ⇒ 网址仍是主判据（老口径的钉子，一个字没松）
+    both = _src(success_text="Thank you", success_urls="thank-you")
+    assert 'SUCCESS_URL_MARKERS = ["thank-you"]' in both, both[:400]
 
 
 def test_a_pick_rule_we_do_not_understand_is_refused():
@@ -314,6 +335,54 @@ def test_the_phone_pool_gives_a_number_the_site_accepts(tmp_path, monkeypatch):
                                    "0117496", "0118496", "0121496", "0131496", "0141496",
                                    "0151496", "0161496", "0191496", "0289018", "0292018")), \
             "给了 Ofcom 影视保留段：%s" % got
+
+
+
+def test_the_phone_number_never_comes_from_the_profile_and_a_site_can_pin_its_area_code(
+        tmp_path, monkeypatch):
+    """★ 2026-10-13（用户点名，compareinsulation）：「手机号**不要用资料给的**。就用
+    `0207xxxxxxx` 格式，后几位随机就行。」
+
+    两件事，都钉在这条里：
+    ① **不再取资料**：账本里那个号（`EXAMPLES`）是探路时从**资料**里拿的真号 —— 它就在产物的
+       `PROVENANCE["examples"]` 里（本例 `07880539011`）。原来那一支**先查它**，与「那一格
+       永远是现编的号码」这句注释打架 ⇒ 现在一律现编。
+    ② **这一站要的号段**由 `FILLS[name]['prefix']` 给（`'0207'`）—— 尾数照旧随机，
+       而**没给前缀的站**照旧从那一串号段里挑（2026-10-08 那个口径不能丢）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/quiz", "head": "Q", "progress": "", "inputs": [],
+            "options": [], "nextVisible": True, "nextTxt": "Continue"}
+    _fake_common(monkeypatch, page, calls)
+    prov = dict(PROV, examples={"phone": "07880539011"})
+
+    def _load(tag, fills):
+        src = template_loop.render_loop("phonesite", "Thank you", "thank-you", fills, prov)
+        path = tmp_path / ("%s.py" % tag)
+        path.write_text(src, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("%s_product" % tag, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        obj = module.Filler.__new__(module.Filler)
+        obj.form_data = {}
+        return module, obj
+
+    # ① 资料里那个号一个都别用上（拿它当答案就是被认出来的那种）
+    module, obj = _load("pinned", {"phone": {"kind": "value", "label": "07xxx xxx xxx",
+                                            "prefix": "0207"}})
+    got = [obj.value_for("\u0002e.g. 07xxx xxx xxx", {}, 0) for _ in range(20)]
+    assert "07880539011" not in got, "手机号用了资料里那个：%r" % got
+    assert all(g.startswith("0207") and len(g) == 11 for g in got), \
+        "这一站的号段不是 `0207`（或位数不对）：%r" % got
+    assert len(set(got)) > 1, "尾数没随机（20 次全一样）：%r" % got
+    #: 直接问池子也一样（同一条口径，两处别分家）
+    assert all(module.Filler._pool(None, "phone", "0207").startswith("0207") for _ in range(20))
+
+    # ② 没给前缀的站照旧从那一串号段里挑（2026-10-08 的口径没被这条弄丢）
+    _mod2, obj2 = _load("free", {"phone": {"kind": "value", "label": "07xxx xxx xxx"}})
+    free = [obj2.value_for("\u0002e.g. 07xxx xxx xxx", {}, 0) for _ in range(50)]
+    assert "07880539011" not in free, free
+    assert all(len(g) == 11 and g.isdigit() for g in free), free
 
 
 def test_four_byte_characters_are_written_as_escapes(tmp_path, monkeypatch):
@@ -582,6 +651,236 @@ def test_a_screen_the_light_reader_cannot_see_is_read_by_the_snapshot_fallback(t
     rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
     assert any("结构化快照" in str(r.get("note") or "") for r in rows), \
         "兜底动手了却没记 trace：%r" % (rows[-3:],)
+
+
+def test_a_continue_that_does_not_take_is_retried_after_scrolling_it_into_view(
+        tmp_path, monkeypatch):
+    """★ 2026-10-13 真事（`job-e8bbc9b2612a`，compareinsulation 的问卷）。
+
+    现场：那一屏是「What's your email?」（进度 83%），产物连点 3 次 Continue 页面一动不动 ⇒
+    收摊。手量那一屏：`cdp click` 自己的回话里写着 `landing_blind: true`（「那个坐标上取不到
+    节点 —— 点可能在**视口外**」）⇒ 抬手发出去了、没落在按钮上；把那一颗挪进视口再点就过。
+    读取器那一层只判 `offsetWidth/Height > 0` —— **在视口外它也判「可见」**，空点的根就在这儿。
+
+    又：原来那条路**写死 `ok=True`** ⇒ 账上每一次 Next 都是「成功」，失败那几次一点痕迹都没有，
+    诊断只能判「不知道」（那一趟的诊断就是 `unknown`）。
+
+    这条钉三件：① 第一下就是**手势**；② 同一屏再来一次时**先落定 + 先挪进视口**
+    （`calls["scroll"]`）；③ 点没点出去**照实记**（标记打不上时那一行必须 `ok=False`）。
+    ⚠️ 点法**始终是手势** —— `lint` 禁手拼 JS 点击（契约 §5.2），所以这条还兼着一条负控：
+    产物里不许出现自己 `.click()` 的 JS。
+    """
+    page = {"url": "https://funnel.test/quiz", "head": "What's your email?", "progress": "83%",
+            "inputs": [], "options": [], "nextVisible": True, "nextTxt": "Continue"}
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    _fake_common(monkeypatch, page, calls)
+
+    src = template_loop.render_loop("selsite", "Thank you", "thank-you", {}, dict(PROV))
+    path = tmp_path / "next_retry.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("next_retry_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    trace = tmp_path / "next_retry.jsonl"
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    module.Filler("ws://x/1", str(form), "cid",
+                  trace_path=str(trace), no_report=True).run(max_steps=5)
+
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    nexts = [r for r in rows if r.get("note") == "Next"]
+    assert nexts, "这一屏一次 Next 都没点：这一条测不到东西"
+    assert not nexts[0].get("target", {}).get("retry"), \
+        "第一下就该是**普通手势**（重试那一下不许抢在前面）：%r" % nexts[0]
+    assert nexts[0].get("ok") is True, nexts[0]
+    assert any(n.get("target", {}).get("retry") for n in nexts), \
+        "同一屏没改判据就反复点（该改成「先落定 + 挪进视口」）：%r" % nexts
+    assert calls["scroll"], "重试那一下没有先把它挪进视口：%r" % calls
+    assert all(c == '[data-sf-pick="1"]' for c in calls["click"]), \
+        "点法不是「打标记 + cdp click」了：%r" % calls["click"]
+    assert "e.click()" not in src, "产物里出现手拼 JS 点击 —— 契约 §5.2 禁它（lint 会打回）"
+
+    # 负控：标记打不上（页面上没那段文字）⇒ 这一行必须照实写 ok=False，不许伪装成成功
+    calls2 = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    mod2 = _fake_common(monkeypatch, page, calls2)
+    #: 只让**打标记那一段**回 `none`（读取那一层照旧回页面）—— 全回 `none` 的话产物连页面都读不到，
+    #: 走的是「页面读不到」那条路，这一条就测不到「点了没点上」。
+    _orig2 = mod2.CDPHelper.eval
+    mod2.CDPHelper.eval = lambda self, js, *a, **kw: (
+        "none" if "setAttribute('data-sf-pick'" in js else _orig2(self, js, *a, **kw))
+    src2 = template_loop.render_loop("selsite", "Thank you", "thank-you", {}, dict(PROV))
+    path2 = tmp_path / "next_none.py"
+    path2.write_text(src2, encoding="utf-8")
+    spec2 = importlib.util.spec_from_file_location("next_none_product", path2)
+    module2 = importlib.util.module_from_spec(spec2)
+    spec2.loader.exec_module(module2)
+    trace2 = tmp_path / "next_none.jsonl"
+    module2.Filler("ws://x/1", str(form), "cid",
+                   trace_path=str(trace2), no_report=True).run(max_steps=5)
+    rows2 = [json.loads(ln) for ln in trace2.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert any(r.get("note") == "Next" and r.get("ok") is False for r in rows2), \
+        "没点上，账上却没有一条 ok=False：%r" % [r for r in rows2 if r.get("note") == "Next"]
+
+
+def test_the_same_next_counter_resets_when_the_screen_changes(tmp_path, monkeypatch):
+    """★ 2026-10-13 真事（`job-e8bbc9b2612a`）：一道「连着点 N 次没变就收摊」的闸，把**换屏**
+    读成了「同一屏」。
+
+    现场：那一族的 `head` 是**页面标题**（每屏都长一样：「Free Eligibility Checker」）、选项也都
+    是空的 ⇒ 旧判据（题面 + 选项）在 postcode / name / email 三屏上是**同一个字符串** ⇒ 计数器
+    **跨屏累加**：postcode、name 两屏各点过一次之后，**email 那一屏第一次点之前**就数到 3 ⇒ 收摊
+    一次都没试（trace 里 step 11/14 都写着 `retry: True` —— 它们根本不在同一屏上）。
+
+    ⇒ 判「同一屏」得看**看得见的形状**：题面 + 选项 + **进度** + **这一屏有哪几个格**。
+    这条钉住它：三屏各自换过之后，产物**每一屏都还点得动**（不是数到 3 就收摊）。
+    """
+    screens = [
+        {"url": "https://funnel.test/quiz", "head": "Free Eligibility Checker", "progress": "50%",
+         "inputs": [["\u0002e.g. NN3 3AQ", ""]], "options": [], "nextVisible": True,
+         "nextTxt": "Continue"},
+        {"url": "https://funnel.test/quiz", "head": "Free Eligibility Checker", "progress": "72%",
+         "inputs": [["\u0002e.g. Margaret Johnson", ""]], "options": [], "nextVisible": True,
+         "nextTxt": "Continue"},
+        {"url": "https://funnel.test/quiz", "head": "Free Eligibility Checker", "progress": "83%",
+         "inputs": [["\u0002e.g. margaret@example.co.uk", ""]], "options": [], "nextVisible": True,
+         "nextTxt": "Continue"},
+    ]
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    mod = _fake_common(monkeypatch, screens[0], calls)
+    seen = {"n": 0}
+
+    def eval_(self, js, *a, **kw):
+        if "setAttribute" in js:                    # 打标记那一段
+            return "marked"
+        #: ★ 2026-10-16（Task 4）：**只有「读这一屏」那一段推进场景** —— 桩原来把每一次
+        #: `eval` 都当成一次读，而产物动手之前还会探好几次（落点 / 弹层）⇒ 场景被那些探针
+        #: 推着走，三屏提前走完 ⇒ 第 6 步撞上「连着 3 次点 Next、页面还是那一屏」那道闸
+        #: （`_stop` 那一行也是 `action="click"`、`ok=False`）⇒ 这条用例的判据被**桩**带红。
+        #: 「按读取器那段 JS 认读」是这个文件里本来就有的认法（同 `"nextVisible" in js`）。
+        if "nextVisible" not in js:                 # 别的探针（落点 / 弹层）：这一屏没有那些东西
+            return json.dumps("")
+        seen["n"] += 1
+        return json.dumps(screens[min((seen["n"] - 1) // 2, len(screens) - 1)])
+
+    mod.CDPHelper.eval = eval_
+    src = template_loop.render_loop("selsite", "Thank you", "thank-you", {}, dict(PROV))
+    path = tmp_path / "screens.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("screens_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    trace = tmp_path / "screens.jsonl"
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    module.Filler("ws://x/1", str(form), "cid",
+                  trace_path=str(trace), no_report=True).run(max_steps=6)
+
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    nexts = [r for r in rows if r.get("note") == "Next"]
+    assert len(nexts) >= 4, \
+        "换了两屏之后就被那道闸收摊了（计数器跨屏累加）：%r" % [(r.get("step"), r.get("target")) for r in nexts]
+    assert not any(r.get("action") == "click" and r.get("ok") is False for r in rows), rows
+
+
+def test_a_consent_layer_that_shows_up_mid_run_is_cleared_before_acting(tmp_path, monkeypatch):
+    """★ 2026-10-13（用户口径：**修系统**，不是修某一份）：「同意条这类**啥时候冒出来都不确定**」。
+
+    循环这一族是「读到什么做什么」—— 中途才冒出来的同意条，原来会被读取器当成**一个可点的
+    选项**（`pick_option` 随机挑：挑中「Accept All」算运气，挑中「管理偏好」就点进一个弹窗里
+    空转 ✗）。现在两处都收住：
+      ① 读取器**不把同意那几颗当选项**（读回来那一格 `consent` 只是「这一屏有同意层」）；
+      ② 每一轮**动手之前**先清掉它，清不掉**不算失败**（同意层是环境噪声）。
+
+    现场：第 1 读说有同意层、清掉之后就没有了 —— 钉的是「清完了还接着把题答下去」。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    seen = {"reads": 0, "cleared": False}
+    page = {"url": "https://funnel.test/quiz", "head": "Question 1", "progress": "20%",
+            "inputs": [], "options": ["\u0001No", "\u0001Yes"], "nextVisible": False, "nextTxt": ""}
+    mod = _fake_common(monkeypatch, page, calls)
+
+    def eval_(self, js, *a, **kw):
+        if "setAttribute('data-sf-pick'" in js:          # 打标记再点（同意那颗也走这条）
+            calls.setdefault("marks", []).append(js)
+            return "marked"
+        if "still-here" in js:                           # 「同意条还在吗」那一读
+            return "gone" if seen["cleared"] else "still-here"
+        if "nextVisible" in js:                          # 读这一屏
+            seen["reads"] += 1
+            got = dict(page, consent=(seen["reads"] == 1))
+            return json.dumps(got)
+        return json.dumps(page)
+
+    mod.CDPHelper.eval = eval_
+    #: 点一下就算清了（真实的 `clear_cookies` 会复读确认，这里让复读说「gone」）
+    orig_click = mod.CDPHelper.click
+
+    def click_(self, sel, *a, **kw):
+        seen["cleared"] = True
+        return orig_click(self, sel, *a, **kw)
+
+    mod.CDPHelper.click = click_
+    src = template_loop.render_loop("selsite", "Thank you", "thank-you", {}, dict(PROV))
+    path = tmp_path / "consent.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("consent_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    trace = tmp_path / "consent.jsonl"
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    module.Filler("ws://x/1", str(form), "cid",
+                  trace_path=str(trace), no_report=True).run(max_steps=4)
+
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert any(r.get("action") == "popup" for r in rows), \
+        "这一屏有同意层，账上却没有那一步：%r" % rows[:4]
+    marks = " ".join(calls.get("marks") or [])
+    assert "Accept All Cookies" in marks, \
+        "清同意层那一下点的不是同意那几颗之一：%r" % (calls.get("marks"),)[:2]
+    assert any(str(r.get("note") or "").startswith("答了第") for r in rows), \
+        "清完同意层之后没有接着答题（被软跳过的那一步不该结束这一趟）：%r" % rows
+
+
+def test_stop_writes_the_why_into_the_note_too(monkeypatch, tmp_path):
+    """★ 2026-10-14：`_stop` 收摊时那句话**两格都写** —— `progress_why` 与 `note`。
+
+    为什么要两格：`progress_why` 是「**有没有推进**」那一路读的（`steps.layer_of`），
+    `note` 是「**为什么没做成**」那一路读的（`selftest._verdict` 的 `step_said`）。
+    只写前者 ⇒ 诊断落成兜底话「trace 里那一步没写为什么」⇒ **模型拿着那句话去改稿，
+    改不出任何东西**（它不知道要改什么）。实测 4 趟就是这么丢的
+    （`job-0efb84117920` / `job-c053e0b049f3` / `job-cf1d84521a09` / `job-fc0d7a398eff`）。
+
+    真事的 trace 行逐字（`easystorebuilderpro-20260925-192239`）：
+        {"step": 60, "action": "give_up", "ok": false, "progress": null,
+         "progress_why": "走满 60 步还没到成功"}
+
+    ⚠️ 这一份骨架（`template_loop.py`）是**一个字符串**：`class Filler` 长在
+    `_LOOP_SKELETON` 里面，模块顶层拿不到它（`hasattr(template_loop, "Filler")` 是 False）
+    —— 所以只能**渲出来、exec 出来**再叫它（与这一份里其他用例同一个法子）。
+    """
+    calls: dict = {}
+    _fake_common(monkeypatch, {"url": "https://x.test/", "head": "", "progress": "",
+                               "inputs": [], "options": [], "nextVisible": False,
+                               "nextTxt": ""}, calls)
+
+    src = _src()
+    path = tmp_path / "stop_note.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("stop_note_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    rows: list = []
+    obj = module.Filler.__new__(module.Filler)
+    obj._trace = lambda **row: rows.append(row)      # 只钉收摊那一行，别的都不碰
+    obj._stop(60, "give_up", "走满 60 步还没到成功")
+
+    assert rows[0]["note"] == "走满 60 步还没到成功", rows[0]
+    assert rows[0]["progress_why"] == "走满 60 步还没到成功", (
+        "原来那一格照旧要写 —— 别为了补 note 把 progress_why 挤掉", rows[0])
+    assert rows[0]["ok"] is False and rows[0]["step"] == 60 and rows[0]["action"] == "give_up"
+
 
 # ── 落点判据（★ 2026-10-16：循环型第一次有它 —— 与固定步骤表**同一把尺子**）──────────
 

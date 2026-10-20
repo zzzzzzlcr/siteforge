@@ -121,3 +121,131 @@ def test_a_round_with_no_step_number_still_reads_by_what_it_names(fam):
     rounds = [_round(None, "每一步都做成了，但没出现「Thank You」"),
               _round(None, "每一步都做成了，但没出现「Thank You」")]
     assert fam.classify_rounds(rounds) == fam.ROUNDS_STUCK
+
+
+# ── 弹窗族：产物运行期那四格（从自测日志读）────────────────────────────
+#
+# 为什么口径是「**次运行**」不是「趟」：自测目录名只有 `<站>-<时刻>`，**不带 job id**，
+# 没法跟台账 join；而「两道保护有没有用」这件事，每次自测就是一次检验。
+
+def test_the_popup_ledger_separates_exempt_from_died(fam, tmp_path):
+    """**豁免**与**判死**必须分开计数 —— 那是「保护有没有用」这件事的两半。
+
+    真事 `runtime/selftest/compareinsulation-20261013-075250`：钩子表命中一次
+    （`把「同意条」点掉了`），账本那条「Accept all」被**豁免**（`跳过，不算没做成`），
+    可同一份产物里**另一条**「Accept All Cookies」被判死（`第 2 步：页面上没找到…`）。
+    把两者混成一个数，就永远答不出「保护到底有没有用」。
+    """
+    run = tmp_path / "selftest" / "demo-20260101-000000" / "baseline"
+    run.mkdir(parents=True)
+    (run / "demo.baseline.log").write_text(
+        "这一步动手之前之后 把「同意条」点掉了（#si-accept，'Accept All Cookies'）：看起来成了\n"
+        "「Accept all」这一步：页面上已经没有同意弹层了（前面那次会话把它点掉过）—— 跳过，不算没做成。\n"
+        "第 2 步：页面上没找到「Accept All Cookies」，这一步没做成；页面没有变化\n",
+        encoding="utf-8")
+    st = fam.selftest_popup_stats(tmp_path)
+
+    assert st["runs"] == 1
+    assert st["hits"] == {"同意条": 1}, "① 钩子表命中了几次、命中的是哪一条"
+    assert st["exempt"] == 1, "③a 账本那条同意条被豁免（保护有效）"
+    assert st["died"] == 1, "③b 另一条被判死（保护漏了）—— 两半分开记"
+    assert st["dup"] == 0, "② 同一次运行里同一条被点 ≥2 次才算重复"
+
+
+def test_a_non_consent_step_that_was_not_found_is_not_counted_as_a_popup(fam, tmp_path):
+    """**负控**：`第 N 步：没找到「Submit」` 不是弹窗那一族 —— 别把它算进来。"""
+    run = tmp_path / "selftest" / "demo-20260101-000000" / "baseline"
+    run.mkdir(parents=True)
+    (run / "demo.baseline.log").write_text(
+        "第 5 步：页面上没找到「Submit」，这一步没做成；页面没有变化\n", encoding="utf-8")
+    st = fam.selftest_popup_stats(tmp_path)
+
+    assert st["died"] == 0, "「Submit」不是同意条 —— 这一格不许把普通步骤算成弹窗"
+
+
+def test_only_the_names_the_executor_calls_consent_are_counted(fam, tmp_path):
+    """③b 的**二次过滤**不可省：同一份日志里混着同意条与普通步骤时，只数同意条那几条。
+
+    用真数据里出现过的三个名字（`Yes` / `See if you qualify for benefits` /
+    `没写名字的元素` 都**不是**同意条 —— 前两个是业务按钮，第三个是探路误点的）。
+    """
+    run = tmp_path / "selftest" / "demo-20260101-000000" / "baseline"
+    run.mkdir(parents=True)
+    (run / "demo.baseline.log").write_text(
+        "第 2 步：页面上没找到「Accept All Cookies」，这一步没做成；页面没有变化\n"
+        "第 6 步：页面上没找到「Yes」，这一步没做成；页面没有变化\n"
+        "第 9 步：页面上没找到「See if you qualify for benefits」，这一步没做成；页面没有变化\n"
+        "第 11 步：页面上没找到「没写名字的元素」，这一步没做成；页面没有变化\n",
+        encoding="utf-8")
+    st = fam.selftest_popup_stats(tmp_path)
+
+    assert st["died"] == 1, "只该数「Accept All Cookies」那一条 —— 其余三条是普通步骤"
+
+
+def test_the_same_hook_twice_in_one_run_duplicates_but_across_runs_does_not(fam, tmp_path):
+    """`dup` 的口径是「**同一次运行**内同名 ≥2 次」—— **跨运行不许累计**。
+
+    两个运行各点一次同一个钩子，那是**两次正常运行**，不是「重复处理」。
+    混起来算会让「重复处理」这个数随运行次数虚涨（是个隐蔽的统计偏差）。
+    """
+    for tag, hits in (("a", 2), ("b", 1), ("c", 1)):
+        run = tmp_path / "selftest" / ("demo-20260101-00000%s" % tag) / "baseline"
+        run.mkdir(parents=True)
+        (run / ("demo.%s.log" % tag)).write_text(
+            "把「同意条」点掉了（#x，'Accept all'）：看起来成了\n" * hits, encoding="utf-8")
+    st = fam.selftest_popup_stats(tmp_path)
+
+    assert st["runs"] == 3
+    assert st["hits"] == {"同意条": 4}, "命中总数照旧是全部加起来"
+    assert st["dup"] == 1, "只有 a 那一次运行算重复；b 与 c 各一次不算"
+
+
+def test_no_selftest_run_says_unmeasured_not_zero_popup_failures(fam, tmp_path):
+    """`runs == 0` 是「**没观测到**」，不是「零弹窗故障」—— 报告上必须这么说。"""
+    (tmp_path / "selftest").mkdir()
+    st = fam.selftest_popup_stats(tmp_path)
+    assert st["runs"] == 0 and st["died"] == 0, "两个都是 0，但意思完全不同"
+
+    text = fam.render({"empty": False, "rows": [], "no_journal": [], "missing": [],
+                       "popup": {str(tmp_path): st}})
+    assert "没量到" in text, "报告要把它说成「没量到」，不许画成一片空白"
+    assert "没有 selftest 目录" in text
+
+
+# ── 「他有没有点修复」与「没走到终局的趟」 ──────────────────────────────
+#
+# 起因：运营反馈「今天的都是自测过不去」，而**没人答得出他点没点修复**。
+# 账本答得出（`visits` 路线），但报表里没有那一格。
+
+def test_the_report_says_diagnose_to_draft_is_not_a_human_click(fam):
+    """★ 2026-10-14 **撤回的一格**：`diagnose` 后面跟 `draft` **不是「他点了修复」**。
+
+    那是图在那道闸上的**默认路径**（`_next("draft")`）—— 第一版拿它当判据，
+    218 趟里 25/25 全中，一点信息量都没有。
+    真查过：人打回那一档（`revised_at`）**218 趟里一次都没被用过**；人在闸上做过的事，
+    账本上有痕迹的只有 `hints`（「说一句纠正」）。
+
+    ⇒ 报告里必须把这条**说死**，免得下一个人又拿默认路径当人的动作读。
+    这一条钉的就是那句话还在。
+    """
+    text = fam.render({"empty": False, "rows": [], "no_journal": [], "missing": [],
+                       "popup": {}, "open_jobs": []})
+    assert "默认路径" in text, "「diagnose→draft 是默认路径」这句不许被删掉"
+    assert "这版不行" in text and "一次都没被用过" in text, "撤回的理由要留在报告里"
+    assert "hints" in text, "真正看得见的那一格（人说过的话）要点名"
+
+
+def test_a_run_that_never_ended_is_listed_and_named(fam):
+    """**没走到终局的趟**要单列、要点名 —— 不许被静默吃掉。
+
+    台账里这类有 69 个（10-14 那天 3 个），而先前所有数（族分布、A/B、长度墙）
+    **全部跳过了它们** —— 谁读报表都看不见这一块。
+    """
+    text = fam.render({
+        "empty": False, "rows": [], "no_journal": [], "missing": [], "popup": {},
+        "open_jobs": [{"job": "job-aaaaaaaaaaaa", "last": "selftest", "repair": True},
+                      {"job": "job-bbbbbbbbbbbb", "last": "intake", "repair": None}]})
+    assert "没走到终局" in text, "要有一格专门说它们"
+    assert "job-aaaaaaaaaaaa" in text and "job-bbbbbbbbbbbb" in text, "要点名"
+    assert "2" in text
+    assert "正在跑" in text or "不一定是卡住" in text, "「停在 selftest」不等于卡住，得说清"

@@ -206,7 +206,7 @@ class Run:
     label: str                   # 人话：这一遍在打什么
     status: str                  # "passed" | "failed" | "skipped" | "not_needed"（R-84）
     ok: Optional[bool]
-    failed_step: Optional[int]   # 卡在第几步（trace 里第一条 ok=false 的 step）
+    failed_step: Optional[int]   # 卡在第几步（第一条承重步 ok=false；无硬失败时=第一条「点了没推进」的嫌疑 click）
     trace_path: Optional[str]    # 这一遍自己的 trace（没跑就没有）
     note: str                    # 人话：为什么是这个结果
 
@@ -489,10 +489,24 @@ def scene_of(run) -> Optional[dict]:
         cand = [r for r in rows if r.get("step") == step]
         row = next((r for r in cand if _has_scene_material(r)), cand[0] if cand else None)
         why = "这一遍卡在第 %s 步（trace 里第一条**承重步**没做成的那行）" % step
+        #: ★ 2026-10-20（`job-7427b3e7cc41` · belong）：这一格也可能是**嫌疑 click**
+        #: （`ok=true` / `progress=false`，由 `_verdict` 在没有硬失败时放进来）——
+        #: 不能再说成「承重步没做成」，否则读的人（和模型）会按另一条路查。
+        if row is not None and row.get("ok") is True and row.get("progress") is False:
+            why = ("这一遍**没有硬失败**（没有 `ok=false` 的行）；摆的是第 %s 步那条"
+                   "「点了但页面没动」的**嫌疑 click**（`ok=true` / `progress=false`）"
+                   % step)
     else:
-        row = rows[-1]
+        #: ★ 2026-10-20（同一趟 belong）：最后几行往往是**被跳过**的状态（`ok=None`、
+        #: 现场全空）⇒ 原来取 `rows[-1]` 等于给模型一格白卷。取**最后一条真正执行过**
+        #: 且有现场的行；一条执行的都没有时才退回最后一行（老形状，不编）。
+        executed = [r for r in rows if r.get("ok") is not None]
+        pool = executed or rows
+        row = next((r for r in reversed(pool) if _has_scene_material(r)),
+                   pool[-1] if pool else None)
         why = ("这一遍**没有哪一步报「没做成」**（`failed_step` 是空的）—— "
-               "摆的是**最后一步**：它走到这儿就没有下一步了，而成功判据始终没成立。")
+               "摆的是**最后一条真正执行过、且有现场的行**：它走到这儿就没有下一步了，"
+               "而成功判据始终没成立。")
     if row is None:
         return None
     scene = row.get("scene") if isinstance(row.get("scene"), dict) else None
@@ -700,7 +714,20 @@ def _with_scheme(url: str) -> str:
     return "https://" + said.lstrip("/")
 
 
-def _navigate(cdp_bin, ws_url, entry_url, env) -> Optional[str]:
+#: 「**这一下没连上**」那几句话的指纹（cdp 连不上时说的是这几样）。
+#: ⚠️ 它判的是**连接那一下没成**，不是「窗口没了」—— 两件事，处置相反：
+#: 前者可以重读一次地址再试，后者只能重开窗口（见 `_navigate` 里那段）。
+UNREACHABLE_MARKS = ("failed to connect to Chrome", "failed to create client",
+                     "context deadline exceeded", "connection refused")
+
+
+def _unreachable(text: str) -> bool:
+    """这段输出说的是不是「**连不上**」。认不出来 = 不是（不猜）。"""
+    low = _as_text(text).lower()
+    return any(mark.lower() in low for mark in UNREACHABLE_MARKS)
+
+
+def _navigate(cdp_bin, ws_url, entry_url, env, refresh=None) -> Optional[str]:
     """把窗口**导航到 `entry_url`** → `None` 成了 / 一句人话为什么没成。
 
     ⚠️ 【我量的·2026-09-21】**不导航就白跑**：证据那一趟跑到最后，脚本报的最后地址是
@@ -708,12 +735,20 @@ def _navigate(cdp_bin, ws_url, entry_url, env) -> Optional[str]:
     也就是说脚本是在**控制台页**上找元素的，什么都没找到、当场报 `max_steps`。
     生产那边是 ad-task 先开好页面才调脚本的，所以这一步在自测这条路里必须自己做
     （第二遍 `rerun` 的「刷新后重跑」本来就是这么做的，这里把它抽出来共用）。
+
+    ★ 2026-10-13（运营反馈「窗口连不上」的那一族）：`refresh` 给了就在**连不上**的时候
+    问一次窗口层「这个窗口**现在**的地址是什么」，拿到**不一样**的一对 host:port 就换上
+    接着重试。理由：手里那串是**开窗那一刻**拿到的，它可能过期（浏览器进程换过之后同一个
+    `bit_id` 的地址是另一串）—— 而那种失败报出来的话会变成「窗口没了」，**指错方向**
+    （读账的人去查选择器 / 重开窗口，都不是那一件事）。`refresh` 不给 = 老行为一个字不变。
     """
     if not cdp_bin or not entry_url:
         return "（没导航：%s）" % ("没有可用的 cdp 二进制" if not cdp_bin else "没给入口网址")
     entry_url = _with_scheme(entry_url)       # ★ 见上面那条实测：没 scheme 的话 navi 直接判无效
     host, port = _host_port(ws_url)
     said = ""
+    notes: list = []
+    reread = False
     for attempt in range(NAVI_TRIES):
         try:
             done = subprocess.run([str(cdp_bin), "navi", entry_url, "--host", host, "--port", port],
@@ -728,9 +763,18 @@ def _navigate(cdp_bin, ws_url, entry_url, env) -> Optional[str]:
             raw = done.stderr or done.stdout
             said = "导航没成（退出码 %d，它说：%s）" % (
                 done.returncode, _error_line(_noise_free(raw)) or "什么都没说")
+            #: ★ 换地址那一步：**只做一次**（再换就是窗口层自己在飘，那要人看）。
+            if refresh is not None and not reread and _unreachable(raw):
+                reread = True
+                fresh = str(refresh() or "").strip()
+                pair = _host_port(fresh) if fresh else None
+                if pair and pair != (host, port):
+                    notes.append("手里的地址连不上 → 从窗口层重读了当前地址："
+                                 "%s:%s → %s:%s，接着重试" % (host, port, pair[0], pair[1]))
+                    host, port = pair
         if attempt < NAVI_TRIES - 1:
             time.sleep(NAVI_GAP_SECONDS)      # 端口还没通 ⇒ 等一下再试（见上面那条实测）
-    return said
+    return ("；".join(notes) + "；" if notes else "") + said
 
 
 def run_once(py_path, ws_url, form_file, site, *, legacy: bool = False, run_dir=None,
@@ -1031,6 +1075,29 @@ def _aux_row(ln) -> bool:
             or bool((ln or {}).get("soft")))
 
 
+def _first_click_that_did_not_move(lines: list) -> Optional[dict]:
+    """第一条「点了但页面没动」的**承重 click**（`ok=true` / `progress=false`），没有就 `None`。
+
+    ★ 2026-10-20（真事 `job-7427b3e7cc41` · belong）：**没有 `ok=false` 的硬失败**时，
+    真凶常常就在这一格 —— 动作下发成功（所以 `ok=true`），可页面一步没动（`progress=false`），
+    典型是选择项点在了外层 div 上、真正的 radio 没被选中；随后下一屏的状态全因地址不匹配被
+    跳过，诊断只能拿到「第一处跳过」这个**下游症状**，改稿模型顺着它改，改不动 ⇒ `repair_noop`。
+
+    判据只吃 trace 里现成的两格（`ok` / `progress`），不另算、不猜：
+      · 只认 `click` —— `scroll`/`wait`/`popup` 不推进页面是**正常**的；
+      · `form` 填字也不要求推进（填完页面本来就可以不变）；
+      · 辅助/`soft` 行照旧排除（`_aux_row`，与「带瑕疵」那条同一把尺子）。
+    调用方只在**确实有被跳过的状态**时用它（否则「点了没动」可能只是正常的选择动作）。
+    """
+    for ln in lines or []:
+        if (ln.get("ok") is True
+                and str(ln.get("action") or "").strip().lower() == "click"
+                and ln.get("progress") is False
+                and not _aux_row(ln)):
+            return ln
+    return None
+
+
 def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
              err: str, out: str, timeout: float, stopped_at: int = 0) -> tuple:
     """一遍的证据 → (ok, failed_step, note)。**这一处就是「诚实」本身**，别把它做软。
@@ -1072,15 +1139,18 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
     #: 成功文案放行不了整趟（负控钉在 `test_a_run_that_walked_on_to_success_passes_…`）。
     #: ⚠️ 它管不了「走对没走对」（值填错、字填错格子）—— 那是产物质检那条线，别拿它当。
     ended_in_success = bool(lines) and (lines[-1] or {}).get("success_in_page") is True
+    #: ★ 2026-10-13（用户裁定「都收吧」）：**`soft` 的行也放行**（那些行照旧点名，但不否决这一遍）。
+    #: 谁标的、凭什么：`browser_agent._replay_step` —— 「点掉同意条 / 弹层」那一类**环境噪声**
+    #: （有时有有时没有：新窗口有、上一趟点掉过就没有、还可能是后冒出来的）。这一档与
+    #: `auxiliary` 同一形状，只是**判据不同**：那个靠观察（同一目标作成过也做败过），
+    #: 这个靠「它就是弹层那类」的生成侧标记。产物那侧不拿它打回整组（`template.py` 的 `soft` 段）。
     hard_rows = [ln for ln in bad_rows
-                 if str(ln.get("action") or "").strip().lower() not in AUXILIARY_ACTIONS
-                 and not ln.get("auxiliary")
+                 if not _aux_row(ln)
                  and ln.get("success_in_page") is not True
                  and not ended_in_success]
     #: 上面那一档**放过**的那些行（照旧要说出来）：它们本该是承重步，只是这一趟最后走到了。
     walked_rows = ([ln for ln in bad_rows
-                    if str(ln.get("action") or "").strip().lower() not in AUXILIARY_ACTIONS
-                    and not ln.get("auxiliary")
+                    if not _aux_row(ln)
                     and ln.get("success_in_page") is not True]
                    if ended_in_success else [])
     #: ★ 2026-10-17（**终审 C1**）：`first_bad` **跳过辅助档** —— 它原来是 `bad_rows[0]`
@@ -1096,7 +1166,16 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
                  or (bad_rows[0] if bad_rows else None))
     first_hard = hard_rows[0] if hard_rows else None
     failed_step = first_hard.get("step") if first_hard else None
-    step_said = (first_bad or {}).get("note") or "trace 里那一步没写为什么"
+    #: ★ 2026-10-14：**「没写为什么」这句话以前是假的** —— 收摊那一跳（`_stop`）把
+    #: 「为什么收摊」写进 `progress_why`（`self._trace(..., progress_why=why)`），
+    #: 而这里只读 `note` ⇒ 诊断落成兜底话。**后果不是难看**：模型拿着「trace 里那一步
+    #: 没写为什么」去改稿，**改不出任何东西**（它不知道要改什么）。实测 4 趟就是这么丢的
+    #: （`job-0efb84117920` / `job-c053e0b049f3` / `job-cf1d84521a09` / `job-fc0d7a398eff`）。
+    #: 两格都读，顺序有意：`note` 是**那一步自己**的话，`progress_why` 是**为什么**没成/没推进。
+    #: 兜底那句留着 —— 两格都空时它仍然是对的（那时候产物**真的**什么都没说）。
+    step_said = ((first_bad or {}).get("note")
+                 or (first_bad or {}).get("progress_why")
+                 or "trace 里那一步没写为什么")
     stopped = bool(stopped_at) and any(
         int((ln or {}).get("stopped_at") or 0) == int(stopped_at) for ln in (lines or []))
     # `lines` 非空是承重的一环（R-27）：一行 trace 都没有时，「trace 里没有没做成的步」
@@ -1172,17 +1251,46 @@ def _verdict(rc, timed_out: bool, lines: list, bad_lines: int,
             #: 并说清**人在这儿能做什么**。人手里能改的就那几样：成功判据 / 开工前那一句 /
             #: 或者把状态判据本身改对（那要动产物）。
             head = skipped[0]
+            first_skip_i = next((i for i, ln in enumerate(lines)
+                                 if "跳过" in str(ln.get("progress_why")
+                                                  or ln.get("note") or "")), len(lines))
+            #: ★ 2026-10-20（`job-7427b3e7cc41` · belong）：**第一处跳过常常只是下游症状**。
+            #: 在那之前先找**第一条「点了但页面没动」的承重 click** —— 它才是真凶时，
+            #: 把它连同 `selector_used` + 之后那一屏的正文一起摆出来，模型才有得改。
+            suspect = _first_click_that_did_not_move(lines[:first_skip_i])
+            executed = [ln for ln in lines[:first_skip_i] if ln.get("ok") is not None]
+            last = executed[-1] if executed else None
+            done_word = "真正执行过的" if suspect is not None else "真正做成的"
             note = ("这一遍 **%d 步里 %d 步被跳过**（那些状态跟当前这一页对不上 —— 页面压根没走到"
-                    "它们那一页），真正做成的只有 %d 步 ⇒ 没走到成功（退出码 %s）。\n"
+                    "它们那一页），%s只有 %d 步 ⇒ 没走到成功（退出码 %s）。\n"
                     "第一处跳过：第 %s 步（%s）—— %s\n"
                     "⚠️ 跳过就是**没做** —— 这一遍不能当成「走完了」。\n"
                     "⇒ 这儿能配合的：① 如果页面上其实**成了**，改「什么算成功」那一格；"
                     "② 如果它**走岔了**，在闸上说一句「从第 %s 步起，页面在哪 / 该点哪个」——"
                     "它会带着这句话重改一版。"
-                    % (len(lines), len(skipped), len(lines) - len(skipped), rc,
+                    % (len(lines), len(skipped), done_word,
+                       len(lines) - len(skipped), rc,
                        head.get("step"), str(head.get("action") or "?"),
                        str(head.get("progress_why") or head.get("note") or "（它没说为什么）")[:160],
                        head.get("step")))
+            if suspect is not None:
+                failed_step = suspect.get("step")
+                page = str((last or {}).get("page_sig") or "")
+                tail = str((last or {}).get("page_sig_tail") or "")
+                page_note = page[:400]
+                if tail and tail[-200:] not in page_note:
+                    page_note = (page_note + " … " + tail[-200:]).strip()
+                suspect_say = ("嫌疑步：第 %s 步（%s）—— 点了但页面没动"
+                               "（selector=%s，progress=false）"
+                               % (suspect.get("step"),
+                                  str(suspect.get("action") or "?"),
+                                  str(suspect.get("selector_used") or "（空）")))
+                if last is not None and last is not suspect and page_note:
+                    suspect_say += ("；它之后最后执行的第 %s 步页面仍在 %s，页面上写着：%s"
+                                    % (last.get("step"),
+                                       str(last.get("url") or "（未知）"),
+                                       page_note))
+                note = suspect_say + "\n" + note
         else:
             note = ("每一步都做成了，但页面上一直没出现成功文案（退出码 %s）—— "
                     "不是卡在哪一步，是没走到成功" % rc)
@@ -1257,7 +1365,7 @@ def _execute(name: str, py, ws_url, form_file, correlation_id, log_level, env,
              run_dir: pathlib.Path, site: str, timeout: float, task_id=None,
              delay=None, legacy_why: str = "", repeats: int = 1,
              start_url: Optional[str] = None, cdp_bin: Optional[str] = None,
-             loop: bool = False) -> Run:
+             loop: bool = False, refresh=None) -> Run:
     """跑一遍产物，按 trace + 退出码下结论。
 
     `repeats > 1` = ★ 2026-09-30（用户裁定「Py 必须通过稳定性测试才能交付」）：
@@ -1298,13 +1406,26 @@ def _execute(name: str, py, ws_url, form_file, correlation_id, log_level, env,
     except OSError as exc:
         err = "起不来：%s" % exc
 
+    #: ★ 2026-10-13（`job-a6954761e657` 的现场）：**产物自己的话必须落盘**。
+    #: trace 那一行是**话术**（`没找到「X」这个输入框，没填成` 对「找不到框 / 严格闸拒填 /
+    #: 被盖着 / 位置不稳」全都是同一句），而 cdp 真正说了什么**只在它的 stdout/stderr 里**。
+    #: 原来这一趟跑完就把 `out`/`err` 丢了 ⇒ 查「为什么填不进去」只能**再跑一趟真提交**
+    #: （每一趟都是一份真 lead）。证据线那一趟早就这么做（`run_evidence` 的
+    #: `<site>.evidence.log`）—— 这一趟照做，文件名与 trace 同源：`<site>.<遍名>.log`。
+    #: ⚠️ 落盘失败**不许**动结论（它是旁路，不是判据）。
+    log_path = run_dir / ("%s.%s.log" % (site, name))
+    try:
+        log_path.write_text((out or "") + (err or ""), encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+
     lines, bad_lines = _read_trace(trace)
     ok, failed_step, note = _verdict(rc, timed_out, lines, bad_lines, err, out, timeout)
     if legacy_why:
         note = (note + " " + legacy_why) if note else legacy_why
     ok, extra = _rerun_note(py, ws_url, form_file, correlation_id, log_level, env,
                             run_dir, site, name, lines, timeout, task_id, delay,
-                            repeats, ok, legacy_why, start_url, cdp_bin, loop)
+                            repeats, ok, legacy_why, start_url, cdp_bin, loop, refresh)
     note = note + extra
     return Run(
         name=name,
@@ -1325,7 +1446,7 @@ def _last_step(lines: list) -> int:
 
 def _rerun_note(py, ws_url, form_file, correlation_id, log_level, env, run_dir,
                 site, name, lines, timeout, task_id, delay, repeats, ok,
-                legacy_why, start_url=None, cdp_bin=None, loop=False) -> tuple:
+                legacy_why, start_url=None, cdp_bin=None, loop=False, refresh=None) -> tuple:
     """★ 2026-09-30：**同环境复跑**那几遍 —— 跑完返回该贴在结论尾巴上的那句话（失败就点名）。
 
     为什么要它（用户裁定原话：「可重放性：同环境连续跑 3~5 次」）：自测原来**一遍过了就停**
@@ -1369,7 +1490,7 @@ def _rerun_note(py, ws_url, form_file, correlation_id, log_level, env, run_dir,
     passed = 0
     bad: list = []
     for i in range(2, int(repeats) + 1):
-        missed = _navigate(cdp_bin, ws_url, start_url, env) or ""
+        missed = _navigate(cdp_bin, ws_url, start_url, env, refresh) or ""
         if missed:
             return (ok, "\n⚠️ 同环境复跑这一关**这一次没验到**：起跑前站不回起点（%s）。" % missed)
         rep_trace = pathlib.Path(run_dir) / ("%s.%s.rep%d.trace.jsonl" % (site, name, i))
@@ -1456,6 +1577,9 @@ def run(py_path, ws_url, form_file, site, *,
         only: Optional[Sequence[str]] = None,
         #: ★ 2026-09-30：这一版是**循环型**吗（见 `_rerun_note` 里那一格：循环稿不做复跑）。
         loop: bool = False,
+        #: ★ 2026-10-13：**连不上时重读一次当前地址**的回调（`() -> ws_url | None`）。
+        #: 不给 = 老行为一个字不变（手里的地址一直用到跑完）。
+        refresh_ws: Optional[Callable] = None,
         on_run: Optional[Callable] = None) -> Report:
     """在真浏览器上按 `RUN_NAMES` 的序列跑，返回一份**说得清**的结论。
 
@@ -1539,6 +1663,19 @@ def run(py_path, ws_url, form_file, site, *,
         legacy_why = ("⚠️ 这一版是**老写法**（不认 `--trace` / `--no-report` / `--delay`）—— "
                       "所以按老写法跑：证据是**它自己上报过的那些步**（由运行时写）+ 退出码，"
                       "**定位不到卡在第几步**。")
+    #: ★ 2026-10-13：**手里的地址可能过期**（浏览器进程换过之后同一个 `bit_id` 的地址
+    #: 是另一串）—— 开跑之前先问一次窗口层「这个窗口**现在**的地址是什么」，拿到不一样的
+    #: 就换上去（`_navigate` 里那次重读只管连不上的那一下，这一次管**后面每一遍**：
+    #: 产物的每一遍都是拿 ws_url 自己连的）。
+    #: ⚠️ 拿不到 / 一样 ⇒ 照旧用给的这串：那是「条件差一点」，不是「这一趟不能跑」
+    #: （与 `_clean_window_for_explore` 换不成干净窗口时同一条规矩）。
+    if refresh_ws is not None:
+        try:
+            live = str(refresh_ws() or "").strip()
+        except Exception:                          # noqa: BLE001 —— 外面世界，不许带塌自测
+            live = ""
+        if live and _host_port(live) != _host_port(ws_url):
+            ws_url = live
 
     #: ★ **跑之前先导航到那个站**（2026-09-21 真跑撞出来的）：`fresh_open` 开出来的窗口停在
     #: **Bit 自己的控制台页**上，而生产那边是 ad-task 先开好页面才调脚本的 —— 我们这条工具路
@@ -1550,7 +1687,7 @@ def run(py_path, ws_url, form_file, site, *,
     navi_why = ""
     navi_block = False
     if start_url:
-        navi_why = _navigate(cdp_bin, ws_url, start_url, env) or ""
+        navi_why = _navigate(cdp_bin, ws_url, start_url, env, refresh_ws) or ""
         navi_block = bool(navi_why)      # 给了地址却去不了 ⇒ **一遍都不许跑**
     elif allow_navigation_skip:                      # 老调用方：不导航，但**要说清**
         navi_why = "没给要导航到哪个页面（`start_url`）"
@@ -1575,11 +1712,12 @@ def run(py_path, ws_url, form_file, site, *,
         """
         if not start_url:
             return ""
-        return _navigate(cdp_bin, ws_url, start_url, env) or ""
+        return _navigate(cdp_bin, ws_url, start_url, env, refresh_ws) or ""
 
     def _once(name, **kw):
         return _execute(name, py, ws_url, form_file, correlation_id, log_level, env,
-                        run_dir, site, timeout, task_id=task_id, legacy_why=legacy_why, **kw)
+                        run_dir, site, timeout, task_id=task_id, legacy_why=legacy_why,
+                        refresh=refresh_ws, **kw)
 
     runs: list = []
     submissions = 0

@@ -587,7 +587,7 @@ def test_reopen_on_a_run_that_did_not_stop_for_a_window_is_refused(tmp_path):
 
 
 def test_a_dead_window_is_noticed_before_the_next_step_runs(tmp_path):
-    """窗口在**等人回话**的那几分钟里死了（§4.6：窗口只活几分钟）→ 回话时先说清。
+    """窗口在**等人回话**的那几分钟里死了（窗口会自己到点，实测 25~33 分钟）→ 回话时先说清。
 
     不先探一下的后果：自测拿着一个死窗口跑，报告把「连不上」记成产物的问题，
     人看到的是一份**误导性的**失败（R-5 那条「不许把接线问题记成产物不行」的服务侧版本）。
@@ -817,6 +817,141 @@ def test_alive_reads_the_shape_the_real_worker_actually_returns():
     # 别把「问不出来」读成「死了」——那会误杀一个本来能跑的运行
     assert _bit_window(lambda p, b: {"success": True, "data": "看不懂"}).alive() is None
     assert _bit_window(lambda p, b: (_ for _ in ()).throw(RuntimeError("连不上"))).alive() is None
+
+
+def test_current_ws_reads_the_address_the_window_has_now_and_never_opens_one():
+    """★ 2026-10-13：`current_ws()` = 「这个窗口**现在**的地址」。两个判据都是**实测**的
+    （worker 192.168.1.197）：
+
+    ① `/browser/open` 对一个**开着**的窗口是**幂等**的（连开两次回同一个 ws、同一个 pid
+       6564）⇒ 问「当前地址」不用关窗、也不会多开一个窗口；
+    ② `pids/alive` 回的 `data` 是空 dict ⇒ 窗口**不在**了，这时候**绝不许**再调 `open`：
+       那会**真开一个新窗口**，而「开不开新窗口」是图和人的决定（`reopen`），
+       不是一次重连该做的事。
+    """
+    bid = "b" * 32
+    calls: list = []
+
+    def reply(path, body):
+        calls.append(path)
+        if path == "/browser/pids/alive":
+            return {"success": True, "data": {bid: 6564}}
+        if path == "/browser/open":
+            return {"success": True, "data": {"ws": "ws://0.0.0.0:61129/devtools/browser/new"}}
+        raise AssertionError("窗口层没这个接口：%s" % path)
+
+    win = _bit_window(reply)
+    assert win.current_ws() == "ws://192.168.1.197:61129/devtools/browser/new"
+    assert calls == ["/browser/pids/alive", "/browser/open"], calls
+
+    #: 窗口不在 ⇒ 只能回 None，**一次 open 都不许发**
+    calls.clear()
+    dead = _bit_window(lambda p, b: {"success": True, "data": {}})
+    assert dead.current_ws() is None, "窗口不在 ⇒ 只能回 None"
+    assert calls == [], calls
+
+    #: 问不出来（窗口服务抖了）⇒ None：不许抛，更不许编一个地址出来
+    boom = _bit_window(lambda p, b: (_ for _ in ()).throw(RuntimeError("连不上")))
+    assert boom.current_ws() is None
+
+
+def test_opening_a_window_retries_the_rate_limit_and_only_that(monkeypatch):
+    """★ 2026-10-13（真因现场）：Bit 的窗口服务**会限流** ——
+    `{"success": false, "msg": "打开窗口失败，请尝试降低接口请求频率重试"}`。
+
+    `fresh_open()` 是**先关、后开** ⇒ 这一下直接抛的后果不是「慢一点」，是
+    **旧窗已经关了、手上一串死地址**（自测随后报「窗口连不上」，指错方向）。
+    所以按 Bit 自己那句话**退避重试**。
+    ⚠️ **只对限流**重试：别的失败（SKILL 里那条「内存使用率超出 95%」）照旧当场抛 ——
+    拿重试糊一个真错误，只是把「开不出来」拖成「开得很慢」。
+    """
+    bid = "b" * 32
+    calls: list = []
+    sleeps: list = []
+
+    def opens():
+        return len([c for c in calls if c == "/browser/open"])
+
+    def reply(path, body):
+        calls.append(path)
+        if path == "/browser/pids/alive":
+            return {"success": True, "data": {bid: 6564}}
+        if path == "/browser/open":
+            if opens() < 3:
+                return {"success": False, "msg": "打开窗口失败，请尝试降低接口请求频率重试"}
+            return {"success": True, "data": {"ws": "ws://0.0.0.0:61129/devtools/browser/new"}}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(service.time, "sleep", lambda s: sleeps.append(s))
+    win = _bit_window(reply)
+    assert win.open() == "ws://192.168.1.197:61129/devtools/browser/new"
+    assert opens() == 3, calls
+    assert sleeps == [service.BitWindow.OPEN_GAP_SECONDS] * 2, sleeps
+
+    #: 一直限流 ⇒ 试满就抛（带上 Bit 那句原话），不无限等
+    calls.clear()
+    sleeps.clear()
+
+    def always_limited(path, body):
+        calls.append(path)
+        if path == "/browser/pids/alive":
+            return {"success": True, "data": {bid: 6564}}
+        return {"success": False, "msg": "打开窗口失败，请尝试降低接口请求频率重试"}
+
+    with pytest.raises(RuntimeError) as exc:
+        _bit_window(always_limited).open()
+    assert "降低接口请求频率" in str(exc.value), exc.value
+    assert opens() == service.BitWindow.OPEN_TRIES, calls
+    assert sleeps == [service.BitWindow.OPEN_GAP_SECONDS] * (service.BitWindow.OPEN_TRIES - 1), sleeps
+
+    #: 反向钉子：**不是**限流 ⇒ 一次就抛，一次都不等
+    calls.clear()
+    sleeps.clear()
+
+    def memory_pressure(path, body):
+        calls.append(path)
+        if path == "/browser/pids/alive":
+            return {"success": True, "data": {bid: 6564}}
+        return {"success": False, "msg": "打开窗口失败：内存使用率超出 95%"}
+
+    with pytest.raises(RuntimeError):
+        _bit_window(memory_pressure).open()
+    assert opens() == 1, calls
+    assert sleeps == [], sleeps
+
+
+def test_the_selftest_gets_the_window_layers_current_address(tmp_path, monkeypatch):
+    """★ 2026-10-13：服务把 `refresh_ws` 交给自测（窗口层**只有服务手上有** ——
+    与 `set_viewport` / `explore` 同一条形状）。
+
+    判据是**真去问了窗口层**（那个桩的 `current_ws` 被调用了），不是「有个可调用的东西」。
+    反向：桩窗口没有这个能力 ⇒ **不接**这条线，自测那一边一个字节不变。
+    """
+    seen: dict = {}
+
+    class _Win:
+        def __init__(self):
+            self.asked = 0
+
+        def current_ws(self):
+            self.asked += 1
+            return "ws://192.168.1.197:61129/devtools/browser/new"
+
+    win = _Win()
+    svc = service.Service(window=win, capture_bin="/bin/true",
+                          checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
+    monkeypatch.setattr(service.selftest, "run",
+                        lambda *a, **kw: (seen.update(kw) or {"stub": True}))
+    svc._selftest_cb()("p.py", "ws://old", "form.json", "site")
+    assert seen.get("refresh_ws") is not None, "接上了窗口层就该把它交出去"
+    assert seen["refresh_ws"]() == "ws://192.168.1.197:61129/devtools/browser/new"
+    assert win.asked == 1, win.asked
+
+    seen.clear()
+    plain = service.Service(window=StubWindow(), capture_bin="/bin/true",
+                            checkpointer=InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST))
+    plain._selftest_cb()("p.py", "ws://old", "form.json", "site")
+    assert "refresh_ws" not in seen, seen
 
 
 # ──────── D-2 那条前提的另一半：**只有一个消费线程**在推 job（Task 2 收口轮）────────
@@ -1481,11 +1616,43 @@ def test_reopen_picks_up_a_run_whose_window_died_during_the_explore(tmp_path):
     assert any("ZIP 要填真的" in h for h in hints), "重开之后人说过的话丢了：%r" % hints
 
 
+
+def test_reopen_will_not_open_a_window_while_another_run_is_using_it(tmp_path):
+    """★ 2026-10-13：换窗**先关后开** —— 别人正在跑的时候自己开一个新的，就是把别人那个关掉。
+    所以这一下先问一句「现在有没有人在用」；**自己带 `ws_url` 来的人不受这条管**（他不关别人的窗）。
+    """
+    rec = Rec()
+    client = _reopenable_client(rec, tmp_path, [
+        _journey(stop_reason="budget_steps"),      # 第一次：探路没走完（＝可重开的那一档）
+        _journey(),
+    ])
+    job_id = client.post("/run", json=_brief(
+        tmp_path, allow_skips=["country", "viewport"])).json()["job_id"]
+    view = _wait(client, job_id)
+    assert view["status"] == "waiting" and view["gate"]["step"] == "explore"
+    client.post("/job/%s/reply" % job_id, json={"action": "revise", "note": "ZIP 要填真的"})
+    view = _reply_until_done(client, job_id)
+    assert view["result"]["end_reason"] == "explore_unfinished", view["result"]
+
+    svc = client.app.state.service
+    svc._begin_window_use("job-other00001")
+    try:
+        r = client.post("/job/%s/reopen" % job_id, json={})
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert "正用着那个窗口" in detail and "job-other00001" in detail, detail
+
+        #: 带窗口来的人走老路（他不关别人的窗）
+        r2 = client.post("/job/%s/reopen" % job_id, json={"ws_url": NEW_WS_URL})
+        assert r2.status_code == 200, r2.text
+    finally:
+        svc._end_window_use("job-other00001")
+
 def test_reopen_picks_up_a_job_that_blew_up_during_the_explore(tmp_path):
     """更糟的那一支：探路**抛异常**（窗口的传输断了 / MCP 门起不来）→ `_advance` 把 job 记成 `failed`。
 
     那时候 `reopen` 与 `reply` **双双 409** —— 出路只剩「重新开一个任务」，也就是整轮重来。
-    而窗口只活几分钟、一次探路可能跑更久，所以**这一支是大概率那支，不是稀奇的那支**。
+    而窗口会自己到点（实测 25~33 分钟）、一次探路可能跑更久，所以**这一支是大概率那支，不是稀奇的那支**。
     """
     rec = Rec()
     client = _reopenable_client(rec, tmp_path, [
@@ -1888,6 +2055,73 @@ def test_the_explore_also_gets_a_clean_window():
     assert win.opened == 1
     assert brief["ws_url"] == "ws://1.2.3.4:61129/devtools/browser/CLEAN"
 
+
+
+def test_a_new_run_does_not_steal_the_window_a_running_step_is_using(capsys):
+    """★ 2026-10-13（运营的现场）：「开一趟没问题，但**正在跑的那趟就废了**」。
+
+    根：这个部署只有**一个** Bit 档案，而换窗（`fresh_open`）是**先关、后开** ——
+    谁正在用就被谁关掉。账上那一趟：探到第 12 步窗口被换成新 pid、页面被换回
+    Bit 自己的工作台页，第 13 步全找不到元素，最后跑满 600 秒超时。
+    所以判据只有一条：**有人正在用窗口时，不许别人换它**（推迟到这一趟自己的探路那一步）。
+    """
+    class _Win:
+        def __init__(self):
+            self.opened = 0
+
+        def fresh_open(self):
+            self.opened += 1
+            return "ws://1.2.3.4:61129/devtools/browser/CLEAN"
+
+    win = _Win()
+    svc = service.Service(window=win)
+    svc._begin_window_use("job-other00001")               # 别人那一步正在跑
+    brief = {"ws_url": "ws://1.2.3.4:61129/devtools/browser/INUSE"}
+    svc._clean_window_for_explore(brief)
+    assert win.opened == 0, "别人正在用的那个窗口**一个字节都不许动**"
+    assert brief["ws_url"] == "ws://1.2.3.4:61129/devtools/browser/INUSE"
+    assert brief[service.WINDOW_DEFER_CLEAN] == "job-other00001", brief
+    assert "推迟到这一趟自己的探路那一步" in capsys.readouterr().out
+    #: 轮到这一趟自己了（探路那一步带 `job_id` 再进来）⇒ 现在换，而且**只换一次**
+    #: （这个记号要收掉：探路会重探，第二次再换就是把刚开好的那个关掉）
+    svc._end_window_use("job-other00001")
+    svc._begin_window_use("job-mine000001")
+    svc._clean_window_for_explore(brief, "job-mine000001")
+    assert win.opened == 1 and brief["ws_url"].endswith("/CLEAN"), (win.opened, brief)
+    assert service.WINDOW_DEFER_CLEAN not in brief, brief
+    #: 别人（不是自己）再进来 ⇒ 照样推迟
+    svc._clean_window_for_explore(brief, "job-third00001")
+    assert win.opened == 1, "别人不许动这一趟的窗口"
+    svc._end_window_use("job-mine000001")
+
+    #: 没有人在用 ⇒ 照旧当场换（老行为一个字不变）
+    win2 = _Win()
+    brief2 = {"ws_url": "ws://x/DIRTY"}
+    service.Service(window=win2)._clean_window_for_explore(brief2)
+    assert win2.opened == 1 and brief2["ws_url"].endswith("/CLEAN"), brief2
+
+
+def test_the_window_use_mark_lives_only_inside_the_step_and_always_gets_released():
+    """占位只在「某一步正在跑」的那一段里成立，而且**一定要收掉**：
+    不收 = 从此谁都不许换窗（比原来的病更难查）。抛也照收（`finally`）。
+    """
+    svc = service.Service(window=StubWindow())
+    job = service.Job(job_id="job-abcdef123456", brief={})
+    seen: list = []
+
+    svc._advance_step = lambda j, p: seen.append(svc._window_in_use_by())
+    svc._advance(job, None)
+    assert seen == ["job-abcdef123456"], seen
+    assert svc._window_in_use_by() is None, "跑完必须把占位收掉"
+
+    def boom(j, p):
+        seen.append(svc._window_in_use_by())
+        raise RuntimeError("这一步挂了")
+
+    svc._advance_step = boom
+    with pytest.raises(RuntimeError):
+        svc._advance(job, None)
+    assert svc._window_in_use_by() is None, "抛出来的那一次也必须把占位收掉"
 
 def test_a_window_that_cannot_be_refreshed_keeps_the_original_and_says_so(capsys):
     """换不了就是「条件更差」，**不是**「这一单不能跑」：照旧用原来那个窗口。"""
@@ -2302,6 +2536,30 @@ def test_a_run_without_a_py_says_why_in_one_line():
     assert service._no_py_say({}) == ""
 
 
+def test_a_run_that_had_no_window_says_the_clean_session_swap_failed():
+    """★ 2026-10-13（运营原话：「开一趟没问题，但是重放就一直报没有窗口可用」）。
+
+    真因在 `session` 那一格里，后端的原话：`每 一次换干净会话` 时
+    `fresh_open()` **先关后开** —— 关成了、开被 Bit **限流**挡下
+    （`打开窗口失败，请尝试降低接口请求频率重试`）⇒ 旧窗已没了、新窗没起来，
+    图兜底「照旧跑」= 拿**死地址**去自测。**不把这一句摆出来**，屏幕上只剩
+    「窗口连不上」——读的人只会去重开窗口（能救，但每次都白跑一趟自测，
+    而且没人知道为什么老是这样）。**量到的不许吞。**
+    """
+    told = {"end_reason": "no_window",
+            "session": ("换干净会话没成（开窗口没成：{'success': False, 'msg': "
+                        "'打开窗口失败，请尝试降低接口请求频率重试'}）—— 这一次**不是干净会话**，照旧跑。")}
+    said = service._no_py_say(told)
+    assert "它自己交代的是" in said, said
+    assert "降低接口请求频率" in said, said
+
+    #: 反向：换成了干净会话（`session` 说的是那句**成了**的话）⇒ 不许多一句
+    ok = {"end_reason": "no_window", "session": "换了**干净会话**（关旧窗、开新窗；生产每单都是这么起的）。"}
+    assert "它自己交代的是" not in service._no_py_say(ok), service._no_py_say(ok)
+    #: 没有那一格（探路那一步就没有）⇒ 一个字不编
+    assert "它自己交代的是" not in service._no_py_say({"end_reason": "no_window"})
+
+
 def test_the_human_words_ride_into_the_explore_call(monkeypatch):
     """★ 2026-09-22 真事：运营把步骤写得**很细**，新站那条路上模型**一个字都没收到**。
 
@@ -2342,3 +2600,23 @@ def test_the_panel_says_which_layer_it_got_stuck_on():
     html = service.CONSOLE_PATH.read_text(encoding="utf-8")
     assert 'at(row, "layer", "")' in html, "列表没读服务给的那一层"
     assert "卡在：" in html, "读到了却不摆出来，等于没读"
+
+
+# ── ★ 2026-10-10：「收到你的话」那一句要点名它接着要跑的那一步 ──────────────
+
+
+def test_the_reply_sentence_names_the_step_it_just_released():
+    """回话要点名**它接下来要跑的那一步**（用户：「点继续运营不知道啥情况」）。
+
+    ⚠️ 材料来自**改状态之前**那个 `view` 的 `gate.step` —— 就是人刚放行的那一步。
+    改完状态再读，`gate` 已经没了（`_view` 的 RUNNING 分支给 `gate: None`），
+    所以这一条同时钉住「读的是哪一份 view」。
+    """
+    say = service._reply_accepted_say({"gate": {"step": "lint"}})
+    assert service.STEP_SAY["lint"] in say, say
+    #: 认不出那一步时**不编一个步名** —— 与从前那句一字不差
+    assert service._reply_accepted_say({"gate": {"step": ""}}) == \
+        service.REPLY_ACCEPTED_STEP_UNKNOWN_SAY
+    assert service._reply_accepted_say({}) == service.REPLY_ACCEPTED_STEP_UNKNOWN_SAY
+    #: 负控：**不许**拼出「它正在跑「」这一步」那种残句（空步名直接套模板就是这个形状）
+    assert "「」" not in service._reply_accepted_say({"gate": {"step": ""}}), "空步名被套进模板了"

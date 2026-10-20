@@ -204,6 +204,220 @@ def test_a_draft_with_no_readable_criterion_is_not_guessed():
     assert fix.success_clue_from_source("x = 1\n") == ""
 
 
+# ── 诊断进提示词（★ 2026-10-10）────────────────────────────────────────
+
+
+def test_the_whole_diagnosis_goes_into_the_prompt_not_just_one_sentence():
+    """★ 2026-10-10（`job-d037348fba4d` / `job-bbc57727025c`）：递**整套**诊断，不是那一句 `say`。
+
+    在这之前 `service.write` 只传 `diag["say"]` —— `_diagnosis` 算出来的
+    `failed_step` / `note` / `per_run` / `现场` **一格都没到模型眼前**。
+    而 `states_user` 那一侧本来就写着「诊断**逐字**贴进去」：只递一句话，
+    那条规矩等于空转，改稿那双手看得见「卡在第 6 步」、看不见「这一步真用的是哪条选择器」。
+    """
+    diag = {"run": "baseline", "failed_step": 6,
+            "say": "第 1 遍挂了：卡在第 6 步 —— 页面没动",
+            "note": "填好了「E-mail」；页面没有变化",
+            "submissions": 2,
+            "per_run": [{"name": "baseline", "status": "failed", "ok": False,
+                         "failed_step": 6, "note": "…"}],
+            "现场": {"哪一步": 6, "动作": "form", "这一步的目标": "E-mail",
+                    "实际用的选择器": "#input-sections--1__footer--contactemail",
+                    "当时页面上这段字（末尾 240 字）": "…Please try again. ⚠️ Verify EN",
+                    "为什么是这一步": "这一遍卡在第 6 步（trace 里第一条**承重步**没做成的那行）"}}
+    block = fix.diagnosis_for_prompt(diag)
+    # 那三格以前一格都传不过去 —— 这一条钉的就是它们现在**到了**。
+    assert "#input-sections--1__footer--contactemail" in block, block
+    assert "Please try again" in block, block
+    assert "2" in block and "次" in block, block          # submissions（R-84 那个数）
+    assert "页面没动" in block, block                      # 原来那一句 `say`
+
+    #: 提示词那一侧**逐字**贴（不许在这儿概括）—— 摆进去的就是上面那一段原文。
+    text = fix.states_user({"site": "s", "states": [], "fills": {}}, diagnosis=block)
+    assert block in text, text
+    assert "## 上一版自测没过：诊断（逐字）" in text, text
+
+
+def test_an_empty_diagnosis_contributes_nothing_at_all():
+    """**负控**：空诊断 ⇒ 空串 —— `states_user` 见到空串**就不摆那一段**。
+
+    摆一个空标题比不摆更坏：读的人会以为「诊断是空的」是这一趟的结论，
+    而真相是「这一轮根本没有诊断」（第一次出稿）。
+    """
+    assert fix.diagnosis_for_prompt(None) == ""
+    assert fix.diagnosis_for_prompt({}) == ""
+    text = fix.states_user({"site": "s", "states": [], "fills": {}},
+                           diagnosis=fix.diagnosis_for_prompt({}))
+    assert "上一版自测没过" not in text, text
+
+
+# ── ★ 2026-10-14：「读到了却丢掉」那一族 ────────────────────────────────
+#
+# 起因（一串真事）：`foodandwine` / `goldenromances` 那几份**步进循环型**产物
+# （1069 / 1151 行）修不了 —— 报的是 `504 Gateway Time-out`，看着像网关的事。
+# 实际是这里丢的：`_literals` 明明抠出了 `FILLS`，可 `from_py` 因为 `states is None`
+# **两个都返回 `None`** ⇒ 判成 `legacy` ⇒ 修站把 **57 KB 的整份源码**丢给模型重写
+# ⇒ 超网关 180 秒。改成走数据表之后那一跳是 **1653 字**（差 35 倍）。
+
+
+def test_a_py_with_only_fills_is_not_called_unreadable():
+    """**只有 `FILLS`、没有 `STATES`** 的 py（步进循环型）—— `fills` 读出来了就不许丢。
+
+    ⚠️ 那一族**本来就没有 `STATES`**（它是每轮现读页面的），所以「没有 STATES」
+    不是「读不出来」，是**这一种形状的正常样子**。
+    """
+    src = "FILLS = {'email': {'source': 'email'}}\n"
+    plan, states, fills, notes = fix.from_py(src)
+
+    #: ⚠️ `states` 回来是 **`[]`**（不是 `None`）—— `repair_states(None, …)` 把「没有」
+    #: 记成空表。**所以 `graph.py` 那句 `if fix_states:` 对它是 falsy** ——
+    #: 上游那一句也得跟着改，不然这里读出来了，那边照样走 `legacy`。
+    assert states == [], "它确实没有 STATES（回来是空表，不是 None）"
+    assert fills == {"email": {"source": "email"}}, ("读到了就不许丢", fills)
+    assert not notes, ("不许报「读不出来」—— 那不是这一档", notes)
+
+
+def test_a_py_with_neither_is_still_called_unreadable():
+    """**两个都没有**才算读不出来 —— 这一档照旧，别把「真读不出」也放过去。"""
+    plan, states, fills, notes = fix.from_py("x = 1\n")
+
+    assert states is None and fills is None
+    assert notes and "读不出来" in notes[0], notes
+
+
+def test_one_literal_that_cannot_be_read_does_not_throw_the_other_away():
+    """`_literals`：一个抠不出来，**另外那个已经读到的照旧留着**。
+
+    原来那句是 `except Exception: return None, None` —— 把**已经读到的**一起丢了。
+    「量到了不许当成量不到」这条纪律的**反面**。
+    """
+    src = "FILLS = {'a': 1}\nSTATES = build()\n"     # STATES 是动态构造，抠不出来
+    st, fl = fix._literals(src)
+
+    assert st is None, "STATES 确实抠不出来"
+    assert fl == {"a": 1}, ("FILLS 读到了，不该被 STATES 那一下连累丢掉", fl)
+
+
+# ── ★ 2026-10-14：修站**保不住形状**那一族 ──────────────────────────────
+#
+# 起因（真事 `job-d29e4c847c1c` foodandwine）：拿一条**步进循环型**的底稿去修，
+# `_draft` 里修站支把 `journey` 置 `None` ⇒ `funnel` 也是 `None` ⇒ `shape` 恒为
+# `"table"` —— 而循环型的 `STATES` **本来就是空的**（每轮现读页面）⇒ 产出一份
+# **走不动**的固定步骤表。而「修站**不切形态**：那一版的形状是人交进来的」是这条链上
+# 的老规矩。要保住它，就得把循环型那几格从**底稿自己身上**读回来。
+
+#: 一条像真的循环型底稿：元数据在 `PROVENANCE`、旋钮在模块常量、`STATES` 压根没有。
+LOOP_SRC = '''
+PROVENANCE = {"shape": "loop",
+              "arrive_url": "https://x.test/reg",
+              "pre_steps": [{"action": "click", "target": {"text": "Join now"}}],
+              "fill_order": ["email"],
+              "examples": {"email": "a@b.c"},
+              "why": "有 3 个状态共用同一个地址"}
+PICK = "random"
+MAX_STEPS = 60
+IDLE_LIMIT = 60
+BUSY_TIMEOUT = 90
+FILLS = {"email": {"name": "email", "source": "email", "kind": "value"}}
+'''
+
+
+def test_a_loop_draft_keeps_its_shape_when_read_back():
+    """循环型的底稿：那几格**从它自己身上**读回来（元数据在 PROVENANCE、旋钮在模块常量）。"""
+    spec = fix.loop_spec_from_source(LOOP_SRC)
+    assert spec is not None, "这一份**是**循环型（PROVENANCE 里那格写着）"
+    assert spec["arrive_url"] == "https://x.test/reg"
+    assert spec["pre_steps"] == [{"action": "click", "target": {"text": "Join now"}}]
+    assert spec["fill_order"] == ["email"]
+    assert spec["examples"] == {"email": "a@b.c"}
+    #: 旋钮那四格 —— 它们是**这一份现在的行为**（手调过 max_steps 就该照新的，不是照默认）
+    assert spec["pick"] == "random" and spec["max_steps"] == 60
+    assert spec["idle_limit"] == 60 and spec["busy_timeout"] == 90
+
+
+def test_a_draft_that_is_not_a_loop_is_not_called_one():
+    """**负控**：固定步骤表的底稿、以及不带那几格的老产物，都不许被判成循环型。
+
+    形态切错的代价在下游**看不出来**：产物照样跑，只是走的是另一条路。
+    """
+    #: ① 固定步骤表那一族（有 `STATES`、没有 `PROVENANCE`）
+    assert fix.loop_spec_from_source('STATES = []\nFILLS = {"a": 1}\n') is None
+    #: ② `PROVENANCE` 在，但那一格不是 `loop`（老产物 / 固定步骤表那份）
+    assert fix.loop_spec_from_source('PROVENANCE = {"shape": "table"}\n') is None
+    #: ③ 那片字段根本不是字面量（动态构造）⇒ 读不出来
+    assert fix.loop_spec_from_source("PROVENANCE = build()\n") is None
+    assert fix.loop_spec_from_source("") is None
+
+
+def test_the_knobs_fall_back_when_the_draft_does_not_carry_them():
+    """`PROVENANCE` 说它是循环型、但那份**没写旋钮** ⇒ 只回元数据，旋钮那几格**不进表**。
+
+    （调用方那边 `_loop_source` 对缺的键有默认值 —— 所以「没读到」与「读到 0」必须分得开。）
+    """
+    spec = fix.loop_spec_from_source('PROVENANCE = {"shape": "loop", "why": "单页漏斗"}\n')
+    assert spec is not None and spec["why"] == "单页漏斗"
+    for key in ("pick", "max_steps", "idle_limit", "busy_timeout"):
+        assert key not in spec, ("没读到的旋钮不许编一个值顶上", key)
+
+
+def test_a_loop_shaped_draft_also_skips_exploration(tmp_path):
+    """**循环型的底稿也不探索** —— 这是 2026-10-14 补的那一刀（与上面那条同一条判据）。
+
+    ⚠️ 为什么单钉：`fix_states` 读出来是**空表**，而空表是 falsy —— 判据写成
+    `if state.get("fix_states")` 时它被读成「这不是修站」⇒ **真开浏览器从零探一路**
+    （实测 `job-d29e4c847c1c`：50 秒、11 步、白烧一个窗口 + 一次模型账），
+    而探出来的账本回头又让下游认了一条**假的成功网址**。
+    """
+    draft = tmp_path / "loop.py"
+    draft.write_text(LOOP_SRC, encoding="utf-8")
+    explored = []
+
+    def spy_explore(*a, **kw):
+        explored.append(a)
+        raise AssertionError("循环型的底稿也是修站 —— 这条路**不许**探索")
+
+    deps = graph.Deps(explore=spy_explore, write=graph._writer_from_journey)
+    app = graph.build(checkpointer=graph.allowlisted(InMemorySaver()), deps=deps)
+    cfg = {"configurable": {"thread_id": "fix-loop-1"}}
+    #: ⚠️ **网址那格留空、只给正文判据** —— 这就是 `foodandwine` 的真形状
+    #: （交单之后地址不变，只在原地显示「Check your email」）。
+    #: 原先这一格非给不可（`render_loop` 的护栏写着「这一族只看网址」）⇒ 修站那条路
+    #: 在这一格必然卡死；2026-10-14 用户裁定放宽成「网址或正文**至少有一个**」。
+    app.invoke({"url": "https://example.test/x", "goal": "把它走通",
+                "success_text": "Check your email",
+                "site": "example-fixloop",
+                "out_dir": str(tmp_path / "sites"), "fix_py": str(draft),
+                "allow_skips": ["country", "viewport"]}, cfg)
+
+    state = app.get_state(cfg)
+    gate = state.values.get("__interrupt__") or state.tasks[0].interrupts[0].value
+    assert gate["step"] == "explore", gate
+    assert gate["facts"].get("模式") == "修站（MODE_FIX）", gate["facts"]
+    assert "没有探路" in json.dumps(gate["facts"], ensure_ascii=False), gate["facts"]
+    assert explored == [], explored
+
+    app.invoke(Command(resume="continue"), cfg)          # 过 explore（**不探索**）
+    assert explored == [], "走完 explore 这一步之后仍然一次都不许探索"
+
+    #: ★ 另一半（同一族）：产出的**形状**要照底稿 —— 这一格掉了的话，一份循环型的底稿
+    #: 会被渲成 `STATES` 为空的固定步骤表（走不动），而下游**不会响**。
+    #: ⚠️ `draft` 自己也有一道闸（`shape` 是在**闸之后**才算的）⇒ 要多过一次。
+    app.invoke(Command(resume="continue"), cfg)          # 过 draft
+    after = app.get_state(cfg)
+    assert after.values.get("end_reason") in (None, ""), \
+        (after.values.get("end_reason"), after.values.get("end_note"))
+    assert after.values.get("shape") == "loop", \
+        ("形状掉了：%s" % after.values.get("shape_why"))
+    assert "修站" in str(after.values.get("shape_why") or ""), after.values.get("shape_why")
+    #: 底稿那份 `fix_fills` **真的用上了**（不是拿别的账本重算了一份）
+    assert (after.values.get("fills") or {}).get("email"), after.values.get("fills")
+    #: 判据那一格：正文那句进了产物、网址那格**空着**（不是从哪儿认了一个顶上）
+    src = str(after.values.get("src") or "")
+    assert "Check your email" in src, "正文判据要在产物里"
+    assert "SUCCESS_URL_MARKERS = []" in src, \
+        "网址判据空着就该是空的 —— 认一条顶上正是那次假成功的来路"
+
+
 # ── 原始观察：抽取 / 对回原件（2026-10-15 修站那一刀）────────────────────────
 
 def _card_src():

@@ -157,7 +157,14 @@ def _funnel_journey():
                          "fill": {"name": "postcode", "source": "postcode", "kind": "value",
                                   "label": "Postcode", "value": "SW1A 1AA",
                                   "fallback": [{"random": "postcode"}]}}}]
-    pages = [{"name": "q%d" % i, "when": {"url_contains": "quiz"}, "url": URL,
+    #: ⚠️ `text_contains` 是 **2026-10-08 补的**：三个状态**共用一个地址**，原先判据**只有地址**
+    #: —— 而 `lint` 的 `judge-url-only`（2026-09-29，`0c46ad2`）正是拦这个形状的：
+    #: 「SPA 上的 URL 全程不变 ⇒ 等于没判据」。单页漏斗本来就该有**这一屏独有的正文**
+    #: （`_funnel_journey` 里本来就给每一页起了 `title`）—— 补上它，产物才是过得了闸的那一份。
+    #: 不补的话，下面那条用例产出的稿会被 lint **正确地**打回 3 次 ⇒ 变成 `lint_cap`，
+    #: 而它要验的是「想换形态换不成**不砍这一趟**」，不是「lint 拦不拦得住」。
+    pages = [{"name": "q%d" % i, "when": {"url_contains": "quiz",
+                                          "text_contains": ["t%d" % i]}, "url": URL,
               "title": "t%d" % i} for i in (1, 2, 3)]
     return browser_agent.Journey(steps=steps, notes=["走完了：填了一个邮编"],
                                  stop_reason="model_done",
@@ -253,6 +260,45 @@ def test_the_service_hands_the_model_writer_to_the_graph(tmp_path, monkeypatch):
     assert SAID in seen["user"], "人说的话没进提示词"
     assert "现在的表" in seen["user"], "整张表没摆给模型"
     assert seen["system"] == fix.STATES_SYSTEM
+
+
+def test_the_service_puts_the_whole_diagnosis_in_front_of_the_model(tmp_path, monkeypatch):
+    """★ 2026-10-10：诊断**整套**进提示词 —— 不许只递 `say` 那一句。
+
+    在这之前这一行是 `diagnosis=str((diag or {}).get("say") or "")`：
+    `_diagnosis` 算出来的 `failed_step` / `note` / `per_run` / **`现场`** 全被挡在门外。
+    两趟真账本（d037 / bbc）量出来的后果：改稿那双手只看得见「卡在第 N 步」，
+    于是它只会去改「找元素」那一层 —— 而真相是**用的那条选择器指到了另一个元素**。
+
+    ⚠️ 这条量的是**接线**（`service.write` 真的用了 `fix.diagnosis_for_prompt`），
+    不是那个函数本身（它由 `tests/test_fix.py` 钉）。接不接线，源码文本断言两边都绿。
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-用例里不真打模型")
+    seen: dict = {}
+
+    def fake_loop(system, user, specs, exec_tool, **kw):
+        seen["user"] = user
+        return [{"round": 1, "tool_calls": [], "usage": {}, "elapsed_ms": 1,
+                 "content": '```json\n{"fills": {}, "note": "照诊断改"}\n```'}]
+
+    monkeypatch.setattr(service.llm, "run_tool_loop", fake_loop)
+    box: list = []
+    assert _run_once(_client(tmp_path, _deps_captured(box)), tmp_path).status_code == 202
+
+    box[-1].write({"site": SITE, "fills": {"postcode": _decl()}, "states": []},
+                  {"hints": [], "violations": [],
+                   "diagnosis": {"run": "baseline", "failed_step": 6,
+                                 "say": "第 1 遍挂了：卡在第 6 步 —— 页面没动",
+                                 "note": "填好了「E-mail」", "submissions": 2,
+                                 "per_run": [],
+                                 "现场": {"哪一步": 6,
+                                         "实际用的选择器": "#footer-email-box",
+                                         "当时页面上这段字（末尾 240 字）":
+                                             "…Please try again. ⚠️ Verify EN"}}})
+    #: 这三样以前一格都到不了模型眼前。
+    assert "#footer-email-box" in seen["user"], seen["user"]
+    assert "Please try again" in seen["user"], seen["user"]
+    assert "卡在第 6 步" in seen["user"], seen["user"]
 
 
 def test_without_a_model_key_the_service_does_not_pretend(tmp_path, monkeypatch):

@@ -1006,6 +1006,547 @@ def test_a_colliding_gate_is_repicked_to_a_unique_snippet():
     assert browser_agent._gates_that_hold_elsewhere(pages) == []
 
 
+# ── ★ 2026-10-09：重挑在**被截过的那一页**上也得跑（真账本 `job-53e8caeece5e`）────────
+#
+# 现场（kotzheating，两趟同一形状：`job-c8d966155ec6` / `job-53e8caeece5e`，都是 `draft_failed`）：
+#   · 首页有 **400 个叶子元素** —— 工具的 `nodeTexts` 上限就是 400 ⇒ `node_texts_truncated`
+#     为真。⚠️ 账本那一格只抄前 120 条，但**判据那一侧读的是模型里的 400 条**
+#     （`note_page(raw)`，不是 `_summarize` 那行）⇒ 那个开关挡掉的是**重挑**，不是记账。
+#   · 前 137 个字全是页头/导航 ⇒ 第一个状态没有「上一页」可比（`avoid=""`）⇒ 判据必然
+#     从这儿剪 ⇒ 全站每页都有 ⇒ `gate_collisions` 非空 ⇒ IR 把整趟砍死。
+#   · 而首页自己那句话排在窗口第 ~185 字，**完全在 600 字窗口内** ⇒ 候选是有的，
+#     只是那个开关让重挑压根没去挑（真账本 26 趟 `draft_failed` 里 `repicked=False` 的成因之一）。
+
+
+def _gate_page_cut(name: str, url: str, text: str, nodes, avoid: str = "",
+                   truncated: bool = True) -> dict:
+    """同 `_gate_page_with_nodes`，外加两件真账本上有、那个 helper 没有的：
+
+    · `node_texts_truncated` —— 这一页的叶子元素多到被工具截过（默认开，`truncated=False` 关掉）；
+    · `avoid` —— `note_page` 对**非第一页**传的那一格（上一页的正文）。
+      第一页没有上一页，传空串（那正是撞车的来源）。
+    """
+    model = {"url": url, "title": name, "page_text": text, "node_texts": list(nodes)}
+    if truncated:
+        model["node_texts_truncated"] = True
+    return {"name": name, "when": browser_agent._when_for(model, avoid=avoid),
+            "key": (url, name, text), "model": model, "url": url, "title": name}
+
+
+#: 真账本原文（`job-53e8caeece5e` 首页那一屏前 600 字里掐的那一段，逐字）。
+KOTZ_HOME_TEXT = ("Skip to content Proudly Serving Oakland County, MI Since 1929 Heating Cooling "
+                  "Plumbing Air Quality About Promotions Contact 248-574-4100 Schedule Online "
+                  "Kotz Heating, Cooling and Plumbing Proudly Serving Oakland County, MI Since 1929 "
+                  "Since 1929, Kotz Heating, Cooling and Plumbing has been serving the residents of "
+                  "Oakland County, MI for all their HVAC and Plumbing services.")
+#: 同一趟 `/contact/` 那一屏——前 137 字与首页**一字不差**，撞车就是从这儿来的。
+KOTZ_CONTACT_TEXT = ("Skip to content Proudly Serving Oakland County, MI Since 1929 Heating Cooling "
+                     "Plumbing Air Quality About Promotions Contact 248-574-4100 Schedule Online "
+                     "Contact Us When you need help with your Oakland County home, Kotz Heating, "
+                     "Cooling and Plumbing is here for you.")
+#: ⚠️ 真账本实测：首页那 120 条与 `/contact/` 那 120 条**一条不差**（120/120 在那边也有）——
+#: 页头 + 导航本来就全站共用。夹具照这个来，否则量不出 ② 那条。
+KOTZ_CHROME_NODES = ["Skip to content", "Proudly Serving Oakland County, MI Since 1929", "Careers",
+                     "Financing", "Promotions", "Blog", "248-574-4100", "Schedule Online",
+                     "Heating", "Cooling", "Plumbing", "Air Quality", "About", "Contact"]
+KOTZ_HOME_NODES = KOTZ_CHROME_NODES + [
+    "Since 1929, Kotz Heating, Cooling and Plumbing has been serving the residents of "
+    "Oakland County, MI for all their HVAC and Plumbing services."]
+KOTZ_CONTACT_NODES = KOTZ_CHROME_NODES + [
+    "Contact Us When you need help with your Oakland County home"]
+
+
+def test_the_repick_runs_on_a_page_whose_element_list_was_cut():
+    """★ 2026-10-09：`node_texts_truncated` **不该**挡住重挑。
+
+    为什么挡住是错的：那一格的全部意思是「这份**清单**不是这一页的全部」，而重挑要的三件事
+    没有一件靠「清单全不全」——
+      ① 候选是**单个元素自己的话**：它就是逐条 `_snippet(节点)` 取出来的，天然满足，
+         跟截没截过无关（跨元素拼接那个旧病，这条路上犯不了）；
+      ② 「别的页上也有吗」比的是**别的页**的正文，跟这一页的清单长短无关；
+      ③ 「自己这一页上有吗」当场另比一遍（`low in mine`）。
+    把 ① 的理由（「判据的元素可能排在截断线之后」）套到重挑上，是**把两件事当一件事**了。
+    """
+    home = _gate_page_cut("kotzheating", "https://kotzheating.com/", KOTZ_HOME_TEXT, KOTZ_HOME_NODES)
+    contact = _gate_page_cut("contact", "https://kotzheating.com/contact/",
+                             KOTZ_CONTACT_TEXT, KOTZ_CONTACT_NODES, avoid=KOTZ_HOME_TEXT)
+    pages = [home, contact]
+    #: 夹具先自证复现了那个形状（不然后面几条断言测得是空气）
+    assert home["when"]["text_contains"] == ["Skip to content Proudly Serving Oakland County,"], \
+        home["when"]
+    assert [h["name"] for h in browser_agent._gates_that_hold_elsewhere(pages)] == ["kotzheating"]
+
+    fixed = browser_agent._repair_ambiguous_whens(pages)
+
+    assert [f["name"] for f in fixed] == ["kotzheating"], fixed
+    #: (a) 正例：换完在**自己那一页**上仍然成立（不成立 = 整组静默跳过，比撞车更坏）
+    assert browser_agent.when_holds(home["when"], home["model"]), home["when"]
+    #: (b) 反面：别的页上不再成立 ⇒ IR 那道门不再拦这一趟
+    assert browser_agent._gates_that_hold_elsewhere(pages) == []
+
+
+def test_the_repick_does_not_settle_for_text_only_the_six_hundred_char_window_hides():
+    """★ 2026-10-09：②「别的页上也有吗」必须连**逐元素正文**一起比，不能只比 600 字窗口。
+
+    为什么单独钉：`page_text` 是工具**硬切 600 字**的（`observe.go`：`pageText.slice(0, 600)`），
+    页头/导航/页脚有大半落在切点之后 ⇒ 只比它就会把**全站公用的导航项**认成「这一页独有」——
+    那正是重挑要治的病，却让它换个名字复发（产物照样在别的页上成立、照样乱点，而这一次
+    **没有任何一道门会喊**）。
+
+    `_other_pages_text` 的 docstring 早写着这条教训（「只比一个会漏，而漏的后果是『以为躲开了、
+    其实没躲开』」）—— `_snippet_in_one_node` 一直在用它，只有 `_unique_snippet_for` 没用。
+    """
+    #: `Financing` / `Our Services` 都是**导航项**：在自己这 600 字里有，在对方那 600 字里
+    #: **没有**（对方的窗口被它自己的正文占住了），但在对方的**逐元素正文**里有。
+    home = _gate_page_cut(
+        "kotzheating", "https://kotzheating.com/",
+        "Skip to content Proudly Serving Oakland County, MI Since 1929 Financing Our Services "
+        "Home Solutions When You Need It The Most",
+        ["Skip to content", "Proudly Serving Oakland County, MI Since 1929", "Financing",
+         "Our Services", "Home Solutions When You Need It The Most"])
+    contact = _gate_page_cut(
+        "contact", "https://kotzheating.com/contact/",
+        "Skip to content Proudly Serving Oakland County, MI Since 1929 Contact Us When you need "
+        "help with your Oakland County home",
+        ["Skip to content", "Proudly Serving Oakland County, MI Since 1929", "Financing",
+         "Our Services", "Contact Us When you need help with your Oakland County home"],
+        avoid="Skip to content Proudly Serving Oakland County, MI Since 1929 Financing Our Services "
+              "Home Solutions When You Need It The Most")
+    pages = [home, contact]
+    assert [h["name"] for h in browser_agent._gates_that_hold_elsewhere(pages)] == ["kotzheating"]
+
+    #: 先量出这个陷阱是真的：只比 600 字窗口的话，那两个导航项看着像「这一页独有」。
+    only_the_window = [browser_agent._norm(contact["model"]["page_text"]).lower()]
+    assert not browser_agent._on_other_pages("Financing", only_the_window), \
+        "夹具不对：这句在对方那 600 字里也有 —— 这条就量不出「只比正文会挑错」"
+    assert browser_agent._on_other_pages(
+        "Financing", browser_agent._other_pages_text([contact["model"]])), \
+        "夹具不对：这句在对方的逐元素正文里也该有"
+
+    fixed = browser_agent._repair_ambiguous_whens(pages)
+
+    assert [f["name"] for f in fixed] == ["kotzheating"], fixed
+    #: 真正的判据（不管挑中哪一段）：换完那一段，在**别的页的正文 + 逐元素正文**里都不出现。
+    picked = (home["when"].get("text_contains") or [""])[0]
+    assert not browser_agent._on_other_pages(
+        picked, browser_agent._other_pages_text([contact["model"]])), picked
+
+
+#: 全站每一页都有的那几样（页头 + 无障碍跳转链接 + 导航）：本夹具里拿它**把 600 字窗口占满**。
+SHORE_CHROME = ("Skip to main content INQUIRE Careers Financing Promotions Contact "
+                "Privacy Terms Accessibility Sitemap Blog ")
+#: 600 字窗口那份：**整段都是全站公用文案**。真站上就是这样 —— `page_text` 是工具
+#: **硬切 600 字**的（`observe.go`：`pageText.slice(0, 600)`），而页头 + 导航先占满了它。
+SHORE_HOME_600 = (SHORE_CHROME * 6)[:600]
+SHORE_INQUIRE_600 = SHORE_HOME_600[:520] + "Inquire Thank you for your interest in Shorecrest."
+
+
+def test_the_repick_can_pick_words_that_live_past_the_six_hundred_char_window():
+    """★ 2026-10-09：正例那一向要拿**产物那一侧的尺子**量，不能只看 600 字的 `page_text`。
+
+    形状（`job-f86ac12fda15` shorecrestwpb 五趟 / `job-c8730acb27c5` policyquail 两趟，真账本）：
+    判据钉的是 `Skip to main content` —— **全站每一页都有**的那句跳转链接；而这一页
+    **自己**的话排在 600 字之后 ⇒ 那 600 字里**一个字都不是这一页独有的** ⇒
+    重挑按 ③（「必须在自己那 600 字里」）去挑时**手上没牌**，返回空、由 IR 把整趟砍死。
+    那七趟 `_repair_ambiguous_whens` 全返回空，`repicked=False`。
+
+    为什么 ③ 本来就该收两样：**产物那一侧的 `page_signature()` 自己写着**
+    「**不裁长度** —— 成功文案可能在第 600 字之后」（`template.py`）。
+    判据落在 600 字之后**照样成立** —— 生成侧只看 600 字，等于拿一把**比产物更窄**的尺子
+    去验正例，把本来成立的好判据判成「不成立」。这是「两把尺子」的老病。
+
+    ⚠️ **只动正例这一向**：反面（`_gates_that_hold_elsewhere` 用 `when_holds` 比**别的页**）
+    一个字不改 —— 放宽反面 = 少拦坏判据，那是另一刀、得另说。
+    """
+    home = _gate_page_cut(
+        "www_shorecrestwpb", "https://www.shorecrestwpb.com/", SHORE_HOME_600,
+        ["Skip to main content", "INQUIRE", "Careers", "Financing", "Promotions", "Contact",
+         "Image Vision", "REFINED WATERFRONT LIVING",
+         "Conceived and curated by connoisseurs of modern living, Shorecrest from Related Ross"],
+        truncated=False)
+    inq = _gate_page_cut(
+        "inquire", "https://www.shorecrestwpb.com/inquire", SHORE_INQUIRE_600,
+        ["Skip to main content", "INQUIRE", "Careers", "Financing", "Promotions", "Contact",
+         "Inquire Thank you for your interest in Shorecrest."],
+        avoid=SHORE_HOME_600, truncated=False)
+    pages = [home, inq]
+    #: 夹具先自证：撞车真的复现了，而且判据确实钉在那句全站公用的跳转链接上。
+    assert [h["name"] for h in browser_agent._gates_that_hold_elsewhere(pages)] == ["www_shorecrestwpb"]
+    assert not browser_agent._on_other_pages("Image Vision", [
+        browser_agent._norm(inq["model"]["page_text"]).lower()]), \
+        "夹具不对：这一页自己的话掉进对方那 600 字里了 —— 这条就量不出 ③ 太窄"
+
+    fixed = browser_agent._repair_ambiguous_whens(pages)
+
+    assert [f["name"] for f in fixed] == ["www_shorecrestwpb"], fixed
+    #: 挑中的那一段必须在**这一页自己**的话里（正例不许破）—— 尺子与产物一侧同宽。
+    picked = (home["when"].get("text_contains") or [""])[0]
+    assert picked.lower() in browser_agent._one_page_text(home["model"]), picked
+    #: 反面照旧：别的页的**正文 + 逐元素正文**里都不许有它。
+    assert not browser_agent._on_other_pages(
+        picked, browser_agent._other_pages_text([inq["model"]])), picked
+    #: ⇒ IR 那道门不再拦这一趟
+    assert browser_agent._gates_that_hold_elsewhere(pages) == []
+
+
+# ── ★ 2026-10-09：判据从**这一页自己的话**里剪，不从公用那一层剪 ────────────────────
+#
+# 现场（`job-53e8caeece5e` / `job-22e8c86afe10`，kotzheating 两趟 `draft_failed`）：
+#   `page_text` 是工具**每帧切 600 字**拼的（`observe.go` 的 `pageText.slice(0, 600)`），
+#   而**页头 + 导航先把那 600 字占满了** ⇒ 第一个状态没有「上一页」可比（`avoid=""`）
+#   ⇒ 判据必然从这 600 字的开头剪 ⇒ 剪到的全是全站公用文案 ⇒ 撞车 ⇒ IR 拦下整趟。
+#
+# 为什么不用引插件：`observe` **早就**把「标签@区域」逐条带回来了
+#   （`tools/cdp/internal/observe.go` 的 `region()`，在浏览器里当场算的纯函数：
+#    landmark 优先、class 派生兜底）—— 确定性、零依赖、零模型、零额外调用。
+#   实测（2026-10-09 live，`kotzheating.com` 首页那一眼，402 条）：
+#     nav 272 / main 98 / header 20 / body 6 / dialog 3 / footer 3
+#   而 `main` 的第一条排在**第 299 条** —— 账本只存前 120 条，所以**账本里一条 main 都看不到**。
+
+#: 真样本（2026-10-09 live `kotzheating.com`，逐字）。
+KOTZ_HEAD_600 = (
+    "Accessibility Screen-Reader Guide, Feedback, and Issue Reporting | New window "
+    "Cookie Policy Skip to content Proudly Serving Oakland County, MI Since 1929 Heating Cooling "
+    "Plumbing Air Quality About Promotions Contact 248-264-3092 Schedule Online "
+    "Kotz Heating, Cooling and Plumbing Proudly Serving Oakland County, MI Since 1929 "
+    "Since 1929, Kotz Heating, Cooling and Plumbing has been serving the residents of "
+    "Oakland County, MI for all their HVAC and Plumbing services.")
+#: 同一眼的前几条（`标签@区域` 与原文都逐字）。
+KOTZ_LIVE_NODES = [
+    ("a@body", "Accessibility Screen-Reader Guide, Feedback, and Issue Reporting | New window"),
+    ("div@body", "Cookie Policy"),
+    ("a@body", "Skip to content"),
+    ("a@nav", "Boilers"),
+    ("a@nav", "Ductless Mini-Split"),
+    ("h2@header", "Proudly Serving Oakland County, MI Since 1929"),
+    ("span@header", "Schedule Online"),
+    ("p@main", "Kotz Heating, Cooling and Plumbing"),
+    ("h1@main", "Proudly Serving Oakland County, MI Since 1929"),
+    ("p@main", "Since 1929, Kotz Heating, Cooling and Plumbing has been serving the "
+               "residents of Oakland County, MI for all their HVAC and Plumbing services."),
+]
+
+
+def _page_with_kinds(url: str, text: str, pairs) -> dict:
+    """一页的模型：`(标签@区域, 原文)` 逐条给（`observe` 那两格是逐条对应的）。"""
+    return {"url": url, "title": url, "page_text": text,
+            "node_texts": [t for _, t in pairs],
+            "node_elements": [k for k, _ in pairs]}
+
+
+def test_a_gate_is_cut_from_the_pages_own_words_not_from_the_chrome():
+    """★ 2026-10-09：`page_text` 那 600 字被公用文案占满时，判据改从**自有区域**剪。
+
+    真账本上这一条就是那两趟的死因：判据剪成了
+    `Accessibility Screen-Reader Guide, Feedback,`（`a@body`，全站每页都有）
+    —— 另一趟剪成 `Skip to content Proudly Serving Oakland County,`（跨元素拼接）。
+    两次都在 `/contact/` 上也成立 ⇒ `gate_collisions` 非空 ⇒ 一份 py 都不出。
+
+    判据三半：① 剪出来的**不是**公用文案；② 它**落在单个元素**里（不是拼的）；
+    ③ 换完在**自己这一页**上仍然成立（正例不许破）。
+    """
+    model = _page_with_kinds("https://kotzheating.com/", KOTZ_HEAD_600, KOTZ_LIVE_NODES)
+    when = browser_agent._when_for(model)
+
+    picked = (when.get("text_contains") or [""])[0]
+    assert picked, when
+    #: ① 不是那几句公用文案
+    for chrome in ("Accessibility Screen-Reader Guide", "Cookie Policy", "Skip to content"):
+        assert chrome.lower() not in picked.lower(), \
+            "判据还是从公用那一层剪的：%r" % (when,)
+    #: ② 落在**单个元素**里（跨元素拼出来的那串在页面上根本不存在）
+    assert any(picked.lower() in t.lower() for _, t in KOTZ_LIVE_NODES), \
+        "剪出来这句不在任何**单个**元素里（跨元素拼接）：%r" % (picked,)
+    #: ③ 正例：在自己这一页上仍然成立
+    assert browser_agent.when_holds(when, model), when
+
+
+def test_a_gate_is_still_cut_from_the_head_when_the_head_is_the_pages_own_words():
+    """★ 2026-10-09 **负控**：页头本来就是这一页自己的话时，判据**一个字节都不许变**。
+
+    为什么非钉不可：这一改要是溢出去，**所有站**的产物判据一起动
+    （「没撞的门判据一个字节都不该变」—— `_repair_ambiguous_whens` 那段注释里的原话）。
+    所以只在「剪到的那条**落在公用区域**上」时才改道；否则照旧从 `page_text` 剪。
+    """
+    text = "Refined waterfront living Conceived and curated by connoisseurs of modern living"
+    model = _page_with_kinds("https://www.shorecrestwpb.com/", text, [
+        ("h1@main", "Refined waterfront living"),
+        ("p@main", "Conceived and curated by connoisseurs of modern living"),
+    ])
+    when = browser_agent._when_for(model)
+    #: 与今天的行为**逐字相同**：剪出来那句跨了两个元素 ⇒ 被去拼接那一道换成
+    #: **第一个元素自己的开头** `Refined waterfront living`（2026-09-28 那条老规矩）。
+    #: ⚠️ 它落在 `main` 上 ⇒ 新的「改道」那一支**不该插手** ⇒ 结果必须还是这一条。
+    assert when["text_contains"] == ["Refined waterfront living"], when
+    assert "公用那一层" not in (when.get("text_why") or ""), when
+
+
+def test_own_words_do_not_include_a_nav_label_that_happens_to_have_a_main_twin():
+    """★ 2026-10-09（真站当场逮到的，`job-c4c0f4ee0ad7`）：挑「自己的话」时要躲开
+    **在自己这页的公用区域里也出现**的那些。
+
+    现场：`/contact/` 那道门定成了 `'Contact Us'`。它确实是从 `h1@main` 剪的（合法），
+    但**同一个字符串也是全站导航项的标签** —— 那一页的逐元素正文里它出现在**两个
+    `a@nav`** 上。⇒ 这道门在任何带「Contact Us」导航的页面上都成立，而**没人喊**：
+    反面那把尺子（`when_holds`）只看得到别的页那 **600 字**，导航不在里面。
+
+    ⚠️ 这一条与「反面那把尺子太窄」**不是同一件事**，也**不取代**它：
+    这一条只问「我自己这页的公用区域里有没有同名的」——局部、免费、当场问得出来。
+    落到 `p@main` 那种整句上就不会有这个歧义。
+    """
+    #: ⚠️ 头一条**必须**是那种长条的壳：`_cut_landed_on_chrome` 拿 `page_text` 前 24 个字
+    #: 去认剪点落在哪，认不出来就**不改道** —— 那样这一条测的是空气（第一版就是这么写的，
+    #: 一跑就绿）。真站那个形状的头一条正是 `span@body` 的这句（逐字）。
+    pairs = [
+        ("span@body", "Press Alt+1 for screen-reader mode, Alt+0 to cancel"),
+        ("a@nav", "Contact Us"),
+        ("a@nav", "Contact Us"),
+        ("h1@main", "Contact Us"),
+        ("p@main", "When you need help with your heating, cooling or plumbing systems"),
+    ]
+    text = ("Press Alt+1 for screen-reader mode, Alt+0 to cancel Contact Us "
+            "When you need help with your heating, cooling or plumbing systems")
+    model = _page_with_kinds("https://kotzheating.com/contact/", text, pairs)
+    #: 夹具先自证：改道那一支**真的**会触发（不然又是一条测空气的用例）
+    assert browser_agent._cut_landed_on_chrome(model), "夹具不对：剪点没落在壳上，改道不会跑"
+    when = browser_agent._when_for(model)
+
+    picked = (when.get("text_contains") or [""])[0]
+    assert picked != "Contact Us", \
+        "挑中了一个**也是导航标签**的字符串（它在自己这页的 a@nav 上也有）：%r" % (when,)
+    assert picked.startswith("When you need help"), when
+    assert browser_agent.when_holds(when, model), when
+
+
+# ── ★ 2026-10-09：`auxiliary` —— 探路**自己**就作成过也做败过的无名目标，不承重 ──────────
+#
+# 现场（`job-22e8c86afe10` 的账本，逐字）：
+#   step 30  click 「没写名字的元素」   ok=True    ← 浮窗那个 ✕，当时挡住了 Submit，顺手关掉
+#   step 45  click 「没写名字的元素」   ok=False   ← 同一趟里**又碰到它、没找着**
+# 产物忠实地把 step 30 抄成一步 ⇒ 自测时浮窗没出来 ⇒ 那一步没做成
+# ⇒ `selftest` 判「**承重步**失败」⇒ **整趟否决** —— 而产物自己一路跑到成功页、退出码 0。
+# 用户当场的话：「浮窗本来就是类似弹窗有时候有有时候没有，不能把它认为不做就继续不下去」。
+
+#: 浮窗那个 ✕：**没有任何能叫出它的东西**（无文字 / 无 label / 无 placeholder）。
+NOISY_CLICK = {"text": None, "label": None, "placeholder": None, "role": "button", "near": "aside",
+               "selectors": ["#agency_bot_option_2_options > div:nth-of-type(1) > button:nth-of-type(1)"]}
+#: 一个**有名字**的按钮 —— 它是漏斗的一部分，失败**必须**否决。
+NAMED_CLICK = {"text": "Submit", "role": "button", "selectors": ["#gform_submit_button_12"]}
+
+
+def _click_step(n: int, target: dict, ok: bool, note: str) -> dict:
+    return {"state": "contact", "step_no": n, "action": "click", "target": dict(target),
+            "result": {"ok": ok}, "note": note}
+
+
+def test_the_selector_that_really_worked_is_tried_first():
+    """★ 2026-10-10（`job-d037348fba4d` 那趟 agemate，用户报的「点了继续一直不动」）：
+
+    **账本记着「这一步实际命中的是哪一个选择器」，产物必须先用它。**
+
+    现场（账本原文，`attempt-1.jsonl` 第 19 步）：模型给的那串候选里，**页脚的订阅框**
+    排在第 0、弹窗里那个排在第 5；而 `result.selector`（这一次真发出去、也真成了的那个）
+    是第 5 个。`_selectors_of` 按 `element.selector + alternates + 兜底` 的顺序拼，
+    于是页脚那个**排到了最前面**，而 `_replay_step` 把 `target` **原样照搬**
+    —— 重放时运行期「`selectors[0]` 命中就停」，当场命中页脚那格：
+
+      · 邮件填进了**页脚订阅框**，弹窗里那格是空的；
+      · 下一步点弹窗的提交 → 站方回 `Please try again / Verify Email`；
+      · 优惠码没出来 → 自测永远走不到成功 → `diagnose` → `draft` 重写
+        → **重写出来的还是同一份（同一个顺序）** ⇒ 三版稿撞同一堵墙，图停在闸上等人。
+
+    ⚠️ 这一条**为什么以前没被钉住**：夹具里的 `_click` / `_fill` 都写
+    `result={"selector": selectors[0]}`（「用的就是第一条」）—— 那个前提下
+    「原样照搬」与「把用成的提到前面」**一模一样**，两种实现都绿。
+    真实账本不是那样的：`element.selector` 与模型最后用的那一个可以**不是同一个元素**。
+    """
+    footer = "#input-sections--1__footer--contactemail"
+    popup = 'form.klaviyo-form input[placeholder="Email Address"]'
+    journey = browser_agent.Journey(steps=[
+        _row("form", "funnel",
+             target={"label": "E-mail", "text": None, "role": None, "near": None,
+                     "hint": "contact[email]", "placeholder": " ",
+                     "nearby_text": ["E-mail", "Be the first to know about new products"],
+                     "selectors": [footer, 'input[name="contact[email]"]',
+                                   'input[placeholder=" "]',
+                                   'form:has(input[name="form_type"]) input[type=email]',
+                                   "input.input.is-floating", popup],
+                     "above_fold_only": False, "frame_id": ""},
+             #: ★ 这一格就是账本里那条「**这一步用的是它**」—— 模型的参数，不是 element 的
+             result={"selector": popup,
+                     "fill": {"name": "email", "source": "email", "kind": "value",
+                              "label": "E-mail", "value": "a@b.test", "fallback": []}},
+             note="填好了「E-mail」"),
+    ])
+    (state,) = journey.states()
+    (step,) = state["steps"]
+    got = (step.get("target") or {}).get("selectors") or []
+    assert got[0] == popup, (
+        "这一步实际命中的是 %r，产物却还是先试 %r —— 运行期「第一条命中就停」，"
+        "于是又填进页脚那个框：%r" % (popup, got[0] if got else None, got))
+    #: 候选**一个都不许丢**（它们仍然是「这一格还可能在哪」的证据）——
+    #: 只是顺序变了：用成的那条提到最前，其余按原相对顺序跟在后面。
+    assert sorted(got) == sorted([footer, 'input[name="contact[email]"]',
+                                  'input[placeholder=" "]',
+                                  'form:has(input[name="form_type"]) input[type=email]',
+                                  "input.input.is-floating", popup]), got
+
+
+def test_a_step_with_no_recorded_selector_keeps_the_declared_order():
+    """**负控**：账本里没记「用的是哪条」时，声明顺序**一个字节都不动**。
+
+    为什么要这条：`result.selector` 在老账本 / 某些工具上可能是空的
+    （`_summarize` 只在 `click`/`form`/`scroll` 且模型真传了 `selector` 时才写它）。
+    那时候**没有任何证据**说哪条更该先试 —— 编一个顺序出来就是拿猜当证据。
+    """
+    a, b = "#first", "#second"
+    journey = browser_agent.Journey(steps=[
+        _row("click", "funnel",
+             target={"text": "开始申请", "role": "button", "near": None,
+                     "selectors": [a, b], "above_fold_only": False, "frame_id": ""},
+             result={},                       # ← 没记 selector
+             note="点了「开始申请」"),
+    ])
+    (state,) = journey.states()
+    (step,) = state["steps"]
+    assert step["target"]["selectors"] == [a, b], step["target"]
+
+
+# ─────────── 格是「后出来的」还是「压根没出现过」（2026-10-13 真账本）───────────
+#
+# `job-4d12a95edf34`（innovatingcanada 的 Hustle 弹窗）：那个弹窗是**加载后约 25~31 秒**
+# 才弹出来的（触发是一次 25 秒的定时器），而产物「没找到」只等 `NOT_FOUND_WAIT_SECONDS`
+# （6 秒）⇒ 自测第 1 步就挂。生产上 249 趟自测日志里，「没找到」等到头的是 28 次、
+# 等出来的是 2 次 —— 6 秒这个数基本没救回过谁，因为它分不开这两种：
+#   · **后出来的**（值得等）—— 账本第一眼里没有它、后面的眼里有了；
+#   · **压根没出现过**（不值得等）—— 哪一眼里都没有。
+# 下面三条就把这把尺子钉住（正例 + 两个反例）。
+
+LATE_FIELD = "#hustle-field-first_name-module-6"
+
+
+def _look_with_fields(url, text, state, selectors):
+    """一条 `observe` 行，带上**账本真有的那一格**（`page_fields`：格的清单）。"""
+    row = _look(url, text, state=state)
+    row["result"]["page_fields"] = [{"selector": s, "label": s} for s in selectors]
+    return row
+
+
+def test_a_page_whose_fields_show_up_late_marks_that_group():
+    """正例（真账本形状）：**第一眼里没有它，后来有一步真填成了它** ⇒ 这一组标上 `late_element`。
+
+    ⚠️ 这一条**故意只给一行 `observe`**（照 `job-5ca190173123` 那一趟：整整一趟只有两行眼，
+    弹窗的格一眼都没进过 `page_fields`）—— 凭据落在**步自己**身上（`result.selector`）。
+    """
+    steps = [
+        _look_with_fields(ENTRY, "文章开头", "landing", ["#cat"]),
+        _fill("Name", "John", LATE_FIELD, state="landing"),
+        _click("Submit", ("button.hustle-button",), state="landing"),
+    ]
+    (state,) = browser_agent.Journey(steps=steps).states()
+    assert [s.get("late_element") for s in state["steps"]] == [True, True], (
+        "这一组的两步都该带上那一格（后出来的东西不止影响填的那一步 —— "
+        "提交那个按钮也是弹窗里的）：%r" % [s.get("late_element") for s in state["steps"]])
+
+
+def test_a_late_field_is_judged_against_the_page_not_the_states_own_first_look():
+    """★ 2026-10-13 **真站上逮到的坑**（`job-b9653c77ecec`）：基准必须是**这一页**的第一眼，
+    不是**这个状态**的第一眼。
+
+    真账本形状：同一页上两屏（同意条那一屏 / 弹窗那一屏）**共用一个地址**，而
+    `observed_pages()` 的归属会把两眼**都收给后一屏**（它优先「正文对得上的、后出现的」）——
+    于是「这个状态的第一眼」已经是**带弹窗**的那一眼 ⇒ 判成「不晚」⇒ 长预算一格都没挂上，
+    那一趟是**蒙**过去的（弹窗 3.6 秒就冒出来了，撞进了 6 秒那条短预算里）。
+
+    换基准：**这一页**（按地址）的第一眼 —— 落到那一页时它不在，那就是后出来的。
+    """
+    steps = [
+        _look_with_fields(ENTRY, "文章开头", "landing", ["#cat"]),
+        _look_with_fields(ENTRY, "文章开头（同意条没了，弹窗出来了）", "landing-2",
+                          ["#cat", LATE_FIELD]),
+        _fill("Name", "John", LATE_FIELD, state="landing-2"),
+    ]
+    states = browser_agent.Journey(steps=steps).states()
+    got = {st["name"]: [s.get("late_element") for s in st["steps"]] for st in states}
+    assert got.get("landing-2") == [True], (
+        "同一个地址、同一个状态里填成的 —— 基准得看**这一页**的第一眼：%r" % got)
+
+
+def test_a_group_whose_fields_were_there_from_the_first_look_is_not_marked_late():
+    """反例一：**第一眼里就有** ⇒ 不标（它只是还没渲完，或根本不该等 —— 6 秒那条路照旧）。"""
+    steps = [
+        _look_with_fields(ENTRY, "表单一上来就在", "landing", ["#cat", LATE_FIELD]),
+        _fill("Name", "John", LATE_FIELD, state="landing"),
+    ]
+    (state,) = browser_agent.Journey(steps=steps).states()
+    assert [s.get("late_element") for s in state["steps"]] == [None], state["steps"]
+
+
+def test_a_group_whose_fields_never_showed_up_is_not_marked_late():
+    """反例二（**最要紧的那一条**）：那一格**从没出现过**（填都没填成）⇒ **不标**。
+
+    生产日志里那 28 次「等到头也没出来」就是这个形状 —— 给它们加预算等于白等
+    （而这一支恰恰是失败路径上最常见的：选择器压根不对）。
+    """
+    failed = _fill("Name", "John", LATE_FIELD, state="landing")
+    failed["result"]["ok"] = False
+    failed["result"].pop("fill", None)             # 没填成 ⇒ 没有凭据（账本真形状）
+    steps = [
+        _look_with_fields(ENTRY, "文章开头", "landing", ["#cat"]),
+        _look_with_fields(ENTRY, "文章开头（还是只有那个下拉）", "landing", ["#cat"]),
+        failed,
+        _click("Submit", ("button.hustle-button",), state="landing"),   # 这一组还有一步能重放
+    ]
+    (state,) = browser_agent.Journey(steps=steps).states()
+    assert [s.get("late_element") for s in state["steps"]] == [None], state["steps"]
+
+
+def test_an_unnamed_target_that_was_not_always_there_is_not_load_bearing():
+    """★ 2026-10-09：两条都满足才标 —— ① 目标**没名字**；② 同一趟里它**作成过也做败过**。
+
+    为什么会「做败过」这件事是证据而不是猜：它说的是「**这一次探路里它自己就不稳**」，
+    是量出来的，不是从"它长得像浮窗"推的（`obstructions` 那条通道现场报的是空，靠不住）。
+    """
+    journey = browser_agent.Journey(steps=[
+        _click_step(1, NOISY_CLICK, True, "点了「没写名字的元素」"),
+        _click_step(2, NOISY_CLICK, False, "页面上没找到「没写名字的元素」，这一步没做成"),
+    ])
+    (state,) = journey.states()
+    (step,) = state["steps"]                      # 没做成那条不可重放，不该进产物
+    assert step["action"] == "click", step
+    assert step.get("auxiliary") is True, step
+
+
+def test_a_named_target_that_was_not_always_there_is_still_load_bearing():
+    """★ 2026-10-09 **负控**：有名字的目标**不标** —— 标宽了就是把真失败也放过去。
+
+    为什么这条非钉不可：`auxiliary` 那一档**会否决权**（自测那一遍仍算过）。
+    一个叫得出名字的按钮（`Submit` / `Schedule Online`）是漏斗的一部分，
+    它失败**必须**照样否决 —— 否则「产物其实没走通」会被判成「过了」，
+    那正是 `selftest` 那个模块要消灭的形状。
+    """
+    journey = browser_agent.Journey(steps=[
+        _click_step(1, NAMED_CLICK, True, "点了「Submit」"),
+        _click_step(2, NAMED_CLICK, False, "页面上没找到「Submit」，这一步没做成"),
+    ])
+    (state,) = journey.states()
+    (step,) = state["steps"]
+    assert step.get("auxiliary") is None, step
+
+
+def test_a_page_with_no_landmark_keeps_its_body_words():
+    """★ 2026-10-09：整页**没有 `main`** 时，`body` 那格**不丢** —— 正文就在里面。
+
+    `body` 那一格是**混的**：没有 landmark 祖先的元素都落到它。有 `main` 的时候
+    那些是壳（跳转链接、cookie 小条）；没有 `main` 的时候它就是正文本身
+    ⇒ 按「有没有 `main`」分流。丢了正文比留着壳坏得多。
+    """
+    pairs = [("a@body", "Order your copy today"), ("p@body", "Free shipping on all orders over forty dollars")]
+    model = _page_with_kinds("https://example.test/", "Order your copy today Free shipping on all orders", pairs)
+    assert [t for _, t in pairs] == browser_agent._own_word_nodes(model), \
+        "没有 main 的页面上，body 里的话被当成公用文案丢掉了"
+
+
 def test_a_state_seen_twice_is_repicked_as_one():
     """同一个状态看了两眼（`same_gate` 合成一条名）⇒ 那几条**一起换**成同一段。
 
@@ -4970,6 +5511,151 @@ def test_the_whole_page_read_runs_in_every_frame_the_run_touched(monkeypatch):
     assert browser_agent._success_hit(journey.steps, "出现 Tailor Your Cover") is not None
 
 
+# ═════════ 成功文案「既不在开头、又只待几秒」（2026-10-13 真账本逼出来的）═════════
+#
+# `job-4d12a95edf34`（innovatingcanada 的 Hustle 弹窗）三趟探路都没认出成功。真站实测：
+#   · 那句「Thank You!」**在整页正文的第 12,968 字上**（全页 12,978）—— 浮层挂在文档末尾，
+#     而 `observe` 那一手的正文被工具**硬切 600 字**（`observe.go` 的 `pageText.slice(0, 600)`）；
+#   · 它**迟到 5.8 秒**（点完提交要等后端回话），出现 **7 秒**后弹窗自己收走。
+#
+# 于是三趟各 observe 了 7~8 次、一次都没够着它 ⇒ 判「没见着成功」⇒ 图那边不出 py、
+# 还**自动重探**（每趟 = 再往站方真交一次表单）。下面这几条钉的就是这两刀。
+
+
+def _watch_run(tmp_path, evals, turns, **kwargs):
+    """一次带成功判据的桩跑法：`observe` 只给 600 字的头，`eval`（系统自己那一读）给整页。"""
+    head = ("Skip to main content Innovating Canada " * 20)[:600]
+    return _run(
+        tmp_path,
+        {"observe": [{"structured": {**PAGE_LANDING, "page_text": head}}],
+         "click": [{"structured": {"ok": True}}],
+         "eval": [{"structured": t} for t in evals]},
+        turns, **kwargs)
+
+
+def _record_reads(monkeypatch) -> list:
+    """记下**每一步那一读**（`_read_page_text`）每次读回来的正文（按顺序）。
+
+    ⚠️ 记它、不记 `eval` 那个工具调用：收尾那一手（`_final_success_check`）读的也是
+    `eval`，两件事混在一个数里，这条用例就测不出「盯到什么时候收工」。
+    """
+    reads: list = []
+    real = browser_agent._read_page_text
+
+    def spy(session, journey, wants):
+        got = real(session, journey, wants)
+        reads.append(got)
+        return got
+
+    monkeypatch.setattr(browser_agent, "_read_page_text", spy)
+    return reads
+
+
+def test_a_success_that_only_shows_at_the_tail_of_the_page_is_still_seen(tmp_path, monkeypatch):
+    """成功文案在正文**尾部**（浮层）时，系统自己那一读必须够得着它。
+
+    红的样子（修之前）：`page_text_head` 只有 600 字的头，`_success_hit` 什么都搜不到
+    ⇒ 这一趟照旧「没见着成功」⇒ 不出 py + 自动重探（= 再交一次真表单）。
+    """
+    monkeypatch.setattr(browser_agent.time, "sleep", lambda s: None)
+    tail = ("文章正文 " * 600) + " ✓ Thank You!"
+    journey, fake, calls = _watch_run(
+        tmp_path,
+        ["文章正文，没有那串字", tail],
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#submit"})]},
+         {"calls": [("observe", {})]}],
+        success_text="Thank You!",
+        budget=browser_agent.Budget(max_steps=9, max_rounds=9),
+    )
+    assert [s["action"] for s in journey.steps] == ["observe", "click"], (
+        "见到成功文案就该收摊，第三步不该发生：%r" % [s["action"] for s in journey.steps])
+    assert journey.stop_reason == browser_agent.STOP_REACHED_SUCCESS, journey.stop_reason
+    seen = journey.steps[-1]["result"].get("success_line") or ""
+    assert "Thank You!" in seen, ("见到判据的那一步必须把**它见到的那一截**记下来"
+                                  "（账本与结算都只认这一格）：%r" % journey.steps[-1]["result"])
+    assert graph._explore_reached_success(journey, "Thank You!") is True, (
+        "活的探路见着了、结算却说没见着 —— 那就是同一把尺子裂成两把")
+
+
+def test_a_submit_that_answers_a_few_seconds_later_is_still_caught(tmp_path, monkeypatch):
+    """提交的「回话」会**迟到几秒**（本站实测 5.8 秒）⇒ 动手之后要盯一会儿，只读一眼会扑空。"""
+    monkeypatch.setattr(browser_agent.time, "sleep", lambda s: None)
+    journey, fake, calls = _watch_run(
+        tmp_path,
+        ["文章正文", "文章正文", "文章正文", "文章正文 ✓ Thank You!"],
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#submit"})]},
+         {"calls": [("observe", {})]}],
+        success_text="Thank You!",
+        budget=browser_agent.Budget(max_steps=9, max_rounds=9),
+    )
+    assert journey.stop_reason == browser_agent.STOP_REACHED_SUCCESS, (
+        "盯了这几秒就该见着它：%r" % (journey.stop_reason,))
+    assert "Thank You!" in (journey.steps[-1]["result"].get("success_line") or "")
+    assert [s["action"] for s in journey.steps] == ["observe", "click"], (
+        "是**提交那一下**把它等回来的（不是后面某一手撞上的）：%r"
+        % [s["action"] for s in journey.steps])
+
+
+def test_the_watch_stops_as_soon_as_the_page_answers(tmp_path, monkeypatch):
+    """盯是为了**等页面回话**，不是白等满 8 秒：正文一变（或判据一现）就收工。
+
+    ⚠️ 数的是**盯的节拍**（`time.sleep(WATCH_EVERY_SECONDS)` 那一次），不是 `eval`
+    那个工具调用 —— 收尾那一手读的也是 `eval`，混在一个数里就测不出「盯到什么时候收工」。
+    ⚠️ 还要证明盯出来的读**不落步**（账本上一步都不多）：「一步一行」那条契约的另一半。
+    """
+    slept = []
+    monkeypatch.setattr(browser_agent.time, "sleep", lambda s: slept.append(s))
+    reads = _record_reads(monkeypatch)
+    journey, fake, calls = _watch_run(
+        tmp_path,
+        ["动手之前那一页", "动手之后还是那一页", "页面换了一屏", "又来一屏"],
+        [{"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#submit"})]},
+         {"content": "收工", "calls": []}],
+        success_text="Thank you!",
+        budget=browser_agent.Budget(max_steps=9, max_rounds=9),
+    )
+    assert reads[:3] == ["动手之前那一页", "动手之后还是那一页", "页面换了一屏"], (
+        "读法该是：observe 之后那一眼 → 动手之后那一眼 → 页面回话那一读：%r" % reads[:3])
+    assert slept.count(browser_agent.WATCH_EVERY_SECONDS) == 1, (
+        "页面第一读就回话了 ⇒ **只看一次**就收工，不许再盯下去：%r" % slept)
+    walked = [s["action"] for s in journey.steps if s.get("origin") != "final_check"]
+    assert walked == ["observe", "click"], (
+        "盯出来的读**不许**变成账本上的一步：%r" % walked)
+
+
+def test_a_run_without_a_text_criterion_does_not_pay_for_the_reads(tmp_path):
+    """没给正文判据（只给了网址、或什么都没给）⇒ **一次都不读**：没有要找的东西。"""
+    journey, fake, calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}]},
+        [{"calls": [("observe", {})]}, {"calls": [("click", {"selector": "#cta"})]}],
+        budget=browser_agent.Budget(max_steps=9, max_rounds=9),
+    )
+    assert [c["name"] for c in calls if c["name"] == "eval"] == [], (
+        "没有判据还去读整页 = 白花（每一步一次）：%r" % (calls,))
+
+
+def test_the_replay_line_reads_the_very_text_the_live_run_did():
+    """★ 同一把尺子：活的探路认「头 600 + 整页 + 那一截判据」，重放这边也必须是这一把。
+
+    只认头 600 字的话，重放会把**提交**当成可重放的一步 —— 那就是**再往站方交一次真表单**
+    （R3 存在的全部理由）。
+    """
+    rows = list(_walk_rows())
+    submit = _click("提交", state="funnel")
+    rows.insert(3, submit)                     # goto / observe / click(开始申请) / **提交** / observe
+    whole, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert whole == rows, "对照：没见过成功文案时这一段本来就整段可重放（%s）" % why
+    submit["result"]["success_line"] = "…… ✓ %s ……" % SUCCESS
+    prefix, why = browser_agent.replayable_prefix(rows, SUCCESS, entry_url=ENTRY)
+    assert submit not in prefix, ("这一行读到了成功文案 —— 它（以及它之后的一切）"
+                                  "都不许重放：%s" % why)
+    assert "成功" in why or "那条线" in why, why
+
+
 def test_every_tool_the_agent_dispatches_exists_in_the_cdp_mcp_table():
     """★ 2026-09-23：`dispatch("eval", …)` 打了**好几天**空气。
 
@@ -4979,10 +5665,15 @@ def test_every_tool_the_agent_dispatches_exists_in_the_cdp_mcp_table():
     「接上了但不响」比没接更坏：它让一条修好的路**看起来存在**。
 
     这条用例把**两个各自写各的**清单钉在一起：agent 会调的 vs cdp 真有的。
+
+    ★ 2026-10-13：扫的范围加上 `call_tool("…")` —— 每一步那一读（`_read_page_text`）走的是
+    `session.call_tool("eval", …)`，**不经过 `dispatch`**（它不落步、不花预算）。
+    不把它算进来的话，那条路会再犯一次同样的病：调一个门口没有的工具，被吞成空串。
     """
     root = pathlib.Path(__file__).resolve().parents[1]
     src = (root / "agent" / "browser_agent.py").read_text(encoding="utf-8")
     used = set(re.findall(r'dispatch\(\s*"([a-z_]+)"', src))
+    used |= set(re.findall(r'call_tool\(\s*"([a-z_]+)"', src))
     reg = (root / "tools" / "cdp" / "internal" / "mcp" / "registry.go").read_text(encoding="utf-8")
     have = set(re.findall(r'newTool\(\s*"([a-z_]+)"', reg))
     assert used, "一个 dispatch 都没扫到 —— 正则坏了，这条用例就成了摆设"
@@ -5320,9 +6011,15 @@ def test_it_stops_the_moment_the_success_text_shows_up_instead_of_going_on(tmp_p
         success_text=MATCHED,
     )
     assert journey.stop_reason == "reached_success", journey.stop_reason
-    assert [c["name"] for c in calls] == ["goto", "observe", "observe"], (
+    #: ★ 2026-10-13：每一步走完，系统会**只读**地再读一眼整页正文（`_watch_the_page`，
+    #: 见 `job-4d12a95edf34`）—— 那一下是 `eval`，**不碰站方**，与这条用例防的不是一件事：
+    #: 这里防的是「过了线之后还能再发一个**会改页面**的真请求」（当年第 67 步那个 `goto`）。
+    #: 所以把只读的那一下摘掉再比，其余一个字节都不放宽。
+    assert [c["name"] for c in calls if c["name"] != "eval"] == ["goto", "observe", "observe"], (
         "过了那条线之后还有真请求发出去：%r"
         % [(c["name"], c["args"]) for c in calls])
+    assert [c["name"] for c in calls if c["name"] in browser_agent._ACTIONS] == ["goto"], (
+        "过了那条线之后还有**会改页面**的请求发出去：%r" % (calls,))
     assert len(journey.steps) == 2, [s["action"] for s in journey.steps]
     assert len(fake.calls) == 2, (
         "看见了成功文案之后还问了一轮模型（%d 轮）—— 那一轮让「再点一下」有了机会"
@@ -5451,28 +6148,107 @@ def test_the_line_the_live_run_stops_on_is_the_same_line_the_graph_settles(tmp_p
 
 
 @pytest.mark.parametrize("raw", ["", "  ", "a\nb", " a\t b ", "a b", "x  y", "甲　乙"])
-def test_the_three_norms_are_one_yardstick(raw):
-    """**三把**归一化必须是同一把尺子（R1 点名的就是三处，复审 F4：原先只跨校了 2 把）。
+def test_the_two_norms_are_one_yardstick(raw):
+    """**两把**归一化必须是同一把尺子 —— 探路那份，与产物里那份。
 
-    三处判的都是**同一句话在不在页面上**：
+    两处判的都是**同一句话在不在页面上**：
 
-    1. `browser_agent._norm` —— 活的探路（`_stop_reason`）与重放前缀 R3
-       （`replayable_prefix`）用的就是它；
-    2. `graph._norm_text` —— 图上**事后**结算用的（`_explore_reached_success`）；
-    3. `template._norm` —— **产物那一侧**（`page_signature()` 脚下那份，`agent/template.py`）。
+    1. `browser_agent._norm` —— 活的探路（`_stop_reason`）、重放前缀 R3
+       （`replayable_prefix`）、以及图上**事后**结算（`_explore_reached_success`
+       读的是 `browser_agent.row_text`）走的都是**这一个函数**；
+    2. **产物里那份 `_norm`**（`SKELETON.template` 那段源码里，`page_signature()`
+       脚下那份）—— 它是**独立交付出去的一份 py**，import 不到 agent 包，所以只能是两份。
 
-    前两把要是漂了：活的那一趟停下来说「见着了」、图上说「没见着」⇒ **拒绝写 py**。
-    第一把与第三把要是漂了：**探路看见的那一页**与**脚本重放时判的那一页**不是同一页
+    这一把要是漂了：**探路看见的那一页**与**脚本重放时判的那一页**不是同一页
     （规格 §4.3 那句「与 py 里 page_signature() 同口径」）—— 交付出去的那份 py
     会在真站上认错页。
-    ⚠️ 三处各自的注释都写着「必须与别人一致」，但**只有这条用例**会红。
+    ⚠️ 两处各自的注释都写着「必须与别人一致」，但**只有这条用例**会红。
+
+    ★ 2026-10-09 复审：这条原先叫 `test_the_three_norms_are_one_yardstick`，那第三把是
+    `graph._norm_text` —— 而它**全仓没有任何生产调用点**（图上结算走的是 `browser_agent`
+    那一把），文档里那句「图上事后结算用的」是**假的**。死的那把已删，所以不再是「三把」。
+    """
+    want = browser_agent._norm(raw)
+    assert _artifact_norm()(raw) == want, (
+        "产物那份（`page_signature()` 脚下那个 `_norm`）与探路那份漂了")
+
+
+#: 同一个字的**两种写法**（左＝判据那格人敲的，右＝站点真渲染出来的那一种）。
+#: ★ 2026-10-09：这些**不是**「两串不同的字」，是**同一个字的两种写法** —— 与大小写同类
+#: （2026-09-22 那条先例：`check your email` 与 `Check your email` 算同一个词）。
+#: 前四条是**排版写法**（弯引号 / 长短破折 / 省略号），后三条是**宽度**（全角 / 半角）——
+#: 用户 2026-10-09 对后者也点了头（原话：「算吧算同一个」）。
+_TWO_SPELLINGS = [
+    ("We've received it", "We’ve received it"),        # 直角撇号 ↔ 弯撇号
+    ('say "go"', 'say “go”'),                     # 直角双引号 ↔ 弯双引号
+    ("a-b", "a—b"),                                    # 连字符 ↔ 长破折
+    ("wait...", "wait…"),                              # 三个点 ↔ 省略号
+    ("Thank you! Really?", "Thank you！ Really？"),      # 半角标点 ↔ 全角标点
+    ("ok, done", "ok， done"),                          # 半角逗号 ↔ 全角逗号
+    ("ABC-123", "ＡＢＣ－１２３"),                      # 半角字母数字 ↔ 全角字母数字
+]
+
+
+@pytest.mark.parametrize("straight, curly", _TWO_SPELLINGS,
+                         ids=[s for s, _c in _TWO_SPELLINGS])
+def test_the_page_norm_treats_the_two_spellings_of_a_character_as_one(straight, curly):
+    """★ 2026-10-09：`’` 与 `'` 是**同一个撇号的两种排版写法** ⇒ 折算成同一个。
+
+    真事（`job-27389cef3110`，enroll 那趟）：人给的判据是
+    `Thank You! We've Received Your Information!`（**直角**撇号），而站点把那句渲染成
+    `Thank You! We’ve Received Your Information!`（**弯**撇号 U+2019）。代码**真读到了**
+    那句（2339 字的整页正文里就是它），可两边只压空白 + 小写 ⇒ 子串不成立
+    ⇒ `_explore_reached_success` 返回 `False` ⇒ `explore_unfinished` ⇒ **一份 py 都不出**，
+    尽管探路 30 步走完、收尾那一眼也照着截图看见那句了。
+
+    ⚠️ 折的只是**同一个字的排版变体**。**抹标点不做** ——「`Thank You!` 配得上
+    `Thank You`」是**真的放宽判据**，钉住它不许再松的是
+    `tests/test_template.py::test_the_product_still_needs_the_punctuation_that_was_asked_for`。
+    """
+    assert browser_agent._norm(curly) == browser_agent._norm(straight)
+    assert _artifact_norm()(curly) == browser_agent._norm(straight), (
+        "产物那一侧没折 —— 探路认得出、脚本在真站上认不出，等于没修")
+
+
+def test_the_two_norms_do_not_fold_what_is_actually_a_different_character():
+    """**边界** —— 折的是「同一个字的两种写法」，不是「长得像的都折」。
+
+    ⚠️ 三个必须**原样不动**的：
+      1. **半角片假名**（U+FF61–FF9F：ｱｲｳ）—— 它跟全角 ASCII 同在 Unicode 的
+         「Halfwidth and Fullwidth Forms」那一个块里，可它是**完全不同的字符**，
+         不是谁的半角形。折算表要是按「块」来写，就会把它们一起吃掉。
+      2. **`。`（U+3002 句号）** —— 中文的句号，不是 `.` 的另一种写法。
+      3. **大小写**不归这张表管（那是 `.lower()` 的事，本来就有）。
+    """
+    for untouched in ["ｱｲｳ", "。", "、", "「」", "〜"]:
+        assert browser_agent._norm(untouched) == untouched, (
+            "把 %r 折了 —— 它是**另一个字符**，不是同一个字的另一种写法" % untouched)
+    assert _artifact_norm()("ｱｲｳ") == "ｱｲｳ", "产物那一侧把半角片假名折了"
+
+
+def test_a_criterion_typed_with_straight_quotes_matches_a_site_typing_them_curly(tmp_path):
+    """★ 2026-10-09 `job-27389cef3110`（enroll）的形状：判据直角、页面弯角。
+
+    与 `test_the_line_the_live_run_stops_on_is_the_same_line_the_graph_settles` 是同一条
+    判据的**另一面**：那一条钉「两边一模一样时答案一样」，这一条钉「同一个字的两种写法
+    两边都算一样」。这一面没钉住时，图上结算说「没在页面上见到成功文案」，
+    而**坏的那句会拒绝写 py**。
     """
     from agent import graph as graph_mod
 
-    want = browser_agent._norm(raw)
-    assert graph_mod._norm_text(raw) == want, "图上那份（`_norm_text`）与探路那份漂了"
-    assert _artifact_norm()(raw) == want, (
-        "产物那份（`page_signature()` 脚下那个 `_norm`）与探路那份漂了")
+    want = "Thank You! We've Received Your Information!"
+    page = dict(PAGE_MATCHED)
+    page["page_text"] = ("Privacy policy. Thank You! We’ve Received Your Information!"
+                         " Call us on 555-0100.")
+    journey, _fake, _calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": page}]},
+        [{"calls": [("observe", {})]}, {"calls": [("observe", {})]}, {"content": "说完了"}],
+        budget=browser_agent.Budget(max_steps=50, max_rounds=50),
+        success_text=want,
+    )
+    assert graph_mod._explore_reached_success(journey, want) is True, (
+        "判据是直角撇号、页面是弯撇号 —— 结算说「没见着」，于是**一份 py 都不出**")
 
 
 def _artifact_norm():
@@ -5482,19 +6258,36 @@ def _artifact_norm():
     （`SKELETON.template` 那段源码，`page_signature()` 就调它）。所以这里把那段源码
     切下来真跑一遍 —— 跨校的是**真会跑在真站上的那份**，不是另抄的一份
     （另抄一份 = 又一个「同一个事实两个名字」）。
+    ⚠️ 与它一起抠的还有 `_FOLD`（★ 2026-10-09 那张同形字折算表）：`_norm` 引用它，
+    少抠一块只会得一个 `NameError`，而不是「用例红了」。
     """
     import re as _re                        # 只在这一处用
-    src = template.SKELETON.template
-    lines = src.splitlines(keepends=True)
-    start = next(i for i, ln in enumerate(lines) if ln.startswith("def _norm(text):"))
-    block = [lines[start]]
-    for ln in lines[start + 1:]:
-        if ln.strip() and not ln[:1].isspace():     # 下一个顶层语句（含顶层注释）= 到头
-            break
-        block.append(ln)
     ns: dict = {"re": _re}
-    exec(compile("".join(block), "<artifact>", "exec"), ns)
+    for name in ("_FOLD", "_norm"):
+        exec(compile(_artifact_piece(name), "<artifact:%s>" % name, "exec"), ns)
     return ns["_norm"]
+
+
+def _artifact_piece(name: str) -> str:
+    """从**骨架源码**里切出一个顶层语句（跨行的括号算在内）。
+
+    ⚠️ 为什么不能 `ast.parse` 整份骨架：那里面还有 `SUCCESS_TEXTS = $success_texts`
+    这种**非 Python 的模板占位符**，parse 直接炸。
+    ⚠️ 为什么不能只看「下一个不缩进的行」：`_FOLD` 那张表的收尾 `})` **本身就顶格** ——
+    按那个切法会被当成「下一个顶层语句」而切掉，抠出来的东西编译不了。
+    """
+    lines = template.SKELETON.template.splitlines(keepends=True)
+    start = next(i for i, ln in enumerate(lines)
+                 if ln.startswith("%s = " % name) or ln.startswith("def %s(" % name))
+    out: list = []
+    depth = 0
+    for ln in lines[start:]:
+        if out and depth <= 0 and ln.strip() and not ln[:1].isspace():
+            break
+        out.append(ln)
+        code = ln.split("#", 1)[0]          # 注释里的括号不算配平
+        depth += sum(code.count(c) for c in "([{") - sum(code.count(c) for c in ")]}")
+    return "".join(out)
 
 
 def test_only_the_observe_rows_can_carry_the_line():
@@ -5923,6 +6716,12 @@ def test_an_address_field_is_named_street_not_the_label_slug():
     assert browser_agent._field_kind("Email address", {"type": "email"}) == "email"
     #: 反向：`Years at address` 要的是**个位数**，不许被 address 认成街道
     assert browser_agent._field_kind("Years at address", {"type": "number"}) != "street"
+    #: ★ 真数据复验当场逮到的：`Town / City` 自己一个词条都不命中时，会落到
+    #: `nearby_text`（邻格写着 `Address line 2 (optional)`）⇒ 被认成街道 ✗。
+    #: 给了 `city` 词条之后：① 「这一格自己怎么说」先命中 ⇒ 邻格那句话轮不到。
+    assert browser_agent._field_kind(
+        "Town / City", {"type": "text",
+                        "nearby_text": ["Town / City", "Address line 2 (optional)"]}) == "city"
 
     journey = browser_agent.Journey()
     name = browser_agent._fill_name("Address line 1", {"type": "text"}, journey)
@@ -6155,6 +6954,38 @@ def test_a_positional_selector_from_the_model_is_tied_by_its_unique_tail():
         "`div > input` 这种尾巴没有鉴别力、标签也不唯一 ⇒ 不该认"
 
 
+
+# ─────────── ★ 2026-10-13：「点掉同意条」那一步是**环境噪声**（标 `soft`）───────────
+#
+# 真事 `job-c02d5768e535`（compareinsulation）：账本里模型对**同一条同意条**点了两次
+# （`Accept all` / `Accept All Cookies`）⇒ 编成步骤表就是两条硬步骤 ⇒ 产物开跑前钩子已经
+# 点掉过一次 ⇒ 第 1 条豁免、第 2 条判死 ⇒ 整组重试 ⇒ 自测挂两遍 ⇒ 人只能喊停。
+# 这类东西**天生有时有有时没有**（新窗口有、上一趟点掉过就没有、还可能后冒出来），
+# 而产物的前提层每步都会问一遍钩子表（`_POPUP_HOOKS`）—— 所以表里那一步是冗余的，
+# 冗余就该是软的：找不到不算没做成、也不打回整组（`template.py` 的 `soft` 段）。
+
+
+def test_a_consent_click_is_marked_soft_and_a_business_accept_is_not():
+    """判据要窄：`Accept All Cookies` / `Reject All` 标软；**业务**按钮（`Accept offer`）不标。
+
+    标错的代价是「真失败被读成跳过」——所以只有**强同意短语**或「同意语境 + 决定动作词」
+    两条路才算（见 `_consent_click_like` 上面那段）。
+    """
+    def soft(note, text, selectors):
+        return browser_agent._replay_step({
+            "action": "click", "result": {"ok": True}, "note": note,
+            "target": {"text": text, "role": None, "near": None, "selectors": list(selectors)},
+        })
+
+    assert soft("点了「Accept All Cookies」", "Accept All Cookies", ["#si-accept"]).get("soft") \
+        is True
+    assert soft("点了「Reject All」", "Reject All", ["#fides-reject-all"]).get("soft") is True
+    assert soft("点了「ALLOW COOKIES」", "ALLOW COOKIES", ['[data-sf-consent="1"]']).get("soft") \
+        is True
+    assert "soft" not in soft("点了「Accept offer」", "Accept offer", ["#go"])
+    assert "soft" not in soft("点了「Get Started」", "Get Started", ["a.cta"])
+
+
 def test_describe_says_why_when_the_element_is_not_found():
     """找不到元素时**不许静默**给一张空卡 —— `why` 本来就是为「看不见」准备的。"""
     # 一眼都还没看过（`pages.pages` 是空的，见 `_Pages.__init__`）⇒ `_find_element` 必返 None。
@@ -6179,6 +7010,7 @@ def test_click_target_already_carries_the_card():
     got = browser_agent._target_of(element, "click", "button.nav-toggle", "")
     assert got["label"] == "Menu"
     assert got["nearby_text"] == ["Competitions"]
+
 
 # ───────── ★ 2026-10-15：回执里那一行名字 —— 探路**当场读到了**，账本里却是空卡 ─────────
 #
