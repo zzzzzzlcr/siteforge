@@ -242,6 +242,7 @@ import argparse
 import json
 import os
 import random
+import re
 import sys
 import time
 
@@ -867,6 +868,10 @@ class Filler:
             name = FILL_ORDER[int(index)]
             spec = (FILLS or {}).get(name) or {}
             kind = str(spec.get("kind") or name)
+            #: ★ 2026-10-20（Review finding 3）：兜底那一支也要认规则 —— 否则
+            #: 页面 placeholder 一变、① 对不上时，这里会把资料值/旧 prefix 又填回去。
+            if spec.get("rule"):
+                return self._rule_value(spec)
             if self._is_phone(name, kind):        # 同上：号码那一格**一律现编**，不取资料
                 _p = str(spec.get("prefix") or "")
                 return self._pool(name, _p) or self._pool(kind, _p)

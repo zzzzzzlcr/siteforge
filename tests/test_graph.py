@@ -3828,3 +3828,39 @@ def test_apply_rules_stops_without_a_dob_format():
     got = graph._apply_rules(spec, {"rules": {"dob": {"random": True}}})
     assert got["end_reason"] == "rule_needs_format"
     assert "生日格式" in got["end_note"]
+
+
+def test_the_rule_keys_are_declared_in_the_state_schema():
+    from agent.state import SiteState
+    for key in ("rules", "rules_effective", "rules_applied", "rules_unmatched"):
+        assert key in SiteState.__annotations__, key
+
+
+def test_same_as_the_tested_one_ignores_rule_keys():
+    from agent import graph
+    state = {"shape": "table", "states": [], "success_text": "Thank you",
+             "success_urls": "", "loop_spec": None,
+             "fills": {"phone": {"name": "phone", "rule": "phone_prefix",
+                                 "prefixes": ["02"]}}}
+    spec = {"states": [], "success_text": "Thank you", "success_urls": "",
+            "fills": {"phone": {"name": "phone"}}}
+    assert graph._same_as_the_tested_one(state, spec, "table", {}) is True
+
+
+def test_legacy_fix_with_rules_stops_instead_of_ignoring_them():
+    from agent import graph
+    got = graph._rule_legacy_stop({"fix_style": "legacy",
+                                   "rules": {"phone_prefixes": ["02"]}})
+    assert got["end_reason"] == "rule_unsupported"
+    assert "FILLS" in got["end_note"] or "老写法" in got["end_note"]
+
+
+def test_provenance_without_rules_has_no_rules_key():
+    from agent import graph
+
+    class D:
+        def provenance(self):
+            return {}
+
+    prov = graph._provenance({"mode": "build"}, D(), report=None)
+    assert "rules" not in prov

@@ -103,17 +103,25 @@ def _fill_text(fill: dict) -> str:
         fill.get("name"), fill.get("kind"), fill.get("source"), fill.get("label"),
         target.get("label"), target.get("hint"),
     ))
-    return hay.lower()
+    #: 下划线/连字符当空格：`phone_number` / `birth_date` 要能按词认出。
+    return hay.lower().replace("_", " ").replace("-", " ")
+
+
+def _has_word(text: str, word: str) -> bool:
+    return bool(re.search(r"(?:^|[^a-z])" + re.escape(word) + r"(?:[^a-z]|$)", text))
 
 
 def is_phone_fill(fill: dict) -> bool:
     text = _fill_text(fill)
-    return any(s in text for s in ("phone", "tel", "mobile"))
+    #: `PhoneNumber` 是连写；`hotel` 里的 `tel` 不算（用户 2026-10-20 的 Review）。
+    return ("phone" in text or "mobile" in text) or _has_word(text, "tel")
 
 
 def is_dob_fill(fill: dict) -> bool:
     text = _fill_text(fill)
-    return any(s in text for s in ("dob", "birth", "birthday", "date of birth"))
+    #: 只认真正的出生日期；`Place of birth` 不是 DOB（Review finding 8）。
+    return ("dob" in text or "birthday" in text or "birthdate" in text
+            or "date of birth" in text or "birth date" in text)
 
 
 def is_password_fill(fill: dict) -> bool:
@@ -149,9 +157,9 @@ def apply_to_fills(fills: dict, rules: Optional[dict]) -> dict:
             for n in hits:
                 out[n]["rule"] = "phone_prefix"
                 out[n]["prefixes"] = phones
-            result["applied"].append("phone:" + "/".join(phones))
+            result["applied"].extend("phone:" + p for p in phones)
         else:
-            result["unmatched"].append("phone:" + "/".join(phones))
+            result["unmatched"].extend("phone:" + p for p in phones)
 
     dob = rules.get("dob")
     if dob:

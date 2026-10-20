@@ -53,6 +53,7 @@ def test_apply_phone_dob_password_ignores_nothing_and_sets_rules():
     assert got["fills"]["dob"]["rule"] == "dob_random"
     assert got["fills"]["dob"]["date_format"] == "DD/MM/YYYY"
     assert got["fills"]["password"]["rule"] == "password_strong"
+    assert got["applied"] == ["phone:02", "phone:07", "dob_random", "password_strong"]
     assert got["needs_format"] == []
     assert got["unmatched"] == []
 
@@ -71,6 +72,14 @@ def test_apply_reports_unmatched_and_needs_format():
     )
     assert only_dob["needs_format"] == ["dob"]
     assert only_dob["fills"]["dob"].get("rule") is None
+
+
+def test_matchers_do_not_overmatch_place_of_birth_or_hotel():
+    assert not rules.is_dob_fill({"name": "place_of_birth", "label": "Place of birth"})
+    assert not rules.is_phone_fill({"name": "hotel", "label": "Hotel"})
+    assert rules.is_phone_fill({"name": "phone_number", "label": "Phone"})
+    assert rules.is_dob_fill({"name": "dob", "label": "Date of birth"})
+    assert rules.is_dob_fill({"name": "birthday", "label": "Birthday"})
 
 
 def test_run_request_keeps_rules_and_normalize_rejects_unknown():

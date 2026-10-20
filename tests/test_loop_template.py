@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import ast
+import datetime
 import importlib.util
 import json
 import logging
@@ -1576,3 +1577,53 @@ def test_value_for_rule_ignores_form_data_and_is_stable(tmp_path, monkeypatch):
     got = [obj.value_for("\u0002PhoneNumber", {}, 0) for _ in range(3)]
     assert len(set(got)) == 1, got          # 同一趟同值
     assert re.fullmatch(r"02\d{8}", got[0]), got
+
+
+def test_value_for_dob_rule_works_in_loop(tmp_path, monkeypatch):
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/quiz", "head": "Q", "progress": "",
+            "inputs": [], "options": [], "nextVisible": True, "nextTxt": "Continue"}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop(
+        "phonesite", "Thank you", "thank-you",
+        {"dob": {"kind": "value", "label": "Date of birth",
+                 "rule": "dob_random", "date_format": "DD/MM/YYYY"}},
+        dict(PROV))
+    path = tmp_path / "rule_dob.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("rule_dob_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    obj = module.Filler.__new__(module.Filler)
+    obj.form_data = {}
+    obj._rule_values = {}
+    got = obj.value_for("\u0002Date of birth", {}, 0)
+    assert re.fullmatch(r"\d{2}/\d{2}/\d{4}", got), got
+    day, month, year = (int(x) for x in got.split("/"))
+    today = datetime.date.today()
+    age = today.year - year - ((today.month, today.day) < (month, day))
+    assert 18 <= age <= 68, (got, age)
+
+
+def test_value_for_rule_survives_the_index_fallback(tmp_path, monkeypatch):
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/quiz", "head": "Q", "progress": "",
+            "inputs": [], "options": [], "nextVisible": True, "nextTxt": "Continue"}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop(
+        "phonesite", "Thank you", "thank-you",
+        {"password": {"kind": "value", "label": "Password",
+                      "rule": "password_strong"}},
+        dict(PROV, fill_order=["password"]))
+    path = tmp_path / "rule_password_fallback.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("rule_password_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    obj = module.Filler.__new__(module.Filler)
+    obj.form_data = {"password": "weak"}
+    obj._rule_values = {}
+    got = obj.value_for("\u0002Unrelated", {}, 0)
+    assert got != "weak", got
+    assert re.fullmatch(r"^(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[!@#$%^&*]).{8,}$",
+                        got), got

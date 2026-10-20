@@ -126,7 +126,7 @@ from agent.state import (
     END_DELIVERED, END_DELIVER_LINT, END_DRAFT_FAILED, END_EXPLORE_UNFINISHED, END_FIX_OLD_PASSES,
     END_HUMAN_STOP, END_LINT_CAP, END_MISSING_KNOB, END_NO_BRIEF, END_NO_SUCCESS_TEXT,
     END_NO_WINDOW, END_PAUSED, END_REPAIR_NOOP, END_REPAIR_STUCK, END_REVISION_CAP,
-    END_RULE_NEEDS_FORMAT, END_SELFTEST_CAP, END_WINDOW_GONE,
+    END_RULE_NEEDS_FORMAT, END_RULE_UNSUPPORTED, END_SELFTEST_CAP, END_WINDOW_GONE,
     FINISHED_EXPLORATION, GENERATOR, MODE_BUILD, MODE_FIX, REVISE, STOP, Caps, SiteState,
     human_reply,
 )
@@ -428,7 +428,7 @@ def _brief_facts(state, deps: Deps, missing: list) -> dict:
     从 `intake` 搬一份存进 state 的话，两道闸之间哪根线掉了它也不会说 ——
     而「哪根线还在」正是这道闸要让人看见的东西之一。
     """
-    return {"url": str(state.get("url") or "").strip(),
+    facts = {"url": str(state.get("url") or "").strip(),
             "goal": str(state.get("goal") or state.get("evidence") or "").strip(),
             "成功判据": state.get("success_text"),
             #: ★ 2026-09-24：判据的**第二格**（网址那一截）—— 与上面那格并列摆出来，
@@ -443,11 +443,12 @@ def _brief_facts(state, deps: Deps, missing: list) -> dict:
             "成功判据（口径）": CRITERION_BRANCH_ADVICE,
             "成功判据（提醒）": _criterion_advice(state.get("success_text")),
             "mode": state.get("mode") or MODE_BUILD,
-            #: ★ 2026-10-20：这一趟勾了什么规则（请求；生效结果在 draft/lint 闸上）
-            "规则": state.get("rules") or None,
             "要用的窗口": state.get("ws_url"),
             "允许跳过的扰动": list(state.get("allow_skips") or []),
             "还缺的窗口旋钮": [k["knob"] for k in missing]}
+    if state.get("rules"):
+        facts["规则"] = state.get("rules")
+    return facts
 
 
 def _intake(state, deps: Deps, caps: Caps) -> dict:
@@ -1250,6 +1251,10 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     #    `STATES/FILLS` 那张数据表可改 —— 所以整份源码交给 `deps.patch_source` 出补丁，
     #    过闸（`fix.check_patch`）才许往下走。⚠️ 这条支**排在模板那条之前**。
     if state.get("fix_style") == "legacy":
+        _legacy_stop = _rule_legacy_stop(state)
+        if _legacy_stop:
+            out.update(_legacy_stop)
+            return out
         src, bad = _patch_draft(state, deps, feedback)
         if bad:
             out.update({"end_reason": END_DRAFT_FAILED, "end_note": _patch_failed_say(bad)})
@@ -1648,10 +1653,13 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
 
 def _lint(state, deps: Deps, caps: Caps) -> dict:
     """契约检查（Task 4）：产出的 py 里有没有手拼 JS 这类写模式。"""
+    _facts = {"检查的是": "刚写好的那一版（%d 行）" % len((state.get("src") or "").splitlines())}
+    if state.get("rules"):
+        _facts["规则"] = state.get("rules_applied") or []
+        _facts["规则没命中"] = state.get("rules_unmatched") or []
+        _facts["生日格式"] = (state.get("rules_effective") or {}).get("dob")
     out = _enter(state, caps, "lint", "接下来要把刚写好的这一版逐行过一遍契约检查（重点是手拼 JS）。",
-                 facts={"检查的是": "刚写好的那一版（%d 行）" % len((state.get("src") or "").splitlines()),
-                        "规则": state.get("rules_applied") or [],
-                        "规则没命中": state.get("rules_unmatched") or []})
+                 facts=_facts)
     if _held(out):
         return out
 
@@ -2033,12 +2041,24 @@ def _steps_differ(a: dict, b: dict) -> bool:
 # 而且要比得跟**产物读什么**对齐：`shape == "loop"` 那一支根本不读 `states`
 # （见 `_draft` 里那句 ponytail）—— 不读的东西改了不算改，否则「在那一格上乱动」
 # 会让我们白跑一轮自测，而那正是这一刀要堵的。
+_RULE_FILL_KEYS = ("rule", "prefixes", "date_format", "date_format_source")
+
+
+def _without_rule_keys(fills) -> dict:
+    """去掉生成期套上去的规则键 —— 它们不是模型写的那张表的一部分。"""
+    return {name: {k: v for k, v in (fill or {}).items() if k not in _RULE_FILL_KEYS}
+            for name, fill in (fills or {}).items()}
+
+
 def _what_the_artifact_reads(states, fills, success_text, success_urls, shape, loop_spec) -> dict:
     """这一版**产物真正读**的那几格（判「改没改」只认它们）。**纯函数**。"""
     out = {"success_text": success_text, "success_urls": success_urls or "", "shape": shape}
+    #: ★ 2026-10-20（Review finding 5）：规则键是**我们**在模型交稿后加的；拿它去比
+    #: 「模型有没有改」会恒不同 ⇒ `repair_noop` 永远不触发。比之前先把它们剥掉。
+    model_fills = _without_rule_keys(fills)
     if shape == "loop":
-        return dict(out, fills=fills or {}, loop=loop_spec or {})
-    return dict(out, states=states or [], fills=fills or {})
+        return dict(out, fills=model_fills, loop=loop_spec or {})
+    return dict(out, states=states or [], fills=model_fills)
 
 
 def _same_as_the_tested_one(state, spec: dict, shape: str, loop_spec: dict) -> bool:
@@ -3341,6 +3361,15 @@ def _drop_candidate(state) -> None:
         pass                                  # 已经不在了 / 删不掉：不值得让交付失败
 
 
+def _rule_legacy_stop(state: dict) -> Optional[dict]:
+    """规则勾了、底稿却是 legacy 手写脚本（没有 STATES/FILLS 表）⇒ 停下说明，不静默忽略。"""
+    if str(state.get("fix_style") or "") != "legacy" or not state.get("rules"):
+        return None
+    return {"end_reason": END_RULE_UNSUPPORTED,
+            "end_note": ("这一份底稿是**老写法**（没有 `STATES`/`FILLS` 表），规则勾选套不上去 —— "
+                         "这一趟**不产 py**。请用表型/循环型底稿，或者把规则写成一句话人工处理。")}
+
+
 def _apply_rules(spec: dict, state: dict) -> dict:
     """把 `state["rules"]` 套到 `spec["fills"]`（模型写完之后、render 之前）。
 
@@ -3362,7 +3391,7 @@ def _apply_rules(spec: dict, state: dict) -> dict:
 def _provenance(state, deps: Deps, *, report) -> dict:
     """§5.3 的元数据块。**图只填它真知道的**，剩下的 `None`（不编内容）。"""
     now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
-    return {
+    prov = {
         "generated_at": now,
         "generator": GENERATOR,
         "env": state.get("env") or None,
@@ -3372,8 +3401,6 @@ def _provenance(state, deps: Deps, *, report) -> dict:
         #: 就是「点了也不动」，而这件事以前**一个字都没记**（每次都要人去后台再修一遍）。
         "fingerprint": state.get("fingerprint") or None,
         "platform": state.get("platform") or None,
-        #: ★ 2026-10-20：这一版烤了哪些规则（生效后的那一份；含生日格式来源 / applied / unmatched）
-        "rules": state.get("rules_effective") or state.get("rules") or None,
         "selftest": _selftest_block(report, now),
         "source": {
             "kind": state.get("mode") or MODE_BUILD,
@@ -3383,6 +3410,10 @@ def _provenance(state, deps: Deps, *, report) -> dict:
             "runtime": dict(deps.provenance()),
         },
     }
+    effective = state.get("rules_effective") or state.get("rules")
+    if effective:
+        prov["rules"] = effective
+    return prov
 
 
 def _selftest_block(report, now: Optional[str]) -> Optional[dict]:

@@ -30,7 +30,7 @@ __all__ = ["SiteState", "Caps", "GENERATOR", "MODE_BUILD", "MODE_FIX",
            "END_DELIVERED", "END_HUMAN_STOP", "END_NO_BRIEF", "END_NO_SUCCESS_TEXT",
            "END_MISSING_KNOB", "END_REVISION_CAP", "END_EXPLORE_UNFINISHED", "END_FIX_OLD_PASSES",
            "END_WINDOW_GONE", "END_PAUSED", "END_DRAFT_FAILED", "END_LINT_CAP",
-           "END_SELFTEST_CAP", "END_RULE_NEEDS_FORMAT",
+           "END_SELFTEST_CAP", "END_RULE_NEEDS_FORMAT", "END_RULE_UNSUPPORTED",
            "END_NO_WINDOW", "END_DELIVER_LINT", "END_REPAIR_STUCK", "FINISHED_EXPLORATION"]
 
 #: §5.3 的 `generator`。与 `fixtures/reference_site.py` 里那份参考产物同一个值。
@@ -110,6 +110,8 @@ END_PAUSED = "paused"
 END_DRAFT_FAILED = "draft_failed"
 #: 生日规则勾了，但页面没写格式、运营也没手填 —— 停在生成期，不静默按 DD/MM 编。
 END_RULE_NEEDS_FORMAT = "rule_needs_format"
+#: 规则勾了，但底稿是 legacy 手写脚本（没有 STATES/FILLS 表）—— 规则套不上去，停下说明。
+END_RULE_UNSUPPORTED = "rule_unsupported"
 #: 修站那条路上**跑了一遍旧脚本，它自己就走通了** —— 于是**没有可修的东西**，
 #: 就此停住（不写 py、不碰那个站）。用户 2026-09-21 的口径：「那个是因为失败了才被我
 #: 停用的…我认为它是脚本没问题得偶发性」—— 拿一个跑得通的脚本去赌，只会把它改坏。
@@ -285,6 +287,10 @@ class SiteState(TypedDict, total=False):
     #: （含检测出的生日格式 / applied / unmatched），给 `PROVENANCE` 与闸上看。
     rules: Optional[dict]
     rules_effective: Optional[dict]
+    #: ★ 2026-10-20（Review finding 2）：langgraph 按 schema 过滤，没声明的键会被静默丢掉。
+    #: 闸上要读这两个（`_lint` 的 facts），所以必须在 schema 里。
+    rules_applied: Optional[list]
+    rules_unmatched: Optional[list]
     evidence: str                 # fix 模式：失败证据的引用（FMR formLog / formStep）
     #: §4.6 前提层的产物：窗口、代理指纹、表单数据。都是**外面**给的，图不自己弄
     ws_url: Optional[str]
