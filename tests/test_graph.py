@@ -3801,3 +3801,30 @@ def test_a_when_that_also_holds_on_the_failed_page_is_tightened_to_url_only(tmp_
     assert "URL 严格" in new[0]["when"].get("text_why", ""), new[0]
     assert new[1]["when"]["text_contains"] == ["What's your main health goal"], new[1]
     assert states[0]["when"]["text_contains"], "原 states 被就地改了"
+
+
+def test_apply_rules_sets_fills_and_returns_effective():
+    from agent import graph
+    spec = {"fills": {
+        "phone": {"name": "phone", "kind": "value", "label": "PhoneNumber",
+                  "target": {"selectors": ["#phone"]}},
+        "dob": {"name": "dob", "kind": "value",
+                "label": "Date of birth (DD/MM/YYYY)",
+                "target": {"placeholder": "DD/MM/YYYY", "selectors": ["#dob"]}},
+    }}
+    got = graph._apply_rules(spec, {"rules": {"phone_prefixes": ["02"],
+                                              "dob": {"random": True}}})
+    assert got["fills"]["phone"]["rule"] == "phone_prefix"
+    assert got["fills"]["dob"]["date_format"] == "DD/MM/YYYY"
+    assert got["rules_effective"]["dob"]["format"] == "DD/MM/YYYY"
+
+
+def test_apply_rules_stops_without_a_dob_format():
+    from agent import graph
+    spec = {"fills": {
+        "dob": {"name": "dob", "kind": "value", "label": "Date of birth",
+                "target": {"selectors": ["#dob"]}},
+    }}
+    got = graph._apply_rules(spec, {"rules": {"dob": {"random": True}}})
+    assert got["end_reason"] == "rule_needs_format"
+    assert "生日格式" in got["end_note"]

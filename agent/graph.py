@@ -118,7 +118,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from agent import browser_agent
-from agent import fix as fix_mod, ir as ir_mod, lint as lint_mod, runtime
+from agent import fix as fix_mod, ir as ir_mod, lint as lint_mod, rules as rules_mod, runtime
 from agent import selftest as selftest_mod
 from agent import template
 from agent import template_loop
@@ -126,7 +126,7 @@ from agent.state import (
     END_DELIVERED, END_DELIVER_LINT, END_DRAFT_FAILED, END_EXPLORE_UNFINISHED, END_FIX_OLD_PASSES,
     END_HUMAN_STOP, END_LINT_CAP, END_MISSING_KNOB, END_NO_BRIEF, END_NO_SUCCESS_TEXT,
     END_NO_WINDOW, END_PAUSED, END_REPAIR_NOOP, END_REPAIR_STUCK, END_REVISION_CAP,
-    END_SELFTEST_CAP, END_WINDOW_GONE,
+    END_RULE_NEEDS_FORMAT, END_SELFTEST_CAP, END_WINDOW_GONE,
     FINISHED_EXPLORATION, GENERATOR, MODE_BUILD, MODE_FIX, REVISE, STOP, Caps, SiteState,
     human_reply,
 )
@@ -1540,6 +1540,16 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
             _fills[name] = dict(_fills[name] or {}, prefix=_area)
         if _hit:
             spec["fills"] = _fills
+    _rr = _apply_rules(spec, state)
+    spec["fills"] = _rr["fills"]
+    if _rr.get("end_reason"):
+        out.update({"end_reason": _rr["end_reason"], "end_note": _rr["end_note"]})
+        return out
+    if _rr.get("rules_effective"):
+        out["rules_effective"] = _rr["rules_effective"]
+        state["rules_effective"] = _rr["rules_effective"]
+    out["rules_applied"] = _rr.get("rules_applied") or []
+    out["rules_unmatched"] = _rr.get("rules_unmatched") or []
     try:
         if shape == "loop":
             merged = dict(state)
@@ -1639,7 +1649,9 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
 def _lint(state, deps: Deps, caps: Caps) -> dict:
     """契约检查（Task 4）：产出的 py 里有没有手拼 JS 这类写模式。"""
     out = _enter(state, caps, "lint", "接下来要把刚写好的这一版逐行过一遍契约检查（重点是手拼 JS）。",
-                 facts={"检查的是": "刚写好的那一版（%d 行）" % len((state.get("src") or "").splitlines())})
+                 facts={"检查的是": "刚写好的那一版（%d 行）" % len((state.get("src") or "").splitlines()),
+                        "规则": state.get("rules_applied") or [],
+                        "规则没命中": state.get("rules_unmatched") or []})
     if _held(out):
         return out
 
@@ -3329,6 +3341,24 @@ def _drop_candidate(state) -> None:
         pass                                  # 已经不在了 / 删不掉：不值得让交付失败
 
 
+def _apply_rules(spec: dict, state: dict) -> dict:
+    """把 `state["rules"]` 套到 `spec["fills"]`（模型写完之后、render 之前）。
+
+    返回 `fills` / `rules_effective` / `rules_applied` / `rules_unmatched`；
+    生日格式识别不出时另带 `end_reason=rule_needs_format` + `end_note`（图据此不产 py）。
+    """
+    rr = rules_mod.apply_to_fills(spec.get("fills") or {}, state.get("rules"))
+    out = {"fills": rr["fills"], "rules_effective": rr["effective"],
+           "rules_applied": rr["applied"], "rules_unmatched": rr["unmatched"]}
+    if rr["needs_format"]:
+        out["end_reason"] = END_RULE_NEEDS_FORMAT
+        out["end_note"] = (
+            "生日格式没识别出来：%s。请在面板「生日格式」里填一个，比如 `DD/MM/YYYY`"
+            "（或 `MM/DD/YYYY` / `YYYY-MM-DD`）；识别不出的这一趟**不写 py**。"
+            % "、".join(rr["needs_format"]))
+    return out
+
+
 def _provenance(state, deps: Deps, *, report) -> dict:
     """§5.3 的元数据块。**图只填它真知道的**，剩下的 `None`（不编内容）。"""
     now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
@@ -3342,6 +3372,8 @@ def _provenance(state, deps: Deps, *, report) -> dict:
         #: 就是「点了也不动」，而这件事以前**一个字都没记**（每次都要人去后台再修一遍）。
         "fingerprint": state.get("fingerprint") or None,
         "platform": state.get("platform") or None,
+        #: ★ 2026-10-20：这一版烤了哪些规则（生效后的那一份；含生日格式来源 / applied / unmatched）
+        "rules": state.get("rules_effective") or state.get("rules") or None,
         "selftest": _selftest_block(report, now),
         "source": {
             "kind": state.get("mode") or MODE_BUILD,
