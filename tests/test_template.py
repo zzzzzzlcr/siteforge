@@ -4125,6 +4125,35 @@ def test_a_hit_that_did_not_land_is_retried_and_the_group_survives(sandbox, form
         "复核之后这一页就是那个状态 ⇒ 这一组**不该被跳过**：%s" % clicks)
 
 
+def test_a_hit_that_moved_the_page_is_not_retried(sandbox, form_file, tmp_path):
+    """★ 2026-10-20（真事 `job-4f7f53be42eb` · delamere）：**判得出页面动过的一击，不许再点一次**。
+
+    现场逐字：第 3 步点「For myself」——`progress=True`（diff 判得出页面动了），
+    可下一组「yourself」的判据（`Facebook`）不成立 ⇒ `_verify_the_hit` 回头**重点第 3 步**，
+    而那一击已经把页面带到下一屏了 ⇒ 新页上没有「For myself」⇒ 自测报「第 3 步没找到」
+    **两次**（yourself / yourself-2 各一次）⇒ 诊断判成「选择器族、改稿治得了」⇒
+    修稿一直改那个选择器、最后 `repair_stuck`。
+
+    判据不成立是**判据/页面**的事，不是「这一击没落地」—— 后者才该重试。
+    """
+    module, _ = _load("run_no_retry_after_move", template.render(
+        "example-no-retry-after-move", "Thank you",
+        _two_groups({"url_contains": "https://example.test/", "text_contains": ["Second"]}),
+        [], SAMPLE_PROVENANCE), sandbox)
+    trace = tmp_path / "moved.jsonl"
+    common = _stub(sandbox, observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    #: 点完 #go 页面**确实换了**（到 "Moved"），可「Second」永远不出现 ——
+    #: 这正是「一击落地了、但下一道门不对」的形状。
+    common.STATE.texts = ["First", "Moved"] + ["Moved"] * 10
+    module.SUCCESS_WAIT_SECONDS = 0
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace)).run()
+    clicks = [a for a in common.STATE.actions if a[0] == "click"]
+    assert clicks.count(("click", "#go")) == 1, (
+        "页面已经动过了，不该回头重点那一击（真事里它变成两次假的「没找到」）：%s" % clicks)
+    assert ("click", "#next") not in clicks, clicks
+
+
 def test_the_retry_happens_only_once_per_group(sandbox, form_file):
     """反例（代价闸）：**一组只重试一次** —— 重试是在真页面上多做真实动作，
     运营口径是「刷太多不太好」，不许随失败组数累积。"""

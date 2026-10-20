@@ -1505,6 +1505,164 @@ def test_two_screens_behind_one_url_are_not_merged():
     assert {s["state"] for s in steps} == {"quiz", "quiz-2"}, steps
 
 
+def _three_screens_one_url(*, name_screen_text, other_pages=()):
+    """`/compare` 上的三屏（邮箱 / 姓名 / 手机），门都钉在**全站页脚**那句上。
+
+    形状逐字取自真账本（`job-0bee2dd7903e` · healthinsurancewatch.com.au）：
+    三屏的 h1 前两屏一样（`A few last details...`）、第三屏换成 `Last Step`，
+    三屏的正文头里都有页脚那句（全站每页都有）。
+    """
+    url = "https://hiw.test/compare"
+    footer = "Health Insurance Watch is a brand operated by Compare The Market Pty Ltd ABN"
+
+    def page(name, nodes):
+        return {"name": name, "url": url, "title": "HIW",
+                "when": {"url_contains": url, "text_contains": [footer]},
+                "key": (url, name),
+                "model": {"url": url, "page_text": " ".join(nodes),
+                          "node_texts": list(nodes)}}
+
+    pages = [page("compare-5", ["Back", "A few last details...", "Email address", "Next", footer]),
+             page("compare-6", ["Back", name_screen_text, "Next", footer]),
+             page("compare-7", ["Back", "Last Step", "Mobile number", "Help me save", footer])]
+    pages.extend(other_pages)
+    steps = [{"state": "compare-5", "step_no": 9, "action": "form"},
+             {"state": "compare-5", "step_no": 10, "action": "click"},
+             {"state": "compare-6", "step_no": 11, "action": "form"},
+             {"state": "compare-7", "step_no": 12, "action": "form"}]
+    return pages, steps
+
+
+def test_three_screens_that_can_each_hold_their_own_gate_are_not_merged():
+    """★ 2026-10-13（真事 `job-0bee2dd7903e` · healthinsurancewatch.com.au）：同一个地址上的
+    三屏（`… Email address` / `… Name` / `Last Step Mobile number`）判据都钉在**全站页脚**
+    那句上 ⇒ 被判「分不开」⇒ 并成一组；收尾重挑又给这一组换了门，而它只看得见**并组后留下
+    的那一眼** ⇒ 挑中 'Last Step'（只在第三屏上成立）⇒ 重放到第一屏，**整组 6 步全跳过**
+    （自测 15 步里 6 步被跳过、邮箱那一格空着、没走到成功）。
+
+    判据：三屏各自都有只属于自己的一段正文 ⇒ **不并**，而且各给各的门
+    （并是那条拒绝话里的出路 ②；出路 ① 是「让判据落在只有那一页有的那句话上」）。
+    """
+    pages, steps = _three_screens_one_url(name_screen_text="Name")
+    gone = browser_agent._merge_one_page_states(pages, steps)
+
+    assert gone == [], "三屏各有各的门 ⇒ 不许并（并了就只能共用一道门）：%s" % (gone,)
+    assert [p["name"] for p in pages] == ["compare-5", "compare-6", "compare-7"], pages
+    assert {s["state"] for s in steps} == {"compare-5", "compare-6", "compare-7"}, steps
+    #: ★ 2026-10-20：**门必须真分得开**（旧夹具只验了「在自己那屏上成立」，页脚那种
+    #: 兄弟屏共有的字也能过）。三道门互不相同、每一道在兄弟屏上都不成立 —— 这才是
+    #: 2026-10-13 那条真事想要的 `Email address / Name / Last Step`。
+    gates = [p["when"]["text_contains"][0] for p in pages]
+    assert len(set(gates)) == 3, gates
+    for p in pages:
+        assert browser_agent.when_holds(p["when"], p["model"]), (
+            "各给各的门之后，每一道门都要在**它自己那一屏**上成立：%s" % (p,))
+        for other in pages:
+            if other is p:
+                continue
+            assert not browser_agent.when_holds(p["when"], other["model"]), (
+                "这道门在**兄弟屏**上也成立（那它就不是这一屏的门）：%r / %s" % (p["when"], other))
+    assert browser_agent._gates_that_hold_elsewhere(pages) == [], \
+        "各给各的门之后还报撞车的话，`graph._draft` 照样一份 py 都不出"
+
+
+def test_a_screen_that_cannot_hold_a_gate_of_its_own_is_still_merged():
+    """反面：**有一屏挑不出自己的那一段**（它页面上的字**别的屏也都有**）⇒ 照旧并。
+
+    并是那条拒绝话里的出路 ② —— 挑不到就别动它，一个字都不许改（并与不并都得是量出来的）。
+    ★ 2026-10-20：这一屏现在要「连短标签都不独有」才算挑不到 —— 旧夹具用的是 `Name`
+    （4 个字，只在它这一屏上）⇒ 按 2026-10-13 那条「长度只是唯一性的代理」，它**该能**
+    当门（`_unique_snippet_for` 的短的那一档就是为它加的）。所以夹具改成**与第一屏同文**
+    （`A few last details...`）：它的字全都在兄弟屏 / 页脚上 ⇒ 真的挑不出。
+    """
+    footer = "Health Insurance Watch is a brand operated by Compare The Market Pty Ltd ABN"
+    #: 组外的一页（**另一个地址**）：页脚那句在它身上也有 ⇒ 全站页脚也挑不出来。
+    outside = {"name": "article", "url": "https://hiw.test/the-article", "title": "HIW",
+               "when": {"url_contains": "https://hiw.test/the-article",
+                        "text_contains": ["The set and forget mistake sweeping seniors"]},
+               "key": ("article", "hiw"), "model": {"url": "https://hiw.test/the-article",
+                                                    "page_text": footer,
+                                                    "node_texts": [footer]}}
+    pages, steps = _three_screens_one_url(name_screen_text="A few last details...",
+                                          other_pages=[outside])
+    gone = browser_agent._merge_one_page_states(pages, steps)
+
+    assert [(g["name"], g["into"]) for g in gone] == [("compare-6", "compare-5"),
+                                                      ("compare-7", "compare-5")], gone
+    assert [p["name"] for p in pages] == ["compare-5", "article"], pages
+    assert {s["state"] for s in steps} == {"compare-5"}, steps
+
+
+def test_a_regate_never_lands_on_a_snippet_only_one_of_the_merged_screens_has():
+    """★ 2026-10-13：并组之后收尾重挑门时，**并进去那几屏的正文也要拿来验**。
+
+    并组那一步把模型换成了**最新那一眼**的（`keep["model"] = group[-1]["model"]`），
+    别的几眼的模型就丢了 —— 于是重挑只对着**一屏**验「这一段在别的页上没有」，
+    挑出来的那段完全可能只在那一屏上成立（真事：`Last Step`）⇒ 重放到头一屏整组跳过。
+    """
+    pages, _ = _three_screens_one_url(name_screen_text="A few last details...")
+    email, name, phone = pages
+    survivor = dict(phone, name="compare-5")                 # 并组留下的那一条：模型=第三屏
+    survivor["merged_texts"] = [browser_agent._one_page_text(m)
+                                for m in (email["model"], name["model"], phone["model"])]
+    success = {"name": "success", "url": "https://hiw.test/compare/success", "title": "HIW",
+               "when": {"url_contains": "https://hiw.test/compare/success",
+                        "text_contains": ["All done!"]},
+               "key": ("success", "hiw"),
+               #: 成功页上也有那句全站页脚 —— 撞车就是这么来的（真账本原话：
+               #: 「这一组的判据在别的页上也成立（…/compare/success）」）
+               "model": {"url": "https://hiw.test/compare/success",
+                         "page_text": "All done! We've received your details. " + survivor["model"]["page_text"]}}
+    #: 撞车：这一组的门（全站页脚那句）在成功页上也成立 —— 重挑就是被它触发的
+    both = [survivor, success]
+    had = list(survivor["when"]["text_contains"])
+    assert [h["name"] for h in browser_agent._gates_that_hold_elsewhere(both)] == ["compare-5"]
+
+    hit = browser_agent._repair_ambiguous_whens(both)
+
+    assert hit == [], "挑不出「三屏都成立」的那一段 ⇒ 一个字都不许改：%s" % (hit,)
+    assert survivor["when"]["text_contains"] == had, survivor
+    assert "Last Step" not in survivor["when"]["text_contains"], (
+        "只在第三屏上成立的那句不许当门：%s" % survivor["when"])
+
+
+def test_a_short_label_that_only_this_screen_has_can_hold_the_gate():
+    """★ 2026-10-13（真事 `job-0bee2dd7903e` · healthinsurancewatch.com.au）：**能不能用看的是
+    「在已知的页里出现过没有」，不是「有多长」。**
+
+    真账本第 20 步（姓名屏）：它与上一屏（邮箱屏）**共用同一个 h1**，真正不同的只有两个字的名字
+    （`Email address` → `Name`）。剪判据那道「跨元素拼出来的那段要换成单个元素、且**共有 ≥8 字**」
+    的门槛，把 `Name`（4 字）与 `Next`（4 字）都挡在门外 ⇒ 它退到了页脚那句（`span@footer`，
+    **全站每页都有**）⇒ 于是「这一屏的门在别页上也成立」⇒ 判「分不开」⇒ 并组 ⇒ 收尾重挑 ⇒
+    整组 6 步跳过（自测 15 步里 6 步被跳过、邮箱那一格空着）。
+
+    门槛本身是对的（太短的判据到处都成立）—— 错的是**那一问问错了**：`others` 一直在传，
+    「这段在已知的页里出现过没有」是**量得出来的**，而长度只是它的代理。
+    """
+    url = "https://hiw.test/compare"
+    footer = "Health Insurance Watch is a brand operated by Compare The Market Pty Ltd ABN"
+    nodes = ["Back", "A few last details...", "Name", "Next", footer]
+    kinds = ["a@main", "h1@main", "label@main", "button@main", "span@footer"]
+    email = {"url": url, "title": "HIW",
+             "page_text": "Back A few last details... Email address Next " + footer,
+             "node_texts": ["Back", "A few last details...", "Email address", "Next", footer],
+             "node_elements": kinds}
+    signup = {"url": url, "title": "HIW", "page_text": "Back A few last details... Name Next " + footer,
+              "node_texts": nodes, "node_elements": kinds}
+
+    when = browser_agent._when_for(signup, avoid=email["page_text"], others=[email])
+
+    assert when["text_contains"] == ["Name"], (
+        "这一屏独有、在已知的页上一个都没有的那两个字，就是它该用的门：%s" % (when,))
+    assert "label@main" in str(when.get("text_from") or ""), when
+    #: 反面：**这段在别的页上也出现过**（换一页也有 `Name`）⇒ 一个字都不许放宽，照旧退页脚。
+    other = {"url": "https://hiw.test/other", "page_text": "Name " + footer,
+             "node_texts": ["Name", footer], "node_elements": kinds}
+    again = browser_agent._when_for(signup, avoid=email["page_text"], others=[email, other])
+    assert again["text_contains"] != ["Name"], (
+        "「别处也有」的短判据不许用 —— 那是「到处都成立」那条老病：%s" % (again,))
+
+
 def test_two_pages_that_share_their_text_are_still_two_states():
     """**地址不一样**的共享文案（页头/导航那种）**不并** —— 那一验的活儿一个字没少。
 
@@ -5830,6 +5988,101 @@ def test_a_running_clock_is_never_a_gate_candidate():
     model2 = {"url": "https://x.test/a", "page_text": "2025 KTM SX 85 - Big Wheel 倒计时 01:11:45",
               "node_texts": ["2025 KTM SX 85 - Big Wheel", "01:11:45"]}
     assert browser_agent._unique_snippet_for(model2, []) == "2025 KTM SX 85 - Big Wheel"
+
+
+def test_a_hidden_leaf_never_beats_a_visible_gate_candidate():
+    """★ 2026-10-20（真事 `job-4f7f53be42eb` / `job-2b027b30f0b0` · delamere）：
+    候选里**页面上看不见**的那一条，不许压过看得见的那一条。
+
+    现场：`node_texts` 里混着 Gravity Forms 的蜜罐 div（`visibility:hidden`，而
+    `e.innerText` 对不渲染的元素会回退到 `textContent`）——它排在正文前面，于是
+    `_unique_snippet_for` 挑中了 `'This field is for validation purposes and'`；
+    产物 `page_signature()` 读的是 `body.innerText`（看不见它）⇒ 那道门**永远不成立**
+    ⇒ 整组跳过。真事里更早的一版挑中的是页脚社交链接的 `'Facebook'`，同一个形状。
+    """
+    model = {
+        "url": "https://x.test/contact/yourself",
+        "page_text": "Thank you Who are we talking to today?",
+        "node_texts": [
+            "This field is for validation purposes and",   # 隐藏蜜罐：不在 page_text 里
+            "Who are we talking to today?",                # 可见正文
+        ],
+    }
+    assert browser_agent._unique_snippet_for(model, []) == "Who are we talking to today?"
+
+
+def test_an_invisible_candidate_is_still_picked_when_nothing_visible_is_unique():
+    """上一条的**反面**：`page_text` 是工具硬切 600 字/帧的，落在切点之后的好判据
+    在产物一侧照样成立（2026-10-09 那条：正例那把尺子必须与产物同宽）。
+    ⇒ 「可见优先」只是**排序**，挑不到可见的就照旧退回原来的顺序（行为一个字不改）。
+    """
+    model = {
+        "url": "https://x.test/deep",
+        "page_text": "只有壳",
+        "node_texts": ["落在切点之后的那一句唯一正文"],
+    }
+    assert browser_agent._unique_snippet_for(model, []) == "落在切点之后的那一句唯一正文"
+
+
+def test_page_footer_social_and_form_honeypots_never_become_gates():
+    """★ 2026-10-20（真事 delamere 三趟：`Facebook` / `Instagram` / `LinkedIn` 都当选过）：
+    页脚社交部件的名字与 Gravity Forms 蜜罐是**环境噪声** —— 干净会话里看不见，
+    拿它们当门 ⇒ 自测永远不成立。跳过它们，挑下一个**看得见**的候选。
+    """
+    model = {
+        "url": "https://x.test/contact/yourself",
+        "page_text": "LinkedIn Who are we talking to today?",
+        "node_texts": ["LinkedIn",
+                       "This field is for validation purposes and should be left unchanged.",
+                       "Who are we talking to today?"],
+    }
+    assert browser_agent._unique_snippet_for(model, []) == "Who are we talking to today?"
+    #: 反面：整页只有噪声 ⇒ 挑不到（交空串，让调用方走「没有门」那条明路）。
+    only = {"url": "https://x.test/x", "page_text": "Instagram",
+            "node_texts": ["Instagram"]}
+    assert browser_agent._unique_snippet_for(only, []) == ""
+
+
+def test_pinning_per_screen_gates_ignores_text_shared_by_the_sibling_screens():
+    """★ 2026-10-20（真事 `job-4f7f53be42eb` / `job-2b027b30f0b0` · delamere）：
+    同一地址的几屏，**兄弟屏共有的字不许当任何一屏的门**。
+
+    现场四屏（`Step 1/2/3/4 of 4`）：蜜罐 `This field is for validation purposes and`
+    每一屏都有，而「别的地址」上没有 ⇒ 旧口径（`others` 只收别的地址）把它当成
+    「这一屏独有」⇒ 那道门在另一趟会话里根本不在可见正文上 ⇒ 整组跳过。
+    真正该当选的是 `Step N of 4,` 这种**兄弟屏之间各不相同**、运行时页面上看得见的字。
+    """
+    def page(name, text, nodes, when):
+        return {"name": name, "url": "https://x.test/contact/yourself",
+                "model": {"url": "https://x.test/contact/yourself",
+                          "page_text": text, "node_texts": nodes},
+                "when": when}
+
+    first = page("first", "Thank you Step 1 of 4,",
+                 ["This field is for validation purposes and", "Thank you", "Step 1 of 4,"],
+                 {"url_contains": "https://x.test/contact/yourself",
+                  "text_contains": ["Thank you"]})
+    second = page("second",
+                  "Thank you Help us understand what you're going through Step 2 of 4,",
+                  ["This field is for validation purposes and",
+                   "Help us understand what you're going through", "Step 2 of 4,"],
+                  {"url_contains": "https://x.test/contact/yourself",
+                   "text_contains": ["Help us understand what you're going through"]})
+    other = {"name": "other", "url": "https://x.test/contact",
+             "model": {"url": "https://x.test/contact", "page_text": "Talk to us",
+                       "node_texts": ["Talk to us"]},
+             "when": {"url_contains": "https://x.test/contact",
+                      "text_contains": ["Talk to us"]}}
+    pages = [first, second, other]
+
+    assert browser_agent._pin_own_gates([first, second], pages) is True
+    gates = [first["when"]["text_contains"][0], second["when"]["text_contains"][0]]
+    assert "This field is for validation purposes and" not in gates, gates
+    #: 每道门都得在**自己那一屏**上成立、在**兄弟屏**上不成立 —— 这才叫「这一屏的门」。
+    assert browser_agent.when_holds(first["when"], first["model"])
+    assert not browser_agent.when_holds(first["when"], second["model"])
+    assert browser_agent.when_holds(second["when"], second["model"])
+    assert not browser_agent.when_holds(second["when"], first["model"])
 
 
 def test_a_positional_selector_from_the_model_is_tied_by_its_unique_tail():

@@ -1946,7 +1946,9 @@ class Filler:
         #: 否则「重试上限」就变成了「只要这次重试成了，下次还能再重试」。
         self.group_retries = 0
         #: ★ 2026-09-29（交接《骨架还缺什么》§8）：判据不成立时**复核那一击**要用到的三格。
-        #: `_last_hit` = 刚动手的那一步（重试就重试它）；`_seen_tabs` = 见过的 tab（用来认
+        #: `_last_hit` = 刚动手的那一步**连同它的 `progress`**（`(index, step, progress)`；
+        #: `progress is True` = 页面**判得出动过** ⇒ 那一击落地了、**不许重试**，见 2026-10-20
+        #: 那条真事）；`_seen_tabs` = 见过的 tab（用来认
         #: 「晚到的新 tab」）；`_retried_groups` = 复核过重试的状态名（**一组只重试一次**）。
         #: ⚠️ 这三个都只在这一条路上用（判据不成立）—— 成功路径一次都不碰，代价不摊到每步。
         self._last_hit = None
@@ -2796,8 +2798,15 @@ class Filler:
         三步，**代价只落在这一条路上**（判据不成立时；成功路径一次都不碰）：
           ① 有没有**晚到的新 tab**（与我们见过的 id 集合比）⇒ 切过去；
           ② 判据要的那一页是不是**早就在、只是没在前台**（`_follow_tab_matching`）⇒ 切过去；
-          ③ 两个都不是 ⇒ 把**刚才那一击重试一次**（进 `_perform`，所以先过 §7 那道闸：
-             文档到 interactive + 元素中心点得到的还是它自己）。
+          ③ 两个都不是 ⇒ 先问**刚才那一击到底动没动页面**：`progress is True`（diff 判得出
+             页面变了）⇒ **它已经落地了**，不许再点一次；只有判不出/判出没动时才把那一击
+             重试一次（进 `_perform`，所以先过 §7 那道闸：文档到 interactive + 元素中心点得到
+             的还是它自己）。
+             ⚠️ ★ 2026-10-20（真事 `job-4f7f53be42eb` · delamere）：少了前半句，判据不成立
+             就会变成「回头重点一个已经不在页面上的元素」—— 真事里第 3 步点「For myself」
+             成功、页面已经到下一屏，下一组的门（`Facebook`）不成立 ⇒ 回头重点 ⇒
+             「页面上没找到「For myself」」⇒ 自测把它读成**选择器族**、修稿一直改选择器 ⇒
+             `repair_stuck`。判据不成立照旧记「跳过」（跳过是没做），但它**不是**「没落地」。
         ⚠️ **一组只重试一次**（`_retried_groups`）：重试的代价是**在真页面上多做几个真实动作**，
         而运营口径是「刷太多不太好」—— 这一格不许随着失败组数累积。
         ⚠️ 它**只进日志、不进 trace**：trace 的每一行都是「一步」（下游按 `line["ok"]` 读它），
@@ -2830,14 +2839,25 @@ class Filler:
             self.log.info("[%s] ⚠️ 判据不成立 —— 但**那一页在另一个 tab 上**，已经切过去",
                           self.cid)
             return True
-        # ③ 重试那一击（一组一次）
+        # ③ 重试那一击（一组一次）—— **只在这一击判不出「页面动过」时**
+        index, step, progress = self._last_hit
+        if progress is True:
+            #: ★ 2026-10-20（见 docstring 里那条真事）：这一击**判得出页面动过** ⇒ 它不是
+            #: 「没落地」。再点一次只会在**新的一页**上找一个已经不存在的元素，那句
+            #: 「页面上没找到 X」还会被自测读成**选择器族**（改稿治得了）⇒ 修稿改错地方。
+            self.log.info("[%s] 「%s」的判据不成立 —— 但**上一击判得出页面动过**"
+                          "（progress=True），不再回头重点第 %d 步：这一页只是不像那个状态",
+                          self.cid, name, index)
+            return False
         if name in self._retried_groups:
             return False
         self._retried_groups.add(name)
-        index, step = self._last_hit
-        self.log.warning("[%s] ⚠️ 「%s」的判据不成立，而页面**一点没动** —— "
+        self.log.warning("[%s] ⚠️ 「%s」的判据不成立，而%s —— "
                          "把第 %d 步（%s）**重来一次**（这一组只重试这一次）",
-                         self.cid, name, index, _label((step or {}).get("target"), step))
+                         self.cid, name,
+                         "页面**一点没动**" if progress is False
+                         else "这一击**判不出**落地没有",
+                         index, _label((step or {}).get("target"), step))
         self._run_step(index, step)
         return True
 
@@ -4288,8 +4308,10 @@ class Filler:
                         self._wait_ready()
                         self._clear_obstructions(why="这一次导航")
                     ok, progress = self._run_step(index, step)
-                    #: 记下来：判据一旦不成立，要复核的就是**这一下**（§8）。
-                    self._last_hit = (index, step)
+                    #: 记下来：判据一旦不成立，要复核的就是**这一下**（§8）——
+                    #: 连同它的 `progress`（True = 页面判得出动过 ⇒ 不许重试，见
+                    #: `_verify_the_hit` 的 2026-10-20 那条）。
+                    self._last_hit = (index, step, progress)
 
                     if self._succeeded():
                         self.log.info("[%s] 成功：判据成立了（页面上那串字 / 网址那一截）", self.cid)

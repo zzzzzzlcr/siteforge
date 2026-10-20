@@ -188,6 +188,20 @@ COVER_WAIT_SECONDS = 35.0
 #: 等蒙版期间每隔多久再量一次（秒）
 COVER_POLL_SECONDS = 0.4
 
+#: ★ 2026-10-13：等遮挡物自己走的同时，**最多**把目标挪到视口正中几次（见 `_recenter`）。
+#:
+#: 为什么要这一格（真事 `job-a6954761e657` · healthinsurancewatch.com.au，读数在
+#: `_probe_hiw_cover.py`）：填完上一格之后**站点自己滚动**，`#postcode` 的中心点正好落在
+#: **粘性页眉**（`div.h-full`，视口顶上那一条：[0,0,360,98]）底下 ⇒ 产物「礼貌地」不动手：
+#: 等满 35 秒、两个声明地址 + 两个重找候选**一个都没试** ⇒ 报文只有一句
+#: 「没找到「Your postcode」这个输入框，没填成」。自测三轮都死在这一步，各花 50.1/49.8/50.1 秒
+#: （= 35 秒空等 + 开销；第 9 步只花 14.5 秒 —— 遮挡物已经进了「赖着不走」名单）。
+#:
+#: **粘性页眉不是「不能碰」，是「站错地方了」** —— 人在那儿只会把页面往回滚一点就填了。
+#: 但这条口子**有界**：真弹层（consent 那类）挪几次也没用 ⇒ 预算到点照旧不动手、照旧失败；
+#: 也就是「多滚两下」，不是「放开遮挡判据」。
+RECENTER_TRIES = 2
+
 #: ★ 2026-10-12：声明里那根地址**没找到**时，先等多久（秒）再试**同一根地址**。
 #:
 #: 为什么要这一格（真事 `job-d57366d0cf35` · ic.com 的选国家抽屉，读数在
@@ -342,7 +356,19 @@ _CONSENT_ROOTS_JS = (
 #: 判据：有面积、而且顶边还没划出视口 —— 与 `cdp observe` 看 obstructions 一个口径。
 _VIS_JS = (
     "var vis=function(e){var r=e.getBoundingClientRect();"
-    "return r.width>0&&r.height>0&&r.bottom>0&&r.top<window.innerHeight;};"
+    "if(!(r.width>0&&r.height>0&&r.bottom>0&&r.top<window.innerHeight))return false;"
+    #: ★ 2026-10-17（终审 Ruling 28-①）：**矩形过了才问 display / visibility**（顺序有意：
+    #: 只在「矩形这一关已经过了」的那些元素上取 computedStyle —— 几千个元素逐个取太贵，
+    #: 而这一格问的正是「这一颗看得见吗」）。
+    #: 为什么补这一段：`visibility:hidden` 的关闭键**矩形照样有面积** ⇒ 原来被当成可见
+    #: （真站实测 `docs/superpowers/plans/2026-10-16-弹窗与遮挡-能力进骨架-实测.md` §1.3：
+    #: wildnutrition 那一屏**两颗 `visibility:hidden` 的关闭键**都进了候选、差点被点）。
+    #: ⚠️ `getComputedStyle` 可能**根本不存在**（`tests/popup_probe_driver.js` 的假 window 就没有）
+    #: ⇒ 必须 try/catch 住：抛出去 = 整段探针炸 = 十条钩子全哑（`_COVER_JS` 那处同一个包法）。
+    "var cs=null;try{cs=getComputedStyle(e);}catch(err){}"
+    "if(cs){var d=String(cs.display||''),v=String(cs.visibility||'');"
+    "if(d==='none'||v==='hidden'||v==='collapse')return false;}"
+    "return true;};"
 )
 _CONSENT_BOX_JS = (
     "var boxW=/(cookie|consent|gdpr|privacy)/i;"
@@ -459,6 +485,10 @@ def _is_consent_step(label: str) -> bool:
 #:
 #: ★ 2026-10-10 起它是**钩子表里的一条**（`_POPUP_HOOKS` 第二行）：签名 `(all, vis)` ——
 #: 用调用方穿好 shadow root 的那份元素表，**不再**吃上一条钩子的局部变量（原来那是个暗扣）。
+#:
+#: ★ 2026-10-19：关闭键也认 `div`/`span` —— 同意控件不一定是 `button/a/input`（真事
+#: compareinsulation 的 CookieScript 把 accept/reject 做成 `<div>`）。`closeW` 的 ≤24 字闸
+#: 已经把散文挡在外面，这里不再加第二条长度闸。
 _MODAL_BOX_JS = (
     "var isModal=function(e){"
     "var lab=String(e.id||'')+' '+String(e.className||'')+' '"
@@ -477,13 +507,46 @@ _MODAL_BOX_JS = (
     "if(!isModal(mb))continue;"
     "var mi=(mb.getElementsByTagName?mb.getElementsByTagName('*'):mb.querySelectorAll('*'));"
     "for(var n=0;n<mi.length;n++){var cb=mi[n],ct=String(cb.tagName||'').toLowerCase();"
-    "if(ct!=='button'&&ct!=='a'&&ct!=='input')continue;"
+    "var ctl=(ct==='button'||ct==='a'||ct==='input');"
+    "if(!ctl&&ct!=='div'&&ct!=='span')continue;"
+    #: ★ 2026-10-19：新加的 div/span **只认叶子** —— 子元素里带文字的是容器，
+    #: 点它是点空气（真站 `#cookiescript_buttons` 就是这个形状）。
+    "if(!ctl&&cb.children&&cb.children.length){var tc=false;"
+    "  for(var q=0;q<cb.children.length;q++){var ch=cb.children[q];"
+    "    if(String(ch.innerText||ch.value||'').trim()){tc=true;break;}}"
+    "  if(tc)continue;}"
     "if(!vis(cb))continue;"
     "var ca=String((cb.getAttribute&&cb.getAttribute('aria-label'))||'').trim();"
     "var cx=String(cb.innerText||cb.value||'').trim();"
     "if(!(closeW(ca)||closeW(cx)))continue;"
     "return (cb.id?('#'+cb.id):'TEXT')+'|'+(ca||cx).slice(0,40);}"
     "return '';}"
+)
+
+#: ★ 2026-10-19（真事 wildnutrition）：站点自己的 **markets offcanvas 抽屉** 在新会话里
+#: 每单都会打开，而它的关闭键被 sticky header / hero 盖住 —— `cdp click` 的落点判据
+#: 会拒绝（那是对的：不点被盖住的东西），于是脚本的每一步都被 `div.OffcanvasDimmer`
+#: 挡在外面。这一条**只认 `data-drawer-names="markets"` 的 offcanvas**，由钩子
+#: **自己用 JS 的 `.click` 关掉**（绕开 hit-testing），答复 `JS|done`；消费端看到 `JS`
+#: 就不再走 cdp click，但**照样复核**（还在 ⇒ 记没关掉）。
+#: ⚠️ 只认 markets：站点别的抽屉（promo / filters 之类）不归这一条管 ——「宁可不做」。
+_MARKETS_OFFCANVAS_JS = (
+    "var cls=function(e){return String((e&&(e.className||(e.getAttribute&&e.getAttribute('class'))))||'');};"
+    "var isM=function(e){return String((e.getAttribute&&e.getAttribute('data-drawer-names'))||'').toLowerCase()==='markets';};"
+    "var hasM=false;"
+    "for(var i=0;i<all.length;i++){var box=all[i];"
+    "if(!isM(box)||!vis(box))continue;hasM=true;"
+    "var ins=(box.getElementsByTagName?box.getElementsByTagName('*'):[]);"
+    "for(var j=0;j<ins.length;j++){var b=ins[j];"
+    "if(!/(^|\\s)js-offcanvas-close(\\s|$)/.test(cls(b))||!vis(b)||!b.click)continue;"
+    "try{b.click();}catch(e){continue;}"
+    "return 'JS|done';}}"
+    "if(!hasM)return '';"
+    "for(var k=0;k<all.length;k++){var d=all[k];"
+    "if(!/OffcanvasDimmer/.test(cls(d))||!vis(d)||!d.click)continue;"
+    "try{d.click();}catch(e){continue;}"
+    "return 'JS|done';}"
+    "return '';"
 )
 
 _CONSENT_HOOK_JS = (
@@ -498,17 +561,149 @@ _CONSENT_HOOK_JS = (
     "  var inner=(box.getElementsByTagName?box.getElementsByTagName('*'):box.querySelectorAll('*'));"
     "  for(var j=0;j<inner.length;j++){"
     "    var b=inner[j], tag=String(b.tagName||'').toLowerCase();"
-    "    if(tag!=='button'&&tag!=='a'&&tag!=='input') continue;"
+    "    var ctl=(tag==='button'||tag==='a'||tag==='input');"
+    "    if(!ctl&&tag!=='div'&&tag!=='span') continue;"
+    #: ★ 2026-10-19（真站 compareinsulation）：`#cookiescript_buttons` 这个 **wrapper** 的
+    #: 合并文字是 `"ACCEPT ALL\nDECLINE ALL"`（22 字）—— ≤40 的短文本闸拦不住它，钩子会
+    #: 先挑中 wrapper、点下去是点空气。新加的 div/span **只认叶子**：子元素里带文字的
+    #: 是容器，跳过；真正的 accept/reject（或它们里面那颗 span）才留下。
+    "    if(!ctl&&b.children&&b.children.length){var tc=false;"
+    "      for(var q=0;q<b.children.length;q++){var ch=b.children[q];"
+    "        if(String(ch.innerText||ch.value||'').trim()){tc=true;break;}}"
+    "      if(tc) continue;}"
     #: ★ 2026-09-28：**按钮也得是可见的** —— 藏起来的那颗（有的是给读屏用的）点不到，
     #: 点了也是白点（`cdp click` 会回错误 ⇒ 白搭一步）。
     "    if(!vis(b)) continue;"
     "    var t=String(b.innerText||b.value||(b.getAttribute&&b.getAttribute('aria-label'))||'').trim();"
+    "    if(!ctl&&t.length>40) continue;"
     "    if(!btnW.test(t)) continue;"
     #: 有稳定地址 ⇒ 直接用；只有文字 ⇒ 交回一句「按文字点」（调用方打标记再点）
     "    return (b.id?('#'+b.id):'TEXT')+'|'+t.slice(0,40);"
     "  }"
     "}"
 )
+
+
+#: ★ 2026-10-16：**广告 creative** 那一型（blavity 2026-10-10 / kotzheating 2026-10-09 两份产物
+#: 的判据交集）。它与上面三条的差别：**没有**模态语义、也**不一定是**同意那件事 ——
+#: 认它靠「**有一颗明确的关闭键**」这件事本身。
+#: ⚠️ 三条窄口径（缺一不可，与前三条同一套「宁可不做，不可错点」）：
+#:   ① 关闭语义 —— **三条路都收窄**（Ruling 22；不许变成「凡带 close 字样就点」）：
+#:      · 属性**名**带 close（`data-close="1"` 那种）且值 ∈ {"",true,1,close}；
+#:      · 属性**值****精确等于** close/dismiss/关闭 —— blavity 现场 `data-click="close"`
+#:        就是这一条（`close` 是它的**值**、名字叫 `data-click`）；
+#:      · `id` / `class` 命中关闭词 —— **子串**（`#cwCloseButton` 那种驼峰靠词边界正则会漏；
+#:        `.op2-close` 两边都中）；
+#:      · `aria-label` / 文字 —— **锚定** `^(close|dismiss|关闭)`（散文里出现 close 不算：
+#:        「Do not close this window」是**别关**的意思 —— Ruling 23 抓的就是这一条），
+#:        或 `×/✕/✖`，且要**短**；
+#:   ② 它自己**可见**、尺寸 ≥8×8、**中心点的落点是它自己/祖先/后代**（blavity 那把尺子：
+#:      同页 6 个候选里只有 1 个可见，直接点会点空气）；
+#:   ③ 找不到 ⇒ 空串（**正常情况**）。
+#: ★ Ruling 22（2026-10-16）：①的后两条路（值那条 / id·class·aria·文字那条）**必须**再
+#: 过一道 **≤120×120** 的尺寸闸（照 2026-10-09 那一刀的界）—— 否则 `close-banner-wrapper`
+#: 那种**容器**会被当成关闭键点掉（假 DOM 里实测：没闸的时候它真答 `#close-banner-wrapper|close`）。
+#: ①的第一条（属性名那条）**不要**闸：它本来就够 specific（名字里带 close 的东西不会是容器）。
+#: ## 未验（真弹窗上没再次观察到）
+#: 2026-10-16（Task 6）：照 `docs/probes/2026-10-10-blavity-ad-popup/README.md`「复现第 7 条」
+#: 在 Bit `192.168.1.222` 上开窗重试了一次**只读**观察（21:29:51 开窗 → 21:39:27 关窗，
+#: 20 眼、每眼约 27 秒，第 3 眼起每 3 眼滑动诱发一次）：那段窗口里**一次都没再弹** ——
+#: `[data-click="close"]` 候选 20/20 眼恒为 0（`{"n":0,"vis":[]}`），钩子 19/20 眼恒返空串
+#: （剩 1 眼是一次 `DOM.documentUpdated` 传输错），与 10-10 那次「点掉之后 28 分钟没再弹
+#: （疑频次抑制）」同形。⇒ 这一行是**照两份产物的判据交集收窄出来的，真弹窗上没再次观察到**
+#: （**不许**当成验过了）。原始读数见报告的「前置验证」那一节。
+#: ⚠️ 另按真站那份现场（README 表格：`<button id="bx-close-inside-…" data-click="close">`）
+#: 拿 node + 假 DOM 核过语义：那颗按钮**不带 aria-label、也没有文字**时，光靠「属性名带
+#: close」**命不中**（名字是 `data-click`，`close` 是它的**值**）—— 要靠 aria-label / 文字
+#: 那两条才认得出。如实记在这儿，**不**在这条注释里偷偷放宽判据（等裁决）。
+#: ⚠️ Ruling 22 之后那条「属性值精确等于 close」就是为它加的；Ruling 23 又把 aria-label 那支
+#: 从子串**收回锚定**（散文里出现 close 不算）。
+#: ⚠️ 尺寸闸 **≤120×120 是一个「接受的赌」**（Ruling 24）：那个界是照 2026-10-09 产物那一刀取的，
+#: **真控件 rect 从来没量到过**（10-10 只量到候选计数），而真弹窗这一刀又观察不到
+#: ⇒ **不编数**、也不假装它量过：这条界就是这么来的，真站上它是**假设**。
+#: ⚠️ **已量到误答**（2026-10-17 订正，读这段的人别再以为这一行的风险只是「没验过」）：
+#: 本刀真站那一趟（实测文档 §1.3）它**照着判据答出来并点了** —— wildnutrition 那一屏上
+#: 它答 `广告 creative|TEXT|Close filters drawer`，把站点自己的**抽屉控件**当成了关闭键。
+#: ⇒ 终审 **Ruling 30**：这一行**只报不点**（表里那一格带着 `_REPORT_ONLY` 标志，
+#: 认得出、账上记一行，**不动手**），直到真 creative 上验过「可见 + 有落点」。
+_AD_CREATIVE_JS = (
+    # ①-a 属性**名**带 close（值可信）—— 本来就够 specific，**不加**尺寸上限
+    "var closeAttr=function(e){var as=e.attributes||[];"
+    "for(var i=0;i<as.length;i++){var n=String(as[i].name||'').toLowerCase();"
+    "var v=String(as[i].value||'').trim().toLowerCase();"
+    "if(/(^|[-_])close([-_]|$)/.test(n)&&(v===''||v==='true'||v==='1'||v==='close'))return true;}"
+    "return false;};"
+    # ①-b 属性**值精确等于**关闭词 —— blavity 的 `data-click="close"` 走这一条
+    "var closeVal=function(e){var as=e.attributes||[];"
+    "for(var i=0;i<as.length;i++){var v=String(as[i].value||'').trim().toLowerCase();"
+    "if(v==='close'||v==='dismiss'||v==='关闭')return true;}return false;};"
+    # ①-c `id` / `class` 命中关闭词 —— 子串（它们是**标识符**：`#cwCloseButton` 这种驼峰，
+    #      词边界正则会漏；`.op2-close` 两边都能中）
+    "var closeWord=function(s){s=String(s||'').toLowerCase();"
+    "return s.indexOf('close')>=0||s.indexOf('dismiss')>=0||s.indexOf('关闭')>=0;};"
+    # ①-c `aria-label` / 文字：**锚定**（散文里出现 close 不算 —— 「Do not close this window」
+    #      是**别关**的意思；Ruling 23 抓的就是这一条），× 那三个单字符也算，且要短。
+    "var closeT=function(s){s=String(s||'').trim().toLowerCase();if(!s)return false;"
+    "if(s==='×'||s==='✕'||s==='✖')return true;"
+    "return /^(close|dismiss|关闭)/.test(s)&&s.length<=24;};"
+    #: ★ 2026-10-19：**站点锚**（表里第 4 格）。空串 = 不设锚（broad 判据，仍只报不点）；
+    #: 站点补丁填了 `[data-click="close"]` / `.op2-close` 后，只有匹配它的候选才算 ——
+    #: 这是把「站点自己的 Close filters drawer」挡在外面的那道闸。`matches` 只读；
+    #: 选择器写坏了就 catch 成 false（宁可不做）。
+    "var anchored=function(e){if(!anchor)return true;"
+    "try{return !!(e.matches&&e.matches(anchor));}catch(err){return false;}};"
+    # ② 逐元素：可见 + ≥8×8 + **落点那一摞里没有别的元素排在它前面**（＝它没被盖着）
+    #    —— 只在**有落点**的那一个上动手（blavity 那把尺子：同页 6 个候选里只有 1 个可见，
+    #    直接点会点空气）。
+    # ★ Ruling 27（2026-10-17 终审）：这一格改用**与 `_COVER_JS` 同一把尺子**（整摞、
+    #   跳过 `pointer-events:none`、看第一个**别的**元素）。原来那版是「复数
+    #   `elementsFromPoint` + `any(自己/祖先/后代)`」—— 被盖着的候选**仍然在那一摞里**
+    #   ⇒ 这条判据**挡不住它**（Task 7 实施者量到的口径差：blavity 那刀用的是单数
+    #   `elementFromPoint`）。⚠️ 两把尺子不许分家：改这里就要照 `_COVER_JS` 的写法改。
+    "for(var i=0;i<all.length;i++){var e=all[i];"
+    "var tg=String(e.tagName||'').toLowerCase();"
+    "if(tg!=='button'&&tg!=='a'&&tg!=='div'&&tg!=='span'&&tg!=='input')continue;"
+    "if(!vis(e))continue;"
+    "var r=e.getBoundingClientRect();"
+    "if(r.width<8||r.height<8)continue;"
+    "var x=r.left+r.width/2,y=r.top+r.height/2;"
+    "if(x<0||y<0||x>window.innerWidth||y>window.innerHeight)continue;"
+    "var mark=(e.getAttribute&&e.getAttribute('aria-label'))||'';"
+    "var txt=String(e.innerText||e.value||'').trim();"
+    "var cls=String((e.getAttribute&&e.getAttribute('class'))||e.className||'');"
+    # ★ Ruling 22：①-b / ①-c 那两条路**必须**过 ≤120×120 这道闸（不然容器会被点掉）；
+    #   `small` 只挡后两条，①-a 不挡。
+    "var small=(r.width<=120&&r.height<=120);"
+    "if(!(closeAttr(e)||(small&&(closeVal(e)||closeWord(e.id)||closeWord(cls)"
+    "||closeT(mark)||closeT(txt)))))continue;"
+    "if(!anchored(e))continue;"                  # ← 站点锚（空串 = 不过滤）
+    "var stack=document.elementsFromPoint(x,y)||[],covered=false;"
+    "for(var k=0;k<stack.length;k++){var h=stack[k];var pe='';"
+    "try{pe=getComputedStyle(h).pointerEvents||'';}catch(err){}"
+    "if(pe==='none')continue;"
+    #: ★ 2026-10-19：影子宿主在 `elementsFromPoint` 里只以**宿主**出现，而
+    #: `host.contains(影子里的 e)` 是 **false** —— 必须看 `host.shadowRoot.contains(e)`；
+    #: 否则影子里的 ad creative 会被误判成「被盖着」（合成页 `data:` + open shadow 复现）。
+    #: `_COVER_JS` 不遍历 shadow（找不到目标就返回空 = 静默放行），这里只补 ad 的落点尺子。
+    "if(h===e||e.contains(h)||h.contains(e)"
+    "||(h.shadowRoot&&h.shadowRoot.contains(e)))break;"
+    "covered=true;break;}"
+    "if(covered)continue;"                   # ← 被盖着 ⇒ 不认（宁可不做）
+    "return (e.id?('#'+e.id):'TEXT')+'|'+(mark||txt).slice(0,40);}"
+    "return '';"
+)
+
+
+#: ★ 2026-10-17（终审 C2 · Ruling 30）：表里那一行的**第三格 = 这个标志** ⇒ 这一行
+#: 「认得出，但**不点**」。真站上已经量到误点（实测 §1.3），而「加容器锚」那把尺子对
+#: 这一型**还没有正向证据** ⇒ **不点**是唯一「不需要再验就不会做错事」的那条路。
+_REPORT_ONLY = "report_only"
+
+#: ★ 2026-10-19：点完复核的**短轮询** —— 同意层的关闭常常是异步的（真站 compareinsulation：
+#: 点 accept 之后紧接的那一次再探还会看到它，再晚一点点才没了）。只在「复核还答**可点**行」
+#: 时等；返空 / 只答 `_REPORT_ONLY` 都立即收（那两件事都已经有结论了）。
+POPUP_RECHECK_WAIT_SECONDS = 1.0
+POPUP_RECHECK_POLL_SECONDS = 0.2
 
 
 #: ★ 2026-10-10（用户问的那句：「假如会出现某些弹窗的钩子函数」）：**弹窗钩子表**。
@@ -532,10 +727,47 @@ _CONSENT_HOOK_JS = (
 #:      （它保证「点了个寂寞」不会被记成做成了）；
 #:   ③ 钩子只许**读**页面：动手那一下一律交回选择器，由调用方走 `cdp click`（§5.2）。
 #: 每一条的「为什么这么窄」写在它自己的注释里（下面两条就是）。
+#:
+#: ★ 2026-10-17（终审 C2 · Ruling 30）：**行可以带第三格 = 「报但不点」的标志**
+#: （`(名字, 钩子 JS)` 是普通行，`(名字, 钩子 JS, _REPORT_ONLY)` 是「认得出、但不动手」）。
+#: 为什么要它：真站上已经**量到误点**（实测 §1.3：第 4 行把站点自己的抽屉控件
+#: `Close filters drawer` 当成了关闭键）⇒ 那一型在拿到真站正向证据之前，**只报不点**。
+#: ⚠️ 标志**按名字回来**（`_popup_report_only(who)`），**答复的形状一个字符都不动** ——
+#: 那三格被两套消费端的 `split("|", 2)` 与十条假 DOM 夹具钉着，动它 = 全线改判据。
 _POPUP_HOOKS = (
     ("同意条", _CONSENT_HOOK_JS),
     ("盖住整页的模态", _MODAL_BOX_JS),
+    #: ★ 2026-10-19：**markets offcanvas**（wildnutrition 那型）—— 关闭键被 sticky header
+    #: 盖住，`cdp click` 点不到；这一条自己用 JS 点掉，答复 `JS|done`。排在模态之后、
+    #: 广告 creative 之前：它比模态窄（只认 `data-drawer-names="markets"`），但比 creative
+    #: 硬（它盖住的是整页，而且站点自己就有一颗关闭键）。
+    ("市场/地区抽屉", _MARKETS_OFFCANVAS_JS),
+    #: ★ 2026-10-16：广告 creative（blavity 那型）—— 排在**最后**：它比同意条软、也比模态软
+    #: （它的容器**没有**语义，只靠「有一颗明确的关闭键」）。判据见 `_AD_CREATIVE_JS`。
+    #: ★ 2026-10-17（Ruling 30）：**降级为「只报不点」**，直到真 creative 上验过
+    #: 「可见 + 有落点」为止（消费端照 `_REPORT_ONLY` 只记一行 INFO，见 `_clear_obstructions`）。
+    #: ★ 2026-10-19（**毕业**）：row 不再只报不点 —— **第三格 = 站点锚**（CSS 选择器）。
+    #: 已知的两个锚取并集：blavity `[data-click="close"]` / kotzheating `.op2-close`。
+    #: 真站证据：blavity 10-10 真弹窗那颗 close 点掉、kotzheating 10-09 真 `.op2-close`
+    #: 浮层点掉（都用的是这两个精确控件）；合成锚测试证明站点自己的 `Close filters drawer`
+    #: / 没有锚的 `TEXT|×` 会被挡在外面。第四格仍保留「只报不点 + 锚」的写法，留给以后
+    #: 还想先观察的站点。
+    ("广告 creative", _AD_CREATIVE_JS, '[data-click="close"], .op2-close'),
 )
+
+
+def _popup_report_only(name):
+    """这一行是不是「**报但不点**」（表的第三格，Ruling 30）。认不出来 = 不是（不猜）。
+
+    ⚠️ 标志**按名字查回**，答复的**形状不动**：`_POPUP_PROBE_JS` 照旧答
+    `"<钩子名>|<选择器|TEXT>|<按钮文字>"` 三格（那三格是两套消费端与十条假 DOM 夹具
+    钉着的契约；往答复里塞第四格 = 全线改判据，且**探针/夹具那一层钉的是「认得出哪一颗」，
+    不是「点不点」**）。表里那一行同时带着名字与标志 ⇒ 名字回来 = 标志也就回来了。
+    """
+    for row in _POPUP_HOOKS:
+        if row[0] == name:
+            return len(row) > 2 and row[2] == _REPORT_ONLY
+    return False
 
 
 def _popup_probe_js(hooks=None):
@@ -546,9 +778,22 @@ def _popup_probe_js(hooks=None):
 
     名字（表里的第一格）**跟着答复一起回来**：日志要照它说「把『盖住整页的模态』点掉了」——
     原来那句话一律说「同意弹层」，模态被点掉时也是（读日志的人会去找错的东西）。
+    ⚠️ 行是**两格或三格**（第三格 = `_REPORT_ONLY`，见 `_POPUP_HOOKS`）⇒ 这里只取前两格；
+    带标志的那一行照旧会被问、照旧会答（「报」这一半就是靠它）。
     """
     out = [_CONSENT_ROOTS_JS, _VIS_JS]      # `all` / `vis`：只算一遍，所有钩子共用
-    for name, js in (_POPUP_HOOKS if hooks is None else hooks):
+    for row in (_POPUP_HOOKS if hooks is None else hooks):
+        name, js = row[0], row[1]
+        #: ★ 2026-10-19：**站点锚**。行形有三种：
+        #:   `(name, js)` ⇒ 可点、不设锚；`(name, js, _REPORT_ONLY)` ⇒ 只报不点、不设锚；
+        #:   `(name, js, _REPORT_ONLY, anchor)` ⇒ 只报不点 + 锚；
+        #:   `(name, js, anchor)` ⇒ **可点 + 锚**（第三格不是标志就是锚）。
+        #: 所有钩子都多收一个 `anchor` 参数；不用它的钩子直接忽略（JS 允许多传实参）。
+        anchor = ""
+        if len(row) > 3:
+            anchor = row[3]
+        elif len(row) > 2 and row[2] != _REPORT_ONLY:
+            anchor = row[2]
         #: ⚠️ 钩子的 `return` 只在**它自己那个函数**里有效，而「第一个答应的就此打住」
         #: 要的是**探针这一层**的 return ⇒ `if(hit)` 那半句必须留在外面这一层。
         #: （写成 `(function(){…if(hit)return…})()` 的话，那一下只返回给那个空壳、
@@ -556,7 +801,8 @@ def _popup_probe_js(hooks=None):
         #: 替身测试**测不出来**：它根本不执行这段 JS。）
         #: ⚠️ 拼接而**不用 `%` 格式化**：钩子是别人写的 JS，里面完全可能有 `width:100%`
         #: 这种百分号 —— 那会在 import 期炸出一个跟钩子八竿子打不着的格式错误。
-        out.append("var hit=(function(all,vis){" + js + "})(all,vis);"
+        out.append("var hit=(function(all,vis,anchor){" + js + "})(all,vis,"
+                   + json.dumps(anchor, ensure_ascii=False) + ");"
                    "if(hit)return " + json.dumps(name, ensure_ascii=False) + "+'|'+hit;")
     out.append("return '';")
     return "".join(out)
@@ -566,12 +812,16 @@ _POPUP_PROBE_JS = _popup_probe_js()
 
 #: 按文字给同意按钮**打标记**（只有文字的那种）—— 与产物里「按占位符填」同一招：
 #: 找用 JS、点还是走 `cdp click`（§5.2），标记属性用完就清。
+#:
+#: ★ 2026-10-19：tag 白名单与三条钩子同源 —— 钩子答 `TEXT` 的 div/span 要靠这里落点；
+#: 不放它，探针答得出来、动作永远落不下去（真站上就是「没敢点」）。
+#: 这里是**精确文字匹配**（`t===want`），不需要长度闸。
 _MARK_CONSENT_BY_TEXT_JS = (
     "var want=%s;"
     + _CONSENT_ROOTS_JS +
     "var hit=null;"
     "for(var i=0;i<all.length;i++){var b=all[i],tag=String(b.tagName||'').toLowerCase();"
-    "if(tag!=='button'&&tag!=='a'&&tag!=='input')continue;"
+    "if(tag!=='button'&&tag!=='a'&&tag!=='input'&&tag!=='div'&&tag!=='span')continue;"
     "var t=String(b.innerText||b.value||(b.getAttribute&&b.getAttribute('aria-label'))||'').trim();"
     "if(t===want){hit=b;break;}}"
     "if(!hit)return 'none';"
@@ -767,7 +1017,7 @@ PROVENANCE = { 'generated_at': '2026-09-17T02:00:00+08:00',
 #: （实测代价：重渲一版 travelandleisure 一口气多带了 8 个方法）。
 #: 拿它跟当前骨架的 `template.SKELETON_SHA` 一比，`skeleton_drift()` 就答得出「落后多少」。
 #: ⚠️ 它是**骨架**的指纹（这份文件），不是产物的 —— 站点数据（STATES/FILLS）不算骨架。
-SKELETON_SHA = "bc2805fe4d6640ed"
+SKELETON_SHA = "2ad75ad56ba38dcf"
 
 
 def _site_country():
@@ -1086,6 +1336,14 @@ def _label(target, step=None):
             return str(value)
     if step and step.get("fill"):
         return str(step["fill"])
+    #: ★ 2026-10-13：**标签也算名字** —— 取写在这颗**旁边**的那一句（`nearby_text` 第一条）。
+    #: 真站那一趟的原话：`点了「没写名字的元素」（换了第 3 个找法才找到）【恢复】…` ——
+    #: **挑对了，但读日志的人看不出挑的是哪一颗**；名字改成「Electric」就够了。
+    #: `fill` 那一档排在它前面（字段名比旁边的字更像它的名字）。
+    near = [str(x).strip() for x in ((target or {}).get("nearby_text") or [])
+            if str(x).strip()]
+    if near:
+        return near[0]
     return "没写名字的元素"
 
 
@@ -1114,6 +1372,18 @@ def _landing_say(output):
     return ""
 
 
+#: 从**选择器**或**遮挡物描述**里抠出第一个 `#id` —— `#edit-size` 抠出 `edit-size`，
+#: `span#select2-edit-size-container.select2-selection__rendered` 抠出
+#: `select2-edit-size-container`。抠不出来（没有 `#`）就是空串。
+#: ★ 2026-10-08：给「盖着它的是不是**这一格自己的**控件」那条判据用（见 `_cover_is_own_widget`）。
+_ID_IN_SEL = re.compile(r"#([A-Za-z_][-\w]*)")
+
+
+def _id_in(sel) -> str:
+    m = _ID_IN_SEL.search(str(sel or ""))
+    return m.group(1) if m else ""
+
+
 def _say(action, label, ok, level=None, progress=None, landing=""):
     """给人看的一句话（D16：使用者是非技术人员 —— 不是错误码、不是选择器）。"""
     if action == "click":
@@ -1139,6 +1409,35 @@ def _say(action, label, ok, level=None, progress=None, landing=""):
     if progress is False:
         line += "；页面没有变化"
     return line
+
+
+#: ★ 2026-10-16：两段 JS 提到模块级 —— 「谁盖着这一点」与「把目标挪到视口正中」。
+#: 为什么：循环型骨架要用**同一份**（同一把尺子）；它 import 的是 `agent/template.py`
+#: 里那两份常量，渲染时替到这里，**不是**另抄一遍。
+#:
+#: ★ 2026-10-17（终审 M2）**把解释搬回产物里**：提成常量之前，这段 JS 的判据解释**长在
+#: 产物这一处**（`_cover_once` 方法体里那七行注释）；提走之后产物里就只剩一行光秃秃的
+#: 赋值 —— 下一个读产物的人看不出**为什么**要「整摞」而不是单问一下。
+#: 判据本身（两条，一个字都别省）：
+#:   · **单问 `elementFromPoint` 会把 `pointer-events:none` 的透明空遮罩也报成遮挡** ——
+#:     真事（2026-09-28 ukg 真站）：`#qualified-multimodal-host`（967×905、全透明、
+#:     z-index 拉满、**pointer-events:none**）盖在整页上，产物于是「礼貌地」拒绝点击，
+#:     后面几个字段全空 ⇒ 提交被站点打回 `The Title field is required`；
+#:   · 而同一页 `cdp observe` 的 `occluded_by` 是 None（它判对了）—— **两把尺子对不上
+#:     就说明这把量错了：点得穿的，不算盖着。**
+_COVER_JS = ("var all=document.getElementsByTagName('*'), el=null;for(var "
+ 'i=0;i<all.length;i++){try{if(all[i].matches(%s)){el=all[i];break;}}catch(e){}}if(!el) return '
+ "'';var r=el.getBoundingClientRect();if(!r||r.width<=0||r.height<=0) return '';var "
+ 'x=r.left+r.width/2, '
+ "y=r.top+r.height/2;if(x<0||y<0||x>window.innerWidth||y>window.innerHeight) return '';var "
+ 'stack=document.elementsFromPoint(x,y)||[];for(var k=0;k<stack.length;k++){var h=stack[k];var '
+ "pe='';try{pe=getComputedStyle(h).pointerEvents||'';}catch(e){}if(pe==='none') "
+ "continue;if(h===el||el.contains(h)||h.contains(el)) return '';return "
+ "'COVER|'+(h.tagName||'').toLowerCase()+(h.id?('#'+h.id):'')+'.'+String(h.className||'').split(' "
+ "')[0];}return '';")
+_RECENTER_JS = ("(function(){var all=document.getElementsByTagName('*');for(var "
+ "i=0;i<all.length;i++){try{if(all[i].matches(%s)){all[i].scrollIntoView({block:'center'});return "
+ "'ok';}}catch(e){}}return '';})()")
 
 
 class Filler:
@@ -1177,6 +1476,14 @@ class Filler:
     #: 后面再遇到**不再等**（见 `_covered_by`）—— 不然每步白赔一笔。
     #: 同样给一个类默认值：`object.__new__(Filler)` 那种实例上也够得着这一格。
     _stuck_covers = frozenset()
+
+    #: ★ 2026-10-13：这一步**因为被盖着而一个候选都没试**时，盖着它的那个东西
+    #: （`"tag#id.class"`，空串 = 不是这个原因）。只属于触发它的那一步（`_perform` 开头清零）。
+    #: 为什么要它：报文原来把「没敢动手」与「找不到框」说成同一句
+    #: （`job-a6954761e657` 三轮自测都只留下「没找到「Your postcode」这个输入框，没填成」，
+    #: 而那一刻产物**连一次 cdp form 都没发出去**）⇒ 三轮诊错全在改选择器。
+    #: 类默认值同上：`object.__new__(Filler)` 那种实例也要够得着。
+    cover_why = ""
 
     #: 最近一次 `goto` 时 cdp 在 stderr 上说的话（见 `__init__` 与 `_do` 里 goto 那段）。
     #: 类默认值同上：`object.__new__(Filler)` 的实例够得着这一格。
@@ -1245,7 +1552,9 @@ class Filler:
         #: 否则「重试上限」就变成了「只要这次重试成了，下次还能再重试」。
         self.group_retries = 0
         #: ★ 2026-09-29（交接《骨架还缺什么》§8）：判据不成立时**复核那一击**要用到的三格。
-        #: `_last_hit` = 刚动手的那一步（重试就重试它）；`_seen_tabs` = 见过的 tab（用来认
+        #: `_last_hit` = 刚动手的那一步**连同它的 `progress`**（`(index, step, progress)`；
+        #: `progress is True` = 页面**判得出动过** ⇒ 那一击落地了、**不许重试**，见 2026-10-20
+        #: 那条真事）；`_seen_tabs` = 见过的 tab（用来认
         #: 「晚到的新 tab」）；`_retried_groups` = 复核过重试的状态名（**一组只重试一次**）。
         #: ⚠️ 这三个都只在这一条路上用（判据不成立）—— 成功路径一次都不碰，代价不摊到每步。
         self._last_hit = None
@@ -1800,7 +2109,10 @@ class Filler:
         # 而这里是「**这个元素**是不是账本里那个」—— 认错元素的代价（点到别的框/别的按钮）
         # 比地址脆得多。地址脆还有 alternates 与下一次重找兜着。
         rank = {"high": 0, "medium": 1, "low": 2}
-        hits.sort(key=lambda t: (-t[0], rank.get((t[2].get("stability") or "").lower(), 3),
+        # ★ 2026-10-13：分数并列时，**多对上一条 `nearby_text` 的排前面**（见 `_nearby_hits`）——
+        # 一排同 role 的圆点里人人靠「邻居那句」凑上 nearby_text，不数条数就等于没分。
+        hits.sort(key=lambda t: (-t[0], -self._nearby_hits(t[2], target),
+                                 rank.get((t[2].get("stability") or "").lower(), 3),
                                  _below_fold(t[2])))
         if hits:
             self.resolve_score, self.resolve_why = hits[0][0], hits[0][1]
@@ -1824,6 +2136,23 @@ class Filler:
                 if selector and (selector, frame) not in out:
                     out.append((selector, frame))
         return out
+
+    def _nearby_hits(self, element, target):
+        """账本那一列 `nearby_text` 里**对上了几条**（0 = 一条都没对上）。
+
+        为什么要数条数、而不只是「有没有对上」（★ 2026-10-13，真站 `job-37d8e6bfa080`
+        那一族）：一排同 role 的候选（compareinsulation 那六颗圆点）里，每颗的
+        `nearby_text` 都带着**邻居那一句**（自己那句在前、邻居那句在后）——
+        「有没有对上」人人有份、`_intent_score` 并列，排序就退化回池子顺序 =
+        **按页面上谁在前点谁**（先红用例实测：`#option-2` 被点成了上一颗）。
+        自己那一句也在里面 ⇒ 对上的**条数**才是分得开的那把尺子。
+        """
+        want = [_norm(str(x)).lower() for x in (target.get("nearby_text") or [])
+                if str(x).strip()]
+        if not want:
+            return 0
+        have = " ".join(_norm(str(x)).lower() for x in (element.get("nearby_text") or []))
+        return sum(1 for w in want if w in have)
 
     def _intent_score(self, element, target, kind):
         """这个候选**像不像**账本里记的那一个：命中的身份信号越多，分越高（0~1）。
@@ -2075,8 +2404,15 @@ class Filler:
         三步，**代价只落在这一条路上**（判据不成立时；成功路径一次都不碰）：
           ① 有没有**晚到的新 tab**（与我们见过的 id 集合比）⇒ 切过去；
           ② 判据要的那一页是不是**早就在、只是没在前台**（`_follow_tab_matching`）⇒ 切过去；
-          ③ 两个都不是 ⇒ 把**刚才那一击重试一次**（进 `_perform`，所以先过 §7 那道闸：
-             文档到 interactive + 元素中心点得到的还是它自己）。
+          ③ 两个都不是 ⇒ 先问**刚才那一击到底动没动页面**：`progress is True`（diff 判得出
+             页面变了）⇒ **它已经落地了**，不许再点一次；只有判不出/判出没动时才把那一击
+             重试一次（进 `_perform`，所以先过 §7 那道闸：文档到 interactive + 元素中心点得到
+             的还是它自己）。
+             ⚠️ ★ 2026-10-20（真事 `job-4f7f53be42eb` · delamere）：少了前半句，判据不成立
+             就会变成「回头重点一个已经不在页面上的元素」—— 真事里第 3 步点「For myself」
+             成功、页面已经到下一屏，下一组的门（`Facebook`）不成立 ⇒ 回头重点 ⇒
+             「页面上没找到「For myself」」⇒ 自测把它读成**选择器族**、修稿一直改选择器 ⇒
+             `repair_stuck`。判据不成立照旧记「跳过」（跳过是没做），但它**不是**「没落地」。
         ⚠️ **一组只重试一次**（`_retried_groups`）：重试的代价是**在真页面上多做几个真实动作**，
         而运营口径是「刷太多不太好」—— 这一格不许随着失败组数累积。
         ⚠️ 它**只进日志、不进 trace**：trace 的每一行都是「一步」（下游按 `line["ok"]` 读它），
@@ -2109,14 +2445,25 @@ class Filler:
             self.log.info("[%s] ⚠️ 判据不成立 —— 但**那一页在另一个 tab 上**，已经切过去",
                           self.cid)
             return True
-        # ③ 重试那一击（一组一次）
+        # ③ 重试那一击（一组一次）—— **只在这一击判不出「页面动过」时**
+        index, step, progress = self._last_hit
+        if progress is True:
+            #: ★ 2026-10-20（见 docstring 里那条真事）：这一击**判得出页面动过** ⇒ 它不是
+            #: 「没落地」。再点一次只会在**新的一页**上找一个已经不存在的元素，那句
+            #: 「页面上没找到 X」还会被自测读成**选择器族**（改稿治得了）⇒ 修稿改错地方。
+            self.log.info("[%s] 「%s」的判据不成立 —— 但**上一击判得出页面动过**"
+                          "（progress=True），不再回头重点第 %d 步：这一页只是不像那个状态",
+                          self.cid, name, index)
+            return False
         if name in self._retried_groups:
             return False
         self._retried_groups.add(name)
-        index, step = self._last_hit
-        self.log.warning("[%s] ⚠️ 「%s」的判据不成立，而页面**一点没动** —— "
+        self.log.warning("[%s] ⚠️ 「%s」的判据不成立，而%s —— "
                          "把第 %d 步（%s）**重来一次**（这一组只重试这一次）",
-                         self.cid, name, index, _label((step or {}).get("target"), step))
+                         self.cid, name,
+                         "页面**一点没动**" if progress is False
+                         else "这一击**判不出**落地没有",
+                         index, _label((step or {}).get("target"), step))
         self._run_step(index, step)
         return True
 
@@ -2287,6 +2634,56 @@ class Filler:
                       self.cid, limit)
         return False
 
+    def _popup_row(self, ok, why):
+        """弹层这一下**如实**落一行 trace（`ok`：True = 关掉了 / False = 它还在 / None = 这一次没量到）。
+
+        ★ 2026-10-17（终审 C3）：与循环型的 `_popup_trace` **同一套三值** —— spec §3.4
+        第一句就是「**cdp 回 ok 不算做成**，要再探一次」，而这边原来只按 cdp 的回话记日志。
+        三条纪律与那边逐字同义：
+          ① `ok` 只由**复核**给（再问一遍同一张表），**不许**拿 `cdp click` 的回话当做成
+             （那句回话说的是「选择器命中 1 个」，不是「点到的就是它」）；
+          ② `soft=True`：弹层是**环境噪声** ⇒ 自测不拿它否决那一趟（`selftest._verdict`
+             的辅助档），但照旧点名 —— spec §3.5：探针自己永远不许变成新的失败点；
+          ③ `note` 与 `progress_why` **两格都写**（同 `_stop` 那条 2026-10-14 的规矩）。
+        ⚠️ 只在**探针答过话**（或量不出来）时才落行 —— 页面上压根没有这类东西时照旧**不落**
+        （那是这一族的常态，不是一步；表这一族的 trace 契约是「每一行都是一步」）。
+        """
+        self._trace({"step": self.step, "action": "popup", "ok": ok, "soft": True,
+                     "note": why, "progress_why": why})
+
+    def _popup_still_there(self):
+        """复核：**再问一遍同一张表**，返回还在的那一个（空串 = 这一屏没有它了）。
+
+        三种结果，**不许并成两种**（与循环型 `clear_popups` 那份逐字同义）：
+          · 空串 = 没有它了；
+          · 非空 = 它还在（返回钩子表点名的那个）；
+          · `None` = **这一次没量到**（读炸了 / 答复形状不认识）—— 量不到就如实说量不到，
+            把它读成「关掉了」正是这一刀要治的病（Task 1 真站量到：同一站首载有同意层、
+            来回一趟之后同一条探针返空 ⇒ 「返空」分不清「关掉了」与「本来就不在」）。
+
+        ★ 2026-10-19：**短轮询**（有界）—— 同意层的关闭是异步的（真站 compareinsulation：
+        点 accept 之后紧接的那一次再探还会看到它，再晚一点点才没了）。只在「复核还答**可点**
+        行」时等；返空 / 只答 `_REPORT_ONLY` 都立即收。带 `_REPORT_ONLY` 的行（表尾的
+        「广告 creative」）本来就不挡路 —— 不排掉它，一次真的关掉了会被记成 `ok:false`
+        （真站 wildnutrition 量到：`Close filters drawer`）。
+        """
+        try:
+            deadline = time.time() + POPUP_RECHECK_WAIT_SECONDS
+            while True:
+                raw = str(self._ev(_POPUP_PROBE_JS) or "").strip()
+                if not raw:
+                    return ""
+                parts = raw.split("|", 2)
+                if len(parts) != 3:
+                    return None
+                if _popup_report_only(parts[0]):
+                    return ""
+                if time.time() >= deadline:
+                    return parts[0]
+                time.sleep(POPUP_RECHECK_POLL_SECONDS)
+        except Exception:                                  # noqa: BLE001 —— 外面世界
+            return None
+
     def _clear_obstructions(self, why=""):
         """开跑（以及每次导航之后）把**挡路的弹层**点掉：问一遍钩子表（`_POPUP_HOOKS`），
         谁先答应就点谁（今天：同意条 → 盖住整页的模态）。要加一类弹窗，**改表**，不改这里。
@@ -2317,6 +2714,15 @@ class Filler:
         然后 `连着 3 步没做成，收摊`。既然它现在挨着**每一步**，它就**不许自己变成新的
         失败点**：探不动 / 点不动一律只记一行 INFO 走人（与 `warthunder.py` 的
         `_dismiss_consent` 同一条口径：它是为了修失败才加的，自己再变成失败点就本末倒置）。
+
+        ★ 2026-10-17（终审那一波，三条都在这儿）：
+          · **C3 · spec §3.4**：点完**再探一次**（`_popup_still_there`）才下结论 ——
+            「cdp 回 ok 不算做成」，三值（True/False/None）写进日志**与**账本（`_popup_row`）。
+            这一天之前这里只按 cdp 的回话记「看起来成了 / 没成」；
+          · **C2 · Ruling 30**：表里带 `_REPORT_ONLY` 的那一行**只报不点**（认得出、记一行 INFO
+            与一行账，**不动手**）—— 真站上已经量到它误点（实测 §1.3）；
+          · **Ruling 28-②**：答复是 `TEXT|` 而**文字是空的** ⇒ **不点**（那是「指向不确定
+            元素的地址」，与「形状不认识」同一处置）。
         """
         try:
             raw = str(self._ev(_POPUP_PROBE_JS) or "")
@@ -2329,33 +2735,93 @@ class Filler:
                 if raw.strip():
                     self.log.info("[%s] 弹窗探针的答复形状不认识（%r）—— 当它没答，"
                                   "照旧走这一步自己的判据", self.cid, raw[:60])
+                    #: ★ 2026-10-17（终审 C3）：**量不出来 ≠ 没有弹层** —— 账上也说一句
+                    #: （与循环型那份同一处置；`ok=None` = 这一次没量到，不当成做成）。
+                    self._popup_row(None, "弹窗探针答复形状不认识（%r）—— **量不出来**"
+                                          "（这一次没量到覆盖现场），不当成做成" % raw[:40])
                 return
             who, how, text = parts
-            if how == "TEXT":           # 只有文字：打标记再点（点还是走 cdp）
-                marked = self._ev(_MARK_CONSENT_BY_TEXT_JS % json.dumps(text))
-                if "marked" not in str(marked or ""):
-                    self.log.info("[%s] 「%s」那颗按钮（%r）没有 id、按文字也没标记上 —— 不猜，"
-                                  "留给 `_covered_by` 兜（下一步会被挡住并如实失败）",
-                                  self.cid, who, text[:30])
-                    return
-                selector = '[data-sf-consent="1"]'
+            if _popup_report_only(who):
+                #: ★ 2026-10-17（终审 C2 · Ruling 30）：这一行**只报不点** —— 探针照认
+                #: （「认得出哪一颗」这一半归探针与合成页矩阵），但**不动手**。
+                #: 为什么：真站上已经**量到误点**（实测 §1.3：它把站点自己的抽屉控件
+                #: `Close filters drawer` 当成关闭键点了），而「加容器锚」那把尺子对
+                #: **这一型**还没有正向证据 ⇒ 不点，直到真 creative 上验过「可见 + 有落点」。
+                #: ⚠️ 记账/日志要说清**为什么没点** —— 不然读的人会以为探针没答。
+                self.log.info("[%s] 认出了「%s」（%s，%r）—— 但**没有动手**：这一型还没有"
+                              "真站正向证据，按 Ruling 30 **只报不点**（照 `_REPORT_ONLY`）",
+                              self.cid, who, how, text[:30])
+                self._popup_row(None, "认出了「%s」（%s，%r）但**没有动手**：这一型还没有"
+                                      "真站正向证据，按 Ruling 30 只报不点"
+                                      % (who, how, text[:30]))
+                return
+            if how == "TEXT" and not text.strip():
+                #: ★ 2026-10-17（终审 Ruling 28-②）：`TEXT|` 而**文字是空的** —— 那是
+                #: 「**指向不确定元素的地址**」（按文字打标记 = 按空串找一颗空文字的按钮，
+                #: 页面上这种按钮可能有好几颗）⇒ 与「形状不认识」同处置：说出来、**不点**。
+                #: 真站实测（实测文档 §1.3）：`广告 creative|TEXT|` 就是这么答的。
+                self.log.info("[%s] 「%s」答的是 `TEXT|` 而**文字是空的** —— 那是一个"
+                              "**指向不确定元素的地址**（按空文字打标记可能点到别的东西）："
+                              "不猜、不点", self.cid, who)
+                self._popup_row(None, "「%s」答的是 `TEXT|` 而文字是空的 —— **指向不确定"
+                                      "元素的地址**：没敢点" % who)
+                return
+            js_done = (how == "JS")
+            if js_done:
+                #: 钩子自己已经用 JS 的 `.click` 关掉了（绕开被 sticky header 盖住的落点判据）；
+                #: 这一步**不再走 cdp click** —— 但下面的复核照旧（还在 ⇒ 记没关掉）。
+                selector = "JS"
+                out = None
             else:
-                selector = how
-            out = self.cdp.click(selector)   # 动作一律走 cdp（§5.2）
+                if how == "TEXT":           # 只有文字：打标记再点（点还是走 cdp）
+                    marked = self._ev(_MARK_CONSENT_BY_TEXT_JS % json.dumps(text))
+                    if "marked" not in str(marked or ""):
+                        self.log.info("[%s] 「%s」那颗按钮（%r）没有 id、按文字也没标记上 —— 不猜，"
+                                      "留给 `_covered_by` 兜（下一步会被挡住并如实失败）",
+                                      self.cid, who, text[:30])
+                        #: 探之前**有**、而我们**没动手** ⇒ 它当然还在（不用再探一次也知道）。
+                        self._popup_row(False, "「%s」还在（认不出该点哪一颗 —— 没敢点）" % who)
+                        return
+                    selector = '[data-sf-consent="1"]'
+                else:
+                    selector = how
+                out = self.cdp.click(selector)   # 动作一律走 cdp（§5.2）
             if how == "TEXT":
                 #: 标记用完就清（不清的话下一屏上会留一个 `[data-sf-consent="1"]`，那是脏状态）
                 self._ev("var a=document.getElementsByTagName('*');"
                          "for(var i=0;i<a.length;i++){if(a[i].removeAttribute)"
                          "a[i].removeAttribute('data-sf-consent');}return 'clean';")
-            self.log.info("[%s] %s把「%s」点掉了（%s，%r）：%s", self.cid,
-                          ("%s之后 " % why) if why else "开跑前 ", who, selector, text[:30],
-                          "看起来成了" if _ok(out) else "**没成**")
+            #: ★ 2026-10-17（终审 C3 · spec §3.4）：**cdp 回 ok 不算做成** —— 点完**再探一次**
+            #: 同一张表（`_popup_still_there`，**同一把尺子**：同一个 `_ev(_POPUP_PROBE_JS)`）。
+            #: 三值，与循环型那份逐字同义：探之前有 + 探之后没有 ⇒ True；探之后**还有** ⇒ False；
+            #: 复核探不动（读炸了 / 答复形状不认识）⇒ None（量不到就如实说量不到）。
+            still = self._popup_still_there()
+            if still is None:
+                verdict, said = None, ("点完复核不了：探不动（这一次没量到覆盖现场）"
+                                       "—— 不当成做成")
+            elif still:
+                verdict, said = False, ("点完复核：这一屏**还有**「%s」（探之前有、探之后还有）"
+                                        "—— 这一下没能关掉" % still)
+            else:
+                verdict, said = True, "点完复核：这一屏没有它了（探之前有、探之后没有）"
+            self.log.info("[%s] %s把「%s」%s（%s，%r）—— %s%s", self.cid,
+                          ("%s之后 " % why) if why else "开跑前 ", who,
+                          ("用 JS 关掉" if js_done else "点掉了"),
+                          selector, text[:30], said,
+                          #: ⚠️ cdp 的回话**不是判据**（它只说「选择器命中 1 个」）—— 只在它说
+                          #: 「没成」时补一句，免得读日志的人以为上面那一句是从回话推出来的。
+                          "" if (js_done or _ok(out)) else "（另外 cdp 的回话说这一下**没成**）")
+            self._popup_row(verdict, said)
         except Exception as exc:                           # noqa: BLE001
             #: **永不失败**：读不到 / 点不动都只记一行，绝不往上抛 ——
             #: 往上抛会把这**一步**判成「产物自己出错了」（`_run_step` 里那条 except 会
             #: 直接结束整趟），而弹层只是环境带来的噪声，不该有这种权力。
             self.log.info("[%s] 看/点弹层这一下没成（%s: %s）—— 当它没有，照旧往下走",
                           self.cid, type(exc).__name__, exc)
+            #: ★ 2026-10-17（终审 C3）：这一格 `ok=None`（**没量到**）—— 探针自己炸了、
+            #: 或点那一下炸了 ⇒ 既不能说「关掉了」（没量过）也不能说「还在」（没看见）。
+            self._popup_row(None, "看/点弹层这一下没成（%s: %s）—— 没量到，不当成做成"
+                                  % (type(exc).__name__, str(exc)[:40]))
 
     def _consent_step_handled(self, label, frame=""):
         """「点掉同意弹层」这一步**找不到元素**时：它是软跳过，不是失败。
@@ -2426,28 +2892,7 @@ class Filler:
 
     def _cover_once(self, selector, frame_id=""):
         """**量一次**：这个选择器指的元素是不是被别的东西盖着。盖着就返回盖它的东西，否则空串。"""
-        js = ("var all=document.getElementsByTagName('*'), el=null;"
-              "for(var i=0;i<all.length;i++){try{if(all[i].matches(%s)){el=all[i];break;}}catch(e){}}"
-              "if(!el) return '';"
-              "var r=el.getBoundingClientRect();"
-              "if(!r||r.width<=0||r.height<=0) return '';"
-              "var x=r.left+r.width/2, y=r.top+r.height/2;"
-              "if(x<0||y<0||x>window.innerWidth||y>window.innerHeight) return '';"
-              #: ★ 2026-09-28（ukg 真站实测）：改用整摞 elementsFromPoint，跳过点得穿的。
-              #: 单问 elementFromPoint 会把 pointer-events:none 的透明空遮罩也报成遮挡 ——
-              #: 真事：`#qualified-multimodal-host`（967x905、全透明、z-index 拉满、
-              #: **pointer-events:none**）盖在整页上，产物于是「礼貌地」拒绝点击，
-              #: 后面几个字段全空 ⇒ 提交被站点打回 `The Title field is required`。
-              #: 而同一页 `cdp observe` 的 occluded_by 是 None（它判对了）——
-              #: 两把尺子对不上就说明这把量错了：**点得穿的，不算盖着**。
-              "var stack=document.elementsFromPoint(x,y)||[];"
-              "for(var k=0;k<stack.length;k++){var h=stack[k];var pe='';"
-              "try{pe=getComputedStyle(h).pointerEvents||'';}catch(e){}"
-              "if(pe==='none') continue;"
-              "if(h===el||el.contains(h)||h.contains(el)) return '';"
-              "return 'COVER|'+(h.tagName||'').toLowerCase()+(h.id?('#'+h.id):'')"
-              "+'.'+String(h.className||'').split(' ')[0];}"
-              "return '';")
+        js = _COVER_JS
         got = self._ev(js % json.dumps(selector), frame_id).strip()
         # ⚠️ **只认带 `COVER|` 前缀的答复**。空串 / `null` / 任何别的形状都是「量不出来」——
         # 一律**不当成盖着**（当成盖着会让每一步都无缘无故不点；不认前缀则会在
@@ -2561,6 +3006,33 @@ class Filler:
         return ("已随这次失败上报（step=fail_scene_%d）" % index) if ok \
             else "截图没发成：上报接口没收下（它也没说为什么）"
 
+    def _cover_is_own_widget(self, action, kind, selector, cover) -> bool:
+        """★ 2026-10-08（真事 `job-62086decf839`，shorecrestwpb.com）：**盖着它的是这一格
+        自己的自定义控件 ⇒ 不算遮挡物**。窄口径，**只放 `form` + `kind == "select"`**。
+
+        形状：站方用 **select2** 那类插件把原生 `<select>` 换成自定义控件 —— 原生 `<select>`
+        还在 DOM 里，而 `cdp form --select` **自己认得**这种（它的说明里写着：目标不是原生
+        `<select>` 时会去找可点的控件打开菜单），**手打那条命令是成的**。
+        可产物的遮挡判据**排在 cdp 前面**：它量到 `<select>` 被
+        `span#select2-edit-size-container.select2-selection__rendered` 盖着 ⇒ 判成
+        「被别的东西挡着」⇒ 四个下拉**一个都不动** ⇒ 第 7 步没做成 ⇒ 后面的勾选与 submit
+        全没做（那一趟自测 `passed=False`，运营拿不到能用的稿）。
+
+        **只放这一种**，两条都要：
+          ① 动作是 `form` 且 `kind == "select"` —— 别的动作照旧拦（那道防线挡的是
+             「点到 consent 弹层上、cdp 还回 ok」，真站栽过，见 `_covered_by` 的说明）；
+          ② 盖着的东西的 id 里**带着这一格自己的 id** —— select2 那类壳子的命名法就是把
+             原生 id 嵌进去（`select2-<原生 id>-container`）。
+
+        ⚠️ 判不出来（选择器里没有 `#id`、或盖着的东西没有 id）⇒ **当遮挡物**（不放行）：
+        这条路的默认必须是「拦」，放宽要有依据。
+        """
+        if action != "form" or kind != "select":
+            return False
+        want = _id_in(selector)
+        got = _id_in(cover)
+        return bool(want and got and want in got)
+
     def _covered_by(self, selector, frame_id="", until=None):
         """这个选择器指的元素**是不是被别的东西盖着**。盖着就返回盖它的东西（读，不动页面）。
 
@@ -2583,6 +3055,7 @@ class Filler:
         那种情况由 cdp 自己的滚动与报错去说，不在这里替它下结论。
         """
         waited = False
+        recentered = 0
         while True:
             cover = self._cover_once(selector, frame_id)
             # 「没盖着」与「量不出来」都是空串 —— 两种都**不拦**，直接放行。
@@ -2609,7 +3082,39 @@ class Filler:
                 waited = True
                 self.log.info("[%s] 这个元素现在被 %s 盖着（多半是加载蒙版）—— "
                               "先等它自己走，最多 %.0f 秒", self.cid, cover, COVER_WAIT_SECONDS)
+            # ★ 2026-10-13：**等的同时把它挪出遮挡物底下**（见 `_recenter`）——
+            # 粘性页眉那类遮挡不是「还没好」，等一辈子也不会走，可它只压住视口顶上那一条：
+            # 挪到正中就躲开了（人在那儿就是这么做的）。有界（`RECENTER_TRIES`）：
+            # 真弹层挪几次也没用，别把预算花在空滚上 —— 预算到点照旧不动手、照旧失败。
+            if recentered < RECENTER_TRIES:
+                recentered += 1
+                self._recenter(selector, frame_id)
             time.sleep(COVER_POLL_SECONDS)
+
+    def _recenter(self, selector, frame_id=""):
+        """把目标**挪到视口正中**（滚一下）。挪不动 / 找不着都**不报错**：它只是「多试一下」。
+
+        ★ 2026-10-13（真事 `job-a6954761e657` · healthinsurancewatch.com.au）：**遮挡物不都是
+        「不能碰」—— 有的只是「站错地方了」**。真站实测（读数 `_probe_hiw_cover.py`）：
+        填完上一格之后站点自己滚动，`#postcode` 的**中心点正好落在粘性页眉**底下
+        （`div.h-full`，[0,0,360,98] —— 视口顶上那一条），于是产物等满 35 秒、**一个候选都没试**，
+        报文却只有一句「没找到…没填成」；自测三轮都死在这一步。
+
+        **为什么是「正中」**：粘性页眉只压住顶上那一条、固定页脚只压住底下那一条，正中一定躲得开。
+        **为什么不动用 cdp**：这一下只是「把页面挪一挪」，JS 的 `scrollIntoView` 就够，
+        不必为它多起一个进程（生产重跑那条路越便宜越好）。
+        **量不出来就当没做**（返回空串）：判据仍然是 `_cover_once` 那一把尺子 ——
+        这一格改的只是「有没有资格再看一眼」，不是「算不算盖着」。
+        """
+        js = _RECENTER_JS
+        try:
+            got = self._ev(js % json.dumps(selector), frame_id).strip()
+        except Exception:                                   # noqa: BLE001
+            return ""
+        if got:
+            self.log.info("[%s] 把它挪到视口正中再看一眼（遮挡物是页眉/页脚那类就躲开了）",
+                          self.cid)
+        return got
 
     def _scroll(self, step, target, label):
         """把这一步的元素滚进视口。返回 `(ok, selector_used, level, note, frame_used)`。
@@ -2763,10 +3268,19 @@ class Filler:
         # 遮挡预算**按步开一次**（快路 + 重找那条路共用）：被盖住时先等加载蒙版走，
         # 但整步只赔这一笔，不按候选数翻倍（见 COVER_WAIT_SECONDS）。
         cover_until = time.monotonic() + COVER_WAIT_SECONDS
+        #: ★ 2026-10-13：「被盖着所以一个候选都没试」这件事**只属于这一步**（与
+        #: `resolve_why` / `goto_echo` 同一条规矩）：进来先清零，报文要用它。
+        self.cover_why = ""
+        #: 这一步**到底有没有真动过手**（发过一次 cdp 动作）。报文只在「一个都没试」时
+        #: 才把原因归到遮挡上 —— 试过、并且失败了，那是另一回事（别拿遮挡背锅）。
+        tried_any = False
         #: ★ 2026-10-12：「没找到」那一支的预算（与上面那笔分开，见 `NOT_FOUND_WAIT_SECONDS`）。
         #: 同样按步开一次。`_miss_waited` 也在这儿清零 —— `_miss_note` 那半句只属于
         #: **等过的那一步**（与 `_followed_tab` 同一条规矩）。
-        miss_until = time.monotonic() + NOT_FOUND_WAIT_SECONDS
+        #: ★ 2026-10-13：账本标了 `late_element` 的那一组换成**长预算**（见那一格的注释）——
+        #: 弹窗那类站等的是定时器，6 秒不够，而「它是不是后出来的」账本里有证据。
+        miss_until = time.monotonic() + (LATE_ELEMENT_WAIT_SECONDS if step.get("late_element")
+                                         else NOT_FOUND_WAIT_SECONDS)
         self._miss_waited = 0.0
         for level, selector in enumerate(selectors):
             # **快路也要接遮挡判据**（真站实测的那条链）：不看一眼就点，
@@ -2774,6 +3288,7 @@ class Filler:
             # 被记成做成了。盖着就不点它，换下一个候选；全都被盖着就是这一步没做成。
             cover = self._covered_by(selector, frame, until=cover_until)
             if cover and not self._cover_is_own_widget(action, kind, selector, cover):
+                self.cover_why = cover
                 self.log.info("[%s] 第 %d 个选择器指的元素被 %s 盖着 —— 这一下不点"
                               "（点了等于点到盖着它的东西上）", self.cid, level + 1, cover)
                 continue
@@ -2812,10 +3327,12 @@ class Filler:
             # 与快路**同一笔预算**（`cover_until` 在上面开的那一笔），不另开一份。
             cover = self._covered_by(selector, cand_frame, until=cover_until)
             if cover:
+                self.cover_why = cover
                 self.log.info("[%s] 重找出来的第 %d 个候选也被 %s 盖着 —— 这一下不点",
                               self.cid, extra + 1, cover)
                 continue
             out = self._do(action, selector, value, kind, cand_frame)
+            tried_any = True
             if _ok(out):
                 note = (_say(action, label, True, level, landing=_landing_say(out))
                         + self._tab_note()
@@ -2835,6 +3352,13 @@ class Filler:
             if handled:
                 self.log.info("[%s] %s", self.cid, why)
                 return True, "", None, why, frame
+        # ★ 2026-10-13：**「没敢动手」不是「没找到」** —— 两个原因说成同一句话，读的人
+        # 只会往选择器上查（真事 `job-a6954761e657`：三轮诊错全在改选择器，而那一刻
+        # 产物**连一次 cdp form 都没发出去**，框一直好好地在那儿）。
+        if self.cover_why and not tried_any:
+            return False, "", None, (
+                "%s 一直盖着「%s」（等过、也把它往视口正中挪过，它没走）—— 这一下没敢%s"
+                % (self.cover_why, label, "点" if action == "click" else "填")), frame
         return False, "", None, _say(action, label, False), frame
 
     # ── 一步的执行 ──────────────────────────────────────────
@@ -3390,8 +3914,10 @@ class Filler:
                         self._wait_ready()
                         self._clear_obstructions(why="这一次导航")
                     ok, progress = self._run_step(index, step)
-                    #: 记下来：判据一旦不成立，要复核的就是**这一下**（§8）。
-                    self._last_hit = (index, step)
+                    #: 记下来：判据一旦不成立，要复核的就是**这一下**（§8）——
+                    #: 连同它的 `progress`（True = 页面判得出动过 ⇒ 不许重试，见
+                    #: `_verify_the_hit` 的 2026-10-20 那条）。
+                    self._last_hit = (index, step, progress)
 
                     if self._succeeded():
                         self.log.info("[%s] 成功：判据成立了（页面上那串字 / 网址那一截）", self.cid)

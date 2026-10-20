@@ -321,6 +321,123 @@ def _other_pages_text(models) -> list:
     return out
 
 
+def _one_page_text(model: dict) -> str:
+    """这一页**自己**有什么文字（归一化、小写）—— **正例那一向的尺子**。
+
+    就是 `_other_pages_text` 的单页版（一处口径：它俩调的是同一段实现）。
+
+    ★ 2026-10-09：为什么正例要用它、而不是 `when_holds` 那把 600 字的尺子 ——
+    这一问的真实答案在**产物那一侧**：`template.page_signature()` 的 docstring 原话是
+    「**不裁长度** —— 成功文案可能在第 600 字之后」（trace 里落的那份才裁到 600）。
+    也就是说**判据落在 600 字之后照样成立**。生成侧只看 `page_text`（工具硬切 600 字）
+    等于拿一把**比产物更窄**的尺子去验正例 ⇒ 把本来成立的好判据判成「不成立」⇒
+    重挑手上没牌（`_unique_snippet_for` 的 ③），整趟被 IR 砍死。
+    真账本：`job-f86ac12fda15`（shorecrestwpb 五趟）/ `job-c8730acb27c5`（policyquail 两趟）。
+
+    ⚠️ **只给正例用**。反面（`_gates_that_hold_elsewhere` 拿 `when_holds` 比**别的页**）
+    有意仍是那把窄尺子 —— 放宽反面 = 少拦坏判据，那是**另一刀**，没动。
+    """
+    return next(iter(_other_pages_text([model])), "")
+
+
+#: 属于「公用那一层」的区域（全站每页都有的壳）：导航 / 页头 / 页脚 / 侧栏 / 弹窗。
+#:
+#: ★ 2026-10-09（用户「有没有啥能提取关键字的插件不用一次性扔给AI的」）：**不用引插件** ——
+#: 区域那一格 `cdp observe` **早就逐条带回来了**（`node_elements` 的 `标签@区域`），
+#: 而它是在浏览器里**当场算的纯函数**（`tools/cdp/internal/observe.go` 的 `region()`：
+#: landmark 标签优先、class 派生兜底）：确定性、零依赖、零模型、零额外调用。
+_CHROME_REGIONS = frozenset({"nav", "header", "footer", "aside", "dialog"})
+
+
+def _is_chrome(kind: str, *, has_main: bool) -> bool:
+    """这一条（`标签@区域`）算不算**公用那一层**。
+
+    ⚠️ `body` 是**混的**：没有 landmark 祖先的元素都落到它 —— 跳转链接、cookie 小条
+    是 `a@body` / `div@body`（真样本：kotzheating 首页前四条全是），而**整页没有 `<main>`**
+    的站点，正文本身也在 `body` 里。⇒ **有 `main` 时** `body` 那些就是壳，一起算公用；
+    没有 `main` 时留着。丢正文比留着壳坏得多。
+    """
+    region = str(kind or "").split("@")[-1].strip().lower()
+    if region in _CHROME_REGIONS:
+        return True
+    return region == "body" and has_main
+
+
+def _has_main(kinds) -> bool:
+    """这一页有没有 `main` 这个 landmark（决定 `body` 那格怎么算，见 `_is_chrome`）。"""
+    return any(str(k or "").split("@")[-1].strip().lower() == "main" for k in (kinds or []))
+
+
+def _own_word_nodes(model: dict) -> list:
+    """这一页**自己**的话（丢掉公用那一层的元素；保序）。
+
+    ★ 2026-10-09：为什么要有这一格 —— 判据那一侧活在一个 **600 字**的窗口里
+    （`page_text` 是工具**每帧切 600 字**拼的，`observe.go` 的 `pageText.slice(0, 600)`），
+    而**页头 + 导航常常先把那 600 字占满** ⇒ 第一个状态又没有「上一页」可比（`avoid=""`）
+    ⇒ 判据必然从开头剪 ⇒ 剪到的全是全站公用文案 ⇒ 撞车 ⇒ IR 拦下整趟。
+    实测（2026-10-09 live，`kotzheating.com` 首页那一眼，402 条）：
+    `nav 272 / main 98 / header 20 / body 6 / dialog 3 / footer 3`，**`main` 的第一条排在第 299 条**，
+    而 `page_text` 那 600 字全是壳。
+
+    ⚠️ 元素身份那一格与正文**逐条对应**（同一个循环产出的）。对不上时**不筛**
+    （宁可多留壳，也不许错位 —— 错位比没有更坏，同 `_summarize` 里那条纪律）。
+    """
+    nodes = model.get("node_texts")
+    if not isinstance(nodes, list) or not nodes:
+        return []
+    kinds = model.get("node_elements")
+    if not isinstance(kinds, list) or len(kinds) != len(nodes):
+        return [str(t) for t in nodes if str(t or "").strip()]
+    has_main = _has_main(kinds)
+    return [str(t) for t, k in zip(nodes, kinds)
+            if str(t or "").strip() and not _is_chrome(k, has_main=has_main)]
+
+
+def _also_in_chrome(text: str, model: dict) -> bool:
+    """这段字在**这一页的公用区域**里也有吗。
+
+    ⚠️ ★ 2026-10-09（真站当场逮到，`job-c4c0f4ee0ad7`）：`/contact/` 那道门定成了
+    `'Contact Us'` —— 它**确实**是从 `h1@main` 剪的（合法），可**同一个字符串也是导航项的
+    标签**：那一页的逐元素正文里它出现在**两个 `a@nav`** 上 ⇒ 这道门在任何带「Contact Us」
+    导航的页面上都成立，而**没人喊** —— 反面那把尺子（`when_holds`）只看得到别的页那
+    **600 字**，导航不在里面。
+
+    ⚠️ 这一问与「反面那把尺子太窄」**不是同一件事**、也**不取代**它：这一问是**局部**的
+    （只看自己这一页）、**免费**的，当场问得出来；它只说「这段字不是这一页独有的**话**」。
+    """
+    low = _norm(text).lower()
+    nodes = model.get("node_texts")
+    kinds = model.get("node_elements")
+    if not low or not isinstance(nodes, list) or not nodes:
+        return False
+    if not isinstance(kinds, list) or len(kinds) != len(nodes):
+        return False
+    has_main = _has_main(kinds)
+    return any(_is_chrome(k, has_main=has_main) and low in _norm(str(t or "")).lower()
+               for t, k in zip(nodes, kinds))
+
+
+def _cut_landed_on_chrome(model: dict) -> bool:
+    """`page_text` 的开头那一截，落点是不是**公用那一层**（剪点就在那儿）。
+
+    判法：拿 `page_text` 前 24 个字去认它落在哪个元素里。认不出来（跨元素拼、
+    或那一格没有 / 对不上）⇒ **不算**落在壳上 —— 这一问只用来决定「要不要改道」，
+    认不准就不动（宁可照旧，也不许瞎改）。
+    """
+    text = _norm(model.get("page_text") or "")
+    nodes = model.get("node_texts")
+    kinds = model.get("node_elements")
+    probe = text[:24].lower()
+    if not probe or not isinstance(nodes, list) or not nodes:
+        return False
+    if not isinstance(kinds, list) or len(kinds) != len(nodes):
+        return False
+    idx = next((i for i, t in enumerate(nodes) if probe in _norm(str(t or "")).lower()), None)
+    if idx is None:
+        return False
+    return _is_chrome(kinds[idx], has_main=_has_main(kinds))
+
+
 def _snippet_in_one_node(snippet: str, nodes, others=(), kinds=()) -> tuple:
     """把跨元素拼出来的 `snippet` 换成**落在单个元素里**的那一段（换不了给空串）。
 
@@ -355,6 +472,8 @@ def _snippet_in_one_node(snippet: str, nodes, others=(), kinds=()) -> tuple:
         kinds = [""] * len(nodes or [])          # 对不上就别猜（缺了比错位好）
     best_node, best_len, best_el = "", 0, ""
     uniq_node, uniq_el = "", ""
+    #: ★ 2026-10-13：**短、但只在已知的页面上出现过**的那一个（见函数尾那段）。
+    short_node, short_el = "", ""
     for pos, text in enumerate(nodes or []):
         node = _norm(str(text or ""))
         if not node:
@@ -375,6 +494,11 @@ def _snippet_in_one_node(snippet: str, nodes, others=(), kinds=()) -> tuple:
             cand = _snippet(node)
             if len(cand) >= _WHEN_REPICK_MIN_CHARS and not _on_other_pages(cand, elsewhere):
                 uniq_node, uniq_el = node, kinds[pos]
+        #: ★ 2026-10-13：**短的也算 —— 只要它在已知的页面上没出现过**（见下面那段注释）。
+        if not short_node:
+            cand = _snippet(node)
+            if len(cand) >= SHORT_WHEN_MIN_CHARS and not _on_other_pages(cand, elsewhere):
+                short_node, short_el = node, kinds[pos]
     if best_len < 8:
         return "", "", ""
     head = _snippet(best_node)
@@ -382,6 +506,18 @@ def _snippet_in_one_node(snippet: str, nodes, others=(), kinds=()) -> tuple:
         return head, "", best_el            # 页头这段是本页自己的 ⇒ 照旧（今天的行为）
     if uniq_node:
         return _snippet(uniq_node), best_node, uniq_el
+    #: ★ 2026-10-13（真事 `job-0bee2dd7903e` · healthinsurancewatch.com.au）：走到这儿说明
+    #: 「≥8 字且别处没有」的一个都没有。原来**直接退回最像的那个**（`best_node`）—— 而它
+    #: 恰恰是**已知在别的页上也有的**那一个（那趟退成了全站页脚）⇒ 这一屏的门在别页上照样
+    #: 成立 ⇒ 判「分不开」⇒ 并组 ⇒ 收尾重挑 ⇒ 那一组整组跳过（6 步）。
+    #:
+    #: 这一问问错了：**判据能不能用，看的是「在已知的页里出现过没有」，不是「有多长」**。
+    #: 长度只是它的**代理**（当年没有 `others` 才用长度顶着）。`others` 现在一直在传，
+    #: 所以第二遍放宽到 `SHORT_WHEN_MIN_CHARS`，但**只收「别处没见过」的那些** ——
+    #: 真事那一屏上，`Name`（4 字，全站只这一屏有）被 ≥8 挡住，而页脚（45 字，全站每页都有）
+    #: 反倒当选。⚠️ 放宽的**只有**这条兜底：上面两条（≥8 的两支）一个字没动。
+    if short_node:
+        return _snippet(short_node), best_node, short_el
     return head, "", best_el                # 全页都撞上 ⇒ 退回原来那条（不硬拒，见上）
 
 
@@ -4928,6 +5064,22 @@ def _when_for(model: dict, avoid: str = "", others=()) -> dict | None:
     text = _norm(model.get("page_text") or "")
     snippet = _snippet(text, avoid=avoid)
     spliced, avoided, element = "", "", ""
+    #: ★ 2026-10-09：剪到的那段**落在公用那一层**（页头/导航/页脚/弹窗）⇒ 改从这一页
+    #: **自己**的话里剪。为什么非改不可：那 600 字被壳占满时，剪出来的必然是全站公用文案
+    #: ⇒ 撞车 ⇒ IR 拦下整趟（`observe.go` 每帧切 600 字，而 `main` 常常排在第 299 条）。
+    #: ⚠️ **只在「剪到的是壳」时改道** —— 没撞的门判据一个字节都不许变（同
+    #: `_repair_ambiguous_whens` 那条纪律）。
+    #: ⚠️ 改道之后取的是**某一个元素自己的开头**（`_snippet(单条)`），
+    #: 所以顺手把「跨元素拼」那个病也躲开了；下面那道验照旧会跑，只是验的已经是新的。
+    from_public = ""
+    if snippet and _cut_landed_on_chrome(model):
+        #: ⚠️ 还要躲开「在**自己这页的公用区域**里也出现」的那些 —— 真站当场逮到过
+        #: `/contact/` 定成 `'Contact Us'`，而那句也是导航项的标签（见 `_also_in_chrome`）。
+        own = [s for s in (_snippet(_norm(t)) for t in _own_word_nodes(model))
+               if len(s) >= _WHEN_REPICK_MIN_CHARS and not _also_in_chrome(s, model)]
+        better = next(iter(own), "")
+        if better:
+            from_public, snippet = snippet, better
     nodes = model.get("node_texts")
     if snippet and isinstance(nodes, list) and nodes and not model.get("node_texts_truncated"):
         # ★ 2026-09-28（缺陷单《产物判据跨元素拼接》§六 A.4 —— 那份单子的**正题**）：
@@ -5182,6 +5334,41 @@ WHEN_REPICKED_WHY = ("这一段判据**收尾时按全站避让重挑过**：原
 #: 短判据的鉴别力等于零（一页上到处都成立），那会让**每一组**的门都成立 —— 比整组跳过更坏。
 _WHEN_REPICK_MIN_CHARS = 8
 
+#: ★ 2026-10-13（真事 `job-0bee2dd7903e` · healthinsurancewatch.com.au）：上面那道 8 字门槛
+#: **兜底那一支**放宽到几字 —— 但只收「**在已知的页面上没出现过**」的那些。
+#:
+#: 为什么：单页漏斗上一屏与下一屏的差别常常只是**两个字的名字**（`Email address` → `Name`）。
+#: 门槛把 `Name` 挡在门外之后，原来那一支会**退回最像的那个元素**，而它往往正是「又长又干净、
+#: 可是全站每页都有」的那一句（那趟是页脚）⇒ 这一屏的门在别页上也成立 ⇒ 判「分不开」⇒ 并组
+#: ⇒ 收尾重挑 ⇒ 整组跳过。**长度是「唯一性」的代理**（当年没有 `others` 才拿它顶），
+#: 而唯一性是**量得出来的**：「在已知的页里出现过没有」。
+SHORT_WHEN_MIN_CHARS = 4
+
+#: ★ 2026-10-20（真事 delamere `job-4f7f53be42eb` / `job-2b027b30f0b0` / `job-4705e0b35df0`）：
+#: **环境噪声**不许当门 —— 页脚社交部件的名字（`Facebook` / `Instagram` / `LinkedIn` …；会随
+#: 会话与加载时机出现或消失，干净会话里整块 `visibility:hidden`）与 Gravity Forms 的蜜罐
+#: （`This field is for validation purposes and should be left unchanged.`）。
+#: 它们已经**三次**被挑中当 `when`（三种不同的社交名），而自测是**干净会话** ⇒ 那道门
+#: 永远不成立。判据只认**整词/整段**（不是任意子串）：一个真页面完全可以把「LinkedIn」当正文讲。
+_BOILERPLATE_GATES = frozenset({
+    "facebook", "instagram", "linkedin", "twitter", "x", "youtube", "tiktok",
+    "pinterest", "threads", "follow us on", "follow us", "share on",
+})
+_BOILERPLATE_GATE_PHRASES = (
+    "this field is for validation purposes",
+    "should be left unchanged",
+)
+
+
+def _is_boilerplate_gate(text: str) -> bool:
+    """这一段是不是**页脚社交 / 表单蜜罐**那种环境噪声（见上面那条）。"""
+    low = _norm(str(text or "")).lower().strip(" \t\r\n.,:;!·|–—-")
+    if not low:
+        return False
+    if low in _BOILERPLATE_GATES:
+        return True
+    return any(p in low for p in _BOILERPLATE_GATE_PHRASES)
+
 
 #: 走秒的那一串长什么样（倒计时 / 计时器）：`01:11:45` / `1:11:45` / `11:45`。
 #: ⚠️ 只认**冒号形状的时刻**、两端都有界（`(?<![\d:]) … (?![\d:])`）：`12:30pm` 那种带尾巴的、
@@ -5208,36 +5395,86 @@ def _unique_snippet_for(model: dict, others: list) -> str:
     候选 = 逐元素正文里每一个元素**自己的开头**（口径与 `_snippet_in_one_node` 一样：
     元素自己的开头才是「它自己的话」）。三条要求，缺一不可：
 
-      ① 落在**单个元素**里 —— 拿不到逐元素正文（缺 / 被截断）时**直接不挑**：宁可不动，
-         也不去犯 2026-09-28 那个「拿跨元素拼出来的那串字当判据」的旧病（那串在页面上
-         根本不存在 ⇒ 重放时整组静默跳过）。
+      ① 落在**单个元素**里 —— **这一条是构造出来的，不是验出来的**：候选逐条取自
+         `node_texts`，而那一格是「每个叶子元素各一条，不合并」⇒ 候选天然是一句话。
+         ⚠️ ★ 2026-10-09：原先这里还挂着「`node_texts_truncated` 为真就**直接不挑**」。
+         那半句是**从 `_snippet_in_one_node` 抄过来的**，而那边防的是另一件事 ——
+         「这段判据**不在任何单个元素里**」这个**结论**（判据的元素可能排在截断线之后，
+         「量不到」与「没有」是两件事）。在这儿它挡掉的却是**挑一个候选**，而挑候选
+         根本不看清单全不全：候选自己是不是一句话，跟这一页还有多少条没抄下来无关。
+         真账本上它挡掉的是 kotzheating 那两趟（`job-c8d966155ec6` / `job-53e8caeece5e`）——
+         首页 400 个叶子元素 ⇒ 必然置位 ⇒ 重挑一次都没跑，两趟都砍死在 IR 那道门上。
       ② 在**别的每一页**的正文里都不出现 —— 比 `_snippet` 那个「只避上一页」严，撞车正是
          从「只避上一页」那儿来的。
+         ⚠️ ★ 2026-10-09：「别的页的正文」= `_other_pages_text`（`page_text` **加逐元素正文**），
+         **不是**只比 `page_text`。`page_text` 是工具**硬切 600 字**的
+         （`observe.go`：`pageText.slice(0, 600)`），页头 / 导航 / 页脚有大半落在切点之后 ⇒
+         只比它就会把**全站公用的导航项**认成「这一页独有」⇒ 同名旧病换个名字复发，
+         而这一次**没有任何一道门会喊**（产物照样在别的页上成立、照样乱点）。
+         `_snippet_in_one_node` 早就在用 `_other_pages_text` 了 —— 这里是漏网的那一处。
       ③ 在**自己这一页**上真成立（正例）—— 不成立就是整组静默跳过，比撞车更坏。
+         ⚠️ ★ 2026-10-09：这一条原先比的是 `page_text` 那 **600 字**（理由是「与剪判据那次
+         `when_holds` 同一把尺子」）—— **那把尺子比产物那一侧的窄**：产物的
+         `page_signature()` 明写着「不裁长度 —— 成功文案可能在第 600 字之后」。
+         真账本上它的后果是 shorecrestwpb 五趟 / policyquail 两趟：判据钉在**全站公用**
+         的页头那一截上，而这一页**自己**的话排在 600 字之后 ⇒ 那 600 字里一个字都不是
+         这一页独有的 ⇒ **手上没牌**。现在改用 `_one_page_text`（正文 **加逐元素正文**，
+         与产物一侧同宽）。⚠️ 只动正例这一向，反面一个字不改 —— 见 `_one_page_text`。
+      ④ ★ 2026-10-20（真事 `job-4f7f53be42eb` / `job-2b027b30f0b0` · delamere）：**看得见的
+         优先**。`node_texts` 是每个叶子元素自己的 `innerText`，而不渲染的元素（Gravity Forms
+         的蜜罐 `visibility:hidden`、页脚社交链接那一类）上 innerText 会**回退到 textContent**
+         ⇒ 页面上根本看不见的字也能当候选；而产物 `page_signature()` 读的是 `body.innerText`
+         ⇒ 那种门**永远不成立**、整组静默跳过。真事挑中的是 `'This field is for validation
+         purposes and'` / `'Facebook'`（都排在真正文前面）。
+         ⚠️ 只是**排序**，不是硬拒：`page_text` 硬切 600 字/帧，落在那之后的**好**判据在产物
+         一侧照样成立 —— 一个可见的候选都没有时，照旧退回原来的顺序（行为一个字不改）。
+      ⑤ ★ 2026-10-20：**短的那一档也收**（`SHORT_WHEN_MIN_CHARS`，≥4 字），但**只收在已知的
+         每一页（含同址兄弟屏）上都没出现过的**。理由与 `_snippet_in_one_node` 那条同一句：
+         **长度只是「唯一性」的代理**，而唯一性是量得出来的。单页漏斗的差别常只是
+         `Email address` → `Name`（4 字）—— 8 字门槛会把它挡住，于是退回页脚那种「又长、
+         但兄弟屏都有」的字（真事 `job-0bee2dd7903e`）。⚠️ 它排在**可见的长候选之后**：
+         优先顺序 = 长且可见 → 短且可见 → 长但只在 600 字之外 → 短且只在 600 字之外。
 
     挑到第一个合格的就要（按页面自己的元素顺序）：够用就行，不挑更长的 ——
-    读起来才是这一页正文里的原话。
+    读起来才是这一页正文里的原话。④/⑤ 是仅有的两次**越过顺序**：可见压过不可见；
+    长的（≥8）压过短的（≥4）。
     """
     nodes = model.get("node_texts")
-    if not isinstance(nodes, list) or not nodes or model.get("node_texts_truncated"):
+    if not isinstance(nodes, list) or not nodes:
         return ""
-    mine = _norm(model.get("page_text") or "").lower()
+    mine = _one_page_text(model)
     if not mine:
         return ""
-    others_norm = [_norm(str(o.get("page_text") or "")).lower() for o in others]
+    elsewhere = _other_pages_text(others)
+    #: 这一页**看得见**的正文（`page_text` = 工具按帧切的 `body.innerText`）——
+    #: 产物 `page_signature()` 读的就是同一张嘴（见 ④）。
+    visible = _norm(model.get("page_text") or "").lower()
+    long_visible = short_visible = long_hidden = short_hidden = ""
     for raw in nodes:
         cand = _snippet(_norm(str(raw or "")))
-        if len(cand) < _WHEN_REPICK_MIN_CHARS:
+        n = len(cand)
+        if n < SHORT_WHEN_MIN_CHARS:
             continue
+        if _is_boilerplate_gate(cand):
+            continue                    # 页脚社交 / 蜜罐那种环境噪声（见 _BOILERPLATE_GATES）
         low = cand.lower()
         if low not in mine:
             continue
         if _looks_like_a_clock(cand):
             continue                    # 走秒的那串不许当门（见 _looks_like_a_clock）
-        if any(low in text for text in others_norm):
+        if _on_other_pages(cand, elsewhere):
             continue
-        return cand
-    return ""
+        #: ④/⑤ 的四档（顺序 = 优先级）；每档只留**第一个**（按页面自己的元素顺序）。
+        if n >= _WHEN_REPICK_MIN_CHARS:
+            if low in visible:
+                long_visible = long_visible or cand
+            else:
+                long_hidden = long_hidden or cand
+        elif low in visible:
+            short_visible = short_visible or cand
+        else:
+            short_hidden = short_hidden or cand
+    return long_visible or short_visible or long_hidden or short_hidden
 
 
 def _repair_ambiguous_whens(pages: list) -> list:
@@ -5283,8 +5520,15 @@ def _repair_ambiguous_whens(pages: list) -> list:
         if not cand:
             continue
         low = cand.lower()
-        if not all(low in _norm(str((p.get("model") or {}).get("page_text") or "")).lower()
-                   for p in mine):
+        #: ⚠️ ★ 2026-10-09：正例这一验与 `_unique_snippet_for` 的 ③ **同一把尺子**
+        #: （`_one_page_text` = 正文 **加逐元素正文**，与产物一侧同宽）。两处若不同宽，
+        #: 就会出现「挑的时候说成立、换的时候又说不成立」—— 那条路只会把整趟白白砍死。
+        #: ⚠️ ★ 2026-10-13：这一组要是**并出来的**，正例就得在**并进来的每一屏**上都成立 ——
+        #: 光验 `model`（= 并组时留下的**最新那一眼**）等于只验一屏：真事 `job-0bee2dd7903e`
+        #: 就是这么把门换成 `Last Step` 的（只在第三屏上有），重放到头一屏整组 6 步全跳过。
+        spans = [p["merged_texts"] if p.get("merged_texts") else [_one_page_text(p.get("model") or {})]
+                 for p in mine]
+        if not all(low in text for texts in spans for text in texts):
             continue                    # 这一条自己那页上没有这段 ⇒ 一起不换（正例不许破）
         had: list = []
         changed = False
@@ -5386,6 +5630,56 @@ def _rename_state(steps: list, gone: str, into: str) -> None:
     for step in steps or []:
         if (step.get("state") or "") == gone:
             step["state"] = into
+
+
+#: ★ 2026-10-13：并组之前先试「各给各的门」时，挑出来的那段进 `when` 时说的话
+#: （账本上要看得见这一组的门是怎么来的 —— 与 `WHEN_REPICKED_WHY` 同一个位置）。
+WHEN_SPLIT_WHY = ("这一组的门**各给各的**：同一个地址上的几屏各有各的正文，"
+                  "并成一个状态会让它们共用一道门 —— 而那样的门只可能在某一屏上成立。"
+                  "挑到了就**不并**（并是那条拒绝话里的出路 ②，出路 ① 是各钉各的）。")
+
+
+def _pin_own_gates(group: list, pages: list) -> bool:
+    """能给这一组**每一眼各挑一段只属于它自己的正文**当门吗？挑到了就**就地换门**回 True。
+
+    ★ 2026-10-13（真事 `job-0bee2dd7903e` · healthinsurancewatch.com.au）：同一个地址上的
+    三屏（`… Email address` / `… Name` / `Last Step Mobile number`）判据都钉在**全站页脚**
+    那句上 ⇒ `_page_pair_indistinguishable` 说「分不开」⇒ 并成一组；收尾 `_repair_ambiguous_whens`
+    又给这一组重挑了一道门 —— 可它只看得见**并组后留下的那一眼**（`keep["model"]` 换成了
+    `group[-1]["model"]`，别的几眼的模型当场就丢了）⇒ 挑中的 `Last Step` 只在**第三屏**成立
+    ⇒ 重放到第一屏，整组 6 步**全跳过**（自测 15 步里 6 步被跳过、邮箱那一格空着、没走到成功）。
+
+    而三屏各自的正文本来就不一样。所以并组之前先问一句：**各给各的门，行不行？**
+
+    ★ 2026-10-20（真事 `job-4f7f53be42eb` / `job-2b027b30f0b0` · delamere）：**兄弟屏之间也要比**。
+    现场四屏（`Step 1/2/3/4 of 4`）上，**每一屏都有**的那些字（Gravity Forms 的蜜罐
+    `This field is for validation purposes and`、页脚社交链接）在「别的地址」上不一定有 ——
+    按「只比别的地址」的旧口径，它们**每一屏都算独有** ⇒ 挑中的门在**另一趟会话**里根本
+    不在页面正文上（蜜罐是隐藏 div）⇒ 整组跳过。**真·每屏唯一**的是 `Step 2 of 4,`
+    这种（兄弟屏之间各不相同、运行时页面上看得见）。所以 `others` 收**除这一屏以外的
+    每一页**：兄弟屏 + 别的地址，一个都不少。
+    ⚠️ 与撞车检测器（`_gates_that_hold_elsewhere` 跳过同址）**不是同一把尺子**：那个问的是
+    「这两页分不分得开」，同址兄弟本来就该算一页；这里问的是「这一屏的**门**独不独」——
+    兄弟共有的字正是**恰恰不能**当门的那些。
+
+    一处挑不到 ⇒ **一个字都不改**（回 False，照旧并：那时候并正是对的出路 —— 单页漏斗上
+    真正分不开的两眼，比如「同一屏的第二眼」，就该并）。
+    """
+    picks: list = []
+    for pg in group:
+        #: ★ 2026-10-20：**除这一屏以外的每一页**（兄弟屏 + 别的地址）—— 见 docstring。
+        others = [q.get("model") or {} for q in pages if q is not pg]
+        cand = _unique_snippet_for(pg.get("model") or {}, others)
+        if not cand:
+            return False
+        picks.append(cand)
+    for pg, cand in zip(group, picks):
+        when = dict(pg.get("when") or {})
+        when["text_contains"] = [cand]
+        when["text_from"] = "这一段是从这一屏自己的正文里剪的"
+        when["text_why"] = WHEN_SPLIT_WHY
+        pg["when"] = when
+    return True
 
 
 def _merge_one_page_states(pages: list, steps: list) -> list:
@@ -5499,11 +5793,23 @@ def _merge_one_page_states(pages: list, steps: list) -> list:
     for group in groups:
         if len(group) < 2:
             continue
+        #: ★ 2026-10-13：**先试「各给各的门」（出路 ①）** —— 挑得到就别并。并是出路 ②，
+        #: 代价是这一组往后只能共用一道门，而收尾重挑那一步**只看得见留下的那一眼**
+        #: （并组时模型就被换掉了）⇒ 一旦重挑，就可能挑到只在某一屏上成立的那句话，
+        #: 整组跟着跳过（真事 `job-0bee2dd7903e`，见 `_pin_own_gates`）。
+        if _pin_own_gates(group, pages):
+            continue
         keep = group[0]
         keep["when"] = _best_gate(group)
         #: 判据随**最新那一眼**的模型走：下一页要与它比（`_gates_that_hold_elsewhere` 用的是 `model`）。
         keep["model"] = group[-1].get("model") or keep.get("model")
         keep["key"] = group[-1].get("key") or keep.get("key")
+        #: ★ 2026-10-13：**并进来那几眼的正文也留着**（就留正文，不留整份模型 —— 那几眼
+        #: 的模型本来就只有这一处还用得上）。收尾 `_repair_ambiguous_whens` 给这一组重挑门时
+        #: 要拿它验正例：**这一段得在这一组的每一屏上都成立**。不留的话，重挑只对着**一屏**验
+        #: ⇒ 挑出来的那段可能只在那一屏上成立 ⇒ 重放到头一屏整组跳过（真事 `job-0bee2dd7903e`：
+        #: 并进来的三屏只剩第三屏的模型，重挑把门换成了只在第三屏成立的 `Last Step`）。
+        keep["merged_texts"] = [t for t in (_one_page_text(g.get("model") or {}) for g in group) if t]
         for gone in group[1:]:
             merged.append({"name": gone.get("name") or "", "into": keep.get("name") or "",
                            "url": gone.get("url") or "", "kind": "same_page"})
