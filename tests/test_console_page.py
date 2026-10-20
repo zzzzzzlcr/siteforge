@@ -756,6 +756,18 @@ def test_the_new_run_form_never_checks_the_required_cells_by_itself():
     assert "trim()" in body, "取值时该去掉首尾空白（不然「全是空格」会被当成填了）"
 
 
+def test_the_run_form_has_rule_checkboxes_and_dob_format():
+    """规则区：四个勾选 + 生日格式输入；`runPayload` 只在勾了时带 `rules`。"""
+    page = _page()
+    for element_id in ("rulePhone02", "rulePhone07", "ruleDob",
+                       "runDobFormat", "rulePassword"):
+        assert 'id="%s"' % element_id in page, element_id
+    assert "function runRulesPayload" in page
+    body = re.search(r"function runPayload\(\).*?\n  \}", page, re.S).group(0)
+    assert "runRulesPayload()" in body
+    assert '"rules"' in body
+
+
 def test_the_stop_button_says_what_it_costs():
     """★ Task 12 第 3 件（**只改措辞**那个最轻的选项）：按钮上写着「撤不回」。
 

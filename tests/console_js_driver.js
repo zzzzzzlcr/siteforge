@@ -199,6 +199,12 @@ async function runScenario(out) {
   el("runGoal").value = payload.run.goal;
   el("runSuccess").value = payload.run.success_text;
   el("runEvidence").value = payload.run.evidence;
+  const rr = payload.run.rules || {};
+  el("rulePhone02").checked = (rr.phone_prefixes || []).indexOf("02") >= 0;
+  el("rulePhone07").checked = (rr.phone_prefixes || []).indexOf("07") >= 0;
+  el("ruleDob").checked = !!rr.dob;
+  el("runDobFormat").value = (rr.dob && rr.dob.format) || "";
+  el("rulePassword").checked = rr.password === "strong";
   //: ★ 「停用站也照修」那一格**真勾上**（2026-09-21）：夹具那边因此要求载荷里是 `true` ——
   //: 只钉「那一格在载荷里」的话，页面把它**写死 False** 这种改法照绿（而闸就形同虚设）。
   el("runAllowDisabled").checked = true;

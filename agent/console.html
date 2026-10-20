@@ -758,6 +758,19 @@
                   两种活做法不一样，所以这一格服务要问清楚。</p>
               </div>
               <div class="field">
+                <label>规则（勾了就按我们的规则现编，不取任务资料）</label>
+                <label><input type="checkbox" id="rulePhone02"> 手机号 02 开头</label>
+                <label><input type="checkbox" id="rulePhone07"> 手机号 07 开头</label>
+                <label><input type="checkbox" id="ruleDob"> 生日随机（18–68 岁）</label>
+                <label><input type="checkbox" id="rulePassword"> 密码强随机（8+ 大小写数字特殊字符）</label>
+                <div id="runDobFormatField" hidden>
+                  <input type="text" id="runDobFormat" autocomplete="off"
+                         spellcheck="false" placeholder="DD/MM/YYYY（可空 = 按页面识别）">
+                </div>
+                <p class="why">勾了就<b>完全不看任务资料</b>；02/07 同勾 = 每趟随机一个号段，
+                  同一趟所有 phone 字段用同一个号。生日格式空着就按探路记下的页面格式。</p>
+              </div>
+              <div class="field">
                 <label for="runAllowDisabled">这个站在后端是「停用」的（照修它）</label>
                 <label><input type="checkbox" id="runAllowDisabled">
                   这一趟是<b>停用行</b>（别自动上传）</label>
@@ -2089,6 +2102,26 @@
     return (note ? note + "\n\n" : "") + "【步骤表（人给的，照它走）】\n" + steps;
   }
 
+  function runRulesPayload() {
+    var out = {};
+    var phones = [];
+    if (document.getElementById("rulePhone02").checked) { phones.push("02"); }
+    if (document.getElementById("rulePhone07").checked) { phones.push("07"); }
+    if (phones.length) { out.phone_prefixes = phones; }
+    if (document.getElementById("ruleDob").checked) {
+      out.dob = { "random": true };
+      var fmt = document.getElementById("runDobFormat").value.trim();
+      if (fmt) { out.dob.format = fmt; }
+    }
+    if (document.getElementById("rulePassword").checked) { out.password = "strong"; }
+    return Object.keys(out).length ? out : undefined;
+  }
+
+  function syncDobFormat() {
+    document.getElementById("runDobFormatField").hidden =
+      !document.getElementById("ruleDob").checked;
+  }
+
   function runPayload() {
     var url = document.getElementById("runUrl").value.trim();
     return {
@@ -2118,7 +2151,9 @@
       //: ★ 停用的站照修（2026-09-21）：勾了才让服务拿 `type=debug` 那一份当底稿。
       //: ⚠️ 发的是**布尔**（不是 "on"）：服务那一格是 `bool`，发字符串会被 pydantic 当成真值，
       //: 「没勾」与「勾了」就分不出来了（闸门形同虚设）。
-      "allow_disabled": document.getElementById("runAllowDisabled").checked === true
+      "allow_disabled": document.getElementById("runAllowDisabled").checked === true,
+      //: ★ 2026-10-20：规则只在勾了时进正文；`runRulesPayload()` 返回 undefined ⇒ JSON 里没有这一格。
+      "rules": runRulesPayload()
     };
   }
 
@@ -3255,6 +3290,9 @@
   // 「开页时它是什么样」由**同一个判据**算出来 —— 不靠标记、也不靠人的记性）。
   document.getElementById("runEvidenceField").hidden =
     (document.getElementById("runMode").value !== "fix");
+  //: 规则区：勾了生日才露出格式输入；开页按「没勾」摆一次（不靠静态标记）。
+  document.getElementById("ruleDob").addEventListener("change", syncDobFormat);
+  syncDobFormat();
   // ★ 窗口那两下（Task 12）：关（跑完/叫停之后收摊）与重开（窗口没了 → 换一个接着走）。
   document.getElementById("btnCloseWindow").addEventListener("click", function () {
     windowAct("windowClose", this);

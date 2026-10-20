@@ -374,7 +374,9 @@ def _artifact_payloads(*, with_artifact: bool) -> dict:
 
 #: `_drive` 的 `scenario` 名字 → 驱动器认识的那个名字（**只差这一对**）。
 _DRIVER_SCENARIO = {"artifact-missing": "artifact",
-                    "runs-why": "repaint", "runs-why-none": "repaint"}
+                    "runs-why": "repaint", "runs-why-none": "repaint",
+                    #: ★ 2026-10-20：同一段驱动（`run`），只差载荷里带不带 `rules`。
+                    "run-rules": "run"}
 
 
 def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
@@ -398,6 +400,8 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _run_payloads()
     elif scenario == "run-steps":
         payload = _run_steps_payloads()
+    elif scenario == "run-rules":
+        payload = _run_rules_payloads()
     elif scenario == "country":
         payload = _country_payloads()
     elif scenario == "country-refused":
@@ -2820,3 +2824,22 @@ def test_the_auto_row_says_what_the_service_said(tmp_path):
     _onscreen(got["afterOn"], rows[1]["body"]["say"], "按「打开」之后那句")
     _onscreen(got["afterOff"], rows[2]["body"]["say"], "按「停」之后那句")
     assert got["end"] == got["afterOff"], "那句话没活过之后三次重画"
+
+
+def _run_rules_payloads():
+    return {"scenario": "run", "search": "",
+            "run": dict(RUN_FORM, rules={
+                "phone_prefixes": ["02", "07"],
+                "dob": {"random": True, "format": "DD/MM/YYYY"},
+                "password": "strong"}),
+            "responses": {"/run": [{"body": {"job_id": NEW_JOB,
+                                             "say": SUBMITTED_SAY}}]}}
+
+
+def test_run_payload_carries_rules(tmp_path):
+    out = _drive(tmp_path, scenario="run-rules")
+    last = [s for s in out["sent"] if s["url"] == "/run"][-1]
+    body = json.loads(last["body"])
+    assert body["rules"] == {"phone_prefixes": ["02", "07"],
+                             "dob": {"random": True, "format": "DD/MM/YYYY"},
+                             "password": "strong"}
