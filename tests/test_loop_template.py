@@ -1553,3 +1553,26 @@ def test_the_loop_carries_the_same_ad_creative_row_the_table_does():
         "表序 = 优先级：它要排在**最后**（与表那套同一份表）：%r" % (rows,))
     assert _ad_creative_segment(src) == _ad_creative_segment(template._POPUP_MACHINERY_SRC), (
         "循环型那份与发源地不是同一段（两把尺子分家了）：各自从产物里切出来比一比")
+
+
+def test_value_for_rule_ignores_form_data_and_is_stable(tmp_path, monkeypatch):
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/quiz", "head": "Q", "progress": "",
+            "inputs": [], "options": [], "nextVisible": True, "nextTxt": "Continue"}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop(
+        "phonesite", "Thank you", "thank-you",
+        {"phone": {"kind": "value", "label": "PhoneNumber",
+                   "rule": "phone_prefix", "prefixes": ["02"]}},
+        dict(PROV))
+    path = tmp_path / "rule_phone.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("rule_phone_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    obj = module.Filler.__new__(module.Filler)
+    obj.form_data = {"phone": "0000000000"}
+    obj._rule_values = {}
+    got = [obj.value_for("\u0002PhoneNumber", {}, 0) for _ in range(3)]
+    assert len(set(got)) == 1, got          # 同一趟同值
+    assert re.fullmatch(r"02\d{8}", got[0]), got

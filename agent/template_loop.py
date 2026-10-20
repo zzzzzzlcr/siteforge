@@ -373,12 +373,52 @@ def _clean_eval(raw):
     return text
 
 
+def _format_date(day, month, year, fmt):
+    out = []
+    for part in re.split(r"([/\-\.])", str(fmt or "")):
+        if not part:
+            continue
+        if part in ("/", "-", "."):
+            out.append(part)
+            continue
+        token = part.upper()
+        if token == "D":
+            out.append(str(day))
+        elif token == "DD":
+            out.append("%02d" % day)
+        elif token == "M":
+            out.append(str(month))
+        elif token == "MM":
+            out.append("%02d" % month)
+        elif token == "YYYY":
+            out.append(str(year))
+        elif token == "YY":
+            out.append(str(year)[-2:])
+        else:
+            raise ValueError("产物写错了：生日格式里有不认识的 token「%s」" % part)
+    return "".join(out)
+
+
+def _strong_password():
+    upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    lower = "abcdefghijklmnopqrstuvwxyz"
+    digits = "0123456789"
+    specials = "!@#$%^&*"
+    chars = [random.choice(upper), random.choice(lower),
+             random.choice(digits), random.choice(specials)]
+    alphabet = upper + lower + digits + specials
+    chars += [random.choice(alphabet) for _ in range(8)]
+    random.shuffle(chars)
+    return "".join(chars)
+
+
 class Filler:
     def __init__(self, ws_url, form_file, correlation_id, task_id="",
                  trace_path="", no_report=False, stop_at=0):
         self.cdp = CDPHelper(ws_url)
         with open(form_file) as f:
             self.form_data = json.load(f)
+        self._rule_values = {}
         self.cid = correlation_id
         self.tid = task_id
         self.log = setup_logger("loop")
@@ -745,6 +785,29 @@ class Filler:
         return "Error" not in said and "element not found" not in said
 
 
+    def _rule_value(self, fill):
+        rule = str(fill.get("rule") or "")
+        key = (rule, tuple(fill.get("prefixes") or ()),
+               str(fill.get("date_format") or ""))
+        if key in self._rule_values:
+            return self._rule_values[key]
+        if rule == "phone_prefix":
+            prefixes = [str(x).strip() for x in (fill.get("prefixes") or [])
+                        if str(x).strip()]
+            prefix = random.choice(prefixes) if prefixes else "04"
+            value = prefix + "".join(str(random.randint(0, 9))
+                                     for _ in range(max(0, 10 - len(prefix))))
+        elif rule == "dob_random":
+            fmt = str(fill.get("date_format") or "DD/MM/YYYY")
+            year = time.localtime().tm_year - random.randint(19, 68)
+            value = _format_date(random.randint(1, 28), random.randint(1, 12), year, fmt)
+        elif rule == "password_strong":
+            value = _strong_password()
+        else:
+            raise ValueError("产物写错了：不认识的规则「%s」" % rule)
+        self._rule_values[key] = value
+        return value
+
     def value_for(self, token, page, index=0):
         """这一格填什么 —— 三档，从**有据可依**往**兜底**走：
         ① 字样（`kind`/`label` ✓）对得上 ⇒ 用它 ✓
@@ -776,6 +839,8 @@ class Filler:
                                              ((spec.get("target") or {}).get("selectors") or [])]).lower()
             if ((label and label in hay) or (kind and kind in hay)
                     or (hay and hay in blob)):
+                if spec.get("rule"):
+                    return self._rule_value(spec)
                 if self._is_phone(name, kind):
                     #: ★ 2026-09-26 用户点名（solarincentives）：「**手机号别取资料**」——
                     #: ★ 2026-10-13 用户再点名（compareinsulation）：「手机号**不要用资料给的**，
