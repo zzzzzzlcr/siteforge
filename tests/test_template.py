@@ -5185,3 +5185,35 @@ def test_rule_fills_ignore_form_data_and_share_values(sandbox, tmp_path):
     assert 18 <= age <= 68, (filled["input#dob"], age)
     assert re.fullmatch(r"^(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[!@#$%^&*]).{8,}$",
                         filled["input#password"]), filled["input#password"]
+
+
+def test_rules_off_leaves_the_old_behavior(sandbox, tmp_path):
+    """不勾规则 = 与今天逐字节相同：资料里有值就原样用。"""
+    ff = tmp_path / "form.json"
+    ff.write_text(json.dumps({"phone": "0000000000", "password": "weak"}),
+                  encoding="utf-8")
+
+    def _target(label, sel):
+        return {"text": None, "label": label, "role": None, "near": None,
+                "selectors": [sel]}
+
+    fills = [
+        {"name": "phone", "source": "phone", "kind": "value", "label": "PhoneNumber",
+         "target": _target("PhoneNumber", "input#phone")},
+        {"name": "password", "source": "password", "kind": "value", "label": "Password",
+         "target": _target("Password", "input#password")},
+    ]
+    steps = [{"action": "form", "fill": f["name"], "note": "填 %s" % f["label"]}
+             for f in fills]
+    prod = template.render("example-rule-off", "Thank you",
+                           [{"name": "walk", "when": None, "steps": steps}], fills,
+                           SAMPLE_PROVENANCE)
+    module, _ = _load("run_rule_off", prod, sandbox)
+    common = _stub(sandbox, diff={"actionable": True},
+                   observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common.STATE.texts = ["Walk"] * 2 + ["Thank you"]
+
+    assert module.Filler(WS, str(ff), "cid_1", "task_1", delay=(0, 0)).run() is True
+    filled = {a[1]: a[2] for a in common.STATE.actions if a[0] == "form"}
+    assert filled["input#phone"] == "0000000000"
+    assert filled["input#password"] == "weak"
