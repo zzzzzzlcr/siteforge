@@ -83,8 +83,8 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from agent import (browser_agent, configcheck, events, fix, fmr, graph, journal, jsondiag,
-                   jsonwrite, llm, manual, measure, pywrite, rounds, selftest, shots, steps,
-                   template, tools)
+                   jsonwrite, llm, manual, measure, pywrite, rounds, rules as rules_mod,
+                   selftest, shots, steps, template, tools)
 from agent.graph import NODES, STEP_SAY
 from agent.state import (END_DELIVERED, END_DRAFT_FAILED, END_EXPLORE_UNFINISHED,
                          END_HUMAN_STOP, END_LINT_CAP,
@@ -2136,6 +2136,10 @@ class RunRequest(_Intake):
     phone_area_code: str = Field(
         "", description="**这一站**的电话号段（例 `0207` = 伦敦座机，后 7 位随机）。"
                         "空串 = 按池子现编。它只管号段，不管「取不取资料」那件事")
+    rules: Optional[dict] = Field(
+        None, description="生成期规则：{\"phone_prefixes\": [\"02\", \"07\"], "
+                          "\"dob\": {\"random\": true, \"format\": \"DD/MM/YYYY\"}, "
+                          "\"password\": \"strong\"}。勾了就按规则现编，不取资料")
     # ── Task 8 加的两个（**加**字段不是改既有形状**：既有形状那条约束管的是 `/job/{id}` 的响应）──
     hints: Optional[list] = Field(
         None, description="人说过的话**播种**进这一趟的 state（`/again` 带过来的那几句，R5）。"
@@ -5160,7 +5164,7 @@ class Service:
             return None
         keep = ("url", "goal", "mode", "success_text", "success_urls", "evidence", "site",
                 "ws_url", "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url",
-                "phone_area_code", "fingerprint")
+                "phone_area_code", "rules", "fingerprint")
         brief = {k: values[k] for k in keep if values.get(k) is not None}
         brief["set_viewport"] = bool(self._window is not None
                                      and hasattr(self._window, "set_viewport"))
@@ -6307,6 +6311,10 @@ class Service:
             #: **底稿自己那一条**来（`_stage_fix_source` 手上就有那份源码）。所以这儿只拦 **build**。
             #: ⚠️ 底稿里也读不出来时**照旧拦**，只是那句话挪到了拿到底稿之后 —— 那条路
             #: **一个 job 都不开、一个字节都不落盘**，所以「不碰浏览器、不跑模型、不花钱」没变。
+        try:
+            rules_mod.normalize_rules(getattr(body, "rules", None))
+        except rules_mod.RuleError as exc:
+            problems.append(str(exc))
         if body.allow_skips is not None:
             if not body.allow_skips:
                 problems.append("`allow_skips` 是空的（`[]`）—— 空列表没有意义：它和「没给」在图的边界"
@@ -6503,7 +6511,12 @@ class Service:
         if problems:
             raise HTTPException(status_code=400, detail=self._problems_say(problems))
 
+        normalized_rules = rules_mod.normalize_rules(getattr(body, "rules", None))
         brief = body.model_dump(exclude_none=True)
+        if normalized_rules is None:
+            brief.pop("rules", None)
+        else:
+            brief["rules"] = normalized_rules
         brief = self._materialize_form_data(brief)
         #: 人在开工前说的那句 → `hints`（`note` 这一格**不留在载荷里**：图那份 schema 里
         #: 没有 `note`，留着会被 langgraph **静默丢掉** —— 与 `fix_py` 当年那个坑同一族）。
@@ -6629,6 +6642,7 @@ class Service:
         keep = ("url", "goal", "mode", "success_text", "success_urls", "evidence", "site",
                 "ws_url", "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url",
                 "phone_area_code",
+                "rules",
                 "hints",
                 #: ⚠️ 少了它，服务算出来、也落了盘，却**发不到图里** ——
                 #: `graph.py:346` 那个 `if fix_py:` 恒为假，那条路「接上了但不响」

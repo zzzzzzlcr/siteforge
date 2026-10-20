@@ -71,3 +71,13 @@ def test_apply_reports_unmatched_and_needs_format():
     )
     assert only_dob["needs_format"] == ["dob"]
     assert only_dob["fills"]["dob"].get("rule") is None
+
+
+def test_run_request_keeps_rules_and_normalize_rejects_unknown():
+    from agent.service import RunRequest
+    body = RunRequest(url="https://example.test", mode="build",
+                      success_text="Thank you",
+                      rules={"phone_prefixes": ["02", "07"]})
+    assert body.rules == {"phone_prefixes": ["02", "07"]}
+    with pytest.raises(rules.RuleError):
+        rules.normalize_rules({"phone_prefixes": ["04"]})

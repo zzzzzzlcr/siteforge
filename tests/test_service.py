@@ -2620,3 +2620,16 @@ def test_the_reply_sentence_names_the_step_it_just_released():
     assert service._reply_accepted_say({}) == service.REPLY_ACCEPTED_STEP_UNKNOWN_SAY
     #: 负控：**不许**拼出「它正在跑「」这一步」那种残句（空步名直接套模板就是这个形状）
     assert "「」" not in service._reply_accepted_say({"gate": {"step": ""}}), "空步名被套进模板了"
+
+
+def test_the_door_rejects_bad_rules():
+    """`/run` 的规则在门口校验：手机号只认 02/07；未知规则/格式 400。
+
+    直接量 `_intake_problems`（`start()` 就是拿它 400 的）—— 不造 job、不开窗口。
+    """
+    svc = service.Service()
+    body = service.RunRequest(url="https://example.test", goal="test",
+                              mode="build", success_text="Thank you",
+                              rules={"phone_prefixes": ["04"]})
+    problems = svc._intake_problems(body)
+    assert any("手机号只认" in p for p in problems), problems

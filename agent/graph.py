@@ -443,6 +443,8 @@ def _brief_facts(state, deps: Deps, missing: list) -> dict:
             "成功判据（口径）": CRITERION_BRANCH_ADVICE,
             "成功判据（提醒）": _criterion_advice(state.get("success_text")),
             "mode": state.get("mode") or MODE_BUILD,
+            #: ★ 2026-10-20：这一趟勾了什么规则（请求；生效结果在 draft/lint 闸上）
+            "规则": state.get("rules") or None,
             "要用的窗口": state.get("ws_url"),
             "允许跳过的扰动": list(state.get("allow_skips") or []),
             "还缺的窗口旋钮": [k["knob"] for k in missing]}
