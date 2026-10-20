@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import ast
+import datetime
 import importlib.util
 import json
 import logging
@@ -5133,3 +5134,54 @@ def test_the_rendered_product_defines_those_same_constants():
     for name in ("_COVER_JS", "_RECENTER_JS"):
         assert "\n%s = " % name in src, "产物里没定义 %s —— 它一跑就是 NameError" % name
     assert "elementsFromPoint" in src and "scrollIntoView" in src
+
+
+def test_rule_fills_ignore_form_data_and_share_values(sandbox, tmp_path):
+    """勾了规则的格子：不读 form_data，同规则组同值，按站点格式/规则现编。"""
+    ff = tmp_path / "form.json"
+    ff.write_text(json.dumps({"phone": "0000000000",
+                              "phone_confirm": "0000000000",
+                              "dob": "01/01/1900",
+                              "password": "weak"}), encoding="utf-8")
+
+    def _target(label, sel):
+        return {"text": None, "label": label, "role": None, "near": None,
+                "selectors": [sel]}
+
+    fills = [
+        {"name": "phone", "source": "phone", "kind": "value", "label": "PhoneNumber",
+         "target": _target("PhoneNumber", "input#phone"),
+         "rule": "phone_prefix", "prefixes": ["02", "07"]},
+        {"name": "phone_confirm", "source": "phone_confirm", "kind": "value",
+         "label": "Confirm phone", "target": _target("Confirm phone", "input#phone2"),
+         "rule": "phone_prefix", "prefixes": ["02", "07"]},
+        {"name": "dob", "source": "dob", "kind": "value", "label": "Date of birth",
+         "target": _target("Date of birth", "input#dob"),
+         "rule": "dob_random", "date_format": "DD/MM/YYYY"},
+        {"name": "password", "source": "password", "kind": "value", "label": "Password",
+         "target": _target("Password", "input#password"),
+         "rule": "password_strong"},
+    ]
+    steps = [{"action": "form", "fill": f["name"], "note": "填 %s" % f["label"]}
+             for f in fills]
+    prod = template.render("example-rule", "Thank you",
+                           [{"name": "walk", "when": None, "steps": steps}], fills,
+                           SAMPLE_PROVENANCE)
+    module, _ = _load("run_rule_fills", prod, sandbox)
+    common = _stub(sandbox, diff={"actionable": True},
+                   observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common.STATE.texts = ["Walk"] * 4 + ["Thank you"]
+
+    assert module.Filler(WS, str(ff), "cid_1", "task_1", delay=(0, 0)).run() is True
+    filled = {a[1]: a[2] for a in common.STATE.actions if a[0] == "form"}
+
+    assert filled["input#phone"] == filled["input#phone2"]
+    assert re.fullmatch(r"0[27]\d{8}", filled["input#phone"]), filled["input#phone"]
+    assert filled["input#phone"] != "0000000000"
+    assert re.fullmatch(r"\d{2}/\d{2}/\d{4}", filled["input#dob"]), filled["input#dob"]
+    day, month, year = (int(x) for x in filled["input#dob"].split("/"))
+    today = datetime.date.today()
+    age = today.year - year - ((today.month, today.day) < (month, day))
+    assert 18 <= age <= 68, (filled["input#dob"], age)
+    assert re.fullmatch(r"^(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[!@#$%^&*]).{8,}$",
+                        filled["input#password"]), filled["input#password"]

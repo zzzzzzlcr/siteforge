@@ -1239,6 +1239,45 @@ def _shaped_like(sample: str) -> str:
     run = m.group(0)
     return (text[:m.start()]
             + "".join(random.choice("0123456789") for _ in range(len(run))))
+def _format_date(day, month, year, fmt):
+    out = []
+    for part in re.split(r"([/\-\.])", str(fmt or "")):
+        if not part:
+            continue
+        if part in ("/", "-", "."):
+            out.append(part)
+            continue
+        token = part.upper()
+        if token == "D":
+            out.append(str(day))
+        elif token == "DD":
+            out.append("%02d" % day)
+        elif token == "M":
+            out.append(str(month))
+        elif token == "MM":
+            out.append("%02d" % month)
+        elif token == "YYYY":
+            out.append(str(year))
+        elif token == "YY":
+            out.append(str(year)[-2:])
+        else:
+            raise ValueError("产物写错了：生日格式里有不认识的 token「%s」" % part)
+    return "".join(out)
+
+
+def _strong_password():
+    upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    lower = "abcdefghijklmnopqrstuvwxyz"
+    digits = "0123456789"
+    specials = "!@#$$%^&*"
+    chars = [random.choice(upper), random.choice(lower),
+             random.choice(digits), random.choice(specials)]
+    alphabet = upper + lower + digits + specials
+    chars += [random.choice(alphabet) for _ in range(8)]
+    random.shuffle(chars)
+    return "".join(chars)
+
+
 ERR_MARKERS = ("Error:", "error:", "not found", "BugError", "no page target",
                "failed to create client", "Usage:", "Flags:", "panic:")
 
@@ -2093,6 +2132,7 @@ class Filler:
         self.cdp = CDPHelper(ws_url)
         with open(form_file) as f:
             self.form_data = json.load(f)
+        self._rule_values = {}
         self.cid = correlation_id
         self.tid = task_id or correlation_id.split('_')[0]
         self.log = setup_logger(SITE)
@@ -2854,6 +2894,32 @@ class Filler:
             return "" if ok else "Error: 打开 %s 失败" % value
         raise ValueError("产物写错了：不认识这个动作「%s」" % action)
 
+    def _rule_value(self, rule, fill):
+        key = (rule, tuple(fill.get("prefixes") or ()),
+               str(fill.get("date_format") or ""))
+        if key in self._rule_values:
+            self._value_from = "规则「%s」现编（同一趟同值）" % rule
+            return self._rule_values[key]
+        if rule == "phone_prefix":
+            prefixes = [str(x).strip() for x in (fill.get("prefixes") or [])
+                        if str(x).strip()]
+            prefix = random.choice(prefixes) if prefixes else "04"
+            value = prefix + "".join(str(random.randint(0, 9))
+                                     for _ in range(max(0, 10 - len(prefix))))
+            self._value_from = "规则「手机号 %s」现编" % ("/".join(prefixes) or prefix)
+        elif rule == "dob_random":
+            fmt = str(fill.get("date_format") or "DD/MM/YYYY")
+            year = time.localtime().tm_year - random.randint(19, 68)
+            value = _format_date(random.randint(1, 28), random.randint(1, 12), year, fmt)
+            self._value_from = "规则「生日 %s，18-68」现编" % fmt
+        elif rule == "password_strong":
+            value = _strong_password()
+            self._value_from = "规则「强密码」现编"
+        else:
+            raise ValueError("产物写错了：不认识的规则「%s」" % rule)
+        self._rule_values[key] = value
+        return value
+
     def _fill_value(self, fill, step):
         """这一步填什么：先读 --form-file 里的键，没有就用 fallback 里的一个随机值。
 
@@ -2867,6 +2933,9 @@ class Filler:
            ⚠️ 只报**来源**，**不报值本身**（生产日志会上报到后端，姓名/电话没必要进那儿）。
         """
         self._value_from = ""
+        rule = str(fill.get("rule") or "").strip()
+        if rule:
+            return self._rule_value(rule, fill)
         source = fill.get("source")
 
         def take(key):
@@ -3173,7 +3242,7 @@ class Filler:
             year = time.localtime().tm_year - random.randint(19, 68)
             return "%02d/%02d/%d" % (random.randint(1, 28), random.randint(1, 12), year)
         if kind == "password":
-            #: 至少 8 位，含大写/小写/数字/特殊字符；`!` 在站点要求的 `!@#$%^&*` 里。
+            #: 至少 8 位，含大写/小写/数字/特殊字符；`!` 在站点要求的 `!@#$$%^&*` 里。
             return "Test%d!" % random.randint(1000, 9999)
         raise ValueError("产物写错了：不认识这个随机值类型「%s」" % kind)
 
