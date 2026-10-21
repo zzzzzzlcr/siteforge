@@ -5151,10 +5151,10 @@ def test_rule_fills_ignore_form_data_and_share_values(sandbox, tmp_path):
     fills = [
         {"name": "phone", "source": "phone", "kind": "value", "label": "PhoneNumber",
          "target": _target("PhoneNumber", "input#phone"),
-         "rule": "phone_prefix", "prefixes": ["02", "07"]},
+         "rule": "phone_prefix", "prefixes": ["04", "0207"]},
         {"name": "phone_confirm", "source": "phone_confirm", "kind": "value",
          "label": "Confirm phone", "target": _target("Confirm phone", "input#phone2"),
-         "rule": "phone_prefix", "prefixes": ["02", "07"]},
+         "rule": "phone_prefix", "prefixes": ["04", "0207"]},
         {"name": "dob", "source": "dob", "kind": "value", "label": "Date of birth",
          "target": _target("Date of birth", "input#dob"),
          "rule": "dob_random", "date_format": "DD/MM/YYYY"},
@@ -5176,7 +5176,7 @@ def test_rule_fills_ignore_form_data_and_share_values(sandbox, tmp_path):
     filled = {a[1]: a[2] for a in common.STATE.actions if a[0] == "form"}
 
     assert filled["input#phone"] == filled["input#phone2"]
-    assert re.fullmatch(r"0[27]\d{8}", filled["input#phone"]), filled["input#phone"]
+    assert re.fullmatch(r"(?:04\d{8}|0207\d{6})", filled["input#phone"]), filled["input#phone"]
     assert filled["input#phone"] != "0000000000"
     assert re.fullmatch(r"\d{2}/\d{2}/\d{4}", filled["input#dob"]), filled["input#dob"]
     day, month, year = (int(x) for x in filled["input#dob"].split("/"))

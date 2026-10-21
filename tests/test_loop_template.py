@@ -1564,7 +1564,7 @@ def test_value_for_rule_ignores_form_data_and_is_stable(tmp_path, monkeypatch):
     src = template_loop.render_loop(
         "phonesite", "Thank you", "thank-you",
         {"phone": {"kind": "value", "label": "PhoneNumber",
-                   "rule": "phone_prefix", "prefixes": ["02"]}},
+                   "rule": "phone_prefix", "prefixes": ["04"]}},
         dict(PROV))
     path = tmp_path / "rule_phone.py"
     path.write_text(src, encoding="utf-8")
@@ -1576,7 +1576,7 @@ def test_value_for_rule_ignores_form_data_and_is_stable(tmp_path, monkeypatch):
     obj._rule_values = {}
     got = [obj.value_for("\u0002PhoneNumber", {}, 0) for _ in range(3)]
     assert len(set(got)) == 1, got          # 同一趟同值
-    assert re.fullmatch(r"02\d{8}", got[0]), got
+    assert re.fullmatch(r"04\d{8}", got[0]), got
 
 
 def test_value_for_dob_rule_works_in_loop(tmp_path, monkeypatch):

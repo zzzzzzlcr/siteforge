@@ -5,18 +5,18 @@ from agent import rules
 
 def test_normalize_accepts_the_first_batch():
     got = rules.normalize_rules({
-        "phone_prefixes": ["02", "07", "02"],
+        "phone_prefixes": ["04", "0207", "04"],
         "dob": {"random": True, "format": "DD/MM/YYYY"},
         "password": "strong",
     })
-    assert got["phone_prefixes"] == ["02", "07"]
+    assert got["phone_prefixes"] == ["04", "0207"]
     assert got["dob"] == {"random": True, "format": "DD/MM/YYYY"}
     assert got["password"] == "strong"
 
 
 def test_normalize_rejects_unknown_rules_and_bad_formats():
     with pytest.raises(rules.RuleError):
-        rules.normalize_rules({"phone_prefixes": ["04"]})
+        rules.normalize_rules({"phone_prefixes": ["4"]})
     with pytest.raises(rules.RuleError):
         rules.normalize_rules({"dob": {"random": True, "format": "03/10/1970"}})
     with pytest.raises(rules.RuleError):
@@ -43,17 +43,17 @@ def test_apply_phone_dob_password_ignores_nothing_and_sets_rules():
         "password": _fill("password", "Password", "#password"),
     }
     got = rules.apply_to_fills(fills, {
-        "phone_prefixes": ["02", "07"],
+        "phone_prefixes": ["04", "0207"],
         "dob": {"random": True},
         "password": "strong",
     })
     assert got["fills"]["phone"]["rule"] == "phone_prefix"
-    assert got["fills"]["phone"]["prefixes"] == ["02", "07"]
+    assert got["fills"]["phone"]["prefixes"] == ["04", "0207"]
     assert got["fills"]["phone_confirm"]["rule"] == "phone_prefix"
     assert got["fills"]["dob"]["rule"] == "dob_random"
     assert got["fills"]["dob"]["date_format"] == "DD/MM/YYYY"
     assert got["fills"]["password"]["rule"] == "password_strong"
-    assert got["applied"] == ["phone:02", "phone:07", "dob_random", "password_strong"]
+    assert got["applied"] == ["phone:04", "phone:0207", "dob_random", "password_strong"]
     assert got["needs_format"] == []
     assert got["unmatched"] == []
 
@@ -61,9 +61,9 @@ def test_apply_phone_dob_password_ignores_nothing_and_sets_rules():
 def test_apply_reports_unmatched_and_needs_format():
     got = rules.apply_to_fills(
         {"email": _fill("email", "Email", "#email")},
-        {"phone_prefixes": ["02"], "dob": {"random": True}},
+        {"phone_prefixes": ["04"], "dob": {"random": True}},
     )
-    assert got["unmatched"] == ["phone:02", "dob_random"]
+    assert got["unmatched"] == ["phone:04", "dob_random"]
     assert got["needs_format"] == []
 
     only_dob = rules.apply_to_fills(
@@ -86,7 +86,7 @@ def test_run_request_keeps_rules_and_normalize_rejects_unknown():
     from agent.service import RunRequest
     body = RunRequest(url="https://example.test", mode="build",
                       success_text="Thank you",
-                      rules={"phone_prefixes": ["02", "07"]})
-    assert body.rules == {"phone_prefixes": ["02", "07"]}
+                      rules={"phone_prefixes": ["04", "0207"]})
+    assert body.rules == {"phone_prefixes": ["04", "0207"]}
     with pytest.raises(rules.RuleError):
-        rules.normalize_rules({"phone_prefixes": ["04"]})
+        rules.normalize_rules({"phone_prefixes": ["4"]})

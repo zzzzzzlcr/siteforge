@@ -10,6 +10,10 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-20-rules-checkbox-design.md`
 
+> **2026-10-21 变更（post-merge）**：手机号规则从 `02/07` 勾选改为**前缀输入框**
+> （0 开头、2–10 位数字，例 `04` / `0207`），运行时补随机数字到 **10 位**。
+> 本文 Task 1/6 里 `02/07` 的代码与用例是执行当时的记录；现状以 spec 为准。
+
 ## Global Constraints
 
 - `rules` 是对象：`{"phone_prefixes": [...], "dob": {"random": true, "format": "..."}, "password": "strong"}`；三块都可省略。

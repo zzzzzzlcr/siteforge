@@ -26,7 +26,7 @@
 
 ## 2026-10-20 规则勾选实现后
 
-- belong 的 DOB/密码不再需要手改产物：面板勾「手机 02/07 / 生日随机 / 密码强随机」即可，
+- belong 的 DOB/密码不再需要手改产物：面板填「手机号前缀（04/0207）」、勾「生日随机 / 密码强随机」即可，
   规则在生成期烤进 `FILLS`（`rule`/`prefixes`/`date_format`）；旧产物不变。
 - spec/plan 见 `docs/superpowers/specs/2026-10-20-rules-checkbox-design.md` /
   `docs/superpowers/plans/2026-10-20-rules-checkbox-plan.md`。

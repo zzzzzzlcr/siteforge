@@ -759,7 +759,7 @@ def test_the_new_run_form_never_checks_the_required_cells_by_itself():
 def test_the_run_form_has_rule_checkboxes_and_dob_format():
     """规则区：四个勾选 + 生日格式输入；`runPayload` 只在勾了时带 `rules`。"""
     page = _page()
-    for element_id in ("rulePhone02", "rulePhone07", "ruleDob",
+    for element_id in ("runPhonePrefix", "ruleDob",
                        "runDobFormat", "rulePassword"):
         assert 'id="%s"' % element_id in page, element_id
     assert "function runRulesPayload" in page

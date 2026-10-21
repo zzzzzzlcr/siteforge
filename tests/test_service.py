@@ -2623,13 +2623,13 @@ def test_the_reply_sentence_names_the_step_it_just_released():
 
 
 def test_the_door_rejects_bad_rules():
-    """`/run` 的规则在门口校验：手机号只认 02/07；未知规则/格式 400。
+    """`/run` 的规则在门口校验：手机号前缀是 0 开头的 2-10 位数字；未知规则/格式 400。
 
     直接量 `_intake_problems`（`start()` 就是拿它 400 的）—— 不造 job、不开窗口。
     """
     svc = service.Service()
     body = service.RunRequest(url="https://example.test", goal="test",
                               mode="build", success_text="Thank you",
-                              rules={"phone_prefixes": ["04"]})
+                              rules={"phone_prefixes": ["4"]})
     problems = svc._intake_problems(body)
-    assert any("手机号只认" in p for p in problems), problems
+    assert any("手机号前缀" in p for p in problems), problems

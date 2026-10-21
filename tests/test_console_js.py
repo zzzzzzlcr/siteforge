@@ -2829,7 +2829,7 @@ def test_the_auto_row_says_what_the_service_said(tmp_path):
 def _run_rules_payloads():
     return {"scenario": "run", "search": "",
             "run": dict(RUN_FORM, rules={
-                "phone_prefixes": ["02", "07"],
+                "phone_prefixes": ["04", "0207"],
                 "dob": {"random": True, "format": "DD/MM/YYYY"},
                 "password": "strong"}),
             "responses": {"/run": [{"body": {"job_id": NEW_JOB,
@@ -2840,6 +2840,6 @@ def test_run_payload_carries_rules(tmp_path):
     out = _drive(tmp_path, scenario="run-rules")
     last = [s for s in out["sent"] if s["url"] == "/run"][-1]
     body = json.loads(last["body"])
-    assert body["rules"] == {"phone_prefixes": ["02", "07"],
+    assert body["rules"] == {"phone_prefixes": ["04", "0207"],
                              "dob": {"random": True, "format": "DD/MM/YYYY"},
                              "password": "strong"}

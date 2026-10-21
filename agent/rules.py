@@ -1,4 +1,4 @@
-"""生成期规则：手机号 02/07、生日随机、密码强随机。
+"""生成期规则：手机号前缀（如 04 / 0207）、生日随机、密码强随机。
 
 这一层只做**纯函数**：校验载荷、解析日期格式、把规则写进 FILLS。
 运行时的生成器在 template.py / template_loop.py 里（产物必须自包含，不能 import 本仓）。
@@ -8,7 +8,8 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-PHONE_PREFIXES = ("02", "07")
+PHONE_PREFIX_MIN = 2
+PHONE_PREFIX_MAX = 10
 _DOB_TOKENS = {"D", "DD", "M", "MM", "YYYY", "YY"}
 _DATE_RE = re.compile(
     r"(?i)\b(D{1,2}|M{1,2}|Y{2,4})[\/\-\.](D{1,2}|M{1,2}|Y{2,4})[\/\-\.](D{1,2}|M{1,2}|Y{2,4})\b"
@@ -21,6 +22,15 @@ class RuleError(ValueError):
 
 def _fail(msg: str) -> "RuleError":
     return RuleError("规则不合法：%s" % msg)
+
+
+def _phone_prefix(x: Any) -> str:
+    """AU 手机号前缀：0 开头、2-10 位数字；运行时补随机数字到 10 位。"""
+    text = str(x or "").strip()
+    if (not text.isdigit() or not text.startswith("0")
+            or not (PHONE_PREFIX_MIN <= len(text) <= PHONE_PREFIX_MAX)):
+        raise _fail("手机号前缀得是 0 开头的 2-10 位数字（例 04 / 0207）；给的是 %r" % text)
+    return text
 
 
 def normalize_rules(raw: Any) -> Optional[dict]:
@@ -40,13 +50,9 @@ def normalize_rules(raw: Any) -> Optional[dict]:
             raise _fail("`phone_prefixes` 得是一串字符串")
         cleaned = []
         for x in phones:
-            x = x.strip()
-            if x and x not in cleaned:
+            x = _phone_prefix(x)
+            if x not in cleaned:
                 cleaned.append(x)
-        bad = [x for x in cleaned if x not in PHONE_PREFIXES]
-        if bad:
-            raise _fail("手机号只认 %s；给的是 %s"
-                        % ("/".join(PHONE_PREFIXES), "、".join(bad)))
         if cleaned:
             out["phone_prefixes"] = cleaned
     dob = raw.get("dob")

@@ -2137,9 +2137,9 @@ class RunRequest(_Intake):
         "", description="**这一站**的电话号段（例 `0207` = 伦敦座机，后 7 位随机）。"
                         "空串 = 按池子现编。它只管号段，不管「取不取资料」那件事")
     rules: Optional[dict] = Field(
-        None, description="生成期规则：{\"phone_prefixes\": [\"02\", \"07\"], "
+        None, description="生成期规则：{\"phone_prefixes\": [\"04\", \"0207\"], "
                           "\"dob\": {\"random\": true, \"format\": \"DD/MM/YYYY\"}, "
-                          "\"password\": \"strong\"}。勾了就按规则现编，不取资料")
+                          "\"password\": \"strong\"}。手机号前缀补到 10 位；勾/填了就按规则现编，不取资料")
     # ── Task 8 加的两个（**加**字段不是改既有形状**：既有形状那条约束管的是 `/job/{id}` 的响应）──
     hints: Optional[list] = Field(
         None, description="人说过的话**播种**进这一趟的 state（`/again` 带过来的那几句，R5）。"

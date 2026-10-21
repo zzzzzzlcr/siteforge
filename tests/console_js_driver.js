@@ -200,8 +200,7 @@ async function runScenario(out) {
   el("runSuccess").value = payload.run.success_text;
   el("runEvidence").value = payload.run.evidence;
   const rr = payload.run.rules || {};
-  el("rulePhone02").checked = (rr.phone_prefixes || []).indexOf("02") >= 0;
-  el("rulePhone07").checked = (rr.phone_prefixes || []).indexOf("07") >= 0;
+  el("runPhonePrefix").value = (rr.phone_prefixes || []).join(" ");
   el("ruleDob").checked = !!rr.dob;
   el("runDobFormat").value = (rr.dob && rr.dob.format) || "";
   el("rulePassword").checked = rr.password === "strong";

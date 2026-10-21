@@ -3812,7 +3812,7 @@ def test_apply_rules_sets_fills_and_returns_effective():
                 "label": "Date of birth (DD/MM/YYYY)",
                 "target": {"placeholder": "DD/MM/YYYY", "selectors": ["#dob"]}},
     }}
-    got = graph._apply_rules(spec, {"rules": {"phone_prefixes": ["02"],
+    got = graph._apply_rules(spec, {"rules": {"phone_prefixes": ["04"],
                                               "dob": {"random": True}}})
     assert got["fills"]["phone"]["rule"] == "phone_prefix"
     assert got["fills"]["dob"]["date_format"] == "DD/MM/YYYY"
@@ -3841,7 +3841,7 @@ def test_same_as_the_tested_one_ignores_rule_keys():
     state = {"shape": "table", "states": [], "success_text": "Thank you",
              "success_urls": "", "loop_spec": None,
              "fills": {"phone": {"name": "phone", "rule": "phone_prefix",
-                                 "prefixes": ["02"]}}}
+                                 "prefixes": ["04"]}}}
     spec = {"states": [], "success_text": "Thank you", "success_urls": "",
             "fills": {"phone": {"name": "phone"}}}
     assert graph._same_as_the_tested_one(state, spec, "table", {}) is True
@@ -3850,7 +3850,7 @@ def test_same_as_the_tested_one_ignores_rule_keys():
 def test_legacy_fix_with_rules_stops_instead_of_ignoring_them():
     from agent import graph
     got = graph._rule_legacy_stop({"fix_style": "legacy",
-                                   "rules": {"phone_prefixes": ["02"]}})
+                                   "rules": {"phone_prefixes": ["04"]}})
     assert got["end_reason"] == "rule_unsupported"
     assert "FILLS" in got["end_note"] or "老写法" in got["end_note"]
 
