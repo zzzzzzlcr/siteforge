@@ -4825,6 +4825,51 @@ def test_the_shape_fallback_copies_the_prefix_and_never_guesses_dates(sandbox):
         assert module._shaped_like(untouched) == "", (untouched, module._shaped_like(untouched))
 
 
+def test_a_glued_plus_number_is_used_verbatim_instead_of_reshaped(sandbox):
+    """★ 2026-10-21（`job-42ef78ce6fbb` · northernpathways，真站代价）：`+12016428374` 这种
+    **国家码与号码粘在一起**（`+` 后整串数字、没有空格/横线）的写法，切不开「前 1~3 位里
+    哪几位是国家码」—— 老规则把整串当尾段随机 ⇒ `+1` 被编成 `+5`/`+7`（实测
+    `+52655266854`、`+93029242324`）⇒ 站方按所选国家校验，回红字
+    `Please enter a valid phone number`，后面每一组判据都跟着垮。
+
+    这种形状**不编**（与日期/姓名同一条规矩）：真站收过的那个值就是它。
+    ⚠️ 有分隔的（`+61 412 345 678`）照旧编 —— 前缀那截在数字串外面，抄得到。
+    """
+    module, _ = _load("run_shape_glued", template.render(
+        "example-shape-glued", "Thank you", [{"name": "walk", "when": None, "steps": []}], [],
+        SAMPLE_PROVENANCE), sandbox)
+    for sample in ("+12016428374", "+61412345678"):
+        assert module._shaped_like(sample) == sample, sample
+    #: 有分隔的那条**不许**被这条挡住（不然就退化成「凡是电话都不编」）
+    got = module._shaped_like("+61 412 345 678")
+    assert re.fullmatch(r"\+61 412 \d{3} \d{3}", got), got
+
+
+def test_a_glued_plus_phone_fills_the_exact_value_the_site_accepted(sandbox, tmp_path):
+    """同一件事的**用户可见面**：资料里没有电话 ⇒ 重放填的必须是 `sample` 那个号本身。
+
+    真事 `job-42ef78ce6fbb`：自测第 12 步填的是 `+` + 11 位随机数（国家码被编掉），
+    第 13 步页面上就出现了 `Please enter a valid phone number`。
+    """
+    fills = [{"name": "phone", "source": "phone", "kind": "value", "label": "Phone number",
+              "sample": "+12016428374",
+              "target": {"text": None, "label": "Phone number", "role": None, "near": None,
+                         "selectors": ["input#phone"]},
+              "fallback": [{"random": "phone"}]}]
+    steps = [{"action": "form", "fill": "phone", "note": "填手机"}]
+    env = {"dpr": 1, "ua": "Mozilla/5.0 (stub)", "viewport": [1280, 800], "proxy_country": "GB"}
+    product = template.render("example-shape-glued-fill", "Thank you",
+                              [{"name": "walk", "when": None, "steps": steps}], fills,
+                              dict(SAMPLE_PROVENANCE, env=env))
+    module, _ = _load("run_shape_glued_fill", product, sandbox)
+    common = _stub(sandbox)
+    empty = tmp_path / "empty.json"
+    empty.write_text("{}", encoding="utf-8")
+    module.Filler(WS, str(empty), "cid_1", "task_1", delay=(0, 0)).run()
+    got = [v for (kind, _sel, v) in common.STATE.actions if kind == "form"]
+    assert got == ["+12016428374"], got
+
+
 def test_the_random_pools_follow_the_country_of_the_site(sandbox, tmp_path):
     """★★ 美国站与英国站各跑一次 ⇒ **拿到不同池子**（交接《骨架还缺什么》「别处」）。
 

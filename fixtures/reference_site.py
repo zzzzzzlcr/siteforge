@@ -122,6 +122,18 @@ _SPLIT_FROM = {"first_name": "username", "last_name": "username"}
 #: 值里**最后那一串**数字（`\d{3,}` 且后面不再有数字）—— `_shaped_like` 拿它当「可变尾段」。
 _TAIL_DIGITS = re.compile(r"\d{3,}(?!.*\d)")
 
+#: `+` 后整串都是数字（没有空格/横线/括号）：**国家码与号码粘在一起**。
+#: 这种写法切不开「前 1~3 位里哪几位是国家码」—— 照老规则（最后那串数字随机）会把
+#: `+1` 编成 `+5`/`+7`。真事 `job-42ef78ce6fbb`（northernpathways）：`+12016428374`
+#: 被编成 `+52655266854`，站方按所选 US 校验回 `Please enter a valid phone number`，
+#: 之后 29 步判据全被跳过。**不编**：真站收过的那个值就是它（与日期/姓名同一条规矩）。
+_GLUED_PLUS_NUMBER = re.compile(r"\+\d{8,}")
+
+
+def _glued_plus_number(text) -> bool:
+    """这个值是不是「`+` 后整串数字」的电话（切不开国家码）。"""
+    return bool(_GLUED_PLUS_NUMBER.fullmatch(str(text or "").strip()))
+
 
 def _shaped_like(sample: str) -> str:
     """照 `sample`（**真站收过的那个值**）的形状编一个新的，前面照抄、尾段数字随机。返回空串 = 不编。
@@ -140,8 +152,10 @@ def _shaped_like(sample: str) -> str:
         （`04` 是澳洲手机的前缀、`20` 是澳洲邮编的城市段 —— 头两位正是「形状」的所在）；
       · **数字前还有别的东西**（`+61 412 345 678` / `SW1A 1AA`）⇒ 最后那串数字随机、前面照抄。
 
-    ⚠️ **不编**的三种：一个数字都没有（姓名那类，交给池子）；带 `/`（日期那类，`07/23/1981`
-    的尾段是**年份**，随机成 `0231` 比池子更坏）；尾段太短（<3 位，随机等于没形状）。
+    ⚠️ **不编**的四种：一个数字都没有（姓名那类，交给池子）；带 `/`（日期那类，`07/23/1981`
+    的尾段是**年份**，随机成 `0231` 比池子更坏）；尾段太短（<3 位，随机等于没形状）；
+    **国家码与号码粘在一起**（`+12016428374`，见 `_glued_plus_number` —— 切不开哪几位是
+    国家码，整串随机会把 `+1` 编成 `+5/+7`，站方按所选国家校验直接红字）。
     ⚠️ 尾段**随机**是故意的：每趟都填同一个号，站方的去重/风控看得见（与那两个池子同一条理由）。
     """
     text = str(sample or "").strip()
@@ -150,6 +164,8 @@ def _shaped_like(sample: str) -> str:
     digits = [c for c in text if c.isdigit()]
     if not digits:
         return ""
+    if _glued_plus_number(text):
+        return text
     if all(c.isdigit() or c.isspace() for c in text):
         body = text.replace(" ", "")
         if len(body) < 3:
@@ -1196,7 +1212,7 @@ PROVENANCE = { 'generated_at': '2026-09-17T02:00:00+08:00',
 #: （实测代价：重渲一版 travelandleisure 一口气多带了 8 个方法）。
 #: 拿它跟当前骨架的 `template.SKELETON_SHA` 一比，`skeleton_drift()` 就答得出「落后多少」。
 #: ⚠️ 它是**骨架**的指纹（这份文件），不是产物的 —— 站点数据（STATES/FILLS）不算骨架。
-SKELETON_SHA = "af1e560d19524b8e"
+SKELETON_SHA = "f41404fe9d4923fd"
 
 
 def _site_country():
@@ -2693,7 +2709,12 @@ class Filler:
         shaped = _shaped_like(str(fill.get("sample") or "")
                               if str(fill.get("kind") or "value") == "value" else "")
         if shaped:
-            self._value_from = "**照真站收过的那个值的形状**编的（避开了随机池的国家档）"
+            self._value_from = (
+                #: 粘着国家码的号码**没编**（`_glued_plus_number`）—— 说的就得是「原样用」，
+                #: 不然日志会把「填的就是人给的那个号」说成「又编了一个」。
+                "**真站收过的那个值**（国家码与号码粘在一起，切不开，原样用）"
+                if _glued_plus_number(shaped)
+                else "**照真站收过的那个值的形状**编的（避开了随机池的国家档）")
             return shaped
         candidates = list(fill.get("fallback") or [])
         if not candidates:
