@@ -774,6 +774,13 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
                 "（换一组随机答案；最多重探 %d 次）。" % (n - 1, EXPLORE_ATTEMPTS - 1))
         journey.note(note)
         journey = pass_once(n)
+        #: ★ 2026-10-21：**每一趟都重算**。原先只在第 1 趟之后算一次，于是第 2 趟收尾
+        #: 照图**在图上真见着了**（`vision_hit=True`）也拦不住第 3 趟 —— 而每一趟重探
+        #: 都是一次**真提交**（真事 `job-be76b7ecd92c`：第 3 趟才见着，前两趟白交；
+        #: 用户原话「不要重复执行」）。闸的门槛一个字没动，只是不再拿第 1 趟的旧事实
+        #: 去管第 3 趟。
+        wont_help = _retry_wont_help(state.get("success_text"), journey,
+                                     state.get("success_urls"))
     reached = attempts[-1]["reached"]
     out["journey"] = journey
     out["explore_say"] = _journey_say(journey)
@@ -2696,7 +2703,7 @@ def _explore_reached_success(journey, success_text, success_urls="") -> Optional
         #: **加上**收尾那次 `eval` 取的整页正文）—— `observe` 的正文被 cdp 自己截到 600 字，
         #: 而成功文案常在 600 字之后（2026-09-22 真事）。一处实现，与活着那一趟同一把尺子。
         head = browser_agent.row_text(step).lower()
-        if head and wants and any(w in head for w in wants):
+        if head and wants and browser_agent.criterion_in(head, wants):
             return True
         #: ★ 2026-09-24：**网址那一格**在同一行的地址上找（与活着那一趟**同一把尺子**：
         #: `_norm` + 小写 + 子串）—— 两边分家的后果是「活的探路说见着了、图上说没见到」。

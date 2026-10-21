@@ -3970,7 +3970,8 @@ def _the_product_judges(page_text, criterion):
     """拿**真渲染出来的** `_succeeded()` 判这一页算不算成了。"""
     src = template.render(SAMPLE_SITE, [criterion], SAMPLE_STATES, SAMPLE_FILLS,
                           SAMPLE_PROVENANCE)
-    ns = _rendered_pieces(src, "_FOLD", "_norm", "SUCCESS_TEXTS", "SUCCESS_URLS", "_succeeded")
+    ns = _rendered_pieces(src, "_FOLD", "_norm", "_criterion_in",
+                          "SUCCESS_TEXTS", "SUCCESS_URLS", "_succeeded")
     return ns["_succeeded"](_JustEnoughProduct(ns["_norm"], page_text))
 
 
@@ -3997,6 +3998,25 @@ def test_the_product_still_needs_the_punctuation_that_was_asked_for():
                                _TYPO_CRITERION) is False
     assert _the_product_judges("Thank You! We've Received Your Information!",
                                _TYPO_CRITERION) is True
+
+
+def test_the_product_sees_the_success_words_a_page_split_into_two_blocks():
+    """★ 2026-10-21（真事 `job-be76b7ecd92c` · lendio）：页面把一句话拆在 `h3` + `h5` 上。
+
+    正文拼出来两块之间有一个换行，人给的判据（`Congratulations!Your business …`）没有
+    那个空格 —— **空白不是内容**，同一句话被排版拆开仍然是同一句。产物是**独立交付
+    的一份 py**（与探路天然是两份实现），这一格钉住它也得认；否则它在真站上会一路
+    说「每一步都做成了」、最后报「没走到成功」，而现场只看得出「判据没匹配上」。
+    """
+    page = ("Congratulations! Your business is eligible for several financing options. "
+            "Finish creating your account.")
+    assert _the_product_judges(
+        page,
+        "Congratulations!Your business is eligible for several financing options.") is True
+    #: 负控：空白不敏感**只**放过排版差异，不许把**不同的词**接上
+    assert _the_product_judges(
+        "Congratulations! Our business is eligible for several financing options.",
+        "Congratulations!Your business is eligible for several financing options.") is False
 
 
 # ── 候选顺序：框架生成的 id 排最后（★ 2026-09-23 用户实测）──────────────

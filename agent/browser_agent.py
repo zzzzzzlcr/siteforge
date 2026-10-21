@@ -1694,9 +1694,32 @@ FINAL_LOOK_ROUNDS = 2
 FINAL_TEXT_CHARS = 20000
 #: 取整页正文的那段 JS —— ⚠️ **只读**（不点、不填、不选元素）。
 #: 为什么还是得写这一段：`observe` 的正文被它自己截到 600 字（`internal/observe.go`），
-#: 而这里要的是**整页**；shadow 那条坑由**同一轮紧挨着的 `observe`** 兜着（两处一起读）。
-_FULL_TEXT_JS = ("(function(){try{return (document.body && document.body.innerText || '')"
-                 ".replace(/\\s+/g,' ').trim().slice(0, %d);}catch(e){return '';}})()")
+#: 而这里要的是**整页**。
+#:
+#: ★ 2026-10-21（真事 `job-be76b7ecd92c` · lendio）：**必须逐 root 收** ——
+#: `document.body.innerText` **不穿 shadow**，而那一趟的成功文案（`h3`「Congratulations!」+
+#: `h5`「Your business is eligible …」）整棵都在 open shadow root 里 ⇒ `page_text_full`
+#: 里连一道题都没有 ⇒ 判据永远搜不到 ⇒ 自动重探 3 趟（每趟都是一次真提交）。
+#: 原先那句「shadow 那条坑由同一轮 observe 兜着」是**假的**：`observe` 的正文也是从
+#: 正文根起收的，而且**截在 600 字**——落地页文案一铺满，shadow 里的字就被切掉了。
+#: ⚠️ 这份必须与**产物那份**（`template._PAGE_TEXT_JS`）同一个口径：只跳 style/script
+#: 那几族、逐 root 收、`innerText` 压空白 —— 两边分家就会「探路认得出、交付出去的脚本
+#: 认不出」（产物那份 2026-09-23/28 已经修过同一个坑）。
+_FULL_TEXT_JS = (
+    "(function(){try{"
+    "var SKIP={SCRIPT:1,STYLE:1,TEMPLATE:1,LINK:1,META:1,NOSCRIPT:1,TITLE:1};"
+    "var roots=[document],i=0;"
+    "while(i<roots.length){var r=roots[i++];"
+    "var els=(r.getElementsByTagName?r.getElementsByTagName('*'):r.querySelectorAll('*'));"
+    "for(var j=0;j<els.length;j++){if(els[j].shadowRoot){roots.push(els[j].shadowRoot);}}}"
+    "var parts=[];"
+    "for(var k=0;k<roots.length;k++){var rt=roots[k];"
+    "if(rt.body){try{parts.push(rt.body.innerText||'');}catch(e){}}"
+    "else{for(var m=0;m<rt.children.length;m++){var c=rt.children[m];"
+    "if(SKIP[c.tagName]){continue;}"
+    "try{parts.push(c.innerText||'');}catch(e){}}}}"
+    "return parts.join(' ').replace(/\\s+/g,' ').trim().slice(0, %d);"
+    "}catch(e){return '';}})()")
 
 #: 收尾「照着图找那串字」那句的 system（**只问这一件事**：别让它顺手改页面）。
 _FINAL_LOOK_SYSTEM = (
@@ -1821,13 +1844,75 @@ def _read_page_text(session, journey, wants) -> str:
     return _norm(" ".join(parts))
 
 
+def _squash_positions(text: str):
+    """去掉**所有**空白之后的那份 + 每个字在原串里的下标（判据比对用）。
+
+    ⚠️ 只给 `criterion_in` / `_success_line_in` 用：`_norm` 那一把尺子是**页面身份**
+    （`page_signature` / diff 靠它认页），**不许**去掉空白 —— 那会把两页认成一页。
+    """
+    out: list = []
+    pos: list = []
+    for i, ch in enumerate(text or ""):
+        if not ch.isspace():
+            out.append(ch)
+            pos.append(i)
+    return "".join(out), pos
+
+
+def criterion_in(text: str, wants) -> bool:
+    """判据在不在正文里 —— **空白可有可无**（「同一把尺子」的那个口子）。
+
+    先逐字比（原来的行为不变）；不中再比「去掉所有空白」的那一份。为什么必须这样
+    （★ 2026-10-21 真事 `job-be76b7ecd92c` · lendio）：页面把同一句成功文案拆在两块上
+    （`h3`「Congratulations!」+ `h5`「Your business is eligible …」）—— 视觉上是换行，
+    正文拼出来中间有一个空白；而运营给的那格没有那个空格
+    （`Congratulations!Your business …`）⇒ 逐字子串**永远**对不上 ⇒ 探路自动重探 3 趟，
+    每趟都是一次真提交。**空白不是内容**：同一句话被排版拆开仍然是同一句。
+
+    ⚠️ 与产物那份（`template` 骨架里的 `_criterion_in`）**必须同一口径** —— 两边分家
+    就是「探路认得出、交付出去的脚本认不出」（这个病已经犯过两次：大小写、同形字）。
+    ⚠️ 去空白**只**动判据比对，不动 `_norm` / `row_text` / `page_signature`。
+    """
+    low = str(text or "").lower()
+    if not low:
+        return False
+    flat = None
+    for word in wants or []:
+        want = str(word or "").lower()
+        if not want:
+            continue
+        if want in low:
+            return True
+        #: ⚠️ 这里用 `re.sub` 而**不是** `_squash_positions`：这一支在每个读者里
+        #: 是**按行**调的（R3 的 `seen_text` 越滚越大），逐字循环会变成 O(行数×正文)。
+        #: 只有 `_success_line_in` 需要「去掉空白后的下标」，所以那个才用逐字的那份。
+        if flat is None:
+            flat = re.sub(r"\s+", "", low)
+        if re.sub(r"\s+", "", want) in flat:
+            return True
+    return False
+
+
 def _success_line_in(text: str, wants) -> str:
-    """判据在这份正文里的**那一截**（前后各留 `SUCCESS_LINE_PAD` 字）；没有给空串。"""
-    low = (text or "").lower()
+    """判据在这份正文里的**那一截**（前后各留 `SUCCESS_LINE_PAD` 字）；没有给空串。
+
+    与 `criterion_in` 同一把尺子：先逐字找，不中再在「去掉所有空白」的那份里找，
+    再把下标映射回原串（页面把一句话拆成两块时，原串里含着人给的那串字的**全部**字）。
+    """
+    raw = text or ""
+    low = raw.lower()
     for word in wants or []:
         at = low.find(word)
         if at >= 0:
-            return text[max(0, at - SUCCESS_LINE_PAD):at + len(word) + SUCCESS_LINE_PAD]
+            return raw[max(0, at - SUCCESS_LINE_PAD):at + len(word) + SUCCESS_LINE_PAD]
+    flat, pos = _squash_positions(low)
+    for word in wants or []:
+        want = _squash_positions(str(word or "").lower())[0]
+        at = flat.find(want) if want else -1
+        if at >= 0:
+            start = pos[at]
+            end = pos[at + len(want) - 1] + 1
+            return raw[max(0, start - SUCCESS_LINE_PAD):end + SUCCESS_LINE_PAD]
     return ""
 
 
@@ -2249,7 +2334,7 @@ def _success_hit(steps: list, success_text: str, success_urls: str = "") -> int 
         if not is_look(row):
             continue                      # 没看过页面的一行（动作类）⇒ 判据不该在它身上找
         head = row_text(row).lower()
-        if head and wants and any(w in head for w in wants):
+        if head and wants and criterion_in(head, wants):
             return i
         #: ★ 2026-09-24：网址那一格在**同一行的地址**上找（与正文同一把尺子：小写 + 子串）。
         page_url = row_url(row).lower()
@@ -4170,7 +4255,7 @@ def replayable_prefix(steps: list, success_text: str, *,
     #: 判据**最早**在第几行那次观察里出现（None = 这一趟压根没出现过）。
     #: ⚠️ 两格是**或**的关系（文字见着了、或网址对上了，都算过了那条线）。
     first_hit = next((j for j in range(len(seen_text))
-                      if (wants and any(w in seen_text[j].lower() for w in wants))
+                      if (wants and criterion_in(seen_text[j], wants))
                       or (urls and any(u in seen_at[j] for u in urls))), None)
 
     seen_urls = set()

@@ -2013,6 +2013,37 @@ def test_a_plan_that_stalled_still_gets_its_bounded_retries(tmp_path):
     assert out["explore_spent"]["attempts"] == 3, out["explore_spent"]
 
 
+def _journey_without_the_line(*, vision_hit=False):
+    """一趟「干净走完、正文里没有那句成功文案」的账本（有 look ⇒ 结算判得出 False）。"""
+    book = _journey(stop_reason="model_done")
+    book.steps.append({"state": "funnel", "action": "observe", "note": "看了一眼页面",
+                       "target": {}, "result": {"ok": True, "url": URL, "title": "Funnel",
+                                                "page_text_head": "这一页上没有那句成功文案"}})
+    book.vision_hit = vision_hit
+    if vision_hit:
+        book.vision_say = "图上写着：" + SUCCESS
+    return book
+
+
+def test_a_later_pass_that_saw_the_line_in_the_screenshot_stops_further_retries(tmp_path):
+    """★ 2026-10-21（真事 `job-be76b7ecd92c` · lendio）：第 2 趟「图上见着了」⇒ 不许再起第 3 趟。
+
+    `wont_help` 原先只在第 1 趟之后算**一次**，于是第 2 趟收尾照图**在图上真见着了**
+    （`vision_hit=True`）也拦不住第 3 趟 —— 而每一趟重探都是一次**真提交**
+    （那一趟就是这么交了三遍）。重算之后：第 2 趟一收尾，闸就关。
+    """
+    first = _journey_without_the_line()
+    second = _journey_without_the_line(vision_hit=True)
+    deps, rec = _deps(explores=[first, second])
+    app, cfg, _ = _build(deps=deps)
+    _, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert len(rec.explore) == 2, (
+        "第 2 趟图上已经见着了，还是起了第 %d 趟（每趟都是一次真提交）" % len(rec.explore))
+    assert out["explore_reached_success"] is False, out.get("explore_reached_success")
+    assert out["end_reason"] == "explore_unfinished", out.get("end_note")
+
+
 def test_a_criterion_written_as_a_sentence_is_flagged_on_the_first_gate(tmp_path):
     """★ 2026-09-22 **真事连着三次**：判据被写成**说明句** ⇒ 子串永远找不到 ⇒
     屏幕上只表现成「没见到成功文案」+ 自动重探 3 趟（`出现文字 check your email`、

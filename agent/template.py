@@ -1792,6 +1792,37 @@ def _norm(text):
     return re.sub(r"\s+", " ", text or "").translate(_FOLD).strip()
 
 
+def _criterion_in(text, wants):
+    """判据在不在正文里 —— **空白可有可无**（与探路那份 `browser_agent.criterion_in`
+    **同一个口径**）。
+
+    先逐字比；不中再比「去掉所有空白」的那一份。页面常把一句话拆在两块上
+    （`h3`「Congratulations!」+ `h5`「Your business …」）：视觉上是换行，正文拼出来
+    中间有一个空白，而人给的那格常常没有那个空格 —— ★ 2026-10-21 真事
+    `job-be76b7ecd92c`（lendio）：判据 `Congratulations!Your business …` 逐字比**永远**
+    对不上 ⇒ 探路重探 3 趟；产物这一侧同病 ⇒ 真站上会报「没走到成功」。
+    **空白不是内容**：同一句话被排版拆开仍然是同一句。
+
+    ⚠️ 去空白**只**用于判据比对：`_norm` / `page_signature()` 是**页面身份**，去掉空白
+    会把两页认成一页。⚠️ 抹标点**不做**（那才是放宽判据）。
+    """
+    low = str(text or "").lower()
+    if not low:
+        return False
+    flat = None
+    for word in wants or []:
+        want = str(word or "").lower()
+        if not want:
+            continue
+        if want in low:
+            return True
+        if flat is None:
+            flat = re.sub(r"\s+", "", low)
+        if re.sub(r"\s+", "", want) in flat:
+            return True
+    return False
+
+
 # 读页面正文（**只读**）。shadow DOM 要逐 root 收：body.innerText 不穿 shadow，
 # 而生产站点里 shadow 页越来越多（实测遇过整页正文只剩 10 个字符）。
 # 遍历用 getElementsByTagName / querySelectorAll —— 动作一律走 cdp，这里只是「看」。
@@ -4324,7 +4355,7 @@ class Filler:
 
     def _succeeded(self):
         signature = self.page_signature().lower()
-        if any(_norm(t).lower() in signature for t in SUCCESS_TEXTS if t):
+        if _criterion_in(signature, [_norm(t).lower() for t in SUCCESS_TEXTS if t]):
             return True
         #: ★ 2026-09-24（用户点名「那不能一样加个 success_url」）：**网址那一格**。
         #: 判「成功」的两条路并列：页面上见到了那串字，**或者**现在这个地址里出现了那一截。

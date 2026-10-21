@@ -3957,6 +3957,23 @@ def test_the_page_the_step_landed_on_carries_the_success_text():
     assert "落到的那一页" in why and "撞" not in why, why
 
 
+def test_r3_recognizes_the_success_sentence_split_across_two_blocks():
+    """★ 2026-10-21（真事 `job-be76b7ecd92c`）：一句话被页面拆在 `h3` + `h5` 上时，R3 也得认。
+
+    正文里两块之间有一个换行，而判据那格没有空格 —— **空白不是内容**。
+    不认的后果：重放把「提交」当成可重放的一步，在真页面上再交一次。
+    """
+    rows = [_goto(ENTRY, state="start"),
+            _look(ENTRY, TEXT_A, state="start"),
+            _click("提交申请", state="funnel"),
+            _look(QUOTE,
+                  "Congratulations! Your business is eligible for several financing options.",
+                  state="funnel")]
+    prefix, why = browser_agent.replayable_prefix(rows, SPLIT_SUCCESS, entry_url=ENTRY)
+    assert prefix == rows[:2], f"过线的那一步进了前缀：{[r['action'] for r in prefix]}"
+    assert "R3" in why, why
+
+
 def test_a_success_text_that_collided_with_an_earlier_page_also_stops_everything():
     """R3 反例（**撞**）：那句话出现在**我们早先就在的**那一页上 → **也不许过**。
 
@@ -5478,6 +5495,52 @@ def test_the_final_look_reads_the_whole_page_with_code_and_never_asks_the_model(
     assert asked == [], "代码已经见着了，还去问模型看图 = 白花一次模型调用"
 
 
+def test_the_whole_page_read_pierces_open_shadow_roots(tmp_path):
+    """★ 2026-10-21（真事 `job-be76b7ecd92c` · lendio）：整页正文必须**穿 shadow root**。
+
+    那一趟的成功文案（`h3`「Congratulations!」+ `h5`「Your business is eligible …」）全在
+    同一棵 open shadow root 里，而 `_FULL_TEXT_JS` 只读 `document.body.innerText`（不穿
+    shadow）⇒ `page_text_full` 里连一道题都没有 ⇒ 判据永远搜不到 ⇒ 自动重探 3 趟。
+    产物那份 `_PAGE_TEXT_JS` 早就是逐 root 收的（`agent/template.py`），探路这份没跟上。
+
+    真跑那段 JS（node + 假 DOM）：正文根里写着落地页文案、成功文案只在 shadow root 的
+    子元素里 —— 读回来的正文必须两段都有。
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("这台机器上没有 node —— 没验这段 JS 的行为，别当验过")
+    js = browser_agent._FULL_TEXT_JS % browser_agent.FINAL_TEXT_CHARS
+    harness = r"""
+const READ = __JS__;
+function El(tag, o) {
+  o = o || {};
+  this.tagName = tag;
+  this.shadowRoot = o.shadowRoot || null;
+  this.innerText = o.innerText || "";
+}
+const congrats = new El("H3", {innerText: "Congratulations!"});
+const shadow = {
+  children: [congrats],
+  querySelectorAll: function () { return [congrats]; }
+};
+const host = new El("DIV", {shadowRoot: shadow});
+const body = new El("BODY", {innerText: "See how much your business is eligible for."});
+globalThis.document = {
+  body: body,
+  getElementsByTagName: function () { return [body, host]; }
+};
+console.log(JSON.stringify(eval(READ)));
+""".replace("__JS__", json.dumps(js))
+    path = tmp_path / "full_text.js"
+    path.write_text(harness, encoding="utf-8")
+    done = subprocess.run([node, str(path)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[:500]
+    got = json.loads(done.stdout)
+    assert "See how much your business is eligible for." in got, got
+    assert "Congratulations!" in got, (
+        "整页正文没有读出 shadow root 里的字 —— 判据永远搜不到：%r" % got)
+
+
 def test_the_whole_page_read_runs_in_every_frame_the_run_touched(monkeypatch):
     """★ 2026-09-23 真站实测（`job-968a5382f7b4` 那个站）：只读**主帧**拿回来 **357 字**
     —— 这站的正文挂在**跨源 iframe** 里，光读主帧等于没读，判据照样什么也搜不到。
@@ -5991,6 +6054,23 @@ PAGE_MATCHED = {
     "fields": [], "option_groups": [], "obstructions": [], "honeypots": [], "diagnostics": [],
 }
 
+#: ★ 2026-10-21（真事 `job-be76b7ecd92c` · lendio）：页面把同一句成功文案**拆成两块**
+#: （`h3`「Congratulations!」+ `h5`「Your business is eligible …」）。视觉上是换行，
+#: 正文拼出来中间多一个空白，而运营给的那格**没有**那个空格
+#: （`Congratulations!Your business …`）⇒ 逐字子串永远对不上 ⇒ 自动重探 3 趟。
+SPLIT_SUCCESS = "Congratulations!Your business is eligible for several financing options."
+
+PAGE_SPLIT_SUCCESS = {
+    "url": "https://example.test/funnel?eligible=1",
+    "title": "Example 漏斗 有资格",
+    "page_text": ("Congratulations! Your business is eligible for several financing options. "
+                  "Finish creating your account and start your application."),
+    "shadow_roots": 0,
+    "viewport_css_px": {"width": 1280, "height": 800},
+    "actions": [],
+    "fields": [], "option_groups": [], "obstructions": [], "honeypots": [], "diagnostics": [],
+}
+
 
 def test_it_stops_the_moment_the_success_text_shows_up_instead_of_going_on(tmp_path):
     """★ 看见了那句成功文案 ⇒ **当场收摊**，之后一次真请求都不许再发。
@@ -6042,6 +6122,30 @@ def test_a_click_queued_in_the_same_round_after_the_look_never_reaches_the_site(
     assert [c["name"] for c in calls] == ["goto", "observe"], (
         "同一轮里排在后面那一下也发出去了：%r" % [(c["name"], c["args"]) for c in calls])
     assert journey.stop_reason == "reached_success", journey.stop_reason
+
+
+def test_it_stops_when_the_page_puts_the_success_sentence_in_two_blocks(tmp_path):
+    """★ 2026-10-21（真事 `job-be76b7ecd92c` · lendio）：判据里没有空格、页面是两块。
+
+    页面把一句话拆在 `h3` + `h5` 上 ⇒ 正文里中间有一个换行。人给的那格
+    （`Congratulations!Your business …`）没有那个空格 —— **空白不是内容**，
+    这仍然是「同一句话」。第 2 眼就该收摊：不许再走到后面的 click。
+    """
+    journey, _fake, calls = _run(
+        tmp_path,
+        {"observe": [{"structured": PAGE_LANDING}, {"structured": PAGE_SPLIT_SUCCESS}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("observe", {})]},
+         {"calls": [("click", {"selector": "#see-other-quotes"})]},
+         {"content": "说完了"}],
+        budget=browser_agent.Budget(max_steps=50, max_rounds=50),
+        success_text=SPLIT_SUCCESS,
+    )
+    assert journey.stop_reason == "reached_success", journey.stop_reason
+    #: `eval` 是 `_watch_the_page` 那一下**只读**的整页正文（不碰站方）——
+    #: 与上一条用例同一条口径：这里防的是「过了线之后还能再发**会改页面**的请求」。
+    assert [c["name"] for c in calls if c["name"] != "eval"] == ["goto", "observe", "observe"], (
+        "判据在第二眼就成立了，却还走到了后面的动作：%r" % [(c["name"], c["args"]) for c in calls])
 
 
 def test_the_human_stop_is_still_reported_as_the_human_stop(tmp_path):
@@ -6147,6 +6251,20 @@ def test_the_line_the_live_run_stops_on_is_the_same_line_the_graph_settles(tmp_p
         "停下来说「见着了」、图上结算说「没见着」—— 同一个事实两个答案")
 
 
+def test_the_settlement_recognizes_the_success_sentence_split_across_two_blocks():
+    """★ 2026-10-21（真事 `job-be76b7ecd92c`）：图上**事后结算**也得认「被拆成两块」的那句。
+
+    活的探路、R3、结算必须是**同一把尺子** —— 这条只钉结算这一面；另外两面各有一条。
+    """
+    from agent import graph as graph_mod
+
+    class _Journey:
+        steps = [_look("https://example.test/done",
+                       "Congratulations! Your business is eligible for several financing options.")]
+
+    assert graph_mod._explore_reached_success(_Journey(), SPLIT_SUCCESS) is True
+
+
 @pytest.mark.parametrize("raw", ["", "  ", "a\nb", " a\t b ", "a b", "x  y", "甲　乙"])
 def test_the_two_norms_are_one_yardstick(raw):
     """**两把**归一化必须是同一把尺子 —— 探路那份，与产物里那份。
@@ -6171,6 +6289,31 @@ def test_the_two_norms_are_one_yardstick(raw):
     want = browser_agent._norm(raw)
     assert _artifact_norm()(raw) == want, (
         "产物那份（`page_signature()` 脚下那个 `_norm`）与探路那份漂了")
+
+
+@pytest.mark.parametrize("page, criterion", [
+    ("Congratulations! Your business is eligible.", "Congratulations!Your business is eligible."),
+    ("We've received it", "We've received it"),
+    ("Congratulations! Our business is eligible.", "Congratulations!Your business is eligible."),
+    ("", "Congratulations!"),
+    ("some page", ""),
+    ("  a\nb ", "ab"),
+])
+def test_the_two_criterion_matchers_are_one_yardstick(page, criterion):
+    """★ 2026-10-21：**判据匹配**这一把尺子，探路那份与产物那份必须同一个答案。
+
+    `criterion_in` / `_criterion_in` 是两份独立实现（产物是**交付出去的一份 py**，
+    import 不到 agent 包）—— 分家的后果是「探路认得出、脚本在真站上认不出」，
+    而这个病本仓已经犯过两次（大小写、同形字）。这一条拿同一批输入两边各跑一遍。
+    """
+    import re as _re
+    ns: dict = {"re": _re}
+    exec(compile(_artifact_piece("_criterion_in"), "<artifact:_criterion_in>", "exec"), ns)
+
+    got_both = (browser_agent.criterion_in(page, [criterion]),
+                ns["_criterion_in"](page, [criterion]))
+    assert got_both[0] == got_both[1], (
+        "探路说 %r、产物说 %r（页=%r 判据=%r）" % (got_both + (page, criterion)))
 
 
 #: 同一个字的**两种写法**（左＝判据那格人敲的，右＝站点真渲染出来的那一种）。
