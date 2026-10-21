@@ -111,6 +111,8 @@ _ALIASES = {
     "city": ("town",),
     "street": ("address", "address1", "street_address"),
     "country": ("country_code",),
+    #: 任务资料里出生日期叫 `birthday`（formMessage 的键），产物里常按页面叫 `dob`。
+    "dob": ("birthday", "date_of_birth", "birthdate"),
 }
 #: 资料只给**一个全名**（`username: "Lin Cameron"`）时，这两格从它按空格拆。
 #: 页面上是 First / Last 两个框、资料库里是一个字段 —— 这是**结构差**，
@@ -162,6 +164,45 @@ def _shaped_like(sample: str) -> str:
     run = m.group(0)
     return (text[:m.start()]
             + "".join(random.choice("0123456789") for _ in range(len(run))))
+def _format_date(day, month, year, fmt):
+    out = []
+    for part in re.split(r"([/\-\.])", str(fmt or "")):
+        if not part:
+            continue
+        if part in ("/", "-", "."):
+            out.append(part)
+            continue
+        token = part.upper()
+        if token == "D":
+            out.append(str(day))
+        elif token == "DD":
+            out.append("%02d" % day)
+        elif token == "M":
+            out.append(str(month))
+        elif token == "MM":
+            out.append("%02d" % month)
+        elif token == "YYYY":
+            out.append(str(year))
+        elif token == "YY":
+            out.append(str(year)[-2:])
+        else:
+            raise ValueError("产物写错了：生日格式里有不认识的 token「%s」" % part)
+    return "".join(out)
+
+
+def _strong_password():
+    upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    lower = "abcdefghijklmnopqrstuvwxyz"
+    digits = "0123456789"
+    specials = "!@#$%^&*"
+    chars = [random.choice(upper), random.choice(lower),
+             random.choice(digits), random.choice(specials)]
+    alphabet = upper + lower + digits + specials
+    chars += [random.choice(alphabet) for _ in range(8)]
+    random.shuffle(chars)
+    return "".join(chars)
+
+
 ERR_MARKERS = ("Error:", "error:", "not found", "BugError", "no page target",
                "failed to create client", "Usage:", "Flags:", "panic:")
 
@@ -1060,6 +1101,11 @@ def _random_gb_landline() -> str:
             return got
 
 
+def _random_au_mobile() -> str:
+    """澳洲**手机**形状：`04` + 8 位随机数字（共 10 位，站方那格要的就是这个形状）。"""
+    return "04" + "".join(str(random.randint(0, 9)) for _ in range(8))
+
+
 def _phone_pool(make) -> list:
     """现生成 `PHONE_POOL_SIZE` 个**互不相同**的值（重复的丢掉重抽）。"""
     out: list = []
@@ -1072,6 +1118,9 @@ def _phone_pool(make) -> list:
 
 #: 英国那一档（同时是「不知道」那一档，见上面那段）。
 PHONES = _phone_pool(_random_gb_landline)
+AU_PHONES = _phone_pool(_random_au_mobile)
+AU_POSTCODES = ("2000", "3000", "4000", "5000", "6000", "7000", "0800", "0820", "2250", "4217")
+AU_STATES = ("New South Wales", "Victoria", "Queensland", "Western Australia", "South Australia", "Tasmania", "Australian Capital Territory", "Northern Territory")
 # ── 随机池按**站点国家**分流（★ 2026-09-29，交接《骨架还缺什么》「别处」那条）──────
 #
 # 为什么非分流不可（真站代价，`forms/common.py` 的 `_ALIASES` 注释里记着那一次）：
@@ -1124,6 +1173,8 @@ COUNTRY_POOLS = {
            "postcode": POSTCODES, "phone": PHONES},
     "CA": {"country": "Canada", "state": CA_PROVINCES,
            "postcode": CA_POSTCODES, "phone": CA_PHONES},
+    "AU": {"country": "Australia", "state": AU_STATES,
+           "postcode": AU_POSTCODES, "phone": AU_PHONES},
 }
 #: 「不知道这个站在哪一国」时用的兜底 —— 邮编仍是英国那一套、州仍是美国那一套，
 #: 手机与英国那一档**共用 `PHONES`**（见 `PHONES` 上面那段：真跑起来常常就是这一档）。
@@ -1145,7 +1196,7 @@ PROVENANCE = { 'generated_at': '2026-09-17T02:00:00+08:00',
 #: （实测代价：重渲一版 travelandleisure 一口气多带了 8 个方法）。
 #: 拿它跟当前骨架的 `template.SKELETON_SHA` 一比，`skeleton_drift()` 就答得出「落后多少」。
 #: ⚠️ 它是**骨架**的指纹（这份文件），不是产物的 —— 站点数据（STATES/FILLS）不算骨架。
-SKELETON_SHA = "8bb5a7de188a9693"
+SKELETON_SHA = "c6b53f2e4e6305e8"
 
 
 def _site_country():
@@ -1676,6 +1727,7 @@ class Filler:
         self.cdp = CDPHelper(ws_url)
         with open(form_file) as f:
             self.form_data = json.load(f)
+        self._rule_values = {}
         self.cid = correlation_id
         self.tid = task_id or correlation_id.split('_')[0]
         self.log = setup_logger(SITE)
@@ -2437,6 +2489,32 @@ class Filler:
             return "" if ok else "Error: 打开 %s 失败" % value
         raise ValueError("产物写错了：不认识这个动作「%s」" % action)
 
+    def _rule_value(self, rule, fill):
+        key = (rule, tuple(fill.get("prefixes") or ()),
+               str(fill.get("date_format") or ""))
+        if key in self._rule_values:
+            self._value_from = "规则「%s」现编（同一趟同值）" % rule
+            return self._rule_values[key]
+        if rule == "phone_prefix":
+            prefixes = [str(x).strip() for x in (fill.get("prefixes") or [])
+                        if str(x).strip()]
+            prefix = random.choice(prefixes) if prefixes else "04"
+            value = prefix + "".join(str(random.randint(0, 9))
+                                     for _ in range(max(0, 10 - len(prefix))))
+            self._value_from = "规则「手机号 %s」现编" % ("/".join(prefixes) or prefix)
+        elif rule == "dob_random":
+            fmt = str(fill.get("date_format") or "DD/MM/YYYY")
+            year = time.localtime().tm_year - random.randint(19, 68)
+            value = _format_date(random.randint(1, 28), random.randint(1, 12), year, fmt)
+            self._value_from = "规则「生日 %s，18-68」现编" % fmt
+        elif rule == "password_strong":
+            value = _strong_password()
+            self._value_from = "规则「强密码」现编"
+        else:
+            raise ValueError("产物写错了：不认识的规则「%s」" % rule)
+        self._rule_values[key] = value
+        return value
+
     def _fill_value(self, fill, step):
         """这一步填什么：先读 --form-file 里的键，没有就用 fallback 里的一个随机值。
 
@@ -2450,6 +2528,9 @@ class Filler:
            ⚠️ 只报**来源**，**不报值本身**（生产日志会上报到后端，姓名/电话没必要进那儿）。
         """
         self._value_from = ""
+        rule = str(fill.get("rule") or "").strip()
+        if rule:
+            return self._rule_value(rule, fill)
         source = fill.get("source")
 
         def take(key):
@@ -2749,7 +2830,14 @@ class Filler:
         if kind == "dob":
             return "%02d/%02d/%d" % (random.randint(1, 12), random.randint(1, 28),
                                      random.randint(1970, 1995))
+        if kind == "dob_dmy":
+            #: ★ 2026-10-20（belong）：站点 label 明确要 **DD/MM/YYYY**（日/月/年）。
+            #: 年份取 [今年-68, 今年-19] ⇒ 不论生日过没过，年龄都落在 18-68
+            #: （今年-19 且生日未到 = 18；今年-68 且生日已过 = 68）。
+            year = time.localtime().tm_year - random.randint(19, 68)
+            return "%02d/%02d/%d" % (random.randint(1, 28), random.randint(1, 12), year)
         if kind == "password":
+            #: 至少 8 位，含大写/小写/数字/特殊字符；`!` 在站点要求的 `!@#$%^&*` 里。
             return "Test%d!" % random.randint(1000, 9999)
         raise ValueError("产物写错了：不认识这个随机值类型「%s」" % kind)
 
