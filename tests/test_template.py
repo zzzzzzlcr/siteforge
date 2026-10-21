@@ -670,6 +670,45 @@ def test_early_stop_on_repeated_failure(sandbox, form_file):
     assert f.step < total_steps, "这不算早停 —— 它磨到了全程"
 
 
+def test_stalled_early_stop_leaves_a_terminal_trace_row(sandbox, form_file, tmp_path):
+    """「原地打转」早停也要**先落一行 trace**（与循环型 `_stop` 同一条规矩）。
+
+    现场（`job-6c2335e72ba9` · trials）：连着 3 下选项点击被 `cdp diff` 判成「没推进」⇒
+    `stalled` 早停，可 trace 里**没有这一行** ⇒ selftest 的 `_verdict` 找不到承重失败行，
+    回退到前面那条 `ok=false` 的软行（同意弹层）⇒ 面板与 diagnose 都被指向弹层 ⇒
+    repair 回原稿两次 ⇒ `repair_noop`。
+
+    这一条钉两件：**行在**（`ok=false`、没有 soft/auxiliary 记号），而且**话对**
+    （note 里是「原地打转」，不是前一步那句「页面没有变化」）。
+    """
+    click = {
+        "action": "click", "note": "选一项",
+        "target": {"text": "Yes", "role": "button", "near": None, "selectors": ["#yes"]},
+    }
+    src = template.render(
+        "example-stalled", "NEVER-APPEARS",
+        _walk_states(4, lambda i: click), [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_stalled", src, sandbox)
+    common = _stub(
+        sandbox,
+        observe={"url": "https://example.test/step-1", "actions": [], "fields": []},
+        diff={"actionable": False},
+    )
+    common.STATE.texts = ["Walk"]
+    module.SUCCESS_WAIT_SECONDS = 0
+
+    trace = tmp_path / "stalled.jsonl"
+    f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace))
+    assert f.run() is False
+    lines = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines()
+             if ln.strip()]
+    last = lines[-1]
+    assert last["ok"] is False, last
+    assert last["step"] == module.STUCK_LIMIT, last
+    assert "原地打转" in last["note"], last
+    assert last.get("soft") is None and last.get("auxiliary") is None, last
+
+
 def test_ladder_falls_back_to_observe(rendered, sandbox, form_file):
     """§5.1b：声明式 target 的最后一跳 —— 选择器全挂 → 重新 observe → 按 text+role+near 找到。
 
@@ -764,6 +803,61 @@ def _relocate_only(sandbox, name, actions, target_extra=None):
     common.STATE.texts = ["Walk"]
     common.STATE.fail_selectors = ("#stale-a", "#stale-b")
     return module, common
+
+
+def test_a_strict_form_that_hits_the_cdp_datepicker_bug_is_retried_without_strict(
+        sandbox, form_file, tmp_path):
+    """`cdp form --strict` 报内核假错时：**唯一命中**才退回非严格再填一次。
+
+    现场（`job-e892e399ccb5` · trials 的 8100 复验）：MUI 输入框
+    `input[placeholder="Your first name"]` 带 `--strict` 时 `cdp form` 回
+    `Error: datepicker detection: no input found in wrapper`；**同一个选择器不带
+    `--strict` 就能填进去**。严格闸存在的理由是「命中多个时不许静默挑第一个」——
+    所以退回之前先数命中：唯一命中才退；多个 / 数不出来照旧大声失败。
+    """
+    sel = 'input[placeholder="Your first name"]'
+    target = {"text": None, "label": "First name *", "role": "textbox", "near": None,
+              "selectors": [sel], "frame_id": ""}
+    steps = [{"action": "form", "fill": "first_name", "note": "填好了「First name *」",
+              "target": dict(target)}]
+    fills = [{"name": "first_name", "source": "username", "kind": "value",
+              "label": "First name *", "target": dict(target),
+              "fallback": [{"random": "first_name"}]}]
+    src = template.render("example-strict-bug", "Thank you",
+                          [{"name": "w", "when": None, "steps": steps}], fills,
+                          SAMPLE_PROVENANCE)
+
+    module, _ = _load("run_strict_bug", src, sandbox)
+    module.SUCCESS_WAIT_SECONDS = 0
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.form_datepicker_strict = True
+    common.STATE.match_count = 1
+    trace = tmp_path / "strict_bug.jsonl"
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace)).run()
+    forms = [a for a in common.STATE.actions if a[0] == "form"]
+    assert len(forms) == 1, common.STATE.actions
+    line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert line["ok"] is True, line
+    assert line["selector_used"] == sel, line
+
+    #: 负控：命中 **2** 个 ⇒ 不许退回非严格（那正是严格闸要拦的「静默挑第一个」）。
+    module2, _ = _load("run_strict_bug_many", src, sandbox)
+    module2.SUCCESS_WAIT_SECONDS = 0
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.form_datepicker_strict = True
+    common.STATE.match_count = 2
+    trace2 = tmp_path / "strict_bug_many.jsonl"
+    module2.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                   trace=str(trace2)).run()
+    assert not [a for a in common.STATE.actions if a[0] == "form"], common.STATE.actions
+    line2 = json.loads(trace2.read_text(encoding="utf-8").splitlines()[0])
+    assert line2["ok"] is False, line2
 
 
 def test_below_the_fold_candidate_is_usable(sandbox, form_file):
@@ -1141,12 +1235,19 @@ def test_shots_only_for_failed_steps(sandbox, form_file, tmp_path):
     assert pngs == ["1-after.png", "1-before.png", "2-after.png", "2-before.png",
                     "5-after.png", "5-before.png"], pngs
     lines = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert [ln["ok"] for ln in lines] == [False, False, True, True, False]
-    assert [ln["target"] for ln in lines][:3] == ["Go", "Go", "没写名字的元素"], (
+    #: ★ 2026-10-21：`stalled` 收摊现在会多落一行 `action="give_up"`（见 `_stop`）——
+    #: 截图判据只看**动作行**，收摊行单独钉（它本来就没有「那一步的图」）。
+    action_rows = [ln for ln in lines if ln["action"] != "give_up"]
+    assert [ln["ok"] for ln in action_rows] == [False, False, True, True, False]
+    assert [ln["target"] for ln in action_rows][:3] == ["Go", "Go", "没写名字的元素"], (
         "第 2 步是**重走**那一组的第一个动作（同一个 target「Go」），不是「往下走」: %s"
-        % ([ln["target"] for ln in lines],))
-    assert all(ln["shot_before"] and ln["shot_after"] for ln in lines if ln["ok"] is False)
-    assert all(ln["shot_before"] is None and ln["shot_after"] is None for ln in lines if ln["ok"])
+        % ([ln["target"] for ln in action_rows],))
+    assert all(ln["shot_before"] and ln["shot_after"] for ln in action_rows if ln["ok"] is False)
+    assert all(ln["shot_before"] is None and ln["shot_after"] is None
+               for ln in action_rows if ln["ok"])
+    stop = lines[-1]
+    assert stop["action"] == "give_up" and stop["ok"] is False, stop
+    assert "原地打转" in stop["note"], stop
 
 
 def test_shots_all_keeps_every_step(rendered, sandbox, form_file, tmp_path):
@@ -1467,6 +1568,14 @@ class _State:
         #: （`OOPIF eval: attach failed: No target with given id found`）。
         #: 「帧号漂了」这条路上的钉子靠它（同一个选择器在死帧里挂、在活帧里成）。
         self.fail_frames = ()
+        #: 动作回执里带 `landing_blind`（跨站子帧里落点判据不触发）——
+        #: 钉「跨站子帧里 progress=false 不能当没推进」那一条。
+        self.landing_blind = False
+        #: `cdp form --strict` 回报内核那个假错（`datepicker detection: no input found
+        #: in wrapper`）—— 钉「唯一命中时退回非严格再填一次」那一条。
+        self.form_datepicker_strict = False
+        #: `_count_matches` 那个探针答命中几个（默认 1 = 唯一命中）。
+        self.match_count = 1
         # 生产那个 cdp 没有 screenshot 命令，而真 CDPHelper.screenshot() 只交 stdout、
         # 把 stderr 丢了（common.py:244 `return result.stdout.strip()`）—— 于是它返回空串。
         self.fail_screenshot = False
@@ -1518,16 +1627,21 @@ class CDPHelper:
         if self._fail(selector, frame_id):
             return '{"error": "element not found"}'
         STATE.actions.append(("click", selector))
-        return '{"clicked": true}'
+        return json.dumps({"clicked": True,
+                           "landing_blind": bool(STATE.landing_blind)})
 
     def form(self, selector, value=None, check=None, select=None, frame_id="",
              strict=False, expect_label=""):
         if self._fail(selector, frame_id):
             return '{"error": "element not found"}'
+        if strict and STATE.form_datepicker_strict:
+            # cdp 内核那个假错的原话（真站 2026-10-21：trials 的 MUI 输入框）
+            return "Error: datepicker detection: no input found in wrapper"
         STATE.actions.append(("form", selector, value if value is not None else (check or select)))
         # 严格闸那两条参数**单独记**（不塞进 actions 的元组，免得动到既有断言的形状）
         STATE.form_strict.append((selector, bool(strict), expect_label))
-        return '{"filled": true}'
+        return json.dumps({"filled": True,
+                           "landing_blind": bool(STATE.landing_blind)})
 
     def scroll(self, pixels="300"):
         # ⚠️ 2026-09-23：滚动这条原先**只认** `fail_actions`（一刀切），于是「某一个地址挂了、
@@ -1553,6 +1667,8 @@ class CDPHelper:
             if STATE.scene_raises:
                 raise RuntimeError("cdp 挂了")     # 现场探针坏掉时的真站形状
             return json.dumps(getattr(STATE, "scene", "") or "")
+        if "sfMatches" in script:            # `_count_matches` 那个探针
+            return json.dumps(STATE.match_count)
         if "data-sf-consent" in script:
             #: ★ 2026-09-28：同意按钮**只有文字、没有 id** 时，产物按文字给它打标记
             #: （`_MARK_CONSENT_BY_TEXT_JS`）⇒ 点还是走 `cdp click`。
@@ -1847,6 +1963,89 @@ def test_declared_selectors_are_retried_in_the_live_frame(sandbox, form_file):
     assert line["selector_used"] == "#year", line
     assert line["frame_id"] == "LIVE1234", line          # ← **活帧**，不是账本那个死号
     assert line["ok"] is True, line
+
+
+def test_declared_selectors_are_tried_in_live_frames_before_waiting(sandbox, form_file, tmp_path):
+    """帧号漂了 → **先**去活帧里试，再谈「等它出来」—— 不许每步白等 `late_element` 那 45 秒。
+
+    现场（`job-6c2335e72ba9` · trials）：账本里的 frameID 在重放时已经是死号，而
+    `late_element` 给这一组 45 秒预算 ⇒ 每一步都先在死帧里重试 ~39 秒，才落到活帧；
+    8 步跑了 6 分钟 —— 整条 38 步必然撞 600 秒的自测上限。
+
+    判据：把 `_wait_until_present` 换成一叫就炸的桩 —— 帧号漂了时它**根本不该被叫到**。
+    """
+    module, _ = _load(
+        "run_drift_nowait",
+        template.render("example-drift-nowait", "Thank you",
+                        _one_click_states(selectors=["#year"], frame_id="DEAD0000"),
+                        [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox, **_drift_sandbox(sandbox))
+    common.STATE.texts = ["Walk"]
+    common.STATE.fail_frames = ("DEAD0000",)
+
+    trace = sandbox / "drift_nowait.jsonl"
+    f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace))
+
+    def _no_wait(*args, **kwargs):
+        raise AssertionError(
+            "帧号漂了还先去等 —— 应该先把声明里的选择器拿到活帧里试（trials 每步白等 39 秒）")
+
+    f._wait_until_present = _no_wait
+    f.run()
+
+    line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert line["selector_used"] == "#year", line
+    assert line["frame_id"] == "LIVE1234", line
+    assert line["ok"] is True, line
+
+
+def test_landing_blind_clicks_are_not_counted_as_no_progress(sandbox, form_file, tmp_path):
+    """跨站子帧里 `landing_blind` ⇒ `progress=false` 不能当「没推进」（不喂反打转刹车）。
+
+    现场（`job-6c2335e72ba9` · trials）：问卷一次把所有题渲染出来，点选只改 radio 的
+    选中态 —— `cdp diff` 的帮助明说它**不判填写与选择** ⇒ 连续 3 下真点上了的选项
+    被当成「连着 3 步点了页面都没动」⇒ 假失败，整趟收摊。
+
+    判据：4 下都执行完、每行 `progress is None` 且 `progress_why` 有话，**没有**收摊行。
+    """
+    target = {"text": "Yes", "role": "button", "near": None,
+              "selectors": ["#yes"], "frame_id": "DEAD0000"}
+    click = {"action": "click", "note": "选一项", "target": target}
+    src = template.render(
+        "example-blind", "NEVER-APPEARS",
+        _walk_states(4, lambda i: click), [], SAMPLE_PROVENANCE)
+    module, _ = _load("run_blind", src, sandbox)
+    common = _stub(
+        sandbox,
+        observe={"url": "https://example.test/step-1", "fields": [],
+                 "actions": [{"selector": "#yes", "text": "Yes", "role": "button",
+                              "region": "body", "visible": True, "occluded_by": None,
+                              "above_fold": True, "stability": "high", "alternates": [],
+                              "frame_path": ["main", "LIVE1234"]}]},
+        diff={"actionable": False},
+    )
+    common.STATE.texts = ["Walk"]
+    common.STATE.fail_frames = ("DEAD0000",)
+    common.STATE.landing_blind = True
+    module.SUCCESS_WAIT_SECONDS = 0
+
+    trace = tmp_path / "blind.jsonl"
+    f = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace))
+    started = time.monotonic()
+    assert f.run() is False          # 成功文案始终没出现；但四步都该走完
+    elapsed = time.monotonic() - started
+    #: 降级必须排在 `DIFF_POLL_SECONDS`（5 秒）那次重试**之前** —— 排在后面的话，
+    #: 4 个盲点步就是 20 秒白等（8100 复验第一趟：38 步里 20 步，差点撞满 600 秒上限）。
+    assert elapsed < 10, "盲点步在 5 秒 diff 重试上白等了：%.1fs" % elapsed
+    lines = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines()
+             if ln.strip()]
+    clicks = [ln for ln in lines if ln.get("action") == "click"]
+    assert len(clicks) == 4, clicks
+    assert all(ln["progress"] is None for ln in clicks), clicks
+    assert all(ln.get("progress_why") for ln in clicks), clicks
+    assert not any("原地打转" in (ln.get("note") or "") for ln in lines), lines
 
 
 # ─────────── 同意弹层（A）与遮挡判据（C）—— 2026-09-17 真站实测的那条链 ───────────
@@ -2904,6 +3103,38 @@ def test_a_group_whose_url_drifted_still_runs_as_long_as_its_text_matches(sandbo
     #: 判据**只有地址**（没写正文）⇒ 照旧严格比地址（那种组本来就靠地址认）。
     only_url = {"url_contains": "example.test/step/location"}
     assert drifted._matches(only_url) is False, "只写地址的判据被放宽了 —— 那等于「哪一页都行」"
+
+
+def test_an_exact_url_gate_does_not_match_a_child_page(sandbox):
+    """★ 2026-10-21（真事 delamere `job-e41de4bf38a4`）：产物那一侧的 `url_equals`。
+
+    `url_contains` 是**子串**判据 —— `https://delamere.com/contact` 在
+    `/contact/loved-one` 上也成立；`url_equals` 整条网址逐字比（query/fragment/尾斜杠不算），
+    子页面不算。这条量的是**渲染出来的产物**里 `_matches` 真的这么判。
+    """
+    module, _ = _load(
+        "run_exact_url",
+        template.render("example-exact", "Thank you",
+                        [{"name": "walk",
+                          "when": {"url_contains": "https://delamere.test/contact",
+                                   "url_equals": "https://delamere.test/contact",
+                                   "text_contains": ["Call Us : 0330 111 2015"]},
+                          "steps": [{"action": "scroll", "note": "s"}]}], [],
+                        SAMPLE_PROVENANCE),
+        sandbox)
+    when = {"url_contains": "https://delamere.test/contact",
+            "url_equals": "https://delamere.test/contact",
+            "text_contains": ["Call Us : 0330 111 2015"]}
+
+    def _filler(url):
+        f = object.__new__(module.Filler)
+        f._urls = lambda: [url]
+        f.page_signature = lambda: "Call Us : 0330 111 2015 ..."
+        return f
+
+    assert _filler("https://delamere.test/contact?utm=1")._matches(when) is True
+    assert _filler("https://delamere.test/contact/loved-one")._matches(when) is False, (
+        "精确地址门被**子页面**骗过去了 —— 那正是这一族要治的形状")
 
 
 def test_a_group_whose_text_is_missing_is_still_skipped_even_when_the_url_matches(sandbox, form_file):
@@ -5124,6 +5355,67 @@ def test_the_cover_js_is_one_module_level_constant():
     body = _skeleton_method_body("_cover_once")
     assert "_COVER_JS" in body, "`_cover_once` 没用那份共享常量（另抄了一份？）"
     assert "elementsFromPoint" not in body, "方法体里还留着第二份 JS"
+
+
+def test_the_cover_probe_ignores_the_targets_own_label(tmp_path):
+    """★ 2026-10-21（真事 `job-49e6dd44475f` · directmeds 问卷第 1 屏）：**自己的 label 不算遮挡**。
+
+    那一屏的选项是「隐藏的 checkbox + 可见的 `span.option-text`」；`elementsFromPoint` 在
+    checkbox 正中拿到的是它**自己的** label 文字 ⇒ 旧判据报 `span.option-text 一直盖着`
+    ⇒ 一格都不填、自测卡在第 5 步。而 label 本来就是点这一格的合法路径。
+
+    这条**真跑那段 JS**（node + 假 DOM），不只看字符串：
+      · 自己 label 里的 span 盖在目标上 ⇒ **空串**（放行）；
+      · 无关的 `div#onetrust-banner` 盖在目标上 ⇒ 仍然点名它（别把判据整个关掉）。
+    """
+    import shutil
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("这台机器上没有 node —— 没验这段 JS 的行为，别当验过")
+    js = template._COVER_JS % json.dumps("#target")
+    harness = r"""
+const COVER = __JS__;
+function El(tag, o) {
+  o = o || {};
+  this.tagName = tag;
+  this.className = o.className || "";
+  this.id = o.id || "";
+  this.pointerEvents = "auto";
+  this.labels = o.labels || [];
+  this._match = !!o.match;
+  this._contains = o.contains || [];
+}
+El.prototype.matches = function () { return this._match; };
+El.prototype.getBoundingClientRect = function () {
+  return { left: 10, top: 10, width: 100, height: 40 };
+};
+El.prototype.contains = function (x) { return this._contains.indexOf(x) >= 0; };
+function probe(target, stack) {
+  globalThis.window = { innerWidth: 400, innerHeight: 800 };
+  globalThis.document = {
+    getElementsByTagName: function () { return [target]; },
+    elementsFromPoint: function () { return stack; }
+  };
+  globalThis.getComputedStyle = function (h) { return { pointerEvents: h.pointerEvents || "auto" }; };
+  return new Function(COVER)();
+}
+const input = new El("INPUT", { id: "target", match: true });
+const span = new El("SPAN", { className: "option-text" });
+const label = new El("LABEL", { contains: [span, input] });
+input.labels = [label];
+const banner = new El("DIV", { id: "onetrust-banner", className: "banner" });
+console.log(JSON.stringify({
+  own_label: probe(input, [span, label, input]),
+  overlay: probe(input, [banner, input])
+}));
+""".replace("__JS__", json.dumps(js))
+    path = tmp_path / "cover_probe.js"
+    path.write_text(harness, encoding="utf-8")
+    done = subprocess.run([node, str(path)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[:500]
+    got = json.loads(done.stdout)
+    assert got["own_label"] == "", got
+    assert got["overlay"].startswith("COVER|div#onetrust-banner"), got
 
 
 def test_the_recenter_js_is_one_module_level_constant():

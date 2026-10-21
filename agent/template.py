@@ -448,6 +448,13 @@ def render(site, success_text, states, fills, provenance, success_urls=None, *,
 #: ⚠️ `%s` 吃一个**已 json.dumps 过**的选择器（调用方给）。**只此一份**，不许再拷一份。
 #: ⚠️ 它是**裸语句序列**，**不带** `(function(){…})()` 壳 —— 表那套的 `_ev` 在调用时替它包
 #: （循环型那侧 `cdp.eval` 不包，由调用处自己包；别在这儿包，包了表那套就成了双层包裹）。
+#:
+#: ★ 2026-10-21（真事 `job-49e6dd44475f` · directmeds 问卷第 1 屏）：**目标自己的
+#: `<label>`（以及它里面的 `span.option-text`）不算遮挡**。那一屏的选项是「隐藏的
+#: checkbox + 可见的 label 文字」，`elementsFromPoint` 在 checkbox 的中心拿到的是它自己的
+#: `span.option-text` ⇒ 判成「被盖着」⇒ 一格都不填、自测卡在第 5 步。可 `label` 本来就是
+#: **点这一格的那条合法路径**（`<label for=…>` / 包着 input 的 label）——
+#: 挡住它的不是别人，是它自己的名字。`el.labels` 是浏览器给的关联表（`for=` 与包裹两种都在）。
 _COVER_JS = (
     "var all=document.getElementsByTagName('*'), el=null;"
     "for(var i=0;i<all.length;i++){try{if(all[i].matches(%s)){el=all[i];break;}}catch(e){}}"
@@ -461,6 +468,8 @@ _COVER_JS = (
     "try{pe=getComputedStyle(h).pointerEvents||'';}catch(e){}"
     "if(pe==='none') continue;"
     "if(h===el||el.contains(h)||h.contains(el)) return '';"
+    "var labs=(el.labels||[]);"
+    "for(var j=0;j<labs.length;j++){if(labs[j]===h||labs[j].contains(h)) return '';}"
     "return 'COVER|'+(h.tagName||'').toLowerCase()+(h.id?('#'+h.id):'')"
     "+'.'+String(h.className||'').split(' ')[0];}"
     "return '';"
@@ -2037,6 +2046,26 @@ def _landing_say(output):
     return ""
 
 
+def _landing_blind(output) -> bool:
+    """这条 cdp 回执里是不是说「这一帧的落点判据用不了」（跨站子帧）。
+
+    ★ 2026-10-21（真事 `job-6c2335e72ba9` · trials）：跨站子帧里 `cdp click` 的落点
+    判据**恒不触发**，而 `cdp diff` 的帮助里写着它**只判导航与组成变化、不判填写与选择**
+    ⇒ 点选 radio/按钮这类步骤的 `actionable=false` **不能**当成「这一下没推进」
+    （那会把「连着 3 步点了页面都没动」的刹车喂爆，整趟假失败）。
+
+    只读回执里的**字段**（与 `_landing_say` 同一份契约），不扫句子。
+    """
+    raw = (output or "").strip()
+    if not raw.startswith("{"):
+        return False
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return False
+    return bool(isinstance(data, dict) and data.get("landing_blind"))
+
+
 #: 从**选择器**或**遮挡物描述**里抠出第一个 `#id` —— `#edit-size` 抠出 `edit-size`，
 #: `span#select2-edit-size-container.select2-selection__rendered` 抠出
 #: `select2-edit-size-container`。抠不出来（没有 `#`）就是空串。
@@ -2224,6 +2253,13 @@ class Filler:
         self.observe_why = None    # 最近一次「重新看页面」没成的原因（人话）
         self.progress_why = None   # 最近一步「为什么 progress 是 null」（人话）
         self.shots_why = None      # 最近一步截图没落成的原因（人话）
+        #: 最近一步**真发出去**的那条动作（选择器 + 帧）—— 收摊那行 trace 要带上它们
+        #: （`_stop`），不然读的人只看到「第 8 步收摊」却不知道那一步点的是什么。
+        self._last_selector = ""
+        self._last_frame = ""
+        #: 最近一步的动作回执里说「这一帧的落点判据用不了」（跨站子帧）——
+        #: 见 `_landing_blind`：这一格为真时，`progress=false` 不许当成「没推进」。
+        self.landing_blind = False
         #: 最近一次 `goto` 时 **cdp 自己在 stderr 上说的话**（成功时才留）。
         #: 为什么单独一个通道：见 `_do` 里 goto 那段的说明（它**不参与判据**）。
         self.goto_echo = ""
@@ -2262,6 +2298,24 @@ class Filler:
         跨源 iframe 里的正文只有在那帧的上下文里读得到，主帧的 JS 看不见它。
         """
         return _clean_eval(self.cdp.eval("(function(){%s})()" % js, frame_id or ""))
+
+    def _count_matches(self, selector, frame_id=""):
+        """这个选择器在那一帧里命中几个元素（读；`cdp eval`）。量不出来返回 None。
+
+        ★ 2026-10-21（真事 `job-e892e399ccb5` · trials 的 8100 复验）：`cdp form --strict`
+        在这个站的 MUI 输入框上报 **`datepicker detection: no input found in wrapper`**
+        （同一个选择器不带 `--strict` 就填得进去）—— 那是 cdp 内核的假错，不是歧义。
+        退回非严格之前要先确认「这个选择器**唯一命中**」：严格闸存在的理由正是
+        「命中多个时不许静默挑第一个」，不能为了绕开一个假错把它拆掉。
+        """
+        js = ("var sfMatches=0,all=document.getElementsByTagName('*');"
+              "for(var i=0;i<all.length;i++){try{if(all[i].matches(%s))sfMatches++;}"
+              "catch(e){}}return sfMatches;") % json.dumps(selector)
+        raw = self._ev(js, frame_id or "")
+        try:
+            return int(str(raw).strip().strip('"'))
+        except (TypeError, ValueError):
+            return None
 
     def _url(self):
         """当前地址 —— **只取第一行**：`CDPHelper.eval` 交出来的是 stdout+stderr 串在一起，
@@ -2471,6 +2525,39 @@ class Filler:
                 fp.write(json.dumps(line, ensure_ascii=False) + "\n")
         except OSError as exc:
             self.log.warning("[%s] trace 写不进：%s", self.cid, exc)
+
+    def _stop(self, step, action, why, **kw):
+        """收摊：**先落一行 trace 再走**（与循环型 `_stop` 同一条规矩）。
+
+        ★ 2026-09-24 立的规矩：任何收摊路径都先落一行 —— 不然下一个查的人只看得见退出码。
+
+        ★ 2026-10-21（真事 `job-6c2335e72ba9` · trials）：固定步骤表这一支**没有**这一行，
+        而 `stalled` 早停（「连着 3 步点了页面都没动」）恰恰只写日志、不写 trace ⇒
+        `selftest._verdict` 找不到承重失败行，回退到前面那条 `ok=false` 的**软行**
+        （同意弹层）⇒ 面板与 diagnose 都把失败族判成 `overlay` ⇒ 改稿模型去修一个
+        **根本不在产物里**的东西 ⇒ 两轮交回原稿 ⇒ `repair_noop`。
+
+        `note` 与 `progress_why` **两格都写**（2026-10-14 那条规矩）：
+        「为什么没做成」那一路读 `note`，「有没有推进」那一路读 `progress_why`。
+        """
+        if not self.trace_path:
+            return          # 生产重跑不带 --trace：不花那几次 eval（日志那一行照旧由调用方写）
+        kw.setdefault("note", why)
+        kw.setdefault("progress_why", why)
+        kw.setdefault("selector_used", getattr(self, "_last_selector", "") or "")
+        kw.setdefault("frame_id", getattr(self, "_last_frame", "") or "")
+        kw.setdefault("url", self._url())
+        kw.setdefault("page_sig", self.page_signature()[:PAGE_TEXT_CHARS])
+        kw.setdefault("success_in_page", self._succeeded())
+        #: 形状与 `_run_step` 落的那一行**一样**（少哪个键，下游读 trace 的人就要多判一次）：
+        #: 截图的几格给 None（收摊这一行不是一步动作，没有「那一步的图」）。
+        line = {"step": step, "action": action, "target": "", "ok": False,
+                "progress": None, "progress_why": why, "fallback_level": None,
+                "recovery": None, "auxiliary": None, "soft": None,
+                "shot_before": None, "shot_after": None, "shots_why": None,
+                "scene": None}
+        line.update(kw)
+        self._trace(line)
 
     def _rpt(self, label):
         if self.no_report:
@@ -2879,7 +2966,7 @@ class Filler:
             base = ({"check": str(value).lower()} if kind == "check" else
                     {"select": str(value)} if kind == "select" else {"value": str(value)})
             try:
-                return self.cdp.form(selector, **base, **extra)
+                out = self.cdp.form(selector, **base, **extra)
             except TypeError as exc:
                 # 部署的那份 `common.py` 还不认识严格闸那两个参数（2026-09-17 真站实测：
                 # 这一下会把**整个产物**炸掉 —— 而 `run()` 的 except 当时不落 trace，
@@ -2891,6 +2978,23 @@ class Filler:
                     "这一步退回**不做消歧**的老路 —— 值可能落进别的框。"
                     "把本仓库的 common.py 同版本铺过去就好了。", self.cid, exc)
                 return self.cdp.form(selector, **base, **{"frame_id": frame_id or ""})
+            #: ★ 2026-10-21（真事 `job-e892e399ccb5` · trials 的 8100 复验）：`cdp form --strict`
+            #: 在这个站的 MUI 输入框上报 `datepicker detection: no input found in wrapper`
+            #: （**同一个选择器不带 `--strict` 就填得进去**）—— cdp 内核的假错，不是歧义。
+            #: 退回非严格之前先数命中：**唯一命中**才退（严格闸的理由是「多个时不许静默挑
+            #: 第一个」，不能为绕开一个假错把它拆掉）；数不出来 / 多个 ⇒ 照旧大声失败。
+            if not _ok(out) and "datepicker detection" in str(out):
+                count = self._count_matches(selector, frame_id)
+                if count == 1:
+                    self.log.warning(
+                        "[%s] cdp form 的严格闸在这个字段上报了假错（%s）—— 选择器**唯一命中**，"
+                        "退回非严格再填一次", self.cid, str(out)[:80])
+                    return self.cdp.form(selector, **base, **{"frame_id": frame_id or ""})
+                self.log.warning(
+                    "[%s] cdp form 的严格闸报「%s」，而这个选择器命中 %s 个 —— "
+                    "不退回非严格（那会静默挑第一个）", self.cid, str(out)[:80],
+                    "数不出来" if count is None else count)
+            return out
         if action == "scroll":
             # ⚠️ 位置参数**是选择器**（CLI：`cdp scroll [selector]`）—— 把像素数字塞进
             # 这里 = 拿一个不存在的选择器去滚，真窗口实测 `cdp scroll 400` →
@@ -3871,6 +3975,7 @@ class Filler:
         for level, selector in enumerate(selectors):
             out = attempt(selector, frame)
             if _ok(out):
+                self.landing_blind = _landing_blind(out)
                 return (True, selector, level,
                         _say("scroll", label, True, level, landing=_landing_say(out)), frame)
             self.log.info("[%s] 第 %d 个选择器滚不动：%s", self.cid, level + 1, selector)
@@ -3883,6 +3988,7 @@ class Filler:
                 for selector in selectors:
                     out = attempt(selector, live)
                     if _ok(out):
+                        self.landing_blind = _landing_blind(out)
                         return (True, selector, len(selectors) + extra,
                                 _say("scroll", label, True, len(selectors) + extra,
                                      landing=_landing_say(out)), live)
@@ -3894,6 +4000,7 @@ class Filler:
         for extra, (selector, cand_frame) in enumerate(self._relocate(target, "action")):
             out = attempt(selector, cand_frame)
             if _ok(out):
+                self.landing_blind = _landing_blind(out)
                 level = len(selectors) + extra
                 note = _say("scroll", label, True, level, landing=_landing_say(out))
                 if extra == 0 and self.resolve_why:
@@ -3913,6 +4020,47 @@ class Filler:
         return (_ok(out), "", None,
                 _say("scroll", label, _ok(out)) + "（这一步只记了滚多少像素，"
                 "而 cdp 的 scroll 收的是选择器 —— 这一条老形状的命令多半滚不动）", "")
+
+    def _try_declared_in_live_frames(self, action, selectors, value, kind, frame, label,
+                                     cover_until, base_level):
+        """账本里的帧号漂了：把声明里的选择器**先拿到活着的帧里试一遍**。
+
+        为什么要排在「等它出来」**之前**（★ 2026-10-21，`job-6c2335e72ba9` · trials）：
+        那个站的账本帧号一进重放就是死号，而 `late_element` 给这一组 45 秒预算 ——
+        每一步都先在死帧里重试 ~39 秒，才落到活帧；8 步跑了 6 分钟，整条 38 步
+        必然撞 600 秒的自测上限。帧号漂了、**页面结构没变**，所以声明里那条路径
+        在活帧里仍然是这个元素最精确的身份（与 `_scroll` 那条兜底同一跳）。
+
+        只在「账本那一帧已经不在活帧表里」时动手：帧号还活着时，同一个选择器
+        在别的帧里可能指着另一个元素 —— 那时不猜（语义回退那条路兜着）。
+
+        返回 `(命中, 有没有真发过 cdp 动作)`；命中是 `(ok, selector, level, note, frame)`。
+        """
+        if not frame or not selectors:
+            return None, False
+        if frame in self.live_frames:
+            return None, False
+        #: `_read_frames` 会顺手确认一次活帧表（节流在它里面）；读不出来就按没命中原样返回。
+        live_frames = [fid for fid in self._read_frames() if fid and fid != frame]
+        tried = False
+        for extra, live in enumerate(live_frames):
+            for selector in selectors:
+                cover = self._covered_by(selector, live, until=cover_until)
+                if cover and not self._cover_is_own_widget(action, kind, selector, cover):
+                    self.cover_why = cover
+                    self.log.info("[%s] 活帧 %s 里这个选择器也被 %s 盖着 —— 这一下不点",
+                                  self.cid, live, cover)
+                    continue
+                out = self._do(action, selector, value, kind, live, label)
+                tried = True
+                if _ok(out):
+                    self.landing_blind = _landing_blind(out)
+                    level = base_level + extra
+                    note = (_say(action, label, True, level, landing=_landing_say(out))
+                            + self._tab_note() + self._miss_note()
+                            + (self._value_note() if action == "form" else ""))
+                    return (True, selector, level, note, live), tried
+        return None, tried
 
     def _perform(self, action, step, target, label):
         """做一步。返回 `(ok, selector_used, fallback_level, note, frame_used)`。
@@ -3998,6 +4146,8 @@ class Filler:
         miss_until = time.monotonic() + (LATE_ELEMENT_WAIT_SECONDS if step.get("late_element")
                                          else NOT_FOUND_WAIT_SECONDS)
         self._miss_waited = 0.0
+        #: 帧号漂了那条兜底只走一次（第一个选择器失败时试；后面几个不重复试同一批活帧）。
+        live_done = False
         for level, selector in enumerate(selectors):
             # **快路也要接遮挡判据**（真站实测的那条链）：不看一眼就点，
             # 点到盖着它的东西上（consent 弹层那类）cdp 照样回 ok —— 「点了个寂寞」
@@ -4018,6 +4168,17 @@ class Filler:
             out = self._do(action, selector, value, kind, frame, label)
             tried_any = True
             if not _ok(out) and not cover:
+                #: ★ 2026-10-21：帧号漂了 ⇒ **先把声明里的选择器拿到活帧里试**，
+                #: 再去谈「等它出来」。顺序反了的话，`late_element` 那 45 秒会白赔在
+                #: 一个已经不存在的 frameID 上（真事 `job-6c2335e72ba9`：每步 39 秒）。
+                if not live_done:
+                    live_done = True
+                    hit, live_tried = self._try_declared_in_live_frames(
+                        action, selectors, value, kind, frame, label, cover_until,
+                        len(selectors))
+                    tried_any = tried_any or live_tried
+                    if hit is not None:
+                        return hit
                 #: ★ 2026-10-12：**没找到**先等一等再试同一根地址（见 NOT_FOUND_WAIT_SECONDS）。
                 #: `cover` 那一支不走这儿 —— 它有自己的预算（`_covered_by` 里已经等过了）。
                 again = self._wait_until_present(action, selector, value, kind, frame, label,
@@ -4025,6 +4186,7 @@ class Filler:
                 if again is not None:
                     out = again
             if _ok(out):
+                self.landing_blind = _landing_blind(out)
                 return (True, selector, level,
                         _say(action, label, True, level, landing=_landing_say(out))
                         + self._tab_note() + self._miss_note()
@@ -4051,6 +4213,7 @@ class Filler:
             out = self._do(action, selector, value, kind, cand_frame)
             tried_any = True
             if _ok(out):
+                self.landing_blind = _landing_blind(out)
                 note = (_say(action, label, True, level, landing=_landing_say(out))
                         + self._tab_note()
                         + (self._value_note() if action == "form" else ""))
@@ -4111,6 +4274,14 @@ class Filler:
         when = when or {}
         if not when:
             return "这一步没有 when 判据"
+        want_exact = when.get("url_equals")
+        if want_exact:
+            exact = [(u or "").split("#")[0].split("?")[0].rstrip("/")
+                     for u in self._urls()]
+            if want_exact not in exact:
+                have = " ｜ ".join(self._urls()) or "（一个都没读到）"
+                return ("地址不是那一页：要**精确**「%s」；手里这些地址是：%s；%s"
+                        % (want_exact, have, self._frames_say()))
         want_url = when.get("url_contains")
         if want_url and not any(want_url in url for url in self._urls()):
             have = " ｜ ".join(self._urls()) or "（一个都没读到）"
@@ -4195,6 +4366,15 @@ class Filler:
         """
         if not when:
             return True
+        #: ★ 2026-10-21（真事 delamere `/contact` vs `/contact/loved-one`）：`url_equals` 是
+        #: **收紧**的那一侧 —— 整条网址逐字比（去 query/fragment/尾斜杠），子页面不算。
+        #: 与 `url_contains` 并存时两条都要成立（它只会让判据更严，不会更松）。
+        want_exact = str(when.get("url_equals") or "")
+        if want_exact:
+            exact = [(u or "").split("#")[0].split("?")[0].rstrip("/")
+                     for u in self._urls()]
+            if want_exact not in exact:
+                return False
         want_url = str(when.get("url_contains") or "")
         url_ok = (not want_url) or any(want_url in url for url in self._urls())
         wants = [_norm(str(w)).lower() for w in (when.get("text_contains") or [])]
@@ -4346,6 +4526,10 @@ class Filler:
                 continue
             if when.get("text_contains"):
                 continue
+            #: ★ 2026-10-21：`url_equals` 是**精确地址**门（整条网址逐字比）—— 不是
+            #: 「只有地址、等于没判据」那一种，别把它混进这堆警告里。
+            if when.get("url_equals"):
+                continue
             bare.append((state.get("name") or SITE, when))
         for name, when in bare:
             self.log.warning("[%s] 状态「%s」的判据**只有地址**（%s）：%s",
@@ -4372,6 +4556,9 @@ class Filler:
 
         before_path, shot_before, signature = None, None, ""
         self.progress_why, self.shots_why = None, None
+        #: 这一步「落在跨站子帧里、落点判据用不了」—— 只属于这一步（下一步先清掉）。
+        self.landing_blind = False
+        self._last_selector, self._last_frame = "", ""
         #: 「这一组要重来一遍」那句（`run()` 在上一步**没做成**之后写下的）—— 它是
         #: **这一步**的一部分（这一步就是那一组的重来），所以在这里取走并清掉，
         #: 与 `progress_why` 同一条规矩：那句话只属于触发它的那一步，不许粘在下一步上。
@@ -4405,6 +4592,9 @@ class Filler:
             self.log.error("[%s] 产物自己在第 %d 步出错了：%s: %s",
                            self.cid, index, type(exc).__name__, exc)
             raise
+        #: 收摊那行 trace 要带上「刚才真发出去的是哪一条」（`_stop`）——
+        #: 没做成时 `_perform` 给的是空选择器，这一步就照实留空。
+        self._last_selector, self._last_frame = selector or "", frame or ""
         # ★ 2026-09-23（用户点的那件事）／★ 2026-09-29（交接《骨架还缺什么》§4）：**没做成
         # 的那一步**把现场录下来（`_scene` 的 docstring 写着为什么是字而不是图、为什么它
         # 现在在生产路径上也要跑）。§13 的老口径一个字没变：**成功的步不探**；
@@ -4422,6 +4612,18 @@ class Filler:
         try:
             self._dly()
             progress = self._diff(before_path) if before_path else None
+            #: ★ 2026-10-21（真事 `job-6c2335e72ba9` · trials）：跨站子帧里落点判据**恒不触发**
+            #: （回执里 `landing_blind`），而 `cdp diff` 只判「导航与组成变化」、**不判填写与选择**
+            #: —— 点选 radio/按钮这类步骤的 `actionable=false` 不能当成「这一下没推进」：
+            #: 那会把反打转刹车（`stalled`）喂爆 ⇒ 明明在逐题往下走，却「连着 3 步点了页面都没动」
+            #: 收摊。⇒ 这一格降成 **None（量不出来）**，并把为什么写进 `progress_why`。
+            #: ⚠️ 只动 `False`：diff 说 True 仍然是 True（组成真的变了）；主帧里的 click 照旧。
+            #: ⚠️ 位置排在 5 秒重试**之前**：降级放在重试之后时，38 步里有 20 步各白等
+            #: `DIFF_POLL_SECONDS`（5 秒）—— 8100 复验第一趟差点撞满 600 秒自测上限。
+            if progress is False and self.landing_blind:
+                progress = None
+                self.progress_why = ("跨站子帧里落点判据不触发；cdp diff 只判导航/组成变化，"
+                                     "判不了这一下选没选中")
             #: ★ 2026-09-23 用户实测（「等待时间短了……重新填了后成功了」）：
             #: 只 diff 一次的话，**异步换页**的那些步会被判成「页面没有变化」
             #: （trace 第 12 步实测如此，而那一下其实成了）。有界重试：一变立刻停。
@@ -4658,15 +4860,21 @@ class Filler:
                     else:
                         self.stuck += 1
                         if self.stuck >= STUCK_LIMIT:
-                            self.log.error("[%s] 连着 %d 步没做成，收摊（早停，不磨完全程）",
-                                           self.cid, self.stuck)
+                            why = ("连着 %d 步没做成，收摊（早停，不磨完全程）"
+                                   % self.stuck)
+                            self.log.error("[%s] %s", self.cid, why)
+                            self._stop(index, "give_up", why, progress=progress,
+                                       target=_label(step.get("target") or {}, step))
                             self._rpt("stuck")
                             return False
                     if progress is False and (step.get("action") or "") in DIFF_JUDGES:
                         self.stalled += 1
                         if self.stalled >= STUCK_LIMIT:
-                            self.log.error("[%s] 连着 %d 步点了页面都没动，收摊（原地打转）",
-                                           self.cid, self.stalled)
+                            why = ("连着 %d 步点了页面都没动，收摊（原地打转）"
+                                   % self.stalled)
+                            self.log.error("[%s] %s", self.cid, why)
+                            self._stop(index, "give_up", why, progress=progress,
+                                       target=_label(step.get("target") or {}, step))
                             self._rpt("stalled")
                             return False
                     elif progress is True:
