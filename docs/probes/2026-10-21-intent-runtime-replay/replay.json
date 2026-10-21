@@ -1,0 +1,2338 @@
+{
+  "summary": {
+    "total": 165,
+    "by_kind": {
+      "advance": {
+        "cases": 8,
+        "hit": 6,
+        "wrong": 0,
+        "abstain": 2,
+        "miss": 0,
+        "invalid": 0
+      },
+      "fill": {
+        "cases": 7,
+        "hit": 6,
+        "wrong": 0,
+        "abstain": 1,
+        "miss": 0,
+        "invalid": 0
+      },
+      "choose": {
+        "cases": 150,
+        "hit": 149,
+        "wrong": 0,
+        "abstain": 1,
+        "miss": 0,
+        "invalid": 0
+      }
+    },
+    "wrong": []
+  },
+  "outcomes": [
+    {
+      "name": "observe-certain-after-select:advance",
+      "kind": "advance",
+      "source": "auto",
+      "status": "selected",
+      "picked": "button.cursor-pointer.items-center",
+      "picked_text": "Continue",
+      "score": 85,
+      "expected": [
+        "button.cursor-pointer.items-center"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-certain-initial:advance",
+      "kind": "advance",
+      "source": "auto",
+      "status": "selected",
+      "picked": "button.cursor-pointer.items-center",
+      "picked_text": "Continue",
+      "score": 85,
+      "expected": [
+        "button.cursor-pointer.items-center"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-growth-areas-initial:advance",
+      "kind": "advance",
+      "source": "auto",
+      "status": "selected",
+      "picked": "button.cursor-pointer.items-center",
+      "picked_text": "Continue",
+      "score": 85,
+      "expected": [
+        "button.cursor-pointer.items-center"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-login-fields:fill:email",
+      "kind": "fill",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#email",
+      "picked_text": "",
+      "score": 61,
+      "expected": [
+        "#email"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-login-fields:fill:password",
+      "kind": "fill",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#password",
+      "picked_text": "",
+      "score": 61,
+      "expected": [
+        "#password"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-login-filled:fill:email",
+      "kind": "fill",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#email",
+      "picked_text": "",
+      "score": 61,
+      "expected": [
+        "#email"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-login-filled:fill:password",
+      "kind": "fill",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#password",
+      "picked_text": "",
+      "score": 61,
+      "expected": [
+        "#password"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S0:choose:More energy",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "More energyMore energyMore energy",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S0:choose:Greater wellbeing",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "Greater wellbeingGreater wellbeingGreater wellbein",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S0:choose:Emotional balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "Emotional balanceEmotional balanceEmotional balanc",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S0:choose:Better sleep",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "Better sleepBetter sleepBetter sleep",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S0:choose:Cycle support",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "Cycle supportCycle supportCycle support",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S0:choose:Hair, skin + nails",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)",
+      "picked_text": "Hair, skin + nailsHair, skin + nailsHair, skin + n",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S0:choose:Bones, joints + muscles",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)",
+      "picked_text": "Bones, joints + musclesBones, joints + musclesBone",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S0:choose:Gut health",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)",
+      "picked_text": "Gut healthGut healthGut health",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S0:choose:Stronger immunity",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)",
+      "picked_text": "Stronger immunityStronger immunityStronger immunit",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S0:choose:Hormonal balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(10)",
+      "picked_text": "Hormonal balanceHormonal balanceHormonal balance",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(10)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S0:choose:Pregnancy + postpartum",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(11)",
+      "picked_text": "Pregnancy + postpartumPregnancy + postpartumPregna",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(11)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S0:choose:Fertility support",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(12)",
+      "picked_text": "Fertility supportFertility supportFertility suppor",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(12)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S0:choose:Perimenopause + menopause",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(13)",
+      "picked_text": "Perimenopause + menopausePerimenopause + menopause",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(13)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S0:choose:Weight management",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(14)",
+      "picked_text": "Weight managementWeight managementWeight managemen",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(14)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S2-repo:choose:18-24",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "18-2418-2418-24",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S2-repo:choose:25-34",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "25-3425-3425-34",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S2-repo:choose:34-44",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "34-4434-4434-44",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S2-repo:choose:45-54",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "45-5445-5445-54",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S2-repo:choose:55+",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "55+55+55+",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S2:choose:18-24",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "18-2418-2418-24",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S2:choose:25-34",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "25-3425-3425-34",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S2:choose:34-44",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "34-4434-4434-44",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S2:choose:45-54",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "45-5445-5445-54",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S2:choose:55+",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "55+55+55+",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S3-repo:choose:18-24",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "18-2418-2418-24",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S3-repo:choose:25-34",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "25-3425-3425-34",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S3-repo:choose:34-44",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "34-4434-4434-44",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S3-repo:choose:45-54",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "45-5445-5445-54",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S3-repo:choose:55+",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "55+55+55+",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S3:choose:18-24",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "18-2418-2418-24",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S3:choose:25-34",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "25-3425-3425-34",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S3:choose:34-44",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "34-4434-4434-44",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S3:choose:45-54",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "45-5445-5445-54",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S3:choose:55+",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "55+55+55+",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S4:choose:18-24",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "18-2418-2418-24",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S4:choose:25-34",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "25-3425-3425-34",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S4:choose:34-44",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "34-4434-4434-44",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S4:choose:45-54",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "45-5445-5445-54",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S4:choose:55+",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "55+55+55+",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S5:choose:18-24",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "18-2418-2418-24",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S5:choose:25-34",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "25-3425-3425-34",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S5:choose:34-44",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "34-4434-4434-44",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S5:choose:45-54",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "45-5445-5445-54",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S5:choose:55+",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "55+55+55+",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S6:choose:18-24",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "18-2418-2418-24",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S6:choose:25-34",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "25-3425-3425-34",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S6:choose:34-44",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "34-4434-4434-44",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S6:choose:45-54",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "45-5445-5445-54",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "observe-S6:choose:55+",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "55+55+55+",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q1:choose:More energy",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "More energyMore energyMore energy",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q1:choose:Greater wellbeing",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "Greater wellbeingGreater wellbeingGreater wellbein",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q1:choose:Emotional balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "Emotional balanceEmotional balanceEmotional balanc",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q1:choose:Better sleep",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "Better sleepBetter sleepBetter sleep",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q1:choose:Cycle support",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "Cycle supportCycle supportCycle support",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q1:choose:Hair, skin + nails",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)",
+      "picked_text": "Hair, skin + nailsHair, skin + nailsHair, skin + n",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q1:choose:Bones, joints + muscles",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)",
+      "picked_text": "Bones, joints + musclesBones, joints + musclesBone",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q1:choose:Gut health",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)",
+      "picked_text": "Gut healthGut healthGut health",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q1:choose:Stronger immunity",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)",
+      "picked_text": "Stronger immunityStronger immunityStronger immunit",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q1:choose:Hormonal balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(10)",
+      "picked_text": "Hormonal balanceHormonal balanceHormonal balance",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(10)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q1:choose:Pregnancy + postpartum",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(11)",
+      "picked_text": "Pregnancy + postpartumPregnancy + postpartumPregna",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(11)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q1:choose:Fertility support",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(12)",
+      "picked_text": "Fertility supportFertility supportFertility suppor",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(12)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q1:choose:Perimenopause + menopause",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(13)",
+      "picked_text": "Perimenopause + menopausePerimenopause + menopause",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(13)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q1:choose:Weight management",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(14)",
+      "picked_text": "Weight managementWeight managementWeight managemen",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(14)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q10:choose:More energy",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "More energyMore energyMore energy",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q10:choose:Greater wellbeing",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "Greater wellbeingGreater wellbeingGreater wellbein",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q10:choose:Emotional balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "Emotional balanceEmotional balanceEmotional balanc",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q10:choose:Better sleep",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "Better sleepBetter sleepBetter sleep",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q10:choose:Cycle support",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "Cycle supportCycle supportCycle support",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q10:choose:Bones, joints + muscles",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)",
+      "picked_text": "Bones, joints + musclesBones, joints + musclesBone",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q10:choose:Gut health",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)",
+      "picked_text": "Gut healthGut healthGut health",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q10:choose:Stronger immunity",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)",
+      "picked_text": "Stronger immunityStronger immunityStronger immunit",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q10:choose:Hormonal balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)",
+      "picked_text": "Hormonal balanceHormonal balanceHormonal balance",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q11:choose:More energy",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "More energyMore energyMore energy",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q11:choose:Greater wellbeing",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "Greater wellbeingGreater wellbeingGreater wellbein",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q11:choose:Emotional balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "Emotional balanceEmotional balanceEmotional balanc",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q11:choose:Better sleep",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "Better sleepBetter sleepBetter sleep",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q11:choose:Cycle support",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "Cycle supportCycle supportCycle support",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q11:choose:Bones, joints + muscles",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)",
+      "picked_text": "Bones, joints + musclesBones, joints + musclesBone",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q11:choose:Gut health",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)",
+      "picked_text": "Gut healthGut healthGut health",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q11:choose:Stronger immunity",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)",
+      "picked_text": "Stronger immunityStronger immunityStronger immunit",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q11:choose:Hormonal balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)",
+      "picked_text": "Hormonal balanceHormonal balanceHormonal balance",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q12:choose:More energy",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "More energyMore energyMore energy",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q12:choose:Greater wellbeing",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "Greater wellbeingGreater wellbeingGreater wellbein",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q12:choose:Emotional balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "Emotional balanceEmotional balanceEmotional balanc",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q12:choose:Better sleep",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "Better sleepBetter sleepBetter sleep",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q12:choose:Cycle support",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "Cycle supportCycle supportCycle support",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q12:choose:Bones, joints + muscles",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)",
+      "picked_text": "Bones, joints + musclesBones, joints + musclesBone",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q12:choose:Gut health",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)",
+      "picked_text": "Gut healthGut healthGut health",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q12:choose:Stronger immunity",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)",
+      "picked_text": "Stronger immunityStronger immunityStronger immunit",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q12:choose:Hormonal balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)",
+      "picked_text": "Hormonal balanceHormonal balanceHormonal balance",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q2:choose:More energy",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "More energyMore energyMore energy",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q2:choose:Greater wellbeing",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "Greater wellbeingGreater wellbeingGreater wellbein",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q2:choose:Emotional balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "Emotional balanceEmotional balanceEmotional balanc",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q2:choose:Better sleep",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "Better sleepBetter sleepBetter sleep",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q2:choose:Cycle support",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "Cycle supportCycle supportCycle support",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q2:choose:Bones, joints + muscles",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)",
+      "picked_text": "Bones, joints + musclesBones, joints + musclesBone",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q2:choose:Gut health",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)",
+      "picked_text": "Gut healthGut healthGut health",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q2:choose:Stronger immunity",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)",
+      "picked_text": "Stronger immunityStronger immunityStronger immunit",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q2:choose:Hormonal balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)",
+      "picked_text": "Hormonal balanceHormonal balanceHormonal balance",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q3:choose:18-24",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "18-2418-2418-24",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q3:choose:25-34",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "25-3425-3425-34",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q3:choose:34-44",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "34-4434-4434-44",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q3:choose:45-54",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "45-5445-5445-54",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q3:choose:55+",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "55+55+55+",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q4:advance",
+      "kind": "advance",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(2) > button:nth-of-type(1)",
+      "picked_text": "Continue",
+      "score": 85,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(2) > button:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q5:choose:More energy",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "More energyMore energyMore energy",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q5:choose:Greater wellbeing",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "Greater wellbeingGreater wellbeingGreater wellbein",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q5:choose:Emotional balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "Emotional balanceEmotional balanceEmotional balanc",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q5:choose:Better sleep",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "Better sleepBetter sleepBetter sleep",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q5:choose:Cycle support",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "Cycle supportCycle supportCycle support",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q5:choose:Bones, joints + muscles",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)",
+      "picked_text": "Bones, joints + musclesBones, joints + musclesBone",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q5:choose:Gut health",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)",
+      "picked_text": "Gut healthGut healthGut health",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q5:choose:Stronger immunity",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)",
+      "picked_text": "Stronger immunityStronger immunityStronger immunit",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q5:choose:Hormonal balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)",
+      "picked_text": "Hormonal balanceHormonal balanceHormonal balance",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q6:choose:More energy",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "More energyMore energyMore energy",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q6:choose:Greater wellbeing",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "Greater wellbeingGreater wellbeingGreater wellbein",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q6:choose:Emotional balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "Emotional balanceEmotional balanceEmotional balanc",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q6:choose:Better sleep",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "Better sleepBetter sleepBetter sleep",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q6:choose:Cycle support",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "Cycle supportCycle supportCycle support",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q6:choose:Bones, joints + muscles",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)",
+      "picked_text": "Bones, joints + musclesBones, joints + musclesBone",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q6:choose:Gut health",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)",
+      "picked_text": "Gut healthGut healthGut health",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q6:choose:Stronger immunity",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)",
+      "picked_text": "Stronger immunityStronger immunityStronger immunit",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q6:choose:Hormonal balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)",
+      "picked_text": "Hormonal balanceHormonal balanceHormonal balance",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q7:choose:More energy",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "More energyMore energyMore energy",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q7:choose:Greater wellbeing",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "Greater wellbeingGreater wellbeingGreater wellbein",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q7:choose:Emotional balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "Emotional balanceEmotional balanceEmotional balanc",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q7:choose:Better sleep",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "Better sleepBetter sleepBetter sleep",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q7:choose:Cycle support",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "Cycle supportCycle supportCycle support",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q7:choose:Bones, joints + muscles",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)",
+      "picked_text": "Bones, joints + musclesBones, joints + musclesBone",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q7:choose:Gut health",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)",
+      "picked_text": "Gut healthGut healthGut health",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q7:choose:Stronger immunity",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)",
+      "picked_text": "Stronger immunityStronger immunityStronger immunit",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q7:choose:Hormonal balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)",
+      "picked_text": "Hormonal balanceHormonal balanceHormonal balance",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q8:choose:More energy",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "More energyMore energyMore energy",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q8:choose:Greater wellbeing",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "Greater wellbeingGreater wellbeingGreater wellbein",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q8:choose:Emotional balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "Emotional balanceEmotional balanceEmotional balanc",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q8:choose:Better sleep",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "Better sleepBetter sleepBetter sleep",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q8:choose:Cycle support",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "Cycle supportCycle supportCycle support",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q8:choose:Bones, joints + muscles",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)",
+      "picked_text": "Bones, joints + musclesBones, joints + musclesBone",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q8:choose:Gut health",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)",
+      "picked_text": "Gut healthGut healthGut health",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q8:choose:Stronger immunity",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)",
+      "picked_text": "Stronger immunityStronger immunityStronger immunit",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q8:choose:Hormonal balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)",
+      "picked_text": "Hormonal balanceHormonal balanceHormonal balance",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q9:choose:More energy",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+      "picked_text": "More energyMore energyMore energy",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q9:choose:Greater wellbeing",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+      "picked_text": "Greater wellbeingGreater wellbeingGreater wellbein",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q9:choose:Emotional balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+      "picked_text": "Emotional balanceEmotional balanceEmotional balanc",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q9:choose:Better sleep",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+      "picked_text": "Better sleepBetter sleepBetter sleep",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q9:choose:Cycle support",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+      "picked_text": "Cycle supportCycle supportCycle support",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q9:choose:Bones, joints + muscles",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)",
+      "picked_text": "Bones, joints + musclesBones, joints + musclesBone",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q9:choose:Gut health",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)",
+      "picked_text": "Gut healthGut healthGut health",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q9:choose:Stronger immunity",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)",
+      "picked_text": "Stronger immunityStronger immunityStronger immunit",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r3-observe-Q9:choose:Hormonal balance",
+      "kind": "choose",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)",
+      "picked_text": "Hormonal balanceHormonal balanceHormonal balance",
+      "score": 125,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r5-observe-S4:advance",
+      "kind": "advance",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#octane-quiz-wrapper > div:nth-of-type(2) > button:nth-of-type(1)",
+      "picked_text": "Continue",
+      "score": 85,
+      "expected": [
+        "#octane-quiz-wrapper > div:nth-of-type(2) > button:nth-of-type(1)"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "r5-observe-S8-email前:fill:email",
+      "kind": "fill",
+      "source": "auto",
+      "status": "selected",
+      "picked": "input[placeholder=\"Enter email\"]",
+      "picked_text": "",
+      "score": 58,
+      "expected": [
+        "input[placeholder=\"Enter email\"]"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "地址屏-observe-真实字段:advance",
+      "kind": "advance",
+      "source": "auto",
+      "status": "selected",
+      "picked": "button.slds-button.slds-button_brand",
+      "picked_text": "Next",
+      "score": 70,
+      "expected": [
+        "button.slds-button.slds-button_brand"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "地址屏-observe-真实字段:fill:zip",
+      "kind": "fill",
+      "source": "auto",
+      "status": "selected",
+      "picked": "#input-167",
+      "picked_text": "",
+      "score": 96,
+      "expected": [
+        "#input-167"
+      ],
+      "verdict": "hit",
+      "reason": "unique semantic winner"
+    },
+    {
+      "name": "manual:blinkist-login:advance",
+      "kind": "advance",
+      "source": "manual",
+      "status": "ambiguous",
+      "picked": "",
+      "picked_text": "",
+      "score": 60,
+      "expected": [
+        "button[data-testid=\"auth-submit-button\"]"
+      ],
+      "verdict": "abstain",
+      "reason": "top semantic candidates are not separated safely"
+    },
+    {
+      "name": "manual:wildnutrition-Q10:advance-without-continue",
+      "kind": "advance",
+      "source": "manual",
+      "status": "ambiguous",
+      "picked": "",
+      "picked_text": "",
+      "score": 60,
+      "expected": [],
+      "verdict": "abstain",
+      "reason": "top semantic candidates are not separated safely"
+    },
+    {
+      "name": "manual:wildnutrition-Q10:absent-answer",
+      "kind": "choose",
+      "source": "manual",
+      "status": "ambiguous",
+      "picked": "",
+      "picked_text": "",
+      "score": 65,
+      "expected": [],
+      "verdict": "abstain",
+      "reason": "top semantic candidates are not separated safely"
+    },
+    {
+      "name": "manual:georgiapower:no-email-field",
+      "kind": "fill",
+      "source": "manual",
+      "status": "not_found",
+      "picked": "",
+      "picked_text": "",
+      "score": 6,
+      "expected": [],
+      "verdict": "abstain",
+      "reason": "no candidate reached the semantic threshold"
+    }
+  ]
+}

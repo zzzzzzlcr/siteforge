@@ -128,6 +128,13 @@ FORWARD_WORDS = (
 )
 BACK_WORDS = ("back", "previous", "prev", "go back")
 NON_FLOW_WORDS = ("next slide", "previous slide", "carousel", "close", "dismiss")
+#: Identity-provider buttons read like forward progress ("Continue with …")
+#: but they leave the site's own flow.  They are only demoted when the text is
+#: both an auth verb and a provider: "Continue with email" stays a valid step.
+AUTH_VERBS = ("continue with", "sign in with", "signin with", "log in with",
+              "login with", "sign up with")
+AUTH_PROVIDERS = ("apple", "google", "facebook", "microsoft", "sso",
+                  "single sign-on", "saml")
 REGION_BONUS = {"questionnaire": 30, "form": 25, "main": 15, "body": 5}
 STABILITY_BONUS = {"high": 6, "medium": 3, "low": 0}
 
@@ -254,6 +261,9 @@ class Resolver:
             score += 35; why.append("forward text")
         if self._contains_any(text, BACK_WORDS + NON_FLOW_WORDS):
             score -= 120; why.append("non-flow navigation")
+        if (self._contains_any(text, AUTH_VERBS)
+                and self._contains_any(text, AUTH_PROVIDERS)):
+            score -= 80; why.append("third-party auth")
         if _norm(candidate.role) == "button":
             score += 5; why.append("button role")
         region = _norm(candidate.region)

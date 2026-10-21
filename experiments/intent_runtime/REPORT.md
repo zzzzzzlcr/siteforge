@@ -77,3 +77,19 @@ of contextual intent resolution, but it does **not** yet establish a successful
 end-to-end replay. A conclusive run needs a stable CDP session (the repository's
 CDP binary or a machine with its required Go toolchain) so every action can be
 followed by a value/selection/page-transition receipt.
+
+## Real-dump replay (2026-10-21)
+
+`docs/probes/2026-10-21-intent-runtime-replay/README.md` replays 46 real
+`cdp observe` dumps (3 sites, 20 with DOM state sidecars) through the resolver:
+165 cases, 161 hits, **0 wrong actions**, 4 safe abstentions.
+
+The replay found one real wrong action — `advance("Log in")` on Blinkist's
+login page picked `Continue with Apple` — and it is now fixed in
+`_score_advance` by demoting third-party auth links. The same login page still
+abstains because the provider name exists only in the selector/aria-label and
+the older observe dump does not expose `aria-label`; that is an observation
+gap, not a resolver rule to add.
+
+This is still resolution-only: no clicks, no form actions, no value
+round-trip, and no shadow/iframe/overlay coverage.

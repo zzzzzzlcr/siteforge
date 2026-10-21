@@ -77,6 +77,35 @@ def test_advance_excludes_carousel_next_on_the_real_homebuddy_shape():
     assert got.candidate.selector == "#next"
 
 
+def test_advance_prefers_the_email_login_submit_over_a_third_party_auth_link():
+    model = page("Log in", actions=[
+        action("#apple", "Continue with Apple", near="Log in", region="main"),
+        action("#email-login", "Login with email", near="Log in", region="main"),
+    ])
+    got = Resolver().resolve(model, Intent.advance("Log in"))
+    assert got.status == "selected"
+    assert got.candidate.selector == "#email-login"
+
+
+def test_advance_without_context_abstains_on_third_party_auth_links():
+    model = page("Log in", actions=[
+        action("#apple", "Continue with Apple", near="Log in", region="main"),
+        action("#google", "Continue with Google", near="Log in", region="main"),
+    ])
+    got = Resolver().resolve(model, Intent.advance(""))
+    assert got.status in ("not_found", "ambiguous")
+    assert got.candidate is None
+
+
+def test_advance_still_accepts_a_first_party_continue_with_email():
+    model = page("Sign up", actions=[
+        action("#email", "Continue with email", near="Sign up", region="main"),
+    ])
+    got = Resolver().resolve(model, Intent.advance("Sign up"))
+    assert got.status == "selected"
+    assert got.candidate.selector == "#email"
+
+
 def test_indistinguishable_buttons_abstain_before_any_click():
     model = page("Current question", actions=[
         action("#a", "Next", near="Current question"),
