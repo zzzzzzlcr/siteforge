@@ -221,10 +221,18 @@ def wait_for_window(eval_fn, *, timeout: float = 30.0, poll: float = 0.5) -> str
         time.sleep(poll)
 
 
+#: SPA 首屏常见的「还在加载」正文 —— 这不是页面内容（2026-10-22 cupidfeel 实测：
+#: 首屏正文只有 `Loading...`，问卷约 10 秒后才渲染；把它当「有内容」会让分类提前判 unknown）。
+_LOADING_MARK = re.compile(r"^\s*(loading|please wait|just a moment|one moment)\b", re.I)
+
+
 def census_has_content(census: dict) -> bool:
-    """这一份 census 是不是「页面有东西」——空壳（标题/控件/正文全无）不算分类结果。"""
-    return bool(str(census.get("title") or "") or (census.get("testids") or [])
-                or str(census.get("body_text") or ""))
+    """这一份 census 是不是「页面有东西」——空壳 / 纯 Loading 都不算分类结果。"""
+    if (str(census.get("title") or "") or (census.get("testids") or [])
+            or (census.get("inputs") or [])):
+        return True
+    body = str(census.get("body_text") or "").strip()
+    return len(body) >= 40 and not _LOADING_MARK.match(body)
 
 
 def wait_for_census(eval_fn, *, timeout: float = 10.0, poll: float = 0.5) -> dict:

@@ -271,6 +271,13 @@ def test_census_has_content_tells_an_empty_shell_from_a_loaded_page():
     assert classify.census_has_content(_census(testids=["step-1"])) is True
 
 
+def test_census_has_content_does_not_treat_a_loading_shell_as_ready():
+    #: 2026-10-22 cupidfeel：SPA 首屏正文就一个 "Loading..."，但它 10 秒后才渲染出问卷。
+    assert classify.census_has_content(_census(body_text="Loading...")) is False
+    assert classify.census_has_content(_census(body_text="Please wait")) is False
+    assert classify.census_has_content(_census(body_text="x" * 50)) is True
+
+
 def test_mark_start_js_returns_a_json_string_and_skips_submits():
     js = classify.MARK_START_JS
     assert "JSON.stringify" in js, "裸 'marked' 会被 _cdp_eval 的双层解析吞成 None"
