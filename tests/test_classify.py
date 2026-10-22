@@ -1,6 +1,10 @@
 """约会站分类器的纯逻辑（不碰窗口/网络）。"""
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from agent import classify
 
 
@@ -70,9 +74,6 @@ def test_site_key_strips_scheme_query_fragment_and_trailing_slash():
     assert classify.site_key("a.test/x?q=1") == "a.test/x"
 
 
-import pytest
-
-
 def test_resolve_config_uses_the_platform_anchor():
     rows = [{"site": "japansdates.com", "config_id": 101, "status": 1},
             {"site": "goldenagesouls.com", "config_id": 66, "status": 1}]
@@ -91,3 +92,59 @@ def test_resolve_config_refuses_a_missing_anchor():
     with pytest.raises(classify.ClassifyError) as got:
         classify.resolve_config("japansdates", [])
     assert "锚点" in str(got.value)
+
+
+def _eval_from(pages):
+    """按顺序返回 census 的假 eval：pages 是 dict 列表。
+    `MARK_START_JS` 那一下（带 `data-sf-start`）固定回 "marked"，不占 pages。"""
+    seq = list(pages)
+
+    def _call(js):
+        if "data-sf-start" in js:
+            return "marked"
+        if not seq:
+            raise AssertionError("eval 调多了")
+        return json.dumps(seq.pop(0))
+    return _call
+
+
+def test_census_with_start_does_not_click_when_the_first_screen_matches():
+    page = _census(testids=["step-content-item-Basic", "option-x", "legal-checkbox"],
+                   hash="#c3RlcDE=")
+    clicked = []
+    got = classify.census_with_start(_eval_from([page]), lambda: clicked.append(1))
+    assert got["clicked_start"] is False
+    assert clicked == []
+
+
+def test_census_with_start_clicks_once_when_unknown_and_returns_the_new_census():
+    first = _census(buttons=["Start"], start_candidates=[{"text": "Start", "tag": "button"}])
+    second = _census(testids=["step-content-item-Basic", "option-x", "legal-checkbox"],
+                     hash="#c3RlcDE=")
+    clicked = []
+    got = classify.census_with_start(_eval_from([first, second]),
+                                     lambda: clicked.append(1))
+    assert got["clicked_start"] is True
+    assert got["clicked_text"] == "Start"
+    assert clicked == [1]
+    assert got["census"] == second
+
+
+def test_census_with_start_does_not_click_with_no_candidate_or_no_click_flag():
+    page = _census(buttons=["Start"], start_candidates=[])
+    got = classify.census_with_start(_eval_from([page]), lambda: None)
+    assert got["clicked_start"] is False
+
+    page2 = _census(start_candidates=[{"text": "Start", "tag": "button"}])
+    clicked = []
+    got2 = classify.census_with_start(_eval_from([page2]), lambda: clicked.append(1),
+                                      allow_click=False)
+    assert got2["clicked_start"] is False and clicked == []
+
+
+def test_census_with_start_reports_when_the_click_does_not_change_the_page():
+    page = _census(start_candidates=[{"text": "Start", "tag": "button"}])
+    got = classify.census_with_start(_eval_from([page, page]),
+                                     lambda: None, wait_seconds=0.0)
+    assert got["clicked_start"] is True
+    assert "没变" in got["note"]

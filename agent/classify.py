@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 import sys
+import time
 
 #: 穿透 shadow root 的收集器（与 agent/template_loop.py 的 DEEP_JS 同款）。
 DEEP_JS = ("function deepAll(sel){var out=[];"
@@ -147,6 +148,60 @@ def census_signature(census: dict) -> str:
     blob = "|".join([str(census.get("url") or ""), str(census.get("title") or ""),
                      hashlib.sha1("\n".join(testids).encode("utf-8")).hexdigest()])
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()
+
+
+START_SELECTOR = '[data-sf-start="1"]'
+
+#: 给可见的 start 候选打标记（只打第一个；点还是走 `cdp click` 的真人手势层）。
+MARK_START_JS = r"""(function(){""" + DEEP_JS + r"""
+  function vis(e){return e && e.offsetWidth>0 && e.offsetHeight>0;}
+  function txt(e){return ((e.textContent||'').replace(/\s+/g,' ').trim());}
+  var START=/^(start|begin|continue|join|see if|qualify|get started|take the quiz|find out|check)\b/i;
+  var old=deepAll('[data-sf-start]');for(var j=0;j<old.length;j++)old[j].removeAttribute('data-sf-start');
+  var es=deepAll('button,[role=button],a[href]');
+  for(var i=0;i<es.length;i++){var e=es[i];
+    if(!vis(e))continue; var s=txt(e); if(!s||!START.test(s))continue;
+    e.setAttribute('data-sf-start','1'); return 'marked';}
+  return 'none';})()"""
+
+
+def _as_census(raw) -> dict:
+    """`selftest._cdp_eval` 可能已经拆成 dict，也可能还是 JSON 文本 —— 两种都收。"""
+    return raw if isinstance(raw, dict) else json.loads(raw)
+
+
+def census_with_start(eval_fn, click_fn, *, allow_click: bool = True,
+                      wait_seconds: float = 5.0, poll: float = 0.5) -> dict:
+    """第一轮 census；`unknown` 且允许 → 点**一次** Start → 第二轮 census。
+
+    `eval_fn(js) -> dict | JSON 文本`、`click_fn()` 只负责点（点了哪个字从 census 里读）。
+    点了但页面没变（签名不变）⇒ `clicked_start=True` 且 note 明说「没变」。
+    """
+    first = _as_census(eval_fn(CENSUS_JS))
+    verdict = classify_census(first)
+    if verdict["platform"] or not allow_click:
+        return {"census": first, "clicked_start": False, "clicked_text": "", "note": ""}
+    if not (first.get("start_candidates") or []):
+        return {"census": first, "clicked_start": False, "clicked_text": "",
+                "note": "没找到可点的开始"}
+    clicked_text = str((first.get("start_candidates") or [{}])[0].get("text") or "")
+    marked = str(eval_fn(MARK_START_JS) or "")
+    if "marked" not in marked:
+        return {"census": first, "clicked_start": False, "clicked_text": "",
+                "note": "没找到可点的开始"}
+    click_fn()
+    before = census_signature(first)
+    deadline = time.time() + max(0.0, float(wait_seconds))
+    second = first
+    while True:
+        time.sleep(min(poll, max(0.0, deadline - time.time())))
+        second = _as_census(eval_fn(CENSUS_JS))
+        if census_signature(second) != before:
+            return {"census": second, "clicked_start": True, "clicked_text": clicked_text,
+                    "note": ""}
+        if time.time() >= deadline:
+            return {"census": second, "clicked_start": True, "clicked_text": clicked_text,
+                    "note": "点了 %r，页面没变" % (clicked_text or "?")}
 
 
 class ClassifyError(RuntimeError):
