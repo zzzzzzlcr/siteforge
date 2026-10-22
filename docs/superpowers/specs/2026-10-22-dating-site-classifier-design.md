@@ -98,16 +98,17 @@ python -m agent.classify <url> \
   "links": ["Privacy Policy", "…"],
   "inputs": [{"type": "text", "name": "", "placeholder": "Age", "testid": ""}],
   "body_text": "前 500 字（压空白）",
-  "start_candidates": [{"text": "Start", "tag": "button", "selector_hint": "…"}]
+  "start_candidates": [{"text": "Start", "tag": "button"}]
 }
 ```
 
-- `testids`：所有 `[data-testid]`（穿透 shadow root，复用 `deepAll` 那套），**去重**、保留可见性标记；上限 300。
+- `testids`：**可见**的 `[data-testid]`（穿透 shadow root，复用 `deepAll` 那套），**去重**；上限 300。
 - `classes`：可见元素的 class token（按空白拆），**过滤** `css-*` / `Mui*` / 长度 < 3；上限 200。
 - `buttons` / `links`：可见 `button, [role=button], a[href]` 的文字；上限 80。
 - `start_candidates`：可见、文字命中
   `^(start|begin|continue|join|see if|qualify|get started|take the quiz|find out|check)\b` 的
-  `button/a/[role=button]`；上限 5，带 `tag` 和一个可由 `cdp click` 用的选择器（标记 `data-sf-start` 后取）。
+  `button/a/[role=button]`；上限 5，带 `tag`。点击时由运行期给第一个候选打
+  `data-sf-start="1"`，再 `cdp click '[data-sf-start="1"]'`（census 本身不返回选择器）。
 - **不收集**任何输入框的值（只 type/name/placeholder/testid）。
 
 ### 3.2 Start 点击（最多一次）
