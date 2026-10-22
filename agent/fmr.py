@@ -267,6 +267,12 @@ FORM_SCRIPT_PATH = "/api/quest/formScript"
 #:   ⚠️ token 与配置那个口用的是**同一串写 token**（读 token 在这两个口上都是 401）。
 FORM_SCRIPT_UPDATE_PATH = "/api/quest/formScript/update"
 
+#: ★ 2026-10-22（后端 `df4938d`）：只做站点↔配置关联，不写脚本、不建 config。
+#: 文档 `/company/farmer/docs/agent-data-api.md` §18.4。
+#: 鉴权同写口：`X-Api-Token: <configs.agentWriteToken>`；body 必须是 application/json；
+#: 回执照旧是 `/api/quest/*` 的约定（HTTP 200 + body.status）：200 成功、400 参数、404 config 不存在。
+FORM_CONFIG_LINK_PATH = "/api/quest/formConfig/link"
+
 #: 这两个口的超时（秒）—— **比别的读口短**（`DEFAULT_TIMEOUT` 是 20）。
 #: brief §2 R4：这是**给面板用的**，不是批量任务：人按了按钮在等一个答复，
 #: 让它挂 20 秒不如早一点说「还没读成」。旋钮在 `FmrClient(config_timeout=…)`。
@@ -1892,6 +1898,55 @@ class FmrClient:
             say=("**没传上去 —— 后端说这请求不对**（后端回的 `status` 是 %s）。%s"
                  "⚠️ 这一条是它**明确拒了**（不是「不知道」）⇒ `%s` 的脚本**没有被改动**。"
                  % (status, tail, k)))
+
+    def form_config_link(self, site: str, config_id: int, *, operator: str,
+                         reason: str = "") -> dict:
+        """把站点挂到**已有** config → `{"site","config_id","created"}`。
+
+        成功判据 = body 里 `status == 200`（`/api/quest/*` 是旧约定：HTTP 恒 200）。
+        400 = 参数/形状错；404 = config 不存在；401 = 写 token 错 —— 都抛 `FmrRefused`。
+        本地能查出来的错（空站 / 空 operator / 非正整数 config_id / 没写 token）**一个请求都不发**。
+        """
+        key = str(site or "").strip()
+        if not key:
+            raise FmrUnmeasured("没说是哪个站：一个请求都没发出去。", kind="no-site")
+        who = str(operator or "").strip()
+        if not who:
+            raise FmrUnmeasured("没说 operator（谁改的）：一个请求都没发出去。",
+                                kind="no-operator")
+        try:
+            cid = int(config_id)
+        except (TypeError, ValueError):
+            raise FmrUnmeasured("config_id 必须是正整数：一个请求都没发出去。",
+                                kind="bad-config-id")
+        if cid <= 0:
+            raise FmrUnmeasured("config_id 必须是正整数：一个请求都没发出去。",
+                                kind="bad-config-id")
+        if not self.write_token:
+            raise FmrNoToken(
+                "**一个字都没写**：这个部署没配写用的 token（`%s`）。" % WRITE_TOKEN_ENV)
+        url = "%s%s" % (self.base, FORM_CONFIG_LINK_PATH)
+        headers = {"Content-Type": "application/json; charset=utf-8",
+                   "X-Api-Token": self.write_token}
+        body_in = {"site": key, "config_id": cid, "operator": who,
+                   "reason": str(reason or "")}
+        body = json.dumps(body_in, ensure_ascii=False).encode("utf-8")
+        raw = self._poster(url, headers, body)
+        try:
+            payload = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            raise FmrUnreachable("关联的回执读不成 JSON：%s" % str(exc)[:120]) from exc
+        if not isinstance(payload, dict):
+            raise FmrUnreachable("关联的回执不是对象：%r" % (payload,))
+        status = int(payload.get("status") or 0)
+        if status != 200:
+            raise FmrRefused("关联没成（body.status=%s）：%s"
+                             % (status, str(payload.get("msg") or "")[:200]),
+                             status=status)
+        data = payload.get("data") or {}
+        return {"site": str(data.get("site") or key),
+                "config_id": int(data.get("config_id") or cid),
+                "created": bool(data.get("created"))}
 
     def _write_unread_result(self, site: str, exc: Exception,
                              path: str = FORM_CONFIG_PATH) -> FormWriteResult:
