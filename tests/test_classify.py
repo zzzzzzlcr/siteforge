@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from agent import classify
+from agent import classify, fmr
 
 
 def _census(**kw):
@@ -269,6 +269,100 @@ def test_census_has_content_tells_an_empty_shell_from_a_loaded_page():
     assert classify.census_has_content(_census()) is False
     assert classify.census_has_content(_census(title="X")) is True
     assert classify.census_has_content(_census(testids=["step-1"])) is True
+
+
+def test_mark_start_js_returns_a_json_string_and_skips_submits():
+    js = classify.MARK_START_JS
+    assert "JSON.stringify" in js, "裸 'marked' 会被 _cdp_eval 的双层解析吞成 None"
+    assert "submit" in js
+    assert "input:not([type=hidden])" in js
+
+
+def test_census_start_candidates_skip_submits_and_visible_form_controls():
+    js = classify.CENSUS_JS
+    assert "safeStart" in js
+    assert "submit" in js
+    assert "input:not([type=hidden])" in js
+
+
+def test_as_census_tolerates_none_and_garbage():
+    assert classify._as_census(None) == {}
+    assert classify._as_census("not json") == {}
+    assert classify._as_census({"a": 1}) == {"a": 1}
+
+
+def test_wait_for_census_keeps_polling_when_eval_returns_none():
+    seq = [None, {"title": "X"}]
+    got = classify.wait_for_census(lambda js: seq.pop(0), timeout=0.1, poll=0.0)
+    assert got["title"] == "X"
+
+
+def test_run_classify_apply_link_error_reports_not_linked():
+    client = _FakeClient(ROWS, link_result=fmr.FmrNoToken("没配写 token"))
+    got = classify.run_classify(
+        "https://soulmatemeets.com/land/sp/23d247da/",
+        census_fn=lambda: {"census": JAPAN, "clicked_start": False,
+                           "clicked_text": "", "note": ""},
+        site_rows=ROWS, client=client, apply=True)
+    assert got["exit"] == 4, got
+    assert got["result"]["linked"] is None
+    assert "FmrNoToken" in got["result"]["link_error"]
+
+
+def test_run_classify_apply_unknown_link_outcome_is_settled_by_readback():
+    class _LandedThenLost(_FakeClient):
+        def form_config_link(self, site, config_id, *, operator, reason=""):
+            self.rows = [r for r in self.rows if r.get("site") != site] + [
+                {"site": site, "config_id": config_id, "status": 1}]
+            raise fmr.FmrUnreachable("回执没读成")
+
+    client = _LandedThenLost(ROWS)
+    got = classify.run_classify(
+        "https://soulmatemeets.com/land/sp/23d247da/",
+        census_fn=lambda: {"census": JAPAN, "clicked_start": False,
+                           "clicked_text": "", "note": ""},
+        site_rows=ROWS, client=client, apply=True)
+    assert got["exit"] == 0, got
+    assert got["result"]["linked"] == {"created": None, "config_id": 101}
+
+
+def test_run_classify_apply_calls_before_write_with_the_payload():
+    seen = []
+    client = _FakeClient(ROWS)
+    got = classify.run_classify(
+        "https://soulmatemeets.com/land/sp/23d247da/",
+        census_fn=lambda: {"census": JAPAN, "clicked_start": False,
+                           "clicked_text": "", "note": ""},
+        site_rows=ROWS, client=client, apply=True, before_write=seen.append)
+    assert got["exit"] == 0, got
+    assert seen and seen[0]["site"] == "soulmatemeets.com/land/sp/23d247da"
+    assert seen[0]["config_id"] == 101
+    assert "japansdates" in seen[0]["operator"]
+
+
+def test_render_human_ambiguous_lists_candidates():
+    r = {"url": "u", "site_key": "k", "platform": None, "confidence": "low",
+         "ambiguous": True, "config_id": None, "anchor": None, "evidence": [],
+         "clicked_start": False, "clicked_text": "", "click_note": "",
+         "linked": None, "link_error": None, "link_payload": None,
+         "matches": [{"platform": "delachat", "evidence": ["class_token: terms__button"]},
+                     {"platform": "goldenagesouls", "evidence": ["testid_exact: option-man"]}],
+         "census": {"title": "", "hash": "", "testids": [], "classes": []}}
+    s = classify.render_human(r)
+    assert "delachat" in s and "goldenagesouls" in s
+    assert "ambiguous" in s
+
+
+def test_render_human_unknown_shows_census_and_hint():
+    r = {"url": "u", "site_key": "k", "platform": None, "confidence": "unknown",
+         "ambiguous": False, "config_id": None, "anchor": None, "evidence": [],
+         "clicked_start": False, "clicked_text": "", "click_note": "",
+         "linked": None, "link_error": None, "link_payload": None, "matches": [],
+         "census": {"title": "", "hash": "", "testids": ["step-1"],
+                    "classes": ["reg-form"]}}
+    s = classify.render_human(r)
+    assert "step-1" in s and "reg-form" in s
+    assert "指纹" in s
 
 
 def test_census_with_start_can_reuse_the_first_census():

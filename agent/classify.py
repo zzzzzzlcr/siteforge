@@ -45,10 +45,17 @@ CENSUS_JS = r"""(function(){""" + DEEP_JS + r"""
                  placeholder:String(e.getAttribute('placeholder')||''),
                  testid:String(e.getAttribute('data-testid')||'')});});
   var START=/^(start|begin|continue|join|see if|qualify|get started|take the quiz|find out|check)\b/i;
+  // ★ 2026-10-22 review：**绝不点提交** —— submit 按钮、或带可见输入的表单里的按钮都不算 Start。
+  function safeStart(e){
+    if(e.tagName==='BUTTON'&&(e.getAttribute('type')||'').toLowerCase()==='submit')return false;
+    var f=e.form||(e.closest&&e.closest('form'));
+    if(f&&f.querySelector('input:not([type=hidden]),select,textarea'))return false;
+    return true;}
   var starts=[];
   deepAll('button,[role=button],a[href]').forEach(function(e){
     if(!vis(e))return; var s=txt(e); if(!s||!START.test(s))return;
     if(e.tagName==='A'&&!e.getAttribute('href'))return;
+    if(!safeStart(e))return;
     starts.push({text:s.slice(0,80), tag:String(e.tagName||'').toLowerCase()});});
   return JSON.stringify({
     url:location.href, title:document.title||'', hash:location.hash||'',
@@ -160,21 +167,42 @@ def census_signature(census: dict) -> str:
 START_SELECTOR = '[data-sf-start="1"]'
 
 #: 给可见的 start 候选打标记（只打第一个；点还是走 `cdp click` 的真人手势层）。
+#: ⚠️ 返回值必须 `JSON.stringify` 包一层：`selftest._cdp_eval` 会连拆两层 JSON，
+#: 裸 `'marked'` 会在第二层解析失败被它吞成 `None`（2026-10-22 review 的 Critical）。
 MARK_START_JS = r"""(function(){""" + DEEP_JS + r"""
   function vis(e){return e && e.offsetWidth>0 && e.offsetHeight>0;}
   function txt(e){return ((e.textContent||'').replace(/\s+/g,' ').trim());}
   var START=/^(start|begin|continue|join|see if|qualify|get started|take the quiz|find out|check)\b/i;
+  function safeStart(e){
+    if(e.tagName==='BUTTON'&&(e.getAttribute('type')||'').toLowerCase()==='submit')return false;
+    var f=e.form||(e.closest&&e.closest('form'));
+    if(f&&f.querySelector('input:not([type=hidden]),select,textarea'))return false;
+    return true;}
   var old=deepAll('[data-sf-start]');for(var j=0;j<old.length;j++)old[j].removeAttribute('data-sf-start');
   var es=deepAll('button,[role=button],a[href]');
   for(var i=0;i<es.length;i++){var e=es[i];
     if(!vis(e))continue; var s=txt(e); if(!s||!START.test(s))continue;
-    e.setAttribute('data-sf-start','1'); return 'marked';}
-  return 'none';})()"""
+    if(!safeStart(e))continue;
+    e.setAttribute('data-sf-start','1'); return JSON.stringify('marked');}
+  return JSON.stringify('none');})()"""
 
 
 def _as_census(raw) -> dict:
-    """`selftest._cdp_eval` 可能已经拆成 dict，也可能还是 JSON 文本 —— 两种都收。"""
-    return raw if isinstance(raw, dict) else json.loads(raw)
+    """`selftest._cdp_eval` 可能已经拆成 dict、还是 JSON 文本、或 **None**（读失败）。
+
+    ⚠️ `_cdp_eval` 读不到时**返回 None 不抛**（它的契约）—— Start 点击后页面正在导航，
+    某一次 poll 撞上已销毁的执行上下文就是 None；这里必须收成 `{}` 让轮询继续，
+    而不是 `json.loads(None)` 抛 `TypeError` 把 CLI 打成 exit 1。
+    """
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        return {}
+    try:
+        got = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return got if isinstance(got, dict) else {}
 
 
 def wait_for_window(eval_fn, *, timeout: float = 30.0, poll: float = 0.5) -> str:
@@ -286,7 +314,8 @@ EXIT_CONFIG = 5
 
 
 def run_classify(url: str, *, census_fn, site_rows, client=None,
-                 apply: bool = False, config_override: int | None = None) -> dict:
+                 apply: bool = False, config_override: int | None = None,
+                 before_write=None) -> dict:
     """一次分类（+ 可选写入）。返回 `{"exit": int, "result": dict}`；不打印。"""
     got = census_fn()
     census = got["census"]
@@ -301,8 +330,9 @@ def run_classify(url: str, *, census_fn, site_rows, client=None,
         "clicked_text": str(got.get("clicked_text") or ""),
         "click_note": str(got.get("note") or ""),
         "census": {"title": census.get("title"), "hash": census.get("hash"),
-                   "testids": (census.get("testids") or [])[:40]},
-        "linked": None,
+                   "testids": (census.get("testids") or [])[:40],
+                   "classes": (census.get("classes") or [])[:40]},
+        "linked": None, "link_error": None, "link_payload": None,
     }
     if verdict["platform"] is None:
         return {"exit": EXIT_UNKNOWN, "result": result}
@@ -312,32 +342,89 @@ def run_classify(url: str, *, census_fn, site_rows, client=None,
     try:
         result["config_id"] = resolve_config(verdict["platform"], site_rows,
                                              override=config_override)
-    except ClassifyError:
+    except ClassifyError as exc:
+        result["link_error"] = str(exc)
         return {"exit": EXIT_CONFIG, "result": result}
     if not apply:
         return {"exit": EXIT_OK, "result": result}
-
     if client is None:
+        result["link_error"] = "没有可用的 FMR 客户端（没读/写 token）"
         return {"exit": EXIT_LINK, "result": result}
+
+    payload = {
+        "site": key, "config_id": result["config_id"],
+        "operator": "claude (classify: %s, %s)" % (verdict["platform"], key),
+        "reason": "census: " + "; ".join(result["evidence"])[:300],
+    }
+    result["link_payload"] = payload
+    if before_write is not None:
+        before_write(payload)
+
+    created = None
     try:
-        linked = client.form_config_link(
-            key, result["config_id"],
-            operator="claude (classify: %s, %s)" % (verdict["platform"], key),
-            reason="census: " + "; ".join(result["evidence"])[:300])
-    except Exception:  # noqa: BLE001 —— 写失败/没 token/回执读不成都算没写成
-        return {"exit": EXIT_LINK, "result": result}
-    result["linked"] = {"created": bool(linked.get("created")),
-                        "config_id": int(linked.get("config_id") or result["config_id"])}
-    #: 回读复核：这一行必须是目标 config 且 status=1，否则不许报成功。
+        linked = client.form_config_link(**payload)
+        created = bool(linked.get("created"))
+    except Exception as exc:  # noqa: BLE001 —— 没写/被拒/回执没读成：都由回读来定
+        result["link_error"] = "%s: %s" % (type(exc).__name__, str(exc)[:200])
+    #: ★ 回读复核：不管有没有回执，**以这一行为准**（写没写成 / 是不是目标 config）。
     try:
         rows = client.form_config_sites()
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        if not result["link_error"]:
+            result["link_error"] = "回读失败：%s" % str(exc)[:200]
         return {"exit": EXIT_LINK, "result": result}
-    row = next((r for r in rows if str(r.get("site") or "") == key), None)
-    if row is None or int(row.get("config_id") or 0) != result["config_id"] \
-            or int(row.get("status") or 0) != 1:
+    row = next((r for r in rows if site_key(str(r.get("site") or "")) == key), None)
+    if row is None or int(row.get("config_id") or 0) != result["config_id"]:
+        if not result["link_error"]:
+            result["link_error"] = "回读不一致：这一行不是 config %s" % result["config_id"]
         return {"exit": EXIT_LINK, "result": result}
+    if int(row.get("status") or 0) != 1:
+        result["link_error"] = "回读到了，但 status=%s（不是 1）" % row.get("status")
+        return {"exit": EXIT_LINK, "result": result}
+    #: 回读确认了 ⇒ 就算回执没读到，映射也已经在了（created 未知）。
+    result["link_error"] = None
+    result["linked"] = {"created": created, "config_id": result["config_id"]}
     return {"exit": EXIT_OK, "result": result}
+
+
+def render_human(r: dict) -> str:
+    """人话输出（unknown/ambiguous 要给出候选或 census 证据 + 加指纹提示）。"""
+    lines = ["URL    %s" % (r.get("url") or ""),
+             "平台   %s（%s）  → config %s（锚点 %s）" % (
+                 r.get("platform") or "unknown", r.get("confidence") or "unknown",
+                 r.get("config_id") if r.get("config_id") is not None else "—",
+                 r.get("anchor") or "—"),
+             "键     %s" % (r.get("site_key") or "")]
+    if r.get("ambiguous") or r.get("platform") is None:
+        ms = r.get("matches") or []
+        if ms:
+            for m in ms:
+                lines.append("候选   %s：%s" % (m.get("platform"),
+                                              "; ".join(m.get("evidence") or [])))
+            lines.append("动作   ambiguous —— 不自动写；挑一个用 --config-id")
+        else:
+            c = r.get("census") or {}
+            lines.append("证据   testid=%s | class=%s | hash=%s" % (
+                ",".join((c.get("testids") or [])[:8]) or "—",
+                ",".join((c.get("classes") or [])[:8]) or "—",
+                c.get("hash") or "—"))
+            lines.append("提示   这个家族还没有指纹；把上面的 testid/class 加进 FINGERPRINTS")
+    else:
+        lines.append("证据   %s" % ("; ".join(r.get("evidence") or []) or "—"))
+    lines.append("动作   %s" % (
+        ("点了 Start %r" % r.get("clicked_text")) if r.get("clicked_start")
+        else (r.get("click_note") or "未点 Start")))
+    if r.get("link_payload"):
+        lines.append("将发   %s" % json.dumps(r["link_payload"], ensure_ascii=False))
+    if r.get("linked"):
+        created = r["linked"].get("created")
+        lines.append("写入   已关联（created=%s）"
+                     % ("未知（回读确认）" if created is None else created))
+    elif r.get("link_error"):
+        lines.append("写入   失败：%s" % r["link_error"])
+    else:
+        lines.append("写入   未写（加 --apply 才写）")
+    return "\n".join(lines) + "\n"
 
 
 def main(argv=None) -> int:
@@ -416,9 +503,14 @@ def main(argv=None) -> int:
         except Exception as exc:  # noqa: BLE001
             sys.stderr.write("读站点清单失败：%s\n" % str(exc)[:200])
             return EXIT_CONFIG
+        before_write = None
+        if a.apply and not a.json:
+            def before_write(payload):
+                sys.stderr.write("将发 link：%s\n"
+                                 % json.dumps(payload, ensure_ascii=False))
         out = run_classify(a.url, census_fn=lambda: got, site_rows=rows,
                            client=client, apply=a.apply,
-                           config_override=a.config_id)
+                           config_override=a.config_id, before_write=before_write)
     finally:
         if owns and not a.keep_window and window is not None:
             try:
@@ -428,16 +520,7 @@ def main(argv=None) -> int:
     if a.json:
         sys.stdout.write(json.dumps(out["result"], ensure_ascii=False, indent=1) + "\n")
     else:
-        r = out["result"]
-        sys.stdout.write(
-            "URL    %s\n平台   %s（%s）  → config %s（锚点 %s）\n键     %s\n证据   %s\n"
-            "动作   %s；只读普查\n写入   %s\n" % (
-                r["url"], r["platform"] or "unknown", r["confidence"],
-                r["config_id"] if r["config_id"] is not None else "—",
-                r["anchor"] or "—", r["site_key"], "; ".join(r["evidence"]) or "—",
-                ("点了 Start %r" % r["clicked_text"]) if r["clicked_start"]
-                else (r["click_note"] or "未点 Start"),
-                ("已关联：%r" % (r["linked"],)) if r["linked"] else "未写（加 --apply 才写）"))
+        sys.stdout.write(render_human(out["result"]))
     return int(out["exit"])
 
 
