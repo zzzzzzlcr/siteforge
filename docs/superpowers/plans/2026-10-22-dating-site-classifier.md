@@ -1025,11 +1025,14 @@ B='--worker 192.168.1.222 --bit-id 982d158b41b14fbb87754667859b4719'
 > ⚠️ **必须显式 `--worker 192.168.1.222`**：`siteforge.env` 里那格是 197（8099 那台运营在用的），
 > 不覆盖就会去开运营的窗口。
 
-Expected（对照后端已知配置）：
+Expected（**按 DOM 家族**，不是「后端现在把它挂在哪」——2026-10-22 实测订正）：
 - soulmatemeets 23d247da → `japansdates` / config 101；
 - soulfuldate a64f40a4 → `japansdates` / 101；
-- callyourdate 5549e30e → `goldenagesouls` / 66；
-- chattyromance 81d0a481 → `delachat` / 142。
+- callyourdate 5549e30e → `japansdates` / **101**（后端现存配置是 66，但那页的 DOM 是
+  `step-content-item-*` 那一套 —— 与 soulfuldate 10-10 的错配同类）；
+- chattyromance 81d0a481 → `japansdates` / **101**（后端现存 142 的 Delachat；但那页也是
+  `step-content-item-*` 变体）。
+- **goldenagesouls.com** → `goldenagesouls` / 66（真正的 goldenagesouls 落地屏样本）。
 
 - [ ] **Step 2: 跑一个非约会页**
 

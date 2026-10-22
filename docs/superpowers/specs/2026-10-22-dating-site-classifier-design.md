@@ -102,8 +102,11 @@ python -m agent.classify <url> \
 }
 ```
 
-- `testids`：**可见**的 `[data-testid]`（穿透 shadow root，复用 `deepAll` 那套），**去重**；上限 300。
-- `classes`：可见元素的 class token（按空白拆），**过滤** `css-*` / `Mui*` / 长度 < 3；上限 200。
+- `testids`：**全部** `[data-testid]`（穿透 shadow root，复用 `deepAll` 那套；**不按可见性过滤**
+  —— 平台签名常常藏在首屏之外，2026-10-22 真站实测：只看可见 testid 会把 japansdates 判成 unknown），
+  **去重**；上限 300。
+- `classes`：全部元素的 class token（按空白拆；同样**不按可见性过滤**），
+  **过滤** `css-*` / `Mui*` / 长度 < 3；上限 200。
 - `buttons` / `links`：可见 `button, [role=button], a[href]` 的文字；上限 80。
 - `start_candidates`：可见、文字命中
   `^(start|begin|continue|join|see if|qualify|get started|take the quiz|find out|check)\b` 的
@@ -132,11 +135,14 @@ python -m agent.classify <url> \
 | 平台 | anchor | all_of | any_of（min） | none_of |
 |---|---|---|---|---|
 | `japansdates` | `japansdates.com` | `testid_prefix: step-content-item-` | `testid_prefix: option-`、`testid_exact: legal-checkbox`、`testid_exact: continue-button`、`hash_b64_prefix: step`（min 2） | `testid_prefix: image-button-` |
-| `goldenagesouls` | `goldenagesouls.com` | `testid_exact: continue-button` | `testid_prefix: image-button-`、`testid_prefix: age-`（min 1） | — |
+| `goldenagesouls` | `goldenagesouls.com` | `testid_exact: option-man` | `testid_exact: gender-male`、`testid_exact: option-both`、`testid_exact: birth-date`、`class_token: terms__checkbox`、`class_token: reg-form__body`（min 2） | `testid_prefix: step-content-item-` |
 | `delachat` | `chattyromance.com/land/sp/81d0a481` | `class_token: terms__button` | `class_token: step_active`、`class_token: terms__checkbox`、`testid_exact: continue-button`（min 1） | `testid_prefix: step-content-item-` |
 
-> ⚠️ goldenagesouls / delachat 的标记是**从脚本源码推的初版**，实现时要在真站上各量一次再钉死；
-> 表设计成「加一行就扩展」。`thisromance` / `agemate` 先不覆盖，遇到就 `unknown` + 证据。
+> ⚠️ **2026-10-22 真站订正**：goldenagesouls 原来按 `age-*` / `image-button-*` 写，实测
+> `goldenagesouls.com` 是 `option-man` / `gender-male` / `birth-date` / `terms__checkbox` /
+> `reg-form__body` 这套（无 `step-content-item-*`）。delachat 的 `terms__button` 指纹**还没在真站命中过**
+> —— 抽到的 config-142 站（chattyromance 81d0a481）其实是 `step-content-item-*` 变体，归 japansdates。
+> delachat 先保留为**未验证条目**；`thisromance` / `agemate` 先不覆盖，遇到就 `unknown` + 证据。
 
 ### 4.2 分类规则
 

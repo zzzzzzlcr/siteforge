@@ -23,12 +23,13 @@ CENSUS_JS = r"""(function(){""" + DEEP_JS + r"""
   function vis(e){return e && e.offsetWidth>0 && e.offsetHeight>0;}
   function txt(e){return ((e.textContent||'').replace(/\s+/g,' ').trim());}
   function uniq(a){var o=[],s={};for(var i=0;i<a.length;i++){var k=a[i];if(k&&!s[k]){s[k]=1;o.push(k);}}return o;}
+  // ★ 2026-10-22 真站：**不按可见性过滤** —— 平台签名（option-*/continue-*/legal-*）
+  //   首屏常常是隐藏的；只看可见 testid 会把 japansdates 判成 unknown。
   var testids=[];
   deepAll('[data-testid]').forEach(function(e){
-    if(!vis(e))return; var t=e.getAttribute('data-testid'); if(t)testids.push(t);});
+    var t=e.getAttribute('data-testid'); if(t)testids.push(t);});
   var classes=[];
   deepAll('*').forEach(function(e){
-    if(!vis(e))return;
     String(e.className||'').split(/\s+/).forEach(function(c){
       if(c && c.length>=3 && c.indexOf('css-')!==0 && c.indexOf('Mui')!==0)classes.push(c);});});
   var buttons=[], links=[];
@@ -67,12 +68,18 @@ FINGERPRINTS = [
                 {"kind": "hash_b64_prefix", "value": "step"}],
      "any_min": 2,
      "none_of": [{"kind": "testid_prefix", "value": "image-button-"}]},
+    #: ★ 2026-10-22 真站（goldenagesouls.com）：它是**另一种落地屏** ——
+    #: `option-man` + `gender-male` + `birth-date` + `terms__checkbox` / `reg-form__body`，
+    #: **没有** `step-content-item-*`。最初按 `age-*` / `image-button-*` 写的指纹是错的。
     {"platform": "goldenagesouls", "anchor": "goldenagesouls.com",
-     "all_of": [{"kind": "testid_exact", "value": "continue-button"}],
-     "any_of": [{"kind": "testid_prefix", "value": "image-button-"},
-                {"kind": "testid_prefix", "value": "age-"}],
-     "any_min": 1,
-     "none_of": []},
+     "all_of": [{"kind": "testid_exact", "value": "option-man"}],
+     "any_of": [{"kind": "testid_exact", "value": "gender-male"},
+                {"kind": "testid_exact", "value": "option-both"},
+                {"kind": "testid_exact", "value": "birth-date"},
+                {"kind": "class_token", "value": "terms__checkbox"},
+                {"kind": "class_token", "value": "reg-form__body"}],
+     "any_min": 2,
+     "none_of": [{"kind": "testid_prefix", "value": "step-content-item-"}]},
     {"platform": "delachat", "anchor": "chattyromance.com/land/sp/81d0a481",
      "all_of": [{"kind": "class_token", "value": "terms__button"}],
      "any_of": [{"kind": "class_token", "value": "step_active"},
@@ -170,14 +177,51 @@ def _as_census(raw) -> dict:
     return raw if isinstance(raw, dict) else json.loads(raw)
 
 
+def wait_for_window(eval_fn, *, timeout: float = 30.0, poll: float = 0.5) -> str:
+    """开窗之后 CDP 目标要过一会儿才通：轮询到 `location.href` 读得出来，或超时回 ""。
+
+    ⚠️ 用 `JSON.stringify(location.href)`：`selftest._cdp_eval` 会连拆两层 JSON，
+    直接读 `location.href`（裸字符串）会被它当成「不是 JSON」返回 `None`。
+    """
+    deadline = time.time() + max(0.0, float(timeout))
+    while True:
+        got = eval_fn("JSON.stringify(location.href)")
+        if isinstance(got, str) and got:
+            return got
+        if time.time() >= deadline:
+            return ""
+        time.sleep(poll)
+
+
+def census_has_content(census: dict) -> bool:
+    """这一份 census 是不是「页面有东西」——空壳（标题/控件/正文全无）不算分类结果。"""
+    return bool(str(census.get("title") or "") or (census.get("testids") or [])
+                or str(census.get("body_text") or ""))
+
+
+def wait_for_census(eval_fn, *, timeout: float = 10.0, poll: float = 0.5) -> dict:
+    """导航之后页面可能还在加载：轮询 census，直到有标题/控件/正文，或超时回最后一个。"""
+    deadline = time.time() + max(0.0, float(timeout))
+    last: dict = {}
+    while True:
+        last = _as_census(eval_fn(CENSUS_JS))
+        if census_has_content(last):
+            return last
+        if time.time() >= deadline:
+            return last
+        time.sleep(poll)
+
+
 def census_with_start(eval_fn, click_fn, *, allow_click: bool = True,
-                      wait_seconds: float = 5.0, poll: float = 0.5) -> dict:
+                      wait_seconds: float = 5.0, poll: float = 0.5,
+                      first: dict | None = None) -> dict:
     """第一轮 census；`unknown` 且允许 → 点**一次** Start → 第二轮 census。
 
     `eval_fn(js) -> dict | JSON 文本`、`click_fn()` 只负责点（点了哪个字从 census 里读）。
+    `first` 给了就复用（导航后 `wait_for_census` 已经读过一次，别重复 eval）。
     点了但页面没变（签名不变）⇒ `clicked_start=True` 且 note 明说「没变」。
     """
-    first = _as_census(eval_fn(CENSUS_JS))
+    first = _as_census(first) if first is not None else _as_census(eval_fn(CENSUS_JS))
     verdict = classify_census(first)
     if verdict["platform"] or not allow_click:
         return {"census": first, "clicked_start": False, "clicked_text": "", "note": ""}
@@ -335,14 +379,20 @@ def main(argv=None) -> int:
 
     cdp_bin = os.environ.get("SITEFORGE_CDP_BIN") or "cdp"
     cdp_env = os.environ.copy()
+
+    def eval_fn(js):
+        return selftest._cdp_eval(cdp_bin, ws_url, js, cdp_env)
+
     try:
+        #: ★ 2026-10-22 真站实测：`fresh_open()` 刚回来的窗口，CDP 目标还没通 ——
+        #: 直接 navi 会导航在空白页上，census 读到空标题/空 testid。
+        if not wait_for_window(eval_fn):
+            sys.stderr.write("窗口没就绪（CDP 一直读不到 location.href）。\n")
+            return EXIT_WINDOW
         why = selftest._navigate(cdp_bin, ws_url, a.url, cdp_env)
         if why:
             sys.stderr.write("导航没成：%s\n" % why)
             return EXIT_WINDOW
-
-        def eval_fn(js):
-            return selftest._cdp_eval(cdp_bin, ws_url, js, cdp_env)
 
         host, port = selftest._host_port(ws_url)
 
@@ -352,7 +402,12 @@ def main(argv=None) -> int:
                             "--port", str(port)], capture_output=True, text=True,
                            timeout=60)
 
-        got = census_with_start(eval_fn, click_fn, allow_click=not a.no_click)
+        first = wait_for_census(eval_fn, timeout=30.0)
+        if not census_has_content(first):
+            sys.stderr.write("页面没就绪（census 空：标题/控件/正文都没有）。\n")
+            return EXIT_WINDOW
+        got = census_with_start(eval_fn, click_fn, allow_click=not a.no_click,
+                                first=first)
         client = fmr.FmrClient(
             token=os.environ.get("FMR_AGENT_TOKEN", ""),
             write_token=os.environ.get("FORM_SCRIPT_WRITE_TOKEN", ""))

@@ -27,9 +27,12 @@ def test_japansdates_is_recognised_by_step_markers_and_base64_hash():
     assert any("step-content-item-" in e for e in got["matches"][0]["evidence"])
 
 
-def test_goldenagesouls_is_recognised_by_age_and_image_buttons():
+def test_goldenagesouls_is_recognised_by_its_own_landing_markers():
+    #: 2026-10-22 真站：goldenagesouls.com 是另一种落地屏（option-man / gender / birth-date /
+    #: terms__checkbox），没有 step-content-item-*，也没有 age-* / image-button-*。
     got = classify.classify_census(_census(
-        testids=["continue-button", "image-button-basic", "age-18-24"]))
+        testids=["option-man", "option-woman", "gender-male", "birth-date"],
+        classes=["terms__checkbox", "reg-form__body"]))
     assert got["platform"] == "goldenagesouls"
     assert got["confidence"] == "high"
 
@@ -49,10 +52,10 @@ def test_a_plain_continue_button_is_not_enough():
 
 
 def test_two_matching_platforms_is_ambiguous():
-    #: delachat 与 goldenagesouls 的标记**不互斥**（delachat 只否 step-content-item-）。
+    #: delachat 与 goldenagesouls 的标记**不互斥**（两者都不否对方的标记）。
     got = classify.classify_census(_census(
-        classes=["terms__button", "step_active"],
-        testids=["continue-button", "image-button-basic"]))
+        classes=["terms__button", "step_active", "terms__checkbox"],
+        testids=["option-man", "gender-male", "birth-date"]))
     assert got["ambiguous"] is True
     assert got["platform"] is None
     assert {m["platform"] for m in got["matches"]} >= {"delachat", "goldenagesouls"}
@@ -175,8 +178,8 @@ JAPAN = _census(url="https://soulmatemeets.com/land/sp/23d247da/",
                 testids=["step-content-item-Basic", "option-x", "legal-checkbox"],
                 hash="#c3RlcDE=")
 #: delachat + goldenagesouls 的标记**不互斥**，用来造 ambiguous。
-AMBIGUOUS = _census(classes=["terms__button", "step_active"],
-                    testids=["continue-button", "image-button-x"])
+AMBIGUOUS = _census(classes=["terms__button", "step_active", "terms__checkbox"],
+                    testids=["option-man", "gender-male", "birth-date"])
 ROWS = [{"site": "japansdates.com", "config_id": 101, "status": 1}]
 
 
@@ -238,3 +241,43 @@ def test_run_classify_missing_anchor_exits_5():
                            "clicked_text": "", "note": ""},
         site_rows=[], client=client, apply=True)
     assert got["exit"] == 5, got
+
+
+def test_wait_for_census_polls_until_the_page_has_content():
+    pages = [_census(), _census(url="https://x.test/", title="X")]
+    got = classify.wait_for_census(_eval_from(pages), timeout=0.1, poll=0.0)
+    assert got["title"] == "X"
+
+
+def test_wait_for_window_polls_until_cdp_answers():
+    seq = [None, None, "https://x.test/"]
+    calls = []
+
+    def _ev(js):
+        calls.append(js)
+        return seq.pop(0) if seq else None
+
+    assert classify.wait_for_window(_ev, timeout=0.1, poll=0.0) == "https://x.test/"
+    assert "JSON.stringify" in calls[0]
+
+
+def test_wait_for_window_returns_empty_on_timeout():
+    assert classify.wait_for_window(lambda js: None, timeout=0.0) == ""
+
+
+def test_census_has_content_tells_an_empty_shell_from_a_loaded_page():
+    assert classify.census_has_content(_census()) is False
+    assert classify.census_has_content(_census(title="X")) is True
+    assert classify.census_has_content(_census(testids=["step-1"])) is True
+
+
+def test_census_with_start_can_reuse_the_first_census():
+    page = _census(testids=["step-content-item-Basic", "option-x", "legal-checkbox"],
+                   hash="#c3RlcDE=")
+
+    def _boom(js):
+        raise AssertionError("不该再 eval 第一轮")
+
+    got = classify.census_with_start(_boom, lambda: None, first=page)
+    assert got["clicked_start"] is False
+    assert got["census"] == page
