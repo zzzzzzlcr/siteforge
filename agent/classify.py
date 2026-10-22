@@ -147,3 +147,33 @@ def census_signature(census: dict) -> str:
     blob = "|".join([str(census.get("url") or ""), str(census.get("title") or ""),
                      hashlib.sha1("\n".join(testids).encode("utf-8")).hexdigest()])
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()
+
+
+class ClassifyError(RuntimeError):
+    """分类/解析失败（CLI 按错误类型给退出码）。"""
+
+
+def resolve_config(platform: str, site_rows: list[dict], *,
+                   override: int | None = None) -> int:
+    """平台 → config_id：`--config-id` 优先；否则用锚点站在站点清单里精确匹配。"""
+    if override is not None:
+        try:
+            cid = int(override)
+        except (TypeError, ValueError):
+            raise ClassifyError("config_id 必须是正整数：%r" % (override,))
+        if cid <= 0:
+            raise ClassifyError("config_id 必须是正整数：%r" % (override,))
+        return cid
+    fp = next((f for f in FINGERPRINTS if f["platform"] == platform), None)
+    if fp is None:
+        raise ClassifyError("不认识的平台：%r" % (platform,))
+    anchor = fp["anchor"]
+    hits = [r for r in (site_rows or []) if str(r.get("site") or "") == anchor]
+    if len(hits) != 1:
+        raise ClassifyError(
+            "锚点站 %r 在 formConfig/sites 里找了 %d 条（要恰好 1 条）—— 不猜 config。"
+            % (anchor, len(hits)))
+    try:
+        return int(hits[0]["config_id"])
+    except (KeyError, TypeError, ValueError):
+        raise ClassifyError("锚点站 %r 那一条没有可用的 config_id。" % (anchor,))

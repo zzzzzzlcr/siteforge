@@ -68,3 +68,26 @@ def test_site_key_strips_scheme_query_fragment_and_trailing_slash():
         == "soulmatemeets.com/land/sp/23d247da"
     assert classify.site_key("http://a.test/x/") == "a.test/x"
     assert classify.site_key("a.test/x?q=1") == "a.test/x"
+
+
+import pytest
+
+
+def test_resolve_config_uses_the_platform_anchor():
+    rows = [{"site": "japansdates.com", "config_id": 101, "status": 1},
+            {"site": "goldenagesouls.com", "config_id": 66, "status": 1}]
+    assert classify.resolve_config("japansdates", rows) == 101
+    assert classify.resolve_config("goldenagesouls", rows) == 66
+
+
+def test_resolve_config_override_wins_and_must_be_positive():
+    rows = [{"site": "japansdates.com", "config_id": 101, "status": 1}]
+    assert classify.resolve_config("japansdates", rows, override=55) == 55
+    with pytest.raises(classify.ClassifyError):
+        classify.resolve_config("japansdates", rows, override=0)
+
+
+def test_resolve_config_refuses_a_missing_anchor():
+    with pytest.raises(classify.ClassifyError) as got:
+        classify.resolve_config("japansdates", [])
+    assert "锚点" in str(got.value)
