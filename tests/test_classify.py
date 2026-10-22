@@ -148,3 +148,93 @@ def test_census_with_start_reports_when_the_click_does_not_change_the_page():
                                      lambda: None, wait_seconds=0.0)
     assert got["clicked_start"] is True
     assert "没变" in got["note"]
+
+
+class _FakeClient:
+    def __init__(self, rows, link_result=None, update_rows=True):
+        self.rows = rows
+        self.link_result = link_result or {"site": "x", "config_id": 101, "created": True}
+        self.update_rows = update_rows
+        self.linked = []
+
+    def form_config_sites(self):
+        return self.rows
+
+    def form_config_link(self, site, config_id, *, operator, reason=""):
+        self.linked.append((site, config_id, operator, reason))
+        if isinstance(self.link_result, Exception):
+            raise self.link_result
+        if self.update_rows:
+            #: 真后端是加性 upsert —— 回读能看见这一行。
+            self.rows = [r for r in self.rows if r.get("site") != site] + [
+                {"site": site, "config_id": config_id, "status": 1}]
+        return self.link_result
+
+
+JAPAN = _census(url="https://soulmatemeets.com/land/sp/23d247da/",
+                testids=["step-content-item-Basic", "option-x", "legal-checkbox"],
+                hash="#c3RlcDE=")
+#: delachat + goldenagesouls 的标记**不互斥**，用来造 ambiguous。
+AMBIGUOUS = _census(classes=["terms__button", "step_active"],
+                    testids=["continue-button", "image-button-x"])
+ROWS = [{"site": "japansdates.com", "config_id": 101, "status": 1}]
+
+
+def test_run_classify_read_only_does_not_link():
+    client = _FakeClient(ROWS)
+    got = classify.run_classify(
+        "https://soulmatemeets.com/land/sp/23d247da/",
+        census_fn=lambda: {"census": JAPAN, "clicked_start": False,
+                           "clicked_text": "", "note": ""},
+        site_rows=ROWS, client=client)
+    assert got["exit"] == 0
+    assert got["result"]["platform"] == "japansdates"
+    assert got["result"]["config_id"] == 101
+    assert got["result"]["site_key"] == "soulmatemeets.com/land/sp/23d247da"
+    assert client.linked == []
+
+
+def test_run_classify_unknown_or_ambiguous_exits_2_and_never_links():
+    client = _FakeClient(ROWS)
+    for c in (_census(), AMBIGUOUS):
+        got = classify.run_classify("https://x.test/", census_fn=lambda c=c: {
+            "census": c, "clicked_start": False, "clicked_text": "", "note": ""},
+            site_rows=ROWS, client=client, apply=True)
+        assert got["exit"] == 2, got
+    assert client.linked == []
+
+
+def test_run_classify_apply_links_then_reads_back():
+    client = _FakeClient(ROWS)
+    got = classify.run_classify(
+        "https://soulmatemeets.com/land/sp/23d247da/",
+        census_fn=lambda: {"census": JAPAN, "clicked_start": False,
+                           "clicked_text": "", "note": ""},
+        site_rows=ROWS, client=client, apply=True)
+    assert got["exit"] == 0, got
+    assert client.linked and client.linked[0][0] == "soulmatemeets.com/land/sp/23d247da"
+    assert client.linked[0][1] == 101
+    assert got["result"]["linked"] == {"created": True, "config_id": 101}
+
+
+def test_run_classify_apply_refuses_when_readback_does_not_match():
+    rows = [{"site": "japansdates.com", "config_id": 101, "status": 1},
+            {"site": "soulmatemeets.com/land/sp/23d247da", "config_id": 66, "status": 1}]
+    #: 写成功但回读仍是 66 —— 不许报成功。
+    client = _FakeClient(rows, update_rows=False)
+    got = classify.run_classify(
+        "https://soulmatemeets.com/land/sp/23d247da/",
+        census_fn=lambda: {"census": JAPAN, "clicked_start": False,
+                           "clicked_text": "", "note": ""},
+        site_rows=rows, client=client, apply=True)
+    assert got["exit"] == 4, got
+
+
+def test_run_classify_missing_anchor_exits_5():
+    client = _FakeClient([])
+    got = classify.run_classify(
+        "https://soulmatemeets.com/land/sp/23d247da/",
+        census_fn=lambda: {"census": JAPAN, "clicked_start": False,
+                           "clicked_text": "", "note": ""},
+        site_rows=[], client=client, apply=True)
+    assert got["exit"] == 5, got

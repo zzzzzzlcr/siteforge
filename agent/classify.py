@@ -232,3 +232,159 @@ def resolve_config(platform: str, site_rows: list[dict], *,
         return int(hits[0]["config_id"])
     except (KeyError, TypeError, ValueError):
         raise ClassifyError("锚点站 %r 那一条没有可用的 config_id。" % (anchor,))
+
+
+EXIT_OK = 0
+EXIT_UNKNOWN = 2
+EXIT_WINDOW = 3
+EXIT_LINK = 4
+EXIT_CONFIG = 5
+
+
+def run_classify(url: str, *, census_fn, site_rows, client=None,
+                 apply: bool = False, config_override: int | None = None) -> dict:
+    """一次分类（+ 可选写入）。返回 `{"exit": int, "result": dict}`；不打印。"""
+    got = census_fn()
+    census = got["census"]
+    verdict = classify_census(census)
+    key = site_key(url)
+    result = {
+        "url": str(url), "site_key": key,
+        "platform": verdict["platform"], "confidence": verdict["confidence"],
+        "ambiguous": verdict["ambiguous"], "matches": verdict["matches"],
+        "config_id": None, "anchor": None, "evidence": [],
+        "clicked_start": bool(got.get("clicked_start")),
+        "clicked_text": str(got.get("clicked_text") or ""),
+        "click_note": str(got.get("note") or ""),
+        "census": {"title": census.get("title"), "hash": census.get("hash"),
+                   "testids": (census.get("testids") or [])[:40]},
+        "linked": None,
+    }
+    if verdict["platform"] is None:
+        return {"exit": EXIT_UNKNOWN, "result": result}
+    result["evidence"] = verdict["matches"][0]["evidence"] if verdict["matches"] else []
+    result["anchor"] = next(f["anchor"] for f in FINGERPRINTS
+                            if f["platform"] == verdict["platform"])
+    try:
+        result["config_id"] = resolve_config(verdict["platform"], site_rows,
+                                             override=config_override)
+    except ClassifyError:
+        return {"exit": EXIT_CONFIG, "result": result}
+    if not apply:
+        return {"exit": EXIT_OK, "result": result}
+
+    if client is None:
+        return {"exit": EXIT_LINK, "result": result}
+    try:
+        linked = client.form_config_link(
+            key, result["config_id"],
+            operator="claude (classify: %s, %s)" % (verdict["platform"], key),
+            reason="census: " + "; ".join(result["evidence"])[:300])
+    except Exception:  # noqa: BLE001 —— 写失败/没 token/回执读不成都算没写成
+        return {"exit": EXIT_LINK, "result": result}
+    result["linked"] = {"created": bool(linked.get("created")),
+                        "config_id": int(linked.get("config_id") or result["config_id"])}
+    #: 回读复核：这一行必须是目标 config 且 status=1，否则不许报成功。
+    try:
+        rows = client.form_config_sites()
+    except Exception:  # noqa: BLE001
+        return {"exit": EXIT_LINK, "result": result}
+    row = next((r for r in rows if str(r.get("site") or "") == key), None)
+    if row is None or int(row.get("config_id") or 0) != result["config_id"] \
+            or int(row.get("status") or 0) != 1:
+        return {"exit": EXIT_LINK, "result": result}
+    return {"exit": EXIT_OK, "result": result}
+
+
+def main(argv=None) -> int:
+    import argparse
+    import os
+    import subprocess
+
+    from agent import fmr, selftest, service
+
+    ap = argparse.ArgumentParser(description="约会站分类器（只读；--apply 才关联）")
+    ap.add_argument("url")
+    ap.add_argument("--ws-url", default="")
+    ap.add_argument("--worker", default="")
+    ap.add_argument("--bit-id", default="")
+    ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--config-id", type=int, default=None)
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--no-click", action="store_true")
+    ap.add_argument("--keep-window", action="store_true")
+    a = ap.parse_args(argv)
+
+    window = None
+    if a.ws_url:
+        ws_url, owns = a.ws_url, False
+    else:
+        env = dict(os.environ)
+        if a.worker:
+            env["BIT_WORKER_IP"] = a.worker
+        if a.bit_id:
+            env["BIT_ID"] = a.bit_id
+        window = service.bit_window_from_env(env)
+        if window is None:
+            sys.stderr.write("没配 BIT_WORKER_IP / BIT_ID，也没给 --ws-url。\n")
+            return EXIT_WINDOW
+        ws_url, owns = str(window.fresh_open() or ""), True
+        if not ws_url:
+            sys.stderr.write("开不出窗口。\n")
+            return EXIT_WINDOW
+
+    cdp_bin = os.environ.get("SITEFORGE_CDP_BIN") or "cdp"
+    cdp_env = os.environ.copy()
+    try:
+        why = selftest._navigate(cdp_bin, ws_url, a.url, cdp_env)
+        if why:
+            sys.stderr.write("导航没成：%s\n" % why)
+            return EXIT_WINDOW
+
+        def eval_fn(js):
+            return selftest._cdp_eval(cdp_bin, ws_url, js, cdp_env)
+
+        host, port = selftest._host_port(ws_url)
+
+        def click_fn():
+            #: 打标记是 `census_with_start` 做的；这里只负责真人手势那一下。
+            subprocess.run([cdp_bin, "click", START_SELECTOR, "--host", host,
+                            "--port", str(port)], capture_output=True, text=True,
+                           timeout=60)
+
+        got = census_with_start(eval_fn, click_fn, allow_click=not a.no_click)
+        client = fmr.FmrClient(
+            token=os.environ.get("FMR_AGENT_TOKEN", ""),
+            write_token=os.environ.get("FORM_SCRIPT_WRITE_TOKEN", ""))
+        try:
+            rows = client.form_config_sites()
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write("读站点清单失败：%s\n" % str(exc)[:200])
+            return EXIT_CONFIG
+        out = run_classify(a.url, census_fn=lambda: got, site_rows=rows,
+                           client=client, apply=a.apply,
+                           config_override=a.config_id)
+    finally:
+        if owns and not a.keep_window and window is not None:
+            try:
+                window.close()
+            except Exception:  # noqa: BLE001
+                pass
+    if a.json:
+        sys.stdout.write(json.dumps(out["result"], ensure_ascii=False, indent=1) + "\n")
+    else:
+        r = out["result"]
+        sys.stdout.write(
+            "URL    %s\n平台   %s（%s）  → config %s（锚点 %s）\n键     %s\n证据   %s\n"
+            "动作   %s；只读普查\n写入   %s\n" % (
+                r["url"], r["platform"] or "unknown", r["confidence"],
+                r["config_id"] if r["config_id"] is not None else "—",
+                r["anchor"] or "—", r["site_key"], "; ".join(r["evidence"]) or "—",
+                ("点了 Start %r" % r["clicked_text"]) if r["clicked_start"]
+                else (r["click_note"] or "未点 Start"),
+                ("已关联：%r" % (r["linked"],)) if r["linked"] else "未写（加 --apply 才写）"))
+    return int(out["exit"])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
