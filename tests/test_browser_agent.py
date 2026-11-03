@@ -185,6 +185,65 @@ def _stub(tmp_path: pathlib.Path, responses: dict, tools_table: list | None = No
     return session, log
 
 
+def test_reopen_replaces_the_stdio_process_and_keeps_working(tmp_path):
+    """★ 2026-10-21（真事 `job-e45daea13b94`）：传输层卡死时**原地换一条 MCP 会话**。
+
+    现场：问卷 Submit 之后站点页没了，`cdp-mcp` 从那一刻起每次调用都 120 秒不回，
+    而 Bit 窗口接口一直说活着 ⇒ 探路既停不下来也走不动。修法不是重放那一下
+    （那一下可能已经提交过），而是**换一条会话**，让**下一次**工具调用能走。
+    """
+    session, log = _stub(
+        tmp_path, {"observe": [{"structured": {"url": "https://x.test/", "page_text": "Hello"}}]})
+    try:
+        first = session.call_tool("observe", {})
+        old_pid = session._proc.pid
+
+        session.reopen()
+
+        assert session._proc.pid != old_pid, "reopen 没换进程"
+        second = session.call_tool("observe", {})
+        assert second == first, (second, first)
+        assert session._proc.poll() is None
+    finally:
+        session.close()
+
+
+def test_a_transport_timeout_reopens_the_session_and_the_next_call_works(tmp_path):
+    """★ 2026-10-21：`McpError`（超时/EOF/协议）⇒ **换会话**；下一次工具调用走新会话。
+
+    不自动重放那一下：超时的那一下可能已经动过页面（点/填/提交），重放就是重复提交。
+    这一条钉的是「第一次 observe 超时 ⇒ 记成失败行；第二次 observe 用重开后的会话成功」。
+    """
+    session, log = _stub(
+        tmp_path, {"observe": [{"structured": PAGE_LANDING}]})
+    real_call = session.call_tool
+    state = {"n": 0}
+
+    def flaky(name, args):
+        if name == "observe" and state["n"] == 0:
+            state["n"] += 1
+            raise tools.McpError("cdp-mcp 超过 120 秒没回 id=1")
+        return real_call(name, args)
+
+    real_reopen = session.reopen
+    opened: list = []
+    session.call_tool = flaky
+    session.reopen = lambda: (opened.append(1), real_reopen())[1]
+    fake = FakeLLM([{"calls": [("observe", {})]}, {"calls": [("observe", {})]}])
+    try:
+        journey = browser_agent.explore(
+            "https://example.test/funnel", "看看这一页", session=session, client=fake,
+            budget=browser_agent.Budget(max_steps=2, max_rounds=2))
+    finally:
+        session.close()
+
+    assert opened, "传输层超时没有换会话（后面每一次都要再等 120 秒）"
+    observes = [s for s in journey.steps if s.get("action") == "observe"]
+    assert len(observes) >= 2, observes
+    assert (observes[0].get("result") or {}).get("ok") is False
+    assert (observes[1].get("result") or {}).get("ok") is True, observes[1]
+
+
 def _calls(log: pathlib.Path) -> list:
     if not log.exists():
         return []
@@ -1006,6 +1065,47 @@ def test_a_colliding_gate_is_repicked_to_a_unique_snippet():
     assert browser_agent._gates_that_hold_elsewhere(pages) == []
 
 
+def test_url_equals_is_exact_and_does_not_match_a_child_page():
+    """★ 2026-10-21（真事 delamere `job-e41de4bf38a4`）：**精确地址门**不许被前缀骗过去。
+
+    现场：`/contact` 与 `/contact/loved-one` 两页正文一样（表单在跨源 iframe 里，顶层只有
+    页头/电话）；而 `url_contains="https://delamere.com/contact"` 是子页 URL 的**子串**
+    ⇒ 首页那道门在子页上也成立。`url_equals` 逐字比（query/fragment/尾斜杠不算），子页不算。
+    """
+    when = {"url_contains": "https://delamere.test/contact",
+            "url_equals": "https://delamere.test/contact",
+            "text_contains": ["Call Us : 0330 111 2015"]}
+    own = {"url": "https://delamere.test/contact?utm=1", "page_text": "Call Us : 0330 111 2015 ..."}
+    child = {"url": "https://delamere.test/contact/loved-one", "page_text": "Call Us : 0330 111 2015 ..."}
+    assert browser_agent.when_holds(when, own), "自己那一页（带 query）也该成立"
+    assert not browser_agent.when_holds(when, child), "精确地址门被子页骗过去了"
+
+
+def test_a_collision_with_no_unique_text_falls_back_to_the_exact_url():
+    """★ 2026-10-21：**正文挑不出只这一页有的那一段 ⇒ 换精确地址当门**。
+
+    delamere 那个形状：两页顶部正文**逐字一样**（表单在跨源 iframe 里），`_unique_snippet_for`
+    挑不出候选；旧处置是「不改、交给 IR 拦」，这一族（24 趟 / 10 站）就此砍死。
+    现在：这一组自己那几眼都停在同一个精确地址 ⇒ 钉 `url_equals`，碰撞消失。
+    """
+    text = "Call Us : 0330 111 2015 Who are we talking to today? CONTINUE"
+    nodes = ["Call Us : 0330 111 2015", "Who are we talking to today?", "CONTINUE"]
+    parent = _gate_page_with_nodes("contact", "https://delamere.test/contact", text, nodes)
+    child = _gate_page_with_nodes("loved_one", "https://delamere.test/contact/loved-one", text, nodes)
+    pages = [parent, child]
+    assert [h["name"] for h in browser_agent._gates_that_hold_elsewhere(pages)] == ["contact"]
+
+    fixed = browser_agent._repair_ambiguous_whens(pages)
+
+    assert [f["name"] for f in fixed] == ["contact"], fixed
+    assert parent["when"]["url_equals"] == "https://delamere.test/contact", parent["when"]
+    assert parent["when"].get("url_why"), parent["when"]
+    assert "精确地址" in (fixed[0].get("say") or ""), fixed[0]
+    assert browser_agent._gates_that_hold_elsewhere(pages) == []
+    assert browser_agent.when_holds(parent["when"], parent["model"]), "正例被破了"
+    assert not browser_agent.when_holds(parent["when"], child["model"])
+
+
 # ── ★ 2026-10-09：重挑在**被截过的那一页**上也得跑（真账本 `job-53e8caeece5e`）────────
 #
 # 现场（kotzheating，两趟同一形状：`job-c8d966155ec6` / `job-53e8caeece5e`，都是 `draft_failed`）：
@@ -1591,10 +1691,12 @@ def test_a_state_seen_twice_is_left_alone_when_the_new_snippet_is_missing_from_o
     assert browser_agent._gates_that_hold_elsewhere(pages), "撞车该留着（IR 还得拦）"
 
 
-def test_a_page_with_no_unique_text_keeps_its_gate_byte_for_byte():
-    """这一页**没有**独有的正文（两页一字不差）⇒ 一个字都不改 —— 防「假装修好了」。
+def test_a_page_with_no_unique_text_falls_back_to_its_exact_url():
+    """这一页**没有**独有的正文（两页一字不差）⇒ 换**精确地址**当门（2026-10-21）。
 
-    改不动的后果照旧：`gate_collisions` 还在 ⇒ IR 拦住并说清（那是对的形状）。
+    以前这一格是「一个字都不改，交给 IR 拦」—— 于是「同正文、父/子两条地址」的站
+    （delamere `/contact` vs `/contact/loved-one`）**整族砍死**。`url_equals` 逐字比整条
+    网址，正是为这种「正文分不开、地址能分开」准备的；只有**连地址也分不开**时才留给 IR。
     """
     body = SKIP_LINK
     landing = _gate_page_with_nodes("landing", "https://example.test/", body, [SKIP_LINK])
@@ -1602,11 +1704,15 @@ def test_a_page_with_no_unique_text_keeps_its_gate_byte_for_byte():
                                  body + " 另一页也有的那一句", [SKIP_LINK, "另一页也有的那一句"])
     pages = [landing, twin]
     assert browser_agent._gates_that_hold_elsewhere(pages), "夹具没复现出撞车"
-    before = copy.deepcopy(landing["when"])
 
-    assert browser_agent._repair_ambiguous_whens(pages) == []
-    assert landing["when"] == before, "改不动的时候不许动 —— 半份改动比不改更坏"
-    assert browser_agent._gates_that_hold_elsewhere(pages), "撞车该留着（IR 还得拦）"
+    fixed = browser_agent._repair_ambiguous_whens(pages)
+
+    assert [f["name"] for f in fixed] == ["landing"], fixed
+    assert landing["when"]["url_equals"] == "https://example.test", landing["when"]
+    assert "精确地址" in (fixed[0].get("say") or ""), fixed[0]
+    assert browser_agent._gates_that_hold_elsewhere(pages) == []
+    assert browser_agent.when_holds(landing["when"], landing["model"]), "正例被破了"
+    assert not browser_agent.when_holds(landing["when"], twin["model"])
 
 
 def test_a_gate_that_does_not_collide_is_not_touched():
@@ -1623,22 +1729,27 @@ def test_a_gate_that_does_not_collide_is_not_touched():
     assert [p["when"] for p in pages] == before
 
 
-def test_a_page_without_per_element_text_is_not_repicked():
-    """拿不到逐元素正文（`node_texts` 缺 / 被截断）⇒ **不修**（`test_a_colliding_gate_…`
-    那一份带着逐元素正文、同样撞车的夹具会被重挑 —— 差别只在这一格）。
+def test_a_page_without_per_element_text_gets_the_exact_url_not_an_invented_snippet():
+    """拿不到逐元素正文（`node_texts` 缺 / 被截断）⇒ **不编一段正文**，改钉**精确地址**。
 
-    宁可不动，也不去犯 2026-09-28 那个「拿跨元素拼出来的那串字当判据」的旧病 ——
-    那一串在页面上**根本不存在**，重放时整组静默跳过。
+    ★ 2026-10-21：旧处置是「一个字都不改，交给 IR 拦」—— 而 `url_equals` 不需要正文，
+    整条网址逐字比就够了（delamere `/contact` vs `/contact/loved-one` 的同一族）。
+    仍然不许犯 2026-09-28 那个「拿跨元素拼出来的那串字当判据」的旧病 ——
+    这一条钉住：``text_contains`` 一个字都不动，只加 ``url_equals``。
     """
     landing = _gate_page("landing", "https://example.test/", SKIP_LINK)   # ← 没有 node_texts
     twin = _gate_page("inquire", "https://example.test/inquire",
                       SKIP_LINK + " 另一页自己的话")
     pages = [landing, twin]
     assert browser_agent._gates_that_hold_elsewhere(pages), "夹具没复现出撞车"
-    before = copy.deepcopy(landing["when"])
+    had = copy.deepcopy(landing["when"].get("text_contains"))
 
-    assert browser_agent._repair_ambiguous_whens(pages) == []
-    assert landing["when"] == before
+    fixed = browser_agent._repair_ambiguous_whens(pages)
+
+    assert [f["name"] for f in fixed] == ["landing"], fixed
+    assert landing["when"]["text_contains"] == had, "不许编一段正文当判据"
+    assert landing["when"]["url_equals"] == "https://example.test", landing["when"]
+    assert browser_agent._gates_that_hold_elsewhere(pages) == []
 
 
 def test_the_repair_runs_at_the_end_of_a_real_explore_run(tmp_path):
@@ -2161,10 +2272,14 @@ def test_a_regate_never_lands_on_a_snippet_only_one_of_the_merged_screens_has():
 
     hit = browser_agent._repair_ambiguous_whens(both)
 
-    assert hit == [], "挑不出「三屏都成立」的那一段 ⇒ 一个字都不许改：%s" % (hit,)
+    #: ★ 2026-10-21：挑不出「三屏都成立」的那一段 ⇒ **换精确地址**（三屏同址，地址能分开
+    #: 成功页）。仍然不许把只在第三屏成立的 `Last Step` 当门。
+    assert [h["name"] for h in hit] == ["compare-5"], hit
+    assert survivor["when"]["url_equals"] == "https://hiw.test/compare", survivor["when"]
     assert survivor["when"]["text_contains"] == had, survivor
     assert "Last Step" not in survivor["when"]["text_contains"], (
         "只在第三屏上成立的那句不许当门：%s" % survivor["when"])
+    assert browser_agent._gates_that_hold_elsewhere(both) == []
 
 
 def test_a_short_label_that_only_this_screen_has_can_hold_the_gate():
@@ -6657,6 +6772,24 @@ def test_the_same_field_recorded_twice_does_not_get_filled_twice():
     assert sorted(j.fills()) == ["field", "field-2"], sorted(j.fills())
 
 
+
+
+def test_a_named_fill_is_tried_before_an_unnamed_duplicate():
+    """★ 2026-11-02（自测 `job-b6de06891f9a` 三遍都卡在同一格）：
+    `field` 与 `postcode` 都指 `input[name="zip_code"]`（不同状态各记了一次）——
+    `value_for` 按 FILLS 顺序认第一格，`field` 排在前面就会用 `EXAMPLES["field"]`
+    （那是街道样例 `455 N Rexford Dr`）⇒ 邮编框回读只有 `455 N`。
+    语义名必须先试；`field` / `field-N` 排最后。
+    """
+    j = browser_agent.Journey(steps=[
+        _form_step("field", 'input[name="zip_code"]', state="first"),
+        _form_step("postcode", 'input[name="zip_code"]', state="second"),
+        _form_step("field-2", 'select[name="education_level"]', state="third"),
+    ])
+    names = list(j.fills())
+    assert names.index("postcode") < names.index("field") < names.index("field-2"), names
+
+
 def test_the_same_address_in_another_state_is_still_filled_there():
     """跨状态填同一格是**另一件事**（流程里第二次问它）⇒ 一步都不许删。"""
     j = browser_agent.Journey(steps=[
@@ -7097,6 +7230,104 @@ def test_a_positional_selector_from_the_model_is_tied_by_its_unique_tail():
         "`div > input` 这种尾巴没有鉴别力、标签也不唯一 ⇒ 不该认"
 
 
+def test_a_unique_name_or_id_attribute_in_the_selector_is_identity():
+    """★ 2026-11-02（educationdirectory 真站 · `job-bf3fd425f058` 那一族）：
+    观测池里那两格的选择器带着 `input[name="zip_code"]` /
+    `select[name="education_level"]`，而探路写的是 `[name=…]`（不带标签）——
+    原样对不上、`hint` 又是框架那种不透明号 ⇒ `_find_element` 三档全落空 ⇒
+    名字退成 `field-N`、产物取不到资料列。
+
+    判据与各档同一条纪律：**唯一才认**。`name` / `id` 的值在池子里只出现在一条元素上
+    才认；同名的一组 radio 一条都不认（认错比认不回来坏）。
+    """
+    from agent import browser_agent
+
+    pages = browser_agent._Pages()
+    zip_field = {"label": "Postal code", "hint": "input-a1b2c3", "type": "text",
+                 "selector": '#entry-form > fieldset:nth-of-type(1) > '
+                             'input[name="zip_code"]',
+                 "frame_path": ["main"]}
+    edu = {"label": "Highest level of education Please Select",
+           "hint": "select-d4e5f6", "type": "select-one",
+           "selector": '#entry-form > fieldset:nth-of-type(1) > '
+                       'select[name="education_level"]',
+           "frame_path": ["main"]}
+    phone = {"label": "Callback number", "hint": "input-f7g8h9", "type": "tel",
+             "selector": "#entry-form-phone", "frame_path": ["main"]}
+    pages.note_page({"url": "https://education.example.test/get-started",
+                     "title": "Get started", "page_text": "Tell us about you",
+                     "fields": [zip_field, edu, phone], "actions": []})
+
+    got_zip = browser_agent._find_element(pages, "field", 'input[name="zip_code"]')
+    assert got_zip is zip_field, "`[name=…]` 唯一却没认回那一格：%r" % (got_zip,)
+    got_edu = browser_agent._find_element(pages, "field", '[name="education_level"]')
+    assert got_edu is edu, "不带标签的 `[name=…]` 唯一却没认回那一格：%r" % (got_edu,)
+    got_phone = browser_agent._find_element(
+        pages, "field", 'input[id="entry-form-phone"]')
+    assert got_phone is phone, "`[id=…]` 与观测的 `#id` 是同一个身份：%r" % (got_phone,)
+
+    #: 认回来之后名字能落回资料列名（ZIP 那格是语义名 `postcode`）。
+    target = browser_agent._target_of(got_zip, "form", 'input[name="zip_code"]')
+    fill = browser_agent._fill_info({"value": "10001"}, target, got_zip,
+                                    browser_agent.Journey(steps=[]))
+    assert fill["source"] == "postcode", fill
+
+    #: 反例：同名的一组 radio（`area_of_interest` 五格）⇒ **一条都不认**。
+    radios = [{"label": "Option %d" % i, "hint": "input-%d" % i, "type": "checkbox",
+               "selector": '#hero > form > label:nth-of-type(%d) > '
+                           'input[name="area_of_interest"][value="v%d"]' % (i, i),
+               "frame_path": ["main"]} for i in range(1, 6)]
+    many = browser_agent._Pages()
+    many.note_page({"url": "https://education.example.test/quiz",
+                    "title": "Quiz", "page_text": "Pick one",
+                    "fields": radios, "actions": []})
+    assert browser_agent._find_element(
+        many, "field", '[name="area_of_interest"]') is None, \
+        "同名的一组 radio 还认了一个 —— 那是把这一步指到别的选项上"
+
+
+def test_a_semantic_name_attribute_becomes_the_source():
+    """★ 2026-11-02（educationdirectory 真站）：`education_level` 那一格的标签是
+    `Highest level of education Please Select`，蛇形化之后一长串、对不上资料列名；
+    而元素自报的 `name` 就是资料列名。选择器里的 `[name=…]` 既然能认回这一格，
+    名字就该用它 —— 不透明号（`input-e3d6d0f7` / `select-d4e5f6`）照旧不许当名字。
+    """
+    from agent import browser_agent
+
+    journey = browser_agent.Journey(steps=[])
+    edu = {"label": "Highest level of education Please Select",
+           "hint": "education_level", "type": "select-one"}
+    assert browser_agent._fill_name(edu["label"], edu, journey) == "education_level"
+    opaque = {"label": "Highest level of education Please Select",
+              "hint": "select-d4e5f6", "type": "select-one"}
+    assert (browser_agent._fill_name(opaque["label"], opaque, journey)
+            == "highest_level_of_education_please_select"), \
+        "不透明号被当成名字了"
+
+
+def test_a_positional_selector_still_gets_the_semantic_name():
+    """★ 2026-11-02（同一天的另一半）：探路写**位置链**时，尾段唯一照旧认回那一格，
+    名字也照旧从元素自报的 `name` 来（`zip_code` → `postcode`）。
+    """
+    from agent import browser_agent
+
+    head = "body:nth-of-type(1) > main:nth-of-type(1) > form:nth-of-type(1) > "
+    field = {"label": "Postal code", "hint": "zip_code", "type": "text",
+             "selector": head + "label:nth-of-type(7) > input:nth-of-type(1)",
+             "frame_path": ["main"]}
+    pages = browser_agent._Pages()
+    pages._current = {"name": "auth", "when": {}, "key": (), "url": "",
+                      "model": {"fields": [field]}}
+    got = browser_agent._find_element(
+        pages, "field", "form:has(input[placeholder=\"A friend's code\"]) > "
+                        "label:nth-of-type(7) > input", "")
+    assert got is field, "位置链尾段唯一却没认回那一格：%r" % (got,)
+    target = browser_agent._target_of(got, "form", "form > label:nth-of-type(7) > input")
+    fill = browser_agent._fill_info({"value": "10001"}, target, got,
+                                    browser_agent.Journey(steps=[]))
+    assert fill["source"] == "postcode", fill
+
+
 
 # ─────────── ★ 2026-10-13：「点掉同意条」那一步是**环境噪声**（标 `soft`）───────────
 #
@@ -7263,3 +7494,37 @@ def test_a_click_whose_element_was_found_is_not_touched_by_the_receipt(tmp_path)
     assert click["target"].get("label") is None, "找到了的那张卡被回执盖了"
     assert not click["why"].get("card"), click["why"]
 
+
+def test_success_urls_can_carry_more_than_one_marker():
+    """★ 2026-10-22（用户裁定「不合资格也算成功」）：面板只有一格，但要能写**两条**判据
+    （合格屏 + 拒绝屏）⇒ 一格字符串里**一行一条**。单条照旧原样（不许多切一刀）。
+
+    这是 `template._success_urls` 与 `template_loop.render_loop` **共用的**那一个解析器 ——
+    两处各写一份就会出现「判据说见着了、产物说不认识」那对老病。
+    """
+    assert browser_agent.wanted_urls("https://x.test/qual\nhttps://x.test/rejection/") == [
+        "https://x.test/qual", "https://x.test/rejection/"]
+    assert browser_agent.wanted_urls("https://x.test/qual") == ["https://x.test/qual"]
+    assert browser_agent.wanted_urls(["a", " b \n c "]) == ["a", "b", "c"]
+    assert browser_agent.wanted_urls("") == []
+
+
+def test_explore_uses_the_phone_the_human_gave(tmp_path):
+    """★ 2026-10-29（job-31cc47a0dbe3）：人给了号，探路那一趟就得填那个号 ——
+    模型自己挑的随机值不算（用户看到的「不按我给的数据输」就是这一格）。"""
+    page = dict(PAGE_QUIZ, fields=[{
+        "selector": "#phone", "alternates": [], "stability": "high",
+        "label": "Phone number", "hint": "phone-input", "placeholder": "+1 000 000 0000",
+        "type": "tel", "required": True, "shadow_depth": 0, "frame_path": ["main"],
+    }])
+    journey, _, calls = _run(
+        tmp_path,
+        {"observe": [{"structured": page}], "form": [{"structured": {"ok": True}}]},
+        [{"calls": [("observe", {})]},
+         {"calls": [("form", {"selector": "#phone", "value": "5555551234"})]},
+         {"content": "走完了"}],
+        phone_value="2014237916",
+    )
+    assert journey.fills()["phone"]["sample"] == "2014237916"
+    forms = [a for a in calls if a["name"] == "form"]
+    assert forms and forms[0]["args"]["value"] == "2014237916", forms

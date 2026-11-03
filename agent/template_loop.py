@@ -64,17 +64,21 @@ DEFAULT_READ_JS = r"""(function(){""" + DEEP_JS + r"""
   //   `[data-testid="…"]` 找 ⇒ **一个都找不到**、`cdp form` 报「element not found」，
   //   而调用方把这一下当成功了 ⇒ 表单永远是空的、提交永远被拒（真事：点三次 Next 页面一动不动）。
   //   ⇒ 来源**打上标记**（`\u0004` = 按 id/name 找），填/点那一侧照着用对选择器。
+  // ★ 2026-10-28（Atticus `How can we reach you?` 的真事）：React 的自动 id（`:r1:`…）**会整排漂移**
+  //   （账本 `:r1:`=First … `:r4:`=Phone，线上那一屏变成 `:r2:`…`:r5:`）⇒ 按 id 认格 = 每格拿到
+  //   **前一格**的值（邮箱进姓氏、电话进邮箱、年龄进电话）⇒ 校验红字、Submit 永远灰着。
+  //   ⇒ 自动 id **不算身份**：有 placeholder / aria-label 就按那个认；稳定 id 照旧优先。
   function tid(e){var t=e.getAttribute('data-testid');
     if(t)return t;
     var i=e.id||e.getAttribute('name');
-    if(i)return "\u0004"+i;
     var p=(e.getAttribute('placeholder')||e.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim();
+    if(i)return (p&&/^:r[0-9a-z]+:$/i.test(i))?("\u0002"+p):("\u0004"+i);
     return p?("\u0002"+p):'';}
   var inputs=[];
   deepAll('input,select,textarea').forEach(function(e){
     if(!vis(e))return; var t=tid(e); if(!t)return;
     inputs.push([t, (e.value||'').trim()]);});
-  var options=[], nextVisible=false, nextTxt='';
+  var options=[], unanswered=[], items=[], nextVisible=false, nextTxt='', nextEnabled=false;
   // ★ 2026-09-24 第九趟真站：`a[href]` 一律不收 —— 页脚那几个「Privacy Policy」会被当成
   //   选项，每轮挑中一个、又点不到（它们不是 button/label）⇒ 「再看一眼」空转到收摊 ✗。
   // ★ 2026-09-26（`job-c053e0b049f3` 的真 trace）：**导航/编辑类控件也不算选项** ——
@@ -89,9 +93,24 @@ DEFAULT_READ_JS = r"""(function(){""" + DEEP_JS + r"""
     // ★ 2026-09-26（第四次真站试跑）：**输入框自己的 `<label>` 不是选项** ——
     //   那一趟把「📬 Email — where your blueprint is sent」当成一题点了（trace 里那行
     //   「答了第 14 题」就是它）✗。带 `for=` 或肚子里有输入框的 label 一律不算选项。
-    if(e.tagName==='LABEL'&&(e.htmlFor||e.querySelector('input,select,textarea')))return;
-    if(/^\s*(next|continue|get results|submit|install|finish|done|complete)\b/i.test(s)
-       || /[\u2192\u00bb\u203a]\s*$/.test(s)){nextVisible=true;nextTxt=s;return;}
+    // ★ 2026-10-22（Atticus 真站）：**收窄到「文本类输入」** —— 上面那条写宽了：
+    //   那一屏的选项是 `<label>Myself<input type="checkbox"></label>`，checkbox 就是选项本身，
+    //   却被「包着 input 就跳过」整组丢掉 ⇒ 连 60 步「没有可动作的东西」。
+    //   现在只有 label 指向/包着**文本类**输入（input 非 checkbox/radio/hidden、select、
+    //   textarea）才跳过；包着 checkbox/radio 的 label 是选项，要收。
+    if(e.tagName==='LABEL'){var ref=e.htmlFor?document.getElementById(e.htmlFor):null;var refTxt=!!(ref&&(ref.tagName==='TEXTAREA'||ref.tagName==='SELECT'||(ref.tagName==='INPUT'&&!/^(checkbox|radio|hidden)$/i.test(ref.getAttribute('type')||''))));if(e.querySelector('input:not([type=checkbox]):not([type=radio]):not([type=hidden]),select,textarea')||refTxt)return;}
+    // \u2605 2026-10-24\uff08Atticus `survey/claim/zip`\uff09\uff1a\u300c\u4e0b\u4e00\u6b65\u300d**\u662f\u4e0d\u662f\u7981\u7528**\u4e5f\u5f97\u4ea4\u56de\u53bb \u2014\u2014
+    //   \u90a3\u4e00\u5c4f\u7684 value \u660e\u660e\u5728\uff08\u56de\u8bfb\u8bf4\u586b\u597d\u4e86\uff09\uff0c\u53ef Next \u4e00\u76f4\u662f `disabled`\uff08\u7ad9\u70b9\u90a3\u6b21
+    //   `benefitsByZip` \u88ab\u4e2d\u6b62\uff09\uff0c\u5faa\u73af\u770b\u4e0d\u89c1\u8fd9\u4e2a\u4e8b\u5b9e\uff0c\u53ea\u4f1a\u5e72\u70b9 8 \u6b21\u3001\u5982\u5b9e\u62a5\u5931\u8d25\u3002
+    //: ★ 2026-11-02（educationdirectory 真站，8100 那趟）：最后那颗提交按钮写的是
+    //: 「Agree & See My Schools」—— 既不匹配上面那几个词，又被下面那条同意层排除规则
+    //: 当成「同意条按钮」扔掉 ⇒ 六题答完、格子填完，之后 60 步全「没有可动作的东西」。
+    //: 判据加一条**结构**的：`<button type="submit">` 就是「下一步」（submit 是它的本义）。
+    if(String(e.getAttribute('type')||'').toLowerCase()==='submit'
+       || /^\s*(next|continue|get results|submit|install|finish|done|complete)\b/i.test(s)
+       || /[\u2192\u00bb\u203a]\s*$/.test(s)){nextVisible=true;nextTxt=s;
+      if(!(e.disabled||e.getAttribute('aria-disabled')==='true'))nextEnabled=true;
+      return;}
     if(NAVISH.test(s))return;
     // ★ 2026-10-13（用户口径：**修系统**）：「同意条**啥时候冒出来都不确定**」⇒ 同意那几颗
     //   **不许被当成「这一屏的一道题」**：它出来得晚（异步注入），混进选项里就会被随机挑 ——
@@ -99,26 +118,55 @@ DEFAULT_READ_JS = r"""(function(){""" + DEEP_JS + r"""
     //   这一类交给**动手之前那一段**（`run()` 里读 `consent` 那一格 ⇒ `clear_cookies()`）。
     if(/^\s*(accept|agree|allow|got it|close|reject|decline|deny|manage|settings|preferences|more options|customi[sz]e)\b/i.test(s)
        || /(cookie|consent|gdpr|privacy|同意|接受|拒绝|隐私|设置|偏好)/i.test(s))return;
-    var t=tid(e);
-    if(t) options.push(t); else options.push("\u0001"+s);});
+    // ★ 2026-11-02（educationdirectory 真站）：选项包在 label 里的 radio/checkbox 用
+    //   `\u0005文字\u0006name\u0007value` 交回去 —— 同一屏的两组 Yes/No 文字一模一样，
+    //   按文字点永远点到第一组（第二组一直空着，Next 被表单校验拦住）。
+    //   顺便把「这一组选过没有」算出来：`unanswered` 只放还没选过的那几组（+ 没有 input 的
+    //   普通按钮），调用方按它挑 —— 老读取器没有这一格，调用方照旧按 options 挑。
+    var t=tid(e), ctl=null, g="", chk=false;
+    if(e.tagName==='LABEL'){
+      ctl=e.control||(e.htmlFor?document.getElementById(e.htmlFor):null)||e.querySelector('input');
+      if(ctl&&(ctl.type==='checkbox'||ctl.type==='radio')){
+        g=ctl.name?("n:"+ctl.name):("u:"+items.length);
+        chk=!!ctl.checked;
+        if(ctl.name&&ctl.value)t="\u0005"+s+"\u0006"+ctl.name+"\u0007"+ctl.value;
+      }
+    }
+    var tok=t?t:("\u0001"+s);
+    options.push(tok); items.push({t:tok,g:g,c:chk});});
+  var gdone={}; items.forEach(function(it){if(it.g&&it.c)gdone[it.g]=1;});
+  items.forEach(function(it){if(!it.g||!gdone[it.g])unanswered.push(it.t);});
   //: 「这一屏有没有同意层」—— 同意层这类**看得见的、命中那几组字样**的元素算（与上面那条
   //: 排除规则同一套词）：有 ⇒ 调用方动手之前先清掉它。**只读，不动手**。
   var consent=false;
   deepAll('div,section,aside,footer,[role=dialog]').forEach(function(e){
-    if(!vis(e))return; var lab=String(e.id||'')+' '+String(e.className||'')+' '
-      +String((e.getAttribute&&e.getAttribute('aria-label'))||'')+' '
-      +String(e.innerText||'').replace(/\s+/g,' ').slice(0,120);
+    //: ★ 2026-11-02（educationdirectory 真站）：**只看身份**（id / class / aria-label），
+    //: 不看 `innerText` —— 页脚那行「Privacy Policy」把整页判成「有同意层」⇒ 每一轮都
+    //: 去清、清不掉、`idle` 被清零 ⇒ 空转到步数上限（8100 那趟第 10–126 步全是这一句）。
+    //: ★ 2026-11-02 第二刀（8099 那趟第 9–158 步）：`<div class="lp-consent">` 是页面里
+    //: **内联的 TCPA 声明**（`position:static`），不是浮层 —— 身份里有 consent 也**不算**。
+    //: 判据加一条形状：**浮层**（computed position 是 fixed/sticky）或 `role=dialog`。
+    //: 认不出来的真弹层由 `clear_popups` 的形状判据兜住（每次动手之前都会跑）；这里只是
+    //: 「要不要提前清一下」的提示，**宁漏不误标**（误标的代价是整趟空转）。
+    if(!vis(e))return;
+    var st=""; try{st=getComputedStyle(e).position;}catch(err){}
+    if(st!=="fixed"&&st!=="sticky"&&e.getAttribute("role")!=="dialog")return;
+    var lab=String(e.id||"")+" "+String(e.className||"")+" "
+      +String((e.getAttribute&&e.getAttribute("aria-label"))||"");
     if(/(cookie|consent|gdpr)/i.test(lab))consent=true;});
   var pm=(document.body.innerText.match(/\b\d{1,3}\s*%/)||[])[0]; var prog=pm?pm:'';
   var head=(document.querySelector('h1,h2,h3')||document.body).innerText||'';
   return JSON.stringify({url:location.href, head:head.replace(/\s+/g,' ').trim().slice(0,300),
-                         progress:prog, inputs:inputs, options:options, nextVisible:nextVisible,
-                         nextTxt:nextTxt, consent:consent});})()"""
+                         progress:prog, inputs:inputs, options:options, unanswered:unanswered,
+                         nextVisible:nextVisible,
+                         nextTxt:nextTxt, nextDisabled:(nextVisible&&!nextEnabled),
+                         consent:consent});})()"""
 
 
 def render_loop(site, success_text, success_urls, fills, provenance, *,
                 read_js: str = "", pick: str = "random", max_steps: int = 60,
-                idle_limit: int = 6, busy_timeout: int = 90) -> str:
+                idle_limit: int = 6, busy_timeout: int = 90,
+                pick_hints=()) -> str:
     """把「怎么读这一屏、每格填什么、选项挑哪个」渲染成一条**步进循环型**的完整 py。
 
     `success_urls` 是**主判据**；`success_text` 是**兜底判据**（URL 判据不成立、
@@ -135,11 +183,17 @@ def render_loop(site, success_text, success_urls, fills, provenance, *,
 
     `pick`：`random`（反检测那一族）或 `first`。
     `fills`：`{字段名: {kind, label, fallback}}` —— 形状与 `template.render` **同源**。
+    `pick_hints`：**优先**挑的选项文字（`["Myself", "I'm the applicant"]`），池子里有就选它。
+    ★ 2026-10-24（Atticus 真站）：随机答到「家人/护理人员」那两支会走进一屏必填的
+    「Relationship to applicant」下拉 —— 那是我们不会填的格子；本人申请那一条没有它。
+    提示是**优先**不是**只认**：别的屏上这些字根本不出现，照旧掷骰子。
     """
     if not str(site or "").strip():
         raise ValueError("site 不能空")
-    urls = [u for u in ([success_urls] if isinstance(success_urls, str) else (success_urls or []))
-            if str(u or "").strip()]
+    #: ★ 2026-10-22：与固定步骤表**同一个解析器**（`wanted_urls`）—— 一格字符串可以
+    #: **一行一条**（合格屏 + 拒绝屏都算成功那一类）；列表形状照旧收。
+    from agent.browser_agent import wanted_urls     # noqa: PLC0415 —— 避开 import 环
+    urls = wanted_urls(success_urls)
     if not urls and not str(success_text or "").strip():
         raise ValueError("成功判据不能空：**网址那格与正文那格至少要有一样** —— "
                          "两格都空的产物会「跑到底再说自己成功」，那是这一套里最忌讳的那类谎")
@@ -148,13 +202,32 @@ def render_loop(site, success_text, success_urls, fills, provenance, *,
     for name, spec in (fills or {}).items():
         if not isinstance(spec, dict) or not str(spec.get("kind") or "").strip():
             raise ValueError("FILLS[%r] 没给 kind —— 填什么由它决定，没它这一格填不了" % (name,))
+    #: ★ 2026-10-29：**生成期闸门** —— 这一格有没有可能取到任务资料。
+    #: 键 / `source` / `kind` 三样都认不出（既不是资料列名、也没有别名），又没
+    #: `rule` / `from_profile: false` ⇒ 写进 `PROVENANCE['profile_unmapped']`。
+    #: 现场：Atticus 的 `postcode` 取不到 `postal_code`，两个月里日志只说「填了 zipcode」，
+    #: 直到截图里发现邮编一直是被写死的示例 `10001`。标出来，别让它再装成「已验证」。
+    provenance = dict(provenance or {})
+    unmapped = []
+    for name, spec in (fills or {}).items():
+        spec = spec or {}
+        if spec.get("rule") or spec.get("from_profile", True) is False:
+            continue
+        keys = (str(spec.get("source") or ""), str(name), str(spec.get("kind") or ""))
+        if not any(k in PROFILE_KEYS for k in keys if k):
+            unmapped.append(str(name))
+    provenance["profile_unmapped"] = unmapped
     src = _LOOP_SKELETON
+    hints = [str(h).strip() for h in (pick_hints or ()) if str(h or "").strip()]
     for token, value in (("__SITE__", _lit(str(site))),
                          ("__URL_MARKERS__", _json_lit(urls)),
                          ("__TEXTS__", _json_lit([success_text]
                                                  if str(success_text or "").strip() else [])),
                          ("__FILLS__", _lit(fills or {})),
+                         ("__PROFILE_ALIASES__", _lit(PROFILE_ALIASES)),
+                         ("__PROFILE_SPLIT_FROM__", _lit(PROFILE_SPLIT_FROM)),
                          ("__PICK__", _lit(str(pick))),
+                         ("__PICK_HINTS__", _lit(hints)),
                          ("__MAX_STEPS__", str(int(max_steps))),
                          ("__IDLE_LIMIT__", str(int(idle_limit))),
                          ("__BUSY_TIMEOUT__", str(int(busy_timeout))),
@@ -187,13 +260,31 @@ LOOP_IDLE_LIMIT = 60
 LOOP_MAX_STEPS = 60
 LOOP_BUSY_TIMEOUT = 90
 
-#: 判「这是不是单页漏斗 / 问卷」的那把尺子：**同一个 `url_contains` 底下的状态数**。
-#: 为什么是这条：问卷整段在一页上（地址不变、靠正文换题）⇒ 账本里那一串状态共用同一个
-#: `url_contains`；而多页导航型每一门各占一条地址 ⇒ 最大那一组只有 1 ✓。
+#: 判「这是不是单页漏斗 / 问卷」的那把尺子：**多少个状态停在同一个网址上**。
+#: 为什么是这条：问卷整段在一页上（地址不变、靠正文换题）⇒ 账本里那一串状态
+#: **逐页的 `url` 相同**；而多页导航型每一门各占一条地址 ⇒ 最大那一组只有 1 ✓。
+#: ⚠️ **不许拿 `when.url_contains` 当这把尺子**（2026-10-21，真事 `job-6203bc32c1c4`）：
+#: 它是**放宽过的**判据（末段像轮换码就丢），`article-3in1-tab-ed.php` / `questionnaire-1.php`
+#: 这类带数字的文件名会被截成同一个目录前缀 ⇒ 落地页与 18 屏问卷被算成「同一页」
+#: ⇒ 判成循环型；而循环型的 `pre_steps` 只收「漏斗之前」的状态 ⇒ 落地页那两下
+#: **点进问卷的 CTA 一个都没进产物**，产物在落地页上空转到收摊。逐页的 `url` 才是
+#: 「是不是同一页」的**事实**（query / fragment 不算）；判据放宽是另一件事，别混用。
 #: ⚠️ 天花板（`ponytail:`）：**每页一屏、地址逐页变**的问卷会被判成固定步骤表（保守那一侧，
 #: 顶多多跑几趟才回过味来）；反过来「一页上就三五个状态的落地页」会被判成循环型 ——
 #: 那也正好是循环型擅长的形状。要收窄就调这个阈值，别再加第二套判据。
 LOOP_MIN_STATES = 3
+
+
+def _page_key(page) -> str:
+    """这一页的**网址身份**：`url` 去 query / fragment；账本没记 `url` 时退回 `when.url_contains`。
+
+    ⚠️ 退回那一支是**旧账本**的形状（`when.url_contains` 是放宽过的判据）—— 它判得宽，
+    但**没有更好的事实可用**；「量不到」不许当成「不是同一页」。
+    """
+    raw = str((page or {}).get("url") or "").strip()
+    if raw:
+        return raw.split("#")[0].split("?")[0].rstrip("/")
+    return str(((page or {}).get("when") or {}).get("url_contains") or "").strip()
 
 
 def funnel_states(journey) -> dict:
@@ -202,28 +293,64 @@ def funnel_states(journey) -> dict:
     返回 `{"states": [名字…], "url": <共用的那一截地址>, "why": <人话>}`；
     `states` 空的两种情形（没有带地址的页 / 最大那组不够大）都**不猜** ——
     调用方照旧产固定步骤表（那一条至少不会因为形状切换而变坏）。
+
+    `url` 仍是那一组的 `when.url_contains`（**放宽过的**那一截）—— 它给 `ARRIVE_URL` 用，
+    重放时末段轮换也不至于「到不了」；而「是不是同一页」由 `_page_key` 说了算。
     """
     whens: dict = {}
+    keys: dict = {}
     for page in (getattr(journey, "pages", None) or []):
         name = str((page or {}).get("name") or "")
         url = str(((page or {}).get("when") or {}).get("url_contains") or "")
         if name and url:
             whens[name] = url
+            keys[name] = _page_key(page) or url
     if not whens:
         return {"states": [], "url": "",
                 "why": "账本里没有「带地址的页」（判不出单页漏斗）"}
     groups: dict = {}
-    for name, url in whens.items():
-        groups.setdefault(url, []).append(name)
-    url, names = max(groups.items(), key=lambda kv: (len(kv[1]), kv[0]))
+    for name, key in keys.items():
+        groups.setdefault(key, []).append(name)
+    key, names = max(groups.items(), key=lambda kv: (len(kv[1]), kv[0]))
+    #: 同一页（同一条 path）的 `url_contains` 应当一样；不一样就取**出现最多的那条**
+    #: （同票取长的）—— 不编一个，也不拿某一页的冒充全组。
+    counts: dict = {}
+    for name in names:
+        counts[whens[name]] = counts.get(whens[name], 0) + 1
+    url = max(counts.items(), key=lambda kv: (kv[1], len(kv[0])))[0]
     if len(names) < LOOP_MIN_STATES:
         return {"states": [], "url": url,
-                "why": "最大那一组只有 %d 个状态共用地址「%s」（要 %d 个才算单页漏斗）"
-                       % (len(names), url[:50], LOOP_MIN_STATES)}
+                "why": "最大那一组只有 %d 个状态停在同一个网址「%s」（要 %d 个才算单页漏斗）"
+                       % (len(names), key[:50], LOOP_MIN_STATES)}
     return {"states": sorted(names), "url": url,
-            "why": "有 %d 个状态共用同一个地址「%s」—— 单页漏斗/问卷"
-                   % (len(names), url[:50])}
+            "why": "有 %d 个状态停在同一个网址「%s」上（query 不算）—— 单页漏斗/问卷"
+                   % (len(names), key[:50])}
 
+
+#: ★ 2026-10-29：**资料列名与页面字段名的对照表 —— 单一事实源**。
+#: `FILLS` 的键是照**页面字段名**起的（`postcode` / `phone`），而任务资料（`--form-file`，
+#: 来自 FMR `formMessage`）的键是**资料库的列名**（`postal_code` / `phone_number` / `username`）。
+#: 两边没有约定 ⇒ 只有恰好同名的 `email` 取得到，其余**静默**掉进账本示例/随机池
+#: （真事：Atticus 两单的截图里邮编永远是账本示例 `10001`）。
+#: 这一份既注入产物（`__PROFILE_ALIASES__`），也供 `render_loop` 在生成期做闸门。
+PROFILE_ALIASES = {
+    "phone": ("phone_number", "tel", "mobile", "phone1", "telephone"),
+    "first_name": ("firstname", "first", "given_name"),
+    "last_name": ("lastname", "last", "surname", "family_name"),
+    "email": ("mail", "email_address"),
+    "postcode": ("postal_code", "zip", "zipcode", "zip_code"),
+    "city": ("town",),
+    "street": ("address", "address1", "street_address"),
+    "country": ("country_code",),
+    "dob": ("birthday", "date_of_birth", "birthdate"),
+}
+#: 资料只给**一个全名**（`username: "Lin Cameron"`）时，First / Last 各取一段。
+PROFILE_SPLIT_FROM = {"first_name": "username", "last_name": "username"}
+#: 生成期闸门认得的键：别名表的键 + 别名目标 + 全名来源 + **本来就不该取资料**的那几格
+#: （`age` 是用户 2026-10-22 点名「资料里没有年龄，这一格要随机」）。
+PROFILE_KEYS = frozenset(
+    set(PROFILE_ALIASES) | {a for alts in PROFILE_ALIASES.values() for a in alts}
+    | set(PROFILE_SPLIT_FROM.values()) | {"age", "age-2"})
 
 #: 固定骨架。⚠️ 与 `template.render` **同一个生产契约**（`forms/common.py::CDPHelper` + `report_url`
 #: + `fix.REQUIRED_CLI_FLAGS` 那四个）；**自测**那三个（`--trace` / `--delay` / `--no-report`）也必须在 ——
@@ -257,6 +384,7 @@ SUCCESS_URL_MARKERS = __URL_MARKERS__
 SUCCESS_TEXTS = __TEXTS__
 FILLS = __FILLS__
 PICK = __PICK__
+PICK_HINTS = __PICK_HINTS__
 MAX_STEPS = __MAX_STEPS__
 IDLE_LIMIT = __IDLE_LIMIT__
 BUSY_TIMEOUT = __BUSY_TIMEOUT__
@@ -265,6 +393,18 @@ READ_PAGE_JS = __READ_JS__
 #: `consent` 那一格，**不额外往返**（那一读本来就有）。
 #: 蜜罐：这些字样命中的输入框**永远不填**（真人看不见它、机器人会填 ⇒ 整单判垃圾）。
 SKIP_FIELDS = ("company", "company_url", "website", "url", "fax")
+#: 资料列名 ↔ 页面字段名（单一事实源在 `agent/template_loop.py` —— 与固定步骤表同源）。
+#: `FILLS` 的键是页面名、资料的键是库列名（`postal_code` / `phone_number` / `username`）；
+#: 两边没有约定 ⇒ 只加一层回退。⚠️ 不写任何站特有的字。
+PROFILE_ALIASES = __PROFILE_ALIASES__
+#: 资料只给一个全名（`username`）时，First / Last 各取一段。
+PROFILE_SPLIT_FROM = __PROFILE_SPLIT_FROM__
+#: Next 是禁用态 + 格子有值 ⇒ **同一屏最多重打几次**。
+#: ★ 2026-10-29（线上 26919524）：站点那次查询是**偶发**被中止的（再打一次就 200），
+#: 而旧实现「一屏只打一次」⇒ 第一次撞上中止就再也不碰这格，只能干点 Next 到收摊。
+NUDGE_TRIES = 3
+#: 每次重打后最多等多久看 Next 开没开（真站 `benefitsByZip` 约 1.7s 返回）。
+NUDGE_WAIT_SECONDS = 5.0
 #: 页面「在处理」的文案（忙 ≠ 空转；与 goldenagesouls 同一套思路）。
 BUSY_MARKERS = ("almost done", "processing your", "setting up", "just a moment",
                 "getting things ready", "hold on", "calculating", "please wait")
@@ -293,10 +433,44 @@ BY_PLACEHOLDER = "\\x02"
 #: ★ 2026-09-26 第五次真站试跑逼出来的（`easystorebuilderpro` 那三个格只有 id）：
 #: 不分来源就一律按 `[data-testid=…]` 找 ⇒ **一个都找不到**，而填的那一步照样报成功 ✗✗。
 BY_ID = "\\x04"
+#: 选项是**包在 label 里的 radio/checkbox** 时的前缀：`\\x05文字\\x06name\\x07value`
+#: = 「按 name/value 找到那个 input，再点它的 label」。
+#: ★ 2026-11-02（educationdirectory 真站）：同一屏会追加题（选了「Still deciding」才冒出
+#: 两颗必答的 Yes/No），而两组的文字一模一样（两个「Yes」两个「No」）—— 按文字点永远只
+#: 点到第一组 ⇒ 第二组一直空着、Next 被表单校验拦住。name/value 是页面上**唯一**的地址。
+BY_FIELD = "\\x05"
+#: 这一格是原生 `<select>`、可我们**没有**任何值可填（账本没记、池子也不认识这一格）时的
+#: 返回值：由执行那一侧**从页面上挑第一个可选项**（见 `_any_select_option`）。
+#: ★ 2026-11-02（educationdirectory 真站）：探路把名字退成 `field-5`（取值名那条老缺陷），
+#: `education_level` 这一格既没有账本值、池子也认不出 ⇒ 空着 ⇒ Next 被表单校验拦住。
+#: 下拉的值**本来就在页面上**，挑一个真实存在于页面上的选项，比编一个必然不存在的值好。
+SELECT_ANY = "\\x00select-any"
 
 #: 连着点几次「Next」页面还是那一屏 ⇒ 当**空转**，如实收摊（第一版没有这道闸，
 #: 真站上才会空点 55 次 Continue 把步数耗光 ✗）。
 SAME_NEXT_LIMIT = 3
+
+#: ★ 2026-10-22（Atticus 真站）：`cdp form` 回 `ok=true` 之后**回读 value**，没留住就重填。
+#: 现场：`#zipcode.value` 一直是 `""`、Next 一直禁用，而 trace 上写着「填了 zipcode」——
+#: React 在 hydration / 重渲染时把早期写进去的值覆盖掉了。`form` 的回话只说明「发出去」。
+#: 回读**读不到**（`None`）不算「没填上」：那是看不见，不是事实。
+FILL_READBACK_TRIES = 3
+FILL_READBACK_GAP = 0.4
+#: ★ 2026-10-29（Atticus 第一趟 step 1）：`cdp form` 在页面还没 hydrate 完的那一下回
+#: `Error: … element not found` —— 旧实现**立刻判失败**。这一格下一轮会不会被再填一次
+#: 全看运气。短促重试几次，仍不行才如实失败（并把原因写进 `_fill_why`）。
+FILL_READY_TRIES = 3
+FILL_READY_GAP = 0.6
+#: ★ 2026-10-29（Atticus 插页屏）：Next 是禁用态、又没有可重打的格子 ⇒ **等**，别去点。
+#: 点禁用按钮 = 点空气，还会把「同一屏最多几次」的额度烧光（旧流程就这么收摊的）。
+DISABLED_NEXT_WAIT = 1.0
+#: ★ 2026-10-29（Atticus `age-interstitial-*` 旁路轮询现场）：点完 Next **先等页面变**
+#: （URL 或题面），别 1.5 秒一次地连点 —— 那一趟 8 次点击全被吞，而页面在停止点击
+#: 之后才走（同一时刻有 15–18 秒才失败的第三方请求）。变了就进下一轮。
+#: ★ 2026-10-29 真站复跑：ZIP 屏从点 Next 到下一屏 **13 秒**（本地 headless，第三方请求
+#: 15–18 秒才失败），12 秒差一点不够 ⇒ 20 秒留余量。正常的屏 1–2 秒就变了，不受影响。
+NEXT_SETTLE_SECONDS = 20.0
+NEXT_SETTLE_POLL = 0.4
 
 #: 「这一屏答过了、但页面一动不动」最多再放行几次（见 ⑤ 里那段注释）。
 #: 2 次够用：一次留给站点偶发忽略点击，一次留给随机换一个选项试试。
@@ -307,6 +481,59 @@ STUCK_RETRIES = 2
 #: 于是 Continue 降为**兜底**：连着这么多轮确实一件可见的都没有，才轮到点它 ✗
 #: （不这么办 ⇒ 页面正把题画出来的那两轮里它抢先点 Continue ⇒ 22 秒就被自己的闸误杀 ✓ 真发生过）。
 EMPTY_ROUNDS_BEFORE_NEXT = 2
+#: ── 随机池按**站点国家**分流（★ 2026-11-02，educationdirectory 真站）──────────────
+#:
+#: 现场：US 站、资料没电话 ⇒ 池子给了英国 11 位 `01148106686`，US 站压成
+#: `(011) 481-0668` ⇒ 回读少一位 ⇒ 重填两遍判「没填上」。
+#: 信号只有一处现成的：`PROVENANCE["env"]["proxy_country"]`（与固定步骤表
+#: `agent/template.py::_site_country()` 同一处，两字母码）；没有它时看资料里的
+#: 五位 ZIP（英国/加拿大/澳洲邮编都带字母或不是五位）。**都不知道 = 英国那一档**
+#: —— 与既有口径逐字相同（不静默改成美国）。
+_PHONE_US_AREAS = ("202", "212", "305", "312", "404", "415", "480", "512", "602", "617",
+                   "702", "703", "713", "801", "813", "847", "901", "919", "214", "267",
+                   "336", "407", "469", "614", "646", "678", "786", "818", "858", "916")
+_PHONE_CA_AREAS = ("416", "604", "514", "403", "613", "902", "780", "905", "204", "306",
+                   "709", "867")
+_PHONE_COUNTRIES = ("US", "CA", "GB", "AU")
+
+
+def _site_phone_country(filler=None) -> str:
+    """这个站的电话该按哪一国形状（`US` / `CA` / `GB` / `AU`；认不出给空串）。"""
+    env = (PROVENANCE or {}).get("env") if isinstance(PROVENANCE, dict) else None
+    code = str((env or {}).get("proxy_country") or "").strip().upper()
+    if code in _PHONE_COUNTRIES:
+        return code
+    data = getattr(filler, "form_data", None)
+    zip_code = str((data or {}).get("zip") or (data or {}).get("zip_code")
+                   or (data or {}).get("postal_code") or "").strip()
+    if re.fullmatch(r"\\d{5}", zip_code):
+        return "US"
+    #: 站点国家也可以从**页面/账本**读出来（不靠代理出口）：`phone` 那格的
+    #: placeholder `(555) 555-5555` 是 NANP；账本里那个真填过的号形状也能说明问题。
+    for _name, spec in (FILLS or {}).items():
+        spec = spec or {}
+        words = ("%s %s" % (_name, spec.get("kind") or "")).lower()
+        if not ("phone" in words or "mobile" in words or "tel" in words):
+            continue
+        placeholder = str((spec.get("target") or {}).get("placeholder") or "")
+        if re.search(r"\\(\\d{3}\\)\\s*\\d{3}[-.\\s]?\\d{4}", placeholder):
+            return "US"
+    ledger = str(EXAMPLES.get("phone") or "").strip()
+    if re.fullmatch(r"\\d{10}", ledger):
+        if ledger[:3] in _PHONE_CA_AREAS:
+            return "CA"
+        if ledger[:3] in _PHONE_US_AREAS:
+            return "US"
+    if re.fullmatch(r"04\\d{8}", ledger):
+        return "AU"
+    if re.fullmatch(r"0\\d{10}", ledger):
+        return "GB"
+    return ""
+
+
+def _nanp_phone(areas) -> str:
+    """NANP 的**保留段** `NPA-555-01xx`（10 位）—— 号段真、尾号随机。"""
+    return "%s55501%02d" % (random.choice(areas), random.randint(0, 99))
 
 #: 同意层上那几个「接受/拒绝」长什么样（两份样本都先清它：`goldenagesouls` 的第一句就是
 #: `self.cdp.click(COOKIE_BTN)` ✓ `lastingpowerofattorney` 的 `_clear_cookies` 同一条路 ✓）。
@@ -421,13 +648,20 @@ class Filler:
             self.form_data = json.load(f)
         self._rule_values = {}
         self.cid = correlation_id
-        self.tid = task_id
+        #: ★ 2026-10-30：与固定步骤表那族同一条（`template.py` 的
+        #: `self.tid = task_id or correlation_id.split('_')[0]`）—— 生产**不传**
+        #: `--task-id`，只传 `--correlation-id <task>_<ts>`；只认 `task_id` 的话
+        #: `tid` 恒为空 ⇒ `report_url` 带着 `task_id: ""` 被后端 400 拒掉
+        #: ⇒ formStep 一条 step/url 都没有（用户报「只看到 success」）。
+        self.tid = task_id or correlation_id.split('_')[0]
         self.log = setup_logger("loop")
         self._filled = set()
         #: 每一格**试过几次**、以及**最后给它的那个值**（见 ① 里那段：重试要重试同一个值，
         #: 不能每次换一个新的随机值 —— 换来换去站点永远收不到一份完整的表单）。
         self._field_tries = {}
         self._field_value = {}
+        #: 每一格那个值是**从哪儿来的**（资料 / 账本示例 / 池子）—— 跟着填的那一行日志走。
+        self._field_from = {}
         #: ★ 自测那两格（`selftest.ARTIFACT_FLAGS`）：少了它们，产物在自测里**一上来就 argparse
         #: 退出**（2026-09-24 实测：`unrecognized arguments: --trace … --no-report` ⇒ 报告只剩
         #: 「进程退了（退出码 2）」）。`--no-report` 是硬规矩（自测不是生产任务，不该在生产那边
@@ -443,6 +677,18 @@ class Filler:
         if self.no_report:
             return None                     # 自测那一遍：**永不上报**
         return report_url(self.cdp, self.tid, step, self.log, reason)
+
+    def _rpt_if_moved(self, step, url, label):
+        """这一屏**第一次动手**时上报一行（与固定步骤表那族的 `_rpt_if_moved` 同一口径）。
+
+        生产靠这些记录看「任务走到哪了」；同一屏上连点/重填不再刷（已经报过）。
+        只报「第几步、在干什么」，**不报值**（姓名/电话不该进那条记录）。
+        """
+        if not url or url == getattr(self, "_reported_url", ""):
+            return None
+        label = "".join(ch for ch in str(label) if ch >= " ")
+        self._reported_url = url
+        return self._rpt("step", "第 %d 步 %s" % (step, label))
 
     def _trace(self, **row):
         """落一行 trace（JSON Lines）。自测/面板按它读「这一步成没成」——没有它只剩退出码。"""
@@ -763,16 +1009,36 @@ class Filler:
             #: ★ 本刀：动手之前先量落点 —— 被盖着就不动手，并**如实报**（不是「没找到」）
             if self._covered_before_acting('[data-sf-fill="1"]', "填"):
                 return False
-            return self._filled_ok(self.cdp.form('[data-sf-fill="1"]', value=value))
+            return self._fill_and_check(token, '[data-sf-fill="1"]', value)
         if token.startswith(BY_ID):
-            sel = '[id="%s"]' % token[len(BY_ID):]
-            if self._covered_before_acting(sel, "填"):
-                return False
-            return self._filled_ok(self.cdp.form(sel, value=value))
+            #: ★ 2026-11-02（educationdirectory 真站）：读取器把 `id` 与 `name` 都打成
+            #: `\x04`（`tid(e)` 的原话「只有 `id`（或 `name`）」），可这一支原来只拼
+            #: `[id=…]` —— 那三个格只有 `name`（`zip_code` / `education_level` /
+            #: `high_school_graduation_year`）⇒ `cdp form` 报 `element not found`，
+            #: 三次 Next 全空点。先按 id 找，找不到再按 name 找（同一个 token 的两种地址）。
+            key = token[len(BY_ID):]
+            for sel in ('[id="%s"]' % key, '[name="%s"]' % key):
+                if self._covered_before_acting(sel, "填"):
+                    return False
+                if self._fill_and_check(token, sel, value):
+                    return True
+                if "element not found" not in str(getattr(self, "_fill_why", "") or ""):
+                    return False
+            return False
         sel = '[data-testid="%s"]' % token
         if self._covered_before_acting(sel, "填"):
             return False
-        return self._filled_ok(self.cdp.form(sel, value=value))
+        return self._fill_and_check(token, sel, value)
+
+    @staticmethod
+    def _clicked_ok(out) -> bool:
+        """`cdp click` 说点着了没有 —— 成功是 `{"match_count":…}`，失败是 `Error: …`。
+
+        ★ 2026-10-29（Atticus 第二趟）：`click()` 原来不看这句回话，没点着也 `return True`
+        ⇒ trace 里每一次 Next 都是「成功」，失败在账上一点痕迹都没有。
+        """
+        said = str(out or "").strip()
+        return bool(said) and "Error" not in said
 
     @staticmethod
     def _filled_ok(out) -> bool:
@@ -785,6 +1051,267 @@ class Filler:
         said = str(out or "")
         return "Error" not in said and "element not found" not in said
 
+    @staticmethod
+    def _same_value(a, b) -> bool:
+        """两个值是不是「同一个」（站点会格式化：`2125550147` ↔ `(212) 555-0147`）。"""
+        def norm(x):
+            return "".join(ch for ch in str(x if x is not None else "").lower()
+                           if ch.isalnum())
+        return norm(a) == norm(b)
+
+    def _read_back(self, token):
+        """回读这一格现在的值：读到了是字符串，**读不到是 `None`**（看不见 ≠ 没填上）。"""
+        page = self.read()
+        if not isinstance(page, dict):
+            return None
+        for pair in (page.get("inputs") or []):
+            if (isinstance(pair, (list, tuple)) and len(pair) >= 2
+                    and str(pair[0]) == str(token)):
+                return str(pair[1] if pair[1] is not None else "")
+        return None
+
+    def _is_select(self, sel) -> bool:
+        """这一格是不是原生 `<select>` —— `cdp form --value` 打不进它（那一路是
+        insertText），得走 `--select`（按 option 的 value / 文字挑一项）。
+
+        ★ 2026-11-02（educationdirectory 真站，8100 那趟）：`education_level` /
+        `high_school_graduation_year` 都是原生 select，打不进 ⇒ 回读永远对不上。
+        """
+        js = ("(function(){__DEEP__var es=deepAll(%s);"
+              "return JSON.stringify({s:!!(es.length&&es[0].tagName==='SELECT')});})()"
+              % json.dumps(sel))
+        got = self._eval_json(js)
+        return bool(isinstance(got, dict) and got.get("s"))
+
+    def _any_select_option(self, sel) -> str:
+        """这一格是下拉、又没有值可填 ⇒ 挑**页面上第一个可选项**（value 优先，其次文字）。
+
+        ★ 2026-11-02（educationdirectory 真站）：`education_level` 退成 `field-5`、账本没留值
+        ⇒ 空着 ⇒ Next 被表单校验拦住。编一个页面里不存在的值只会让 `--select` 报
+        option not found，所以从页面自己身上取。
+        """
+        js = ("(function(){__DEEP__var es=deepAll(%s);var e=es[0];"
+              "if(!e||e.tagName!=='SELECT')return JSON.stringify({});"
+              "for(var i=0;i<e.options.length;i++){var o=e.options[i];"
+              "var t=(o.textContent||'').replace(/\\\\s+/g,' ').trim();"
+              "if(o.value||t)return JSON.stringify({v:o.value,t:t});}"
+              "return JSON.stringify({});})()" % json.dumps(sel))
+        got = self._eval_json(js) or {}
+        return str(got.get("v") or got.get("t") or "")
+
+    def _fill_and_check(self, token, sel, value) -> bool:
+        """填 → **回读** → 没留住再填（见 `FILL_READBACK_TRIES` 那段）。
+
+        `cdp form` 的 `ok` 只说明「发出去了」；值有没有留在页面上，只有回读说得清。
+        先等 `FILL_READBACK_GAP` 再读：hydration / 重渲染把值盖掉通常就在填完那一下。
+
+        ★ 2026-10-29：`element not found` **短促重试**（`FILL_READY_TRIES`）——
+        页面还没 hydrate 完的那一下就会回这句，旧实现立刻判失败（真站第一趟 step 1）。
+        仍然不行 ⇒ 如实失败，并把 `_fill_why` 留给日志说清楚为什么。
+        """
+        self._fill_why = ""
+        #: ★ 2026-11-02：原生 `<select>` 不吃 `--value`（那一路是 insertText，打不进去）⇒
+        #: 走 `--select`（按 option 的 value / 文字挑）。回读也不比：select 的 `value` 是
+        #: 选项的 value（`bachelors`），不是我们给的那段文字（`Bachelor's degree`）。
+        is_select = self._is_select(sel)
+        if value == SELECT_ANY:
+            if not is_select:
+                #: 让 `fill()` 的 id→name 回退接着走（它靠这句里的 `element not found` 判
+                #: 「这根地址上不是那个东西」）。控制字符**绝不能**当参数发给子进程。
+                self._fill_why = "element not found（这一根地址不是下拉）"
+                return False
+            value = self._any_select_option(sel)
+            if not value:
+                self._fill_why = "这一格是下拉，但页面上一个可选项都没有"
+                return False
+
+        def _send():
+            return (self.cdp.form(sel, select=value) if is_select
+                    else self.cdp.form(sel, value=value))
+
+        out = _send()
+        for _ in range(max(0, FILL_READY_TRIES - 1)):
+            if self._filled_ok(out) or "element not found" not in str(out or ""):
+                break
+            time.sleep(FILL_READY_GAP)
+            out = _send()
+        if not self._filled_ok(out):
+            said = str(out or "").strip()
+            self._fill_why = ("cdp form 报错：%s" % said[:160]) if said else "cdp form 没回话"
+            return False
+        if is_select:
+            said = str(out or "")
+            if '"error"' in said or "option not found" in said:
+                self._fill_why = "cdp form --select 报错：%s" % said[:160]
+                return False
+            return True
+        for _ in range(FILL_READBACK_TRIES):
+            time.sleep(FILL_READBACK_GAP)
+            got = self._read_back(token)
+            if got is None or self._same_value(got, value):
+                return True
+            if not self._filled_ok(_send()):
+                self._fill_why = "回读是 %r（不是 %r），重填也被拒" % (got, value)
+                return False
+        time.sleep(FILL_READBACK_GAP)
+        got = self._read_back(token)
+        ok = got is None or self._same_value(got, value)
+        if not ok:
+            self._fill_why = "回读是 %r，不是填进去的 %r" % (got, value)
+        return ok
+
+    def _eval_json(self, js):
+        """跑一段 JS，按 `read()` 同一套拆两层 JSON；读不到回 `None`。"""
+        raw = (self.cdp.eval(js, "") or "").strip()
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            return None
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except ValueError:
+                return None
+        return data if isinstance(data, dict) else None
+
+    def _set_value_events(self, token, value) -> bool:
+        """用**原生 setter + 全套事件**写一格 —— React 受控输入只认这条。
+
+        ★ 2026-10-24 真站量证（Atticus `survey/claim/zip`，`cdp form` vs 原生事件）：
+        `cdp form '#zipcode' --value 10001` 之后 **45 秒** Next 一直是禁用态；
+        同一屏改用原生 setter + `keydown/keypress/input/keyup/change/blur` 写 `90210`，
+        **约 1–2 秒** Next 就由禁用变可用（`benefitsByZip` 请求约 1.7s 返回）。
+        ⇒ `cdp form` 只改了 DOM 的 value，没进 React 的 state；`_nudge` 原来用它重打，
+        等于没打。这条也穿透 shadow root（`deepAll`），与 `read()` 同一套找法。
+        """
+        token = str(token or "")
+        js = ("(function(){function deepAll(sel){var out=[];function walk(root){"
+              "root.querySelectorAll(sel).forEach(function(e){out.push(e);});"
+              "var all=root.querySelectorAll('*');"
+              "for(var i=0;i<all.length;i++){if(all[i].shadowRoot)walk(all[i].shadowRoot);}}"
+              "walk(document);return out;}"
+              "var token=%s,value=%s;var e=null;"
+              "if(!token)return JSON.stringify({ok:false,why:'no-token'});"
+              "if(token.charCodeAt(0)===4){var es=deepAll('[id=\"'+token.slice(1)+'\"]');e=es[0];"
+              "if(!e){es=deepAll('[name=\"'+token.slice(1)+'\"]');e=es[0];}}"
+              "else if(token.charCodeAt(0)===2){var want=token.slice(1);"
+              "var all=deepAll('input,textarea,select');"
+              "for(var i=0;i<all.length;i++){"
+              "var p=(all[i].getAttribute('placeholder')||'').replace(/\\\\s+/g,' ').trim();"
+              "var al=(all[i].getAttribute('aria-label')||'').replace(/\\\\s+/g,' ').trim();"
+              "if(p===want||al===want){e=all[i];break;}}}"
+              "else {var es2=deepAll('[data-testid=\"'+token+'\"]');e=es2[0];}"
+              "if(!e)return JSON.stringify({ok:false,why:'not-found'});"
+              "e.focus();"
+              "if(e.tagName==='SELECT'){e.value=value;}"
+              "else{var proto=e.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:"
+              "window.HTMLInputElement.prototype;"
+              "var d=Object.getOwnPropertyDescriptor(proto,'value');"
+              "if(d&&d.set)d.set.call(e,value);else e.value=value;}"
+              "['keydown','keypress','input','keyup','change','blur'].forEach(function(t){"
+              "e.dispatchEvent(t==='input'||t==='change'?new Event(t,{bubbles:true}):"
+              "new KeyboardEvent(t,{bubbles:true,key:'1',keyCode:49}));});"
+              "return JSON.stringify({ok:true,value:e.value});})()"
+              % (json.dumps(token), json.dumps(str(value))))
+        got = self._eval_json(js)
+        return bool(isinstance(got, dict) and got.get("ok"))
+
+    def _nudge(self, page) -> bool:
+        """Next 是禁用态、格子又都有值 ⇒ 把值**用同一个重打一遍**（同值重填）。
+
+        ★ 2026-10-24（Atticus `survey/claim/zip` 真站，线上 `26789962`）：
+        那一格填进去之后，站点发了 `benefitsByZip`，可那一次**被中止**
+        （performance 里 `responseStatus: 0`）—— app 没拿到回话就一直把 Next 禁着。
+        而 DOM 的 value 是**留住的** ⇒ 回读说「填好了」⇒ 循环再也不会碰这一格
+        ⇒ 干点 8 次 Next、如实报失败。
+        手工量证（同一个窗口）：把这格**用同一个值重打一遍** ⇒ 站点重发请求（200）
+        ⇒ Next 由禁用变可用。⇒ 这一下是「值在、页面没收下」那一类唯一的补救动作。
+
+        ★ 2026-10-29（线上 26919524）：那一下是**偶发**被中止的，而旧实现
+        「一屏只打一次」（`_nudged_sig`）⇒ 第一次撞上就再也没机会。改成
+        **同一屏最多 `NUDGE_TRIES` 次**，每次打完最多等 5 秒看 Next 开没开。
+        重打用 `_set_value_events`（原生 setter + 事件）—— `cdp form` 进不了 React state。
+        """
+        sig = "%s|%s" % ((page.get("head") or "")[:60], str(page.get("url") or ""))
+        tries = getattr(self, "_nudge_tries", None)
+        if tries is None:
+            tries = self._nudge_tries = {}
+        n = int(tries.get(sig, 0))
+        if n >= NUDGE_TRIES:
+            return False
+        tries[sig] = n + 1
+        did = False
+        for pair in (page.get("inputs") or []):
+            if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                continue
+            token, value = str(pair[0] or ""), str(pair[1] if pair[1] is not None else "")
+            if not token or not value:
+                continue
+            if self._set_value_events(token, value):
+                did = True
+                self.log.info("[%s] step: Next 是禁用态、格子有值 ⇒ 原生 setter+事件重写 %s",
+                              self.cid, token)
+                self._trace(step=0, action="form", ok=True, progress=None,
+                            target={"testid": token},
+                            note="原生 setter+全套事件（cdp form 只改 DOM，不进 React state）")
+        if did:
+            #: 给站点发 `benefitsByZip` 的时间（真站量到 ~1.7s；最多等 `NUDGE_WAIT_SECONDS`）。
+            deadline = time.monotonic() + NUDGE_WAIT_SECONDS
+            while time.monotonic() < deadline:
+                time.sleep(0.5)
+                page2 = self.read()
+                if page2 and not page2.get("nextDisabled"):
+                    break
+        return did
+
+
+    def _wait_for_change(self, before) -> bool:
+        """点完「下一步」先等页面**真的变了**（URL 或题面）—— 变了返回 True。
+
+        ★ 2026-10-29（Atticus `age-interstitial-over-50-early-btr`，旁路轮询 0.6s/次）：
+        点完立刻重读、看到同一屏就再点 ⇒ 8 次点击全被吞，而页面在**停止点击之后**自己
+        走到了下一屏；同一时刻页面上有一批 15–18 秒才失败（`responseStatus: 0`）的第三方
+        请求。连点不会加速过渡，只会把「同一屏最多几次」的额度烧光。
+        读不到（`None`）不算变 —— 看不见不是事实。
+        """
+        before_sig = self._page_sig(before)
+        #: 测试/自测可以把等待压到 0（`SITEFORGE_NEXT_SETTLE`）；生产不设 ⇒ 用默认预算。
+        budget = NEXT_SETTLE_SECONDS
+        raw = os.environ.get("SITEFORGE_NEXT_SETTLE")
+        if raw not in (None, ""):
+            try:
+                budget = float(raw)
+            except ValueError:
+                budget = NEXT_SETTLE_SECONDS
+        if budget <= 0:
+            return False
+        deadline = time.monotonic() + budget
+        while time.monotonic() < deadline:
+            time.sleep(NEXT_SETTLE_POLL)
+            now = self.read()
+            if not isinstance(now, dict):
+                continue
+            if self._page_sig(now) != before_sig:
+                return True
+        return False
+
+    @staticmethod
+    def _page_sig(page) -> str:
+        """这一屏的「看得见的形状」—— 与 `_same_next` 同一把尺子（题面可能每屏都一样）。
+
+        只比 URL + 题面会漏掉「标题不变、进度/格子变了」的那一族（Free Eligibility Checker 型），
+        那会白白等满 12 秒。
+        """
+        page = page if isinstance(page, dict) else {}
+        return "|".join([
+            str(page.get("url") or ""),
+            str(page.get("head") or ""),
+            str(page.get("progress") or ""),
+            "|".join(str(t) for t, _v in (page.get("inputs") or [])),
+            "|".join(str(o) for o in (page.get("options") or []))[:160],
+        ])
 
     def _rule_value(self, fill):
         rule = str(fill.get("rule") or "")
@@ -792,12 +1319,17 @@ class Filler:
                str(fill.get("date_format") or ""))
         if key in self._rule_values:
             return self._rule_values[key]
-        if rule == "phone_prefix":
+        if rule == "phone_exact":
+            value = str(fill.get("value") or "").strip()
+        elif rule == "phone_prefix":
             prefixes = [str(x).strip() for x in (fill.get("prefixes") or [])
                         if str(x).strip()]
             prefix = random.choice(prefixes) if prefixes else "04"
             value = prefix + "".join(str(random.randint(0, 9))
                                      for _ in range(max(0, 10 - len(prefix))))
+            if (len(prefix) <= 3 and not prefix.startswith("0")
+                    and len(value) == 10 and value[3] in "01"):
+                value = value[:3] + str(random.randint(2, 9)) + value[4:]
         elif rule == "dob_random":
             fmt = str(fill.get("date_format") or "DD/MM/YYYY")
             year = time.localtime().tm_year - random.randint(19, 68)
@@ -819,6 +1351,9 @@ class Filler:
         掉到「点页脚噪声」⇒ 空转到 60 ✗。（样本那份靠写死 `"rg24" in hay` 绕过 ✗ 那是它那个
         站的补丁，不是规则 ✓ 我们不这么干 ✓。）
         """
+        #: ★ 2026-10-29：填上了 ≠ 填对了 —— 这个值的**来源**（资料 / 账本示例 / 池子）
+        #: 跟着返回值一起说出去，由调用方拼进日志与 trace（固定步骤表 2026-09-28 起就这么做）。
+        self._value_from = ""
         hay = str(token or "").lower()
         if hay.startswith(BY_PLACEHOLDER):
             hay = hay[len(BY_PLACEHOLDER):]
@@ -841,27 +1376,67 @@ class Filler:
             if ((label and label in hay) or (kind and kind in hay)
                     or (hay and hay in blob)):
                 if spec.get("rule"):
+                    self._value_from = "规则「%s」现编" % str(spec.get("rule") or "")
                     return self._rule_value(spec)
-                if self._is_phone(name, kind):
-                    #: ★ 2026-09-26 用户点名（solarincentives）：「**手机号别取资料**」——
-                    #: ★ 2026-10-13 用户再点名（compareinsulation）：「手机号**不要用资料给的**，
-                    #: 就用 `0207xxxxxxx` 格式、后几位随机」。
-                    #: ⇒ 这一格**一律现编**：账本里那份（`EXAMPLES`）是探路时从**资料**里拿的
-                    #: 真号，同一串在同一个站上反复出现迟早被认出来。
-                    #: ⚠️ 原来这里**先查 `EXAMPLES`** —— 与上面那句「永远是现编的号码」**打架**
-                    #: （注释说 A、代码做 B），用户这次点名的就是这个。
-                    #: `prefix`（`FILLS[name]['prefix']`，例：`'0207'`）= **这一站**要的号段；
-                    #: 不给就按池子自带的那一串号段挑（见 `_pool` 里 2026-10-08 那段：
-                    #: 别锁死一个号段）。
-                    _p = str(spec.get("prefix") or "")
-                    return self._pool(name, _p) or self._pool(kind, _p)
-                for key in (name, kind):
-                    got = p.get(key) or EXAMPLES.get(key)
+                #: ★ 2026-10-29：探路给的 `source` **排第一** —— 2026-09-30 起它就是
+                #: **资料库的列名**（`postal_code` / `phone_number` …），比拿 `FILLS`
+                #: 的页面名去猜更准；源里没有这个名字时才回退到原名/别名。
+                source = str(spec.get("source") or "")
+                if source:
+                    got = self._profile_value(p, source)
                     if got:
                         return str(got)
+                if self._is_phone(name, kind):
+                    #: ★ 2026-10-22（用户：「手机号肯定要取资料」；「别取资料」只是**个别特殊
+                    #: 脚本**的处理，不是全局口径）—— 推翻 2026-09-26/10-13 那两刀：
+                    #: ① 默认：资料给了电话就用 **资料那一串**；
+                    #: ② 特殊脚本用 `prefix`（例 `'0207'`）或 `from_profile: false` 点名
+                    #:    「这一站要现编」⇒ 不取资料，按那个号段/池子现编。
+                    #: 账本里的 `EXAMPLES`（探路时从资料里拿的真号）仍然只当**兜底**，
+                    #: 不再压过资料。
+                    _p = str(spec.get("prefix") or "")
+                    if not _p and spec.get("from_profile", True) is not False:
+                        got = self._profile_value(p, name, kind)
+                        if got:
+                            return str(got)
+                    self._value_from = "随机池「%s」" % name
+                    return self._pool(name, _p) or self._pool(kind, _p)
+                if self._is_age(name, kind):
+                    #: ★ 2026-10-22（用户：资料里没有年龄，这一格要**随机**）——
+                    #: 资料给了就听资料的；没给就每趟现取一个成年年龄（50–64，
+                    #: 与 Atticus 探路那趟 58 同一档，不跨到未成年人那一支）。
+                    got = self._profile_value(p, name, kind)
+                    if got:
+                        return str(got)
+                    self._value_from = "现取年龄（50–64）"
+                    return str(random.randint(50, 64))
+                #: ★ 2026-10-29：资料先按**原名 + 别名 + 全名拆分**找（`PROFILE_ALIASES`），
+                #: 找不到才轮到账本示例 —— 原来只按原名查，`postal_code`/`phone_number`
+                #: 永远对不上，静默落进示例（Atticus 每单都是 10001）。
+                got = self._profile_value(p, name, kind)
+                if got:
+                    return str(got)
+                for key in (name, kind):
+                    got = EXAMPLES.get(key)
+                    if got:
+                        self._value_from = "账本示例「%s」" % key
+                        return str(got)
+                #: ★ 2026-11-02（educationdirectory 真站，8100）：账本每一格都带 `sample` =
+                #: 探路**真填进去**的那个值（与 `EXAMPLES` 同一类事实）。名字退成 `field-4`
+                #: 时 `EXAMPLES` 里没有它 —— 这时 sample 就是**唯一**有据可依的值。
+                sample = str(spec.get("sample") or "").strip()
+                if sample:
+                    self._value_from = "账本 sample"
+                    return sample
+                #: 下拉的值**本来就在页面上**：认不出这一格、账本也没留值时，挑第一个
+                #: 可选项 —— 编一个页面里不存在的值只会让 `--select` 报 option not found。
+                if kind == "select":
+                    self._value_from = "页面上的第一个可选项"
+                    return SELECT_ANY
                 #: ★ 名**先于** kind：`kind` 是「这一格填什么」那一档（这一站给的是笼统的
                 #: `value`），拿它当池子的名 ⇒ `_pool('value')` 什么都没有 ⇒ **邮编永远填不上** ✗
                 #: ⇒ 掉到「点页脚噪声」空转到收摊（第九趟真站的原形）。
+                self._value_from = "随机池「%s」" % name
                 return self._pool(name) or self._pool(kind)
         #: ③ 按**账本顺序**兜底（见 docstring 第 ③ 档）
         if 0 <= int(index) < len(FILL_ORDER):
@@ -871,18 +1446,85 @@ class Filler:
             #: ★ 2026-10-20（Review finding 3）：兜底那一支也要认规则 —— 否则
             #: 页面 placeholder 一变、① 对不上时，这里会把资料值/旧 prefix 又填回去。
             if spec.get("rule"):
+                self._value_from = "规则「%s」现编" % str(spec.get("rule") or "")
                 return self._rule_value(spec)
-            if self._is_phone(name, kind):        # 同上：号码那一格**一律现编**，不取资料
+            source = str(spec.get("source") or "")
+            if source:
+                got = self._profile_value(p, source)
+                if got:
+                    return str(got)
+            if self._is_phone(name, kind):        # 同上：资料优先；prefix / from_profile=False 才现编
                 _p = str(spec.get("prefix") or "")
+                if not _p and spec.get("from_profile", True) is not False:
+                    got = self._profile_value(p, name, kind)
+                    if got:
+                        return str(got)
+                self._value_from = "随机池「%s」" % name
                 return self._pool(name, _p) or self._pool(kind, _p)
-            got = p.get(name) or p.get(kind) or EXAMPLES.get(name) or EXAMPLES.get(kind)
-            return str(got) if got else (self._pool(name) or self._pool(kind))
+            if self._is_age(name, kind):          # 同上：资料优先，没给就现取
+                got = self._profile_value(p, name, kind)
+                if got:
+                    return str(got)
+                self._value_from = "现取年龄（50–64）"
+                return str(random.randint(50, 64))
+            got = (self._profile_value(p, name, kind)
+                   or EXAMPLES.get(name) or EXAMPLES.get(kind))
+            if got:
+                if not self._value_from:
+                    self._value_from = "账本示例"
+                return str(got)
+            sample = str(spec.get("sample") or "").strip()
+            if sample:
+                self._value_from = "账本 sample"
+                return sample
+            if kind == "select":
+                self._value_from = "页面上的第一个可选项"
+                return SELECT_ANY
+            self._value_from = "随机池「%s」" % name
+            return self._pool(name) or self._pool(kind)
+        return ""
+
+    def _profile_value(self, p, *names) -> str:
+        """资料里这一格给的值 —— 原名 → 别名 → 全名拆分，都没有就是空串。
+
+        ★ 2026-10-29（Atticus `survey/claim/zip`）：`FILLS` 的键是照**页面**起的，
+        资料库的键是**列名**，两边没有约定 ⇒ `postal_code` / `phone_number` /
+        `username` 这三样原来一次都没取到，静默落进账本示例/随机池。
+        这里**只加回退**：原名优先，一个字都不改老行为。
+        """
+        if not isinstance(p, dict):
+            return ""
+        for name in names:
+            key = str(name or "")
+            if not key:
+                continue
+            got = str(p.get(key) or "").strip()
+            if got:
+                self._value_from = "任务资料「%s」" % key
+                return got
+            for alt in PROFILE_ALIASES.get(key, ()):
+                got = str(p.get(alt) or "").strip()
+                if got:
+                    self._value_from = "任务资料「%s」（别名 → %s）" % (alt, key)
+                    return got
+            whole = str(p.get(PROFILE_SPLIT_FROM.get(key, "")) or "").strip()
+            if whole and " " in whole:
+                parts = whole.split()
+                self._value_from = "任务资料「%s」拆出（→ %s）" % (
+                    PROFILE_SPLIT_FROM[key], key)
+                return parts[0] if key == "first_name" else " ".join(parts[1:])
         return ""
 
     @staticmethod
     def _is_phone(name, kind) -> bool:
         """这一格是不是**电话号**（`phone` / `tel` / `mobile` 任何一种写法都算）。"""
         return any(s in ("%s %s" % (name, kind)).lower() for s in ("phone", "tel", "mobile"))
+
+    @staticmethod
+    def _is_age(name, kind) -> bool:
+        """这一格是不是**年龄**（按词认：`age` / `age-2` 算，`message` / `page` 不算）。"""
+        words = ("%s %s" % (name, kind)).lower().replace("_", " ").replace("-", " ").split()
+        return "age" in words
 
     def _pool(self, kind, prefix=""):
         kind = (kind or "").lower()
@@ -895,15 +1537,21 @@ class Filler:
             #: ★ 2026-09-25 **用户点名**：给**座机**形状（原来给 `07…` 手机 —— 位数一样合法，
             #: 在那一站上**过不去** ✗：填了但校验不过 ⇒ 停在那一屏）。
             #: ★ 2026-10-08（用户点名「**不是**都是 `0207` 啊」）：号段**别锁死一个** ——
-            #: 每站每趟都是伦敦 `0207`，那本身就是个可疑的常量。口径与 `template.py` 那边
-            #: 同一张表（`_GB_AREA_CODES` / `_GB_DRAMA_PREFIXES`），顺带避开 Ofcom 的
-            #: **影视保留段**（格式合法、一眼是假的）。
-            #: ★ 2026-10-13（用户点名的**这一站**）：「就用 `0207xxxxxxx` 格式，后几位随机」
-            #: ⇒ 号段由 `FILLS[name]['prefix']` 给（`'0207'` = 这一站要伦敦号段），
-            #: **尾数照旧随机**；不给前缀的站照旧从上面那一串里挑（别把上一行那个口径弄丢）。
-            area = str(prefix or "") or random.choice(("0203", "0207", "0208", "0113", "0114",
-                                                       "0115", "0116", "0117", "0118", "0121",
-                                                       "0131", "0141", "0151", "0161", "0191"))
+            #: 每站每趟都是伦敦 `0207`，那本身就是个可疑的常量。
+            #: ★ 2026-11-02：站点国家先决定形状（US/CA = 10 位 NANP、AU = `04…` 10 位），
+            #: 认不出才退回英国 11 位座机；`prefix` 仍然点名压过一切。
+            area = str(prefix or "")
+            if not area:
+                country = _site_phone_country(self)
+                if country == "US":
+                    return _nanp_phone(_PHONE_US_AREAS)
+                if country == "CA":
+                    return _nanp_phone(_PHONE_CA_AREAS)
+                if country == "AU":
+                    return "04" + "".join(str(random.randint(0, 9)) for _ in range(8))
+                area = random.choice(("0203", "0207", "0208", "0113", "0114",
+                                      "0115", "0116", "0117", "0118", "0121",
+                                      "0131", "0141", "0151", "0161", "0191"))
             while True:
                 got = area + "".join(str(random.randint(0, 9)) for _ in range(7))
                 if not got.startswith(("02079460", "0113496", "0114496", "0115496",
@@ -996,9 +1644,13 @@ class Filler:
                 return True
         return False
 
-    def pick_option(self, options):
+    def pick_option(self, options, inputs=None):
         """选项里挑一个：**先只认带 `data-testid` 的那些**（那是「真选项」）✓，
         一个都没有才退到「按文字」那一档。`PICK` 决定随机还是取第一个。没有 ⇒ None。
+
+        ★ 2026-11-02（educationdirectory 真站）：提交前站点会弹地址联想
+        （`Use ZIP 10118`）—— 原来靠随机挑选项「碰巧」点中。现在先把**已经填进页面的
+        五位 ZIP** 与建议文字对一遍，对得上就选那一条；对不上照旧掷骰子。
 
         ★ 2026-09-24 第一次公平试跑逼出来的：`random` 原来在**全部** token 里挑 ✗ ⇒ 它挑中了
         Cookie 条上的 `si-settings`（设置按钮 ✓ 没有 testid ✓）⇒ 点完什么都没发生 ⇒ 空转到收摊 ✗。
@@ -1010,6 +1662,35 @@ class Filler:
         pool = real or [o for o in cand if str(o).startswith(BY_TEXT)]
         if not pool:
             return None
+        #: 先对**已填的 ZIP**：联想建议里带着同一串数字才是这一单的那一条。
+        values = [str(v).strip() for _t, v in (inputs or []) if str(v).strip()]
+        zips = [v for v in values if re.fullmatch(r"\\d{5}", v)]
+        if zips:
+            for o in pool:
+                t = str(o)
+                if t.startswith(BY_TEXT):
+                    t = t[len(BY_TEXT):]
+                elif t.startswith(BY_FIELD):
+                    t = t[len(BY_FIELD):].split("\\x06", 1)[0]
+                if any(z in t for z in zips):
+                    return o
+        #: ★ 2026-10-24（Atticus 真站）：**先看提示**。
+        #: 现场：随机答成「Family member or friend」/「Patient or client」之后，联系信息屏
+        #: 多出一个必填的「Relationship to applicant」下拉 —— 那是我们不会填的格子；
+        #: 本人申请那一条根本没有它。提示是**优先**不是**只认**：别的屏上这些字不出现，
+        #: 照旧往下掷骰子。
+        for want in PICK_HINTS:
+            w = str(want or "").strip().lower()
+            if not w:
+                continue
+            for o in pool:
+                t = str(o)
+                if t.startswith(BY_TEXT):
+                    t = t[len(BY_TEXT):]
+                elif t.startswith(BY_FIELD):
+                    t = t[len(BY_FIELD):].split("\\x06", 1)[0]
+                if t.strip().lower() == w:
+                    return o
         return random.choice(pool) if PICK == "random" else pool[0]
 
     def click(self, token, scroll_first=False):
@@ -1055,20 +1736,42 @@ class Filler:
                 return False
             if scroll_first:
                 self.cdp.scroll('[data-sf-pick="1"]')
-            self.cdp.click('[data-sf-pick="1"]')
-            return True
+            return self._clicked_ok(self.cdp.click('[data-sf-pick="1"]'))
+        if token.startswith(BY_FIELD):
+            #: `\x05文字\x06name\x07value`：按 **name/value** 找到那个 input，点包着它的
+            #: label。为什么不能按文字：同一屏两组 Yes/No 文字一模一样，按文字永远点到
+            #: 第一组（2026-11-02 educationdirectory：第二组一直空着、Next 一动不动）。
+            rest = token[len(BY_FIELD):]
+            _text, _sep, rest = rest.partition("\\x06")
+            name, _sep, value = rest.partition("\\x07")
+            js = ("(function(){__DEEP__var n=" + json.dumps(name) + ",v=" + json.dumps(value) + ";"
+                  "var es=deepAll('input');var hit=null;"
+                  "for(var i=0;i<es.length;i++){var e=es[i];"
+                  "if(String(e.name||'')!==n||String(e.value||'')!==v)continue;"
+                  "var lb=e.closest?e.closest('label'):null;var t=lb||e;"
+                  "if(t.offsetWidth<=0||t.offsetHeight<=0)continue;"
+                  "hit=t;break;}"
+                  "if(!hit)return 'none';"
+                  "var old=deepAll('[data-sf-pick]');"
+                  "for(var j=0;j<old.length;j++){old[j].removeAttribute('data-sf-pick');}"
+                  "hit.setAttribute('data-sf-pick','1');return 'marked';})()")
+            if "marked" not in (self.cdp.eval(js, "") or ""):
+                return False
+            if self._covered_before_acting('[data-sf-pick="1"]', "点"):
+                return False
+            if scroll_first:
+                self.cdp.scroll('[data-sf-pick="1"]')
+            return self._clicked_ok(self.cdp.click('[data-sf-pick="1"]'))
         if token.startswith(BY_ID):
             #: 只有 `id` 的元素（见 `BY_ID` 那段）：按 `[id=…]` 点。
             sel = '[id="%s"]' % token[len(BY_ID):]
             if self._covered_before_acting(sel, "点"):
                 return False
-            self.cdp.click(sel)
-            return True
+            return self._clicked_ok(self.cdp.click(sel))
         sel = '[data-testid="%s"]' % token
         if self._covered_before_acting(sel, "点"):
             return False
-        self.cdp.click(sel)
-        return True
+        return self._clicked_ok(self.cdp.click(sel))
 
     # ── 落点判据（★ 2026-10-16：循环型第一次有它 —— 与固定步骤表**同一把尺子**）──────
     #
@@ -1524,16 +2227,21 @@ class Filler:
                             continue            # 这一格试过两次了：别再往里塞东西
                         val = self._field_value.get(tid) or self.value_for(tid, page,
                                                                            todo.index(tid))
-                        if not val or (tid, val) in self._filled:
+                        if not val:
                             continue
+                        if (tid, val) in self._filled:
+                            #: ★ 2026-10-22（Atticus 真站）：`todo` 只收**页面上空着**的格 ——
+                            #: 这一格空了，说明上一次填的值被页面弄丢了（hydration/重渲染）。
+                            #: 「填过」的记号对「值已经不在」不成立 ⇒ 抹掉，用**同一个值**再填一次。
+                            self._filled.discard((tid, val))
                         #: ★ 2026-10-16 复核修：**动手之前清零** —— `cover_why` 是**这一次动手**
                         #: 的读数，不许外借给同一轮里别的失败（一轮里最多 3 填 + 1 点；
                         #: 表那套的守卫是 `if self.cover_why and not tried_any:`，这边靠这一行
                         #: 拿到同一个语义：没量过落点的失败，不许拿遮挡物背锅）。
                         self.cover_why = ""
                         if not self.fill(tid, val):
-                            self.log.info("[%s] step %d: %s 没填上 ⇒ 下一轮再看", self.cid,
-                                          step, tid)
+                            self.log.info("[%s] step %d: %s 没填上（%s）⇒ 下一轮再看", self.cid,
+                                          step, tid, getattr(self, "_fill_why", "") or "原因未记")
                             if self.cover_why:
                                 #: ★ 2026-10-16 本刀：**「被盖着」不是「没找到」**（同 ② 那段）
                                 self._trace(step=step, action="form", ok=False, progress=None,
@@ -1546,19 +2254,27 @@ class Filler:
                             else:
                                 self._trace(step=step, action="form", ok=False, progress=None,
                                             target={"testid": tid},
-                                            progress_why="这一格没填上（不是「填过了」）")
+                                            progress_why="这一格没填上（不是「填过了」）：%s"
+                                                         % (getattr(self, "_fill_why", "")
+                                                            or "原因未记"))
                             continue             # 填不上就下一轮再看（绝不谎报填了）
                         self._field_value[tid] = val
+                        #: ★ 2026-10-29：值是**资料**的还是**账本示例/池子**的，写进日志 ——
+                        #: 原来只写「填了 zipcode」，两个月没人发现填的一直是示例 10001。
+                        self._field_from[tid] = getattr(self, "_value_from", "") or "来源未记"
                         self._field_tries[tid] = tries + 1
                         self._filled.add((tid, val))
                         filled_any += 1
                         self._empty = 0  # ★ 只有**真填成功**才算是「这一屏有可动的东西」
-                        self.log.info("[%s] step %d: 填了 %s", self.cid, step, tid)
+                        self.log.info("[%s] step %d: 填了 %s（%s）", self.cid, step, tid,
+                                      self._field_from[tid])
                         self._trace(step=step, action="form", ok=True, progress=False,
-                                    target={"testid": tid}, note="填了 %s" % tid)
+                                    target={"testid": tid},
+                                    note="填了 %s（%s）" % (tid, self._field_from[tid]))
                     if filled_any:
                         idle = 0
                         busy_since = None
+                        self._rpt_if_moved(step, url, "填了 %d 格" % filled_any)
                         continue
 
                 # ② 有题可选 ⇒ 挑一个（随机或第一个）—— ★ **同一屏只答一次**。
@@ -1572,9 +2288,19 @@ class Filler:
                 #: ⚠️ 签名**不含 `progress`**：答完一题站点常常把百分比往上推（实测 69% ⇒ 77%），
                 #: 带上它的话「同一屏」会被读成新屏 ⇒ 又答一次 ⇒ 在单页漏斗上反复点 ✗。
                 #: 题面（head）+ **选项那一串文字**才是「这是不是同一道题」的判据。
-                answered_sig = "%s|%s" % ((page.get("head") or "")[:60],
-                                          "|".join(str(o) for o in (page.get("options") or []))[:160])
-                pick = self.pick_option(page.get("options"))
+                #: ★ 2026-11-02（educationdirectory 真站）：**同一屏会追加题** ——
+                #: 选了「Still deciding」才冒出两颗必答的 Yes/No（rn_license /
+                #: teaching_certificate），而上面那条签名截在 160 字、追加的选项排在末尾
+                #: ⇒ 签名一点都不变 ⇒ 下一轮读成「这一屏答过了」⇒ 直接点 Next ⇒ 表单校验
+                #: 不过、页面一动不动（自测第 8 步那三次空点）。现在读取器多交一格
+                #: `unanswered`（还没选过的那几组）：签名带上它，每答完一组就变一次；
+                #: 挑也只从那一格里挑 —— 老读取器没有这一格 ⇒ 照旧按 options 挑。
+                unanswered = page.get("unanswered")
+                answered_sig = "%s|%s|%s" % ((page.get("head") or "")[:60],
+                                             "|".join(str(o) for o in (page.get("options") or []))[:160],
+                                             "|".join(str(o) for o in (unanswered or [])))
+                pick = self.pick_option(unanswered if isinstance(unanswered, list)
+                                        else page.get("options"), page.get("inputs"))
                 if pick and answered_sig != getattr(self, "_answered_sig", ""):
                     self._empty = 0
                     #: ★ 2026-10-16 复核修：同上 —— 这一下动手之前清零（`click()` 打标记返
@@ -1592,6 +2318,8 @@ class Filler:
                         self._trace(step=step, action="click", ok=True, progress=True,
                                     target={"token": str(pick)[:48]},
                                     note="答了第 %d 题" % answered)
+                        self._rpt_if_moved(step, url, "答了第 %d 题：%s"
+                                                    % (answered, str(pick)[:32]))
                         continue
                     if self.cover_why:
                         #: ★ 2026-10-16 本刀：**「被盖着」不是「没找到」** —— 两件事说成
@@ -1628,6 +2356,35 @@ class Filler:
                                     target={"options": len(page.get("options") or []),
                                             "inputs": len(page.get("inputs") or []),
                                             "nextTxt": str(page.get("nextTxt") or "")[:24]})
+                        continue
+                    #: ★ 2026-10-24（Atticus `survey/claim/zip`）：**Next 是禁用态、格子又有值**
+                    #: ⇒ 先把值重打一遍（见 `_nudge`）—— 干点 Next 只会空转到收摊。
+                    if page.get("nextDisabled") and self._nudge(page):
+                        idle = 0
+                        continue
+                    #: ★ 2026-10-29（Atticus `age-interstitial-*` / `personalization-question`）：
+                    #: Next 是禁用态、又没有可重打的格子 ⇒ 站点在发请求 / 还没轮到这一步。
+                    #: 这时候点它 = **点空气**，还会把「同一屏最多几次」的额度烧光（真站就这么
+                    #: 连点 8 次收摊，而那一屏再等几秒自己就好了）⇒ **等**，最多等 `BUSY_TIMEOUT`。
+                    if page.get("nextDisabled"):
+                        if busy_since is None:
+                            busy_since = time.time()
+                        waited = time.time() - busy_since
+                        if waited >= BUSY_TIMEOUT:
+                            self.log.error("[%s] Next 一直是禁用态、等了 %.0f 秒 —— 如实报失败",
+                                           self.cid, waited)
+                            self._rpt("max_steps", "next disabled %.0fs" % waited)
+                            self._stop(step, "wait",
+                                       "Next 一直是禁用态 %.0fs（BUSY_TIMEOUT=%ds）"
+                                       % (waited, BUSY_TIMEOUT))
+                            return False
+                        idle = 0                # 等 ≠ 空转
+                        self.log.info("[%s] step %d: Next 是禁用态、没有可重打的格子 ⇒ 等它（%.0fs/%ds）",
+                                      self.cid, step, waited, BUSY_TIMEOUT)
+                        self._trace(step=step, action="wait", ok=None, progress=None,
+                                    progress_why="Next 是禁用态、没有可重打的格子 —— 等它 %.0fs"
+                                                 % waited)
+                        time.sleep(DISABLED_NEXT_WAIT)
                         continue
                     #: ★ 2026-10-13（真事 `job-e8bbc9b2612a`）：这一道闸原来拿 `answered_sig`
                     #: （题面 + 选项）当「同一屏」的判据，而那一族的 `head` 是**页面标题** ——
@@ -1672,6 +2429,11 @@ class Filler:
                                              % ("重试：先落定、挪进视口" if retrying else "第一次"),
                                 target={"text": str(page.get("nextTxt") or "Next"),
                                         "retry": (True if retrying else None)}, note="Next")
+                    #: ★ 2026-10-29：点完**先等页面变**，别 1.5 秒一次地连点（见 `_wait_for_change`）。
+                    if clicked:
+                        self._wait_for_change(page)
+                        self._rpt_if_moved(step, url, "点了 Next（%s）"
+                                                    % (page.get("head") or "")[:40])
                     continue
 
                 # ④ 没得点：先分清「页面在处理」还是「真的没事干」
@@ -1707,6 +2469,7 @@ class Filler:
                         and self._structured_try(step, page):
                     self._answered_but_stuck = False
                     idle = 0
+                    self._rpt_if_moved(step, url, "结构化兜底点了东西")
                     continue
                 busy_since = None
 

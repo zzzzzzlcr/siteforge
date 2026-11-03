@@ -544,8 +544,21 @@ def test_the_delivered_py_is_a_real_importable_production_script(tmp_path):
 
 
 def test_a_lint_violation_is_handed_back_to_draft_with_its_lines(tmp_path):
-    """lint 打回时，**违规行本身**要跟着回到 draft（只说「你手拼 JS 了」它找不到地方）。"""
-    deps, rec = _deps(write=lambda spec, fb, n: _dirty(spec) if n == 1 else spec)
+    """lint 打回时，**违规行本身**要跟着回到 draft（只说「你手拼 JS 了」它找不到地方）。
+
+    ⚠️ 2026-10-21 起下一版**从上一版出发**（见
+    `test_a_second_draft_starts_from_the_last_version_not_the_raw_journey`）——
+    所以第二版拿到的那张表里，v1 那处脏 note **还在**。这一版按违规行改掉它
+    （模拟模型照 lint 的话修），不是「返回原样」。
+    """
+    def writer(spec, fb, n):
+        if n == 1:
+            return _dirty(spec)
+        out = copy.deepcopy(spec)
+        out["states"][0]["steps"][0]["note"] = "点了「Get Started」"
+        return out
+
+    deps, rec = _deps(write=writer)
     app, cfg, _ = _build(deps=deps)
     payloads, out = _drive(app, cfg, _brief(tmp_path))
 
@@ -590,6 +603,105 @@ def test_lint_that_never_passes_stops_at_the_cap_instead_of_spinning(tmp_path):
     assert out.get("unverified") and "契约检查" in out["unverified"][0], out.get("unverified")
     assert "第" in out["end_note"] or "次" in out["end_note"]        # 人话说得清为什么停
     assert [p["step"] for p in payloads].count("draft") == 3
+    #: ★ 2026-10-28：**交接包** —— 「修不动」的终局要留一份外面读得懂的（原因 + 证据 + 盘上那份）。
+    handoff = pathlib.Path(out["handoff_path"])
+    assert handoff == tmp_path / "forms" / "sites" / ("%s.handoff.md" % SITE), handoff
+    text = handoff.read_text(encoding="utf-8")
+    assert "lint_cap" in text and str(tmp_path / "forms" / "sites") in text
+    assert "第 " in text and "行" in text, "打回的那几行没进包"
+    assert str(handoff) in out["end_note"], out["end_note"]
+
+
+def test_the_same_failure_fingerprint_three_times_asks_for_a_tool_defect(tmp_path):
+    """★ 2026-11-02（交接 P1-1）：同一失败指纹**跨 job** 攒到 3 份 ⇒ 交接包里点名
+    「该开工具层缺陷单」，别再往模型头上加轮次（`docs/根因库.md` 那条规矩）。
+    """
+    state = {"site": SITE, "out_dir": str(tmp_path), "unverified": [],
+             "repair_fingerprint": "sel|zip_code|click|no-transition"}
+    handoff = tmp_path / ("%s.handoff.md" % SITE)
+    graph._handoff(state, {"end_note": "停", "report": None}, "repair_noop")
+    text = handoff.read_text(encoding="utf-8")
+    assert "已出现" not in text and "该开**工具层缺陷单**" not in text, text
+    for expected in (2,):
+        graph._handoff(state, {"end_note": "停", "report": None}, "repair_noop")
+        text = handoff.read_text(encoding="utf-8")
+        assert "该开**工具层缺陷单**" not in text, "还没到 3 份就转工具层了：%r" % text
+        assert "已出现 %d 次" % expected in text, text
+    graph._handoff(state, {"end_note": "停", "report": None}, "repair_noop")
+    text = handoff.read_text(encoding="utf-8")
+    assert "该开**工具层缺陷单**" in text and "3 次" in text, text
+    #: 同一份指纹再记一次也不会被清掉（这份账本是**跨 job 累积**的）
+    assert (tmp_path / graph.REPAIR_FINGERPRINTS).exists()
+
+
+def test_a_second_draft_starts_from_the_last_version_not_the_raw_journey(tmp_path):
+    """★ 2026-10-21（真事 `job-6203bc32c1c4` / `job-49e6dd44475f`）：**下一版从上一版出发**。
+
+    现场：第一版把 `number-2.source` 从框架自造名改成 `intake_history_physical_exam`
+    （lint 因此过了），可自测失败后 diagnose→下一版时，`draft` 又把 `fills` 从
+    **账本原件**重来一遍 ⇒ 那一处修复被冲掉 ⇒ lint 再打回 ⇒ 两版来回翻。
+    `states` 同理（循环型那一侧的 `pre_steps` 也是这么丢的）。
+
+    判据：第二次 `write` 拿到的 `fills` 是**上一版**的（`postcode_fixed`），
+    不是账本原件的 `postcode`。
+    """
+    seen: list = []
+
+    def writer(spec, feedback, n):
+        seen.append(copy.deepcopy(spec["fills"].get("postcode") or {}))
+        out = copy.deepcopy(spec)
+        if n == 1:
+            out["fills"]["postcode"]["source"] = "postcode_fixed"
+            #: 弄脏一处 ⇒ lint 打回 ⇒ 第二版（与 `_dirty` 同一招）
+            out["states"][0]["steps"][0]["note"] += " 顺手用 el.click() 补了一下"
+        else:
+            out["states"][0]["steps"][0]["note"] = "点了「Get Started」"
+        return out
+
+    deps, _rec = _deps(write=writer)
+    app, cfg, _ = _build(deps=deps)
+    _payloads, out = _drive(app, cfg, _brief(tmp_path))
+
+    assert len(seen) >= 2, out.get("end_note")
+    assert seen[0]["source"] == "postcode", seen
+    assert seen[1]["source"] == "postcode_fixed", (
+        "第二版又从账本原件重来了 —— 上一版改好的那一格被冲掉了：%r" % (seen,))
+
+
+def test_a_second_draft_keeps_the_pre_steps_the_first_one_added(tmp_path):
+    """★ 同一件事的另一半（循环型）：第一版补进 `loop.pre_steps` 的那一步，第二版要还在。
+
+    现场就是 `job-6203bc32c1c4` 的 `src-3`：diagnose 之后那一版把落地页的两下 CTA
+    放进了 `pre_steps`，lint 打回重写时 `_loop_spec(journey, funnel)` 又把它算回了空表
+    ⇒ 落地页步骤又丢了。
+    """
+    marker = {"action": "click", "target": {"text": "Start"}}
+    seen: list = []
+
+    def writer(spec, feedback, n):
+        seen.append(copy.deepcopy(list((spec.get("loop") or {}).get("pre_steps") or [])))
+        out = copy.deepcopy(spec)
+        if n == 1:
+            out.setdefault("loop", {})["pre_steps"] = (
+                list(out["loop"].get("pre_steps") or []) + [marker])
+        return out
+
+    fired: list = []
+
+    def reply(p):
+        if p.get("step") == "lint" and not fired:
+            fired.append(1)
+            return {"action": "revise", "note": "重来一版"}
+        return "continue"
+
+    deps, _rec = _deps(journey=_funnel_journey(), write=writer)
+    app, cfg, _ = _build(deps=deps)
+    _payloads, out = _drive(app, cfg, _brief(tmp_path, success_urls="thank-you"), reply=reply)
+
+    assert len(seen) >= 2, out.get("end_note")
+    assert marker in seen[1], (
+        "第二版的 loop.pre_steps 又只剩 `_loop_spec` 算出来的那几步 —— 上一版补的没了：%r"
+        % (seen,))
 
 
 # ──────────────── 回灌二：selftest 挂了 → diagnose → draft 带证据 ────────────────
@@ -656,6 +768,29 @@ def test_the_diagnosis_carries_the_scene_of_the_step_that_failed(tmp_path):
     assert scene["实际用的选择器"] == "#input-sections--1__footer--contactemail", scene
     assert "Please try again" in scene["当时页面上这段字（末尾 240 字）"], scene
 
+
+
+def test_the_diagnosis_carries_the_failed_steps_before_and_after(tmp_path):
+    """★ 2026-10-30：卡住那一步的 before/after 两张图进诊断（与 `现场` 同一刻的两面）。
+
+    只认盘上真有的那两张；没有就是空表（不许编一个文件名）。
+    """
+    trace = tmp_path / "delay.trace.jsonl"
+    trace.write_text(json.dumps({"step": 6, "action": "click", "ok": False}) + "\n",
+                     encoding="utf-8")
+    before = tmp_path / "6-before.png"
+    after = tmp_path / "6-after.png"
+    for one in (before, after):
+        one.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x")
+    run = selftest.Run(name="delay", label="第 3 遍", status="failed", ok=False,
+                       failed_step=6, trace_path=str(trace), note="卡在第 6 步")
+    report = selftest.Report(runs=(run,), passed=False, allowed_skips=("country",),
+                             cdp_bin=None, site=SITE, py_path="/tmp/%s.py" % SITE)
+
+    diag = graph._diagnosis(report)
+    assert diag["截图"] == [str(before), str(after)], diag
+    after.unlink()
+    assert graph._diagnosis(report)["截图"] == [str(before)]
 
 def test_a_diagnosis_with_no_readable_trace_still_has_the_scene_key(tmp_path):
     """**负控**：读不到 trace ⇒ `现场` 是 `None`，而**键在**（形状稳定）。
@@ -746,6 +881,12 @@ def test_selftest_that_never_passes_stops_at_the_cap_instead_of_spinning(tmp_pat
     assert out.get("py_path"), out
     assert out.get("unverified") and "自测" in out["unverified"][0], out.get("unverified")
     assert "自测" in out["end_note"] or "扰动" in out["end_note"]
+    #: ★ 2026-10-28：交接包里要有**每遍自测 + 最后一路诊断**（接手的人要的就是这两样）。
+    text = pathlib.Path(out["handoff_path"]).read_text(encoding="utf-8")
+    assert "selftest_cap" in text, text
+    assert "自测每一遍" in text and "baseline" in text, text
+    assert "卡在第 8 步" in text, "最后一次诊断那句话没进包：%r" % text
+    assert "交接包" in out["end_note"]
 
 
 def test_the_same_failure_twice_stops_instead_of_rewriting_again(tmp_path):
@@ -875,13 +1016,23 @@ def test_a_round_that_moves_to_a_different_element_keeps_rewriting(tmp_path):
 
 
 def test_the_failure_family_is_read_from_the_report_not_invented():
-    """族的判据**只吃报告里现成的字**（说不清 ⇒ `unknown`，不编一个族出来）。"""
+    """族的判据只吃报告里现成的字；**现场有弹层 ⇒ 先判 overlay**。"""
     fam = graph._failure_family
     assert fam({"note": "页面上没找到「Accept All Cookies」"}) == "overlay"
     assert fam({"note": "窗口连不上"}) == "precondition"
     assert fam({"note": "这一遍没跑完就超时了（>600 秒）—— 卡在第 7 步；没找到"}) == "timing"
     assert fam({"note": "页面上没找到「Continue」，这一步没做成"}) == "selector"
     assert fam({"note": "说不清的一句"}) == "unknown"
+    #: ★ 2026-10-30：note 只说「nothing actionable」时，现场那层才是定性证据。
+    assert fam({"note": "nothing actionable",
+                "现场": {"盖在上面的是什么": "div.fides-modal-overlay"}}) == "overlay"
+    assert fam({"note": "nothing actionable", "现场": {"盖在上面的是什么": ""}}) == "unknown"
+    #: ★ 2026-10-30：「等了…没出来」不再要求同时出现「没找到」；盖着仍归 overlay。
+    assert fam({"note": "等了 39.7 秒它还是没出来 —— 不等了，照旧往下试别的路"}) == "timing"
+    assert fam({"note": "等了 35.0 秒，div#onetrust-policy-text. 还盖着这个元素 —— 不等了"}) == "overlay"
+    assert fam({"note": "nothing actionable",
+                "现场": {"这一步往前推了没有": False,
+                         "脚本自己那句话": "页面在处理中 45s"}}) == "timing"
 
 # ── ★ 2026-10-16：**「一处都没改」的稿不是修**（空转那一刀）────────────────────
 #
@@ -2648,9 +2799,12 @@ def _funnel_journey(pages=4):
                            "selectors": ["a.btn"], "above_fold_only": False},
                 "result": {"ok": True, "selector": "a.btn"}}],
         notes=[], stop_reason="model_done",
+        #: ⚠️ 落地页的 `url` **必须是另一页**：`funnel_states` 现在拿逐页 `url` 判「是不是同一页」
+        #: （2026-10-21，真事 `job-6203bc32c1c4`：同一目录下的多页问卷不是单页漏斗）——
+        #: 这里原来填成 `URL`（与 quiz 同址）只是夹具的旧形状，会让落地页也被算进漏斗。
         pages=[{"name": "landing",
                 "when": {"url_contains": "example.test", "text_contains": ["Get Quotes"]},
-                "url": URL, "title": "t"}])
+                "url": "https://example.test/landing", "title": "t"}])
     for i in range(pages):
         name = "quiz" if i == 0 else "quiz-%d" % i
         book.steps.append(
@@ -3752,9 +3906,13 @@ def test_a_version_that_stops_fabricating_clears_the_row(tmp_path):
     而那一格的全部意义就是告诉人「**当前**这双手还在不在编锚」，说反了比不摆更坏。
     """
     def fabricate(spec, feedback, round_no):
-        if round_no == 1:                       # v2 收手：一处都不编
+        if round_no == 1:                       # v1 编锚
             spec["states"][0]["steps"][0]["target"]["text"] = "也是编的"
             spec["states"][0]["steps"][0]["note"] = "顺手用 el.click() 补了一下"  # 让 lint 打回
+        else:
+            #: v2 收手（2026-10-21 起下一版从上一版出发 ⇒ 不改就仍是 v1 那一份）。
+            spec["states"][0]["steps"][0]["target"]["text"] = "Get Started"
+            spec["states"][0]["steps"][0]["note"] = "点了「Get Started」"
         return spec
 
     deps, rec = _deps(write=fabricate)
@@ -3848,6 +4006,19 @@ def test_apply_rules_sets_fills_and_returns_effective():
     assert got["fills"]["phone"]["rule"] == "phone_prefix"
     assert got["fills"]["dob"]["date_format"] == "DD/MM/YYYY"
     assert got["rules_effective"]["dob"]["format"] == "DD/MM/YYYY"
+
+
+def test_apply_rules_uses_the_phone_the_human_typed_at_a_gate():
+    """★ 2026-10-29（job-31cc47a0dbe3）：人在闸上说「电话填2014237916」⇒ 产物用它，不再随机。"""
+    from agent import graph
+    spec = {"fills": {
+        "phone": {"name": "phone", "kind": "value", "label": "Phone number",
+                  "target": {"selectors": ["#phone"]}},
+    }}
+    got = graph._apply_rules(spec, {"hints": ["电话填2014237916"]})
+    assert got["fills"]["phone"]["rule"] == "phone_exact"
+    assert got["fills"]["phone"]["value"] == "2014237916"
+    assert got["rules_applied"] == ["phone_exact:2014237916"]
 
 
 def test_apply_rules_stops_without_a_dob_format():

@@ -928,7 +928,13 @@ class Journey:
                 "sample": (str(info.get("value") or "").strip() if info.get("kind") == "value"
                            else ""),
             }
-        return out
+        #: ★ 2026-11-02（自测 job-b6de06891f9a）：同一地址在**不同状态**各记了一次
+        #: （`field` 与 `postcode` 都指 `input[name="zip_code"]`），而 `value_for` 是
+        #: **按 FILLS 顺序**认第一格 —— `field` 排在前面 ⇒ 用了 `EXAMPLES["field"]`
+        #: （那是街道样例 `455 N Rexford Dr`），回读被邮编框截成 `455 N` ⇒ 三遍都判没填上。
+        #: 名字是 `field` / `field-N` 的是**没起出语义名**的条目：排在语义名后面让位。
+        return dict(sorted(out.items(), key=lambda kv: bool(
+            re.fullmatch(r"field(?:-\d+)?", str(kv[0] or "")))))
 
     def late_states(self) -> set:
         """哪些状态的东西是**后出来的**（落到这一页的**第一眼**里没有那一格，后来有一步真用上了它）。
@@ -1060,6 +1066,11 @@ def when_holds(when, model: dict) -> bool:
     """
     if not when:
         return True
+    #: ★ 2026-10-21（真事 delamere `/contact` vs `/contact/loved-one`）：**精确地址**是收紧的
+    #: 那一侧 —— `url_contains` 的子串判据在子页上也成立，`url_equals` 逐字比才算数。
+    exact = str(when.get("url_equals") or "")
+    if exact and _exact_url(exact) != _exact_url(model.get("url") or ""):
+        return False
     if when.get("url_contains") and when["url_contains"] not in (model.get("url") or ""):
         return False
     wants = when.get("text_contains") or []
@@ -1125,6 +1136,9 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             #: 「判据一个字没放宽，要不要改得人点头」（`graph._criterion_say` 那一族的口径）。
             success_urls: str = "",
             data_keys=None,
+            #: ★ 2026-10-29：人给的电话 —— 探路时**模型说什么都不算**，这里说了算。
+            #: 空串 = 没给（照旧由模型挑，产物那一侧再按规则/资料覆盖）。
+            phone_value: str = "",
             hints=None) -> Journey:
     """在真浏览器里为 `goal` 探 `url` 这条路，返回 `Journey`。
 
@@ -1272,6 +1286,12 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
             _stop_or_raise(paused, journey, taken, limits, success_text, success_urls)
             taken += 1
             step, fill = _describe(name, args, pages, journey)
+            #: ★ 2026-10-29：人给了号就**用那个号** —— 模型挑的随机号不算
+            #: （用户看到的「不按我给的数据输」就是这一格）。
+            if name == "form" and phone_value and _looks_phone_fill(fill):
+                args = dict(args, value=phone_value)
+                fill["value"] = phone_value
+                fill["fallback"] = []
             # ── 契约七格里的**前五格**：脚本只填这五格（契约 §二①）──────────────
             #
             # 第 1 格 `step_no`：第几步（模型这一步是它自己走的，编号按**发出去的顺序**）。
@@ -1293,7 +1313,20 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                 _shots(step_shots.before_mutation, step, session, pages.current_key)
             t0 = time.time()
             try:
-                raw = session.call_tool(name, args)
+                try:
+                    raw = session.call_tool(name, args)
+                except tools.McpError:
+                    #: ★ 2026-10-21（真事 `job-e45daea13b94`）：**传输层**超时/EOF/协议错
+                    #: ⇒ 把这条 MCP 子进程原地换掉（同一个 ws_url 重新握手）。浏览器/窗口
+                    #: 可能还活着，卡死的只是这条 stdio 会话；不换的话，后面每一次调用
+                    #: 都会再等 120 秒（那一趟连着 5 次超时，人只能喊停）。
+                    #: ⚠️ **不重放这一下**：超时的那一下可能已经动过页面（点/填/提交），
+                    #: 自动重放 = 重复提交。模型看见这条错，下一步走新会话。
+                    try:
+                        session.reopen()
+                    except Exception:                  # noqa: BLE001 —— 重开失败也照旧报原错
+                        pass
+                    raise
             except Exception as exc:                       # noqa: BLE001
                 # 第 3 格 `receipt`：**CDP 回执的原文** —— 这一条是工具**没成**那一侧。
                 # 为什么带一个 `isError`：那是 **MCP 协议自己**的字段（`tools.call_tool`
@@ -1558,10 +1591,12 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
         #: 而这一刻每一页的正文都在手边，够得着**按全站避让重挑一段**。
         #: ⚠️ 顺序不能反：反了的话救回来的那些也照样进 `gate_collisions`、照样把整趟砍死。
         for fixed in _repair_ambiguous_whens(pages.pages):
-            journey.note(WHEN_REPICKED_SAY % (fixed["name"],
-                                              "、".join(fixed["pages"]),
-                                              fixed["had"][0] if fixed["had"] else None,
-                                              fixed["now"]))
+            #: ★ 2026-10-21：精确地址那一支自带整句（它换的不是「一段正文」，是地址判据）。
+            journey.note(fixed.get("say") or WHEN_REPICKED_SAY % (
+                fixed["name"],
+                "、".join(fixed["pages"]),
+                fixed["had"][0] if fixed["had"] else None,
+                fixed["now"]))
         journey.gate_collisions = _gates_that_hold_elsewhere(pages.pages)
         for gate in journey.gate_collisions:
             journey.note(GATE_HOLDS_ELSEWHERE % (gate["name"],
@@ -2250,9 +2285,13 @@ def wanted_urls(success_urls) -> list:
     words = [success_urls] if isinstance(success_urls, str) else list(success_urls or [])
     out: list = []
     for word in words:
-        got = str(word or "").strip()
-        if got and got not in out:
-            out.append(got)
+        #: ★ 2026-10-22（用户裁定「不合资格也算成功」）：同一格可以写**多条**判据 ——
+        #: 面板只有一格，所以**一行一条**（URL 里不会出现换行；单条照旧原样收）。
+        #: 例：合格屏 `/qual/post-conversion` + 拒绝屏 `/survey/rejection/`。
+        for part in str(word or "").splitlines():
+            got = part.strip()
+            if got and got not in out:
+                out.append(got)
     return out
 
 
@@ -2791,6 +2830,15 @@ class _Namespace:
 # ─────────────────────── 每一步：描述 / 记账 / 人话 ───────────────────────
 
 
+def _looks_phone_fill(fill) -> bool:
+    """这一步填的是不是**电话那一格**（自由输入格；下拉/勾选不算）。"""
+    if not isinstance(fill, dict) or str(fill.get("kind") or "") != "value":
+        return False
+    text = " ".join(str(fill.get(k) or "") for k in ("name", "source", "label")).lower()
+    return ("phone" in text or "mobile" in text
+            or bool(re.search(r"(?:^|[^a-z])tel(?:[^a-z]|$)", text)))
+
+
 def _describe(name: str, args: dict, pages: "_Pages", journey: Journey) -> tuple:
     """开一个「步」的骨架：状态归属 + target（**声明式多元描述**）+ 这一步填什么。
 
@@ -2992,6 +3040,31 @@ _MIN_TOKEN_KEY = 4
 #: 尾段里要有**鉴别力**的那一段（`label:nth-of-type(7)` 这种）才算证据：
 #: `nth-of-type(k)` / `#id` / `[attr=…]`。`div > input` 那种到处都有，认它是噪声。
 _TAIL_DISTINCTIVE = re.compile(r"nth-of-type\(|#|\[")
+#: 选择器里能当**身份**用的属性对：`[name="…"]` / `[id="…"]`。
+#: 只认这两个 —— `[value="…"]` / `[type="…"]` 要么是整组共用、要么页面上到处都是，
+#: 「唯一」那道闸会先把它们挡掉，读进来只是噪声。
+_IDENTITY_ATTR = re.compile(
+    r"\[\s*(name|id)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\]\s]+))\s*\]",
+    re.I)
+
+
+def _identity_attrs(selector) -> set:
+    """选择器里点名的 `(name|id, 值)` 对（**原样值**，不做归一化）。
+
+    ⚠️ 值与 HTML 一样**区分大小写**：`zip_code` 与 `ZIP_CODE` 是两个不同的身份，
+    认错比认不回来坏（同 `_id_is_the_elements_hint` 那条纪律）。
+    """
+    out = set()
+    text = str(selector or "")
+    for m in _IDENTITY_ATTR.finditer(text):
+        value = next((g for g in m.groups()[1:] if g is not None), "")
+        value = value.strip()
+        if value:
+            out.add((m.group(1).lower(), value))
+    #: `[id="x"]` 与 `#x` 是同一个身份 —— 观测常用后者（`#edit-zip-code`）。
+    for m in re.finditer(r"#([A-Za-z_][-\w]*)", text):
+        out.add(("id", m.group(1)))
+    return out
 
 
 #: `:nth-of-type(1)` 与**不写**是**同一个元素**（第一个同标签的兄弟）—— 归一化时去掉它，
@@ -3063,7 +3136,7 @@ def _id_is_the_elements_hint(element: dict, selector: str, frame_id: str = ""):
 
     返回值是**确信度档**（数字小的先要）：
       · `2` / `3` = **一字不差**（选择器里那段 id 就是 `hint` 本身），帧对得上 / 对不上；
-      · `4` / `5` = 一个**含**另一个（帧对得上 / 对不上）。
+      · `6` / `7` = 一个**含**另一个（帧对得上 / 对不上）。
 
     ★ 2026-10-08（真账本 `job-7f43337b2ba0`，laterlifechoices.uk）：填格那一步模型用的
     选择器是 `input#phone-3848a5d5`，而观察给这一格报的 `selector` 是
@@ -3100,7 +3173,7 @@ def _id_is_the_elements_hint(element: dict, selector: str, frame_id: str = ""):
     if want & said:
         return 2 if ok else 3
     if any(w in s or s in w for w in want for s in said):
-        return 4 if ok else 5
+        return 6 if ok else 7
     return None
 
 
@@ -3114,10 +3187,12 @@ def _find_element(pages: "_Pages", kind: str, selector: str, frame_id: str = "")
     同一套结构再渲染一遍）。所以先挑**帧对得上**的那一个；一个都对不上时退回原先的
     「文档序第一个」—— 「帧对不上」不等于「一定是它」，只是没有更好的线索。
 
-    ★ 2026-10-08：**按信任度排队**（`rank` 小的先要），六档：
+    ★ 2026-10-08：**按信任度排队**（`rank` 小的先要），五档：
       0/1 = 选择器**原样**对得上（帧对得上 / 对不上）—— 老行为，一个字没动；
       2/3 = 选择器里那个 `#id` 与元素的 `hint` **一字不差**（帧对得上 / 对不上）；
-      4/5 = 一个**含**另一个（帧对得上 / 对不上）。
+      4/5 = 选择器里的 `[name=…]` / `[id=…]` 在观测池里**唯一**（帧对得上 / 对不上）；
+      6/7 = 一个**含**另一个（帧对得上 / 对不上）；
+      8/9 = 尾段唯一（帧对得上 / 对不上）。
     每一档里都是**文档序第一个**说了算（`rank` 严格小于才换人 ⇒ 先到的不被后来者顶掉）。
 
     ⚠️ 顺序有讲究：**原样对得上的永远排在 id 推断前面**，**相等永远排在包含前面** ——
@@ -3149,6 +3224,22 @@ def _find_element(pages: "_Pages", kind: str, selector: str, frame_id: str = "")
                 if isinstance(e, dict) and _tail_key(_selector_tail(e.get("selector"))) == key]
         if len(same) == 1:
             tail_owner = same[0]
+    #: ★ 2026-11-02（educationdirectory 真站）：观测池里那两格的选择器带着
+    #: `input[name="zip_code"]` / `select[name="education_level"]`，而模型写的是
+    #: `input[name="zip_code"]`（标签/前缀与观测不同）或 `[name=…]`（不带标签）——
+    #: 原样对不上、`hint` 又被 MUI 那种不透明 id 占着 ⇒ 名字退成 `field-N`。
+    #: 判据照旧是**唯一**：`name` / `id` 的值在池子里只出现在**一条**元素上才认；
+    #: 同名的一组 radio（`area_of_interest` 五格）⇒ 一条都不认，别把两格认成一格。
+    attr_owner = None
+    wanted = _identity_attrs(selector)
+    if wanted:
+        same_attr = [e for e in pool
+                     if isinstance(e, dict)
+                     and wanted <= _identity_attrs(
+                         " ".join([str(e.get("selector") or "")]
+                                  + [str(a or "") for a in (e.get("alternates") or [])]))]
+        if len(same_attr) == 1:
+            attr_owner = same_attr[0]
     if tail_owner is None and tail and re.fullmatch(r"[a-z][a-z0-9-]*", tail[-1]):
         #: ⚠️ 另一副面孔（真站同一天的 `select` 那格）：模型写的是
         #: `form:has(…) select`（**光秃秃一个标签名**，尾巴没有鉴别力），
@@ -3166,8 +3257,10 @@ def _find_element(pages: "_Pages", kind: str, selector: str, frame_id: str = "")
             continue
         if element.get("selector") == selector or selector in (element.get("alternates") or []):
             rank = 0 if _frame_id_of_path(element.get("frame_path")) == frame_id else 1
+        elif element is attr_owner:
+            rank = 4 if _frame_id_of_path(element.get("frame_path")) == frame_id else 5
         elif element is tail_owner:
-            rank = 6 if _frame_id_of_path(element.get("frame_path")) == frame_id else 7
+            rank = 8 if _frame_id_of_path(element.get("frame_path")) == frame_id else 9
         else:
             rank = _id_is_the_elements_hint(element, selector, frame_id)
         if rank is None:
@@ -3333,11 +3426,12 @@ def _fill_name(label: str, element, journey: Journey, semantic=None) -> str:
     名字就成了 `textfield_173838`，运营的 `zip`/`postcode` 键**一个都对不上**。
 
     现在：**先看这个字段在页面上说的是什么**（`_field_kind`：自己的名字 → 周围写着的字 →
-    html 的 type），认得出就用那个**语义名**（`postcode`/`email`/`phone`/…），
-    认不出才退回原来的「标签 / placeholder / type」那条老路（不编名字）。
+    html 的 type），认得出就用那个**语义名**（`postcode`/`email`/`phone`/…）；
+    再退一步用元素自报的 `name`（`education_level` 这种像资料列名的，见 `_hint_as_name`）；
+    最后才是原来的「标签 / placeholder / type」那条老路（不编名字）。
     """
     kind = semantic if semantic is not None else _field_kind(label, element)
-    base = (kind or label or (element or {}).get("placeholder")
+    base = (kind or _hint_as_name(element) or label or (element or {}).get("placeholder")
             or (element or {}).get("type") or FALLBACK_FILL_NAME)
     stem = _snake(base) or FALLBACK_FILL_NAME
     used = {(s.get("result") or {}).get("fill", {}).get("name")
@@ -3378,6 +3472,21 @@ def alias_tables() -> tuple:
     return got["_ALIASES"], got["_SPLIT_FROM"]
 
 
+#: `hint` 什么时候能当**名字**用：它得长得像运营资料的列名（`education_level` /
+#: `zip_code`），而不是框架那种不透明号（`input-e3d6d0f7` / `textField-173862`）。
+#: 判据只取「小写 + 数字 + 下划线，至少一个下划线」—— 保守到不会把不透明号放进来。
+#: ★ 2026-11-02（educationdirectory 真站）：`education_level` 那一格的标签是
+#: `Highest level of education Please Select`，蛇形化之后一长串；而资料列名就是
+#: 它自报的 `name`。选择器里的 `[name=…]` 既然能认回这一格，名字也该用它。
+_SEMANTIC_HINT = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$")
+
+
+def _hint_as_name(element) -> str:
+    hint = str((element or {}).get("hint") or "").strip()
+    return hint if _SEMANTIC_HINT.fullmatch(hint) else ""
+
+
+
 def _key_shape(text) -> str:
     """一个键的**形状**（只留小写字母数字）—— `firstName` / `first_name` / `first-name` 同形。"""
     return re.sub(r"[^0-9a-z]+", "", str(text or "").lower())
@@ -3407,8 +3516,6 @@ def library_key(name: str, data_keys=()) -> str:
     if _key_shape(name) in shape:
         return shape[_key_shape(name)]
     aliases, splits = alias_tables()
-    #: ⚠️ ★ 2026-09-30（**用户问「确认资料不会乱映射吧」时当场逮到的**）：**「拆名」那一族
-    #: 不参与改写**。骨架里那条路是**按 `source` 的名字**触发的
     #: （`_fill_value`：`whole = take(_SPLIT_FROM.get(source, ""))` 且 `parts[0] if
     #: source == "first_name"`）⇒ 把 `first_name` 改写成 `username` 之后那一支**不会触发**，
     #: 资料只给一个全名（`username: "Lin Cameron"`）时整串会被填进名字框 ✗
@@ -5603,6 +5710,16 @@ def _when_for(model: dict, avoid: str = "", others=()) -> dict | None:
     return {"url_contains": url, "text_why": WHEN_TEXT_DROPPED % why}
 
 
+def _exact_url(url: str) -> str:
+    """**精确到 path** 的地址：去 query / fragment / 尾斜杠（**不丢末段**）。
+
+    用于 `when.url_equals`：两页正文分不开、而地址只差一个子路径时（真事 delamere：
+    `/contact` 与 `/contact/loved-one` —— `url_contains` 的**子串**判据在子页上也成立），
+    整条网址逐字比才是真的门。与 `_stable_url` 分开：那个是**放宽**过的判据，这个是**收紧**的。
+    """
+    return (url or "").split("#")[0].split("?")[0].rstrip("/")
+
+
 def _stable_url(url: str) -> str:
     """判据里用哪一段地址：**稳定前缀**。
 
@@ -5791,6 +5908,18 @@ def _gates_that_hold_elsewhere(pages: list) -> list:
 WHEN_REPICKED_SAY = (
     "「%s」这一组的判据在**别的页**上也成立（%s）—— 收尾时**按全站避让重挑了一段**："
     "原来钉的是 %r（全站每一页都有），现在钉在 %r（只这一页有）。")
+
+#: ★ 2026-10-21（真事 delamere `job-e41de4bf38a4`）：**正文分不开、地址能分开**时的处置。
+#: 现场：`/contact` 与 `/contact/loved-one` 两页的顶部正文完全一样（表单在跨源 iframe 里，
+#: 顶层只读到页头/电话）⇒ 重挑一段**挑不出来**；而 `url_contains="https://delamere.com/contact"`
+#: 是子页 URL 的**子串** ⇒ 它也挡不住子页。逐字比整条地址才是真的门。
+WHEN_EXACT_URL_SAY = (
+    "「%s」这一组的判据在**别的页**上也成立（%s）—— 正文**挑不出只这一页有的那一段**，"
+    "收尾时改用**精确地址**当门：原来钉的是 %r，现在钉在 %r（整条网址逐字比对，子页面不算）。")
+
+#: 写在门自己身上（`when["url_why"]`）：读产物源码的人看的是它。
+WHEN_EXACT_URL_WHY = ("这一组与别的页**正文分不开**：收尾时改用**精确地址**当门"
+                      "（整条网址逐字比对；子页面不算）。")
 
 #: 写在**门自己身上**的那一句（`when["text_why"]`）。比上面那句短：读产物源码的人看的是它。
 #: ⚠️ 与 `WHEN_TEXT_SPLICE`（2026-09-28 跨元素拼接那条）同一个位置、同一条规矩：
@@ -5986,6 +6115,30 @@ def _repair_ambiguous_whens(pages: list) -> list:
                   and not (own_url and _stable_url(p.get("url") or "") == own_url)]
         cand = _unique_snippet_for(mine[-1].get("model") or {}, others)
         if not cand:
+            #: ★ 2026-10-21：**正文挑不出只这一页有的那一段** ⇒ 改用**精确地址**当门
+            #: （见 `WHEN_EXACT_URL_SAY`）。只在**这一组自己那几眼都停在同一个精确地址**
+            #: 时这么做 —— 组里跨了好几条地址就没有一个「这一页」可钉，照旧交给 IR 拦。
+            exacts = {_exact_url(p.get("url") or "") for p in mine}
+            exacts.discard("")
+            if len(exacts) == 1:
+                exact = next(iter(exacts))
+                had: list = []
+                changed = False
+                for p in mine:
+                    when = p.get("when")
+                    if not isinstance(when, dict):
+                        continue
+                    if not had:
+                        had = list(when.get("text_contains") or [])
+                    when["url_equals"] = exact
+                    when["url_why"] = WHEN_EXACT_URL_WHY
+                    changed = True
+                if changed:
+                    out.append({"name": name, "had": had, "now": exact,
+                                "pages": list(hit.get("pages") or []),
+                                "say": WHEN_EXACT_URL_SAY % (
+                                    name, "、".join(hit.get("pages") or []),
+                                    had[0] if had else None, exact)})
             continue
         low = cand.lower()
         #: ⚠️ ★ 2026-10-09：正例这一验与 `_unique_snippet_for` 的 ③ **同一把尺子**

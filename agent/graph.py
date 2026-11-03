@@ -783,6 +783,10 @@ def _explore(state, deps: Deps, caps: Caps) -> dict:
                                      state.get("success_urls"))
     reached = attempts[-1]["reached"]
     out["journey"] = journey
+    #: ★ 2026-10-21：**新账本 ⇒ 旧的两张表作废**。`_draft` 现在拿 `state.states/fills`
+    #: 当下一版的底（不然上一版改好的那几格会被账本原件冲掉）；重探换了账本时，
+    #: 那两张表说的是**上一本账**，必须清空，否则下一版会拿旧账的表去渲新账。
+    out.update({"states": [], "fills": {}, "loop_spec": None})
     out["explore_say"] = _journey_say(journey)
     out["explore_reached_success"] = reached
     out["explore_attempts"] = attempts
@@ -1201,6 +1205,7 @@ def _loop_source(state, deps: Deps, *, report) -> str:
     return template_loop.render_loop(
         state["site"], state.get("success_text"), state.get("success_urls") or "",
         state.get("fills") or {}, prov, pick=str(spec.get("pick") or "random"),
+        pick_hints=list(spec.get("pick_hints") or []),
         max_steps=int(spec.get("max_steps") or template_loop.LOOP_MAX_STEPS),
         idle_limit=int(spec.get("idle_limit") or template_loop.LOOP_IDLE_LIMIT),
         busy_timeout=int(spec.get("busy_timeout") or template_loop.LOOP_BUSY_TIMEOUT))
@@ -1281,10 +1286,18 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     #: ⚠️ ★ 2026-10-14：判据同 `_explore` 那一处（**有任一张数据表**就是修站）——
     #: 循环型的 `fix_states` 是空表（falsy），原先掉进下面那支 ⇒ 拿**新探的账本**
     #: 重算了一份，底稿那份 `fix_fills` 压根没用上（`job-d29e4c847c1c` 实测）。
+    #: ★ 2026-10-21（真事 `job-6203bc32c1c4` / `job-49e6dd44475f`）：**下一版从上一版出发**。
+    #: 原来这里每次都用 `journey.states()` / `journey.fills()`（**账本原件**）——
+    #: 于是第一版改对的那一格（`number-2.source`）在下一版里被冲回原件值，
+    #: lint 再打回、再改、再冲，两版来回翻；人的一句话才能破。
+    #: 现在只要上一版真产过表（`state.states` / `state.fills` 非空），就拿它当底；
+    #: 第一次出稿、或重探之后（`_explore` 会把这两格清空），才回账本原件。
+    #: ⚠️ `or` 是**形状上的「空」**（`[]` / `{}`），不是「内容一样」—— 空表就是还没有底。
     if state.get("fix_states") or state.get("fix_fills"):
         spec = {"site": state["site"], "success_text": state.get("success_text"),
                 "success_urls": state.get("success_urls"),
-                "states": state.get("fix_states"), "fills": state.get("fix_fills") or {}}
+                "states": state.get("states") or state.get("fix_states"),
+                "fills": state.get("fills") or (state.get("fix_fills") or {})}
         journey = None
     else:
         journey = state.get("journey")
@@ -1294,7 +1307,8 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
             return out
         spec = {"site": state["site"], "success_text": state.get("success_text"),
                 "success_urls": state.get("success_urls"),
-                "states": journey.states(), "fills": journey.fills()}
+                "states": state.get("states") or journey.states(),
+                "fills": state.get("fills") or journey.fills()}
     #: ★ 2026-10-15：**探路那一刻的原始观察，就在这一刻冻**（spec §3.6b）。
     out.update(_freeze_observed(state, spec["states"], spec["fills"]))
     #: ★ 2026-10-16 第二刀：**这一版认的那份观察** —— 下面两处（`template.render` 与最后那格
@@ -1334,19 +1348,27 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     #: 「跑到底再谎报成功」是本套最忌讳的那类谎）。人只给了正文判据时，照旧产固定步骤表
     #: （那一条能靠正文判），并且**把为什么写在 `shape_why` 里**（人看得见，不用去猜）。
     shape, loop_spec, shape_why = "table", {}, ""
+    #: ★ 2026-10-21（同一件事的循环型那一半）：上一版是循环型时，**它改过的旋钮与
+    #: `pre_steps` 是这一版的底** —— 不能每版都用 `_loop_spec(journey, funnel)` 重算一遍
+    #: （那会把 diagnose 补进去的落地页 CTA 又算回空表，真事 `job-6203bc32c1c4` 的 `src-3`）。
+    #: 只在**上一版也是循环型**时沿用；形态刚切过来（table→loop）时按新账本算，不吃旧旋钮。
+    _prev_loop = dict(state.get("loop_spec") or {}) if state.get("shape") == "loop" else {}
     #: ★ 2026-10-14：**修站不切形态** —— 底稿本来就是步进循环型时，这一版照旧按循环型渲
     #: （那几格是 `fix.loop_spec_from_source` 从**底稿自己**读回来的）。
     #: 为什么非要有这一支：修站那条路 `journey` 是 `None` ⇒ 下面 `funnel` 也是 `None`
     #: ⇒ 不加这一支 `shape` 就掉成 `"table"`，而循环型的 `STATES` 本来就是空的
     #: ⇒ 产出一份**走不动**的固定步骤表（形态切错在下游看不出来：产物照样跑）。
     if journey is None and state.get("fix_loop"):
-        loop_spec = dict(state.get("fix_loop") or {})
+        loop_spec = dict(state.get("loop_spec") or state.get("fix_loop") or {})
         shape = "loop"
         shape_why = "照底稿的形状（修站**不切形态**）：%s" % (loop_spec.get("why") or "")
     if funnel is not None:
         shape_why = funnel["why"]
         if funnel["states"] and str(state.get("success_urls") or "").strip():
-            shape, loop_spec = "loop", _loop_spec(journey, funnel)
+            shape = "loop"
+            loop_spec = _loop_spec(journey, funnel)
+            #: 上一版改过的旋钮/前置步骤盖在账本算出来的那份上（账本是底，不是上限）。
+            loop_spec.update(_prev_loop)
         elif funnel["states"]:
             shape_why = funnel["why"] + "；但**没给网址判据** —— 循环型只看网址，照旧产固定步骤表"
     if _seen_urls:
@@ -1406,6 +1428,7 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
         #: 就是被测的那一版（`_leave_it_where_the_operator_can_take_it` 不给 `end_reason`
         #: 非空的那一档留料，上一版早就留在那儿了）。
         out.update({"end_reason": END_REPAIR_NOOP, "end_note": _repair_noop_note(state, deps)})
+        _handoff(state, out, END_REPAIR_NOOP)
         return out
     #: ★ 2026-10-07（用户：「探路不是探出来了吗？不能自己修正？」）：**能补就补，补不了才拦** ——
     #: 与紧跟着的那段 `FILLS` 是同一句话，只是这一处补的是**必填格那一步**：账本里**真填过**、
@@ -1702,6 +1725,7 @@ def _lint(state, deps: Deps, caps: Caps) -> dict:
         _keep_unverified(state, out, "契约检查打回 %d 次还是同一处没过" % out["lint_bounces"])
         out.update({"end_reason": END_LINT_CAP,
                     "end_note": _lint_cap_note(out["lint_bounces"], violations)})
+        _handoff(state, out, END_LINT_CAP)
     return out
 
 
@@ -1903,6 +1927,7 @@ def _selftest(state, deps: Deps, caps: Caps) -> dict:
                              % out["diagnoses"])
             out.update({"end_reason": END_SELFTEST_CAP,
                         "end_note": _selftest_cap_note(out["diagnoses"], report)})
+            _handoff(state, out, END_SELFTEST_CAP)
     #: ★ 2026-10-09：**闸前留料**（真机那一族最多的就是这一档：8099 上 13 趟停在
     #: `diagnose` 闸上、`src` 里有完整的稿、盘上什么都没有）。自测没过时下一个节点是
     #: `diagnose`，它**第一行就是 `_enter` → `interrupt()`** —— 图停在那儿，人没回来
@@ -2277,6 +2302,7 @@ def _diagnose(state, deps: Deps, caps: Caps) -> dict:
         out.update({"end_reason": END_REPAIR_STUCK,
                     "end_note": _repair_stuck_note(evidence, family),
                     "ir_layer": "repair"})
+        _handoff(state, out, END_REPAIR_STUCK)
     return out
 
 
@@ -3071,6 +3097,21 @@ def _report_say(report) -> str:
     return summary() if callable(summary) else "（这份报告不会说人话）"
 
 
+def _failed_step_shots(run) -> list:
+    """卡住那一步的 **before / after 截图**（`selftest` 的 baseline 目录里那两张）。
+
+    命名由 `template.Filler._shot` 定死：`<步号>-before.png` / `<步号>-after.png`，
+    与 `trace_path` 同目录。**只交真在盘上的**；截不到就是 `[]`（不编一个空名字）。
+    """
+    step = getattr(run, "failed_step", None)
+    trace = str(getattr(run, "trace_path", "") or "")
+    if step is None or not trace:
+        return []
+    where = pathlib.Path(trace).parent
+    want = [where / ("%s-%s.png" % (step, when)) for when in ("before", "after")]
+    return [str(p) for p in want if p.is_file()]
+
+
 def _diagnosis(report) -> dict:
     """报告 → 证据。**只说报告里真有的东西**：没说「卡在第几步」就不许编一个出来。
 
@@ -3083,6 +3124,10 @@ def _diagnosis(report) -> dict:
     它们全在 trace 里，`selftest.scene_of` 负责挑行与搬运（**只搬不加工**）。
     ⚠️ 有没有它，改稿那双手是两种东西：没有 ⇒ 它只看见「卡在第 N 步」，
     于是去改「找元素」那一层；有 ⇒ 它看得见「这一步用的选择器指到了**另一个**元素」。
+
+    ★ 2026-10-30：再带一格 **`截图`** —— 卡住那一步的 before/after 两张图。
+    `现场` 是文字读数，截图是**同一刻的画面**；两边对不上的地方就是病根
+    （真事：日志 `options=[]`，图上有三个文字选项）。
     """
     per_run = [{"name": getattr(r, "name", None), "status": getattr(r, "status", None),
                 "ok": getattr(r, "ok", None), "failed_step": getattr(r, "failed_step", None),
@@ -3091,14 +3136,16 @@ def _diagnosis(report) -> dict:
     submissions = int(getattr(report, "submissions", 0) or 0)
     if report is None:
         return {"run": None, "failed_step": None, "say": "没有自测报告可看。",
-                "note": "", "per_run": per_run, "submissions": 0, "现场": None}
+                "note": "", "per_run": per_run, "submissions": 0, "现场": None,
+                "截图": []}
 
     blocking = list(getattr(report, "blocking", None) or ())
     first = blocking[0] if blocking else None
     if first is None:
         return {"run": None, "failed_step": None,
                 "say": "自测没过，但报告里没有哪一遍说清是为什么（这份报告不完整）。",
-                "note": "", "per_run": per_run, "submissions": submissions, "现场": None}
+                "note": "", "per_run": per_run, "submissions": submissions, "现场": None,
+                "截图": []}
 
     name, label, note = getattr(first, "name", None), getattr(first, "label", "") or "", \
         getattr(first, "note", "") or ""
@@ -3110,14 +3157,15 @@ def _diagnosis(report) -> dict:
         return {"run": name, "failed_step": None,
                 "say": "%s 这一遍**没跑**（%s）—— 这一类失败这次没验到，不是「卡在哪一步」。"
                        % (label or name, note), "note": note, "per_run": per_run,
-                "submissions": submissions, "现场": scene}
+                "submissions": submissions, "现场": scene, "截图": []}
     step = getattr(first, "failed_step", None)
     if step is None:
         say = "%s 这一遍挂了：%s" % (label or name, note)
     else:
         say = "%s 这一遍挂了：卡在第 %s 步 —— %s" % (label or name, step, note)
     return {"run": name, "failed_step": step, "say": say, "note": note, "per_run": per_run,
-            "submissions": submissions, "现场": scene}
+            "submissions": submissions, "现场": scene,
+            "截图": _failed_step_shots(first)}
 
 
 #: 抱怨正文里**点名了哪个元素**（几把引号都认）。
@@ -3178,13 +3226,27 @@ def failure_identity(evidence: dict) -> str:
 #:   `selector`     单纯找不到/指错 —— **只有这一族，改稿真的治得了**；
 #:   `unknown`      说不清 —— 按老规矩办（允许重写，由「同一处两次」那条兜住）。
 def _failure_family(evidence: dict) -> str:
-    """这一趟的失败属于哪一族（见上面那段）。说不清 ⇒ `unknown`（**不编一个族**）。"""
+    """这一趟的失败属于哪一族（见上面那段）。说不清 ⇒ `unknown`（**不编一个族**）。
+
+    ★ 2026-10-30：**现场先判** —— `现场.盖在上面的是什么` 有值 ⇒ `overlay`。
+    弹层挡住时，报告那句话常常只是「nothing actionable」，按 `note` 会误判成 `selector`
+    ⇒ 改稿去改失败那一步的选择器，而病根是前提层那层没关掉。
+    """
+    scene = (evidence or {}).get("现场")
+    if isinstance(scene, dict) and str(scene.get("盖在上面的是什么") or "").strip():
+        return "overlay"
     text = str(evidence.get("note") or "").lower()
     if re.search(r"同意|弹层|cookie|consent|盖着|遮挡|遮罩|浮层|overlay|fides", text):
         return "overlay"
     if re.search(r"窗口|连不上|没有可用的浏览器|会话|connection refused", text):
         return "precondition"
-    if re.search(r"超时|timeout|等了|>600|没出来", text) and re.search(r"没找到|没做成", text):
+    #: ★ 2026-10-30：**「等了 / 处理中 / 没等到」本身就是时序族的证据** ——
+    #: 原来还要同时出现「没找到」，于是「等了 39.7 秒它还是没出来」这类被漏成 `unknown`。
+    #: ⚠️ 必须排在 overlay 之后：`等了 35 秒，div 还盖着` 是弹层，不是时序。
+    scene_say = (" ".join(str(scene.get(k) or "") for k in ("脚本自己那句话", "判不出来时为什么"))
+                 if isinstance(scene, dict) else "")
+    waited = text + " " + scene_say.lower()
+    if re.search(r"等了|等待|超时|timeout|处理中|没等到|没出来|还没", waited):
         return "timing"
     if re.search(r"没走到成功|退出码", text):
         return "flow"
@@ -3368,6 +3430,136 @@ def _drop_candidate(state) -> None:
         pass                                  # 已经不在了 / 删不掉：不值得让交付失败
 
 
+# ───────────────────── 交接包：四个「修不动」的终局 ─────────────────────
+
+
+def _handoff_path(state) -> pathlib.Path:
+    """交接包落点：`<out_dir>/<site>.handoff.md` —— 与 `<site>.before.py` 同层，运营找得到。"""
+    return pathlib.Path(str(state.get("out_dir") or DEFAULT_OUT_DIR)) / (
+        "%s.handoff.md" % state["site"])
+
+
+#: ★ 2026-11-02（交接 2026-11-02 的 P1-1）：同一失败指纹跨 job 攒到 3 份 ⇒
+#: 按 `docs/根因库.md` 的规矩**转工具层缺陷单**，不要再往模型头上加轮次。
+#: 账本落在站点目录（`out_dir`）里 —— 那里本来就按 site 分；测试用 tmp_path，不污染仓库。
+REPAIR_FINGERPRINTS = ".repair-fingerprints.jsonl"
+TOOL_DEFECT_AFTER = 3
+
+
+def _fingerprint_repeats(state) -> int:
+    """把这个失败指纹记一笔，返回**跨 job 出现过的次数**（读不到/写不进 ⇒ 0）。"""
+    fingerprint = str(state.get("repair_fingerprint") or "").strip()
+    if not fingerprint:
+        return 0
+    path = pathlib.Path(str(state.get("out_dir") or DEFAULT_OUT_DIR)) / REPAIR_FINGERPRINTS
+    row = {"site": str(state.get("site") or ""), "fingerprint": fingerprint,
+           "at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        count = 0
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                got = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(got, dict) and str(got.get("fingerprint") or "") == fingerprint:
+                count += 1
+        return count
+    except OSError:
+        return 0
+
+
+def _handoff_text(state, out: dict, what: str, repeats: int = 0) -> str:
+    """交接包的正文。**只说状态里真有的**（与 `_diagnosis` 同一条规矩）：没有的格留空，不编。"""
+    report = out.get("report") or state.get("report")
+    diag = out.get("diagnosis") or state.get("diagnosis") or {}
+    if not diag and report is not None:
+        #: `draft` 收下诊断就把它清掉 ⇒ 触顶这一档常见的形状是「诊断没了、报告还在」。
+        #: 从报告再算一遍（`selftest.scene_of` 只读 trace，不碰页面）—— 那一行是接手最需要的
+        #: 东西（真用的是哪个选择器、页面当时写着什么）。
+        try:
+            diag = _diagnosis(report)
+        except Exception:                                  # noqa: BLE001 —— 包写不写得出来，都不该带塌收尾
+            diag = {}
+    py = str(out.get("py_path") or state.get("py_path") or "")
+    unverified = [str(n) for n in (out.get("unverified") or state.get("unverified") or [])]
+    runs = _field(report, "runs", []) or []
+    lines = ["# 交接包 · %s" % (state.get("site") or "?"), "",
+             "- 停因：`%s`" % what,
+             "- 产物：%s" % (("`%s`%s" % (py, "（**没验过**：%s）" % "；".join(unverified)))
+                            if py else "**盘上没有** —— 这一趟没有留下可交付的那一版"),
+             "- 站点：%s" % (str(state.get("url") or "") or "（没给）"),
+             "- 模式：`%s`" % (state.get("mode") or "?"),
+             "- 轮次：`diagnoses=%s` `lint_bounces=%s` `submissions=%s`" % (
+                 out.get("diagnoses", state.get("diagnoses") or 0),
+                 out.get("lint_bounces", state.get("lint_bounces") or 0),
+                 _field(report, "submissions", 0))]
+    if str(state.get("repair_fingerprint") or ""):
+        lines.append("- 失败指纹：`%s`（同一指纹连着两次 = 再改只会撞同一堵墙）"
+                     % state["repair_fingerprint"])
+        if repeats >= TOOL_DEFECT_AFTER:
+            lines.append("- ⚠️ 同一失败指纹**跨 job 已出现 %d 次** —— 按 `docs/根因库.md` 的"
+                         "规矩，这该开**工具层缺陷单**（别再往模型头上加轮次）。" % repeats)
+        elif repeats > 1:
+            lines.append("- 同一失败指纹**跨 job 已出现 %d 次**（到 %d 次转工具层缺陷单）。"
+                         % (repeats, TOOL_DEFECT_AFTER))
+    if runs:
+        lines += ["", "## 自测每一遍（逐字）", "",
+                  "| 遍 | 结果 | 卡在第几步 | trace | 说明 |", "|---|---|---|---|---|"]
+        for r in runs:
+            step = _field(r, "failed_step")
+            trace = _field(r, "trace_path")
+            lines.append("| %s | %s | %s | %s | %s |" % (
+                _field(r, "label") or _field(r, "name"),
+                _field(r, "status") or _field(r, "ok"),
+                "—" if step is None else step,
+                ("`%s`" % trace) if trace else "—",
+                str(_field(r, "note") or "").replace("|", "\\|").replace("\n", " ")))
+    if diag:
+        lines += ["", "## 最后一路诊断（逐字）", "", "```json",
+                  json.dumps(diag, ensure_ascii=False, indent=1, sort_keys=True), "```"]
+    violations = out.get("violations") or state.get("violations") or []
+    if violations:
+        lines += ["", "## 契约检查打回（逐条）"]
+        lines += ["- 第 %s 行 `%s`：%s" % (v.get("line"), v.get("code"), v.get("message"))
+                  for v in violations]
+    hints = [str(h) for h in (state.get("hints") or []) if str(h).strip()]
+    if hints:
+        lines += ["", "## 人说的话（逐字）"] + ["- %s" % h for h in hints]
+    lines += ["", "## 接手须知", "",
+              "- 要改的是上面那份 py（盘上的现状），不是重跑整条漏斗。",
+              "- 不许放松成功判据；`--ws-url / --form-file / --correlation-id / --log-level`",
+              "  与 `sys.exit(0 if f.run() else 1)` 的形状要保住"
+              "（`agent/fix.py::PATCH_DISCIPLINE`）。",
+              "- 改完走服务那条 `mode=fix` 重验；只跑一遍不算验过（同一环境要复跑）。"]
+    return "\n".join(lines) + "\n"
+
+
+def _handoff(state, out: dict, what: str) -> None:
+    """把「为什么停 + 全部证据 + 盘上那份在哪」写成一份 md，并把它挂进 `end_note`。**永不抛**。
+
+    ★ 2026-10-28（用户点名）：这四个终局（`repair_noop` / `repair_stuck` / `selftest_cap` /
+    `lint_cap`）的共同点是**系统自己修不动了** —— 此时接手的人要的不是再读一遍 checkpoint，
+    而是「哪份稿、卡在哪、试过什么」。从前这些只在 `runtime/checkpoints.sqlite` 的 msgpack 里，
+    外面（含 Claude Code 那类工具）读不到 ⇒ 每次接手都要重新捞一遍。
+
+    ⚠️ 盘上那份是**没验过**的（`unverified` 非空）—— 包里明写，别让人当成交付。
+    ⚠️ 写不进去不值得让这次收尾失败（与 `_drop_candidate` 同一条）。
+    """
+    path = _handoff_path(state)
+    repeats = _fingerprint_repeats(state)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_handoff_text(state, out, what, repeats=repeats), encoding="utf-8")
+    except OSError:
+        return
+    out["handoff_path"] = str(path)
+    out["end_note"] = "%s\n\n交接包（为什么停、全部证据、盘上那份在哪）：%s" % (
+        str(out.get("end_note") or "").rstrip(), path)
+
+
 def _rule_legacy_stop(state: dict) -> Optional[dict]:
     """规则勾了、底稿却是 legacy 手写脚本（没有 STATES/FILLS 表）⇒ 停下说明，不静默忽略。"""
     if str(state.get("fix_style") or "") != "legacy" or not state.get("rules"):
@@ -3383,7 +3575,13 @@ def _apply_rules(spec: dict, state: dict) -> dict:
     返回 `fills` / `rules_effective` / `rules_applied` / `rules_unmatched`；
     生日格式识别不出时另带 `end_reason=rule_needs_format` + `end_note`（图据此不产 py）。
     """
-    rr = rules_mod.apply_to_fills(spec.get("fills") or {}, state.get("rules"))
+    rules = dict(state.get("rules") or {})
+    #: ★ 2026-10-29（job-31cc47a0dbe3）：人在闸上说「电话填2014237916」，产物却走了随机池。
+    #: 人点名的整号**优先于**前缀现编；`rules.phone` 由 `/run` 的载荷给，这里补上人话里的那一句。
+    _exact = rules_mod.phone_from_hints(state.get("hints") or [])
+    if _exact:
+        rules["phone"] = _exact
+    rr = rules_mod.apply_to_fills(spec.get("fills") or {}, rules or None)
     out = {"fills": rr["fills"], "rules_effective": rr["effective"],
            "rules_applied": rr["applied"], "rules_unmatched": rr["unmatched"]}
     if rr["needs_format"]:

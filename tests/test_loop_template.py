@@ -99,6 +99,17 @@ def test_at_least_one_criterion_is_required_and_the_text_one_can_stand_alone():
     assert 'SUCCESS_URL_MARKERS = ["thank-you"]' in both, both[:400]
 
 
+def test_two_success_urls_can_travel_in_one_field():
+    """★ 2026-10-22（用户裁定「不合资格也算成功」）：Atticus 那种问卷**两种结局都算成功**
+    （合格屏 `.../qual/post-conversion-ah` + 拒绝屏 `.../survey/rejection/`）。
+
+    面板只有一格 ⇒ **一行一条**；产物里两条都要进 `SUCCESS_URL_MARKERS`（任一命中即成功）。
+    """
+    src = _src(success_urls="https://x.test/qual\nhttps://x.test/rejection/")
+    assert ('SUCCESS_URL_MARKERS = ["https://x.test/qual", "https://x.test/rejection/"]'
+            in src), src[:500]
+
+
 def test_a_pick_rule_we_do_not_understand_is_refused():
     with pytest.raises(ValueError) as got:
         _src(pick="随便")
@@ -132,6 +143,180 @@ def test_the_reader_js_really_parses():
     path.write_text(js, encoding="utf-8")
     done = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr[:400]
+
+
+def test_react_auto_ids_do_not_win_over_stable_placeholders(tmp_path):
+    """★ 2026-10-28（Atticus `How can we reach you?` 的真事）：React 的自动 id `:r1:`…
+
+    **会整排漂移**（账本 `:r1:`=First … `:r4:`=Phone，线上那一屏变成 `:r2:`…`:r5:`）。
+    读取器按 id 认格 ⇒ 每格拿到**前一格**的值（邮箱进姓氏、电话进邮箱、年龄进电话）
+    ⇒ 邮箱/电话校验红字、Submit 永远灰着（task 26829734 的 fail_img 就是这个现场）。
+
+    判据：**自动 id 不算身份** —— 有 placeholder / aria-label 就按那个认；
+    稳定 id（`zipcode` / `qv3-fn`）照旧优先。这条**真跑 JS**（node + 假 DOM），
+    不是断言字符串：字符串断言活不过一个写错的实现。
+    """
+    node = shutil.which("node")
+    assert node, "这条必须真跑 JS（没有 node 就是红，不是跳过）"
+    js_path = tmp_path / "read.js"
+    js_path.write_text(template_loop.DEFAULT_READ_JS, encoding="utf-8")
+    harness = tmp_path / "harness.js"
+    harness.write_text(r"""
+const fs = require('fs');
+const READ = fs.readFileSync(process.argv[2], 'utf8');
+function el(id, ph, val) {
+  return {tagName:'INPUT', id:id||'', value:val||'', offsetWidth:10, offsetHeight:10,
+          getAttribute:function(n){
+            if(n==='placeholder')return ph||null;
+            if(n==='aria-label')return null;
+            if(n==='name')return null;
+            if(n==='data-testid')return null;
+            if(n==='type')return 'text';
+            return null; }};
+}
+const inputs=[el(':r2:','First name'),el(':r3:','Last name'),el(':r4:','Email address'),
+              el(':r5:','Phone number'),el('zipcode','ZIP code'),el('qv3-fn',null)];
+const document={querySelectorAll:function(s){return s==='input,select,textarea'?inputs:[];},
+                querySelector:function(){return null;}, body:{innerText:''},
+                getElementById:function(){return null;}};
+const location={href:'https://example.test/'};
+console.log(eval(READ));
+""", encoding="utf-8")
+    done = subprocess.run([node, str(harness), str(js_path)],
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[:400]
+    tokens = [pair[0] for pair in json.loads(done.stdout)["inputs"]]
+    assert tokens == ["\x02First name", "\x02Last name", "\x02Email address",
+                      "\x02Phone number", "\x04zipcode", "\x04qv3-fn"], tokens
+
+
+def test_the_consent_hint_reads_identity_not_footer_text(tmp_path):
+    """★ 2026-11-02（educationdirectory 真站，8100 那趟）：读取器原来把容器 `innerText`
+    也算进「同意层」的凭据 —— 页脚那行「Privacy Policy」把整页判成有同意层 ⇒ 每一轮都去
+    清、清不掉、`idle` 清零 ⇒ 第 10–126 步全是同一句，走满上限。
+
+    判据收窄成**只看 id / class / aria-label**：页脚（身份里没有那组词）不算；真同意条
+    （`cookie-banner`）照旧算。这条**真跑 JS**（node + 假 DOM）。
+    """
+    node = shutil.which("node")
+    assert node, "这条必须真跑 JS（没有 node 就是红，不是跳过）"
+    js_path = tmp_path / "read.js"
+    js_path.write_text(template_loop.DEFAULT_READ_JS, encoding="utf-8")
+    harness = tmp_path / "consent.js"
+    harness.write_text(r"""
+const fs = require('fs');
+const READ = fs.readFileSync(process.argv[2], 'utf8');
+function el(a) {
+  a = a || {};
+  return {offsetWidth:10, offsetHeight:10, id:a.id||'', className:a.className||'',
+          position:a.position||'static',
+          innerText:a.innerText||'', textContent:a.innerText||'',
+          getAttribute:function(n){return (a.attrs||{})[n]||null;},
+          querySelectorAll:function(){return [];}, querySelector:function(){return null;}};
+}
+function readWith(target) {
+  global.document = {
+    querySelectorAll:function(s){ return /footer/.test(s) ? [target] : []; },
+    querySelector:function(){ return {innerText:''}; },
+    body:{innerText:''},
+    getElementById:function(){return null;}};
+  global.getComputedStyle = function(){ return {position: target.position || 'static'}; };
+  global.location = {href:'https://example.test/'};
+  return JSON.parse(eval(READ));
+}
+const footer = readWith(el({className:'lp-legal', innerText:'Privacy Policy'}));
+const inline = readWith(el({className:'lp-consent',
+                            innerText:'By clicking "Agree" I consent to be contacted'}));
+const banner = readWith(el({className:'cookie-banner', innerText:'We use cookies',
+                            position:'fixed'}));
+console.log(JSON.stringify([footer.consent, inline.consent, banner.consent]));
+""", encoding="utf-8")
+    done = subprocess.run([node, str(harness), str(js_path)],
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[:400]
+    assert json.loads(done.stdout) == [False, False, True], done.stdout
+
+
+
+def test_an_explicit_submit_button_is_the_next_action(tmp_path):
+    """★ 2026-11-02（educationdirectory 真站，8100 那趟）：最后一颗写的是
+    「Agree & See My Schools」—— 不匹配 next 那几个词，又命中「同意条」排除规则
+    （`agree` 开头）⇒ 读成「没有可动作的东西」，六题答完、格子填完之后空转 60 步。
+
+    判据加结构那一条：`<button type="submit">` 就是「下一步」。这条真跑 JS。
+    """
+    node = shutil.which("node")
+    assert node, "这条必须真跑 JS（没有 node 就是红，不是跳过）"
+    js_path = tmp_path / "read2.js"
+    js_path.write_text(template_loop.DEFAULT_READ_JS, encoding="utf-8")
+    harness = tmp_path / "submit.js"
+    harness.write_text(r"""
+const fs = require('fs');
+const READ = fs.readFileSync(process.argv[2], 'utf8');
+const btn = {tagName:'BUTTON', offsetWidth:100, offsetHeight:30, disabled:false,
+  id:'submit-button', className:'lp-action', textContent:'Agree & See My Schools',
+  getAttribute:function(n){ if(n==='type')return 'submit'; return null; },
+  querySelectorAll:function(){return [];}, querySelector:function(){return null;}};
+global.document = {
+  querySelectorAll:function(s){ return s==='button,label,[role=button]' ? [btn] : []; },
+  querySelector:function(){ return {innerText:''}; },
+  body:{innerText:''}, getElementById:function(){return null;}};
+global.location = {href:'https://example.test/contact'};
+const r = JSON.parse(eval(READ));
+console.log(JSON.stringify([r.nextVisible, r.nextTxt, r.options]));
+""", encoding="utf-8")
+    done = subprocess.run([node, str(harness), str(js_path)],
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[:400]
+    assert json.loads(done.stdout) == [True, "Agree & See My Schools", []], done.stdout
+
+
+def test_a_select_with_no_value_picks_a_real_option_from_the_page(tmp_path, monkeypatch):
+    """★ 2026-11-02（educationdirectory 真站，8100 那趟）：探路把这一格的名字退成
+    `field-5`（没有账本示例、池子也不认识 `education_level`）⇒ 值算不出来 ⇒ 这一格空着
+    ⇒ Next 被表单校验拦住。下拉的值**本来就在页面上**：挑第一个可选项。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/quiz", "head": "School Search", "progress": "80%",
+            "inputs": [["\u0004education_level", ""]], "options": [], "nextVisible": False,
+            "nextTxt": ""}
+
+    def form_out(sel, kw):
+        if sel == '[id="education_level"]':
+            return "Error: scroll mouse wheel failed: element not found"
+        page["inputs"] = [["\u0004education_level", "bachelors"]]
+        return '{"success":true,"value":"bachelors"}'
+
+    mod = _fake_common(monkeypatch, page, calls, form_out=form_out)
+    _orig = mod.CDPHelper.eval
+
+    def eval_(self, js, *a, **kw):
+        if "!!(es.length" in js:                 # `_is_select`：只有 name 那根地址存在
+            return json.dumps({"s": "name=" in js})
+        if "e.options.length" in js:             # `_any_select_option`
+            return json.dumps({"v": "bachelors", "t": "Bachelor's degree"}
+                              if "name=" in js else {})
+        return _orig(self, js, *a, **kw)
+
+    mod.CDPHelper.eval = eval_
+    src = template_loop.render_loop(
+        "selsite", "Thank you", "thank-you", {"education_level": {"kind": "select"}},
+        dict(PROV))
+    path = tmp_path / "selsite2.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("select_product2", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    trace = tmp_path / "selsite2.jsonl"
+    module.Filler("ws://x/1", str(form), "cid", trace_path=str(trace), no_report=True).run(max_steps=1)
+
+    kinds = [(sel, kw.get("select")) for sel, kw in calls["form"]]
+    assert any(sel == '[name="education_level"]' and select == "bachelors"
+               for sel, select in kinds), "没有从页面上挑一个真实选项：%r" % (kinds,)
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert any(r.get("action") == "form" and r.get("ok") is True for r in rows), rows
 
 
 def test_the_reader_and_the_click_scan_pierce_shadow_roots():
@@ -196,7 +381,7 @@ def _book(pages):
 
 
 def test_the_shape_rule_reads_the_ledger_and_says_why():
-    """★ 判「单页漏斗」的那把尺子是**量到的**：多少个状态共用同一个 `url_contains`。
+    """★ 判「单页漏斗」的那把尺子是**量到的**：多少个状态停在**同一个网址**上。
 
     为什么需要这条规则（交接文档欠账 ④）：固定步骤表在问卷上会静默跳过整组 ——
     它记的只是走过的那一条路，下一问变了 `when` 就不成立。
@@ -208,6 +393,48 @@ def test_the_shape_rule_reads_the_ledger_and_says_why():
     assert got["states"] == ["quiz-0", "quiz-1", "quiz-2"], got
     assert got["url"] == "quiz.example.test", got
     assert "单页漏斗" in got["why"], got["why"]
+
+
+def test_pages_that_only_share_a_url_prefix_are_not_a_single_page_funnel():
+    """★ 2026-10-21（真事 `job-6203bc32c1c4` · directmeds）：**同一目录下的多页问卷不是单页漏斗**。
+
+    现场：`_when_for` 的稳定前缀把 `article-3in1-tab-ed.php` / `index-stc-2.php` /
+    `questionnaire-1..18.php` 全截成了 `https://directmeds.com/dm-directmax/` ⇒
+    按 `url_contains` 分组时它们成了「18 个状态共用同一个地址」⇒ 判成步进循环型。
+    而循环型的 `pre_steps` 只收「漏斗之前」那些状态 ⇒ 落地页那两下**点进问卷的 CTA**
+    （`See If You Qualify` / `Get Started`）一个都没进去 ⇒ 产物在落地页上空转 60 步。
+
+    判据要的是**真的同一页**（同一屏靠正文换题）：账本里逐页的 `url`（query/fragment 不算）
+    才是它。地址只共享目录前缀 ⇒ 多页导航型，照旧固定步骤表。
+    """
+    base = "https://directmeds.com/dm-directmax/"
+    pages = [{"name": "article_3in1_tab_ed", "url": base + "article-3in1-tab-ed.php",
+              "when": {"url_contains": base, "text_contains": ["After 15 Years"]}},
+             {"name": "index_stc_2", "url": base + "index-stc-2.php",
+              "when": {"url_contains": base, "text_contains": ["Get 33% off"]}}]
+    pages += [{"name": "questionnaire_%d" % i, "url": base + "questionnaire-%d.php" % i,
+               "when": {"url_contains": base, "text_contains": ["Question %d" % i]}}
+              for i in range(1, template_loop.LOOP_MIN_STATES + 1)]
+    got = template_loop.funnel_states(_book(pages))
+    assert not got["states"], got
+    assert "只有 1 个状态" in got["why"], got["why"]
+
+
+def test_a_single_page_funnel_still_counts_when_only_the_query_changes():
+    """★ 反向钉子：**真的单页漏斗**每一屏只有 query 在变（`?step=`）—— 那还是同一页，别判丢。
+
+    这条与上一条是同一条判据的两侧：**path 相同 ⇒ 同一页**（query / fragment 不算），
+    **path 不同 ⇒ 不同的页**。少了这一条，把 key 换成 path 之后会把真漏斗判成多页。
+    """
+    pages = []
+    for i in range(template_loop.LOOP_MIN_STATES):
+        pages.append({"name": "quiz-%d" % i,
+                      "url": "https://quiz.example.test/start?step=%d" % (i + 1),
+                      "when": {"url_contains": "https://quiz.example.test/start",
+                               "text_contains": ["Question %d" % i]}})
+    got = template_loop.funnel_states(_book(pages))
+    assert got["states"] == ["quiz-0", "quiz-1", "quiz-2"], got
+    assert got["url"] == "https://quiz.example.test/start", got
 
 
 def test_the_shape_rule_refuses_to_guess_without_pages():
@@ -227,8 +454,14 @@ def test_the_shape_rule_refuses_to_guess_without_pages():
     assert not blind["states"] and "判不出" in blind["why"], blind
 
 
-def _fake_common(monkeypatch, page, calls, snap=None):
-    """一个够用的假 `common`：产物 import 的就是它（只记调用，不碰真浏览器）。"""
+def _fake_common(monkeypatch, page, calls, snap=None, on_form=None, click_out=None,
+                 on_click=None, form_out=None):
+    """一个够用的假 `common`：产物 import 的就是它（只记调用，不碰真浏览器）。
+
+    `on_form(sel, kw)`：填完那一下的副作用（测试拿它模拟「值被页面弄丢 / 留住」）。
+    `click_out`：`cdp click` 的回话（默认成功那段 JSON；给 `"Error: …"` 演没点着）。
+    `on_click(sel)`：`cdp click` 的副作用（模拟点了之后页面变了、或没变）。
+    """
     mod = types.ModuleType("common")
 
     class CDPHelper:
@@ -241,6 +474,11 @@ def _fake_common(monkeypatch, page, calls, snap=None):
                 #: 测试才分得清这一下找的是**哪个**字（选项 vs Continue）。
                 calls.setdefault("marks", []).append(js)
                 return "marked"
+            if "getOwnPropertyDescriptor" in js and "keypress" in js:
+                #: ★ 2026-10-29：`_set_value_events` 那一招（原生 setter + 事件）。
+                #: 记下 JS 本身 —— 断言「打的是同一个值」要看里面那个 JSON 字面量。
+                calls.setdefault("events", []).append(js)
+                return json.dumps({"ok": True, "value": "retyped"})
             return json.dumps(page)
 
         def snapshot(self):
@@ -252,9 +490,16 @@ def _fake_common(monkeypatch, page, calls, snap=None):
 
         def click(self, sel, *a, **kw):
             calls["click"].append(sel)
+            if on_click is not None:
+                on_click(sel)
+            return ('{"match_count":1,"target":"stub"}' if click_out is None
+                    else click_out)
 
         def form(self, sel, **kw):
             calls["form"].append((sel, kw))
+            if on_form is not None:
+                on_form(sel, kw)
+            return "ok" if form_out is None else form_out(sel, kw)
 
         def navigate(self, url, *a, **kw):
             calls["nav"].append(url)
@@ -339,17 +584,14 @@ def test_the_phone_pool_gives_a_number_the_site_accepts(tmp_path, monkeypatch):
 
 
 
-def test_the_phone_number_never_comes_from_the_profile_and_a_site_can_pin_its_area_code(
+def test_a_phone_fill_takes_the_profile_unless_the_script_pins_an_area_code(
         tmp_path, monkeypatch):
-    """★ 2026-10-13（用户点名，compareinsulation）：「手机号**不要用资料给的**。就用
-    `0207xxxxxxx` 格式，后几位随机就行。」
+    """★ 2026-10-22（用户：「手机号肯定要取资料」；「别取资料」只是**个别特殊脚本**的处理）。
 
-    两件事，都钉在这条里：
-    ① **不再取资料**：账本里那个号（`EXAMPLES`）是探路时从**资料**里拿的真号 —— 它就在产物的
-       `PROVENANCE["examples"]` 里（本例 `07880539011`）。原来那一支**先查它**，与「那一格
-       永远是现编的号码」这句注释打架 ⇒ 现在一律现编。
-    ② **这一站要的号段**由 `FILLS[name]['prefix']` 给（`'0207'`）—— 尾数照旧随机，
-       而**没给前缀的站**照旧从那一串号段里挑（2026-10-08 那个口径不能丢）。
+    ① 默认：资料给了电话就用**资料那一串**（推翻 2026-09-26/10-13 的「一律现编」）；
+    ② 特殊脚本用 `prefix`（例 `0207`）或 `from_profile: false` 点名「这一站要现编」
+       ⇒ 不取资料、尾数随机；
+    ③ 没资料、没前缀 ⇒ 照旧从池子的那串号段里挑（2026-10-08 的口径没丢）。
     """
     calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
     page = {"url": "https://funnel.test/quiz", "head": "Q", "progress": "", "inputs": [],
@@ -357,7 +599,7 @@ def test_the_phone_number_never_comes_from_the_profile_and_a_site_can_pin_its_ar
     _fake_common(monkeypatch, page, calls)
     prov = dict(PROV, examples={"phone": "07880539011"})
 
-    def _load(tag, fills):
+    def _load(tag, fills, form=None):
         src = template_loop.render_loop("phonesite", "Thank you", "thank-you", fills, prov)
         path = tmp_path / ("%s.py" % tag)
         path.write_text(src, encoding="utf-8")
@@ -365,25 +607,304 @@ def test_the_phone_number_never_comes_from_the_profile_and_a_site_can_pin_its_ar
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         obj = module.Filler.__new__(module.Filler)
-        obj.form_data = {}
+        obj.form_data = form if form is not None else {}
         return module, obj
 
-    # ① 资料里那个号一个都别用上（拿它当答案就是被认出来的那种）
-    module, obj = _load("pinned", {"phone": {"kind": "value", "label": "07xxx xxx xxx",
-                                            "prefix": "0207"}})
-    got = [obj.value_for("\u0002e.g. 07xxx xxx xxx", {}, 0) for _ in range(20)]
-    assert "07880539011" not in got, "手机号用了资料里那个：%r" % got
+    # ① 默认：资料优先（账本里那个真号不再压过资料）
+    _m, obj = _load("profile", {"phone": {"kind": "value", "label": "07xxx xxx xxx"}},
+                    {"phone": "2125550147"})
+    got = [obj.value_for("\u0002e.g. 07xxx xxx xxx", {}, 0) for _ in range(5)]
+    assert got == ["2125550147"] * 5, "没取资料里的电话：%r" % got
+
+    # ② prefix 是「特殊脚本」的信号：现编、不用资料
+    module, pinned = _load("pinned", {"phone": {"kind": "value", "label": "07xxx xxx xxx",
+                                               "prefix": "0207"}},
+                           {"phone": "2125550147"})
+    got = [pinned.value_for("\u0002e.g. 07xxx xxx xxx", {}, 0) for _ in range(20)]
+    assert "2125550147" not in got and "07880539011" not in got, \
+        "点名现编的站还是取了资料：%r" % got
     assert all(g.startswith("0207") and len(g) == 11 for g in got), \
         "这一站的号段不是 `0207`（或位数不对）：%r" % got
     assert len(set(got)) > 1, "尾数没随机（20 次全一样）：%r" % got
     #: 直接问池子也一样（同一条口径，两处别分家）
     assert all(module.Filler._pool(None, "phone", "0207").startswith("0207") for _ in range(20))
 
-    # ② 没给前缀的站照旧从那一串号段里挑（2026-10-08 的口径没被这条弄丢）
+    # ②b 显式 `from_profile: false` 也一样（没有 prefix 的特殊脚本走这一格）
+    _m3, optout = _load("optout", {"phone": {"kind": "value", "label": "07xxx xxx xxx",
+                                             "from_profile": False}},
+                        {"phone": "2125550147"})
+    assert "2125550147" not in [optout.value_for("\u0002e.g. 07xxx xxx xxx", {}, 0)
+                                for _ in range(5)]
+
+    # ③ 没资料、没前缀 ⇒ 池子（2026-10-08 的口径没被这条弄丢）
     _mod2, obj2 = _load("free", {"phone": {"kind": "value", "label": "07xxx xxx xxx"}})
     free = [obj2.value_for("\u0002e.g. 07xxx xxx xxx", {}, 0) for _ in range(50)]
     assert "07880539011" not in free, free
     assert all(len(g) == 11 and g.isdigit() for g in free), free
+
+    # ④ 站点国家 US、资料没电话 ⇒ 10 位美国形状（不是英国 11 位）；ZIP 那格也能给同一信号
+    us_src = template_loop.render_loop(
+        "phonesite", "Thank you", "thank-you",
+        {"phone": {"kind": "value", "label": "07xxx xxx xxx"}},
+        dict(prov, env={"proxy_country": "US"}))
+    us_path = tmp_path / "us_phone.py"
+    us_path.write_text(us_src, encoding="utf-8")
+    us_spec = importlib.util.spec_from_file_location("us_phone_product", us_path)
+    us_module = importlib.util.module_from_spec(us_spec)
+    us_spec.loader.exec_module(us_module)
+    us_obj = us_module.Filler.__new__(us_module.Filler)
+    us_obj.form_data = {}
+    us = [us_obj.value_for("\u0002e.g. 07xxx xxx xxx", {}, 0) for _ in range(50)]
+    assert all(len(g) == 10 and g.isdigit() for g in us), us
+    assert all(g[3:8] == "55501" for g in us), "不是 NANP 保留段形状：%r" % (us,)
+
+    #: 没有代理国家时，资料里那个五位 ZIP 也能说明是 US 站
+    us_obj.form_data = {"zip": "60601"}
+    zipped = [us_obj.value_for("\u0002e.g. 07xxx xxx xxx", {}, 0) for _ in range(10)]
+    assert all(len(g) == 10 and g.isdigit() for g in zipped), zipped
+
+
+
+def test_a_us_phone_placeholder_decides_the_country_without_the_proxy(
+        tmp_path, monkeypatch):
+    """★ 2026-11-02（8099 `job-1b5767017cc7`）：`PROVENANCE["env"]` 是 `None`，
+    资料也没有 ZIP ⇒ 国家只剩**页面自己**这一处信号：phone 那格的
+    placeholder `(555) 555-5555` 是 NANP。池子必须给 10 位美国号，
+    否则 US 站把 11 位英国号压成 `(019) 164-7517`，回读对不上。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/quiz", "head": "Q", "progress": "",
+            "inputs": [], "options": [], "nextVisible": True, "nextTxt": "Continue"}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop(
+        "phonesite", "Thank you", "thank-you",
+        {"phone": {"kind": "value", "label": "Phone number",
+                   "target": {"placeholder": "(555) 555-5555"}}}, dict(PROV))
+    path = tmp_path / "phone_placeholder.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("phone_placeholder_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    got = [module.Filler._pool(None, "phone") for _ in range(50)]
+    assert all(len(g) == 10 and g.isdigit() for g in got), got
+    assert all(g[3:8] == "55501" for g in got), got
+
+
+def test_a_zip_fill_takes_the_pools_postal_code_not_the_ledger_example(
+        tmp_path, monkeypatch):
+    """★ 2026-10-29（try.atticus.com/ssd/benefits，线上 26919522 / 26919524）。
+
+    资料库的列名是 **`postal_code`**（`QuestFormMessageController::getFormMessage`），
+    而循环产物是照**页面字段名** `postcode` 去查的 —— 两边没有约定 ⇒ 永远取不到
+    ⇒ 静默落到账本示例 `10001`（`EXAMPLES['postcode']`）。用户口径：
+    「需要取资料给的邮编」。真事：那两单的截图里邮编永远是 10001，
+    资料里给的邮编一次都没上过页面。
+
+    这一条钉住：资料给 `postal_code`，那一格就得填它，不是账本示例。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/zip", "head": "What's your ZIP code?",
+            "progress": "", "inputs": [], "options": [], "nextVisible": True,
+            "nextTxt": "Next"}
+    _fake_common(monkeypatch, page, calls)
+    prov = dict(PROV, examples={"postcode": "10001"})
+    src = template_loop.render_loop(
+        "zipsite", "Thank you", "thank-you",
+        {"postcode": {"kind": "value", "label": "ZIP code",
+                      "target": {"selectors": ["#zipcode"]}}}, prov)
+    path = tmp_path / "zip_alias.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("zip_alias_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    obj = module.Filler.__new__(module.Filler)
+    obj.form_data = {"postal_code": "90210"}
+    got = obj.value_for("\u0004zipcode", {}, 0)
+    assert got == "90210", "资料里的 postal_code 没被用上（又填了账本示例）：%r" % got
+
+
+def test_a_phone_fill_takes_the_pools_phone_number(tmp_path, monkeypatch):
+    """★ 2026-10-29（同一类）：资料库的键是 `phone_number`，产物查的是 `phone`
+    ⇒ 电话也一次没取过资料。与固定步骤表 `agent/template.py::_ALIASES` 同一条规则。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/reach", "head": "How can we reach you?",
+            "progress": "", "inputs": [], "options": [], "nextVisible": True,
+            "nextTxt": "Next"}
+    _fake_common(monkeypatch, page, calls)
+    prov = dict(PROV, examples={"phone": "07880539011"})
+    src = template_loop.render_loop(
+        "phonesite", "Thank you", "thank-you",
+        {"phone": {"kind": "value", "label": "Phone number",
+                   "target": {"selectors": ['[id=":r4:"]']}}}, prov)
+    path = tmp_path / "phone_alias.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("phone_alias_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    obj = module.Filler.__new__(module.Filler)
+    obj.form_data = {"phone_number": "2125550147"}
+    got = obj.value_for("\u0004:r4:", {}, 0)
+    assert got == "2125550147", "资料里的 phone_number 没被用上：%r" % got
+
+
+def test_first_and_last_name_split_the_pools_username(tmp_path, monkeypatch):
+    """★ 2026-10-29（同一类）：资料只给一个全名 `username: "Lin Cameron"`，
+    而页面是 First / Last 两格 —— 光靠别名对不上，得按空格拆。
+    与固定步骤表 `agent/template.py::_SPLIT_FROM` 同一条规则。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/reach", "head": "How can we reach you?",
+            "progress": "", "inputs": [], "options": [], "nextVisible": True,
+            "nextTxt": "Next"}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop(
+        "namesite", "Thank you", "thank-you",
+        {"first_name": {"kind": "value", "label": "First name",
+                        "target": {"selectors": ['[id=":r1:"]']}},
+         "last_name": {"kind": "value", "label": "Last name",
+                       "target": {"selectors": ['[id=":r2:"]']}}}, dict(PROV))
+    path = tmp_path / "name_split.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("name_split_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    obj = module.Filler.__new__(module.Filler)
+    obj.form_data = {"username": "Lin Cameron"}
+    assert obj.value_for("\u0004:r1:", {}, 0) == "Lin"
+    assert obj.value_for("\u0004:r2:", {}, 0) == "Cameron"
+
+
+def test_a_fill_takes_the_source_key_first(tmp_path, monkeypatch):
+    """★ 2026-10-29：探路给的 `source`（2026-09-30 起就是**资料库列名**）排第一。
+
+    现场形状：页面字段叫 `zip_field`（账本按页面起的名），资料里叫 `postal_code`。
+    光靠别名表接不住（`zip_field` 不是任何别名），但 `source` 里已经写着真列名了 ——
+    取值的第 0 优先必须看它，而不是拿 `FILLS` 的键去猜。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/zip", "head": "What's your ZIP code?",
+            "progress": "", "inputs": [], "options": [], "nextVisible": True,
+            "nextTxt": "Next"}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop(
+        "zipsite", "Thank you", "thank-you",
+        {"zip_field": {"source": "postal_code", "kind": "value", "label": "ZIP code",
+                       "target": {"selectors": ["#zipcode"]}}}, dict(PROV))
+    path = tmp_path / "source_first.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("source_first_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    obj = module.Filler.__new__(module.Filler)
+    obj.form_data = {"postal_code": "90210"}
+    got = obj.value_for("\u0004zipcode", {}, 0)
+    assert got == "90210", "source 里写着 postal_code，却没用上：%r" % got
+
+
+def test_the_fill_says_where_the_value_came_from(tmp_path, monkeypatch):
+    """★ 2026-10-29：**填上了 ≠ 填对了** —— 这一格的值是「任务资料」还是「账本示例/池子」，
+    必须让人在日志里一眼看见（固定步骤表 2026-09-28 就是这么做的，循环这边一直缺）。
+
+    现场代价：两个月里日志一直写「填了 zipcode」，值却永远是账本示例 `10001`。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/zip", "head": "What's your ZIP code?",
+            "progress": "", "inputs": [], "options": [], "nextVisible": True,
+            "nextTxt": "Next"}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop(
+        "zipsite", "Thank you", "thank-you",
+        {"postcode": {"kind": "value", "label": "ZIP code",
+                      "target": {"selectors": ["#zipcode"]}}},
+        dict(PROV, examples={"postcode": "10001"}))
+    path = tmp_path / "value_from.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("value_from_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    obj = module.Filler.__new__(module.Filler)
+    obj.form_data = {"postal_code": "90210"}
+    assert obj.value_for("\u0004zipcode", {}, 0) == "90210"
+    assert "postal_code" in obj._value_from and "资料" in obj._value_from, obj._value_from
+
+    #: 资料里没有这一格 ⇒ 说出来「这是账本示例 / 池子」，不许装成资料
+    obj2 = module.Filler.__new__(module.Filler)
+    obj2.form_data = {}
+    assert obj2.value_for("\u0004zipcode", {}, 0) == "10001"
+    assert "账本示例" in obj2._value_from, obj2._value_from
+
+
+def test_render_marks_fills_that_cannot_come_from_the_profile(tmp_path, monkeypatch):
+    """★ 2026-10-29：生成期就把「这格取不到资料」标出来。
+
+    `FILLS` 的键/`source`/`kind` 既不是资料列名、也没有别名、又没 `rule` /
+    `from_profile: false` ⇒ 写进 `PROVENANCE['profile_unmapped']`，
+    别等到截图里发现填的是账本示例。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    _fake_common(monkeypatch, {"url": "", "head": "", "inputs": [], "options": []}, calls)
+
+    def _load(tag, fills):
+        src = template_loop.render_loop("probe", "Thank you", "thank-you", fills, dict(PROV))
+        path = tmp_path / ("%s.py" % tag)
+        path.write_text(src, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("%s_product" % tag, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    bad = _load("unmapped", {"weird_field": {"kind": "value"}})
+    assert bad.PROVENANCE.get("profile_unmapped") == ["weird_field"], bad.PROVENANCE
+
+    #: 认得出的（别名键 / source 列名）一个都不许标；rule / from_profile:false 也不算
+    good = _load("mapped", {
+        "postcode": {"kind": "value"},
+        "zip_field": {"source": "postal_code", "kind": "value"},
+        "age": {"kind": "value"},
+        "special": {"kind": "value", "from_profile": False},
+        "pin": {"kind": "value", "rule": "phone_prefix", "prefixes": ["04"]},
+    })
+    assert good.PROVENANCE.get("profile_unmapped") == [], good.PROVENANCE
+
+
+def test_an_age_field_is_random_unless_the_profile_gives_one(tmp_path, monkeypatch):
+    """★ 2026-10-22（用户：资料里没有年龄，这一格要**随机**）。
+
+    ① 资料没给 `age` ⇒ 每趟现取一个 50–64 的值（账本里那个 `58` 不再写死）；
+    ② 资料给了 ⇒ 听资料的。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/quiz", "head": "What's your age?", "progress": "",
+            "inputs": [], "options": [], "nextVisible": True, "nextTxt": "Next"}
+    _fake_common(monkeypatch, page, calls)
+
+    def _load(tag, form):
+        src = template_loop.render_loop(
+            "agesite", "Thank you", "thank-you",
+            {"age": {"kind": "value", "label": "Age"}},
+            dict(PROV, examples={"age": "58"}))
+        path = tmp_path / ("%s.py" % tag)
+        path.write_text(src, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("%s_product" % tag, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        obj = module.Filler.__new__(module.Filler)
+        obj.form_data = form
+        return module, obj
+
+    _m, obj = _load("agefree", {})
+    got = [obj.value_for("\u0002Age", {}, 0) for _ in range(30)]
+    assert all(g.isdigit() and 50 <= int(g) <= 64 for g in got), got
+    assert len(set(got)) > 1, "年龄还是写死的（30 次全一样）：%r" % got
+
+    _m2, obj2 = _load("ageprofile", {"age": "41"})
+    assert obj2.value_for("\u0002Age", {}, 0) == "41"
 
 
 def test_four_byte_characters_are_written_as_escapes(tmp_path, monkeypatch):
@@ -451,6 +972,68 @@ def test_a_screen_with_options_is_answered_once_then_continue_is_clicked(tmp_pat
     assert any(r.get("action") == "click" and r.get("note") == "Next" for r in rows), rows[-4:]
 
 
+def test_a_screen_that_adds_required_follow_ups_is_answered_group_by_group(
+        tmp_path, monkeypatch):
+    """★ 2026-11-02（educationdirectory 真站，`job-e004a054663b`）：**同一屏会追加题**。
+
+    那一屏（`data-step-id=area`）有 12 个复选框；选中「Still deciding」之后，站点在**同一屏**
+    追加两颗必答的 Yes/No（`rn_license` / `teaching_certificate`）。旧实现两处一起栽：
+      · 签名 `head + 选项[:160]` 把追加的选项截掉了 ⇒ 下一轮读成「这一屏答过了」；
+      · 就算不截，两组 Yes/No 文字一模一样，按文字点永远点第一组。
+    ⇒ Next 点三次、页面一动不动（trace 里 step 5/6/7 那三次）。
+
+    这条钉：读取器交 `unanswered`（还没选过的组）⇒ **每组答一次**，答完才去点 Next；
+    而且两组 Yes 各自按 name/value 定位（不是同一颗点三下）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    area = "\u0005Still deciding\u0006area_of_interest\u0007general"
+    rn_yes = "\u0005Yes\u0006rn_license\u0007rn"
+    rn_no = "\u0005No\u0006rn_license\u0007no"
+    tc_yes = "\u0005Yes\u0006teaching_certificate\u0007yes"
+    tc_no = "\u0005No\u0006teaching_certificate\u0007no"
+    page = {"url": "https://funnel.test/get-started", "head": "It only takes 60 seconds",
+            "progress": "60%", "inputs": [], "options": [area, rn_yes, rn_no, tc_yes, tc_no],
+            "unanswered": [area, rn_yes, rn_no, tc_yes, tc_no],
+            "nextVisible": True, "nextTxt": "Next Step"}
+
+    def on_click(sel):
+        if sel != '[data-sf-pick="1"]':
+            return
+        js = next((m for m in reversed(calls.get("marks") or [])
+                   if "deepAll('input')" in m), "")
+        if "area_of_interest" in js:
+            page["unanswered"] = [rn_yes, rn_no, tc_yes, tc_no]
+        elif "rn_license" in js:
+            page["unanswered"] = [tc_yes, tc_no]
+        elif "teaching_certificate" in js:
+            page["unanswered"] = []
+
+    _fake_common(monkeypatch, page, calls, on_click=on_click)
+    src = template_loop.render_loop("selsite", "Thank you", "thank-you", {}, dict(PROV),
+                                    pick="first")
+    path = tmp_path / "followups.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("followups_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    trace = tmp_path / "followups.jsonl"
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    module.Filler("ws://x/1", str(form), "cid",
+                  trace_path=str(trace), no_report=True).run(max_steps=8)
+
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    answered = [r for r in rows if str(r.get("note") or "").startswith("答了第")]
+    assert len(answered) == 3, ("三组各答一次（area / rn_license / teaching_certificate）：%r"
+                                % [(r.get("step"), r.get("note")) for r in rows])
+    marks = calls.get("marks") or []
+    assert any("rn_license" in m for m in marks), "第一组 Yes/No 没按 name 定位：%r" % (marks,)
+    assert any("teaching_certificate" in m for m in marks), (
+        "第二组 Yes/No 没被点到（按文字点只会点第一组）：%r" % (marks,))
+    assert any('"Next Step"' in m for m in marks), "三组答完之后没去点 Next：%r" % (marks,)
+
+
 def test_an_input_that_only_has_an_id_is_filled_by_id(tmp_path, monkeypatch):
     """★ 2026-09-26 第五次真站试跑（`easystorebuilderpro` 那三个格）逼出来的：
     输入框**只有 `id`、没有 `data-testid`** ⇒ 原来一律按 `[data-testid=…]` 找 ⇒
@@ -463,7 +1046,10 @@ def test_an_input_that_only_has_an_id_is_filled_by_id(tmp_path, monkeypatch):
     calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
     page = {"url": "https://x.test/lead", "head": "Activation", "progress": "92%",
             "inputs": [["\u0004qv3-fn", ""]], "options": [], "nextVisible": False, "nextTxt": ""}
-    _fake_common(monkeypatch, page, calls)
+    #: 真站填完就留在格子里 —— 桩也得这么演，否则 2026-10-22 那条「填完回读」会如实判它没填上。
+    _fake_common(monkeypatch, page, calls,
+                 on_form=lambda sel, kw: page.__setitem__(
+                     "inputs", [["\u0004qv3-fn", str(kw.get("value") or "")]]))
     #: 那一站的账本里有 `fill_order`（探路时真填过的顺序）—— 这一格按它兜底填（见 `value_for` 第 ③ 档）
     src = template_loop.render_loop(
         "idsite", "Thank you", "thank-you", {"full_name": {"kind": "full_name"}},
@@ -490,20 +1076,206 @@ def test_an_input_that_only_has_an_id_is_filled_by_id(tmp_path, monkeypatch):
     assert module.Filler._filled_ok("") is True
 
 
-def test_the_phone_field_never_takes_the_profile_value(tmp_path, monkeypatch):
-    """★ 2026-09-26 用户点名（solarincentives）：「手机号别取资料」。
+def test_an_input_that_only_has_a_name_is_filled_by_name(tmp_path, monkeypatch):
+    """★ 2026-11-02（educationdirectory 真站，8100 那趟）：读取器把 `id` 与 `name` 都写成
+    `\\x04…`，而填的那一支只拼 `[id=…]` —— 那三个格只有 `name`（`zip_code` /
+    `education_level` / `high_school_graduation_year`）⇒ `cdp form` 报
+    `scroll mouse wheel failed: element not found`，Next 点三次全是空点。
 
-    那一格**永远现编**（`0207` + 7 位）—— 资料里那份是别人填过的真实号，同一串在站上反复
-    出现迟早被认出来。这条把「资料里给了 phone 也不许用」钉住（正控：别的格照旧用资料里的值）。
+    这条钉：id 找不到时必须**再用同一个 token 按 name 找一次**，而且找到就填上。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/quiz", "head": "School Search", "progress": "80%",
+            "inputs": [["\u0004zip_code", ""]], "options": [], "nextVisible": False,
+            "nextTxt": ""}
+
+    def form_out(sel, kw):
+        if sel == '[id="zip_code"]':
+            return "Error: scroll mouse wheel failed: element not found"
+        page["inputs"] = [["\u0004zip_code", str(kw.get("value") or "")]]
+        return "ok"
+
+    _fake_common(monkeypatch, page, calls, form_out=form_out)
+    src = template_loop.render_loop(
+        "namesite", "Thank you", "thank-you", {"zip_code": {"kind": "postcode"}},
+        dict(PROV, fill_order=["zip_code"]))
+    path = tmp_path / "namesite.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("name_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    trace = tmp_path / "namesite.jsonl"
+    module.Filler("ws://x/1", str(form), "cid", trace_path=str(trace), no_report=True).run(max_steps=1)
+
+    sels = [sel for sel, _kw in calls["form"]]
+    assert '[id="zip_code"]' in sels, "没先按 id 找：%r" % (sels,)
+    assert '[name="zip_code"]' in sels, "id 找不到之后没按 name 再找一次：%r" % (sels,)
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert any(r.get("action") == "form" and r.get("ok") is True for r in rows), rows
+
+
+def test_a_native_select_is_filled_with_select_not_value(tmp_path, monkeypatch):
+    """★ 2026-11-02（educationdirectory 真站，8100 那趟）：`education_level` /
+    `high_school_graduation_year` 是原生 `<select>` —— `cdp form --value` 走 insertText，
+    打不进 select；回读的 `value` 又是选项的 value（`bachelors`）而不是我们给的文字
+    （`Bachelor's degree`）⇒ 永远判「没填上」。这一条钉：select 走 `--select`，且不回读。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/quiz", "head": "School Search", "progress": "80%",
+            "inputs": [["\u0004education_level", ""]], "options": [], "nextVisible": False,
+            "nextTxt": ""}
+    mod = _fake_common(monkeypatch, page, calls,
+                       form_out=lambda sel, kw: (
+                           page.__setitem__("inputs", [["\u0004education_level", "bachelors"]])
+                           or '{"success":true,"value":"bachelors"}'))
+    _orig = mod.CDPHelper.eval
+
+    def eval_(self, js, *a, **kw):
+        if "!!(es.length" in js:          # `_is_select` 那一段（不是读取器里那个 LABEL 判断）
+            return json.dumps({"s": True})
+        return _orig(self, js, *a, **kw)
+
+    mod.CDPHelper.eval = eval_
+    src = template_loop.render_loop(
+        "selsite", "Thank you", "thank-you", {"education_level": {"kind": "education"}},
+        dict(PROV, examples={"education_level": "Bachelor's degree"}))
+    path = tmp_path / "selsite.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("select_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    trace = tmp_path / "selsite.jsonl"
+    module.Filler("ws://x/1", str(form), "cid", trace_path=str(trace), no_report=True).run(max_steps=1)
+
+    kinds = [(sel, kw.get("select"), kw.get("value")) for sel, kw in calls["form"]]
+    assert any(select == "Bachelor's degree" and value is None
+               for _sel, select, value in kinds), "select 走了 --value：%r" % (kinds,)
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert any(r.get("action") == "form" and r.get("ok") is True for r in rows), rows
+
+
+def test_a_fill_that_does_not_stick_is_filled_again(tmp_path, monkeypatch):
+    """★ 2026-10-22（Atticus 真站）：`cdp form` 回 `{"ok":true}`，回读 `#zipcode.value` 却是 `""` ——
+    React 在 hydration 时把早期写进去的值覆盖掉，Next 一直禁用，后面连点 8 次全是空点。
+
+    这条钉：填完之后**回读**；值不在（或读出来是空的）就再填一次 ——
+    「发出去」不等于「留在页面上」。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/landing", "head": "What's your ZIP code?", "progress": "",
+            "inputs": [["\u0004zipcode", ""]], "options": [], "nextVisible": True,
+            "nextTxt": "Next"}
+    state = {"n": 0}
+
+    def on_form(sel, kw):
+        state["n"] += 1
+        if state["n"] >= 2:            # 第 1 次写进去被页面弄丢；第 2 次留住
+            page["inputs"] = [["\u0004zipcode", str(kw.get("value") or "")]]
+
+    _fake_common(monkeypatch, page, calls, on_form=on_form)
+    src = template_loop.render_loop(
+        "sticksite", "Thank you", "thank-you",
+        {"postcode": {"kind": "postcode", "label": "ZIP code"}},
+        dict(PROV, fill_order=["postcode"], examples={"postcode": "10001"}))
+    path = tmp_path / "sticksite.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("stick_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    trace = tmp_path / "t.jsonl"
+    module.Filler("ws://x/1", str(form), "cid", trace_path=str(trace),
+                  no_report=True).run(max_steps=1)
+
+    sels = [sel for sel, _kw in calls["form"]]
+    assert sels.count('[id="zipcode"]') == 2, \
+        "值没留住却只填了一次（%d 次）：%r" % (sels.count('[id="zipcode"]'), sels)
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert any(r.get("action") == "form" and r.get("ok") is True for r in rows), rows
+    assert page["inputs"][0][1] == "10001", page
+
+
+def test_a_value_that_disappears_is_filled_again(tmp_path, monkeypatch):
+    """★ 2026-10-22（Atticus 真站）：第一趟 `_filled` 记了「这一格填过」——
+    可页面在下一轮读出来是**空的**（值被 hydration / 重渲染弄丢）。
+
+    这条钉：页面上空了就是空了，「填过」的记号不成立 ⇒ 抹掉它、用**同一个值**再填一次
+    （不是换个新值，也不是永远不再填）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    token, value = "\u0004zipcode", "10001"
+    page = {"url": "https://x.test/landing", "head": "What's your ZIP code?", "progress": "",
+            "inputs": [[token, ""]], "options": [], "nextVisible": True, "nextTxt": "Next"}
+
+    def on_form(sel, kw):
+        page["inputs"] = [[token, str(kw.get("value") or "")]]
+
+    _fake_common(monkeypatch, page, calls, on_form=on_form)
+    src = template_loop.render_loop(
+        "wipedsite", "Thank you", "thank-you",
+        {"postcode": {"kind": "postcode", "label": "ZIP code"}},
+        dict(PROV, fill_order=["postcode"], examples={"postcode": value}))
+    path = tmp_path / "wipedsite.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("wiped_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    trace = tmp_path / "t.jsonl"
+    filler = module.Filler("ws://x/1", str(form), "cid", trace_path=str(trace),
+                           no_report=True)
+    #: 上一轮：填过这一格、值也记住了 —— 但这一轮读出来是空的。
+    filler._field_value[token] = value
+    filler._field_tries[token] = 1
+    filler._filled.add((token, value))
+    filler.run(max_steps=1)
+
+    sels = [sel for sel, _kw in calls["form"]]
+    assert any(sel == '[id="zipcode"]' for sel in sels), \
+        "页面上已经空了，却因为「填过」的记号不再填：%r" % (sels,)
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert any(r.get("action") == "form" and r.get("ok") is True for r in rows), rows
+
+
+def test_a_label_that_wraps_a_checkbox_is_still_an_option():
+    """★ 2026-10-22（Atticus 真站，`claim/age-zip-first-seeking-benefits-for`）：
+    选项是 `<label><strong>Myself</strong><input type="checkbox"></label>` ——
+    老规则「label 包着 input 就跳过」把三个选项全丢了 ⇒ 连 60 步「没有可动作的东西」。
+
+    这条钉：只有 label 指向/包着**文本类**输入（输入框自己的 label）才跳过；
+    包着 checkbox/radio 的 label 是**选项**，要收。
+    """
+    js = template_loop.DEFAULT_READ_JS
+    old = "e.tagName==='LABEL'&&(e.htmlFor||e.querySelector('input,select,textarea'))"
+    assert old not in js, "老规则还在：连包着 checkbox 的选项 label 也一起丢了"
+    assert "input:not([type=checkbox]):not([type=radio])" in js
+    assert "refTxt" in js
+    assert "input:not([type=checkbox]):not([type=radio])" in _src()
+
+
+def test_a_special_site_can_opt_out_of_the_profile_phone(tmp_path, monkeypatch):
+    """★ 2026-09-26（solarincentives）/ 2026-10-13（compareinsulation）：**特殊脚本**不吃资料里的号。
+
+    ★ 2026-10-22（用户澄清）：这是**个别特殊脚本**的处理，不是全局默认 —— 所以现在要显式点名
+    （`from_profile: False` 或 `prefix`）；没点名的脚本默认取资料（见
+    `test_a_phone_fill_takes_the_profile_unless_the_script_pins_an_area_code`）。
+    这条钉「点名之后确实不取」：资料里给了 `9998887777`，产物仍按英国座机形状现编。
     """
     calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
     page = {"url": "https://uk.test/lead", "head": "Phone", "progress": "",
             "inputs": [["\u0002Enter your phone", ""]], "options": [], "nextVisible": False,
             "nextTxt": ""}
     _fake_common(monkeypatch, page, calls)
-    src = template_loop.render_loop("ukphone", "Thank you", "thank-you",
-                                    {"phone": {"kind": "phone", "label": "Enter your phone"}},
-                                    dict(PROV, fill_order=["phone"]))
+    src = template_loop.render_loop(
+        "ukphone", "Thank you", "thank-you",
+        {"phone": {"kind": "phone", "label": "Enter your phone", "from_profile": False}},
+        dict(PROV, fill_order=["phone"]))
     path = tmp_path / "ukphone.py"
     path.write_text(src, encoding="utf-8")
     spec = importlib.util.spec_from_file_location("uk_phone_product", path)
@@ -1579,6 +2351,55 @@ def test_value_for_rule_ignores_form_data_and_is_stable(tmp_path, monkeypatch):
     assert re.fullmatch(r"04\d{8}", got[0]), got
 
 
+def test_value_for_uk_phone_rule_drops_the_trunk_zero(tmp_path, monkeypatch):
+    """★ 2026-10-23（运营）：「英国电话没有 0 开头的，一般是 `20 7040 XXXX`，
+    好像只有后面 8 位可以随机」—— 前缀 `20` + 补到 10 位 = 后 8 位随机。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/quiz", "head": "Q", "progress": "",
+            "inputs": [], "options": [], "nextVisible": True, "nextTxt": "Continue"}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop(
+        "phonesite", "Thank you", "thank-you",
+        {"phone": {"kind": "value", "label": "PhoneNumber",
+                   "rule": "phone_prefix", "prefixes": ["20"]}},
+        dict(PROV))
+    path = tmp_path / "rule_phone_uk.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("rule_phone_uk_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    obj = module.Filler.__new__(module.Filler)
+    obj.form_data = {"phone": "0000000000"}
+    obj._rule_values = {}
+    got = [obj.value_for("\u0002PhoneNumber", {}, 0) for _ in range(3)]
+    assert len(set(got)) == 1, got          # 同一趟同值
+    assert re.fullmatch(r"20\d{8}", got[0]), got   # 10 位：20 + 后 8 位随机
+    assert got[0][3] in "23456789", got[0]   # 交换局首位不许 0/1
+
+
+def test_value_for_exact_phone_is_used_verbatim(tmp_path, monkeypatch):
+    """★ 2026-10-29：人点名的整号原样用（不再随机、不再补位）。"""
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/quiz", "head": "Q", "progress": "",
+            "inputs": [], "options": [], "nextVisible": True, "nextTxt": "Continue"}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop(
+        "phonesite", "Thank you", "thank-you",
+        {"phone": {"kind": "value", "label": "PhoneNumber",
+                   "rule": "phone_exact", "value": "2014237916"}},
+        dict(PROV))
+    path = tmp_path / "rule_phone_exact.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("rule_phone_exact_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    obj = module.Filler.__new__(module.Filler)
+    obj.form_data = {"phone": "0000000000"}
+    obj._rule_values = {}
+    assert obj.value_for("\u0002PhoneNumber", {}, 0) == "2014237916"
+
+
 def test_value_for_dob_rule_works_in_loop(tmp_path, monkeypatch):
     calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
     page = {"url": "https://funnel.test/quiz", "head": "Q", "progress": "",
@@ -1627,3 +2448,413 @@ def test_value_for_rule_survives_the_index_fallback(tmp_path, monkeypatch):
     assert got != "weak", got
     assert re.fullmatch(r"^(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[!@#$%^&*]).{8,}$",
                         got), got
+
+
+def test_a_pick_hint_wins_over_the_dice(tmp_path, monkeypatch):
+    """★ 2026-10-24（Atticus 真站）：有的站**必须优先答某一项**。
+
+    现场：循环把「Who are you seeking disability benefits for?」随机答成
+    「Family member or friend」/「Patient or client」，联系信息屏就多出一个**必填的关系下拉**
+    （`relationship` / `patient-client-professional-role`）—— 而我们会走的那条路
+    （本人申请）根本没有那一格。线上两趟（26807011 / 26807496）全卡在这里。
+
+    ⇒ `pick_hints` 这一格：池子里**有**提示就挑它，没有才照旧掷骰子
+    （提示是「优先」，不是「只认」—— 别的屏上那些提示根本不出现）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    _fake_common(monkeypatch, {"url": "", "head": "", "inputs": [], "options": []}, calls)
+    src = template_loop.render_loop("hinted", "Thank you", "thank-you", {},
+                                    dict(PROV, entry_url=""),
+                                    pick_hints=["Myself", "I'm the applicant"])
+    path = tmp_path / "hinted.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("hinted_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.PICK_HINTS == ["Myself", "I'm the applicant"], module.PICK_HINTS
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    filler = module.Filler("ws://x/1", str(form), "cid", no_report=True)
+
+    pool = ["\u0001Myself", "\u0001Family member or friend", "\u0001Patient or client"]
+    for _ in range(20):
+        assert filler.pick_option(list(pool)) == "\u0001Myself", (
+            "随机把它带去了别的分支 —— 那一支的必填下拉我们不会填")
+
+    #: 池子里一个提示都没有 ⇒ 照旧掷骰子（不许因为配了提示就一个都不挑）
+    others = ["\u0001Yes", "\u0001No"]
+    assert filler.pick_option(list(others)) in others
+
+
+def test_an_autocomplete_suggestion_matching_the_filled_zip_wins(tmp_path, monkeypatch):
+    """★ 2026-11-02（educationdirectory 真站）：提交前站点弹 `Use ZIP 10118` 这类地址联想。
+    原来靠随机挑选项「碰巧」点中；现在**已经填进页面的五位 ZIP** 与建议文字对得上，
+    就先选那一条（对不上照旧掷骰子）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    _fake_common(monkeypatch, {"url": "", "head": "", "inputs": [], "options": []}, calls)
+    src = template_loop.render_loop("zipfit", "Thank you", "thank-you", {},
+                                    dict(PROV, entry_url=""))
+    path = tmp_path / "zipfit.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("zipfit_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    filler = module.Filler("ws://x/1", str(form), "cid", no_report=True)
+
+    pool = ["\u0001Use ZIP 90210", "\u0001Use ZIP 10118"]
+    for _ in range(20):
+        assert filler.pick_option(list(pool), [["\u0004zip_code", "10118"]]) \
+            == "\u0001Use ZIP 10118", "联想建议没按已填的 ZIP 选"
+
+    #: 页面上没有五位 ZIP ⇒ 照旧在池子里挑（不许因此一条都不点）。
+    assert filler.pick_option(list(pool), [["\u0004email", "a@b.test"]]) in pool
+
+
+def test_a_product_without_hints_says_so_and_picks_as_before(tmp_path, monkeypatch):
+    """**负控**：不配 `pick_hints` 的产物，那一格是**空表**，挑法一个字不变。"""
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    _fake_common(monkeypatch, {"url": "", "head": "", "inputs": [], "options": []}, calls)
+    src = template_loop.render_loop("plain", "Thank you", "thank-you", {},
+                                    dict(PROV, entry_url=""))
+    path = tmp_path / "plain.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("plain_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.PICK_HINTS == [], module.PICK_HINTS
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    filler = module.Filler("ws://x/1", str(form), "cid", no_report=True)
+    pool = ["\u0001Myself", "\u0001No"]
+    assert filler.pick_option(list(pool)) in pool
+
+
+def test_a_disabled_next_with_filled_fields_gets_the_value_retyped(tmp_path, monkeypatch):
+    """★ 2026-10-24（Atticus `survey/claim/zip` 真站）：**值在、页面没收下**。
+
+    现场：`#zipcode` 的 value 是 `10001`（DOM 与回读都说填好了），可 `Next` 一直是
+    `disabled` —— 站点在填值那下发的 `benefitsByZip` 被**中止**了（resource 里
+    `responseStatus: 0`），app 拿不到回话就永远禁用 Next；而循环只认 DOM 的值，
+    再也不会碰这一格 ⇒ 连点 8 次、如实报失败（线上 `26789962`）。
+
+    手工量证：同一个窗口里把这格**用同一个值重打一遍** ⇒ 站点重发请求（200）⇒ Next 变可用。
+    所以：`Next` 是禁用态 + 格子都有值 ⇒ **重打一遍**，不是再填一个新值。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/survey/claim/zip", "head": "What's your ZIP code?",
+            "progress": "", "inputs": [["\u0004zipcode", "10001"]], "options": [],
+            "nextVisible": True, "nextTxt": "Next", "nextDisabled": True}
+    _fake_common(monkeypatch, page, calls)
+
+    src = template_loop.render_loop(
+        "zipsite", "Thank you", "thank-you",
+        {"zipcode": {"kind": "postcode"}},
+        dict(PROV, entry_url=""), )
+    path = tmp_path / "zip_product.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("zip_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    module.NUDGE_WAIT_SECONDS = 0          # 不真等（这条钉的是手法，不是时长）
+    filler = module.Filler("ws://x/1", str(form), "cid", no_report=True)
+    filler.run(max_steps=5)
+
+    assert calls.get("events"), ("Next 是禁用态、格子又有值 ⇒ 要用原生 setter + 事件"
+                                 "把值重打一遍，干点 Next 只会空转到收摊：%r"
+                                 % (calls["click"],))
+    js = calls["events"][0]
+    assert "zipcode" in js, js[:400]          # 找的是那一格（`\x04zipcode`）
+    assert '"10001"' in js, "重打得是**同一个值**，不是现编一个新值：%s" % js[:400]
+    assert "nextDisabled" in template_loop.DEFAULT_READ_JS, (
+        "读那一页的 JS 得把「Next 是不是禁用」交回来 —— 不然循环分不出「点了会动」还是白点")
+
+
+def test_a_disabled_next_is_retyped_again_on_later_rounds(tmp_path, monkeypatch):
+    """★ 2026-10-29（线上 26919524 的真形状）：**同一屏只重打一次不够**。
+
+    真站那次 `benefitsByZip` 被中止（`responseStatus: 0`）之后 `Next` 一直禁用。
+    旧实现把「这一屏已经打过一次」记在 `_nudged_sig` 里 ⇒ 之后每一轮都不再碰这格
+    ⇒ 只会干点 8 次 Next（日志原样：「step 10..17: Next（What's your ZIP code?）」）。
+    站点那一下是**偶发**的（同一个窗口里再打一次就 200）⇒ 得允许再试，直到上限。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/survey/claim/zip", "head": "What's your ZIP code?",
+            "progress": "", "inputs": [["\u0004zipcode", "10001"]], "options": [],
+            "nextVisible": True, "nextTxt": "Next", "nextDisabled": True}
+    _fake_common(monkeypatch, page, calls)
+
+    src = template_loop.render_loop(
+        "zipsite", "Thank you", "thank-you",
+        {"zipcode": {"kind": "postcode"}},
+        dict(PROV, entry_url=""))
+    path = tmp_path / "zip_retry.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("zip_retry_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    filler = module.Filler.__new__(module.Filler)
+    filler.cid = "cid"
+    filler.log = logging.getLogger("zip_retry")
+    filler.form_data = {}
+    filler._trace = lambda **kw: None
+    retypes = []
+
+    def _retype(token, value):
+        retypes.append((token, value))
+        return True
+
+    #: 两种重打手法都记成「打了一次」—— 这条钉的是**重试次数**，不是用哪个 API。
+    filler.fill = _retype
+    filler._set_value_events = _retype
+    filler.read = lambda: dict(page)          # 每次读回来 Next 还是禁用
+    module.NUDGE_WAIT_SECONDS = 0             # 不真等 —— 这条钉的是次数
+
+    assert filler._nudge(page) is True
+    assert filler._nudge(page) is True, (
+        "同一屏第二次就没再打 —— 真站那一下是偶发的，只给一次机会等于不给")
+    assert filler._nudge(page) is True
+    assert filler._nudge(page) is False, "超过上限还在打 —— 会一直占着这一屏"
+    assert retypes == [("\u0004zipcode", "10001")] * 3, retypes
+
+
+def test_after_clicking_next_it_waits_for_the_page_to_change(tmp_path, monkeypatch):
+    """★ 2026-10-29（Atticus `age-interstitial-over-50-early-btr` 旁路轮询量到的现场）：
+
+    点完 Next 立刻重读、看到同一屏就再点 —— 8 次点击全被吞，而页面在**停止点击之后**
+    自己走到了下一屏；同一时刻页面上有一批 15–18 秒才失败的第三方请求。
+    ⇒ 点完先**等页面真的变了**（URL 或题面），变了就进下一轮；别 1.5 秒一次地连点。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/interstitial", "head": "Disability benefits…",
+            "progress": "", "inputs": [], "options": [], "nextVisible": True,
+            "nextTxt": "Next"}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop("settlesite", "Thank you", "thank-you", {},
+                                    dict(PROV, entry_url=""))
+    path = tmp_path / "settle.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("settle_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    filler = module.Filler("ws://x/1", str(form), "cid", no_report=True)
+
+    module.NEXT_SETTLE_POLL = 0
+    monkeypatch.setenv("SITEFORGE_NEXT_SETTLE", "0.5")   # conftest 默认把它压成 0（测试不等）
+    reads = {"n": 0}
+
+    def _read():
+        reads["n"] += 1
+        if reads["n"] >= 3:
+            return {"url": "https://x.test/next", "head": "Who are you seeking…"}
+        return dict(page)
+
+    filler.read = _read
+    assert filler._wait_for_change(page) is True
+    assert reads["n"] >= 3, reads
+
+    #: 题面**每屏都一样**的那一族（整站标题相同）：只看 head/url 会白等满预算 ——
+    #: 形状（进度/格子）变了也算「变了」。
+    page_same_head = dict(page, url="https://x.test/quiz", head="Free Eligibility Checker",
+                          progress="50%", inputs=[["\u0002e.g. NN3 3AQ", ""]])
+    monkeypatch.setenv("SITEFORGE_NEXT_SETTLE", "0.5")
+    filler.read = lambda: dict(page_same_head, progress="72%",
+                               inputs=[["\u0002e.g. Margaret Johnson", ""]])
+    assert filler._wait_for_change(page_same_head) is True
+
+    #: 负控：一直不变 ⇒ 到点返回 False（这里把预算设成 0）
+    monkeypatch.setenv("SITEFORGE_NEXT_SETTLE", "0")
+    assert filler._wait_for_change(page) is False
+
+
+def test_a_click_that_cdp_could_not_perform_is_not_success(tmp_path, monkeypatch):
+    """★ 2026-10-29（Atticus 第二趟卡在 `contact/personalization-question`）：
+
+    `click()` 原来不看 `cdp click` 的回话 —— 没点着（`Error: … element not found`）
+    也照样 `return True` ⇒ trace 里每一次 Next 都写着「成功」，失败在账上一点痕迹都没有
+    （2026-10-13 那条注释已经点名过「原来写死 True」，但 BY_TEXT 这一支仍然没看回话）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/q", "head": "Q", "progress": "", "inputs": [],
+            "options": [], "nextVisible": True, "nextTxt": "Next"}
+    _fake_common(monkeypatch, page, calls,
+                 click_out="Error: scroll mouse wheel failed: element not found")
+    src = template_loop.render_loop("clicksite", "Thank you", "thank-you", {},
+                                    dict(PROV, entry_url=""))
+    path = tmp_path / "click_fail.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("click_fail_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    filler = module.Filler("ws://x/1", str(form), "cid", no_report=True)
+
+    assert filler.click("\u0001Next") is False, (
+        "cdp 明说没点着，`click()` 却报成功 —— trace 会把点空气记成做成了")
+
+
+def test_a_disabled_next_with_nothing_to_refill_waits_instead_of_clicking(
+        tmp_path, monkeypatch):
+    """★ 2026-10-29（Atticus `age-interstitial-*` / `personalization-question`）：
+
+    Next 是禁用态、又没有可重打的格子 ⇒ 站点正在发请求/还没轮到这一步。
+    旧流程直接去点它 —— **点不动**，还把「同一屏最多 8 次」的额度烧光 ⇒ 如实报失败，
+    而那一屏其实只要再等几秒就会自己好。现在：**等**（不点），最多等 `BUSY_TIMEOUT`。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/interstitial", "head": "Disability benefits…",
+            "progress": "", "inputs": [], "options": [], "nextVisible": True,
+            "nextTxt": "Next", "nextDisabled": True}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop("waitsite", "Thank you", "thank-you", {},
+                                    dict(PROV, entry_url=""))
+    path = tmp_path / "wait_disabled.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("wait_disabled_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.NUDGE_WAIT_SECONDS = 0
+    module.DISABLED_NEXT_WAIT = 0          # 不真等（这条钉的是「不去点」）
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    trace = tmp_path / "t.jsonl"
+    filler = module.Filler("ws://x/1", str(form), "cid", trace_path=str(trace),
+                           no_report=True)
+    filler.run(max_steps=3)
+
+    assert not calls["click"], ("Next 是禁用态、又没格子可重打 ⇒ 不该去点它：%r"
+                                % (calls["click"],))
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines()
+            if ln.strip()]
+    assert any(r.get("action") == "wait" for r in rows), rows
+
+
+def test_a_fill_that_hits_element_not_found_is_retried(tmp_path, monkeypatch):
+    """★ 2026-10-29（Atticus 第一趟 step 1：`ok=false` 但值其实填上了）：
+
+    `cdp form` 在页面还没 hydrate 完的那一下会报 `element not found` —— 旧实现**立刻
+    判失败**（不重试、也不看回读）。这一格下一轮会被再填一次是运气；运气不好就整单空转。
+    现在：`element not found` 在 `FILL_READY_TRIES` 内重试，仍不行才如实失败，
+    并把**为什么**（`_fill_why`）说出来 —— 「没填上」不再是一句没有下文的话。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/zip", "head": "What's your ZIP code?",
+            "progress": "", "inputs": [["\u0004zipcode", ""]], "options": [],
+            "nextVisible": True, "nextTxt": "Next"}
+    state = {"n": 0}
+
+    def _form(sel, kw):
+        state["n"] += 1
+        if state["n"] == 1:
+            return "Error: scroll mouse wheel failed: element not found"
+        page["inputs"] = [["\u0004zipcode", str(kw.get("value") or "")]]
+        return "ok"
+
+    _fake_common(monkeypatch, page, calls, form_out=_form)
+    src = template_loop.render_loop(
+        "fillsite", "Thank you", "thank-you",
+        {"postcode": {"kind": "value", "label": "ZIP code",
+                      "target": {"selectors": ["#zipcode"]}}}, dict(PROV))
+    path = tmp_path / "fill_retry.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("fill_retry_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.FILL_READY_GAP = 0
+    module.FILL_READBACK_GAP = 0
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    filler = module.Filler("ws://x/1", str(form), "cid", no_report=True)
+
+    assert filler.fill("\u0004zipcode", "60601") is True, (
+        "第一次 element not found 就放弃了 —— 页面只是还没 hydrate 完：%r" % (calls["form"],))
+    assert len(calls["form"]) >= 2, calls["form"]
+
+    #: 一直报 element not found ⇒ 如实失败，并说出为什么
+    #: ⚠️ 得**重新 import**：`from common import CDPHelper` 在 import 那一刻就把类绑死了，
+    #: 光换 `sys.modules["common"]` 不会影响已经 import 过的产物。
+    calls2 = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page2 = dict(page, inputs=[["\u0004zipcode", ""]])
+    _fake_common(monkeypatch, page2, calls2,
+                 form_out=lambda sel, kw: "Error: element not found")
+    spec2 = importlib.util.spec_from_file_location("fill_retry_product2", path)
+    module2 = importlib.util.module_from_spec(spec2)
+    spec2.loader.exec_module(module2)
+    module2.FILL_READY_GAP = 0
+    module2.FILL_READBACK_GAP = 0
+    filler2 = module2.Filler("ws://x/1", str(form), "cid2", no_report=True)
+    assert filler2.fill("\u0004zipcode", "60601") is False
+    assert "element not found" in (filler2._fill_why or ""), filler2._fill_why
+
+
+def test_progress_is_reported_once_per_screen(tmp_path, monkeypatch):
+    """★ 2026-10-30（用户报「这个脚本好像没上报 step」）：循环型产物要**边做边报**。
+
+    固定步骤表那族在每一组判据成立、动手之前 `_rpt_if_moved(name)` 报一行
+    （`agent/template.py`）；循环型原来只在 success / 收摊时报 —— 生产那边一整趟
+    看不到「走到哪一屏了」。这条钉：真做成一下 ⇒ 报一行 `step`；同一屏再做**不重复报**。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/quiz", "head": "Question 1", "progress": "10%",
+            "inputs": [], "options": ["\u0001No"], "nextVisible": False, "nextTxt": ""}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop("reportsite", "Thank you", "thank-you", {}, dict(PROV))
+    path = tmp_path / "report.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("report_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    trace = tmp_path / "t.jsonl"
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    module.Filler("ws://x/1", str(form), "cid", trace_path=str(trace),
+                  no_report=False).run(max_steps=3)
+
+    steps = [r for r in calls["report"] if r[0] == "step"]
+    assert len(steps) == 1, "同一屏报了 %d 次 step：%r" % (len(steps), calls["report"])
+    assert "第 1 步 答了第 1 题" in steps[0][1], steps
+
+
+def test_the_task_id_comes_from_the_correlation_id_when_the_runner_does_not_pass_one(
+        tmp_path, monkeypatch):
+    """★ 2026-10-30（用户报「这站只上报 success / step、url 都没上报」）：
+
+    生产那条路（`ad-task.py` 起 py 脚本）**只给 `--correlation-id <task>_<ts>`**，
+    不给 `--task-id`。固定步骤表那族自己从 correlation_id 拆 task id
+    （`agent/template.py`：`self.tid = task_id or correlation_id.split('_')[0]`）；
+    循环型原来只认 `task_id` ⇒ `tid` 恒空 ⇒ `report_url` 带 `task_id: ""`
+    被后端 400 拒掉（「task_id 必填」）⇒ formStep 一条 step/url 都没有。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://funnel.test/quiz", "head": "Question 1", "progress": "10%",
+            "inputs": [], "options": ["\u0001No"], "nextVisible": False, "nextTxt": ""}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop("tidsite", "Thank you", "thank-you", {}, dict(PROV))
+    path = tmp_path / "tid.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("tid_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    seen = []
+    module.report_url = lambda cdp, tid, step, log=None, reason="": seen.append(
+        (tid, step, reason))
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    module.Filler("ws://x/1", str(form), "26956985_1793328349",
+                  no_report=False).run(max_steps=2)
+
+    assert seen, "整趟一条都没上报"
+    assert all(t == "26956985" for t, _s, _r in seen), seen
+    assert any(s == "step" for _t, s, _r in seen), seen
