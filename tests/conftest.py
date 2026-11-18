@@ -132,6 +132,10 @@ def _tests_never_touch_the_repo_or_a_real_cdp(request, tmp_path, monkeypatch):
     #: 它以前**既没有环境变量、也没被冻结**（`_selftest_kwargs` 不给 `run_dir`），
     #: 于是「调用那一刻」解析进仓库里（修复轮 3 的 F2，复审实测真被建出来）。
     monkeypatch.setenv("SITEFORGE_SELFTEST_DIR", str(tmp_path / "runtime" / "selftest"))
+    #: ★ 2026-10-29：循环产物「点完 Next 等页面变」的预算（`NEXT_SETTLE_SECONDS=12`）。
+    #: 测试里的假页面**本来就不会变** ⇒ 不压到 0 的话，每点一次 Next 白等 12 秒
+    #: （全量实测 +100 秒）。压到 0 = 不等，行为与改动前一致。
+    monkeypatch.setenv("SITEFORGE_NEXT_SETTLE", "0")
     if pathlib.Path(request.path).name in SANDBOX_FILES:
         return
     monkeypatch.setenv("SITEFORGE_CDP_BIN", NO_SUCH_CDP)

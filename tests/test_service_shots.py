@@ -158,6 +158,70 @@ def test_the_first_gate_leaves_pause_1_on_disk(tmp_path, monkeypatch):
     assert log.read_text(encoding="utf-8").strip() == "192.168.1.197 55555"
 
 
+def test_patch_gets_the_latest_gate_shot_and_nothing_when_there_is_none(tmp_path):
+    """2026-10-30：改稿那一步只拿**最近一张**闸拍；没有图就给空 list（文字证据照旧）。"""
+    client = _client(tmp_path)
+    svc = client.app.state.service
+    job_id = "job-dec1de"
+    where = shots.path_for(job_id, root=svc._shots_dir)
+    where.mkdir(parents=True)
+    for n in (1, 9, 2):
+        (where / ("pause-%d.png" % n)).write_bytes(_png())
+    got = svc._patch_shot_paths(job_id)
+    assert [p.name for p in got] == ["pause-9.png"], got
+    assert svc._patch_shot_paths("job-nope") == []
+
+
+def test_repair_shots_prefer_failed_step_then_backend_then_gate(tmp_path):
+    """2026-10-30：改稿的图按「越贴失败现场越优先」挑，最多两张。"""
+    client = _client(tmp_path)
+    svc = client.app.state.service
+    job_id = "job-5h07"
+    where = shots.path_for(job_id, root=svc._shots_dir)
+    where.mkdir(parents=True)
+    (where / "pause-3.png").write_bytes(_png())
+    gate = str(where / "pause-3.png")
+
+    assert svc._repair_shots(job_id, {"evidence_images": ["https://img/x.png"]},
+                             {"截图": ["/a/6-before.png", "/a/6-after.png"]}) == \
+        ["/a/6-before.png", "/a/6-after.png"]
+    assert svc._repair_shots(job_id, {"evidence_images": ["https://img/x.png"]},
+                             {}) == ["https://img/x.png"]
+    assert svc._repair_shots(job_id, {}, {}) == [gate]
+    assert len(svc._repair_shots(job_id, {"evidence_images": ["u1", "u2", "u3"]}, {})) == 2
+
+
+
+def test_patch_callback_hands_the_gate_shot_to_the_model(tmp_path, monkeypatch):
+    """接线本身：`_patch_cb` 拼出来的 user 是**图文 parts**，第二块就是那张闸拍。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    client = _client(tmp_path)
+    svc = client.app.state.service
+    job_id = "job-5h07"
+    where = shots.path_for(job_id, root=svc._shots_dir)
+    where.mkdir(parents=True)
+    (where / "pause-3.png").write_bytes(_png())
+
+    seen = {}
+
+    def fake_loop(system, user, *args, **kwargs):
+        seen["user"] = user
+        raise RuntimeError("停在这儿（只验接线）")
+
+    monkeypatch.setattr(service.llm, "run_tool_loop", fake_loop)
+    patch = svc._patch_cb({}, job_id)
+    feedback = {"diagnosis": {"say": "卡住了", "family": "overlay",
+                              "现场": {"盖在上面的是什么": "div.fides-modal-overlay"}}}
+    with pytest.raises(RuntimeError):
+        patch("x = 1\n", feedback)
+    assert isinstance(seen["user"], list), seen
+    assert seen["user"][1]["type"] == "image_url"
+    assert seen["user"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+    #: ★ 2026-10-30：legacy 那条路也要拿到**整套诊断**（族 → 怎么改），不只是 `say` 一句。
+    assert "失败族" in seen["user"][0]["text"], seen["user"][0]["text"][-500:]
+    assert "先修前提层" in seen["user"][0]["text"], seen["user"][0]["text"][-500:]
+
+
 def test_the_shot_endpoint_serves_the_bytes_it_promised(tmp_path, monkeypatch):
     """`GET /job/{id}/shot/{name}` → 200 + `image/png` + **字节一致**。"""
     client, job_id, png, _ = _to_the_first_gate(tmp_path, monkeypatch)

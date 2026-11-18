@@ -10,7 +10,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import service, state  # noqa: E402
+from agent import auto, service, state  # noqa: E402
 #: ⚠️ 用 `test_service.py` 那套**真会停在闸上**的夹具（`FakeGraph` + `_gate`）——
 #: 别用 `test_service_narration` 那套：那一套的桩**一口气跑到底**，从来不停在闸口，
 #: 于是「没人按」这件事根本发生不了（Task 1 第一次就是这么红的）。
@@ -109,6 +109,20 @@ def test_auto_stops_only_where_the_graph_itself_caps(tmp_path):
         (e["kind"], e["say"]) for e in events]
 
 
+def test_lint_bounces_do_not_eat_the_attempt_budget():
+    """2026-10-30 `job-6ff0dc514ff3`：3 版稿都被 lint 打回、0 次自测，
+    原先被数成「第 3 遍」⇒ 预算在自测之前就烧光。被打回的稿不算一遍。"""
+    from agent import auto
+
+    values = {"visits": ["intake", "explore", "draft", "lint",
+                         "draft", "lint", "draft", "lint"],
+              "lint_bounces": 2}
+    assert auto.attempts(values) == 1, values
+    #: 自测真跑过的仍然照数（别把「一遍」也一起放过）。
+    assert auto.attempts({"visits": ["draft", "selftest", "draft", "selftest"],
+                          "lint_bounces": 0}) == 2
+
+
 def test_the_auto_stop_point_is_pinned_to_the_graphs_own_cap(tmp_path):
     """★ 2026-10-08：`AUTO_MAX_ATTEMPTS` **不许**与图的上限各写一份 —— 一处口径。
 
@@ -152,3 +166,59 @@ def test_auto_stops_when_the_graph_lands_in_the_same_place_twice(tmp_path):
     #: 不在这儿另抄一份措辞（抄了就有两份口径）。
     stuck = [e["say"] for e in events if e["kind"] == "auto_stuck"][0]
     assert stuck == service.AUTO_STUCK_SAY % ("draft", 1), stuck
+
+
+def _dead_window_job(client, *, reopens=0):
+    svc = client.app.state.service
+    job = service.Job(job_id="job-auto-reopen", brief={"auto": True}, status=service.DONE)
+    job.auto_reopens = reopens
+    svc._jobs[job.job_id] = job
+    return svc, job
+
+
+def test_auto_reopens_a_dead_window_instead_of_reporting_it(tmp_path, monkeypatch):
+    """★ 2026-10-30（precondition 族）：窗口没了 ⇒ 自己重开、接着跑，不是直接抛人。"""
+    client = _client(graph_factory=lambda brief, deps: FakeGraph(steps=[{}]))
+    svc, job = _dead_window_job(client)
+    monkeypatch.setattr(svc, "_snapshot", lambda _id: _Snap(
+        values={"end_reason": "no_window", "visits": ["draft", "lint"]}))
+    monkeypatch.setattr(svc, "_view", lambda _id: {
+        "status": service.DONE, "result": {"end_reason": "no_window"}})
+    monkeypatch.setattr(svc, "_resume_point", lambda *_a: ("lint", "selftest"))
+    calls = []
+    monkeypatch.setattr(svc, "reopen", lambda jid, body: calls.append((jid, body)))
+
+    svc._auto_reopen(job)
+
+    assert job.auto_reopens == 1, job.auto_reopens
+    assert calls and calls[0][0] == job.job_id, calls
+    assert "自己重开" in job.say, job.say
+
+
+def test_auto_reopen_stops_at_the_cap_and_says_why(tmp_path, monkeypatch):
+    """开了又死不能无限烧窗口：到上限 ⇒ 记 `needs_human`，不再开。"""
+    client = _client(graph_factory=lambda brief, deps: FakeGraph(steps=[{}]))
+    svc, job = _dead_window_job(client, reopens=auto.AUTO_MAX_REOPENS)
+    monkeypatch.setattr(svc, "_snapshot", lambda _id: _Snap(
+        values={"end_reason": "no_window", "visits": ["draft", "lint"]}))
+    calls = []
+    monkeypatch.setattr(svc, "reopen", lambda jid, body: calls.append(jid))
+
+    svc._auto_reopen(job)
+
+    assert not calls
+    assert job.auto_state == "needs_human", job.auto_state
+    assert "上限" in job.auto_why, job.auto_why
+
+
+def test_auto_reopen_ignores_a_job_that_did_not_stop_on_the_window(tmp_path, monkeypatch):
+    """不是窗口停的（比如交付了）⇒ 一个字节都不动。"""
+    client = _client(graph_factory=lambda brief, deps: FakeGraph(steps=[{}]))
+    svc, job = _dead_window_job(client)
+    monkeypatch.setattr(svc, "_snapshot", lambda _id: _Snap(
+        values={"end_reason": "delivered", "visits": ["draft"]}))
+    calls = []
+    monkeypatch.setattr(svc, "reopen", lambda jid, body: calls.append(jid))
+
+    svc._auto_reopen(job)
+    assert not calls and job.auto_reopens == 0

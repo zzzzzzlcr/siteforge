@@ -166,6 +166,8 @@
   .chip{font:inherit; font-size:11.5px; color:var(--accent); background:#f2f6ff; border:1px solid #d6e2fb;
         border-radius:999px; padding:0 7px; cursor:zoom-in}
   .hintline{font-size:12px; color:var(--ink-3); line-height:1.6; margin-top:6px}
+  .nightre{white-space:pre-wrap; max-height:34vh; overflow:auto;
+    border:1px solid var(--line-soft); border-radius:8px; padding:8px 10px; margin-top:8px}
   .lastshot{margin-top:10px; border-top:1px dashed var(--line); padding-top:6px}
 
   /* ── 这个窗口 ─────────────────────────────────── */
@@ -185,9 +187,26 @@
   .nrun{display:flex; flex-direction:column; gap:12px}
   .nrun .field{display:grid; grid-template-columns:132px minmax(0,1fr); gap:4px 12px; align-items:baseline}
   .nrun .field>label{font-size:13px; color:var(--ink-2)}
-  .nrun .field input, .nrun .field select{
+  .nrun .field input, .nrun .field select, .nrun .field textarea{
     font:inherit; font-size:14px; padding:8px 10px; border:1px solid var(--line); border-radius:8px;
     background:var(--surface-2); color:inherit; min-width:0; width:100%}
+  /* ★ 2026-10-29：勾选框**不许吃满整行**（原来 width:100% 把两个勾选拉成 786px，
+     电话前缀那一格被挤到左边 132px 列里 —— 看着就是「布局乱了」）。 */
+  .nrun .field input[type=checkbox]{
+    width:auto; min-width:0; margin:0; padding:0; justify-self:start; accent-color:var(--accent)}
+  .nrun .field>.checkline{
+    grid-column:1 / -1; display:flex; align-items:center; gap:8px; justify-self:start;
+    font-size:13px; color:var(--ink-2); cursor:pointer}
+  .nrun .field>.fieldhead{grid-column:1 / -1}
+  .nrun .field .ruleset{grid-column:1 / -1; display:flex; flex-direction:column; gap:8px}
+  .nrun .field .ruleset .row{
+    display:grid; grid-template-columns:132px minmax(0,1fr); gap:4px 12px; align-items:center}
+  .nrun .field .ruleset .row>label{font-size:13px; color:var(--ink-2)}
+  .nrun .field .ruleset .checkline{
+    display:flex; align-items:center; gap:8px; justify-self:start;
+    font-size:13px; color:var(--ink-2); cursor:pointer}
+  .nrun .field .ruleset .why{grid-column:auto; margin-top:2px}
+  .nrun .field textarea{resize:vertical; min-height:52px; line-height:1.5}
   #jsonEditor{
     width:100%; box-sizing:border-box; resize:vertical; min-height:220px;
     border:1px solid var(--line); border-radius:8px; padding:10px 12px;
@@ -198,6 +217,7 @@
   @media (max-width:640px){
     .nrun .field{grid-template-columns:minmax(0,1fr)}
     .nrun .field .why{grid-column:1}
+    .nrun .field .ruleset .row{grid-template-columns:minmax(0,1fr)}
   }
 
   /* ── 页面现场（2026-09-21）──────────────────────
@@ -246,6 +266,7 @@
   .btn{font:inherit; font-size:13.5px; padding:8px 14px; border-radius:8px; border:1px solid var(--line);
        background:var(--surface); color:var(--ink); cursor:pointer}
   .btn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+  .btn.small{font-size:12px; padding:2px 8px; border-radius:6px; margin-left:6px}
   .btn:disabled{opacity:.45; cursor:not-allowed}
   .btn.stop{margin-left:auto}
   .hint{font-size:12px; color:var(--ink-3); line-height:1.6; margin-top:7px}
@@ -315,8 +336,8 @@
                  （一个按配置归、一个按键查），对不上就**照实摆着**，别挑一个当结论。 -->
         <section class="panel" id="rankPanel">
           <header>
-            <h2>今天哪些站在失败</h2>
-            <span class="sub">挑一个站，看它失败的那几趟 —— 不用先知道是哪个站坏了。</span>
+            <h2>失败榜</h2>
+            <span class="sub">开页自动读；一行一个站，按「一键修复」直接开修。</span>
           </header>
           <div class="body">
             <div class="nrun">
@@ -327,9 +348,18 @@
                 <p class="why">留空看今天。这一格要的是**那一天**（后端按整天算，从 00:00 到次日 00:00）
                   —— 它会把看的是哪一天写在结果那一句里。</p>
               </div>
+              <div class="field">
+                <label for="rankStreak">榜单门槛</label>
+                <select id="rankStreak">
+                  <option value="1">所有正在失败的站（连败 ≥1）</option>
+                  <option value="5">只看连败 ≥5 的站</option>
+                </select>
+                <p class="why">默认列**所有**当前在失败的站；连败 ≥5 是后端原来的默认档，
+                  只列反复失败、值得动脚本的那几个站。</p>
+              </div>
               <div class="go">
                 <button class="btn primary" type="button" id="btnRank">看榜单</button>
-                <p class="hint" id="rankHint">按下去它去后端读**这一天哪些站在失败**。</p>
+                <p class="hint" id="rankHint">开页会自动读一次；按一下重读**这一天哪些站在失败**。</p>
               </div>
             </div>
             <div id="rank"></div>
@@ -617,6 +647,23 @@
             <p class="hintline" id="autoNote"></p>
         </section>
 
+        <!-- ── 夜间批量（2026-10-29）──────────────────────────────────
+             用户要的那个模式：下班前把单排进队列（用上面「开一趟」那张表 + 这个按钮），
+             夜里由**宿主 cron** 调 `tools/night-shift.py` 按顺序跑；过不去记一笔、直接下一单。
+             ⚠️ 服务只读写**同一份** `runtime/auto/night/`（容器挂着 `runtime/`），不自己跑。 -->
+        <section class="panel" id="nightPanel">
+          <header>
+            <h2>夜间批量</h2>
+            <span class="sub">下班前把单排进队列；<b>18:30</b> 由宿主按顺序跑。
+              <b>两遍不过就停</b>，记一笔、直接下一单 —— 早上看下面那份账单。</span>
+          </header>
+          <div class="body">
+            <p class="hintline" id="nightNow">正在读夜间队列…</p>
+            <ul class="hintline" id="nightList"></ul>
+            <pre class="hintline nightre" id="nightReport"></pre>
+          </div>
+        </section>
+
         <!-- ── 换代理国家（2026-09-22）───────────────────────────
              用户原话：「面板上要能直接换」。这一格就是那一下 ——
              换的是**这台机器上 agent 那条出口链**（`:1081`），生产那条（`:1080`）一个字不动。
@@ -690,6 +737,64 @@
           </div>
         </section>
 
+        <!-- ── 识别约会站（2026-10-29）─────────────────────────────
+             病：新来的约会 landing 属于哪份脚本，原先只能开窗口手工数 testid，
+             再对着已知平台判。分类器已经有了（`agent/classify.py`，CLI），
+             这一栏把它接到运营手上：贴 URL → 平台 / 建议 config / 证据。
+             ⚠️ 两条纪律：
+               · **识别是只读的**（`/classify` 结构上没有写参数）；关联是**另一跳**
+                 （`/classify/link`），要 operator，要人再按一下 —— 且**唯一命中**才摆出来；
+               · 写完**回读**（后端回执不算数）；`exit != 0` 一律不许画成「已关联」。
+             ⚠️ 窗口是**单飞**的：有单正在跑、或队列里压着活，服务会回 409；
+                那句话原样摆出来，这一栏不自己编「等一下再试」以外的解释。 -->
+        <section class="panel" id="classifyPanel">
+          <header>
+            <h2>识别约会站</h2>
+            <span class="sub">贴一个 URL，看它属于哪份约会脚本族；唯一命中时才能关联。</span>
+          </header>
+          <div class="body">
+            <div class="nrun">
+              <div class="field">
+                <label for="classifyUrl">站点网址</label>
+                <input type="text" id="classifyUrl" autocomplete="off" spellcheck="false"
+                       placeholder="https://…/land/sp/…">
+                <p class="why">要识别的那一页。<b>识别本身是只读的</b>：它开一个干净窗口
+                  （清 cookie/缓存），最多点一次 Start，只普查、不填表、不提交。</p>
+              </div>
+              <div class="field">
+                <label for="classifyConfig">指定 config（可空）</label>
+                <input type="text" id="classifyConfig" autocomplete="off" spellcheck="false"
+                       placeholder="留空 = 按平台锚点站解析（例如 japansdates → 101）">
+                <p class="why">同族有多个版本时（japansdates 的 101/55/127），填这里指定挂哪一个；
+                  留空就按锚点站解析。<b>歧义 / unknown 时不摆关联按钮</b> —— 不猜。</p>
+              </div>
+              <div class="field">
+                <label for="classifyOperator">关联时谁点的</label>
+                <input type="text" id="classifyOperator" autocomplete="off" spellcheck="false"
+                       placeholder="写进后端审计；只读识别不用填">
+                <p class="why">只有按「关联到 config」时才用得上 —— 后端
+                  <code>formConfig/link</code> 把这一格记进审计。空着按关联会被服务拦下
+                  （400 + 一句人话），不会静默留一个空名字。</p>
+              </div>
+              <div class="go">
+                <button class="btn primary" type="button" id="btnClassify">识别</button>
+                <p class="hint" id="classifyHint">识别本身是只读的；只有<b>唯一命中</b>时才出现
+                  「关联」，关联写完会<b>回读</b>核对，不拿回执当结论。
+                  窗口是单飞的：有单在跑时，识别会先被拒 —— 服务同一时间只做一件事，
+                  那句话会原样摆在这里。</p>
+              </div>
+            </div>
+            <div id="classify"></div>
+            <div class="nrun" id="classifyAct" hidden>
+              <div class="go">
+                <button class="btn primary" type="button" id="btnClassifyLink" hidden>关联到这个 config</button>
+                <p class="hint" id="classifyLinkHint"></p>
+              </div>
+            </div>
+            <p class="hintline" id="classifyNote"></p>
+          </div>
+        </section>
+
         <!-- ── 开一趟（新的一趟活）─────────────────────────────
              ⚠️ 这一块是**唯一**能开新活的地方（Task 12）：在这之前，面板上能发出去的动作
              只有「继续 / 说一句 / 停 / 重新来一遍」，而「重新来一遍」只在跑完之后才出现、
@@ -736,8 +841,8 @@
               </div>
               <div class="field">
                 <label for="runSuccessUrl">网址里会出现哪一截（可空）</label>
-                <input type="text" id="runSuccessUrl" autocomplete="off" spellcheck="false"
-                       placeholder="比如 /wizard、#/confirm">
+                <textarea id="runSuccessUrl" rows="2" autocomplete="off" spellcheck="false"
+                          placeholder="比如 /wizard、#/confirm（多条：一行一条）"></textarea>
                 <p class="why">★ 2026-09-24 加的<b>第二格</b>（用户点名「那不能一样加个 success_url」）：
                   走通之后<b>地址里</b>会出现的那一截。老脚本本来就常这么判（SPA 换页时
                   <b>正文可能一个字都不变</b>，而地址变了）—— 那一截<b>不在页面上</b>，
@@ -745,6 +850,8 @@
                   ⚠️ <b>不是整条网址</b>：只写那一截（<code>/wizard</code>），
                   它是拿这串去<b>当前地址</b>里找（<b>大小写不算区别</b>）。
                   ⚠️ 两格是<b>或</b>的关系：哪一格成立都算走通了；<b>空的那格不参与</b>。
+                  ★ 这一格可以写<b>多条</b>（<b>一行一条</b>）：比如「合格屏 + 拒绝屏都算成功」
+                  时两条都写上，命中任意一条就算走通。
                   <b>修站那一趟两格都可以空着</b>（服务从底稿搬老脚本声明的那一条）；
                   <b>新站那一趟两格里必须至少给一格</b>。</p>
               </div>
@@ -758,22 +865,36 @@
                   两种活做法不一样，所以这一格服务要问清楚。</p>
               </div>
               <div class="field">
-                <label>规则（填了/勾了就按我们的规则现编，不取任务资料）</label>
-                <label for="runPhonePrefix">手机号前缀（可空；例 04 / 0207，多个用空格/逗号/斜杠分隔）</label>
-                <input type="text" id="runPhonePrefix" autocomplete="off" spellcheck="false"
-                       placeholder="04 / 0207">
-                <label><input type="checkbox" id="ruleDob"> 生日随机（18–68 岁）</label>
-                <label><input type="checkbox" id="rulePassword"> 密码强随机（8+ 大小写数字特殊字符）</label>
-                <div id="runDobFormatField" hidden>
-                  <input type="text" id="runDobFormat" autocomplete="off"
-                         spellcheck="false" placeholder="DD/MM/YYYY（可空 = 按页面识别）">
+                <label class="fieldhead">规则（填了/勾了就按我们的规则现编，不取任务资料）</label>
+                <div class="ruleset">
+                  <div class="row">
+                    <label for="runPhoneExact">手机号（整号）</label>
+                    <input type="text" id="runPhoneExact" autocomplete="off" spellcheck="false"
+                           placeholder="可空；填了就用这个号（如 2014237916）">
+                  </div>
+                  <div class="row">
+                    <label for="runPhonePrefix">手机号前缀</label>
+                    <input type="text" id="runPhonePrefix" autocomplete="off" spellcheck="false"
+                           placeholder="04 / 0207 / 20（多个用空格/逗号/斜杠分隔）">
+                  </div>
+                  <label class="checkline"><input type="checkbox" id="ruleDob">
+                    生日随机（18–68 岁）</label>
+                  <label class="checkline"><input type="checkbox" id="rulePassword">
+                    密码强随机（8+ 大小写数字特殊字符）</label>
+                  <div class="row" id="runDobFormatField" hidden>
+                    <label for="runDobFormat">生日格式</label>
+                    <input type="text" id="runDobFormat" autocomplete="off"
+                           spellcheck="false" placeholder="DD/MM/YYYY（可空 = 按页面识别）">
+                  </div>
+                  <p class="why">填了/勾了就<b>完全不看任务资料</b>；手机号前缀多个时每趟随机选一个，
+                    同一趟所有 phone 字段用同一个号，总位数补到 10 位。
+                    <b>英国号去掉长途 0 的写法也收</b>：填 <code>20</code> ⇒ <code>20</code> + 后 8 位随机
+                    （<code>20 7040 XXXX</code> 那种形状）。生日格式空着就按探路记下的页面格式。</p>
                 </div>
-                <p class="why">填了/勾了就<b>完全不看任务资料</b>；手机号前缀多个时每趟随机选一个，
-                  同一趟所有 phone 字段用同一个号，总位数补到 10 位。生日格式空着就按探路记下的页面格式。</p>
               </div>
               <div class="field">
-                <label for="runAllowDisabled">这个站在后端是「停用」的（照修它）</label>
-                <label><input type="checkbox" id="runAllowDisabled">
+                <label class="fieldhead">这个站在后端是「停用」的（照修它）</label>
+                <label class="checkline"><input type="checkbox" id="runAllowDisabled">
                   这一趟是<b>停用行</b>（别自动上传）</label>
                 <p class="why"><b>读那一份不需要勾</b>：修站这条路<b>读的时候一律</b>带
                   <code>type=debug</code>（用户 2026-09-26 裁定：「固定就不会报那个」）——
@@ -782,6 +903,21 @@
                   <b>勾这一下的意思只剩一个</b>：这一趟开的是**停用行** ⇒ 按规矩
                   <b>不自动上传</b>（传不传由人按）。⚠️ 而「停用」不等于「没在跑」：
                   停用的站照样在失败（量过），所以那一份到底是不是生产在跑的那份，心里要有数。</p>
+              </div>
+              <div class="field">
+                <label for="runCountry">国家码（自动模式必填）</label>
+                <input type="text" id="runCountry" autocomplete="off" spellcheck="false"
+                       maxlength="2" placeholder="US / GB">
+                <p class="why">自动模式开工前要把出口切到这一国（两字母码）。
+                  <b>不填服务会拒</b> —— 它不猜。手动那一趟用不上这一格。</p>
+              </div>
+              <div class="field">
+                <label class="fieldhead">无人值守</label>
+                <label class="checkline"><input type="checkbox" id="runAuto">
+                  <b>自动模式</b>：每道闸自己按「继续」（两遍不过就停）</label>
+                <p class="why">勾上之后这一趟到闸不等人；两遍没过 / 窗口没了 / 判据不够，
+                  它会停下来 —— 面板上只留一句「需要人」。
+                  <b>不勾</b> = 与现在一样，每道闸你按一下。</p>
               </div>
               <div class="field">
                 <label for="runNote">开工前先说一句（可空）</label>
@@ -818,6 +954,7 @@
                   <b>要不要这一格由服务判</b>：缺了它会说，不用你先在心里过一遍。</p>
               </div>
               <div class="go">
+                <button class="btn" type="button" id="btnQueue">排进夜间队列</button>
                 <button class="btn primary" type="button" id="btnRun">开一趟</button>
                 <p class="hint" id="runHint">按下去它会：<b>自己开一个干净的窗口</b> → 探路 →
                   自测 → 写出一版 py。这一屏<b>不替你检查哪一格必填</b> —— 缺什么、格式哪里不对，
@@ -1860,6 +1997,63 @@
     });
   }
 
+  // ══════════════════ 夜间批量（2026-10-29）══════════════════
+  //: 页面只做三件：排一单、拿掉一单、把服务拼好的账单摆出来。
+  //: 判据 / 校验全在 `agent/night.py`（服务与宿主脚本同一处）—— 页面一个判断都不做。
+  var NIGHT_PATH = "/night";
+
+  function nightPayload() {
+    var body = runPayload();
+    body.auto = true;                     // 夜里那条路：闸不等人按
+    var country = document.getElementById("runCountry").value.trim().toUpperCase();
+    if (country) { body.country = country; }
+    return body;
+  }
+
+  function loadNight() {
+    var now = document.getElementById("nightNow");
+    if (!now) { return; }
+    fetch(NIGHT_PATH).then(readJSON).then(function (res) {
+      if (!res.ok) { now.innerHTML = rich(sayOf(res)); return; }
+      now.innerHTML = rich(at(res.obj, "say", ""));
+      var orders = at(res.obj, "orders", []) || [], items = [], i;
+      for (i = 0; i < orders.length; i++) {
+        var one = orders[i], id = at(one, "id", "");
+        items.push("<li><code>" + esc(id) + "</code> " + esc(at(one, "url", "")) +
+                   " · " + esc(at(one, "mode", "build")) +
+                   ' <button class="btn" type="button" data-night-remove="' + esc(id) +
+                   '">拿掉</button></li>');
+      }
+      document.getElementById("nightList").innerHTML = items.join("");
+      document.getElementById("nightReport").textContent =
+        at(res.obj, "report", "") || "（今天还没有账单）";
+    }).catch(function (e) {
+      now.innerHTML = rich("夜间队列没读到：" + e);
+    });
+  }
+
+  function queueRun() {
+    var btn = document.getElementById("btnQueue");
+    btn.disabled = true;
+    fetch("/night/order", { method: "POST", headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(nightPayload()) })
+      .then(readJSON).then(function (res) {
+        btn.disabled = false;
+        if (!res.ok) { setErr(sayOf(res), "act"); return; }
+        setErr("");
+        loadNight();
+      }).catch(function (e) {
+        btn.disabled = false;
+        setErr("排进队列那一下没读到结果：" + e, "act");
+      });
+  }
+
+  function removeNight(id) {
+    fetch("/night/remove", { method: "POST", headers: { "Content-Type": "application/json" },
+                             body: JSON.stringify({ "id": id }) })
+      .then(readJSON).then(function () { loadNight(); });
+  }
+
   //: 「开 / 停」那两下：**只拨开关**（服务写 flags.json）—— 判据与话都在服务那侧，
   //: 这儿把回话**原样**摆出来，再问一遍那一行（不把「要开」抄回屏上当作现状）。
   //: ⚠️ 「停」停的是「还开不开新的」：**正在跑的那一趟不受影响**（服务那句话里写着）。
@@ -2105,6 +2299,8 @@
 
   function runRulesPayload() {
     var out = {};
+    var exact = document.getElementById("runPhoneExact").value.trim();
+    if (exact) { out.phone = exact; }
     var phoneText = document.getElementById("runPhonePrefix").value.trim();
     if (phoneText) {
       out.phone_prefixes = phoneText.split(/[\s,\/，]+/).filter(Boolean);
@@ -2164,8 +2360,12 @@
     btn.disabled = true;                 // 按下先禁用：连按两下不该开出两趟活
     // ⚠️ 这一跳**不在某个 job 下面**（`POST /run`）：地址就是 `ACT.run` 那一格，
     //    不许拼 `jobId`（那时候还没有 job id —— 这一跳正是去拿它的）。
+    var body = runPayload();
+    if (document.getElementById("runAuto").checked === true) { body.auto = true; }
+    var country = document.getElementById("runCountry").value.trim().toUpperCase();
+    if (country) { body.env = { "proxy_country": country }; }
     return fetch(ACT.run, { method: "POST", headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify(runPayload()) })
+                            body: JSON.stringify(body) })
       .then(readJSON)
       .then(function (res) {
         btn.disabled = false;
@@ -2452,7 +2652,11 @@
     for (i = 0; i < rows.length; i++) {
       id = at(rows[i], "task_id", "");
       said = at(rows[i], "say", "");
-      items.push('<li><span class="mono">' + esc(id) + "</span> " + esc(said) + "</li>");
+      items.push('<li><span class="mono">' + esc(id) + "</span> " + esc(said) +
+        //: ★ 2026-11-05：这一单本机修过没有（服务算好的 `repaired_say`）。
+        (at(rows[i], "repaired_say", "") ? "<br>" + rich(at(rows[i], "repaired_say", "")) : "") +
+        ' <button class="btn small" type="button" data-fix-one="' + esc(id) +
+        '">一键修复</button></li>');
       opts.push('<option value="' + esc(id) + '">' + esc(said) + "</option>");
     }
     box.innerHTML = html + '<ul class="faillist">' + items.join("") + "</ul>";
@@ -2472,7 +2676,9 @@
       return;
     }
     btn.disabled = true;
-    return fetch(FAILS + "?site=" + encodeURIComponent(site) + failSinceParam())
+    //: ★ 2026-11-05：修复那条路一直按 `type=debug` 读（用户：「要带 type=debug 啊」）——
+    //: 后端把停用那份也认出来；不带的话，停用行的失败记录读不到。
+    return fetch(FAILS + "?site=" + encodeURIComponent(site) + "&type=debug" + failSinceParam())
       .then(readJSON)
       .then(function (res) {
         btn.disabled = false;
@@ -2487,6 +2693,11 @@
           failProblem("服务回了 200，但正文不是一份失败列表（读不出「哪些失败了」）。");
           return null;
         }
+        //: ★ 2026-11-05：服务按**同一个域名下**别的 full-path 键查到了单时，`site` 是
+        //: 真用的那一串（`requested_site` 才是原来那串）。把输入框换成真用的键 ——
+        //: 下一跳（取证据 / 开修）拿的是它，否则又会按那串**后端认不出**的键去查。
+        var used = String(at(res.obj, "site", "") || "");
+        if (used && used !== site) { document.getElementById("failSite").value = used; }
         state.fails = res.obj;
         paintFailures(res.obj);
         return res.obj;
@@ -2676,7 +2887,10 @@
       //: 「要不要打这个标」是**服务判的**（页面只搬字）；`auto_say` 是我们自己的话 ⇒ 过 `rich()`。
       items.push('<li><span class="mono">' + esc(site) + "</span> " + esc(said) +
         (at(rows[i], "auto_say", "") ? "<br>" + rich(at(rows[i], "auto_say", "")) : "") +
-        "</li>");
+        //: ★ 2026-11-05：本机修过没有（服务算好的 `repaired_say`）—— 防同一行被反复修。
+        (at(rows[i], "repaired_say", "") ? "<br>" + rich(at(rows[i], "repaired_say", "")) : "") +
+        ' <button class="btn small" type="button" data-rankfix="' + esc(site) +
+        '">一键修复</button></li>');
       opts.push('<option value="' + esc(site) + '">' + esc(site) + " — " + esc(said) + "</option>");
     }
     box.innerHTML = html + '<ul class="faillist">' + items.join("") + "</ul>";
@@ -2689,11 +2903,15 @@
 
   function fetchRank() {
     var day = document.getElementById("rankDate").value.trim();
+    var streak = document.getElementById("rankStreak").value || "1";
     var btn = document.getElementById("btnRank");
     btn.disabled = true;
     rankNote("");
     //: ⚠️ 空着**整格不发**（那才是「看今天」）—— 发一个空串不是缺省，背后那一层对它会回 400。
-    return fetch(RANK + (day ? "?date=" + encodeURIComponent(day) : ""))
+    var qs = [];
+    if (day) { qs.push("date=" + encodeURIComponent(day)); }
+    if (streak) { qs.push("min_streak=" + encodeURIComponent(streak)); }
+    return fetch(RANK + (qs.length ? "?" + qs.join("&") : ""))
       .then(readJSON)
       .then(function (res) {
         btn.disabled = false;
@@ -2766,6 +2984,62 @@
     });
   }
 
+
+  //: ★ 2026-10-29（用户：「失败的榜单列一下，控制台随时修复那种」）：
+  //: 榜单/失败单每一行都能**一键修**，走的还是既有那条链（`fixFrom` → `startRun`），
+  //: 不另开一条「页面直接发 /run」的路 —— 两条路的正文迟早分家。
+  //: ⚠️ 修的那一单由**既有** `#failPick` 承载（这一屏「哪一单」只有这一处）。
+  function fixOne(id) {
+    var pick = document.getElementById("failPick");
+    if (pick) { pick.value = id; }
+    return fixThisOne();
+  }
+
+  //: 榜单一行 → 用**近 30 天**查这个站的失败单（站上的失败常常不在今天），
+  //: 挑最新一条，直接开修。查不到时把「查不到」说出来，不假装修了。
+  function rankFix(site, btn) {
+    if (!site) { return; }
+    document.getElementById("failSite").value = site;
+    document.getElementById("failSince").value = "d30";
+    if (btn) { btn.disabled = true; }
+    var row = (rankRows(state.rank) || []).filter(function (r) {
+      return String(at(r, "site", "")) === site;
+    })[0];
+    //: 停用行 = 底稿可能是 debug 那份 ⇒ 这一趟**不自动上传**（与面板那个勾同一个意思）。
+    document.getElementById("runAllowDisabled").checked =
+      /停用/.test(row ? String(at(row, "say", "")) : "");
+    rankNote("正在查 " + site + " 近 30 天的失败单…");
+    return fetchFailures().then(function (got) {
+      if (btn) { btn.disabled = false; }
+      if (!got) {
+        rankNote("这一下没查成 —— 具体原因在下面「这个站失败的那些趟」那一栏里（服务原话）。");
+        return null;
+      }
+      var rows = failRows(got) || [];
+      var id = String(document.getElementById("failPick").value || "").trim();
+      if (!id && rows.length) { id = at(rows[0], "task_id", ""); }
+      if (id) { document.getElementById("failPick").value = id; }
+      //: 换了一条失败单 ⇒ 上一单那两格判据**不能跟着过来**（否则会拿别人的判据判这一站）。
+      //: 修站这条路两格可以空着：服务会读底稿自己声明的那条。
+      document.getElementById("runSuccess").value = "";
+      document.getElementById("runSuccessUrl").value = "";
+      document.getElementById("fixSuccess").value = "";
+      document.getElementById("fixSuccessUrl").value = "";
+      if (!id) {
+        rankNote("⚠️ 榜单记 " + site + " 在失败，但近 30 天按这个键**一条失败单都没查到** —— " +
+                 "榜单键与后端配置键可能不是同一串。这一下**没有开任何修复**。");
+        return null;
+      }
+      rankNote("正在修 " + site + " 的 " + id + " …（成功判据空着 = 用底稿里那条）");
+      return fixOne(id).then(function (out) {
+        if (out) { rankNote("已开一趟修复：" + site + "（失败单 " + id + "）。"); }
+        return out;
+      });
+    }).catch(function (e) {
+      if (btn) { btn.disabled = false; }
+      rankNote("这一下没送出去：" + e + " —— 服务可能没在跑。");
+    });
+  }
   // ══════════════════ 这一单为什么失败（Task 4 ④）══════════════════
   // 这是那条链的**尾**：`formStep` 只有 id/task_id/step/url —— **设计上就没有「原因」这一格**，
   // 原因只写在跑单那台机器自己的日志里。`fail_diag` 那张表是它的新去处，这一栏是读侧。
@@ -3145,6 +3419,148 @@
       });
   }
 
+  // ══════════════════ 识别约会站（2026-10-29）══════════════════
+  //: 两跳都是**服务给**的（`service.CLASSIFY_PATH` / `CLASSIFY_LINK_PATH`）——
+  //: 与 `/failures`、`/rank` 同一个做法：路由换了页面跟着服务走。
+  //: ⚠️ 只读那一跳与写那一跳是**两跳**：这一栏不许把它们合成一跳（合了就没有
+  //:    「先看一眼、再决定写不写」这一步了）。
+  var CLASSIFY = "/classify";
+  var CLASSIFY_LINK = "/classify/link";
+  //: 上一次识别出来的那一格（链接那一跳要它的 URL）。页面**不替**服务记别的状态。
+  var classifyShown = null;
+
+  function classifyPayload() {
+    var out = { "url": document.getElementById("classifyUrl").value.trim() };
+    var cid = document.getElementById("classifyConfig").value.trim();
+    //: ⚠️ 空着就**不发**这一格（服务那边 `None` = 按锚点解析）。发 `""` 是页面自己
+    //:   造出来的一个「config 是空串」，而人的意思明明是「没指定」。
+    if (cid) { out["config_id"] = cid; }
+    return out;
+  }
+
+  //: 什么时候才摆「关联」：**唯一命中 + config 解析出来了 + 还没关联**。
+  //: `exit != 0` 时不摆新的关联结果，但**关联失败那一次**（link_error）仍要留着按钮
+  //: —— 人得能再试一次。unknown / ambiguous / config 解析失败都没有 `config_id`。
+  function classifyLinkable(body) {
+    var r = at(body, "result", {}) || {};
+    var platform = at(r, "platform", null);
+    var cfg = at(r, "config_id", null);
+    return !!(platform && cfg !== null && cfg !== undefined &&
+              at(r, "ambiguous", false) !== true && !at(r, "linked", null));
+  }
+
+  //: 结果那一块**只摆服务给的那几格**（`say` 是人话正文，候选是服务给的清单）——
+  //: 页面不替它拼一句「识别成功」/「没有识别出来」。
+  function paintClassify(body) {
+    var box = document.getElementById("classify");
+    var act = document.getElementById("classifyAct");
+    var link = document.getElementById("btnClassifyLink");
+    var hint = document.getElementById("classifyLinkHint");
+    var note = document.getElementById("classifyNote");
+    classifyShown = null;
+    if (box) { box.innerHTML = ""; }
+    if (act) { act.hidden = true; }
+    if (link) { link.hidden = true; }
+    if (hint) { hint.innerHTML = ""; }
+    if (note) { note.innerHTML = ""; }
+    if (!body) { return; }
+    var r = at(body, "result", {}) || {};
+    var html = '<p class="lead">' + rich(at(body, "say", "")) + "</p>";
+    var matches = at(r, "matches", []) || [];
+    if (matches.length > 1 || at(r, "ambiguous", false) === true) {
+      html += "<h3>候选</h3><ul>";
+      matches.forEach(function (m) {
+        html += "<li><b>" + esc(at(m, "platform", "")) + "</b> " +
+                rich((at(m, "evidence", []) || []).join("; ")) + "</li>";
+      });
+      html += "</ul>";
+    }
+    if (box) { box.innerHTML = html; }
+    if (!classifyLinkable(body)) { return; }
+    var cfg = at(r, "config_id", null);
+    classifyShown = { url: at(r, "url", ""), site_key: at(r, "site_key", "") };
+    if (link) {
+      link.textContent = "关联到 config " + cfg;
+      link.hidden = false;
+    }
+    if (hint) {
+      //: ⚠️ 整句过 `rich()`（这一屏的规矩：`**` 不许裸着进 `innerHTML`）——
+      //: `rich` 会先转义站点键，再排粗体；不在这儿手拼 `<b>`。
+      hint.innerHTML = rich("将把 **" + classifyShown.site_key + "** 挂到 **config " +
+                            cfg + "** —— 只加这一条，不动脚本；写完会**回读**核对。");
+    }
+    if (act) { act.hidden = false; }
+  }
+
+  function doClassify() {
+    var btn = document.getElementById("btnClassify");
+    setErr("");
+    if (btn) { btn.disabled = true; }
+    //: 空 URL 也发 —— 让**服务**说「还没说识别哪个站点」那句人话（这一屏不预判必填）。
+    return fetch(CLASSIFY, { method: "POST",
+                             headers: { "Content-Type": "application/json" },
+                             body: JSON.stringify(classifyPayload()) })
+      .then(readJSON)
+      .then(function (res) {
+        if (btn) { btn.disabled = false; }
+        if (!res.ok) {
+          // 400（没 url/没 operator）、409（窗口被占着）、502（量不到/开不了窗）——
+          // 一律**原样**摆服务那句（`sayOf` 就是干这个的）。
+          paintClassify(null);
+          setErr(sayOf(res), "act");
+          return null;
+        }
+        paintClassify(res.obj);
+        return res.obj;
+      })
+      .catch(function (e) {
+        if (btn) { btn.disabled = false; }
+        paintClassify(null);
+        setErr("这一下没送出去：" + e + " —— 服务可能没在跑。", "act");
+      });
+  }
+
+  function doClassifyLink() {
+    if (!classifyShown) {
+      setErr("先识别一次 —— 这一下没有可关联的结果。", "act");
+      return null;
+    }
+    var op = document.getElementById("classifyOperator").value.trim();
+    var payload = { "url": classifyShown.url, "operator": op };
+    //: ⚠️ 发的是**人填的那一格**，不是上一次解析出来的 config —— 服务会**重新普查一遍**
+    //: 再按锚点解析（等价 CLI 的 `--apply`）；没填就是「不指定」，不替人塞一个。
+    var cid = document.getElementById("classifyConfig").value.trim();
+    if (cid) { payload["config_id"] = cid; }
+    var btn = document.getElementById("btnClassifyLink");
+    setErr("");
+    if (btn) { btn.disabled = true; }
+    return fetch(CLASSIFY_LINK, { method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify(payload) })
+      .then(readJSON)
+      .then(function (res) {
+        if (btn) { btn.disabled = false; }
+        if (!res.ok) {
+          setErr(sayOf(res), "act");
+          return null;
+        }
+        paintClassify(res.obj);
+        var said = at(res.obj, "say", "");
+        if (at(res.obj, "exit", null) === 0 && at(res.obj, "result.linked", null)) {
+          setErr(said, "act", true);      // 回读确认了才叫成
+        } else {
+          //: `exit != 0`：服务那句里写着为什么（回读不一致 / 后端拒了…）——
+          //: **绝不许**在这条路上显示「已关联」。
+          setErr(said || "关联没成（服务没说为什么）。", "act");
+        }
+        return res.obj;
+      })
+      .catch(function (e) {
+        if (btn) { btn.disabled = false; }
+        setErr("关联这一下没送出去：" + e + " —— 服务可能没在跑。", "act");
+      });
+  }
+
   // ══════════════════ 窗口那两下（Task 12）══════════════════
   //: 关窗口 / 重开窗口：都发**当前这一趟**（它们在 `/job/<id>/` 下面）。
   //: ⚠️ 两下的答复里，服务说的那句话都**原样上屏**（`setErr` 那条红杠是这一屏唯一
@@ -3222,9 +3638,17 @@
   }
 
   // ══════════════════ 接线 ══════════════════
+  //: ★ 2026-10-21（真事 `job-6203bc32c1c4`）：运营在输入框里写了话、再按「继续」——
+  //: 这一支原来只发 `{"action":"continue"}`，**把框里那句话扔了**（服务侧的 `hints`
+  //: 从头到尾只有 `[]`）。而这一屏自己的小字写着「这句话会一路带进它下一步要做的事；
+  //: 不写也能按「继续」让它往下走」—— 文案承诺的事，按钮得做到。
+  //: ⇒ 框里有字就按「说一句」那条路送（`action: "say"`，服务把 note 收进 hints）；
+  //:   框里没字仍是纯 `continue`（现状不变）。
   document.getElementById("btnContinue").addEventListener("click", function () {
     if (!jobId) { setErr("先挑一趟运行。"); return; }
-    act("continue", { "action": "continue" });
+    var text = document.getElementById("sayBox").value.trim();
+    act("continue", text ? { "action": "say", "note": text }
+                         : { "action": "continue" });
   });
   document.getElementById("btnSay").addEventListener("click", send);
   document.getElementById("btnStop").addEventListener("click", stopIt);
@@ -3235,6 +3659,18 @@
   // ★ 开一趟（Task 12）：这一屏原先**只能看、只能在闸上回话、只能停、只能重跑**，
   //   开一趟新活得有人在别处敲命令 —— 而这一屏是给运营用的。
   document.getElementById("btnRun").addEventListener("click", startRun);
+  //: ★ 夜间批量（2026-10-29）：排进队列 / 拿掉一单（同一张「开一趟」表，多按一下这个）。
+  document.getElementById("btnQueue").addEventListener("click", queueRun);
+  document.getElementById("nightList").addEventListener("click", function (e) {
+    var el = e.target;
+    while (el && el !== this) {
+      if (el.getAttribute && el.getAttribute("data-night-remove")) {
+        removeNight(el.getAttribute("data-night-remove"));
+        return;
+      }
+      el = el.parentNode;
+    }
+  });
   //: 把这一趟修好的脚本传到后台（2026-09-22）那三下。
   document.getElementById("btnPyPrepare").addEventListener("click", preparePyUpload);
   document.getElementById("btnPyCommit").addEventListener("click", commitPyUpload);
@@ -3249,6 +3685,7 @@
   //: （`if (!live) { return; }`）—— 2026-09-24 真浏览器里量到的：那一栏一直停在
   //: 「正在问值班那一格…」。挑着 job 时 `paint()` 里那次照旧，心跳跟着每拍刷。
   paintAuto();
+  loadNight();          // 夜间队列 / 账单：开页先读一次（不挂进每 3 秒那一拍）
   //: ★ 总开关那两下（T6）：静态按钮（与上面换国家那格同一套写法）。
   document.getElementById("btnAutoOn").addEventListener("click", function () { switchAuto(true); });
   document.getElementById("btnAutoOff").addEventListener("click", function () { switchAuto(false); });
@@ -3263,6 +3700,28 @@
   //   ⚠️ 「看这一单的原因」读的是**上面「要修哪一条」那一格** —— 这一屏里「哪一单」只此一处。
   document.getElementById("btnRank").addEventListener("click", fetchRank);
   document.getElementById("btnRankGo").addEventListener("click", goRank);
+  //: ★ 2026-10-29：榜单 / 失败单里那些**画出来的**「一键修复」走委托。
+  //: 挂静态父亲上（与 `pagePanel` 的「指它」同一条理由）：动态行重画后不用重新挂。
+  document.getElementById("rank").addEventListener("click", function (e) {
+    var el = e.target;
+    while (el && el !== this) {
+      if (el.getAttribute && el.getAttribute("data-rankfix")) {
+        rankFix(el.getAttribute("data-rankfix"), el);
+        return;
+      }
+      el = el.parentNode;
+    }
+  });
+  document.getElementById("fails").addEventListener("click", function (e) {
+    var el = e.target;
+    while (el && el !== this) {
+      if (el.getAttribute && el.getAttribute("data-fix-one")) {
+        fixOne(el.getAttribute("data-fix-one"));
+        return;
+      }
+      el = el.parentNode;
+    }
+  });
   //: 「指它」那一按钮是**动态长出来**的 ⇒ 用委托，别逐条挂。
   //: ⚠️【2026-09-21 真鼠标实测】原来挂在 `#pageMissed` 上 —— 而这两栏里**有一半长在
   //:   `#pageFacts` 里**（「它收到了却没点」那几条，cookie 横幅那条就在那儿）⇒ 那一半
@@ -3275,6 +3734,12 @@
   document.getElementById("btnJsonPrepare").addEventListener("click", prepareJsonWrite);
   document.getElementById("btnJsonCommit").addEventListener("click", commitJsonWrite);
   document.getElementById("btnCheck").addEventListener("click", fetchCheck);
+  document.getElementById("btnClassify").addEventListener("click", doClassify);
+  document.getElementById("btnClassifyLink").addEventListener("click", doClassifyLink);
+  //: 开页时「关联」那一块是**收着**的（还没有任何一份识别结果）。与 `rankAct` / `failAct`
+  //: 同一个做法：开页时它是什么样由这一行算出来，不靠静态标记、也不靠人的记性。
+  document.getElementById("classifyAct").hidden = true;
+  document.getElementById("btnClassifyLink").hidden = true;
   //: 「看哪个站的失败单」那一块开页是**收着**的（还没有任何一份榜单）。
   //: 与 `failAct` 同一行规矩：**开页时它是什么样由这一行算出来**，不靠静态标记。
   document.getElementById("rankAct").hidden = true;
@@ -3365,6 +3830,10 @@
       }
     });
   }
+  //: ★ 2026-10-29（用户：「失败的榜单列一下」）：开页就把榜单读出来 ——
+  //: 原来要人先按一下「看榜单」，而那一栏空着时看起来像「今天没有站在失败」。
+  //: `fetchRank` 自己会把「量不到」原样说出来，所以自动读**不会**把读失败画成空榜。
+  fetchRank();
   // ══════════════════ 运行步骤（P0 / `/job/<id>/steps`）══════════════════
   // 与 `/live` 的分工：`/live` 说「探路走到哪了」，这一块说「产物自己跑的那一趟，
   // 每一步成不成、为什么」。判据**只有服务那一处**（`agent/steps.py`）——

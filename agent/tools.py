@@ -80,19 +80,35 @@ class McpSession:
         self.argv = [str(a) for a in argv]
         self.name = name
         self.timeout = timeout
+        #: ★ 2026-10-21（真事 `job-e45daea13b94`）：`reopen()` 要用**同一份**启动参数 ——
+        #: 存起来，别在重开时再猜一遍环境。
+        self._env = env
+        self._cwd = cwd
         self._id = 0
-        self._lines: queue.Queue = queue.Queue()
         self._stderr: list[str] = []
+        self._spawn()
+
+    def _spawn(self) -> None:
+        """起（或重起）那条 stdio 子进程，并完成 MCP 握手。
+
+        ⚠️ 两个泵**按参数**拿 `proc` / `lines`（不读 `self`）：`reopen()` 换掉进程时，
+        旧线程还在读旧 stdout —— 它们必须把行灌进**旧**队列，别混进新会话的应答里
+        （混进来一个 EOF 哨兵就会把新会话误判成「退了」）。
+        """
+        self._lines: queue.Queue = queue.Queue()
         try:
             self._proc = subprocess.Popen(
                 self.argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1,
-                env=env if env is not None else os.environ.copy(), cwd=cwd,
+                env=self._env if self._env is not None else os.environ.copy(),
+                cwd=self._cwd,
             )
         except OSError as exc:
-            raise McpError(f"起不了 {name}（{self.argv[0]}）: {exc}") from exc
-        threading.Thread(target=self._pump_stdout, daemon=True).start()
-        threading.Thread(target=self._pump_stderr, daemon=True).start()
+            raise McpError(f"起不了 {self.name}（{self.argv[0]}）: {exc}") from exc
+        threading.Thread(target=self._pump_stdout, args=(self._proc, self._lines),
+                         daemon=True).start()
+        threading.Thread(target=self._pump_stderr, args=(self._proc, self._stderr),
+                         daemon=True).start()
         self.server_info: dict = {}
         self._handshake()
 
@@ -145,18 +161,18 @@ class McpSession:
 
     # ── 传输 ────────────────────────────────────────────────
 
-    def _pump_stdout(self) -> None:
+    def _pump_stdout(self, proc, lines: queue.Queue) -> None:
         try:
-            for line in self._proc.stdout:
-                self._lines.put(line)
+            for line in proc.stdout:
+                lines.put(line)
         finally:
-            self._lines.put(None)      # EOF 的哨兵：读的人不能在这儿永远等下去
+            lines.put(None)            # EOF 的哨兵：读的人不能在这儿永远等下去
 
-    def _pump_stderr(self) -> None:
+    def _pump_stderr(self, proc, sink: list) -> None:
         """stderr 必须有人读：管道写满时子进程会**卡死**，而卡死没有诊断信息。"""
-        for line in self._proc.stderr:
-            self._stderr.append(line.rstrip("\n"))
-            del self._stderr[:-50]
+        for line in proc.stderr:
+            sink.append(line.rstrip("\n"))
+            del sink[:-50]
 
     def _tail(self, n: int = 5) -> str:
         return " | ".join(self._stderr[-n:])
@@ -253,6 +269,25 @@ class McpSession:
                 proc.wait(timeout=5)
             except Exception:  # noqa: BLE001
                 pass
+
+    def reopen(self) -> None:
+        """把这条 stdio 子进程**原地换掉**（同一份 argv / env，重新握手）。
+
+        ★ 2026-10-21（真事 `job-e45daea13b94` · event.monetise.com）：问卷 Submit 之后
+        站点页没了、浏览器只剩 Bit 工作台；`cdp-mcp` 从这个状态起**每次调用都 120 秒
+        不回**（stderr：`DOM.documentUpdated when there's no top-level frame` /
+        `could not retrieve document root … context deadline exceeded`），而 Bit 的窗口
+        接口一直说「活着」⇒ 探路既停不下来、也走不动，最后只能人喊停。
+
+        ⚠️ **只换进程，不替调用方重放那一下**：超时的那一下可能**已经动过页面**
+        （点/填/提交），自动重放就是重复提交。重开之后的**下一次**工具调用走新会话；
+        模型自己决定下一步（`observe` / `goto` 回去）。
+        ⚠️ 旧进程的泵线程把行灌进**旧**队列（`_spawn` 按参数收），不会污染新会话。
+        """
+        self.close()
+        self._id = 0
+        self._stderr = []
+        self._spawn()
 
     def __enter__(self) -> "McpSession":
         return self

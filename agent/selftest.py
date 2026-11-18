@@ -434,6 +434,117 @@ def _read_trace(path) -> tuple:
     return lines, bad
 
 
+_NOTHING_ACTIONABLE_RE = re.compile(
+    r"step\s+(\d+):\s+nothing actionable\s*(?:\([^)]*\))?\s*(.*)$")
+_STUCK_URL_RE = re.compile(r"url=step(\d+)\|(\S+)", re.I)
+_ANSWERED_STUCK_RE = re.compile(r"答了\s*(\d+)\s*题后卡住")
+_STUCK_AT_RE = re.compile(r"答了\s*\d+\s*题后卡住[^@]*@\s*(\S+)")
+
+
+def _legacy_stuck_row(out: str, err: str) -> Optional[dict]:
+    """老写法（不认 `--trace`）的卡住现场 —— 从**产物自己的日志**里抽一行。
+
+    ★ 2026-11-04（`job-476a7553b115` · youragemeets）：老底稿不认 `--trace`，
+    trace 里只有一行 `{"step":"max_steps"}` ⇒ `failed_step` 是 `null`、结论落成
+    「每一步都做成了，但页面上一直没出现成功文案」。可产物日志里明明写着：
+
+        卡住诊断 step= next=False legal=False options=[] labels=[] inputs=[] url=step2|<url>
+        step 2: nothing actionable (1, 0s) 1 2 3 4 Your profile ...
+        答了 1 题后卡住 46s @ <url>
+
+    ⇒ 改稿那双手拿到的是假摘要，只能瞎改选择器。这一格把日志里**现成的那几个数**
+    搬成一行与 trace 同形的证据（`ok=False` / `step=2` / `page_sig` / `progress_why`），
+    让下游的 `failed_step`、`scene_of`、诊断都能指到第 2 步。
+
+    ⚠️ **只搬日志里真有的**：没有「卡住诊断/答了 N 题后卡住」就回 `None`（不编步号）。
+    """
+    text = "%s\n%s" % (_as_text(out), _as_text(err))
+    diag = ""
+    for line in text.splitlines():
+        if "卡住诊断" in line:
+            diag = line.strip()
+    step = None
+    url = ""
+    m = _STUCK_URL_RE.search(diag)
+    if m:
+        step, url = int(m.group(1)), m.group(2)
+    if step is None:
+        m = _ANSWERED_STUCK_RE.search(text)
+        if m:
+            step = int(m.group(1)) + 1          # 答了 N 题 ⇒ 卡在第 N+1 题
+    page = ""
+    for line in text.splitlines():
+        m = _NOTHING_ACTIONABLE_RE.search(line)
+        if not m:
+            continue
+        if step is None:
+            step = int(m.group(1))
+        body = m.group(2).strip()
+        if body:
+            page = body
+    if step is None:
+        return None
+    if not url:
+        m = _STUCK_AT_RE.search(text)
+        if m:
+            url = m.group(1).rstrip("，。;")
+    empties = []
+    for name in ("options", "labels", "inputs"):
+        m = re.search(r"%s=(\[[^\]]*\])" % name, diag)
+        if m:
+            empties.append("%s=%s" % (name, m.group(1)))
+    why = "老写法日志：卡在第 %d 步" % step
+    if url:
+        why += "（当时网址 %s）" % url
+    if empties:
+        why += "；这一步读页面拿到 %s" % " ".join(empties)
+    if page:
+        why += "；页面上写着：%s" % page[:200]
+    return {
+        "step": step,
+        "ok": False,
+        "action": "stuck",
+        "url": url,
+        "page_sig": page[:600],
+        "page_sig_tail": page[-240:],
+        "note": why,
+        "progress": False,
+        "progress_why": why,
+        #: 记号：这一行不是产物 trace 写的，是从它的日志里搬来的（读的人要分得清）。
+        "legacy_log": True,
+    }
+
+
+def _append_trace_row(path, row: dict) -> bool:
+    """把一行证据补进 trace。**失败不抛** —— 这是旁路，不许带塌结论。"""
+    try:
+        with pathlib.Path(path).open("a", encoding="utf-8") as fp:
+            fp.write(json.dumps(row, ensure_ascii=False) + "\n")
+        return True
+    except OSError:
+        return False
+
+
+def _drop_legacy_rows(path, lines: list) -> list:
+    """把上一次跑留在同一个 trace 里的 `legacy_log` 行清掉（**只清这种行**）。
+
+    ★ 2026-11-04：`_execute` 会把「老写法的卡点」补进 trace；同一 run_dir 再跑一遍时
+    （自测/复跑共用目录），上一次那行会**留到这一次** —— 这一次明明退出码 0，却被
+    上一趟的 `ok=false` 判成没过。真跑上每次 run_dir 是新的，但反复跑同一目录
+    （验证/复跑）必须自己清干净，否则证据在说上一趟的话。
+    """
+    kept = [ln for ln in (lines or []) if not (isinstance(ln, dict) and ln.get("legacy_log"))]
+    if len(kept) == len(lines or []):
+        return lines
+    try:
+        pathlib.Path(path).write_text(
+            "".join(json.dumps(ln, ensure_ascii=False) + "\n" for ln in kept),
+            encoding="utf-8")
+    except OSError:
+        return lines
+    return kept
+
+
 #: ★ 2026-10-16（Task 5 复核 Important 2）：**这一行有没有「现场」可搬**。
 #: 由头：循环型产物**每次动手之前**先落一行弹层（`action="popup"` —— 它只有
 #: `note` / `progress_why`，**没有** `target` / `selector_used` / `url` / `page_sig` / `scene`），
@@ -869,8 +980,8 @@ def criterion_suspect(ev: dict) -> str:
     trace = [ln for ln in (ev.get("trace") or []) if isinstance(ln, dict)]
     if len(trace) < CRITERION_SUSPECT_MIN_STEPS:
         return ""
-    if any(ln.get("ok") is False for ln in trace):
-        return ""                       # 有步骤没做成 ⇒ 那是流程/选择器那一支，别往判据上引
+    if any(ln.get("ok") is False or ln.get("skipped") for ln in trace):
+        return ""                       # 有步骤没做成 / 被跳过 ⇒ 那是流程/状态判据那一支
     dom = ev.get("dom") if isinstance(ev.get("dom"), dict) else {}
     page = dom.get("page") if isinstance(dom.get("page"), dict) else None
     if not page or (page.get("fields") or ()):
@@ -1420,8 +1531,47 @@ def _execute(name: str, py, ws_url, form_file, correlation_id, log_level, env,
         pass
 
     lines, bad_lines = _read_trace(trace)
+    #: ★ 2026-11-04：同一 run_dir 反复跑时，上一次补进去的老写法卡点会留到这一次 ——
+    #: 这一次退出码 0 却会被上一趟的 `ok=false` 判成没过。成功那一趟先把这个记号清掉。
+    if rc == 0 and any(isinstance(ln, dict) and ln.get("legacy_log") for ln in lines):
+        _drop_legacy_rows(trace, lines)
+        lines, bad_lines = _read_trace(trace)
+    #: ★ 2026-11-04（`job-476a7553b115`）：老写法不认 `--trace` ⇒ trace 里只有
+    #: `max_steps` 一行，结论落成「每一步都做成了」。产物日志里的「卡住诊断 /
+    #: 答了 N 题后卡住」是**现成的现场** —— 搬成一行与 trace 同形的证据再判。
+    #: ⚠️ 只在「没成功、且 trace 里没有硬失败、也没搬过」时做（成功那一趟不碰）。
+    legacy_log_moved = False
+    if (legacy_why and rc not in (None, 0)
+            and not any(ln.get("ok") is False for ln in lines)
+            and not any(ln.get("legacy_log") for ln in lines)):
+        row = _legacy_stuck_row(out, err)
+        #: ★ 2026-11-04：日志只给「options=[]」——**为什么是空的**要问工具。
+        #: 跑完再 `cdp observe` 一眼（只读、不提交），把障碍物 / 可动作元素 / 陷阱元素
+        #: 搬进同一行；读不到就不加（`None` = 读不到，不是「没有」）。
+        if row is not None and cdp_bin and ws_url and not timed_out:
+            page = _cdp_observe(cdp_bin, ws_url, env, timeout=20)
+            if isinstance(page, dict):
+                text = str(page.get("page_text") or "").strip()
+                if text:
+                    row["page_sig"] = text[:600]
+                    row["page_sig_tail"] = text[-240:]
+                obs = [o for o in (page.get("obstructions") or []) if isinstance(o, dict)]
+                acts = [str(a.get("text") or "").strip()
+                        for a in (page.get("actions") or []) if isinstance(a, dict)]
+                row["scene"] = {
+                    "ready": page.get("ready"),
+                    "overlay": obs[0] if obs else None,
+                    "at_point": None,
+                    "texts": [t for t in acts if t][:8] or (text[:400] or None),
+                    "trouble": list(page.get("honeypots") or []),
+                }
+        if row is not None and _append_trace_row(trace, row):
+            legacy_log_moved = True
+            lines, bad_lines = _read_trace(trace)
     ok, failed_step, note = _verdict(rc, timed_out, lines, bad_lines, err, out, timeout)
-    if legacy_why:
+    #: ⚠️ 老写法那句「定位不到卡在第几步」只在**没搬出卡点**时才对；搬出来了还挂这句
+    #: 就是同一句结论里自相矛盾（真跑 `job-3f0c16a46b56` 上看见过）。
+    if legacy_why and not legacy_log_moved:
         note = (note + " " + legacy_why) if note else legacy_why
     ok, extra = _rerun_note(py, ws_url, form_file, correlation_id, log_level, env,
                             run_dir, site, name, lines, timeout, task_id, delay,

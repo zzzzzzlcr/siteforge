@@ -92,12 +92,13 @@ def _probe_js(tmp_path: pathlib.Path) -> str:
 
 
 def _drive(tmp_path: pathlib.Path, js: str, marker_js: str | None = None,
-           anchor_js: str | None = None) -> dict:
+           anchor_js: str | None = None, holds_js: str | None = None) -> dict:
     """把一段探针 JS 丢给假 DOM 跑一遍，读回那几格的结果。
 
     `marker_js` 给了就再跑一遍「按文字打标记」（`_MARK_CONSENT_BY_TEXT_JS`）——
     读半（探针）与动作半（标记）是同一道 tag 闸，两半都得钉。
     `anchor_js` 给了就再跑两页「站点锚」（站点控件 + 真锚候选 / 只有站点控件）。
+    `holds_js` 给了就再跑三页「模态握着这一步」（`_modal_holds_target_js`，★ 2026-11-06）。
     """
     p = tmp_path / "probe.js"
     p.write_text(js, encoding="utf-8")
@@ -110,18 +111,27 @@ def _drive(tmp_path: pathlib.Path, js: str, marker_js: str | None = None,
         a = tmp_path / "anchor.js"
         a.write_text(anchor_js, encoding="utf-8")
         cmd += ["--anchor", str(a)]
+    if holds_js is not None:
+        h = tmp_path / "holds.js"
+        h.write_text(holds_js, encoding="utf-8")
+        cmd += ["--holds", str(h)]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, "夹具自己挂了（rc=%s）：\n%s\n%s" % (r.returncode, r.stdout, r.stderr)
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
 def test_the_probe_answers_the_three_fields_python_reads(tmp_path):
-    """产物那段探针在假 DOM 里**真跑**：二十一格，一格不许差。
+    """产物那段探针在假 DOM 里**真跑**：三十格，一格不许差。
 
-    二十一格 = 同意条（带 id / 只有文字 / **按钮是 div（CookieScript 形状）** /
+    三十格 = 同意条（带 id / 只有文字 / **按钮是 div（CookieScript 形状）** /
     **wrapper 合并文字也很短 —— 不许点 wrapper** / **按钮是 span（没有 id）** /
-    **容器里的长散文不许认**）、盖住整页的模态
-    （按钮 / **关闭键是 span** / **关闭键包在 wrapper 里 —— 不许点 wrapper**）、
+    **容器里的长散文不许认** / ★ 2026-11-06 的 `USER AGREEMENT` 链接（同意条与
+    「盖满视口的同意弹层」两格：子串 `agree` 曾把 `AGREEMENT` 当同意键）、盖住整页的模态
+    （按钮 / **关闭键是 span** / **关闭键包在 wrapper 里 —— 不许点 wrapper** /
+    ★ 2026-11-03 退订弹窗的 `aria-label="No Thanks"`（smartwool 真事）/
+    **前面那个模态没有关闭键 —— 后面的照旧要找**（`return ''` 的收摊范围）/
+    **横向在视口外的关闭键不算**（`.drawer` 那颗 `left:1194`）/
+    **光一个 "No" 不算关闭键**）、
     **满视口的 body 不许当「盖满视口的同意弹层」的容器**、
     干净页面、两者同时在、
     广告 creative（可见那一颗恒命中 / **可见但被盖着 ⇒ 恒返空**（blavity 矩阵第 4 格，
@@ -134,8 +144,46 @@ def test_the_probe_answers_the_three_fields_python_reads(tmp_path):
     少一格那边就退化成「量不出来」（什么都不点）。
     """
     out = _drive(tmp_path, _probe_js(tmp_path))
-    assert out["total"] == 23, out
-    assert out["failed"] == 0, [r for r in out["results"] if not r["ok"]]
+    assert out["total"] == 30, out
+
+
+def test_the_modal_guard_keeps_off_while_a_dropdown_is_open(tmp_path):
+    """★ 2026-11-06（真事 `job-6119866e26d9` · antigravity）：下拉开着 ⇒ **不清模态**。
+
+    现场：第 19 步点 `#rc_select_3`，mousedown 已经把下拉打开（cdp 的抬手被落点守卫扣住，
+    但列表已经开了）；下一步动手前 `_clear_obstructions` 把 Apply 表单当「盖住整页的模态」，
+    而选项渲染在 body 的 portal 里、**不在模态 DOM 里** ⇒ 「目标在不在模态里」判 false ⇒
+    它去点模态的关闭键 ⇒ 那一下等于点页面别处，下拉当场关掉 ⇒ 选项等 45 秒等不到。
+
+    这一格把**判据那段 JS 本体**放进假 DOM 真跑（先前只有替身按标记回预设答复），
+    而且**先跑探针再跑判据**（产物里就是这个顺序 —— 探针给被点名那颗打 `data-sf-hit`）：
+    下拉开着 ⇒ `1|open-dropdown`；没开 ⇒ 不答；目标真在模态里 ⇒ 仍答 `1|text`
+    （**并把 `data-sf-flow=1` 打在容器上**）；已经带着那个标记的模态 ⇒ `1|flow`
+    （★ 2026-11-06 真事 `job-54fbc668f03d` · homejolly：下一屏要几秒才渲出来，
+    按「这一眼」找必然落空 —— 「刚才就在用它」这件事只能记在容器上）。
+    ★ 2026-11-06（`job-0ecaf3b90a6a` · antigravity）：探针点名的是 promo，而目标 /
+    flow 标记都在**底下那个表单模态**里 ⇒ 判据必须答空（promo 照旧清），不然 promo
+    一路盖着下一步（`Content_promo 一直盖着「没写名字的元素」`）。
+    """
+    module = _product(tmp_path)
+    js = module._modal_holds_target_js({"text": "CHECKOUT+", "selectors": []})
+    out = _drive(tmp_path, module._POPUP_PROBE_JS, holds_js=js)
+    assert out["holds"]["open"]["got"] == "1|open-dropdown", out["holds"]
+    assert out["holds"]["closed"]["got"] == "", out["holds"]
+    assert out["holds"]["holdsTarget"]["got"] == "1|text", out["holds"]
+    assert out["holds"]["flow"]["got"] == "1|flow", out["holds"]
+    assert out["holds"]["marked"]["got"] == "1|text", out["holds"]
+    assert out["holds"]["marked"]["mark"] == "1", (
+        "`1|text` 那一支没把 `data-sf-flow=1` 打上去 —— 下一屏就没人记得这个模态"
+        "刚才用过：%r" % (out["holds"],))
+    #: ★ 2026-11-06：身份对上才许拦。promo 被点名，目标与 flow 都在**另一颗**模态里。
+    other = out["holds"]["otherModal"]
+    assert other["probe"].startswith("盖住整页的模态|"), other
+    assert other["hit"] == "1", ("探针没给被点名那颗打身份 —— 判据无从对上：%r" % (other,))
+    assert other["flow"] == "1", other
+    assert other["got"] == "", (
+        "被点名的是 promo，目标 / flow 在另一颗模态里 ⇒ 不许拿它当「流程本身」"
+        "（否则 promo 永远清不掉）：%r" % (other,))
 
 
 def test_the_markets_offcanvas_is_closed_by_the_hook_itself(tmp_path):
@@ -166,7 +214,7 @@ def test_the_fixture_can_actually_fire(tmp_path):
     """
     broken = "(function(){%s})();return '';" % _probe_js(tmp_path)
     out = _drive(tmp_path, broken)
-    assert out["failed"] == 13, out["results"]      # 该有答复的那十三格
+    assert out["failed"] == 19, out["results"]      # 该有答复的那十九格
     passed = [r["name"] for r in out["results"] if r["ok"]]
     assert passed == ["市场/地区抽屉：不是 markets 的 offcanvas 不许点",
                       "干净页面：一条都不答应",
@@ -176,6 +224,7 @@ def test_the_fixture_can_actually_fire(tmp_path):
                       "广告 creative：aria-label 是散文（12 字 ≤24）—— 「Do not close」不许认",
                       "广告 creative：`visibility:hidden` 的关闭键不许认",
                       "广告 creative：没有站点锚的 TEXT|× 不许认（站点控件）",
+                      "盖住整页的模态：光一个 No 不算关闭键",
                       "同意条：容器里的长散文不许认（div/span 新白名单）",
                       "盖满视口的同意弹层：满视口的 body 不许当容器"], passed
 
@@ -193,6 +242,9 @@ def test_the_text_marker_can_mark_a_div_button(tmp_path):
     out = _drive(tmp_path, module._POPUP_PROBE_JS, marker_js=marker)
     assert out["marker"]["got"] == "marked", out["marker"]
     assert out["marker"]["attr"] == "1", out["marker"]
+    #: ★ 2026-11-06：同名的**隐藏**那一颗（前面、`pointer-events:none`）不许被标记 ——
+    #: 标记到它 = `[data-sf-consent=1]` 点下去是空气（真事 `job-669c375b51f9`）。
+    assert out["marker"]["hidden"] is None, out["marker"]
 
 
 @pytest.mark.parametrize("anchor", ['[data-click="close"]', '.op2-close'])

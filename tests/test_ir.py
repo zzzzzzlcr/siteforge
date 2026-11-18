@@ -214,6 +214,30 @@ def test_a_required_field_the_product_has_no_step_for_is_an_ir_problem():
     assert ir.validate(_book(states=_one_screen(), fields=fields), shape="loop") == []
 
 
+def test_an_unnameable_low_stability_field_is_not_reported_as_missing():
+    """★ 2026-11-06（`job-adf4d72c8ebd` · homejolly）：**认不出是哪一格**时不许报「没填」。
+
+    那趟的街道格在 `observe` 里只有一根 `nth-of-type` 长链（`stability=low`）、没有
+    label/hint；而填它的那一步用的是 `input.leadforms-full-street-address-input` ——
+    同一元素、两种写法，`_covers` 对不上。旧行为会报「必填格一步都没填」，而产物其实填了
+    ⇒ 运营看到的是错误的「结构检查没过」，改稿也不知道该改哪。
+    ⚠️ 只静默**认不出**的那一类；有名字的（Town/City 那种）照旧报。
+    """
+    row = browser_agent._field_row({
+        "type": "text", "required": True, "stability": "low", "value": "",
+        "selector": "#m > div:nth-of-type(2) > input:nth-of-type(1)"})
+    assert row.get("stability") == "low" and not row.get("label"), row
+    seen = [{"state": "start", "fields": [row]}]
+    book = _book(states=_one_screen(), fields={"start": [row]}, observed=seen)
+    assert ir.validate(book) == []
+
+    named = browser_agent._field_row({
+        "label": "Town/City", "type": "text", "required": True, "stability": "low",
+        "selector": "#m > div:nth-of-type(2) > input:nth-of-type(1)"})
+    got = ir.validate(_book(states=_one_screen(), fields={"start": [named]}))
+    assert [p.code for p in got] == ["trace_incomplete.required_field_without_step"], got
+
+
 def test_a_field_seen_empty_with_no_step_filling_it_is_an_ir_problem():
     """★ 2026-10-08（policyquail `job-c8730acb27c5`）：**看过时它空着，而产物里一步都不填它**。
 

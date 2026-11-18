@@ -33,12 +33,15 @@ def main() -> int:
     ap.add_argument("--root", default=str(ROOT), help="状态目录的根（开关/账本/心跳都在这儿）")
     ap.add_argument("--service", default=os.environ.get("SITEFORGE_SERVICE_URL") or auto.SERVICE_URL,
                     help="服务地址（默认 = 服务真正在听的那个口；SITEFORGE_SERVICE_URL 可覆盖）")
+    ap.add_argument("--min-streak", type=int, default=5,
+                    help="连续失败几次才开修（后端榜单的 min_streak；默认 5）")
     got = ap.parse_args()
 
     client = fmr.FmrClient()                       # token 在构造那一刻读环境（`FMR_AGENT_TOKEN`）
     while True:
         try:
-            out = auto.run_once(fmr=client, root=got.root, service_url=got.service)
+            out = auto.run_once(fmr=client, root=got.root, service_url=got.service,
+                                min_streak=got.min_streak)
         except Exception as exc:                   # noqa: BLE001 —— 「量不到」不许被读成「没事」
             print("!! 这一圈没量着：%s" % exc, file=sys.stderr)
             return 2

@@ -144,6 +144,19 @@ END_REPAIR_STUCK = "repair_stuck"
 #: 或接上那根线）—— 处置不一样，所以不能并成一个数
 #: （`END_WINDOW_GONE` / `END_EXPLORE_UNFINISHED` 同一条规矩）。
 END_REPAIR_NOOP = "repair_noop"
+#: ★ 2026-11-09：模型回话**不合约定**（JSON / 字段 / 类型 / 枚举 / `note`）。
+#:
+#: 为什么单独一档：这是**通信**失败，不是改稿失败。原先 `states_from_reply` 把坏回话
+#: 原样退回、原因丢掉，`_same_as_the_tested_one` 再把它读成「一处都没改」⇒ `repair_noop`
+#: 把协议失败和「模型真的没改」混成一个数。修法完全不同：前者改提示词/解析器并回灌真实原因，
+#: 后者换证据/换判断。
+END_PROTOCOL_FAILED = "protocol_failed"
+#: ★ 2026-11-09：**证据不足**（探路/页面感知给不出可核对的卡）⇒ 不进 draft。
+#:
+#: 为什么不复用 `repair_stuck`：那一条是「同一堵墙撞了两次」，停在**试过之后**；
+#: 这一条是「拿到的证据压根不够定位」，再写几版也只是换措辞。出路是**补探路/补证据**
+#: （或人给一句锚），不是改稿提示词。
+END_EVIDENCE_DEFECT = "evidence_defect"
 
 #: 探路的账本**算走完了**的标记。两种：
 #:
@@ -407,6 +420,16 @@ class SiteState(TypedDict, total=False):
 
     # ── lint / selftest ───────────────────────────────────────
     violations: list              # 打回的行（`{line, code, message, snippet}`）
+    #: ★ 2026-11-09：**每一次**协议失败的逐条原因（`{node, attempt, errors, reply_chars,
+    #: reply_sha256}`）。只增不减；不存整份回话（checkpoint 会被撑爆）。
+    #: ⚠️ 不在这里声明就进不了状态，而且**不报错**（`fix_style` 那个坑同一族）。
+    protocol_failures: list
+    #: ★ 2026-11-09：**失败原因的持久化账本**（只增不减）。每条形如
+    #: `{at, node, kind, family, defect, defect_why, failed_step, note, violations, errors}`。
+    #: `diagnosis` / `violations` 会被下一版 draft 清掉或覆盖；这一格不会 ——
+    #: 下一轮、交接包、案例账本都读得到「之前到底因为什么失败」。
+    #: ⚠️ 不在这里声明就进不了状态，而且**不报错**。
+    failure_ledger: list
     report: Optional[Report]
     candidate_path: Optional[str]  # 自测跑的那份候选产物（交付成功后会被清掉）
 
@@ -420,16 +443,39 @@ class SiteState(TypedDict, total=False):
     lint_bounces: int
     diagnoses: int
     diagnosis: Optional[dict]     # 回灌给 draft 的证据：{run, failed_step, say, note}
+    repair_family: str
+    #: ★ 2026-11-09：**失败性质**（`evidence` / `reasoning` / `environment` / `execution` /
+    #: `unknown`）。与 `repair_family` 正交：族说「哪一层」，这一格说「该修证据还是修判断」。
+    repair_defect: str
+    repair_defect_why: str
     #: ★ 2026-10-13（用户裁定「都收吧」）：**上一轮自测失败的那一处**（`"<第几步>|<那句话>"`）。
     #: 为什么另开一格、不复用 `diagnosis`：`diagnosis` 是**回灌给 draft 的证据**，
     #: draft 收下就清掉（`graph._draft` 里那两处 `"diagnosis": None`）—— 拿它判「同一处连着
     #: 两次」永远判不到（2026-10-13 实测：`same` 恒为 False、照样烧到 `selftest_cap`）。
     #: 这一格只增不减：它答的是「**是不是又撞了同一堵墙**」（`END_REPAIR_STUCK`）。
     repair_fingerprint: str
+    #: ★ 2026-11-03（案例账本）：上一次失败停下时的那几格 —— `diagnosis` 会被 `draft`
+    #: 清掉，可「这个 job 最后交付的案例属于哪一族、改的是哪一步」得活到交付那一刻。
+    #: ⚠️ 与 `repair_fingerprint` 同一条坑：不在这儿声明就进不了状态，而且不报错。
+    repair_note: str
+    repair_step: Optional[int]
+    #: `_repair_scope` 算出来的锚：`{state, index, global}`；空 dict = 整版重写。
+    repair_scope: dict
+    #: 这一版**被测/被打回时**的源码 —— 案例账本的「改之前」那一份。
+    #: 只在失败那一刻写；后续交付不会覆盖它（`failed_src` 是失败那一版的正身）。
+    failed_src: str
+    #: ★ 2026-11-03（案例账本）：这一版改稿**出发时**的源码 —— 案例里的「改之前」。
+    #: 与 `failed_src` 分工：那个是「失败那一版」，这个是「这一刀从哪一份改起」。
+    case_before_src: str
 
     # ── 收尾 ──────────────────────────────────────────────────
     visits: list                  # 走过的节点（人看路线用，§6.4）
     py_path: Optional[str]
+    #: ★ 2026-10-28：**交接包**落在哪（`<out_dir>/<site>.handoff.md`）—— 只在四个「修不动」
+    #: 的终局写（`repair_noop` / `repair_stuck` / `selftest_cap` / `lint_cap`）。
+    #: 它是**给接手的人/工具**的那一份（为什么停 + 全部证据 + 盘上那份在哪）：
+    #: 从前这些只在 checkpoint 的 msgpack 里，而那一层外面读不到。
+    handoff_path: Optional[str]
     provenance: Optional[dict]
     end_reason: str               # 上面的 END_* 之一；空 = 还没结束
     end_note: str                 # 为什么结束 —— **人话**（D16）

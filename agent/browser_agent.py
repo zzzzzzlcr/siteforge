@@ -244,6 +244,25 @@ DIFF_JUDGES = ("click", "goto")
 #: 为什么不是 5：窗口死掉之后每一次失败的代价都是白等（`MCP_TIMEOUT_S` 那个量级）。
 FAILURES_BEFORE_DEAD = 2
 
+#: ★ 2026-11-05（`job-8bfb00db0ec4` · educationdirectory，171 步）：代理在半路断了 ——
+#: `goto` 连着 11 次 `net::ERR_SOCKS_CONNECTION_FAILED`，而中间夹着的 `eval`/`observe`
+#: **仍然成功**（它们读的是已经打开的那页）⇒ 旧的「连着失败」计数每次都被清零，
+#: 窗口探针又答「活着」，于是一路烧到轮预算。这里的判据只认**网络层**那句错误原文
+#: （`ERR_SOCKS` / `ERR_PROXY` / `ERR_NAME_NOT_RESOLVED` …），不拿「连不上」这种猜出来的
+#: 形状当证据；感知类动作（observe/eval/screenshot/scroll）**不算**「站点又通了」。
+#: 停因是单独一条（`net_down`）：处置与 `window_gone` 一样（账本还在、重开窗口续跑），
+#: 但人话不能说成「窗口没了」——那不是真事。
+NET_FAILURES_BEFORE_STOP = 3
+NET_UNREACHABLE_MARKS = (
+    "err_socks_connection_failed", "err_proxy_connection_failed",
+    "err_tunnel_connection_failed", "err_connection_refused",
+    "err_connection_reset", "err_connection_closed",
+    "err_internet_disconnected", "err_name_not_resolved",
+    "err_address_unreachable", "err_timed_out",
+)
+#: 这几类动作只说明「手里这一页还读得动」，**不能**证明站点又通了。
+_PERCEPTION_ONLY = ("observe", "eval", "screenshot", "scroll")
+
 #: 计划模式里「这一轮没说清自己在第几步」那句人话（§2.4：**如实记「不知道」，不猜**）。
 #: 两种情形**同一句**：压根没报、报了个清单上没有的号 —— 系统不去分辨这两件事，
 #: 它们都只说明「这一轮它没说清自己在哪儿」。
@@ -917,7 +936,11 @@ class Journey:
                 "source": library_key(info["source"], self.data_keys),
                 "kind": info["kind"],
                 "label": info["label"],
-                "target": step.get("target") or {},
+                #: ★ 2026-11-06（`job-adf4d72c8ebd`）：与 `states()` 同一把尺子 —— 账本记的
+                #: `result.selector`（真命中的那条）提到候选最前。运行期 `form` 用的是
+                #: **FILLS 的** target（`template` 那句 `target = fill.get("target") or target`），
+                #: 保持声明顺序会把街道格的值填进姓名格（两格的声明首条都是 `input[name="name"]`）。
+                "target": _target_for_replay(step, step.get("target") or {}),
                 "fallback": list(info.get("fallback") or []),
                 #: ★ 2026-10-13：**探路那趟在真站上真填进去、页面认了的那个值** ——
                 #: 产物在「资料里没有这一格」时照它的**形状**编一个新的（`template._shaped_like`），
@@ -1016,7 +1039,13 @@ class Journey:
             for name, when in whens.items():
                 if not name or not when_holds(when, model):
                     continue
-                hit = bool(when.get("text_contains"))
+                #: ⚠️ `when` 可以是 `None`（起点那页不设判据）—— `when_holds(None, …)`
+                #: 按契约返回 True，所以能走到这一行。★ 2026-11-06（`job-adf4d72c8ebd`）：
+                #: 这里原先直接 `when.get(...)` ⇒ 一抛，`fields_by_state()` / IR 那三条
+                #: 跨状态检查（必填格没填 / 看过时空着 / 账本里填过的死条目）全都落进
+                #: `except Exception: return []` ⇒ **整道闸静默失效**，缺了必填格的产物
+                #: 照样一路走到自测，反馈只说「找不到选择器」。
+                hit = bool((when or {}).get("text_contains"))
                 if not best or (hit and not best_text):
                     best, best_text = name, hit
             out.append({
@@ -1221,6 +1250,9 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
     taken = 0
     #: 连着几次工具调用没成（成功的调用把它清零）—— 见 `FAILURES_BEFORE_DEAD`。
     fails = 0
+    #: 连着几次**站点连不上**（网络层）—— 见 `NET_FAILURES_BEFORE_STOP`：
+    #: 感知类动作成功**不清零**（它们只说明手里这一页还读得动）。
+    net_fails = 0
     #: 只有**真的有计划**才建这一份：`plan=None` / 解析不出步骤 → `None`，
     #: 位置 / 停滞那套判据一次都不参与（自由模式与今天逐字节相同）。
     watch = None
@@ -1280,7 +1312,7 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                 step_shots._safe(fn.__name__, fn, *a)
 
         def dispatch(name: str, args: dict) -> Any:
-            nonlocal taken, fails
+            nonlocal taken, fails, net_fails
             # ← 每一步之前（§6.2）。⚠️ 三条闸（人 / 成功文案 / 预算）都在这一个出口上：
             # 模型一轮里丢了五个动作时，**过线之后的那些一个都不许发**。
             _stop_or_raise(paused, journey, taken, limits, success_text, success_urls)
@@ -1358,12 +1390,23 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                 # `alive()` 是**接口**给的答案，两件事的可靠性差一个量级。
                 # 停之前那一步**照常入账**（它就是「死在哪一下」的证据）。
                 fails += 1
+                if _net_unreachable(exc):
+                    net_fails += 1
+                    if net_fails >= NET_FAILURES_BEFORE_STOP:
+                        raise _Stop(
+                            "net_down",
+                            detail="连着 %d 次导航都连不上站点（最后一次：%s）"
+                                   % (net_fails, str(exc)[:200]))
+                else:
+                    net_fails = 0
                 if fails >= FAILURES_BEFORE_DEAD and _window_is_dead(window_alive):
                     raise _Stop("window_gone",
                                 detail="连着 %d 次工具调用都没成（最后一次：%s）"
                                        % (fails, step["note"]))
                 raise        # 还给 run_tool_loop：模型也必须看见这条错（不吞）
             fails = 0
+            if name not in _PERCEPTION_ONLY:
+                net_fails = 0
             # 第 3 格 `receipt`：工具**回来了** —— 转抄它的原文（超长只标注、不过滤）。
             step["receipt"] = _receipt_of(name, raw)
             #: ★ 2026-10-15：**回执那一行里就有名字** —— 空卡那几步从它自己这条回执里捡回来
@@ -2455,6 +2498,17 @@ def _window_is_dead(alive) -> bool:
         return False
 
 
+def _net_unreachable(exc) -> bool:
+    """这次工具调用失败**是不是站点根本连不上**（网络层，不是选择器/元素）。
+
+    只认错误原文里那串浏览器给的 `net::ERR_*`（`NET_UNREACHABLE_MARKS`）——
+    不是从「连不上」三个字猜出来的形状（与 `_window_is_dead` 同一个取向：
+    猜出来的话，下一次换一句措辞就漏）。
+    """
+    text = str(exc or "").lower()
+    return any(mark in text for mark in NET_UNREACHABLE_MARKS)
+
+
 def _stop_note(reason: str, steps: int, detail: str = "") -> str:
     if reason == "paused":
         if detail:
@@ -2480,6 +2534,13 @@ def _stop_note(reason: str, steps: int, detail: str = "") -> str:
         return ("窗口没了：%s。**账本还留在盘上** —— 重开一个窗口就能从断点接着走"
                 "（`POST /job/<id>/reopen`），不用从头再探一遍。"
                 % (detail or "连着几次工具调用都没成"))
+    if reason == "net_down":
+        # ★ 2026-11-05（`job-8bfb00db0ec4`）：站点连不上 ≠ 窗口没了 —— 两句话都别混。
+        # 处置一样（账本还在，重开窗口续跑），所以归进可续跑那一档。
+        return ("站点连不上（代理/网络这一层）：%s。**账本还留在盘上** —— 重开一个窗口"
+                "就能从断点接着走（`POST /job/<id>/reopen`）；连着几趟都这样，"
+                "要查的是代理出口，不是这一趟的走法。"
+                % (detail or "连着几次导航都没连上站点"))
     if reason == "plan_stalled":
         # §2.5：人话里要带上**它卡在第几步、卡在哪一句描述上**（`detail` 就是那个）。
         return (f"计划停滞：{detail or '连着几轮没有推进'} —— 在这里停下说话，"
@@ -3283,6 +3344,14 @@ def _selectors_of(element, selector: str) -> list:
     return out
 
 
+#: 原生表单控件的**隐含 ARIA role**（observe 的 `fields` 只报 `type`，不报 role）。
+#: 为什么非记不可（2026-11-11 `job-17e9375fc2a4` · dailyhealthsm 的出生日期）：
+#: 月/日/年三个 `<select>` 只有一条 7 跳 nth 链可依，名字只写在**隔壁**（`nearby_text`）——
+#: 而 `lint._has_text_anchor` 的判据是「`nearby_text` **且** `role`」，本文件 form 这一支
+#: 把 role 写死成 `None` ⇒ 三格全被判成「只有一根会漂的地址」，改稿补出文字锚也过不了。
+_IMPLICIT_FORM_ROLES = {"select-one": "combobox", "select-multiple": "listbox"}
+
+
 def _target_of(element, action: str, selector: str, frame_id: str = "") -> dict:
     """声明式多元 target（§5.1b）：**不写死单个选择器**，文字 + 角色 + 语境优先。
 
@@ -3314,12 +3383,27 @@ def _target_of(element, action: str, selector: str, frame_id: str = "") -> dict:
         #     （见 template.py `_relocate`：**两边用同一组来源**才配得上，不然就是
         #      「账本里的名字是 placeholder 来的、那边只认 label」那类错位）。
         near = list(element.get("nearby_text") or [])
-        return {"text": None, "label": label or None, "role": None, "near": None,
+        #: ★ 2026-11-11：表单这一支原先 `"role": None` —— 于是 `<select>` 即使名字就在
+        #: 旁边，也够不着上面那条锚（真站 `job-17e9375fc2a4`：draft ↔ lint 空转到 no-op）。
+        #: 观测自己报了 role 的照旧用它；没报的按 HTML 的隐含 role 补，别的一律 None
+        #: （不许拿「输入框都是 textbox」这种猜测去放宽判据）。
+        role = str(element.get("role") or "").strip()
+        if not role:
+            role = _IMPLICIT_FORM_ROLES.get(
+                str(element.get("type") or "").strip().lower(), "")
+        return {"text": None, "label": label or None, "role": role or None, "near": None,
                 "hint": element.get("hint") or None,
                 "placeholder": element.get("placeholder") or None,
                 "nearby_text": near or None,
                 "selectors": _selectors_of(element, selector), "above_fold_only": False,
-                "frame_id": frame_id}
+                "frame_id": frame_id,
+                #: ★ 2026-11-09：探路那一刻**已有的**感知证据，别在写 target 时丢掉。
+                #: `visible` / `disabled` / `occluded_by` / `stability` 来自 observe 的
+                #: candidate；重放不读它们，但**改稿那双手**要靠它们判「证据够不够」。
+                "visible": element.get("visible"),
+                "disabled": element.get("disabled"),
+                "occluded_by": element.get("occluded_by") or None,
+                "stability": element.get("stability") or None}
     return {
         "text": (element or {}).get("text") or None,
         "role": (element or {}).get("role") or None,
@@ -3339,6 +3423,10 @@ def _target_of(element, action: str, selector: str, frame_id: str = "") -> dict:
         "selectors": _selectors_of(element, selector),
         "above_fold_only": False,
         "frame_id": frame_id,
+        "visible": (element or {}).get("visible"),
+        "disabled": (element or {}).get("disabled"),
+        "occluded_by": (element or {}).get("occluded_by") or None,
+        "stability": (element or {}).get("stability") or None,
     }
 
 #: 一个「看起来就是美国邮编」的值（5 位数字）。用在下面那种**歧义**场合。
@@ -4001,9 +4089,18 @@ def _same_address_same_state(steps: list) -> dict:
         info = step.get("result") or {}
         name = ((info.get("fill") or {}) or {}).get("name")
         sels = (step.get("target") or {}).get("selectors") or []
-        if not name or not sels:
+        #: ★ 2026-11-06（`job-adf4d72c8ebd` · homejolly）：去重认的是**真发出去、真命中的那条**
+        #: （`result.selector`），不是声明里的第一条 —— 同一格的声明地址可能先排着**别的字段**：
+        #: 那趟街道格那一步的 `target.selectors[0]` 是 `input[name="name"]`，而实际填成的是
+        #: `input.leadforms-full-street-address-input`。拿声明首条去重 ⇒ 街道格与姓名格被当成
+        #: 同一格 ⇒ 街道那一步被整步吞掉 ⇒ 产物只点一下空输入框、挑不到联想
+        #: ⇒ 自测卡在「页面上没找到联想项」⇒ 判成 `selector` 族，改两版还是同一堵墙。
+        #: 与 `_target_for_replay` 同一条依据（账本记的 `result.selector` 比声明顺序硬）。
+        hit = str(info.get("selector") or "").strip()
+        key_sel = hit or (str(sels[0]).strip() if sels else "")
+        if not name or not key_sel:
             continue
-        key = (step.get("state") or START_STATE, str(sels[0]).strip())
+        key = (step.get("state") or START_STATE, key_sel)
         if key in seen and seen[key] != name:
             alias[name] = seen[key]
         else:
@@ -5746,6 +5843,33 @@ def _stable_url(url: str) -> str:
     return f"{scheme}://{authority}/" + "/".join(segments[:-1]) + "/"
 
 
+def _same_stable_url(url: str, other: str) -> bool:
+    """这两个地址指**同一页**吗 —— **只在比较处用**，判据里的字符串一个字不动。
+
+    ★ 2026-11-13（真事 `job-eb9e6bf071f1` · accounts.theatlantic.com）：同一页被站点
+    改写成 `/products?source=nav` 与 `/products/?source=nav` ⇒ `_stable_url` 一个带尾
+    斜杠、一个不带 ⇒ 「同一页」的每一处判断（并组 / 同址跳过 / 重挑避让）全部认不出来：
+    先那一眼还在加载（正文空，只剩 URL 判据），后一眼读到了正文 ⇒ 报「判据分不开页」⇒
+    整趟 `draft_failed`。差别只是**尾斜杠**，两串逐字比永远对不上。
+
+    ⚠️ 不许改 `_stable_url` 的输出 —— 那个串会进 `when.url_contains`，改它等于把盘上
+    每一份产物的判据一起动。只在这里把尾斜杠抹平。
+    ⚠️ **子路径不算同一页**：`_stable_url` 会把末段像 id 的那一截丢掉（`/funnel/step2` →
+    `/funnel/`），只看它就会把「上级页与子页」认成同一页。所以轮换变体那一支要求
+    **短的那条不是长那条的路径前缀** —— `/funnel` 与 `/funnel/step2` 不成立；
+    `/walk-in-showers/cr640` 与 `/walk-in-showers/gt1791-1` 成立（那是真轮换）。
+    """
+    one = (url or "").split("#")[0].split("?")[0].rstrip("/")
+    two = (other or "").split("#")[0].split("?")[0].rstrip("/")
+    if not one or not two:
+        return False
+    if one == two:
+        return True
+    if _stable_url(url).rstrip("/") != _stable_url(other).rstrip("/"):
+        return False
+    return not (one.startswith(two + "/") or two.startswith(one + "/"))
+
+
 def _id_like(segment: str) -> bool:
     """这一段像不像**轮换的 id / 短码**（同一页每个变体换一个：`cr640` / `gt1791-1` / `12345`）。
 
@@ -5867,14 +5991,13 @@ def _gates_that_hold_elsewhere(pages: list) -> list:
             continue
         name = entry.get("name") or ""
         hits: list = []
-        own = _stable_url(entry.get("url") or "")
         for j, other in enumerate(pages):
             url = other.get("url") or ""
             if j == i or (other.get("name") or "") == name or url in hits:
                 continue
             #: ⚠️ **同址不算「别的页」**（见 docstring）：那是同一页的两次停留，各自在自己
             #: 那次停留里成立 —— 报它只会把一份对的产物打回（实测：47 条误拒里绝大多数是它）。
-            if own and _stable_url(url) == own:
+            if _same_stable_url(entry.get("url"), url):
                 continue
             if when_holds(when, other.get("model") or {}):
                 hits.append(url)
@@ -6109,10 +6232,9 @@ def _repair_ambiguous_whens(pages: list) -> list:
         #: 反而当选（账本原话：『原来剪到的那段（'2025 KTM SX 85 - Big Wheel'）在前面走过的那几页
         #: 上也有 ⇒ 门分不出两页 ——已经换成这一页自己的一段：'01:11:45'』）⇒ 重放时那道门
         #: 永远不成立、18 步全跳过。两处不一致的后果就是这种「检测器说没事、重挑却把门换坏」。
-        own_url = _stable_url(mine[-1].get("url") or "")
         others = [p.get("model") or {} for p in pages
                   if str(p.get("name") or "") != name
-                  and not (own_url and _stable_url(p.get("url") or "") == own_url)]
+                  and not _same_stable_url(mine[-1].get("url"), p.get("url"))]
         cand = _unique_snippet_for(mine[-1].get("model") or {}, others)
         if not cand:
             #: ★ 2026-10-21：**正文挑不出只这一页有的那一段** ⇒ 改用**精确地址**当门
@@ -6199,7 +6321,7 @@ def _read_something_but_no_pinnable_gate(prev, pg: dict, url: str) -> bool:
     """
     if prev is None or not url:
         return False
-    if _stable_url(prev.get("url") or "") != url:
+    if not _same_stable_url(prev.get("url"), pg.get("url")):
         return False
     if not (prev.get("when") or {}).get("text_contains"):
         return False                       # 上一页只有 URL ⇒ 并过去等于这一组没有门
@@ -6343,7 +6465,7 @@ def _merge_one_page_states(pages: list, steps: list) -> list:
             continue
         here = pages.index(pg)
         readable = [q for q in pages
-                    if _stable_url(q.get("url") or "") == url
+                    if _same_stable_url(q.get("url"), pg.get("url"))
                     and (q.get("when") or {}).get("text_contains")]
         #: ★ 2026-10-12（真事 `job-e7906a6c65d0` · freshstartrelief.org）：**方向先看上一页**。
         #:
@@ -6405,7 +6527,8 @@ def _merge_one_page_states(pages: list, steps: list) -> list:
     for pg in pages:
         url = _stable_url(pg.get("url") or "")
         prev = groups[-1][-1] if groups else None
-        if prev is not None and url and _stable_url(prev.get("url") or "") == url \
+        if prev is not None and url \
+                and _same_stable_url(prev.get("url"), pg.get("url")) \
                 and _page_pair_indistinguishable(prev, pg):
             groups[-1].append(pg)
         else:

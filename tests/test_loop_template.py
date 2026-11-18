@@ -188,6 +188,123 @@ console.log(eval(READ));
     tokens = [pair[0] for pair in json.loads(done.stdout)["inputs"]]
     assert tokens == ["\x02First name", "\x02Last name", "\x02Email address",
                       "\x02Phone number", "\x04zipcode", "\x04qv3-fn"], tokens
+    controls = json.loads(done.stdout)["controls"]
+    #: ★ 2026-11-11：身份字样必须跟着控件回来（label 从这里来；位置不参与）。
+    assert [c["placeholder"] for c in controls] == [
+        "First name", "Last name", "Email address", "Phone number", "ZIP code", ""], controls
+    assert all(c["tag"] == "INPUT" for c in controls), controls
+
+
+def test_the_reader_skips_review_badges_and_surfaces_address_suggestions(tmp_path):
+    """★ 2026-11-06（真事 `job-e1af552518de` · homejolly）：
+
+    ① 页面上 6 颗 `<button class="reviewBtnN">Read Review on Google</button>` 被当成
+       「这一屏的一道题」随机挑中，点完直接导航到 Google Maps ⇒ 整趟回不到漏斗；
+    ② Google Places 的 `.pac-container .pac-item` 不是 button/label/role=button ⇒
+       读取器根本读不到 ⇒ 街道那格填完也选不上（提交要的是联想里那条被选中的地址）。
+
+    这条真跑读取器 JS（node + 假 DOM）：评价徽章不许进选项；联想条目要交回来。
+    """
+    node = shutil.which("node")
+    assert node, "这条必须真跑 JS（没有 node 就是红，不是跳过）"
+    js_path = tmp_path / "read.js"
+    js_path.write_text(template_loop.DEFAULT_READ_JS, encoding="utf-8")
+    harness = tmp_path / "harness.js"
+    harness.write_text(r"""
+const fs = require('fs');
+const READ = fs.readFileSync(process.argv[2], 'utf8');
+function el(tag, cls, text) {
+  return {tagName:tag, id:'', className:cls||'', textContent:text||'', value:'',
+          offsetWidth:10, offsetHeight:10, children:[], shadowRoot:null,
+          getAttribute:function(n){ return null; },
+          querySelectorAll:function(){ return []; }};
+}
+const review = el('BUTTON', 'reviewBtn1', 'Read Review on Google');
+const quiz = el('BUTTON', 'adv-pick-btn', 'Walk-In Shower');
+const pac = el('DIV', 'pac-item', '1450 Sunset BlvdLos Angeles, CA,');
+const all = [review, quiz, pac];
+const document = {querySelectorAll:function(s){
+    if (s === 'input,select,textarea') return [];
+    if (s === 'button,label,[role=button]') return [review, quiz];
+    if (s === '.pac-container .pac-item,[role=option]') return [pac];
+    if (s === 'div,section,aside,footer,[role=dialog]') return [];
+    if (s === '*') return all;
+    return [];
+  },
+  querySelector:function(){ return null; },
+  body:{innerText:'50%'},
+  getElementById:function(){ return null; }};
+const location = {href:'https://example.test/form'};
+console.log(eval(READ));
+""", encoding="utf-8")
+    done = subprocess.run([node, str(harness), str(js_path)],
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[:400]
+    page = json.loads(done.stdout)
+    opts = page["options"]
+    assert "\u0001Walk-In Shower" in opts, opts
+    assert not any("Read Review" in o for o in opts), (
+        "评价徽章进了选项池 —— 随机挑中它会把整趟带出漏斗：%r" % (opts,))
+    assert "\u00011450 Sunset BlvdLos Angeles, CA," in opts, (
+        "地址联想没交回来 —— 街道那格永远选不上：%r" % (opts,))
+
+
+def test_the_reader_never_offers_footer_legal_links_as_answers(tmp_path):
+    """★ 2026-11-10（真事 `job-7c7c3a75a4c8` · in / findmyroofingpro）：
+
+    「We are currently matching you with our partners.」那一屏上没有真答案，页脚那几颗
+    法律链接却是普通 `<button>`（`Terms of Use` / `Do Not Sell My Personal Information` /
+    `Accessibility Statement`）⇒ 读取器把它们当成了这一屏的题，挑中一个就点 —— 页面当场
+    跳到法律页（现场看着就是「每点一次跳一次弹窗」，自测整趟停在那页上空转）。
+
+    判据：以法律页标题开头的那几句短语不进选项池；真答案照旧进。这条**真跑 JS**。
+    """
+    node = shutil.which("node")
+    assert node, "这条必须真跑 JS（没有 node 就是红，不是跳过）"
+    js_path = tmp_path / "read.js"
+    js_path.write_text(template_loop.DEFAULT_READ_JS, encoding="utf-8")
+    harness = tmp_path / "harness.js"
+    harness.write_text(r"""
+const fs = require('fs');
+const READ = fs.readFileSync(process.argv[2], 'utf8');
+function el(tag, cls, text) {
+  return {tagName:tag, id:'', className:cls||'', textContent:text||'', value:'',
+          offsetWidth:10, offsetHeight:10, children:[], shadowRoot:null,
+          getAttribute:function(){ return null; },
+          querySelectorAll:function(){ return []; }};
+}
+const terms = el('BUTTON', 'lp-legal', 'Terms of Use');
+const dns = el('BUTTON', 'lp-legal', 'Do Not Sell My Personal Information');
+const policy = el('BUTTON', 'lp-legal', 'Privacy Policy');
+const acc = el('BUTTON', 'lp-legal', 'Accessibility Statement');
+const answer = el('BUTTON', 'adv-pick-btn', 'Yes');
+const buttons = [terms, dns, policy, acc, answer];
+const document = {querySelectorAll:function(s){
+    if (s === 'input,select,textarea') return [];
+    if (s === 'button,label,[role=button]') return buttons;
+    if (s === '.pac-container .pac-item,[role=option]') return [];
+    if (s === 'div,section,aside,footer,[role=dialog]') return [];
+    if (s === 'div,section,aside,[role=dialog]') return [];
+    if (s === '*') return buttons;
+    return [];
+  },
+  querySelector:function(){ return null; },
+  body:{innerText:'We are currently matching you with our partners.'},
+  getElementById:function(){ return null; }};
+global.document = document;
+global.getComputedStyle = function(){ return {position:'static'}; };
+global.location = {href:'https://findmyroofingpro.com/'};
+console.log(eval(READ));
+""", encoding="utf-8")
+    done = subprocess.run([node, str(harness), str(js_path)],
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[:400]
+    opts = json.loads(done.stdout)["options"]
+    assert "\u0001Yes" in opts, opts
+    for junk in ("Terms of Use", "Do Not Sell My Personal Information", "Privacy Policy",
+                 "Accessibility Statement"):
+        assert "\u0001" + junk not in opts, (
+            "页脚法律链接进了选项池 —— 点中它会把整趟带去法律页：%r" % (opts,))
 
 
 def test_the_consent_hint_reads_identity_not_footer_text(tmp_path):
@@ -319,6 +436,115 @@ def test_a_select_with_no_value_picks_a_real_option_from_the_page(tmp_path, monk
     assert any(r.get("action") == "form" and r.get("ok") is True for r in rows), rows
 
 
+def test_a_hidden_native_select_is_filled_from_the_ledger_address(tmp_path, monkeypatch):
+    """★ 2026-11-11（`job-0eaad0068949` · dailyhealthsm 的 Height）：原生 `<select>` 被
+    自定义下拉藏起来 ⇒ 读取器按「可见」判，`inputs` 里没有它 ⇒ 循环永远不填 ⇒ Next
+    连点 3 次不动。账本里有地址（`FILLS[name].target.selectors`）与示例值 ⇒ 直接填。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/quiz", "head": "What is your height?", "progress": "",
+            "inputs": [], "options": [], "nextVisible": True, "nextTxt": "Next →"}
+
+    mod = _fake_common(monkeypatch, page, calls)
+    _orig = mod.CDPHelper.eval
+
+    def eval_(self, js, *a, **kw):
+        if "!!(es.length" in js:                 # `_is_select`：只认这一根地址
+            return json.dumps({"s": "select.quiz" in js})
+        if "options.length" in js:               # `_select_option_ok`：桩里这根下拉收下这个值
+            return json.dumps({"ok": "select.quiz" in js and "10" in js})
+        return _orig(self, js, *a, **kw)
+
+    mod.CDPHelper.eval = eval_
+    fills = {"height": {"kind": "select", "target": {"selectors": ["select.quiz"]}}}
+    prov = dict(PROV, entry_url="", examples={"height": "5' 10\""})
+    src = template_loop.render_loop("hidden", "Thank you", "thank-you", fills, prov)
+    path = tmp_path / "hidden.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("hidden_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    trace = tmp_path / "hidden.jsonl"
+    module.Filler("ws://x/1", str(form), "cid", trace_path=str(trace),
+                  no_report=True).run(max_steps=1)
+
+    kinds = [(sel, kw.get("select")) for sel, kw in calls["form"]]
+    assert any(sel == "select.quiz" and select == "5' 10\"" for sel, select in kinds), kinds
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert any(r.get("action") == "form" and r.get("ok") is True
+               and "height" in str(r.get("note") or "") for r in rows), rows
+
+
+
+def test_the_next_stuck_row_carries_the_screen_evidence(tmp_path, monkeypatch):
+    """★ 2026-11-11：`连着 N 次点 Next、页面还是那一屏` 那一行要带**这一屏的样子**。
+
+    现场（`job-0eaad0068949`）：诊断只拿到 `failed_step` + 一句话，`现场` 里网址/正文/
+    目标全是 null ⇒ 改稿那双手没有可改的东西，只能交回原样（`repair_noop`）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/quiz", "head": "What is your height and weight?",
+            "progress": "", "inputs": [], "options": ["\u0001Height", "\u0001Weight (lbs)"],
+            "unanswered": [], "nextVisible": True, "nextTxt": "Next →",
+            "nextDisabled": False}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop("stuck", "Thank you", "thank-you", {},
+                                    dict(PROV, entry_url=""))
+    path = tmp_path / "stuck.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("stuck_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    trace = tmp_path / "stuck.jsonl"
+    module.Filler("ws://x/1", str(form), "cid", trace_path=str(trace),
+                  no_report=True).run(max_steps=12)
+
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    stuck = [r for r in rows if "连着" in str(r.get("progress_why") or "")
+             and "Next" in str(r.get("progress_why") or "")]
+    assert len(stuck) == 1, rows
+    assert "height and weight" in str(stuck[0].get("page_sig") or "")
+    target = stuck[0].get("target") or {}
+    assert any("Height" in str(o) for o in (target.get("options") or [])), target
+    assert target.get("nextTxt") == "Next →"
+
+
+def test_the_loop_prefers_the_answer_the_ledger_clicked(tmp_path, monkeypatch):
+    """★ 2026-11-11（`job-d532fbc7eec9`）：同一题面 ⇒ 先点账本那趟点过的选项，别随机。
+
+    现场：ED treatments 多选随机点 "Penile surgery" 后 Next 6 次不动；账本点的是
+    "None of these"（同一屏直接点它，页面立刻过）。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    q = "What, if any, ED treatments have you tried?"
+    page = {"url": "https://x.test/quiz", "head": "banner " + q,
+            "progress": "", "inputs": [],
+            "options": ["\u0001None of these", "\u0001Penile surgery, injections"],
+            "nextVisible": True, "nextTxt": "Next →", "nextDisabled": False}
+    _fake_common(monkeypatch, page, calls)
+    prov = dict(PROV, entry_url="",
+                answers=[{"q": q, "picks": ["None of these"]}])
+    src = template_loop.render_loop("ledgerpick", "Thank you", "thank-you", {}, prov)
+    path = tmp_path / "ledgerpick.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("ledgerpick_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    trace = tmp_path / "ledgerpick.jsonl"
+    module.Filler("ws://x/1", str(form), "cid", trace_path=str(trace),
+                  no_report=True).run(max_steps=1)
+
+    marks = " ".join(calls.get("marks") or [])
+    assert "None of these" in marks, marks
+    assert "Penile surgery" not in marks, marks
+
+
 def test_the_reader_and_the_click_scan_pierce_shadow_roots():
     """★ 2026-09-28（`try` 那站的问卷真跑逼出来的）：控件长在 **shadow root** 里 ⇒
     `document.querySelectorAll` 看不见它们 ⇒ 读取器那一屏只读到一颗「Back」、
@@ -329,8 +555,8 @@ def test_the_reader_and_the_click_scan_pierce_shadow_roots():
     """
     src = _src()
     assert "function deepAll(" in template_loop.DEFAULT_READ_JS
-    assert "deepAll('input,select,textarea')" in template_loop.DEFAULT_READ_JS
-    assert "deepAll('button,label,[role=button]')" in template_loop.DEFAULT_READ_JS
+    assert "deepIn(ROOT,'input,select,textarea')" in template_loop.DEFAULT_READ_JS
+    assert "deepIn(ROOT,'button,label,[role=button]')" in template_loop.DEFAULT_READ_JS
     #: 点/填那两处（骨架里拼的 JS）也要穿 —— 它们各自在字符串里带一次 `deepAll(`
     assert src.count("deepAll(") >= 5, "点/填那几处没穿 shadow：%d 处" % src.count("deepAll(")
     assert "__DEEP__" not in src, "占位符没被替掉（产物里会留一串 __DEEP__）"
@@ -1045,15 +1271,19 @@ def test_an_input_that_only_has_an_id_is_filled_by_id(tmp_path, monkeypatch):
     """
     calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
     page = {"url": "https://x.test/lead", "head": "Activation", "progress": "92%",
-            "inputs": [["\u0004qv3-fn", ""]], "options": [], "nextVisible": False, "nextTxt": ""}
+            "inputs": [["\u0004qv3-fn", ""]], "options": [], "nextVisible": False, "nextTxt": "",
+            #: ★ 2026-11-11：身份是**控件语义**（label），不是「第几个格」。
+            "controls": [{"t": "\u0004qv3-fn", "value": "", "tag": "input", "type": "text",
+                          "label": "Full name", "aria": "", "placeholder": "",
+                          "name": "", "id": "qv3-fn"}]}
     #: 真站填完就留在格子里 —— 桩也得这么演，否则 2026-10-22 那条「填完回读」会如实判它没填上。
     _fake_common(monkeypatch, page, calls,
                  on_form=lambda sel, kw: page.__setitem__(
                      "inputs", [["\u0004qv3-fn", str(kw.get("value") or "")]]))
-    #: 那一站的账本里有 `fill_order`（探路时真填过的顺序）—— 这一格按它兜底填（见 `value_for` 第 ③ 档）
+    #: 旧产物那条 `fill_order` 位置兜底已经删掉 —— 这一格靠 label 认成 `full_name`。
     src = template_loop.render_loop(
         "idsite", "Thank you", "thank-you", {"full_name": {"kind": "full_name"}},
-        dict(PROV, fill_order=["full_name"]))
+        dict(PROV))
     path = tmp_path / "idsite.py"
     path.write_text(src, encoding="utf-8")
     spec = importlib.util.spec_from_file_location("id_product", path)
@@ -1523,8 +1753,13 @@ def test_the_same_next_counter_resets_when_the_screen_changes(tmp_path, monkeypa
     seen = {"n": 0}
 
     def eval_(self, js, *a, **kw):
-        if "setAttribute" in js:                    # 打标记那一段
-            return "marked"
+        #: ★ 2026-11-06：读取器现在也会 `setAttribute`（给 ROOT 打「流程本身」的标记）——
+        #: 先认「读这一屏」，再认「打标记」；反过来读那一下会被当成标记 ⇒ 整趟「页面读不到」。
+        if "nextVisible" not in js:
+            if "setAttribute" in js:
+                return "marked"                 # 打标记那一段
+            #: 别的探针（落点 / 弹层）：这一屏没有那些东西
+            return json.dumps("")
         #: ★ 2026-10-16（Task 4）：**只有「读这一屏」那一段推进场景** —— 桩原来把每一次
         #: `eval` 都当成一次读，而产物动手之前还会探好几次（落点 / 弹层）⇒ 场景被那些探针
         #: 推着走，三屏提前走完 ⇒ 第 6 步撞上「连着 3 次点 Next、页面还是那一屏」那道闸
@@ -1552,6 +1787,65 @@ def test_the_same_next_counter_resets_when_the_screen_changes(tmp_path, monkeypa
     nexts = [r for r in rows if r.get("note") == "Next"]
     assert len(nexts) >= 4, \
         "换了两屏之后就被那道闸收摊了（计数器跨屏累加）：%r" % [(r.get("step"), r.get("target")) for r in nexts]
+    assert not any(r.get("action") == "click" and r.get("ok") is False for r in rows), rows
+
+def test_screens_that_share_a_banner_are_not_read_as_one_screen(tmp_path, monkeypatch):
+    """★ 2026-11-11 真事（`job-209dcbda530d` · dailyhealthsm / standardmeds 问卷）：
+    每一屏的正文都以同一条横幅开头（`256-bit encrypted. Discreet billing & shipping. …`），
+    而穿插在题目之间的**说明屏**没有选项、没有进度、没有输入框 ⇒ 旧判据（head 只取前 60 字
+    + 选项 + 进度 + 格子）在**不同的说明屏**上是同一个字符串 ⇒ 计数器跨屏累加，第三下
+    Next 就被判「页面还是那一屏」收摊 —— 而页面其实每一屏都换了。
+
+    这条钉住它：四张只有横幅相同、正文不同的说明屏，每一屏的 Next 都得点得出去。
+    """
+    banner = ("256-bit encrypted. Discreet billing & shipping. US-licensed providers "
+              "Real Doctors. Real Medicine Standard Meds Excellent 4.5 ")
+    screens = [
+        {"url": "https://www.standardmeds.com/quiz/trishot-v1", "progress": "",
+         "inputs": [], "options": [], "nextVisible": True, "nextTxt": "Next →",
+         "head": banner + "← Standard Meds Fast Acting / Long Lasting 10-15 MINUTES Next →"},
+        {"url": "https://www.standardmeds.com/quiz/trishot-v1", "progress": "",
+         "inputs": [], "options": [], "nextVisible": True, "nextTxt": "Next →",
+         "head": banner + "← You deserve a solution that starts in minutes Next →"},
+        {"url": "https://www.standardmeds.com/quiz/trishot-v1", "progress": "",
+         "inputs": [], "options": [], "nextVisible": True, "nextTxt": "Next →",
+         "head": banner + "← Real clinicians, real pharmacy Next →"},
+        {"url": "https://www.standardmeds.com/quiz/trishot-v1", "progress": "",
+         "inputs": [], "options": [], "nextVisible": True, "nextTxt": "Next →",
+         "head": banner + "← Discreet billing and shipping, straight to your door Next →"},
+    ]
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    mod = _fake_common(monkeypatch, screens[0], calls)
+    seen = {"n": 0}
+
+    def eval_(self, js, *a, **kw):
+        #: 只让「读这一屏」那一段推进场景（同上面那条用例的认法）。
+        if "nextVisible" not in js:
+            return "marked" if "setAttribute" in js else json.dumps("")
+        seen["n"] += 1
+        return json.dumps(screens[min(seen["n"] - 1, len(screens) - 1)])
+
+    mod.CDPHelper.eval = eval_
+    #: 这一条只量「同一屏」判据，不量点完等多久。
+    monkeypatch.setenv("SITEFORGE_NEXT_SETTLE", "0")
+    src = template_loop.render_loop("selsite", "Thank you", "thank-you", {}, dict(PROV))
+    path = tmp_path / "interstitials.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("interstitials_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.Filler._dly = lambda self, a, b: None
+    trace = tmp_path / "interstitials.jsonl"
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    module.Filler("ws://x/1", str(form), "cid",
+                  trace_path=str(trace), no_report=True).run(max_steps=5)
+
+    rows = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    nexts = [r for r in rows if r.get("note") == "Next"]
+    assert len(nexts) >= 4, \
+        "不同的说明屏被读成同一屏了（第三下 Next 就收摊）：%r" % [
+            (r.get("step"), r.get("target")) for r in nexts]
     assert not any(r.get("action") == "click" and r.get("ok") is False for r in rows), rows
 
 
@@ -2426,7 +2720,7 @@ def test_value_for_dob_rule_works_in_loop(tmp_path, monkeypatch):
     assert 18 <= age <= 68, (got, age)
 
 
-def test_value_for_rule_survives_the_index_fallback(tmp_path, monkeypatch):
+def test_value_for_rule_uses_field_identity_not_index_fallback(tmp_path, monkeypatch):
     calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
     page = {"url": "https://funnel.test/quiz", "head": "Q", "progress": "",
             "inputs": [], "options": [], "nextVisible": True, "nextTxt": "Continue"}
@@ -2444,10 +2738,13 @@ def test_value_for_rule_survives_the_index_fallback(tmp_path, monkeypatch):
     obj = module.Filler.__new__(module.Filler)
     obj.form_data = {"password": "weak"}
     obj._rule_values = {}
-    got = obj.value_for("\u0002Unrelated", {}, 0)
+    #: 认得出这一格（FILLS 的 label 命中）⇒ 规则照旧生效。
+    got = obj.value_for("\u0002Password", {}, 0)
     assert got != "weak", got
     assert re.fullmatch(r"^(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[!@#$%^&*]).{8,}$",
                         got), got
+    #: 认不出（既不是字段、FILLS 也没命中）⇒ **不再按第 0 格兜底**。
+    assert obj.value_for("\u0002Unrelated", {}, 0) == ""
 
 
 def test_a_pick_hint_wins_over_the_dice(tmp_path, monkeypatch):
@@ -2514,6 +2811,97 @@ def test_an_autocomplete_suggestion_matching_the_filled_zip_wins(tmp_path, monke
     assert filler.pick_option(list(pool), [["\u0004email", "a@b.test"]]) in pool
 
 
+def test_an_address_suggestion_matching_the_filled_street_wins(
+        tmp_path, monkeypatch):
+    """★ 2026-11-06（真事 `job-e1af552518de` · homejolly）：街道那格填完，Google Places
+    弹 `.pac-container .pac-item`；随机挑会挑到别的条目（或者干脆挑回一道题）。
+
+    判据：与已填值**开头那个门牌号**相同、且长得像地址（带逗号 / 街道后缀）的那一条先选。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    _fake_common(monkeypatch, {"url": "", "head": "", "inputs": [], "options": []}, calls)
+    src = template_loop.render_loop("addrsite", "Thank you", "thank-you", {},
+                                    dict(PROV, entry_url=""))
+    path = tmp_path / "addrsite.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("addrsite_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    filler = module.Filler("ws://x/1", str(form), "cid", no_report=True)
+
+    pool = ["\u00011450 Sunset BlvdLos Angeles, CA,",
+            "\u0001New Walk-In Shower", "\u0001Yes"]
+    token = "\u0008leadforms-full-street-address-input"
+    for _ in range(20):
+        assert filler.pick_option(list(pool), [[token, "1450 Sunset Blvd"]]) == pool[0], (
+            "地址联想没按已填的街道选 —— 提交要的是从联想里选中的那一条")
+
+    #: 已填值不是地址（没有门牌号）⇒ 照旧在池子里挑，不许硬塞。
+    assert filler.pick_option(list(pool), [[token, "Walk-In Shower"]]) in pool
+
+
+def test_a_role_option_suggestion_can_be_marked_and_clicked(tmp_path, monkeypatch):
+    """★ 2026-11-10（真事 `job-7c7c3a75a4c8` · in / findmyroofingpro）：
+
+    读取器从 `[role=option]` 交回地址联想（`<li class="suggestionItem" role="option">`），
+    而按文字打标记那一侧的扫描集里**没有** `[role=option]` ⇒ 填完 Address 之后每轮都是
+    「页面上没找到那段文字」：地址永远选不上。
+
+    钉的是**两边同一套扫描集**：读取器交回来的每一种选项族，打标记那一侧都得认。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    _fake_common(monkeypatch, {"url": "", "head": "", "inputs": [], "options": []}, calls)
+    src = template_loop.render_loop("optsite", "Thank you", "thank-you", {},
+                                    dict(PROV, entry_url=""))
+    path = tmp_path / "optsite.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("optsite_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    filler = module.Filler("ws://x/1", str(form), "cid", no_report=True)
+
+    assert filler.click("\u00011100 North Crescent Drive, Beverly Hills, CA, US") is True
+    marks = [js for js in calls.get("marks", []) if "setAttribute('data-sf-pick'" in js]
+    assert marks, "没走「按文字打标记」那条路"
+    scan = marks[-1]
+    for sel in ("[role=option]", "[class*=select-item]", "[class*=pac-item]"):
+        assert sel in scan, (
+            "打标记的扫描集缺 %s —— 读取器交回来的选项会被判成「页面上没找到」：%r"
+            % (sel, scan))
+    assert calls["click"] == ['[data-sf-pick="1"]'], calls["click"]
+
+
+def test_a_class_only_input_is_filled_by_its_class(tmp_path, monkeypatch):
+    """★ 2026-11-06（真事 `job-e1af552518de` · homejolly）：街道那格**没有** id / name /
+    placeholder / aria-label，只有 class —— 读取器原来直接丢掉它，循环永远填不到街道。
+
+    判据：读取器交 `\\x08<最后一个够长的 class>`，填那一侧按 `[class~=…]` 找。
+    """
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/form", "head": "Your details",
+            "inputs": [], "options": []}
+    _fake_common(monkeypatch, page, calls)
+    src = template_loop.render_loop("classsite", "Thank you", "thank-you", {},
+                                    dict(PROV, entry_url=""))
+    path = tmp_path / "classsite.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("classsite_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    filler = module.Filler("ws://x/1", str(form), "cid", no_report=True)
+
+    token = "\u0008leadforms-full-street-address-input"
+    assert filler.fill(token, "1450 Sunset Blvd") is True, filler._fill_why
+    sels = [sel for sel, _kw in calls["form"]]
+    assert '[class~="leadforms-full-street-address-input"]' in sels, sels
+
+
 def test_a_product_without_hints_says_so_and_picks_as_before(tmp_path, monkeypatch):
     """**负控**：不配 `pick_hints` 的产物，那一格是**空表**，挑法一个字不变。"""
     calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
@@ -2563,15 +2951,22 @@ def test_a_disabled_next_with_filled_fields_gets_the_value_retyped(tmp_path, mon
     form = tmp_path / "form.json"
     form.write_text("{}", encoding="utf-8")
     module.NUDGE_WAIT_SECONDS = 0          # 不真等（这条钉的是手法，不是时长）
+    module.NUDGE_CLEAR_GAP = 0
     filler = module.Filler("ws://x/1", str(form), "cid", no_report=True)
     filler.run(max_steps=5)
 
     assert calls.get("events"), ("Next 是禁用态、格子又有值 ⇒ 要用原生 setter + 事件"
                                  "把值重打一遍，干点 Next 只会空转到收摊：%r"
                                  % (calls["click"],))
-    js = calls["events"][0]
-    assert "zipcode" in js, js[:400]          # 找的是那一格（`\x04zipcode`）
-    assert '"10001"' in js, "重打得是**同一个值**，不是现编一个新值：%s" % js[:400]
+    js_list = calls["events"]
+    clears = [i for i, js in enumerate(js_list) if 'value=""' in js]
+    sets = [i for i, js in enumerate(js_list) if 'value="10001"' in js]
+    assert "zipcode" in js_list[0], js_list[0][:400]   # 找的是那一格（`\x04zipcode`）
+    assert clears and sets, (
+        "重打必须**先清空再写回**：同值直接写时站点 onChange 判「没变」⇒ 不重发查询：%r"
+        % [js[:120] for js in js_list])
+    assert clears[0] < sets[0], "先清空、后写回 —— 顺序反了等于没清：%r" % (
+        [js[:120] for js in js_list],)
     assert "nextDisabled" in template_loop.DEFAULT_READ_JS, (
         "读那一页的 JS 得把「Next 是不是禁用」交回来 —— 不然循环分不出「点了会动」还是白点")
 
@@ -2616,13 +3011,17 @@ def test_a_disabled_next_is_retyped_again_on_later_rounds(tmp_path, monkeypatch)
     filler._set_value_events = _retype
     filler.read = lambda: dict(page)          # 每次读回来 Next 还是禁用
     module.NUDGE_WAIT_SECONDS = 0             # 不真等 —— 这条钉的是次数
+    module.NUDGE_CLEAR_GAP = 0
 
     assert filler._nudge(page) is True
     assert filler._nudge(page) is True, (
         "同一屏第二次就没再打 —— 真站那一下是偶发的，只给一次机会等于不给")
     assert filler._nudge(page) is True
     assert filler._nudge(page) is False, "超过上限还在打 —— 会一直占着这一屏"
-    assert retypes == [("\u0004zipcode", "10001")] * 3, retypes
+    retype = ("\u0004zipcode", "10001")
+    clear = ("\u0004zipcode", "")
+    assert retypes == [clear, retype] * 3, (
+        "每次重打都要先清空再写回（同值直写不会重发站点查询）：%r" % (retypes,))
 
 
 def test_after_clicking_next_it_waits_for_the_page_to_change(tmp_path, monkeypatch):
@@ -2858,3 +3257,159 @@ def test_the_task_id_comes_from_the_correlation_id_when_the_runner_does_not_pass
     assert seen, "整趟一条都没上报"
     assert all(t == "26956985" for t, _s, _r in seen), seen
     assert any(s == "step" for _t, s, _r in seen), seen
+
+
+#：★ 2026-11-11（用户裁定：字段匹配只认**身份 / 语义 / 已验证的证据**）：
+#：下面这几条钉住「结构化字段知识库」的四件事 —— 语义认字段、绑定优先、
+#：不按位置猜、认不出就不填。
+
+
+def test_field_identity_comes_from_semantics_not_from_position(tmp_path, monkeypatch):
+    """字段身份只看控件自己的字样 —— 位置/序号/DOM 路径不参与。"""
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    _fake_common(monkeypatch, {}, calls)
+    src = template_loop.render_loop("ids", "Thank you", "thank-you", {}, dict(PROV))
+    path = tmp_path / "ids.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("ids_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    cases = [
+        ({"tag": "input", "type": "number", "label": "Weight (lbs)"}, "weight"),
+        ({"tag": "select", "type": "select-one", "label": "Height"}, "height"),
+        ({"tag": "input", "type": "text", "label": "Email address"}, "email"),
+        ({"tag": "input", "type": "text", "label": "Full name"}, "full_name"),
+        ({"tag": "select", "type": "select-one", "label": "Year"}, "dob_year"),
+        ({"tag": "input", "type": "text", "label": "ZIP code"}, "postcode"),
+        ({"tag": "input", "type": "text", "placeholder": "e.g. 180"}, ""),
+        ({"tag": "input", "type": "text", "label": "Mystery"}, ""),
+    ]
+    for attrs, want in cases:
+        assert module.field_id_of(attrs) == want, (attrs, module.field_id_of(attrs))
+
+
+def test_a_bound_control_keeps_its_own_ledger_value(tmp_path, monkeypatch):
+    """探路真收下过的值跟着**控件身份**走 —— 体重不会拿到 Year 的 1985。"""
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/quiz", "head": "Height and weight", "inputs": [],
+            "controls": [{"t": "\u0002e.g. 180", "value": "", "tag": "input",
+                          "type": "number", "label": "Weight (lbs)",
+                          "aria": "", "placeholder": "e.g. 180", "name": "", "id": ""}],
+            "options": [], "nextVisible": False, "nextTxt": ""}
+    _fake_common(monkeypatch, page, calls)
+    prov = dict(PROV, bindings=[
+        {"name": "number", "field": "weight", "operation": "type", "value": "180",
+         "selectors": ['input[placeholder="e.g. 180"]'],
+         "control": {"label": "", "placeholder": "e.g. 180", "hint": "", "aria": ""}},
+        {"name": "number-3", "field": "dob_year", "operation": "select", "value": "1985",
+         "selectors": ["select.year"],
+         "control": {"label": "Year", "placeholder": "", "hint": "", "aria": ""}},
+    ])
+    src = template_loop.render_loop("kbsite", "Thank you", "thank-you", {}, prov)
+    path = tmp_path / "kbsite.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("kb_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    obj = module.Filler("ws://x/1", str(form), "cid", no_report=True)
+
+    got = obj.value_for("\u0002e.g. 180", page)
+    assert got == "180", "体重拿到了别的字段的值：%r" % (got,)
+    assert "已验证" in obj._value_from, obj._value_from
+
+
+def test_a_hidden_select_binding_is_filled_by_identity(tmp_path, monkeypatch):
+    """读取器看不见的原生 select 也按**绑定**填 —— 值先过选项成员校验。"""
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/quiz", "head": "Q", "inputs": [], "controls": [],
+            "options": [], "nextVisible": False, "nextTxt": ""}
+    _fake_common(monkeypatch, page, calls)
+    prov = dict(PROV, bindings=[
+        {"name": "select_one", "field": "height", "operation": "select",
+         "value": "5' 10\"", "selectors": ["select.height"],
+         "control": {"label": "Height", "placeholder": "", "hint": "", "aria": ""}},
+    ])
+    src = template_loop.render_loop("hsite", "Thank you", "thank-you", {}, prov)
+    path = tmp_path / "hsite.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("height_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    obj = module.Filler("ws://x/1", str(form), "cid", no_report=True)
+
+    filled = []
+    obj._is_select = lambda sel: sel == "select.height"
+    obj._select_option_ok = lambda sel, value: value == "5' 10\""
+    obj._fill_and_check = lambda token, sel, value: (
+        filled.append((token, sel, value)) or True)
+    assert obj._fill_known_select(page, 1) is True
+    #: ★ 2026-11-11（真事 `job-7d8febdd4879`）：站点把 option 的 value 缩成 `FL` /
+    #: `bachelors`，账本记的是 `Florida` / `Bachelor's degree` —— 只要这根 select
+    #: **真有选中项**就不能再重填（否则每一轮都填它，180 步空转）。
+    obj._select_value = lambda sel: "FL"
+    filled.clear()
+    assert obj._fill_known_select(page, 2) is False
+    assert filled == [], "已经选中的 select 又被重填了：%r" % (filled,)
+
+
+def test_a_verified_consent_checkbox_is_checked_before_anything_else(tmp_path, monkeypatch):
+    """★ 2026-11-11（真事 `job-7d8febdd4879`）：必选同意框没勾 ⇒ 提交按钮被校验拦住，
+    循环把 CTA 当选项反复点、184 步空转。探路**真勾过**它（账本 `kind=check`）⇒ 先勾。"""
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/quiz", "head": "Contact", "inputs": [], "controls": [],
+            "options": [], "nextVisible": False, "nextTxt": ""}
+    _fake_common(monkeypatch, page, calls)
+    prov = dict(PROV, bindings=[
+        {"name": "consent", "field": "", "operation": "check", "value": "true",
+         "selectors": ["input.consent"],
+         "control": {"label": "I have read and understand", "placeholder": "",
+                     "hint": "", "aria": ""}},
+    ])
+    src = template_loop.render_loop("cbsite", "Thank you", "thank-you", {}, prov)
+    path = tmp_path / "cbsite.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("cb_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    obj = module.Filler("ws://x/1", str(form), "cid", no_report=True)
+    obj._checked_state = lambda sel: False
+
+    assert obj._fill_from_binding_check(1) is True
+    assert calls["form"] == [("input.consent", {"check": "true"})], calls["form"]
+    #: 勾过了就不重复勾（同一屏只做一次）。
+    obj._checked_state = lambda sel: True
+    assert obj._fill_from_binding_check(2) is False
+
+
+def test_no_field_is_filled_when_nothing_identifies_it(tmp_path, monkeypatch):
+    """认不出（或没有证据）⇒ **不填** —— 绝不再按「第几个格」兜底。"""
+    calls = {"click": [], "form": [], "nav": [], "scroll": [], "report": []}
+    page = {"url": "https://x.test/quiz", "head": "Q", "inputs": [],
+            "controls": [{"t": "\u0004mystery", "value": "", "tag": "input",
+                          "type": "text", "label": "Mystery field", "aria": "",
+                          "placeholder": "", "name": "", "id": "mystery"}],
+            "options": [], "nextVisible": False, "nextTxt": ""}
+    _fake_common(monkeypatch, page, calls)
+    prov = dict(PROV, fill_order=["phone"], examples={"phone": "07880539011"},
+                bindings=[{"name": "phone", "field": "phone", "operation": "type",
+                           "value": "07880539011", "selectors": ["input.phone"],
+                           "control": {"label": "Phone", "placeholder": "",
+                                       "hint": "", "aria": ""}}])
+    src = template_loop.render_loop("usite", "Thank you", "thank-you", {}, prov)
+    path = tmp_path / "usite.py"
+    path.write_text(src, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("unknown_product", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
+    obj = module.Filler("ws://x/1", str(form), "cid", no_report=True)
+
+    assert obj.value_for("\u0004mystery", page) == ""
+    assert "不猜" in obj._value_from, obj._value_from

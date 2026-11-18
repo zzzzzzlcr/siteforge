@@ -66,9 +66,9 @@ class _FakeResp:
         return False
 
 
-def _client(*, fmr_client, raise_server_exceptions=False):
+def _client(*, fmr_client, raise_server_exceptions=False, **kw):
     """一个 app：**桩掉 FMR 那一层**（不打真网络），别的都按既有兜底来。"""
-    return TestClient(service.create_app(failures_reader=fmr_client, window=StubWindow()),
+    return TestClient(service.create_app(failures_reader=fmr_client, window=StubWindow(), **kw),
                       raise_server_exceptions=raise_server_exceptions)
 
 
@@ -192,6 +192,84 @@ def test_the_site_key_that_does_not_exist_says_so_in_the_error():
     said = r.json()["detail"]
     assert "stockmarketjunkie.com" in said, said
     assert "不认识" in said or "名字" in said, said
+
+
+class _KeyedBackend:
+    """按**站点键**给不同答复的桩（不打真网络）。`known` = 后端配置表 `formConfig/sites`。"""
+
+    def __init__(self, answers: dict, known=()):
+        self.answers = dict(answers)
+        self.known = list(known)
+        self.calls = []
+
+    def fetch_failures(self, site, since=None, limit=None, debug=False):
+        self.calls.append((site, bool(debug)))
+        got = self.answers.get(site)
+        if isinstance(got, Exception):
+            raise got
+        if got is None:
+            raise fmr.FmrRefused("读不了失败记录：那个站它不认识", status=404)
+        return list(got)
+
+    def form_config_sites(self):
+        return [{"site": s, "config_id": 1, "status": 1} for s in self.known]
+
+
+def test_the_repair_search_falls_back_to_another_full_path_of_the_same_domain():
+    """★ 2026-11-05（用户：「按几个域名全路径，单域名都要去对应搜索」）：
+    排行榜那串键后端 404 时，按**同域**别的 full-path 键再搜；找到就用那一串，
+    并且响应里 `site` 是**真用的键**（页面拿它去取证据/开修）。
+    """
+    sib = "www.gowizard.com/auto-warranty/v2"
+    rows = [dict(MEASURED_ROWS[0], site=sib)]
+    back = _KeyedBackend({
+        SITE_KEY: fmr.FmrRefused("读不了失败记录：那个站它不认识", status=404),
+        sib: rows,
+    }, known=[SITE_KEY, sib])
+
+    r = _failures(_client(fmr_client=back), site=SITE_KEY, type="debug")
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["site"] == sib and got["requested_site"] == SITE_KEY, got
+    assert [row["task_id"] for row in got["failures"]] == ["26034602"], got
+    assert sib in got["say"] and "同一个域名下" in got["say"], got["say"]
+    #: 两次读都带 `type=debug`（修复那条路一直这么读 —— 用户点名要的）
+    assert back.calls == [(SITE_KEY, True), (sib, True)], back.calls
+
+
+def test_a_sibling_search_that_finds_nothing_is_still_unmeasured():
+    """同域别的键也没有失败 ⇒ **仍然 502**（不是 200 + 空列表），并把试过哪些键摆出来。"""
+    sib_a = "www.gowizard.com/auto-warranty/a"
+    sib_b = "www.gowizard.com/auto-warranty/b"
+    back = _KeyedBackend({
+        SITE_KEY: fmr.FmrRefused("读不了失败记录：那个站它不认识", status=404),
+        sib_a: [],
+        sib_b: fmr.FmrRefused("读不了失败记录：那个站它不认识", status=404),
+    }, known=[SITE_KEY, sib_a, sib_b])
+
+    r = _failures(_client(fmr_client=back), site=SITE_KEY, type="debug")
+    assert r.status_code == 502, r.text
+    said = r.json()["detail"]
+    assert "量不到" in said, said
+    assert sib_a in said and sib_b in said, said
+    assert "failures" not in r.text, r.text
+
+
+def test_a_ticket_this_machine_already_repaired_is_marked(tmp_path):
+    """★ 2026-11-05（用户：「已修复过的没在面板标记吗？这样运营会有歧义」）：
+    本机修复账里有的单号 ⇒ 那一行带 `repaired_say`（已上传/还没上传说清）。"""
+    out_dir = tmp_path / "forms" / "sites"
+    service.write_repairs(out_dir, {SITE_KEY: {
+        "job_id": "job-x", "task_id": "26034602", "at": "2026-11-05T17:41:25+08:00",
+        "uploaded": True, "uploaded_by": "lcr",
+        "uploaded_at": "2026-11-05T18:00:00+08:00"}})
+    rec = Recorder(envelope(MEASURED_ROWS))
+    r = _failures(_client(fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec),
+                          out_dir=str(out_dir)), site=SITE_KEY)
+    assert r.status_code == 200, r.text
+    rows = {x["task_id"]: x for x in r.json()["failures"]}
+    assert "已上传" in rows["26034602"]["repaired_say"], rows["26034602"]
+    assert rows["26033398"]["repaired_say"] == "", rows["26033398"]
 
 
 # ── ③ 免费的那道闸 + 窗口透传 ──────────────────────────────────────────────

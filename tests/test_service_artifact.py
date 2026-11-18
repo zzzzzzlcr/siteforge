@@ -1178,37 +1178,30 @@ def test_the_live_cell_says_nothing_about_a_file_when_there_is_none(tmp_path):
     assert "撞上限" in cell["say"], cell["say"]
 
 
-def test_the_way_out_says_which_road_to_take_not_just_that_it_is_your_call(tmp_path):
+def test_the_way_out_says_which_road_to_take_not_just_that_it_is_your_call():
     """★ 2026-10-10（用户：「反馈回的信息不足，运营压根不知道要咋操作」）。
 
-    运营卡住的那一句（原文，他贴过来的）：
+    停在闸上（`end_reason` 空）时两条路都在：先验完 / 现在就传，并说清哪条传的是验过的。
 
-        这一趟**已经写下了一版 py**，但它**还没跑完**（它现在是「在等人回话」）—— 再往前走，这一版还会被改。
-        （这一趟**确实写下了这一版**：把「照样传这一版」勾上再预检一次，就能拿它上传 ——
-         **那是你自己的判断，服务不替你做**。）
-
-    —— 最后那半句把决定**推**给运营，却没给他**做决定要的那件东西**：他面前摆着两条路
-    （按「继续」往下走 / 现在就传），而**哪条稳、各要付什么代价**，一句都没说。
-    能读到的只有「你自己判断」⇒ 他就卡在这儿，回来找人。
-
-    ⚠️ 这两条路系统**自己就是这么设计的**，它全知道 —— 差的只是**把它说出来**。
-    这一条钉三件：① 两条路都在屏上；② **哪条传上去的是验过的**说清了；
-    ③ 「只推决定、不给料」那种写法（「那是你自己的判断，服务不替你做」）不许回来。
+    ★ 2026-11-05（8100 实测 `job-94382eaa290a`）：**到头了**（`end_reason` 非空）时
+    「先按继续」那条路**不在**（终态 `/reply` 回 409）—— 只许留真能按的：
+    照样传 / 重新来一遍。指回「继续」就是又一条死路。
     """
     kept = "# KEPT EVEN THOUGH IT NEVER GOT CHECKED\n"
-    client = _client(tmp_path, _factory(
-        reason=END_DRAFT_FAILED, note="先别写 py：这一趟的账本还编译不出来。",
-        extra={"src": kept, "py_path": str(_out_dir(tmp_path) / ("%s.py" % SITE)),
-               "unverified": ["结构检查没过（这一版**照样留给运营**，可以「照样传」去试）：…"]}))
-    job_id, _view = _run_to_the_end(client, tmp_path)
-    said = _live(client, job_id)["artifact"]["say"]
+    values = {"src": kept, "py_path": "/tmp/kept.py",
+              "unverified": ["结构检查没过（这一版**照样留给运营**，可以「照样传」去试）：…"]}
+    state = {"bytes": None, "say": "这一版还没验完。"}
 
+    parked = service._artifact_say(dict(values), state)
     #: ① 两条路都在（一条是「先继续」，一条是「现在就传」）
-    assert "继续" in said, "没给「先让它验完」那条路：%r" % said
-    assert "照样传这一版" in said, "没给「现在就传」那条路：%r" % said
-    #: ② 两条路的**代价**说清了 —— 一条传的是验过的、一条传的是没验过的
-    assert "验过" in said, "没说清哪一条传上去的是**验过**的那一版：%r" % said
-    assert "没验过" in said, "没说清「现在就要」那条传上去的是**没验过**的：%r" % said
-    #: ③ 只推决定、不给料
-    assert "那是你自己的判断，服务不替你做" not in said, (
-        "又把决定推回去、不给做决定要的那两样（两条路 + 各自代价）：%r" % said)
+    assert "继续" in parked and "照样传这一版" in parked, parked
+    #: ② 两条路的**代价**说清了
+    assert "验过" in parked and "没验过" in parked, parked
+    #: ③ 只推决定、不给料那种写法不许回来
+    assert "那是你自己的判断，服务不替你做" not in parked, parked
+
+    ended = service._artifact_say(dict(values, end_reason=END_DRAFT_FAILED), state)
+    assert "已经到头了" in ended and "照样传这一版" in ended, ended
+    assert "没验过" in ended and "重新来一遍" in ended, ended
+    assert "· **先按「继续」**" not in ended, (
+        "终态又指回「继续」—— `/reply` 会回 409：%r" % ended)

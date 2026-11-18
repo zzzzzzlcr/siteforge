@@ -114,6 +114,22 @@ def _field_handles(field: dict) -> tuple:
             {_norm_text(field.get(k)) for k in ("label", "hint")} - {""})
 
 
+def _correlatable(row: dict) -> bool:
+    """这一格**说得清是哪一格**吗 —— 有 label/hint，或者选择器不是低稳定那类。
+
+    ★ 2026-11-06（`job-adf4d72c8ebd` · homejolly）：街道格在 `observe` 里只有一根
+    `nth-of-type` 长链（`stability=low`）、没有 label/hint；而填它的那一步用的是
+    `input.leadforms-full-street-address-input` —— 同一元素、两种写法，`_covers` 对不上。
+    旧行为会报「必填格一步都没填」，而产物其实填了 ⇒ **错误反馈**（运营看到的是
+    「结构检查没过」，改稿却不知道该改哪）。
+    这一类格**认不出**（报出来人也只能看到一串 nth 链）⇒ 按这条门一贯的
+    「没有证据就不拦」不报。有名字的（Town/City 那种）照旧报 —— 那才是这条门的正身。
+    """
+    if str(row.get("label") or "").strip() or str(row.get("hint") or "").strip():
+        return True
+    return str(row.get("stability") or "").strip().lower() != "low"
+
+
 def _step_handles(step: dict) -> tuple:
     """**一步**身上能拿来认它的两样东西：`(选择器集合, 名字集合)`。
 
@@ -230,7 +246,8 @@ def uncovered_required(states: list, journey) -> list:
     out: list = []
     for where, rows in fields.items():
         for row in rows:
-            if not row.get("required") or _step_covers(row, every_step):
+            if (not row.get("required") or not _correlatable(row)
+                    or _step_covers(row, every_step)):
                 continue
             name = ""
             for key, info in fills.items():
@@ -352,7 +369,7 @@ def _field_problems(states: list, journey) -> list:
     for where, rows in seen_fields.items():
         for row in rows:
             key = browser_agent._field_id(row)
-            if not any(key) or _step_covers(row, every_step):
+            if not any(key) or not _correlatable(row) or _step_covers(row, every_step):
                 continue
             if (seen_last.get(key) or row).get("empty"):
                 blank.append((where, row))

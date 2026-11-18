@@ -59,6 +59,27 @@ DEEP_JS = ("function deepAll(sel){var out=[];"
 DEFAULT_READ_JS = r"""(function(){""" + DEEP_JS + r"""
   function vis(e){return e && e.offsetWidth>0 && e.offsetHeight>0;}
   function txt(e){return ((e.textContent||'').replace(/\s+/g,' ').trim());}
+  // ★ 2026-11-06（真事 `job-e1af552518de` · homejolly）：**弹层开着时只读弹层** ——
+  //   原来整页一起读：弹层里的题与弹层后面的落地页 CTA 混在一个池子里 ⇒ 循环把
+  //   「Check Prices Now」（被弹层盖着）当 Next 连点三次、页面纹丝不动就收摊。
+  //   判据：可见 + 身份里有 dialog/modal 或 role=dialog + 盖住 ≥80% 视口；取面积最大那个。
+  function deepIn(root,sel){var out=[];function walk(r){r.querySelectorAll(sel).forEach(function(e){out.push(e);});
+    var all=r.querySelectorAll('*');for(var i=0;i<all.length;i++){if(all[i].shadowRoot)walk(all[i].shadowRoot);}}
+    walk(root);return out;}
+  function modalRoot(){var best=null,ba=0;
+    deepAll('div,section,aside,[role=dialog]').forEach(function(e){
+      if(!vis(e)||!e.getBoundingClientRect)return;
+      var lab=String(e.id||'')+' '+String(e.className||'')+' '+String((e.getAttribute&&e.getAttribute('aria-label'))||'');
+      var sem=/(dialog|modal)/i.test(lab)||!!(e.getAttribute&&(e.getAttribute('role')==='dialog'||String(e.getAttribute('aria-modal'))==='true'));
+      if(!sem)return;
+      var r=e.getBoundingClientRect();
+      if(r.width<window.innerWidth*0.8||r.height<window.innerHeight*0.8)return;
+      var ar=r.width*r.height; if(ar>ba){best=e;ba=ar;}});
+    return best;}
+  var ROOT=modalRoot()||document;
+  //: ★ 2026-11-06：这个模态**就是这一屏**（读取器在它里面读题/读格）⇒ 打上「流程本身」的
+  //: 标记 —— `clear_popups` 那一侧靠它认出「这颗 × 不是遮挡」。跟 DOM 走，关掉即消失。
+  if(ROOT!==document&&ROOT.setAttribute)ROOT.setAttribute('data-sf-flow','1');
   // ★ 2026-09-26（第五次真站试跑，`easystorebuilderpro` 那三个格）：**`id` 与 `data-testid` 不是一回事** ——
   //   那一站三个格只有 `id`（`qv3-fn` / `qv3-em` / `qv3-ph`），而填的那一侧一律按
   //   `[data-testid="…"]` 找 ⇒ **一个都找不到**、`cdp form` 报「element not found」，
@@ -73,11 +94,45 @@ DEFAULT_READ_JS = r"""(function(){""" + DEEP_JS + r"""
     var i=e.id||e.getAttribute('name');
     var p=(e.getAttribute('placeholder')||e.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim();
     if(i)return (p&&/^:r[0-9a-z]+:$/i.test(i))?("\u0002"+p):("\u0004"+i);
-    return p?("\u0002"+p):'';}
-  var inputs=[];
-  deepAll('input,select,textarea').forEach(function(e){
+    if(p)return "\u0002"+p;
+    // ★ 2026-11-06（真事 `job-e1af552518de` · homejolly 的街道那格）：别的身份一个都没有，
+    //   只有 class（`leadforms-full-street-address-input`）。取**最后一个**够长的 class
+    //   （站点习惯把语义类放最后；`mb-4` 这类版式类太短，不当身份）。
+    //   ⚠️ 只给**表单控件**用 —— 选项（button/label）的身份是它那段文字，按 class 认会
+    //   把「按文字打标记再点」那条路整条换掉。
+    var tg=String(e.tagName||'').toUpperCase();
+    if(tg==='INPUT'||tg==='SELECT'||tg==='TEXTAREA'){
+      var cs=String(e.className||'').replace(/\s+/g,' ').trim().split(' ');
+      for(var ci=cs.length-1;ci>=0;ci--){var cc=cs[ci];
+        //: Google Places 给输入框追加的 `pac-target-input` / `pac-*` 不是站点的身份 ——
+        //: 认它会把「这是不是地址格」这条线索弄丢（`leadforms-full-street-address-input`
+        //: 才是）。跳过它，继续往前找。
+        if(/^pac-/.test(cc))continue;
+        if(cc.length>=8&&/^[A-Za-z][A-Za-z0-9_-]*$/.test(cc))return "\u0008"+cc;}}
+    return '';}
+  // ★ 2026-11-11：**这一格的身份**不是它的位置、也不是它的 DOM 路径 ——
+  //   把控件自己的语义字样带回去（label / aria / placeholder / name），
+  //   由字段词典判「它是什么业务字段」。`t` 只是执行手柄。
+  function labOf(e){var s='';var id=String(e.id||'');
+    if(id){var ls=document.querySelectorAll('label[for]');
+      for(var i=0;i<ls.length;i++){if(String(ls[i].htmlFor||'')===id){s=txt(ls[i]);break;}}}
+    if(!s&&e.closest){var lb=e.closest('label');if(lb)s=txt(lb);}
+    if(!s&&e.parentElement){var ps=e.parentElement.querySelectorAll('label');
+      for(var j=0;j<ps.length;j++){var q=ps[j];
+        if(q.querySelector&&q.querySelector('input,select,textarea'))continue;
+        s=txt(q);break;}}
+    return s;}
+  var inputs=[], controls=[];
+  deepIn(ROOT,'input,select,textarea').forEach(function(e){
     if(!vis(e))return; var t=tid(e); if(!t)return;
-    inputs.push([t, (e.value||'').trim()]);});
+    var val=(e.value||'').trim();
+    inputs.push([t, val]);
+    controls.push({t:t, value:val, tag:String(e.tagName||''),
+                   type:String(e.getAttribute('type')||''),
+                   label:labOf(e), aria:String(e.getAttribute('aria-label')||''),
+                   placeholder:String(e.getAttribute('placeholder')||''),
+                   name:String(e.getAttribute('name')||''),
+                   id:(/^:r/i.test(String(e.id||''))?'':String(e.id||''))});});
   var options=[], unanswered=[], items=[], nextVisible=false, nextTxt='', nextEnabled=false;
   // ★ 2026-09-24 第九趟真站：`a[href]` 一律不收 —— 页脚那几个「Privacy Policy」会被当成
   //   选项，每轮挑中一个、又点不到（它们不是 button/label）⇒ 「再看一眼」空转到收摊 ✗。
@@ -85,7 +140,14 @@ DEFAULT_READ_JS = r"""(function(){""" + DEEP_JS + r"""
   //   那一趟 58 次点击里就有两次点在「‹ edit previous piece」上，**倒回上一屏** ⇒
   //   来回震荡、永远走不到提交那一步。这一类不是答案，是往回走。
   var NAVISH=/(previous|\bback\b|go back|\bedit\b|\u2039|\u00ab|\u2190)/i;
-  deepAll('button,label,[role=button]').forEach(function(e){
+  // ★ 2026-11-10（真事 `job-7c7c3a75a4c8` · in / findmyroofingpro）：页脚那几颗「Terms of Use」
+  //   /「Do Not Sell My Personal Information」/「Accessibility Statement」是普通 `<button>`
+  //   （不是 `a[href]`）⇒ 进了选项池。在「We are currently matching you with our partners.」
+  //   那一屏上它们是**唯一**的可挑项 ⇒ 被当成一道题点了，页面当场跳到法律页（现场看着
+  //   就是「每点一次跳一次弹窗」，自测整趟停在那页上空转）。判据只认**以法律页标题开头**
+  //   的那几句短语 —— 答案里出现这些字（如 "I agree to the Terms"）不受影响。
+  var LEGAL=/^\s*(?:privacy\s+(?:policy|notice)|terms\s+(?:of\s+(?:use|service)|(?:&|and)\s+conditions)|do\s+not\s+sell|your\s+privacy\s+choices|user\s+agreement|cookie\s+policy|legal\s+notice|accessibility\s+(?:statement|policy)|sitemap)\b/i;
+  deepIn(ROOT,'button,label,[role=button]').forEach(function(e){
     if(!vis(e))return; var s=txt(e); if(!s)return;
     // ★ 2026-09-26（`job-c053e0b049f3` 那一站的真屏幕）：「下一步」那一颗**不叫 Next/Continue** ——
     //   它是「INSTALL 2 MODULES →」⇒ 只认那几个英文词就永远点不到它，于是答完一题就干等 ✗。
@@ -111,7 +173,25 @@ DEFAULT_READ_JS = r"""(function(){""" + DEEP_JS + r"""
        || /[\u2192\u00bb\u203a]\s*$/.test(s)){nextVisible=true;nextTxt=s;
       if(!(e.disabled||e.getAttribute('aria-disabled')==='true'))nextEnabled=true;
       return;}
+    // ★ 2026-11-06（真事 `job-2aaa04c550b6` · homejolly）：**输入框自己的浮动标签**
+    //   （`<label class="… form-control-placeholder">Street Address*</label>`）不是一道题 ——
+    //   它压在自己那格输入框上，挑中它只会得到一句「被 input…盖着」。
+    if(e.tagName==='LABEL'&&/placeholder/i.test(String(e.className||'')))return;
+    // ★ 2026-11-06（同上）：电话那格的**国家选择器**（`🇺🇸+1`）也不是一道题 —— 挑中它
+    //   会打开一张国家列表浮层，然后整趟都在里面挑国家（后面 40 步全在那一屏上打转）。
+    if(/^[^A-Za-z0-9_]*\+[0-9]{1,4}$/.test(s))return;
     if(NAVISH.test(s))return;
+    if(LEGAL.test(s))return;
+    // ★ 2026-11-06（真事 `job-e1af552518de` · homejolly）：弹层那颗关闭键写的就是「×」——
+    //   它不是一道题；随机挑中它等于把整张表单关掉（后面全空转）。
+    if(/^\s*[×✕✖✗]\s*$/.test(s))return;
+    // ★ 2026-11-06（真事 `job-e1af552518de` · homejolly）：站外的**评价徽章**
+    //   （页面上 6 颗 <button class="reviewBtnN">Read Review on Google</button>）也是
+    //   普通 button ⇒ 被当成「这一屏的一道题」随机挑中，点完直接导航到 Google Maps
+    //   ⇒ 整趟再也回不到漏斗（后面 60 步全在 Map details 上打转）。
+    //   判据只认「评价 + 站外平台」那几句短语（不按站点类名）；别的屏上这些字不出现。
+    if(/^(read|view|see|write|leave)\s+(a\s+|your\s+)?review\b/i.test(s)
+       || /\breviews?\s+on\s+(google|facebook|yelp|trustpilot|bbb)\b/i.test(s))return;
     // ★ 2026-10-13（用户口径：**修系统**）：「同意条**啥时候冒出来都不确定**」⇒ 同意那几颗
     //   **不许被当成「这一屏的一道题」**：它出来得晚（异步注入），混进选项里就会被随机挑 ——
     //   挑中「Accept All」算运气，挑中「管理偏好 / 设置」就点进一个弹窗里空转 ✗。
@@ -134,15 +214,42 @@ DEFAULT_READ_JS = r"""(function(){""" + DEEP_JS + r"""
     }
     var tok=t?t:("\u0001"+s);
     options.push(tok); items.push({t:tok,g:g,c:chk});});
+  // ★ 2026-11-06（真事 `job-e1af552518de` · homejolly）：**地址联想**（Google Places）
+  //   不是 button/label/role=button ⇒ 老读取器**根本读不到** ⇒ 街道那格填完也选不上，
+  //   而提交要的是「从联想里选一条」（站点的 name=street/city/state/zip 是选中后才填的）。
+  //   `[role=option]` 是各家自定义下拉的通用写法（原生 <option> 不可见，`vis` 会挡掉）。
+  //   交给调用方时按 `\u0001`+文字 —— 与别的「按文字点」选项同一条路。
+  deepAll('.pac-container .pac-item,[role=option]').forEach(function(e){
+    if(!vis(e))return; if(String(e.tagName||'').toUpperCase()==='OPTION')return;
+    var s=txt(e); if(!s)return;
+    var tk="\u0001"+s;
+    if(options.indexOf(tk)<0){options.push(tk); items.push({t:tk,g:"",c:false});}});
+  // ★ 2026-11-06（真事 `job-e1af552518de` · homejolly）：题目的答案是**普通 div**
+  //   （`div.leadforms-answer`，没有 button/label/role）⇒ 老读取器一个选项都读不到、
+  //   只剩弹层那颗 ×。按 class 语义（answer/option/choice）收**短文字**的可见块；
+  //   包着文本输入的不算（那是格子，不是选项）；同一段文字只进一次。
+  deepIn(ROOT,'div,span,li').forEach(function(e){
+    if(!vis(e))return;
+    var cl=String(e.className||'').toLowerCase();
+    if(!/(answer|option|choice|select-item)/.test(cl))return;
+    //: 只要**最里面**那一层（`leadforms-answers` 容器 / `leadforms-answer-wrapper` 的文字
+    //: 也是「YesNo」/「Yes」）—— 点容器只会在两颗答案中间落点。
+    if(e.querySelector&&e.querySelector('[class*=answer],[class*=option],[class*=choice]'))return;
+    var s=txt(e); if(!s||s.length>60)return;
+    if(e.querySelector&&e.querySelector('input:not([type=checkbox]):not([type=radio]):not([type=hidden]),textarea,select'))return;
+    if(NAVISH.test(s)||LEGAL.test(s)||/^\s*[×✕✖✗]\s*$/.test(s))return;
+    if(/^\s*(accept|agree|allow|got it|close|reject|decline|deny|manage|settings|preferences|more options|customi[sz]e)\b/i.test(s)
+       || /(cookie|consent|gdpr|privacy|同意|接受|拒绝|隐私|设置|偏好)/i.test(s))return;
+    if(/^(read|view|see|write|leave)\s+(a\s+|your\s+)?review\b/i.test(s)
+       || /\breviews?\s+on\s+(google|facebook|yelp|trustpilot|bbb)\b/i.test(s))return;
+    var tk="\u0001"+s;
+    if(options.indexOf(tk)<0){options.push(tk); items.push({t:tk,g:"",c:false});}});
   var gdone={}; items.forEach(function(it){if(it.g&&it.c)gdone[it.g]=1;});
   items.forEach(function(it){if(!it.g||!gdone[it.g])unanswered.push(it.t);});
   //: 「这一屏有没有同意层」—— 同意层这类**看得见的、命中那几组字样**的元素算（与上面那条
   //: 排除规则同一套词）：有 ⇒ 调用方动手之前先清掉它。**只读，不动手**。
   var consent=false;
   deepAll('div,section,aside,footer,[role=dialog]').forEach(function(e){
-    //: ★ 2026-11-02（educationdirectory 真站）：**只看身份**（id / class / aria-label），
-    //: 不看 `innerText` —— 页脚那行「Privacy Policy」把整页判成「有同意层」⇒ 每一轮都
-    //: 去清、清不掉、`idle` 被清零 ⇒ 空转到步数上限（8100 那趟第 10–126 步全是这一句）。
     //: ★ 2026-11-02 第二刀（8099 那趟第 9–158 步）：`<div class="lp-consent">` 是页面里
     //: **内联的 TCPA 声明**（`position:static`），不是浮层 —— 身份里有 consent 也**不算**。
     //: 判据加一条形状：**浮层**（computed position 是 fixed/sticky）或 `role=dialog`。
@@ -155,9 +262,13 @@ DEFAULT_READ_JS = r"""(function(){""" + DEEP_JS + r"""
       +String((e.getAttribute&&e.getAttribute("aria-label"))||"");
     if(/(cookie|consent|gdpr)/i.test(lab))consent=true;});
   var pm=(document.body.innerText.match(/\b\d{1,3}\s*%/)||[])[0]; var prog=pm?pm:'';
-  var head=(document.querySelector('h1,h2,h3')||document.body).innerText||'';
-  return JSON.stringify({url:location.href, head:head.replace(/\s+/g,' ').trim().slice(0,300),
-                         progress:prog, inputs:inputs, options:options, unanswered:unanswered,
+  var _hd=(ROOT.querySelector?ROOT.querySelector('h1,h2,h3'):null);
+  var _ht=_hd&&_hd.innerText?_hd.innerText:'';
+  var _body=(document.body&&document.body.innerText)||'';
+  var head=((_ht?_ht+' ':'')+_body).replace(/\s+/g,' ').trim().slice(0,600);
+  return JSON.stringify({url:location.href, head:head,
+                        progress:prog, inputs:inputs, controls:controls,
+                        options:options, unanswered:unanswered,
                          nextVisible:nextVisible,
                          nextTxt:nextTxt, nextDisabled:(nextVisible&&!nextEnabled),
                          consent:consent});})()"""
@@ -405,6 +516,11 @@ PROFILE_SPLIT_FROM = __PROFILE_SPLIT_FROM__
 NUDGE_TRIES = 3
 #: 每次重打后最多等多久看 Next 开没开（真站 `benefitsByZip` 约 1.7s 返回）。
 NUDGE_WAIT_SECONDS = 5.0
+#: 重打前先清空、隔这么久再写回。★ 2026-11-06（线上 23 单全卡 ZIP）：
+#: 站点对 `benefitsByZip` 只给 2.5 秒（客户端硬编码），美国代理冷启动常 2.5 秒以上
+#: ⇒ 第一下被 abort，`Next` 一直禁用；而同一个值再写一遍时 React 的 `onChange`
+#: 认为「没变」⇒ **请求根本不重发**。清空再写回才逼它重新查一次。
+NUDGE_CLEAR_GAP = 0.3
 #: 页面「在处理」的文案（忙 ≠ 空转；与 goldenagesouls 同一套思路）。
 BUSY_MARKERS = ("almost done", "processing your", "setting up", "just a moment",
                 "getting things ready", "hold on", "calculating", "please wait")
@@ -423,6 +539,108 @@ FILL_ORDER = list((PROVENANCE or {}).get("fill_order") or [])
 #: 客户端校验直接拒（页面写着「valid phone」）⇒ 提交永远过不去；用账本里那个
 #: `5551234567` 就过 ✓。任务给的 `form_data` 仍然最优先（那是运营填的）。
 EXAMPLES = dict((PROVENANCE or {}).get("examples") or {})
+#: ★ 2026-11-11：**探路那趟每一题点过哪个选项**（`{q, picks}`）—— 优先于随机/Yes。
+#: 随机挑会把多选/资格题答到另一条支路（dailyhealthsm 的 ED treatments 题随机点
+#: "Penile surgery" 后 Next 永远不动；账本点的是 "None of these"）。
+ANSWERS = list((PROVENANCE or {}).get("answers") or [])
+#: ★ 2026-11-11（用户裁定：字段匹配只认**身份 / 语义 / 已验证的证据**，不认位置顺序）：
+#: 探路账本搬过来的**绑定** —— 每条是「哪一格、怎么操作、站点真收下过的值、地址」。
+#: `control` 是这一格的**身份指纹**（label / placeholder / hint / aria），
+#: `selectors` 只是执行手柄（同一个 class 选择器会命中好几根 select，不能拿它当身份）。
+BINDINGS = list((PROVENANCE or {}).get("bindings") or [])
+#: ★ 2026-11-11：**字段词典** —— 「这根控件是什么业务字段」由它判，不由位置/名字后缀猜。
+#: `controls` 是这一字段**允许的控件形状**（认不出的形状不硬填）。
+#: `aliases` 只在**控件自己的身份字样**（label / aria / placeholder / name / id）里按整词对。
+FIELD_TYPES = {
+    "first_name": {"aliases": ("first name", "firstname", "given name", "legal first name"),
+                   "controls": ("text",)},
+    "full_name": {"aliases": ("full name", "fullname", "your name", "legal name"),
+                  "controls": ("text",)},
+    "last_name": {"aliases": ("last name", "lastname", "surname", "family name",
+                              "legal last name"), "controls": ("text",)},
+    "email": {"aliases": ("email", "e mail", "email address"), "controls": ("text", "email")},
+    "phone": {"aliases": ("phone", "phone number", "mobile", "telephone", "cell"),
+              "controls": ("text", "tel", "number")},
+    "street": {"aliases": ("street", "street address", "address line", "address1",
+                           "mailing address"), "controls": ("text",)},
+    "city": {"aliases": ("city", "town"), "controls": ("text",)},
+    "state": {"aliases": ("state", "province", "county"), "controls": ("text", "select")},
+    "postcode": {"aliases": ("zip", "zip code", "zipcode", "postal code", "postcode"),
+                 "controls": ("text", "number")},
+    "country": {"aliases": ("country",), "controls": ("text", "select")},
+    "height": {"aliases": ("height", "how tall"), "controls": ("text", "select")},
+    "weight": {"aliases": ("weight", "lbs", "pounds", "body weight"),
+               "controls": ("number", "text")},
+    "age": {"aliases": ("age", "your age"), "controls": ("number", "text")},
+    "dob_month": {"aliases": ("birth month", "month of birth", "month"),
+                  "controls": ("select", "text")},
+    "dob_day": {"aliases": ("birth day", "day of birth", "day"),
+                "controls": ("select", "text")},
+    "dob_year": {"aliases": ("birth year", "year of birth", "year"),
+                 "controls": ("select", "number", "text")},
+    "gender": {"aliases": ("gender", "sex"), "controls": ("select", "text")},
+}
+
+
+def _control_flavor(tag, typ):
+    """控件的**形状**（字段词典用它挡掉不该填的形状）。认不出给空串 = 不挡。"""
+    tag = str(tag or "").strip().lower()
+    typ = str(typ or "").strip().lower()
+    if tag == "select":
+        return "select"
+    if tag == "textarea":
+        return "text"
+    if typ in ("number", "email", "tel", "date"):
+        return typ
+    if typ in ("checkbox", "radio"):
+        return typ
+    if tag == "input":
+        return "text"
+    return ""
+
+
+def _norm_words(value):
+    """身份字样归一化：小写、非字母数字（保留撇号）变空格、压掉多余空白。"""
+    text = str(value or "").lower()
+    out = []
+    for ch in text:
+        out.append(ch if (ch.isalnum() or ch == "'") else " ")
+    return " ".join("".join(out).split())
+
+
+def field_id_of(attrs):
+    """这根控件是什么业务字段 —— **只按语义**；认不唯一就返回空串（不猜）。
+
+    优先用控件**自己的**身份字样（label / aria / placeholder / name / id / testid）；
+    这些一个都不中时才看题目/分组字样（hint / group）。**位置、序号、DOM 路径不参与。**
+    """
+    attrs = attrs if isinstance(attrs, dict) else {}
+    strong = [_norm_words(attrs.get(k)) for k in
+              ("label", "aria", "placeholder", "name", "id", "testid")]
+    group = [_norm_words(attrs.get(k)) for k in ("hint", "group")]
+    strong = [t for t in strong if t]
+    group = [t for t in group if t]
+    flavor = _control_flavor(attrs.get("tag"), attrs.get("type"))
+
+    def hits(texts):
+        found = []
+        for field, spec in FIELD_TYPES.items():
+            controls = spec.get("controls") or ()
+            if flavor and controls and flavor not in controls:
+                continue
+            for alias in spec.get("aliases") or ():
+                alias = _norm_words(alias)
+                if not alias:
+                    continue
+                if any((" " + alias + " ") in (" " + t + " ") for t in texts):
+                    found.append(field)
+                    break
+        return sorted(set(found))
+
+    candidates = hits(strong)
+    if not candidates and group:
+        candidates = hits(group)
+    return candidates[0] if len(candidates) == 1 else ""
 #: 选项没给 `data-testid` 时的前缀：`\\x01文字` = 「按这段文字去页面上找」。
 BY_TEXT = "\\x01"
 #: 输入框没给 `testid`/`id`/`name` 时的前缀：`\\x02placeholder` = 「按占位符去页面上找」。
@@ -439,6 +657,12 @@ BY_ID = "\\x04"
 #: 两颗必答的 Yes/No），而两组的文字一模一样（两个「Yes」两个「No」）—— 按文字点永远只
 #: 点到第一组 ⇒ 第二组一直空着、Next 被表单校验拦住。name/value 是页面上**唯一**的地址。
 BY_FIELD = "\\x05"
+#: 输入框**连 id/name/placeholder/aria-label 都没有**、只有 class 时的前缀：`\\x08class`
+#: = 「按 `[class~=…]` 找」。★ 2026-11-06（真事 `job-e1af552518de` · homejolly 的街道那格：
+#: `<input class="… leadforms-full-street-address-input">` 别的身份一个都没有）——
+#: 读取器原来直接丢掉它 ⇒ 循环**永远填不到街道**，而提交要的是联想里那条**被选中**的地址。
+#: 取**最后一个** class（站点习惯把语义类放最后），且要够长（≥8）：`mb-4` 这类版式类不当身份。
+BY_CLASS = "\\x08"
 #: 这一格是原生 `<select>`、可我们**没有**任何值可填（账本没记、池子也不认识这一格）时的
 #: 返回值：由执行那一侧**从页面上挑第一个可选项**（见 `_any_select_option`）。
 #: ★ 2026-11-02（educationdirectory 真站）：探路把名字退成 `field-5`（取值名那条老缺陷），
@@ -448,7 +672,16 @@ SELECT_ANY = "\\x00select-any"
 
 #: 连着点几次「Next」页面还是那一屏 ⇒ 当**空转**，如实收摊（第一版没有这道闸，
 #: 真站上才会空点 55 次 Continue 把步数耗光 ✗）。
-SAME_NEXT_LIMIT = 3
+#: ★ 2026-11-11：3 → 6。dailyhealthsm 的**说明屏**连着好几屏正文一模一样（只有 Next →），
+#: 而每一下都真的推进了 —— 3 会在第三屏提前收摊。计数器在「答了一题 / 填了一格」时归零，
+#: 所以这里只影响「连续一模一样、且中间什么都没答」的那一段；6 下仍空转才停。
+SAME_NEXT_LIMIT = 6
+
+#: 地址那格填完、点过它之后，等联想列表出现最多多久（秒）。
+#: ★ 2026-11-06（真事 `job-e2…` 的 8100 那趟）：222 那条链上 Google Places 比 8099 慢 ——
+#: 点完立刻读，列表还没渲出来 ⇒ 下一轮就去填邮箱（失焦、列表当场关）⇒ 地址永远选不上。
+#: 这段时间里**不填别的格**、每轮再点一次地址格；到点还没有就照旧往下走（不硬等）。
+ADDRESS_WAIT_SECONDS = 10
 
 #: ★ 2026-10-22（Atticus 真站）：`cdp form` 回 `ok=true` 之后**回读 value**，没留住就重填。
 #: 现场：`#zipcode.value` 一直是 `""`、Next 一直禁用，而 trace 上写着「填了 zipcode」——
@@ -638,6 +871,21 @@ def _strong_password():
     chars += [random.choice(alphabet) for _ in range(8)]
     random.shuffle(chars)
     return "".join(chars)
+
+
+def _looks_street_address(value):
+    """这个值像不像一条**街道地址**（`1450 Sunset BlvdLos Angeles, CA,`）。
+
+    ★ 2026-11-06（真事 `job-e1af552518de` · homejolly）：探路把地址填进了街道那格，可
+    账本把**那一格记成了别的名字**（`full_name-2`，label 是模型复用的「name」）⇒ 循环
+    按字样认不出街道格；而这一格的值（`sample`）本身带着门牌号 + 街道后缀 —— 拿它认。
+    """
+    t = str(value or "")
+    return bool(re.match(r"\\s*\\d{2,6}\\b", t)
+                and re.search(r"[A-Za-z]", t)
+                and re.search(r",|\\b(?:st|street|ave|avenue|rd|road|dr|drive|blvd|boulevard"
+                              r"|ln|lane|way|ct|court|pl|place|ter|terrace|pkwy|parkway"
+                              r"|hwy|highway)\\b", t, re.I))
 
 
 class Filler:
@@ -868,6 +1116,23 @@ class Filler:
                                             "覆盖现场），只如实记「没量到」，不当成做成")
                 return False
             who, how, text = parts
+            if who == "盖住整页的模态":
+                #: ★ 2026-11-06（真事 `job-2aaa04c550b6` · homejolly）：**这一屏就在这个模态里**
+                #: （读取器把 ROOT 定在它身上、在它里面读题/读格）⇒ 它不是遮挡，是流程本身 ——
+                #: 点掉那颗 × 等于把整张表单删掉（题一个都点不到、Next 永远空点）。
+                #: 判据与固定步骤表同一份 JS：容器上的 `data-sf-flow=1` / 已经打开的下拉。
+                _hjs = (_VIS_JS + _CONSENT_ROOTS_JS + _MODAL_HOLDS_TARGET_BODY
+                        .replace("__WANT__", '""').replace("__SELS__", "[]"))
+                try:
+                    _h = _clean_eval(self.cdp.eval("(function(){%s})()" % _hjs, "") or "")
+                except Exception:                      # noqa: BLE001 —— 外面世界
+                    _h = ""
+                if str(_h or "").startswith("1|"):
+                    self.log.info("[%s] 认出了「%s」（%s）—— 但**这一屏就在它里面**："
+                                  "不当遮挡点掉，不点", self.cid, who, how)
+                    self._popup_trace(None, "「%s」**就是这一屏**（读取器在它里面读题/读格）"
+                                            "—— 不当遮挡点掉" % who)
+                    return False
             if _popup_report_only(who):
                 #: ★ 2026-10-17（终审 C2 · Ruling 30）：这一行**只报不点**（表里那格带
                 #: `_REPORT_ONLY`）—— 真站上已经量到它误点（实测 §1.3：把站点自己的抽屉控件
@@ -972,6 +1237,42 @@ class Filler:
         low = (url or "").lower()
         return any(str(m).lower() in low for m in SUCCESS_URL_MARKERS)
 
+    def _page_targets(self):
+        """当前有哪些 tab（`/json/list`）；读不到给 `[]`（**不抛**）。"""
+        try:
+            import urllib.request as _u
+            raw = _u.urlopen("http://%s:%s/json/list"
+                             % (self.cdp.host, self.cdp.port), timeout=3).read()
+            return [t for t in json.loads(raw)
+                    if t.get("type") == "page" and t.get("id")]
+        except Exception:                          # noqa: BLE001 —— 外面世界
+            return []
+
+    def _activate_tab(self, target_id):
+        """把一个 tab 弄到前台（`/json/activate/<id>`）；失败就算了，不抛。"""
+        try:
+            import urllib.request as _u
+            _u.urlopen("http://%s:%s/json/activate/%s"
+                       % (self.cdp.host, self.cdp.port, target_id), timeout=3).read()
+            return True
+        except Exception:                          # noqa: BLE001
+            return False
+
+    def _success_tab(self):
+        """成功页在**另一个 tab**（`target=_blank`）时，把它切过来并返回地址。
+
+        ★ 2026-11-11（dailyhealthsm 的 Check Eligibility）：那一下开出新 tab，
+        成功网址在**新 tab** 上；循环一直读旧页 ⇒ 「这一屏已答过、没有下一步」⇒
+        走满步数收摊。`/json/list` 里有就切过去。
+        """
+        for t in self._page_targets():
+            url = str(t.get("url") or "")
+            if self.is_success(url):
+                if self._activate_tab(t["id"]):
+                    time.sleep(0.6)
+                return url
+        return ""
+
     # ---------- 填什么（生成器填的那一格）----------
 
     def fill(self, token, value):
@@ -1025,6 +1326,13 @@ class Filler:
                 if "element not found" not in str(getattr(self, "_fill_why", "") or ""):
                     return False
             return False
+        if token.startswith(BY_CLASS):
+            #: ★ 2026-11-06（真事 `job-e1af552518de` · homejolly）：这一格别的身份都没有，
+            #: 只有 class（读取器末尾那个够长的类名）—— 按 `[class~=…]` 找它。
+            sel = '[class~="%s"]' % token[len(BY_CLASS):]
+            if self._covered_before_acting(sel, "填"):
+                return False
+            return self._fill_and_check(token, sel, value)
         sel = '[data-testid="%s"]' % token
         if self._covered_before_acting(sel, "填"):
             return False
@@ -1092,9 +1400,11 @@ class Filler:
         """
         js = ("(function(){__DEEP__var es=deepAll(%s);var e=es[0];"
               "if(!e||e.tagName!=='SELECT')return JSON.stringify({});"
-              "for(var i=0;i<e.options.length;i++){var o=e.options[i];"
+              "for(var i=0;i<e.options.length;i++){var o=e.options[i];if(o.disabled)continue;"
               "var t=(o.textContent||'').replace(/\\\\s+/g,' ').trim();"
-              "if(o.value||t)return JSON.stringify({v:o.value,t:t});}"
+              "var v=String(o.value==null?'':o.value).replace(/\\\\s+/g,' ').trim();"
+              "if(!v&&/^(select|choose|please|pick|--|\\\\.\\\\.\\\\.)/i.test(t))continue;"
+              "if(v||t)return JSON.stringify({v:o.value,t:t});}"
               "return JSON.stringify({});})()" % json.dumps(sel))
         got = self._eval_json(js) or {}
         return str(got.get("v") or got.get("t") or "")
@@ -1160,6 +1470,194 @@ class Filler:
             self._fill_why = "回读是 %r，不是填进去的 %r" % (got, value)
         return ok
 
+    def _select_option_ok(self, sel, value) -> bool:
+        """要填的这个值**真在这根 select 的选项里**吗 —— 防止泛 class 选择器填错格。
+
+        `select.quiz_fld__6sXNU` 是这一站**所有**下拉共用的类名：账本里高度那格的第一个
+        选择器就是它，而月份/日/年/州的下拉也匹配它。不校验就把高度值（`5' 10"`）填进
+        月份下拉，还会把 `(name, sel)` 记成「已填」⇒ 到高度那屏反而不填了。
+        """
+        want = " ".join(str(value or "").split()).lower()
+        if not want:
+            return False
+        js = ("(function(){__DEEP__var es=deepAll(%s);var e=es[0];"
+              "if(!e||e.tagName!=='SELECT')return JSON.stringify({ok:false});"
+              "var w=%s;for(var i=0;i<e.options.length;i++){var o=e.options[i];"
+              "var t=(o.textContent||'').replace(/\\\\s+/g,' ').trim().toLowerCase();"
+              "var v=String(o.value==null?'':o.value).replace(/\\\\s+/g,' ').trim().toLowerCase();"
+              "if(t===w||v===w)return JSON.stringify({ok:true});}"
+              "return JSON.stringify({ok:false});})()"
+              % (json.dumps(sel), json.dumps(want)))
+        got = self._eval_json(js) or {}
+        return bool(isinstance(got, dict) and got.get("ok"))
+
+
+    def _known_fill_value(self, name, spec) -> str:
+        """按 **FILLS 的键**取这一格该填的值。
+
+        ⚠️ 不能用 `value_for(sel)`：泛 class 选择器（`select.quiz_fld__6sXNU`）同时出现在
+        好几份 FILLS 的 `target.selectors` 里，`value_for` 按 blob 子串匹配会认到**第一份**
+        ⇒ 州下拉（`phone-2`）拿到高度值 `5' 10"`、月份下拉也可能拿到高度值。
+        这里只认这一格自己的 `rule / sample / EXAMPLES[键] / fallback`，最后才回资料库。
+        """
+        spec = spec or {}
+        if spec.get("rule"):
+            return self._rule_value(spec)
+        sample = str(spec.get("sample") or "").strip()
+        if sample:
+            return sample
+        for key in (str(name or ""), str(spec.get("kind") or "")):
+            got = EXAMPLES.get(key)
+            if got:
+                return str(got)
+        for fb in (spec.get("fallback") or []):
+            if isinstance(fb, (str, int, float)) and str(fb).strip():
+                return str(fb).strip()
+        p = self.form_data if isinstance(self.form_data, dict) else {}
+        for key in (str(spec.get("source") or ""), str(name or "")):
+            if not key:
+                continue
+            got = self._profile_value(p, key)
+            if got:
+                return str(got)
+        return SELECT_ANY
+
+
+    def _select_value(self, sel) -> str:
+        """这根 select 现在的 value（读不到给空串）。"""
+        js = ("(function(){__DEEP__var es=deepAll(%s);var e=es[0];"
+              "if(!e||e.tagName!=='SELECT')return JSON.stringify({v:''});"
+              "return JSON.stringify({v:String(e.value==null?'':e.value)});})()"
+              % json.dumps(sel))
+        got = self._eval_json(js) or {}
+        return str(got.get("v") or "")
+
+
+    def _fill_from_binding(self, binding, step) -> bool:
+        """按**已验证的绑定**填一根原生 `<select>`（读取器看不见它也算）。
+
+        身份 = 探路那一趟**真对这个控件做过**这件事（绑定自带 `control` 指纹与地址）；
+        **选项成员校验**兜住「同一个 class 选择器命中好几根 select」——
+        值不在这一根的可选项里就绝不填（旧实现把高度值填进月份下拉就是这么来的）。
+        """
+        binding = binding or {}
+        key_name = str(binding.get("field") or binding.get("name") or "select")
+        value = str(binding.get("value") or "").strip()
+        if not value:
+            return False
+        done = getattr(self, "_filled_selects", None)
+        if done is None:
+            done = self._filled_selects = set()
+        for sel in (binding.get("selectors") or []):
+            sel = str(sel or "")
+            if not sel or not self._is_select(sel):
+                continue
+            key = (key_name, sel)
+            if key in done:
+                #: 已经填过 ⇒ 只要这根 select **真有一个选中项**就算完成。
+                #: 不能拿「当前 value == 账本里那段文字」比：站点常把 value 缩成
+                #: `FL` / `bachelors`，而账本记的是 `Florida` / `Bachelor's degree`
+                #: ⇒ 比不中就会每一轮重填同一根 select，整趟空转（真事 `job-7d8febdd4879`）。
+                if self._select_value(sel):
+                    continue
+                done.discard(key)
+            if not self._select_option_ok(sel, value):
+                continue
+            if not self._fill_and_check(key_name, sel, value):
+                continue
+            done.add(key)
+            for each in (binding.get("selectors") or []):
+                done.add((key_name, str(each or "")))
+            self._field_value[key_name] = value
+            self._field_from[key_name] = "账本已验证（select）"
+            self.log.info("[%s] step %d: 填了 %s（%s）", self.cid, step, key_name,
+                          self._field_from[key_name])
+            self._trace(step=step, action="form", ok=True, progress=False,
+                        target={"testid": key_name, "selector": sel},
+                        note="填了 %s（%s）" % (key_name, self._field_from[key_name]))
+            self._same_next = 0
+            return True
+        return False
+
+    def _fill_known_select(self, page, step) -> bool:
+        """账本记着地址、但读取器**看不见**的原生 `<select>` —— 直接按那条地址填。
+
+        ★ 2026-11-11（真事 `job-0eaad0068949` · dailyhealthsm 的「Height」）：
+        那格是原生 `<select class="quiz_fld__6sXNU">`，被自定义下拉藏起来 ⇒ 读取器按
+        「可见」判，`inputs` 里没有它 ⇒ `todo` 永远轮不到它 ⇒ Next 连点 3 次不动。
+        探路那趟**真填过它**（账本里有地址与示例值）⇒ 不必等读取器看见。
+        """
+        if BINDINGS:
+            for binding in BINDINGS:
+                if str((binding or {}).get("operation") or "") != "select":
+                    continue
+                if self._fill_from_binding(binding, step):
+                    return True
+            return False
+        #: 旧产物（PROVENANCE 里没有 `bindings`）：按 FILLS 那条老路走，逐条校验选项成员。
+        for name, spec in (FILLS or {}).items():
+            spec = spec or {}
+            if str(spec.get("kind") or "") != "select":
+                continue
+            for sel in ((spec.get("target") or {}).get("selectors") or []):
+                sel = str(sel or "")
+                if not sel or not self._is_select(sel):
+                    continue
+                value = self._known_fill_value(name, spec)
+                if not self._fill_from_binding(
+                        {"name": name, "value": value, "selectors": [sel]}, step):
+                    continue
+                return True
+        return False
+
+    def _checked_state(self, sel):
+        """这根 checkbox 现在是勾着的吗 —— 读不到给 `None`（看不见 ≠ 没勾）。"""
+        js = ("(function(){__DEEP__var es=deepAll(%s);var e=es[0];"
+              "if(!e||e.tagName!=='INPUT')return JSON.stringify({});"
+              "return JSON.stringify({c:!!e.checked});})()" % json.dumps(sel))
+        got = self._eval_json(js)
+        return bool(got.get("c")) if isinstance(got, dict) and "c" in got else None
+
+    def _fill_from_binding_check(self, step) -> bool:
+        """按**已验证的绑定**勾上必选的 checkbox（同意条款那一类）。
+
+        ★ 2026-11-11（真事 `job-7d8febdd4879`）：联系信息屏上「Please check the consent
+        box to continue」，而读取器把 CTA 当选项反复点 —— 探路那趟**真勾过**这一格
+        （账本 `kind=check`）。绑定就是那条证据，先勾它再谈下一步。
+        """
+        done = getattr(self, "_checked_bindings", None)
+        if done is None:
+            done = self._checked_bindings = set()
+        for binding in BINDINGS:
+            if not isinstance(binding, dict):
+                continue
+            if str(binding.get("operation") or "") != "check":
+                continue
+            key_name = str(binding.get("field") or binding.get("name") or "check")
+            for sel in (binding.get("selectors") or []):
+                sel = str(sel or "")
+                if not sel:
+                    continue
+                key = (key_name, sel)
+                if key in done:
+                    continue
+                if self._checked_state(sel) is True:
+                    done.add(key)
+                    continue
+                out = self.cdp.form(sel, check="true")
+                if not self._filled_ok(out):
+                    continue
+                done.add(key)
+                self._field_from[key_name] = "账本已验证（check）"
+                self.log.info("[%s] step %d: 勾了 %s（%s）", self.cid, step, key_name,
+                              self._field_from[key_name])
+                self._trace(step=step, action="form", ok=True, progress=False,
+                            target={"testid": key_name, "selector": sel},
+                            note="勾了 %s（%s）" % (key_name, self._field_from[key_name]))
+                self._same_next = 0
+                return True
+        return False
+
     def _eval_json(self, js):
         """跑一段 JS，按 `read()` 同一套拆两层 JSON；读不到回 `None`。"""
         raw = (self.cdp.eval(js, "") or "").strip()
@@ -1204,6 +1702,7 @@ class Filler:
               "if(p===want||al===want){e=all[i];break;}}}"
               "else {var es2=deepAll('[data-testid=\"'+token+'\"]');e=es2[0];}"
               "if(!e)return JSON.stringify({ok:false,why:'not-found'});"
+              "if(value===''&&e.tagName==='SELECT')return JSON.stringify({ok:false,why:'select'});"
               "e.focus();"
               "if(e.tagName==='SELECT'){e.value=value;}"
               "else{var proto=e.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:"
@@ -1226,8 +1725,12 @@ class Filler:
         （performance 里 `responseStatus: 0`）—— app 没拿到回话就一直把 Next 禁着。
         而 DOM 的 value 是**留住的** ⇒ 回读说「填好了」⇒ 循环再也不会碰这一格
         ⇒ 干点 8 次 Next、如实报失败。
-        手工量证（同一个窗口）：把这格**用同一个值重打一遍** ⇒ 站点重发请求（200）
-        ⇒ Next 由禁用变可用。⇒ 这一下是「值在、页面没收下」那一类唯一的补救动作。
+        手工量证（同一个窗口）：用**原生 setter + 事件**把这格写一遍 ⇒ 站点重发请求（200）
+        ⇒ Next 由禁用变可用（`cdp form` 只改 DOM，进不了 React state）。
+
+        ★ 2026-11-06（线上 23 单卡在 ZIP）：**同值重写不算变化** —— 站点 `onChange`
+        里是 `n !== t` 才发查询，value 没变就什么都不发。所以现在**先清空、隔一小拍
+        再写回**（`NUDGE_CLEAR_GAP`）：清空让 state 变空，写回才成为一次新输入。
 
         ★ 2026-10-29（线上 26919524）：那一下是**偶发**被中止的，而旧实现
         「一屏只打一次」（`_nudged_sig`）⇒ 第一次撞上就再也没机会。改成
@@ -1249,13 +1752,18 @@ class Filler:
             token, value = str(pair[0] or ""), str(pair[1] if pair[1] is not None else "")
             if not token or not value:
                 continue
+            #: ★ 2026-11-06：先清空再写回。同值重写时站点的 `onChange` 判「没变」⇒
+            #: `benefitsByZip` 不会重发（复现：模拟首查超时后，同值 nudge 仍然禁用、
+            #: performance 里 0 条请求）。清空让 state 先变成空，写回才算一次**新**输入。
+            if self._set_value_events(token, ""):
+                time.sleep(NUDGE_CLEAR_GAP)
             if self._set_value_events(token, value):
                 did = True
-                self.log.info("[%s] step: Next 是禁用态、格子有值 ⇒ 原生 setter+事件重写 %s",
+                self.log.info("[%s] step: Next 是禁用态、格子有值 ⇒ 先清空再原生 setter+事件重写 %s",
                               self.cid, token)
                 self._trace(step=0, action="form", ok=True, progress=None,
                             target={"testid": token},
-                            note="原生 setter+全套事件（cdp form 只改 DOM，不进 React state）")
+                            note="原生 setter+全套事件（先清空再写回；同值重写不会重发站点查询）")
         if did:
             #: 给站点发 `benefitsByZip` 的时间（真站量到 ~1.7s；最多等 `NUDGE_WAIT_SECONDS`）。
             deadline = time.monotonic() + NUDGE_WAIT_SECONDS
@@ -1341,24 +1849,169 @@ class Filler:
         self._rule_values[key] = value
         return value
 
+    def _control_for_token(self, token, page):
+        """这一轮读回来的**控件身份**（读取器读得到就用它；读不到只拿 token 当字样）。"""
+        token = str(token or "")
+        for control in ((page or {}).get("controls") or []):
+            if isinstance(control, dict) and str(control.get("t") or "") == token:
+                return control
+        hay = token
+        for prefix in (BY_PLACEHOLDER, BY_ID, BY_CLASS):
+            if hay.startswith(prefix):
+                hay = hay[len(prefix):]
+                break
+        return {"t": token, "label": hay, "placeholder": "", "tag": "", "type": ""}
+
+    def _binding_for_control(self, control):
+        """这根控件 ↔ 探路那趟**真做过**的那一格（按控件身份字样对，不看顺序/序号）。"""
+        if not BINDINGS or not isinstance(control, dict):
+            return None
+        flavor = _control_flavor(control.get("tag"), control.get("type"))
+        for binding in BINDINGS:
+            if not isinstance(binding, dict):
+                continue
+            operation = str(binding.get("operation") or "")
+            if operation == "select" and flavor and flavor != "select":
+                continue
+            if operation in ("type", "check") and flavor == "select":
+                continue
+            want = binding.get("control") or {}
+            for key in ("placeholder", "label", "aria", "hint"):
+                a = _norm_words(want.get(key))
+                b = _norm_words(control.get(key))
+                if a and b and a == b:
+                    return binding
+        return None
+
+    def _value_for_field(self, field, control, page):
+        """按**字段身份**取值：任务资料 → 已验证绑定 → 字段约束现编。取不到给空串。"""
+        p = self.form_data if isinstance(self.form_data, dict) else {}
+        for key in (field,) + tuple(PROFILE_ALIASES.get(field) or ()):
+            got = self._profile_value(p, key)
+            if got:
+                self._value_from = "任务资料「%s」" % key
+                return str(got)
+        for binding in BINDINGS:
+            if not isinstance(binding, dict):
+                continue
+            if str(binding.get("field") or "") != field:
+                continue
+            got = str(binding.get("value") or "").strip()
+            if got:
+                self._value_from = "账本已验证「%s」" % field
+                return got
+        got = self._field_default(field, control)
+        if got:
+            self._value_from = "字段约束「%s」" % field
+        return got
+
+    def _field_default(self, field, control):
+        """字段词典里的**约束**现编；词典里没有的字段**不编**（返回空串）。"""
+        flavor = _control_flavor((control or {}).get("tag"), (control or {}).get("type"))
+        if field == "height":
+            #: 高度只从**页面上真有的选项**里挑（`_fill_and_check` 会把 SELECT_ANY
+            #: 换成第一个可选项）；编一个页面里没有的值只会被站点拒。
+            return SELECT_ANY if flavor == "select" else ""
+        if field == "weight":
+            return str(random.randint(120, 220))
+        if field == "age":
+            return str(random.randint(50, 64))
+        if field == "first_name":
+            return "John"
+        if field == "full_name":
+            return "John Smith"
+        if field == "last_name":
+            return "Smith"
+        if field == "email":
+            return "john.smith%d@example.com" % random.randint(100, 9999)
+        if field == "phone":
+            return self._pool("phone") or ""
+        if field == "postcode":
+            return self._pool("postcode") or ""
+        if field == "street":
+            return "123 Maple St"
+        if field == "city":
+            return "Springfield"
+        if field == "state":
+            return "CA"
+        if field == "country":
+            return "United States"
+        if field == "dob_month":
+            return random.choice(("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"))
+        if field == "dob_day":
+            return str(random.randint(1, 28))
+        if field == "dob_year":
+            return str(random.randint(1980, 1995))
+        return ""
+
     def value_for(self, token, page, index=0):
-        """这一格填什么 —— 三档，从**有据可依**往**兜底**走：
-        ① 字样（`kind`/`label` ✓）对得上 ⇒ 用它 ✓
-        ② 对不上 ⇒ 拿**账本里那格自己记的地址**去对 ✓（探路时真用过那份 ✓）
-        ③ 还认不出 ⇒ ★ **按账本里那几格的顺序**填（本屏第 `index` 个空格 ⇒ 第 `index` 格 ✓）
-        ⚠️ 第 ③ 档为什么非有不可（2026-09-24 实测）：那一屏的占位符是 `e.g. HD6 4AH` ✗ 而账本里
-        记的是 `e.g. RG24 8PE` ✗ —— 同一格、**站点每次给的例子不一样** ⇒ ①② 全落空 ⇒ 不填 ✗ ⇒
-        掉到「点页脚噪声」⇒ 空转到 60 ✗。（样本那份靠写死 `"rg24" in hay` 绕过 ✗ 那是它那个
-        站的补丁，不是规则 ✓ 我们不这么干 ✓。）
+        """这一格填什么 —— **只认字段身份 / 语义 / 已验证的证据**。
+
+        ★ 2026-11-11（用户裁定）：位置/顺序**不是身份**。旧实现的第 ③ 档
+        「本屏第 n 个空格 ⇒ 账本第 n 格」已删除 —— 那正是把 Year 的 1985
+        填进体重格的原因。现在：
+          ① 探路**真做过**的那一格（`BINDINGS`，按控件身份字样对）⇒ 用那个值；
+          ② 字段词典按 label/aria/placeholder/name 认出业务字段 ⇒ 资料 / 绑定 / 约束；
+          ③ 认不出（或认不唯一）⇒ **空串**，并在 `_value_from` 里说清楚「无证据」。
+        `index` 留着只为老调用点不改签名，**不再参与判定**。
         """
-        #: ★ 2026-10-29：填上了 ≠ 填对了 —— 这个值的**来源**（资料 / 账本示例 / 池子）
-        #: 跟着返回值一起说出去，由调用方拼进日志与 trace（固定步骤表 2026-09-28 起就这么做）。
         self._value_from = ""
+        self._field_id = ""
+        page = page if isinstance(page, dict) else {}
+        control = self._control_for_token(token, page)
+        hay = str(control.get("label") or control.get("placeholder")
+                  or control.get("name") or control.get("t") or "").lower()
+        if any(s in hay for s in SKIP_FIELDS):
+            return ""                       # 蜜罐：绝不填
+        if not BINDINGS:
+            #: 旧产物：`FILLS` 是**这份产物自己声明的**字段证据（source/rule/prefix/sample），
+            #: 它先于词典兜底 —— 否则「点名现编电话 / 账本街道样值」会被通用池盖掉。
+            got = self._legacy_value_for(token)
+            if got:
+                return got
+            field = field_id_of(control)
+            if field:
+                self._field_id = field
+                if (FILLS or {}).get(field):
+                    got = self._legacy_value_for(field)
+                    if got:
+                        return got
+                got = self._value_for_field(field, control, page)
+                if got:
+                    return got
+            self._value_from = "认不出字段（无证据，不猜）"
+            return ""
+        binding = self._binding_for_control(control)
+        field = str((binding or {}).get("field") or "")
+        if field:
+            self._field_id = field
+            got = self._value_for_field(field, control, page)
+            if got:
+                return got
+        elif binding is not None:
+            got = str(binding.get("value") or "").strip()
+            if got:
+                self._value_from = "账本已验证「%s」" % (binding.get("name") or "这一格")
+                return got
+        field = field_id_of(control)
+        if field:
+            self._field_id = field
+            got = self._value_for_field(field, control, page)
+            if got:
+                return got
+        self._value_from = "认不出字段（无证据，不猜）"
+        return ""
+
+    def _legacy_value_for(self, token):
+        """**旧产物**（没有 `bindings`）的取值 —— 保留原语义，但**删掉位置兜底**。"""
         hay = str(token or "").lower()
         if hay.startswith(BY_PLACEHOLDER):
             hay = hay[len(BY_PLACEHOLDER):]
         if hay.startswith(BY_ID):
             hay = hay[len(BY_ID):]
+        if hay.startswith(BY_CLASS):
+            hay = hay[len(BY_CLASS):]
         if any(s in hay for s in SKIP_FIELDS):
             return ""                       # 蜜罐：绝不填
         p = self.form_data if isinstance(self.form_data, dict) else {}
@@ -1366,11 +2019,6 @@ class Filler:
             spec = spec or {}
             kind = str(spec.get("kind") or "")
             label = str(spec.get("label") or name).lower()
-            #: ★ 规则（用户 2026-09-24 拍的「做成规则」）：**字样认不出来**时，拿**账本里那一格
-            #: 自己记的地址**去对（`FILLS[name].target.selectors` = 探路时真用过的那份 ✓）——
-            #: 例：`\x02e.g. RG24 8PE` 对 `postcode` 那格的 `input[placeholder="e.g. RG24 8PE"]` ✓。
-            #: ⚠️ 这一条**不写任何站特有的字**（样本里那个 `"rg24" in hay` 是它那个站的补丁 ✗）
-            #: ⇒ 换站照样成立 ✓ —— 这就是「做成规则」与「照抄那一家」的分界 ✓。
             blob = " ".join([label, kind] + [str(x) for x in
                                              ((spec.get("target") or {}).get("selectors") or [])]).lower()
             if ((label and label in hay) or (kind and kind in hay)
@@ -1378,22 +2026,12 @@ class Filler:
                 if spec.get("rule"):
                     self._value_from = "规则「%s」现编" % str(spec.get("rule") or "")
                     return self._rule_value(spec)
-                #: ★ 2026-10-29：探路给的 `source` **排第一** —— 2026-09-30 起它就是
-                #: **资料库的列名**（`postal_code` / `phone_number` …），比拿 `FILLS`
-                #: 的页面名去猜更准；源里没有这个名字时才回退到原名/别名。
                 source = str(spec.get("source") or "")
                 if source:
                     got = self._profile_value(p, source)
                     if got:
                         return str(got)
                 if self._is_phone(name, kind):
-                    #: ★ 2026-10-22（用户：「手机号肯定要取资料」；「别取资料」只是**个别特殊
-                    #: 脚本**的处理，不是全局口径）—— 推翻 2026-09-26/10-13 那两刀：
-                    #: ① 默认：资料给了电话就用 **资料那一串**；
-                    #: ② 特殊脚本用 `prefix`（例 `'0207'`）或 `from_profile: false` 点名
-                    #:    「这一站要现编」⇒ 不取资料，按那个号段/池子现编。
-                    #: 账本里的 `EXAMPLES`（探路时从资料里拿的真号）仍然只当**兜底**，
-                    #: 不再压过资料。
                     _p = str(spec.get("prefix") or "")
                     if not _p and spec.get("from_profile", True) is not False:
                         got = self._profile_value(p, name, kind)
@@ -1402,17 +2040,11 @@ class Filler:
                     self._value_from = "随机池「%s」" % name
                     return self._pool(name, _p) or self._pool(kind, _p)
                 if self._is_age(name, kind):
-                    #: ★ 2026-10-22（用户：资料里没有年龄，这一格要**随机**）——
-                    #: 资料给了就听资料的；没给就每趟现取一个成年年龄（50–64，
-                    #: 与 Atticus 探路那趟 58 同一档，不跨到未成年人那一支）。
                     got = self._profile_value(p, name, kind)
                     if got:
                         return str(got)
                     self._value_from = "现取年龄（50–64）"
                     return str(random.randint(50, 64))
-                #: ★ 2026-10-29：资料先按**原名 + 别名 + 全名拆分**找（`PROFILE_ALIASES`），
-                #: 找不到才轮到账本示例 —— 原来只按原名查，`postal_code`/`phone_number`
-                #: 永远对不上，静默落进示例（Atticus 每单都是 10001）。
                 got = self._profile_value(p, name, kind)
                 if got:
                     return str(got)
@@ -1421,67 +2053,16 @@ class Filler:
                     if got:
                         self._value_from = "账本示例「%s」" % key
                         return str(got)
-                #: ★ 2026-11-02（educationdirectory 真站，8100）：账本每一格都带 `sample` =
-                #: 探路**真填进去**的那个值（与 `EXAMPLES` 同一类事实）。名字退成 `field-4`
-                #: 时 `EXAMPLES` 里没有它 —— 这时 sample 就是**唯一**有据可依的值。
                 sample = str(spec.get("sample") or "").strip()
                 if sample:
                     self._value_from = "账本 sample"
                     return sample
-                #: 下拉的值**本来就在页面上**：认不出这一格、账本也没留值时，挑第一个
-                #: 可选项 —— 编一个页面里不存在的值只会让 `--select` 报 option not found。
                 if kind == "select":
                     self._value_from = "页面上的第一个可选项"
                     return SELECT_ANY
-                #: ★ 名**先于** kind：`kind` 是「这一格填什么」那一档（这一站给的是笼统的
-                #: `value`），拿它当池子的名 ⇒ `_pool('value')` 什么都没有 ⇒ **邮编永远填不上** ✗
-                #: ⇒ 掉到「点页脚噪声」空转到收摊（第九趟真站的原形）。
                 self._value_from = "随机池「%s」" % name
                 return self._pool(name) or self._pool(kind)
-        #: ③ 按**账本顺序**兜底（见 docstring 第 ③ 档）
-        if 0 <= int(index) < len(FILL_ORDER):
-            name = FILL_ORDER[int(index)]
-            spec = (FILLS or {}).get(name) or {}
-            kind = str(spec.get("kind") or name)
-            #: ★ 2026-10-20（Review finding 3）：兜底那一支也要认规则 —— 否则
-            #: 页面 placeholder 一变、① 对不上时，这里会把资料值/旧 prefix 又填回去。
-            if spec.get("rule"):
-                self._value_from = "规则「%s」现编" % str(spec.get("rule") or "")
-                return self._rule_value(spec)
-            source = str(spec.get("source") or "")
-            if source:
-                got = self._profile_value(p, source)
-                if got:
-                    return str(got)
-            if self._is_phone(name, kind):        # 同上：资料优先；prefix / from_profile=False 才现编
-                _p = str(spec.get("prefix") or "")
-                if not _p and spec.get("from_profile", True) is not False:
-                    got = self._profile_value(p, name, kind)
-                    if got:
-                        return str(got)
-                self._value_from = "随机池「%s」" % name
-                return self._pool(name, _p) or self._pool(kind, _p)
-            if self._is_age(name, kind):          # 同上：资料优先，没给就现取
-                got = self._profile_value(p, name, kind)
-                if got:
-                    return str(got)
-                self._value_from = "现取年龄（50–64）"
-                return str(random.randint(50, 64))
-            got = (self._profile_value(p, name, kind)
-                   or EXAMPLES.get(name) or EXAMPLES.get(kind))
-            if got:
-                if not self._value_from:
-                    self._value_from = "账本示例"
-                return str(got)
-            sample = str(spec.get("sample") or "").strip()
-            if sample:
-                self._value_from = "账本 sample"
-                return sample
-            if kind == "select":
-                self._value_from = "页面上的第一个可选项"
-                return SELECT_ANY
-            self._value_from = "随机池「%s」" % name
-            return self._pool(name) or self._pool(kind)
+        self._value_from = "认不出字段（无证据，不猜）"
         return ""
 
     def _profile_value(self, p, *names) -> str:
@@ -1644,7 +2225,68 @@ class Filler:
                 return True
         return False
 
-    def pick_option(self, options, inputs=None):
+
+    @staticmethod
+    def _option_text(o) -> str:
+        """选项 token → 它那段文字（三种前缀各切一刀）。"""
+        t = str(o)
+        if t.startswith(BY_TEXT):
+            return t[len(BY_TEXT):]
+        if t.startswith(BY_FIELD):
+            return t[len(BY_FIELD):].split("\\x06", 1)[0]
+        return t
+
+    def _ledger_picks(self, page, options) -> list:
+        """账本里这一题点过的选项（按题面匹配）—— 只回**当前屏上真有的**那几个。"""
+        head = str((page or {}).get("head") or "").casefold()
+        if not head:
+            return []
+        pool = list(options or [])
+        for group in ANSWERS:
+            group = group or {}
+            q = str(group.get("q") or "").strip().casefold()
+            if not q or q not in head:
+                continue
+            picked = []
+            for want in (group.get("picks") or []):
+                want = str(want or "").strip().casefold()
+                if not want:
+                    continue
+                for o in pool:
+                    text = self._option_text(o).strip().casefold()
+                    if text == want or (want and (want in text or text in want)):
+                        if o not in picked:
+                            picked.append(o)
+                        break
+            if picked:
+                return picked
+        return []
+
+    def address_suggestion(self, page):
+        """这一屏有没有**与已填地址对得上的联想条目**（`1450 Sunset Blvd…` 这种）。
+
+        ★ 2026-11-06（真事 `job-2aaa04c550b6` · homejolly）：填完街道那格之后**必须马上**
+        选一条 —— 再去填下一格（邮箱/电话）会让街道那格失焦，联想列表当场关掉，
+        之后就再也选不上了（表单的 name=street/city/state/zip 是选中之后才写的）。
+        """
+        values = [str(v).strip() for _t, v in (page.get("inputs") or [])
+                  if str(v).strip()]
+        numbers = []
+        for v in values:
+            m = re.match(r"\\s*(\\d{2,6})\\b", v)
+            if m and re.search(r"[A-Za-z]", v):
+                numbers.append(m.group(1))
+        if not numbers:
+            return None
+        for o in (page.get("options") or []):
+            t = self._option_text(o)
+            if not _looks_street_address(t):
+                continue
+            if any(re.search(r"(^|\\D)%s(\\D|$)" % re.escape(n), t) for n in numbers):
+                return o
+        return None
+
+    def pick_option(self, options, inputs=None, page=None):
         """选项里挑一个：**先只认带 `data-testid` 的那些**（那是「真选项」）✓，
         一个都没有才退到「按文字」那一档。`PICK` 决定随机还是取第一个。没有 ⇒ None。
 
@@ -1662,6 +2304,10 @@ class Filler:
         pool = real or [o for o in cand if str(o).startswith(BY_TEXT)]
         if not pool:
             return None
+        #: ★ 2026-11-11：**先按账本答**（同一题面点过的那个选项）—— 再落到随机。
+        ledger = self._ledger_picks(page, pool)
+        if ledger:
+            return ledger[0]
         #: 先对**已填的 ZIP**：联想建议里带着同一串数字才是这一单的那一条。
         values = [str(v).strip() for _t, v in (inputs or []) if str(v).strip()]
         zips = [v for v in values if re.fullmatch(r"\\d{5}", v)]
@@ -1674,6 +2320,21 @@ class Filler:
                     t = t[len(BY_FIELD):].split("\\x06", 1)[0]
                 if any(z in t for z in zips):
                     return o
+        #: ★ 2026-11-06（真事 `job-e1af552518de` · homejolly）：**街道地址联想** ——
+        #: 街道那格填完之后 Google Places 会弹 `.pac-container .pac-item`（读取器现在交回来）。
+        #: 挑哪一条：与已填值**开头那个门牌号**相同、而且长得像地址（带逗号或街道后缀）的
+        #: 第一条 —— 与 ZIP 那条同一条道理：带同一串数字的才是这一单的那一条。
+        _addr = self.address_suggestion({"options": pool, "inputs": inputs})
+        if _addr:
+            return _addr
+        #: ★ 2026-11-06（真事 8100 那趟）：「Yes/No」同屏时**选 Yes** —— 广告漏斗的资格题
+        #: 选 No 会走进另一条支路（那一支的表单地址联想根本不起作用，提交永远被校验拦住）。
+        #: 天花板：真需要 No 的题（「是否未满 18 岁」这类）也会被答成 Yes；这一族先保证
+        #: 能走到底，真遇到反例再用 `pick_hints` 点名。
+        _texts = [self._option_text(o).strip().lower() for o in pool]
+        if ("yes" in _texts and "no" in _texts
+                and all(t in ("yes", "no") for t in _texts)):
+            return pool[_texts.index("yes")]
         #: ★ 2026-10-24（Atticus 真站）：**先看提示**。
         #: 现场：随机答成「Family member or friend」/「Patient or client」之后，联系信息屏
         #: 多出一个必填的「Relationship to applicant」下拉 —— 那是我们不会填的格子；
@@ -1722,7 +2383,16 @@ class Filler:
             payload = json.dumps(text)
             #: 扫描集**与读取器一致**（2026-09-24 真站逼出来的）：读取器把 `[role=button]` 也当
             #: 选项，这里少认一种 ⇒ 「读到了却点不到」⇒ 每轮落回「再看一眼」空转到收摊 ✗。
-            js = ("(function(){__DEEP__var t=" + payload + ";var bs=deepAll('button,label,[role=button]');"
+            #: ★ 2026-11-06（`job-e1af552518de` · homejolly）：读取器现在还会把
+            #: `[class*=answer|option|choice]` 的普通 div 当选项（`div.leadforms-answer`）——
+            #: 这里同一套扫描集也得认，否则「读到了、点不到」。
+            #: ★ 2026-11-10（同一条真事）：读取器从 `[role=option]` 交回地址联想
+            #: （`<li class="suggestionItem" role="option">`），而这里的扫描集没有它
+            #: ⇒ 填完 Address 之后每轮都「页面上没找到那段文字」，地址永远选不上。
+            #: 读取器交回来的每一种选项族，这里都得能打上标记 —— 两边是同一套扫描集。
+            js = ("(function(){__DEEP__var t=" + payload + ";var bs=deepAll("
+                  "'button,label,[role=button],[role=option],[class*=answer],[class*=option],"
+                  "[class*=choice],[class*=select-item],[class*=pac-item]');"
                   "for(var i=0;i<bs.length;i++){var e=bs[i];"
                   "if(e.offsetWidth<=0||e.offsetHeight<=0)continue;"
                   "var s=(e.textContent||'').replace(/\\\\s+/g,' ').trim();"
@@ -1765,6 +2435,13 @@ class Filler:
         if token.startswith(BY_ID):
             #: 只有 `id` 的元素（见 `BY_ID` 那段）：按 `[id=…]` 点。
             sel = '[id="%s"]' % token[len(BY_ID):]
+            if self._covered_before_acting(sel, "点"):
+                return False
+            return self._clicked_ok(self.cdp.click(sel))
+        if token.startswith(BY_CLASS):
+            #: 只有 class 的元素（见 `BY_CLASS` 那段）：按 `[class~=…]` 点 —— 地址那格
+            #: 填完之后要点它一下，Google Places 的联想列表才会渲染出来。
+            sel = '[class~="%s"]' % token[len(BY_CLASS):]
             if self._covered_before_acting(sel, "点"):
                 return False
             return self._clicked_ok(self.cdp.click(sel))
@@ -2011,7 +2688,8 @@ class Filler:
                     continue
                 hint = " ".join(str(attr.get(k) or "") for k in
                                 ("placeholder", "aria-label", "name", "id", "data-testid"))
-                fields.append({"frame": fid, "selector": sel, "attr": attr, "hint": hint})
+                fields.append({"frame": fid, "selector": sel, "attr": attr, "hint": hint,
+                               "tag": tag, "type": str(attr.get("type") or "")})
                 continue
             if not text or len(str(text)) > 44:
                 continue
@@ -2051,7 +2729,9 @@ class Filler:
             token = self._token_of(f)
             if not token or token in self._filled:
                 continue
-            value = self.value_for(token, {"inputs": [[token, ""]]}, 0)
+            control = self._control_of_field(f)
+            control["t"] = token
+            value = self.value_for(token, {"controls": [control]})
             if not value:
                 continue
             if self._filled_ok(self.cdp.form(f["selector"], value=value,
@@ -2087,6 +2767,20 @@ class Filler:
             self.log.info("[%s] step %d: 结构化快照也没读出能动的东西（fields=%d actions=%d）",
                           self.cid, step, len(got["fields"]), len(got["actions"]))
         return did
+
+    @staticmethod
+    def _control_of_field(field):
+        """结构化那一格 → 字段身份（label / aria / placeholder / name / id + 形状）。"""
+        attr = (field or {}).get("attr") or {}
+        return {"label": str(attr.get("aria-label") or ""),
+                "aria": str(attr.get("aria-label") or ""),
+                "placeholder": str(attr.get("placeholder") or ""),
+                "name": str(attr.get("name") or ""),
+                "id": ("" if str(attr.get("id") or "").lower().startswith(":r")
+                       else str(attr.get("id") or "")),
+                "testid": str(attr.get("data-testid") or ""),
+                "tag": str((field or {}).get("tag") or ""),
+                "type": str((field or {}).get("type") or "")}
 
     def run(self, max_steps=MAX_STEPS):
         try:
@@ -2176,6 +2870,22 @@ class Filler:
                         return False
                     continue
 
+                #: ★ 2026-11-11：同一格在**不同屏**上重试计数要归零 —— 这一趟在高度屏
+                #: 之前已经被「填了又丢」两次 ⇒ `_field_tries` 到 2，回到这一屏时直接跳过
+                #: 那一格，页面永远空着。屏幕一变（题面/选项/格子值变了）就重来。
+                _sig = self._page_sig(page)
+                if _sig != getattr(self, "_tries_sig", None):
+                    self._field_tries = {}
+                    self._tries_sig = _sig
+
+
+                _tab = self._success_tab()
+                if _tab:
+                    self.log.info("[%s] SUCCESS(tab): %s", self.cid, _tab[:90])
+                    self._trace(step=step, action="success", ok=True, progress=True,
+                                url=_tab[:120])
+                    self._rpt("success", _tab[:60])
+                    return True
                 url = page.get("url", "")
                 if self.is_success(url):
                     self.log.info("[%s] SUCCESS(url): %s", self.cid, url[:90])
@@ -2212,7 +2922,22 @@ class Filler:
                 # ① 有空的可填 ⇒ 填第一个（「空了才填」⇒ 一格/两格的形态切换天然不怕）
                 todo = [t for t, v in (page.get("inputs") or []) if t and not v
                         and not any(s in str(t).lower() for s in SKIP_FIELDS)]
-                if todo:
+                #: ★ 2026-11-06（真事 `job-2aaa04c550b6` · homejolly）：这一屏有**与已填地址
+                #: 对得上的联想条目** ⇒ 先去选它（见 `address_suggestion`）—— 再填下一格会让
+                #: 街道那格失焦、联想列表当场关掉，之后就再也选不上了。
+                #: ★ 2026-11-06（真事 8100 那趟）：地址格刚填完、联想还没渲出来 —— 再点它一下、
+                #: 等 `ADDRESS_WAIT_SECONDS`；这段时间里**不填别的格**（一填就失焦、列表关掉）。
+                if (todo and not self.address_suggestion(page)
+                        and time.time() < float(getattr(self, "_addr_until", 0) or 0)):
+                    tok = str(getattr(self, "_addr_token", "") or "")
+                    if tok:
+                        self.click(tok)
+                    self._dly(1.0, 2.0)
+                    self._trace(step=step, action="wait", ok=None, progress=None,
+                                progress_why="等地址联想列表出现（%s）" % tok[:40])
+                    idle = 0
+                    continue
+                if todo and not self.address_suggestion(page):
                     #: ★ 2026-09-26（第四次真站试跑）：那一屏有 **三个** 格（full name / email /
                     #: phone），原来只填 `todo[0]` 就 `continue` ⇒ 那个格被站点回读成空就又填它
                     #: （每次还塞一个**新的随机值**）⇒ 后面两格**永远轮不到** ⇒ 提交一直被拒 ✗。
@@ -2225,9 +2950,19 @@ class Filler:
                         tries = self._field_tries.get(tid, 0)
                         if tries >= 2:
                             continue            # 这一格试过两次了：别再往里塞东西
-                        val = self._field_value.get(tid) or self.value_for(tid, page,
-                                                                           todo.index(tid))
+                        val = self._field_value.get(tid) or self.value_for(tid, page)
                         if not val:
+                            seen = getattr(self, "_unknown_fields", None)
+                            if seen is None:
+                                seen = self._unknown_fields = set()
+                            if tid not in seen:
+                                seen.add(tid)
+                                why = getattr(self, "_value_from", "") or "认不出字段"
+                                self.log.info("[%s] step %d: %s 不填 —— %s", self.cid,
+                                              step, tid, why)
+                                self._trace(step=step, action="none", ok=None, progress=None,
+                                            target={"testid": tid},
+                                            progress_why=why)
                             continue
                         if (tid, val) in self._filled:
                             #: ★ 2026-10-22（Atticus 真站）：`todo` 只收**页面上空着**的格 ——
@@ -2266,16 +3001,43 @@ class Filler:
                         self._filled.add((tid, val))
                         filled_any += 1
                         self._empty = 0  # ★ 只有**真填成功**才算是「这一屏有可动的东西」
+                        self._same_next = 0   # ★ 填了一格 = 这一屏有进展；别把 Next 计数器带过屏
                         self.log.info("[%s] step %d: 填了 %s（%s）", self.cid, step, tid,
                                       self._field_from[tid])
                         self._trace(step=step, action="form", ok=True, progress=False,
                                     target={"testid": tid},
                                     note="填了 %s（%s）" % (tid, self._field_from[tid]))
+                        #: ★ 2026-11-06（真事 `job-2aaa04c550b6` · homejolly）：填完**地址那格**
+                        #: 先停手 —— 接着填下一格会让它失焦、联想列表当场关掉；下一轮先去选联想。
+                        #: ⚠️ 判据是**填进去的那个值**（街道形状），不是 token 的字样 ——
+                        #: 真实环境里 Google 会给这一格追加 `pac-target-input`，token 里
+                        #: 不一定还有 address/street（真事：那一趟接着填了邮箱 ⇒ 焦点一走
+                        if _looks_street_address(val):
+                            #: ⚠️ 还要**点一下这一格**：Google Places 的联想是**焦点/点击**时才
+                            #: 渲染的 —— 只 insertText 不点，列表根本不出现（真站实测）。
+                            #: 并记下这一格与截止时间：联想可能要几秒才出来（见上面那段）。
+                            self._addr_token = tid
+                            self._addr_until = time.time() + ADDRESS_WAIT_SECONDS
+                            self.click(tid)
+                            break
                     if filled_any:
                         idle = 0
                         busy_since = None
                         self._rpt_if_moved(step, url, "填了 %d 格" % filled_any)
                         continue
+
+                # ①' 账本里有地址、读取器里看不见的原生 <select>（自定义下拉把它藏了）
+                if self._fill_known_select(page, step):
+                    idle = 0
+                    busy_since = None
+                    continue
+
+                # ①'' 账本里**真勾过**的必选 checkbox（同意条款那一类）——
+                #    不勾它，提交按钮只会被校验拦住，循环就会把 CTA 当选项反复点。
+                if self._fill_from_binding_check(step):
+                    idle = 0
+                    busy_since = None
+                    continue
 
                 # ② 有题可选 ⇒ 挑一个（随机或第一个）—— ★ **同一屏只答一次**。
                 #: ★ 2026-09-26 真 trace（`job-c053e0b049f3`，用户原话「场上有选项但是选完还得点
@@ -2299,8 +3061,28 @@ class Filler:
                 answered_sig = "%s|%s|%s" % ((page.get("head") or "")[:60],
                                              "|".join(str(o) for o in (page.get("options") or []))[:160],
                                              "|".join(str(o) for o in (unanswered or [])))
-                pick = self.pick_option(unanswered if isinstance(unanswered, list)
-                                        else page.get("options"), page.get("inputs"))
+                _pool = (unanswered if isinstance(unanswered, list)
+                         else page.get("options"))
+                _ledger = self._ledger_picks(page, _pool)
+                if len(_ledger) > 1 and answered_sig != getattr(self, "_answered_sig", ""):
+                    clicked = 0
+                    for tok in _ledger[:6]:
+                        self.cover_why = ""
+                        if self.click(tok):
+                            clicked += 1
+                    if clicked:
+                        answered += clicked
+                        idle = 0
+                        busy_since = None
+                        self._answered_sig = answered_sig
+                        self._stuck_retries = 0
+                        self._same_next = 0
+                        self._trace(step=step, action="click", ok=True, progress=True,
+                                    target={"token": "ledger-multi"},
+                                    note="按账本答了 %d 项" % clicked)
+                        self._rpt_if_moved(step, url, "按账本答了 %d 项" % clicked)
+                        continue
+                pick = self.pick_option(_pool, page.get("inputs"), page=page)
                 if pick and answered_sig != getattr(self, "_answered_sig", ""):
                     self._empty = 0
                     #: ★ 2026-10-16 复核修：同上 —— 这一下动手之前清零（`click()` 打标记返
@@ -2308,10 +3090,13 @@ class Filler:
                     self.cover_why = ""
                     if self.click(pick):
                         answered += 1
+                        #: 联网址联想选上了 ⇒ 不用再等（否则后面每一轮都多停一会儿）。
+                        self._addr_until = 0
                         idle = 0
                         busy_since = None
                         self._answered_sig = answered_sig
                         self._stuck_retries = 0      # 这一屏答成了 ⇒ 次数归零（见 ⑤）
+                        self._same_next = 0          # ★ 答了一题 = 换了屏；Next 计数器不许跨屏累加
                         self.log.info("[%s] step %d [%s] %s -> %s", self.cid, step,
                                       page.get("progress", "?"), (page.get("head") or "")[:48],
                                       str(pick)[:32])
@@ -2392,10 +3177,14 @@ class Filler:
                     #: 那一趟在 postcode/name 两屏上点过之后，**第一次**点 email 那一屏的 Continue
                     #: 就直接收摊 ✗（trace 里 step 11/14 都写着 `retry: True` —— 它们根本不在同一屏上）。
                     #: ⇒ 换成**看得见的形状**：题面 + 选项 + **进度** + **这一屏有哪几个格**。
-                    #: ⚠️ ② 挑选项那边**照旧不含 progress/inputs**（答完一题站点常把百分比往上推，
+                    #: ★ 2026-11-11（真事 `job-209dcbda530d` · standardmeds 问卷）：上一版把
+                    #: `answered_sig`（`head[:60]`）拼进来，可这一族的每一屏都以同一条横幅开头、
+                    #: 说明屏又没有选项/进度/格子 ⇒ **不同的说明屏**在判据上是同一个字符串 ⇒
+                    #: 计数器还是跨屏累加，第三下 Next 被判「页面还是那一屏」收摊（自测第 15 步）。
+                    #: ⇒ 与 `_wait_for_change` 共用 `_page_sig`（题面取**全 300 字**，不截 60）。
+                    #: ⚠️ ② 挑选项那边**照旧含 `progress` 会误判**（答完一题站点常把百分比往上推，
                     #: 带上它「同一屏」会被读成新屏 ⇒ 又答一次 ✗）—— 这把尺子只给 ③ 用。
-                    next_sig = "%s|%s|%s" % (answered_sig, page.get("progress") or "",
-                                             "|".join(str(t) for t, _v in (page.get("inputs") or []))[:120])
+                    next_sig = self._page_sig(page)
                     if next_sig == getattr(self, "_last_next_sig", ""):
                         self._same_next = getattr(self, "_same_next", 0) + 1
                     else:
@@ -2405,8 +3194,15 @@ class Filler:
                         self.log.error("[%s] 连着 %d 次点 Next、页面还是那一屏 —— 如实报失败",
                                        self.cid, self._same_next)
                         self._rpt("max_steps", "next without change")
-                        self._stop(step, "click", "连着 %d 次点 Next、页面还是那一屏"
-                                   % self._same_next)
+                        _head = str(page.get("head") or "")
+                        self._stop(
+                            step, "click", "连着 %d 次点 Next、页面还是那一屏"
+                            % self._same_next,
+                            page_sig=_head[:600], page_sig_tail=_head[-240:],
+                            target={"options": list(page.get("options") or [])[:20],
+                                    "inputs": list(page.get("inputs") or [])[:20],
+                                    "nextTxt": page.get("nextTxt"),
+                                    "nextDisabled": bool(page.get("nextDisabled"))})
                         return False
                     #: ★ 2026-10-13（真事 `job-e8bbc9b2612a` 的问卷）：这一屏**已经点过一次、
                     #: 页面还是没变** ⇒ 这一下换两样东西再试一次：**先让站点那边落定**（等几秒，

@@ -455,6 +455,12 @@ def render(site, success_text, states, fills, provenance, success_urls=None, *,
 #: `span.option-text` ⇒ 判成「被盖着」⇒ 一格都不填、自测卡在第 5 步。可 `label` 本来就是
 #: **点这一格的那条合法路径**（`<label for=…>` / 包着 input 的 label）——
 #: 挡住它的不是别人，是它自己的名字。`el.labels` 是浏览器给的关联表（`for=` 与包裹两种都在）。
+#:
+#: ★ 2026-11-03（真事 `job-b18df26fdb51` / info）：自定义下拉把原生 `<select>` 藏在
+#: **自己的 label** 后面（`label.SelectDropdown…`），而那个 label 没有 `for=`/包裹关系
+#: ⇒ 不在 `el.labels` 里。旧判据把它当遮挡物 ⇒ `cdp form` 一次都没发出去。
+#: 窄口径：目标是 `<select>` + 盖着的是 `<label>` + class 带 select/dropdown 才算
+#: 这一格自己的控件；别的 label 照旧算遮挡。
 _COVER_JS = (
     "var all=document.getElementsByTagName('*'), el=null;"
     "for(var i=0;i<all.length;i++){try{if(all[i].matches(%s)){el=all[i];break;}}catch(e){}}"
@@ -470,6 +476,9 @@ _COVER_JS = (
     "if(h===el||el.contains(h)||h.contains(el)) return '';"
     "var labs=(el.labels||[]);"
     "for(var j=0;j<labs.length;j++){if(labs[j]===h||labs[j].contains(h)) return '';}"
+    "var htag=String(h.tagName||'').toUpperCase(), etag=String(el.tagName||'').toUpperCase();"
+    "if(htag==='LABEL'&&etag==='SELECT'){var hcls=String(h.className||'').toLowerCase();"
+    "if(hcls.indexOf('select')>=0||hcls.indexOf('dropdown')>=0) return '';}"
     "return 'COVER|'+(h.tagName||'').toLowerCase()+(h.id?('#'+h.id):'')"
     "+'.'+String(h.className||'').split(' ')[0];}"
     "return '';"
@@ -554,7 +563,17 @@ _VIS_JS = (
     #: ⇒ 必须 try/catch 住：抛出去 = 整段探针炸 = 十条钩子全哑（`_COVER_JS` 那处同一个包法）。
     "var cs=null;try{cs=getComputedStyle(e);}catch(err){}"
     "if(cs){var d=String(cs.display||''),v=String(cs.visibility||'');"
-    "if(d==='none'||v==='hidden'||v==='collapse')return false;}"
+    "if(d==='none'||v==='hidden'||v==='collapse')return false;"
+    #: ★ 2026-11-06（真事 `job-669c375b51f9` · antigravity）：**点不到的东西不算看得见**。
+    #: 现场：页面上叠着**三份** `div.Modal_modal__Abm7m`（377×757）：两份 `opacity:0` +
+    #: `pointer-events:none`（元素在里面时计算值继承成 none），真正开着的那份才是 auto。
+    #: 旧判据只问 display/visibility ⇒ 隐藏那两份的关闭键也算「可见」⇒ 钩子按 DOM 顺序
+    #: 先挑中**隐藏**那份的关闭键 ⇒ `cdp click` 在落点上取不到节点（拒绝点击）⇒
+    #: 复核「还有盖住整页的模态」⇒ 真弹窗一直关不掉，脚本被它挡住。
+    #: `pointer-events` 是**继承属性**（容器 none ⇒ 子元素计算值也是 none），所以按子元素问
+    #: 就够；`opacity` 不继承，另按元素自己的值判（≤0.05 当看不见）。
+    "var pe=String(cs.pointerEvents||'');if(pe==='none')return false;"
+    "var op=parseFloat(cs.opacity);if(!isNaN(op)&&op<0.05)return false;}"
     "return true;};"
 )
 _CONSENT_BOX_JS = (
@@ -568,6 +587,31 @@ _CONSENT_BOX_JS = (
     "return '';"
 )
 
+
+#: ★ 2026-11-09（真事 `job-18cccc756ba5` · walkergrey 的 Quick view）：
+#: 页面上**有没有一个开着的、盖住大半视口**的模态/抽屉（只读，不动页面）。
+#:
+#: 为什么需要它：弹层的内容是**异步拉的** —— 壳先出来，里面的 Add to cart / Buy now
+#: 隔十几秒才渲出来。账本那一步的目标因此「第一次没找到」，而 `late_element` 只认
+#: **表单填成**的凭据 ⇒ 纯 click 目标永远拿不到长预算（6 秒不够）。
+#: 判据与 `_MODAL_BOX_JS` 的「是不是模态」同一套词汇，但**不要**关闭键：
+#: 关闭键认不出来时（这一站的 Quick view 就是），那条钩子不答应，可弹层照样开着。
+_OPEN_MODAL_JS = (
+    "var sfOpenModal=0;"
+    + _VIS_JS +
+    _CONSENT_ROOTS_JS +
+    "for(var i=0;i<all.length;i++){var e=all[i];"
+    "var lab=String(e.id||'')+' '+String(e.className||'')"
+    "+' '+String((e.getAttribute&&e.getAttribute('aria-label'))||'');"
+    "var sem=/(dialog|modal)/i.test(lab)"
+    "||!!(e.getAttribute&&(e.getAttribute('role')==='dialog'"
+    "||String(e.getAttribute('aria-modal'))==='true'));"
+    "if(!sem||!vis(e))continue;"
+    "var r=e.getBoundingClientRect();"
+    "if(r.width>=window.innerWidth*0.8&&r.height>=window.innerHeight*0.8)"
+    "{sfOpenModal=1;break;}}"
+    "return sfOpenModal?'1':'';"
+)
 
 #: ★ 2026-09-23（用户点的那件事：「最后画面的截图不好分析，运营懵、我们 AI 也懵」）——
 #: **失败那一步的现场**，变成机器读得懂的一段字。为什么是字而不是图：视觉模型今天**没配**
@@ -644,6 +688,33 @@ def _is_consent_step(label: str) -> bool:
     text = str(label or "").lower()
     return bool(text) and any(w in text for w in _CONSENT_STEP_WORDS)
 
+#: ★ 2026-11-06（真事 `job-6119866e26d9` · antigravity）：**弹层/同意层那类辅助步** ——
+#: 名字或地址里**同时**写着「这是个弹层」（modal/dialog/popup/overlay/consent/cookie/…）
+#: 与「这是个关闭/同意动作」（close/dismiss/accept/agree/…）。
+#: 这类步骤**不做意图重定位**：声明的地址失效 = 这一屏根本没有那个弹层了 ⇒ 软跳过。
+#: 现场：账本那步 `close modal button` 的 `.SubscribeModal_closeIcon__S50rw` 在
+#: user-agreement 那一屏不存在 ⇒ 重定位按 aria-label 找到**页面导航里另一颗**同名按钮
+#: ⇒ 点开移动端菜单 ⇒ 底下的 footer 链接被 `ul.index_mobile_list` 盖住 ⇒ 下一步
+#: 「不许点盖着的」⇒ 整组重试 ⇒ 收摊。**宁可不做**：弹层真还在，下一步会被 `_covered_by`
+#: 挡住并如实失败 —— 比点错一颗按钮好。
+#: ⚠️ 两个词族**都要**命中才算（`close` 单出现在业务按钮上不触发；`modal` 单出现在地址里
+#: 也不触发）—— 只认这一种形状，别把它扩成「带 close 的按钮都软跳过」。
+_OVERLAY_WORDS = ("modal", "dialog", "popup", "overlay", "consent", "cookie",
+                  "gdpr", "privacy")
+_OVERLAY_CLOSE_WORDS = ("close", "dismiss", "accept", "agree", "allow",
+                        "reject", "deny", "decline", "got it")
+
+
+def _is_overlay_step(step, label="") -> bool:
+    """这一步是不是「点掉弹层/同意层」（只按**它自己写着的字**判，不猜）。见上。"""
+    target = (step or {}).get("target") or {}
+    hay = " ".join([
+        str((step or {}).get("note") or ""), str(label or ""),
+        str(target.get("label") or ""), str(target.get("text") or ""),
+        " ".join(str(s) for s in (target.get("selectors") or [])),
+    ]).lower()
+    return (any(w in hay for w in _OVERLAY_WORDS)
+            and any(w in hay for w in _OVERLAY_CLOSE_WORDS))
 
 #: ★ 2026-10-10（用户当天那句：「**执行的时候都检测是否有弹窗**」）：
 #: 再看一眼**盖住整页的模态对话框** —— 它不是同意条，但比同意条更硬：
@@ -665,7 +736,8 @@ def _is_consent_step(label: str) -> bool:
 #:   ① 容器自己得是**模态语义**（id/class 里有 `dialog|modal`，或 `role=dialog` / `aria-modal=true`）；
 #:   ② 它得**盖住大半个视口**（宽高都 ≥80%）—— 小浮标、侧栏抽屉不算
 #:      （那些可能真是页面要人看的东西，点掉它同样是「点到别的东西」）；
-#:   ③ 里面得有一颗**可见的、明确叫「关闭」**的控件（close / dismiss / 关闭 / ×，且很短）。
+#:   ③ 里面得有一颗**可见的、明确叫「关闭/拒绝」**的控件（close / dismiss / 关闭 / ×，
+#:      或退订弹窗那族 `no thanks` / `not now` / `maybe later` / `skip`，且很短）。
 #: ⚠️ 剩下的那点风险与「同意条只有文字」那条**同一个量级**（调用方按文字打标记再点）：
 #: 页面上若另有一颗文字恰好也是 `close` 的按钮，标记会命中靠前的那个。
 #: 由 `_covered_by` 兜住 —— 点歪了那一步照样会被判成没做成，不会被记成做成了。
@@ -676,6 +748,21 @@ def _is_consent_step(label: str) -> bool:
 #: ★ 2026-10-19：关闭键也认 `div`/`span` —— 同意控件不一定是 `button/a/input`（真事
 #: compareinsulation 的 CookieScript 把 accept/reject 做成 `<div>`）。`closeW` 的 ≤24 字闸
 #: 已经把散文挡在外面，这里不再加第二条长度闸。
+#: ★ 2026-11-03（真事 `job-1a42633f4d4d` · smartwool）：订阅弹窗
+#: `div.modal.micromodal-slide.signup-modal` 的遮罩 `div.modal__overlay` 是
+#: `position:fixed`、盖满视口（765×437）⇒ ② 早就成立；可它**唯一**那颗关闭键是
+#: `<button aria-label="No Thanks">`（32×32，X 图标）—— `closeW` 不认「拒绝」这族
+#: ⇒ 钩子从不答应，弹窗一路盖住尺寸/加购/结算三步。原话见
+#: `runtime/selftest/smartwool-20261103-073854/baseline/*.log`：
+#: `第 1 个选择器指的元素被 h2#signup-modal-title.signup-modal__title 盖着`。
+#: 窄口径：只在**盖住整页的模态**这一条里加、且要**整句**是拒绝词（`^…$`）——
+#: 广告 creative 那条自己那份 `closeW` 不动（它没有「盖满视口」这道前置闸）。
+#:
+#: ★ 2026-11-03（同一条真站现场）：这一页上**同时**有 17 个「语义是模态 + 盖满视口」
+#: 的容器（商品图模态 / 横幅 / 尺码表 / 抽屉…），要点的那个 `div.modal__overlay`
+#: 排在很后面。原来那句 `return ''` 写在外层 `for` **里面** ⇒ 扫完**第一个**容器
+#: 没找到关闭键就整段收摊，后面的容器一个都不看（这就是「判据全都成立、却从不答应」
+#: 的真因）。`return ''` 收到外层循环**之后**。
 _MODAL_BOX_JS = (
     "var isModal=function(e){"
     "var lab=String(e.id||'')+' '+String(e.className||'')+' '"
@@ -689,9 +776,21 @@ _MODAL_BOX_JS = (
     "var closeW=function(s){s=String(s||'').trim().toLowerCase();"
     "if(!s)return false;"
     "if(s==='×'||s==='✕'||s==='✖')return true;"
-    "return /^(close|dismiss|关闭)/.test(s)&&s.length<=24;};"
+    "if(/^(close|dismiss|关闭)/.test(s)&&s.length<=24)return true;"
+    "return /^(no,? thanks|no thank you|not now|maybe later|skip)$/.test(s)"
+    "&&s.length<=24;};"
+    #: ★ 2026-11-06（真事 `job-0ecaf3b90a6a` · antigravity）：**点名的那个模态要有身份** ——
+    #: `_modal_holds_target` 要问「就是**这一个**模态吗」。答出去之前先清掉上一轮的标记，
+    #: 给这一颗打上 `data-sf-hit=1`；答复形状不动（三格是两套消费端与假 DOM 夹具钉着的
+    #: 契约 —— 往里塞第四格 = 全线改判据）。
+    "for(var z=0;z<all.length;z++){if(all[z].removeAttribute)all[z].removeAttribute('data-sf-hit');}"
     "for(var m=0;m<all.length;m++){var mb=all[m];"
     "if(!isModal(mb))continue;"
+    #: ★ 2026-11-06（真事 `job-669c375b51f9` · antigravity）：**隐藏的那份模态不算遮挡**。
+    #: 现场三份同名满屏容器，两份 `opacity:0` + `pointer-events:none`，它们的关闭键
+    #: `aria-label` 与真要关的那颗一字不差 ⇒ 先答出去的是隐藏那颗（点不到）⇒ 真弹窗
+    #: 一直关不掉。容器自己就藏着 ⇒ 整份跳过。
+    "if(!vis(mb))continue;"
     "var mi=(mb.getElementsByTagName?mb.getElementsByTagName('*'):mb.querySelectorAll('*'));"
     "for(var n=0;n<mi.length;n++){var cb=mi[n],ct=String(cb.tagName||'').toLowerCase();"
     "var ctl=(ct==='button'||ct==='a'||ct==='input');"
@@ -703,12 +802,120 @@ _MODAL_BOX_JS = (
     "    if(String(ch.innerText||ch.value||'').trim()){tc=true;break;}}"
     "  if(tc)continue;}"
     "if(!vis(cb))continue;"
+    #: ★ 2026-11-03（同一条真站现场）：`_VIS_JS` 只看**纵向**有没有划出视口 ——
+    #: 这一页上两只 `.drawer` 的关闭键在 `left:1194`（视口只有 780 宽），
+    #: 却照样算「可见」⇒ 钩子先把抽屉那颗答出去，订阅弹窗排在后面永远轮不到。
+    #: 这里补横向：整颗在视口左边/右边之外的不算（真 DOM 的 rect 一定有 left/right）。
+    "var cr=cb.getBoundingClientRect();"
+    "if(cr.right<=0||cr.left>=window.innerWidth)continue;"
     "var ca=String((cb.getAttribute&&cb.getAttribute('aria-label'))||'').trim();"
     "var cx=String(cb.innerText||cb.value||'').trim();"
     "if(!(closeW(ca)||closeW(cx)))continue;"
-    "return (cb.id?('#'+cb.id):'TEXT')+'|'+(ca||cx).slice(0,40);}"
-    "return '';}"
+    "if(mb.setAttribute)mb.setAttribute('data-sf-hit','1');"
+    "return (cb.id?('#'+cb.id):'TEXT')+'|'+(ca||cx).slice(0,40);}}"
+    "return '';"
 )
+
+#: ★ 2026-10-23（真事 firstday.com · `job-863ba9a731d7`）：**站点自己的购物车抽屉**
+#: 也是「role=dialog + aria-modal=true + 盖满视口 + 一颗 Close shopping cart」——
+#: 上面那条通用模态钩子把它当遮挡点掉了，而下一步要点的「CHECKOUT+」**就在抽屉里**
+#: ⇒ 自测三版稿都卡在「页面上没找到 CHECKOUT+」。抽屉是流程的一部分，不是遮挡。
+#:
+#: 判据（三种，任一成立都不点关）：
+#:   · **这一步要点的东西就在这个模态里**（`text` / `selector`）—— 把这一步的 target
+#:     （text + selectors）交给页面，按「可见元素」找一遍；
+#:   · **这个模态刚才就在用**（`flow`）—— 见下面 `data-sf-flow` 那一段：下一屏要隔几秒
+#:     才渲出来，按「这一眼」找必然落空，所以「握着过一步」这件事得**记在容器上**；
+#:   · **这一屏有一个已经打开的下拉**（`open-dropdown`）。
+#: 为什么不能只按「容器叫 cart」：站点给抽屉起什么名字追不完；「里面有没有下一步的目标」
+#: 是形状，而且对「任何模态里装的下一步」都成立。
+#: ⚠️ 只对「盖住整页的模态」这一行生效（见 `_MODAL_HOOK_NAME`）：同意层照旧先做决定 ——
+#: 同意层里不会有「下一步要点的东西」。
+#: ⚠️ 目标两样都没有（没写 text、也没 selectors）⇒ 返空 = **照旧清弹层**（不猜）；但
+#: `flow` 与 `open-dropdown` 两格**不看目标**——它们说的是「这一下清扫会毁掉流程」。
+_MODAL_HOLDS_TARGET_BODY = (
+    #: 测试替身靠这个标记认这一段（`tests/test_template.py` 的 STUB_COMMON）——
+    #: 它不执行 JavaScript，只能按标记回一句预设答复。
+    "var sfModalHolds=1;"
+    "var want=__WANT__,sels=__SELS__;"
+    "var norm=function(s){return String(s||'').replace(/\\s+/g,' ').trim().toLowerCase();};"
+    "var isModal=function(e){var lab=String(e.id||'')+' '+String(e.className||'')+' '"
+    "+String((e.getAttribute&&e.getAttribute('aria-label'))||'');"
+    "var sem=/(dialog|modal)/i.test(lab)"
+    "||!!(e.getAttribute&&(e.getAttribute('role')==='dialog'"
+    "||String(e.getAttribute('aria-modal'))==='true'));"
+    "if(!sem)return false;var r=e.getBoundingClientRect();"
+    "return r.width>=window.innerWidth*0.8&&r.height>=window.innerHeight*0.8;};"
+    #: ★ 2026-11-06（真事 `job-6119866e26d9` · antigravity）：**这一屏有一个已经打开的下拉**
+    #: ⇒ 也当「这个模态握着这一步」。下拉的选项渲染在 body 的 portal 里、**不在模态 DOM 里**
+    #: ⇒ 上面那两格按「在不在里面」判是 false ⇒ 清弹层去点模态的关闭键 ⇒ 那一下等于点
+    #: 页面别处，下拉当场关掉（`.rc-select-item-option[title="10K–100K"]` 等 45 秒等不到）。
+    #: 判据只认下拉自己声明的开合（`role=combobox` + `aria-expanded=true`，rc-select/antd
+    #: 那一族都这么写）—— 不按站点类名认，也不拿「页面上有个 listbox」当开
+    #: （常驻列表会把同意弹层永远清不掉）。放在 `!want&&!sels.length` 那道闸**之前**：
+    #: 这一步有没有目标都一样 —— 下拉开着时，任何清扫点击都只会把它点没。
+    "for(var q=0;q<all.length;q++){var cb=all[q];"
+    "if(!vis(cb)||!cb.getAttribute)continue;"
+    "if(cb.getAttribute('role')!=='combobox'"
+    "||String(cb.getAttribute('aria-expanded'))!=='true')continue;"
+    "return '1|open-dropdown';}"
+    #: ★ 2026-11-06（真事 `job-0ecaf3b90a6a` · antigravity）：**先认「是哪一个模态」**。
+    #: `_MODAL_BOX_JS` 答出去之前把那一颗打了 `data-sf-hit=1`；这里只认它。
+    #: 原先这几格扫的是**页面上所有模态** —— 促销弹层被点名要清，可「这一步的目标」在
+    #: **底下那个表单模态**里 ⇒ 判成「目标在里面」⇒ 不清促销层 ⇒ 它一路盖着下一步
+    #: （trace 原话：`div.Content_promo__hcTsr 一直盖着「没写名字的元素」`）。
+    #: 清的是哪一颗，判据就只能看哪一颗。
+    "var hit=null;"
+    "for(var h=0;h<all.length;h++){var hb=all[h];"
+    "if(!vis(hb)||!hb.getAttribute)continue;"
+    "if(String(hb.getAttribute('data-sf-hit'))==='1'){hit=hb;break;}}"
+    "if(!hit)return '';"
+    "var rel=function(x){try{return x===hit||(hit.contains&&hit.contains(x))"
+    "||(x.contains&&x.contains(hit));}catch(err){return false;}};"
+    #: ★ 2026-11-06（真事 `job-54fbc668f03d` · homejolly）：**这个模态刚才就在用** —— 上一屏
+    #: 的目标算进了「在它里面」，容器上留了 `data-sf-flow=1`；下一屏要隔几秒才渲出来，
+    #: 按「这一眼」找必然落空。标记只对**被点名那一颗**（或与它同一条祖先链）有效 ——
+    #: 别的模态上挂着它，不代表这一颗是流程本身。
+    "for(var f=0;f<all.length;f++){var fb=all[f];"
+    "if(!vis(fb)||!fb.getAttribute)continue;"
+    "if(String(fb.getAttribute('data-sf-flow'))==='1'&&rel(fb))return '1|flow';}"
+    "if(!want&&!sels.length)return '';"
+    "var inner=(hit.getElementsByTagName?hit.getElementsByTagName('*'):hit.querySelectorAll('*'));"
+    "for(var j=0;j<inner.length;j++){var e=inner[j];if(!vis(e))continue;"
+    "var t=norm(e.innerText||e.value||(e.getAttribute&&e.getAttribute('aria-label'))||'');"
+    #: ★ 2026-11-06：`t` 已经过 `norm`（压空白 + casefold），`want` 没有 ⇒ 原先
+    #: `t===want` 拿 "checkout+" 比 "CHECKOUT+"，**永不相等**（"1|text" 那一支从来没响过 ——
+    #: firstday 那条只靠 selector 那半撑着，替身测试不跑 JS 所以一直没露）。两边同一把尺子。
+    "if(want&&t===norm(want)){if(hit.setAttribute)hit.setAttribute('data-sf-flow','1');"
+    "return '1|text';}"
+    "for(var k=0;k<sels.length;k++){try{if(e.matches(sels[k])){"
+    "if(hit.setAttribute)hit.setAttribute('data-sf-flow','1');return '1|selector';}}catch(err){}}"
+    "}"
+    "return '';"
+)
+
+
+def _modal_holds_target_js(target):
+    """把这一步的目标（text + selectors）填进 `_MODAL_HOLDS_TARGET_BODY`。
+
+    ⚠️ 用 `.replace` 而**不用 `%` 格式化**：这段 JS 里有 `80%` 这种百分号
+    （`_popup_probe_js` 那段注释记着同一个坑）。
+    """
+    target = target or {}
+    want = str(target.get("text") or "").strip()
+    sels = [str(s) for s in (target.get("selectors") or []) if s]
+    return (_VIS_JS + _CONSENT_ROOTS_JS + _MODAL_HOLDS_TARGET_BODY
+            .replace("__WANT__", json.dumps(want, ensure_ascii=False))
+            .replace("__SELS__", json.dumps(sels, ensure_ascii=False)))
+
+
+#: 「盖住整页的模态」那一行在表里叫什么 —— `_clear_obstructions` 要靠它认出
+#: 「这一步的目标就在它里面，别点关」只对**这一行**生效（见 `_MODAL_HOLDS_TARGET_BODY`）。
+#: ⚠️ 必须与 `_POPUP_HOOKS` 里那一行的名字**一字不差**：表里仍写字面量（测试的
+#: `_popup_hook_rows` 是按字面量解析表序的）；新用例
+#: `test_a_modal_that_holds_the_step_target_is_not_dismissed` 钉着两边对得上。
+_MODAL_HOOK_NAME = "盖住整页的模态"
+
 
 #: ★ 2026-10-13（用户裁定「都收吧」；真事 `job-708dfae74b73` · lovesac 的 Fides 弹层）：
 #: **盖满视口的同意弹层** —— 上面那条「同意条」是**按容器身份**认的（`cookie|consent|gdpr|privacy`），
@@ -729,7 +936,13 @@ _MODAL_BOX_JS = (
 #: ★ 2026-10-19：与「同意条」同一道 tag 白名单（`div`/`span`）+ 同一条 ≤40 字闸（只查新 tag）。
 #: 这一条扫的是**满视口容器的全部后代**，散文更像按钮，所以那道长度闸在这里更要紧。
 _CONSENT_MODAL_JS = (
-    "var decW=/(reject|decline|deny|accept|agree|allow|同意|接受|拒绝|不同意)/i;"
+    #: ★ 2026-11-06（真事 `job-82c14d34db71` · antigravity）：**同意词要锚在开头**。
+    #: 原先 `agree` 是子串匹配 ⇒ 页脚那颗 `USER AGREEMENT` 链接（还有同意条里的
+    #: `PRIVACY POLICY` 一类）被当成「同意控件」点了，页面当场跳到用户协议页，
+    #: 后面「Creator Recruitment」当然找不到。判据：控件文字**以决定动词开头**
+    #: （可选 "yes," / "I" 前缀）才算 —— "Accept all" / "I agree" / "同意" 照过，
+    #: "USER AGREEMENT" 不过。
+    "var decW=/^\\s*(?:yes,?\\s+)?(?:i\\s+)?(reject|decline|deny|accept|agree|allow|同意|接受|拒绝|不同意)/i;"
     "var badW=/(reject|decline|deny|拒绝|不同意)/i;"
     "var ctxW=/(cookie|consent|gdpr|privacy|tracking|同意|隐私|跟踪)/i;"
     "var strongW=/(reject|accept|allow|deny|decline)\\s+(all|cookies?)|全部接受|全部拒绝/i;"
@@ -803,7 +1016,8 @@ _CONSENT_HOOK_JS = (
     # 产品里凡是要按选择器找元素的地方一律避开它（`tests/test_template.py` 的
     # 「动作全走 cdp」那条把它钉死了；而这里本来就只是**读**，`matches()` 一样能读）。
     "var boxW=/(cookie|consent|gdpr|privacy)/i;"
-    "var btnW=/(accept|agree|allow|got it|close|reject|decline|deny|同意|接受|关闭)/i;"
+    #: ★ 2026-11-06：同 `decW` 那条 —— 锚在开头，别让 `USER AGREEMENT` 这种链接混进来。
+    "var btnW=/^\\s*(?:yes,?\\s+)?(?:i\\s+)?(accept|agree|allow|got it|close|reject|decline|deny|同意|接受|关闭)/i;"
     "for(var i=0;i<all.length;i++){"
     "  var box=all[i];"
     "  if(!boxW.test(boxLabel(box))||!vis(box)) continue;"
@@ -1070,10 +1284,15 @@ _POPUP_PROBE_JS = _popup_probe_js()
 #: 这里是**精确文字匹配**（`t===want`），不需要长度闸。
 _MARK_CONSENT_BY_TEXT_JS = (
     "var want=%s;"
-    + _CONSENT_ROOTS_JS +
+    #: ★ 2026-11-06（真事 `job-669c375b51f9` · antigravity）：**只标记看得见、点得到的那一颗**。
+    #: 现场：三份同名模态里两份是隐藏的（`pointer-events:none`），它们的关闭键 `aria-label`
+    #: 与真弹窗那颗**一字不差** ⇒ 按 DOM 顺序先标记到隐藏那颗 ⇒ `[data-sf-consent=1]`
+    #: 点下去落到空气上、真弹窗照旧盖着。判据与探针同一把尺子（`_VIS_JS`）。
+    + _VIS_JS + _CONSENT_ROOTS_JS +
     "var hit=null;"
     "for(var i=0;i<all.length;i++){var b=all[i],tag=String(b.tagName||'').toLowerCase();"
     "if(tag!=='button'&&tag!=='a'&&tag!=='input'&&tag!=='div'&&tag!=='span')continue;"
+    "if(!vis(b))continue;"
     "var t=String(b.innerText||b.value||(b.getAttribute&&b.getAttribute('aria-label'))||'').trim();"
     "if(t===want){hit=b;break;}}"
     "if(!hit)return 'none';"
@@ -1326,6 +1545,23 @@ LIVE_PROBE_EVERY = 3.0
 #: `goto` 之后最多等多久（秒）让这一页加载到 `readyState=complete`。
 #: 等不到也照旧往下走（一句人话说明），**不许**把它当成失败。
 WAIT_READY_SECONDS = 10.0
+
+#: ★ 2026-10-24（真事 southernliving.com · 单号 26789988）：**开跑前**最多等多久（秒）
+#: 让落地页「真的出来」—— 空壳 / Cloudflare 验证页 / 还在加载，都算没出来
+#: （判据见 `_wait_landing_ready`）。
+#:
+#: 为什么要这一笔：广告落地页在**冷缓存**下先给一个空壳（`document.title` 是
+#: `Simple Page`、0 个可见链接），接着可能再过一道 Cloudflare 的「Just a moment...」，
+#: 真页面 **15~20 秒**后才出来。生产重跑的 cdp **没有 observe**（§4.6），回退链救不了
+#: 「点得太早」：第 1 步的选择器在空壳上必然找不到 ⇒ 整趟 `no_success`；而 30 秒后
+#: ad-task 抓的现场截图里，页面是**好的** —— 「看起来页面没问题却没成功」，根因就是
+#: **脚本比页面先到**。
+#:
+#: 为什么是 60：给慢网 + 一道验证页留余量；ad-task 给子进程的超时是 600 秒，这一笔
+#: 顶不掉整趟。**正常页面第一眼就过**（三条判据同时成立），平时一分钱不花。
+LANDING_WAIT_SECONDS = 60.0
+#: 上面那一笔的轮询间隔（秒）。
+LANDING_POLL_SECONDS = 0.5
 
 #: ★ 2026-09-22（生成侧建议第 2 条）：**有界等「when 成立」**最多等几秒。
 #: 为什么是 5~8：真不成立的状态组多花这几秒，换来「不是没等就判」；而这类失败
@@ -2035,6 +2271,18 @@ def _label(target, step=None):
     if near:
         return near[0]
     return "没写名字的元素"
+
+
+def _landing_state_say(state):
+    """`_LANDING_STATE_JS` 的答复 → 一句人话（等的时候 / 等超了的时候说给人听）。"""
+    if not isinstance(state, dict):
+        return "读不出来"
+    if state.get("shell"):
+        return "还是一个验证页 / 加载页"
+    if str(state.get("rs") or "") != "complete":
+        return "还在加载（readyState=%s）" % (state.get("rs") or "?")
+    return "页面上还没有能点的东西（可见链接 %s / 控件 %s / 正文 %s 字）" % (
+        state.get("links"), state.get("fields"), state.get("len"))
 
 
 def _landing_say(output):
@@ -3051,12 +3299,20 @@ class Filler:
         if key in self._rule_values:
             self._value_from = "规则「%s」现编（同一趟同值）" % rule
             return self._rule_values[key]
-        if rule == "phone_prefix":
+        if rule == "phone_exact":
+            #: 人点名的整号：**原样用**（不编、不补位、不换国家码）。
+            value = str(fill.get("value") or "").strip()
+            self._value_from = "人给的那个号（原样用）"
+        elif rule == "phone_prefix":
             prefixes = [str(x).strip() for x in (fill.get("prefixes") or [])
                         if str(x).strip()]
             prefix = random.choice(prefixes) if prefixes else "04"
             value = prefix + "".join(str(random.randint(0, 9))
                                      for _ in range(max(0, 10 - len(prefix))))
+            #: 10 位北美号：交换局首位不许 0/1（否则站方按 US 校验直接拒）。
+            if (len(prefix) <= 3 and not prefix.startswith("0")
+                    and len(value) == 10 and value[3] in "01"):
+                value = value[:3] + str(random.randint(2, 9)) + value[4:]
             self._value_from = "规则「手机号 %s」现编" % ("/".join(prefixes) or prefix)
         elif rule == "dob_random":
             fmt = str(fill.get("date_format") or "DD/MM/YYYY")
@@ -3472,6 +3728,94 @@ class Filler:
                       self.cid, limit)
         return False
 
+    #: 「这一页真的出来了没有」那个探针（**读**，不动页面）。答复是一段 JSON：
+    #: `rs` = `document.readyState`；`shell` = 标题还是验证/加载页那一族；
+    #: `links`/`fields`/`len` = 页面上真有多少能点的东西（可见链接 / 表单控件 / 正文字数）。
+    #: ⚠️ 这是**函数体**（`_ev` 会把它包进 `(function(){…})()`）—— **必须带 `return`**，
+    #: 自执行的那种 `(function(){…})()` **不带 return**，包一层之后回 undefined（2026-10-24
+    #: 真站实测：等落地页那一笔因此从来没生效，页面还是空壳就开点了）。
+    #: ⚠️ 注释里的 `sfLanding` 是**测试替身的认人标记**（与 `sfMatches` / `sfModalHolds`
+    #: 同一条规矩）—— 改名字要同步改 `tests/test_template.py` 的替身分支。
+    _LANDING_STATE_JS = (
+        "/* sfLanding */"
+        "var t=(document.title||'').toLowerCase();"
+        "var txt=document.body?(document.body.innerText||''):'';"
+        "var links=0,as=document.querySelectorAll('a');"
+        "for(var i=0;i<as.length;i++){var r=as[i].getBoundingClientRect();"
+        "if(r.width>0&&r.height>0)links++;}"
+        "var fields=document.querySelectorAll('input,textarea,select').length;"
+        "var shell=/just a moment|attention required|checking your browser|"
+        "verify you are human|simple page|请稍候|正在加载/.test(t);"
+        "return JSON.stringify({rs:document.readyState,shell:shell,"
+        "links:links,fields:fields,len:txt.length});"
+    )
+
+    def _wait_landing_ready(self, why=""):
+        """等这一页**真的**出来再开跑：空壳 / 验证页 / 还没加载完 —— 最多 `LANDING_WAIT_SECONDS` 秒。
+
+        ★ 2026-10-24（真站实测，单号 26789988，southernliving.com）：广告落地页在冷缓存下
+        **先给一个空壳**（标题 `Simple Page`、0 个可见链接），随后可能再过一道 Cloudflare 的
+        「Just a moment...」，真页面 15~20 秒后才出来。生产重跑**不 observe**，回退链救不了
+        「点得太早」：第 1 步的选择器在空壳上必然找不到 ⇒ 整趟 `no_success`；而 30 秒后
+        ad-task 抓的现场截图，页面是**好的** —— 照片里 SUBSCRIBE 就在页头。
+
+        判据（三条**同时**成立才叫出来了）：
+          ① `readyState === 'complete'`；
+          ② 标题不是验证/加载页那一族（`Just a moment...` / `Simple Page` / …）；
+          ③ 页面上有真东西（可见链接 / 表单控件 / 正文 ≥ 20 字）。
+
+        ⚠️ 读不出来（cdp 老 / eval 炸 / 答复不是 JSON）⇒ **不等**、照旧往下走：
+        「量不到」不许变成新的失败点，也不许因此白等一分钟。
+        ⚠️ 等超了也只是**说一句**再往下走 —— 这一笔不许把整趟判死（下一句就是真动作）。
+        """
+        if getattr(self, "cdp", None) is None:
+            return True
+        try:
+            limit = float(LANDING_WAIT_SECONDS)
+        except (TypeError, ValueError):
+            return True
+        if limit <= 0:
+            return True
+        started = time.time()
+        deadline = started + limit
+        told = False
+        while True:
+            state = None
+            try:
+                raw = self._ev(self._LANDING_STATE_JS)
+                if isinstance(raw, str) and raw.strip():
+                    state = json.loads(raw)
+            except (TypeError, ValueError):
+                state = None
+            except Exception:                          # noqa: BLE001 —— 读页面炸了也不许带塌主路
+                state = None
+            if not isinstance(state, dict):
+                return True                            # 量不到 ⇒ 不等
+            try:
+                ready = (str(state.get("rs") or "") == "complete"
+                         and not state.get("shell")
+                         and (int(state.get("links") or 0) > 0
+                              or int(state.get("fields") or 0) > 0
+                              or int(state.get("len") or 0) >= 20))
+            except (TypeError, ValueError):
+                return True
+            if ready:
+                waited = time.time() - started
+                if waited >= 1.0:
+                    self.log.info("[%s] 落地页等了 %.0f 秒才真的出来%s —— 继续",
+                                  self.cid, waited, ("（%s）" % why) if why else "")
+                return True
+            if time.time() >= deadline:
+                self.log.warning("[%s] 落地页 %.0f 秒还没真的出来（%s）—— 照旧往下走，"
+                                 "下一步多半会失败", self.cid, limit,
+                                 _landing_state_say(state))
+                return False
+            if not told and time.time() - started >= 3.0:
+                self.log.info("[%s] 落地页还没出来（%s）—— 等它，最多 %.0f 秒",
+                              self.cid, _landing_state_say(state), limit)
+                told = True
+            time.sleep(LANDING_POLL_SECONDS)
+
     def _popup_row(self, ok, why):
         """弹层这一下**如实**落一行 trace（`ok`：True = 关掉了 / False = 它还在 / None = 这一次没量到）。
 
@@ -3522,9 +3866,76 @@ class Filler:
         except Exception:                                  # noqa: BLE001 —— 外面世界
             return None
 
-    def _clear_obstructions(self, why=""):
+    def _modal_holds_target(self, target):
+        """「这一步别清这个模态」的**原因**（空串 = 照旧清）。四种：
+
+          · `"text"` / `"selector"` —— 这一步要点的东西**就在这个模态里**（真事 firstday：
+            购物车抽屉里的 CHECKOUT+）。点掉它 = 把这一步自己删掉。
+          · `"flow"` —— 这个模态**已经握着过一步的目标**（容器上留着 `data-sf-flow=1`，
+            见 `_MODAL_HOLDS_TARGET_BODY`）。真事 `job-54fbc668f03d` · homejolly：下一屏
+            （「Yes」）要隔几秒才渲出来，按「这一眼」找必然落空，而那颗 × 一点下去整个
+            表单模态就没了 —— 等 44 秒也等不到。
+          · `"open-dropdown"` —— 这一屏有一个**已经打开的下拉**（`[role=combobox]
+            [aria-expanded=true]`）。真事 `job-6119866e26d9` · antigravity：下拉的 mousedown
+            已经把列表打开，而下一步的选项渲染在 body 的 portal 里、**不在模态 DOM 里** ⇒
+            这道判断原先说「不在里面」⇒ 清弹层去点模态的关闭键 ⇒ 那一下等于点页面别处，
+            下拉当场关掉 ⇒ `.rc-select-item-option[title="10K–100K"]` 等 45 秒等不到。
+            下拉开着时下一步几乎必然要点它里面的一项 ⇒ 任何清扫点击都只会把它点没。
+
+        读不出来 / 没给目标 ⇒ `""`（照旧清弹层）—— 这道判断只负责「别把流程本身点掉」，
+        **不许**自己变成新的失败点（与弹层那一族人同一条口径）。
+        """
+        try:
+            raw = str(self._ev(_modal_holds_target_js(target)) or "").strip()
+        except Exception:                                  # noqa: BLE001 —— 外面世界
+            return ""
+        return raw[2:].strip() if raw.startswith("1|") else ""
+
+    def _open_modal(self):
+        """页面上有没有一个**开着的、盖住大半视口**的模态/抽屉（只读，不动页面）。
+
+        ★ 2026-11-09（真事 `job-18cccc756ba5` · walkergrey 的 Quick view）：
+        弹层内容是**异步拉的** —— 壳先出来，里面的「Add to cart / Buy now」隔十几秒
+        才渲出来。账本那一步因此「第一次没找到」，而 `late_element` 只认**表单填成**
+        的凭据 ⇒ 纯 click / scroll 目标永远拿不到长预算（6 秒不够）。
+        探到「有弹层开着」就给那一笔（与 `LATE_ELEMENT_WAIT_SECONDS` 同额）。
+
+        读不出来 / 没开 ⇒ False —— 探针**不许**自己变成新的失败点
+        （与 `_clear_obstructions` 那一族人同一条口径）。
+        """
+        try:
+            return str(self._ev(_OPEN_MODAL_JS) or "").strip() == "1"
+        except Exception:                                  # noqa: BLE001 —— 外面世界
+            return False
+
+    def _extend_for_open_modal(self, until, label):
+        """「没找到」的预算：弹层开着就把这一笔放长（只放长，不放短）。
+
+        只在**这一组本来没有** `late_element` 时才问探针；已经有长预算的直接原样返回
+        （少一次 eval，也让日志不说两遍）。
+        """
+        if until - time.monotonic() > NOT_FOUND_WAIT_SECONDS + 0.5:
+            return until
+        if not self._open_modal():
+            return until
+        room = time.monotonic() + LATE_ELEMENT_WAIT_SECONDS
+        if room <= until:
+            return until
+        self.log.info("[%s] 「%s」还没出来，但页面上有一个**开着的弹层** —— "
+                      "弹层内容是异步拉的：预算从 %.0f 秒放到 %.0f 秒",
+                      self.cid, label, NOT_FOUND_WAIT_SECONDS, LATE_ELEMENT_WAIT_SECONDS)
+        return room
+
+    def _clear_obstructions(self, why="", target=None):
         """开跑（以及每次导航之后）把**挡路的弹层**点掉：问一遍钩子表（`_POPUP_HOOKS`），
         谁先答应就点谁（今天：同意条 → 盖住整页的模态）。要加一类弹窗，**改表**，不改这里。
+
+        ★ 2026-10-23（真事 firstday.com · `job-863ba9a731d7`）：`target` 给了的时候，
+        答「盖住整页的模态」的那一行**还要再问一句**：这一步要点的东西是不是**就在这个
+        模态里**（`_modal_holds_target`）？是 ⇒ **不点关**（那不是遮挡，是流程本身 ——
+        点掉它等于把这一步自己删掉）。购物车抽屉就是这样：`role=dialog` + 盖满视口 +
+        `Close shopping cart`，而下一步要点的 `CHECKOUT+` 在抽屉里。
+        没给 `target`（开跑前 / 导航后那两处）⇒ 照旧。
 
         为什么要产物自带（2026-09-17 真站实测，链条闭合）：生产**每一单都是新窗口**、
         每次都清 cookie —— 所以**每单都会遇到同意弹层**；而探索那一趟跑在一个「弹层已经
@@ -3579,6 +3990,40 @@ class Filler:
                                           "（这一次没量到覆盖现场），不当成做成" % raw[:40])
                 return
             who, how, text = parts
+            held = self._modal_holds_target(target) if (
+                target and who == _MODAL_HOOK_NAME) else ""
+            if held:
+                #: ★ 2026-10-23（真事 firstday.com · `job-863ba9a731d7`）：这一步要点的
+                #: 东西**就在这个模态里** —— 它不是遮挡，是流程本身。点掉它 = 把这一步
+                #: 删掉，下一步只会得到一句「页面上没找到 CHECKOUT+」。
+                #: ★ 2026-11-06（真事 `job-6119866e26d9` · antigravity）：`open-dropdown`
+                #: —— 这一屏有一个**已经打开的下拉**：清弹层那一下等于点页面别处，会把
+                #: 它点没（选项渲染在 portal 里，`_modal_holds_target` 的「在不在里面」
+                #: 按 DOM 判是 false，所以要看这一步）。
+                name = _label(target)
+                if held == "open-dropdown":
+                    self.log.info("[%s] 认出了「%s」（%s）—— 但这一屏有一个**已经打开的"
+                                  "下拉**：清弹层那一下等于点页面别处，会把它点没，不点",
+                                  self.cid, who, how)
+                    self._popup_row(None, "这一屏有一个**已经打开的下拉**（「%s」）—— 不当"
+                                          "遮挡清掉：清它等于点页面别处，会把下拉点没" % who)
+                elif held == "flow":
+                    #: ★ 2026-11-06（真事 `job-54fbc668f03d` · homejolly）：这个模态
+                    #: **刚才那一步就在里面做**（容器上留着 `data-sf-flow=1`）—— 下一屏
+                    #: 要隔几秒才渲出来，按「这一眼」找必然落空；点那颗 × 等于把整个表单
+                    #: 模态删掉，下一步只会等到一句「没找到」（44 秒白等）。
+                    self.log.info("[%s] 认出了「%s」（%s）—— 但**刚才那一步就在这个模态里"
+                                  "做**（容器上留着 data-sf-flow=1）：下一屏可能还没渲出来，"
+                                  "点掉它等于把流程自己删掉，不点", self.cid, who, how)
+                    self._popup_row(None, "「%s」**刚才那一步就在里面做**（已经标成流程本身）"
+                                          "—— 不当遮挡点掉：下一屏可能还没渲出来" % who)
+                else:
+                    self.log.info("[%s] 认出了「%s」（%s）—— 但这一步要点的「%s」**就在"
+                                  "它里面**：点掉它等于把这一步自己删掉，不点",
+                                  self.cid, who, how, name)
+                    self._popup_row(None, "「%s」里有这一步要点的「%s」—— 不当遮挡点掉"
+                                          "（点了它这一步就没了）" % (who, name))
+                return
             if _popup_report_only(who):
                 #: ★ 2026-10-17（终审 C2 · Ruling 30）：这一行**只报不点** —— 探针照认
                 #: （「认得出哪一颗」这一半归探针与合成页矩阵），但**不动手**。
@@ -3661,8 +4106,8 @@ class Filler:
             self._popup_row(None, "看/点弹层这一下没成（%s: %s）—— 没量到，不当成做成"
                                   % (type(exc).__name__, str(exc)[:40]))
 
-    def _consent_step_handled(self, label, frame=""):
-        """「点掉同意弹层」这一步**找不到元素**时：它是软跳过，不是失败。
+    def _consent_step_handled(self, label, frame="", step=None):
+        """「点掉同意弹层 / 弹层」这一步**找不到元素**时：它是软跳过，不是失败。
 
         为什么（2026-09-17 真站实测，自测第 2 遍挂在这上面）：
         账本是在一个「弹层已经点掉过」的会话里录的，所以它记了一条硬步骤
@@ -3670,8 +4115,10 @@ class Filler:
         「接着再跑一遍」）时弹层**根本不在页面上** → 找不到 → 记一次失败 → 整遍挂。
         第 1 遍却过（那一遍弹层在）。同一条产物在两遍里表现相反，差别只在环境的残留。
 
-        判据（★ 2026-10-13 改成一条）：
-          这一步的名字属于「对同意做个决定」那一族（`_is_consent_step`）⇒ 找不到就是软跳过。
+        判据（★ 2026-10-13 改成一条；★ 2026-11-06 加了弹层那一族）：
+          这一步的名字属于「对同意做个决定」那一族（`_is_consent_step`）**或**
+          属于「弹层/同意层的辅助步」（`_is_overlay_step`，按它自己写着的字判）
+          ⇒ 找不到就是软跳过。
 
         ★★ 2026-10-13（用户裁定「都收吧」；真事 `job-c02d5768e535` · compareinsulation）：
         **原来还有第二道否决**（「此刻页面上还看得见同意容器吗」，`_CONSENT_BOX_JS`）——
@@ -3681,13 +4128,17 @@ class Filler:
         ⇒ 人只能喊停。那道否决量的东西（「容器还在不在」）与「这一步该不该承重」根本不是一件事：
         自绘的同意条常常**留着空壳容器**，而「还在不在」这件事**下一步自己会说**——
         弹层真要还在，下一步会被 `_covered_by` 挡住并失败（这正是下面最后一段写着的兜底）。
-        所以：**认出是同意步骤就算软跳过**，把否决权交给真正的观测。
+        所以：**认出是同意/弹层步骤就算软跳过**，把否决权交给真正的观测。
 
-        返回 `(算做成了吗, 一句人话)`；不是同意步骤 → `(False, "")`（交回原判据）。"""
-        if not _is_consent_step(label):
+        ★ 2026-11-06（真事 `job-6119866e26d9` · antigravity）：弹层那一步**先**不许重定位
+        （见 `_perform` 里那句）—— 重定位会按 aria-label 找到页面别处同名的一颗，点了它
+        反而把页面搞乱（现场：点开移动端菜单）。这里接住「没找到 ⇒ 软跳过」这半。
+
+        返回 `(算做成了吗, 一句人话)`；都不是 → `(False, "")`（交回原判据）。"""
+        if not (_is_consent_step(label) or _is_overlay_step(step, label)):
             return False, ""
-        return True, ("「%s」这一步：页面上已经没有同意弹层了（前面那次会话把它点掉过，"
-                      "或者这一单本来就是干净会话没有弹层）—— 跳过，不算没做成。"
+        return True, ("「%s」这一步：页面上已经没有那个弹层/同意条了（前面那次会话把它"
+                      "点掉过，或者这一单本来就是干净会话没有弹层）—— 跳过，不算没做成。"
                       "产物开跑前本来就会自己清一次弹层（`_clear_obstructions`），"
                       "每一步动手前后也会再问一遍（`_POPUP_HOOKS`）。" % label)
 
@@ -3849,30 +4300,42 @@ class Filler:
 
     def _cover_is_own_widget(self, action, kind, selector, cover) -> bool:
         """★ 2026-10-08（真事 `job-62086decf839`，shorecrestwpb.com）：**盖着它的是这一格
-        自己的自定义控件 ⇒ 不算遮挡物**。窄口径，**只放 `form` + `kind == "select"`**。
+        自己的自定义控件 ⇒ 不算遮挡物**。窄口径，只放两种形状。
 
-        形状：站方用 **select2** 那类插件把原生 `<select>` 换成自定义控件 —— 原生 `<select>`
-        还在 DOM 里，而 `cdp form --select` **自己认得**这种（它的说明里写着：目标不是原生
-        `<select>` 时会去找可点的控件打开菜单），**手打那条命令是成的**。
+        ① `form` + `kind == "select"`（select2 那类把原生 `<select>` 换成自定义控件的站）：
+        原生 `<select>` 还在 DOM 里，而 `cdp form --select` **自己认得**这种（它的说明里
+        写着：目标不是原生 `<select>` 时会去找可点的控件打开菜单），**手打那条命令是成的**。
         可产物的遮挡判据**排在 cdp 前面**：它量到 `<select>` 被
         `span#select2-edit-size-container.select2-selection__rendered` 盖着 ⇒ 判成
         「被别的东西挡着」⇒ 四个下拉**一个都不动** ⇒ 第 7 步没做成 ⇒ 后面的勾选与 submit
         全没做（那一趟自测 `passed=False`，运营拿不到能用的稿）。
+        两条都要：动作是 `form` + `kind == "select"`；盖着的东西的 id 里**带着这一格自己的
+        id**（select2 那类壳子的命名法就是把原生 id 嵌进去）。
 
-        **只放这一种**，两条都要：
-          ① 动作是 `form` 且 `kind == "select"` —— 别的动作照旧拦（那道防线挡的是
-             「点到 consent 弹层上、cdp 还回 ok」，真站栽过，见 `_covered_by` 的说明）；
-          ② 盖着的东西的 id 里**带着这一格自己的 id** —— select2 那类壳子的命名法就是把
-             原生 id 嵌进去（`select2-<原生 id>-container`）。
+        ② ★ 2026-11-06（真事 `job-0ecaf3b90a6a` / `job-299e89b9c77f` · antigravity）：
+        **自定义下拉的可见壳盖着它自己的 input** 时也放行 —— `click` 与 `form` 都算。
+        现场第 8 步点 `#rc_select_0`、第 10 步填 `rc_select_0`，落点上站着的都是同一格自己的
+        可见壳 `div.RCSelect_v2_label__Qdn2I`（class 里就写着 select）—— 原先这里只放
+        `form + kind=select` ⇒ 判成遮挡 ⇒ click / form 都没发出去（第 10 步只在自测里
+        「带瑕疵过了」，下一组重试才补上）。
+        窄口径两条都要：目标自己的 id 里写着 `select` / `dropdown`（那是这个控件的地址）；
+        盖着的东西的 class 里也写着这两个词（是它的壳）。
 
-        ⚠️ 判不出来（选择器里没有 `#id`、或盖着的东西没有 id）⇒ **当遮挡物**（不放行）：
+        ⚠️ 判不出来（选择器里没有 `#id`、或两条窄口径缺一条）⇒ **当遮挡物**（不放行）：
         这条路的默认必须是「拦」，放宽要有依据。
         """
-        if action != "form" or kind != "select":
-            return False
         want = _id_in(selector)
-        got = _id_in(cover)
-        return bool(want and got and want in got)
+        if action == "form" and kind == "select":
+            got = _id_in(cover)
+            if want and got and want in got:
+                return True
+        if action not in ("form", "click"):
+            return False
+        low_want = want.lower()
+        if not low_want or ("select" not in low_want and "dropdown" not in low_want):
+            return False
+        low_cover = str(cover or "").lower()
+        return "select" in low_cover or "dropdown" in low_cover
 
     def _covered_by(self, selector, frame_id="", until=None):
         """这个选择器指的元素**是不是被别的东西盖着**。盖着就返回盖它的东西（读，不动页面）。
@@ -4014,6 +4477,29 @@ class Filler:
                                 _say("scroll", label, True, len(selectors) + extra,
                                      landing=_landing_say(out)), live)
 
+        #: ★ 2026-11-09（真事 `job-18cccc756ba5` · walkergrey 的 Quick view）：
+        #: **滚动目标还没渲出来**（弹层内容是异步拉的）⇒ 先按「后出来的」那笔预算等，
+        #: 不要立刻掉进「按意图重找」—— 那里没有身份信号，会滚到页面别处一颗无关元素
+        #: （真账本：`a[data-id=…]`，把握 0.50），而下一步的目标还在折线下、点不到。
+        #: 排在**活帧重试之后**（帧号漂了时先在活帧里试，别把 45 秒赔在死号上 ——
+        #: 与 `_perform` 里那条顺序同一条规矩）。
+        if selectors and self._open_modal():
+            deadline = time.monotonic() + LATE_ELEMENT_WAIT_SECONDS
+            self.log.info("[%s] 滚动目标还没出来，但页面上有一个**开着的弹层** —— "
+                          "弹层内容是异步拉的：等它，最多 %.0f 秒",
+                          self.cid, LATE_ELEMENT_WAIT_SECONDS)
+            while time.monotonic() < deadline:
+                time.sleep(NOT_FOUND_POLL_SECONDS)
+                for level, selector in enumerate(selectors):
+                    out = attempt(selector, frame)
+                    if _ok(out):
+                        self.landing_blind = _landing_blind(out)
+                        return (True, selector, level,
+                                _say("scroll", label, True, level,
+                                     landing=_landing_say(out)), frame)
+            self.log.info("[%s] 等了 %.0f 秒它还是没出来 —— 不等了，照旧往下试别的路",
+                          self.cid, LATE_ELEMENT_WAIT_SECONDS)
+
         # ★ 2026-09-23：**最后一跳与 click / form 是同一跳**（vogue 真站案例）——
         # 重新 observe，按意图（text / role / near / label / nearby_text）重找那个元素。
         # 上面那两条路用的都是**账本里的地址**；地址一失效（深结构路径最典型）它们
@@ -4132,7 +4618,7 @@ class Filler:
         # ⚠️ 位置特意选在**整页就绪之后**：早于它就等于在弹层还没渲染出来时问「有没有弹层」；
         #    也特意选在遮挡预算之前 —— 先把弹层清掉，`_covered_by` 才不必为它白等一轮。
         # ⚠️ 它**永不算失败**（清不掉也照走这一步自己的判据），见 `_clear_obstructions`。
-        self._clear_obstructions(why="这一步动手之前")
+        self._clear_obstructions(why="这一步动手之前", target=target)
 
         value, kind = None, "value"
         if action == "form":
@@ -4181,11 +4667,13 @@ class Filler:
                 continue
             if cover:
                 #: ★ 2026-10-08：盖着的是**这一格自己的**自定义控件（select2 那类把原生
-                #: `<select>` 包起来的壳子）⇒ 照填，交给底下的 cdp 去认那条自定义下拉。
-                #: 见 `_cover_is_own_widget`（只放 `form` + `kind=select` 这一种）。
+                #: `<select>` 包起来的壳子）⇒ 照填/照点，交给底下的 cdp 去认那条自定义下拉。
+                #: ★ 2026-11-06：`click` 也走这一支（rc-select 的可见壳盖着它自己的 input）。
+                #: 见 `_cover_is_own_widget`（两种窄口径）。
                 self.log.info("[%s] 第 %d 个选择器指的元素被 %s 盖着 —— 但那是**这一格自己的**"
-                              "（`select` 的自定义控件），照填（底下的 cdp 认得出这种下拉）",
-                              self.cid, level + 1, cover)
+                              "（`select` 的自定义控件），照%s（底下的 cdp 认得出这种下拉）",
+                              self.cid, level + 1, cover,
+                              "填" if action == "form" else "点")
             out = self._do(action, selector, value, kind, frame, label)
             tried_any = True
             if not _ok(out) and not cover:
@@ -4202,6 +4690,12 @@ class Filler:
                         return hit
                 #: ★ 2026-10-12：**没找到**先等一等再试同一根地址（见 NOT_FOUND_WAIT_SECONDS）。
                 #: `cover` 那一支不走这儿 —— 它有自己的预算（`_covered_by` 里已经等过了）。
+                #: ★ 2026-11-09（真事 `job-18cccc756ba5` · walkergrey 的 Buy now）：
+                #: 弹层开着、目标还没渲出来 ⇒ 按「后出来的」那笔预算等。
+                #: 只对 click 开这一档：form 有账本凭据（`late_element`），scroll 在
+                #: `_scroll` 里自己等（它不能等成 45 秒再换候选 —— 那是另一条路的顺序）。
+                if action == "click":
+                    miss_until = self._extend_for_open_modal(miss_until, label)
                 again = self._wait_until_present(action, selector, value, kind, frame, label,
                                                  level, miss_until)
                 if again is not None:
@@ -4214,7 +4708,17 @@ class Filler:
                         + (self._value_note() if action == "form" else ""), frame)
             self.log.info("[%s] 第 %d 个选择器没成：%s", self.cid, level + 1, selector)
 
-        found = self._relocate(target, "field" if action == "form" else "action")
+        #: ★ 2026-11-06：**弹层辅助步不重定位** —— 见 `_is_overlay_step`。声明里的地址
+        #: 失效 = 这一屏没有那个弹层了；按意图重找会命中页面别处**同名**的一颗
+        #: （真事 `job-6119866e26d9`：`close modal button` 找到导航里另一颗 ⇒ 点开移动端
+        #: 菜单 ⇒ 底下的 footer 链接被盖住 ⇒ 整组重试 ⇒ 收摊）。宁可不做。
+        if action == "click" and _is_overlay_step(step, label):
+            self.log.info("[%s] 「%s」是**点掉弹层**那类步骤：声明里的地址都失效了 ⇒ "
+                          "只当它不在，**不按意图重找**（重找会点到页面别处同名的一颗）",
+                          self.cid, label)
+            found = []
+        else:
+            found = self._relocate(target, "field" if action == "form" else "action")
         if found:
             self.log.info("[%s] 声明里的选择器都失效了，重新 observe 找到 %d 个候选",
                           self.cid, len(found))
@@ -4249,7 +4753,7 @@ class Filler:
         # 都试完了还是没找到 —— 「点掉同意弹层」这一步是**软**的（见那个 docstring）：
         # 弹层已经不在了就等于这件事已经办完了，不该记成没做成。
         if action == "click":
-            handled, why = self._consent_step_handled(label, frame)
+            handled, why = self._consent_step_handled(label, frame, step)
             if handled:
                 self.log.info("[%s] %s", self.cid, why)
                 return True, "", None, why, frame
@@ -4758,6 +5262,10 @@ class Filler:
                 # 这次调试要用到的 cdp 能力，缺了先**说清**（重跑路径上不探：§13）
                 self._check_capabilities()
 
+        # ★ 2026-10-24：**先等这一页真的出来**（广告落地页常常先给一个空壳 / 验证页 ——
+        # 生产重跑没有 observe 兜底，点得太早就是整趟 `no_success`；见 `_wait_landing_ready`）。
+        self._wait_landing_ready()
+
         # 开跑之前先看有没有**挡路的同意弹层**并点掉（见 _clear_obstructions 的 docstring：
         # 生产每单都是新窗口 → 每单都会遇到它，而账本里通常没有这一步）。
         self._clear_obstructions()
@@ -4864,7 +5372,9 @@ class Filler:
                         #    「还没加载完」读成「这一页不像那个状态」，整组步骤静默跳过
                         #    （真站实测：33 步里 32 步这么没的）。
                         # ② 换页也是**同意弹层会出现**的时刻，再看一眼弹层。
+                        # ③ 与开跑那一次同一条：新落地页也可能先给空壳 / 验证页。
                         self._wait_ready()
+                        self._wait_landing_ready(why="这一次导航")
                         self._clear_obstructions(why="这一次导航")
                     ok, progress = self._run_step(index, step)
                     #: 记下来：判据一旦不成立，要复核的就是**这一下**（§8）——

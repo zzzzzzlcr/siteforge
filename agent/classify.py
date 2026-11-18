@@ -94,6 +94,20 @@ FINGERPRINTS = [
                 {"kind": "testid_exact", "value": "continue-button"}],
      "any_min": 1,
      "none_of": [{"kind": "testid_prefix", "value": "step-content-item-"}]},
+
+    #: ★ 2026-10-30 真站（allfeellove.com/land/sp/24020051）：land-next/land-430 落地屏 ——
+    #: 首屏（SSR）就有 `step-1` + `gender-*` + `footer-*-link`；水合之后才出现
+    #: `image-button-*` / `continue-button` / `dummy-stepper`。**没有** `step-content-item-*`。
+    #: 指纹只用首屏那几个 —— 只认水合后的标记会在 census 读早了时判成 unknown。
+    {"platform": "allfeellove", "anchor": "allfeellove.com/land/sp/24020051",
+     "all_of": [{"kind": "testid_exact", "value": "footer-terms-of-use-link"},
+                {"kind": "testid_exact", "value": "step-1"}],
+     "any_of": [{"kind": "testid_exact", "value": "footer-arbitration-agreement-link"},
+                {"kind": "testid_exact", "value": "continue-button"},
+                {"kind": "testid_prefix", "value": "image-button-"},
+                {"kind": "class_token", "value": "dummy-stepper"}],
+     "any_min": 1,
+     "none_of": [{"kind": "testid_prefix", "value": "step-content-item-"}]},
 ]
 
 
@@ -288,6 +302,46 @@ class ClassifyError(RuntimeError):
     """分类/解析失败（CLI 按错误类型给退出码）。"""
 
 
+class ClassifyLiveError(RuntimeError):
+    """窗口 / 导航 / 页面没就绪 —— CLI 的 exit 3，面板那层映射成 502。"""
+
+
+def census_live(url, *, ws_url, cdp_bin, cdp_env=None, allow_click=True,
+                window_timeout: float = 30.0, census_timeout: float = 30.0) -> dict:
+    """在**已经开好的**窗口上：等 CDP 就绪 → 导航到 `url` → census（最多点一次 Start）。
+
+    CLI 与面板共用这一段；开窗/关窗归调用方（CLI 用 `fresh_open`，面板用服务那一个）。
+    失败一律抛 `ClassifyLiveError`，消息就是给人看的那句原话。
+    """
+    import os
+    import subprocess
+
+    from agent import selftest
+
+    env = dict(os.environ) if cdp_env is None else cdp_env
+
+    def eval_fn(js):
+        return selftest._cdp_eval(cdp_bin, ws_url, js, env)
+
+    if not wait_for_window(eval_fn, timeout=window_timeout):
+        raise ClassifyLiveError("窗口没就绪（CDP 一直读不到 location.href）。")
+    why = selftest._navigate(cdp_bin, ws_url, url, env)
+    if why:
+        raise ClassifyLiveError("导航没成：%s" % why)
+    host, port = selftest._host_port(ws_url)
+
+    def click_fn():
+        #: 打标记是 `census_with_start` 做的；这里只负责真人手势那一下。
+        subprocess.run([cdp_bin, "click", START_SELECTOR, "--host", host,
+                        "--port", str(port)], capture_output=True, text=True,
+                       timeout=60)
+
+    first = wait_for_census(eval_fn, timeout=census_timeout)
+    if not census_has_content(first):
+        raise ClassifyLiveError("页面没就绪（census 空：标题/控件/正文都没有）。")
+    return census_with_start(eval_fn, click_fn, allow_click=allow_click, first=first)
+
+
 def resolve_config(platform: str, site_rows: list[dict], *,
                    override: int | None = None) -> int:
     """平台 → config_id：`--config-id` 优先；否则用锚点站在站点清单里精确匹配。"""
@@ -323,8 +377,12 @@ EXIT_CONFIG = 5
 
 def run_classify(url: str, *, census_fn, site_rows, client=None,
                  apply: bool = False, config_override: int | None = None,
-                 before_write=None) -> dict:
-    """一次分类（+ 可选写入）。返回 `{"exit": int, "result": dict}`；不打印。"""
+                 before_write=None, operator: str | None = None) -> dict:
+    """一次分类（+ 可选写入）。返回 `{"exit": int, "result": dict}`；不打印。
+
+    `operator`：写后端时记「谁点的」。不给 ⇒ 保持 CLI 原来那一串
+    `claude (classify: <平台>, <键>)`；面板会给它自己那一格（审计里要分得出人）。
+    """
     got = census_fn()
     census = got["census"]
     verdict = classify_census(census)
@@ -359,9 +417,11 @@ def run_classify(url: str, *, census_fn, site_rows, client=None,
         result["link_error"] = "没有可用的 FMR 客户端（没读/写 token）"
         return {"exit": EXIT_LINK, "result": result}
 
+    who = (str(operator or "").strip()
+           or "claude (classify: %s, %s)" % (verdict["platform"], key))
     payload = {
         "site": key, "config_id": result["config_id"],
-        "operator": "claude (classify: %s, %s)" % (verdict["platform"], key),
+        "operator": who,
         "reason": "census: " + "; ".join(result["evidence"])[:300],
     }
     result["link_payload"] = payload
@@ -438,9 +498,8 @@ def render_human(r: dict) -> str:
 def main(argv=None) -> int:
     import argparse
     import os
-    import subprocess
 
-    from agent import fmr, selftest, service
+    from agent import fmr, service
 
     ap = argparse.ArgumentParser(description="约会站分类器（只读；--apply 才关联）")
     ap.add_argument("url")
@@ -475,34 +534,16 @@ def main(argv=None) -> int:
     cdp_bin = os.environ.get("SITEFORGE_CDP_BIN") or "cdp"
     cdp_env = os.environ.copy()
 
-    def eval_fn(js):
-        return selftest._cdp_eval(cdp_bin, ws_url, js, cdp_env)
-
     try:
         #: ★ 2026-10-22 真站实测：`fresh_open()` 刚回来的窗口，CDP 目标还没通 ——
         #: 直接 navi 会导航在空白页上，census 读到空标题/空 testid。
-        if not wait_for_window(eval_fn):
-            sys.stderr.write("窗口没就绪（CDP 一直读不到 location.href）。\n")
+        #: 这一段与面板共用（`census_live`）—— 判据/次序只写一份。
+        try:
+            got = census_live(a.url, ws_url=ws_url, cdp_bin=cdp_bin,
+                              cdp_env=cdp_env, allow_click=not a.no_click)
+        except ClassifyLiveError as exc:
+            sys.stderr.write("%s\n" % exc)
             return EXIT_WINDOW
-        why = selftest._navigate(cdp_bin, ws_url, a.url, cdp_env)
-        if why:
-            sys.stderr.write("导航没成：%s\n" % why)
-            return EXIT_WINDOW
-
-        host, port = selftest._host_port(ws_url)
-
-        def click_fn():
-            #: 打标记是 `census_with_start` 做的；这里只负责真人手势那一下。
-            subprocess.run([cdp_bin, "click", START_SELECTOR, "--host", host,
-                            "--port", str(port)], capture_output=True, text=True,
-                           timeout=60)
-
-        first = wait_for_census(eval_fn, timeout=30.0)
-        if not census_has_content(first):
-            sys.stderr.write("页面没就绪（census 空：标题/控件/正文都没有）。\n")
-            return EXIT_WINDOW
-        got = census_with_start(eval_fn, click_fn, allow_click=not a.no_click,
-                                first=first)
         client = fmr.FmrClient(
             token=os.environ.get("FMR_AGENT_TOKEN", ""),
             write_token=os.environ.get("FORM_SCRIPT_WRITE_TOKEN", ""))

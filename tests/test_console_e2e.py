@@ -144,8 +144,12 @@ def _capture(blob: bytes, calls: list):
 
 
 def _brief(tmp_path) -> dict:
+    #: ★ 2026-11-18：`POST /run` 现在会在门口查 `form_file` 在不在盘上（给了一条路径
+    #: 却已经不在，就 400）—— 所以这条「给的是一份真文件」的载荷得**真把文件落下**。
+    form = tmp_path / "form.json"
+    form.write_text("{}", encoding="utf-8")
     return {"url": URL, "goal": GOAL, "success_text": SUCCESS, "site": SITE,
-            "ws_url": WS, "form_file": str(tmp_path / "form.json"),
+            "ws_url": WS, "form_file": str(form),
             "out_dir": str(tmp_path / "forms" / "sites")}
 
 

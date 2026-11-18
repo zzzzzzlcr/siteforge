@@ -1143,3 +1143,35 @@ def test_the_checkbox_uses_the_very_word_the_service_sentence_says():
         "那个孤例的名字又回来了 —— 它与服务那句「把「照样传这一版」勾上」是两个名字")
     #: 正控：这把尺子真的会响（把那句注释剥掉之后，词还在 = 上屏那一处真的在）
     assert "照样传这一版" in _re.sub(r"<!--.*?-->", "", page, flags=_re.S)
+
+
+def test_the_classify_panel_names_its_two_hops_and_its_own_controls():
+    """约会站识别那一栏（2026-10-29）：两跳 + 输入/结果/关联那几个 id 都在。
+
+    只读那一跳（`/classify`）与写那一跳（`/classify/link`）是**两跳** —— 页面自己
+    不许把它们混成一个（混了就没有「先看一眼、再决定写不写」这一步）。
+    """
+    page = _page()
+    assert 'id="classifyPanel"' in page
+    for el_id in ("classifyUrl", "classifyConfig", "classifyOperator",
+                  "btnClassify", "classify", "classifyAct", "btnClassifyLink",
+                  "classifyNote"):
+        assert 'id="%s"' % el_id in page, "识别那一栏少了这个 id：%s" % el_id
+    assert '"/classify"' in page, "只读识别那一跳没在页面上"
+    assert '"/classify/link"' in page, "关联那一跳没在页面上"
+
+
+def test_the_classify_link_button_starts_hidden_and_the_panel_says_what_it_will_do():
+    """关联是**第二轮动作**：识别结果唯一命中之前，那个按钮不出现；
+    出现之后，旁边那句必须说清「只加这一条、写完回读」，以及窗口是单飞的。"""
+    page = _page()
+    tag = re.search(r'<button[^>]*id="btnClassifyLink"[^>]*>', page)
+    assert tag, "关联按钮不在页面上"
+    assert "hidden" in tag.group(0), "关联按钮一开始必须是藏着的（唯一命中才摆出来）"
+    start = page.index('id="classifyPanel"')
+    block = page[start:page.index("<section", start + 10)] \
+        if "<section" in page[start + 10:] else page[start:]
+    assert "只读" in block, "这一栏得说清识别本身是只读的"
+    assert "唯一命中" in block, "这一栏得说清什么条件下才允许关联"
+    assert "回读" in block, "这一栏得说清写完会回读（不拿回执当结论）"
+    assert "同一时间只做一件事" in block, "这一栏得说清窗口是单飞的（有单在跑会先被拒）"

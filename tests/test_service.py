@@ -115,6 +115,12 @@ def _brief(tmp_path, **over):
              "ws_url": WS_URL, "form_file": str(tmp_path / "form.json"),
              "out_dir": str(tmp_path / "forms" / "sites")}
     brief.update(over)
+    #: ★ 2026-11-11：`/run` 现在**开跑之前**就拒「给的 form_file 不存在」——
+    #: 这些用例不跑自测，但载荷要过门口；给它们一份真的空文件。
+    path = pathlib.Path(str(brief.get("form_file") or ""))
+    if path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
     return brief
 
 
@@ -209,6 +215,20 @@ def _runtime_goes_to_tmp(tmp_path, monkeypatch):
     `pytest` 在 `runtime/explore/` 下留了 48 个目录）。
     """
     monkeypatch.setattr(service.measure, "DEFAULT_ROOT", tmp_path / "runtime" / "explore")
+
+
+def test_form_data_is_kept_on_the_mounted_runtime_root_not_container_tmp():
+    """★ 2026-11-11 真事（`job-2dc5b300d186`）：表单数据原来落在**容器自己的 `/tmp`**，
+    重建容器（换 env / 换镜像）之后那份文件就没了 —— 自测一上来
+    `FileNotFoundError: /tmp/siteforge-form-…/form.json`，job 卡在 diagnose。
+    `runtime/` 是挂载的、重建还在 ⇒ 表单数据也必须落在它下面。
+    """
+    svc = service.Service()
+    brief = svc._materialize_form_data({"form_data": '{"email": "a@b.c"}'})
+    p = pathlib.Path(brief["form_file"])
+    assert p.is_file(), p
+    assert p.parent.parent == pathlib.Path(service.measure.DEFAULT_ROOT).parent / "form-data", p
+    assert json.loads(p.read_text(encoding="utf-8")) == {"email": "a@b.c"}
 
 
 def _client(*, graph_factory, window=None, **kw):
@@ -2520,20 +2540,44 @@ def test_a_run_without_a_py_says_why_in_one_line():
     成功文案」），读的人还得自己把它翻成「所以为什么没有产物、我下一步做什么」。
     `_no_py_say` 就是那句翻过来的话，摆在那一块的**第一行**。
 
-    这一条钉：五种停因各有一句（为什么 + 下一步）；**叫不出名字的停因给空串** ——
+    这一条钉：每一种停因各有一句（为什么 + 下一步）；**叫不出名字的停因给空串** ——
     硬塞一个类别比不说更坏。
     """
     for reason, needle in (("explore_unfinished", "半份账本"),
                            ("no_window", "没有窗口"),
                            ("paused", "人喊停"),
                            ("human_stop", "人喊停"),
-                           ("draft_failed", "过得了闸")):
+                           ("draft_failed", "过得了闸"),
+                           ("protocol_failed", "协议失败"),
+                           ("evidence_defect", "证据不足"),
+                           ("repair_stuck", "同一处连着两次"),
+                           ("repair_noop", "一处都没改")):
         said = service._no_py_say({"end_reason": reason})
         assert said.startswith("**为什么没有 py**"), (reason, said)
         assert needle in said, (reason, said)
         assert "下一步" in said, (reason, said)
     assert service._no_py_say({"end_reason": "something_new"}) == "", "叫不出名字的停因不许硬塞"
     assert service._no_py_say({}) == ""
+
+
+def test_a_stuck_repair_with_a_kept_version_names_the_family_exit():
+    """停住时**留了一版**也要说下一步，而且下一步得是**面板上真有**的那条路。
+
+    这一档原先落到 `_kept_a_version` 那句泛泛的「看那句话，缺什么补什么」——
+    没说是哪一族、也没说这句话只能在**新一趟的第一道闸**上说。
+    """
+    said = service._no_py_say({
+        "end_reason": "repair_stuck",
+        "unverified": ["自测没过 —— 图停下来等人回话"],
+        "repair_family": "selector",
+        "repair_step": 2,
+        "repair_note": "卡在第 2 步：页面上没找到「Accept All Cookies」"})
+    assert said.startswith("**这一版 py 留下了，但没有交付**"), said
+    assert "改稿治得了" in said and "重新来一遍" in said, said
+    assert "第一道闸" in said, said
+    assert "第 2 步" in said and "Accept All Cookies" in said, (
+        "没把失败锚点带到下一步：%r" % said)
+
 
 
 def test_a_run_that_had_no_window_says_the_clean_session_swap_failed():
@@ -2623,7 +2667,7 @@ def test_the_reply_sentence_names_the_step_it_just_released():
 
 
 def test_the_door_rejects_bad_rules():
-    """`/run` 的规则在门口校验：手机号前缀是 0 开头的 2-10 位数字；未知规则/格式 400。
+    """`/run` 的规则在门口校验：手机号前缀是 2-10 位数字（不要求 0 开头）；未知规则/格式 400。
 
     直接量 `_intake_problems`（`start()` 就是拿它 400 的）—— 不造 job、不开窗口。
     """
@@ -2633,3 +2677,87 @@ def test_the_door_rejects_bad_rules():
                               rules={"phone_prefixes": ["4"]})
     problems = svc._intake_problems(body)
     assert any("手机号前缀" in p for p in problems), problems
+
+    #: ★ 2026-10-23：英国号去掉长途 0 的 `20` 得在门口放行（运营当天就是被这条挡住的）。
+    ok = service.RunRequest(url="https://example.test", goal="test",
+                            mode="build", success_text="Thank you",
+                            rules={"phone_prefixes": ["20"]})
+    assert svc._intake_problems(ok) == []
+
+
+# ── ★ 2026-11-11：资料文件不能因为容器重建就变成 FileNotFoundError ─────────────
+
+def test_form_data_is_written_under_the_runtime_tree(tmp_path):
+    """新落点必须在**挂载的 runtime/** 下，不能是容器自己的 `/tmp`。"""
+    svc = service.Service(explore_dir=str(tmp_path / "explore"))
+    brief = svc._materialize_form_data({"form_data": '{"phone": "1"}', "site": "x"})
+    path = pathlib.Path(brief["form_file"])
+    assert path.is_file()
+    assert path.read_text(encoding="utf-8") == '{"phone": "1"}'
+    assert (tmp_path / "form-data") in path.parents
+
+
+def test_a_missing_form_file_is_rebuilt_from_form_data(tmp_path):
+    """旧 `/tmp` 路径没了：有 `form_data` 就从它重落一份，内容不许丢。"""
+    svc = service.Service(explore_dir=str(tmp_path / "explore"))
+    gone = tmp_path / "gone" / "form.json"
+    out = svc._ensure_form_file({"form_file": str(gone), "form_data": '{"x": 1}',
+                                 "site": "x"})
+    path = pathlib.Path(out["form_file"])
+    assert path.is_file() and path.read_text(encoding="utf-8") == '{"x": 1}'
+    assert out["form_data_lost"] == str(gone)
+
+
+def test_a_missing_form_file_without_data_becomes_empty_not_a_traceback(tmp_path):
+    """连 `form_data` 都没有：落一份 `{}` 并记下“资料丢了”，**不许** FileNotFoundError。"""
+    svc = service.Service(explore_dir=str(tmp_path / "explore"))
+    gone = tmp_path / "gone" / "form.json"
+    out = svc._ensure_form_file({"form_file": str(gone), "site": "x"})
+    path = pathlib.Path(out["form_file"])
+    assert path.is_file() and path.read_text(encoding="utf-8") == "{}"
+    assert out["form_data_lost"] == str(gone)
+
+
+def test_the_selftest_callback_heals_a_missing_form_file(tmp_path, monkeypatch):
+    """真正会炸的那一跳：自测回调拿到一个已不存在的 `form_file` ⇒ 先重建再交给自测。"""
+    svc = service.Service(explore_dir=str(tmp_path / "explore"))
+    gone = tmp_path / "gone" / "form.json"
+    svc._jobs["job-x"] = service.Job(
+        job_id="job-x",
+        brief={"form_file": str(gone), "form_data": '{"phone": "1"}', "site": "x"})
+    seen = {}
+
+    def fake_run(py_path, ws_url, form_file, site, **kw):
+        seen["form_file"] = form_file
+        return object()
+
+    monkeypatch.setattr(service.selftest, "run", fake_run)
+    svc._selftest_cb("job-x")("py.py", "ws://x/1", str(gone), "x")
+    path = pathlib.Path(seen["form_file"])
+    assert path.is_file() and path.read_text(encoding="utf-8") == '{"phone": "1"}'
+
+
+def test_a_waiting_job_with_a_kept_version_says_it_may_still_change():
+    """“产物”那格在 waiting + 留过一版时，说的话必须**如实**（不冒充可下载）。"""
+    svc = service.Service()
+    view = {"status": service.WAITING, "say": "在等人回话"}
+    values = {"unverified": ["这一版没验过"]}
+    assert svc._no_artifact_say(view, values) == (
+        service.NO_ARTIFACT_KEPT_RUNNING % "在等人回话")
+    cell = svc._artifact_cell("job-x", view, values)
+    assert cell["url"] is None and cell["kept"] is True
+
+
+def test_recovering_a_job_heals_a_lost_form_file(tmp_path, monkeypatch):
+    """服务重启/换容器之后捡回来的 job：`form_file` 不在了 ⇒ `_recover` 就先重建。"""
+    svc = service.Service(explore_dir=str(tmp_path / "explore"))
+    gone = tmp_path / "gone" / "form.json"
+    snap = _Snap(values={"url": URL, "site": SITE, "ws_url": WS_URL,
+                         "form_file": str(gone), "form_data": '{"x": 1}'})
+    monkeypatch.setattr(svc, "_snapshot", lambda job_id: snap)
+    monkeypatch.setattr(svc, "_build_graph", lambda brief, job_id: None)
+    job = svc._recover("job-x")
+    path = pathlib.Path(job.brief["form_file"])
+    assert path.is_file() and path.read_text(encoding="utf-8") == '{"x": 1}'
+    assert job.brief["form_data_lost"] == str(gone)
+

@@ -24,8 +24,10 @@ const flagValue = (name) => {
 };
 const markerPath = flagValue('--marker');
 const anchorPath = flagValue('--anchor');
+const holdsPath = flagValue('--holds');
 if (!probePath || probePath.startsWith('--')) {
-  console.error('用法：node popup_probe_driver.js <probe.js> [--marker <marker.js>] [--anchor <anchor-probe.js>]');
+  console.error('用法：node popup_probe_driver.js <probe.js> [--marker <marker.js>]'
+    + ' [--anchor <anchor-probe.js>] [--holds <modal-holds.js>]');
   process.exit(2);
 }
 // 与产物 `_ev` 的包法一致：`(function(){…})()`（`return` 才有地方可返）
@@ -362,6 +364,41 @@ const CASES = [
     return pg;
   }, '盖住整页的模态|TEXT|Close'],
 
+  // ★ 2026-11-03（真事 `job-1a42633f4d4d` · smartwool）：订阅弹窗的关闭键没有文字，
+  // 只有 `aria-label="No Thanks"`（32×32 的 X 图标）—— 退订弹窗的标准说法。
+  // 弹窗外壳 `div.modal.micromodal-slide.signup-modal` 的高度是 0（子元素绝对定位），
+  // 真正盖满视口的是它的 `div.modal__overlay`（fixed、765×437）。
+  ['盖住整页的模态：关闭键叫 No Thanks（退订弹窗）', () => {
+    const pg = page([['div', { cls: 'modal micromodal-slide signup-modal',
+                               rect: { width: 390, height: 0, top: 0, bottom: 0 } }]]);
+    const overlay = attach(pg.nodes[0], el('div', { cls: 'modal__overlay', rect: rect_full }));
+    const content = attach(overlay, el('div', { cls: 'modal__container',
+                                                rect: { width: 390, height: 406, top: 0, bottom: 406 } }));
+    attach(content, el('button', { attrs: { 'aria-label': 'No Thanks' } }));
+    return pg;
+  }, '盖住整页的模态|TEXT|No Thanks'],
+
+  // ★ 2026-11-03（同一条真站现场）：这一页上同时有 17 个「语义 + 盖满视口」的容器，
+  // 要点的那个排在后面。原来外层循环里那句 `return ''` 让钩子扫完**第一个**容器
+  // 就收摊 ⇒ 判据全对却从不答应。这一格就是那次真失败的形状：前一个模态没有关闭键。
+  ['盖住整页的模态：前面那个模态没有关闭键 —— 后面的照旧要找', () => {
+    const pg = page([
+      ['div', { cls: 'main-product__media-modal', rect: rect_full }],
+      ['div', { cls: 'modal__overlay', rect: rect_full }],
+    ]);
+    attach(pg.nodes[0], el('div', { text: 'Zoomed product image' }));
+    attach(pg.nodes[1], el('button', { attrs: { 'aria-label': 'No Thanks' } }));
+    return pg;
+  }, '盖住整页的模态|TEXT|No Thanks'],
+
+  // 负控：只叫 "No" 不算关闭键 —— 那可能是「对别的问题说不」，点它是替人做决定。
+  ['盖住整页的模态：光一个 No 不算关闭键', () => {
+    const pg = page([['div', { cls: 'MuiDialog-root', attrs: { role: 'dialog' },
+                               rect: rect_full }]]);
+    attach(pg.nodes[0], el('button', { attrs: { 'aria-label': 'No' } }));
+    return pg;
+  }, ''],
+
   // ★ 负控（新白名单的代价）：同意容器里的**整段说明文字**也会命中 accept/reject 那些词。
   // 放进 div/span 之后，必须靠「短文本」那道闸把它挡在外面 —— 否则会去点一段散文。
   ['同意条：容器里的长散文不许认（div/span 新白名单）', () => {
@@ -371,6 +408,18 @@ const CASES = [
                                         + 'of cookies on this site.' }));
     return pg;
   }, ''],
+
+  // ★ 2026-11-03（同一条真站现场）：`.drawer` 的关闭键在 `left:1194`（视口 780 宽），
+  // `_VIS_JS` 只看纵向 ⇒ 原来会先把这颗抽屉键答出去。横向越界的不算关闭键。
+  ['盖住整页的模态：横向在视口外的关闭键不算', () => {
+    const pg = page([['div', { cls: 'MuiDialog-root', attrs: { role: 'dialog' },
+                               rect: rect_full }]]);
+    attach(pg.nodes[0], el('button', { attrs: { 'aria-label': 'Close' },
+                                      rect: { width: 48, height: 40, left: 900, right: 948,
+                                              top: 20, bottom: 60 } }));
+    attach(pg.nodes[0], el('button', { attrs: { 'aria-label': 'No Thanks' } }));
+    return pg;
+  }, '盖住整页的模态|TEXT|No Thanks'],
 
   // ★ 2026-10-19（真站 compareinsulation）：`_CONSENT_MODAL_JS` 的 `full()` 会命中
   // `body`/`html` —— 它们是满视口的**根节点**，不是「盖满视口的弹层」。这一格：满视口
@@ -382,6 +431,48 @@ const CASES = [
     attach(pg.nodes[0], el('div', { text: 'Accept all' }));
     return pg;
   }, ''],
+
+  // ★ 2026-11-06（真事 `job-82c14d34db71` · antigravity）：同意容器里那颗
+  // `USER AGREEMENT` 链接**不是**同意键 —— 旧判据用子串 `agree` 命中 `AGREEMENT`，
+  // 点下去页面跳到用户协议页，后面那一步的链接当然找不到。
+  // 判据：决定动词锚在**文字开头**（可选 "yes," / "I" 前缀）。
+  ['同意条：容器里的 USER AGREEMENT 链接不许当同意键', () => {
+    const pg = page([['div', { cls: 'cookie-consent',
+                               text: 'We use cookies. See our USER AGREEMENT and PRIVACY POLICY' }]]);
+    attach(pg.nodes[0], el('a', { text: 'USER AGREEMENT' }));
+    attach(pg.nodes[0], el('button', { text: 'Accept all' }));
+    return pg;
+  }, '同意条|TEXT|Accept all'],
+
+  // 同一条判据在「盖满视口的同意弹层」那一钩上也一样：链接排在前，只有真正的
+  // 决定按钮才许被认出来。
+  ['盖满视口的同意弹层：USER AGREEMENT 链接不许当同意键', () => {
+    const pg = page([['div', { cls: 'cookie-banner', text: 'We use cookies', rect: rect_full }]]);
+    attach(pg.nodes[0], el('a', { text: 'USER AGREEMENT' }));
+    attach(pg.nodes[0], el('button', { text: 'Accept all' }));
+    return pg;
+  }, '盖满视口的同意弹层|TEXT|Accept all'],
+
+  // ★ 2026-11-06（真事 `job-669c375b51f9` · antigravity）：同页**三份**同名满屏模态，
+  // 两份是隐藏的（`opacity:0` + `pointer-events:none`），关闭键的 `aria-label` 与真那颗
+  // 一字不差。旧判据按 DOM 顺序先答隐藏那颗 ⇒ `cdp click` 在落点取不到节点（拒绝点击）
+  // ⇒ 复核「还有盖住整页的模态」⇒ 真弹窗一直关不掉。判据：隐藏的容器整份跳过。
+  ['盖住整页的模态：隐藏的那份（pointer-events:none / opacity:0）不算', () => {
+    const pg = page([
+      ['div', { cls: 'Modal_modal', attrs: { role: 'dialog' }, rect: rect_full }],
+      ['div', { cls: 'Modal_modal', attrs: { role: 'dialog' }, rect: rect_full }],
+    ]);
+    attach(pg.nodes[0], el('button', {
+      attrs: { 'aria-label': 'close hidden' },
+      rect: { width: 32, height: 32, left: 300, right: 332, top: 100, bottom: 132 } }));
+    attach(pg.nodes[1], el('button', {
+      attrs: { 'aria-label': 'close visible' },
+      rect: { width: 32, height: 32, left: 300, right: 332, top: 200, bottom: 232 } }));
+    pg.getComputedStyle = (e) => (e === pg.nodes[0]
+      ? { display: 'block', visibility: 'visible', pointerEvents: 'none', opacity: '0' }
+      : undefined);
+    return pg;
+  }, '盖住整页的模态|TEXT|close visible'],
 ];
 
 const results = [];
@@ -413,14 +504,27 @@ let marker = null;
 if (markerPath) {
   const markerJs = '(function(){' + fs.readFileSync(markerPath, 'utf8') + '})()';
   const pg = page([['div', { cls: 'cookie-consent', text: 'We use cookies' }]]);
+  //: ★ 2026-11-06（真事 `job-669c375b51f9` · antigravity）：同名控件先出现的是**隐藏**那颗
+  //: （`pointer-events:none` + `opacity:0`）—— 标记必须落到看得见那颗上，否则
+  //: `[data-sf-consent=1]` 点下去是空气。
+  const hidden = attach(pg.nodes[0], el('div', { text: 'Accept all' }));
   const hit = attach(pg.nodes[0], el('div', { text: 'Accept all' }));
+  pg.getComputedStyle = (e) => (e === hidden
+    ? { display: 'block', visibility: 'visible', pointerEvents: 'none', opacity: '0' }
+    : undefined);
+  const had = Object.prototype.hasOwnProperty.call(globalThis, 'getComputedStyle');
+  const saved = globalThis.getComputedStyle;
+  globalThis.getComputedStyle = pg.getComputedStyle;
   let got, err = '';
   try {
     got = new Function('document', 'window', 'return ' + markerJs)(pg.document, pg.window);
   } catch (e) {
     got = '<抛了>'; err = String(e && e.message || e);
+  } finally {
+    if (had) globalThis.getComputedStyle = saved; else delete globalThis.getComputedStyle;
   }
-  marker = { got: got, attr: hit.getAttribute('data-sf-consent'), err: err };
+  marker = { got: got, attr: hit.getAttribute('data-sf-consent'),
+             hidden: hidden.getAttribute('data-sf-consent'), err: err };
 }
 
 // ★ 2026-10-19：站点锚（表里第 4 格）—— 同一份假 DOM 上再加两页：
@@ -466,5 +570,88 @@ if (anchorPath) {
   };
 }
 
+// ★ 2026-11-06：`_modal_holds_target_js`（「这一步别清这个模态」那条判据）也**真跑**一遍 ——
+// 先前只有替身按标记回一句预设答复，JS 本体一道守都没有。三格：
+//   ① 有一个**已经打开的下拉**（`role=combobox` + `aria-expanded=true`）⇒ `1|open-dropdown`
+//      （真事 `job-6119866e26d9` · antigravity：清弹层那一下把刚打开的下拉点没了）；
+//   ② 下拉没开 ⇒ 不答（照旧清弹层）；
+//   ③ 目标真在模态里 ⇒ `1|text`（2026-10-23 firstday 那条，原先也没被 JS 层钉过）。
+let holds = null;
+if (holdsPath) {
+  const holdsJs = '(function(){' + fs.readFileSync(holdsPath, 'utf8') + '})()';
+  const run = (pg) => {
+    try { return new Function('document', 'window', 'return ' + holdsJs)(pg.document, pg.window); }
+    catch (e) { return '<抛了>:' + String(e && e.message || e); }
+  };
+  //: ⚠️ 假 DOM 的 `all` 是全局的（`page()` 重置它）⇒ 建一页、跑一页。
+  //: ★ 2026-11-06（`job-0ecaf3b90a6a`）：`_modal_holds_target_js` 现在只认**被点名**的
+  //: 模态（`_MODAL_BOX_JS` 答出去之前打的 `data-sf-hit=1`）⇒ 跑它之前必须先跑一遍探针，
+  //: 与产物里的调用顺序一致。（直接单跑 = 「没有身份」⇒ 返空，什么都拦不住。）
+  const runProbe = (pg) => {
+    try { return new Function('document', 'window', 'return ' + PROBE)(pg.document, pg.window); }
+    catch (e) { return '<抛了>:' + String(e && e.message || e); }
+  };
+  const probeThenHold = (pg) => {
+    const probe = runProbe(pg);                    // 先问探针（它打 identity），再问 holds
+    return { got: run(pg), probe: probe };
+  };
+  const modalPage = (attrs, extra) => {
+    const pg = page([['div', { cls: 'ApplyModal', attrs: { role: 'dialog' }, rect: rect_full }]]);
+    //: 真模态都有一颗关闭键（`_MODAL_BOX_JS` 靠它答话，也在答话前给容器打 `data-sf-hit`）。
+    attach(pg.nodes[0], el('button', { attrs: { 'aria-label': 'close' } }));
+    attach(pg.nodes[0], el('input', { attrs: attrs }));
+    if (extra) attach(pg.nodes[0], el('button', { text: extra }));
+    return pg;
+  };
+  //: ★ 2026-11-06（真事 `job-54fbc668f03d` · homejolly）：模态**已经握着过一步的目标** ⇒
+  //: 容器上留着 `data-sf-flow=1`，此后不论这一步的目标渲没渲出来都答 `1|flow`。
+  const flowPage = () => {
+    const pg = page([['div', { cls: 'ApplyModal',
+      attrs: { role: 'dialog', 'data-sf-flow': '1' }, rect: rect_full }]]);
+    attach(pg.nodes[0], el('button', { attrs: { 'aria-label': 'close' } }));
+    return pg;
+  };
+  //: ★ 2026-11-06（`job-0ecaf3b90a6a` · antigravity）：探针点名的是**排在前面的 promo**，
+  //: 而「这一步的目标」与 `data-sf-flow` 都在底下那个表单模态里 —— 旧判据扫全页 ⇒ 把 promo
+  //: 也判成「流程本身」⇒ 永不清它（trace：`Content_promo 一直盖着`）。身份对上才许拦。
+  const promoPage = () => {
+    const pg = page([
+      ['div', { cls: 'Modal_modal Content_promo', attrs: { role: 'dialog' }, rect: rect_full }],
+      ['div', { cls: 'Modal_modal ApplyForm',
+                attrs: { role: 'dialog', 'data-sf-flow': '1' }, rect: rect_full }],
+    ]);
+    attach(pg.nodes[0], el('button', { attrs: { 'aria-label': 'close promo' } }));
+    attach(pg.nodes[1], el('input', { attrs: { name: 'name' } }));
+    attach(pg.nodes[1], el('button', { attrs: { 'aria-label': 'close form' } }));
+    return pg;
+  };
+  //: 正控：`1|text` 那一支**得真把标记打上去**（只读不写的夹具和没有夹具是一回事）。
+  const marked = (() => {
+    const pg = modalPage({ role: 'combobox', 'aria-expanded': 'false' }, 'CHECKOUT+');
+    const res = probeThenHold(pg);
+    return { got: res.got, probe: res.probe,
+             mark: pg.nodes[0].getAttribute('data-sf-flow') };
+  })();
+  const otherModal = (() => {
+    const pg = promoPage();
+    const res = probeThenHold(pg);
+    return { got: res.got, probe: res.probe,
+             hit: pg.nodes[0].getAttribute('data-sf-hit'),
+             flow: pg.nodes[1].getAttribute('data-sf-flow') };
+  })();
+  holds = {
+    open: { ...probeThenHold(modalPage({ role: 'combobox', 'aria-expanded': 'true' })),
+            want: '1|open-dropdown' },
+    closed: { ...probeThenHold(modalPage({ role: 'combobox', 'aria-expanded': 'false' })),
+              want: '' },
+    holdsTarget: { ...probeThenHold(modalPage({ role: 'combobox', 'aria-expanded': 'false' },
+                                             'CHECKOUT+')),
+                   want: '1|text' },
+    flow: { ...probeThenHold(flowPage()), want: '1|flow' },
+    marked: marked,
+    otherModal: { ...otherModal, want: '' },
+  };
+}
+
 process.stdout.write(JSON.stringify({ total: results.length, failed: failed, results: results,
-                                      marker: marker, anchor: anchor }) + '\n');
+                                      marker: marker, anchor: anchor, holds: holds }) + '\n');

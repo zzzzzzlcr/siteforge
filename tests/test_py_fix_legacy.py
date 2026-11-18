@@ -289,6 +289,49 @@ def test_the_patch_prompt_carries_the_page_evidence_as_its_own_section():
     assert "真跑了一遍旧脚本" not in fix.patch_user(LEGACY_PY, evidence="x")
 
 
+def test_the_failure_screenshot_goes_into_the_patch_prompt_as_an_image(tmp_path):
+    """2026-10-30 第一类决策样本：日志 + 失败页截图一起进改稿那一步。"""
+    shot = tmp_path / "pause-2.png"
+    shot.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 32)
+    got = fix.patch_user(LEGACY_PY, evidence="日志 options=[] labels=[] inputs=[]",
+                         shots=[shot])
+    assert isinstance(got, list), got
+    assert got[0]["type"] == "text" and "options=[]" in got[0]["text"]
+    assert got[1]["type"] == "image_url"
+    assert got[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert "先判断，再动手" in fix.PATCH_DISCIPLINE
+
+
+def test_a_screenshot_that_cannot_be_read_is_said_out_not_dropped(tmp_path):
+    """不给图 ⇒ 退回字符串（与从前一致）；给不出 ⇒ 明说，不许静默少一块证据。"""
+    got = fix.patch_user(LEGACY_PY, shots=[tmp_path / "pause-9.png"])
+    assert isinstance(got, str), got
+    assert "截图没进来" in got and "pause-9.png" in got
+
+
+def test_a_backend_image_url_is_fetched_with_a_size_cap(monkeypatch):
+    """后端 `fail_img` 是**外网地址**：走同一条入口，且只读上限内那么多字节。"""
+    png = b"\x89PNG\r\n\x1a\n" + b"x" * 16
+    seen = {}
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, n):
+            seen["limit"] = n
+            return png[:n]
+
+    monkeypatch.setattr(fix.urllib.request, "urlopen",
+                        lambda req, timeout: Resp())
+    parts, skipped = fix.shot_parts(["https://img.example/a.png"])
+    assert not skipped and parts and parts[0]["type"] == "image_url", (parts, skipped)
+    assert 0 < seen["limit"] <= 2 * 1024 * 1024, seen
+
+
 def test_the_evidence_say_only_puts_what_was_measured():
     """`evidence_say` **只摆量到的**：退出码 / 上报过哪些步 / 最后停在哪 / 日志尾巴。**纯函数**。"""
     said = selftest.evidence_say({
@@ -533,12 +576,13 @@ def test_the_patch_prompt_carries_the_evidence_and_the_people_words_verbatim():
 
 # ── ② 图：老写法那条路 ───────────────────────────────────────────
 
-def _legacy_fix(tmp_path, *, patch=None, wrap=None, **over):
+def _legacy_fix(tmp_path, *, patch=None, wrap=None, src=None, **over):
     """把一份老写法的 py 摆好，返回 `(brief, deps, rec)`。"""
+    base_src = src or LEGACY_PY
     out = tmp_path / "forms" / "sites"
     out.mkdir(parents=True, exist_ok=True)
     staged = out / ("%s.before.py" % SITE)
-    staged.write_text(LEGACY_PY, encoding="utf-8")
+    staged.write_text(base_src, encoding="utf-8")
     brief = _brief(tmp_path, mode="fix", fix_py=str(staged))
     #: ⚠️ 窗口与表单数据照旧要给：修站**不探索**（不开窗口探路），
     #: 但**自测**那条路要在真窗口上跑产物 —— 两件事，别混。
@@ -548,7 +592,7 @@ def _legacy_fix(tmp_path, *, patch=None, wrap=None, **over):
 
     def patch_source(old_src, feedback):
         calls.append({"old": old_src, "feedback": feedback})
-        src = patch(calls[-1]) if patch else LEGACY_PY.replace("MAX_STEPS = 40", "MAX_STEPS = 60")
+        src = patch(calls[-1]) if patch else base_src.replace("MAX_STEPS = 40", "MAX_STEPS = 60")
         return wrap(src) if wrap else "```python\n%s\n```" % src
 
     deps, rec = _deps(patch_source=patch_source, **over)
@@ -578,6 +622,25 @@ def test_a_legacy_script_becomes_a_patch_run_instead_of_being_refused(tmp_path):
     assert rec.selftest[0].get("legacy") is True, rec.selftest[0]
     #: ⚠️ 自测那一趟**必须先导航到那个站** —— 不导航就是在 Bit 自己的控制台页上跑（实测过）
     assert rec.selftest[0].get("start_url") == URL, rec.selftest[0]
+
+
+
+def test_a_legacy_patches_preexisting_js_click_does_not_block_delivery(tmp_path):
+    """★ 2026-11-04（`job-476a7553b115` · youragemeets）：老底稿自带 `document...click()`
+    兜底；模型只改该改的那一处，那行**原样留着**。补丁那条路只对**新增**违规负责 ——
+    否则每版都被同一条打回、三次 `lint_cap`，交付前那一道还会再拦一次。
+    """
+    src = LEGACY_PY.replace(
+        "    def is_success",
+        "    def _close(self):\n        self.log.info(\"e.click()\")\n\n    def is_success")
+    brief, deps, _rec, _calls = _legacy_fix(tmp_path, src=src)
+    app, cfg, _ = _build(deps=deps)
+    _payloads, out = _drive(app, cfg, brief)
+
+    assert out.get("end_reason") == "delivered", out.get("end_note")
+    delivered = (tmp_path / "forms" / "sites" / ("%s.py" % SITE)).read_text(encoding="utf-8")
+    assert 'self.log.info("e.click()")' in delivered, delivered
+    assert not out.get("unverified"), out.get("unverified")
 
 
 def test_the_gate_says_which_copy_the_draft_came_from(tmp_path):
@@ -727,8 +790,9 @@ def test_two_bad_patches_stop_and_say_why(tmp_path):
     app, cfg, _ = _build(deps=deps)
     _, out = _drive(app, cfg, brief)
 
-    assert out.get("end_reason") == "draft_failed", out.get("end_note")
+    assert out.get("end_reason") == "protocol_failed", out.get("end_note")
     assert "对不上" in (out.get("end_note") or ""), out.get("end_note")
+    assert out.get("protocol_failures"), "协议失败要落成结构化状态"
     assert len(calls) == graph.PATCH_ATTEMPTS, "上限就是 PATCH_ATTEMPTS —— 不许一直试"
     assert graph.PATCH_ATTEMPTS >= 2, "至少要能回灌一次（第一次没过就把原因给它）"
     assert rec.selftest == []

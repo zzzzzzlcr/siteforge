@@ -30,6 +30,9 @@ config/*.local.*
 # `git add -f forms/sites/<名字>.py`。
 forms/sites/*.py
 
+#: ★ 2026-10-28：交接包（`graph._handoff`）—— 与上面同一类：跑出来的数据，不进仓。
+forms/sites/*.handoff.md
+
 # 工具层构建产物(源码在 tools/cdp/)
 tools/cdp/cdp
 tools/cdp/cdp-mcp
@@ -38,3 +41,16 @@ tools/cdp/cdp-mcp
 tools/cdp/vendor/
 tools/cdp/*.bak-*
 siteforge.env
+
+.code-review-graph/
+
+# ── 机器上的 agent 环境（★ 2026-11-18）──────────────────────────────────
+# `.agents/` `.aider-desk/` 是 skills 安装器往本机落的副本（`skills-lock.json` 记账），
+# 换台机器重装一遍即可，不是这个仓的源码。
+.agents/
+.aider-desk/
+skills-lock.json
+
+# 备份 / 快照（与 `tools/cdp/*.bak-*` 同一类：改之前的旧稿，不进仓）
+*.bak-*
+.repair-fingerprints.jsonl

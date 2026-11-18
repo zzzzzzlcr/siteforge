@@ -117,6 +117,37 @@ def test_the_markets_hook_js_click_is_exempt_but_normal_js_clicks_are_not():
     assert [v.code for v in violations] == ["js-click"], violations
     assert violations[0].line == 4, violations
 
+#: 循环型骨架 `Filler._set_value_events` 的逐字片段（`agent/template_loop.py` 的
+#: `_LOOP_SKELETON` 里就是这几行）。
+SKELETON_VALUE_EVENTS_SRC = (
+    "class Filler:\n"
+    "    def _set_value_events(self, token, value) -> bool:\n"
+    "        js = (\n"
+    "            \"if(e.tagName==='SELECT'){e.value=value;}\"\n"
+    "            \"else{var proto=window.HTMLInputElement.prototype;\"\n"
+    "            \"var d=Object.getOwnPropertyDescriptor(proto,'value');\"\n"
+    "            \"if(d&&d.set)d.set.call(e,value);else e.value=value;}\"\n"
+    "        )\n"
+    "        return self._eval_json(js)\n"
+)
+
+
+def test_the_skeletons_own_value_events_js_is_not_flagged():
+    """★ 2026-11-02（`job-bf3fd425f058`，educationdirectory）：循环型骨架自带的
+    `_set_value_events`（原生 setter + 全套事件，2026-10-24 Atticus 真站量证）天生
+    写着 `Object.getOwnPropertyDescriptor` 与 `e.value=` —— 不豁免的话**每一份循环型
+    产物**都过不了 lint，重写三遍还是同一份字节 ⇒ `lint_cap`，永远到不了自测。
+    """
+    assert lint.check(SKELETON_VALUE_EVENTS_SRC) == []
+
+
+def test_the_value_events_exemption_is_anchored_to_the_skeleton_method():
+    """反例：逐字同样的 JS、但**不在**骨架那个方法里 ⇒ 照旧报（豁免只认那一处）。"""
+    src = SKELETON_VALUE_EVENTS_SRC.replace("_set_value_events", "_push")
+    codes = [v.code for v in lint.check(src)]
+
+    assert codes == ["js-value-assign", "js-native-setter", "js-value-assign"], codes
+
 
 @pytest.mark.parametrize("code, src, line", CASES)
 def test_message_is_human_words(code, src, line):
@@ -216,6 +247,33 @@ def test_lookup_alone_is_not_a_violation():
     assert not any("querySelector" in r.pattern.pattern for r in lint.RULES), (
         "有人把 querySelector 那条加回来了 —— S1 已经裁定删掉它（见计划预检扫描）"
     )
+
+
+#: 2026-10-30 `job-6ff0dc514ff3`：代码已经改成 cdp，注释 / docstring 还在解释
+#: 「原来注射 JS `.click()`」—— lint 连散文一起打回 ⇒ 3 版撞上限。
+JS_CLICK_IN_PROSE_SRC = (
+    "def _go(self):\n"
+    '    """点一下 CTA。\n'
+    "\n"
+    "    以前是 `e.click()`（JS 直点），现在走 cdp。\n"
+    '    """\n'
+    "    # 不要再写成 e.click() —— cdp 才是人手点法\n"
+    "    self.cdp.click('#cta')\n"
+)
+
+
+def test_prose_mentioning_js_is_not_a_violation():
+    """注释 / docstring 不是写动作：`.click()` 写在散文里 → 零违规。"""
+    assert lint.check(JS_CLICK_IN_PROSE_SRC) == []
+
+
+def test_code_string_next_to_prose_is_still_flagged():
+    """挖散文**不能**把代码里的字符串字面量一起放过去（手拼 JS 就写在那儿）。"""
+    src = JS_CLICK_IN_PROSE_SRC + (
+        '    self.cdp.eval("document.querySelector(\'#x\').click()")\n')
+    got = lint.check(src)
+    assert [v.code for v in got] == ["js-click"]
+    assert got[0].line == 8
 
 
 # ── 接口形状与行为 ─────────────────────────────────────────────────────
@@ -332,6 +390,12 @@ def test_a_url_only_judge_is_refused_unless_it_says_why():
     told = _artifact([{"name": "spa", "when": {"url_contains": "/go", "text_why": "查过了：只有地址稳"},
                        "steps": [{"action": "click", "target": {"selectors": ["#a"]}}]}])
     assert "judge-url-only" not in _codes(told), lint.check(told)
+    #: ★ 2026-10-21：`url_equals` = **精确地址**门（整条网址逐字比）—— 不是「SPA 上地址不变」
+    #: 那一种，带了它的组不报这一条（delamere `/contact` vs `/contact/loved-one`）。
+    exact = _artifact([{"name": "spa", "when": {"url_contains": "/go",
+                                                "url_equals": "https://x.test/go"},
+                        "steps": [{"action": "click", "target": {"selectors": ["#a"]}}]}])
+    assert "judge-url-only" not in _codes(exact), lint.check(exact)
 
 
 def test_a_bare_when_is_not_a_violation():
@@ -682,6 +746,69 @@ def test_a_fragile_click_with_a_nearby_label_and_a_role_is_not_a_violation():
     assert say(strip) == ["judge-fragile-selectors"]
 
 
+# ── ★ 2026-11-11：地址三轴（可执行 / 有据 / 稳定）与四档判决 ──────────────────
+
+_DOB_FRAG = ("body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(4) > "
+             "div:nth-of-type(1) > div:nth-of-type(5) > div:nth-of-type(1) > "
+             "select:nth-of-type(1)")
+
+
+def _dob_src(selectors, nearby_text=None):
+    target = {"selectors": list(selectors)}
+    if nearby_text is not None:
+        target["nearby_text"] = list(nearby_text)
+    return _artifact([{"name": "dob",
+                       "when": {"url_contains": "/quiz",
+                                "text_contains": ["date of birth"]},
+                       "steps": [{"action": "form", "fill": "month",
+                                  "target": target}]}])
+
+
+def _dob_obs():
+    return {"states": [{"name": "dob", "steps": [
+        {"action": "form", "fill": "month",
+         "target": {"nearby_text": ["Month", "Month"],
+                    "selectors": [_DOB_FRAG]}}]}], "fills": {}}
+
+
+def test_a_fragile_select_with_an_observed_nearby_label_is_advisory():
+    """`job-17e9375fc2a4` 的形状：原生 `<select>` 只有一条长位置链，标签只写在旁边。
+
+    2026-11-11：运行期 `template._intent_score` 本来就按 `nearby_text` 计分 ⇒
+    **卡上真有这几个字**时按「未证实」放行，不再 draft ↔ lint 空转。
+    """
+    src = _dob_src([_DOB_FRAG], ["Month", "Month"])
+    assert lint.check(src, observed=_dob_obs()) == []
+    notes = lint.check_unverified(src, _dob_obs())
+    assert len(notes) == 1, notes
+    assert "只有位置链可依" in notes[0] and "未证实" in notes[0]
+
+
+def test_playwright_text_selectors_are_not_executable_and_do_not_count_as_stable():
+    """`label:has-text(...)` / `select:has(option:text-is(...))` 不是 CSS（执行器跑不了）。
+
+    2026-11-11：它们不算证据、不算稳定地址；但卡上有 `nearby_text` ⇒ 不等于无据可依，
+    按 `advisory` 放行，并在 `check_unverified` 里明说「跑不了、已忽略」。
+    """
+    sels = ['label:has-text("Month") + select',
+            'select:has(option:text-is("Jan"))']
+    src = _dob_src(sels, ["Month", "Month"])
+    assert lint.check(src, observed=_dob_obs()) == []
+    notes = lint.check_unverified(src, _dob_obs())
+    assert any("不是本执行器支持的 CSS" in one for one in notes), notes
+
+
+def test_a_fabricated_label_does_not_earn_the_advisory_verdict():
+    """产物自己编的 `nearby_text` 不算「卡上真有」⇒ 只剩非 CSS 地址时**照样 blocked**。"""
+    src = _dob_src(['label:has-text("Month") + select'], ["Month", "Month"])
+    obs = {"states": [{"name": "dob", "steps": [
+        {"action": "form", "fill": "month",
+         "target": {"selectors": [_DOB_FRAG]}}]}], "fills": {}}
+    got = [v for v in lint.check(src, observed=obs) if v.code == "judge-fragile-no-basis"]
+    assert len(got) == 1, [v.message for v in lint.check(src, observed=obs)]
+    assert "不是本执行器支持的 CSS" in got[0].message
+
+
 # ── 出处三级（2026-10-15 修站那一刀，spec §3.2）─────────────────────────────
 
 _CARD = {"label": "Postcode", "hint": "postcode", "placeholder": "SW1A 1AA",
@@ -869,6 +996,41 @@ def test_a_card_with_only_the_fragile_chain_still_has_no_basis():
     assert len(gone) == 1 and "它身上没有名字" in gone[0].message
 
 
+#: 真事 `job-044a12bb4ab0`（2026-11-06 · antigravity）：探路那趟为「把 Creator Recruitment
+#: 滚进视口」记了一步 `scroll`，target 只有一根超长 nth-of-type 链、没有语义锚 —— 模型原样
+#: 搬进产物 ⇒ 契约检查连打回 3 次（`judge-fragile-no-basis`）⇒ `lint_cap`。
+#: 重放那一侧**从来不拿 scroll 打回整组**（`template.py` 那段实测注释：没滚成只出声、
+#: 照旧走下一步）—— 所以它的地址不承重，不该按「这一步还能不能重放」判。
+_SCROLL_ONLY_FRAGILE = (
+    "STATES = [\n"
+    "  { 'name': 'auth',\n"
+    "    'steps': [ { 'action': 'scroll',\n"
+    "                 'target': { 'selectors': [ %s ] } } ] } ]\n"
+    "FILLS = {}\n" % _FRAGILE
+)
+_SCROLL_OBS = {"states": [{"name": "auth", "steps": [
+    {"action": "scroll", "target": {"selectors": [_FRAGILE.strip("'")]}}]}], "fills": {}}
+
+
+def test_an_auxiliary_scroll_is_not_judged_by_its_address():
+    """辅助步（scroll）地址脆/无出处 ⇒ **地址那几条不判**，不进待接受清单、不记「未证实」。
+
+    ⚠️ 这条**不是**放宽「无据可依」那个判断本身（下一条钉住 click 照旧报）；
+    放宽的只是「这类步骤的地址承不承重」—— 重放那边早就定了它不承重。
+    """
+    codes = [v.code for v in lint.check(_SCROLL_ONLY_FRAGILE, observed=_SCROLL_OBS)]
+    assert [c for c in codes if c.startswith("judge-fragile")] == [], codes
+    assert lint.no_basis_slots(_SCROLL_ONLY_FRAGILE, _SCROLL_OBS) == []
+    assert lint.check_unverified(_SCROLL_ONLY_FRAGILE, _SCROLL_OBS) == []
+
+
+def test_the_auxiliary_exemption_is_only_for_action_scroll():
+    """不许顺带放宽：同一根地址长在 `click` 上，照旧「无据可依」。"""
+    got = [v for v in lint.check(_src_with("auth", _FRAGILE), observed=_OBS)
+           if v.code == "judge-fragile-no-basis"]
+    assert len(got) == 1, [v.code for v in lint.check(_src_with("auth", _FRAGILE), observed=_OBS)]
+
+
 def test_the_no_basis_message_carries_the_values_not_only_the_keys():
     """★ 修复轮 1（Minor #3）：卡上有东西时，「量到的只有 …」要把**值**带上。
 
@@ -945,7 +1107,7 @@ def test_no_basis_with_a_card_that_has_nothing_keeps_todays_wording():
 
 def test_the_field_wording_says_to_use_the_card_when_the_card_has_something():
     """★ Ruling 14 的**字段那一支**：同一条病（打脸 + 没说出「把卡上那根拿来用」），
-    同一条改法、同一把「有没有货」的尺子 —— 而**两条正路**照旧（字段这一支没有「接受」）。
+    同一条改法、同一把「有没有货」的尺子 —— 三条正路（字段这一支**也有接受口**）。
     """
     frozen = {"states": [], "fills": {"postcode": {"target": {
         "label": "Postcode", "hint": "postcode", "selectors": ['input[name="postcode"]']}}}}
@@ -957,7 +1119,7 @@ def test_the_field_wording_says_to_use_the_card_when_the_card_has_something():
     assert "量不到更稳的地址" not in said, said
     assert "先把卡上那根拿来用" in said, said
     assert 'input[name="postcode"]' in said, said
-    assert "接受地址" not in said, said       # 字段这一支没有那个口子，不许写做不到的话
+    assert "接受地址 FILLS:postcode#0" in said, said   # ★ 字段那一支同一个口子
     #: 卡上什么都没有那一支照旧（不因为这次改动被带上新话）
     gone = [v for v in lint.check(_FILL_SRC, observed={"states": [], "fills": {}})
             if v.code == "judge-fragile-no-basis"]
@@ -1142,10 +1304,11 @@ _FILL_SRC = ("STATES = []\n"
 
 
 def test_a_fill_with_no_basis_gets_the_same_verdict_but_field_wording():
-    """字段那一支的「无据可依」：判决与 states 那支一致，**话按字段说**，而且
-    ①不说「补一条稳的」（那句只能逼出编的）；②**不许**教人「接受地址 X#N」——
-    接受那个口子（`no_basis_slots` / `_accept_from_note`）是按 `(组名, 步序)` 认的，
-    **字段这一支没有对应的名字可认**：写一句做不到的话，正是这一刀要治的病。
+    """字段那一支的「无据可依」：判决与 states 那支一致，**话按字段说**。
+
+    原先**不许**教人「接受地址」—— 那个口子按 `(组名, 步序)` 认，字段这一支没有
+    对应的名字可认。★ 2026-11-11：字段也有 handle 了（`FILLS:<键>#0`），
+    所以现在**必须**给出那条路。
     """
     frozen_card = {"fills": {"postcode": {"target": {"selectors": [_FRAGILE.strip("'")]}}}}
     got = [v for v in lint.check(_FILL_SRC, observed=dict(frozen_card, states=[]))
@@ -1153,7 +1316,7 @@ def test_a_fill_with_no_basis_gets_the_same_verdict_but_field_wording():
     assert len(got) == 1
     assert got[0].message.startswith("字段「postcode」："), got[0].message
     assert "补一条" not in got[0].message
-    assert "接受地址" not in got[0].message
+    assert "接受地址 FILLS:postcode#0" in got[0].message
     assert "删掉" in got[0].message and "请人" in got[0].message
     # 冻结那份里**根本没有这一格** ⇒ 取不到卡 ⇒ 照样本判决（fail-closed）
     gone = [v for v in lint.check(_FILL_SRC, observed={"states": [], "fills": {}})
@@ -1259,8 +1422,8 @@ _FOLLOW = "def _follow_new_tab(self):\n    pass\n"
 def test_no_basis_slots_says_which_address_the_gate_can_accept():
     """`no_basis_slots` = 「现在有哪几处等着被接受」，每条绑死四元组（spec §3.5）。
 
-    ⚠️ 只有 `states` 那一支有它：`FILLS` 那一格的把手是**键**、不是 (组名, 步序)，
-    `_fill_no_basis_say` 因此**只写两条正路**（那条「接受」写上去就是一句做不到的话）。
+    ⚠️ `states` 与 `FILLS` 两支都有它：字段那一支的 handle 是 `FILLS:<键>#0`
+    （键本来就是这一格稳定的名字）。
     """
     src = _src_with("auth", _FRAGILE)
     [slot] = lint.no_basis_slots(src, _OBS)
@@ -1273,18 +1436,22 @@ def test_no_basis_slots_says_which_address_the_gate_can_accept():
     assert lint.no_basis_slots(src, _OBS, accepted=[slot]) == []
 
 
-def test_a_step_that_has_something_to_use_is_not_a_slot_to_accept():
-    """口径与 `_rule_i` **同一支**：卡上有一根验过唯一的地址时，这一格**根本不报**无据可依
-    （`test_a_card_with_a_stable_selector_is_not_called_no_basis` 钉着那一半）——
-    这里钉的是同一条判决的另一半：它也**不进待接受清单**（否则人会去接受一处没人问过的东西）。
+def test_a_fixable_step_is_also_an_acceptance_slot():
+    """卡上有稳地址、产物只用脆链 ⇒ 判 `fixable`（老码），但**也进待接受清单**。
+
+    ★ 2026-11-11：接受口从「无据可依」扩成**所有需要人决定的地址**
+    （`fixable` / `blocked`）—— 人点头过的那一处就不必再让模型改。
+    `advisory` / `stable` 不进（它们已经放行）。
     """
     obs = {"states": [{"name": "auth", "steps": [
         {"action": "click", "target": {"role": "a", "near": "header",
                                        "selectors": ["a[href='/comp']"]}}]}], "fills": {}}
-    src = _src_with("auth", _FRAGILE)
-    assert [v.code for v in lint.check(src, observed=obs)
-            if v.code == "judge-fragile-no-basis"] == []          # 那一半：不报
-    assert lint.no_basis_slots(src, obs) == []                     # 这一半：不等接受
+    src = _src_with("auth", _FRAGILE) + _FOLLOW
+    assert [v.code for v in lint.check(src, observed=obs)] == ["judge-fragile-selectors"]
+    [slot] = lint.no_basis_slots(src, obs)
+    assert (slot["state"], slot["index"], slot["selector"]) == (
+        "auth", 0, _FRAGILE.strip("'"))
+    assert lint.check(src, observed=obs, accepted=[slot]) == []
 
 
 def test_accepted_step_is_not_reported():
@@ -1690,3 +1857,32 @@ def test_the_hint_ladder_uses_one_ruler_on_both_sides():
     assert level == lint.DERIVED, why
     level, why = lint.address_basis("[name=textfield-173862]", card, ["#other"])
     assert level == lint.UNSUPPORTED, why
+
+
+def test_baseline_violations_are_subtracted_by_count_not_by_line():
+    """★ 2026-11-04（`job-476a7553b115`）：老写法补丁只对**新增**违规负责。
+
+    底稿自带两处 `js-click`，补丁原样留着 ⇒ 不豁免就每版都撞同两条、`lint_cap`。
+    判据按 `(code, snippet)` **计数**减（行号会因补丁漂移）；多出来的照旧报。
+    """
+    base = [{"line": 485, "code": "js-click", "snippet": "if(i)i.click();"},
+            {"line": 600, "code": "js-click", "snippet": "if(e)e.click();"}]
+    same_shifted = [{"line": 501, "code": "js-click", "snippet": "if(i)i.click();"},
+                    {"line": 616, "code": "js-click", "snippet": "if(e)e.click();"}]
+    assert lint.subtract_baseline(same_shifted, base) == []
+
+    new_one = same_shifted + [
+        {"line": 700, "code": "js-click", "snippet": "if(x)x.click();"}]
+    kept = lint.subtract_baseline(new_one, base)
+    assert [v["snippet"] for v in kept] == ["if(x)x.click();"], kept
+
+    #: 同一段代码多出现一次（底稿 1 条、新版 2 条）⇒ 只豁免 1 条
+    twice = [dict(base[0]), {"line": 900, "code": "js-click",
+                             "snippet": "if(i)i.click();"}]
+    kept2 = lint.subtract_baseline(twice, base[:1])
+    assert [v["line"] for v in kept2] == [900], kept2
+
+    #: 用真的 `Violation` 也认（`check()` 返回的就是它）
+    real = lint.check("self._ev(\"e.click()\")\n")
+    assert real and real[0].code == "js-click", real
+    assert lint.subtract_baseline(real, real) == []

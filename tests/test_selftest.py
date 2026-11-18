@@ -1293,6 +1293,37 @@ def test_a_click_that_did_not_move_the_page_is_named_before_the_first_skip():
     assert "第一处跳过：第 5 步" in note2, note2
 
 
+def test_a_legacy_log_names_the_step_where_it_stuck():
+    """★ 2026-11-04（`job-476a7553b115` · youragemeets）：老写法不认 `--trace`，
+    trace 里只有 `max_steps` 一行 ⇒ 结论落成「每一步都做成了」。可产物日志里
+    有「卡住诊断 / 答了 1 题后卡住」—— 那是**现成的第 2 步现场**（`options=[]`）。
+    这一格把日志搬成一行证据，让 `failed_step` / `scene_of` 指得到它。
+    """
+    out = """\
+2026-11-04 00:04:53 [INFO] form_fill_japansdates: step 1 [] Let's make the most of your dating experience? -> age-18-24
+2026-11-04 00:04:55 [WARNING] form_fill_japansdates: 卡住诊断 step= next=False legal=False options=[] labels=[] inputs=[] url=step2|https://youragemeets.com/land/sp/ee831f89/?x#c3RlcDI=
+2026-11-04 00:04:55 [INFO] form_fill_japansdates: step 2: nothing actionable (1, 0s) 1 2 3 4 Your profile Preferences Finish up What are you look
+2026-11-04 00:05:40 [ERROR] form_fill_japansdates: 答了 1 题后卡住 46s @ https://youragemeets.com/land/sp/ee831f89/?x#c3RlcDI= —— 如实报失败
+"""
+    row = selftest._legacy_stuck_row(out, "")
+    assert row is not None
+    assert row["step"] == 2, row
+    assert row["url"].startswith("https://youragemeets.com/"), row
+    assert "options=[]" in row["note"] and "labels=[]" in row["note"], row
+    assert "What are you look" in row["page_sig"], row
+    assert row["legacy_log"] is True
+
+    lines = [{"step": "max_steps", "ok": None,
+              "ok_why": "老写法只说明「这一步上报过」", "url": row["url"]}, row]
+    ok, step, note = selftest._verdict(1, False, lines, 0, "", out, 600)
+    assert ok is False and step == 2, (ok, step, note)
+    assert "每一步都做成了" not in note, note
+    assert "第 2 步" in note and "options=[]" in note, note
+
+    #: 负控：日志里没有卡住诊断 / 答了 N 题后卡住 ⇒ 不编一个步号
+    assert selftest._legacy_stuck_row("nothing here\n", "") is None
+
+
 def test_without_a_failed_step_the_scene_takes_the_last_executed_row_not_a_skipped_one(tmp_path):
     """★ 2026-10-20（同一趟 belong）：`failed_step` 为空时，`scene` 原来取 `rows[-1]`。
     可最后几行往往是**被跳过**的状态（`ok=None`、现场全空）⇒ 递给模型一格白卷；
@@ -1989,6 +2020,18 @@ def test_a_funnel_that_ran_every_step_but_never_showed_the_text_is_a_criterion_s
 def test_the_criterion_hint_stays_quiet_when_a_step_really_did_not_work():
     """有一步 `ok=false` ⇒ **闭嘴** —— 那是流程/选择器那一支，把判据拎出来说就是甩锅。"""
     ev = _criterion_ev(trace=[{"step": 1, "ok": True}, {"step": 2, "ok": False}])
+    assert selftest.criterion_suspect(ev) == ""
+
+
+def test_the_criterion_hint_stays_quiet_when_steps_were_skipped():
+    """有步被跳过（`skipped: true`）⇒ 那不是「每一步都做成了」，别往成功判据上引。
+
+    ★ 2026-11-03（`job-b18df26fdb51` / info）：报告说 15 步里 12 步被跳过；
+    fix 模式这条提示原先只看 `ok is False`，跳过行没有 `ok` ⇒ 它照样把方向掰到判据上。
+    """
+    ev = _criterion_ev(trace=[{"step": i, "ok": True} for i in range(1, 8)]
+                              + [{"step": 8, "skipped": True, "state": "form-2",
+                                  "why": "这一页不像「form-2」那个状态"}])
     assert selftest.criterion_suspect(ev) == ""
 
 

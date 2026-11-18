@@ -35,7 +35,7 @@ AUTO_STUCK_SAY = ("自动模式：**停在这儿了** —— 第 %s 这道闸按
 #: **图自己触顶的那一步**（`state.Caps.max_diagnoses + 1`）。
 #: 为什么（真事，`job-b9f0c6a74cbd` / `job-9c5b17be2629` / `job-cfefcd7a3aef`）：三趟都停在
 #: `diagnose` 闸上 —— `src` 里有稿、`unverified` 是空的，运营看到的是「什么都没有」。
-#: 而「留料」（这一版落进交付路径 + `unverified` 写清「自测没过」）**只发生在图触顶那一步**
+#: 而「留料」（这一版落进 `<site>.parked.py` + `unverified` 写清「自测没过」）**只发生在图触顶那一步**
 #: （`graph._selftest` → `_keep_unverified`，`tests/test_graph.py` 钉着它）。
 #: auto 要是**早一步**抛人，那一步永远走不到。⇒ 按到那儿为止，两件事同一步发生：
 #: 「出了、标清了没验过」+「需要人」。
@@ -55,15 +55,46 @@ AUTO_CANNOT_DO = ("no_window", "missing_knob", "no_success_text", "window_gone")
 #: 做不成那句人话的头（后面接那一趟自己留下的 `end_note`）。
 AUTO_CANNOT_DO_SAY = "自动模式：这一趟**做不成**（不是没修好）—— 不等第二遍，直接报人。为什么：%s"
 
+#: **窗口没了**这一类结局 —— 自动那条路的动作不是「报人」，而是**自己开一个新的、
+#: 从断点接着走**（graph 的 `no_window` 话里写的就是 `POST /job/<id>/reopen`）。
+#: ⚠️ 与 `AUTO_CANNOT_DO` 分开：那是「再试也不会变」，窗口死是**环境**，重开就是出路。
+AUTO_WINDOW_END = ("no_window", "window_gone")
+#: 自动那条路最多自己重开几次窗口 —— 防「开了又死」的空转（每次重开都要真窗口 + 真时间）。
+AUTO_MAX_REOPENS = 2
+
+
+def reopen_stop_reason(values: dict, reopens) -> str:
+    """窗口停的结局下，**该不该继续重开** ⇒ 非空 = 该停了（为什么）。
+
+    ⚠️ 只判**上限**；「这一趟是不是窗口停的」由调用方先按 `AUTO_WINDOW_END` 筛过。
+    返回空串 = 可以重开。
+    """
+    values = values or {}
+    if str(values.get("end_reason") or "") not in AUTO_WINDOW_END:
+        return ""
+    done = int(reopens or 0)
+    if done >= AUTO_MAX_REOPENS:
+        return ("窗口没了 %d 次（上限 %d）—— 再开也只是再死一次，停在这里等人"
+                % (done, AUTO_MAX_REOPENS))
+    return ""
+
 
 def attempts(values: dict) -> int:
     """这一趟**已经到第几遍** —— 只认账上有的东西：`visits` 里 `draft` / `selftest` 的次数。
 
     ⚠️ 为什么数 `visits`：图的每一步都会往 `visits` 里落一个节点名（`graph._visited`），
     所以「写过几版稿」这件事**账上本来就有** —— 不另开一格状态（那会是第二个真相源）。
+
+    ★ 2026-10-30（`job-6ff0dc514ff3`，allfeellove）：**lint 打回的稿不算一遍** ——
+    「一遍 = 出一版稿 + 自测一次」，被打回的稿连自测都没跑过。`draft` 次数减掉
+    `lint_bounces` 才是**真走到自测的稿数**。不减的话三版稿都被 lint 打回时，
+    预算先被吃光（那一趟 3 版稿、0 次自测就报了「两遍都没过」）。
+    没这一格（老 job / 桩）⇒ 按 0 算，与从前逐字节一致。
     """
-    visits = [str(v) for v in (values or {}).get("visits") or []]
-    return max(visits.count("draft"), visits.count("selftest"))
+    values = values or {}
+    visits = [str(v) for v in values.get("visits") or []]
+    tested = visits.count("draft") - int(values.get("lint_bounces") or 0)
+    return max(tested, visits.count("selftest"))
 
 
 def give_up_reason(values: dict) -> str:
@@ -296,7 +327,8 @@ def _stop(did: str, why: str, site: str = "") -> dict:
     return {"ok": True, "did": did, "why": why, "site": site}
 def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
              service_url: str = SERVICE_URL,
-             allow_disabled: bool = True) -> dict:
+             allow_disabled: bool = True,
+             min_streak: int = 5) -> dict:
     """**转一圈**：看榜 → 对账 → 开修（一次只开一个）。返回这一圈干了什么。
 
     口径照设计文档（`docs/superpowers/specs/2026-09-24-auto-repair-design.md`）：
@@ -320,7 +352,8 @@ def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
     if not flags["on"]:
         return _stop("没动", "总开关是**关**的（%s）" % (flags["note"] or "没说为什么"))
 
-    rows = parse_list(fmr.fetch_rank(date=today, limit=RANK_LIMIT))   # 信封不认 ⇒ 它抛（让上面报）
+    rows = parse_list(fmr.fetch_rank(date=today, limit=RANK_LIMIT,
+                                     min_streak=min_streak))   # 信封不认 ⇒ 它抛（让上面报）
     book = Ledger(pathlib.Path(root) / STATE_DIR / "ledger.json")
     skipped, picked = [], None
     for row in rows:
@@ -383,6 +416,18 @@ def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
         return _stop("没动", "对账读不到「%s」那一单的逐步记录：%s" % (site, exc), site=site)
     from agent import fmr as fmr_mod      #: `evidence_text` 是**模块**里的函数（不是客户端的方法 —— 验收跑出来的）
     evidence = fmr_mod.evidence_text(first, steps)
+    #: ★ 2026-10-30：后端原因行里那格 `fail_img`（失败截图）—— 读不到**不拦这一趟**
+    #: （它是可选证据），但要在证据里说明「没有那张图」，不许静默少一块。
+    images: list = []
+    try:
+        reasons = list(fmr.fetch_diag(task_id) or [])
+    except Exception as exc:                      # noqa: BLE001 —— 可选证据，读不到就说明
+        reasons = []
+        evidence += "\n（失败原因行读不到：%s —— 这一趟没有后端失败截图）" % exc
+    for one in reasons:
+        url = str((one or {}).get("fail_img") or "").strip()
+        if url.startswith(("http://", "https://")) and url not in images:
+            images.append(url)
     #: **先记再开**：开完再记的话，中途挂了就会重复开（真站上=重复烧钱 + 重复真提交）。
     book.note(site, today=today, at=time.strftime("%H:%M:%S", time.localtime(now)))
     code, said = post(service_url.rstrip("/") + "/run", {
@@ -396,6 +441,7 @@ def run_once(*, fmr: object, post=None, root=".", today=None, now=None,
         #: ⚠️ 两条不放松：① 服务会把「这一版底稿来自**停用那份**」记进状态 / 摆在闸上；
         #: ② 停用行**绝不自动上传**（T4 那条按 `allow_disabled` 判的）。
         "allow_disabled": bool(allow_disabled),
+        "evidence_images": images[:2],  # ★ 后端失败截图（最多两张）
         "evidence": evidence,          # ★ 上面那一条：不带它，服务在门口就拦（验收跑出来的）
         "note": "自动值班：榜上「%s」连败够久（task %s）" % (site, task_id),
     })

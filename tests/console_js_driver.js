@@ -200,6 +200,7 @@ async function runScenario(out) {
   el("runSuccess").value = payload.run.success_text;
   el("runEvidence").value = payload.run.evidence;
   const rr = payload.run.rules || {};
+  el("runPhoneExact").value = rr.phone || "";
   el("runPhonePrefix").value = (rr.phone_prefixes || []).join(" ");
   el("ruleDob").checked = !!rr.dob;
   el("runDobFormat").value = (rr.dob && rr.dob.format) || "";
@@ -324,6 +325,11 @@ async function runRefusedScenario(out) {
 //: 连按钮变灰都看不见。所以「按下去之后、下一拍之前」那一屏**必须**有那句话 ——
 //: 等到重画才显示，真机上就是「点了没反应」。
 async function continueScenario(out) {
+  //: ★ 2026-10-21（真事 `job-6203bc32c1c4`）：运营在输入框里写了话、再按「继续」——
+  //: 页面**把它扔了**（`btnContinue` 只发 `{"action":"continue"}`）。而这一屏自己的小字
+  //: 写的是「这句话会一路带进它下一步要做的事；不写也能按「继续」让它往下走」。
+  //: ⇒ 这一份现在也量「框里那句话有没有跟着出去」：`payload.note` 非空就先写进输入框。
+  if (payload.note) { el("sayBox").value = payload.note; }
   let errScrolls = 0;
   el("errBox").scrollIntoView = function () { errScrolls++; };
   out.beforeClick = { disabled: el("btnContinue").disabled,
@@ -637,6 +643,29 @@ async function rankScenario(out) {
                        rankNote: el("rankNote").innerHTML, fails: el("fails").innerHTML };
 }
 
+
+//: ★ 2026-10-29：榜单一行「一键修复」—— 走的是**既有**的失败单 → 证据 → 开一趟那条链。
+//: 量发出去的 `/run` 正文（修站模式 + 带着那一单的证据/站键）与屏幕上的终态。
+async function rankOneClickScenario(out) {
+  const btn = { disabled: false };
+  //: 动态画出来的按钮在假 DOM 里点不着 ⇒ 直接按**委托监听器**那条路送一个假事件
+  //: （`this` 绑在 `#rank` 上，与真浏览器一致）。
+  el("rank").listeners.click.call(el("rank"), { target: {
+    getAttribute: function (n) { return n === "data-rankfix" ? payload.rank.clean : null; },
+    parentNode: null,
+  } });
+  await settle();
+  const runs = sent.filter(function (s) { return s.url === "/run" && s.body; });
+  out.afterOneClick = {
+    note: el("rankNote").innerHTML,
+    sentRunCount: runs.length,
+    body: runs.length ? JSON.parse(runs[runs.length - 1].body) : null,
+    mode: el("runMode").value,
+    evidence: el("runEvidence").value,
+    disabled: btn.disabled,
+  };
+}
+
 //: 闸口摊开的事实那一趟（Task 14 修复轮 1）：`/live` 停在闸上、`rounds` 里有两张卡 ——
 //: 量的是**屏幕上**看得见什么（`#rounds` 那一块），不是载荷里有什么。
 //: 三样一起量：
@@ -688,6 +717,39 @@ async function autoScenario(out) {
   out.auto.end = el("autoNote").innerHTML;
 }
 
+//: 约会站识别（2026-10-29）：贴 URL → 按「识别」→ 结果与「关联」按钮；
+//: 唯一命中才按「关联到 config」→ 发 `/classify/link`（带 operator）。
+//: 量的是：① 结果里有没有服务那几格（平台/config/证据）；② 按钮**什么时候**出现；
+//: ③ 关联那一下的**正文**（URL / operator / 没指定 config 时不许凭空塞一个）。
+async function classifyScenario(out) {
+  out.before = { actHidden: el("classifyAct").hidden,
+                 linkHidden: el("btnClassifyLink").hidden };
+  el("classifyUrl").value = payload.classify.url;
+  el("classifyConfig").value = payload.classify.config || "";
+  fire("btnClassify", "click");
+  await settle(); await settle(); await settle();
+  out.afterRecognise = {
+    box: el("classify").innerHTML,
+    note: el("classifyNote").innerHTML,
+    actHidden: el("classifyAct").hidden,
+    linkHidden: el("btnClassifyLink").hidden,
+    linkText: el("btnClassifyLink").textContent,
+    linkHint: el("classifyLinkHint").innerHTML,
+    err: el("errBox").textContent, errHidden: el("errBox").hidden,
+  };
+  if (payload.classify.clickLink && !el("btnClassifyLink").hidden) {
+    el("classifyOperator").value = payload.classify.operator || "";
+    fire("btnClassifyLink", "click");
+    await settle(); await settle(); await settle();
+    out.afterLink = {
+      box: el("classify").innerHTML,
+      err: el("errBox").textContent, errHidden: el("errBox").hidden,
+      linkHidden: el("btnClassifyLink").hidden,
+    };
+  }
+  out.calls = sent.filter((s) => s.url === "/classify" || s.url === "/classify/link");
+}
+
 (async () => {
   vm.runInContext(source, sandbox, { filename: "console.html" });
   await settle();                                   // 开页那两次 fetch
@@ -704,7 +766,8 @@ async function autoScenario(out) {
            payload.scenario === "py-upload-nothing" ||
            payload.scenario === "py-upload-kept") { await pyUploadScenario(out); }
   else if (payload.scenario === "run-refused") { await runRefusedScenario(out); }
-  else if (payload.scenario === "continue") { await continueScenario(out); }
+  else if (payload.scenario === "continue" ||
+           payload.scenario === "continue-note") { await continueScenario(out); }
   else if (payload.scenario === "window") { await windowScenario(out); }
   else if (payload.scenario === "page-view") { await pageViewScenario(out); }
   else if (payload.scenario === "country" ||
@@ -727,7 +790,11 @@ async function autoScenario(out) {
   //: （`fixSuccess` 有值 ⇒ 多跑 ⑦c/⑦d 那两下）。与 `artifact` / `artifact-missing` 同款约定。
   else if (payload.scenario === "rank-diag" ||
            payload.scenario === "rank-diag-success") { await rankScenario(out); }
+  else if (payload.scenario === "rank-oneclick") { await rankOneClickScenario(out); }
   else if (payload.scenario === "auto") { await autoScenario(out); }
+  else if (payload.scenario === "classify" ||
+           payload.scenario === "classify-unknown" ||
+           payload.scenario === "classify-link-failed") { await classifyScenario(out); }
   else { await repaintScenario(out); }
   out.paints = timelineWrites;                      // **重画了几次**（C1：别拿 fetch 数代替）
   if (out.paintMarks) { out.paintMarks.end = timelineWrites; }

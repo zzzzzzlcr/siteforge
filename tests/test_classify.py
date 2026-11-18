@@ -45,6 +45,18 @@ def test_delachat_is_recognised_by_class_tokens():
     assert got["confidence"] == "high"
 
 
+def test_allfeellove_is_recognised_before_hydration():
+    #: 2026-10-30 真站首屏（SSR）：`step-1` + gender + `footer-*-link`；
+    #: `image-button-*` / `continue-button` 是水合之后才进 DOM 的。
+    got = classify.classify_census(_census(
+        testids=["step-1", "gender-female", "gender-male",
+                 "footer-about-us-link", "footer-terms-of-use-link",
+                 "footer-privacy-policy-link", "footer-arbitration-agreement-link"]))
+    assert got["platform"] == "allfeellove"
+    assert got["confidence"] == "high"
+    assert got["ambiguous"] is False
+
+
 def test_a_plain_continue_button_is_not_enough():
     got = classify.classify_census(_census(testids=["continue-button"]))
     assert got["platform"] is None
@@ -382,3 +394,52 @@ def test_census_with_start_can_reuse_the_first_census():
     got = classify.census_with_start(_boom, lambda: None, first=page)
     assert got["clicked_start"] is False
     assert got["census"] == page
+
+
+def test_run_classify_uses_the_operator_it_was_given():
+    """面板那条路要留下「谁点的」—— 不能永远写 `claude (classify: …)`。"""
+    client = _FakeClient(ROWS)
+    got = classify.run_classify(
+        "https://soulmatemeets.com/land/sp/23d247da/",
+        census_fn=lambda: {"census": JAPAN, "clicked_start": False,
+                           "clicked_text": "", "note": ""},
+        site_rows=ROWS, client=client, apply=True,
+        operator="alice (console)")
+    assert got["exit"] == 0, got
+    assert client.linked[0][2] == "alice (console)"
+    assert "alice" in (got["result"]["link_payload"] or {}).get("operator", "")
+
+
+def test_census_live_navigates_then_reads_the_page(monkeypatch):
+    """CLI 与面板共用的那一段：开窗（调用方开）→ 等 CDP → 导航 → census。"""
+    from agent import selftest
+
+    nav = []
+
+    def _navigate(cdp_bin, ws_url, entry_url, env, refresh=None):
+        nav.append((cdp_bin, ws_url, entry_url))
+        return None
+
+    monkeypatch.setattr(selftest, "_navigate", _navigate)
+    monkeypatch.setattr(selftest, "_cdp_eval",
+                        lambda cdp_bin, ws_url, js, env: json.dumps(JAPAN))
+    got = classify.census_live("https://soulmatemeets.com/land/sp/23d247da/",
+                               ws_url="ws://1.2.3.4:55555/devtools/page/A",
+                               cdp_bin="cdp")
+    assert got["census"] == JAPAN
+    assert got["clicked_start"] is False
+    assert nav == [("cdp", "ws://1.2.3.4:55555/devtools/page/A",
+                    "https://soulmatemeets.com/land/sp/23d247da/")]
+
+
+def test_census_live_reports_a_navigation_that_did_not_land(monkeypatch):
+    from agent import selftest
+
+    monkeypatch.setattr(selftest, "_navigate",
+                        lambda cdp_bin, ws_url, entry_url, env, refresh=None: "boom")
+    monkeypatch.setattr(selftest, "_cdp_eval",
+                        lambda cdp_bin, ws_url, js, env: json.dumps("https://x.test/"))
+    with pytest.raises(classify.ClassifyLiveError) as got:
+        classify.census_live("https://x.test/", ws_url="ws://1.2.3.4:55555/devtools/page/A",
+                             cdp_bin="cdp")
+    assert "导航没成" in str(got.value)

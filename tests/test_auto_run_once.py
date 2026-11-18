@@ -39,8 +39,8 @@ class FakeFmr:
         self.calls = []
         self.since_seen = []                 #: 每次对账的 `(site, since, debug)`
 
-    def fetch_rank(self, *, date, limit):
-        self.calls.append(("rank", date, limit))
+    def fetch_rank(self, *, date, limit, min_streak=5):
+        self.calls.append(("rank", date, limit, min_streak))
         if self.raises is not None:
             raise self.raises
         return self.rank
@@ -59,6 +59,12 @@ class FakeFmr:
         self.calls.append(("steps", task_id))
         return [{"step": "start", "url": "https://x.example/p"},
                 {"step": "no_success", "url": "https://x.example/p?done=1"}]
+
+    def fetch_diag(self, task_id):
+        """这一单的原因行（`fail_img` = 后端那张失败截图）。"""
+        self.calls.append(("diag", task_id))
+        return [{"lines": "step 2: nothing actionable",
+                 "fail_img": "https://img.example/a.png"}]
 
 
 
@@ -93,6 +99,14 @@ def test_the_switch_off_means_it_touches_nothing_but_still_beats(tmp_path):
     assert auto.heartbeat_age(tmp_path, now=1000.0) is not None, "关着就不跳心跳 —— 面板会以为它死了"
 
 
+def test_the_streak_threshold_is_sent_to_the_backend(tmp_path):
+    """★ 2026-10-29：开修门槛由调用方给（8100 要「连败 ≥3」）—— 不是写死 5。"""
+    _on(tmp_path)
+    fmr, poster = FakeFmr(), Poster()
+    _run(tmp_path, fmr, poster, min_streak=3)
+    assert fmr.calls[0] == ("rank", "2026-09-24", auto.RANK_LIMIT, 3), fmr.calls
+
+
 def test_it_opens_one_with_the_country_from_the_failure_record(tmp_path):
     """够格的一行 ⇒ 对账读出 task_id + country ⇒ `POST /run`（auto、fix、三格同串、带国家）。"""
     _on(tmp_path)
@@ -105,6 +119,7 @@ def test_it_opens_one_with_the_country_from_the_failure_record(tmp_path):
     assert payload["env"] == {"proxy_country": "US"}, payload
     assert payload["fix_site"] == payload["url"] == payload["fix_site_url"] == "a.com/x", payload
     assert "ws_url" not in payload, "开修不带 ws_url —— 窗口是服务那摊（设计文档 §3）"
+    assert payload["evidence_images"] == ["https://img.example/a.png"], payload
     book = auto.Ledger(pathlib.Path(tmp_path) / auto.STATE_DIR / "ledger.json")
     assert book.count(today="2026-09-24") == 1
 

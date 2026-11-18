@@ -243,6 +243,23 @@ LIVE_PROBE_EVERY = 3.0
 #: 等不到也照旧往下走（一句人话说明），**不许**把它当成失败。
 WAIT_READY_SECONDS = 10.0
 
+#: ★ 2026-10-24（真事 southernliving.com · 单号 26789988）：**开跑前**最多等多久（秒）
+#: 让落地页「真的出来」—— 空壳 / Cloudflare 验证页 / 还在加载，都算没出来
+#: （判据见 `_wait_landing_ready`）。
+#:
+#: 为什么要这一笔：广告落地页在**冷缓存**下先给一个空壳（`document.title` 是
+#: `Simple Page`、0 个可见链接），接着可能再过一道 Cloudflare 的「Just a moment...」，
+#: 真页面 **15~20 秒**后才出来。生产重跑的 cdp **没有 observe**（§4.6），回退链救不了
+#: 「点得太早」：第 1 步的选择器在空壳上必然找不到 ⇒ 整趟 `no_success`；而 30 秒后
+#: ad-task 抓的现场截图里，页面是**好的** —— 「看起来页面没问题却没成功」，根因就是
+#: **脚本比页面先到**。
+#:
+#: 为什么是 60：给慢网 + 一道验证页留余量；ad-task 给子进程的超时是 600 秒，这一笔
+#: 顶不掉整趟。**正常页面第一眼就过**（三条判据同时成立），平时一分钱不花。
+LANDING_WAIT_SECONDS = 60.0
+#: 上面那一笔的轮询间隔（秒）。
+LANDING_POLL_SECONDS = 0.5
+
 #: ★ 2026-09-22（生成侧建议第 2 条）：**有界等「when 成立」**最多等几秒。
 #: 为什么是 5~8：真不成立的状态组多花这几秒，换来「不是没等就判」；而这类失败
 #: **跑完全程不报错**（只表现为「没走到成功」），花这几秒比事后排一遍便宜得多。
@@ -642,6 +659,66 @@ _MODAL_BOX_JS = (
     "return (cb.id?('#'+cb.id):'TEXT')+'|'+(ca||cx).slice(0,40);}"
     "return '';}"
 )
+
+#: ★ 2026-10-23（真事 firstday.com · `job-863ba9a731d7`）：**站点自己的购物车抽屉**
+#: 也是「role=dialog + aria-modal=true + 盖满视口 + 一颗 Close shopping cart」——
+#: 上面那条通用模态钩子把它当遮挡点掉了，而下一步要点的「CHECKOUT+」**就在抽屉里**
+#: ⇒ 自测三版稿都卡在「页面上没找到 CHECKOUT+」。抽屉是流程的一部分，不是遮挡。
+#:
+#: 判据：**这一步要点的东西就在这个模态里** ⇒ 不点关（`_modal_holds_target_js` 把这一步
+#: 的 target（text + selectors）交给页面，按「可见元素」找一遍）。
+#: 为什么不能只按「容器叫 cart」：站点给抽屉起什么名字追不完；「里面有没有下一步的目标」
+#: 是形状，而且对「任何模态里装的下一步」都成立。
+#: ⚠️ 只对「盖住整页的模态」这一行生效（见 `_MODAL_HOOK_NAME`）：同意层照旧先做决定 ——
+#: 同意层里不会有「下一步要点的东西」。
+#: ⚠️ 目标两样都没有（没写 text、也没 selectors）⇒ 返空 = **照旧清弹层**（不猜）。
+_MODAL_HOLDS_TARGET_BODY = (
+    #: 测试替身靠这个标记认这一段（`tests/test_template.py` 的 STUB_COMMON）——
+    #: 它不执行 JavaScript，只能按标记回一句预设答复。
+    "var sfModalHolds=1;"
+    "var want=__WANT__,sels=__SELS__;"
+    "var norm=function(s){return String(s||'').replace(/\\s+/g,' ').trim().toLowerCase();};"
+    "var isModal=function(e){var lab=String(e.id||'')+' '+String(e.className||'')+' '"
+    "+String((e.getAttribute&&e.getAttribute('aria-label'))||'');"
+    "var sem=/(dialog|modal)/i.test(lab)"
+    "||!!(e.getAttribute&&(e.getAttribute('role')==='dialog'"
+    "||String(e.getAttribute('aria-modal'))==='true'));"
+    "if(!sem)return false;var r=e.getBoundingClientRect();"
+    "return r.width>=window.innerWidth*0.8&&r.height>=window.innerHeight*0.8;};"
+    "if(!want&&!sels.length)return '';"
+    "for(var i=0;i<all.length;i++){var box=all[i];"
+    "if(!isModal(box)||!vis(box))continue;"
+    "var inner=(box.getElementsByTagName?box.getElementsByTagName('*'):box.querySelectorAll('*'));"
+    "for(var j=0;j<inner.length;j++){var e=inner[j];if(!vis(e))continue;"
+    "var t=norm(e.innerText||e.value||(e.getAttribute&&e.getAttribute('aria-label'))||'');"
+    "if(want&&t===want)return '1|text';"
+    "for(var k=0;k<sels.length;k++){try{if(e.matches(sels[k]))return '1|selector';}catch(err){}}"
+    "}}"
+    "return '';"
+)
+
+
+def _modal_holds_target_js(target):
+    """把这一步的目标（text + selectors）填进 `_MODAL_HOLDS_TARGET_BODY`。
+
+    ⚠️ 用 `.replace` 而**不用 `%` 格式化**：这段 JS 里有 `80%` 这种百分号
+    （`_popup_probe_js` 那段注释记着同一个坑）。
+    """
+    target = target or {}
+    want = str(target.get("text") or "").strip()
+    sels = [str(s) for s in (target.get("selectors") or []) if s]
+    return (_VIS_JS + _CONSENT_ROOTS_JS + _MODAL_HOLDS_TARGET_BODY
+            .replace("__WANT__", json.dumps(want, ensure_ascii=False))
+            .replace("__SELS__", json.dumps(sels, ensure_ascii=False)))
+
+
+#: 「盖住整页的模态」那一行在表里叫什么 —— `_clear_obstructions` 要靠它认出
+#: 「这一步的目标就在它里面，别点关」只对**这一行**生效（见 `_MODAL_HOLDS_TARGET_BODY`）。
+#: ⚠️ 必须与 `_POPUP_HOOKS` 里那一行的名字**一字不差**：表里仍写字面量（测试的
+#: `_popup_hook_rows` 是按字面量解析表序的）；新用例
+#: `test_a_modal_that_holds_the_step_target_is_not_dismissed` 钉着两边对得上。
+_MODAL_HOOK_NAME = "盖住整页的模态"
+
 
 #: ★ 2026-10-13（用户裁定「都收吧」；真事 `job-708dfae74b73` · lovesac 的 Fides 弹层）：
 #: **盖满视口的同意弹层** —— 上面那条「同意条」是**按容器身份**认的（`cookie|consent|gdpr|privacy`），
@@ -1212,7 +1289,7 @@ PROVENANCE = { 'generated_at': '2026-09-17T02:00:00+08:00',
 #: （实测代价：重渲一版 travelandleisure 一口气多带了 8 个方法）。
 #: 拿它跟当前骨架的 `template.SKELETON_SHA` 一比，`skeleton_drift()` 就答得出「落后多少」。
 #: ⚠️ 它是**骨架**的指纹（这份文件），不是产物的 —— 站点数据（STATES/FILLS）不算骨架。
-SKELETON_SHA = "f41404fe9d4923fd"
+SKELETON_SHA = "e6f7e8fb9e8410eb"
 
 
 def _site_country():
@@ -1612,6 +1689,18 @@ def _label(target, step=None):
     return "没写名字的元素"
 
 
+def _landing_state_say(state):
+    """`_LANDING_STATE_JS` 的答复 → 一句人话（等的时候 / 等超了的时候说给人听）。"""
+    if not isinstance(state, dict):
+        return "读不出来"
+    if state.get("shell"):
+        return "还是一个验证页 / 加载页"
+    if str(state.get("rs") or "") != "complete":
+        return "还在加载（readyState=%s）" % (state.get("rs") or "?")
+    return "页面上还没有能点的东西（可见链接 %s / 控件 %s / 正文 %s 字）" % (
+        state.get("links"), state.get("fields"), state.get("len"))
+
+
 def _landing_say(output):
     """这条 cdp 回执里关于**落点判据**的那件事（没有就返回空串）。
 
@@ -1719,6 +1808,9 @@ _COVER_JS = ("var all=document.getElementsByTagName('*'), el=null;for(var "
  "pe='';try{pe=getComputedStyle(h).pointerEvents||'';}catch(e){}if(pe==='none') "
  "continue;if(h===el||el.contains(h)||h.contains(el)) return '';var "
  'labs=(el.labels||[]);for(var j=0;j<labs.length;j++){if(labs[j]===h||labs[j].contains(h)) '
+ "return '';}var htag=String(h.tagName||'').toUpperCase(), "
+ "etag=String(el.tagName||'').toUpperCase();if(htag==='LABEL'&&etag==='SELECT'){var "
+ "hcls=String(h.className||'').toLowerCase();if(hcls.indexOf('select')>=0||hcls.indexOf('dropdown')>=0) "
  "return '';}return "
  "'COVER|'+(h.tagName||'').toLowerCase()+(h.id?('#'+h.id):'')+'.'+String(h.className||'').split(' "
  "')[0];}return '';")
@@ -2639,12 +2731,20 @@ class Filler:
         if key in self._rule_values:
             self._value_from = "规则「%s」现编（同一趟同值）" % rule
             return self._rule_values[key]
-        if rule == "phone_prefix":
+        if rule == "phone_exact":
+            #: 人点名的整号：**原样用**（不编、不补位、不换国家码）。
+            value = str(fill.get("value") or "").strip()
+            self._value_from = "人给的那个号（原样用）"
+        elif rule == "phone_prefix":
             prefixes = [str(x).strip() for x in (fill.get("prefixes") or [])
                         if str(x).strip()]
             prefix = random.choice(prefixes) if prefixes else "04"
             value = prefix + "".join(str(random.randint(0, 9))
                                      for _ in range(max(0, 10 - len(prefix))))
+            #: 10 位北美号：交换局首位不许 0/1（否则站方按 US 校验直接拒）。
+            if (len(prefix) <= 3 and not prefix.startswith("0")
+                    and len(value) == 10 and value[3] in "01"):
+                value = value[:3] + str(random.randint(2, 9)) + value[4:]
             self._value_from = "规则「手机号 %s」现编" % ("/".join(prefixes) or prefix)
         elif rule == "dob_random":
             fmt = str(fill.get("date_format") or "DD/MM/YYYY")
@@ -3060,6 +3160,94 @@ class Filler:
                       self.cid, limit)
         return False
 
+    #: 「这一页真的出来了没有」那个探针（**读**，不动页面）。答复是一段 JSON：
+    #: `rs` = `document.readyState`；`shell` = 标题还是验证/加载页那一族；
+    #: `links`/`fields`/`len` = 页面上真有多少能点的东西（可见链接 / 表单控件 / 正文字数）。
+    #: ⚠️ 这是**函数体**（`_ev` 会把它包进 `(function(){…})()`）—— **必须带 `return`**，
+    #: 自执行的那种 `(function(){…})()` **不带 return**，包一层之后回 undefined（2026-10-24
+    #: 真站实测：等落地页那一笔因此从来没生效，页面还是空壳就开点了）。
+    #: ⚠️ 注释里的 `sfLanding` 是**测试替身的认人标记**（与 `sfMatches` / `sfModalHolds`
+    #: 同一条规矩）—— 改名字要同步改 `tests/test_template.py` 的替身分支。
+    _LANDING_STATE_JS = (
+        "/* sfLanding */"
+        "var t=(document.title||'').toLowerCase();"
+        "var txt=document.body?(document.body.innerText||''):'';"
+        "var links=0,as=document.querySelectorAll('a');"
+        "for(var i=0;i<as.length;i++){var r=as[i].getBoundingClientRect();"
+        "if(r.width>0&&r.height>0)links++;}"
+        "var fields=document.querySelectorAll('input,textarea,select').length;"
+        "var shell=/just a moment|attention required|checking your browser|"
+        "verify you are human|simple page|请稍候|正在加载/.test(t);"
+        "return JSON.stringify({rs:document.readyState,shell:shell,"
+        "links:links,fields:fields,len:txt.length});"
+    )
+
+    def _wait_landing_ready(self, why=""):
+        """等这一页**真的**出来再开跑：空壳 / 验证页 / 还没加载完 —— 最多 `LANDING_WAIT_SECONDS` 秒。
+
+        ★ 2026-10-24（真站实测，单号 26789988，southernliving.com）：广告落地页在冷缓存下
+        **先给一个空壳**（标题 `Simple Page`、0 个可见链接），随后可能再过一道 Cloudflare 的
+        「Just a moment...」，真页面 15~20 秒后才出来。生产重跑**不 observe**，回退链救不了
+        「点得太早」：第 1 步的选择器在空壳上必然找不到 ⇒ 整趟 `no_success`；而 30 秒后
+        ad-task 抓的现场截图，页面是**好的** —— 照片里 SUBSCRIBE 就在页头。
+
+        判据（三条**同时**成立才叫出来了）：
+          ① `readyState === 'complete'`；
+          ② 标题不是验证/加载页那一族（`Just a moment...` / `Simple Page` / …）；
+          ③ 页面上有真东西（可见链接 / 表单控件 / 正文 ≥ 20 字）。
+
+        ⚠️ 读不出来（cdp 老 / eval 炸 / 答复不是 JSON）⇒ **不等**、照旧往下走：
+        「量不到」不许变成新的失败点，也不许因此白等一分钟。
+        ⚠️ 等超了也只是**说一句**再往下走 —— 这一笔不许把整趟判死（下一句就是真动作）。
+        """
+        if getattr(self, "cdp", None) is None:
+            return True
+        try:
+            limit = float(LANDING_WAIT_SECONDS)
+        except (TypeError, ValueError):
+            return True
+        if limit <= 0:
+            return True
+        started = time.time()
+        deadline = started + limit
+        told = False
+        while True:
+            state = None
+            try:
+                raw = self._ev(self._LANDING_STATE_JS)
+                if isinstance(raw, str) and raw.strip():
+                    state = json.loads(raw)
+            except (TypeError, ValueError):
+                state = None
+            except Exception:                          # noqa: BLE001 —— 读页面炸了也不许带塌主路
+                state = None
+            if not isinstance(state, dict):
+                return True                            # 量不到 ⇒ 不等
+            try:
+                ready = (str(state.get("rs") or "") == "complete"
+                         and not state.get("shell")
+                         and (int(state.get("links") or 0) > 0
+                              or int(state.get("fields") or 0) > 0
+                              or int(state.get("len") or 0) >= 20))
+            except (TypeError, ValueError):
+                return True
+            if ready:
+                waited = time.time() - started
+                if waited >= 1.0:
+                    self.log.info("[%s] 落地页等了 %.0f 秒才真的出来%s —— 继续",
+                                  self.cid, waited, ("（%s）" % why) if why else "")
+                return True
+            if time.time() >= deadline:
+                self.log.warning("[%s] 落地页 %.0f 秒还没真的出来（%s）—— 照旧往下走，"
+                                 "下一步多半会失败", self.cid, limit,
+                                 _landing_state_say(state))
+                return False
+            if not told and time.time() - started >= 3.0:
+                self.log.info("[%s] 落地页还没出来（%s）—— 等它，最多 %.0f 秒",
+                              self.cid, _landing_state_say(state), limit)
+                told = True
+            time.sleep(LANDING_POLL_SECONDS)
+
     def _popup_row(self, ok, why):
         """弹层这一下**如实**落一行 trace（`ok`：True = 关掉了 / False = 它还在 / None = 这一次没量到）。
 
@@ -3110,9 +3298,28 @@ class Filler:
         except Exception:                                  # noqa: BLE001 —— 外面世界
             return None
 
-    def _clear_obstructions(self, why=""):
+    def _modal_holds_target(self, target):
+        """这一步要点的东西**就在这个模态里**吗（真事 firstday：购物车抽屉里的 CHECKOUT+）。
+
+        读不出来 / 没给目标 ⇒ False（照旧清弹层）—— 这道判断只负责「别把流程本身点掉」，
+        **不许**自己变成新的失败点（与弹层那一族人同一条口径）。
+        """
+        try:
+            raw = str(self._ev(_modal_holds_target_js(target)) or "").strip()
+        except Exception:                                  # noqa: BLE001 —— 外面世界
+            return False
+        return raw.startswith("1|")
+
+    def _clear_obstructions(self, why="", target=None):
         """开跑（以及每次导航之后）把**挡路的弹层**点掉：问一遍钩子表（`_POPUP_HOOKS`），
         谁先答应就点谁（今天：同意条 → 盖住整页的模态）。要加一类弹窗，**改表**，不改这里。
+
+        ★ 2026-10-23（真事 firstday.com · `job-863ba9a731d7`）：`target` 给了的时候，
+        答「盖住整页的模态」的那一行**还要再问一句**：这一步要点的东西是不是**就在这个
+        模态里**（`_modal_holds_target`）？是 ⇒ **不点关**（那不是遮挡，是流程本身 ——
+        点掉它等于把这一步自己删掉）。购物车抽屉就是这样：`role=dialog` + 盖满视口 +
+        `Close shopping cart`，而下一步要点的 `CHECKOUT+` 在抽屉里。
+        没给 `target`（开跑前 / 导航后那两处）⇒ 照旧。
 
         为什么要产物自带（2026-09-17 真站实测，链条闭合）：生产**每一单都是新窗口**、
         每次都清 cookie —— 所以**每单都会遇到同意弹层**；而探索那一趟跑在一个「弹层已经
@@ -3167,6 +3374,18 @@ class Filler:
                                           "（这一次没量到覆盖现场），不当成做成" % raw[:40])
                 return
             who, how, text = parts
+            if target and who == _MODAL_HOOK_NAME and self._modal_holds_target(target):
+                #: ★ 2026-10-23（真事 firstday.com · `job-863ba9a731d7`）：这一步要点的
+                #: 东西**就在这个模态里** —— 它不是遮挡，是流程本身。点掉它 = 把这一步
+                #: 删掉，下一步只会得到一句「页面上没找到 CHECKOUT+」。
+                #: ⚠️ 只挡「盖住整页的模态」这一行：同意层照旧先做决定（它里面不会有
+                #: 下一步要点的东西），别的钩子也不受影响。
+                name = _label(target)
+                self.log.info("[%s] 认出了「%s」（%s）—— 但这一步要点的「%s」**就在它里面**："
+                              "点掉它等于把这一步自己删掉，不点", self.cid, who, how, name)
+                self._popup_row(None, "「%s」里有这一步要点的「%s」—— 不当遮挡点掉"
+                                      "（点了它这一步就没了）" % (who, name))
+                return
             if _popup_report_only(who):
                 #: ★ 2026-10-17（终审 C2 · Ruling 30）：这一行**只报不点** —— 探针照认
                 #: （「认得出哪一颗」这一半归探针与合成页矩阵），但**不动手**。
@@ -3720,7 +3939,7 @@ class Filler:
         # ⚠️ 位置特意选在**整页就绪之后**：早于它就等于在弹层还没渲染出来时问「有没有弹层」；
         #    也特意选在遮挡预算之前 —— 先把弹层清掉，`_covered_by` 才不必为它白等一轮。
         # ⚠️ 它**永不算失败**（清不掉也照走这一步自己的判据），见 `_clear_obstructions`。
-        self._clear_obstructions(why="这一步动手之前")
+        self._clear_obstructions(why="这一步动手之前", target=target)
 
         value, kind = None, "value"
         if action == "form":
@@ -4346,6 +4565,10 @@ class Filler:
                 # 这次调试要用到的 cdp 能力，缺了先**说清**（重跑路径上不探：§13）
                 self._check_capabilities()
 
+        # ★ 2026-10-24：**先等这一页真的出来**（广告落地页常常先给一个空壳 / 验证页 ——
+        # 生产重跑没有 observe 兜底，点得太早就是整趟 `no_success`；见 `_wait_landing_ready`）。
+        self._wait_landing_ready()
+
         # 开跑之前先看有没有**挡路的同意弹层**并点掉（见 _clear_obstructions 的 docstring：
         # 生产每单都是新窗口 → 每单都会遇到它，而账本里通常没有这一步）。
         self._clear_obstructions()
@@ -4452,7 +4675,9 @@ class Filler:
                         #    「还没加载完」读成「这一页不像那个状态」，整组步骤静默跳过
                         #    （真站实测：33 步里 32 步这么没的）。
                         # ② 换页也是**同意弹层会出现**的时刻，再看一眼弹层。
+                        # ③ 与开跑那一次同一条：新落地页也可能先给空壳 / 验证页。
                         self._wait_ready()
+                        self._wait_landing_ready(why="这一次导航")
                         self._clear_obstructions(why="这一次导航")
                     ok, progress = self._run_step(index, step)
                     #: 记下来：判据一旦不成立，要复核的就是**这一下**（§8）——

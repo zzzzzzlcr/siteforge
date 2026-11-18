@@ -106,6 +106,8 @@ FAMILY_SAY = {
     "deliver_lint": "交付前自检没过",
     "repair_stuck": "同一处修不动（图自己停的）",
     "repair_noop": "改稿那双手一处都没改",
+    "protocol_failed": "模型回话不合约定（协议失败）",
+    "evidence_defect": "证据不足（探路/页面感知给不出可核对的卡）",
     "missing_knob": "缺一根线",
 }
 

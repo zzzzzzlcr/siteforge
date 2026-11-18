@@ -215,7 +215,7 @@ def test_the_whole_diagnosis_goes_into_the_prompt_not_just_one_sentence():
     而 `states_user` 那一侧本来就写着「诊断**逐字**贴进去」：只递一句话，
     那条规矩等于空转，改稿那双手看得见「卡在第 6 步」、看不见「这一步真用的是哪条选择器」。
     """
-    diag = {"run": "baseline", "failed_step": 6,
+    diag = {"run": "baseline", "failed_step": 6, "family": "selector",
             "say": "第 1 遍挂了：卡在第 6 步 —— 页面没动",
             "note": "填好了「E-mail」；页面没有变化",
             "submissions": 2,
@@ -236,7 +236,23 @@ def test_the_whole_diagnosis_goes_into_the_prompt_not_just_one_sentence():
     text = fix.states_user({"site": "s", "states": [], "fills": {}}, diagnosis=block)
     assert block in text, text
     assert "## 上一版自测没过：诊断（逐字）" in text, text
+    assert "失败族" in block and "selector" in block, block
 
+
+def test_the_failure_family_becomes_a_repair_direction():
+    """★ 2026-10-30：族不能只在停住时说人话 —— 改稿那一步要拿到**怎么改**。
+
+    弹层族：先修前提层（关掉并复查），不要只改失败步的选择器。
+    """
+    block = fix.diagnosis_for_prompt({"say": "卡住了", "note": "nothing actionable",
+                                      "family": "overlay",
+                                      "现场": {"盖在上面的是什么": "div.fides-modal-overlay"}})
+    assert "失败族" in block and "overlay" in block, block
+    assert "先修前提层" in block and "复查它真的没了" in block, block
+
+
+    block = fix.diagnosis_for_prompt({"say": "等超时了", "family": "timing"})
+    assert "busy_timeout" in block and "不要改选择器" in block, block
 
 def test_an_empty_diagnosis_contributes_nothing_at_all():
     """**负控**：空诊断 ⇒ 空串 —— `states_user` 见到空串**就不摆那一段**。
@@ -249,6 +265,28 @@ def test_an_empty_diagnosis_contributes_nothing_at_all():
     text = fix.states_user({"site": "s", "states": [], "fills": {}},
                            diagnosis=fix.diagnosis_for_prompt({}))
     assert "上一版自测没过" not in text, text
+
+
+def test_a_verified_repair_case_goes_into_the_prompt_as_reference_only():
+    """★ 2026-11-03（用户裁定「结构化经验沉淀」）：同指纹的历史成功修法可以进提示词，
+    但**只能当参考** —— 站点/版本/锚点都可能不同，绝不许当成能直接套的补丁。
+    """
+    case = {"site": "other-site", "family": "selector",
+            "note": "把「prefix」那格从 label 改成原生 select",
+            "at": "2026-11-03T00:00:00+00:00",
+            "changed_scope": {"state": "form-2", "index": 3, "global": 8},
+            "before_sha256": "a" * 64, "after_sha256": "b" * 64,
+            "diff": "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new"}
+    text = fix.states_user({"site": "s", "states": [], "fills": {}}, cases=[case])
+    assert "同指纹的历史成功修法" in text
+    assert "只能当参考" in text or "**参考**" in text
+    assert "不适用就忽略" in text
+    assert "+new" in text and "form-2" in text
+    #: 老写法那条路也要有（修站不只有账本那一族）。
+    legacy = fix.patch_user("print(1)\n", cases=[case])
+    assert "同指纹的历史成功修法" in legacy and "+new" in legacy
+    #: 负控：没有案例就不许摆一个空标题出来（那看起来像「查到过、但是空的」）。
+    assert "同指纹" not in fix.states_user({"site": "s", "states": [], "fills": {}})
 
 
 # ── ★ 2026-10-14：「读到了却丢掉」那一族 ────────────────────────────────
@@ -693,3 +731,21 @@ def test_the_input_tables_are_not_mutated():
     before = copy.deepcopy(live)
     fix.anchors_from_observed(live, {}, _OBS)
     assert live == before
+
+
+def test_a_loop_draft_keeps_its_pick_hints_when_read_back():
+    """★ 2026-10-24（Atticus）：`PICK_HINTS` 也是**这一份现在的行为**，修站要能带过去。
+
+    少了它，修一版就会把「优先答本人申请」丢掉 —— 而那一格正是躲开
+    「Relationship to applicant」那道必填下拉的唯一依据（线上 26807011 / 26807496 两条）。
+    """
+    src = LOOP_SRC + 'PICK_HINTS = ["Myself", "I\'m the applicant"]\n'
+    spec = fix.loop_spec_from_source(src)
+    assert spec is not None
+    assert spec["pick_hints"] == ["Myself", "I'm the applicant"], spec.get("pick_hints")
+
+
+def test_a_draft_without_pick_hints_does_not_get_an_invented_one():
+    """**负控**：没写这一格 ⇒ 表里**不许有**这个键（没读到 ≠ 读到空表）。"""
+    spec = fix.loop_spec_from_source(LOOP_SRC)
+    assert spec is not None and "pick_hints" not in spec, spec

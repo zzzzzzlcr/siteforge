@@ -82,14 +82,15 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from langgraph.types import Command
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
-from agent import (browser_agent, configcheck, events, fix, fmr, graph, journal, jsondiag,
-                   jsonwrite, llm, manual, measure, pywrite, rounds, rules as rules_mod,
-                   selftest, shots, steps, template, tools)
-from agent.graph import NODES, STEP_SAY
+from agent import (browser_agent, classify, configcheck, events, fix, fmr, graph, journal,
+                   jsondiag, jsonwrite, llm, manual, measure, pywrite, rounds,
+                   rules as rules_mod, selftest, shots, steps, template, tools)
+from agent.graph import NODES, STEP_SAY, repair_next_step_say
 from agent.state import (END_DELIVERED, END_DRAFT_FAILED, END_EXPLORE_UNFINISHED,
                          END_HUMAN_STOP, END_LINT_CAP,
-                         END_NO_WINDOW, END_PAUSED, END_REVISION_CAP,
-                         END_SELFTEST_CAP, END_WINDOW_GONE, MODE_FIX)
+                         END_NO_WINDOW, END_PAUSED, END_PROTOCOL_FAILED,
+                         END_EVIDENCE_DEFECT, END_REPAIR_NOOP, END_REPAIR_STUCK,
+                         END_REVISION_CAP, END_SELFTEST_CAP, END_WINDOW_GONE, MODE_FIX)
 
 __all__ = ["create_app", "app", "BitWindow", "Service", "Checkpointer",
            "QUEUED", "RUNNING", "WAITING", "DONE", "FAILED"]
@@ -503,6 +504,26 @@ RANK_PATH = "/rank"
 #: 一单的原因那一跳（`{单号}` 是路径上那一格）。
 DIAG_PATH = "/diag/%s"
 
+# ── 约会站识别（2026-10-29）──────────────────────────────────────────────
+#: 只读识别那一跳。结构上**没有** `apply` 参数 —— 写后端是下面另一跳（`/classify/link`）。
+CLASSIFY_PATH = "/classify"
+#: 识别 + 关联那一跳（等价 CLI 的 `--apply`：写完**回读**，不拿回执当结论）。
+CLASSIFY_LINK_PATH = "/classify/link"
+#: 识别要开一个**干净窗口**（与 run 同一条路），而这个部署只有**一个**窗口 ⇒ 单飞：
+#: 有 run 正在用、或者队列里还压着活，就**不抢**（409 + 这句原话）。
+CLASSIFY_WINDOW_BUSY_SAY = ("窗口正被「%s」用着 —— 这一趟还没完，识别先等它"
+                            "（单飞：一次只做一件事）。")
+#: 识别自己占着窗口时，人又要开跑：同样是 409（不抢、也不排队等 60 秒）。
+CLASSIFY_RUN_BUSY_SAY = ("正在识别（它占着那个窗口）—— 等识别完再开这一趟"
+                         "（单飞：一次只做一件事）。")
+CLASSIFY_NO_WINDOW_SAY = ("这个部署没接窗口层（`BIT_WORKER_IP`/`BIT_ID`），识别开不了窗口 —— "
+                          "要么把窗口层接上，要么在请求里带一个 `ws_url`。")
+CLASSIFY_NO_URL_SAY = "还没说识别哪个站点：`url`。"
+CLASSIFY_NO_OPERATOR_SAY = "关联要说是谁点的：`operator`。"
+CLASSIFY_OPEN_FAILED_SAY = "识别要的干净窗口没开出来：%s"
+CLASSIFY_LIVE_FAILED_SAY = "识别没走完（窗口/导航/页面）：%s"
+CLASSIFY_UNMEASURED_SAY = "识别量不到（后端那份站点清单读不回来）：%s"
+
 
 def _auto_mark_for(jobs: list, site: str) -> str:
     """★ T6 打标（2026-09-24）：这一串**是不是正等着人** ⇒ 那句话；不是 ⇒ 空串。
@@ -521,6 +542,71 @@ def _auto_mark_for(jobs: list, site: str) -> str:
             return "自动值班在这一串上**停下来了**，等人看：%s" % (
                 str(getattr(j, "auto_why", "") or "它没说为什么"))
     return ""
+
+
+# ── ★ 2026-11-05：本机修过没有（面板上要标出来，不然运营会把同一单再修一遍）──────
+#: 修过哪几单的**本机账**（落盘，重启不丢）。键 = FMR 站点键；值 = 那一趟的结局。
+#: ⚠️ 它是**本机账**，不是后端账：上传成没成另有一格（`uploaded`）。
+REPAIRS_FILE = "repairs.json"
+_REPAIR_TASK = re.compile(r"FMR\s*单\s*(\d+)")
+
+
+def repairs_path(out_dir) -> pathlib.Path:
+    """修复账落在 `out_dir` 的**上一层**（与 `sites/` 并排，不进产物目录）。"""
+    return pathlib.Path(str(out_dir)).parent / REPAIRS_FILE
+
+
+def read_repairs(out_dir) -> dict:
+    """读那份账。**读不回来 ⇒ 空表**（它是显示用的补注，坏掉不许带塌榜单/失败列表）。"""
+    try:
+        raw = json.loads(repairs_path(out_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def write_repairs(out_dir, book: dict) -> None:
+    """原子写（先 `.tmp` 再 `replace`）—— 读到半截账本那种事不会发生。"""
+    path = repairs_path(out_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(book, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def repair_task_of(evidence) -> str:
+    """证据里那句 `FMR 单 <号>` 的单号（没有 ⇒ 空串，不猜）。"""
+    hit = _REPAIR_TASK.search(str(evidence or ""))
+    return hit.group(1) if hit else ""
+
+
+def repaired_say(entry: dict, *, key: str, same_key: bool) -> str:
+    """一行「本机修过」的人话（页面照抄，不自己判断）。"""
+    entry = entry if isinstance(entry, dict) else {}
+    at = str(entry.get("at") or "")
+    when = (at[:16].replace("T", " ") if at else "时间没记")
+    said = ("%s：`%s` —— `%s`（delivered，%s）"
+            % ("本机**已修过这一串**" if same_key else "本机修过**同域的另一页**",
+               key, str(entry.get("job_id") or "job 没记"), when))
+    if entry.get("uploaded"):
+        return said + "，**已上传**（%s，%s）。" % (
+            str(entry.get("uploaded_by") or "上传人没记"),
+            str(entry.get("uploaded_at") or "时间没记")[:16].replace("T", " "))
+    return said + "。**还没上传** —— 要上线去那一趟按「预检上传」。"
+
+
+def _failure_row(row: dict, book: dict) -> dict:
+    """一条失败单 + （本机修过的话）那一句标注。"""
+    tid = str(row.get("task_id") or "")
+    said = ""
+    if tid:
+        for key, ent in (book or {}).items():
+            if isinstance(ent, dict) and str(ent.get("task_id") or "") == tid:
+                said = repaired_say(ent, key=str(key), same_key=True)
+                break
+    return {"task_id": tid, "say": fmr.failure_say(row), "repaired_say": said}
+
+
 #: 「这份 JSON 配置差在哪一格」那一跳（Task B2/B3）。
 #: ⚠️ 站点键走**查询参数**、不走路径：真键长这样 `www.gowizard.com/auto-warranty/`
 #: —— 带斜杠，塞进路径会被切成好几段（`/diag` 那边没这问题，它走的是单号）。
@@ -568,6 +654,13 @@ def _read_exit_country(runner: Callable) -> str:
 #: 只读口 —— 面板那一栏照它说话（页面只搬字）；值班那套的判据全在 `agent/auto.py` 里。
 from agent import auto as auto_mod  # noqa: E402
 from agent.auto import AUTO_PATH  # noqa: E402
+from agent import night as night_mod  # noqa: E402
+
+#: ★ 2026-10-29：夜间批量（面板排单 / 看账单）。队列与账单都在 `runtime/auto/night/`
+#: （宿主脚本 `tools/night-shift.py` 读的**同一份**文件；cron 触发，服务不自己跑）。
+NIGHT_PATH = "/night"
+NIGHT_ORDER_PATH = "/night/order"
+NIGHT_REMOVE_PATH = "/night/remove"
 
 
 def _backend_key(url: Any, fix_site: Any, fix_site_url: Any) -> str:
@@ -616,20 +709,28 @@ def _artifact_say(values: dict, state: dict) -> str:
     #: ★ 2026-09-28（用户点名「上传别只认交付过那一趟」）：这一趟**没走到交付、但确实写下了
     #: 一版**时，光说「没有可交付的产物」等于把人堵死 —— 把**出路**一起说清（勾「照样传」）。
     #: ⚠️ 这一句放在**这一处**（两处出口共用同一拼法），别在 `_artifact_state` 里再来一遍。
-    way = ((
+    if _recorded_bytes(values) is None:
+        way = ""
+    elif str((values or {}).get("end_reason") or ""):
+        #: ★ 2026-11-05（8100 实测 `job-94382eaa290a`）：这一趟**已经到头**，「先按继续」
+        #: 那条路**不在**（终态 `/reply` 回 409）。只留真能按的两条：照样传 / 重新来一遍。
+        way = ("（这一趟**确实写下了这一版**，但它**已经到头了** —— 「先按「继续」验完」"
+               "那条路**不在**。要现在就拿走：把「照样传这一版」勾上、填「谁确认的」，"
+               "再按「预检上传」—— 传上去的是**没验过**的这一版。要它再验一遍 / 再改，"
+               "按「重新来一遍」。）")
+    else:
         #: ★ 2026-10-10（用户：「反馈回的信息不足，运营压根不知道要咋操作」）：
         #: 这一句原先只到「就能拿它上传 —— **那是你自己的判断，服务不替你做**」就完了。
         #: **它把决定推给运营，却没给他做决定要的那件东西**：他面前摆着两条路
         #: （按「继续」往下走 / 现在就传），而**哪条稳、各要付什么**一句没说 ⇒
         #: 只能卡在那儿回来找人。这两条路系统**自己就是这么设计的**，它全知道 ——
         #: 差的只是把它说出来。**「你自己判断」不带料 = 把人堵死**（与 §6.4 那张清单同一条）。
-        "（这一趟**确实写下了这一版**。两条路，你挑一条：\n"
-        "  · **先按「继续」** —— 让它把这一版验完。验过了它会自己走到「写出去」那一步，"
-        "到时候这一栏就能下载、也能上传，传上去的是**验过的**那一版（稳）。\n"
-        "  · **现在就要** —— 把「照样传这一版」勾上、填「谁确认的」，再按「预检上传」。"
-        "传上去的是**没验过**的这一版，而且它接着往前走**还会被改**。\n"
-        "  两条路只差一件事：**传的那一版验过没有**。）")
-    ) if _recorded_bytes(values) is not None else ""
+        way = ("（这一趟**确实写下了这一版**。两条路，你挑一条：\n"
+               "  · **先按「继续」** —— 让它把这一版验完。验过了它会自己走到「写出去」那一步，"
+               "到时候这一栏就能下载、也能上传，传上去的是**验过的**那一版（稳）。\n"
+               "  · **现在就要** —— 把「照样传这一版」勾上、填「谁确认的」，再按「预检上传」。"
+               "传上去的是**没验过**的这一版，而且它接着往前走**还会被改**。\n"
+               "  两条路只差一件事：**传的那一版验过没有**。）")
     head = ("%s\n%s" % (why, state["say"])) if why else state["say"]
     return ("%s\n%s" % (head, way)) if way else head
 
@@ -691,6 +792,33 @@ def _no_py_say(values: dict) -> str:
     两句一起摆在产物那一块里 —— 它们的拼法只有 `_artifact_say` 一处。
     """
     reason = str((values or {}).get("end_reason") or "")
+    if reason == END_PROTOCOL_FAILED:
+        head = ("**这一版 py 留下了，但没有交付**：" if _kept_a_version(values)
+                else "**为什么没有 py**：")
+        return (head + "模型回话**不合约定**（协议失败：JSON / 字段 / 类型 / 枚举 / "
+                "`note` 里有错）—— 这一版**没有进入 lint / 自测**。逐条原因写在它自己那句话里；"
+                "下一步：先按错误改提示词/解析器，再重来一次"
+                "（不要按「改稿判断错」去重探）。")
+    if reason == END_EVIDENCE_DEFECT:
+        head = ("**这一版 py 留下了，但没有交付**：" if _kept_a_version(values)
+                else "**为什么没有 py**：")
+        return (head + "这一步的失败是**证据不足/不可核对**（探路、页面感知或诊断卡"
+                "给不出稳定身份）—— **不是模型判断错**；再改 Draft Prompt 只会换措辞。"
+                "下一步：按「重新来一遍」补探路，或在新一趟的**第一道闸**上说一句"
+                "「这一步该认哪个元素 / 缺了什么证据」。")
+    if reason in (END_REPAIR_NOOP, END_REPAIR_STUCK):
+        #: ★ 2026-11-05：这两个终局**不是「没产出」**（盘上那一版是留下的），但只摆
+        #: 「留下了」也不够 —— 这一趟已经到头，「说一句」不收；下一步必须说**按哪个按钮**、
+        #: 在**哪儿**说。族 → 出路只有一份（`graph.repair_next_step_say`），别在这儿另拼。
+        head = ("**这一版 py 留下了，但没有交付**：" if _kept_a_version(values)
+                else "**为什么没有 py**：")
+        why = ("改稿那双手**交回的是同一份**（一处都没改）—— 再叫一次也一样。"
+               if reason == END_REPAIR_NOOP else
+               "**同一处连着两次一模一样** —— 再写一版只会撞同一堵墙。")
+        return head + why + "\n" + repair_next_step_say(
+            str((values or {}).get("repair_family") or ""),
+            (values or {}).get("repair_step"),
+            str((values or {}).get("repair_note") or ""))
     if _kept_a_version(values):
         if not reason:
             #: ★ 2026-10-09（闸前留料）：**还没结束**时就留了料。这一支比下面那句还要早一层 ——
@@ -748,6 +876,31 @@ def _form_data_keys(form_file) -> list:
     if not isinstance(got, dict):
         return []
     return [str(k) for k in got if str(k or "").strip()]
+
+
+def _form_data_phone(form_file) -> str:
+    """资料里人给的那个电话（`phone` / `phone_number` / `tel` …）；没有 = 空串。
+
+    探路那一趟也要用它 —— 否则窗口里填的是随机池，而最后脚本填的是人给的号，
+    人看到的就是「不按我给的数据输」。
+    """
+    path = str(form_file or "").strip()
+    if not path:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            got = json.load(fh)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(got, dict):
+        return ""
+    for key in ("phone", "phone_number", "tel", "telephone", "mobile", "phone1"):
+        if got.get(key) not in (None, ""):
+            try:
+                return rules_mod._phone_exact(got[key])
+            except rules_mod.RuleError:
+                return ""
+    return ""
 
 
 #: ★ 2026-09-30（用户裁定「IR 必须先证明完整」）：**卡在第几层** —— `ir_layer` 那格是机器名
@@ -888,6 +1041,23 @@ def _failures_say(site: str, since: str, rows: list, limit: int) -> str:
         return said
     return ("这个站从 %s 起**没有**失败的记录 —— 这是**量到的**结果（不是「没量着」）。"
             % when)
+
+
+def _siblings_say(empty: list, failed: list) -> str:
+    """「同域别的键也试过」那一句 —— 试过什么、各是什么结果，**一条都不省**。
+
+    ★ 2026-11-05：排行榜的键在后端被删掉时，修复按钮要按同域的其它 full-path 键再搜。
+    搜完仍然没有 ⇒ **仍然是「量不到」**（不是「没有失败」），所以这句话挂在错误正文里。
+    """
+    bits = []
+    if empty:
+        bits.append("读到了 0 条：%s" % "、".join("`%s`" % k for k in empty))
+    if failed:
+        bits.append("读不到：%s" % "、".join("`%s`" % k for k in failed))
+    if not bits:
+        return "\n（同一个域名下、后端配置表里没有别的 full-path 键可以再试。）"
+    return ("\n（同一个域名下这些键也挨个试过了 —— %s。所以这一条仍然是「量不到」，"
+            "不是「没有失败」。）" % "；".join(bits))
 
 
 def _configcheck_say(errors: list, notes: list) -> str:
@@ -2046,6 +2216,44 @@ class _Intake(BaseModel):
         return tuple(self._unwritable_items.get(field) or ())
 
 
+def _success_urls_text(value) -> str:
+    """`success_urls` 那一格 → 内部那一格（**一行一条**；列表形状也收）。
+
+    ★ 2026-10-22（用户裁定「不合资格也算成功」）：Atticus 那种问卷**两种结局都算成功**
+    （合格屏 + 拒绝屏），而面板只有一格 ⇒ 人在里面一行写一条。
+    ⚠️ 内部仍然只传**一个字符串**：图/产物两侧都用 `browser_agent.wanted_urls` 解析
+    （它按换行拆）—— 不在这里换第二套形状，免得两处判据漂。
+    """
+    words = [value] if isinstance(value, str) else list(value or [])
+    out: list = []
+    for word in words:
+        for line in str(word or "").splitlines():
+            got = line.strip()
+            if got:
+                out.append(got)
+    return "\n".join(out)
+
+
+class ClassifyRequest(_Intake):
+    """`POST /classify`：只读识别（`apply` 这一格**故意没有**）。
+
+    ⚠️ 继承 `_Intake`：外面来的 `url` / `ws_url` 也走那台消毒机（坏字节换掉 + 数出来）——
+    不然它一路进 `run_classify` / 响应，最后在 `.encode("utf-8")` 那一下把整条打挂。
+    """
+
+    url: str = Field("", description="要识别的约会站那一页")
+    #: 不给就由服务开一个干净窗口（`fresh_open`，与 run 同一条路）。
+    ws_url: str = Field("", description="已有的窗口（可空 = 服务自己开）")
+    #: 同族有多个版本时（japansdates 的 101/55/127），人指定挂哪一个。
+    config_id: Optional[int] = Field(None, description="指定的 config（可空 = 按锚点站解析）")
+
+
+class ClassifyLinkRequest(ClassifyRequest):
+    """`POST /classify/link`：识别 + 关联（等价 CLI 的 `--apply`）。"""
+
+    operator: str = Field("", description="谁点的（写进后端审计；必填）")
+
+
 class RunRequest(_Intake):
     """`POST /run` 的载荷 —— 等于图的开场白（`state.SiteState` 的前几项）。
 
@@ -2073,11 +2281,18 @@ class RunRequest(_Intake):
     #: 走通之后**网址**里会出现哪一截（`/wizard` 那种）。老脚本本来就常这么判
     #: （`japansdates` / `warthunder`），而正文那格**接不住**它 —— 网址那一截不在正文里。
     #: ⚠️ 载荷里通常是一格字符串（面板一格）；底稿搬过来的那种可能是**列表**（见 `_stage_fix_source`）。
-    success_urls: str = Field("", description="成功判据（网址那格）：走通之后网址里会出现哪一截")
+    #: ★ 2026-10-22（用户裁定「不合资格也算成功」）：一格字符串里可以**一行一条** ——
+    #: 合格屏与拒绝屏同时算成功时，两条判据都要进产物。列表形状也收（见 `_success_urls_text`）。
+    success_urls: str | list[str] = Field(
+        "", description="成功判据（网址那格）：走通之后网址里会出现哪一截；一行一条可写多条")
     #: ★ 2026-09-24：**这一趟是自动那条路开的**（值班脚本开的）⇒ 服务到闸替人按「继续」。
     #: ⚠️ 它**不改图**：闸照旧 `interrupt()`，是**服务**去按（图的契约一个字不动）。
     auto: bool = False
     evidence: str = Field("", description="fix 模式：失败证据的引用（FMR formLog / formStep）")
+    #: ★ 2026-10-30：后端原因行里那格 `fail_img`（失败截图的 OSS 地址）。
+    #: 值班脚本读榜单时顺手带过来；没有就是空表（改稿照旧走文字证据）。
+    evidence_images: list[str] = Field(
+        default_factory=list, description="fix 模式：失败截图地址（后端 fail_img）")
     site: str = Field("", description="站点短名（不给就从 URL 推）")
     fix_site: Optional[str] = Field(
         None, description="修站用的**后端站键**（失败记录行里那一格 `site`）—— "
@@ -2137,9 +2352,12 @@ class RunRequest(_Intake):
         "", description="**这一站**的电话号段（例 `0207` = 伦敦座机，后 7 位随机）。"
                         "空串 = 按池子现编。它只管号段，不管「取不取资料」那件事")
     rules: Optional[dict] = Field(
-        None, description="生成期规则：{\"phone_prefixes\": [\"04\", \"0207\"], "
+        None, description="生成期规则：{\"phone\": \"2014237916\", "
+                          "\"phone_prefixes\": [\"04\", \"0207\", \"20\"], "
                           "\"dob\": {\"random\": true, \"format\": \"DD/MM/YYYY\"}, "
-                          "\"password\": \"strong\"}。手机号前缀补到 10 位；勾/填了就按规则现编，不取资料")
+                          "\"password\": \"strong\"}。`phone` 是整号（原样用）；"
+                          "只给前缀时补到 10 位（2-10 位数字，不要求 0 开头：英国去掉长途 0 写 20）；"
+                          "勾/填了就按规则现编，不取资料")
     # ── Task 8 加的两个（**加**字段不是改既有形状**：既有形状那条约束管的是 `/job/{id}` 的响应）──
     hints: Optional[list] = Field(
         None, description="人说过的话**播种**进这一趟的 state（`/again` 带过来的那几句，R5）。"
@@ -2234,6 +2452,24 @@ class AutoRequest(_Intake):
 
     on: bool = Field(False, description="开 / 关（默认关 = 什么都不动）")
     note: str = Field("", description="为什么拨这一下（可选；会写进 flags.json 并显示出来）")
+
+
+class NightOrderRequest(RunRequest):
+    """`POST /night/order`：排进夜间队列（与 `/run` 同一张表，多一个 `id`）。
+
+    ⚠️ **现在不开这一趟** —— 它只是躺进 `runtime/auto/night/queue.json`，由宿主上的
+    `tools/night-shift.py`（cron）按顺序 `POST /run`（auto=true）。
+    `country` 是给面板省一格的写法：给了就并进 `env.proxy_country`（自动路不猜国家）。
+    """
+
+    id: str = Field("", description="队列里的记号（空 = 服务给一个）；同一队列不许重")
+    country: str = Field("", description="两字母国家码（与 env.proxy_country 二选一）")
+
+
+class NightRemoveRequest(_Intake):
+    """`POST /night/remove`：从队列里拿掉一单。"""
+
+    id: str = Field("", description="队列里那个记号")
 
 
 class CountryRequest(_Intake):
@@ -2488,6 +2724,9 @@ class Job:
     #: 为什么非有不可（这一条是**测试当场抓到的**）：图原地打转时（同一道闸反复返回同一份快照），
     #: 没有它就会**一直按下去** —— 真站上那是无限烧钱 + 无限真提交。
     auto_pressed: list = dataclasses.field(default_factory=list)
+    #: ★ 2026-10-30：自动那条路**自己重开过几次窗口**（上限在 `auto.AUTO_MAX_REOPENS`）。
+    #: 进程内计数；服务重启归零 —— 上限防的是**这一趟**空转，不是跨重启的账。
+    auto_reopens: int = 0
     #: **步拍**报过的 `why`（人话原文）。**同一句只报一次**（Task 5，目录表第 6 行）：
     #: 拍照坏掉通常是**每一步**都坏，每一步刷一条会把时间线灌满 —— 而多条不是信息。
     #: 认的是**那句话**、不是第几步：同一趟探路里两步的图没了往往是同一个原因。
@@ -2674,7 +2913,7 @@ class Service:
                  shots_dir: Optional[str] = None, capture: Optional[Callable] = None,
                  shot_timeout: Optional[float] = None, capture_bin: Optional[str] = None,
                  selftest_dir: Optional[str] = None, mcp_bin: Optional[str] = None,
-                 failures_reader: Any = None,
+                 failures_reader: Any = None, classify_live: Optional[Callable] = None,
                  json_ws_url: Optional[str] = None,
                  json_rerun: Optional[Callable] = None,
                  json_backup_dir: Optional[str] = None,
@@ -2687,6 +2926,13 @@ class Service:
         #: 而窗口全局只有一个 ⇒ 有人用着时不许换。见 `_window_in_use_by`。
         self._window_used_by: Optional[str] = None
         self._window_use_lock = threading.Lock()
+        #: ★ 2026-10-29：**开窗/换窗**这一小段的互斥（识别与 run 共用那个窗口）。
+        #: 识别整段都拿着它（导航/census 期间也不松手）—— 否则一次同时按下的「开跑」
+        #: 会把识别正在读的窗口换掉。`_clean_window_for_explore` 也要拿它（见那儿）。
+        self._window_op_lock = threading.Lock()
+        #: 识别的窗口占位（`None` = 没在识别）。与 `_window_used_by` 分开一格是为了
+        #: 让「谁在用」这句话说得出来（run 的 id / `classify`）。
+        self._classify_owner = "classify"
         self._jobs: dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
         self._queue: "queue.Queue[tuple]" = queue.Queue()
@@ -2750,6 +2996,9 @@ class Service:
         #: 「配没配」也会与真正用的那个对不上 —— 「名字说 A、量的是 B」的老病。
         self._fmr = (failures_reader if failures_reader is not None
                      else fmr.FmrClient())
+        #: ★ 2026-10-29：约会站识别那一段（`classify.census_live`）。测试注入桩 ——
+        #: 与 `failures_reader` / `json_rerun` 同一条：构造时定死，别在请求里再读。
+        self._classify_live = classify_live or classify.census_live
         #: ② 复跑那份 JSON 配置：**用哪个浏览器** + **起子进程那一手**（Task B2/B3）。
         #: `ws_url` 同上：**构造时定死**。不给就按环境拼一个
         #: （`SITEFORGE_JSON_WS_URL` 在**这一刻**读一次）—— 「用的时候再读环境」
@@ -2803,12 +3052,12 @@ class Service:
         # ★ 2026-09-28：**账本那一族的改稿那双手**（模型按人说的话 / 自测诊断改那张表）。
         # 没接上（这个部署没有模型 key）⇒ **连这一格都不传**，`Deps.write` 用它默认的那个
         # 恒等翻译器 —— 打回只会走到上限就停（诚实的那种停）。
-        write = self._write_cb(brief)
+        write = self._write_cb(brief, job_id)
         deps = graph.Deps(explore=self._explore_for(brief, job_id),
                           # ★ 修站那条路：出稿之前先跑一遍旧脚本，把「它停在哪儿」给模型。
                           evidence_run=self._evidence_run_cb(brief, job_id),
                           # B 线 ③（乙）：老写法那份 py 的**改稿那双手**（没接上就在 draft 停下点名）。
-                          patch_source=self._patch_cb(brief),
+                          patch_source=self._patch_cb(brief, job_id),
                           selftest=self._selftest_cb(job_id),
                           set_viewport=(self._viewport_cb(brief.get("ws_url"))
                                         if brief.get("set_viewport") else None),
@@ -2860,6 +3109,10 @@ class Service:
         """
 
         def run_selftest(py_path, ws_url, form_file, site, **kw):
+            job = self._jobs.get(job_id)
+            if job is not None:
+                self._ensure_form_file(job.brief, job=job)
+                form_file = str(job.brief.get("form_file") or form_file)
             kw.setdefault("run_dir", str(selftest.default_run_dir(site, root=self._selftest_root)))
             if job_id:
                 kw.setdefault("on_run", self._run_teller(job_id))
@@ -3050,6 +3303,11 @@ class Service:
     #: 这份活要的是「整份源码进、整份源码出」+ 推理，所以给足。
     PATCH_MAX_TOKENS = 32000
 
+    #: 回话**不合约定**时最多再问几回（每一回都把**真实的解析错误**回灌）。
+    #: 与 `graph.PATCH_ATTEMPTS` / `WRITE_ATTEMPTS` 分开：那两格管的是「改不动」与
+    #: 「没改」，这一格管的是「没说清楚」。混用一个数会让两类失败再次互相顶替。
+    PROTOCOL_ATTEMPTS = 2
+
     def _evidence_run_cb(self, brief: dict, job_id: str = "") -> Optional[Callable]:
         """`Deps.evidence_run`（修站那条路）：**跑一遍旧脚本**拿证据。
 
@@ -3085,13 +3343,43 @@ class Service:
                 detail="「表单数据」那一格不是一段合法的 JSON：%s（第 %s 行第 %s 列）。"
                        "要的是一份 `{...}`（字段名 → 值）；**空着也行** —— 空着就按「没给值」算。"
                        % (exc.msg, exc.lineno, exc.colno))
-        path = pathlib.Path(tempfile.mkdtemp(prefix="siteforge-form-")) / "form.json"
+        #: ★ 2026-11-11（真事 `job-2dc5b300d186`）：**别落进容器自己的 `/tmp`** ——
+        #: 那个 `/tmp` 只在**这一个容器**里活着：换 env / 换镜像重建容器（不是 restart）
+        #: 之后文件就没了，自测一上来 `FileNotFoundError: …/form.json`，job 卡在 diagnose。
+        #: `runtime/` 是挂载的、重建还在 ⇒ 表单数据也放它下面（与 `runtime/explore` 同层）。
+        root = pathlib.Path(self._explore_root).parent / "form-data"
+        root.mkdir(parents=True, exist_ok=True)
+        path = pathlib.Path(tempfile.mkdtemp(prefix="siteforge-form-", dir=str(root))) / "form.json"
         path.write_text(text, encoding="utf-8")
         brief["form_file"] = str(path)
         brief["form_data_given"] = bool(str(brief.get("form_data") or "").strip())
         return brief
 
-    def _patch_cb(self, brief: dict) -> Optional[Callable]:
+    def _ensure_form_file(self, brief: dict, *, job: Optional[Job] = None) -> dict:
+        """`form_file` 指的那份文件不在了 ⇒ 从 `form_data` 重新落一份；没有数据就落 `{}`。
+
+        ★ 2026-11-11（真事 8099：`FileNotFoundError: /tmp/siteforge-form-…/form.json`）：
+        旧容器把资料落在自己的 `/tmp` 里，重建容器之后文件没了；job 从 checkpoint 捡回来、
+        人一按继续，自测就去开那个不存在的路径 ⇒ 整趟跑挂。`runtime/form-data` 是挂载的，
+        新落点不再丢；这一格负责**旧路径的残留**：缺了就重建，并且**明说**资料丢了。
+        """
+        brief = brief if isinstance(brief, dict) else {}
+        path = str(brief.get("form_file") or "").strip()
+        if path and pathlib.Path(path).is_file():
+            return brief
+        lost = path
+        brief.pop("form_file", None)
+        self._materialize_form_data(brief)
+        brief["form_data_lost"] = lost
+        if job is not None and lost and not brief.get("form_data_lost_reported"):
+            brief["form_data_lost_reported"] = True
+            self.narrate(job, "form_data_lost",
+                         "这一趟的表单数据文件**不见了**（`%s`）—— 已用一份**空资料**"
+                         "重新落盘；产物会走自己的回退值。要真数据请重新来一遍。"
+                         % lost, who="system")
+        return brief
+
+    def _patch_cb(self, brief: dict, job_id: str = "") -> Optional[Callable]:
         """`Deps.patch_source`（B 线 ③ 乙）：**老写法那份 py 的改稿那双手**。
 
         形状 `(old_src, feedback) -> 模型原话`：图那一侧负责过闸（`fix.check_patch`），
@@ -3102,6 +3390,8 @@ class Service:
         那会让「改不了」看起来像「改过了」。
         ⚠️ 失败证据 / 成功判据 / 违规行 / 人说的话**逐字**交给 `fix.patch_user` 组装 ——
         这一层**不概括**它们（概括一次，模型就再也看不到原文里那些细节）。
+        ★ 2026-10-30（第一类决策样本）：把**最近一张闸拍**（失败页）作为图递进去 ——
+        日志说 `options=[]`、截图上明明有三个文字选项，两边一对才判得出「读页漏了」。
         """
         if not os.environ.get("OPENAI_API_KEY"):
             return None
@@ -3117,9 +3407,11 @@ class Service:
             rounds = llm.run_tool_loop(
                 fix.PATCH_SYSTEM,
                 fix.patch_user(old_src, evidence=evidence, success_text=success_text,
-                               diagnosis=str((diag or {}).get("say") or ""),
+                               diagnosis=fix.diagnosis_for_prompt(diag),
                                page_evidence=page_ev, violations=vios,
-                               hints=list(fb.get("hints") or [])),
+                               hints=list(fb.get("hints") or []),
+                               cases=list(fb.get("cases") or []),
+                               shots=self._repair_shots(job_id, brief, diag)),
                 [], lambda name, args: None, max_rounds=1,
                 max_tokens=self.PATCH_MAX_TOKENS)
             #: 空回话在这儿**抛**（带那一次的账）—— 图那一侧会把它原样摆到闸上，
@@ -3128,7 +3420,44 @@ class Service:
 
         return patch
 
-    def _write_cb(self, brief: dict) -> Optional[Callable]:
+    def _patch_shot_paths(self, job_id: str) -> list:
+        """改稿时给模型看的那张失败页 —— **最近一张闸拍**（`pause-<n>.png`，n 最大）。
+
+        ⚠️ 闸拍是**旁路产物**：目录不在 / 一张都没拍成 ⇒ 空 list（改稿照旧走文字证据）。
+        ⚠️ 只取**一张**：多张会让上下文翻倍，而这里要的是「卡住时那一页长什么样」。
+        """
+        if not job_id:
+            return []
+        try:
+            where = shots.path_for(job_id, root=self._shots_dir)
+        except ValueError:
+            return []
+        try:
+            found = list(where.glob("pause-*.png"))
+        except OSError:
+            return []
+        numbered = []
+        for one in found:
+            try:
+                numbered.append((int(one.stem.split("-", 1)[1]), one))
+            except (IndexError, ValueError):
+                continue
+        return [max(numbered)[1]] if numbered else []
+
+    def _repair_shots(self, job_id: str, brief: dict, diag: dict) -> list:
+        """改稿要看哪几张图 —— **越贴失败现场越优先**，最多两张。
+
+        ① 自测卡住那一步的 `N-before.png` / `N-after.png`（`_diagnosis` 算好的）；
+        ② 后端 `fail_img`（生产失败那一刻的截图，值班脚本带过来的地址）；
+        ③ 都没有 ⇒ 最近一张闸拍（`pause-N.png`）。
+        ⚠️ 只有**前两档**都没有时才退到闸拍：闸拍是「停在这一屏」，不一定就是失败那一刻。
+        """
+        local = [str(p) for p in ((diag or {}).get("截图") or []) if str(p or "").strip()]
+        remote = [str(u) for u in (brief.get("evidence_images") or []) if str(u or "").strip()]
+        gate = [str(p) for p in self._patch_shot_paths(job_id)]
+        return (local or remote or gate)[:2]
+
+    def _write_cb(self, brief: dict, job_id: str = "") -> Optional[Callable]:
         """`Deps.write`（★ 2026-09-28）：**账本那一族的改稿那双手**（模型）。
 
         形状 `(spec, feedback) -> spec`：这里只负责「把提示词拼好、把模型叫醒、把回话读成
@@ -3141,8 +3470,11 @@ class Service:
         ⚠️ **没有模型 key（`OPENAI_API_KEY`）就返回 `None`**（不接这根线）—— 图于是用它默认
         那个恒等翻译器：打回只会走到上限就停（**诚实的那种停**）。**不编一个假的改稿器**：
         那会让「改不了」看起来像「改过了」（用户问的那件事，根就在这儿）。
-        ⚠️ 模型回话读不动 / 少了 `note` ⇒ **这一版表原样退回**（`fix.states_from_reply` 说清
-        为什么）：半份收下会让闸上看到「改过了」而产物没变。
+        ⚠️ 模型回话读不动 / 少了 `note` ⇒ **`ProtocolError`**（不是「原样退回」）：
+        `states_with_retry` 把逐条原因回灌下一问，并把每一回记成结构化状态
+        （`fix.PROTOCOL_LOG_KEY` → `graph._draft` 写进 `protocol_failures`）。
+        半份收下会让闸上看到「改过了」而产物没变；当成「没改」则会把**协议失败**
+        误记成改稿失败 —— 两种都是静默分岔。
         """
         if not os.environ.get("OPENAI_API_KEY"):
             return None
@@ -3152,24 +3484,36 @@ class Service:
         def write(spec: dict, feedback: dict) -> dict:
             fb = feedback or {}
             diag = fb.get("diagnosis") if isinstance(fb.get("diagnosis"), dict) else {}
-            #: 模型不调工具直接答（`tool_specs=[]`）—— 这是**一次问答**，不是工具循环。
-            rounds = llm.run_tool_loop(
-                fix.STATES_SYSTEM,
-                fix.states_user(spec,
-                                # ★ 2026-10-10：递**整套**诊断，不是 `say` 那一句。
-                                # 只递一句时，`failed_step` / `note` / `per_run` / `现场`
-                                # 全被挡在门外 —— 而 `states_user` 那一侧本来就写着
-                                # 「诊断逐字贴」。见 `fix.diagnosis_for_prompt`。
-                                diagnosis=fix.diagnosis_for_prompt(diag),
-                                page_evidence=str(fb.get("fix_evidence") or brief_evidence),
-                                violations=fix.violations_for_prompt(fb.get("violations")),
-                                hints=list(fb.get("hints") or [])),
-                [], lambda name, args: None, max_rounds=1,
-                max_tokens=self.PATCH_MAX_TOKENS)
-            #: 空回话在这儿**抛**（带那一次的账）—— 图那一侧会把它原样摆到闸上，
-            #: 不许只说「改稿是空的」（与 `_patch_cb` 同一条纪律）。
-            reply = fix.patch_from_rounds(rounds, max_tokens=self.PATCH_MAX_TOKENS)
-            new, _notes = fix.states_from_reply(spec, reply)
+            shots = self._repair_shots(job_id, brief, diag)
+
+            def ask(violations: list) -> str:
+                #: 模型不调工具直接答（`tool_specs=[]`）—— 这是**一次问答**，不是工具循环。
+                rounds = llm.run_tool_loop(
+                    fix.STATES_SYSTEM,
+                    fix.with_shots(
+                        fix.states_user(spec,
+                                        # ★ 2026-10-10：递**整套**诊断，不是 `say` 那一句。
+                                        # 只递一句时，`failed_step` / `note` / `per_run` / `现场`
+                                        # 全被挡在门外 —— 而 `states_user` 那一侧本来就写着
+                                        # 「诊断逐字贴」。见 `fix.diagnosis_for_prompt`。
+                                        diagnosis=fix.diagnosis_for_prompt(diag),
+                                        page_evidence=str(fb.get("fix_evidence") or brief_evidence),
+                                        violations=fix.violations_for_prompt(violations),
+                                        hints=list(fb.get("hints") or []),
+                                        cases=list(fb.get("cases") or [])),
+                        shots),
+                    [], lambda name, args: None, max_rounds=1,
+                    max_tokens=self.PATCH_MAX_TOKENS)
+                #: 空回话在这儿**抛**（带那一次的账）—— 图那一侧会把它原样摆到闸上，
+                #: 不许只说「改稿是空的」（与 `_patch_cb` 同一条纪律）。
+                return fix.patch_from_rounds(rounds, max_tokens=self.PATCH_MAX_TOKENS)
+
+            new, failures = fix.states_with_retry(
+                spec, ask, attempts=self.PROTOCOL_ATTEMPTS,
+                violations=fix.violations_for_prompt(fb.get("violations")))
+            if failures:
+                #: 旁路键：`graph._draft` 在渲染之前 pop 掉，并并进 `protocol_failures`。
+                new[fix.PROTOCOL_LOG_KEY] = failures
             return new
 
         return write
@@ -3199,6 +3543,11 @@ class Service:
             ws_url = str(brief.get("ws_url") or "").strip()
         if not ws_url:
             return None                       # 没人给窗口 → 用默认（图会在自测那步停下点名）
+        #: ★ 2026-10-29（job-9b1967834601 / job-31cc47a0dbe3）：探路那一趟也得按人给的数据填 ——
+        #: 前缀规则 / 整号 / 资料里的电话，优先级与产物那条路一致（整号 > 前缀 > 资料）。
+        phone_value = rules_mod.phone_for_explore(brief.get("rules"), brief.get("hints"))
+        if not phone_value:
+            phone_value = _form_data_phone(brief.get("form_file"))
         #: 步拍落在哪（这一趟探路的 job 级目录）。**算不出来就不接** ——
         #: `job_id` 不像话时 `dir_for` 报错，而这里是图的路径上，不许抛；
         #: 闸拍那条路自己会把这个原因记成一句人话（`_shoot_pause`）。
@@ -3267,6 +3616,7 @@ class Service:
                                                 # ★ 2026-09-30：这一趟资料里真有的键 ⇒
                                                 # `FILLS[*].source` 写能直接命中的那个名字。
                                                 data_keys=_form_data_keys(brief.get("form_file")),
+                                                phone_value=phone_value,
                                                 shots_dir=shots_where,
                                                 binary=self._mcp_bin,
                                                 # Task 9：人的话「直达下一轮」那条线
@@ -4096,34 +4446,39 @@ class Service:
         #: 进来先把它清掉：换窗**这一趟只做一次**（探路最多重探 3 趟，第二次再换一次窗
         #: 就是把刚开好的那个关掉）。
         brief.pop(WINDOW_DEFER_CLEAN, None)
-        busy = self._window_in_use_by()
-        if busy and busy != str(job_id or ""):
-            brief[WINDOW_DEFER_CLEAN] = busy
-            print("[siteforge] 现在有活正在用那个窗口（%s）—— 这一次的换窗"
-                  "推迟到这一趟自己的探路那一步（不关别人的窗口）" % busy)
-            return
-        self._align_window_size()
-        if self._window is None or not hasattr(self._window, "fresh_open"):
-            return
-        try:
-            ws = self._window.fresh_open()
-        except Exception as exc:                     # noqa: BLE001 —— 外面世界
-            brief[WINDOW_OPEN_FAILED] = str(exc)
-            print("[siteforge] 探路前换干净窗口没成（%s）—— 用调用方给的那个窗口接着跑"
-                  "（账本学的路径可能带着「弹层已经点过」的前提）" % exc)
-            return
-        if ws:
-            brief["ws_url"] = str(ws)
-            #: ★ 2026-09-28：**量下来的指纹跟着这一趟走**（不覆盖 `env`：那一格是「人要求了什么」，
-            #: 这一格是「窗口实际是什么」—— 两个都留着，才分得出「名字说 A、量的是 B」）。
-            got = self.fingerprint_of(str(ws))
-            if got:
-                brief["fingerprint"] = got
+        #: ★ 2026-10-29：**开窗这一小段与识别共用一把锁**。识别整段都拿着它（读页面时也不松手），
+        #: 所以「同时按下的开跑」不会在识别读页面时把窗口换掉 —— 它要么排在识别之后，
+        #: 要么在 `classify` 那一侧按不到锁（409）。`busy` 必须在**拿到锁之后**再读：
+        #: 等识别收摊的这段时间里，占位可能已经变了。
+        with self._window_op_lock:
+            busy = self._window_in_use_by()
+            if busy and busy != str(job_id or ""):
+                brief[WINDOW_DEFER_CLEAN] = busy
+                print("[siteforge] 现在有活正在用那个窗口（%s）—— 这一次的换窗"
+                      "推迟到这一趟自己的探路那一步（不关别人的窗口）" % busy)
+                return
+            self._align_window_size()
+            if self._window is None or not hasattr(self._window, "fresh_open"):
+                return
+            try:
+                ws = self._window.fresh_open()
+            except Exception as exc:                 # noqa: BLE001 —— 外面世界
+                brief[WINDOW_OPEN_FAILED] = str(exc)
+                print("[siteforge] 探路前换干净窗口没成（%s）—— 用调用方给的那个窗口接着跑"
+                      "（账本学的路径可能带着「弹层已经点过」的前提）" % exc)
+                return
+            if ws:
+                brief["ws_url"] = str(ws)
+                #: ★ 2026-09-28：**量下来的指纹跟着这一趟走**（不覆盖 `env`：那一格是「人要求了什么」，
+                #: 这一格是「窗口实际是什么」—— 两个都留着，才分得出「名字说 A、量的是 B」）。
+                got = self.fingerprint_of(str(ws))
+                if got:
+                    brief["fingerprint"] = got
+                else:
+                    print("[siteforge] 读不出这个窗口的指纹（视口/DPR/UA）—— 这一趟的账本与产物里"
+                          "**不会有**指纹那一格（下一个人分不出它是在什么尺寸下录的）")
             else:
-                print("[siteforge] 读不出这个窗口的指纹（视口/DPR/UA）—— 这一趟的账本与产物里"
-                      "**不会有**指纹那一格（下一个人分不出它是在什么尺寸下录的）")
-        else:
-            brief[WINDOW_OPEN_FAILED] = "开窗口没给出新的 `ws_url`（空串）"
+                brief[WINDOW_OPEN_FAILED] = "开窗口没给出新的 `ws_url`（空串）"
 
     def _align_window_size(self) -> None:
         """把档案的窗口尺寸对齐**生产那套**（`PROD_VIEWPORT_ENV`，默认 393×852）。
@@ -4167,6 +4522,94 @@ class Service:
               "下一次开窗口生效）；旋钮 `%s=%s`"
               % ("%s×%s" % now if now else "读不出", want[0], want[1],
                  PROD_VIEWPORT_ENV, "%dx%d" % want))
+
+    def classify(self, url: str, *, ws_url: str = "", config_id: Optional[int] = None,
+                 apply: bool = False, operator: str = "") -> dict:
+        """约会站识别（+ 可选关联）。返回 `{"exit", "result", "say"}`。
+
+        窗口：没给 `ws_url` 就自己开一个**干净**的（`fresh_open`，与 `_reopen` 同一条路），
+        用完关掉。**单飞**：有 run 正在那一步里用窗口、或者队列里还压着活，就**不抢**
+        （409）；自己识别期间，`/run` 也会 409 —— 这一整段拿着 `_window_op_lock`，
+        所以两边不会在「先关后开」那一下互相打死。
+        """
+        target = str(url or "").strip()
+        if not target:
+            raise HTTPException(status_code=400, detail=CLASSIFY_NO_URL_SAY)
+        if apply and not str(operator or "").strip():
+            raise HTTPException(status_code=400, detail=CLASSIFY_NO_OPERATOR_SAY)
+
+        provided = str(ws_url or "").strip()
+        owns = False
+        claimed = False
+        win = None
+        if not provided:
+            if not self._window_op_lock.acquire(blocking=False):
+                raise HTTPException(status_code=409, detail=(
+                    "窗口正在被另一件事用着（识别或开窗）—— 等它完再识别。"))
+            try:
+                busy = self._window_in_use_by()
+                if busy:
+                    raise HTTPException(status_code=409,
+                                        detail=CLASSIFY_WINDOW_BUSY_SAY % busy)
+                queued = self._queue.qsize()
+                if queued:
+                    raise HTTPException(status_code=409, detail=CLASSIFY_WINDOW_BUSY_SAY % (
+                        "排队的 %d 趟" % queued))
+                #: 停在闸上的那一趟**还占着那个窗口**（它一接着走就要用）——
+                #: 识别的 `fresh_open` 会把它换掉，那一趟随后就找不到元素了。
+                with self._jobs_lock:
+                    waiting = next((j.job_id for j in self._jobs.values()
+                                    if j.status == WAITING), "")
+                if waiting:
+                    raise HTTPException(status_code=409, detail=CLASSIFY_WINDOW_BUSY_SAY % (
+                        "停在闸上的 %s" % waiting))
+                if self._window is None or not hasattr(self._window, "fresh_open"):
+                    raise HTTPException(status_code=400, detail=CLASSIFY_NO_WINDOW_SAY)
+                #: 先占位再开窗：`start()` 看到这一格就会回 409，不会在识别读页面时换窗。
+                self._begin_window_use(self._classify_owner)
+                claimed = True
+                try:
+                    provided = str(self._window.fresh_open() or "").strip()
+                except Exception as exc:             # noqa: BLE001 —— Bit 窗口服务
+                    raise HTTPException(status_code=502,
+                                        detail=CLASSIFY_OPEN_FAILED_SAY % exc)
+                if not provided:
+                    raise HTTPException(status_code=502, detail=CLASSIFY_OPEN_FAILED_SAY % (
+                        "开窗口没给出新的 `ws_url`（空串）"))
+                owns, win = True, self._window
+            except BaseException:
+                #: 开窗没成就**当场收摊**（占位/锁都还回去），别把后面的请求一起卡死。
+                if claimed:
+                    self._end_window_use(self._classify_owner)
+                self._window_op_lock.release()
+                raise
+
+        try:
+            try:
+                got = self._classify_live(target, ws_url=provided, cdp_bin=self._cdp_bin)
+            except Exception as exc:                 # noqa: BLE001 —— 窗口/导航/页面
+                raise HTTPException(status_code=502,
+                                    detail=CLASSIFY_LIVE_FAILED_SAY % str(exc))
+            try:
+                rows = self._fmr.form_config_sites()
+            except Exception as exc:                 # noqa: BLE001 —— FMR 量不到
+                raise HTTPException(status_code=502,
+                                    detail=CLASSIFY_UNMEASURED_SAY % str(exc))
+            out = classify.run_classify(
+                target, census_fn=lambda: got, site_rows=rows,
+                client=self._fmr if apply else None, apply=apply,
+                config_override=config_id, operator=operator or None)
+            out["say"] = classify.render_human(out["result"])
+            return out
+        finally:
+            if owns:
+                self._end_window_use(self._classify_owner)
+                if win is not None and hasattr(win, "close"):
+                    try:
+                        win.close()
+                    except Exception:            # noqa: BLE001 —— 关窗失败不许盖掉结果
+                        traceback.print_exc()
+                self._window_op_lock.release()
 
     def fingerprint_of(self, ws_url: str) -> Optional[dict]:
         """量这个窗口**当下**的指纹：`{"viewport": "984x905", "dpr": 3, "ua": "…"}`。
@@ -5048,7 +5491,9 @@ class Service:
             job.status = DONE
             job.say = ""
         self._note_after_advance(job, ended=True)    # 目录表第 1、6 行
+        self._note_repaired(job, out)                # ★ 2026-11-05：本机修复账（面板打标用）
         self._auto_reply(job)                        # ★ 自动那条路：到闸就替人按（图一个字不改）
+        self._auto_reopen(job)                       # ★ 2026-10-30：窗口没了 ⇒ 自己重开
         self._auto_upload(job)                       # ★ T4 自动那条路：两遍内过了 ⇒ 自己传
 
     def _auto_reply(self, job: "Job") -> None:
@@ -5107,6 +5552,116 @@ class Service:
         self.narrate(job, "auto_replied", AUTO_REPLIED_SAY, step=step)
         self._submit(job, Command(resume={"action": "continue", "note": ""}))
 
+    def _auto_reopen(self, job: "Job") -> None:
+        """自动那条路：**窗口没了 ⇒ 自己开一个新的、从断点接着跑**（不是报人）。
+
+        ★ 2026-10-30（`precondition` 族）：图自己那句 `no_window` 写的就是
+        `POST /job/<id>/reopen`；以前 auto 把它当「做不成」立刻抛人 —— 而这一族的
+        正确动作正好是**重开窗口**（探路/自测那段账都还在 checkpoint 里）。
+        上限 `auto.AUTO_MAX_REOPENS`：开了又死不能无限烧窗口；开不出来就说清为什么。
+        """
+        if not (job.brief or {}).get("auto") or getattr(job, "auto_state", ""):
+            return
+        try:
+            snap = self._snapshot(job.job_id)
+        except Exception:                      # noqa: BLE001 —— 读不回来只是这一次不重开
+            traceback.print_exc()
+            return
+        values = dict(getattr(snap, "values", None) or {})
+        if str(values.get("end_reason") or "") not in auto_mod.AUTO_WINDOW_END:
+            return
+        stop = auto_mod.reopen_stop_reason(values, getattr(job, "auto_reopens", 0))
+        if stop:
+            return self._auto_give_up(job, values, stop)
+        try:
+            view = self._view(job.job_id)
+            point = self._resume_point(job.job_id, view)
+        except Exception as exc:               # noqa: BLE001 —— 读不回来：说清、报人
+            traceback.print_exc()
+            return self._auto_give_up(job, values, "窗口没了，但读不回这一趟停在哪：%s" % exc)
+        if point is None:
+            return self._auto_give_up(
+                job, values, "窗口没了，但这一趟接不上：%s"
+                % self._cannot_reopen_say(job.job_id, view)[:300])
+        with job.lock:
+            job.auto_reopens = int(getattr(job, "auto_reopens", 0) or 0) + 1
+            n = job.auto_reopens
+        try:
+            self.reopen(job.job_id, ReopenRequest())
+        except HTTPException as exc:
+            return self._auto_give_up(job, values, "自己开窗口没成：%s" % exc.detail)
+        except Exception as exc:               # noqa: BLE001 —— 外面世界
+            traceback.print_exc()
+            return self._auto_give_up(job, values, "自己开窗口没成：%s" % exc)
+        with job.lock:
+            job.say = ("自动模式：窗口没了 —— 自己重开了（第 %d 次，上限 %d）。%s"
+                       % (n, auto_mod.AUTO_MAX_REOPENS, str(job.say or "")))
+
+    def _note_repaired(self, job: "Job", out: dict) -> None:
+        """交付成功 ⇒ **本机修复账**记一笔（面板据此标「已修过」，防同一单被反复修）。
+
+        ⚠️ 旁路：账写不进去不许带塌这一趟（与 `_measure_after` 同一条规矩）。
+        """
+        try:
+            if str((out or {}).get("end_reason") or "") != END_DELIVERED:
+                return
+            brief = dict(getattr(job, "brief", None) or {})
+            key = str(brief.get("fix_site") or "").strip()
+            if not key:
+                return
+            book = read_repairs(self._out_dir)
+            book[key] = {
+                "job_id": job.job_id,
+                "task_id": repair_task_of(brief.get("evidence")),
+                "at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+                "uploaded": False,
+            }
+            write_repairs(self._out_dir, book)
+        except Exception:            # noqa: BLE001 —— 补注账，坏了不带塌主路
+            traceback.print_exc()
+
+    def _mark_repaired_uploaded(self, key: str, operator: str) -> None:
+        """上传成功 ⇒ 那一格改成「已上传」（账里没有这一单 ⇒ 什么都不做）。"""
+        try:
+            key = str(key or "").strip()
+            if not key:
+                return
+            book = read_repairs(self._out_dir)
+            entry = book.get(key)
+            if not isinstance(entry, dict):
+                return
+            entry["uploaded"] = True
+            entry["uploaded_by"] = str(operator or "")
+            entry["uploaded_at"] = datetime.datetime.now().astimezone().isoformat(
+                timespec="seconds")
+            book[key] = entry
+            write_repairs(self._out_dir, book)
+        except Exception:            # noqa: BLE001
+            traceback.print_exc()
+
+    def _repair_marks(self, site_key: str) -> str:
+        """这一串（含**同域别的 full-path 键**）本机修过的记录 ⇒ 人话；没有 ⇒ 空串。
+
+        ★ 2026-11-05（用户：「已修复过的没在面板标记吗？这样运营会有歧义」）：
+        标记在**服务这一侧**算（页面只摆字）；同域但**不是同一页**的修复要说清
+        「修的是哪一串」，别让运营误以为这一行已经修过。
+        """
+        key = str(site_key or "").strip()
+        if not key:
+            return ""
+        book = read_repairs(self._out_dir)
+        said: list = []
+        entry = book.get(key)
+        if isinstance(entry, dict):
+            said.append(repaired_say(entry, key=key, same_key=True))
+        host = fmr._host_key(key)
+        for other, ent in book.items():
+            if other == key or not isinstance(ent, dict):
+                continue
+            if host and fmr._host_key(str(other)) == host:
+                said.append(repaired_say(ent, key=str(other), same_key=False))
+        return "\n".join(said)
+
     @staticmethod
     def _auto_attempts(values: dict) -> int:
         """这一趟已经到第几遍 —— 判据在 `agent/auto.py::attempts`（一处口径）。"""
@@ -5163,13 +5718,14 @@ class Service:
         if not values:
             return None
         keep = ("url", "goal", "mode", "success_text", "success_urls", "evidence", "site",
-                "ws_url", "form_file", "env", "platform", "out_dir", "allow_skips", "entry_url",
-                "phone_area_code", "rules", "fingerprint")
+                "ws_url", "form_file", "form_data", "env", "platform", "out_dir",
+                "allow_skips", "entry_url", "phone_area_code", "rules", "fingerprint")
         brief = {k: values[k] for k in keep if values.get(k) is not None}
         brief["set_viewport"] = bool(self._window is not None
                                      and hasattr(self._window, "set_viewport"))
         job = Job(job_id=job_id, brief=brief, status=DONE, say=RECOVERED_SAY, recovered=True,
                   created_at=self._ledger_time(job_id))
+        self._ensure_form_file(job.brief, job=job)
         job.graph = self._build_graph(brief, job_id)
         with self._jobs_lock:
             self._jobs.setdefault(job_id, job)
@@ -5577,7 +6133,21 @@ class Service:
                 else FAILURE_STATUS_UNMEASURED)
         return HTTPException(status_code=code, detail=exc.say)
 
-    def failures(self, site: str, since: Any = None, limit: Any = None) -> dict:
+    def _sibling_failure_keys(self, key: str) -> list:
+        """同一个域名下、后端配置表里**真有的**别的 full-path 键（最多 `fmr.SIBLING_KEY_TRIES` 个）。
+
+        ⚠️ 读配置表本身失败（没 token / 后端抖）⇒ 空表：这条是**补考**，不是主路，
+        它坏掉不许改变主路那句报错。
+        """
+        try:
+            rows = self._fmr.form_config_sites() or []
+        except Exception:            # noqa: BLE001 —— 补考读不到不影响主路
+            return []
+        known = [str(r.get("site") or "") for r in rows if isinstance(r, dict)]
+        return fmr.sibling_failure_keys(key, known)
+
+    def failures(self, site: str, since: Any = None, limit: Any = None,
+                 *, debug: bool = False) -> dict:
         """`GET /failures` 的正文（Task 13）：**这个站最近失败的那几趟**，一行一句人话。
 
         ⚠️ 端出去的**不是** FMR 那份 JSON：每一行只留 `task_id`（机器要用它去取证据）
@@ -5586,6 +6156,14 @@ class Service:
 
         ⚠️ 三种「量不到」在这儿的形状：**非 2xx**（见 `_unmeasured_to_http`）。
         **只有真量过、真没有** 才有 `200` + `failures: []`。
+
+        ★ 2026-11-05（用户：「修复那个按钮……几个域名全路径，单域名都要去对应搜索」）：
+        那串键后端回 **404（它不认识）** 时，按**同一个域名下**配置表里真有的别的
+        full-path 键再搜（`sibling_failure_keys`，主机段那一档 `fetch_failures` 自己会试）。
+        找到就**用那一串**（响应里 `site` = 真用的键、`requested_site` = 原来的键，
+        人话里也写明）—— 页面随后拿 `site` 去取证据/开修。
+        **一条都没找到 ⇒ 仍然是「量不到」（非 2xx）**，不写成「没有失败」。
+        `debug=True`（面板带 `type=debug`）会透传到每一次读 —— 修复那条路一直这么读。
         """
         key = str(site or "").strip()
         if not key:
@@ -5602,18 +6180,44 @@ class Service:
             # 免费的那道闸（与下面「缺 site」同一档）：读不出来的时间窗**在门口**就响 ——
             # 悄悄改用默认窗口的坏处是「你以为查的是昨天，看到的是今天那份」。
             raise HTTPException(status_code=400, detail=exc.say)
+        used, rows = key, []
         try:
-            rows = self._fmr.fetch_failures(key, since=since, limit=limit)
+            rows = self._fmr.fetch_failures(key, since=since, limit=limit, debug=debug)
+        except fmr.FmrRefused as exc:
+            if int(getattr(exc, "status", 0) or 0) != 404:
+                raise self._unmeasured_to_http(exc)
+            empty, failed = [], []
+            for cand in self._sibling_failure_keys(key):
+                try:
+                    got = self._fmr.fetch_failures(cand, since=since, limit=limit,
+                                                   debug=debug)
+                except fmr.FmrUnmeasured:
+                    failed.append(cand)
+                    continue
+                if got:
+                    used, rows = cand, got
+                    break
+                empty.append(cand)
+            if not rows:
+                raise self._unmeasured_to_http(fmr.FmrRefused(
+                    exc.say + _siblings_say(empty, failed),
+                    status=int(getattr(exc, "status", 404) or 404),
+                    msg=str(getattr(exc, "msg", "") or "")))
         except fmr.FmrUnmeasured as exc:
             raise self._unmeasured_to_http(exc)
         n = fmr.DEFAULT_LIMIT if limit in (None, "") else int(limit)
+        say = _failures_say(used, since_txt, rows, n)
+        if used != key:
+            say += ("\n（排行榜那串 `%s` 后端认不出；这一栏是按**同一个域名下**的 `%s` "
+                    "查到的 —— 下面这些单属于那一串键。）" % (key, used))
+        book = read_repairs(self._out_dir)
         return {
-            "site": key,
+            "site": used,
+            "requested_site": key,
             "since": since_txt,
             "limit": n,
-            "say": _failures_say(key, since_txt, rows, n),
-            "failures": [{"task_id": str(r.get("task_id") or ""), "say": fmr.failure_say(r)}
-                         for r in rows],
+            "say": say,
+            "failures": [_failure_row(r, book) for r in rows],
         }
 
     def failure_evidence(self, task_id: str, *, site: str,
@@ -5665,7 +6269,8 @@ class Service:
         }
 
     # ── ③ 榜单（哪个站坏了）+ ④ 原因（为什么）（Task 4）──────────────
-    def rank(self, date: Any = None, limit: Any = None) -> dict:
+    def rank(self, date: Any = None, limit: Any = None,
+             min_streak: Any = None) -> dict:
         """`GET /rank` 的正文（Task 4 ③）：**这一天哪些站在失败**，一行一句人话。
 
         ⚠️ 端出去的**不是** FMR 那份 JSON：每一行只留
@@ -5689,7 +6294,7 @@ class Service:
         ⚠️ 三种「量不到」在这儿的形状与 `/failures` **一模一样**：**非 2xx**。
         """
         try:
-            data = self._fmr.fetch_rank(date=date, limit=limit)
+            data = self._fmr.fetch_rank(date=date, limit=limit, min_streak=min_streak)
         except fmr.FmrUnmeasured as exc:
             raise self._unmeasured_to_http(exc)
         n = fmr.DEFAULT_RANK_LIMIT if limit in (None, "") else int(limit)
@@ -5708,6 +6313,8 @@ class Service:
                 #: ★ T6 打标：这一行正等着人吗（**判在服务这一侧** —— 页面只摆它）。
                 #: 空串 = 没这回事（页面就当这一格不在，别拿它当「一切正常」的读数）。
                 "auto_say": _auto_mark_for(list(self._jobs.values()), r.get("site")),
+                #: ★ 2026-11-05：本机修过没有（含「同域另一页」那一格）—— 防同一单被反复修。
+                "repaired_say": self._repair_marks(str(r.get("site") or "")),
             } for r in rows],
         }
 
@@ -6240,6 +6847,7 @@ class Service:
                 "逐字节一致。写前那份备份在 `%s`（要回滚就按「回滚」。）"
                 % (item.source_sha256[:16], backup_id))
         said += self._config_status_say(config_status, after=True)
+        self._mark_repaired_uploaded(item.key, item.operator)
         return {"ok": True, "site": item.key, "sha256": item.source_sha256,
                 "bytes": len(item.source.encode("utf-8")), "backup_id": backup_id,
                 "config_status": config_status,
@@ -6518,6 +7126,12 @@ class Service:
         else:
             brief["rules"] = normalized_rules
         brief = self._materialize_form_data(brief)
+        _ff = str(brief.get("form_file") or "").strip()
+        if _ff and not pathlib.Path(_ff).is_file():
+            raise HTTPException(
+                status_code=400,
+                detail="表单数据文件不存在：`%s`（这一趟**没开跑**）。"
+                       "把那份文件放回去、或者改用面板上的「表单数据」那一格重试。" % _ff)
         #: 人在开工前说的那句 → `hints`（`note` 这一格**不留在载荷里**：图那份 schema 里
         #: 没有 `note`，留着会被 langgraph **静默丢掉** —— 与 `fix_py` 当年那个坑同一族）。
         said = str(brief.pop("note", "") or "").strip()
@@ -6525,7 +7139,7 @@ class Service:
             brief["hints"] = [said]
         brief.setdefault("out_dir", self._out_dir)
         brief["success_text"] = body.success_text
-        brief["success_urls"] = body.success_urls
+        brief["success_urls"] = _success_urls_text(body.success_urls)
         # ⚠️ `expects` 也在门口换了（修复轮 1），所以「第几项换了几个」要**跟着这条载荷走**：
         # 判那一步的是 `_note_step`（在图上跑），门口换掉之后它手上只剩换好的值
         # —— 不把个数带过去，那条静默路径就又回来了。
@@ -6540,6 +7154,10 @@ class Service:
         took_success = str(brief.get(SUCCESS_TAKEN) or "")
         brief = self._country_from_proxy(brief)   # ★ 2026-10-08：没给国家就按出口链补
         took_country = str(brief.get(COUNTRY_TAKEN) or "")
+        #: ★ 2026-10-29：识别正占着窗口（它在读页面，整段拿着 `_window_op_lock`）——
+        #: 这一趟**不开跑**，回 409 把人话摆出去（不排队干等 60 秒，更不抢窗）。
+        if self._window_in_use_by() == self._classify_owner:
+            raise HTTPException(status_code=409, detail=CLASSIFY_RUN_BUSY_SAY)
         self._clean_window_for_explore(brief)     # R-F1 的另一半：**探路也要干净会话**
         #: ★ 2026-09-22：窗口是**服务自己**开的（面板没有挑窗口那一栏）⇒ 开不出来时这一趟
         #: **必死**。按「拿不到底稿就不开 job」同一条规矩（`_stage_fix_source`）：门口红掉，
@@ -7471,6 +8089,7 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                capture_bin: Optional[str] = None,
                selftest_dir: Optional[str] = None,
                mcp_bin: Optional[str] = None, failures_reader: Any = None,
+               classify_live: Optional[Callable] = None,
                json_ws_url: Optional[str] = None,
                json_rerun: Optional[Callable] = None,
                json_backup_dir: Optional[str] = None,
@@ -7505,6 +8124,7 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                   window_probe_seconds=window_probe_seconds, shots_dir=shots_dir,
                   capture=capture, shot_timeout=shot_timeout, capture_bin=capture_bin,
                   selftest_dir=selftest_dir, mcp_bin=mcp_bin, failures_reader=failures_reader,
+                  classify_live=classify_live,
                   json_ws_url=json_ws_url, json_rerun=json_rerun,
                   json_backup_dir=json_backup_dir, json_ticket_store=json_ticket_store,
                   country_runner=country_runner, country_tool=country_tool,
@@ -7587,15 +8207,18 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
         }
 
     @api.get("/failures")
-    def failures(site: str = "", since: str = "", limit: str = "") -> dict:
+    def failures(site: str = "", since: str = "", limit: str = "",
+                 type: str = "") -> dict:
         """**这个站最近失败的那几趟**（Task 13 ②）—— 一行一句人话。
 
         ⚠️ 它**不是**「把 FMR 那个接口代理一下」：端出去的是人话 + 一个单号。
         ⚠️ **三种「量不到」一律非 2xx**（503 没配 token / 502 连不上 / 502 后端回码）——
         一个 `200 {"failures": []}` 在屏幕上与「这个站很健康」一模一样，
         而这一栏存在的理由正是「别把量不出来读成量出来了」。
+        ★ `type=debug`：修复那条路一直按这个读（面板会带）；透传到每一次读。
         """
-        return svc.failures(site, since=since or None, limit=_count(limit))
+        return svc.failures(site, since=since or None, limit=_count(limit),
+                            debug=(str(type or "").strip().lower() == "debug"))
 
     @api.get("/failures/{task_id}/evidence")
     def failure_evidence(task_id: str, site: str = "", since: str = "") -> dict:
@@ -7606,14 +8229,16 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
         return svc.failure_evidence(task_id, site=site, since=since or None)
 
     @api.get("/rank")
-    def rank(date: str = "", limit: str = "") -> dict:
+    def rank(date: str = "", limit: str = "", min_streak: str = "") -> dict:
         """**这一天哪些站在失败**（Task 4 ③）—— 一行一句人话。
 
+        `min_streak=1` = 列**所有**当前在失败的站（默认 5 只列连败够的）。
         ⚠️ 与 `/failures` 同一个形状：**三种「量不到」一律非 2xx**。
         「今天一个站都没失败」是 `200` + 那句说清了「这是量到的」的 `say` ——
         两件事在屏幕上必须分得开（这一片从头到尾治的就是那个形状）。
         """
-        return svc.rank(date=date or None, limit=_count(limit))
+        streak = int(min_streak) if str(min_streak or "").strip() else None
+        return svc.rank(date=date or None, limit=_count(limit), min_streak=streak)
 
     @api.get("/diag/{task_id}")
     def diag(task_id: str) -> dict:
@@ -7670,6 +8295,31 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
     @api.post(PYWRITE_ROLLBACK_PATH)
     def py_upload_rollback(job_id: str, body: PyWriteRollbackRequest) -> dict:
         return svc.py_upload_rollback(job_id, body.backup_id, body.operator)
+
+    @api.post(CLASSIFY_PATH)
+    def classify_site(body: ClassifyRequest) -> dict:
+        """约会站识别（**只读**）：平台 / 建议 config / 证据。
+
+        结果里 `exit` 沿用 CLI 的口径（0 成功、2 unknown/ambiguous、5 config 解析失败）——
+        `unknown` 是一个**结果**，不是服务的错，所以回 200；开不了窗口 / 量不到后端才是 4xx/5xx。
+        这一跳**结构上写不了后端**：它没有 `apply` 参数，调用链也不给 client。
+        """
+        out = svc.classify(body.url, ws_url=body.ws_url, config_id=body.config_id)
+        #: 换掉坏字节是**有损**的 —— 必须说（`_Intake` 那台机器的口径；没有静默的路径）。
+        out["say"] = str(out.get("say") or "") + body.unwritable_say()
+        return out
+
+    @api.post(CLASSIFY_LINK_PATH)
+    def classify_link(body: ClassifyLinkRequest) -> dict:
+        """识别 + 关联（等价 CLI 的 `--apply`）：唯一命中才写，写完**回读**。
+
+        `exit != 0` 时结果里 `linked` 是 `null`、`link_error` 是原话 —— 页面按它说话，
+        不许把「写失败」画成「写成功」。
+        """
+        out = svc.classify(body.url, ws_url=body.ws_url, config_id=body.config_id,
+                           apply=True, operator=body.operator)
+        out["say"] = str(out.get("say") or "") + body.unwritable_say()
+        return out
 
     @api.post("/run", status_code=202)
     def run(body: RunRequest) -> dict:
@@ -7881,6 +8531,38 @@ def create_app(*, graph_factory: Optional[Callable] = None, window: Any = None,
                 "never_beat": age is None, "stale": stale,
                 "opened_today": opened, "day_cap": auto_mod.DAY_CAP,
                 "ledger_say": ledger_say, "needs_human": needs}
+
+
+    # ── 夜间批量（2026-10-29）：面板排单 / 看账单 ─────────────────────────
+    #: ⚠️ 服务**不自己跑**这一批：cron 在宿主上调 `tools/night-shift.py`（一条命令，
+    #: 单飞提交）。这里只读写**同一份** `runtime/auto/night/`（容器里挂着 `runtime/`）。
+    def _night_root() -> str:
+        return str(getattr(svc, "_auto_root", "") or os.getcwd())
+
+    @api.get(NIGHT_PATH)
+    def night_now() -> dict:
+        return night_mod.queue_view(_night_root(), time.strftime("%Y-%m-%d"))
+
+    @api.post(NIGHT_ORDER_PATH)
+    def night_add(body: NightOrderRequest) -> dict:
+        """排一单进去（**现在不开**）—— 判据与落盘都在 `agent/night.py`，这里只接与回话。"""
+        raw = body.model_dump(exclude_none=True, exclude_defaults=True)
+        raw.pop("auto", None)
+        raw.pop("country", None)
+        try:
+            oid = night_mod.queue_add(_night_root(), raw, body.id, body.country)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"ok": True, "id": oid,
+                "say": "排进夜间队列了（`%s`）。下班后按顺序跑；过不去会记一笔、直接下一单。"
+                       % oid}
+
+    @api.post(NIGHT_REMOVE_PATH)
+    def night_remove(body: NightRemoveRequest) -> dict:
+        if not night_mod.remove_order(_night_root(), body.id):
+            raise HTTPException(status_code=404,
+                                detail="队列里没有 id=%s 的单（可能已经被跑掉了）。" % body.id)
+        return {"ok": True, "say": "从夜间队列里拿掉了（`%s`）。" % body.id}
 
 
     @api.get(COUNTRY_PATH)

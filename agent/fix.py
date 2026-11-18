@@ -33,19 +33,25 @@
 from __future__ import annotations
 
 import ast
+import base64
 import copy
+import hashlib
 import json
+import pathlib
 import re
 import urllib.request
 from typing import Any, Callable, Optional
 
 from agent import browser_agent
 from agent import plan as plan_mod
+from agent import tools as tools_mod
 
 __all__ = ["from_py", "repair_states", "REQUIRED_CLI_FLAGS",
-           "PATCH_SYSTEM", "shape_of", "check_patch", "patch_user", "extract_source",
+           "PATCH_SYSTEM", "shape_of", "check_patch", "patch_user", "shot_parts",
+           "with_shots", "extract_source",
            "patch_from_rounds", "apply_diff", "apply_edits", "source_from_reply",
            "STATES_SYSTEM", "LOOP_KEYS", "states_user", "states_from_reply",
+           "ProtocolError", "PROTOCOL_LOG_KEY", "states_with_retry",
            #: ★ 2026-10-15 修站那一刀：**原始观察**那一族（见下面那一节）
            "CARD_KEYS", "card_of", "observed_of", "find_observed", "card_fingerprint",
            #: ★ 2026-10-16 修站第二刀：锚只认观测（合并那一步）
@@ -53,6 +59,32 @@ __all__ = ["from_py", "repair_states", "REQUIRED_CLI_FLAGS",
 
 #: 取站方配置的超时（秒）。**短** —— 它是可选层，拿不到就往下走，不能把整趟拖住。
 CONFIG_TIMEOUT = 8.0
+
+#: 模型回话**不是约定形状**（JSON / 字段 / 类型 / 枚举 / `note`）—— 通信失败，不是改稿失败。
+#:
+#: 为什么单独一类：这类错的修法是**改提示词 / 解析器 / 回灌真实原因**；改稿失败的修法是
+#: **换证据 / 换诊断 / 换判断**。混成一个 `repair_noop`，两种病就再也分不开。
+class ProtocolError(ValueError):
+    """一次回话不合约定。`errors` 是**逐条人话**（要回灌下一轮、也要落盘）。"""
+
+    def __init__(self, errors, *, reply: str = "", records=None):
+        self.errors = [str(x) for x in (errors or []) if str(x).strip()]
+        self.reply = str(reply or "")
+        #: 已经试过的那几回（`record()` 的形态）；空 = 只此一回。
+        self.records = list(records or [])
+        super().__init__("；".join(self.errors) or "模型回话不合约定")
+
+    def record(self, *, node: str = "draft", attempt: int = 1) -> dict:
+        """落进状态的那一行：**原因原文** + 回话指纹，不存整份回话（会撑爆 checkpoint）。"""
+        return {"node": str(node), "attempt": int(attempt),
+                "errors": list(self.errors),
+                "reply_chars": len(self.reply),
+                "reply_sha256": hashlib.sha256(self.reply.encode("utf-8")).hexdigest()}
+
+
+#: `Deps.write` 返回值上的旁路键：这一版**试过但被拒**的回话记录。
+#: `graph._draft` 在用它之前**必须 pop 掉**（它不属于产物规格，不能被渲染）。
+PROTOCOL_LOG_KEY = "_protocol_failures"
 
 #: 站方配置里 `subtype` / `mappedQuestionId` 的词 → 我们这边的 `kind`。
 #:
@@ -445,7 +477,7 @@ def shape_of(src: str) -> dict:
 #: 步进循环型（`template_loop` 产的）那几个**行为旋钮**的模块级常量名 —— 逐字读。
 #: ⚠️ 它们与 `PROVENANCE` 分两处拿：元数据（`arrive_url` / `pre_steps` / …）在
 #: `PROVENANCE` 里，是**探路事实**；旋钮是**这一份现在的行为**（手调过 max_steps 就该照新的）。
-LOOP_KNOB_NAMES = ("PICK", "MAX_STEPS", "IDLE_LIMIT", "BUSY_TIMEOUT")
+LOOP_KNOB_NAMES = ("PICK", "PICK_HINTS", "MAX_STEPS", "IDLE_LIMIT", "BUSY_TIMEOUT")
 
 
 def loop_spec_from_source(src: str):
@@ -470,8 +502,11 @@ def loop_spec_from_source(src: str):
            "pre_steps": list(prov.get("pre_steps") or []),
            "fill_order": list(prov.get("fill_order") or []),
            "examples": dict(prov.get("examples") or {}),
+           "answers": list(prov.get("answers") or []),
+           "bindings": list(prov.get("bindings") or []),
            "why": str(prov.get("why") or "")}
-    for key, name in (("pick", "PICK"), ("max_steps", "MAX_STEPS"),
+    for key, name in (("pick", "PICK"), ("pick_hints", "PICK_HINTS"),
+                      ("max_steps", "MAX_STEPS"),
                       ("idle_limit", "IDLE_LIMIT"), ("busy_timeout", "BUSY_TIMEOUT")):
         if name in lit:
             out[key] = lit[name]
@@ -605,6 +640,11 @@ PATCH_DISCIPLINE = """## 改这份脚本时的纪律（这几条是这套工具�
 （比如「第一步点那个 `Accept all`」），就**照他给的那个写** —— 他正看着那一页，比任何猜测都准。
 人没说、页面证据也没给的东西，**不要编**；宁可写「找不到就如实报失败」。
 
+**先判断，再动手**：证据里给了失败页截图时，先把**日志的读数**与**图上真有的东西**逐条对上 ——
+矛盾处就是病根（例：日志写 `options=[] labels=[] inputs=[]`，图上有三个可点的文字选项
+⇒ 读页漏了纯文字块，不是页面没有）。只改这一处；证据不够或两边打架 ⇒ 少改，
+**宁可如实报失败，也别猜着改**（猜出来的改动没有任何地方会响）。
+
 **人给了「步骤表」就照那张表发号施令**（正文里带 `【步骤表（人给的，照它走）】` 那一段；
 一行一步，通常写着「动作 + 选择器 ｜ 等多久 ｜ 出现哪个元素才算这一步成了」）：
 那张表**就是规格** —— 别自己重新设计流程，也别把顺序改了。照它写的每一条：
@@ -649,13 +689,118 @@ PATCH_DISCIPLINE = """## 改这份脚本时的纪律（这几条是这套工具�
 """
 
 
+def _shot_bytes(one, *, limit: int) -> bytes:
+    """截图 → 原始字节（**最多** `limit` 字节）。本地路径或 `http(s)` 地址。
+
+    ⚠️ 只认这两种；别的 scheme 当场说「不认」，不许让 `urllib` 去试 `file://` 之类。
+    ⚠️ `limit` 不是省事：后端那张图是外网地址，不设上限就是让一个地址决定内存。
+    """
+    text = str(one or "").strip()
+    if text.startswith(("http://", "https://")):
+        req = urllib.request.Request(text, headers={"User-Agent": "siteforge-repair/1"})
+        with urllib.request.urlopen(req, timeout=20) as got:
+            return got.read(limit)
+    if "://" in text:
+        raise OSError("不认这种地址（只收本地路径或 http/https）：%s" % text)
+    with pathlib.Path(text).open("rb") as fp:
+        return fp.read(limit)
+
+
+def shot_parts(paths) -> tuple[list, str]:
+    """失败截图 → OpenAI 图文 parts；给不进去的**逐条说清**，不许静默丢。
+
+    ★ 2026-10-30（第一条决策样本 `job-6ff0dc514ff3`）：日志只说
+    `options=[] labels=[] inputs=[]`，截图里却有「A little lonely / Hoping to meet you /
+    Seeing what's possible」三个文字选项 —— 两边一对，病根是读页漏了纯文字块。
+    ★ 2026-10-30 第二刀：自测卡住那一步的 `N-before.png` / `N-after.png` 与后端
+    `fail_img`（OSS 地址）走**同一条**入口。
+    ⚠️ 上限与 `screenshot` 工具那条路同一格（`tools._shot_b64_max`）：超了就**说**（下文），
+    不许把 base64 当文本塞进去（模型看不见还白付上下文）。
+    """
+    parts, skipped = [], []
+    cap = tools_mod._shot_b64_max()
+    #: base64 比原字节大 4/3 ⇒ 原字节上限就是 cap × 3/4（多读 1 字节用来判「超了」）。
+    raw_cap = max(1, cap * 3 // 4)
+    for one in paths or []:
+        name = str(one or "").strip().rsplit("/", 1)[-1] or "（没名字）"
+        try:
+            data = _shot_bytes(one, limit=raw_cap + 1)
+        except Exception as exc:                  # noqa: BLE001 —— 外面世界（网络 / 盘）
+            skipped.append("%s 读不到（%s）" % (name, exc))
+            continue
+        if len(data) > raw_cap:
+            skipped.append("%s 太大（超过上限 %d 字节）" % (name, raw_cap))
+            continue
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            skipped.append("%s 不是 PNG" % name)
+            continue
+        b64 = base64.b64encode(data).decode()
+        parts.append({"type": "image_url",
+                      "image_url": {"url": "data:image/png;base64," + b64}})
+    return parts, "；".join(skipped)
+
+
+def with_shots(text: str, paths) -> "str | list[dict]":
+    """一段提示词 + 截图文件/地址 → 字符串（没图）或图文 parts（有图）。**一处口径**。"""
+    parts, skipped = shot_parts(paths)
+    if skipped:
+        text += "\n\n## 截图没进来 / 不全\n%s" % skipped
+    if not parts:
+        return text
+    return [{"type": "text", "text": text}] + parts
+
+
+def cases_block(cases) -> str:
+    """**已验证交付**的历史修法 → 提示词里的一段**参考**。没有就回空串。
+
+    ⚠️ 不自动套用：站点/代码版本/行号/锚点都可能不同 —— 这一段只把「上次真修成的那一刀」
+    原样摆出来，让模型自己核对。失败方案永远进不来（`graph._case_hints` 只收
+    `verification.delivered == True` 的行）。
+    """
+    rows = [c for c in (cases or [])
+            if isinstance(c, dict) and str(c.get("diff") or "").strip()]
+    if not rows:
+        return ""
+    lines = ["## 同指纹的历史成功修法（**参考**，不是能直接套的补丁）",
+             "下面每一条都是**同一失败指纹**、在别的 job 上**自测通过并交付过**的那次改动。",
+             "站点与代码版本可能不同 ⇒ **先核对锚点/行号**；不适用就忽略，别整段照抄。"]
+    for one in rows:
+        where = str(one.get("site") or "（站点没记）")
+        when = str(one.get("at") or "")
+        family = str(one.get("family") or "")
+        note = str(one.get("note") or "")
+        lines.append("- 站点 `%s`%s%s：%s"
+                     % (where,
+                        ("（%s）" % when) if when else "",
+                        ("，族 `%s`" % family) if family else "",
+                        note or "（它没说为什么）"))
+        scope = one.get("changed_scope")
+        if isinstance(scope, dict) and scope:
+            lines.append("  改的范围：组「%s」第 %s 步（产物第 %s 步）"
+                         % (scope.get("state") or "?", int(scope.get("index") or 0) + 1,
+                            scope.get("global")))
+        before = str(one.get("before_sha256") or "")
+        after = str(one.get("after_sha256") or "")
+        if before or after:
+            lines.append("  版本：before `%s` → after `%s`"
+                         % (before[:16] or "?", after[:16] or "?"))
+        lines.append("  diff（逐字）：")
+        lines.append("  ```diff")
+        lines.extend("  " + ln for ln in str(one["diff"]).splitlines())
+        lines.append("  ```")
+    return "\n".join(lines)
+
+
 def patch_user(old_src: str, *, evidence: str = "", success_text: str = "",
                diagnosis: str = "", page_evidence: str = "",
-               violations: Optional[list] = None, hints: Optional[list] = None) -> str:
+               violations: Optional[list] = None, hints: Optional[list] = None,
+               shots: Optional[list] = None, cases: Optional[list] = None):
     """给模型的**这一轮**输入：旧源码全文 + 失败证据 + 人给的成功判据 + 上一轮被打回的原因。
 
     ⚠️ 失败证据与人说的话**逐字**贴进去（不加工、不概括）—— 那是外部世界给的东西；
     这一层替它总结一次，模型就再也看不到原文里那些细节了。
+    `shots` 给的是**失败页截图**的文件路径：返回图文 parts（`[text, image…]`）；
+    没给图 / 一张都给不进去 ⇒ 返回字符串，与从前逐字节一致。
     """
     parts = []
     if str(evidence or "").strip():
@@ -673,13 +818,16 @@ def patch_user(old_src: str, *, evidence: str = "", success_text: str = "",
         parts.append("## 上一版自测没过：诊断（逐字）\n%s" % str(diagnosis).strip())
     for bad in (violations or []):
         parts.append("## 上一版被打回的原因（逐条改掉）\n%s" % bad)
+    block = cases_block(cases)
+    if block:
+        parts.append(block)
     parts.append(PATCH_DISCIPLINE)
     numbered = "\n".join("%5d| %s" % (i, ln) for i, ln in enumerate(old_src.splitlines(), 1))
     parts.append("## 旧源码（生产里正在跑的那一份，逐字；**左边那个数是行号**）\n```\n%s\n```"
                  % numbered)
     parts.append("照上面那个形状交：每一处一块 `<<<REPLACE 起行-止行 锚点`，末尾单独一行 `>>>`。"
                  "行号用清单左边那一列，锚点写那一段第一行开头的几个字。")
-    return "\n\n".join(parts)
+    return with_shots("\n\n".join(parts), shots)
 
 
 # ── 账本那一族的改稿那双手：**只交一张数据表**（★ 2026-09-28）──────────────────
@@ -778,6 +926,35 @@ LOCAL_REPAIR_SAY = (
 )
 
 
+#: 失败族 → **这一轮怎么改**（一句话）。★ 2026-10-30（`job-c02d5768e535` 那一族）：
+#: 族本来只用来在停住时说人话；改稿那双手拿到的提示词里**没有它** —— 于是弹层族
+#: 照样去改失败步的选择器。这里把族变成**动作指引**（判据仍在 `graph._failure_family`）。
+FAMILY_FIX_SAY = {
+    "overlay": ("**先修前提层**：把盖住页面的那一层关掉（或按它自己的关闭钩子），"
+                "并**复查它真的没了**；不要只改失败那一步的选择器。"
+                "现场里「盖在上面的是什么」就是那一层。"),
+    "timing": ("这是**时序**：只动等待/轮询/重试预算 —— 步进循环型是 `busy_timeout`，"
+               "老写法是失败那一步自己的等待循环；等到关键元素真出现为止。"
+               "不要改选择器、不要全局加长 sleep；等不到就如实报失败。"),
+    "flow": ("这是**流程/判据/少一步**那一族：先看它停在哪一页、哪些步被跳过 —— "
+             "补漏掉的步骤，把**状态判据**（被跳过那组的 `when`）或成功判据钉对；"
+             "别乱改选择器。"),
+    "precondition": "这是**前提**（窗口/会话），不是稿子的问题 —— 不要在稿里编一个修法。",
+    "unknown": "证据不够定性：只改证据指得出的那一处，别猜。",
+}
+
+
+#: 缺陷类 → **先修哪一层**（与 `graph._defect_class` 的判据配套）。
+#: `evidence` 那一档的出路是补探路/补证据，**不是**在提示词里换措辞。
+DEFECT_FIX_SAY = {
+    "evidence": "这是**证据不足/不可核对**：不要靠改 Prompt/选择器硬猜；先补探路或请人给锚。",
+    "reasoning": "这是**推理/判断**：证据够，改判据/步骤/取值，别乱动证据锚。",
+    "environment": "这是**环境/前提层**（弹层/窗口/时序）：先修前提，不要在稿里编。",
+    "execution": "这是**执行方式**（怎么填/怎么点）：改填法，不是改身份锚。",
+    "unknown": "判不出证据还是推理：只改证据指得出的那一处。",
+}
+
+
 def diagnosis_for_prompt(diag: Optional[dict]) -> str:
     """一份诊断 → **逐字**贴进提示词的那一段（`states_user(diagnosis=…)` 的载荷）。
 
@@ -804,6 +981,14 @@ def diagnosis_for_prompt(diag: Optional[dict]) -> str:
         parts.append("它自己那句话（逐字）：%s" % str(diag["note"]).strip())
     if diag.get("submissions") is not None:
         parts.append("这一轮往站方**真提交**了 %s 次。" % diag.get("submissions"))
+    family = str(diag.get("family") or "").strip()
+    if family:
+        parts.append("**这一轮的失败族**：`%s`。%s"
+                     % (family, FAMILY_FIX_SAY.get(family, "")))
+    defect = str(diag.get("defect") or "").strip()
+    if defect:
+        parts.append("**这一轮的缺陷类**：`%s`。%s"
+                     % (defect, DEFECT_FIX_SAY.get(defect, "")))
     per_run = diag.get("per_run") or []
     if per_run:
         parts.append("每一遍（逐字）：\n%s"
@@ -824,7 +1009,8 @@ def diagnosis_for_prompt(diag: Optional[dict]) -> str:
 
 
 def states_user(spec: dict, *, diagnosis: str = "", page_evidence: str = "",
-                violations: Optional[list] = None, hints: Optional[list] = None) -> str:
+                violations: Optional[list] = None, hints: Optional[list] = None,
+                cases: Optional[list] = None) -> str:
     """给模型的**这一轮**输入：这张表全文 + 人说的话 + 自测诊断 + 上一版被打回的原因。
 
     ⚠️ 人说的话与诊断**逐字**贴进去（与 `patch_user` 同一条规矩）：这一层替它概括一次，
@@ -840,6 +1026,9 @@ def states_user(spec: dict, *, diagnosis: str = "", page_evidence: str = "",
         parts.append("## 上一版真跑了一遍的证据（下面是它自己打的）\n%s" % page_evidence.strip())
     for bad in (violations or []):
         parts.append("## 上一版被打回的原因（逐条改掉）\n%s" % bad)
+    block = cases_block(cases)
+    if block:
+        parts.append(block)
     parts.append("## 现在的表（逐字；改它就是改产物）\n```json\n%s\n```"
                  % json.dumps(_table(spec), ensure_ascii=False, indent=1, sort_keys=True))
     parts.append("照上面那个形状交：**一个** JSON 对象，只写你要改的那几格 + `note`。")
@@ -847,11 +1036,14 @@ def states_user(spec: dict, *, diagnosis: str = "", page_evidence: str = "",
 
 
 def states_from_reply(spec: dict, reply: str) -> tuple:
-    """模型原话 → `(改过的 spec, 人话)`。
+    """模型原话 → `(改过的 spec, 人话)`；**读不动 / 有一样不合法 ⇒ 抛 `ProtocolError`**。
 
-    **读不动 / 有一样不合法 ⇒ 整份原样退回 + 原因**（不是「能认的那几格先收下」）：
-    半份收下的后果是**闸上看到「改过了」而其中一半根本没进去** —— 那种静默分岔是这套工具
-    反复付过代价的坏法（`graph._patch_draft` 的「逐条人话」也是为它写的）。
+    不是「能认的那几格先收下」：半份收下的后果是**闸上看到「改过了」而其中一半根本没进去**
+    —— 那种静默分岔是这套工具反复付过代价的坏法（`graph._patch_draft` 的「逐条人话」
+    也是为它写的）。
+
+    ⚠️ 拒绝**不再返回原样 spec**：返回值 `(原样, 原因)` 会让调用方把它当成「模型没改」，
+    而真正发生的是**协议失败**（JSON / 字段 / 类型 / 枚举 / `note`）。两类病必须分开。
     """
     text = str(reply or "")
     fenced = _JSON_FENCE.search(text)
@@ -864,10 +1056,12 @@ def states_from_reply(spec: dict, reply: str) -> tuple:
     try:
         got = json.loads(text)
     except (ValueError, TypeError) as exc:
-        return dict(spec), ["改稿那双手交回来的东西不是一段合法的 JSON（%s）" % exc]
+        raise ProtocolError(
+            ["改稿那双手交回来的东西不是一段合法的 JSON（%s）" % exc], reply=text) from exc
     if not isinstance(got, dict):
-        return dict(spec), ["改稿那双手交回来的不是一个 JSON 对象（是一份 %s）"
-                            % type(got).__name__]
+        raise ProtocolError(
+            ["改稿那双手交回来的不是一个 JSON 对象（是一份 %s）" % type(got).__name__],
+            reply=text)
     bad: list = []
     new = dict(spec)
     if "fills" in got:
@@ -911,8 +1105,36 @@ def states_from_reply(spec: dict, reply: str) -> tuple:
     if not note:
         bad.append("那份回话里没有 `note` —— 说不清它按人说的改了哪一处")
     if bad:
-        return dict(spec), bad
+        raise ProtocolError(bad, reply=text)
     return new, [note]
+
+
+def states_with_retry(spec: dict, ask: Callable[[list], str], *,
+                      attempts: int = 2, violations=None) -> tuple:
+    """反复问，直到模型交回一份读得动的表；**每次拒绝的真实原因回灌下一次**。
+
+    `ask(violations)` 负责拼这一轮的提示词并拿回原话。返回值 `(新 spec, 失败记录)`：
+    记录是**结构化的**（`ProtocolError.record()`），调用方要把它并进 state，不能只留在
+    prompt 里 —— 下一轮、闸上、盘上的交接包都要看得到「上一次到底错在哪」。
+
+    全都读不动 ⇒ 抛最后一个 `ProtocolError`，`records` 带齐每一回的失败。
+    """
+    failures: list = []
+    told = list(violations or [])
+    last = None
+    for attempt in range(1, max(1, int(attempts)) + 1):
+        try:
+            reply = ask(told)
+            new, _note = states_from_reply(spec, reply)
+        except ProtocolError as exc:
+            last = exc
+            failures.append(exc.record(attempt=attempt))
+            told = list(exc.errors)
+            continue
+        return new, failures
+    if last is None:
+        last = ProtocolError(["模型这一轮一个字都没给"])
+    raise ProtocolError(last.errors, reply=last.reply, records=failures)
 
 
 _CODE_FENCE = re.compile(r"```(?:python|py|diff)?\s*\n(.*?)```", re.S)
@@ -1074,8 +1296,10 @@ def source_from_reply(old: str, reply: str) -> str:
     if _looks_like_source(block):
         return block
     head = (block or "").strip().splitlines()[:1]
-    raise ValueError("这段回话既不是 diff（一个 `@@` 都没有）也不是一份读得通的 py"
-                     "（开头是：%s）—— 不猜它想干什么。" % (head[0][:60] if head else "（空的）"))
+    raise ProtocolError(
+        ["这段回话既不是 diff（一个 `@@` 都没有）也不是一份读得通的 py"
+         "（开头是：%s）—— 不猜它想干什么。" % (head[0][:60] if head else "（空的）")],
+        reply=str(reply or ""))
 
 
 def violations_for_prompt(violations) -> list:
@@ -1114,12 +1338,13 @@ def patch_from_rounds(rounds, *, max_tokens=None) -> str:
         return text
     usage = last.get("usage") or {}
     det = usage.get("completion_tokens_details") or {}
-    raise ValueError(
-        "模型这一轮**一个字都没给**（`finish_reason=%s`）：思考 token %s、完成 token %s%s"
-        " —— 多半是预算被思考吃满（文件太大 / `max_tokens` 太小）。"
-        % (last.get("finish_reason"), det.get("reasoning_tokens"),
-           usage.get("completion_tokens"),
-           ("，这一次的预算是 %s" % max_tokens) if max_tokens else ""))
+    raise ProtocolError(
+        ["模型这一轮**一个字都没给**（`finish_reason=%s`）：思考 token %s、完成 token %s%s"
+         " —— 多半是预算被思考吃满（文件太大 / `max_tokens` 太小）。"
+         % (last.get("finish_reason"), det.get("reasoning_tokens"),
+            usage.get("completion_tokens"),
+            ("，这一次的预算是 %s" % max_tokens) if max_tokens else "")],
+        reply="")
 
 
 def extract_source(reply: str) -> str:

@@ -598,6 +598,50 @@ def _key_candidates(key: Any) -> list:
     return out
 
 
+#: 同一个域名下**最多再试几个别的 full-path 键**（一次点击的代价要有上限）。
+#: 实测 `www.blinkist.com` 有 39 个同域键 —— 全试一遍就是一次点击 40 个请求。
+SIBLING_KEY_TRIES = 6
+
+
+def sibling_failure_keys(key: Any, known, limit: int = SIBLING_KEY_TRIES) -> list:
+    """同一个域名下、**后端配置表里真有的**别的 full-path 键（失败记录那一跳的候选）。
+
+    ★ 2026-11-05（educationdirectory 真事）：排行榜那行是
+    `educationdirectory.net/landing-page/4/default`，可这串键在后端配置表里已经删了
+    （`formLog` 回 `config not found`）；同域名下另一个 full-path 键
+    （`…/articles/…`）却读得到。修复按钮不能只认排行榜那一串。
+
+    ⚠️ 只认**同一主机**；原文键与主机段本身都不算（主机段那一档 `fetch_failures`
+    自己会试）。与原文键共的路径前缀越长越先试，其余按字典序（确定性）。
+    ⚠️ 这是**候选**，不是判据：全读不到照样抛、照样报人。
+    """
+    want = str(key or "").strip()
+    host = _host_key(want)
+    if not want or not host:
+        return []
+    out: List[str] = []
+    for raw in known or ():
+        cand = str(raw or "").strip()
+        if not cand or cand == want or cand == host:
+            continue
+        if _host_key(cand) != host:
+            continue
+        if cand not in out:
+            out.append(cand)
+    out.sort(key=lambda c: (-_common_prefix(c, want), c))
+    return out[:max(0, int(limit))]
+
+
+def _common_prefix(a: str, b: str) -> int:
+    """两串共同前缀有多长（只用来排序候选，**不进任何判据**）。"""
+    n = 0
+    for x, y in zip(str(a or ""), str(b or "")):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
 
 
 # ─────────────────────────────── 人话 ───────────────────────────────
@@ -1347,13 +1391,12 @@ class FmrClient:
         return [r for r in (data or []) if isinstance(r, dict)]
 
     # ── ③ 榜单：这一天哪些站在失败 ───────────────────────────────────
-    def fetch_rank(self, date: Any = None, limit: Any = None) -> dict:
+    def fetch_rank(self, date: Any = None, limit: Any = None,
+                   min_streak: Any = None) -> dict:
         """③ **这一天哪些站在失败**（按失败数倒序，并列按站点名字节序 —— 后端那边定的，不重排）。
 
-        ⚠️ 回的是后端那个**对象**：`{date, failed_total, unattributed, rank:[…]}`。
-        `data` 那一格不是一个对象 ⟹ **抛**（见 `_call` 的 `shape` 那段）——
-        那一天没有失败时后端回的**照样是这个对象**（`failed_total:0` / `rank:[]`），
-        所以「形状不对」只可能是「这一次没量着」，**不许**读成「今天没有站在失败」。
+        `min_streak`：后端默认 **5**（只列还在连败 ≥5 次的站）。给 `1` = **所有**当前在失败的站
+        —— 面板上那个「所有失败站」档就是它。⚠️ 不给 ⇒ 整格不发（后端默认值说了算）。
         """
         params: dict = {}
         day = str(date or "").strip()
@@ -1363,6 +1406,8 @@ class FmrClient:
         #: 后端对它回 400（`?limit=` 经 ConvertEmptyStringsToNull 就是 null，同一个坑）。
         if limit not in (None, ""):
             params["limit"] = int(limit)
+        if min_streak not in (None, ""):
+            params["min_streak"] = int(min_streak)
         return self._call("/api/quest/formLogRank", params, shape=dict)
 
     # ── ④ 原因：这一单为什么失败 ─────────────────────────────────────

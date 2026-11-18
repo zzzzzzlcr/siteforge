@@ -446,3 +446,18 @@ def test_the_surrogate_is_really_unwritable_so_the_probe_is_not_vacuous():
     assert json.dumps({"t": BAD}, ensure_ascii=False)                 # 过得了
     with pytest.raises(UnicodeEncodeError):
         json.dumps({"t": BAD}, ensure_ascii=False).encode("utf-8")    # 过不了（`/live` 那一步）
+
+
+def test_success_urls_takes_a_list_or_several_lines():
+    """★ 2026-10-22（用户裁定「不合资格也算成功」）：**合格屏 + 拒绝屏**两条判据。
+
+    面板只有一格 ⇒ 人在里面**一行一条**；API 调用方也可以直接给列表。
+    内部归一成「一行一条」的字符串，图/产物两侧共用 `browser_agent.wanted_urls` 解析。
+    """
+    assert service._success_urls_text("a\nb") == "a\nb"
+    assert service._success_urls_text(["a", " b ", ""]) == "a\nb"
+    assert service._success_urls_text(None) == ""
+    body = service.RunRequest(url=URL, success_text=SUCCESS,
+                              success_urls=["https://x.test/qual",
+                                            "https://x.test/rejection/"])
+    assert body.success_urls == ["https://x.test/qual", "https://x.test/rejection/"]

@@ -337,6 +337,19 @@ def _continue_payloads() -> dict:
     }
 
 
+def _continue_note_payloads() -> dict:
+    """★ 2026-10-21（真事 `job-6203bc32c1c4`）：「框里写了话 + 按继续」那一份。
+
+    与 `_continue_payloads` **同一趟驱动**，只多一格 `note`（驱动把它写进输入框）。
+    现场：运营在闸上写了「先点 See If You Qualify 再往下走」，再按「继续」——
+    页面发出去的是 `{"action":"continue"}`，那句话**一个字都没出去**（`hints` 里始终是空的）。
+    """
+    got = _continue_payloads()
+    got["scenario"] = "continue-note"
+    got["note"] = "先点 See If You Qualify 再往下走"
+    return got
+
+
 def _assert_all_different(bodies: list, what: str) -> None:
     """那些正文**两两不同** —— 夹具的牙挂在这个前提上（页面只在正文变了才重画）。"""
     seen = {json.dumps(b, sort_keys=True) for b in bodies}
@@ -387,6 +400,8 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _payloads(final_mode=None, with_why=(scenario == "runs-why"))
     elif scenario == "continue":
         payload = _continue_payloads()
+    elif scenario == "continue-note":
+        payload = _continue_note_payloads()
     elif scenario == "again":
         payload = _again_payloads()
     elif scenario == "artifact":
@@ -446,6 +461,14 @@ def _drive(tmp_path, *, final_mode: str = None, scenario: str = "repaint",
         payload = _rank_payloads()
     elif scenario == "rank-diag-success":
         payload = _rank_success_payloads()
+    elif scenario == "rank-oneclick":
+        payload = _rank_oneclick_payloads()
+    elif scenario == "classify":
+        payload = _classify_payloads()
+    elif scenario == "classify-unknown":
+        payload = _classify_payloads(unknown=True)
+    elif scenario == "classify-link-failed":
+        payload = _classify_payloads(link_exit=4)
     else:
         payload = _payloads(final_mode=final_mode)
     #: 分支名与载荷自己声明的那一个**同不同名**：不同名 = 上面又漏了一个分支，
@@ -688,6 +711,25 @@ def test_the_continue_button_says_something_back(tmp_path):
     #    在那儿滚就是跟人抢滚动条（比看不见更坏）—— `run-refused` 钉的是同一条。
     assert out["afterRepaint"]["errScrolls"] == after["errScrolls"], (
         "重画那几次也跟着滚了 —— 每 3 秒跟人抢一次滚动条：%r" % out["afterRepaint"])
+
+
+def test_the_continue_button_carries_what_is_typed_in_the_box(tmp_path):
+    """★ 2026-10-21（真事 `job-6203bc32c1c4`）：**框里写了话，按「继续」它得跟着出去**。
+
+    现场：运营在闸上写了「先点 See If You Qualify 再往下走」，再按「继续」——
+    `btnContinue` 只发 `{"action":"continue"}`，那句**一个字都没出去**
+    （服务侧的 `hints` 从头到尾只有 `[]`）。而这一屏自己的小字写的是
+    「这句话会一路带进它下一步要做的事；不写也能按「继续」让它往下走」——
+    文案承诺的事，按钮得做到。
+
+    判据落在**发出去的正文**上（`out["sent"]`）：`action` 是 `say`（不是 `continue`），
+    `note` 与框里那句话**一字不差**。没有写的时候仍是纯 `continue`（上一条用例钉着）。
+    """
+    out = _drive(tmp_path, scenario="continue-note")
+    replies = [x for x in out["sent"] if x["url"] == "/job/job-1/reply"]
+    assert len(replies) == 1, out["sent"]
+    assert json.loads(replies[0]["body"]) == {
+        "action": "say", "note": "先点 See If You Qualify 再往下走"}, replies[0]
 
 
 def test_the_download_is_not_there_until_the_artifact_really_is(tmp_path):
@@ -1629,7 +1671,8 @@ FAIL_PICK = "26033398"
 #: 两个值写得一样的话，「页面把 `#failSite` 那个值当作站点键发出去」这种改法照绿。
 FAIL_ROW_KEY = "www.gowizard.com/auto-warranty"
 #: 服务那两跳的地址（**从服务自己的常量算出来**，不在这儿手拼一份）。
-FAIL_LIST_URL = service.FAILURES_PATH + "?site=" + urllib.parse.quote(FAIL_SITE, safe="")
+FAIL_LIST_URL = (service.FAILURES_PATH + "?site=" + urllib.parse.quote(FAIL_SITE, safe="")
+                 + "&type=debug")
 FAIL_EV_URL = (service.FAILURE_EVIDENCE_PATH % FAIL_PICK
                + "?site=" + urllib.parse.quote(FAIL_SITE, safe=""))
 #: 那一段证据（服务给的那三样）。**它自己就是 `fmr.evidence_text` 算的** —— 同源。
@@ -1896,9 +1939,10 @@ def test_the_panel_shows_the_failures_as_human_words(tmp_path):
     assert FAIL_ROW_SAY in html, "那一条的人话没上屏：%r" % html
     assert "9-19 10:21 失败 · 美国 · 站点专属" in html, html
     assert "有 2 条失败的记录" in html, "服务那句「量到了什么」没上屏：%r" % html
-    #: ★ 每一行的形状：**单号 + 一句人话**，没有第三样东西
-    assert '<li><span class="mono">26033398</span> %s</li>' % FAIL_ROW_SAY in html, \
-        "那一行不是「单号 + 一句人话」（多了或少了东西）：%r" % html
+    #: ★ 2026-10-29：每一行 = 单号 + 一句人话 + 一个「一键修复」（不再只有两样）。
+    assert ('<li><span class="mono">26033398</span> %s ' % FAIL_ROW_SAY +
+            '<button class="btn small" type="button" data-fix-one="26033398">一键修复</button></li>'
+            ) in html, "那一行不是「单号 + 一句人话 + 一键修复」：%r" % html
     assert html.count("<li>") == len(FAIL_ROWS), html
     for junk in ("{", "}", '"task_id"', "JSON"):
         assert junk not in html, "那一行把整条记录端上来了（%s）：%r" % (junk, html)
@@ -2160,14 +2204,15 @@ RANK_BODY = {
 RANK_SAY = RANK_BODY["say"]
 RANK_ROW_SAYS = [r["say"] for r in RANK_BODY["rank"]]
 #: 那一栏的三跳地址（**从服务自己的常量算出来**，不在这儿手拼一份）。
-RANK_URL = service.RANK_PATH
+RANK_URL = service.RANK_PATH + "?min_streak=1"
 DIAG_WITH_URL = service.DIAG_PATH % DIAG_TASK
 DIAG_NO_URL = service.DIAG_PATH % NO_DIAG_TASK
 
 
 def _failures_url(site: str) -> str:
-    """`/failures?site=<键>` 那一跳（`quote(..., safe="")` 与页面的 `encodeURIComponent` 同形）。"""
-    return service.FAILURES_PATH + "?site=" + urllib.parse.quote(site, safe="")
+    """`/failures?site=<键>&type=debug` 那一跳（页面 2026-11-05 起固定带 `type=debug`）。"""
+    return (service.FAILURES_PATH + "?site=" + urllib.parse.quote(site, safe="")
+            + "&type=debug")
 
 
 #: 那两单的失败行（`/failures` 那一栏要摆出来的）—— 人话**现算**。
@@ -2327,6 +2372,25 @@ def _rank_payloads() -> dict:
             }}
 
 
+def _rank_oneclick_payloads() -> dict:
+    """榜单一行「一键修复」那一趟：**近 30 天**查失败单 → 挑最新一条 → 开一趟。
+
+    ⚠️ 单开一趟，不塞进 `rank-diag`：它会真发一次 `/run`（与 `rank-diag-success` 同一条理由）。
+    """
+    p = _rank_payloads()
+    p["scenario"] = "rank-oneclick"
+    since = (dt.date.today() - dt.timedelta(days=30)).isoformat()
+    extra = "&since=" + urllib.parse.quote(since)
+    p["responses"][_failures_url(RANK_CLEAN) + extra] = [
+        {"body": _failures_body(RANK_CLEAN, 2, seed=RANK_FAIL_ROWS)}]
+    p["responses"][(service.FAILURE_EVIDENCE_PATH % DIAG_TASK)
+                   + "?site=" + urllib.parse.quote(RANK_CLEAN, safe="") + extra] = [{"body": {
+                       "task_id": DIAG_TASK, "row_say": FAIL_ROW_SAY, "url": FAIL_ENTRY_URL,
+                       "evidence": FAIL_EV, "fill_url": True,
+                       "site": RANK_CLEAN, "fill_site": True}}]
+    return p
+
+
 #: ★ 2026-09-24（用户实测：按「看完了，直接修这一单」⇒ 400「还没说什么算成功」）：
 #: 人在这两格里写的那两串 —— 一个并进 `#runSuccess`，一个**已经**写在那儿（量「不替人挑」）。
 FIX_SUCCESS = "Thank you for subscribing!"
@@ -2404,6 +2468,31 @@ def test_the_rank_panel_shows_the_rank_as_human_words(tmp_path):
     #: ⚠️ 后端那几格**原样的字段名**不许上屏（页面画的是人话，不是一份 JSON 转储）。
     for code in ("config_id", "config_status", "has_script", "failed_total"):
         assert code not in html, "字段名上了屏（%s）：%r" % (code, html)
+
+
+def test_a_rank_row_repairs_the_latest_failure_in_one_click(tmp_path):
+    """★ 2026-10-29（用户：「失败的榜单列一下，控制台随时修复那种」）：
+    榜单一行按「一键修复」= 近 30 天查失败单 → 挑最新一条 → 开一趟 `mode=fix`。"""
+    out = _drive(tmp_path, scenario="rank-oneclick")
+    after = out["afterOneClick"]
+    assert after["sentRunCount"] == 1, after
+    body = after["body"]
+    assert body["mode"] == "fix", body
+    assert body["url"] == FAIL_ENTRY_URL, body
+    assert body["fix_site"] == RANK_CLEAN, body
+    assert body["fix_site_url"] == FAIL_ENTRY_URL, body
+    assert body["evidence"] == FAIL_EV, body
+    assert after["mode"] == "fix", after
+    assert after["evidence"] == FAIL_EV, after
+    assert "已开一趟修复" in after["note"], after
+    assert after["disabled"] is False, after
+
+
+def test_a_failure_row_repairs_that_ticket_in_one_click(tmp_path):
+    """失败单那一行也有「一键修复」—— 点它走的是同一单（`#failPick` 那一格）。"""
+    out = _drive(tmp_path, scenario="failures")
+    html = out["afterQuery"]["fails"]
+    assert 'data-fix-one="%s"' % FAIL_ROWS[0]["task_id"] in html, html
 
 
 def test_clicking_a_site_asks_the_existing_panel_for_that_sites_failures(tmp_path):
@@ -2829,6 +2918,7 @@ def test_the_auto_row_says_what_the_service_said(tmp_path):
 def _run_rules_payloads():
     return {"scenario": "run", "search": "",
             "run": dict(RUN_FORM, rules={
+                "phone": "2014237916",
                 "phone_prefixes": ["04", "0207"],
                 "dob": {"random": True, "format": "DD/MM/YYYY"},
                 "password": "strong"}),
@@ -2840,6 +2930,117 @@ def test_run_payload_carries_rules(tmp_path):
     out = _drive(tmp_path, scenario="run-rules")
     last = [s for s in out["sent"] if s["url"] == "/run"][-1]
     body = json.loads(last["body"])
-    assert body["rules"] == {"phone_prefixes": ["04", "0207"],
+    assert body["rules"] == {"phone": "2014237916",
+                             "phone_prefixes": ["04", "0207"],
                              "dob": {"random": True, "format": "DD/MM/YYYY"},
                              "password": "strong"}
+
+
+# ══════════════════ 约会站识别（2026-10-29）══════════════════
+CLASSIFY_URL = "https://soulmatemeets.com/land/sp/23d247da/"
+CLASSIFY_KEY = "soulmatemeets.com/land/sp/23d247da"
+CLASSIFY_EVIDENCE = ["testid_prefix: step-content-item-",
+                     "testid_prefix: option-",
+                     "hash_b64_prefix: step"]
+CLASSIFY_RESULT = {
+    "url": CLASSIFY_URL, "site_key": CLASSIFY_KEY,
+    "platform": "japansdates", "confidence": "high", "ambiguous": False,
+    "matches": [{"platform": "japansdates", "score": 3,
+                 "evidence": CLASSIFY_EVIDENCE}],
+    "config_id": 101, "anchor": "japansdates.com", "evidence": CLASSIFY_EVIDENCE,
+    "clicked_start": False, "clicked_text": "", "click_note": "",
+    "census": {"title": "Find your match", "hash": "#c3RlcDE=",
+               "testids": ["step-content-item-Basic", "option-x"],
+               "classes": []},
+    "linked": None, "link_error": None, "link_payload": None,
+}
+CLASSIFY_SAY = ("URL    %s\n平台   japansdates（high）  → config 101（锚点 japansdates.com）\n"
+                "键     %s\n证据   testid: step-content-item-*; option-*\n"
+                "动作   未点 Start\n写入   未写（加 --apply 才写）"
+                % (CLASSIFY_URL, CLASSIFY_KEY))
+
+
+def _classify_payloads(*, unknown=False, link_exit=0) -> dict:
+    """识别那一栏：成功 / unknown / 关联失败，三段**同一段驱动**（差别只在答复）。"""
+    if unknown:
+        result = dict(CLASSIFY_RESULT, platform=None, confidence="unknown",
+                      matches=[], config_id=None, anchor=None, evidence=[],
+                      census={"title": "", "hash": "", "testids": ["step-1"],
+                              "classes": []})
+        say = ("URL    %s\n平台   unknown（unknown）  → config —（锚点 —）\n"
+               "键     %s\n提示   这个家族还没有指纹；把上面的 testid/class 加进 FINGERPRINTS\n"
+               "写入   未写（加 --apply 才写）" % (CLASSIFY_URL, CLASSIFY_KEY))
+        return {"scenario": "classify-unknown", "search": "",
+                "classify": {"url": CLASSIFY_URL, "clickLink": False},
+                "responses": {
+                    "/runs": [{"body": {"note": "还没有任何运行。", "runs": []}}],
+                    "/classify": [{"body": {"exit": 2, "result": result, "say": say}}],
+                }}
+    if link_exit:
+        result = dict(CLASSIFY_RESULT, link_error="回读不一致：这一行不是 config 101")
+        say = CLASSIFY_SAY.replace("写入   未写（加 --apply 才写）",
+                                   "写入   失败：回读不一致：这一行不是 config 101")
+        return {"scenario": "classify-link-failed", "search": "",
+                "classify": {"url": CLASSIFY_URL,
+                             "operator": "值班员 A", "clickLink": True},
+                "responses": {
+                    "/runs": [{"body": {"note": "还没有任何运行。", "runs": []}}],
+                    "/classify": [{"body": {"exit": 0, "result": CLASSIFY_RESULT,
+                                            "say": CLASSIFY_SAY}}],
+                    "/classify/link": [{"body": {"exit": 4, "result": result, "say": say}}],
+                }}
+    linked = dict(CLASSIFY_RESULT, linked={"created": True, "config_id": 101},
+                  link_payload={"site": CLASSIFY_KEY, "config_id": 101,
+                                "operator": "值班员 A", "reason": "census: …"})
+    linked_say = CLASSIFY_SAY.replace(
+        "写入   未写（加 --apply 才写）", "写入   已关联（created=True）")
+    return {"scenario": "classify", "search": "",
+            "classify": {"url": CLASSIFY_URL, "operator": "值班员 A", "clickLink": True},
+            "responses": {
+                "/runs": [{"body": {"note": "还没有任何运行。", "runs": []}}],
+                "/classify": [{"body": {"exit": 0, "result": CLASSIFY_RESULT,
+                                        "say": CLASSIFY_SAY}}],
+                "/classify/link": [{"body": {"exit": 0, "result": linked,
+                                             "say": linked_say}}],
+            }}
+
+
+def test_the_classify_panel_recognises_then_offers_the_link(tmp_path):
+    """识别成功：平台/config/证据上屏，关联按钮**这时才出现**；按下去带 operator。"""
+    out = _drive(tmp_path, scenario="classify")
+    after = out["afterRecognise"]
+    assert "japansdates" in after["box"], after["box"]
+    assert "101" in after["box"], after["box"]
+    assert after["linkHidden"] is False, "唯一命中之后「关联」按钮应该出现"
+    assert after["actHidden"] is False, after
+    assert "101" in after["linkText"], after["linkText"]
+    assert "只加这一条" in after["linkHint"], after["linkHint"]
+    assert out["afterLink"]["linkHidden"] is True, "关联成功之后按钮该收起来"
+    assert "已关联" in out["afterLink"]["box"], out["afterLink"]["box"]
+    calls = out["calls"]
+    assert [c["url"] for c in calls] == ["/classify", "/classify/link"], calls
+    body = json.loads(calls[1]["body"])
+    assert body["url"] == CLASSIFY_URL
+    assert body["operator"] == "值班员 A"
+    assert "config_id" not in body or body["config_id"] in ("", None), body
+
+
+def test_the_classify_panel_does_not_offer_to_link_an_unknown(tmp_path):
+    """unknown 是一个**结果**，不是「可以蒙一个 config」——按钮一个字都不许出现。"""
+    out = _drive(tmp_path, scenario="classify-unknown")
+    after = out["afterRecognise"]
+    assert after["linkHidden"] is True, after
+    assert after["actHidden"] is True, after
+    assert "unknown" in after["box"], after["box"]
+    assert "指纹" in after["box"], after["box"]
+    assert [c["url"] for c in out["calls"]] == ["/classify"], out["calls"]
+
+
+def test_a_failed_classify_link_does_not_claim_success(tmp_path):
+    """关联失败（回读不一致）：服务那句原话上屏，**不显示「已关联」**，按钮留着再试。"""
+    out = _drive(tmp_path, scenario="classify-link-failed")
+    after = out["afterLink"]
+    assert "回读" in after["err"], after
+    assert after["errHidden"] is False, after
+    assert "已关联" not in after["box"], after["box"]
+    assert after["linkHidden"] is False, "失败之后按钮要留着，人能再试一次"

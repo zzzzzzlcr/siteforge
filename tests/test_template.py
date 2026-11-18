@@ -345,6 +345,11 @@ def _load(name: str, src: str, sandbox: pathlib.Path):
     #: 要量「等」这件事本身的那一条会自己把它设回去
     #: （`test_a_selector_that_is_not_there_yet_is_retried_before_relocating` 的两臂）。
     module.NOT_FOUND_WAIT_SECONDS = 0.0
+    #: ★ 2026-10-24：同理 ——「开跑前等落地页」那笔预算（`LANDING_WAIT_SECONDS`，默认 60 秒）
+    #: 在这一份里**关掉**：这一份用假页面跑，替身对 `sfLanding` 不答话时产物本来就不等，
+    #: 但万一哪天答了话，60 秒也能把整份拖慢。要量「等」这件事本身的那一条会自己把它
+    #: 设回去（`test_a_landing_shell_is_waited_out_before_the_first_click`）。
+    module.LANDING_WAIT_SECONDS = 0.0
     return module, path
 
 
@@ -1540,6 +1545,19 @@ class _State:
         self.consent_seq = []
         #: 探针一读就炸（真站上 cdp 偶尔这样）—— 钉「它不许变成新的失败点」那一条。
         self.consent_raises = False
+        #: ★ 2026-10-23：`_MODAL_HOLDS_TARGET_BODY` 的答复（`"1|..."` = 这一步要点的
+        #: 东西**就在模态里**，别点关）—— 假页面默认 ""（不在），购物车抽屉那类用例设成
+        #: `"1|text"`。
+        self.modal_holds = ""
+        #: ★ 2026-11-09：`_OPEN_MODAL_JS` 的答复（`"1"` = 页面上有一个开着的、盖住
+        #: 大半视口的模态/抽屉）——「弹层内容异步渲出来」那族用例设成 "1"。
+        self.open_modal = ""
+        #: ★ 2026-10-24：`_LANDING_STATE_JS` 的答复（一段 JSON 对象；`""` = 不答）。
+        #: 不答 ⇒ 产物「量不到」⇒ **不等**（与真站上 cdp 老到读不出来时的处置同一条）。
+        self.landing = ""
+        #: 逐次答复（同 `consent_seq`）：量一次弹一个，弹空了才退回 `landing`。
+        #: 用来演「还在加载 → 空壳/验证页 → 真页面」这三次真站形状。
+        self.landing_seq = []
         #: 遮挡判据的答复（`"COVER|tag#id.class"`，空串 = 没被盖着）——
         #: 产物 `_covered_by` **只认带 `COVER|` 前缀**的答复。
         self.cover = ""
@@ -1648,6 +1666,10 @@ class CDPHelper:
         # 别的地址还能用」这种真站形状在桩里造不出来 —— 而 `_scroll` 的回退链正是冲它来的。
         # 补上 `fail_selectors`（同一个开关，别的命令早就认它了）；只影响**点名**了
         # 那个选择器的用例，既有用例一个都不动。
+        left = STATE.fail_plan.get(pixels, 0)
+        if left > 0:                       # 按次数失败：演「第一次没成、等一等就成」
+            STATE.fail_plan[pixels] = left - 1
+            return '{"error": "element not found"}'
         if STATE.fail_actions or pixels in STATE.fail_selectors:
             return '{"error": "element not found"}'
         STATE.actions.append(("scroll", pixels))
@@ -1674,6 +1696,14 @@ class CDPHelper:
             #: （`_MARK_CONSENT_BY_TEXT_JS`）⇒ 点还是走 `cdp click`。
             STATE.actions.append(("mark", "consent"))
             return json.dumps("marked")
+        if "sfModalHolds" in script:         # 「这一步要点的东西就在这个模态里吗」（2026-10-23）
+            return json.dumps(STATE.modal_holds)
+        if "sfOpenModal" in script:           # 页面上有没有开着的模态（2026-11-09）
+            return json.dumps(STATE.open_modal)
+        if "sfLanding" in script:             # 「落地页真的出来了吗」（2026-10-24）
+            if STATE.landing_seq:
+                return json.dumps(STATE.landing_seq.pop(0))
+            return json.dumps(STATE.landing)
         if "privacy" in script:              # 同意弹层那个探针（它按 cookie|consent|gdpr|privacy 判）
             if STATE.consent_raises:
                 raise RuntimeError("cdp 挂了")     # 探针坏掉时的真站形状
@@ -2288,6 +2318,196 @@ def test_the_log_says_which_hook_cleared_what(sandbox, form_file, caplog):
     assert "盖住整页的模态" in said and "同意弹层" not in said, said
 
 
+def test_a_modal_that_holds_the_step_target_is_not_dismissed(sandbox, form_file, caplog):
+    """★ 2026-10-23（真事 firstday.com · `job-863ba9a731d7`）：**站点自己的购物车抽屉**
+    也是「role=dialog + aria-modal + 盖满视口 + 一颗 Close shopping cart」—— 通用模态钩子
+    把它当遮挡点掉了，而下一步要点的「CHECKOUT+」**就在抽屉里** ⇒ 自测卡在
+    「页面上没找到 CHECKOUT+」，改了几版稿还是同一堵墙。
+
+    判据：**这一步要点的东西就在这个模态里** ⇒ 它不是遮挡，是流程本身 —— 不点关。
+    ⚠️ 只对「盖住整页的模态」那一行生效；同意条照旧先做决定。
+    """
+    module, _ = _load(
+        "run_popup_holds_target",
+        template.render("example-popup-holds", "Thank you",
+                        _one_click_states(selectors=["#checkout"], text="CHECKOUT+"),
+                        [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    #: 收尾那 30 秒的等待与这一条无关（`run()` 走完还要白等一次）。
+    module.SUCCESS_WAIT_SECONDS = 0
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    #: 开跑前那一次探：没有弹层；本步动手前那一次：购物车抽屉在。
+    common.STATE.consent_seq = ["", "盖住整页的模态|#close-cart|Close shopping cart"]
+    #: 假页面的答复：这一步要点的「CHECKOUT+」就在那个模态里。
+    common.STATE.modal_holds = "1|text"
+
+    with caplog.at_level(logging.INFO):
+        module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert "#close-cart" not in clicks, (
+        "模态里就有这一步要点的东西 —— 点掉它等于把这一步自己删掉：%r" % (clicks,))
+    assert "#checkout" in clicks, clicks
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "就在它里面" in said, said
+
+
+def test_an_open_dropdown_keeps_the_modal_sweep_off(sandbox, form_file, caplog):
+    """★ 2026-11-06（真事 `job-6119866e26d9` · antigravity）：**下拉开着 ⇒ 不清弹层**。
+
+    现场：第 19 步点 `#rc_select_3`，mousedown 已经把列表打开；下一步动手前
+    `_clear_obstructions` 把 Apply 表单当「盖住整页的模态」，而选项渲染在 body 的 portal
+    里、不在模态 DOM 里 ⇒ 它去点模态的关闭键 ⇒ 那一下等于点页面别处，下拉当场关掉 ⇒
+    `.rc-select-item-option[title="10K–100K"]` 等 45 秒等不到，整组重试随后在已经开着的
+    表单上找「Apply now」⇒ 连着三步没做成，收摊。
+
+    判据：`_modal_holds_target` 回 `open-dropdown` ⇒ 与「目标就在模态里」同处置：不点关。
+    """
+    module, _ = _load(
+        "run_popup_open_dropdown",
+        template.render("example-popup-dropdown", "Thank you",
+                        _one_click_states(selectors=["#option"], text="10K–100K"),
+                        [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    module.SUCCESS_WAIT_SECONDS = 0
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    #: 开跑前没有弹层；本步动手前：Apply 表单（满屏模态）在，而这一屏有一个打开的下拉。
+    common.STATE.consent_seq = ["", "盖住整页的模态|#close-form|Close"]
+    common.STATE.modal_holds = "1|open-dropdown"
+
+    with caplog.at_level(logging.INFO):
+        module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert "#close-form" not in clicks, (
+        "下拉开着时点页面别处会把它点没 —— 不许清：%r" % (clicks,))
+    assert "#option" in clicks, clicks
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "已经打开的下拉" in said, said
+
+
+def test_a_modal_that_was_just_used_is_not_swept_off(sandbox, form_file, caplog):
+    """★ 2026-11-06（真事 `job-54fbc668f03d` · homejolly）：**刚才就在用的模态** ⇒ 不清。
+
+    现场：第 5 步在 `#customModal` 里点了「New Walk-In Shower」；第 6 步要点的「Yes」
+    隔几秒才渲出来 ⇒ `_modal_holds_target` 按「这一眼」找落空 ⇒ 清弹层那颗 × 把整个
+    表单模态点掉 ⇒ 「Yes」等 44 秒也等不到（日志原话：「页面上没找到「Yes」」）。
+
+    判据：容器上留着 `data-sf-flow=1`（`_modal_holds_target` 回 `flow`）⇒ 与「目标就在
+    模态里」同处置：不点关。
+    """
+    module, _ = _load(
+        "run_popup_flow_modal",
+        template.render("example-popup-flow", "Thank you",
+                        _one_click_states(selectors=["#yes"], text="Yes"),
+                        [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    module.SUCCESS_WAIT_SECONDS = 0
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    #: 开跑前没有弹层；本步动手前：刚才就在用的那个表单模态还盖着整页。
+    common.STATE.consent_seq = ["", "盖住整页的模态|#close-form|Close"]
+    common.STATE.modal_holds = "1|flow"
+
+    with caplog.at_level(logging.INFO):
+        module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert "#close-form" not in clicks, (
+        "这个模态刚才那一步就在里面做 —— 点掉它等于把流程自己删掉：%r" % (clicks,))
+    assert "#yes" in clicks, clicks
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "刚才那一步就在这个模态里" in said, said
+
+
+def test_an_overlay_close_step_is_never_relocated(sandbox, form_file, caplog):
+    """★ 2026-11-06（真事 `job-6119866e26d9` · antigravity）：**点掉弹层**那类步骤
+    地址失效 ⇒ 只当它不在，**不按意图重找**。
+
+    现场：账本那步 `close modal button` 的 `.SubscribeModal_closeIcon__S50rw` 在
+    user-agreement 那一屏不存在；重定位按 aria-label 找到**页面导航里另一颗**同名按钮
+    ⇒ 点开移动端菜单 ⇒ 底下的 footer 链接被 `ul.index_mobile_list` 盖住 ⇒
+    下一步「不许点盖着的」⇒ 整组重试 ⇒ 收摊。
+
+    判据：名字/地址里同时有「弹层」与「关闭/同意」两族词（`_is_overlay_step`）⇒
+    声明地址全失效时**不重找**、按软跳过处理（弹层真还在，下一步会被 `_covered_by` 挡住）。
+    """
+    states = [{"name": "go", "when": None, "steps": [
+        {"action": "click", "note": "点了「close modal button」",
+         "target": {"label": "close modal button", "selectors": ["#modal-close"]}}]}]
+    module, _ = _load(
+        "run_overlay_no_relocate",
+        template.render("example-overlay", "Thank you", states, [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    module.SUCCESS_WAIT_SECONDS = 0
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/",
+                            "fields": [],
+                            "actions": [{"text": "", "role": "button", "region": "header",
+                                         "stability": "high", "selector": "#nav-close"}]},
+                   diff={"actionable": True})
+    #: 声明的地址在这张假页面上**不存在**（不这么设，假 cdp 的 click 一律回 ok，
+    #: 这一步根本走不到重定位那一跳 —— 测的就不是这条判据了）。
+    common.STATE.fail_selectors = ("#modal-close",)
+    common.STATE.texts = ["Walk"]
+
+    with caplog.at_level(logging.INFO):
+        module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    clicks = [a[1] for a in common.STATE.actions if a[0] == "click"]
+    assert "#nav-close" not in clicks, (
+        "弹层辅助步不许按意图重找（会点到页面别处同名的一颗）：%r" % (clicks,))
+    assert "不按意图重找" in " ".join(r.getMessage() for r in caplog.records)
+
+
+def test_a_landing_shell_is_waited_out_before_the_first_click(sandbox, form_file, caplog):
+    """★ 2026-10-24（真事 southernliving.com · 单号 26789988）：广告落地页在冷缓存下
+    **先给一个空壳**（标题 `Simple Page`、0 个可见链接），接着还可能过一道 Cloudflare
+    的「Just a moment...」，真页面 15~20 秒后才出来。生产重跑没有 observe，回退链
+    救不了「点得太早」：第 1 步的选择器在空壳上必然找不到 ⇒ 整趟 `no_success`；
+    而 30 秒后 ad-task 抓的现场截图，页面是**好的**（照片里 SUBSCRIBE 就在页头）。
+
+    判据：**开跑前等这一页真的出来** —— 空壳 / 验证页 / 还没加载完都不算。
+    三条同时成立才叫出来：`readyState=complete`、标题不是验证/加载页那一族、
+    页面上有真东西（可见链接 / 表单控件 / 正文 ≥ 20 字）。
+    """
+    module, _ = _load(
+        "run_landing_wait",
+        template.render("example-landing-wait", "Walk",
+                        _one_click_states(selectors=["#subscribe"], text="SUBSCRIBE"),
+                        [], SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    #: 收尾那 30 秒与这一条无关；这里量的只是**开跑前那一笔**。
+    module.SUCCESS_WAIT_SECONDS = 0
+    module.LANDING_WAIT_SECONDS = 10.0
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    #: 假页面头三眼：还在加载 → 空壳（验证页） → 真页面。
+    common.STATE.landing_seq = [
+        {"rs": "loading", "shell": False, "links": 0, "fields": 0, "len": 0},
+        {"rs": "complete", "shell": True, "links": 0, "fields": 0, "len": 0},
+        {"rs": "complete", "shell": False, "links": 24, "fields": 2, "len": 900},
+    ]
+
+    with caplog.at_level(logging.INFO):
+        ok = module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+    assert ok is True
+    assert [a[1] for a in common.STATE.actions if a[0] == "click"] == ["#subscribe"]
+    said = " ".join(r.getMessage() for r in caplog.records)
+    assert "落地页" in said and "等" in said, said
+
+
 def test_an_answer_in_a_shape_we_do_not_know_is_not_a_popup(sandbox, form_file):
     """反例（新形状的边界）：答复**认不出来**时一下都不点 —— 不许拿半个答复去点东西。
 
@@ -2585,6 +2805,89 @@ def test_a_select_covered_by_its_own_widget_is_still_filled(sandbox, form_file, 
     assert forms == [("form", "#edit-size", "Two Bedrooms")], (
         "被自己那层 select2 壳子盖着的那一格**要填**（底下的 cdp 认得出自定义下拉）：%s"
         % (common.STATE.actions,))
+    line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert line["ok"] is True, line
+
+
+def test_a_click_on_the_select_widgets_own_label_is_not_blocked(sandbox, form_file, tmp_path):
+    """★ 2026-11-06（真事 `job-0ecaf3b90a6a` · antigravity）：**click 也认「自己的壳」**。
+
+    现场第 8 步点 `#rc_select_0`（rc-select 的隐藏 input），落点上站着的是同一格自己的
+    可见 label `div.RCSelect_v2_label__Qdn2I`（class 里就写着 select）。旧判据只放
+    `form + kind=select` ⇒ 判成遮挡 ⇒ **一次 cdp click 都没发出去**，整组连带后面收摊。
+
+    窄口径两条都要：目标 id 里写着 select/dropdown；盖着的东西 class 里也写着这两个词。
+    负控（同一格）：非 select 目标、非 select 壳、`form` 但 `kind` 不是 select —— 一律照旧拦。
+    """
+    module, _ = _load(
+        "run_select_click",
+        template.render("example-select-click", "Thank you",
+                        _one_click_states(selectors=["#rc_select_0"]), [],
+                        SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Walk"]
+    common.STATE.cover = "COVER|div.RCSelect_v2_label__Qdn2I"
+    module.COVER_WAIT_SECONDS = 0.3
+    module.COVER_POLL_SECONDS = 0.02
+
+    trace = tmp_path / "select_click.jsonl"
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                  trace=str(trace)).run()
+
+    assert ("click", "#rc_select_0") in common.STATE.actions, (
+        "被自己那层可见 label 盖着的下拉**要点**（底下 cdp 认得出这种控件）：%s"
+        % (common.STATE.actions,))
+    line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
+    assert line["ok"] is True, line
+    #: 负控：两条窄口径缺一条就照旧拦（纯判据，不需要实例）。
+    own = module.Filler._cover_is_own_widget
+    assert not own(None, "click", "value", "#go", "div.RCSelect_v2_label__Qdn2I")
+    assert not own(None, "click", "value", "#rc_select_0", "div#onetrust-banner")
+    assert not own(None, "form", "value", "#email", "div.RCSelect_v2_label__Qdn2I")
+    #: 正控：`form` 填同一个下拉的 input 也放行（★ `job-299e89b9c77f` 自测第 10 步的形状）。
+    assert own(None, "form", "value", "#rc_select_0", "div.RCSelect_v2_label__Qdn2I")
+
+
+def test_a_form_fill_on_the_select_widgets_hidden_input_is_not_blocked(
+        sandbox, form_file, tmp_path):
+    """★ 2026-11-06（真事 `job-299e89b9c77f` · antigravity）：**form 填 rc-select 的 input**。
+
+    自测第 10 步原话：`div.RCSelect_v2_label__Qdn2I 一直盖着「rc_select_0」……这一下没敢填`
+    —— 可见壳盖着同一格的隐藏 input。判据与 click 那一条同一把尺子（`_cover_is_own_widget`）。
+    """
+    fills = [{
+        "name": "photo", "source": "photo", "kind": "value", "label": "Photo",
+        "target": {"text": None, "label": "Photo", "role": None, "near": None,
+                   "selectors": ["#rc_select_0"]},
+        "fallback": [],
+    }]
+    states = [{"name": "form", "when": None,
+               "steps": [{"action": "form", "fill": "photo", "note": "填下拉"}]}]
+    module, _ = _load(
+        "run_select_form_own_widget",
+        template.render("example-select-form", "Thank you", states, fills,
+                        SAMPLE_PROVENANCE),
+        sandbox,
+    )
+    common = _stub(sandbox,
+                   observe={"url": "https://example.test/", "actions": [], "fields": []},
+                   diff={"actionable": True})
+    common.STATE.texts = ["Thank you"]
+    common.STATE.cover = "COVER|div.RCSelect_v2_label__Qdn2I"
+    module.COVER_WAIT_SECONDS = 0.3
+    module.COVER_POLL_SECONDS = 0.02
+
+    trace = tmp_path / "select_form.jsonl"
+    module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0),
+                  trace=str(trace)).run()
+
+    forms = [a for a in common.STATE.actions if a[0] == "form"]
+    assert forms and forms[0][1] == "#rc_select_0", (
+        "被自己那层可见 label 盖着的下拉 input **要填**：%s" % (common.STATE.actions,))
     line = json.loads(trace.read_text(encoding="utf-8").splitlines()[0])
     assert line["ok"] is True, line
 
@@ -4030,6 +4333,97 @@ def test_a_group_whose_fields_show_up_late_waits_past_the_short_budget(sandbox, 
         "没标 `late_element` 的那一组必须照旧（短预算一到就换路）：%s" % fresh)
 
 
+def test_a_click_inside_an_async_modal_waits_past_the_short_budget(sandbox, form_file, caplog):
+    """★ 2026-11-09（真事 `job-18cccc756ba5` · walkergrey 的 Buy now）：
+    弹层壳先出来、里面的按钮隔十几秒才渲出来 —— 账本那一步「第一次没找到」，
+    而 `late_element` 只认**表单填成**的凭据 ⇒ 纯 click 目标拿到的仍是 6 秒预算，
+    内容出来时脚本已经放弃（trace：`页面上没找到「Buy now」`）。
+
+    判据：弹层开着 ⇒ 预算换成 `LATE_ELEMENT_WAIT_SECONDS`，重试**同一根地址**直到它出来；
+    没有弹层 ⇒ 照旧（短预算一到就换路，去调 observe）。
+    """
+    steps = [{"action": "click", "note": "点了「Buy now」",
+              "target": {"text": "Buy now", "role": None, "near": None,
+                         "selectors": ["#late"]}}]
+    src = template.render("example-async-modal", "Thank you",
+                          [{"name": "w", "when": None, "steps": steps}], [],
+                          SAMPLE_PROVENANCE)
+
+    def once(open_modal, name, fails):
+        caplog.clear()
+        module, _ = _load(name, src, sandbox)
+        common = _stub(sandbox, observe={"url": "https://example.test/", "actions": [],
+                                         "fields": []})
+        common.STATE.texts = ["Walk", "Thank you"]
+        common.STATE.fail_plan = {"#late": fails}
+        common.STATE.open_modal = "1" if open_modal else ""
+        module.NOT_FOUND_WAIT_SECONDS = 0.0
+        module.LATE_ELEMENT_WAIT_SECONDS = 1.0
+        module.NOT_FOUND_POLL_SECONDS = 0.05
+        with caplog.at_level(logging.INFO):
+            module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+        return common, [r.getMessage() for r in caplog.records]
+
+    # ① 弹层开着 ⇒ 等到它出来，同一根地址做成（不该掉进「按意图重找」）
+    before = len(_cdp_calls(sandbox))
+    common, said = once(True, "run_async_modal", 1)
+    assert ("click", "#late") in [(a[0], a[1]) for a in common.STATE.actions], (
+        common.STATE.actions)
+    assert any("开着的弹层" in m for m in said), said
+    assert not [c for c in _cdp_calls(sandbox)[before:] if c.startswith("observe")], (
+        "等一下就成的事，不该走到「重找」那一跳")
+
+    # ② 反例：没有弹层 ⇒ 短预算（0）一到就换路（重找那一跳会调 observe）
+    before = len(_cdp_calls(sandbox))
+    once(False, "run_async_modal_control", 99)
+    assert any(c.startswith("observe") for c in _cdp_calls(sandbox)[before:]), (
+        "没有弹层时必须照旧（短预算一到就换路）")
+
+
+def test_a_scroll_target_inside_an_async_modal_waits_before_relocating(sandbox, form_file,
+                                                                      caplog):
+    """★ 2026-11-09（同一趟）：**滚动目标**也还没渲出来。
+
+    真 trace：`第 1 个选择器滚不动：#MpModal1 button.pay-button-buy-now` ⇒ 当场掉进
+    「按意图重找」，那里没有身份信号，滚到 `a[data-id=…]`（把握 0.50）—— 真正的按钮
+    仍在弹层内部折线下，下一步点不到。判据：弹层开着 ⇒ 先等目标渲出来再滚；
+    没有弹层 ⇒ 照旧走重找那一跳。
+    """
+    steps = [{"action": "scroll", "note": "把「Buy now」滚进了视口",
+              "target": {"text": None, "role": None, "near": None,
+                         "selectors": ["#late"]}}]
+    src = template.render("example-async-scroll", "Thank you",
+                          [{"name": "w", "when": None, "steps": steps}], [],
+                          SAMPLE_PROVENANCE)
+
+    def once(open_modal, name, fails):
+        caplog.clear()
+        module, _ = _load(name, src, sandbox)
+        common = _stub(sandbox, observe={"url": "https://example.test/", "actions": [],
+                                         "fields": []})
+        common.STATE.texts = ["Walk", "Thank you"]
+        common.STATE.fail_plan = {"#late": fails}
+        common.STATE.open_modal = "1" if open_modal else ""
+        module.LATE_ELEMENT_WAIT_SECONDS = 1.0
+        module.NOT_FOUND_POLL_SECONDS = 0.05
+        with caplog.at_level(logging.INFO):
+            module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0)).run()
+        return common, [r.getMessage() for r in caplog.records]
+
+    before = len(_cdp_calls(sandbox))
+    common, said = once(True, "run_async_scroll", 1)
+    assert ("scroll", "#late") in [(a[0], a[1]) for a in common.STATE.actions], (
+        common.STATE.actions)
+    assert any("滚动目标还没出来" in m for m in said), said
+    assert not [c for c in _cdp_calls(sandbox)[before:] if c.startswith("observe")], (
+        "等一下就成的事，不该走到「重找」那一跳")
+
+    before = len(_cdp_calls(sandbox))
+    once(False, "run_async_scroll_control", 99)
+    assert any(c.startswith("observe") for c in _cdp_calls(sandbox)[before:]), (
+        "没有弹层时必须照旧（滚不动就换路）")
+
+
 def test_a_failed_step_replays_its_whole_state_group(sandbox, form_file, caplog):
     """★ 线③：一步没做成 ⇒ **把它那一组从头再走一遍**（一次为限）。
 
@@ -5412,6 +5806,8 @@ def test_the_cover_probe_ignores_the_targets_own_label(tmp_path):
     这条**真跑那段 JS**（node + 假 DOM），不只看字符串：
       · 自己 label 里的 span 盖在目标上 ⇒ **空串**（放行）；
       · 无关的 `div#onetrust-banner` 盖在目标上 ⇒ 仍然点名它（别把判据整个关掉）。
+      · `<select>` 被自己的可见 label（class 带 select/dropdown）盖着 ⇒ **空串**（放行）；
+      · class 不带那两个词的 label，或目标不是 `<select>` ⇒ 仍然点名它（窄口径负控）。
     """
     import shutil
     node = shutil.which("node")
@@ -5449,9 +5845,18 @@ const span = new El("SPAN", { className: "option-text" });
 const label = new El("LABEL", { contains: [span, input] });
 input.labels = [label];
 const banner = new El("DIV", { id: "onetrust-banner", className: "banner" });
+const select = new El("SELECT", { id: "prefix", match: true });
+const selectLabel = new El("LABEL", {
+  className: "SelectDropdown_selectDropdownLabel__C_KQf"
+});
+const consentLabel = new El("LABEL", { className: "consent-banner" });
+const input2 = new El("INPUT", { id: "email", match: true });
 console.log(JSON.stringify({
   own_label: probe(input, [span, label, input]),
-  overlay: probe(input, [banner, input])
+  overlay: probe(input, [banner, input]),
+  select_label: probe(select, [selectLabel, select]),
+  select_consent: probe(select, [consentLabel, select]),
+  input_select_label: probe(input2, [selectLabel, input2])
 }));
 """.replace("__JS__", json.dumps(js))
     path = tmp_path / "cover_probe.js"
@@ -5461,6 +5866,9 @@ console.log(JSON.stringify({
     got = json.loads(done.stdout)
     assert got["own_label"] == "", got
     assert got["overlay"].startswith("COVER|div#onetrust-banner"), got
+    assert got["select_label"] == "", got
+    assert got["select_consent"].startswith("COVER|label.consent-banner"), got
+    assert got["input_select_label"].startswith("COVER|label.SelectDropdown"), got
 
 
 def test_the_recenter_js_is_one_module_level_constant():
@@ -5542,6 +5950,22 @@ def test_rule_fills_ignore_form_data_and_share_values(sandbox, tmp_path):
     assert 18 <= age <= 68, (filled["input#dob"], age)
     assert re.fullmatch(r"^(?=.*[A-Z])(?=.*[a-z])(?=.*[0-9])(?=.*[!@#$%^&*]).{8,}$",
                         filled["input#password"]), filled["input#password"]
+
+
+def test_rule_phone_exact_is_used_verbatim(sandbox):
+    """★ 2026-10-29（job-31cc47a0dbe3）：人点名的整号原样用，不再更新随机值。"""
+    fill = {"name": "phone", "source": "phone", "kind": "value", "label": "Phone number",
+            "target": {"text": None, "label": "Phone number", "role": None, "near": None,
+                       "selectors": ["input#phone"]},
+            "rule": "phone_exact", "value": "2014237916"}
+    steps = [{"action": "form", "fill": "phone", "note": "填 Phone number"}]
+    prod = template.render("example-phone", "Thank you",
+                           [{"name": "walk", "when": None, "steps": steps}], [fill],
+                           SAMPLE_PROVENANCE)
+    module, _ = _load("run_phone_exact", prod, sandbox)
+    obj = module.Filler.__new__(module.Filler)
+    obj._rule_values = {}
+    assert obj._rule_value("phone_exact", fill) == "2014237916"
 
 
 def test_rules_off_leaves_the_old_behavior(sandbox, tmp_path):

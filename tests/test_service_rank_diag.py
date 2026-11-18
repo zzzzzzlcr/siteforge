@@ -43,7 +43,7 @@ from agent import graph  # noqa: E402
 from agent import service  # noqa: E402
 from test_fmr import (  # noqa: E402
     FAKE_TOKEN, MEASURED_DIAG, RANK_FIXTURE, RANK_KEY_CLEAN, RANK_KEY_LONG,
-    RANK_KEY_NO_CONFIG, Recorder, envelope,
+    RANK_KEY_NO_CONFIG, Recorder, envelope, query_of,
 )
 from test_service_input import StubWindow  # noqa: E402
 
@@ -53,9 +53,9 @@ SITE_KEY = "www.gowizard.com/auto-warranty/"
 TASK_ID = "26033398"
 
 
-def _client(*, fmr_client, raise_server_exceptions=False):
+def _client(*, fmr_client, raise_server_exceptions=False, **kw):
     """一个 app：**桩掉 FMR 那一层**（不打真网络），别的都按既有兜底来。"""
-    return TestClient(service.create_app(failures_reader=fmr_client, window=StubWindow()),
+    return TestClient(service.create_app(failures_reader=fmr_client, window=StubWindow(), **kw),
                       raise_server_exceptions=raise_server_exceptions)
 
 
@@ -99,6 +99,17 @@ def test_the_rank_comes_back_as_human_rows():
     _no_code(got)
 
 
+def test_the_rank_can_ask_for_every_failing_site():
+    """★ 2026-10-29：`min_streak=1` ⇒ 列**所有**当前在失败的站（默认 5 只列连败够的）。"""
+    rec = Recorder(envelope(RANK_FIXTURE))
+    r = _rank(_client(fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec)),
+              min_streak=1)
+    assert r.status_code == 200, r.text
+    path, params = query_of(rec.urls[0])
+    assert path == "/api/quest/formLogRank", rec.urls[0]
+    assert params.get("min_streak") == "1", params
+
+
 def test_the_rank_answer_carries_the_three_numbers_the_page_needs():
     """★ 「摆了 4 个站」与「今天失败 18 次」**可以同时为真** —— 那一句里三个数都得在。
 
@@ -140,6 +151,36 @@ def test_the_rank_row_carries_the_count_the_page_reconciles_with():
     assert got2["rank"][0]["fail_count"] is None, got2["rank"][0]
     #: 而那一行的人话也要**照实说它没给**（不是画一个 0）。
     assert "它没给" in got2["rank"][0]["say"], got2["rank"][0]
+
+
+
+def test_the_rank_marks_what_this_machine_already_repaired(tmp_path):
+    """★ 2026-11-05（用户：「已修复过的没在面板标记吗？这样运营会有歧义」）：
+    本机修复账里有的键 ⇒ 那一行带 `repaired_say`；**同域别的键**修过也要说清
+    「修的是另一页」（别让运营以为这一行已经修过）。"""
+    out_dir = tmp_path / "forms" / "sites"
+    sibling = "callyourdate.com/other-page"
+    service.write_repairs(out_dir, {
+        RANK_KEY_CLEAN: {"job_id": "job-x", "task_id": TASK_ID,
+                         "at": "2026-11-05T17:41:25+08:00", "uploaded": False},
+        sibling: {"job_id": "job-y", "task_id": "",
+                  "at": "2026-11-05T18:00:00+08:00", "uploaded": False},
+    })
+    day = {"date": "2026-09-20", "failed_total": 4, "unattributed": 0, "rank": [
+        {"site": RANK_KEY_CLEAN, "fail": 2, "streak": 3, "config_id": 66,
+         "config_status": "启用", "has_script": True},
+        {"site": "other.test/x", "fail": 2, "streak": 3, "config_id": 7,
+         "config_status": "启用", "has_script": True},
+    ]}
+    rec = Recorder(envelope(day))
+    got = _rank(_client(fmr_client=fmr.FmrClient(token=FAKE_TOKEN, opener=rec),
+                        out_dir=str(out_dir))).json()
+    rows = {r["site"]: r for r in got["rank"]}
+    said = rows[RANK_KEY_CLEAN]["repaired_say"]
+    assert "已修过这一串" in said and "还没上传" in said, said
+    assert "同域的另一页" in said and sibling in said, said
+    #: 别的站不带标（自己的账才标自己的）
+    assert rows["other.test/x"]["repaired_say"] == "", rows["other.test/x"]
 
 
 def test_a_day_with_no_failures_is_a_200_that_says_it_was_measured():

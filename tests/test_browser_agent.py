@@ -1919,6 +1919,38 @@ def test_a_bare_url_gate_is_not_evidence_that_two_screens_are_one_page():
     assert len(pages.pages) == 2, pages.pages
 
 
+def test_the_same_page_with_a_trailing_slash_difference_is_one_page():
+    """★ 2026-11-13（真事 `job-eb9e6bf071f1` · accounts.theatlantic.com）：**尾斜杠不许把一页拆成两页**。
+
+    现场：站点把 `/products?source=nav` 写成 `/products/?source=nav`（多一个尾斜杠）。
+    先那一眼还在加载（`page_text` 空）⇒ 判据只剩 URL；后一眼读到了正文 ⇒ 被判成 `products-2`。
+    两个 `_stable_url` 只差**尾斜杠**，于是「同一页」那三处判断全都认不出来：
+      · 并组：`readable` 里找不到「同一地址上读到正文的那一眼」⇒ 空门活下来；
+      · 同址跳过：`_gates_that_hold_elsewhere` 把同一页的两次停留当成「别的页」⇒ 报分不开；
+      · 重挑：把同一页的兄弟观测当「别的页」避让 ⇒ 换个门。
+    结局：`draft_failed` —— 一份 py 都不出。这一条钉：尾斜杠抹平后并成一页、不报撞车。
+    """
+    models = [
+        {"url": "https://accounts.test/products?source=nav", "title": "Accounts",
+         "page_text": ""},                                          # ← 加载中：一个字都没读到
+        {"url": "https://accounts.test/products/?source=nav", "title": "Accounts",
+         "page_text": "MENU Subscribe UNDERSTAND AMERICA AFTER THE MIDTERMS. Digital $ 89.99 "
+                      "/year Unlimited access on any device Select"},
+    ]
+    pages, steps = _split_one_page_into_states(models)
+    assert [p["name"] for p in pages.pages] == ["products", "products-2"], pages.pages
+
+    gone = browser_agent._merge_one_page_states(pages.pages, steps)
+
+    assert [(g["name"], g["into"], g["kind"]) for g in gone] == [
+        ("products", "products-2", "unread")], gone
+    assert [p["name"] for p in pages.pages] == ["products-2"], pages.pages
+    kept = pages.pages[0]["when"]
+    assert kept.get("text_contains"), "留下的判据只剩地址（等于没门）：%r" % (kept,)
+    assert browser_agent._gates_that_hold_elsewhere(pages.pages) == [], \
+        "并掉之后还报的话，`graph._draft` 照样一份 py 都不出"
+
+
 def test_a_trailing_unread_observation_is_not_a_page_either():
     """★ 2026-09-30（**现场逮到的第二个形状**，用户报的 `zekear` 那一趟）：「没读到正文」的那一眼
     可能落在**这一页的最后一眼**上 —— `…_cleaner-2` 是那一页最后一眼，后面直接去了别的地址。
@@ -4419,6 +4451,34 @@ def test_a_click_target_keeps_the_label_written_next_to_it():
     assert aria["label"] == "Close"
 
 
+def test_a_form_target_records_the_implicit_role_of_a_select():
+    """原生 `<select>` 要记下隐含的 `combobox` —— 否则「标签在隔壁」那格永远够不着锚。
+
+    真事（2026-11-11 `job-17e9375fc2a4` · dailyhealthsm 的出生日期）：observe 只给
+    `type=select-one` / `nearby_text=["Month","Month"]`，form 这一支把 `role` 写死
+    `None` ⇒ `lint._has_text_anchor`（`nearby_text` **且** `role`）不成立 ⇒ 月/日/年
+    三格被判成「只有一根会漂的地址」，改稿两轮交回同一份 ⇒ `repair_noop`、没有 py。
+    """
+    select = {"type": "select-one",
+              "selector": "body:nth-of-type(1) > select:nth-of-type(1)",
+              "nearby_text": ["Month", "Month"]}
+    target = browser_agent._target_of(select, "form", select["selector"])
+    assert target["role"] == "combobox"
+    assert target["nearby_text"] == ["Month", "Month"]
+
+    multi = {"type": "select-multiple", "selector": "select#tags"}
+    assert browser_agent._target_of(multi, "form", "select#tags")["role"] == "listbox"
+
+    # 正控：普通文本框没有隐含 role —— 不许凭空造一个锚出来（尺度不许悄悄放宽）
+    text = {"type": "text", "selector": 'input[name="first_name"]',
+            "nearby_text": ["First name"]}
+    assert browser_agent._target_of(text, "form", text["selector"])["role"] is None
+
+    # 观测自己报了 role 的照旧用它（不拿类型去盖）
+    radio = {"type": "radio", "role": "radio", "selector": "#option-1"}
+    assert browser_agent._target_of(radio, "form", "#option-1")["role"] == "radio"
+
+
 def test_a_nameless_step_is_named_after_the_label_written_next_to_it():
     """「身上没字、标签在隔壁」的那一步，名字要写**标签**，不许退成「没写名字的元素」。
 
@@ -4745,6 +4805,68 @@ def test_a_window_probe_that_breaks_does_not_invent_a_stop_reason(tmp_path):
 
     journey, _, _ = _run(tmp_path, {"click": [{"error": "没有找到选择器 #ghost"}]},
                          _dead_click_turns(2), window_alive=broken)
+    assert journey.stop_reason == "model_done", journey.stop_reason
+
+
+# ── ★ 2026-11-05：站点连不上（代理/网络）要早停，别把预算烧在重试上 ──────────
+#
+# 现场 `job-8bfb00db0ec4`（educationdirectory，171 步）：`goto` 连着 11 次
+# `net::ERR_SOCKS_CONNECTION_FAILED`，中间夹着的 `eval`/`observe` 仍然成功
+# （它们读的是已经打开的那页）⇒ 旧的「连着失败」计数每次都被清零；窗口探针答「活着」
+# ⇒ 一路烧到轮预算。下面三条钉住：早停、感知动作不算「站点又通了」、真成功才清零。
+
+
+def _net_error_turns(n):
+    return [{"calls": [("goto", {"url": "https://example.test/funnel"})]} for _ in range(n)]
+
+
+def test_three_navigation_failures_with_a_network_error_stop_as_net_down(tmp_path):
+    journey, _, _ = _run(
+        tmp_path,
+        {"goto": [{"error": "failed to navigate: navigate error: "
+                            "net::ERR_SOCKS_CONNECTION_FAILED"}],
+         "observe": [{"structured": PAGE_LANDING}]},
+        _net_error_turns(5))
+
+    assert journey.stop_reason == "net_down", journey.stop_reason
+    assert len(journey.steps) == 3, journey.steps
+    note = journey.notes[-1]
+    assert "站点连不上" in note and "代理/网络" in note, note
+    assert "窗口没了" not in note, "站点连不上 ≠ 窗口没了（两句话不能混）"
+
+
+def test_perception_calls_do_not_reset_the_network_failure_count(tmp_path):
+    """`eval`/`observe` 成功只说明手里这一页读得动 —— 它们**不许**把网络失败计数清零。"""
+    turns = [{"calls": [("goto", {"url": "https://example.test/funnel"})]},
+             {"calls": [("observe", {})]},
+             {"calls": [("goto", {"url": "https://example.test/funnel"})]},
+             {"calls": [("eval", {"js": "1"})]},
+             {"calls": [("goto", {"url": "https://example.test/funnel"})]}]
+    journey, _, _ = _run(
+        tmp_path,
+        {"goto": [{"error": "navigate error: net::ERR_SOCKS_CONNECTION_FAILED"}],
+         "observe": [{"structured": PAGE_LANDING}],
+         "eval": [{"structured": {"ok": True}}]},
+        turns)
+
+    assert journey.stop_reason == "net_down", journey.stop_reason
+    assert len(journey.steps) == 5, journey.steps
+
+
+def test_a_successful_action_resets_the_network_failure_count(tmp_path):
+    """两次网络失败 → 一次**真动作**成功 → 重新数：不许把两段失败拼成「连着三次」。"""
+    turns = [{"calls": [("goto", {"url": "https://example.test/funnel"})]},
+             {"calls": [("goto", {"url": "https://example.test/funnel"})]},
+             {"calls": [("click", {"selector": "#get-started"})]},
+             {"calls": [("goto", {"url": "https://example.test/funnel"})]},
+             {"calls": [("goto", {"url": "https://example.test/funnel"})]},
+             {"content": "讲完了"}]
+    journey, _, _ = _run(
+        tmp_path,
+        {"goto": [{"error": "navigate error: net::ERR_SOCKS_CONNECTION_FAILED"}],
+         "observe": [{"structured": PAGE_LANDING}]},
+        turns)
+
     assert journey.stop_reason == "model_done", journey.stop_reason
 
 
@@ -6134,6 +6256,29 @@ def test_the_field_table_reaches_the_ledger_and_is_read_back_by_state(tmp_path):
     assert got["funnel"][0]["label"] == "Town/City", got
 
 
+def test_observed_pages_survives_a_page_whose_gate_is_none():
+    """★ 2026-11-06（`job-adf4d72c8ebd` · homejolly）：起点那页的判据是 `None`（不设判据）。
+
+    `when_holds(None, …)` 按契约返回 True（没判据 = 哪儿都算成立），所以循环会走到
+    `when.get(...)` —— 那里原先直接抛 `AttributeError`。而 `fields_by_state()` 与 IR 那三条
+    跨状态检查（必填格没填 / 看过时空着 / 账本里填过的死条目）全建在 `observed_pages()` 上，
+    且都包着 `except Exception: return []` ⇒ **整道闸静默失效**。
+    那趟的街道格是 `required`，产物里一步都没填，IR 却一个字都没报 —— 反馈只剩
+    「页面上没找到「455 North …」」，于是改稿一路改选择器。
+    """
+    journey = browser_agent.Journey(
+        steps=[{"state": "start", "action": "observe", "note": "",
+                "result": {"url": ENTRY, "page_text_head": "Get started",
+                           "page_fields": [{"selector": "#town", "label": "Town/City",
+                                            "required": True}]}}],
+        pages=[{"name": "start", "when": None},
+               {"name": "funnel", "when": {"url_contains": ENTRY}}])
+    pages = journey.observed_pages()
+    assert len(pages) == 1, pages
+    assert pages[0]["fields"], pages[0]
+    assert list(journey.fields_by_state()) == ["start"], journey.fields_by_state()
+
+
 # ══════════ 见到成功文案就收摊（Task 15：真站 job-a4d100addd25 第 66 → 71 步）══════════
 #
 # **病**（2026-09-20 真站实测）：`runtime/explore/job-a4d100addd25/attempt-1.jsonl` 的
@@ -6770,6 +6915,39 @@ def test_the_same_field_recorded_twice_does_not_get_filled_twice():
     got = [s.get("fill") for s in steps if s.get("action") == "form"]
     assert got == ["field", "field-2"], got
     assert sorted(j.fills()) == ["field", "field-2"], sorted(j.fills())
+
+
+def test_two_fills_with_the_same_declared_first_selector_are_two_fields():
+    """★ 2026-11-06（`job-adf4d72c8ebd` · homejolly）：两格**声明里第一条选择器相同**，
+    可实际填成的是各自那一条（`result.selector` 不同）—— 它们不是同一格。
+
+    那趟的账本：`full_name` 真填的是 `input[name="name"]`；`full_name-2`（街道格）的声明
+    首条也写成了 `input[name="name"]`（工具把上一格的地址一起带上了），可它实际填成的是
+    `input.leadforms-full-street-address-input`。旧判据拿声明首条去重 ⇒ 街道那一步被当成
+    姓名格的重复、整步吞掉 ⇒ 产物只点一下空输入框、挑不到联想 ⇒ 自测卡在「页面上没找到
+    联想项」⇒ 判成 `selector` 族，改两版还是同一堵墙。
+    """
+    name_sel = 'input[name="name"]'
+    street_sel = ('form:has(input[name="name"]) '
+                  'input.leadforms-full-street-address-input')
+
+    def fill(name, hit):
+        return {"state": "form", "action": "form", "note": "",
+                "target": {"selectors": [name_sel, hit]},
+                "result": {"ok": True, "selector": hit,
+                           "fill": {"name": name, "source": name,
+                                    "kind": "value", "label": "name",
+                                    "fallback": []}}}
+
+    j = browser_agent.Journey(steps=[fill("full_name", name_sel),
+                                     fill("full_name-2", street_sel)])
+    steps = j.states()[0]["steps"]
+    assert [s.get("fill") for s in steps] == ["full_name", "full_name-2"], steps
+    fills = j.fills()
+    assert sorted(fills) == ["full_name", "full_name-2"], fills
+    #: 运行期 `form` 用的是**FILLS 的** target ⇒ 街道那格必须先试真命中的那条，
+    #: 否则拿声明顺序会把街道值填进姓名格。
+    assert fills["full_name-2"]["target"]["selectors"][0] == street_sel, fills["full_name-2"]
 
 
 

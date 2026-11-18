@@ -32,13 +32,18 @@
 
 ## 怎么扫
 
-**整份源码逐行扫**（不用 AST 挑字符串）。为什么不挑：
+**整份源码逐行扫代码**（不用 AST 挑字符串）。为什么不挑：
 
 - JS 是**字符串**，可以拼在多行、多个字面量里（参考产物的 `_PAGE_TEXT_JS` 就是
   一串相邻字符串），按 AST 挑字符串反而更容易漏；
 - 判据要**能指着行说**（回灌给 agent 的时候它认的是行号），逐行扫天然对得上；
-- 代价是**注释与 docstring 里的样例文案也会被算进去**。可接受：重写一句话就行，
-  而「产物里出现这串字」本身也不该出现在一份正经的产物里。
+- ★ 2026-10-30（`job-6ff0dc514ff3`，allfeellove）：**注释与 docstring 不扫** ——
+  它们不是「写动作」，是散文。那趟修站 3 版稿的代码已经改成 `cdp click` 了，
+  可新写的注释里还在解释「原来注射 JS `.click()`」，lint 连散文一起打回 ⇒
+  每版都「同样的地方不过」⇒ 3 版撞上限、交给人。散文里的样例不是行为，
+  打回它只会让改稿那双手去改注释，而不是改代码。
+  ⚠️ 代码里的**字符串字面量照旧扫**（手拼 JS 正是那种形状）；只挖掉
+  `tokenize` 认出的注释与 `ast` 认出的一等 docstring —— 行号与 snippet 不变。
 
 ## 已知边界（**不是** lint 该自己决定的事）
 
@@ -59,11 +64,14 @@
 from __future__ import annotations
 
 import ast
+import io
 import re
+import tokenize
 from dataclasses import dataclass
 from typing import Optional, Pattern
 
-__all__ = ["Violation", "Rule", "RULES", "check", "check_unverified", "no_basis_slots"]
+__all__ = ["Violation", "Rule", "RULES", "check", "check_unverified", "no_basis_slots",
+           "subtract_baseline"]
 
 
 @dataclass(frozen=True)
@@ -130,6 +138,35 @@ RULES: tuple[Rule, ...] = (
                  "—— 改用 cdp 的 form 命令来填。"),
     ),
 )
+
+#: 产物**骨架自带**的那一段手拼 JS（`Filler._set_value_events`）—— 不进 `RULES` 的判。
+#:
+#: 为什么豁免：这一段就是「往 React 受控输入里写值」唯一测得通的那条路
+#: （2026-10-24 Atticus 真站：`cdp form` 之后 Next 45 秒仍是禁用态；原生 setter +
+#: 全套事件 1–2 秒就开了）。它天生写着 `Object.getOwnPropertyDescriptor` + `e.value=`
+#: + 合成事件 —— 四条写模式里三条会命中它。不豁免的后果是**每一份循环型产物都过不了
+#: lint**、重写出来的还是同一份字节 ⇒ `lint_cap`，永远到不了自测
+#: （2026-11-02 `job-bf3fd425f058`，educationdirectory：三遍都停在 1713 / 1716 / 1717）。
+#: ⚠️ 与 markets offcanvas 那条豁免同一条纪律：**逐字认**。判据 = 源码里真有那个方法名
+#: （骨架只在它里面这么写）+ 那一行逐字含下面三串之一；别处的同一写法照旧报。
+SKELETON_VALUE_EVENTS = "_set_value_events"
+SKELETON_VALUE_EVENTS_LINES = (
+    "if(e.tagName==='SELECT'){e.value=value;}",
+    "var d=Object.getOwnPropertyDescriptor(proto,'value');",
+    "if(d&&d.set)d.set.call(e,value);else e.value=value;}",
+)
+
+
+def _skeleton_value_events_lines(src: str) -> set[int]:
+    """骨架 `Filler._set_value_events` 自带的那几行（1-based）；不像骨架自己的 ⇒ 空集。
+
+    「像」= 源码里真有那个方法（`def _set_value_events(`）**且**这一行逐字是骨架那段 JS。
+    两条缺一不可：少了第一条，别处原样抄这三串也会被当成豁免（那是漏检）。
+    """
+    if not re.search(r"def\s+%s\s*\(" % SKELETON_VALUE_EVENTS, src):
+        return set()
+    return {lineno for lineno, raw in enumerate(src.splitlines(), start=1)
+            if any(mark in raw for mark in SKELETON_VALUE_EVENTS_LINES)}
 
 # ──────────────────────────────────────────────────────────────────────────
 # 第二族：**判据与产物形状**（`STATES[*].when` / `FILLS` / 产物里那几格骨架）——
@@ -272,6 +309,20 @@ _SEPARATOR_IN_SEL = re.compile(r'[\s>+~]+')
 #: 一段简单选择器开头的标签名（`input[name=…]` ⇒ `input`）。
 _SEG_TAG = re.compile(r'^([a-zA-Z][a-zA-Z0-9]*)')
 _TEXT_ANCHOR = re.compile(r'^(?:text|label|nearby_text)\s*=\s*(.+)$', re.S)
+
+#: 执行器只吃**标准 CSS**：`:has-text()` / `:contains()` / `text=` 在真站上报
+#: element not found（`forms/sites/qualify.py` 那段实测的原话）。这不是「判据读不懂」——
+#: 是**运行期根本跑不了**。两种形状要分开：非执行器语言不算证据，也不许被当成稳的地址。
+_NON_EXECUTABLE_SEL = re.compile(
+    r":(?:has-text|contains|text-is|text-matches|visible|hidden)\s*\("
+    r"|^(?:text|label|nearby_text)\s*="
+    r"|\s>>\s",
+    re.I)
+
+
+def is_executable(selector) -> bool:
+    """这条地址是不是**执行器能跑的语言**（标准 CSS）。"""
+    return not _NON_EXECUTABLE_SEL.search(str(selector or ""))
 
 
 def _norm_text(value) -> str:
@@ -858,38 +909,106 @@ def _fragile(selector) -> bool:
                 or len(template._HOPS.findall(text)) > template._HOPS_LOW)
 
 
+def _kept_selectors(card, sels) -> list:
+    """这一版里**采信的**地址：可执行（标准 CSS）且不是 `UNSUPPORTED`。"""
+    kept = []
+    for one in sels or []:
+        if not is_executable(one):
+            continue
+        level, _why = address_basis(
+            one, card or {}, (card or {}).get("selectors") or [])
+        if level != UNSUPPORTED:
+            kept.append(one)
+    return kept
+
+
+def _evidence_texts(target, fill_label="") -> list:
+    """运行期 `_relocate` 能用来找回这一格的**文字证据**（归一、去重、保序）。"""
+    t = target or {}
+    out = []
+    for key in ("text", "label", "aria_label", "placeholder"):
+        value = _norm_text(t.get(key))
+        if value:
+            out.append(value)
+    for one in (t.get("nearby_text") or []):
+        value = _norm_text(one)
+        if value:
+            out.append(value)
+    label = _norm_text(fill_label)
+    if label:
+        out.append(label)
+    return list(dict.fromkeys(out))
+
+
+def _matching_evidence(target, card, fill_label="") -> list:
+    """这一版用的文字证据里，**卡上真有**的那几个（归一后的原样）。"""
+    have = set(_evidence_texts(card))
+    return [one for one in _evidence_texts(target, fill_label) if one in have]
+
+
+def _uses_observed_text(target, card, fill_label="") -> bool:
+    """这一版用的文字证据，**卡上真有**吗 —— 有才算「运行期能按它重定位」。"""
+    return bool(_matching_evidence(target, card, fill_label))
+
+
+def _address_verdict(card, sels, kept, target, fill_label="") -> tuple:
+    """地址判决：`(stable|advisory|fixable|blocked, 要绑的那根地址)`。
+
+    为什么分四档（2026-11-11 `job-17e9375fc2a4` · dailyhealthsm 的出生日期）：
+      · stable   —— 至少一条**可执行、采信、不脆**的地址；
+      · advisory —— 只剩脆的/没有采信的，但这一版用的文字证据**卡上真有** ⇒ 运行期
+        `_relocate` 能找回，按「未证实」放行（不报违规，见 `check_unverified`）；
+      · fixable  —— 卡上有答案（稳地址 / 锚）而这一版没用上 ⇒ 交回改稿（老码）；
+      · blocked  —— 卡上没答案、运行期也没有可信的文字锚 ⇒ 只能删 / 问人 / 接受。
+
+    ⚠️ 「有证据」只认**卡上真有的那几个字**：产物自己编的 label / nearby_text 不算
+    （与 `address_basis` 同一条纪律：没观察过的不算量到）。上一版那条
+    「`nearby_text` **且** `role`」在这里被**运行期的证据词汇**取代 —— role 是所有
+    文本框/下拉共有的弱信号，而 `template._intent_score` 本来就把 `nearby_text` 单独计分。
+    """
+    bound = kept[0] if kept else (sels[0] if sels else "")
+    if not kept:
+        return (("advisory" if _uses_observed_text(target, card, fill_label)
+                 else "blocked"), bound)
+    if any(not _fragile(s) and assertions_of(s) for s in kept):
+        return "stable", ""
+    if not all(_fragile(s) for s in kept):
+        #: 纯位置（零断言）：位置证明不了身份，但卡上有锚时重放能按锚找回。
+        return (("advisory" if not _card_has_nothing(card, kept)
+                 or _uses_observed_text(target, card, fill_label)
+                 else "blocked"), bound)
+    if _uses_observed_text(target, card, fill_label):
+        return "advisory", bound
+    if not _card_has_nothing(card, kept):
+        return "fixable", bound
+    return "blocked", bound
+
+
+def _selectors_say(sels, limit=2) -> str:
+    """几句地址原文（违规 / 未证实的人话用）。"""
+    return "、".join("`%s`" % str(one)[:60] for one in list(sels or [])[:limit])
+
+
+def _non_exec_say(sels) -> str:
+    """这一版里有几条**不是本执行器支持的 CSS** —— 违规人话的尾巴。"""
+    bad = [one for one in sels or [] if not is_executable(one)]
+    if not bad:
+        return ""
+    return ("；另有 %d 条地址不是本执行器支持的 CSS（%s）—— 运行期跑不了、已忽略。"
+            % (len(bad), _selectors_say(bad)))
+
+
 def _has_text_anchor(target: dict) -> bool:
-    """这一格除了选择器之外，有没有**文字/标签**那根锚。
+    """**没传 `observed` 的老路**用的文字/标签锚（与从前逐字节一致）。
 
-    ★ 2026-09-30（`zekear` 那趟现场）：那个「i agree」勾选框**页面上没有 name / id**，
-    探路只留下一条 9 跳 nth 链 —— 打回一次、改稿那双手也补不出稳的（真没有），于是
-    **draft ↔ lint 来回打转**（每一圈一次模型调用）。而它**有 label**（`i agree`）——
-    产物本来就能按 label 找得到。
-    ⇒ 「一条稳的都没有」这句话里的**稳**，本来就不止 CSS 那一条路（`_selector_rank`
-    把脆的排最后，正是因为它只是**最后一条路**）：有文字/标签锚的格不算「只剩一根漂的线」。
-
-    ★ 2026-10-13：「**身上没字、标签在隔壁**」的控件也算有锚 —— `nearby_text` **且** `role`。
-    现场是 compareinsulation 那排 `role=radio` 的 16×16 圆点（`text` 空、id 是
-    `#option-<时间戳>`、标签只写在旁边）。⚠️ 那一族的 id 按同一天的裁定**不进这道硬闸**
-    （`_fragile` 只剩渲染序号 id 与长 nth 链两族）—— 这条收的是**形状同族**的那些：
-    只有渲染序号 id / 长链可依、而标签写在隔壁的无名控件。为什么不放宽成「nearby_text 非空就算」：
-    仓里实测过它可能是**邻居的字**（隔壁 State 下拉、邻格的 `Address line 2`）——
-    `role` 是那道分辨器；重放那一跳（产物 `_relocate` → `_intent_score`）认的也正是
-    「role 先筛、标签再分」。缺一个就照旧打回。
+    ⚠️ 有冻结观察时不走这一支 —— 那一支按 `_address_verdict`（运行期证据词汇）判；
+    这里保留只是因为老调用点没有卡可比，不能凭空换一把尺子。
     """
     t = target or {}
     if str(t.get("label") or "").strip() or str(t.get("text") or "").strip():
         return True
     near = [x for x in (t.get("nearby_text") or []) if str(x).strip()]
     return bool(near and str(t.get("role") or "").strip())
-
-
-def _as_int(value) -> Optional[int]:
-    """读成整数；**读不出来给 `None`**（不是 `0` —— 「读不懂」与「第 0 步」在判据里是两件事）。"""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _fp_text(card_fp) -> str:
@@ -911,60 +1030,45 @@ def _acceptance_holds(accepted, state_name, index, selector, card_fp) -> bool:
     ⚠️ 它住 `lint`（判据这一侧），不住 `graph`：判据要用它，而 `graph` 已经 import 了
     `lint`，反过来 import 就是循环引用。人在闸上那句话怎么**变成**一条 `accepted`，
     那一半在 `graph._accept_from_note`（唯一入口）。
-    ⚠️ 读不懂的那一条（不是 dict / 步序读不成数）**一律不算接受**：这一侧的方向只有一个 ——
+    ⚠️ 读不懂的那一条（不是 dict / 组名或步序对不上）**一律不算接受**：这一侧的方向只有一个 ——
     判「不成立」（⇒ 照旧报 ⇒ 回到闸上重新问）。这里**不许抛**（判据每一趟都走它，
     在这儿抛就是整趟运行死在一条手改的旧账上；文件里同一条纪律见 `check_unverified`）。
     """
-    want = _as_int(index)
-    if want is None:
-        return False
     for one in (accepted or []):
         if not isinstance(one, dict):
             continue
         if (str(one.get("state")) != str(state_name)
-                or _as_int(one.get("index") or 0) != want):
+                or str(one.get("index")) != str(index)):
             continue
         return (str(one.get("selector") or "") == str(selector or "")
                 and _fp_text(one.get("card")) == _fp_text(card_fp))
     return False
 
 
-def _no_basis_sel(card, sels, kept) -> Optional[str]:
-    """这一步**是不是**「无据可依」→ 是就回**要绑的那根地址**，不是回 `None`。**纯谓词**。
+def _accepted(accepted, state_name, index, selector, card) -> bool:
+    """人点头过的那一处、四元组一项没变 ⇒ `True`（调用方**整步跳过**）。
 
-    这一支**只有一个定义**，两个调用方是同一件事的两半（★ 2026-10-15 Task 6）：
-      · `_rule_i`：报 `judge-fragile-no-basis` 之前问一句；
-      · `no_basis_slots`：把「现在有哪几处等着被接受、各绑哪一根」写下来（人话里的 handle、
-        与 `addr_accepted` 的四元组**从这里出**）。
-    两处各写一遍的话，「人接受过的那一步」与「判据还在报的那一步」会**各说各的**
-    —— 接受完还在报 / 报着却接受不了 —— 而屏幕上两边看起来都正常。
-
-    ⚠️ **它不看 `accepted`**（★ 2026-10-15 修复轮 1）：原来它把「不是这一格」与「人接受过」
-    混成同一个 `None`，于是 `_rule_i` 里那句 `if ... is not None` 在**已接受**这条路上
-    **不 `continue`**，控制流掉进下面那几条（`all(one == DERIVED …)` → `not all(_fragile …)`
-    → `_has_text_anchor`），最后被 **`judge-fragile-selectors`** 重新拦住（实测：空卡 + 产物那根
-    脆链是 `OBSERVED` + 那个 target 没有语义锚 ⇒ 接受完违规表里换成这一条）⇒ 人话里承诺的
-    第 ③ 条路对这类形状是**死胡同**（那一步同时从 `addr_candidates` 里消失，再说一遍无效 ⇒
-    一路爬到 `lint_cap`）。判定「接受生效」是 `_accepted` 那一支的事（它管**整步跳过**）。
+    ★ 2026-11-11：判据从「只有无据可依才问」改成**任何地址判决都问** —— 绑定的是
+    `(组名, 步序, 那根地址, 卡指纹)`，与 `no_basis_slots` 写下来的槽同源。
+    字段那一支用 `state_name="FILLS:<键>"`、`index=0`：同一个口子也管 `FILLS`。
+    ⚠️ 四元组任一变了（地址被改稿换了 / 原始观察重渲了 / 步序挪了 / 换了别的组）⇒
+    `False` ⇒ 照旧报、也照旧进待接受清单（失效 = 回到闸上重新问）。
     """
-    if not (_card_has_nothing(card, kept) or not kept):
-        return None
-    return kept[0] if kept else sels[0]
-
-
-def _accepted(card, sels, kept, accepted, state_name, index) -> bool:
-    """这一步无据可依，**而且人接受过、四元组一项没变** ⇒ `True`（★ 2026-10-15 Task 6）。
-
-    ⚠️ `True` 的含义是「**这一步不再被任何一条判据拦**」——调用方一律**整步跳过**，
-    不只是不报 `judge-fragile-no-basis` 那一条（理由见 `_no_basis_sel` 里那段实测）。
-    ⚠️ 四元组任一变了（地址被改稿换了 / 原始观察重渲了 / 步序挪了 / 换了别的组）⇒ `False`
-    ⇒ 照旧报、也照旧进 `no_basis_slots` 那份待接受清单（「失效 = 回到闸上重新问」）。
-    """
-    sel = _no_basis_sel(card, sels, kept)
-    if sel is None:
+    if not accepted:
         return False
     from agent import fix                  # 局部 import：与 `_observed_card` 同一条理由
-    return _acceptance_holds(accepted, state_name, index, sel, fix.card_fingerprint(card))
+    return _acceptance_holds(accepted, state_name, index, selector,
+                             fix.card_fingerprint(card))
+
+#: **辅助动作**：重放时没做成也**不打回整组**的那一类（口径在 `template.py` 的那段实测注释 ——
+#: scroll 没滚成只出声、照旧走下一步；它只是准备动作，真正要做的那一步自己会把元素滚进视口）。
+#: ⇒ 这类步骤的地址**不承重**：脆不脆、有没有出处都不改变「这一趟能不能成功」，
+#: 所以 I 那两条判据（`judge-fragile-selectors` / `judge-fragile-no-basis`）不判它，
+#: 也不进「等被接受」的清单、不记「未证实」。
+#: ⚠️ 只豁免**地址**那几条：写模式（`RULES`）与别的形状判据照旧扫它。
+#: ⚠️ 判据只能照抄 `template` 那一行（`action == "scroll"`）—— 两处一旦分家，
+#: 就会出现「lint 说这一步承重、重放说它是准备动作」那种各说各话。
+AUXILIARY_ACTIONS = ("scroll",)
 
 
 def _rule_i(states: list, fills, src: str, observed=None, accepted=None) -> list[Violation]:
@@ -983,26 +1087,20 @@ def _rule_i(states: list, fills, src: str, observed=None, accepted=None) -> list
     换一版构建 / 换个分辨率 ⇒ 这一步「页面上没找到」⇒ 整组静默跳过。
     有稳候选的不挂（脆的排最后，本来就不会先用它）。
 
-    ★ 2026-10-15（spec §3.1）干了三件事：
-      ① **先验出处**：拿 `observed` 里那一步的卡（`fix.find_observed`）把候选分成
-         Observed / Derived / Unsupported，**Unsupported 的不算候选** ——
-         这一步就是「编一根长得稳的过闸」不再有好处的全部理由；
-      ② 全靠 Derived 撑着 ⇒ **不报**（放行但按「未证实」记，`check_unverified` 管那一半）；
-      ③ 一根采信的都不剩 ⇒ 报**新码** `judge-fragile-no-basis`，话换成三条正路
-         （老话「给它补一条稳的」在那一刻**没有正确答案**，只能逼出编的）。
-    ⚠️ `observed` 只该影响**出处那一件事**：去重照旧按 `(组名, 步序)`（与老路同一把尺子）、
-    有语义锚照旧不挂 —— 这两条在两支里都留着。
-    不传 `observed` ⇒ 走老路（与从前逐字节一致）。
+    ★ 2026-10-15（spec §3.1）：先验出处（Observed / Derived / Unsupported），
+    Unsupported 不算候选；全靠 Derived 撑着不报（`check_unverified` 记一笔）。
 
-    ★ 2026-10-15 Task 6：`accepted` = **人点头接受过的那几处地址**（spec §3.5）。它只干一件事：
-    「这一步**无据可依**、但人接受过、且四元组一项没变」⇒ **整步跳过**（这一条的每一格都不再问）。
-    ⚠️ 必须是**整步**：落在无据可依那一格的那一步同时也在下面几条的射程里（真站实测那个形状：
-    空卡 + 产物那根脆链是 `OBSERVED` + target 没有语义锚 ⇒ 只「不报 no-basis」的话，它会被
-    `judge-fragile-selectors` 接着拦住 ⇒ 那句「接受」等于没说）。见 `_no_basis_sel` 里那段实测。
-    ⚠️ 它**不放松**别的任何一格（无据可依这个判断本身一个字没动）；四元组任一变了就回到报。
-    ⚠️ **`FILLS` 那一支没有它**：那一格的把手是**键**、不是 (组名, 步序)，没有对应的口子
-    （`_fill_no_basis_say` 因此只写两条正路 —— 写上去就是一句做不到的话）。
-    不传 `accepted` ⇒ 与从前逐字节一致。
+    ★ 2026-11-11（`job-17e9375fc2a4`）：判决改成**四档**（`_address_verdict`）——
+      · `stable`   ：可执行、采信、**有身份断言**且不脆的地址；
+      · `advisory` ：只剩位置链，但这一版用的文字证据**卡上真有** ⇒ 按「未证实」放行；
+      · `fixable`  ：卡上有答案而这一版没用上 ⇒ 报 `judge-fragile-selectors`（老码）；
+      · `blocked`  ：卡上没答案、运行期也没有可信文字锚 ⇒ 报 `judge-fragile-no-basis`。
+    ⚠️ 「可执行」是独立一轴：`:has-text` / `text=` 这类执行器跑不了的地址**不算证据**，
+    也不许被当成稳的地址（`is_executable`）；不再拿「判据读不懂」当「无据可依」。
+    ⚠️ `observed` 只影响出处与判决；不传 ⇒ 走老路（与从前逐字节一致）。
+
+    ★ `accepted`：人点头过的那一处（四元组没变）⇒ **整步跳过**，对四档都生效。
+    `FILLS` 也有同一个口子：handle 是 `FILLS:<键>#0`。
     """
     out: list[Violation] = []
     seen: set = set()
@@ -1013,6 +1111,8 @@ def _rule_i(states: list, fills, src: str, observed=None, accepted=None) -> list
         for index, step in enumerate(state.get("steps") or []):
             if not isinstance(step, dict):
                 continue
+            if str(step.get("action") or "") in AUXILIARY_ACTIONS:
+                continue                    # 见 `AUXILIARY_ACTIONS`：失败不打回整组 ⇒ 地址不承重
             target = step.get("target") or {}
             sels = _selectors(target)
             if not sels:
@@ -1022,51 +1122,27 @@ def _rule_i(states: list, fills, src: str, observed=None, accepted=None) -> list
                 continue
             if observed is not None:
                 card = _observed_card(observed, name, index, target)
-                kept, levels = [], []
-                for one in sels:
-                    level, why = address_basis(
-                        one, card or {}, (card or {}).get("selectors") or [])
-                    levels.append(level)
-                    if level != UNSUPPORTED:
-                        kept.append(one)
-                #: ★ 第一格（spec §3.1 第③步第一条）：判「有没有答案」**要看卡**，
-                #: 不能只看产物那几根。真现场：nitrous 那一步的卡是空的，而产物那根脆链
-                #: 与观测原文**逐字相同** ⇒ 它是 `OBSERVED`、是「采信的候选」，
-                #: 只按候选判会掉进「有据但没用上」⇒ 报「从这几样里挑一条稳的」，
-                #: 可**那几样一样都没有** —— 那句人话自相矛盾，又回到逼人编。
-                #: ★ 2026-10-15 Task 6：这一格与下面 ③ 那一格（**卡上有锚、候选全没依据**）
-                #: **合成一句** —— 两条身子逐字节相同（同一个 handle、同一句话、同一根地址），
-                #: 而「人接受过 ⇒ 不报」必须**两处都问**（漏一处就成了「接受了还在报」，
-                #: 屏幕上看不出来）。「算不算无据可依、要绑哪一根」因此**只有一处定义**：
-                #: `_no_basis_sel`（`no_basis_slots` 那份待接受清单走的是同一支）。
-                #: ★ 修复轮 1：接受**整步跳过**（`continue`）—— 落在这一格的那一步同时也在
-                #: 别的判据的射程里（实测：`judge-fragile-selectors` 就在下面几行），
-                #: 只「不报 no-basis」等于接受没生效（详见 `_no_basis_sel` 里那段实测）。
-                #: ⚠️ 这里**不 `seen.add`**：`seen` 是「同一个 handle 只报一次」的账，
-                #: 接受不是「报过」—— 同名重复组里那一步要按它自己的四元组判（与
-                #: `no_basis_slots` 同一条时机）。
-                if _accepted(card, sels, kept, accepted, name, index):
+                kept = _kept_selectors(card, sels)
+                verdict, bound = _address_verdict(card, sels, kept, target)
+                #: 接受是**整步跳过**，而且对四档判决都生效（人点头过就不用再问）
+                if bound and _accepted(accepted, name, index, bound, card):
                     continue
-                if _no_basis_sel(card, sels, kept) is not None:
-                    seen.add(handle)
+                if verdict in ("stable", "advisory"):
+                    continue
+                seen.add(handle)
+                _tail = _non_exec_say(sels)
+                if verdict == "fixable":
+                    out.append(Violation(
+                        line=_line_of_any(src, sels[0], sels[0][-24:], name),
+                        code="judge-fragile-selectors",
+                        message=_with_evidence_say(name, index, card) + _tail,
+                        snippet=_snippet(sels[0])))
+                else:
                     out.append(Violation(
                         line=_line_of_any(src, sels[0], sels[0][-24:], name),
                         code="judge-fragile-no-basis",
-                        message=_no_basis_say(name, index, card),
+                        message=_no_basis_say(name, index, card) + _tail,
                         snippet=_snippet(sels[0])))
-                    continue
-                if all(one == DERIVED for one in levels if one != UNSUPPORTED):
-                    continue        # ② 全靠 Derived 撑着 ⇒ 放行（由 check_unverified 记一笔）
-                if not all(_fragile(s) for s in kept):
-                    continue        # 有 Observed 的不脆候选 ⇒ 过
-                if _has_text_anchor(target):
-                    continue        # 有语义锚 ⇒ 过（今天就这样，留）
-                seen.add(handle)
-                out.append(Violation(
-                    line=_line_of_any(src, sels[0], sels[0][-24:], name),
-                    code="judge-fragile-selectors",
-                    message=_with_evidence_say(name, index, card),
-                    snippet=_snippet(sels[0])))
                 continue
             # ── 没传 observed：老路，一个字都不改 ─────────────────────────────
             if not all(_fragile(s) for s in sels):
@@ -1100,34 +1176,27 @@ def _rule_i(states: list, fills, src: str, observed=None, accepted=None) -> list
             #: fills 这一支没有「步序」这个把手）。
             frozen_fill = ((observed or {}).get("fills") or {}).get(key)
             card = fix.card_of((frozen_fill or {}).get("target"))
-            kept, levels = [], []
-            for one in sels:
-                level, why = address_basis(
-                    one, card or {}, (card or {}).get("selectors") or [])
-                levels.append(level)
-                if level != UNSUPPORTED:
-                    kept.append(one)
-            if _card_has_nothing(card, kept) or not kept:
-                #: 与 states 那一支同一条判决、同一格顺序（卡上什么都没有 ⇒ 无据可依）
-                seen.add(handle)
+            kept = _kept_selectors(card, sels)
+            fill_label = str((fill or {}).get("label") or "")
+            verdict, bound = _address_verdict(card, sels, kept, target, fill_label)
+            if bound and _accepted(accepted, handle, 0, bound, card):
+                continue
+            if verdict in ("stable", "advisory"):
+                continue
+            seen.add(handle)
+            _tail = _non_exec_say(sels)
+            if verdict == "fixable":
+                out.append(Violation(
+                    line=_line_of_any(src, sels[0], sels[0][-24:], key),
+                    code="judge-fragile-selectors",
+                    message=_fill_with_evidence_say(key, card) + _tail,
+                    snippet=_snippet(sels[0])))
+            else:
                 out.append(Violation(
                     line=_line_of_any(src, sels[0], sels[0][-24:], key),
                     code="judge-fragile-no-basis",
-                    message=_fill_no_basis_say(key, card),
+                    message=_fill_no_basis_say(key, card) + _tail,
                     snippet=_snippet(sels[0])))
-                continue
-            if all(one == DERIVED for one in levels if one != UNSUPPORTED):
-                continue        # 全靠 Derived 撑着 ⇒ 放行（由 check_unverified 记一笔）
-            if not all(_fragile(s) for s in kept):
-                continue        # 有 Observed 的不脆候选 ⇒ 过（脆的排最后，本来就不会先用它）
-            if _has_text_anchor(target) or str((fill or {}).get("label") or "").strip():
-                continue        # 这一格自己写着名字 ⇒ 过（今天就这样，留）
-            seen.add(handle)
-            out.append(Violation(
-                line=_line_of_any(src, sels[0], sels[0][-24:], key),
-                code="judge-fragile-selectors",
-                message=_fill_with_evidence_say(key, card),
-                snippet=_snippet(sels[0])))
             continue
         # ── 没传 observed：老路，一个字都不改 ─────────────────────────────
         if not all(_fragile(s) for s in sels):
@@ -1320,38 +1389,40 @@ def _with_evidence_say(name: str, index: int, card) -> str:
             "「页面上没找到」，整组步骤被静默跳过。"
             "**探路那一刻量到的是**：%s —— 从这几样里挑一条**稳的**地址"
             "（`input[name=…]` / `input[placeholder=…]` / 文字锚那几类）。"
-            % (name, index + 1, said or "**什么都没有**"))
+            "实在改不动：在闸上说「接受地址 %s#%d」（只有人能接受，且地址或证据一变就失效）。"
+            % (name, index + 1, said or "**什么都没有**", name, index))
 
 
 def _fill_no_basis_say(key: str, card) -> str:
-    """「无据可依」那一支的**字段版**人话 —— 与 `_no_basis_say` 同一条立场，两处不同：
+    """「无据可依」那一支的**字段版**人话 —— 与 `_no_basis_say` 同一条立场：
 
     · 说的是**字段**（`FILLS` 那一支没有「第 N 步」这个把手，键就是它的名字）；
-    · **不写第 ③ 条「接受」** —— 那一条的落地（`no_basis_slots` / `_accept_from_note`）
-      是按 `(组名, 步序)` 认的，**字段这一支没有对应的口子**：写一句做不到的话，
-      正是这一刀要治的病（老话「给它补一条稳的」就是这么坏的）。
+    · ★ 2026-11-11：**接受那条路现在也有口子** —— handle 是 `FILLS:<键>#0`
+      （`no_basis_slots` 与 `_accept_from_note` 同一个键），不再写「做不到的话」。
     ★ 2026-10-15 修复轮 2（Ruling 14）：与 `_no_basis_say` **同一个病、同一条改法、同一把
     「有没有货」的尺子**（`_card_has_nothing`）—— 卡上有货就不许说「量不到更稳的地址」
-    （下一句会打脸），改成「先把卡上那根拿来用」。两条正路照旧只有两条。
+    （下一句会打脸），改成「先把卡上那根拿来用」。
     """
+    accept = ("③ 如实**接受**（在闸上说「接受地址 FILLS:%s#0」—— 只有人能接受，"
+              "且地址或证据一变就失效）。" % key)
     if not _card_has_nothing(card, ()):
         return (
             "字段「%s」：**这一格的地址一条都不是量到的**（编出来的地址没人验过 —— "
             "它会让「这一格还能不能填上」这件事在屏幕上看起来是好的）。"
             "**探路那一刻量到的是**：%s —— **先把卡上那根拿来用**；"
-            "实在没有能用的，两条正路任选其一："
+            "实在没有能用的，三条正路任选其一："
             "① 这一格**本来就不该填**（页面没要求，或它已经在别处填过）⇒ **把这一步删掉**；"
-            "② **请人给一根**（在闸上说一句，人正看着那一页）。"
-            % (key, _card_facts_say(card)))
-    #: ── 卡上什么都没有：下面的原话**一个字都没动** ──────────────────────────────────
+            "② **请人给一根**（在闸上说一句，人正看着那一页）；%s"
+            % (key, _card_facts_say(card), accept))
+    #: ── 卡上什么都没有：除了多出第 ③ 条，原话不动 ──────────────────────────────
     return (
         "字段「%s」：这一格探路那一刻**量不到更稳的地址** —— %s。"
         "**别编一根**：编出来的地址没人验过，而它会让「这一格还能不能填上」这件事"
-        "在屏幕上看起来是好的。两条正路，任选其一："
+        "在屏幕上看起来是好的。三条正路，任选其一："
         "① 这一格**本来就不该填**（页面没要求，或它已经在别处填过）⇒ **把这一步删掉**；"
-        "② **请人给一根**（在闸上说一句，人正看着那一页）。"
+        "② **请人给一根**（在闸上说一句，人正看着那一页）；%s"
         % (key, "它身上没有名字、旁边没有字、也没有一条验过唯一的候选"
-           if not card else "量到的只有 %s" % _card_facts_say(card)))
+           if not card else "量到的只有 %s" % _card_facts_say(card), accept))
 
 
 def _fill_with_evidence_say(key: str, card) -> str:
@@ -1362,7 +1433,8 @@ def _fill_with_evidence_say(key: str, card) -> str:
             "「没找到」而填不进去，日志里只说没填成、看不出是地址漂了。"
             "**探路那一刻量到的是**：%s —— 从这几样里挑一条**稳的**地址"
             "（`input[name=…]` / `input[placeholder=…]` / 文字锚那几类）。"
-            % (key, said or "**什么都没有**"))
+            "实在改不动：在闸上说「接受地址 FILLS:%s#0」（只有人能接受，且地址或证据一变就失效）。"
+            % (key, said or "**什么都没有**", key))
 
 
 #: `judge-source-autoname` 那一句人话的**前半句**（诊断）—— 两支共用，一个字都不许变：
@@ -1459,7 +1531,10 @@ def _judge_violations(src: str, observed=None, accepted=None) -> list[Violation]
         if not isinstance(when, dict):
             continue                            # `when=None` 本身不违规（边界见 `_rule_e`）
         judged = [str(t) for t in (when.get("text_contains") or [])]
-        if not judged and when.get("url_contains") and not when.get("text_why"):
+        #: ★ 2026-10-21（真事 delamere）：`url_equals` = **精确地址**门（整条网址逐字比），
+        #: 不是「SPA 上地址不变 ⇒ 等于没判据」那一种。带了它的组不报这一条。
+        if (not judged and when.get("url_contains") and not when.get("text_why")
+                and not when.get("url_equals")):
             # ⚠️ 带了 `text_why` 的不报：那是「查过了，只有地址稳」的记录（有损但**说了**），
             # 与「没钉出来」是两件事 —— 判据就在这一格上。
             out.append(Violation(
@@ -1513,6 +1588,45 @@ def _snippet(raw: str) -> str:
     return text
 
 
+def _code_text(src: str) -> list[str]:
+    """每一行的**代码**（注释尾巴与一等 docstring 挖掉；行号、列位置不动）。
+
+    只给 `RULES` 那四条写模式用：它们盯的是**动作**，而注释 / docstring 是散文
+    （2026-10-30 `job-6ff0dc514ff3`：改好的代码被自己解释旧写法的注释反复打回）。
+    ⚠️ 代码里的字符串字面量**不挖** —— 手拼 JS 就写在那儿。
+    `tokenize` / `ast` 认不出（源码半截、语法错）⇒ 退回原文，与从前一致。
+    """
+    lines = src.splitlines()
+    masked = list(lines)
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type == tokenize.COMMENT:
+                row, col = tok.start
+                if 1 <= row <= len(masked):
+                    masked[row - 1] = masked[row - 1][:col]
+    except (tokenize.TokenError, IndentationError):
+        pass
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return masked
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", [])
+        if not body:
+            continue
+        first = body[0]
+        if not (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)):
+            continue
+        doc = first.value
+        end = getattr(doc, "end_lineno", None) or doc.lineno
+        for row in range(doc.lineno, min(end, len(masked)) + 1):
+            masked[row - 1] = ""
+    return masked
+
+
 def check(src: str, observed=None, accepted=None) -> list[Violation]:
     """扫一份产物源码，返回违规列表（按行号升序；同一行同一条规则只报一次）。
 
@@ -1531,10 +1645,18 @@ def check(src: str, observed=None, accepted=None) -> list[Violation]:
     """
     violations: list[Violation] = []
     seen: set[tuple[int, str]] = set()
+    code_lines = _code_text(src)
+    #: 骨架自带方法里那几行（见 `SKELETON_VALUE_EVENTS_LINES`）：写模式不判它。
+    own_lines = _skeleton_value_events_lines(src)
     for lineno, raw in enumerate(src.splitlines(), start=1):
+        code = code_lines[lineno - 1]
         for rule in RULES:
             key = (lineno, rule.code)
-            if key in seen or not rule.pattern.search(raw):
+            if key in seen or not rule.pattern.search(code):
+                continue
+            #: 骨架那份写值 JS（React 受控输入唯一测得通的路）不判 —— 只免它自己那几行，
+            #: 别处的同一写法照旧报（判据见 `_skeleton_value_events_lines`）。
+            if lineno in own_lines:
                 continue
             #: ★ 2026-10-19（wildnutrition）：**产品自己的 markets offcanvas hook** 例外。
             #: 那一型关闭键被 sticky header 盖住 ⇒ `cdp click` 的落点判据点不到（点下去是
@@ -1556,6 +1678,35 @@ def check(src: str, observed=None, accepted=None) -> list[Violation]:
         seen.add(key)
         violations.append(one)
     return sorted(violations, key=lambda v: (v.line, v.code))
+
+
+def subtract_baseline(violations, baseline) -> list:
+    """从这一版里**减掉底稿本来就有的违规** —— 只给「整份源码出补丁」那条老写法用。
+
+    ★ 2026-11-04（`job-476a7553b115` · youragemeets）：老底稿自己带着两处
+    `document.querySelector(...).click()` 兜底（正常的历史写法）；模型只改它该改的
+    那一处，而那两行**原样留着** ⇒ 每一版都被同两条 `js-click` 打回、三次撞 `lint_cap`。
+    补丁那条路的契约应该是「**别新增**违规」，不是「把历史写法也一起重写」。
+
+    判据按 `(code, snippet)` **计数**相减：底稿有几条同样的，这一版就豁免几条；
+    多出来的（模型新写的）照旧报 —— 不按行号，因为补丁会让所有行号往下漂。
+    传进来的两条可以是 `Violation`，也可以是 `_violation_dict` 那种朴素 dict。
+    """
+    def _get(v, k):
+        return v.get(k) if isinstance(v, dict) else getattr(v, k, None)
+
+    key = lambda v: (_get(v, "code"), str(_get(v, "snippet") or "").strip())
+    budget: dict = {}
+    for one in baseline or []:
+        budget[key(one)] = budget.get(key(one), 0) + 1
+    out = []
+    for one in violations or []:
+        k = key(one)
+        if budget.get(k):
+            budget[k] -= 1
+            continue
+        out.append(one)
+    return out
 
 
 def _derived_only_say(card, sels) -> Optional[tuple]:
@@ -1591,12 +1742,41 @@ def _derived_only_say(card, sels) -> Optional[tuple]:
     return (derived[0][1], [one for one, _ in derived])
 
 
+def _unverified_notes(card, sels, kept, target, who, fill_label="") -> list:
+    """一处地址的「未证实」备注（Derived / 只有位置链 / 非 CSS）—— **不报违规**。"""
+    out = []
+    got = _derived_only_say(card, sels) if card else None
+    if got:
+        why, derived = got
+        out.append("%s：地址 %s **放行，但按「未证实」记** —— %s"
+                   "自测跑到它才算数（跑到了也只记「运行验证通过」，"
+                   "**不得**把它当成量到的）。"
+                   % (who, "、".join("`%s`" % one for one in derived), why))
+    verdict, _bound = _address_verdict(card, sels, kept, target, fill_label)
+    if verdict == "advisory":
+        used = _matching_evidence(target, card, fill_label)
+        out.append("%s：地址 %s **只有位置链可依**（运行期按文字证据 %s 重定位）—— "
+                   "**按「未证实」放行**，自测跑到它才算数。"
+                   % (who, _selectors_say(kept or sels),
+                      "、".join("`%s`" % one for one in used[:3]) or "（这一版没带）"))
+    if verdict in ("stable", "advisory"):
+        bad = [one for one in sels if not is_executable(one)]
+        if bad:
+            out.append("%s：%d 条地址不是本执行器支持的 CSS（%s）—— "
+                       "运行期跑不了、已忽略。" % (who, len(bad), _selectors_say(bad)))
+    return out
+
+
 def check_unverified(src: str, observed) -> list[str]:
-    """这一版里**有据但没验过**的那几处（Derived）→ 一行一句的人话。**不报违规**。
+    """这一版里**放行但不当作稳**的那几处 → 一行一句的人话。**不报违规**。
 
     ★ 2026-10-15（spec §3.3a）：全靠 Derived 撑着的那一步**放行，但不当作「稳」**。
     为什么不报违规：报了它就停在 `draft ↔ lint` 环里、**永远到不了自测** ——
     而 Derived 的验证恰恰落在自测那一跳。所以这里只**记一笔**，让它带着标注往下走。
+
+    ★ 2026-11-11（`job-17e9375fc2a4`）：**只有位置链、但运行期有可信文字锚**的那一档
+    也走这里（`_address_verdict` 的 `advisory`）—— 它就是「交付了，但要人知道」。
+    非执行器语言的地址也记一笔（`:has-text` / `text=` 那类跑不了，别当成稳的）。
 
     ⚠️ 自测跑到了 ⇒ 记「运行验证通过」；**不得改写成 Observed**（一次跑通 ≠ 属性来源已证实）。
     ⚠️ 人话不许编：那几句**出处的话**取自 `address_basis`（判据自己说的那一句），
@@ -1621,6 +1801,8 @@ def check_unverified(src: str, observed) -> list[str]:
         for index, step in enumerate(state.get("steps") or []):
             if not isinstance(step, dict):
                 continue
+            if str(step.get("action") or "") in AUXILIARY_ACTIONS:
+                continue                    # 同 `_rule_i`：辅助动作的地址不承重，也不记「未证实」
             target = step.get("target") or {}
             sels = _selectors(target)
             if not sels:
@@ -1628,15 +1810,9 @@ def check_unverified(src: str, observed) -> list[str]:
             #: ⚠️ 卡一律走 `_observed_card`（= `_rule_i` 那一支的同一个调用）：`find_observed`
             #: 的返回值**按 falsy 判**，而且卡**必须**来自冻结那份 —— 见 `_observed_card`。
             card = _observed_card(observed, name, index, target)
-            got = _derived_only_say(card, sels) if card else None
-            if not got:
-                continue
-            why, derived = got
-            out.append("组「%s」第 %d 步：地址 %s **放行，但按「未证实」记** —— %s"
-                       "自测跑到它才算数（跑到了也只记「运行验证通过」，"
-                       "**不得**把它当成量到的）。"
-                       % (name, index + 1,
-                          "、".join("`%s`" % one for one in derived), why))
+            kept = _kept_selectors(card, sels)
+            out.extend(_unverified_notes(
+                card, sels, kept, target, "组「%s」第 %d 步" % (name, index + 1)))
     for key, fill in fills.items():
         target = (fill or {}).get("target") or {}
         sels = _selectors(target)
@@ -1646,30 +1822,25 @@ def check_unverified(src: str, observed) -> list[str]:
         #: 拿它当证据就是循环证明 —— 冻结那份里按 `fills` 的**键**找（键是这一格唯一的名字）。
         frozen = ((observed or {}).get("fills") or {}).get(key)
         card = fix.card_of((frozen or {}).get("target"))
-        got = _derived_only_say(card, sels) if card else None
-        if not got:
-            continue
-        why, derived = got
-        out.append("字段「%s」：地址 %s **放行，但按「未证实」记** —— %s"
-                   "自测跑到它才算数（跑到了也只记「运行验证通过」，"
-                   "**不得**把它当成量到的）。"
-                   % (key, "、".join("`%s`" % one for one in derived), why))
+        kept = _kept_selectors(card, sels)
+        out.extend(_unverified_notes(
+            card, sels, kept, target, "字段「%s」" % key,
+            str((fill or {}).get("label") or "")))
     return out
 
 
 def no_basis_slots(src: str, observed, accepted=None) -> list[dict]:
-    """这一版里**无据可依**的那几处 → `[{"state": 名, "index": 步序, "selector": 那根, "card": 卡指纹}]`。
+    """**还能让改稿修 / 只能人点头**的那几处 → `[{state, index, selector, card}]`。
 
     为什么要有它（★ Ruling 2）：人在闸上说「接受地址 X#N」时，`_accept_from_note` 得知道
     X#N 指的是**哪一根**，否则只能不认（**不许猜** —— 猜的后果是「人没同意的事被记成同意了」，
-    而屏幕上一切正常）。这一格就是那个「指的是哪一根」：`_no_basis_say` 报的那个 handle
-    与这里写下来的键**同源**（`(组名, 步序)` 拼的 `%s#%d`），两边不会各说各的。
+    而屏幕上一切正常）。这一格就是那个「指的是哪一根」：判据报的那个 handle 与这里写下来的
+    键**同源**，两边不会各说各的。
 
-    ⚠️ 判「算不算无据可依、要绑哪一根」走的是 `_no_basis_sel`、判「人接受过没有」走的是
-    `_accepted`（与 `_rule_i` 报那一格**同一支**）—— 各写一遍的话，「人接受过的那一步」
-    与「判据还在报的那一步」会对不上，而屏幕上两边看起来都正常。
-    ⚠️ 只覆盖 `states` 那一支：`FILLS` 那一格的把手是**键**、`(组名, 步序)` 认不出来
-    （`_fill_no_basis_say` 因此只写两条正路 —— 写一句做不到的话正是这一刀要治的病）。
+    ★ 2026-11-11：从「只看无据可依」扩成**所有需要人决定的地址**（`fixable` / `blocked`）。
+    `advisory` 不进来（它已经放行），`stable` 更不进来。
+    `FILLS` 那一支也有了口子：handle 是 `FILLS:<键>#0` —— 键本来就是这一格稳定的名字，
+    不再因为它没有「第 N 步」就少一条出路。
     ⚠️ **卡指纹存字符串**（`fix.card_fingerprint` 本来给的是**元组**，`fix.py:1190`）：
     这一格要进 state、要过 checkpoint（JSON），元组过一趟就成了 list ⇒ 同一张卡前后
     `str()` 不等，人那次点头会**无声失效**（屏幕上还写着「接受过」）。存字符串就只有一种形状。
@@ -1682,8 +1853,20 @@ def no_basis_slots(src: str, observed, accepted=None) -> list[dict]:
     states, fills = fix._literals(src)
     if not isinstance(states, list):
         states = []
+    if not isinstance(fills, dict):
+        fills = {}
     out: list[dict] = []
     seen: set = set()
+
+    def _slot(card, sels, kept, target, state_name, index, fill_label=""):
+        verdict, bound = _address_verdict(card, sels, kept, target, fill_label)
+        if verdict not in ("fixable", "blocked") or not bound:
+            return None
+        if _accepted(accepted, state_name, index, bound, card):
+            return None
+        return {"state": state_name, "index": index, "selector": bound,
+                "card": str(fix.card_fingerprint(card))}
+
     for state in states:
         if not isinstance(state, dict):
             continue
@@ -1691,6 +1874,8 @@ def no_basis_slots(src: str, observed, accepted=None) -> list[dict]:
         for index, step in enumerate(state.get("steps") or []):
             if not isinstance(step, dict):
                 continue
+            if str(step.get("action") or "") in AUXILIARY_ACTIONS:
+                continue                    # 同 `_rule_i`：辅助动作不进「等被接受」的清单
             target = step.get("target") or {}
             sels = _selectors(target)
             if not sels:
@@ -1698,26 +1883,24 @@ def no_basis_slots(src: str, observed, accepted=None) -> list[dict]:
             handle = "%s#%d" % (name, index)
             if handle in seen:
                 continue
-            #: ⚠️ 卡一律走 `_observed_card`（= `_rule_i` 那一支的同一个调用）：`find_observed`
-            #: 的返回值**按 falsy 判**，而且卡**必须**来自冻结那份 —— 见 `_observed_card`。
             card = _observed_card(observed, name, index, target)
-            #: ⚠️ 与 `_rule_i` 那一支**同一个滤法**（`UNSUPPORTED` 的**不算采信**）：
-            #: 那边还要 `levels`（"全靠 Derived 撑着" 那一支要用），所以它自己那个循环留着 ——
-            #: 改一处必须改两处。
-            kept = []
-            for one in sels:
-                level, _why = address_basis(
-                    one, card or {}, (card or {}).get("selectors") or [])
-                if level != UNSUPPORTED:
-                    kept.append(one)
-            #: ★ 修复轮 1：与 `_rule_i` **同一条判决**（那边是「整步跳过」，这边是「不再等」）——
-            #: 已经接受过的那一格不该再出现在待接受清单里（人再说一遍也只是原地覆盖）。
-            if _accepted(card, sels, kept, accepted, name, index):
-                continue
-            sel = _no_basis_sel(card, sels, kept)
-            if sel is None:
+            kept = _kept_selectors(card, sels)
+            one = _slot(card, sels, kept, target, name, index)
+            if one is None:
                 continue
             seen.add(handle)
-            out.append({"state": name, "index": index, "selector": sel,
-                        "card": str(fix.card_fingerprint(card))})
+            out.append(one)
+    for key, fill in fills.items():
+        target = (fill or {}).get("target") or {}
+        sels = _selectors(target)
+        if not sels:
+            continue
+        frozen = ((observed or {}).get("fills") or {}).get(key)
+        card = fix.card_of((frozen or {}).get("target"))
+        kept = _kept_selectors(card, sels)
+        one = _slot(card, sels, kept, target, "FILLS:%s" % key, 0,
+                    str((fill or {}).get("label") or ""))
+        if one is None:
+            continue
+        out.append(one)
     return out

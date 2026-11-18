@@ -783,6 +783,14 @@ def test_the_rank_query_is_the_one_that_was_measured():
     assert rec.headers[0]["X-Api-Token"] == FAKE_TOKEN, rec.headers[0]
 
 
+def test_the_rank_can_lower_the_streak_gate_to_see_every_failing_site():
+    """`min_streak=1` ⇒ 整格发出去（默认 5 是后端的默认，不是我们的判断）。"""
+    rec = Recorder(envelope(RANK_FIXTURE))
+    client(rec).fetch_rank(min_streak=1)
+    _path, params = query_of(rec.urls[0])
+    assert params == {"min_streak": "1"}, params
+
+
 def test_the_rank_leaves_both_cells_out_so_the_backend_picks_the_day():
     """★ 不给 `date` 时**整格不发** —— 缺省（= 后端那边的「今天」）不是「发一个空串」。
 
@@ -2316,3 +2324,26 @@ def test_the_candidate_ladder_is_the_three_keys_measured_on_the_real_board():
     assert fmr._key_candidates("www.a.com/x") == ["www.a.com/x", "www.a.com"], \
         "★ www. 那一档不加 qualify.（加了就是去问另一个站）"
     assert fmr._key_candidates("") == []
+
+
+def test_sibling_failure_keys_are_same_host_full_paths_nearest_first():
+    """★ 2026-11-05（educationdirectory）：排行榜那串键在后端被删了，同域别的 full-path
+    键还读得到 —— 修复按钮要按它们再搜。
+
+    钉三件：**只认同一主机**、原文键/主机段不算、与原文键共的前缀越长越先试；
+    以及**上限**（同域键最多的站实测 39 个 —— 全试就是一次点击 40 个请求）。
+    """
+    key = "educationdirectory.net/landing-page/4/default"
+    known = [key,
+             "educationdirectory.net",                              # 主机段：不算
+             "educationdirectory.net/landing-page/4/other",          # 同前缀 → 先
+             "educationdirectory.net/articles/x",                    # 同主机
+             "www.educationdirectory.net/landing-page/4/default",    # 别的主机
+             ""]
+    assert fmr.sibling_failure_keys(key, known) == [
+        "educationdirectory.net/landing-page/4/other",
+        "educationdirectory.net/articles/x"]
+    #: 上限：`limit` 之外一个都不多试（39 个同域键的站上别把一次点击变成 40 个请求）
+    many = ["a.com/p%d" % i for i in range(39)]
+    assert len(fmr.sibling_failure_keys("a.com/x", many)) == fmr.SIBLING_KEY_TRIES
+    assert fmr.sibling_failure_keys("", many) == []

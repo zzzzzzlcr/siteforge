@@ -89,19 +89,83 @@ def test_the_model_only_changes_the_keys_it_mentions():
     '{"loop": {"谁都不知道的键": 1}, "note": "x"}',
     '{"fills": {"age": "35"}}',                    # 少了 `note`
 ])
-def test_a_reply_that_cannot_be_read_changes_nothing_at_all(reply):
-    """读不动 / 有一样不合法 ⇒ **整份原样退回 + 原因**（不许「能认的那几格先收下」）。
+def test_a_reply_that_cannot_be_read_is_a_protocol_error(reply):
+    """读不动 / 有一样不合法 ⇒ **`ProtocolError` + 原因**（不许「能认的那几格先收下」，
+    也不许返回原样让调用方误读成「模型没改」）。
 
     半份收下的后果是**闸上看到「改过了」而其中一半根本没进去** —— 那种静默分岔是这套工具
     反复付过代价的坏法（`graph._patch_draft` 的「逐条人话」也是为它写的）。
     """
     spec = {"site": SITE, "success_text": SUCCESS, "states": [{"name": "q1"}],
             "fills": {"postcode": _decl()}}
-    new, notes = fix.states_from_reply(spec, reply)
+    with pytest.raises(fix.ProtocolError) as got:
+        fix.states_from_reply(spec, reply)
 
-    assert new == spec, "退回来的不是原样：%r" % (new,)
-    assert notes and all(str(x).strip() for x in notes), "退回来却没说为什么"
-    assert any(("JSON" in x or "note" in x or "只认" in x or "得是" in x) for x in notes), notes
+    bad = got.value.errors
+    assert bad and all(str(x).strip() for x in bad), "拒了却没说为什么"
+    assert any(("JSON" in x or "note" in x or "只认" in x or "得是" in x) for x in bad), bad
+    assert got.value.reply, "拒绝时要把原始回话留着（落状态只存指纹）"
+
+
+def test_a_rejected_reply_feeds_its_real_reason_into_the_next_ask():
+    """★ 反馈回路：第一回缺 `note` ⇒ 第二回拿到的是**这条真实错误**，不是「一处都没改」。"""
+    spec = {"site": SITE, "success_text": SUCCESS, "states": [{"name": "q1"}], "fills": {}}
+    seen: list = []
+    replies = iter(['{"fills": {"age": "35"}}',
+                    '{"fills": {"age": "35"}, "note": "补上了 note"}'])
+
+    def ask(violations):
+        seen.append(list(violations))
+        return next(replies)
+
+    new, failures = fix.states_with_retry(spec, ask, attempts=2)
+
+    assert seen[0] == [], seen
+    assert any("note" in str(x) for x in seen[1]), seen
+    assert new["fills"] == {"age": "35"}
+    assert failures and failures[0]["errors"], failures
+    assert failures[0]["reply_chars"] == len('{"fills": {"age": "35"}}')
+
+
+def test_retry_exhaustion_raises_with_every_attempt_recorded():
+    """两回都读不动 ⇒ 抛 `ProtocolError`，`records` 带齐两回（结构化、可落状态）。"""
+    spec = {"site": SITE, "fills": {}, "states": []}
+
+    def ask(_violations):
+        return "一段散文"
+
+    with pytest.raises(fix.ProtocolError) as got:
+        fix.states_with_retry(spec, ask, attempts=2)
+    assert len(got.value.records) == 2, got.value.records
+    assert [r["attempt"] for r in got.value.records] == [1, 2]
+    assert all(r["errors"] for r in got.value.records)
+
+
+def test_the_service_writer_retries_with_the_real_protocol_error(monkeypatch):
+    """★ 断掉的那一截：服务那双手要把**真实解析错误**回灌，而不是「一处都没改」。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    replies = iter(['{"fills": {"age": "35"}}',
+                    '{"fills": {"age": "35"}, "note": "补上了 note"}'])
+    seen: list = []
+
+    def fake_loop(system, user, specs, dispatch, **kw):
+        seen.append(user)
+        return [{"content": next(replies)}]
+
+    monkeypatch.setattr(service.llm, "run_tool_loop", fake_loop)
+    svc = object.__new__(service.Service)          # 只走 `_write_cb`，不建服务
+    write = svc._write_cb({}, "")
+    spec = {"site": SITE, "success_text": SUCCESS, "success_urls": "",
+            "states": [], "fills": {}}
+
+    new = write(spec, {})
+
+    assert new["fills"] == {"age": "35"}
+    assert len(seen) == 2, "第一次读不动 ⇒ 必须真的再问一次"
+    assert "没有 `note`" in seen[1], "第二问拿到的是真实错误，不是「一处都没改」：%r" % seen[1]
+    failures = new[fix.PROTOCOL_LOG_KEY]
+    assert failures and failures[0]["attempt"] == 1, failures
+    assert any("note" in e for e in failures[0]["errors"]), failures
 
 
 def test_a_fenced_json_reply_is_read_even_without_the_language_tag():
@@ -346,9 +410,9 @@ def test_a_shape_change_is_accepted_only_for_the_two_names():
     assert new["shape"] == "loop" and notes == ["按人说的换成循环型"]
 
     for junk in ('{"shape": "自适应", "note": "x"}', '{"shape": 1, "note": "x"}'):
-        back, bad = fix.states_from_reply(spec, junk)
-        assert back == spec, junk
-        assert bad and "shape" in bad[0], bad
+        with pytest.raises(fix.ProtocolError) as got:
+            fix.states_from_reply(spec, junk)
+        assert got.value.errors and "shape" in got.value.errors[0], got.value.errors
 
 
 def test_the_writer_can_switch_a_fixed_table_artifact_to_the_loop_shape(tmp_path):
