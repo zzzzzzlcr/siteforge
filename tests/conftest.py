@@ -136,6 +136,14 @@ def _tests_never_touch_the_repo_or_a_real_cdp(request, tmp_path, monkeypatch):
     #: 测试里的假页面**本来就不会变** ⇒ 不压到 0 的话，每点一次 Next 白等 12 秒
     #: （全量实测 +100 秒）。压到 0 = 不等，行为与改动前一致。
     monkeypatch.setenv("SITEFORGE_NEXT_SETTLE", "0")
+    #: ★ 2026-11-18：`POST /run` 门口现在会查「给的那条 `form_file` 还在不在盘上」
+    #: （2026-11-11 真事故：容器重建后 checkpoint 里的旧路径没了）。用例里的 `_brief`
+    #: 一直把 `form_file` 指向 `<tmp_path>/form.json`、却从不落这份文件 —— 那些用例
+    #: 判的**不是**文件在不在（图都是桩），所以在这儿统一兜一份空的。
+    #: ⚠️ 要判「缺席」的用例自己先 `unlink()`。
+    _form = tmp_path / "form.json"
+    if not _form.exists():
+        _form.write_text("{}", encoding="utf-8")
     if pathlib.Path(request.path).name in SANDBOX_FILES:
         return
     monkeypatch.setenv("SITEFORGE_CDP_BIN", NO_SUCH_CDP)
