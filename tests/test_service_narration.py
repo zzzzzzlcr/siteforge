@@ -137,6 +137,9 @@ def _shot_boom(ws_url, dest, *, timeout=None):
 
 
 def _brief(tmp_path, **over):
+    #: ★ 2026-11-18：门口查 `form_file` 在不在盘上 —— 嵌套目录跑的那些自己落一份。
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "form.json").write_text("{}", encoding="utf-8")
     brief = {"url": URL, "goal": GOAL, "success_text": SUCCESS, "site": SITE,
              "ws_url": WS_URL, "form_file": str(tmp_path / "form.json"),
              "out_dir": str(tmp_path / "forms" / "sites")}

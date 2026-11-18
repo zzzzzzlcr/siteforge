@@ -99,6 +99,10 @@ def test_the_form_data_cell_becomes_a_file_the_self_test_can_read(tmp_path):
 
 
 def _brief(tmp_path, **over) -> dict:
+    #: ★ 2026-11-18：门口查 `form_file` 在不在盘上 —— 这条载荷点名的文件得真在。
+    tmp_path = pathlib.Path(tmp_path)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "form.json").write_text("{}", encoding="utf-8")
     brief = {"url": URL, "goal": GOAL, "success_text": SUCCESS, "site": SITE,
              "ws_url": WS_URL, "form_file": str(tmp_path / "form.json"),
              "out_dir": str(_out_dir(tmp_path))}

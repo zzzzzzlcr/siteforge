@@ -148,6 +148,10 @@ def _run_job(tmp_path, monkeypatch, *, click, page=None, page_after=None, expect
         box["graph"] = _ExploreGraph(deps, url=url)
         return box["graph"]
 
+    #: ★ 2026-11-18：门口会查 `form_file` 在不在盘上（这类用例都在嵌套目录里跑，
+    #: conftest 那份只兜 `<tmp_path>/form.json` 这一层）⇒ 自己把文件落下。
+    (tmp_path / "form.json").parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "form.json").write_text("{}", encoding="utf-8")
     brief = {"url": url, "goal": GOAL, "success_text": SUCCESS, "site": SITE,
              "ws_url": WS_URL, "form_file": str(tmp_path / "form.json"),
              "out_dir": str(tmp_path / "forms" / "sites")}
