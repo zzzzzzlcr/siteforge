@@ -1401,14 +1401,18 @@ _CRITERIA_READS = {"_waiting_entries": 2, "_delivered_by": 1, "_unsent_texts": 1
 #: 条目上表示状态的键。
 _ENTRY_KEYS = {"delivered", "superseded", "promised"}
 
-#: 唯二的两个**同名不同物**的例外：`/job/{id}` 的投影 `view` 与 checkpoint 的 `values`
-#: 里也有一个 `delivered`（那是「这一趟的产物送到没有」，**不是** `inbox` 条目的那一格）。
-#: ⇒ 守按「接收者名字 **+ 它出现在哪个函数里**」放行这两个（别的名字一律要落在 `_CRITERIA_HOME` 里）。
+#: 三个**同名不同物**的例外：`/job/{id}` 的投影 `view`、checkpoint 的 `values`、以及
+#: 案例账本行上的 `verification` —— 那里的 `delivered` 说的是「这一条修法验成了没有」
+#: （`graph._case_hints` 挑可回灌的经验），**不是** `inbox` 条目的那一格。
+#: ⇒ 守按「接收者名字 **+ 它出现在哪个函数里**」放行这三个（别的名字一律要落在 `_CRITERIA_HOME` 里）。
 #: ⚠️ **修复轮 5 / 加固②**：原先**只按接收者名字**放行 ⇒ 任何一条**条目**只要那个变量叫
 #: `view` / `values` 就自动免检，而 `view` 正是这个文件里最常见的名字
 #: （量过：在别的函数里写 `view.get("delivered")`（`view` 是一条条目）⇒ 旧守**全绿**）。
 #: 现在还要**出现在下面点名的那个函数里** —— 名字对、地方不对 ＝ 野的。
-_NOT_INBOX_RECEIVERS = {"view": ("live", "runs"), "values": ("_measure_after",)}
+_NOT_INBOX_RECEIVERS = {"view": ("live", "runs"), "values": ("_measure_after",),
+                        #: ★ 2026-11-18：案例账本（`forms/sites/.repair-fingerprints.jsonl`）
+                        #: 的行上也有 `verification["delivered"]` —— 与 inbox 无关。
+                        "verification": ("_case_hints",)}
 
 
 def _agent_python_files():
@@ -1523,9 +1527,10 @@ def test_the_inbox_criteria_live_in_exactly_one_place():
          ②`getattr(x, "delivered")`；③条目换成位置结构（`x[2]`）；
          ④ `agent/` **单层**以外的一切（子目录、`tests/`、别的目录）。
       合成源码的正/反控在 `…sees_every_position`；真文件里那几条由变异证明（报告 §修复轮 5）。
-    ⚠️ 两个**同名不同物**的例外写在 `_NOT_INBOX_RECEIVERS`（`view` / `values` 里那个
-    `delivered` 说的是「这一趟的产物送到没有」，与 `inbox` 无关）—— 不豁免这两处，
-    这一条会**假红 4 处**（`live` 两处 + `runs` 一处 + `_measure_after` 一处；量过）。
+    ⚠️ 三个**同名不同物**的例外写在 `_NOT_INBOX_RECEIVERS`（`view` / `values` 里那个
+    `delivered` 说的是「这一趟的产物送到没有」，`verification` 那一格说的是「这条修法
+    验成了没有」，都与 `inbox` 无关）—— 不豁免这三处，这一条会**假红**：
+    `live` 两处 + `runs` 一处 + `_measure_after` 一处 + `_case_hints` 一处（量过）。
     """
     bad, seen_home, by_core = _criteria_outside_their_home()
     assert not bad, ("队里那两个键被读的地方不止一处 —— 判据又有副本了：\n  %s\n"
