@@ -472,6 +472,7 @@ def test_giving_up_after_waiting_says_so(monkeypatch):
     """等过了还是不行 ⇒ 那句话里要说**等了几次** —— 否则读报告的人分不清
     「上游一直没空」与「我们一次都没等」。"""
     monkeypatch.setenv("SITEFORGE_LLM_BACKOFF", "0,0")
+    monkeypatch.setenv("SPIKE_FALLBACK_MODEL", "")   # 只量 primary 的退避，不掺切换
     fresh = importlib.reload(llm)
     cli, calls = _flaky_client(_busy(), fail_times=99)
     with pytest.raises(fresh.ModelCallFailed) as e:
@@ -575,3 +576,16 @@ def test_spike_runner_passes_the_env_budget(monkeypatch, tmp_path):
     assert res["max_tokens"] == 12345, res
     dumped = json.loads((tmp_path / "budget-rep-test.json").read_text(encoding="utf-8"))
     assert dumped["max_tokens"] == 12345, dumped         # 每份证据自带预算
+
+
+def test_the_empty_patch_budget_diagnostic_is_still_reachable(monkeypatch):
+    """空回复现在先被循环判成硬失败 —— `fix.py` 那条诊断仍要能走到。"""
+    from agent import fix
+
+    monkeypatch.setenv("SPIKE_FALLBACK_MODEL", "")
+    rounds = [{"content": "", "finish_reason": "length",
+               "usage": {"completion_tokens": 12000,
+                         "completion_tokens_details": {"reasoning_tokens": 12000}}}]
+    with pytest.raises(ValueError) as e:
+        fix.patch_from_rounds(rounds, max_tokens=12000)
+    assert "预算被思考吃满" in str(e.value)

@@ -17,10 +17,13 @@ from __future__ import annotations
 import contextvars
 import json
 import os
+import sys
+import threading
 import time
+import types
 from typing import Any, Callable, Protocol
 
-from . import tools
+from . import anthropic_transport, tools
 
 DEFAULT_MODEL = os.environ.get("SPIKE_MODEL", "deepseek-v4-flash")
 #: ⚠️ **这一格故意没有默认值**（2026-09-23，用户点名：「想法是都要走我 test.sh 那个配置的」）。
@@ -198,7 +201,7 @@ DEFAULT_BACKOFF_SECONDS = (5.0, 20.0, 60.0)
 #: - 408/409/425/429：**明确是「现在不行」**（超时 / 冲突 / 太频繁）；
 #: - 500/502/503/504：上游或中间那层自己出问题。
 #: ⚠️ 其余 4xx **一律不等**：密钥错 / 参数错 / 模型名错，等多久都是同一个结果。
-RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 529})
 
 
 def backoff_seconds() -> tuple:
@@ -221,6 +224,19 @@ def backoff_seconds() -> tuple:
     return tuple(got)
 
 
+class BadReply(Exception):
+    """这一轮回复**不可用**（空流 / 工具参数不是 JSON）—— 整轮作废再重试/切换。
+
+    `facts` 是这一次调用的账（`finish_reason` / 正文字符 / `tool_calls` /
+    `reasoning_tokens` / `max_tokens`）：`fix.py` 原来那条「预算被思考吃满」的诊断
+    不能因为循环先把它当硬失败就丢掉。
+    """
+
+    def __init__(self, message: str, *, facts: str = ""):
+        super().__init__(message)
+        self.facts = facts
+
+
 def _worth_waiting(exc) -> bool:
     """这个错**值不值得等一等再打**。
 
@@ -228,8 +244,19 @@ def _worth_waiting(exc) -> bool:
     拿消息里有没有「503」去猜的话，我们自己的代码缺陷（消息里恰好带这几个数字）
     也会被当成上游抖动，一路等下去。那正是「把真错拖成慢错」。
     """
+    if isinstance(exc, BadReply):          # 空流 / 坏参数：同 503 一条退避与切换路径
+        return True
     code = getattr(exc, "status_code", None)
     if isinstance(code, int) and code in RETRYABLE_STATUS:
+        return True
+    import httpx
+    if isinstance(exc, httpx.HTTPStatusError):
+        #: ⚠️ `HTTPStatusError` **没有** `.status_code`（在 `.response.status_code`），
+        #: 也不能一刀切当可重试 —— 否则 400/401 也会被等下去、被切换。
+        return exc.response.status_code in RETRYABLE_STATUS
+    if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError,
+                        httpx.ReadError, httpx.RemoteProtocolError,
+                        httpx.WriteError)):
         return True
     from openai import APIConnectionError, APITimeoutError   # 与 `client()` 同一条：用时才导
     return isinstance(exc, (APIConnectionError, APITimeoutError))
@@ -306,8 +333,208 @@ def format_call_context(attempts: list, seconds: float, model: str, messages: li
                timeout_seconds(), max_retries()))
 
 
+#: 备用模型：主模型硬失败时自动切到它。**空串 = 关闭整个 failover 特性**
+#: （连同空流 / 坏参数那两条新判据 —— 应急回切必须是整条的）。
+DEFAULT_FALLBACK_MODEL = "claude-sonnet-4-6"
+
+
+def _positive_from_env(name: str, default):
+    raw = str(os.environ.get(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return default if value < 0 else value
+
+
+def fallback_model() -> str:
+    """备用模型名；`SPIKE_FALLBACK_MODEL=` 空串 = 关闭切换。"""
+    raw = os.environ.get("SPIKE_FALLBACK_MODEL")
+    if raw is None:
+        return DEFAULT_FALLBACK_MODEL
+    return str(raw).strip()
+
+
+def failover_fails() -> int:
+    """连续失败几次后熔断；`0` = 永不熔断（每次调用都先试主模型）。"""
+    return int(_positive_from_env("SITEFORGE_LLM_FAILOVER_FAILS", 3))
+
+
+def failover_cooldown() -> float:
+    """熔断冷却秒数。"""
+    return float(_positive_from_env("SITEFORGE_LLM_FAILOVER_COOLDOWN", 300.0))
+
+
+#: 进程级熔断状态。不持久化：重启归零 = 「先试主模型」，本来就是期望行为。
+_BREAKER_LOCK = threading.Lock()
+_BREAKERS: dict[str, dict] = {}
+
+
+def _breaker_state(model: str) -> dict:
+    with _BREAKER_LOCK:
+        return _BREAKERS.setdefault(model, {"failures": 0, "demoted_until": 0.0, "open": False})
+
+
+def _reset_failover_state() -> None:
+    with _BREAKER_LOCK:
+        _BREAKERS.clear()
+
+
+def _breaker_start(primary: str) -> tuple[int, bool]:
+    """`(从第几个模型开始, 是否半开)`。
+
+    熔断期内 ⇒ 直接从备用开始（`reason="breaker"`）；窗口已过 ⇒ 半开，
+    先试一次主模型，成功即恢复、失败一次就重新熔断。
+    """
+    state = _breaker_state(primary)
+    with _BREAKER_LOCK:
+        if not state["open"]:
+            return 0, False
+        if state["demoted_until"] > time.time():
+            return 1, False
+        return 0, True
+
+
+def _breaker_success(primary: str) -> None:
+    state = _breaker_state(primary)
+    with _BREAKER_LOCK:
+        state.update({"failures": 0, "open": False, "demoted_until": 0.0})
+
+
+def _breaker_failure(primary: str, *, half_open: bool) -> None:
+    threshold = failover_fails()
+    state = _breaker_state(primary)
+    with _BREAKER_LOCK:
+        if half_open or (threshold > 0 and state["failures"] + 1 >= threshold):
+            state.update({"open": True, "failures": 0,
+                          "demoted_until": time.time() + failover_cooldown()})
+        else:
+            state["failures"] += 1
+
+
+def _log_failover(primary: str, fallback: str, exc=None, *, reason: str,
+                  left: float = 0.0) -> None:
+    """每次切换写一行容器日志（不打印 key、不打印消息正文）。"""
+    if reason == "breaker":
+        line = ("[llm] primary=%s demoted (breaker open, %ds left) → fallback=%s"
+                % (primary, int(left), fallback))
+    else:
+        line = ("[llm] primary=%s failed (%s): %s → fallback=%s"
+                % (primary, type(exc).__name__, str(exc)[:300].replace("\n", " "), fallback))
+    sys.stderr.write(line + "\n")
+
+
+def _tried_models_note(tried: list) -> str:
+    if not tried:
+        return ""
+    return "\n  · 试过模型：%s" % " → ".join(tried)
+
+
+def _parse_arguments(raw) -> dict:
+    """工具参数 JSON → dict。空白 = `{}`；解析失败 / 不是对象 ⇒ ValueError。"""
+    if raw is None or not str(raw).strip():
+        return {}
+    args = json.loads(raw)
+    if not isinstance(args, dict):
+        raise ValueError("arguments 不是对象，是 %s" % type(args).__name__)
+    return args
+
+
+def _parse_calls(raw_calls) -> list[dict]:
+    """**唯一**的参数解析点：这里解析一次，校验与 dispatch 都用这一份。"""
+    out: list[dict] = []
+    for c in raw_calls:
+        try:
+            args = _parse_arguments(c.get("arguments"))
+        except Exception as e:                 # noqa: BLE001 —— 解析失败本身就是证据
+            out.append({"args": {}, "error": "arguments 解析失败: %s" % e})
+        else:
+            out.append({"args": args, "error": None})
+    return out
+
+
+def _reply_facts_note(reply: dict, max_tokens) -> str:
+    usage = reply.get("usage") or {}
+    det = usage.get("completion_tokens_details") or {}
+    return ("这一次回复的现场：finish_reason=%s；正文字符=%d；tool_calls=%d；"
+            "reasoning_tokens=%s；max_tokens=%s"
+            % (reply.get("finish_reason"), len(str(reply.get("content") or "")),
+               len(reply.get("tool_calls") or []),
+               det.get("reasoning_tokens"), max_tokens))
+
+
+def _validate_reply(reply: dict, parsed: list, *, failover_on: bool,
+                    max_tokens) -> None:
+    """空流 / 坏参数判成硬失败 —— 只属于 failover 特性。
+
+    `SPIKE_FALLBACK_MODEL=` 空串时**整条关掉**：空回复仍按今天的行为
+    「模型讲完了」收工，坏参数仍记账后继续。
+    """
+    if not failover_on:
+        return
+    if not str(reply.get("content") or "").strip() and not reply.get("tool_calls"):
+        raise BadReply("模型回了空流", facts=_reply_facts_note(reply, max_tokens))
+    for item in parsed:
+        if item["error"]:
+            raise BadReply("工具参数不是 JSON：%s" % item["error"],
+                           facts=_reply_facts_note(reply, max_tokens))
+
+
+def auto_protocol(model: str) -> str:
+    """按模型名判协议：`claude-*` 走 Anthropic 原生，其余走 OpenAI 兼容。"""
+    return "anthropic" if str(model or "").lower().startswith("claude") else "openai"
+
+
+def call_protocol(model: str, *, primary: bool) -> str:
+    """这一次调用该走哪条协议。
+
+    `SPIKE_PROTOCOL` 写死**只作用于 primary**（回切开关）；备用模型永远按名字判
+    —— 否则把 primary 写死成 openai 时，备用路也会被打回那条 422 的路。
+    """
+    if primary:
+        explicit = str(os.environ.get("SPIKE_PROTOCOL", "") or "").strip().lower()
+        if explicit in ("openai", "anthropic"):
+            return explicit
+    return auto_protocol(model)
+
+
+class _Router:
+    """`client()` 的门面：对外仍是 `chat.completions.create(**kwargs)`，按模型选协议。
+
+    ⚠️ 两条协议都从这一个口进出 —— `browser_agent._Gate` 包在**外面**，停闸 / 叙述 /
+    停滞判据因此对 Anthropic 路照样生效。Anthropic 传输层**绝不**绕过它直接发请求。
+    """
+
+    def __init__(self, openai_client, anthropic_transport):
+        self._openai = openai_client
+        self._anthropic = anthropic_transport
+        self.chat = types.SimpleNamespace(
+            completions=types.SimpleNamespace(create=self._create))
+
+    def __getattr__(self, name):
+        #: 未知识属性转给底层 SDK —— `client().base_url` 之类的现存用法一个字节不变。
+        return getattr(self._openai, name)
+
+    def _create(self, **kwargs):
+        proto = kwargs.pop("_protocol", None)
+        model = kwargs.get("model") or DEFAULT_MODEL
+        proto = proto or auto_protocol(model)
+        if proto == "anthropic":
+            return self._anthropic.chat.completions.create(**kwargs)
+        out = dict(kwargs)
+        if isinstance(out.get("messages"), list):
+            #: `_anthropic_blocks` 是我们的旁路字段，OpenAI SDK 不认它。
+            out["messages"] = [
+                {k: v for k, v in m.items() if not str(k).startswith("_")}
+                for m in out["messages"]
+            ]
+        return self._openai.chat.completions.create(**out)
+
+
 def client():
-    """按 env 建 OpenAI 兼容客户端。key 只从 env 读，**不落任何文件**。"""
+    """按 env 建客户端门面。key 只从 env 读，**不落任何文件**。"""
     from openai import OpenAI
 
     key = os.environ.get("OPENAI_API_KEY")
@@ -337,9 +564,16 @@ def client():
     #: 而「查 504 的那三格」里有两格就是它们）。值**与 SDK 默认相同** ⇒ 行为不变；
     #: env 能拧（`SITEFORGE_LLM_TIMEOUT` / `SITEFORGE_LLM_RETRIES`）⇒ 调参不必改代码。
     #: `http_client` 那一个是**量具**：SDK 每次重试都过它 ⇒ 「发出去几次」量得到。
-    return OpenAI(base_url=base, api_key=key,
-                  timeout=timeout_seconds(), max_retries=max_retries(),
-                  http_client=_http_client())
+    inner = OpenAI(base_url=base, api_key=key,
+                   timeout=timeout_seconds(), max_retries=max_retries(),
+                   http_client=_http_client())
+    #: ⚠️ 传输层**必须显式带 timeout**：`_http_client()` 是裸建的，httpx 默认 5 秒；
+    #: SDK 会按请求覆盖它，直连不会 —— 漏了这一格，长生成 5 秒就被掐，症状酷似「模型挂了」。
+    anthropic = anthropic_transport.AnthropicTransport(
+        _http_client(), base_url=base, api_key=key,
+        timeout=timeout_seconds(), max_retries=max_retries(),
+        retryable_status=RETRYABLE_STATUS)
+    return _Router(inner, anthropic)
 
 
 def as_dict(chunk) -> dict:
@@ -387,10 +621,13 @@ def read_stream(chunks) -> dict:
     calls: dict = {}
     finish = None
     usage = None
+    blocks = None
     for chunk in chunks:
         d = as_dict(chunk)
         if d.get("usage"):
             usage = d["usage"]
+        if d.get("_anthropic_blocks") is not None:
+            blocks = d["_anthropic_blocks"]
         if said := delta_content(d):
             content.append(said)
         for ch in (d.get("choices") or []):
@@ -411,12 +648,111 @@ def read_stream(chunks) -> dict:
     return {"content": "".join(content),
             "tool_calls": [calls[k] for k in sorted(calls)],
             "finish_reason": finish,
-            "usage": usage}
+            "usage": usage,
+            "_anthropic_blocks": blocks}
+
+
+def _call_with_failover(cli, *, model, messages, tool_specs, max_tokens, box):
+    """发**一次**模型调用：主模型退避耗尽且属于可重试错误 ⇒ 换备用模型重发。
+
+    返回 `(reply, 实际用的模型, failover 或 None, 预解析的工具参数)`。
+    `messages` 一个字不动 —— 两个模型看的是同一段历史。
+    熔断只记**主模型**的账：备用模型失败不加计数。
+    """
+    chain = [model]
+    fb = fallback_model()
+    if fb and fb != model:
+        chain.append(fb)
+    failover_on = len(chain) > 1
+    waits = backoff_seconds()
+    t0 = time.time()
+    tried: list = []
+    tries_total, waited_total = 0, 0.0
+    failover = None
+
+    pos, half_open = _breaker_start(model) if failover_on else (0, False)
+    if pos:
+        left = max(0.0, _breaker_state(model)["demoted_until"] - time.time())
+        _log_failover(model, chain[1], reason="breaker", left=left)
+        failover = {"from": model, "to": chain[1], "reason": "breaker"}
+
+    while pos < len(chain):
+        candidate = chain[pos]
+        tried.append(candidate)
+        proto = call_protocol(candidate, primary=(pos == 0))
+        protocol_kw = {} if proto == auto_protocol(candidate) else {"_protocol": proto}
+        tries, waited = 0, 0.0
+        switched = False
+        while True:
+            try:
+                #: ★ 2026-10-14：**流式** —— 治「60 秒 nginx 读超时」（见 `read_stream`）。
+                #: `include_usage` 不点名就要不到 token 账（那是预算那条线 C1 的依据）。
+                #: ⚠️ 流**在这里就消费掉**：中途被掐（nginx 切断）也落在同一个 `try` 里，
+                #: 照样被包成带现场的 `ModelCallFailed`。
+                reply = read_stream(cli.chat.completions.create(
+                    model=candidate,
+                    messages=messages,
+                    tools=tool_specs or None,
+                    max_tokens=max_tokens,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                    **protocol_kw,
+                ))
+                parsed = _parse_calls(reply["tool_calls"])
+                #: 判定在**追加 assistant 消息之前**：这一轮整轮作废（assistant 消息
+                #: 与工具结果都不进历史），按 503 同一条路重试/切换。
+                _validate_reply(reply, parsed, failover_on=failover_on,
+                                max_tokens=max_tokens)
+                if failover_on and pos == 0:
+                    _breaker_success(model)
+                return reply, candidate, failover, parsed
+            except BaseException as exc:       # noqa: BLE001 —— `_Stop`（人喊停）也是 BaseException
+                #: ⚠️ 人喊停（`_Stop`）是 **BaseException 而不是 Exception** ——
+                #: **原样往上走，连等都不等、也不切换**。
+                if not isinstance(exc, Exception):
+                    raise
+                #: ★ 2026-10-15：**认得出来的瞬态错误 ⇒ 等一等再打**（`_worth_waiting`）。
+                #: SDK 那两次重试是**同一瞬间**打完的，对「上游这一刻没空」等于没重试。
+                #: ⚠️ 重试的只是**这一次调用**（messages 一个字没动）。
+                if tries < len(waits) and _worth_waiting(exc):
+                    pause = waits[tries]
+                    tries += 1
+                    waited += pause
+                    time.sleep(pause)
+                    continue
+                tries_total += tries
+                waited_total += waited
+                retryable = _worth_waiting(exc)
+                if failover_on and pos == 0 and retryable:
+                    # 只有可重试的失败才记熔断 —— 参数错 / 鉴权错换谁都救不了，
+                    # 不该把主模型「熔」掉。
+                    _breaker_failure(model, half_open=half_open)
+                if failover_on and retryable and pos + 1 < len(chain):
+                    nxt = chain[pos + 1]
+                    _log_failover(candidate, nxt, exc, reason="error")
+                    failover = {"from": candidate, "to": nxt, "reason": "error"}
+                    switched = True
+                    break
+                #: ★ 2026-10-14：**带着现场往上抛** —— `__error__` 里只留得住 `str(exc)`，
+                #: 而「耗时 / 发出去几次 / 旋钮」正是分辨那三个假设的唯一依据。
+                #: ★ 2026-10-15 再补一格：**长重试了几次、等了多久**（没等过就是空串）。
+                #: ★ 2026-11-07：再补「试过哪些模型」。
+                raise ModelCallFailed(
+                    "模型这一跳挂了（%s）：%s\n  · %s%s%s%s"
+                    % (type(exc).__name__, str(exc)[:400],
+                       format_call_context(box, time.time() - t0, candidate, messages),
+                       _long_retry_note(tries_total, waited_total),
+                       getattr(exc, "facts", "") and
+                       ("\n  · " + getattr(exc, "facts")),
+                       _tried_models_note(tried))) from exc
+        if switched:
+            pos += 1
+            continue
 
 
 def run_tool_loop(
     system: str,
-    user: str,
+    user: str | list[dict],
     tool_specs: list[dict],
     dispatch: Dispatch,
     max_rounds: int = 8,
@@ -458,6 +794,8 @@ def run_tool_loop(
     讲完了 —— 这一条是**当面**堵那个误读；真发生了由 `browser_agent` 记一句人话，见 R11）。
     ⚠️ 这一次调用**有结果之后**还要回填一次（`_tell_steer`）：返回 ⇒ `went_out()`、
     抛 ⇒ `missed()` —— 那根线靠它才知道「到底发出去了没有」（`SteerLine`，复审 F2）。
+    `user` 收**字符串或 OpenAI content parts**（`[{"type":"text",…},{"type":"image_url",…}]`）——
+    带失败页截图的那次改稿走后者；别的调用一个字节都不变。
     """
     cli = _client or client()
     model = model or DEFAULT_MODEL
@@ -484,51 +822,14 @@ def run_tool_loop(
         #: 一共打出去多少**（含每次尝试里 SDK 自己那几下），而不是最后一下的。
         box: list = []
         _tok = _ATTEMPTS.set(box)
-        waits = backoff_seconds()
-        tries, waited = 0, 0.0
         try:
-            while True:
-                try:
-                    #: ★ 2026-10-14：**流式** —— 治「60 秒 nginx 读超时」（见 `read_stream`）。
-                    #: `include_usage` 不点名就要不到 token 账（那是预算那条线 C1 的依据）。
-                    #: ⚠️ 流**在这里就消费掉**：中途被掐（nginx 切断）也落在同一个 `try` 里，
-                    #: 照样被包成带现场的 `ModelCallFailed`。
-                    reply = read_stream(cli.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        tools=tool_specs or None,
-                        max_tokens=max_tokens,
-                        stream=True,
-                        stream_options={"include_usage": True},
-                    ))
-                    break
-                except BaseException as exc:       # noqa: BLE001 —— `_Stop`（人喊停）也是 BaseException
-                    #: ⚠️ 人喊停（`_Stop`）是 **BaseException 而不是 Exception** ——
-                    #: **原样往上走，连等都不等**（等 85 秒再抛，屏幕上就是
-                    #: 「我按了停，它还在那儿」——那条承诺当场变假话）。
-                    if not isinstance(exc, Exception):
-                        raise
-                    #: ★ 2026-10-15：**认得出来的瞬态错误 ⇒ 等一等再打**（`_worth_waiting`）。
-                    #: 这一支是那段现场（09:25 四趟全死在 503 上）唯一的治法：
-                    #: SDK 那两次重试是**同一瞬间**打完的，对「上游这一刻没空」等于没重试。
-                    #: ⚠️ 重试的只是**这一次调用**（messages 一个字没动）——
-                    #: 人插进来的那句话、工具结果、轮次账都不受影响。
-                    if tries < len(waits) and _worth_waiting(exc):
-                        pause = waits[tries]
-                        tries += 1
-                        waited += pause
-                        time.sleep(pause)
-                        continue
-                    # 这一次调用**没发出去** —— 那根线要据此把「已经交给它了」收回去（`missed`）。
-                    _tell_steer(steer, went_out=False)
-                    #: ★ 2026-10-14：**带着现场往上抛** —— `__error__` 里只留得住 `str(exc)`，
-                    #: 而「耗时 / 发出去几次 / 旋钮」正是分辨那三个假设的唯一依据。
-                    #: ★ 2026-10-15 再补一格：**长重试了几次、等了多久**（没等过就是空串）。
-                    raise ModelCallFailed(
-                        "模型这一跳挂了（%s）：%s\n  · %s%s"
-                        % (type(exc).__name__, str(exc)[:400],
-                           format_call_context(box, time.time() - t0, model, messages),
-                           _long_retry_note(tries, waited))) from exc
+            reply, used_model, failover, parsed = _call_with_failover(
+                cli, model=model, messages=messages, tool_specs=tool_specs,
+                max_tokens=max_tokens, box=box)
+        except ModelCallFailed:
+            # 这一次调用**没发出去** —— 那根线要据此把「已经交给它了」收回去（`missed`）。
+            _tell_steer(steer, went_out=False)
+            raise
         finally:
             _ATTEMPTS.reset(_tok)
         if steered:
@@ -548,6 +849,8 @@ def run_tool_loop(
             "finish_reason": reply["finish_reason"],
             "messages": [],
             "steered": steered,
+            "model": used_model,
+            "failover": failover,
         }
 
         # 原样把 assistant message 追加进对话（OpenAI 要求 tool 消息必须紧跟带
@@ -562,27 +865,28 @@ def run_tool_loop(
                 }
                 for c in raw_calls
             ]
+        #: §5.4 —— thinking 旁路只跟**最新一条** assistant 走；旧的剥掉（全量回传会让
+        #: 上下文每轮线性膨胀）。记录里只留 OpenAI 形状，不带 `_` 私有键。
+        for m in messages:
+            if m.get("role") == "assistant":
+                m.pop("_anthropic_blocks", None)
+        if reply.get("_anthropic_blocks"):
+            assistant_msg["_anthropic_blocks"] = reply["_anthropic_blocks"]
         messages.append(assistant_msg)
-        record["messages"].append(assistant_msg)
+        record["messages"].append(
+            {k: v for k, v in assistant_msg.items() if not str(k).startswith("_")})
 
-        for c in raw_calls:
+        for c, parsed_call in zip(raw_calls, parsed):
             name = c["name"]
             args_raw = c["arguments"]
-            call: dict = {"id": c["id"], "name": name, "args_raw": args_raw, "args": None,
-                          "result": None, "error": None, "elapsed_ms": None}
+            call: dict = {"id": c["id"], "name": name, "args_raw": args_raw,
+                          "args": parsed_call["args"] if parsed_call["error"] is None else None,
+                          "result": None, "error": parsed_call["error"], "elapsed_ms": None}
 
             t1 = time.time()
-            try:
-                args = json.loads(args_raw) if args_raw and args_raw.strip() else {}
-                if not isinstance(args, dict):
-                    raise ValueError(f"arguments 不是对象，是 {type(args).__name__}")
-                call["args"] = args
-            except Exception as e:  # noqa: BLE001 —— 解析失败本身就是一条要记的证据
-                call["error"] = f"arguments 解析失败: {e}"
-                args = {}
-            else:
+            if parsed_call["error"] is None:
                 try:
-                    call["result"] = dispatch(name, args)
+                    call["result"] = dispatch(name, parsed_call["args"])
                 except Exception as e:  # noqa: BLE001
                     call["error"] = f"{type(e).__name__}: {e}"
             call["elapsed_ms"] = int((time.time() - t1) * 1000)
@@ -618,6 +922,13 @@ def summarize(rounds: list[dict]) -> dict:
     """把逐轮记录压成一行账：几轮、几次工具调用、花了多少 token / 时间。"""
     calls = [c for r in rounds for c in r["tool_calls"]]
     usage_tot: dict[str, int] = {}
+    models: dict[str, int] = {}
+    failovers = 0
+    for r in rounds:
+        if r.get("model"):
+            models[r["model"]] = models.get(r["model"], 0) + 1
+        if r.get("failover"):
+            failovers += 1
     for r in rounds:
         for k, v in (r["usage"] or {}).items():
             if isinstance(v, int):
@@ -633,4 +944,6 @@ def summarize(rounds: list[dict]) -> dict:
         "model_spoke_without_tools": bool(rounds) and not rounds[-1]["tool_calls"],
         "elapsed_ms": sum(r["elapsed_ms"] for r in rounds) + sum(c["elapsed_ms"] or 0 for c in calls),
         "usage": usage_tot,
+        "models": models,
+        "failovers": failovers,
     }
