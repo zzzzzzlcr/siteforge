@@ -830,6 +830,22 @@ def test_no_catalog_row_is_silent(tmp_path, monkeypatch):
     seen |= auto_replied_over_the_real_chain(tmp_path)
     seen |= auto_stuck_over_the_real_chain(tmp_path)
 
+    # ⑯ 捡回来的 job 那份**表单数据不见了** —— `form_data_lost`（2026-11-11 的真事故：
+    #     旧容器把资料落在自己的 `/tmp` 里，重建容器之后路径就没了）。
+    #     与 ⑥ 同一个场景，只在两次服务之间把那份文件删掉：`_recover` 发现路径不在
+    #     就重落一份空资料，并**说出来**（不说的话，产物悄悄用了回退值还报成功）。
+    saver16 = InMemorySaver().with_allowlist(graph.MSGPACK_ALLOWLIST)
+    factory16 = lambda brief, deps: graph.build(  # noqa: E731
+        checkpointer=saver16, deps=_never_used_deps())
+    first16 = _client(graph_factory=factory16, window=None, checkpointer=saver16)
+    j16 = first16.post("/run", json=_brief(
+        tmp_path, ws_url=None, allow_skips=["country", "viewport"])).json()["job_id"]
+    _wait(first16, j16)
+    (tmp_path / "form.json").unlink()
+    second16 = _client(graph_factory=factory16, window=None, checkpointer=saver16)
+    job16 = second16.app.state.service._recover(j16)
+    assert job16 is not None, "捡不回来就量不到这一格"
+    seen |= {e["kind"] for e in job16.timeline.all()}
     # ── 机械断言（三条，名字都从调用点推出来）──────────────────────
     derived = _kinds_the_service_narrates()
     assert set(events.KINDS) - derived == set(), (
