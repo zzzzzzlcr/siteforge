@@ -1,0 +1,51 @@
+{
+ "url": "https://www.wildnutrition.com/pages/what-supplements-should-i-take",
+ "scrollY": 64,
+ "email_inputs": 0,
+ "wrap": true,
+ "wrap_text": "CONTINUE | ← BACK",
+ "has_continue": true,
+ "has_back": true,
+ "when_minus3": true,
+ "ul_count": 0,
+ "uls": [],
+ "buttons": [
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(2) > button:nth-of-type(1)",
+   "attrs": {
+    "class": "cbdacb07dc918b9e8598f7068dd0c98d2d5471e00",
+    "tabindex": "0",
+    "title": "",
+    "aria-disabled": "false"
+   },
+   "text": "CONTINUE",
+   "box": [
+    129,
+    412,
+    101,
+    41
+   ],
+   "disabled": false,
+   "vis": true,
+   "aria_disabled": "false"
+  },
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "attrs": {
+    "class": "c1a031c94f0ceb7e8a5ba5eb14b13347b46d6373c",
+    "tabindex": "0",
+    "title": "Back"
+   },
+   "text": "← BACK",
+   "box": [
+    154,
+    513,
+    52,
+    19
+   ],
+   "disabled": false,
+   "vis": true,
+   "aria_disabled": null
+  }
+ ]
+}

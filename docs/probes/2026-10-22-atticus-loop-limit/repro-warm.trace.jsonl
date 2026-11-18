@@ -1,0 +1,72 @@
+{"step": 0, "action": "goto", "ok": null, "progress": null, "progress_why": "不导航：页面由平台按任务开好（产物不自己导航一遍）"}
+{"step": 0, "action": "pre", "ok": true, "progress": null, "target": {"text": "See if you qualify for benefits", "selector": "#main > div:nth-of-type(1) > div:nth-of-"}, "progress_why": "前置：进问卷之前那几步"}
+{"step": 1, "action": "form", "ok": true, "progress": false, "target": {"testid": "\u0004zipcode"}, "note": "填了 \u0004zipcode"}
+{"step": 2, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001What is Social Security Disability?"}, "note": "答了第 1 题"}
+{"step": 3, "action": "none", "ok": null, "progress": null, "progress_why": "Next 已可见、这一屏还没成形（第 1 轮）", "head": "FAQ", "target": {"options": 5, "inputs": 1, "nextTxt": "Next"}}
+{"step": 4, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 5, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 6, "action": "form", "ok": true, "progress": false, "target": {"testid": "\u0004:r0:"}, "note": "填了 \u0004:r0:"}
+{"step": 7, "action": "none", "ok": null, "progress": null, "progress_why": "Next 已可见、这一屏还没成形（第 1 轮）", "head": "What's your age? This determines which benefits are available. Age Age Did you k", "target": {"options": 0, "inputs": 1, "nextTxt": "Next"}}
+{"step": 8, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 9, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 10, "action": "none", "ok": null, "progress": false, "progress_why": "这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次）"}
+{"step": 11, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（2）"}
+{"step": 12, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（3）"}
+{"step": 13, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（4）"}
+{"step": 14, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（5）"}
+{"step": 15, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（6）"}
+{"step": 16, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（7）"}
+{"step": 17, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（8）"}
+{"step": 18, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（9）"}
+{"step": 19, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（10）"}
+{"step": 20, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（11）"}
+{"step": 21, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（12）"}
+{"step": 22, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（13）"}
+{"step": 23, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（14）"}
+{"step": 24, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（15）"}
+{"step": 25, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（16）"}
+{"step": 26, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（17）"}
+{"step": 27, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（18）"}
+{"step": 28, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（19）"}
+{"step": 29, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（20）"}
+{"step": 30, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（21）"}
+{"step": 31, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（22）"}
+{"step": 32, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（23）"}
+{"step": 33, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（24）"}
+{"step": 34, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（25）"}
+{"step": 35, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（26）"}
+{"step": 36, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（27）"}
+{"step": 37, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（28）"}
+{"step": 38, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（29）"}
+{"step": 39, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（30）"}
+{"step": 40, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（31）"}
+{"step": 41, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（32）"}
+{"step": 42, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（33）"}
+{"step": 43, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（34）"}
+{"step": 44, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（35）"}
+{"step": 45, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（36）"}
+{"step": 46, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（37）"}
+{"step": 47, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（38）"}
+{"step": 48, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（39）"}
+{"step": 49, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（40）"}
+{"step": 50, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（41）"}
+{"step": 51, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（42）"}
+{"step": 52, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（43）"}
+{"step": 53, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（44）"}
+{"step": 54, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（45）"}
+{"step": 55, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（46）"}
+{"step": 56, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（47）"}
+{"step": 57, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（48）"}
+{"step": 58, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（49）"}
+{"step": 59, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（50）"}
+{"step": 60, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（51）"}
+{"step": 61, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（52）"}
+{"step": 62, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（53）"}
+{"step": 63, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（54）"}
+{"step": 64, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（55）"}
+{"step": 65, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（56）"}
+{"step": 66, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（57）"}
+{"step": 67, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（58）"}
+{"step": 68, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（59）"}
+{"step": 69, "action": "none", "ok": null, "progress": false, "progress_why": "没有可动作的东西（60）"}
+{"step": 69, "action": "none", "ok": false, "progress": null, "progress_why": "连 60 步没有可动作的东西（答过 1 题）"}

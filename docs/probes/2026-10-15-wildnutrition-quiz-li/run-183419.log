@@ -1,0 +1,737 @@
+探针开始 18:34:19
+窗口探活：pid=2644
+ws = ws://192.168.1.222:61129/devtools/browser/09ee9676-eb7b-4b1f-9bc2-a4fad327ac50
+cdp 目标 192.168.1.222:61129（二进制 /opt/skills/auto-farm-skill/cdp）
+代理：不另设 —— 用这个窗口自己带的那条链（siteforge 的 :1081，PROVENANCE 是 US）
+  [navi 直接进 quiz 页] rc=0 18.8s ｜cdp navi: 没等到 load 事件（等了 15s）—— 「没等到」不等于「没打开」，页面在不在由调用方自己看
+  等了 2s，quiz 容器出现了
+
+===== 屏 A0-落地 =====
+  [observe A0-落地] url=https://www.wildnutrition.com/pages/what-supplements-should-i-take actions=54（quiz 里 14）diag=1
+      判据：CONTINUE=False ←BACK=False ｜ goal问句=False ｜ 正文前 120 字：Toggle menu SEARCH Wild Nutrition® Ltd ACCOUNT BASKET 0 Search our store Search Search ASK LUNA Bestsellers Take the qui
+    —— li 卡（原样）——
+{
+  "selector": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)",
+  "alternates": [],
+  "stability": "low",
+  "text": "More energyMore energyMore energy",
+  "aria_label": "More energy",
+  "label": null,
+  "role": "radio",
+  "tag": "LI",
+  "type": "",
+  "visible": true,
+  "value": null,
+  "value_truncated": false,
+  "selected": false,
+  "disabled": false,
+  "occluded_by": null,
+  "shadow_depth": 0,
+  "frame_path": [
+    "main"
+  ],
+  "bbox": [
+    60,
+    364,
+    240,
+    45
+  ],
+  "region": "main",
+  "above_fold": true,
+  "relative_size": 5.3,
+  "peer_count": 14,
+  "z_index": "auto",
+  "contrast": "high",
+  "nearby_text": [
+    "Greater wellbeingGreater wellbeingGreate",
+    "What’s your main health goal right now?"
+  ]
+}
+    —— li 卡（原样）——
+{
+  "selector": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)",
+  "alternates": [],
+  "stability": "low",
+  "text": "Greater wellbeingGreater wellbeingGreater wellbein",
+  "aria_label": "Greater wellbeing",
+  "label": null,
+  "role": "radio",
+  "tag": "LI",
+  "type": "",
+  "visible": true,
+  "value": null,
+  "value_truncated": false,
+  "selected": false,
+  "disabled": false,
+  "occluded_by": null,
+  "shadow_depth": 0,
+  "frame_path": [
+    "main"
+  ],
+  "bbox": [
+    60,
+    429,
+    240,
+    45
+  ],
+  "region": "main",
+  "above_fold": true,
+  "relative_size": 5.3,
+  "peer_count": 14,
+  "z_index": "auto",
+  "contrast": "high",
+  "nearby_text": [
+    "More energyMore energyMore energy",
+    "Emotional balanceEmotional balanceEmotio",
+    "What’s your main health goal right now?"
+  ]
+}
+    —— li 卡（原样）——
+{
+  "selector": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)",
+  "alternates": [],
+  "stability": "low",
+  "text": "Emotional balanceEmotional balanceEmotional balanc",
+  "aria_label": "Emotional balance",
+  "label": null,
+  "role": "radio",
+  "tag": "LI",
+  "type": "",
+  "visible": true,
+  "value": null,
+  "value_truncated": false,
+  "selected": false,
+  "disabled": false,
+  "occluded_by": null,
+  "shadow_depth": 0,
+  "frame_path": [
+    "main"
+  ],
+  "bbox": [
+    60,
+    494,
+    240,
+    45
+  ],
+  "region": "main",
+  "above_fold": true,
+  "relative_size": 5.3,
+  "peer_count": 14,
+  "z_index": "auto",
+  "contrast": "high",
+  "nearby_text": [
+    "Greater wellbeingGreater wellbeingGreate",
+    "More energyMore energyMore energy",
+    "Better sleepBetter sleepBetter sleep",
+    "What’s your main health goal right now?"
+  ]
+}
+    —— li 卡（原样）——
+{
+  "selector": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)",
+  "alternates": [],
+  "stability": "low",
+  "text": "Better sleepBetter sleepBetter sleep",
+  "aria_label": "Better sleep",
+  "label": null,
+  "role": "radio",
+  "tag": "LI",
+  "type": "",
+  "visible": true,
+  "value": null,
+  "value_truncated": false,
+  "selected": false,
+  "disabled": false,
+  "occluded_by": null,
+  "shadow_depth": 0,
+  "frame_path": [
+    "main"
+  ],
+  "bbox": [
+    60,
+    560,
+    240,
+    45
+  ],
+  "region": "main",
+  "above_fold": true,
+  "relative_size": 5.3,
+  "peer_count": 14,
+  "z_index": "auto",
+  "contrast": "high",
+  "nearby_text": [
+    "Emotional balanceEmotional balanceEmotio",
+    "Greater wellbeingGreater wellbeingGreate",
+    "Cycle supportCycle supportCycle support",
+    "What’s your main health goal right now?"
+  ]
+}
+    —— li 卡（原样）——
+{
+  "selector": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5)",
+  "alternates": [],
+  "stability": "low",
+  "text": "Cycle supportCycle supportCycle support",
+  "aria_label": "Cycle support",
+  "label": null,
+  "role": "radio",
+  "tag": "LI",
+  "type": "",
+  "visible": true,
+  "value": null,
+  "value_truncated": false,
+  "selected": false,
+  "disabled": false,
+  "occluded_by": null,
+  "shadow_depth": 0,
+  "frame_path": [
+    "main"
+  ],
+  "bbox": [
+    60,
+    625,
+    240,
+    45
+  ],
+  "region": "main",
+  "above_fold": true,
+  "relative_size": 5.3,
+  "peer_count": 14,
+  "z_index": "auto",
+  "contrast": "high",
+  "nearby_text": [
+    "Better sleepBetter sleepBetter sleep",
+    "Emotional balanceEmotional balanceEmotio",
+    "Hair, skin + nailsHair, skin + nailsHair",
+    "What’s your main health goal right now?"
+  ]
+}
+    —— li 卡（原样）——
+{
+  "selector": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)",
+  "alternates": [],
+  "stability": "low",
+  "text": "Hair, skin + nailsHair, skin + nailsHair, skin + n",
+  "aria_label": "Hair, skin + nails",
+  "label": null,
+  "role": "radio",
+  "tag": "LI",
+  "type": "",
+  "visible": true,
+  "value": null,
+  "value_truncated": false,
+  "selected": false,
+  "disabled": false,
+  "occluded_by": null,
+  "shadow_depth": 0,
+  "frame_path": [
+    "main"
+  ],
+  "bbox": [
+    60,
+    690,
+    240,
+    45
+  ],
+  "region": "main",
+  "above_fold": true,
+  "relative_size": 5.3,
+  "peer_count": 14,
+  "z_index": "auto",
+  "contrast": "high",
+  "nearby_text": [
+    "Cycle supportCycle supportCycle support",
+    "Better sleepBetter sleepBetter sleep",
+    "Bones, joints + musclesBones, joints + m",
+    "What’s your main health goal right now?"
+  ]
+}
+    —— li 卡（原样）——
+{
+  "selector": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7)",
+  "alternates": [],
+  "stability": "low",
+  "text": "Bones, joints + musclesBones, joints + musclesBone",
+  "aria_label": "Bones, joints + muscles",
+  "label": null,
+  "role": "radio",
+  "tag": "LI",
+  "type": "",
+  "visible": true,
+  "value": null,
+  "value_truncated": false,
+  "selected": false,
+  "disabled": false,
+  "occluded_by": "offscreen",
+  "shadow_depth": 0,
+  "frame_path": [
+    "main"
+  ],
+  "bbox": [
+    60,
+    755,
+    240,
+    45
+  ],
+  "region": "main",
+  "above_fold": true,
+  "relative_size": 5.3,
+  "peer_count": 14,
+  "z_index": "auto",
+  "contrast": "high",
+  "nearby_text": [
+    "Hair, skin + nailsHair, skin + nailsHair",
+    "Cycle supportCycle supportCycle support",
+    "Gut healthGut healthGut health",
+    "What’s your main health goal right now?"
+  ]
+}
+    —— li 卡（原样）——
+{
+  "selector": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8)",
+  "alternates": [],
+  "stability": "low",
+  "text": "Gut healthGut healthGut health",
+  "aria_label": "Gut health",
+  "label": null,
+  "role": "radio",
+  "tag": "LI",
+  "type": "",
+  "visible": true,
+  "value": null,
+  "value_truncated": false,
+  "selected": false,
+  "disabled": false,
+  "occluded_by": "offscreen",
+  "shadow_depth": 0,
+  "frame_path": [
+    "main"
+  ],
+  "bbox": [
+    60,
+    820,
+    240,
+    45
+  ],
+  "region": "main",
+  "above_fold": false,
+  "relative_size": 5.3,
+  "peer_count": 14,
+  "z_index": "auto",
+  "contrast": "high",
+  "nearby_text": [
+    "Bones, joints + musclesBones, joints + m",
+    "Hair, skin + nailsHair, skin + nailsHair",
+    "Stronger immunityStronger immunityStrong",
+    "What’s your main health goal right now?"
+  ]
+}
+    —— li 卡（原样）——
+{
+  "selector": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9)",
+  "alternates": [],
+  "stability": "low",
+  "text": "Stronger immunityStronger immunityStronger immunit",
+  "aria_label": "Stronger immunity",
+  "label": null,
+  "role": "radio",
+  "tag": "LI",
+  "type": "",
+  "visible": true,
+  "value": null,
+  "value_truncated": false,
+  "selected": false,
+  "disabled": false,
+  "occluded_by": "offscreen",
+  "shadow_depth": 0,
+  "frame_path": [
+    "main"
+  ],
+  "bbox": [
+    60,
+    886,
+    240,
+    45
+  ],
+  "region": "main",
+  "above_fold": false,
+  "relative_size": 5.3,
+  "peer_count": 14,
+  "z_index": "auto",
+  "contrast": "high",
+  "nearby_text": [
+    "Gut healthGut healthGut health",
+    "Bones, joints + musclesBones, joints + m",
+    "Hormonal balanceHormonal balanceHormonal",
+    "What’s your main health goal right now?"
+  ]
+}
+    —— li 卡（原样）——
+{
+  "selector": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(10)",
+  "alternates": [],
+  "stability": "low",
+  "text": "Hormonal balanceHormonal balanceHormonal balance",
+  "aria_label": "Hormonal balance",
+  "label": null,
+  "role": "radio",
+  "tag": "LI",
+  "type": "",
+  "visible": true,
+  "value": null,
+  "value_truncated": false,
+  "selected": false,
+  "disabled": false,
+  "occluded_by": "offscreen",
+  "shadow_depth": 0,
+  "frame_path": [
+    "main"
+  ],
+  "bbox": [
+    60,
+    951,
+    240,
+    45
+  ],
+  "region": "main",
+  "above_fold": false,
+  "relative_size": 5.3,
+  "peer_count": 14,
+  "z_index": "auto",
+  "contrast": "high",
+  "nearby_text": [
+    "Stronger immunityStronger immunityStrong",
+    "Gut healthGut healthGut health",
+    "Pregnancy + postpartumPregnancy + postpa",
+    "What’s your main health goal right now?"
+  ]
+}
+    —— li 卡（原样）——
+{
+  "selector": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(11)",
+  "alternates": [],
+  "stability": "low",
+  "text": "Pregnancy + postpartumPregnancy + postpartumPregna",
+  "aria_label": "Pregnancy + postpartum",
+  "label": null,
+  "role": "radio",
+  "tag": "LI",
+  "type": "",
+  "visible": true,
+  "value": null,
+  "value_truncated": false,
+  "selected": false,
+  "disabled": false,
+  "occluded_by": "offscreen",
+  "shadow_depth": 0,
+  "frame_path": [
+    "main"
+  ],
+  "bbox": [
+    60,
+    1016,
+    240,
+    45
+  ],
+  "region": "main",
+  "above_fold": false,
+  "relative_size": 5.3,
+  "peer_count": 14,
+  "z_index": "auto",
+  "contrast": "high",
+  "nearby_text": [
+    "Hormonal balanceHormonal balanceHormonal",
+    "Stronger immunityStronger immunityStrong",
+    "Fertility supportFertility supportFertil",
+    "What’s your main health goal right now?"
+  ]
+}
+    —— li 卡（原样）——
+{
+  "selector": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(12)",
+  "alternates": [],
+  "stability": "low",
+  "text": "Fertility supportFertility supportFertility suppor",
+  "aria_label": "Fertility support",
+  "label": null,
+  "role": "radio",
+  "tag": "LI",
+  "type": "",
+  "visible": true,
+  "value": null,
+  "value_truncated": false,
+  "selected": false,
+  "disabled": false,
+  "occluded_by": "offscreen",
+  "shadow_depth": 0,
+  "frame_path": [
+    "main"
+  ],
+  "bbox": [
+    60,
+    1081,
+    240,
+    45
+  ],
+  "region": "main",
+  "above_fold": false,
+  "relative_size": 5.3,
+  "peer_count": 14,
+  "z_index": "auto",
+  "contrast": "high",
+  "nearby_text": [
+    "Pregnancy + postpartumPregnancy + postpa",
+    "Hormonal balanceHormonal balanceHormonal",
+    "Perimenopause + menopausePerimenopause +",
+    "What’s your main health goal right now?"
+  ]
+}
+    —— li 卡（原样）——
+{
+  "selector": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(13)",
+  "alternates": [],
+  "stability": "low",
+  "text": "Perimenopause + menopausePerimenopause + menopause",
+  "aria_label": "Perimenopause + menopause",
+  "label": null,
+  "role": "radio",
+  "tag": "LI",
+  "type": "",
+  "visible": true,
+  "value": null,
+  "value_truncated": false,
+  "selected": false,
+  "disabled": false,
+  "occluded_by": "offscreen",
+  "shadow_depth": 0,
+  "frame_path": [
+    "main"
+  ],
+  "bbox": [
+    60,
+    1146,
+    240,
+    45
+  ],
+  "region": "main",
+  "above_fold": false,
+  "relative_size": 5.3,
+  "peer_count": 14,
+  "z_index": "auto",
+  "contrast": "high",
+  "nearby_text": [
+    "Fertility supportFertility supportFertil",
+    "Pregnancy + postpartumPregnancy + postpa",
+    "Weight managementWeight managementWeight",
+    "What’s your main health goal right now?"
+  ]
+}
+    —— li 卡（原样）——
+{
+  "selector": "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(14)",
+  "alternates": [],
+  "stability": "low",
+  "text": "Weight managementWeight managementWeight managemen",
+  "aria_label": "Weight management",
+  "label": null,
+  "role": "radio",
+  "tag": "LI",
+  "type": "",
+  "visible": true,
+  "value": null,
+  "value_truncated": false,
+  "selected": false,
+  "disabled": false,
+  "occluded_by": "offscreen",
+  "shadow_depth": 0,
+  "frame_path": [
+    "main"
+  ],
+  "bbox": [
+    60,
+    1211,
+    240,
+    45
+  ],
+  "region": "main",
+  "above_fold": false,
+  "relative_size": 5.3,
+  "peer_count": 14,
+  "z_index": "auto",
+  "contrast": "high",
+  "nearby_text": [
+    "Perimenopause + menopausePerimenopause +",
+    "Fertility supportFertility supportFertil",
+    "What’s your main health goal right now?"
+  ]
+}
+    —— quiz 里其余动作（一行一条）——
+  [裸DOM A0-落地] url=https://www.wildnutrition.com/pages/what-supplements-should-i-take wrap=True ul=1 scrollY=0
+      正文前 300 字：Toggle menu | SEARCH | Wild Nutrition® Ltd | ACCOUNT | BASKET | 0 | Search our store | Search | Search | ASK LUNA | Bestsellers | Take the quiz | Book a consultation | What’s your main health goal right now? | What’s your main health goal right now?  | More energy | More energy | More energy | Great
+      UL body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)  attrs={"id": "oct-multiple-choice-answers-root-812ae45d37fb4e5387baf7cea6ad7840cf75c757", "class": "c7d6ae551801c4ce3d237f2f9fa62835a63a3ae65", "role": "radiogroup", "aria-labelledby": "oct-q-title-812ae45d37fb4e5387baf7cea6ad7840cf75c757"} box=[60, 314, 240, 943]  li=14
+        li#1 attrs={"id": "bbb60065ca22877e14a824818bd90233f988309a", "data-option-id": "bbb60065ca22877e14a824818bd90233f988309a", "data-option-index": "0", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "aria-checked": "false", "aria-label": "More energy"}
+             text='More energy\nMore energy\nMore energy'  textContent='More energyMore energyMore energy'
+             box=[60, 364, 240, 45] rects=1 disp=list-item vis=visible op=1 pe=auto role='radio' aria='More energy'
+             中心点上是：div (=自己/后代)
+             子元素 4 个：[{"tag": "div", "attrs": {}, "text": "More energy", "tc": "More energy", "box": [77, 377, 206, 19], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-default"}, "text": "More energy", "tc": "More energy", "box": [77, 396, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-selected"}, "text": "More energy", "tc": "More energy", "box": [77, 396, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2d797d
+             outerHTML[:500]=<li id="bbb60065ca22877e14a824818bd90233f988309a" data-option-id="bbb60065ca22877e14a824818bd90233f988309a" data-option-index="0" class="oct-quiz-multiple-choice-options__option" tabindex="0" role="radio" aria-checked="false" aria-label="More energy"><div>More energy</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-default">More energy</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-selected">More energy</div><div class="c2d797d84f9df36211295c425ccb99bc74a04e06d"></div></li>
+        li#2 attrs={"id": "4f629a989e31508b3b9961463901b3df859b718c", "data-option-id": "4f629a989e31508b3b9961463901b3df859b718c", "data-option-index": "1", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "aria-checked": "false", "aria-label": "Greater wellbeing"}
+             text='Greater wellbeing\nGreater wellbeing\nGreater wellbeing'  textContent='Greater wellbeingGreater wellbeingGreater wellbeing'
+             box=[60, 429, 240, 45] rects=1 disp=list-item vis=visible op=1 pe=auto role='radio' aria='Greater wellbeing'
+             中心点上是：div (=自己/后代)
+             子元素 4 个：[{"tag": "div", "attrs": {}, "text": "Greater wellbeing", "tc": "Greater wellbeing", "box": [77, 442, 206, 19], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-default"}, "text": "Greater wellbeing", "tc": "Greater wellbeing", "box": [77, 461, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-selected"}, "text": "Greater wellbeing", "tc": "Greater wellbeing", "box": [77, 461, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag"
+             outerHTML[:500]=<li id="4f629a989e31508b3b9961463901b3df859b718c" data-option-id="4f629a989e31508b3b9961463901b3df859b718c" data-option-index="1" class="oct-quiz-multiple-choice-options__option" tabindex="0" role="radio" aria-checked="false" aria-label="Greater wellbeing"><div>Greater wellbeing</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-default">Greater wellbeing</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-selected">Greater wellbeing</div><div class="c2d797d84f9df36211295c425ccb99
+        li#3 attrs={"id": "3032e5ba774dd665f248409445f9fa51a24dd005", "data-option-id": "3032e5ba774dd665f248409445f9fa51a24dd005", "data-option-index": "2", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "aria-checked": "false", "aria-label": "Emotional balance"}
+             text='Emotional balance\nEmotional balance\nEmotional balance'  textContent='Emotional balanceEmotional balanceEmotional balance'
+             box=[60, 494, 240, 45] rects=1 disp=list-item vis=visible op=1 pe=auto role='radio' aria='Emotional balance'
+             中心点上是：div (=自己/后代)
+             子元素 4 个：[{"tag": "div", "attrs": {}, "text": "Emotional balance", "tc": "Emotional balance", "box": [77, 507, 206, 19], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-default"}, "text": "Emotional balance", "tc": "Emotional balance", "box": [77, 527, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-selected"}, "text": "Emotional balance", "tc": "Emotional balance", "box": [77, 527, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag"
+             outerHTML[:500]=<li id="3032e5ba774dd665f248409445f9fa51a24dd005" data-option-id="3032e5ba774dd665f248409445f9fa51a24dd005" data-option-index="2" class="oct-quiz-multiple-choice-options__option" tabindex="0" role="radio" aria-checked="false" aria-label="Emotional balance"><div>Emotional balance</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-default">Emotional balance</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-selected">Emotional balance</div><div class="c2d797d84f9df36211295c425ccb99
+        li#4 attrs={"id": "c0109b2abf545198481683df8c0565e36adbcb28", "data-option-id": "c0109b2abf545198481683df8c0565e36adbcb28", "data-option-index": "3", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "aria-checked": "false", "aria-label": "Better sleep"}
+             text='Better sleep\nBetter sleep\nBetter sleep'  textContent='Better sleepBetter sleepBetter sleep'
+             box=[60, 560, 240, 45] rects=1 disp=list-item vis=visible op=1 pe=auto role='radio' aria='Better sleep'
+             中心点上是：div (=自己/后代)
+             子元素 4 个：[{"tag": "div", "attrs": {}, "text": "Better sleep", "tc": "Better sleep", "box": [77, 573, 206, 19], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-default"}, "text": "Better sleep", "tc": "Better sleep", "box": [77, 592, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-selected"}, "text": "Better sleep", "tc": "Better sleep", "box": [77, 592, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c
+             outerHTML[:500]=<li id="c0109b2abf545198481683df8c0565e36adbcb28" data-option-id="c0109b2abf545198481683df8c0565e36adbcb28" data-option-index="3" class="oct-quiz-multiple-choice-options__option" tabindex="0" role="radio" aria-checked="false" aria-label="Better sleep"><div>Better sleep</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-default">Better sleep</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-selected">Better sleep</div><div class="c2d797d84f9df36211295c425ccb99bc74a04e06d"></div><
+        li#5 attrs={"id": "11bcefef580aa5b8a497ebda73e0713979b5a327", "data-option-id": "11bcefef580aa5b8a497ebda73e0713979b5a327", "data-option-index": "4", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "aria-checked": "false", "aria-label": "Cycle support"}
+             text='Cycle support\nCycle support\nCycle support'  textContent='Cycle supportCycle supportCycle support'
+             box=[60, 625, 240, 45] rects=1 disp=list-item vis=visible op=1 pe=auto role='radio' aria='Cycle support'
+             中心点上是：div (=自己/后代)
+             子元素 4 个：[{"tag": "div", "attrs": {}, "text": "Cycle support", "tc": "Cycle support", "box": [77, 638, 206, 19], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-default"}, "text": "Cycle support", "tc": "Cycle support", "box": [77, 657, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-selected"}, "text": "Cycle support", "tc": "Cycle support", "box": [77, 657, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"clas
+             outerHTML[:500]=<li id="11bcefef580aa5b8a497ebda73e0713979b5a327" data-option-id="11bcefef580aa5b8a497ebda73e0713979b5a327" data-option-index="4" class="oct-quiz-multiple-choice-options__option" tabindex="0" role="radio" aria-checked="false" aria-label="Cycle support"><div>Cycle support</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-default">Cycle support</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-selected">Cycle support</div><div class="c2d797d84f9df36211295c425ccb99bc74a04e06d"></d
+        li#6 attrs={"id": "d2877f461cc84ada1ffbe9a65fde98ff1ca7b66b", "data-option-id": "d2877f461cc84ada1ffbe9a65fde98ff1ca7b66b", "data-option-index": "5", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "aria-checked": "false", "aria-label": "Hair, skin + nails"}
+             text='Hair, skin + nails\nHair, skin + nails\nHair, skin + nails'  textContent='Hair, skin + nailsHair, skin + nailsHair, skin + nails'
+             box=[60, 690, 240, 45] rects=1 disp=list-item vis=visible op=1 pe=auto role='radio' aria='Hair, skin + nails'
+             中心点上是：div (=自己/后代)
+             子元素 4 个：[{"tag": "div", "attrs": {}, "text": "Hair, skin + nails", "tc": "Hair, skin + nails", "box": [77, 703, 206, 19], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-default"}, "text": "Hair, skin + nails", "tc": "Hair, skin + nails", "box": [77, 722, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-selected"}, "text": "Hair, skin + nails", "tc": "Hair, skin + nails", "box": [77, 722, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, 
+             outerHTML[:500]=<li id="d2877f461cc84ada1ffbe9a65fde98ff1ca7b66b" data-option-id="d2877f461cc84ada1ffbe9a65fde98ff1ca7b66b" data-option-index="5" class="oct-quiz-multiple-choice-options__option" tabindex="0" role="radio" aria-checked="false" aria-label="Hair, skin + nails"><div>Hair, skin + nails</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-default">Hair, skin + nails</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-selected">Hair, skin + nails</div><div class="c2d797d84f9df36211295c425c
+        li#7 attrs={"id": "05d5d012adcac306f860dae850f128b1df2ad56b", "data-option-id": "05d5d012adcac306f860dae850f128b1df2ad56b", "data-option-index": "6", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "aria-checked": "false", "aria-label": "Bones, joints + muscles"}
+             text='Bones, joints + muscles\nBones, joints + muscles\nBones, joints + muscles'  textContent='Bones, joints + musclesBones, joints + musclesBones, joints + muscles'
+             box=[60, 755, 240, 45] rects=1 disp=list-item vis=visible op=1 pe=auto role='radio' aria='Bones, joints + muscles'
+             中心点上是：(中心点不在视口)
+             子元素 4 个：[{"tag": "div", "attrs": {}, "text": "Bones, joints + muscles", "tc": "Bones, joints + muscles", "box": [77, 768, 206, 19], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-default"}, "text": "Bones, joints + muscles", "tc": "Bones, joints + muscles", "box": [77, 787, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-selected"}, "text": "Bones, joints + muscles", "tc": "Bones, joints + muscles", "box": [77, 787, 206, 0], "disp": "block", 
+             outerHTML[:500]=<li id="05d5d012adcac306f860dae850f128b1df2ad56b" data-option-id="05d5d012adcac306f860dae850f128b1df2ad56b" data-option-index="6" class="oct-quiz-multiple-choice-options__option" tabindex="0" role="radio" aria-checked="false" aria-label="Bones, joints + muscles"><div>Bones, joints + muscles</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-default">Bones, joints + muscles</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-selected">Bones, joints + muscles</div><div class="c2d797
+        li#8 attrs={"id": "06c0c1402aee351dfe0418e004d5a3946f0652e8", "data-option-id": "06c0c1402aee351dfe0418e004d5a3946f0652e8", "data-option-index": "7", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "aria-checked": "false", "aria-label": "Gut health"}
+             text='Gut health\nGut health\nGut health'  textContent='Gut healthGut healthGut health'
+             box=[60, 820, 240, 45] rects=1 disp=list-item vis=visible op=1 pe=auto role='radio' aria='Gut health'
+             中心点上是：(中心点不在视口)
+             子元素 4 个：[{"tag": "div", "attrs": {}, "text": "Gut health", "tc": "Gut health", "box": [77, 833, 206, 19], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-default"}, "text": "Gut health", "tc": "Gut health", "box": [77, 853, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-selected"}, "text": "Gut health", "tc": "Gut health", "box": [77, 853, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2d797d84f9df
+             outerHTML[:500]=<li id="06c0c1402aee351dfe0418e004d5a3946f0652e8" data-option-id="06c0c1402aee351dfe0418e004d5a3946f0652e8" data-option-index="7" class="oct-quiz-multiple-choice-options__option" tabindex="0" role="radio" aria-checked="false" aria-label="Gut health"><div>Gut health</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-default">Gut health</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-selected">Gut health</div><div class="c2d797d84f9df36211295c425ccb99bc74a04e06d"></div></li>
+        li#9 attrs={"id": "431e45ce8ef2cb4dd18b4181ec7ca5760270a669", "data-option-id": "431e45ce8ef2cb4dd18b4181ec7ca5760270a669", "data-option-index": "8", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "aria-checked": "false", "aria-label": "Stronger immunity"}
+             text='Stronger immunity\nStronger immunity\nStronger immunity'  textContent='Stronger immunityStronger immunityStronger immunity'
+             box=[60, 886, 240, 45] rects=1 disp=list-item vis=visible op=1 pe=auto role='radio' aria='Stronger immunity'
+             中心点上是：(中心点不在视口)
+             子元素 4 个：[{"tag": "div", "attrs": {}, "text": "Stronger immunity", "tc": "Stronger immunity", "box": [77, 899, 206, 19], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-default"}, "text": "Stronger immunity", "tc": "Stronger immunity", "box": [77, 918, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-selected"}, "text": "Stronger immunity", "tc": "Stronger immunity", "box": [77, 918, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag"
+             outerHTML[:500]=<li id="431e45ce8ef2cb4dd18b4181ec7ca5760270a669" data-option-id="431e45ce8ef2cb4dd18b4181ec7ca5760270a669" data-option-index="8" class="oct-quiz-multiple-choice-options__option" tabindex="0" role="radio" aria-checked="false" aria-label="Stronger immunity"><div>Stronger immunity</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-default">Stronger immunity</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-selected">Stronger immunity</div><div class="c2d797d84f9df36211295c425ccb99
+        li#10 attrs={"id": "2dde0b18796cfa67bf842bf5da6b7607755c1103", "data-option-id": "2dde0b18796cfa67bf842bf5da6b7607755c1103", "data-option-index": "9", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "aria-checked": "false", "aria-label": "Hormonal balance"}
+             text='Hormonal balance\nHormonal balance\nHormonal balance'  textContent='Hormonal balanceHormonal balanceHormonal balance'
+             box=[60, 951, 240, 45] rects=1 disp=list-item vis=visible op=1 pe=auto role='radio' aria='Hormonal balance'
+             中心点上是：(中心点不在视口)
+             子元素 4 个：[{"tag": "div", "attrs": {}, "text": "Hormonal balance", "tc": "Hormonal balance", "box": [77, 964, 206, 19], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-default"}, "text": "Hormonal balance", "tc": "Hormonal balance", "box": [77, 983, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-selected"}, "text": "Hormonal balance", "tc": "Hormonal balance", "box": [77, 983, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div
+             outerHTML[:500]=<li id="2dde0b18796cfa67bf842bf5da6b7607755c1103" data-option-id="2dde0b18796cfa67bf842bf5da6b7607755c1103" data-option-index="9" class="oct-quiz-multiple-choice-options__option" tabindex="0" role="radio" aria-checked="false" aria-label="Hormonal balance"><div>Hormonal balance</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-default">Hormonal balance</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-selected">Hormonal balance</div><div class="c2d797d84f9df36211295c425ccb99bc74
+        li#11 attrs={"id": "a7bec110ea0d2691172d37df8f0529fdf6d3b14e", "data-option-id": "a7bec110ea0d2691172d37df8f0529fdf6d3b14e", "data-option-index": "10", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "aria-checked": "false", "aria-label": "Pregnancy + postpartum"}
+             text='Pregnancy + postpartum\nPregnancy + postpartum\nPregnancy + postpartum'  textContent='Pregnancy + postpartumPregnancy + postpartumPregnancy + postpartum'
+             box=[60, 1016, 240, 45] rects=1 disp=list-item vis=visible op=1 pe=auto role='radio' aria='Pregnancy + postpartum'
+             中心点上是：(中心点不在视口)
+             子元素 4 个：[{"tag": "div", "attrs": {}, "text": "Pregnancy + postpartum", "tc": "Pregnancy + postpartum", "box": [77, 1029, 206, 19], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-default"}, "text": "Pregnancy + postpartum", "tc": "Pregnancy + postpartum", "box": [77, 1048, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-selected"}, "text": "Pregnancy + postpartum", "tc": "Pregnancy + postpartum", "box": [77, 1048, 206, 0], "disp": "block", "vi
+             outerHTML[:500]=<li id="a7bec110ea0d2691172d37df8f0529fdf6d3b14e" data-option-id="a7bec110ea0d2691172d37df8f0529fdf6d3b14e" data-option-index="10" class="oct-quiz-multiple-choice-options__option" tabindex="0" role="radio" aria-checked="false" aria-label="Pregnancy + postpartum"><div>Pregnancy + postpartum</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-default">Pregnancy + postpartum</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-selected">Pregnancy + postpartum</div><div class="c2d797d84
+        li#12 attrs={"id": "68f45b717bce41a1b7e90db35267f2ff17e0b67e", "data-option-id": "68f45b717bce41a1b7e90db35267f2ff17e0b67e", "data-option-index": "11", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "aria-checked": "false", "aria-label": "Fertility support"}
+             text='Fertility support\nFertility support\nFertility support'  textContent='Fertility supportFertility supportFertility support'
+             box=[60, 1081, 240, 45] rects=1 disp=list-item vis=visible op=1 pe=auto role='radio' aria='Fertility support'
+             中心点上是：(中心点不在视口)
+             子元素 4 个：[{"tag": "div", "attrs": {}, "text": "Fertility support", "tc": "Fertility support", "box": [77, 1094, 206, 19], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-default"}, "text": "Fertility support", "tc": "Fertility support", "box": [77, 1113, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-selected"}, "text": "Fertility support", "tc": "Fertility support", "box": [77, 1113, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"t
+             outerHTML[:500]=<li id="68f45b717bce41a1b7e90db35267f2ff17e0b67e" data-option-id="68f45b717bce41a1b7e90db35267f2ff17e0b67e" data-option-index="11" class="oct-quiz-multiple-choice-options__option" tabindex="0" role="radio" aria-checked="false" aria-label="Fertility support"><div>Fertility support</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-default">Fertility support</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-selected">Fertility support</div><div class="c2d797d84f9df36211295c425ccb9
+        li#13 attrs={"id": "14f26c36b4fced13edd0dc7026c2ab3f8aace8cd", "data-option-id": "14f26c36b4fced13edd0dc7026c2ab3f8aace8cd", "data-option-index": "12", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "aria-checked": "false", "aria-label": "Perimenopause + menopause"}
+             text='Perimenopause + menopause\nPerimenopause + menopause\nPerimenopause + menopause'  textContent='Perimenopause + menopausePerimenopause + menopausePerimenopause + menopause'
+             box=[60, 1146, 240, 45] rects=1 disp=list-item vis=visible op=1 pe=auto role='radio' aria='Perimenopause + menopause'
+             中心点上是：(中心点不在视口)
+             子元素 4 个：[{"tag": "div", "attrs": {}, "text": "Perimenopause + menopause", "tc": "Perimenopause + menopause", "box": [77, 1159, 206, 19], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-default"}, "text": "Perimenopause + menopause", "tc": "Perimenopause + menopause", "box": [77, 1178, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-selected"}, "text": "Perimenopause + menopause", "tc": "Perimenopause + menopause", "box": [77, 1178, 206, 0], "d
+             outerHTML[:500]=<li id="14f26c36b4fced13edd0dc7026c2ab3f8aace8cd" data-option-id="14f26c36b4fced13edd0dc7026c2ab3f8aace8cd" data-option-index="12" class="oct-quiz-multiple-choice-options__option" tabindex="0" role="radio" aria-checked="false" aria-label="Perimenopause + menopause"><div>Perimenopause + menopause</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-default">Perimenopause + menopause</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-selected">Perimenopause + menopause</div><div clas
+        li#14 attrs={"id": "3f1ca09bc5d48b7af40247b954d0be5eedfce714", "data-option-id": "3f1ca09bc5d48b7af40247b954d0be5eedfce714", "data-option-index": "13", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "aria-checked": "false", "aria-label": "Weight management"}
+             text='Weight management\nWeight management\nWeight management'  textContent='Weight managementWeight managementWeight management'
+             box=[60, 1211, 240, 45] rects=1 disp=list-item vis=visible op=1 pe=auto role='radio' aria='Weight management'
+             中心点上是：(中心点不在视口)
+             子元素 4 个：[{"tag": "div", "attrs": {}, "text": "Weight management", "tc": "Weight management", "box": [77, 1224, 206, 19], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-default"}, "text": "Weight management", "tc": "Weight management", "box": [77, 1244, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"tag": "div", "attrs": {"class": "c2068c231f105bee74dbb00c8052f05a63a5144b0-selected"}, "text": "Weight management", "tc": "Weight management", "box": [77, 1244, 206, 0], "disp": "block", "vis": "visible", "op": "1"}, {"t
+             outerHTML[:500]=<li id="3f1ca09bc5d48b7af40247b954d0be5eedfce714" data-option-id="3f1ca09bc5d48b7af40247b954d0be5eedfce714" data-option-index="13" class="oct-quiz-multiple-choice-options__option" tabindex="0" role="radio" aria-checked="false" aria-label="Weight management"><div>Weight management</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-default">Weight management</div><div class="c2068c231f105bee74dbb00c8052f05a63a5144b0-selected">Weight management</div><div class="c2d797d84f9df36211295c425ccb9
+
+开 quiz 的元素：{"sel": "body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > header:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(5) > a:nth-of-type(2)", "text": "Take the quiz"}
+  [click 开 quiz] rc=0 0.3s ｜cdp click：选择器 "body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > header:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(5) > a:nth-of-type(2)" 命中 1 个元素，点的是第 1 个 —— <a> "Take the quiz" [114,101,78,16]（可点）
+
+===== 屏 A1-开完quiz =====
+  [observe A1-开完quiz] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz actions=47（quiz 里 0）diag=0
+      判据：CONTINUE=False ←BACK=False ｜ goal问句=False ｜ 正文前 120 字：Toggle menu SEARCH Wild Nutrition® Ltd ACCOUNT BASKET 0 Search our store Search Search ASK LUNA Bestsellers Take the qui
+    —— quiz 里其余动作（一行一条）——
+  [裸DOM A1-开完quiz] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz wrap=False ul=None scrollY=0
+      正文前 300 字：Toggle menu | SEARCH | Wild Nutrition® Ltd | ACCOUNT | BASKET | 0 | Search our store | Search | Search | ASK LUNA | Bestsellers | Take the quiz | Book a consultation |  | WELLBEING STARTS HERE |  | What supplements should I take? |  | Tired? Hormones unbalanced? Looking for fertility, pregnancy or m
+  [组-2 第1步 click li6] rc=1 0.1s ｜      --host string   Chrome host address (default "127.0.0.1") ｜       --port int      Chrome port (default 9222)
+
+===== 屏 B1-click-li6 =====
+  [observe B1-click-li6] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz actions=47（quiz 里 0）diag=0
+      判据：CONTINUE=False ←BACK=False ｜ goal问句=False ｜ 正文前 120 字：Toggle menu SEARCH Wild Nutrition® Ltd ACCOUNT BASKET 0 Search our store Search Search ASK LUNA Bestsellers Take the qui
+    —— quiz 里其余动作（一行一条）——
+  [裸DOM B1-click-li6] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz wrap=False ul=None scrollY=0
+      正文前 300 字：Toggle menu | SEARCH | Wild Nutrition® Ltd | ACCOUNT | BASKET | 0 | Search our store | Search | Search | ASK LUNA | Bestsellers | Take the quiz | Book a consultation |  | WELLBEING STARTS HERE |  | What supplements should I take? |  | Tired? Hormones unbalanced? Looking for fertility, pregnancy or m
+  [组-2 第2步 scroll li6] rc=1 0.1s ｜      --host string   Chrome host address (default "127.0.0.1") ｜       --port int      Chrome port (default 9222)
+
+===== 屏 B2-scroll-li6 =====
+  [observe B2-scroll-li6] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz actions=47（quiz 里 0）diag=0
+      判据：CONTINUE=False ←BACK=False ｜ goal问句=False ｜ 正文前 120 字：Toggle menu SEARCH Wild Nutrition® Ltd ACCOUNT BASKET 0 Search our store Search Search ASK LUNA Bestsellers Take the qui
+    —— quiz 里其余动作（一行一条）——
+  [裸DOM B2-scroll-li6] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz wrap=False ul=None scrollY=0
+      正文前 300 字：Toggle menu | SEARCH | Wild Nutrition® Ltd | ACCOUNT | BASKET | 0 | Search our store | Search | Search | ASK LUNA | Bestsellers | Take the quiz | Book a consultation |  | WELLBEING STARTS HERE |  | What supplements should I take? |  | Tired? Hormones unbalanced? Looking for fertility, pregnancy or m
+  [组-2 第3步 click li6] rc=1 0.1s ｜      --host string   Chrome host address (default "127.0.0.1") ｜       --port int      Chrome port (default 9222)
+
+===== 屏 B3-click-li6-again =====
+  [observe B3-click-li6-again] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz actions=47（quiz 里 0）diag=0
+      判据：CONTINUE=False ←BACK=False ｜ goal问句=False ｜ 正文前 120 字：Toggle menu SEARCH Wild Nutrition® Ltd ACCOUNT BASKET 0 Search our store Search Search ASK LUNA Bestsellers Take the qui
+    —— quiz 里其余动作（一行一条）——
+  [裸DOM B3-click-li6-again] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz wrap=False ul=None scrollY=0
+      正文前 300 字：Toggle menu | SEARCH | Wild Nutrition® Ltd | ACCOUNT | BASKET | 0 | Search our store | Search | Search | ASK LUNA | Bestsellers | Take the quiz | Book a consultation |  | WELLBEING STARTS HERE |  | What supplements should I take? |  | Tired? Hormones unbalanced? Looking for fertility, pregnancy or m
+  [组-2 第4步 scroll li2] rc=1 0.1s ｜      --host string   Chrome host address (default "127.0.0.1") ｜       --port int      Chrome port (default 9222)
+
+===== 屏 B4-scroll-li2 =====
+  [observe B4-scroll-li2] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz actions=47（quiz 里 0）diag=0
+      判据：CONTINUE=False ←BACK=False ｜ goal问句=False ｜ 正文前 120 字：Toggle menu SEARCH Wild Nutrition® Ltd ACCOUNT BASKET 0 Search our store Search Search ASK LUNA Bestsellers Take the qui
+    —— quiz 里其余动作（一行一条）——
+  [裸DOM B4-scroll-li2] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz wrap=False ul=None scrollY=0
+      正文前 300 字：Toggle menu | SEARCH | Wild Nutrition® Ltd | ACCOUNT | BASKET | 0 | Search our store | Search | Search | ASK LUNA | Bestsellers | Take the quiz | Book a consultation |  | WELLBEING STARTS HERE |  | What supplements should I take? |  | Tired? Hormones unbalanced? Looking for fertility, pregnancy or m
+  [组-2 第5步 click li2] rc=1 0.1s ｜      --host string   Chrome host address (default "127.0.0.1") ｜       --port int      Chrome port (default 9222)
+
+===== 屏 C0-组-2走完（这一屏就是 -3 组的 when：CONTINUE ← BACK） =====
+  [observe C0-组-2走完（这一屏就是 -3 组的 when：CONTINUE ← BACK）] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz actions=47（quiz 里 0）diag=0
+      判据：CONTINUE=False ←BACK=False ｜ goal问句=False ｜ 正文前 120 字：Toggle menu SEARCH Wild Nutrition® Ltd ACCOUNT BASKET 0 Search our store Search Search ASK LUNA Bestsellers Take the qui
+    —— quiz 里其余动作（一行一条）——
+    —— 交叉对照：仓里那个 cdp（/company/siteforge/tools/cdp/cdp）看到的 li 卡 ——
+  [裸DOM C0-组-2走完（这一屏就是 -3 组的 when：CONTINUE ← BACK）] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz wrap=False ul=None scrollY=0
+      正文前 300 字：Toggle menu | SEARCH | Wild Nutrition® Ltd | ACCOUNT | BASKET | 0 | Search our store | Search | Search | ASK LUNA | Bestsellers | Take the quiz | Book a consultation |  | WELLBEING STARTS HERE |  | What supplements should I take? |  | Tired? Hormones unbalanced? Looking for fertility, pregnancy or m
+  [组-3 第1步 click Continue] rc=1 0.1s ｜      --host string   Chrome host address (default "127.0.0.1") ｜       --port int      Chrome port (default 9222)
+
+===== 屏 D1-点完Continue（账本第2步 li3 所在的屏） =====
+  [observe D1-点完Continue（账本第2步 li3 所在的屏）] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz actions=47（quiz 里 0）diag=0
+      判据：CONTINUE=False ←BACK=False ｜ goal问句=False ｜ 正文前 120 字：Toggle menu SEARCH Wild Nutrition® Ltd ACCOUNT BASKET 0 Search our store Search Search ASK LUNA Bestsellers Take the qui
+    —— quiz 里其余动作（一行一条）——
+    —— 交叉对照：仓里那个 cdp（/company/siteforge/tools/cdp/cdp）看到的 li 卡 ——
+  [裸DOM D1-点完Continue（账本第2步 li3 所在的屏）] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz wrap=False ul=None scrollY=0
+      正文前 300 字：Toggle menu | SEARCH | Wild Nutrition® Ltd | ACCOUNT | BASKET | 0 | Search our store | Search | Search | ASK LUNA | Bestsellers | Take the quiz | Book a consultation |  | WELLBEING STARTS HERE |  | What supplements should I take? |  | Tired? Hormones unbalanced? Looking for fertility, pregnancy or m
+  [组-3 第2步 click li3] rc=1 0.1s ｜      --host string   Chrome host address (default "127.0.0.1") ｜       --port int      Chrome port (default 9222)
+
+===== 屏 D2-点完li3（账本第3步 li4 所在的屏） =====
+  [observe D2-点完li3（账本第3步 li4 所在的屏）] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz actions=53（quiz 里 0）diag=0
+      判据：CONTINUE=False ←BACK=False ｜ goal问句=False ｜ 正文前 120 字：We use cookies and similar technologies to personalise content and ads, analyse website performance and improve the webs
+    —— quiz 里其余动作（一行一条）——
+  [裸DOM D2-点完li3（账本第3步 li4 所在的屏）] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz wrap=False ul=None scrollY=0
+      正文前 300 字：We use cookies and similar technologies to personalise content and ads, analyse website performance and improve the website experience. For more information, please read our Cookie Policy | Manage Cookies | Accept All | Toggle menu | SEARCH | Wild Nutrition® Ltd | ACCOUNT | BASKET | 0 | Search our s
+  [组-3 第3步 click li4] rc=1 0.1s ｜      --host string   Chrome host address (default "127.0.0.1") ｜       --port int      Chrome port (default 9222)
+
+===== 屏 D3-点完li4（账本第4步 li1 所在的屏） =====
+  [observe D3-点完li4（账本第4步 li1 所在的屏）] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz actions=53（quiz 里 0）diag=0
+      判据：CONTINUE=False ←BACK=False ｜ goal问句=False ｜ 正文前 120 字：We use cookies and similar technologies to personalise content and ads, analyse website performance and improve the webs
+    —— quiz 里其余动作（一行一条）——
+  [裸DOM D3-点完li4（账本第4步 li1 所在的屏）] url=https://www.wildnutrition.com/pages/wild-nutrition-supplement-quiz wrap=False ul=None scrollY=0
+      正文前 300 字：We use cookies and similar technologies to personalise content and ads, analyse website performance and improve the website experience. For more information, please read our Cookie Policy | Manage Cookies | Accept All | Toggle menu | SEARCH | Wild Nutrition® Ltd | ACCOUNT | BASKET | 0 | Search our s
+
+★ 到此为止：**不点** li1、**不填**邮箱、**不点** submit（边界）
+
+窗口收尾：
+  关窗：确认已关
+窗口已关：True

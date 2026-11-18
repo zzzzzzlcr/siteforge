@@ -1,0 +1,71 @@
+{
+ "script_sha256": "b7e3fc041f7cadafd39b4363a8b7b7a6411380789c2ec0ac80f7529e2fc0f6c8",
+ "version": "20260918",
+ "sites": [
+  {
+   "site": "callyourdate.com/land/sp/5549e30e",
+   "config_id": 66,
+   "status": 1
+  },
+  {
+   "site": "cupidfeel.com/land/sp/ef697977",
+   "config_id": 66,
+   "status": 1
+  },
+  {
+   "site": "elenadate.com/land/sp/f324f3a2",
+   "config_id": 66,
+   "status": 1
+  },
+  {
+   "site": "funchatt.com",
+   "config_id": 66,
+   "status": 1
+  },
+  {
+   "site": "instantalks.com",
+   "config_id": 66,
+   "status": 1
+  },
+  {
+   "site": "juliettdate.com/land/sp/cf8552d4",
+   "config_id": 66,
+   "status": 1
+  },
+  {
+   "site": "la-date.com",
+   "config_id": 66,
+   "status": 1
+  },
+  {
+   "site": "latamvibe.com/land/sp/7526f83f",
+   "config_id": 66,
+   "status": 1
+  },
+  {
+   "site": "lovingchances.com/land/sp/2dcddb04",
+   "config_id": 66,
+   "status": 1
+  },
+  {
+   "site": "placetochat.com/land/sp/0ec9e69f",
+   "config_id": 66,
+   "status": 1
+  },
+  {
+   "site": "soulmatemeets.com/land/sp/e77eb1b0",
+   "config_id": 66,
+   "status": 1
+  },
+  {
+   "site": "thisromance.com/land/sp/d04f472b",
+   "config_id": 66,
+   "status": 1
+  },
+  {
+   "site": "goldenagesouls.com",
+   "config_id": 66,
+   "status": 1
+  }
+ ]
+}

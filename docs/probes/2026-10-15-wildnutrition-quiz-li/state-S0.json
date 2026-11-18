@@ -1,0 +1,476 @@
+{
+ "url": "https://www.wildnutrition.com/pages/what-supplements-should-i-take",
+ "scrollY": 0,
+ "has_continue": false,
+ "has_back": false,
+ "wrap": true,
+ "wrap_text": "What’s your main health goal right now?  | More energy | More energy | More energy | Greater wellbeing | Greater wellbeing | Greater wellbeing | Emotional balance | Emotional balance | Emotional balance | Better sleep | Better sleep | Better sleep | Cycle supp",
+ "ul_count": 1,
+ "uls": [
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)",
+   "attrs": {
+    "id": "oct-multiple-choice-answers-root-812ae45d37fb4e5387baf7cea6ad7840cf75c757",
+    "class": "ce5aa5a68f73fecd5b848c3ae61f42faf3b4570bd",
+    "role": "radiogroup",
+    "aria-labelledby": "oct-q-title-812ae45d37fb4e5387baf7cea6ad7840cf75c757"
+   },
+   "box": [
+    60,
+    314,
+    240,
+    943
+   ],
+   "question": "What’s your main health goal right now?",
+   "lis": [
+    {
+     "n": 1,
+     "attrs": {
+      "id": "bbb60065ca22877e14a824818bd90233f988309a",
+      "data-option-id": "bbb60065ca22877e14a824818bd90233f988309a",
+      "data-option-index": "0",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "More energy"
+     },
+     "text": "More energy/More energy/More energy",
+     "tc": "More energyMore energyMore energy",
+     "aria": "More energy",
+     "checked": "false",
+     "box": [
+      60,
+      364,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"bbb60065ca22877e14a824818bd90233f988309a\" data-option-id=\"bbb60065ca22877e14a824818bd90233f988309a\" data-option-index=\"0\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"More energy\"><div>More energy</div><div class=\"c1823daf808f1d0"
+    },
+    {
+     "n": 2,
+     "attrs": {
+      "id": "4f629a989e31508b3b9961463901b3df859b718c",
+      "data-option-id": "4f629a989e31508b3b9961463901b3df859b718c",
+      "data-option-index": "1",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Greater wellbeing"
+     },
+     "text": "Greater wellbeing/Greater wellbeing/Greater wellbeing",
+     "tc": "Greater wellbeingGreater wellbeingGreater wellbeing",
+     "aria": "Greater wellbeing",
+     "checked": "false",
+     "box": [
+      60,
+      429,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"4f629a989e31508b3b9961463901b3df859b718c\" data-option-id=\"4f629a989e31508b3b9961463901b3df859b718c\" data-option-index=\"1\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Greater wellbeing\"><div>Greater wellbeing</div><div class=\"c18"
+    },
+    {
+     "n": 3,
+     "attrs": {
+      "id": "3032e5ba774dd665f248409445f9fa51a24dd005",
+      "data-option-id": "3032e5ba774dd665f248409445f9fa51a24dd005",
+      "data-option-index": "2",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Emotional balance"
+     },
+     "text": "Emotional balance/Emotional balance/Emotional balance",
+     "tc": "Emotional balanceEmotional balanceEmotional balance",
+     "aria": "Emotional balance",
+     "checked": "false",
+     "box": [
+      60,
+      494,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"3032e5ba774dd665f248409445f9fa51a24dd005\" data-option-id=\"3032e5ba774dd665f248409445f9fa51a24dd005\" data-option-index=\"2\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Emotional balance\"><div>Emotional balance</div><div class=\"c18"
+    },
+    {
+     "n": 4,
+     "attrs": {
+      "id": "c0109b2abf545198481683df8c0565e36adbcb28",
+      "data-option-id": "c0109b2abf545198481683df8c0565e36adbcb28",
+      "data-option-index": "3",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Better sleep"
+     },
+     "text": "Better sleep/Better sleep/Better sleep",
+     "tc": "Better sleepBetter sleepBetter sleep",
+     "aria": "Better sleep",
+     "checked": "false",
+     "box": [
+      60,
+      560,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"c0109b2abf545198481683df8c0565e36adbcb28\" data-option-id=\"c0109b2abf545198481683df8c0565e36adbcb28\" data-option-index=\"3\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Better sleep\"><div>Better sleep</div><div class=\"c1823daf808f1"
+    },
+    {
+     "n": 5,
+     "attrs": {
+      "id": "11bcefef580aa5b8a497ebda73e0713979b5a327",
+      "data-option-id": "11bcefef580aa5b8a497ebda73e0713979b5a327",
+      "data-option-index": "4",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Cycle support"
+     },
+     "text": "Cycle support/Cycle support/Cycle support",
+     "tc": "Cycle supportCycle supportCycle support",
+     "aria": "Cycle support",
+     "checked": "false",
+     "box": [
+      60,
+      625,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"11bcefef580aa5b8a497ebda73e0713979b5a327\" data-option-id=\"11bcefef580aa5b8a497ebda73e0713979b5a327\" data-option-index=\"4\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Cycle support\"><div>Cycle support</div><div class=\"c1823daf808"
+    },
+    {
+     "n": 6,
+     "attrs": {
+      "id": "d2877f461cc84ada1ffbe9a65fde98ff1ca7b66b",
+      "data-option-id": "d2877f461cc84ada1ffbe9a65fde98ff1ca7b66b",
+      "data-option-index": "5",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Hair, skin + nails"
+     },
+     "text": "Hair, skin + nails/Hair, skin + nails/Hair, skin + nails",
+     "tc": "Hair, skin + nailsHair, skin + nailsHair, skin + nails",
+     "aria": "Hair, skin + nails",
+     "checked": "false",
+     "box": [
+      60,
+      690,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"d2877f461cc84ada1ffbe9a65fde98ff1ca7b66b\" data-option-id=\"d2877f461cc84ada1ffbe9a65fde98ff1ca7b66b\" data-option-index=\"5\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Hair, skin + nails\"><div>Hair, skin + nails</div><div class=\"c"
+    },
+    {
+     "n": 7,
+     "attrs": {
+      "id": "05d5d012adcac306f860dae850f128b1df2ad56b",
+      "data-option-id": "05d5d012adcac306f860dae850f128b1df2ad56b",
+      "data-option-index": "6",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Bones, joints + muscles"
+     },
+     "text": "Bones, joints + muscles/Bones, joints + muscles/Bones, joints + muscles",
+     "tc": "Bones, joints + musclesBones, joints + musclesBones, joints + muscles",
+     "aria": "Bones, joints + muscles",
+     "checked": "false",
+     "box": [
+      60,
+      755,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"05d5d012adcac306f860dae850f128b1df2ad56b\" data-option-id=\"05d5d012adcac306f860dae850f128b1df2ad56b\" data-option-index=\"6\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Bones, joints + muscles\"><div>Bones, joints + muscles</div><di"
+    },
+    {
+     "n": 8,
+     "attrs": {
+      "id": "06c0c1402aee351dfe0418e004d5a3946f0652e8",
+      "data-option-id": "06c0c1402aee351dfe0418e004d5a3946f0652e8",
+      "data-option-index": "7",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Gut health"
+     },
+     "text": "Gut health/Gut health/Gut health",
+     "tc": "Gut healthGut healthGut health",
+     "aria": "Gut health",
+     "checked": "false",
+     "box": [
+      60,
+      820,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"06c0c1402aee351dfe0418e004d5a3946f0652e8\" data-option-id=\"06c0c1402aee351dfe0418e004d5a3946f0652e8\" data-option-index=\"7\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Gut health\"><div>Gut health</div><div class=\"c1823daf808f1d0bb"
+    },
+    {
+     "n": 9,
+     "attrs": {
+      "id": "431e45ce8ef2cb4dd18b4181ec7ca5760270a669",
+      "data-option-id": "431e45ce8ef2cb4dd18b4181ec7ca5760270a669",
+      "data-option-index": "8",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Stronger immunity"
+     },
+     "text": "Stronger immunity/Stronger immunity/Stronger immunity",
+     "tc": "Stronger immunityStronger immunityStronger immunity",
+     "aria": "Stronger immunity",
+     "checked": "false",
+     "box": [
+      60,
+      886,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"431e45ce8ef2cb4dd18b4181ec7ca5760270a669\" data-option-id=\"431e45ce8ef2cb4dd18b4181ec7ca5760270a669\" data-option-index=\"8\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Stronger immunity\"><div>Stronger immunity</div><div class=\"c18"
+    },
+    {
+     "n": 10,
+     "attrs": {
+      "id": "2dde0b18796cfa67bf842bf5da6b7607755c1103",
+      "data-option-id": "2dde0b18796cfa67bf842bf5da6b7607755c1103",
+      "data-option-index": "9",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Hormonal balance"
+     },
+     "text": "Hormonal balance/Hormonal balance/Hormonal balance",
+     "tc": "Hormonal balanceHormonal balanceHormonal balance",
+     "aria": "Hormonal balance",
+     "checked": "false",
+     "box": [
+      60,
+      951,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"2dde0b18796cfa67bf842bf5da6b7607755c1103\" data-option-id=\"2dde0b18796cfa67bf842bf5da6b7607755c1103\" data-option-index=\"9\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Hormonal balance\"><div>Hormonal balance</div><div class=\"c1823"
+    },
+    {
+     "n": 11,
+     "attrs": {
+      "id": "a7bec110ea0d2691172d37df8f0529fdf6d3b14e",
+      "data-option-id": "a7bec110ea0d2691172d37df8f0529fdf6d3b14e",
+      "data-option-index": "10",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Pregnancy + postpartum"
+     },
+     "text": "Pregnancy + postpartum/Pregnancy + postpartum/Pregnancy + postpartum",
+     "tc": "Pregnancy + postpartumPregnancy + postpartumPregnancy + postpartum",
+     "aria": "Pregnancy + postpartum",
+     "checked": "false",
+     "box": [
+      60,
+      1016,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"a7bec110ea0d2691172d37df8f0529fdf6d3b14e\" data-option-id=\"a7bec110ea0d2691172d37df8f0529fdf6d3b14e\" data-option-index=\"10\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Pregnancy + postpartum\"><div>Pregnancy + postpartum</div><div"
+    },
+    {
+     "n": 12,
+     "attrs": {
+      "id": "68f45b717bce41a1b7e90db35267f2ff17e0b67e",
+      "data-option-id": "68f45b717bce41a1b7e90db35267f2ff17e0b67e",
+      "data-option-index": "11",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Fertility support"
+     },
+     "text": "Fertility support/Fertility support/Fertility support",
+     "tc": "Fertility supportFertility supportFertility support",
+     "aria": "Fertility support",
+     "checked": "false",
+     "box": [
+      60,
+      1081,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"68f45b717bce41a1b7e90db35267f2ff17e0b67e\" data-option-id=\"68f45b717bce41a1b7e90db35267f2ff17e0b67e\" data-option-index=\"11\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Fertility support\"><div>Fertility support</div><div class=\"c1"
+    },
+    {
+     "n": 13,
+     "attrs": {
+      "id": "14f26c36b4fced13edd0dc7026c2ab3f8aace8cd",
+      "data-option-id": "14f26c36b4fced13edd0dc7026c2ab3f8aace8cd",
+      "data-option-index": "12",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Perimenopause + menopause"
+     },
+     "text": "Perimenopause + menopause/Perimenopause + menopause/Perimenopause + menopause",
+     "tc": "Perimenopause + menopausePerimenopause + menopausePerimenopause + menopause",
+     "aria": "Perimenopause + menopause",
+     "checked": "false",
+     "box": [
+      60,
+      1146,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"14f26c36b4fced13edd0dc7026c2ab3f8aace8cd\" data-option-id=\"14f26c36b4fced13edd0dc7026c2ab3f8aace8cd\" data-option-index=\"12\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Perimenopause + menopause\"><div>Perimenopause + menopause</di"
+    },
+    {
+     "n": 14,
+     "attrs": {
+      "id": "3f1ca09bc5d48b7af40247b954d0be5eedfce714",
+      "data-option-id": "3f1ca09bc5d48b7af40247b954d0be5eedfce714",
+      "data-option-index": "13",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Weight management"
+     },
+     "text": "Weight management/Weight management/Weight management",
+     "tc": "Weight managementWeight managementWeight management",
+     "aria": "Weight management",
+     "checked": "false",
+     "box": [
+      60,
+      1211,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"3f1ca09bc5d48b7af40247b954d0be5eedfce714\" data-option-id=\"3f1ca09bc5d48b7af40247b954d0be5eedfce714\" data-option-index=\"13\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Weight management\"><div>Weight management</div><div class=\"c1"
+    }
+   ]
+  }
+ ],
+ "buttons": [],
+ "other_buttons": [
+  {
+   "tag": "button",
+   "text": "Back",
+   "path": "body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > aside:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > ul:nth-of-type(1) > li:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "box": [
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "tag": "button",
+   "text": "Back",
+   "path": "body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > aside:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > ul:nth-of-type(1) > li:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "box": [
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "tag": "button",
+   "text": "Back",
+   "path": "body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > aside:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > ul:nth-of-type(1) > li:nth-of-type(3) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "box": [
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "tag": "button",
+   "text": "Back",
+   "path": "body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > aside:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > ul:nth-of-type(1) > li:nth-of-type(4) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "box": [
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "tag": "button",
+   "text": "Back",
+   "path": "body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > aside:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > ul:nth-of-type(1) > li:nth-of-type(5) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "box": [
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "tag": "button",
+   "text": "Continue shopping",
+   "path": "body:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(4) > button:nth-of-type(1)",
+   "box": [
+    0,
+    0,
+    0,
+    0
+   ]
+  }
+ ]
+}

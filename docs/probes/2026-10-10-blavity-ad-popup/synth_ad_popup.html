@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>合成页：广告弹窗关闭件（复刻 blavity 那套 bx- 结构）</title>
+<style>
+  body { margin: 0; font: 14px system-ui; }
+  .bx-align { display: block; }
+  .bx-wrap { display: inline-block; }
+  .bx-creative { display: inline-block; position: relative; }
+  .bx-close { position: absolute; top: 4px; right: 4px; width: 88px; height: 54px;
+              z-index: 2147483647; }
+  .d-none { display: none; }
+  .v-hidden { visibility: hidden; }
+  #pop-creative { width: 340px; height: 347px; background: #fee; border: 2px solid #c00;
+                  z-index: 2147483645; }
+  #page-cover { position: fixed; inset: 0; background: rgba(0,0,0,.5);
+                z-index: 2147483646; }
+</style>
+</head>
+<body>
+<h1>文章正文</h1>
+<p>合成页：判据是「6 个候选里只有 1 个可见，且必须是它中选」。</p>
+
+<!-- ★ 文档顺序上，隐藏的重复件**排在前面** —— 这正是真站那个坑的形状：
+     `cdp click` 命中多个时点的是文档顺序第一个，不看可见性。 -->
+<button id="bx-close-outside-a1" class="bx-close d-none"   data-click="close">close dialog</button>
+<div class="bx-align"><div class="bx-wrap"><div class="bx-creative" id="creative-a2">
+  <button id="bx-close-inside-a2" class="bx-close" style="width:0;height:0" data-click="close">close dialog</button>
+</div></div></div>
+<button id="bx-close-outside-b3" class="bx-close v-hidden" data-click="close">close dialog</button>
+<button id="bx-close-inside-b4"  class="bx-close d-none"   data-click="close">close dialog</button>
+
+<!-- 弹窗本体（可见） -->
+<div class="bx-align"><div class="bx-wrap"><div class="bx-creative" id="pop-creative">
+  <button id="bx-close-inside-pop" class="bx-close" data-click="close">close dialog</button>
+</div></div></div>
+
+<button id="bx-close-outside-c5" class="bx-close v-hidden" data-click="close">close dialog</button>
+
+<div id="log">none</div>
+
+<script>
+// 复刻真站行为：点掉之后整个 creative 从 DOM 里消失（2026-10-10 真站实测）
+document.querySelectorAll('[data-click="close"]').forEach(function (b) {
+  b.addEventListener('click', function () {
+    document.getElementById('log').textContent = 'CLICKED=' + b.id;
+    var c = document.getElementById('pop-creative');
+    if (c) c.remove();
+  });
+});
+</script>
+</body>
+</html>

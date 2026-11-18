@@ -1,0 +1,176 @@
+探针开始 18:36:19
+窗口探活：**不在**
+窗口不在 ⇒ 开一个（BitWindow.open 的 args 原样抄）
+ws = ws://192.168.1.222:61129/devtools/browser/c5773765-e584-4a34-afc8-f6d2e53fd3a7
+  [navi quiz 页] rc=0 3.8s ｜2026/10/15 18:36:28 ERROR: could not unmarshal event: json: cannot unmarshal JSON string into Go network.CorsError within "/corsErrorStatus/corsError": unknown CorsError value: UnexpectedPrivateNetworkAccess ｜ 2026/10/15 18:36:28 ERROR: could not unmarshal event: json: cannot unmarshal JSON string into Go network.CorsError within "/corsErrorStatus/corsError": unknown CorsError value: UnexpectedPrivateNetworkAccess
+  等了 14s，quiz 容器出现
+
+########## S0 落地（第 1 题） ##########
+  [屏 S0] url=https://www.wildnutrition.com/pages/what-supplements-should-i-take wrap=True ul=1 CONTINUE=False ←BACK=False scrollY=0
+      quiz 里印着：What’s your main health goal right now?  | More energy | More energy | More energy | Greater wellbeing | Greater wellbeing | Greater wellbeing | Emotional balance | Emotional balance | Emotional balance | Better sleep | Better sleep | Better sleep | Cycle supp
+      UL -type(1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)
+         attrs={"id": "oct-multiple-choice-answers-root-812ae45d37fb4e5387baf7cea6ad7840cf75c757", "class": "ce5aa5a68f73fecd5b848c3ae61f42faf3b4570bd", "role": "radiogroup", "aria-labelledby": "oct-q-title-812ae45d37fb4e5387baf7cea6ad7840cf75c757"} box=[60, 314, 240, 943] 题面='What’s your main health goal right now?'
+         li#1  aria='More energy'              checked=false text='More energy/More energy/More energy' box=[60, 364, 240, 45] vis=visible rects=1 id=bbb60065ca22 optidx=0
+         li#2  aria='Greater wellbeing'        checked=false text='Greater wellbeing/Greater wellbeing/Greater wellbeing' box=[60, 429, 240, 45] vis=visible rects=1 id=4f629a989e31 optidx=1
+         li#3  aria='Emotional balance'        checked=false text='Emotional balance/Emotional balance/Emotional balance' box=[60, 494, 240, 45] vis=visible rects=1 id=3032e5ba774d optidx=2
+         li#4  aria='Better sleep'             checked=false text='Better sleep/Better sleep/Better sleep' box=[60, 560, 240, 45] vis=visible rects=1 id=c0109b2abf54 optidx=3
+         li#5  aria='Cycle support'            checked=false text='Cycle support/Cycle support/Cycle support' box=[60, 625, 240, 45] vis=visible rects=1 id=11bcefef580a optidx=4
+         li#6  aria='Hair, skin + nails'       checked=false text='Hair, skin + nails/Hair, skin + nails/Hair, skin + nails' box=[60, 690, 240, 45] vis=visible rects=1 id=d2877f461cc8 optidx=5
+         li#7  aria='Bones, joints + muscles'  checked=false text='Bones, joints + muscles/Bones, joints + muscles/Bones, joints + muscles' box=[60, 755, 240, 45] vis=visible rects=1 id=05d5d012adca optidx=6
+         li#8  aria='Gut health'               checked=false text='Gut health/Gut health/Gut health' box=[60, 820, 240, 45] vis=visible rects=1 id=06c0c1402aee optidx=7
+         li#9  aria='Stronger immunity'        checked=false text='Stronger immunity/Stronger immunity/Stronger immunity' box=[60, 886, 240, 45] vis=visible rects=1 id=431e45ce8ef2 optidx=8
+         li#10 aria='Hormonal balance'         checked=false text='Hormonal balance/Hormonal balance/Hormonal balance' box=[60, 951, 240, 45] vis=visible rects=1 id=2dde0b18796c optidx=9
+         li#11 aria='Pregnancy + postpartum'   checked=false text='Pregnancy + postpartum/Pregnancy + postpartum/Pregnancy + postpartum' box=[60, 1016, 240, 45] vis=visible rects=1 id=a7bec110ea0d optidx=10
+         li#12 aria='Fertility support'        checked=false text='Fertility support/Fertility support/Fertility support' box=[60, 1081, 240, 45] vis=visible rects=1 id=68f45b717bce optidx=11
+         li#13 aria='Perimenopause + menopause' checked=false text='Perimenopause + menopause/Perimenopause + menopause/Perimenopause + menopause' box=[60, 1146, 240, 45] vis=visible rects=1 id=14f26c36b4fc optidx=12
+         li#14 aria='Weight management'        checked=false text='Weight management/Weight management/Weight management' box=[60, 1211, 240, 45] vis=visible rects=1 id=3f1ca09bc5d4 optidx=13
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(1) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(2) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(3) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(4) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(5) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Continue shopping' box=[0, 0, 0, 0] path=e(1) > div:nth-of-type(1) > div:nth-of-type(4) > button:nth-of-type(1)
+  [observe S0] actions=54 diag=0 obstructions=1
+      quiz 里的动作 14 条；li 卡：
+  [scroll li6 (Hair, skin + nails)] rc=0 0.1s 
+  [click li6 (Hair, skin + nails)] rc=0 0.3s ｜cdp click：选择器 "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)" 命中 1 个元素，点的是第 1 个 —— <li> "Hair, skin + nailsHair, skin + n" aria-label="Hair, skin + nails" [60,464,240,45]（可点）
+
+########## S1 点完 li6 ##########
+  [屏 S1] url=https://www.wildnutrition.com/pages/what-supplements-should-i-take wrap=True ul=1 CONTINUE=False ←BACK=True scrollY=64
+      quiz 里印着：What other health goal would you like to focus on?  | More energy | More energy | More energy | Greater wellbeing | Greater wellbeing | Greater wellbeing | Emotional balance | Emotional balance | Emotional balance | Better sleep | Better sleep | Better sleep |
+      UL -type(1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)
+         attrs={"id": "oct-multiple-choice-answers-root-e3ceb93c45462f766f8b85fdd78695820fbdc914", "class": "c0af85b433f557dbd4901507312ce9b9e7370479c", "role": "radiogroup", "aria-labelledby": "oct-q-title-e3ceb93c45462f766f8b85fdd78695820fbdc914"} box=[60, 282, 240, 617] 题面='What other health goal would you like to focus on?'
+         li#1  aria='More energy'              checked=false text='More energy/More energy/More energy' box=[60, 332, 240, 45] vis=visible rects=1 id=95c27abf07a5 optidx=0
+         li#2  aria='Greater wellbeing'        checked=false text='Greater wellbeing/Greater wellbeing/Greater wellbeing' box=[60, 397, 240, 45] vis=visible rects=1 id=0d3edd12b54f optidx=1
+         li#3  aria='Emotional balance'        checked=false text='Emotional balance/Emotional balance/Emotional balance' box=[60, 459, 240, 45] vis=visible rects=1 id=f35650700676 optidx=2
+         li#4  aria='Better sleep'             checked=false text='Better sleep/Better sleep/Better sleep' box=[60, 528, 240, 45] vis=visible rects=1 id=9b7cd4323e6b optidx=3
+         li#5  aria='Cycle support'            checked=false text='Cycle support/Cycle support/Cycle support' box=[60, 593, 240, 45] vis=visible rects=1 id=9d7dae73ec0a optidx=4
+         li#6  aria='Bones, joints + muscles'  checked=false text='Bones, joints + muscles/Bones, joints + muscles/Bones, joints + muscles' box=[60, 658, 240, 45] vis=visible rects=1 id=a5e1fb0c06ec optidx=5
+         li#7  aria='Gut health'               checked=false text='Gut health/Gut health/Gut health' box=[60, 723, 240, 45] vis=visible rects=1 id=68e03b8868cf optidx=6
+         li#8  aria='Stronger immunity'        checked=false text='Stronger immunity/Stronger immunity/Stronger immunity' box=[60, 788, 240, 45] vis=visible rects=1 id=0004f7597258 optidx=7
+         li#9  aria='Hormonal balance'         checked=false text='Hormonal balance/Hormonal balance/Hormonal balance' box=[60, 854, 240, 45] vis=visible rects=1 id=5acb8ad42a79 optidx=8
+      BUTTON -of-type(2) > div:nth-of-type(1) > button:nth-of-type(1) text='← BACK' disabled=False vis=visible box=[154, 989, 52, 19] attrs={"class": "ce9093f68a496bc4bb050d6baed5421af3371efef", "tabindex": "0", "title": "Back"}
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(1) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(2) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(3) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(4) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(5) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Continue shopping' box=[0, 0, 0, 0] path=e(1) > div:nth-of-type(1) > div:nth-of-type(4) > button:nth-of-type(1)
+  [click li2 (Greater wellbeing)] rc=0 0.5s ｜cdp click：选择器 "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)" 命中 1 个元素，点的是第 1 个 —— <li> "Greater wellbeingGreater wellbei" aria-label="Greater wellbeing" [60,253,240,45]（可点）
+
+########## S2 点完 li2（账本 -2 组走完这一屏） ##########
+  [屏 S2] url=https://www.wildnutrition.com/pages/what-supplements-should-i-take wrap=True ul=1 CONTINUE=False ←BACK=True scrollY=64
+      quiz 里印着：How old are you? | 18-24 | 18-24 | 18-24 | 25-34 | 25-34 | 25-34 | 34-44 | 34-44 | 34-44 | 45-54 | 45-54 | 45-54 | 55+ | 55+ | 55+ | ← BACK
+      UL -type(1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)
+         attrs={"id": "oct-multiple-choice-answers-root-a3b2d38f734bf570ea095d15b95b3fda6f9b4c6a", "class": "ce1923fb1e13642705692e2cbf8b6a014a049f359", "role": "radiogroup", "aria-labelledby": "oct-q-title-a3b2d38f734bf570ea095d15b95b3fda6f9b4c6a"} box=[60, 218, 240, 336] 题面='How old are you?'
+         li#1  aria='18-24'                    checked=false text='18-24/18-24/18-24' box=[60, 245, 240, 45] vis=visible rects=1 id=06a1c50173a0 optidx=0
+         li#2  aria='25-34'                    checked=false text='25-34/25-34/25-34' box=[60, 313, 240, 45] vis=visible rects=1 id=2c168946ec9e optidx=1
+         li#3  aria='34-44'                    checked=false text='34-44/34-44/34-44' box=[60, 378, 240, 45] vis=visible rects=1 id=35836f2ca4ac optidx=2
+         li#4  aria='45-54'                    checked=false text='45-54/45-54/45-54' box=[60, 444, 240, 45] vis=visible rects=1 id=1d930b9ea5f0 optidx=3
+         li#5  aria='55+'                      checked=false text='55+/55+/55+' box=[60, 509, 240, 45] vis=visible rects=1 id=29b37a6c9cd3 optidx=4
+      BUTTON -of-type(2) > div:nth-of-type(1) > button:nth-of-type(1) text='← BACK' disabled=False vis=visible box=[154, 644, 52, 19] attrs={"class": "cf8517f00b3097165dff89e6abd6d71b1e796f3bc", "tabindex": "0", "title": "Back"}
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(1) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(2) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(3) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(4) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(5) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Continue shopping' box=[0, 0, 0, 0] path=e(1) > div:nth-of-type(1) > div:nth-of-type(4) > button:nth-of-type(1)
+  [observe S2] actions=46 diag=0 obstructions=1
+      quiz 里的动作 6 条；li 卡：
+      tag=BUTTON role=button  text='← BACK' aria='' near=['How old are you?18-2418-2418-2425-3425-3', 'How old are you?'] stab=medium vis=True box=[154, 644, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+      —— 交叉对照：仓里那个 cdp 看到的 li 卡 ——
+
+########## S3 账本 -3 第 1 步：点 Continue ##########
+  [click Continue] rc=1 0.1s ｜      --host string   Chrome host address (default "127.0.0.1") ｜       --port int      Chrome port (default 9222)
+  [屏 S3] url=https://www.wildnutrition.com/pages/what-supplements-should-i-take wrap=True ul=1 CONTINUE=False ←BACK=True scrollY=0
+      quiz 里印着：How old are you? | 18-24 | 18-24 | 18-24 | 25-34 | 25-34 | 25-34 | 34-44 | 34-44 | 34-44 | 45-54 | 45-54 | 45-54 | 55+ | 55+ | 55+ | ← BACK
+      UL -type(1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)
+         attrs={"id": "oct-multiple-choice-answers-root-a3b2d38f734bf570ea095d15b95b3fda6f9b4c6a", "class": "ce1923fb1e13642705692e2cbf8b6a014a049f359", "role": "radiogroup", "aria-labelledby": "oct-q-title-a3b2d38f734bf570ea095d15b95b3fda6f9b4c6a"} box=[69, 218, 240, 336] 题面='How old are you?'
+         li#1  aria='18-24'                    checked=false text='18-24/18-24/18-24' box=[69, 248, 240, 45] vis=visible rects=1 id=06a1c50173a0 optidx=0
+         li#2  aria='25-34'                    checked=false text='25-34/25-34/25-34' box=[69, 313, 240, 45] vis=visible rects=1 id=2c168946ec9e optidx=1
+         li#3  aria='34-44'                    checked=false text='34-44/34-44/34-44' box=[69, 378, 240, 45] vis=visible rects=1 id=35836f2ca4ac optidx=2
+         li#4  aria='45-54'                    checked=false text='45-54/45-54/45-54' box=[69, 444, 240, 45] vis=visible rects=1 id=1d930b9ea5f0 optidx=3
+         li#5  aria='55+'                      checked=false text='55+/55+/55+' box=[69, 509, 240, 45] vis=visible rects=1 id=29b37a6c9cd3 optidx=4
+      BUTTON -of-type(2) > div:nth-of-type(1) > button:nth-of-type(1) text='← BACK' disabled=False vis=visible box=[162, 644, 52, 19] attrs={"class": "cf8517f00b3097165dff89e6abd6d71b1e796f3bc", "tabindex": "0", "title": "Back"}
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(1) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(2) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(3) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(4) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(5) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Continue shopping' box=[0, 0, 0, 0] path=e(1) > div:nth-of-type(1) > div:nth-of-type(4) > button:nth-of-type(1)
+  [observe S3] actions=52 diag=0 obstructions=4
+      quiz 里的动作 6 条；li 卡：
+      tag=BUTTON role=button  text='← BACK' aria='' near=['How old are you?18-2418-2418-2425-3425-3', 'How old are you?'] stab=medium vis=True box=[162, 644, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+      —— 交叉对照：仓里那个 cdp 看到的 li 卡 ——
+
+########## S4 账本 -3 第 2 步：点 li3 ##########
+  [click li3] rc=1 0.3s ｜      --host string   Chrome host address (default "127.0.0.1") ｜       --port int      Chrome port (default 9222)
+  [屏 S4] url=https://www.wildnutrition.com/pages/what-supplements-should-i-take wrap=True ul=1 CONTINUE=False ←BACK=True scrollY=0
+      quiz 里印着：How old are you? | 18-24 | 18-24 | 18-24 | 25-34 | 25-34 | 25-34 | 34-44 | 34-44 | 34-44 | 45-54 | 45-54 | 45-54 | 55+ | 55+ | 55+ | ← BACK
+      UL -type(1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)
+         attrs={"id": "oct-multiple-choice-answers-root-a3b2d38f734bf570ea095d15b95b3fda6f9b4c6a", "class": "ce1923fb1e13642705692e2cbf8b6a014a049f359", "role": "radiogroup", "aria-labelledby": "oct-q-title-a3b2d38f734bf570ea095d15b95b3fda6f9b4c6a"} box=[69, 218, 240, 336] 题面='How old are you?'
+         li#1  aria='18-24'                    checked=false text='18-24/18-24/18-24' box=[69, 248, 240, 45] vis=visible rects=1 id=06a1c50173a0 optidx=0
+         li#2  aria='25-34'                    checked=false text='25-34/25-34/25-34' box=[69, 313, 240, 45] vis=visible rects=1 id=2c168946ec9e optidx=1
+         li#3  aria='34-44'                    checked=false text='34-44/34-44/34-44' box=[69, 378, 240, 45] vis=visible rects=1 id=35836f2ca4ac optidx=2
+         li#4  aria='45-54'                    checked=false text='45-54/45-54/45-54' box=[69, 444, 240, 45] vis=visible rects=1 id=1d930b9ea5f0 optidx=3
+         li#5  aria='55+'                      checked=false text='55+/55+/55+' box=[69, 509, 240, 45] vis=visible rects=1 id=29b37a6c9cd3 optidx=4
+      BUTTON -of-type(2) > div:nth-of-type(1) > button:nth-of-type(1) text='← BACK' disabled=False vis=visible box=[162, 644, 52, 19] attrs={"class": "cf8517f00b3097165dff89e6abd6d71b1e796f3bc", "tabindex": "0", "title": "Back"}
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(1) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(2) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(3) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(4) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(5) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Continue shopping' box=[0, 0, 0, 0] path=e(1) > div:nth-of-type(1) > div:nth-of-type(4) > button:nth-of-type(1)
+  [observe S4] actions=52 diag=0 obstructions=4
+      quiz 里的动作 6 条；li 卡：
+      tag=BUTTON role=button  text='← BACK' aria='' near=['How old are you?18-2418-2418-2425-3425-3', 'How old are you?'] stab=medium vis=True box=[162, 644, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+
+########## S5 账本 -3 第 3 步：点 li4 ##########
+  [click li4] rc=1 0.3s ｜      --host string   Chrome host address (default "127.0.0.1") ｜       --port int      Chrome port (default 9222)
+  [屏 S5] url=https://www.wildnutrition.com/pages/what-supplements-should-i-take wrap=True ul=1 CONTINUE=False ←BACK=True scrollY=0
+      quiz 里印着：How old are you? | 18-24 | 18-24 | 18-24 | 25-34 | 25-34 | 25-34 | 34-44 | 34-44 | 34-44 | 45-54 | 45-54 | 45-54 | 55+ | 55+ | 55+ | ← BACK
+      UL -type(1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)
+         attrs={"id": "oct-multiple-choice-answers-root-a3b2d38f734bf570ea095d15b95b3fda6f9b4c6a", "class": "ce1923fb1e13642705692e2cbf8b6a014a049f359", "role": "radiogroup", "aria-labelledby": "oct-q-title-a3b2d38f734bf570ea095d15b95b3fda6f9b4c6a"} box=[69, 218, 240, 336] 题面='How old are you?'
+         li#1  aria='18-24'                    checked=false text='18-24/18-24/18-24' box=[69, 248, 240, 45] vis=visible rects=1 id=06a1c50173a0 optidx=0
+         li#2  aria='25-34'                    checked=false text='25-34/25-34/25-34' box=[69, 313, 240, 45] vis=visible rects=1 id=2c168946ec9e optidx=1
+         li#3  aria='34-44'                    checked=false text='34-44/34-44/34-44' box=[69, 378, 240, 45] vis=visible rects=1 id=35836f2ca4ac optidx=2
+         li#4  aria='45-54'                    checked=false text='45-54/45-54/45-54' box=[69, 444, 240, 45] vis=visible rects=1 id=1d930b9ea5f0 optidx=3
+         li#5  aria='55+'                      checked=false text='55+/55+/55+' box=[69, 509, 240, 45] vis=visible rects=1 id=29b37a6c9cd3 optidx=4
+      BUTTON -of-type(2) > div:nth-of-type(1) > button:nth-of-type(1) text='← BACK' disabled=False vis=visible box=[162, 644, 52, 19] attrs={"class": "cf8517f00b3097165dff89e6abd6d71b1e796f3bc", "tabindex": "0", "title": "Back"}
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(1) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(2) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(3) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(4) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(5) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Continue shopping' box=[0, 0, 0, 0] path=e(1) > div:nth-of-type(1) > div:nth-of-type(4) > button:nth-of-type(1)
+  [observe S5] actions=52 diag=0 obstructions=4
+      quiz 里的动作 6 条；li 卡：
+      tag=BUTTON role=button  text='← BACK' aria='' near=['How old are you?18-2418-2418-2425-3425-3', 'How old are you?'] stab=medium vis=True box=[162, 644, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+
+########## S6 账本 -3 第 4 步：点 li1 ##########
+  [click li1] rc=1 0.5s ｜      --host string   Chrome host address (default "127.0.0.1") ｜       --port int      Chrome port (default 9222)
+  [屏 S6] url=https://www.wildnutrition.com/pages/what-supplements-should-i-take wrap=True ul=1 CONTINUE=False ←BACK=True scrollY=0
+      quiz 里印着：How old are you? | 18-24 | 18-24 | 18-24 | 25-34 | 25-34 | 25-34 | 34-44 | 34-44 | 34-44 | 45-54 | 45-54 | 45-54 | 55+ | 55+ | 55+ | ← BACK
+      UL -type(1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)
+         attrs={"id": "oct-multiple-choice-answers-root-a3b2d38f734bf570ea095d15b95b3fda6f9b4c6a", "class": "ce1923fb1e13642705692e2cbf8b6a014a049f359", "role": "radiogroup", "aria-labelledby": "oct-q-title-a3b2d38f734bf570ea095d15b95b3fda6f9b4c6a"} box=[69, 218, 240, 336] 题面='How old are you?'
+         li#1  aria='18-24'                    checked=false text='18-24/18-24/18-24' box=[69, 248, 240, 45] vis=visible rects=1 id=06a1c50173a0 optidx=0
+         li#2  aria='25-34'                    checked=false text='25-34/25-34/25-34' box=[69, 313, 240, 45] vis=visible rects=1 id=2c168946ec9e optidx=1
+         li#3  aria='34-44'                    checked=false text='34-44/34-44/34-44' box=[69, 378, 240, 45] vis=visible rects=1 id=35836f2ca4ac optidx=2
+         li#4  aria='45-54'                    checked=false text='45-54/45-54/45-54' box=[69, 444, 240, 45] vis=visible rects=1 id=1d930b9ea5f0 optidx=3
+         li#5  aria='55+'                      checked=false text='55+/55+/55+' box=[69, 509, 240, 45] vis=visible rects=1 id=29b37a6c9cd3 optidx=4
+      BUTTON -of-type(2) > div:nth-of-type(1) > button:nth-of-type(1) text='← BACK' disabled=False vis=visible box=[162, 644, 52, 19] attrs={"class": "cf8517f00b3097165dff89e6abd6d71b1e796f3bc", "tabindex": "0", "title": "Back"}
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(1) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(2) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(3) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(4) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Back' box=[0, 0, 0, 0] path=e(5) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)
+      别处的按钮 <button> 'Continue shopping' box=[0, 0, 0, 0] path=e(1) > div:nth-of-type(1) > div:nth-of-type(4) > button:nth-of-type(1)
+  [observe S6] actions=52 diag=0 obstructions=4
+      quiz 里的动作 6 条；li 卡：
+      tag=BUTTON role=button  text='← BACK' aria='' near=['How old are you?18-2418-2418-2425-3425-3', 'How old are you?'] stab=medium vis=True box=[162, 644, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+
+★ 到此为止：**不填邮箱、不点 submit**。当前 URL=https://www.wildnutrition.com/pages/what-supplements-should-i-take
+
+窗口收尾：
+  关窗：确认已关
+窗口已关：True

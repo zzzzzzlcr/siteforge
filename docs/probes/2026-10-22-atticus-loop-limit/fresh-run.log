@@ -1,0 +1,32 @@
+2026-10-22 01:53:42 [INFO] form_fill_loop: [evidence-try_20261022-015334] loop: site=try provenance=None
+INFO:form_fill_loop:[evidence-try_20261022-015334] loop: site=try provenance=None
+2026-10-22 01:53:42 [INFO] form_fill_loop: [evidence-try_20261022-015334] 这一版**不自己导航**（谁开页面谁负责）——就在当前这一页上开干
+INFO:form_fill_loop:[evidence-try_20261022-015334] 这一版**不自己导航**（谁开页面谁负责）——就在当前这一页上开干
+2026-10-22 01:53:42 [INFO] form_fill_loop: [evidence-try_20261022-015334] 前置：点「See if you qualify for benefit」-> 点了
+INFO:form_fill_loop:[evidence-try_20261022-015334] 前置：点「See if you qualify for benefit」-> 点了
+2026-10-22 01:53:46 [INFO] form_fill_loop: [evidence-try_20261022-015334] 前置：到了（地址里有 https://www.atticus.com/disability-benefits/n/get-help/surve）
+INFO:form_fill_loop:[evidence-try_20261022-015334] 前置：到了（地址里有 https://www.atticus.com/disability-benefits/n/get-help/surve）
+2026-10-22 01:53:48 [INFO] form_fill_loop: [evidence-try_20261022-015334] step 1: 填了 zipcode
+INFO:form_fill_loop:[evidence-try_20261022-015334] step 1: 填了 zipcode
+2026-10-22 01:53:49 [INFO] form_fill_loop: [evidence-try_20261022-015334] step 2 [25%] FAQ -> What is Social Security Disabil
+INFO:form_fill_loop:[evidence-try_20261022-015334] step 2 [25%] FAQ -> What is Social Security Disabil
+2026-10-22 01:53:51 [INFO] form_fill_loop: [evidence-try_20261022-015334] step 3: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+INFO:form_fill_loop:[evidence-try_20261022-015334] step 3: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+2026-10-22 01:53:54 [INFO] form_fill_loop: [evidence-try_20261022-015334] step 4: Next（FAQ）
+INFO:form_fill_loop:[evidence-try_20261022-015334] step 4: Next（FAQ）
+2026-10-22 01:53:56 [INFO] form_fill_loop: [evidence-try_20261022-015334] step 5: Next（FAQ）
+INFO:form_fill_loop:[evidence-try_20261022-015334] step 5: Next（FAQ）
+2026-10-22 01:53:58 [INFO] form_fill_loop: [evidence-try_20261022-015334] step 6: Next（FAQ）
+INFO:form_fill_loop:[evidence-try_20261022-015334] step 6: Next（FAQ）
+2026-10-22 01:53:59 [INFO] form_fill_loop: [evidence-try_20261022-015334] step 7: Next（FAQ）
+INFO:form_fill_loop:[evidence-try_20261022-015334] step 7: Next（FAQ）
+2026-10-22 01:54:01 [INFO] form_fill_loop: [evidence-try_20261022-015334] step 8: Next（FAQ）
+INFO:form_fill_loop:[evidence-try_20261022-015334] step 8: Next（FAQ）
+2026-10-22 01:54:03 [INFO] form_fill_loop: [evidence-try_20261022-015334] step 9: Next（FAQ）
+INFO:form_fill_loop:[evidence-try_20261022-015334] step 9: Next（FAQ）
+2026-10-22 01:54:05 [INFO] form_fill_loop: [evidence-try_20261022-015334] step 10: Next（FAQ）
+INFO:form_fill_loop:[evidence-try_20261022-015334] step 10: Next（FAQ）
+2026-10-22 01:54:06 [INFO] form_fill_loop: [evidence-try_20261022-015334] step 11: Next（FAQ）
+INFO:form_fill_loop:[evidence-try_20261022-015334] step 11: Next（FAQ）
+2026-10-22 01:54:08 [ERROR] form_fill_loop: [evidence-try_20261022-015334] 连着 8 次点 Next、页面还是那一屏 —— 如实报失败
+ERROR:form_fill_loop:[evidence-try_20261022-015334] 连着 8 次点 Next、页面还是那一屏 —— 如实报失败

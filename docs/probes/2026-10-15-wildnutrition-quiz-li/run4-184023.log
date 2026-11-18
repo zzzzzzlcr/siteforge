@@ -1,0 +1,117 @@
+探针开始 18:40:23
+窗口探活：**不在**
+窗口不在 ⇒ 开一个
+ws = ws://192.168.1.222:61129/devtools/browser/3e114877-9107-4589-a2a2-78c9755024aa
+  [navi quiz 页] rc=0 3.1s ｜2026/10/15 18:40:32 ERROR: received DOM.documentUpdated when there's no top-level frame ｜ 2026/10/15 18:40:32 ERROR: could not unmarshal event: json: cannot unmarshal JSON string into Go network.CorsError within "/corsErrorStatus/corsError": unknown CorsError value: UnexpectedPrivateNetworkAccess ｜ 2026/10/15 18:40:32 ERROR: could not unmarshal event: json: cannot unmarshal JSON string into Go net
+  等了 10s，quiz 容器出现
+  等 8 秒让迟到的 cookie 横幅弹出来…
+  清浮层：{"clicked": ["#shopify-section-international-popup button"]}
+  清浮层：{"clicked": ["#shopify-section-international-popup button"]}
+
+########## Q1（第 1 次落屏） ##########
+  [Q1] url=ition.com/pages/what-supplements-should-i-take wrap=True ul=1 CONTINUE=False BACK=False email框=0 scrollY=0
+      题面='What’s your main health goal right now?'  UL attrs={"id": "oct-multiple-choice-answers-root-812ae45d37fb4e5387baf7cea6ad7840cf75c757", "class": "cab820e746bb875415570c9aa7d2c87828e519f84", "role": "radiogroup", "aria-labelledby": "
+        li#1  aria='More energy'              role=radio  checked=false text='More energy/More energy/More energy'    vis=True box=[60, 364, 240, 45]
+        li#2  aria='Greater wellbeing'        role=radio  checked=false text='Greater wellbeing/Greater wellbeing/Greater wellbeing' vis=True box=[60, 429, 240, 45]
+        li#3  aria='Emotional balance'        role=radio  checked=false text='Emotional balance/Emotional balance/Emotional balance' vis=True box=[60, 494, 240, 45]
+        li#4  aria='Better sleep'             role=radio  checked=false text='Better sleep/Better sleep/Better sleep' vis=True box=[60, 560, 240, 45]
+        li#5  aria='Cycle support'            role=radio  checked=false text='Cycle support/Cycle support/Cycle support' vis=True box=[60, 625, 240, 45]
+        li#6  aria='Hair, skin + nails'       role=radio  checked=false text='Hair, skin + nails/Hair, skin + nails/Hair, skin + nails' vis=True box=[60, 690, 240, 45]
+        li#7  aria='Bones, joints + muscles'  role=radio  checked=false text='Bones, joints + muscles/Bones, joints + muscles/Bones, joints + muscle' vis=True box=[60, 755, 240, 45]
+        li#8  aria='Gut health'               role=radio  checked=false text='Gut health/Gut health/Gut health'       vis=True box=[60, 820, 240, 45]
+        li#9  aria='Stronger immunity'        role=radio  checked=false text='Stronger immunity/Stronger immunity/Stronger immunity' vis=True box=[60, 886, 240, 45]
+        li#10 aria='Hormonal balance'         role=radio  checked=false text='Hormonal balance/Hormonal balance/Hormonal balance' vis=True box=[60, 951, 240, 45]
+        li#11 aria='Pregnancy + postpartum'   role=radio  checked=false text='Pregnancy + postpartum/Pregnancy + postpartum/Pregnancy + postpartum' vis=True box=[60, 1016, 240, 45]
+        li#12 aria='Fertility support'        role=radio  checked=false text='Fertility support/Fertility support/Fertility support' vis=True box=[60, 1081, 240, 45]
+        li#13 aria='Perimenopause + menopause' role=radio  checked=false text='Perimenopause + menopause/Perimenopause + menopause/Perimenopause + me' vis=True box=[60, 1146, 240, 45]
+        li#14 aria='Weight management'        role=radio  checked=false text='Weight management/Weight management/Weight management' vis=True box=[60, 1211, 240, 45]
+  [observe Q1] actions=54 quiz里=14（li 0）diag=0 obstructions=1
+      li 卡里 text 与 aria_label **都空**的：0 条
+      LI text='More energyMore energyMore energy' role=radio aria='More energy' stab=low box=[60, 364, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Greater wellbeingGreater wellbeingGreater wellbein' role=radio aria='Greater wellbeing' stab=low box=[60, 429, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Emotional balanceEmotional balanceEmotional balanc' role=radio aria='Emotional balance' stab=low box=[60, 494, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Better sleepBetter sleepBetter sleep' role=radio aria='Better sleep' stab=low box=[60, 560, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Cycle supportCycle supportCycle support' role=radio aria='Cycle support' stab=low box=[60, 625, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Hair, skin + nailsHair, skin + nailsHair, skin + n' role=radio aria='Hair, skin + nails' stab=low box=[60, 690, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Bones, joints + musclesBones, joints + musclesBone' role=radio aria='Bones, joints + muscles' stab=low box=[60, 755, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Gut healthGut healthGut health' role=radio aria='Gut health' stab=low box=[60, 820, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Stronger immunityStronger immunityStronger immunit' role=radio aria='Stronger immunity' stab=low box=[60, 886, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Hormonal balanceHormonal balanceHormonal balance' role=radio aria='Hormonal balance' stab=low box=[60, 951, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Pregnancy + postpartumPregnancy + postpartumPregna' role=radio aria='Pregnancy + postpartum' stab=low box=[60, 1016, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Fertility supportFertility supportFertility suppor' role=radio aria='Fertility support' stab=low box=[60, 1081, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Perimenopause + menopausePerimenopause + menopause' role=radio aria='Perimenopause + menopause' stab=low box=[60, 1146, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Weight managementWeight managementWeight managemen' role=radio aria='Weight management' stab=low box=[60, 1211, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      ⚠ obstruction overlay dismiss=#shopify-section-header > header:nth-of-type(1) > div:nth-of-type(1) > div:nth-o
+  [Q1 scroll li6] rc=0 0.1s 
+  [Q1 click li6] rc=1 0.3s ｜Error: 拒绝点击 "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)"：它中心的整摞里没有它 —— 那一点上站着的是 0:<div class="Offcanvas-content wn_international_popup_W1V67a_Internationa"> | 1:<h2 class="wn_international_popup_W1V67a_InternationalPopup__title"> | 2:<div class="Offcanvas-content wn_international_popup_W1V67a_Internationa"> | 3:<div class="Offcanvas-conte
+      ↑ 点不动，再清一次浮层后重试：Error: 拒绝点击 "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)"：它中心的整摞里没有它 —— 那一点上站着的是 0:<div class="Offcanvas-content wn_international_popup_W1V67a_Internationa"> | 1:<h2 class="wn_international_popup_W1V67a_InternationalPopup__title"> | 2:<div c
+  清浮层：{"clicked": ["#shopify-section-international-popup button"]}
+  [Q1 re-scroll li6] rc=0 0.3s 
+  [Q1 re-click li6] rc=0 0.4s ｜cdp click：选择器 "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)" 命中 1 个元素，点的是第 1 个 —— <li> "Hair, skin + nailsHair, skin + n" aria-label="Hair, skin + nails" [60,254,240,45]（可点） ｜ cdp click：落点判据 —— 落点判据这次没跑成：那个坐标上取不到节点（点可能在视口外）—— 按老行为把抬起发出去，这一次没有「落点变了就不交给新落点」这层保护
+
+########## Q2（第 2 次落屏） ##########
+  [Q2] url=ition.com/pages/what-supplements-should-i-take wrap=True ul=1 CONTINUE=False BACK=True email框=0 scrollY=64
+      题面='What other health goal would you like to focus on?'  UL attrs={"id": "oct-multiple-choice-answers-root-e3ceb93c45462f766f8b85fdd78695820fbdc914", "class": "c755cd7028697818148ef73c3e8240f980ca6832d", "role": "radiogroup", "aria-labelledby": "
+        li#1  aria='More energy'              role=radio  checked=false text='More energy/More energy/More energy'    vis=True box=[60, 332, 240, 45]
+        li#2  aria='Greater wellbeing'        role=radio  checked=false text='Greater wellbeing/Greater wellbeing/Greater wellbeing' vis=True box=[60, 397, 240, 45]
+        li#3  aria='Emotional balance'        role=radio  checked=false text='Emotional balance/Emotional balance/Emotional balance' vis=True box=[60, 462, 240, 45]
+        li#4  aria='Better sleep'             role=radio  checked=false text='Better sleep/Better sleep/Better sleep' vis=True box=[60, 528, 240, 45]
+        li#5  aria='Cycle support'            role=radio  checked=false text='Cycle support/Cycle support/Cycle support' vis=True box=[60, 593, 240, 45]
+        li#6  aria='Bones, joints + muscles'  role=radio  checked=false text='Bones, joints + muscles/Bones, joints + muscles/Bones, joints + muscle' vis=True box=[60, 658, 240, 45]
+        li#7  aria='Gut health'               role=radio  checked=false text='Gut health/Gut health/Gut health'       vis=True box=[60, 723, 240, 45]
+        li#8  aria='Stronger immunity'        role=radio  checked=false text='Stronger immunity/Stronger immunity/Stronger immunity' vis=True box=[60, 788, 240, 45]
+        li#9  aria='Hormonal balance'         role=radio  checked=false text='Hormonal balance/Hormonal balance/Hormonal balance' vis=True box=[60, 854, 240, 45]
+      BUTTON text='← BACK' disabled=False vis=True box=[154, 989, 52, 19] attrs={"class": "c4a5dac07fc77a9558807f9de40614b59370896ee", "tabindex": "0", "title": "Back"}
+  [observe Q2] actions=50 quiz里=10（li 0）diag=0 obstructions=1
+      li 卡里 text 与 aria_label **都空**的：0 条
+      LI text='More energyMore energyMore energy' role=radio aria='More energy' stab=low box=[60, 332, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Greater wellbeingGreater wellbeingGreater wellbein' role=radio aria='Greater wellbeing' stab=low box=[60, 397, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Emotional balanceEmotional balanceEmotional balanc' role=radio aria='Emotional balance' stab=low box=[60, 462, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Better sleepBetter sleepBetter sleep' role=radio aria='Better sleep' stab=low box=[60, 528, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Cycle supportCycle supportCycle support' role=radio aria='Cycle support' stab=low box=[60, 593, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Bones, joints + musclesBones, joints + musclesBone' role=radio aria='Bones, joints + muscles' stab=low box=[60, 658, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Gut healthGut healthGut health' role=radio aria='Gut health' stab=low box=[60, 723, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Stronger immunityStronger immunityStronger immunit' role=radio aria='Stronger immunity' stab=low box=[60, 788, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='Hormonal balanceHormonal balanceHormonal balance' role=radio aria='Hormonal balance' stab=low box=[60, 854, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      BUTTON text='← BACK' role=button aria='' stab=medium box=[154, 989, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+      ⚠ obstruction overlay dismiss=#shopify-section-header > header:nth-of-type(1) > div:nth-of-type(1) > div:nth-o
+  [Q2 scroll li2] rc=0 0.1s 
+  [Q2 click li2] rc=0 0.4s ｜cdp click：选择器 "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)" 命中 1 个元素，点的是第 1 个 —— <li> "Greater wellbeingGreater wellbei" aria-label="Greater wellbeing" [60,461,240,45]（可点）
+
+########## Q3（第 3 次落屏） ##########
+  [Q3] url=ition.com/pages/what-supplements-should-i-take wrap=True ul=1 CONTINUE=False BACK=True email框=0 scrollY=64
+      题面='How old are you?'  UL attrs={"id": "oct-multiple-choice-answers-root-a3b2d38f734bf570ea095d15b95b3fda6f9b4c6a", "class": "cb1bc6b57ecd313b5e180f48fc202a8da6a728fcb", "role": "radiogroup", "aria-labelledby": "
+        li#1  aria='18-24'                    role=radio  checked=false text='18-24/18-24/18-24'                      vis=True box=[60, 248, 240, 45]
+        li#2  aria='25-34'                    role=radio  checked=false text='25-34/25-34/25-34'                      vis=True box=[60, 313, 240, 45]
+        li#3  aria='34-44'                    role=radio  checked=false text='34-44/34-44/34-44'                      vis=True box=[60, 378, 240, 45]
+        li#4  aria='45-54'                    role=radio  checked=false text='45-54/45-54/45-54'                      vis=True box=[60, 441, 240, 45]
+        li#5  aria='55+'                      role=radio  checked=false text='55+/55+/55+'                            vis=True box=[60, 509, 240, 45]
+      BUTTON text='← BACK' disabled=False vis=True box=[154, 644, 52, 19] attrs={"class": "c3eb323249b8eb125833809e7fb18a26f45790dfa", "tabindex": "0", "title": "Back"}
+  [observe Q3] actions=46 quiz里=6（li 0）diag=0 obstructions=1
+      li 卡里 text 与 aria_label **都空**的：0 条
+      LI text='18-2418-2418-24' role=radio aria='18-24' stab=low box=[60, 248, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='25-3425-3425-34' role=radio aria='25-34' stab=low box=[60, 313, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='34-4434-4434-44' role=radio aria='34-44' stab=low box=[60, 378, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='45-5445-5445-54' role=radio aria='45-54' stab=low box=[60, 441, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      LI text='55+55+55+' role=radio aria='55+' stab=low box=[60, 509, 240, 45] sel=#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nt
+      BUTTON text='← BACK' role=button aria='' stab=medium box=[154, 644, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+      ⚠ obstruction overlay dismiss=#shopify-section-header > header:nth-of-type(1) > div:nth-of-type(1) > div:nth-o
+  [Q3 scroll li3] rc=0 0.2s 
+  [Q3 click li3] rc=0 0.4s ｜cdp click：选择器 "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)" 命中 1 个元素，点的是第 1 个 —— <li> "34-4434-4434-44" aria-label="34-44" [60,442,240,45]（可点）
+
+########## Q4（第 4 次落屏） ##########
+  [Q4] url=ition.com/pages/what-supplements-should-i-take wrap=True ul=0 CONTINUE=True BACK=True email框=0 scrollY=64
+      BUTTON text='CONTINUE' disabled=False vis=True box=[129, 297, 101, 41] attrs={"class": "c9fccbe366f7810f2aa1040f61cc40ff3353f31fc", "tabindex": "0", "title": "", "aria-disabled": "false"}
+      BUTTON text='← BACK' disabled=False vis=True box=[154, 398, 52, 19] attrs={"class": "c7740384802db34183f0ec3c6171552ab87ec3cd2", "tabindex": "0", "title": "Back"}
+  [observe Q4] actions=42 quiz里=2（li 0）diag=0 obstructions=1
+      li 卡里 text 与 aria_label **都空**的：0 条
+      BUTTON text='Continue' role=button aria='' stab=medium box=[129, 412, 101, 41] sel=#octane-quiz-wrapper > div:nth-of-type(2) > button:nth-of-type(1)
+      BUTTON text='← BACK' role=button aria='' stab=medium box=[154, 513, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+      ⚠ obstruction overlay dismiss=#shopify-section-header > header:nth-of-type(1) > div:nth-of-type(1) > div:nth-o
+  这一屏没有 ul（可能不是多选题）—— 停
+
+★ 走完（没填邮箱、没提交）。URL=https://www.wildnutrition.com/pages/what-supplements-should-i-take
+
+窗口收尾：
+  关窗：确认已关
+窗口已关：True

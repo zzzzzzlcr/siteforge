@@ -1,0 +1,14 @@
+{
+ "deep_row": {
+  "site": "lauradate.com/land/sp/a34293f4",
+  "config_id": 101,
+  "status": 1
+ },
+ "host_row": {
+  "site": "lauradate.com",
+  "config_id": 75,
+  "status": 1
+ },
+ "deep_script_sha256": "4c8b9fbe52ca9b479085c8161f59975bf1a70b061c1db2d910a7fa5e7277b948",
+ "host_script_sha256": "80b5c9bf05f85a337af199db5d7372c1cae241870e1cc007c15620d946ef112c"
+}

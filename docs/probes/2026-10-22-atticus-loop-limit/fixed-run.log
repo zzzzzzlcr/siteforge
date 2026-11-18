@@ -1,0 +1,170 @@
+2026-10-22 02:08:06 [INFO] form_fill_loop: [evidence-try_20261022-020803] loop: site=try provenance=None
+INFO:form_fill_loop:[evidence-try_20261022-020803] loop: site=try provenance=None
+2026-10-22 02:08:06 [INFO] form_fill_loop: [evidence-try_20261022-020803] 这一版**不自己导航**（谁开页面谁负责）——就在当前这一页上开干
+INFO:form_fill_loop:[evidence-try_20261022-020803] 这一版**不自己导航**（谁开页面谁负责）——就在当前这一页上开干
+2026-10-22 02:08:06 [INFO] form_fill_loop: [evidence-try_20261022-020803] 前置：点「See if you qualify for benefit」-> 点了
+INFO:form_fill_loop:[evidence-try_20261022-020803] 前置：点「See if you qualify for benefit」-> 点了
+2026-10-22 02:08:10 [INFO] form_fill_loop: [evidence-try_20261022-020803] 前置：到了（地址里有 https://www.atticus.com/disability-benefits/n/get-help/surve）
+INFO:form_fill_loop:[evidence-try_20261022-020803] 前置：到了（地址里有 https://www.atticus.com/disability-benefits/n/get-help/surve）
+2026-10-22 02:08:11 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 1: 填了 :Rcrlbd7rufkq:
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 1: 填了 :Rcrlbd7rufkq:
+2026-10-22 02:08:14 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 2: 填了 :Rcrlbd7rufkq:
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 2: 填了 :Rcrlbd7rufkq:
+2026-10-22 02:08:15 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 3 [25%] FAQ -> Is my information secure?
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 3 [25%] FAQ -> Is my information secure?
+2026-10-22 02:08:17 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 4: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 4: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+2026-10-22 02:08:19 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 5: Next（FAQ）
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 5: Next（FAQ）
+2026-10-22 02:08:21 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 6: Next（Disability benefits provide monthly chec）
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 6: Next（Disability benefits provide monthly chec）
+2026-10-22 02:08:24 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 7: 填了 zipcode
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 7: 填了 zipcode
+2026-10-22 02:08:24 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 8: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 8: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+2026-10-22 02:08:26 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 9: Next（What's your ZIP code? We'll look for ext）
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 9: Next（What's your ZIP code? We'll look for ext）
+2026-10-22 02:08:27 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 10 [] Who are you seeking disability benefits for? Mys -> Family member or friend
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 10 [] Who are you seeking disability benefits for? Mys -> Family member or friend
+2026-10-22 02:08:28 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 11: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 11: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+2026-10-22 02:08:31 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 12: Next（Who are you seeking disability benefits ）
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 12: Next（Who are you seeking disability benefits ）
+2026-10-22 02:08:32 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 13 [] First, we have a few questions to make sure we c -> Why do we need to know?
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 13 [] First, we have a few questions to make sure we c -> Why do we need to know?
+2026-10-22 02:08:33 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 14: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 14: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+2026-10-22 02:08:34 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 15: Next（First, we have a few questions to make s）
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 15: Next（First, we have a few questions to make s）
+2026-10-22 02:08:35 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 16 [] Have you applied for Social Security Disability  -> No, never
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 16 [] Have you applied for Social Security Disability  -> No, never
+2026-10-22 02:08:40 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 17: 结构化快照也没读出能动的东西（fields=0 actions=4）
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 17: 结构化快照也没读出能动的东西（fields=0 actions=4）
+2026-10-22 02:08:40 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 17: 这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次） | Have you applied for Social Security Disability al
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 17: 这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次） | Have you applied for Social Security Disability al
+2026-10-22 02:08:41 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 18 [] Did you ever hire a lawyer to help you with your -> Yes
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 18 [] Did you ever hire a lawyer to help you with your -> Yes
+2026-10-22 02:08:42 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 19: 没有可动作的东西（1） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 19: 没有可动作的东西（1） | We're sorry.
+2026-10-22 02:08:44 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 20: 没有可动作的东西（2） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 20: 没有可动作的东西（2） | We're sorry.
+2026-10-22 02:08:48 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 21: 结构化快照也没读出能动的东西（fields=0 actions=2）
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 21: 结构化快照也没读出能动的东西（fields=0 actions=2）
+2026-10-22 02:08:48 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 21: 没有可动作的东西（3） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 21: 没有可动作的东西（3） | We're sorry.
+2026-10-22 02:08:50 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 22: 没有可动作的东西（4） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 22: 没有可动作的东西（4） | We're sorry.
+2026-10-22 02:08:51 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 23: 没有可动作的东西（5） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 23: 没有可动作的东西（5） | We're sorry.
+2026-10-22 02:08:53 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 24: 没有可动作的东西（6） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 24: 没有可动作的东西（6） | We're sorry.
+2026-10-22 02:08:55 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 25: 没有可动作的东西（7） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 25: 没有可动作的东西（7） | We're sorry.
+2026-10-22 02:08:56 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 26: 没有可动作的东西（8） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 26: 没有可动作的东西（8） | We're sorry.
+2026-10-22 02:08:58 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 27: 没有可动作的东西（9） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 27: 没有可动作的东西（9） | We're sorry.
+2026-10-22 02:08:59 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 28: 没有可动作的东西（10） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 28: 没有可动作的东西（10） | We're sorry.
+2026-10-22 02:09:00 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 29: 没有可动作的东西（11） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 29: 没有可动作的东西（11） | We're sorry.
+2026-10-22 02:09:02 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 30: 没有可动作的东西（12） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 30: 没有可动作的东西（12） | We're sorry.
+2026-10-22 02:09:03 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 31: 没有可动作的东西（13） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 31: 没有可动作的东西（13） | We're sorry.
+2026-10-22 02:09:04 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 32: 没有可动作的东西（14） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 32: 没有可动作的东西（14） | We're sorry.
+2026-10-22 02:09:05 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 33: 没有可动作的东西（15） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 33: 没有可动作的东西（15） | We're sorry.
+2026-10-22 02:09:07 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 34: 没有可动作的东西（16） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 34: 没有可动作的东西（16） | We're sorry.
+2026-10-22 02:09:08 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 35: 没有可动作的东西（17） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 35: 没有可动作的东西（17） | We're sorry.
+2026-10-22 02:09:10 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 36: 没有可动作的东西（18） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 36: 没有可动作的东西（18） | We're sorry.
+2026-10-22 02:09:10 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 37: 没有可动作的东西（19） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 37: 没有可动作的东西（19） | We're sorry.
+2026-10-22 02:09:12 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 38: 没有可动作的东西（20） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 38: 没有可动作的东西（20） | We're sorry.
+2026-10-22 02:09:13 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 39: 没有可动作的东西（21） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 39: 没有可动作的东西（21） | We're sorry.
+2026-10-22 02:09:14 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 40: 没有可动作的东西（22） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 40: 没有可动作的东西（22） | We're sorry.
+2026-10-22 02:09:14 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 41: 没有可动作的东西（23） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 41: 没有可动作的东西（23） | We're sorry.
+2026-10-22 02:09:16 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 42: 没有可动作的东西（24） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 42: 没有可动作的东西（24） | We're sorry.
+2026-10-22 02:09:17 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 43: 没有可动作的东西（25） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 43: 没有可动作的东西（25） | We're sorry.
+2026-10-22 02:09:18 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 44: 没有可动作的东西（26） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 44: 没有可动作的东西（26） | We're sorry.
+2026-10-22 02:09:19 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 45: 没有可动作的东西（27） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 45: 没有可动作的东西（27） | We're sorry.
+2026-10-22 02:09:21 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 46: 没有可动作的东西（28） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 46: 没有可动作的东西（28） | We're sorry.
+2026-10-22 02:09:22 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 47: 没有可动作的东西（29） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 47: 没有可动作的东西（29） | We're sorry.
+2026-10-22 02:09:23 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 48: 没有可动作的东西（30） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 48: 没有可动作的东西（30） | We're sorry.
+2026-10-22 02:09:25 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 49: 没有可动作的东西（31） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 49: 没有可动作的东西（31） | We're sorry.
+2026-10-22 02:09:26 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 50: 没有可动作的东西（32） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 50: 没有可动作的东西（32） | We're sorry.
+2026-10-22 02:09:28 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 51: 没有可动作的东西（33） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 51: 没有可动作的东西（33） | We're sorry.
+2026-10-22 02:09:29 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 52: 没有可动作的东西（34） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 52: 没有可动作的东西（34） | We're sorry.
+2026-10-22 02:09:30 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 53: 没有可动作的东西（35） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 53: 没有可动作的东西（35） | We're sorry.
+2026-10-22 02:09:32 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 54: 没有可动作的东西（36） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 54: 没有可动作的东西（36） | We're sorry.
+2026-10-22 02:09:33 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 55: 没有可动作的东西（37） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 55: 没有可动作的东西（37） | We're sorry.
+2026-10-22 02:09:34 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 56: 没有可动作的东西（38） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 56: 没有可动作的东西（38） | We're sorry.
+2026-10-22 02:09:35 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 57: 没有可动作的东西（39） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 57: 没有可动作的东西（39） | We're sorry.
+2026-10-22 02:09:36 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 58: 没有可动作的东西（40） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 58: 没有可动作的东西（40） | We're sorry.
+2026-10-22 02:09:37 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 59: 没有可动作的东西（41） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 59: 没有可动作的东西（41） | We're sorry.
+2026-10-22 02:09:38 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 60: 没有可动作的东西（42） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 60: 没有可动作的东西（42） | We're sorry.
+2026-10-22 02:09:40 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 61: 没有可动作的东西（43） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 61: 没有可动作的东西（43） | We're sorry.
+2026-10-22 02:09:41 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 62: 没有可动作的东西（44） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 62: 没有可动作的东西（44） | We're sorry.
+2026-10-22 02:09:43 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 63: 没有可动作的东西（45） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 63: 没有可动作的东西（45） | We're sorry.
+2026-10-22 02:09:44 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 64: 没有可动作的东西（46） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 64: 没有可动作的东西（46） | We're sorry.
+2026-10-22 02:09:45 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 65: 没有可动作的东西（47） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 65: 没有可动作的东西（47） | We're sorry.
+2026-10-22 02:09:47 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 66: 没有可动作的东西（48） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 66: 没有可动作的东西（48） | We're sorry.
+2026-10-22 02:09:48 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 67: 没有可动作的东西（49） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 67: 没有可动作的东西（49） | We're sorry.
+2026-10-22 02:09:49 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 68: 没有可动作的东西（50） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 68: 没有可动作的东西（50） | We're sorry.
+2026-10-22 02:09:51 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 69: 没有可动作的东西（51） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 69: 没有可动作的东西（51） | We're sorry.
+2026-10-22 02:09:52 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 70: 没有可动作的东西（52） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 70: 没有可动作的东西（52） | We're sorry.
+2026-10-22 02:09:53 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 71: 没有可动作的东西（53） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 71: 没有可动作的东西（53） | We're sorry.
+2026-10-22 02:09:54 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 72: 没有可动作的东西（54） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 72: 没有可动作的东西（54） | We're sorry.
+2026-10-22 02:09:56 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 73: 没有可动作的东西（55） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 73: 没有可动作的东西（55） | We're sorry.
+2026-10-22 02:09:58 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 74: 没有可动作的东西（56） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 74: 没有可动作的东西（56） | We're sorry.
+2026-10-22 02:09:59 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 75: 没有可动作的东西（57） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 75: 没有可动作的东西（57） | We're sorry.
+2026-10-22 02:10:00 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 76: 没有可动作的东西（58） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 76: 没有可动作的东西（58） | We're sorry.
+2026-10-22 02:10:02 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 77: 没有可动作的东西（59） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 77: 没有可动作的东西（59） | We're sorry.
+2026-10-22 02:10:04 [INFO] form_fill_loop: [evidence-try_20261022-020803] step 78: 没有可动作的东西（60） | We're sorry.
+INFO:form_fill_loop:[evidence-try_20261022-020803] step 78: 没有可动作的东西（60） | We're sorry.
+2026-10-22 02:10:04 [ERROR] form_fill_loop: [evidence-try_20261022-020803] 连 60 步没有可动作的东西（答过 5 题）—— 如实报失败
+ERROR:form_fill_loop:[evidence-try_20261022-020803] 连 60 步没有可动作的东西（答过 5 题）—— 如实报失败

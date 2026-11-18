@@ -1,0 +1,43 @@
+2026-10-23 11:07:28,633 INFO [sm101probe_1792724845] japansdates: Alex alexprobe5730@outlook.com
+2026-10-23 11:07:31,117 WARNING [sm101probe_1792724845] 卡住诊断 step= next=False legal=False options=[] labels=[] inputs=[] url=-|https://soulmatemeets.com/land/sp/23d247da/
+2026-10-23 11:07:31,117 INFO [sm101probe_1792724845] step 1: nothing actionable (1, 0s) 
+2026-10-23 11:07:32,440 INFO [sm101probe_1792724845] step 2: nothing actionable (2, 1s) 
+2026-10-23 11:07:34,323 INFO [sm101probe_1792724845] step 3 [step-content-item-Basic+step-content-item-AgeLegalText+step-content-item-ChooseAge] Sign In Let's make the most of your dating exp -> (文本) 65+
+2026-10-23 11:07:39,455 INFO [sm101probe_1792724845] step 4 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Wha -> option-find-friend
+2026-10-23 11:07:42,882 INFO [sm101probe_1792724845] step 5 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Wha -> option-have-fun
+2026-10-23 11:07:44,417 INFO [sm101probe_1792724845] step 6 [step-content-item-ChoosePrefGender] 1 2 3 4 Your profile Preferences Finish up Who -> pref-gender-male
+2026-10-23 11:07:45,739 INFO [sm101probe_1792724845] step 7 [step-content-item-ChoosePrefGender] 1 2 3 4 Your profile Preferences Finish up Who -> pref-gender-male
+2026-10-23 11:07:47,168 WARNING [sm101probe_1792724845] 卡住诊断 step=step-content-item-ChoosePrefGender next=False legal=False options=['pref-gender-male', 'pref-gender-female'] labels=['Man', 'Woman'] inputs=[] url=step3|https://soulmatemeets.com/land/sp/23d247da/?id_vis
+2026-10-23 11:07:47,168 INFO [sm101probe_1792724845] step 8: nothing actionable (1, 0s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:07:48,839 INFO [sm101probe_1792724845] step 9: nothing actionable (2, 2s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:07:49,988 INFO [sm101probe_1792724845] step 10: nothing actionable (3, 3s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:07:51,957 INFO [sm101probe_1792724845] step 11: nothing actionable (4, 5s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:07:53,939 INFO [sm101probe_1792724845] step 12: nothing actionable (5, 7s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:07:54,886 INFO [sm101probe_1792724845] step 13: nothing actionable (6, 8s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:07:56,002 INFO [sm101probe_1792724845] step 14: nothing actionable (7, 9s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:07:57,676 INFO [sm101probe_1792724845] step 15: nothing actionable (8, 11s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:07:58,526 INFO [sm101probe_1792724845] step 16: nothing actionable (9, 11s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:07:59,600 INFO [sm101probe_1792724845] step 17: nothing actionable (10, 12s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:01,608 INFO [sm101probe_1792724845] step 18: nothing actionable (11, 14s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:02,902 INFO [sm101probe_1792724845] step 19: nothing actionable (12, 16s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:04,641 INFO [sm101probe_1792724845] step 20: nothing actionable (13, 17s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:06,144 INFO [sm101probe_1792724845] step 21: nothing actionable (14, 19s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:07,952 INFO [sm101probe_1792724845] step 22: nothing actionable (15, 21s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:08,978 INFO [sm101probe_1792724845] step 23: nothing actionable (16, 22s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:09,990 INFO [sm101probe_1792724845] step 24: nothing actionable (17, 23s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:11,507 INFO [sm101probe_1792724845] step 25: nothing actionable (18, 24s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:13,441 INFO [sm101probe_1792724845] step 26: nothing actionable (19, 26s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:14,836 INFO [sm101probe_1792724845] step 27: nothing actionable (20, 28s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:16,660 INFO [sm101probe_1792724845] step 28: nothing actionable (21, 29s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:18,492 INFO [sm101probe_1792724845] step 29: nothing actionable (22, 31s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:19,933 INFO [sm101probe_1792724845] step 30: nothing actionable (23, 33s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:20,910 INFO [sm101probe_1792724845] step 31: nothing actionable (24, 34s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:21,880 INFO [sm101probe_1792724845] step 32: nothing actionable (25, 35s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:23,496 INFO [sm101probe_1792724845] step 33: nothing actionable (26, 36s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:24,771 INFO [sm101probe_1792724845] step 34: nothing actionable (27, 38s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:26,540 INFO [sm101probe_1792724845] step 35: nothing actionable (28, 39s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:28,223 INFO [sm101probe_1792724845] step 36: nothing actionable (29, 41s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:29,063 INFO [sm101probe_1792724845] step 37: nothing actionable (30, 42s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:30,961 INFO [sm101probe_1792724845] step 38: nothing actionable (31, 44s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:32,812 INFO [sm101probe_1792724845] step 39: nothing actionable (32, 46s) 1 2 3 4 Your profile Preferences Finish up Who can we help y
+2026-10-23 11:08:32,813 ERROR [sm101probe_1792724845] 答了 5 题后卡住 46s @ https://soulmatemeets.com/land/sp/23d247da/?id_visit_prev=8d725cae-9b6f-4327-939d-64746073 —— 如实报失败

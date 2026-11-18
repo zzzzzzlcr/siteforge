@@ -1,0 +1,251 @@
+{
+ "url": "https://www.wildnutrition.com/pages/what-supplements-should-i-take",
+ "scrollY": 0,
+ "has_continue": false,
+ "has_back": true,
+ "wrap": true,
+ "wrap_text": "How old are you? | 18-24 | 18-24 | 18-24 | 25-34 | 25-34 | 25-34 | 34-44 | 34-44 | 34-44 | 45-54 | 45-54 | 45-54 | 55+ | 55+ | 55+ | ← BACK",
+ "ul_count": 1,
+ "uls": [
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)",
+   "attrs": {
+    "id": "oct-multiple-choice-answers-root-a3b2d38f734bf570ea095d15b95b3fda6f9b4c6a",
+    "class": "ce1923fb1e13642705692e2cbf8b6a014a049f359",
+    "role": "radiogroup",
+    "aria-labelledby": "oct-q-title-a3b2d38f734bf570ea095d15b95b3fda6f9b4c6a"
+   },
+   "box": [
+    69,
+    218,
+    240,
+    336
+   ],
+   "question": "How old are you?",
+   "lis": [
+    {
+     "n": 1,
+     "attrs": {
+      "id": "06a1c50173a086a9c58cc76e757770dd8bc90b59",
+      "data-option-id": "06a1c50173a086a9c58cc76e757770dd8bc90b59",
+      "data-option-index": "0",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "18-24"
+     },
+     "text": "18-24/18-24/18-24",
+     "tc": "18-2418-2418-24",
+     "aria": "18-24",
+     "checked": "false",
+     "box": [
+      69,
+      248,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"06a1c50173a086a9c58cc76e757770dd8bc90b59\" data-option-id=\"06a1c50173a086a9c58cc76e757770dd8bc90b59\" data-option-index=\"0\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"18-24\"><div>18-24</div><div class=\"c3bca072fbbe9d644af0fdd66cf"
+    },
+    {
+     "n": 2,
+     "attrs": {
+      "id": "2c168946ec9eba159be438fcc74c217f7aefe656",
+      "data-option-id": "2c168946ec9eba159be438fcc74c217f7aefe656",
+      "data-option-index": "1",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "25-34"
+     },
+     "text": "25-34/25-34/25-34",
+     "tc": "25-3425-3425-34",
+     "aria": "25-34",
+     "checked": "false",
+     "box": [
+      69,
+      313,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"2c168946ec9eba159be438fcc74c217f7aefe656\" data-option-id=\"2c168946ec9eba159be438fcc74c217f7aefe656\" data-option-index=\"1\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"25-34\"><div>25-34</div><div class=\"c3bca072fbbe9d644af0fdd66cf"
+    },
+    {
+     "n": 3,
+     "attrs": {
+      "id": "35836f2ca4acbb07ee51a058faace84dc4274de8",
+      "data-option-id": "35836f2ca4acbb07ee51a058faace84dc4274de8",
+      "data-option-index": "2",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "34-44"
+     },
+     "text": "34-44/34-44/34-44",
+     "tc": "34-4434-4434-44",
+     "aria": "34-44",
+     "checked": "false",
+     "box": [
+      69,
+      378,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"35836f2ca4acbb07ee51a058faace84dc4274de8\" data-option-id=\"35836f2ca4acbb07ee51a058faace84dc4274de8\" data-option-index=\"2\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"34-44\"><div>34-44</div><div class=\"c3bca072fbbe9d644af0fdd66cf"
+    },
+    {
+     "n": 4,
+     "attrs": {
+      "id": "1d930b9ea5f0f2bc6df83fb151053950a86e4132",
+      "data-option-id": "1d930b9ea5f0f2bc6df83fb151053950a86e4132",
+      "data-option-index": "3",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "45-54"
+     },
+     "text": "45-54/45-54/45-54",
+     "tc": "45-5445-5445-54",
+     "aria": "45-54",
+     "checked": "false",
+     "box": [
+      69,
+      444,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"1d930b9ea5f0f2bc6df83fb151053950a86e4132\" data-option-id=\"1d930b9ea5f0f2bc6df83fb151053950a86e4132\" data-option-index=\"3\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"45-54\"><div>45-54</div><div class=\"c3bca072fbbe9d644af0fdd66cf"
+    },
+    {
+     "n": 5,
+     "attrs": {
+      "id": "29b37a6c9cd3bbe2d8f055496038f26184d3ace1",
+      "data-option-id": "29b37a6c9cd3bbe2d8f055496038f26184d3ace1",
+      "data-option-index": "4",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "55+"
+     },
+     "text": "55+/55+/55+",
+     "tc": "55+55+55+",
+     "aria": "55+",
+     "checked": "false",
+     "box": [
+      69,
+      509,
+      240,
+      45
+     ],
+     "vis": "visible",
+     "disp": "list-item",
+     "rects": 1,
+     "outer": "<li id=\"29b37a6c9cd3bbe2d8f055496038f26184d3ace1\" data-option-id=\"29b37a6c9cd3bbe2d8f055496038f26184d3ace1\" data-option-index=\"4\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"55+\"><div>55+</div><div class=\"c3bca072fbbe9d644af0fdd66cf0531"
+    }
+   ]
+  }
+ ],
+ "buttons": [
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "attrs": {
+    "class": "cf8517f00b3097165dff89e6abd6d71b1e796f3bc",
+    "tabindex": "0",
+    "title": "Back"
+   },
+   "text": "← BACK",
+   "box": [
+    162,
+    644,
+    52,
+    19
+   ],
+   "disabled": false,
+   "vis": "visible"
+  }
+ ],
+ "other_buttons": [
+  {
+   "tag": "button",
+   "text": "Back",
+   "path": "body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > aside:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > ul:nth-of-type(1) > li:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "box": [
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "tag": "button",
+   "text": "Back",
+   "path": "body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > aside:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > ul:nth-of-type(1) > li:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "box": [
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "tag": "button",
+   "text": "Back",
+   "path": "body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > aside:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > ul:nth-of-type(1) > li:nth-of-type(3) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "box": [
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "tag": "button",
+   "text": "Back",
+   "path": "body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > aside:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > ul:nth-of-type(1) > li:nth-of-type(4) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "box": [
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "tag": "button",
+   "text": "Back",
+   "path": "body:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > aside:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > ul:nth-of-type(1) > li:nth-of-type(5) > div:nth-of-type(1) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "box": [
+    0,
+    0,
+    0,
+    0
+   ]
+  },
+  {
+   "tag": "button",
+   "text": "Continue shopping",
+   "path": "body:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(4) > button:nth-of-type(1)",
+   "box": [
+    0,
+    0,
+    0,
+    0
+   ]
+  }
+ ]
+}

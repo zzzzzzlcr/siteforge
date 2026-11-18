@@ -1,0 +1,52 @@
+{"step": 0, "action": "goto", "ok": null, "progress": null, "progress_why": "不导航：页面由平台按任务开好（产物不自己导航一遍）"}
+{"step": 0, "action": "pre", "ok": true, "progress": null, "target": {"text": "See if you qualify for benefits", "selector": "#main > div:nth-of-type(1) > div:nth-of-"}, "progress_why": "前置：进问卷之前那几步"}
+{"step": 1, "action": "form", "ok": true, "progress": false, "target": {"testid": "\u0004zipcode"}, "note": "填了 \u0004zipcode"}
+{"step": 2, "action": "form", "ok": true, "progress": false, "target": {"testid": "\u0004zipcode"}, "note": "填了 \u0004zipcode"}
+{"step": 3, "action": "none", "ok": null, "progress": null, "progress_why": "Next 已可见、这一屏还没成形（第 1 轮）", "head": "Hi there! I'm Jackie. Together, we'll see if you qualify then create a plan to g", "target": {"options": 0, "inputs": 1, "nextTxt": "Next"}}
+{"step": 4, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 5, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 6, "action": "form", "ok": true, "progress": false, "target": {"testid": "\u0004:r0:"}, "note": "填了 \u0004:r0:"}
+{"step": 7, "action": "none", "ok": null, "progress": null, "progress_why": "Next 已可见、这一屏还没成形（第 1 轮）", "head": "What's your age? This determines which benefits are available. Age Age Did you k", "target": {"options": 0, "inputs": 1, "nextTxt": "Next"}}
+{"step": 8, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 9, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 10, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 11, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 12, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001Patient or client"}, "note": "答了第 1 题"}
+{"step": 13, "action": "none", "ok": null, "progress": null, "progress_why": "Next 已可见、这一屏还没成形（第 1 轮）", "head": "Who are you seeking disability benefits for? Myself Family member or friend Pati", "target": {"options": 3, "inputs": 0, "nextTxt": "Next"}}
+{"step": 14, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 15, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001Why do we need to know?"}, "note": "答了第 2 题"}
+{"step": 16, "action": "none", "ok": null, "progress": null, "progress_why": "Next 已可见、这一屏还没成形（第 1 轮）", "head": "First, we have a few questions to make sure we can help.", "target": {"options": 1, "inputs": 0, "nextTxt": "Next"}}
+{"step": 17, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 18, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001No, never"}, "note": "答了第 3 题"}
+{"step": 19, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001Not sure?"}, "note": "答了第 4 题"}
+{"step": 20, "action": "none", "ok": null, "progress": false, "progress_why": "这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次）"}
+{"step": 21, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001No"}, "note": "答了第 5 题"}
+{"step": 22, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001Yes, that's correct"}, "note": "答了第 6 题"}
+{"step": 23, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001Why do we need to know?"}, "note": "答了第 7 题"}
+{"step": 24, "action": "none", "ok": null, "progress": null, "progress_why": "Next 已可见、这一屏还没成形（第 1 轮）", "head": "Next, we’ll ask about how much you’re working.", "target": {"options": 1, "inputs": 0, "nextTxt": "Next"}}
+{"step": 25, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 26, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001Within the last month"}, "note": "答了第 8 题"}
+{"step": 27, "action": "none", "ok": null, "progress": false, "progress_why": "这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次）"}
+{"step": 28, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001Yes"}, "note": "答了第 9 题"}
+{"step": 29, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001I'm on medical leave and may not return"}, "note": "答了第 10 题"}
+{"step": 30, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001Why do we need to know?"}, "note": "答了第 11 题"}
+{"step": 31, "action": "none", "ok": null, "progress": null, "progress_why": "Next 已可见、这一屏还没成形（第 1 轮）", "head": "Lastly, we need to know a little about your health.", "target": {"options": 1, "inputs": 0, "nextTxt": "Next"}}
+{"step": 32, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 33, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001A mix of physical and mental health"}, "note": "答了第 12 题"}
+{"step": 34, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001Had surgery"}, "note": "答了第 13 题"}
+{"step": 35, "action": "none", "ok": null, "progress": null, "progress_why": "Next 已可见、这一屏还没成形（第 1 轮）", "head": "In the last year, have you... Select all that apply. Visited your primary care d", "target": {"options": 7, "inputs": 0, "nextTxt": "Next"}}
+{"step": 36, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 37, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 38, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001I want to know if it's right for me"}, "note": "答了第 14 题"}
+{"step": 39, "action": "none", "ok": null, "progress": false, "progress_why": "这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次）"}
+{"step": 40, "action": "none", "ok": null, "progress": null, "progress_why": "Next 已可见、这一屏还没成形（第 1 轮）", "head": "Get timely answers that the SSA won't give you.", "target": {"options": 0, "inputs": 0, "nextTxt": "Next"}}
+{"step": 41, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 42, "action": "form", "ok": true, "progress": false, "target": {"testid": "\u0004:r1:"}, "note": "填了 \u0004:r1:"}
+{"step": 42, "action": "form", "ok": true, "progress": false, "target": {"testid": "\u0004:r2:"}, "note": "填了 \u0004:r2:"}
+{"step": 43, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001I'm the applicant"}, "note": "答了第 15 题"}
+{"step": 44, "action": "form", "ok": true, "progress": false, "target": {"testid": "\u0004:r3:"}, "note": "填了 \u0004:r3:"}
+{"step": 44, "action": "form", "ok": true, "progress": false, "target": {"testid": "\u0004:r4:"}, "note": "填了 \u0004:r4:"}
+{"step": 45, "action": "none", "ok": null, "progress": null, "progress_why": "Next 已可见、这一屏还没成形（第 1 轮）", "head": "How can we reach you?", "target": {"options": 2, "inputs": 6, "nextTxt": "Submit"}}
+{"step": 46, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Submit"}, "note": "Next"}
+{"step": 47, "action": "none", "ok": null, "progress": false, "progress_why": "这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次）"}
+{"step": 48, "action": "success", "ok": true, "progress": true, "url": "https://www.atticus.com/disability-benefits/n/get-help/survey/qual/post-conversion-ah"}

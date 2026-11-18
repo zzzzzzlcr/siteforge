@@ -1,0 +1,179 @@
+{
+ "url": "https://www.wildnutrition.com/pages/what-supplements-should-i-take",
+ "scrollY": 64,
+ "email_inputs": 0,
+ "wrap": true,
+ "wrap_text": "How are you sleeping lately? | Struggle to fall asleep | Struggle to fall asleep | Struggle to fall asleep | Wake during the night | Wake during the night | Wake during the night | Poor quality sleep | Poor quality sleep | Poor quality sleep | Generally sleep well | Generally sleep well | Generally ",
+ "has_continue": false,
+ "has_back": true,
+ "when_minus3": false,
+ "ul_count": 1,
+ "uls": [
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)",
+   "attrs": {
+    "id": "oct-multiple-choice-answers-root-7433dcf59ee4b3c187ab34a87cd61dec0af4fa71",
+    "class": "c85a407960cf10ce528b4102c3e19d8b052985c9f",
+    "role": "radiogroup",
+    "aria-labelledby": "oct-q-title-7433dcf59ee4b3c187ab34a87cd61dec0af4fa71"
+   },
+   "box": [
+    60,
+    250,
+    240,
+    271
+   ],
+   "question": "How are you sleeping lately?",
+   "lis": [
+    {
+     "n": 1,
+     "attrs": {
+      "id": "d37bcdbde16f782b746b6dc8f95ff3f919f89225",
+      "data-option-id": "d37bcdbde16f782b746b6dc8f95ff3f919f89225",
+      "data-option-index": "0",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Struggle to fall asleep"
+     },
+     "text": "Struggle to fall asleep/Struggle to fall asleep/Struggle to fall asleep",
+     "tc": "Struggle to fall asleepStruggle to fall asleepStruggle to fall asleep",
+     "aria": "Struggle to fall asleep",
+     "role": "radio",
+     "checked": "false",
+     "box": [
+      60,
+      280,
+      240,
+      45
+     ],
+     "vis": true,
+     "kids": [
+      "div:Struggle to fall asleep",
+      "div.c7575f52ab41a0c96f26d47566:Struggle to fall asleep",
+      "div.c7575f52ab41a0c96f26d47566:Struggle to fall asleep",
+      "div.cf74285cc1197dc8bd368fe2f5:(无字)"
+     ],
+     "outer": "<li id=\"d37bcdbde16f782b746b6dc8f95ff3f919f89225\" data-option-id=\"d37bcdbde16f782b746b6dc8f95ff3f919f89225\" data-option-index=\"0\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Struggle to fall asleep\"><div>Struggle to fall asleep</div><div class=\"c7575f52ab4"
+    },
+    {
+     "n": 2,
+     "attrs": {
+      "id": "1b9581f6c03076ed1521f0695f1fd56804c3a0c3",
+      "data-option-id": "1b9581f6c03076ed1521f0695f1fd56804c3a0c3",
+      "data-option-index": "1",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Wake during the night"
+     },
+     "text": "Wake during the night/Wake during the night/Wake during the night",
+     "tc": "Wake during the nightWake during the nightWake during the night",
+     "aria": "Wake during the night",
+     "role": "radio",
+     "checked": "false",
+     "box": [
+      60,
+      345,
+      240,
+      45
+     ],
+     "vis": true,
+     "kids": [
+      "div:Wake during the night",
+      "div.c7575f52ab41a0c96f26d47566:Wake during the night",
+      "div.c7575f52ab41a0c96f26d47566:Wake during the night",
+      "div.cf74285cc1197dc8bd368fe2f5:(无字)"
+     ],
+     "outer": "<li id=\"1b9581f6c03076ed1521f0695f1fd56804c3a0c3\" data-option-id=\"1b9581f6c03076ed1521f0695f1fd56804c3a0c3\" data-option-index=\"1\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Wake during the night\"><div>Wake during the night</div><div class=\"c7575f52ab41a0c"
+    },
+    {
+     "n": 3,
+     "attrs": {
+      "id": "fd63056aa1b17ebfe62b516932047ecc47310525",
+      "data-option-id": "fd63056aa1b17ebfe62b516932047ecc47310525",
+      "data-option-index": "2",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Poor quality sleep"
+     },
+     "text": "Poor quality sleep/Poor quality sleep/Poor quality sleep",
+     "tc": "Poor quality sleepPoor quality sleepPoor quality sleep",
+     "aria": "Poor quality sleep",
+     "role": "radio",
+     "checked": "false",
+     "box": [
+      60,
+      410,
+      240,
+      45
+     ],
+     "vis": true,
+     "kids": [
+      "div:Poor quality sleep",
+      "div.c7575f52ab41a0c96f26d47566:Poor quality sleep",
+      "div.c7575f52ab41a0c96f26d47566:Poor quality sleep",
+      "div.cf74285cc1197dc8bd368fe2f5:(无字)"
+     ],
+     "outer": "<li id=\"fd63056aa1b17ebfe62b516932047ecc47310525\" data-option-id=\"fd63056aa1b17ebfe62b516932047ecc47310525\" data-option-index=\"2\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Poor quality sleep\"><div>Poor quality sleep</div><div class=\"c7575f52ab41a0c96f26d"
+    },
+    {
+     "n": 4,
+     "attrs": {
+      "id": "378c8d8e15b10dae9f8922aa9e2db394eb2d24fc",
+      "data-option-id": "378c8d8e15b10dae9f8922aa9e2db394eb2d24fc",
+      "data-option-index": "3",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Generally sleep well"
+     },
+     "text": "Generally sleep well/Generally sleep well/Generally sleep well",
+     "tc": "Generally sleep wellGenerally sleep wellGenerally sleep well",
+     "aria": "Generally sleep well",
+     "role": "radio",
+     "checked": "false",
+     "box": [
+      60,
+      473,
+      240,
+      45
+     ],
+     "vis": true,
+     "kids": [
+      "div:Generally sleep well",
+      "div.c7575f52ab41a0c96f26d47566:Generally sleep well",
+      "div.c7575f52ab41a0c96f26d47566:Generally sleep well",
+      "div.cf74285cc1197dc8bd368fe2f5:(无字)"
+     ],
+     "outer": "<li id=\"378c8d8e15b10dae9f8922aa9e2db394eb2d24fc\" data-option-id=\"378c8d8e15b10dae9f8922aa9e2db394eb2d24fc\" data-option-index=\"3\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Generally sleep well\"><div>Generally sleep well</div><div class=\"c7575f52ab41a0c96"
+    }
+   ]
+  }
+ ],
+ "buttons": [
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "attrs": {
+    "class": "c9d230a8b9f5fc7c0d0d0d3fe967191b44ac25f40",
+    "tabindex": "0",
+    "title": "Back"
+   },
+   "text": "← BACK",
+   "box": [
+    154,
+    611,
+    52,
+    19
+   ],
+   "disabled": false,
+   "vis": true,
+   "aria_disabled": null
+  }
+ ]
+}

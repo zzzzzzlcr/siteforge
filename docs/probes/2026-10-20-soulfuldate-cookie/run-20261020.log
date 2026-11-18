@@ -1,0 +1,70 @@
+2026-10-20 10:17:09 [INFO] form_fill_japansdates: [jd-probe-20261020] japansdates: Donald probe.soulful4421@outlook.com
+INFO:form_fill_japansdates:[jd-probe-20261020] japansdates: Donald probe.soulful4421@outlook.com
+2026-10-20 10:17:14 [INFO] form_fill_japansdates: [jd-probe-20261020] step 1 [step-content-item-Basic+step-content-item-Basic] continue (Sign In Glad you’ve chosen Soulfuldate! We are)
+INFO:form_fill_japansdates:[jd-probe-20261020] step 1 [step-content-item-Basic+step-content-item-Basic] continue (Sign In Glad you’ve chosen Soulfuldate! We are)
+2026-10-20 10:17:19 [INFO] form_fill_japansdates: [jd-probe-20261020] step 2 [step-content-item-Preferences] What connection do you crave most? Some plain  -> option-plain-fun
+INFO:form_fill_japansdates:[jd-probe-20261020] step 2 [step-content-item-Preferences] What connection do you crave most? Some plain  -> option-plain-fun
+2026-10-20 10:17:22 [INFO] form_fill_japansdates: [jd-probe-20261020] step 3 [step-content-item-Preferences] What connection do you crave most? Some plain  -> option-plain-fun
+INFO:form_fill_japansdates:[jd-probe-20261020] step 3 [step-content-item-Preferences] What connection do you crave most? Some plain  -> option-plain-fun
+2026-10-20 10:17:25 [INFO] form_fill_japansdates: [jd-probe-20261020] step 4 [step-content-item-ChooseGender] I am a Man I am a Woman About Us Terms of Use  -> gender-female
+INFO:form_fill_japansdates:[jd-probe-20261020] step 4 [step-content-item-ChooseGender] I am a Man I am a Woman About Us Terms of Use  -> gender-female
+2026-10-20 10:17:29 [INFO] form_fill_japansdates: [jd-probe-20261020] step 5 [step-content-item-Preferences] Do you have a gender preference? Man Woman Bot -> option-both
+INFO:form_fill_japansdates:[jd-probe-20261020] step 5 [step-content-item-Preferences] Do you have a gender preference? Man Woman Bot -> option-both
+2026-10-20 10:17:31 [INFO] form_fill_japansdates: [jd-probe-20261020] step 6 [step-content-item-InputNameAutofill]: filled firstname
+INFO:form_fill_japansdates:[jd-probe-20261020] step 6 [step-content-item-InputNameAutofill]: filled firstname
+2026-10-20 10:17:34 [INFO] form_fill_japansdates: [jd-probe-20261020] step 7 [step-content-item-InputNameAutofill] continue (How can users call you? Please use English cha)
+INFO:form_fill_japansdates:[jd-probe-20261020] step 7 [step-content-item-InputNameAutofill] continue (How can users call you? Please use English cha)
+2026-10-20 10:17:36 [INFO] form_fill_japansdates: [jd-probe-20261020] step 8 [step-content-item-Preferences] How’s your mood today, Donald? Sad Neutral Hap -> option-neutral
+INFO:form_fill_japansdates:[jd-probe-20261020] step 8 [step-content-item-Preferences] How’s your mood today, Donald? Sad Neutral Hap -> option-neutral
+2026-10-20 10:17:37 [INFO] form_fill_japansdates: [jd-probe-20261020] step 9 [step-content-item-Question] Are you ready to respect other users’ wishes?  -> option-no
+INFO:form_fill_japansdates:[jd-probe-20261020] step 9 [step-content-item-Question] Are you ready to respect other users’ wishes?  -> option-no
+2026-10-20 10:17:40 [INFO] form_fill_japansdates: [jd-probe-20261020] step 10 [step-content-item-Question] Is it OK for you if users text you first? No Y -> option-yes
+INFO:form_fill_japansdates:[jd-probe-20261020] step 10 [step-content-item-Question] Is it OK for you if users text you first? No Y -> option-yes
+2026-10-20 10:17:43 [INFO] form_fill_japansdates: [jd-probe-20261020] step 11 [step-content-item-AgeLegalText+step-content-item-ChooseAge] How old are you? By clicking the button below, -> (文本) 25-34
+INFO:form_fill_japansdates:[jd-probe-20261020] step 11 [step-content-item-AgeLegalText+step-content-item-ChooseAge] How old are you? By clicking the button below, -> (文本) 25-34
+2026-10-20 10:17:45 [INFO] form_fill_japansdates: [jd-probe-20261020] step 12 [step-content-item-Question] Would you like to receive content from users?  -> option-no
+INFO:form_fill_japansdates:[jd-probe-20261020] step 12 [step-content-item-Question] Would you like to receive content from users?  -> option-no
+2026-10-20 10:17:47 [INFO] form_fill_japansdates: [jd-probe-20261020] step 13 [step-content-item-Question] Are you ready for lots of attention? No Yes Ab -> option-no
+INFO:form_fill_japansdates:[jd-probe-20261020] step 13 [step-content-item-Question] Are you ready for lots of attention? No Yes Ab -> option-no
+2026-10-20 10:17:48 [INFO] form_fill_japansdates: [jd-probe-20261020] step 14 [step-content-item-Question] Are you up to join chats on frank topics? No Y -> option-yes
+INFO:form_fill_japansdates:[jd-probe-20261020] step 14 [step-content-item-Question] Are you up to join chats on frank topics? No Y -> option-yes
+2026-10-20 10:17:50 [WARNING] form_fill_japansdates: [jd-probe-20261020] 卡住诊断 step=step-content-item-LoadingBarComponent next=False legal=False options=[] labels=[] inputs=[] url=step13|https://soulfuldate.com/land/sp/5a4f738d/?id_visit
+WARNING:form_fill_japansdates:[jd-probe-20261020] 卡住诊断 step=step-content-item-LoadingBarComponent next=False legal=False options=[] labels=[] inputs=[] url=step13|https://soulfuldate.com/land/sp/5a4f738d/?id_visit
+2026-10-20 10:17:50 [INFO] form_fill_japansdates: [jd-probe-20261020] step 15: nothing actionable (1, 0s) Thanks for the honest answers! About Us Terms of Use Privacy
+INFO:form_fill_japansdates:[jd-probe-20261020] step 15: nothing actionable (1, 0s) Thanks for the honest answers! About Us Terms of Use Privacy
+2026-10-20 10:17:51 [INFO] form_fill_japansdates: [jd-probe-20261020] step 16: nothing actionable (2, 1s) Thanks for the honest answers! 27 About Us Terms of Use Priv
+INFO:form_fill_japansdates:[jd-probe-20261020] step 16: nothing actionable (2, 1s) Thanks for the honest answers! 27 About Us Terms of Use Priv
+2026-10-20 10:17:52 [INFO] form_fill_japansdates: [jd-probe-20261020] step 17: nothing actionable (3, 2s) Thanks for the honest answers! 74 About Us Terms of Use Priv
+INFO:form_fill_japansdates:[jd-probe-20261020] step 17: nothing actionable (3, 2s) Thanks for the honest answers! 74 About Us Terms of Use Priv
+2026-10-20 10:17:54 [INFO] form_fill_japansdates: [jd-probe-20261020] step 18 [step-content-item-Basic+step-content-item-InputEmail]: filled email
+INFO:form_fill_japansdates:[jd-probe-20261020] step 18 [step-content-item-Basic+step-content-item-InputEmail]: filled email
+2026-10-20 10:17:57 [INFO] form_fill_japansdates: [jd-probe-20261020] step 19 [step-content-item-Basic+step-content-item-InputEmail] continue (That's inspiring! Leave your email, we strive )
+INFO:form_fill_japansdates:[jd-probe-20261020] step 19 [step-content-item-Basic+step-content-item-InputEmail] continue (That's inspiring! Leave your email, we strive )
+2026-10-20 10:18:00 [INFO] form_fill_japansdates: [jd-probe-20261020] step 20 [step-content-item-Basic+step-content-item-InputEmail] continue (That's inspiring! Leave your email, we strive )
+INFO:form_fill_japansdates:[jd-probe-20261020] step 20 [step-content-item-Basic+step-content-item-InputEmail] continue (That's inspiring! Leave your email, we strive )
+2026-10-20 10:18:02 [INFO] form_fill_japansdates: [jd-probe-20261020] step 21 [step-content-item-InputPassword]: filled password
+INFO:form_fill_japansdates:[jd-probe-20261020] step 21 [step-content-item-InputPassword]: filled password
+2026-10-20 10:18:03 [INFO] form_fill_japansdates: [jd-probe-20261020] step 22 [step-content-item-InputPassword] continue (Now create and note your password to access th)
+INFO:form_fill_japansdates:[jd-probe-20261020] step 22 [step-content-item-InputPassword] continue (Now create and note your password to access th)
+2026-10-20 10:18:07 [INFO] form_fill_japansdates: [jd-probe-20261020] step 23: 勾选条款
+INFO:form_fill_japansdates:[jd-probe-20261020] step 23: 勾选条款
+2026-10-20 10:18:08 [WARNING] form_fill_japansdates: [jd-probe-20261020] 卡住诊断 step=step-content-item-Basic+step-content-item-CheckboxTerms next=False legal=True options=[] labels=[] inputs=[] url=step16|https://soulfuldate.com/land/sp/5a4f738d/?id_visit
+WARNING:form_fill_japansdates:[jd-probe-20261020] 卡住诊断 step=step-content-item-Basic+step-content-item-CheckboxTerms next=False legal=True options=[] labels=[] inputs=[] url=step16|https://soulfuldate.com/land/sp/5a4f738d/?id_visit
+2026-10-20 10:18:08 [INFO] form_fill_japansdates: [jd-probe-20261020] step 24: nothing actionable (1, 0s) Getting closer Tick the box, accept our rules, and you are i
+INFO:form_fill_japansdates:[jd-probe-20261020] step 24: nothing actionable (1, 0s) Getting closer Tick the box, accept our rules, and you are i
+2026-10-20 10:18:10 [INFO] form_fill_japansdates: [jd-probe-20261020] step 25: nothing actionable (2, 2s) Getting closer Tick the box, accept our rules, and you are i
+INFO:form_fill_japansdates:[jd-probe-20261020] step 25: nothing actionable (2, 2s) Getting closer Tick the box, accept our rules, and you are i
+2026-10-20 10:18:12 [INFO] form_fill_japansdates: [jd-probe-20261020] step 26: nothing actionable (3, 4s) About Us Terms of Use Privacy Policy Arbitration Agreement
+INFO:form_fill_japansdates:[jd-probe-20261020] step 26: nothing actionable (3, 4s) About Us Terms of Use Privacy Policy Arbitration Agreement
+2026-10-20 10:18:13 [INFO] form_fill_japansdates: [jd-probe-20261020] SUCCESS: https://soulfuldate.com/land/sp/5a4f738d/?id_visit_prev=cec7a7a4-d101-4f2f-ad0b-（站点状态 wizard1）
+INFO:form_fill_japansdates:[jd-probe-20261020] SUCCESS: https://soulfuldate.com/land/sp/5a4f738d/?id_visit_prev=cec7a7a4-d101-4f2f-ad0b-（站点状态 wizard1）
+2026-10-20 10:18:17 [INFO] form_fill_japansdates: [URL Report] step=success, URL: https://soulfuldate.com/main-page?referrer=https%3A%2F%2Fsoulfuldate.com%2Fland%2Fsp%2F5a4f738d%2F%3
+INFO:form_fill_japansdates:[URL Report] step=success, URL: https://soulfuldate.com/main-page?referrer=https%3A%2F%2Fsoulfuldate.com%2Fland%2Fsp%2F5a4f738d%2F%3
+2026-10-20 10:18:17 [INFO] form_fill_japansdates: [URL Report] Sending data: {"task_id": "jd-probe-20261020", "step": "success", "base64": "", "url": "https://soulfuldate.com/main-page?referrer=https%3A%2F%2Fsoulfuldate.com%2Fland%2Fsp%2F5a4f738d%2F%3Fid_visit_prev%3Dcec7a7a4-d101-4f2f-ad0b-a077909c69f4%23d2l6YXJkMQ%3D%3D&source=land&action=reg"}
+INFO:form_fill_japansdates:[URL Report] Sending data: {"task_id": "jd-probe-20261020", "step": "success", "base64": "", "url": "https://soulfuldate.com/main-page?referrer=https%3A%2F%2Fsoulfuldate.com%2Fland%2Fsp%2F5a4f738d%2F%3Fid_visit_prev%3Dcec7a7a4-d101-4f2f-ad0b-a077909c69f4%23d2l6YXJkMQ%3D%3D&source=land&action=reg"}
+2026-10-20 10:18:18 [WARNING] form_fill_japansdates: [URL Report] Attempt 1 failed: HTTP Error 500: Internal Server Error
+WARNING:form_fill_japansdates:[URL Report] Attempt 1 failed: HTTP Error 500: Internal Server Error
+2026-10-20 10:18:19 [INFO] form_fill_japansdates: [URL Report] Sending data: {"task_id": "jd-probe-20261020", "step": "success", "base64": "", "url": "https://soulfuldate.com/main-page?referrer=https%3A%2F%2Fsoulfuldate.com%2Fland%2Fsp%2F5a4f738d%2F%3Fid_visit_prev%3Dcec7a7a4-d101-4f2f-ad0b-a077909c69f4%23d2l6YXJkMQ%3D%3D&source=land&action=reg"}
+INFO:form_fill_japansdates:[URL Report] Sending data: {"task_id": "jd-probe-20261020", "step": "success", "base64": "", "url": "https://soulfuldate.com/main-page?referrer=https%3A%2F%2Fsoulfuldate.com%2Fland%2Fsp%2F5a4f738d%2F%3Fid_visit_prev%3Dcec7a7a4-d101-4f2f-ad0b-a077909c69f4%23d2l6YXJkMQ%3D%3D&source=land&action=reg"}
+2026-10-20 10:18:19 [WARNING] form_fill_japansdates: [URL Report] Attempt 2 failed: HTTP Error 500: Internal Server Error
+WARNING:form_fill_japansdates:[URL Report] Attempt 2 failed: HTTP Error 500: Internal Server Error

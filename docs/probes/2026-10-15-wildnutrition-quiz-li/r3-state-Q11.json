@@ -1,0 +1,293 @@
+{
+ "url": "https://www.wildnutrition.com/pages/what-supplements-should-i-take",
+ "scrollY": 0,
+ "email_inputs": 0,
+ "body_text": "We use cookies and similar technologies to personalise content and ads, analyse website performance and improve the website experience. For more information, please read our Cookie Policy | Manage Coo",
+ "wrap": true,
+ "has_continue": false,
+ "has_back": true,
+ "wrap_text": "What other health goal would you like to focus on?  | More energy | More energy | More energy | Greater wellbeing | Greater wellbeing | Greater wellbeing | Emotional balance | Emotional balance | Emotional balance | Better sleep | Better sleep | Better sleep | Cycle support | Cycle support | Cycle s",
+ "ul_count": 1,
+ "uls": [
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)",
+   "attrs": {
+    "id": "oct-multiple-choice-answers-root-e3ceb93c45462f766f8b85fdd78695820fbdc914",
+    "class": "ce9a3420c2c35bbcab2608681f0181255ce3901b1",
+    "role": "radiogroup",
+    "aria-labelledby": "oct-q-title-e3ceb93c45462f766f8b85fdd78695820fbdc914"
+   },
+   "box": [
+    69,
+    88,
+    240,
+    617
+   ],
+   "question": "What other health goal would you like to focus on?",
+   "lis": [
+    {
+     "n": 1,
+     "attrs": {
+      "id": "95c27abf07a5feb3a63c05b1a8fead78b3b3231e",
+      "data-option-id": "95c27abf07a5feb3a63c05b1a8fead78b3b3231e",
+      "data-option-index": "0",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "More energy"
+     },
+     "text": "More energy/More energy/More energy",
+     "tc": "More energyMore energyMore energy",
+     "aria": "More energy",
+     "checked": "false",
+     "role": "radio",
+     "box": [
+      69,
+      138,
+      240,
+      45
+     ],
+     "vis": true,
+     "rects": 1,
+     "outer": "<li id=\"95c27abf07a5feb3a63c05b1a8fead78b3b3231e\" data-option-id=\"95c27abf07a5feb3a63c05b1a8fead78b3b3231e\" data-option-index=\"0\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"More energy\"><div>More"
+    },
+    {
+     "n": 2,
+     "attrs": {
+      "id": "0d3edd12b54f94b8ce59994197cb87476e46c3b6",
+      "data-option-id": "0d3edd12b54f94b8ce59994197cb87476e46c3b6",
+      "data-option-index": "1",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Greater wellbeing"
+     },
+     "text": "Greater wellbeing/Greater wellbeing/Greater wellbeing",
+     "tc": "Greater wellbeingGreater wellbeingGreater wellbeing",
+     "aria": "Greater wellbeing",
+     "checked": "false",
+     "role": "radio",
+     "box": [
+      69,
+      203,
+      240,
+      45
+     ],
+     "vis": true,
+     "rects": 1,
+     "outer": "<li id=\"0d3edd12b54f94b8ce59994197cb87476e46c3b6\" data-option-id=\"0d3edd12b54f94b8ce59994197cb87476e46c3b6\" data-option-index=\"1\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Greater wellbeing\"><di"
+    },
+    {
+     "n": 3,
+     "attrs": {
+      "id": "f3565070067685dd8ba4416993f93fdc7b5b6129",
+      "data-option-id": "f3565070067685dd8ba4416993f93fdc7b5b6129",
+      "data-option-index": "2",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Emotional balance"
+     },
+     "text": "Emotional balance/Emotional balance/Emotional balance",
+     "tc": "Emotional balanceEmotional balanceEmotional balance",
+     "aria": "Emotional balance",
+     "checked": "false",
+     "role": "radio",
+     "box": [
+      69,
+      268,
+      240,
+      45
+     ],
+     "vis": true,
+     "rects": 1,
+     "outer": "<li id=\"f3565070067685dd8ba4416993f93fdc7b5b6129\" data-option-id=\"f3565070067685dd8ba4416993f93fdc7b5b6129\" data-option-index=\"2\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Emotional balance\"><di"
+    },
+    {
+     "n": 4,
+     "attrs": {
+      "id": "9b7cd4323e6b2167fa519818099e7c1ca9d3aff0",
+      "data-option-id": "9b7cd4323e6b2167fa519818099e7c1ca9d3aff0",
+      "data-option-index": "3",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Better sleep"
+     },
+     "text": "Better sleep/Better sleep/Better sleep",
+     "tc": "Better sleepBetter sleepBetter sleep",
+     "aria": "Better sleep",
+     "checked": "false",
+     "role": "radio",
+     "box": [
+      69,
+      334,
+      240,
+      45
+     ],
+     "vis": true,
+     "rects": 1,
+     "outer": "<li id=\"9b7cd4323e6b2167fa519818099e7c1ca9d3aff0\" data-option-id=\"9b7cd4323e6b2167fa519818099e7c1ca9d3aff0\" data-option-index=\"3\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Better sleep\"><div>Bet"
+    },
+    {
+     "n": 5,
+     "attrs": {
+      "id": "9d7dae73ec0a73dec41c1e4d3a20c3ba57f9820d",
+      "data-option-id": "9d7dae73ec0a73dec41c1e4d3a20c3ba57f9820d",
+      "data-option-index": "4",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Cycle support"
+     },
+     "text": "Cycle support/Cycle support/Cycle support",
+     "tc": "Cycle supportCycle supportCycle support",
+     "aria": "Cycle support",
+     "checked": "false",
+     "role": "radio",
+     "box": [
+      69,
+      399,
+      240,
+      45
+     ],
+     "vis": true,
+     "rects": 1,
+     "outer": "<li id=\"9d7dae73ec0a73dec41c1e4d3a20c3ba57f9820d\" data-option-id=\"9d7dae73ec0a73dec41c1e4d3a20c3ba57f9820d\" data-option-index=\"4\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Cycle support\"><div>Cy"
+    },
+    {
+     "n": 6,
+     "attrs": {
+      "id": "a5e1fb0c06ec6436750a467499da5db56d6bebd4",
+      "data-option-id": "a5e1fb0c06ec6436750a467499da5db56d6bebd4",
+      "data-option-index": "5",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Bones, joints + muscles"
+     },
+     "text": "Bones, joints + muscles/Bones, joints + muscles/Bones, joints + muscle",
+     "tc": "Bones, joints + musclesBones, joints + musclesBones, joints + muscles",
+     "aria": "Bones, joints + muscles",
+     "checked": "false",
+     "role": "radio",
+     "box": [
+      69,
+      464,
+      240,
+      45
+     ],
+     "vis": true,
+     "rects": 1,
+     "outer": "<li id=\"a5e1fb0c06ec6436750a467499da5db56d6bebd4\" data-option-id=\"a5e1fb0c06ec6436750a467499da5db56d6bebd4\" data-option-index=\"5\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Bones, joints + muscle"
+    },
+    {
+     "n": 7,
+     "attrs": {
+      "id": "68e03b8868cfd9e055293cea877e93a17fb7220f",
+      "data-option-id": "68e03b8868cfd9e055293cea877e93a17fb7220f",
+      "data-option-index": "6",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Gut health"
+     },
+     "text": "Gut health/Gut health/Gut health",
+     "tc": "Gut healthGut healthGut health",
+     "aria": "Gut health",
+     "checked": "false",
+     "role": "radio",
+     "box": [
+      69,
+      529,
+      240,
+      45
+     ],
+     "vis": true,
+     "rects": 1,
+     "outer": "<li id=\"68e03b8868cfd9e055293cea877e93a17fb7220f\" data-option-id=\"68e03b8868cfd9e055293cea877e93a17fb7220f\" data-option-index=\"6\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Gut health\"><div>Gut h"
+    },
+    {
+     "n": 8,
+     "attrs": {
+      "id": "0004f7597258ea7d9d6ffb99585eb49a1ee82959",
+      "data-option-id": "0004f7597258ea7d9d6ffb99585eb49a1ee82959",
+      "data-option-index": "7",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Stronger immunity"
+     },
+     "text": "Stronger immunity/Stronger immunity/Stronger immunity",
+     "tc": "Stronger immunityStronger immunityStronger immunity",
+     "aria": "Stronger immunity",
+     "checked": "false",
+     "role": "radio",
+     "box": [
+      69,
+      594,
+      240,
+      45
+     ],
+     "vis": true,
+     "rects": 1,
+     "outer": "<li id=\"0004f7597258ea7d9d6ffb99585eb49a1ee82959\" data-option-id=\"0004f7597258ea7d9d6ffb99585eb49a1ee82959\" data-option-index=\"7\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Stronger immunity\"><di"
+    },
+    {
+     "n": 9,
+     "attrs": {
+      "id": "5acb8ad42a79367d94a647efcd4b2696fe5d2464",
+      "data-option-id": "5acb8ad42a79367d94a647efcd4b2696fe5d2464",
+      "data-option-index": "8",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Hormonal balance"
+     },
+     "text": "Hormonal balance/Hormonal balance/Hormonal balance",
+     "tc": "Hormonal balanceHormonal balanceHormonal balance",
+     "aria": "Hormonal balance",
+     "checked": "false",
+     "role": "radio",
+     "box": [
+      69,
+      660,
+      240,
+      45
+     ],
+     "vis": true,
+     "rects": 1,
+     "outer": "<li id=\"5acb8ad42a79367d94a647efcd4b2696fe5d2464\" data-option-id=\"5acb8ad42a79367d94a647efcd4b2696fe5d2464\" data-option-index=\"8\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Hormonal balance\"><div"
+    }
+   ]
+  }
+ ],
+ "buttons": [
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "attrs": {
+    "class": "c3cc28a3ee721b407f2f0ca78f847d56c32da9a04",
+    "tabindex": "0",
+    "title": "Back"
+   },
+   "text": "← BACK",
+   "box": [
+    162,
+    795,
+    52,
+    19
+   ],
+   "disabled": false,
+   "vis": true
+  }
+ ]
+}

@@ -1,0 +1,14 @@
+{"step": 0, "action": "goto", "ok": null, "progress": null, "progress_why": "不导航：页面由平台按任务开好（产物不自己导航一遍）"}
+{"step": 0, "action": "pre", "ok": true, "progress": null, "target": {"text": "See if you qualify for benefits", "selector": "#main > div:nth-of-type(1) > div:nth-of-"}, "progress_why": "前置：进问卷之前那几步"}
+{"step": 1, "action": "form", "ok": true, "progress": false, "target": {"testid": "\u0004zipcode"}, "note": "填了 \u0004zipcode"}
+{"step": 2, "action": "click", "ok": true, "progress": true, "target": {"token": "\u0001What is Social Security Disability?"}, "note": "答了第 1 题"}
+{"step": 3, "action": "none", "ok": null, "progress": null, "progress_why": "Next 已可见、这一屏还没成形（第 1 轮）", "head": "FAQ", "target": {"options": 5, "inputs": 1, "nextTxt": "Next"}}
+{"step": 4, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 5, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 6, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 7, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 8, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 9, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 10, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 11, "action": "click", "ok": true, "progress": null, "progress_why": "点了 Next，页面变没变由下一轮读出来", "target": {"text": "Next"}, "note": "Next"}
+{"step": 12, "action": "click", "ok": false, "progress": null, "progress_why": "连着 8 次点 Next、页面还是那一屏"}

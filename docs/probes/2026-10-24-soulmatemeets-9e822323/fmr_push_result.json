@@ -1,0 +1,19 @@
+{
+ "key": "soulmatemeets.com/land/sp/9e822323",
+ "local_sha256": "0a826139ee473cf210b29de9036fbb24ea06fb4cd0f82eda6a505874fd19a50f",
+ "config_id": 222,
+ "created": true,
+ "linked": {
+  "site": "soulmatemeets.com/land/sp/9e822323",
+  "config_id": 222,
+  "created": true
+ },
+ "readback_sha256": "0a826139ee473cf210b29de9036fbb24ea06fb4cd0f82eda6a505874fd19a50f",
+ "sites_row": {
+  "site": "soulmatemeets.com/land/sp/9e822323",
+  "config_id": 222,
+  "status": 1
+ },
+ "config66_unchanged": true,
+ "config66_sha256": "b7e3fc041f7cadafd39b4363a8b7b7a6411380789c2ec0ac80f7529e2fc0f6c8"
+}

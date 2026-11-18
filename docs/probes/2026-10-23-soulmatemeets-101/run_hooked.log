@@ -1,0 +1,48 @@
+2026-10-23 15:42:56,133 INFO [sm101probe_1792741372] japansdates: Alex alexprobe9620@outlook.com
+2026-10-23 15:42:58,236 WARNING [sm101probe_1792741372] 卡住诊断 step= next=False legal=False options=[] labels=[] inputs=[] url=-|https://soulmatemeets.com/land/sp/23d247da/
+2026-10-23 15:42:58,236 INFO [sm101probe_1792741372] step 1: nothing actionable (1, 0s) 
+2026-10-23 15:43:00,004 INFO [sm101probe_1792741372] step 2: nothing actionable (2, 2s) 
+2026-10-23 15:43:01,950 INFO [sm101probe_1792741372] step 3 [step-content-item-Basic+step-content-item-AgeLegalText+step-content-item-ChooseAge] Sign In Let's make the most of your dating exp -> (文本) 25-34
+2026-10-23 15:43:04,208 INFO [sm101probe_1792741372] 点掉了「同意条」（[data-sf-consent="1"]，'Ok with all'）
+2026-10-23 15:43:04,704 INFO [sm101probe_1792741372] step 4 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Wha -> option-find-friend
+2026-10-23 15:43:06,303 INFO [sm101probe_1792741372] step 5 [step-content-item-ChoosePrefGender] 1 2 3 4 Your profile Preferences Finish up Who -> pref-gender-female
+2026-10-23 15:43:08,564 INFO [sm101probe_1792741372] step 6 [step-content-item-Basic+step-content-item-Basic] continue (1 2 3 4 Your profile Preferences Finish up Not)
+2026-10-23 15:43:11,042 INFO [sm101probe_1792741372] step 7 [step-content-item-ChooseGender] 1 2 3 4 Your profile Preferences Finish up Cho -> gender-female
+2026-10-23 15:43:13,080 INFO [sm101probe_1792741372] step 8 [step-content-item-Basic+step-content-item-Basic+step-content-item-Basic] continue (1 2 3 4 Your profile Preferences Finish up You)
+2026-10-23 15:43:14,996 INFO [sm101probe_1792741372] step 9 [step-content-item-InputNameAutofill]: filled firstname
+2026-10-23 15:43:16,607 INFO [sm101probe_1792741372] step 10 [step-content-item-InputNameAutofill] continue (1 2 3 4 Your profile Preferences Finish up How)
+2026-10-23 15:43:19,428 INFO [sm101probe_1792741372] step 11 [step-content-item-Basic+step-content-item-Basic] continue (1 2 3 4 Your profile Preferences Finish up Not)
+2026-10-23 15:43:21,384 INFO [sm101probe_1792741372] step 12 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Wha -> option-mind
+2026-10-23 15:43:24,269 INFO [sm101probe_1792741372] step 13 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Wha -> option-blonde-hair
+2026-10-23 15:43:27,920 INFO [sm101probe_1792741372] step 14 [step-content-item-Basic+step-content-item-Basic+step-content-item-Basic] continue (1 2 3 4 Your profile Preferences Finish up Fac)
+2026-10-23 15:43:30,349 INFO [sm101probe_1792741372] step 15 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Wha -> option-humour
+2026-10-23 15:43:35,528 INFO [sm101probe_1792741372] step 16 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up The -> option-nothing-serious
+2026-10-23 15:43:37,721 INFO [sm101probe_1792741372] step 17 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up The -> option-сonspiracy
+2026-10-23 15:43:39,826 INFO [sm101probe_1792741372] step 18 [step-content-item-Preferences]: 已选中 2 个，按 continue
+2026-10-23 15:43:42,344 INFO [sm101probe_1792741372] step 19 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up The -> option-sports
+2026-10-23 15:43:45,794 INFO [sm101probe_1792741372] step 20 [step-content-item-Preferences]: 已选中 1 个，按 continue
+2026-10-23 15:43:47,245 WARNING [sm101probe_1792741372] 卡住诊断 step=step-content-item-Basic+step-content-item-Basic+step-content-item-LoadingBarComponent next=False legal=False options=[] labels=[] inputs=[] url=step15|https://soulmatemeets.com/land/sp/23d247da/?id_vis
+2026-10-23 15:43:47,245 INFO [sm101probe_1792741372] step 21: nothing actionable (1, 0s) 1 2 3 4 Your profile Preferences Finish up Thanks, Alex for 
+2026-10-23 15:43:49,196 INFO [sm101probe_1792741372] step 22: nothing actionable (2, 2s) 1 2 3 4 Your profile Preferences Finish up Thanks, Alex for 
+2026-10-23 15:43:50,884 INFO [sm101probe_1792741372] step 23: nothing actionable (3, 4s) 1 2 3 4 Your profile Preferences Finish up Thanks, Alex for 
+2026-10-23 15:43:53,063 INFO [sm101probe_1792741372] step 24 [step-content-item-Basic+step-content-item-Basic+step-content-item-LoadingBarComponent] continue (1 2 3 4 Your profile Preferences Finish up Tha)
+2026-10-23 15:43:55,004 INFO [sm101probe_1792741372] step 25 [step-content-item-ProgressPanel+step-content-item-Basic+step-content-item-Basic] continue (Seems like you are a @Confidence builder! You )
+2026-10-23 15:43:57,979 INFO [sm101probe_1792741372] step 26 [step-content-item-InputEmail+step-content-item-DynamicComponent]: filled email
+2026-10-23 15:44:00,032 INFO [sm101probe_1792741372] step 27 [step-content-item-InputEmail+step-content-item-DynamicComponent] continue (1 2 3 4 Your profile Preferences Finish up Wri)
+2026-10-23 15:44:05,343 INFO [sm101probe_1792741372] step 28 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Are -> option-yes
+2026-10-23 15:44:10,524 INFO [sm101probe_1792741372] step 29 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Are -> option-maybe
+2026-10-23 15:44:16,280 INFO [sm101probe_1792741372] step 30 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Is  -> option-maybe
+2026-10-23 15:44:20,977 INFO [sm101probe_1792741372] step 31 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Is  -> option-yes-i-enjoy-that
+2026-10-23 15:44:26,662 INFO [sm101probe_1792741372] step 32 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Is  -> option-no-its-me-usually-writing-first
+2026-10-23 15:44:31,687 INFO [sm101probe_1792741372] step 33 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Is  -> (文本) Maybe
+2026-10-23 15:44:35,194 INFO [sm101probe_1792741372] step 34 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Is  -> (文本) No, It’s me usually writing first
+2026-10-23 15:44:38,989 INFO [sm101probe_1792741372] step 35 [step-content-item-Basic+step-content-item-Basic] continue (1 2 3 4 Your profile Preferences Finish up Fac)
+2026-10-23 15:44:41,436 INFO [sm101probe_1792741372] step 36 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Any -> option-i-practice-dating-online
+2026-10-23 15:44:43,841 INFO [sm101probe_1792741372] step 37 [step-content-item-Basic+step-content-item-Basic+step-content-item-Basic] continue (1 2 3 4 Your profile Preferences Finish up Get)
+2026-10-23 15:44:45,999 INFO [sm101probe_1792741372] step 38 [step-content-item-InputPassword]: filled password
+2026-10-23 15:44:48,977 INFO [sm101probe_1792741372] step 39 [step-content-item-InputPassword] continue (1 2 3 4 Your profile Preferences Finish up Cre)
+2026-10-23 15:44:51,692 WARNING [sm101probe_1792741372] 卡住诊断 step=step-content-item-CheckboxTerms next=False legal=False options=[] labels=[] inputs=[] url=step24|https://soulmatemeets.com/land/sp/23d247da/?id_vis
+2026-10-23 15:44:51,693 INFO [sm101probe_1792741372] step 40: nothing actionable (1, 0s) 1 2 3 4 Your profile Preferences Finish up Thanks for your a
+2026-10-23 15:44:54,080 INFO [sm101probe_1792741372] step 41: nothing actionable (2, 2s) 1 2 3 4 Your profile Preferences Finish up Thanks for your a
+2026-10-23 15:44:55,699 INFO [sm101probe_1792741372] step 42: nothing actionable (3, 4s) About Us Terms of Use Privacy Policy Arbitration Agreement
+2026-10-23 15:44:57,455 INFO [sm101probe_1792741372] SUCCESS: https://soulmatemeets.com/land/sp/23d247da/?id_visit_prev=47693b74-97c2-4f66-ab1（站点状态 wizard1）

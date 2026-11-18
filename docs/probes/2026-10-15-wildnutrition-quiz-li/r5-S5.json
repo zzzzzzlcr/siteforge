@@ -1,0 +1,179 @@
+{
+ "url": "https://www.wildnutrition.com/pages/what-supplements-should-i-take",
+ "scrollY": 64,
+ "email_inputs": 0,
+ "wrap": true,
+ "wrap_text": "How often do you feel overwhelmed? | Daily | Daily | Daily | Often | Often | Often | Every now and then | Every now and then | Every now and then | Rarely | Rarely | Rarely | ← BACK",
+ "has_continue": false,
+ "has_back": true,
+ "when_minus3": false,
+ "ul_count": 1,
+ "uls": [
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)",
+   "attrs": {
+    "id": "oct-multiple-choice-answers-root-ec5be9979811aa88f954dd2e7072b016089008fc",
+    "class": "c4813031ec989a99cc909092474d3860ae86dc280",
+    "role": "radiogroup",
+    "aria-labelledby": "oct-q-title-ec5be9979811aa88f954dd2e7072b016089008fc"
+   },
+   "box": [
+    60,
+    250,
+    240,
+    271
+   ],
+   "question": "How often do you feel overwhelmed?",
+   "lis": [
+    {
+     "n": 1,
+     "attrs": {
+      "id": "7b72d5ef9a296e3b4eef6a886950e64221b48c7a",
+      "data-option-id": "7b72d5ef9a296e3b4eef6a886950e64221b48c7a",
+      "data-option-index": "0",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Daily"
+     },
+     "text": "Daily/Daily/Daily",
+     "tc": "DailyDailyDaily",
+     "aria": "Daily",
+     "role": "radio",
+     "checked": "false",
+     "box": [
+      60,
+      280,
+      240,
+      45
+     ],
+     "vis": true,
+     "kids": [
+      "div:Daily",
+      "div.c172cbd0c2bf205570696c4924:Daily",
+      "div.c172cbd0c2bf205570696c4924:Daily",
+      "div.cbff65efbebad7d334749c6b6f:(无字)"
+     ],
+     "outer": "<li id=\"7b72d5ef9a296e3b4eef6a886950e64221b48c7a\" data-option-id=\"7b72d5ef9a296e3b4eef6a886950e64221b48c7a\" data-option-index=\"0\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Daily\"><div>Daily</div><div class=\"c172cbd0c2bf205570696c4924b61be20b9b49a64-defau"
+    },
+    {
+     "n": 2,
+     "attrs": {
+      "id": "a10a64d5354c69c6411b43799d30bfc5e4b75ac4",
+      "data-option-id": "a10a64d5354c69c6411b43799d30bfc5e4b75ac4",
+      "data-option-index": "1",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Often"
+     },
+     "text": "Often/Often/Often",
+     "tc": "OftenOftenOften",
+     "aria": "Often",
+     "role": "radio",
+     "checked": "false",
+     "box": [
+      60,
+      345,
+      240,
+      45
+     ],
+     "vis": true,
+     "kids": [
+      "div:Often",
+      "div.c172cbd0c2bf205570696c4924:Often",
+      "div.c172cbd0c2bf205570696c4924:Often",
+      "div.cbff65efbebad7d334749c6b6f:(无字)"
+     ],
+     "outer": "<li id=\"a10a64d5354c69c6411b43799d30bfc5e4b75ac4\" data-option-id=\"a10a64d5354c69c6411b43799d30bfc5e4b75ac4\" data-option-index=\"1\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Often\"><div>Often</div><div class=\"c172cbd0c2bf205570696c4924b61be20b9b49a64-defau"
+    },
+    {
+     "n": 3,
+     "attrs": {
+      "id": "7839b8cdd46f6d3ea3a761912c6efc71726effca",
+      "data-option-id": "7839b8cdd46f6d3ea3a761912c6efc71726effca",
+      "data-option-index": "2",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Every now and then"
+     },
+     "text": "Every now and then/Every now and then/Every now and then",
+     "tc": "Every now and thenEvery now and thenEvery now and then",
+     "aria": "Every now and then",
+     "role": "radio",
+     "checked": "false",
+     "box": [
+      60,
+      410,
+      240,
+      45
+     ],
+     "vis": true,
+     "kids": [
+      "div:Every now and then",
+      "div.c172cbd0c2bf205570696c4924:Every now and then",
+      "div.c172cbd0c2bf205570696c4924:Every now and then",
+      "div.cbff65efbebad7d334749c6b6f:(无字)"
+     ],
+     "outer": "<li id=\"7839b8cdd46f6d3ea3a761912c6efc71726effca\" data-option-id=\"7839b8cdd46f6d3ea3a761912c6efc71726effca\" data-option-index=\"2\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Every now and then\"><div>Every now and then</div><div class=\"c172cbd0c2bf205570696"
+    },
+    {
+     "n": 4,
+     "attrs": {
+      "id": "e79c31210324861ad83f9b27b5bfdd89cbb5141b",
+      "data-option-id": "e79c31210324861ad83f9b27b5bfdd89cbb5141b",
+      "data-option-index": "3",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Rarely"
+     },
+     "text": "Rarely/Rarely/Rarely",
+     "tc": "RarelyRarelyRarely",
+     "aria": "Rarely",
+     "role": "radio",
+     "checked": "false",
+     "box": [
+      60,
+      476,
+      240,
+      45
+     ],
+     "vis": true,
+     "kids": [
+      "div:Rarely",
+      "div.c172cbd0c2bf205570696c4924:Rarely",
+      "div.c172cbd0c2bf205570696c4924:Rarely",
+      "div.cbff65efbebad7d334749c6b6f:(无字)"
+     ],
+     "outer": "<li id=\"e79c31210324861ad83f9b27b5bfdd89cbb5141b\" data-option-id=\"e79c31210324861ad83f9b27b5bfdd89cbb5141b\" data-option-index=\"3\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Rarely\"><div>Rarely</div><div class=\"c172cbd0c2bf205570696c4924b61be20b9b49a64-def"
+    }
+   ]
+  }
+ ],
+ "buttons": [
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "attrs": {
+    "class": "c98cbcdcbbaa899a677d2ad2116038757fdc3025c",
+    "tabindex": "0",
+    "title": "Back"
+   },
+   "text": "← BACK",
+   "box": [
+    154,
+    611,
+    52,
+    19
+   ],
+   "disabled": false,
+   "vis": true,
+   "aria_disabled": null
+  }
+ ]
+}

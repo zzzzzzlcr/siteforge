@@ -1,0 +1,116 @@
+2026-10-22 05:46:23 [INFO] form_fill_loop: [evidence-try_20261022-054618] loop: site=try provenance=None
+INFO:form_fill_loop:[evidence-try_20261022-054618] loop: site=try provenance=None
+2026-10-22 05:46:23 [INFO] form_fill_loop: [evidence-try_20261022-054618] 这一版**不自己导航**（谁开页面谁负责）——就在当前这一页上开干
+INFO:form_fill_loop:[evidence-try_20261022-054618] 这一版**不自己导航**（谁开页面谁负责）——就在当前这一页上开干
+2026-10-22 05:46:24 [INFO] form_fill_loop: [evidence-try_20261022-054618] 前置：点「See if you qualify for benefit」-> 点了
+INFO:form_fill_loop:[evidence-try_20261022-054618] 前置：点「See if you qualify for benefit」-> 点了
+2026-10-22 05:46:29 [INFO] form_fill_loop: [evidence-try_20261022-054618] 前置：到了（地址里有 https://www.atticus.com/disability-benefits/n/get-help/surve）
+INFO:form_fill_loop:[evidence-try_20261022-054618] 前置：到了（地址里有 https://www.atticus.com/disability-benefits/n/get-help/surve）
+2026-10-22 05:46:30 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 1: 填了 zipcode
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 1: 填了 zipcode
+2026-10-22 05:46:33 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 2: 填了 zipcode
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 2: 填了 zipcode
+2026-10-22 05:46:35 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 3: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 3: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+2026-10-22 05:46:37 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 4: Next（Hi there! I'm Jackie. Together, we'll se）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 4: Next（Hi there! I'm Jackie. Together, we'll se）
+2026-10-22 05:46:38 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 5: Next（Atticus got 334 New Yorkers approved for）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 5: Next（Atticus got 334 New Yorkers approved for）
+2026-10-22 05:46:41 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 6: 填了 :r0:
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 6: 填了 :r0:
+2026-10-22 05:46:42 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 7: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 7: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+2026-10-22 05:46:44 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 8: Next（What's your age? This determines which b）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 8: Next（What's your age? This determines which b）
+2026-10-22 05:46:45 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 9: Next（Disability benefits provide monthly chec）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 9: Next（Disability benefits provide monthly chec）
+2026-10-22 05:46:46 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 10: Next（Disability benefits provide monthly chec）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 10: Next（Disability benefits provide monthly chec）
+2026-10-22 05:46:47 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 11: Next（Disability benefits provide monthly chec）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 11: Next（Disability benefits provide monthly chec）
+2026-10-22 05:46:50 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 12 [] Who are you seeking disability benefits for? Mys -> Patient or client
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 12 [] Who are you seeking disability benefits for? Mys -> Patient or client
+2026-10-22 05:46:51 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 13: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 13: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+2026-10-22 05:46:52 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 14: Next（Who are you seeking disability benefits ）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 14: Next（Who are you seeking disability benefits ）
+2026-10-22 05:46:54 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 15 [] First, we have a few questions to make sure we c -> Why do we need to know?
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 15 [] First, we have a few questions to make sure we c -> Why do we need to know?
+2026-10-22 05:46:55 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 16: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 16: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+2026-10-22 05:46:57 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 17: Next（First, we have a few questions to make s）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 17: Next（First, we have a few questions to make s）
+2026-10-22 05:46:58 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 18 [] Have you applied for Social Security Disability  -> No, never
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 18 [] Have you applied for Social Security Disability  -> No, never
+2026-10-22 05:47:00 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 19 [] Did you ever hire a lawyer to help you with your -> Not sure?
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 19 [] Did you ever hire a lawyer to help you with your -> Not sure?
+2026-10-22 05:47:05 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 20: 结构化快照也没读出能动的东西（fields=0 actions=4）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 20: 结构化快照也没读出能动的东西（fields=0 actions=4）
+2026-10-22 05:47:05 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 20: 这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次） | Did you ever hire a lawyer to help you with your d
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 20: 这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次） | Did you ever hire a lawyer to help you with your d
+2026-10-22 05:47:07 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 21 [] Did you ever hire a lawyer to help you with your -> No
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 21 [] Did you ever hire a lawyer to help you with your -> No
+2026-10-22 05:47:08 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 22 [] Does that look right? -> Yes, that's correct
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 22 [] Does that look right? -> Yes, that's correct
+2026-10-22 05:47:10 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 23 [] Next, we’ll ask about how much you’re working. -> Why do we need to know?
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 23 [] Next, we’ll ask about how much you’re working. -> Why do we need to know?
+2026-10-22 05:47:11 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 24: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 24: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+2026-10-22 05:47:12 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 25: Next（Next, we’ll ask about how much you’re wo）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 25: Next（Next, we’ll ask about how much you’re wo）
+2026-10-22 05:47:14 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 26 [] When was the last time you got paid for work? Th -> Within the last month
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 26 [] When was the last time you got paid for work? Th -> Within the last month
+2026-10-22 05:47:18 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 27: 结构化快照也没读出能动的东西（fields=0 actions=4）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 27: 结构化快照也没读出能动的东西（fields=0 actions=4）
+2026-10-22 05:47:18 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 27: 这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次） | When was the last time you got paid for work? This
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 27: 这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次） | When was the last time you got paid for work? This
+2026-10-22 05:47:20 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 28 [] Are you getting paid for work this week? Yes No -> Yes
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 28 [] Are you getting paid for work this week? Yes No -> Yes
+2026-10-22 05:47:22 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 29 [] Which of these best describes your situation? I' -> I'm on medical leave and may no
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 29 [] Which of these best describes your situation? I' -> I'm on medical leave and may no
+2026-10-22 05:47:23 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 30 [] Lastly, we need to know a little about your heal -> Why do we need to know?
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 30 [] Lastly, we need to know a little about your heal -> Why do we need to know?
+2026-10-22 05:47:24 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 31: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 31: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+2026-10-22 05:47:26 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 32: Next（Lastly, we need to know a little about y）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 32: Next（Lastly, we need to know a little about y）
+2026-10-22 05:47:28 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 33 [] What's making it hard to work right now? Mostly  -> A mix of physical and mental he
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 33 [] What's making it hard to work right now? Mostly  -> A mix of physical and mental he
+2026-10-22 05:47:29 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 34 [] In the last year, have you... Select all that ap -> Had surgery
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 34 [] In the last year, have you... Select all that ap -> Had surgery
+2026-10-22 05:47:30 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 35: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 35: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+2026-10-22 05:47:32 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 36: Next（In the last year, have you... Select all）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 36: Next（In the last year, have you... Select all）
+2026-10-22 05:47:33 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 37: Next（You look like a strong candidate for ben）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 37: Next（You look like a strong candidate for ben）
+2026-10-22 05:47:35 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 38 [] What are you most interested in today? Whether y -> I want to know if it's right fo
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 38 [] What are you most interested in today? Whether y -> I want to know if it's right fo
+2026-10-22 05:47:39 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 39: 结构化快照也没读出能动的东西（fields=0 actions=3）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 39: 结构化快照也没读出能动的东西（fields=0 actions=3）
+2026-10-22 05:47:39 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 39: 这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次） | What are you most interested in today? Whether you
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 39: 这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次） | What are you most interested in today? Whether you
+2026-10-22 05:47:40 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 40: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 40: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+2026-10-22 05:47:42 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 41: Next（Get timely answers that the SSA won't gi）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 41: Next（Get timely answers that the SSA won't gi）
+2026-10-22 05:47:44 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 42: 填了 :r1:
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 42: 填了 :r1:
+2026-10-22 05:47:45 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 42: 填了 :r2:
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 42: 填了 :r2:
+2026-10-22 05:47:47 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 43 [] How can we reach you? -> I'm the applicant
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 43 [] How can we reach you? -> I'm the applicant
+2026-10-22 05:47:49 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 44: 填了 :r3:
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 44: 填了 :r3:
+2026-10-22 05:47:51 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 44: 填了 :r4:
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 44: 填了 :r4:
+2026-10-22 05:47:52 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 45: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 45: 这一屏可见的东西还没有 ⇒ 再看一眼再决定
+2026-10-22 05:47:53 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 46: Next（How can we reach you?）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 46: Next（How can we reach you?）
+2026-10-22 05:47:58 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 47: 结构化快照也没读出能动的东西（fields=0 actions=8）
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 47: 结构化快照也没读出能动的东西（fields=0 actions=8）
+2026-10-22 05:47:58 [INFO] form_fill_loop: [evidence-try_20261022-054618] step 47: 这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次） | How can we reach you?
+INFO:form_fill_loop:[evidence-try_20261022-054618] step 47: 这一屏**已经答过了**、但页面上没有认得出的「下一步」可点（1）｜放行再答一次（第 1 次） | How can we reach you?
+2026-10-22 05:47:59 [INFO] form_fill_loop: [evidence-try_20261022-054618] SUCCESS(url): https://www.atticus.com/disability-benefits/n/get-help/survey/qual/post-conversion-ah
+INFO:form_fill_loop:[evidence-try_20261022-054618] SUCCESS(url): https://www.atticus.com/disability-benefits/n/get-help/survey/qual/post-conversion-ah

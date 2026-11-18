@@ -1,0 +1,49 @@
+{
+ "url": "https://www.wildnutrition.com/pages/what-supplements-should-i-take",
+ "scrollY": 64,
+ "email_inputs": 0,
+ "body_text": "Toggle menu | SEARCH | Wild Nutrition® Ltd | ACCOUNT | BASKET | 0 | Search our store | Search | Search | ASK LUNA | Bestsellers | Take the quiz | Book a consultation | CONTINUE | ← BACK | Community | ",
+ "wrap": true,
+ "has_continue": true,
+ "has_back": true,
+ "wrap_text": "CONTINUE | ← BACK",
+ "ul_count": 0,
+ "uls": [],
+ "buttons": [
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(2) > button:nth-of-type(1)",
+   "attrs": {
+    "class": "c9fccbe366f7810f2aa1040f61cc40ff3353f31fc",
+    "tabindex": "0",
+    "title": "",
+    "aria-disabled": "false"
+   },
+   "text": "CONTINUE",
+   "box": [
+    129,
+    297,
+    101,
+    41
+   ],
+   "disabled": false,
+   "vis": true
+  },
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "attrs": {
+    "class": "c7740384802db34183f0ec3c6171552ab87ec3cd2",
+    "tabindex": "0",
+    "title": "Back"
+   },
+   "text": "← BACK",
+   "box": [
+    154,
+    398,
+    52,
+    19
+   ],
+   "disabled": false,
+   "vis": true
+  }
+ ]
+}

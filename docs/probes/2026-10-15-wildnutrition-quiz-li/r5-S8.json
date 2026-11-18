@@ -1,0 +1,70 @@
+{
+ "url": "https://www.wildnutrition.com/pages/what-supplements-should-i-take",
+ "scrollY": 64,
+ "email_inputs": 1,
+ "wrap": true,
+ "wrap_text": " Receive a code for 50% off your first 3 months* | We will send your personalised recommendations and discount straight to your inbox | * Our 50% off for 3 months offer is valid for new customers only | SUBMIT | Skip | ← BACK",
+ "has_continue": false,
+ "has_back": true,
+ "when_minus3": false,
+ "ul_count": 0,
+ "uls": [],
+ "buttons": [
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(2) > button:nth-of-type(1)",
+   "attrs": {
+    "class": "caf09d187d026abb605feb6f74f5139282053f70c",
+    "tabindex": "0",
+    "title": "Submit",
+    "disabled": "",
+    "aria-disabled": "true"
+   },
+   "text": "SUBMIT",
+   "box": [
+    138,
+    498,
+    85,
+    41
+   ],
+   "disabled": true,
+   "vis": true,
+   "aria_disabled": "true"
+  },
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(3) > button:nth-of-type(1)",
+   "attrs": {
+    "class": "c773f0e4b596489c7a56f3c54d53590c351cb0775",
+    "tabindex": "0",
+    "title": "Skip"
+   },
+   "text": "Skip",
+   "box": [
+    166,
+    584,
+    28,
+    17
+   ],
+   "disabled": false,
+   "vis": true,
+   "aria_disabled": null
+  },
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "attrs": {
+    "class": "cd02412e7d79b3fe54972b07d128ab931992f76e9",
+    "tabindex": "0",
+    "title": "Back"
+   },
+   "text": "← BACK",
+   "box": [
+    154,
+    676,
+    52,
+    19
+   ],
+   "disabled": false,
+   "vis": true,
+   "aria_disabled": null
+  }
+ ]
+}

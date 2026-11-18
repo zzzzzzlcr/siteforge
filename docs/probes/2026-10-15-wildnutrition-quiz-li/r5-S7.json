@@ -1,0 +1,115 @@
+{
+ "url": "https://www.wildnutrition.com/pages/what-supplements-should-i-take",
+ "scrollY": 64,
+ "email_inputs": 0,
+ "wrap": true,
+ "wrap_text": "How would you describe your diet? | Anything goes | Anything goes | Anything goes | Vegetarian | Vegetarian | Vegetarian | ← BACK",
+ "has_continue": false,
+ "has_back": true,
+ "when_minus3": false,
+ "ul_count": 1,
+ "uls": [
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)",
+   "attrs": {
+    "id": "oct-multiple-choice-answers-root-00c026c9fab77cc65cd77e50c2fb2acc7a9b1581",
+    "class": "cd0996c549de0b71122a22cddff8b17a9e1543d79",
+    "role": "radiogroup",
+    "aria-labelledby": "oct-q-title-00c026c9fab77cc65cd77e50c2fb2acc7a9b1581"
+   },
+   "box": [
+    60,
+    250,
+    240,
+    140
+   ],
+   "question": "How would you describe your diet?",
+   "lis": [
+    {
+     "n": 1,
+     "attrs": {
+      "id": "784a7aa1965da12f39c8defb108c9ea4e43a6c7e",
+      "data-option-id": "784a7aa1965da12f39c8defb108c9ea4e43a6c7e",
+      "data-option-index": "0",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Anything goes"
+     },
+     "text": "Anything goes/Anything goes/Anything goes",
+     "tc": "Anything goesAnything goesAnything goes",
+     "aria": "Anything goes",
+     "role": "radio",
+     "checked": "false",
+     "box": [
+      60,
+      280,
+      240,
+      45
+     ],
+     "vis": true,
+     "kids": [
+      "div:Anything goes",
+      "div.c405f221013e5ede7cede2754d:Anything goes",
+      "div.c405f221013e5ede7cede2754d:Anything goes",
+      "div.c15c3ceb2fc658459dcc587ad2:(无字)"
+     ],
+     "outer": "<li id=\"784a7aa1965da12f39c8defb108c9ea4e43a6c7e\" data-option-id=\"784a7aa1965da12f39c8defb108c9ea4e43a6c7e\" data-option-index=\"0\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Anything goes\"><div>Anything goes</div><div class=\"c405f221013e5ede7cede2754dbaffc"
+    },
+    {
+     "n": 2,
+     "attrs": {
+      "id": "bc03ef09d0c412890c851319b2bfe4783362a4a5",
+      "data-option-id": "bc03ef09d0c412890c851319b2bfe4783362a4a5",
+      "data-option-index": "1",
+      "class": "oct-quiz-multiple-choice-options__option",
+      "tabindex": "0",
+      "role": "radio",
+      "aria-checked": "false",
+      "aria-label": "Vegetarian"
+     },
+     "text": "Vegetarian/Vegetarian/Vegetarian",
+     "tc": "VegetarianVegetarianVegetarian",
+     "aria": "Vegetarian",
+     "role": "radio",
+     "checked": "false",
+     "box": [
+      60,
+      345,
+      240,
+      45
+     ],
+     "vis": true,
+     "kids": [
+      "div:Vegetarian",
+      "div.c405f221013e5ede7cede2754d:Vegetarian",
+      "div.c405f221013e5ede7cede2754d:Vegetarian",
+      "div.c15c3ceb2fc658459dcc587ad2:(无字)"
+     ],
+     "outer": "<li id=\"bc03ef09d0c412890c851319b2bfe4783362a4a5\" data-option-id=\"bc03ef09d0c412890c851319b2bfe4783362a4a5\" data-option-index=\"1\" class=\"oct-quiz-multiple-choice-options__option\" tabindex=\"0\" role=\"radio\" aria-checked=\"false\" aria-label=\"Vegetarian\"><div>Vegetarian</div><div class=\"c405f221013e5ede7cede2754dbaffc48d3d0"
+    }
+   ]
+  }
+ ],
+ "buttons": [
+  {
+   "path": "body:nth-of-type(1) > main:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(1) > div:nth-of-type(2) > div:nth-of-type(1) > button:nth-of-type(1)",
+   "attrs": {
+    "class": "c00b70aadc16e778d792adb77ee9c7d8cdf30e14b",
+    "tabindex": "0",
+    "title": "Back"
+   },
+   "text": "← BACK",
+   "box": [
+    154,
+    477,
+    52,
+    19
+   ],
+   "disabled": false,
+   "vis": true,
+   "aria_disabled": null
+  }
+ ]
+}

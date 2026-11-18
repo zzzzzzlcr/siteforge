@@ -1,0 +1,255 @@
+探针开始 18:41:59
+窗口探活：**不在**
+窗口不在 ⇒ 开一个
+ws = ws://192.168.1.222:61129/devtools/browser/6010c9fc-89b8-43ed-8b94-1f449e69d4d0
+  [navi quiz 页] rc=0 2.3s ｜2026/10/15 18:42:08 ERROR: could not unmarshal event: json: cannot unmarshal JSON string into Go network.CorsError within "/corsErrorStatus/corsError": unknown CorsError value: UnexpectedPrivateNetworkAccess ｜ 2026/10/15 18:42:08 ERROR: could not unmarshal event: json: cannot unmarshal JSON string into Go network.CorsError within "/corsErrorStatus/corsError": unknown CorsError value: UnexpectedPrivateNetworkAccess ｜ 2026/10/15 18:42:08 ERROR: could not unmarshal event: json: cannot unmarshal JS
+  等了 8s，quiz 容器出现
+  清浮层：{"clicked": ["#shopify-section-international-popup button"]}
+  清浮层：{"clicked": ["#shopify-section-international-popup button"]}
+
+########## S1  账本-2 第1步 li6 ##########
+  [S1] wrap=True ul=1 CONTINUE=False BACK=False 账本-3判据=False email框=0 scrollY=0
+      quiz 里印着：What’s your main health goal right now?  | More energy | More energy | More energy | Greater wellbeing | Greater wellbeing | Greater wellbeing | Emotional balance | Emotional balance | Emotional balance | Better sleep | Better sleep | Better sleep | Cycle support | Cycle support | Cycle support | Ha
+      UL 1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)
+         ul.attrs={"id": "oct-multiple-choice-answers-root-812ae45d37fb4e5387baf7cea6ad7840cf75c757", "class": "c30643056ea144011d9ad43971bdfa44f80c74738", "role": "radiogroup", "aria-labelledby": "oct-q-title-812ae45d 题面='What’s your main health goal right now?'
+         li#1  aria='More energy'            role=radio  checked=false text='More energy/More energy/More energy'          vis=True box=[69, 364, 240, 45]
+              attrs={"id": "bbb60065ca22877e14a824818bd90233f988309a", "data-option-id": "bbb60065ca22877e14a824818bd90233f988309a", "data-option-index": "0", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:More energy", "div.ca697c84d5c499fb44f3060f70:More energy", "div.ca697c84d5c499fb44f3060f70:More energy", "div.c97a23252da8f2046760fad87a:(无字)"]
+         li#2  aria='Greater wellbeing'      role=radio  checked=false text='Greater wellbeing/Greater wellbeing/Greater wellbeing' vis=True box=[69, 429, 240, 45]
+              attrs={"id": "4f629a989e31508b3b9961463901b3df859b718c", "data-option-id": "4f629a989e31508b3b9961463901b3df859b718c", "data-option-index": "1", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Greater wellbeing", "div.ca697c84d5c499fb44f3060f70:Greater wellbeing", "div.ca697c84d5c499fb44f3060f70:Greater wellbeing", "div.c97a23252da8f2046760fad87a:(无字)"]
+         li#3  aria='Emotional balance'      role=radio  checked=false text='Emotional balance/Emotional balance/Emotional balance' vis=True box=[69, 494, 240, 45]
+              attrs={"id": "3032e5ba774dd665f248409445f9fa51a24dd005", "data-option-id": "3032e5ba774dd665f248409445f9fa51a24dd005", "data-option-index": "2", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Emotional balance", "div.ca697c84d5c499fb44f3060f70:Emotional balance", "div.ca697c84d5c499fb44f3060f70:Emotional balance", "div.c97a23252da8f2046760fad87a:(无字)"]
+         li#4  aria='Better sleep'           role=radio  checked=false text='Better sleep/Better sleep/Better sleep'       vis=True box=[69, 560, 240, 45]
+              attrs={"id": "c0109b2abf545198481683df8c0565e36adbcb28", "data-option-id": "c0109b2abf545198481683df8c0565e36adbcb28", "data-option-index": "3", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Better sleep", "div.ca697c84d5c499fb44f3060f70:Better sleep", "div.ca697c84d5c499fb44f3060f70:Better sleep", "div.c97a23252da8f2046760fad87a:(无字)"]
+         li#5  aria='Cycle support'          role=radio  checked=false text='Cycle support/Cycle support/Cycle support'    vis=True box=[69, 625, 240, 45]
+              attrs={"id": "11bcefef580aa5b8a497ebda73e0713979b5a327", "data-option-id": "11bcefef580aa5b8a497ebda73e0713979b5a327", "data-option-index": "4", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Cycle support", "div.ca697c84d5c499fb44f3060f70:Cycle support", "div.ca697c84d5c499fb44f3060f70:Cycle support", "div.c97a23252da8f2046760fad87a:(无字)"]
+         li#6  aria='Hair, skin + nails'     role=radio  checked=false text='Hair, skin + nails/Hair, skin + nails/Hair, skin + nails' vis=True box=[69, 690, 240, 45]
+              attrs={"id": "d2877f461cc84ada1ffbe9a65fde98ff1ca7b66b", "data-option-id": "d2877f461cc84ada1ffbe9a65fde98ff1ca7b66b", "data-option-index": "5", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Hair, skin + nails", "div.ca697c84d5c499fb44f3060f70:Hair, skin + nails", "div.ca697c84d5c499fb44f3060f70:Hair, skin + nails", "div.c97a23252da8f2046760fad87a:(无字)"]
+         li#7  aria='Bones, joints + muscles' role=radio  checked=false text='Bones, joints + muscles/Bones, joints + muscles/Bones, joints + muscles' vis=True box=[69, 755, 240, 45]
+              attrs={"id": "05d5d012adcac306f860dae850f128b1df2ad56b", "data-option-id": "05d5d012adcac306f860dae850f128b1df2ad56b", "data-option-index": "6", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Bones, joints + muscles", "div.ca697c84d5c499fb44f3060f70:Bones, joints + muscles", "div.ca697c84d5c499fb44f3060f70:Bones, joints + muscles", "div.c97a23252da8f2046760fad87a:(无字)"]
+         li#8  aria='Gut health'             role=radio  checked=false text='Gut health/Gut health/Gut health'             vis=True box=[69, 820, 240, 45]
+              attrs={"id": "06c0c1402aee351dfe0418e004d5a3946f0652e8", "data-option-id": "06c0c1402aee351dfe0418e004d5a3946f0652e8", "data-option-index": "7", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Gut health", "div.ca697c84d5c499fb44f3060f70:Gut health", "div.ca697c84d5c499fb44f3060f70:Gut health", "div.c97a23252da8f2046760fad87a:(无字)"]
+         li#9  aria='Stronger immunity'      role=radio  checked=false text='Stronger immunity/Stronger immunity/Stronger immunity' vis=True box=[69, 886, 240, 45]
+              attrs={"id": "431e45ce8ef2cb4dd18b4181ec7ca5760270a669", "data-option-id": "431e45ce8ef2cb4dd18b4181ec7ca5760270a669", "data-option-index": "8", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Stronger immunity", "div.ca697c84d5c499fb44f3060f70:Stronger immunity", "div.ca697c84d5c499fb44f3060f70:Stronger immunity", "div.c97a23252da8f2046760fad87a:(无字)"]
+         li#10 aria='Hormonal balance'       role=radio  checked=false text='Hormonal balance/Hormonal balance/Hormonal balance' vis=True box=[69, 951, 240, 45]
+              attrs={"id": "2dde0b18796cfa67bf842bf5da6b7607755c1103", "data-option-id": "2dde0b18796cfa67bf842bf5da6b7607755c1103", "data-option-index": "9", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Hormonal balance", "div.ca697c84d5c499fb44f3060f70:Hormonal balance", "div.ca697c84d5c499fb44f3060f70:Hormonal balance", "div.c97a23252da8f2046760fad87a:(无字)"]
+         li#11 aria='Pregnancy + postpartum' role=radio  checked=false text='Pregnancy + postpartum/Pregnancy + postpartum/Pregnancy + postpartum' vis=True box=[69, 1016, 240, 45]
+              attrs={"id": "a7bec110ea0d2691172d37df8f0529fdf6d3b14e", "data-option-id": "a7bec110ea0d2691172d37df8f0529fdf6d3b14e", "data-option-index": "10", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ar
+              子元素=["div:Pregnancy + postpartum", "div.ca697c84d5c499fb44f3060f70:Pregnancy + postpartum", "div.ca697c84d5c499fb44f3060f70:Pregnancy + postpartum", "div.c97a23252da8f2046760fad87a:(无字)"]
+         li#12 aria='Fertility support'      role=radio  checked=false text='Fertility support/Fertility support/Fertility support' vis=True box=[69, 1081, 240, 45]
+              attrs={"id": "68f45b717bce41a1b7e90db35267f2ff17e0b67e", "data-option-id": "68f45b717bce41a1b7e90db35267f2ff17e0b67e", "data-option-index": "11", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ar
+              子元素=["div:Fertility support", "div.ca697c84d5c499fb44f3060f70:Fertility support", "div.ca697c84d5c499fb44f3060f70:Fertility support", "div.c97a23252da8f2046760fad87a:(无字)"]
+         li#13 aria='Perimenopause + menopause' role=radio  checked=false text='Perimenopause + menopause/Perimenopause + menopause/Perimenopause + menopause' vis=True box=[69, 1146, 240, 45]
+              attrs={"id": "14f26c36b4fced13edd0dc7026c2ab3f8aace8cd", "data-option-id": "14f26c36b4fced13edd0dc7026c2ab3f8aace8cd", "data-option-index": "12", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ar
+              子元素=["div:Perimenopause + menopause", "div.ca697c84d5c499fb44f3060f70:Perimenopause + menopause", "div.ca697c84d5c499fb44f3060f70:Perimenopause + menopause", "div.c97a23252da8f2046760fad87a:(无字)"]
+         li#14 aria='Weight management'      role=radio  checked=false text='Weight management/Weight management/Weight management' vis=True box=[69, 1211, 240, 45]
+              attrs={"id": "3f1ca09bc5d48b7af40247b954d0be5eedfce714", "data-option-id": "3f1ca09bc5d48b7af40247b954d0be5eedfce714", "data-option-index": "13", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ar
+              子元素=["div:Weight management", "div.ca697c84d5c499fb44f3060f70:Weight management", "div.ca697c84d5c499fb44f3060f70:Weight management", "div.c97a23252da8f2046760fad87a:(无字)"]
+  [observe S1] actions=60 quiz里=14（li 14）diag=0 obstructions=4；li 里 text 与 aria 都空=0
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1) text='More energyMore energyMore energy' aria='More energy' role=radio stab=low near=['Greater wellbeingGreater wellbeingGreate', 'What’s your main health goal right now?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2) text='Greater wellbeingGreater wellbeingGreater wellbein' aria='Greater wellbeing' role=radio stab=low near=['More energyMore energyMore energy', 'Emotional balanceEmotional balanceEmotio', 'What’s your main health goal right now?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3) text='Emotional balanceEmotional balanceEmotional balanc' aria='Emotional balance' role=radio stab=low near=['Greater wellbeingGreater wellbeingGreate', 'More energyMore energyMore energy', 'Better sleepBetter sleepBetter sleep', 'What’s your main health goal right now?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4) text='Better sleepBetter sleepBetter sleep' aria='Better sleep' role=radio stab=low near=['Emotional balanceEmotional balanceEmotio', 'Greater wellbeingGreater wellbeingGreate', 'Cycle supportCycle supportCycle support', 'What’s your main health goal right now?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5) text='Cycle supportCycle supportCycle support' aria='Cycle support' role=radio stab=low near=['Better sleepBetter sleepBetter sleep', 'Emotional balanceEmotional balanceEmotio', 'Hair, skin + nailsHair, skin + nailsHair', 'What’s your main health goal right now?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6) text='Hair, skin + nailsHair, skin + nailsHair, skin + n' aria='Hair, skin + nails' role=radio stab=low near=['Cycle supportCycle supportCycle support', 'Better sleepBetter sleepBetter sleep', 'Bones, joints + musclesBones, joints + m', 'What’s your main health goal right now?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7) text='Bones, joints + musclesBones, joints + musclesBone' aria='Bones, joints + muscles' role=radio stab=low near=['Hair, skin + nailsHair, skin + nailsHair', 'Cycle supportCycle supportCycle support', 'Gut healthGut healthGut health', 'What’s your main health goal right now?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8) text='Gut healthGut healthGut health' aria='Gut health' role=radio stab=low near=['Bones, joints + musclesBones, joints + m', 'Hair, skin + nailsHair, skin + nailsHair', 'Stronger immunityStronger immunityStrong', 'What’s your main health goal right now?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9) text='Stronger immunityStronger immunityStronger immunit' aria='Stronger immunity' role=radio stab=low near=['Gut healthGut healthGut health', 'Bones, joints + musclesBones, joints + m', 'Hormonal balanceHormonal balanceHormonal', 'What’s your main health goal right now?']
+      LI sel=1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(10) text='Hormonal balanceHormonal balanceHormonal balance' aria='Hormonal balance' role=radio stab=low near=['Stronger immunityStronger immunityStrong', 'Gut healthGut healthGut health', 'Pregnancy + postpartumPregnancy + postpa', 'What’s your main health goal right now?']
+      LI sel=1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(11) text='Pregnancy + postpartumPregnancy + postpartumPregna' aria='Pregnancy + postpartum' role=radio stab=low near=['Hormonal balanceHormonal balanceHormonal', 'Stronger immunityStronger immunityStrong', 'Fertility supportFertility supportFertil', 'What’s your main health goal right now?']
+      LI sel=1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(12) text='Fertility supportFertility supportFertility suppor' aria='Fertility support' role=radio stab=low near=['Pregnancy + postpartumPregnancy + postpa', 'Hormonal balanceHormonal balanceHormonal', 'Perimenopause + menopausePerimenopause +', 'What’s your main health goal right now?']
+      LI sel=1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(13) text='Perimenopause + menopausePerimenopause + menopause' aria='Perimenopause + menopause' role=radio stab=low near=['Fertility supportFertility supportFertil', 'Pregnancy + postpartumPregnancy + postpa', 'Weight managementWeight managementWeight', 'What’s your main health goal right now?']
+      LI sel=1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(14) text='Weight managementWeight managementWeight managemen' aria='Weight management' role=radio stab=low near=['Perimenopause + menopausePerimenopause +', 'Fertility supportFertility supportFertil', 'What’s your main health goal right now?']
+  [S1 scroll li6] rc=0 0.2s 
+  [S1 click li6] rc=1 0.2s ｜Error: 拒绝点击 "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)"：它中心的整摞里没有它 —— 那一点上站着的是 0:<div class="pd-cookie-banner-window cc-window cc-floating cc-type-custom"> | 1:<button class="cc-btn cc-settings"> | 2:<button class="cc-btn cc-settings"> | 3:<button class="cc-btn cc-settings">。这一下按下去会落到**别的东西**身上（本项目最贵的一类失败：看起来成功了，实际点的是别人）。检查是不是有浮层盖着它，或把选择器改准 ｜   cdp click [selector] [flags] ｜ Global Flags:
+  清浮层：{"clicked": ["button.cc-allow", "div.pd-cookie-banner-window button.cc-allow", "#shopify-section-international-popup button"]}
+  [S1 click li6 re-scroll] rc=0 0.1s 
+  [S1 click li6 re-click] rc=0 0.3s ｜cdp click：选择器 "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6)" 命中 1 个元素，点的是第 1 个 —— <li> "Hair, skin + nailsHair, skin + n" aria-label="Hair, skin + nails" [60,461,240,45]（可点）
+
+########## S2  账本-2 第4步 li2 ##########
+  [S2] wrap=True ul=1 CONTINUE=False BACK=True 账本-3判据=False email框=0 scrollY=64
+      quiz 里印着：What other health goal would you like to focus on?  | More energy | More energy | More energy | Greater wellbeing | Greater wellbeing | Greater wellbeing | Emotional balance | Emotional balance | Emotional balance | Better sleep | Better sleep | Better sleep | Cycle support | Cycle support | Cycle s
+      UL 1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)
+         ul.attrs={"id": "oct-multiple-choice-answers-root-e3ceb93c45462f766f8b85fdd78695820fbdc914", "class": "c99c04054429d8f29837f38f124070ffa5ec39986", "role": "radiogroup", "aria-labelledby": "oct-q-title-e3ceb93c 题面='What other health goal would you like to focus on?'
+         li#1  aria='More energy'            role=radio  checked=false text='More energy/More energy/More energy'          vis=True box=[60, 332, 240, 45]
+              attrs={"id": "95c27abf07a5feb3a63c05b1a8fead78b3b3231e", "data-option-id": "95c27abf07a5feb3a63c05b1a8fead78b3b3231e", "data-option-index": "0", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:More energy", "div.ceccdb599332b645331d17c272:More energy", "div.ceccdb599332b645331d17c272:More energy", "div.c1cae6f52ef8a5a7ebc0e82aa1:(无字)"]
+         li#2  aria='Greater wellbeing'      role=radio  checked=false text='Greater wellbeing/Greater wellbeing/Greater wellbeing' vis=True box=[60, 397, 240, 45]
+              attrs={"id": "0d3edd12b54f94b8ce59994197cb87476e46c3b6", "data-option-id": "0d3edd12b54f94b8ce59994197cb87476e46c3b6", "data-option-index": "1", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Greater wellbeing", "div.ceccdb599332b645331d17c272:Greater wellbeing", "div.ceccdb599332b645331d17c272:Greater wellbeing", "div.c1cae6f52ef8a5a7ebc0e82aa1:(无字)"]
+         li#3  aria='Emotional balance'      role=radio  checked=false text='Emotional balance/Emotional balance/Emotional balance' vis=True box=[60, 459, 240, 45]
+              attrs={"id": "f3565070067685dd8ba4416993f93fdc7b5b6129", "data-option-id": "f3565070067685dd8ba4416993f93fdc7b5b6129", "data-option-index": "2", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Emotional balance", "div.ceccdb599332b645331d17c272:Emotional balance", "div.ceccdb599332b645331d17c272:Emotional balance", "div.c1cae6f52ef8a5a7ebc0e82aa1:(无字)"]
+         li#4  aria='Better sleep'           role=radio  checked=false text='Better sleep/Better sleep/Better sleep'       vis=True box=[60, 528, 240, 45]
+              attrs={"id": "9b7cd4323e6b2167fa519818099e7c1ca9d3aff0", "data-option-id": "9b7cd4323e6b2167fa519818099e7c1ca9d3aff0", "data-option-index": "3", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Better sleep", "div.ceccdb599332b645331d17c272:Better sleep", "div.ceccdb599332b645331d17c272:Better sleep", "div.c1cae6f52ef8a5a7ebc0e82aa1:(无字)"]
+         li#5  aria='Cycle support'          role=radio  checked=false text='Cycle support/Cycle support/Cycle support'    vis=True box=[60, 593, 240, 45]
+              attrs={"id": "9d7dae73ec0a73dec41c1e4d3a20c3ba57f9820d", "data-option-id": "9d7dae73ec0a73dec41c1e4d3a20c3ba57f9820d", "data-option-index": "4", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Cycle support", "div.ceccdb599332b645331d17c272:Cycle support", "div.ceccdb599332b645331d17c272:Cycle support", "div.c1cae6f52ef8a5a7ebc0e82aa1:(无字)"]
+         li#6  aria='Bones, joints + muscles' role=radio  checked=false text='Bones, joints + muscles/Bones, joints + muscles/Bones, joints + muscles' vis=True box=[60, 658, 240, 45]
+              attrs={"id": "a5e1fb0c06ec6436750a467499da5db56d6bebd4", "data-option-id": "a5e1fb0c06ec6436750a467499da5db56d6bebd4", "data-option-index": "5", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Bones, joints + muscles", "div.ceccdb599332b645331d17c272:Bones, joints + muscles", "div.ceccdb599332b645331d17c272:Bones, joints + muscles", "div.c1cae6f52ef8a5a7ebc0e82aa1:(无字)"]
+         li#7  aria='Gut health'             role=radio  checked=false text='Gut health/Gut health/Gut health'             vis=True box=[60, 723, 240, 45]
+              attrs={"id": "68e03b8868cfd9e055293cea877e93a17fb7220f", "data-option-id": "68e03b8868cfd9e055293cea877e93a17fb7220f", "data-option-index": "6", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Gut health", "div.ceccdb599332b645331d17c272:Gut health", "div.ceccdb599332b645331d17c272:Gut health", "div.c1cae6f52ef8a5a7ebc0e82aa1:(无字)"]
+         li#8  aria='Stronger immunity'      role=radio  checked=false text='Stronger immunity/Stronger immunity/Stronger immunity' vis=True box=[60, 788, 240, 45]
+              attrs={"id": "0004f7597258ea7d9d6ffb99585eb49a1ee82959", "data-option-id": "0004f7597258ea7d9d6ffb99585eb49a1ee82959", "data-option-index": "7", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Stronger immunity", "div.ceccdb599332b645331d17c272:Stronger immunity", "div.ceccdb599332b645331d17c272:Stronger immunity", "div.c1cae6f52ef8a5a7ebc0e82aa1:(无字)"]
+         li#9  aria='Hormonal balance'       role=radio  checked=false text='Hormonal balance/Hormonal balance/Hormonal balance' vis=True box=[60, 854, 240, 45]
+              attrs={"id": "5acb8ad42a79367d94a647efcd4b2696fe5d2464", "data-option-id": "5acb8ad42a79367d94a647efcd4b2696fe5d2464", "data-option-index": "8", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Hormonal balance", "div.ceccdb599332b645331d17c272:Hormonal balance", "div.ceccdb599332b645331d17c272:Hormonal balance", "div.c1cae6f52ef8a5a7ebc0e82aa1:(无字)"]
+      BUTTON text='← BACK' disabled=False aria-disabled=None vis=True box=[154, 989, 52, 19] attrs={"class": "c7d02449ed10b96e224590584d88ea4e88ebebf5d", "tabindex": "0", "title": "Back"}
+  [observe S2] actions=50 quiz里=10（li 9）diag=0 obstructions=1；li 里 text 与 aria 都空=0
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1) text='More energyMore energyMore energy' aria='More energy' role=radio stab=low near=['Greater wellbeingGreater wellbeingGreate', 'What other health goal would you like to focus on?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2) text='Greater wellbeingGreater wellbeingGreater wellbein' aria='Greater wellbeing' role=radio stab=low near=['More energyMore energyMore energy', 'Emotional balanceEmotional balanceEmotio', 'What other health goal would you like to focus on?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3) text='Emotional balanceEmotional balanceEmotional balanc' aria='Emotional balance' role=radio stab=low near=['Greater wellbeingGreater wellbeingGreate', 'More energyMore energyMore energy', 'Better sleepBetter sleepBetter sleep', 'What other health goal would you like to focus on?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4) text='Better sleepBetter sleepBetter sleep' aria='Better sleep' role=radio stab=low near=['Emotional balanceEmotional balanceEmotio', 'Greater wellbeingGreater wellbeingGreate', 'Cycle supportCycle supportCycle support', 'What other health goal would you like to focus on?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5) text='Cycle supportCycle supportCycle support' aria='Cycle support' role=radio stab=low near=['Better sleepBetter sleepBetter sleep', 'Emotional balanceEmotional balanceEmotio', 'Bones, joints + musclesBones, joints + m', 'What other health goal would you like to focus on?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(6) text='Bones, joints + musclesBones, joints + musclesBone' aria='Bones, joints + muscles' role=radio stab=low near=['Cycle supportCycle supportCycle support', 'Better sleepBetter sleepBetter sleep', 'Gut healthGut healthGut health', 'What other health goal would you like to focus on?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(7) text='Gut healthGut healthGut health' aria='Gut health' role=radio stab=low near=['Bones, joints + musclesBones, joints + m', 'Cycle supportCycle supportCycle support', 'Stronger immunityStronger immunityStrong', 'What other health goal would you like to focus on?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(8) text='Stronger immunityStronger immunityStronger immunit' aria='Stronger immunity' role=radio stab=low near=['Gut healthGut healthGut health', 'Bones, joints + musclesBones, joints + m', 'Hormonal balanceHormonal balanceHormonal', 'What other health goal would you like to focus on?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(9) text='Hormonal balanceHormonal balanceHormonal balance' aria='Hormonal balance' role=radio stab=low near=['Stronger immunityStronger immunityStrong', 'Gut healthGut healthGut health', 'What other health goal would you like to focus on?']
+      BUTTON text='← BACK' role=button aria='' stab=medium box=[154, 989, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+  [S2 scroll li2] rc=0 0.1s 
+  [S2 click li2] rc=0 0.6s ｜cdp click：选择器 "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2)" 命中 1 个元素，点的是第 1 个 —— <li> "Greater wellbeingGreater wellbei" aria-label="Greater wellbeing" [60,455,240,45]（可点）
+
+########## S3  年龄题 li3 ##########
+  [S3] wrap=True ul=1 CONTINUE=False BACK=True 账本-3判据=False email框=0 scrollY=64
+      quiz 里印着：How old are you? | 18-24 | 18-24 | 18-24 | 25-34 | 25-34 | 25-34 | 34-44 | 34-44 | 34-44 | 45-54 | 45-54 | 45-54 | 55+ | 55+ | 55+ | ← BACK
+      UL 1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)
+         ul.attrs={"id": "oct-multiple-choice-answers-root-a3b2d38f734bf570ea095d15b95b3fda6f9b4c6a", "class": "cbffd2697a681097185f7c972ec3ec13e686997b4", "role": "radiogroup", "aria-labelledby": "oct-q-title-a3b2d38f 题面='How old are you?'
+         li#1  aria='18-24'                  role=radio  checked=false text='18-24/18-24/18-24'                            vis=True box=[60, 248, 240, 45]
+              attrs={"id": "06a1c50173a086a9c58cc76e757770dd8bc90b59", "data-option-id": "06a1c50173a086a9c58cc76e757770dd8bc90b59", "data-option-index": "0", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:18-24", "div.c1dd3ac8b910346d5a7034f4ef:18-24", "div.c1dd3ac8b910346d5a7034f4ef:18-24", "div.c212bb295c5656f993f67a82c2:(无字)"]
+         li#2  aria='25-34'                  role=radio  checked=false text='25-34/25-34/25-34'                            vis=True box=[60, 313, 240, 45]
+              attrs={"id": "2c168946ec9eba159be438fcc74c217f7aefe656", "data-option-id": "2c168946ec9eba159be438fcc74c217f7aefe656", "data-option-index": "1", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:25-34", "div.c1dd3ac8b910346d5a7034f4ef:25-34", "div.c1dd3ac8b910346d5a7034f4ef:25-34", "div.c212bb295c5656f993f67a82c2:(无字)"]
+         li#3  aria='34-44'                  role=radio  checked=false text='34-44/34-44/34-44'                            vis=True box=[60, 378, 240, 45]
+              attrs={"id": "35836f2ca4acbb07ee51a058faace84dc4274de8", "data-option-id": "35836f2ca4acbb07ee51a058faace84dc4274de8", "data-option-index": "2", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:34-44", "div.c1dd3ac8b910346d5a7034f4ef:34-44", "div.c1dd3ac8b910346d5a7034f4ef:34-44", "div.c212bb295c5656f993f67a82c2:(无字)"]
+         li#4  aria='45-54'                  role=radio  checked=false text='45-54/45-54/45-54'                            vis=True box=[60, 441, 240, 45]
+              attrs={"id": "1d930b9ea5f0f2bc6df83fb151053950a86e4132", "data-option-id": "1d930b9ea5f0f2bc6df83fb151053950a86e4132", "data-option-index": "3", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:45-54", "div.c1dd3ac8b910346d5a7034f4ef:45-54", "div.c1dd3ac8b910346d5a7034f4ef:45-54", "div.c212bb295c5656f993f67a82c2:(无字)"]
+         li#5  aria='55+'                    role=radio  checked=false text='55+/55+/55+'                                  vis=True box=[60, 509, 240, 45]
+              attrs={"id": "29b37a6c9cd3bbe2d8f055496038f26184d3ace1", "data-option-id": "29b37a6c9cd3bbe2d8f055496038f26184d3ace1", "data-option-index": "4", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:55+", "div.c1dd3ac8b910346d5a7034f4ef:55+", "div.c1dd3ac8b910346d5a7034f4ef:55+", "div.c212bb295c5656f993f67a82c2:(无字)"]
+      BUTTON text='← BACK' disabled=False aria-disabled=None vis=True box=[154, 644, 52, 19] attrs={"class": "c5771676e0c38b60ac45898447a095bbebac3f9b4", "tabindex": "0", "title": "Back"}
+  [observe S3] actions=46 quiz里=6（li 5）diag=0 obstructions=1；li 里 text 与 aria 都空=0
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1) text='18-2418-2418-24' aria='18-24' role=radio stab=low near=['25-3425-3425-34', 'How old are you?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2) text='25-3425-3425-34' aria='25-34' role=radio stab=low near=['18-2418-2418-24', '34-4434-4434-44', 'How old are you?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3) text='34-4434-4434-44' aria='34-44' role=radio stab=low near=['25-3425-3425-34', '18-2418-2418-24', '45-5445-5445-54', 'How old are you?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4) text='45-5445-5445-54' aria='45-54' role=radio stab=low near=['34-4434-4434-44', '25-3425-3425-34', '55+55+55+', 'How old are you?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(5) text='55+55+55+' aria='55+' role=radio stab=low near=['45-5445-5445-54', '34-4434-4434-44', 'How old are you?']
+      BUTTON text='← BACK' role=button aria='' stab=medium box=[154, 644, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+  [S3 scroll li3] rc=0 0.2s 
+  [S3 click li3] rc=0 0.6s ｜cdp click：选择器 "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)" 命中 1 个元素，点的是第 1 个 —— <li> "34-4434-4434-44" aria-label="34-44" [60,439,240,45]（可点）
+
+########## S4  ★账本-3 第1步 Continue ##########
+  [S4] wrap=True ul=0 CONTINUE=True BACK=True 账本-3判据=True email框=0 scrollY=64
+      quiz 里印着：CONTINUE | ← BACK
+      BUTTON text='CONTINUE' disabled=False aria-disabled=false vis=True box=[129, 412, 101, 41] attrs={"class": "cbdacb07dc918b9e8598f7068dd0c98d2d5471e00", "tabindex": "0", "title": "", "aria-disabled": "false"}
+      BUTTON text='← BACK' disabled=False aria-disabled=None vis=True box=[154, 513, 52, 19] attrs={"class": "c1a031c94f0ceb7e8a5ba5eb14b13347b46d6373c", "tabindex": "0", "title": "Back"}
+  [observe S4] actions=42 quiz里=2（li 0）diag=0 obstructions=1；li 里 text 与 aria 都空=0
+      BUTTON text='Continue' role=button aria='' stab=medium box=[129, 412, 101, 41] sel=#octane-quiz-wrapper > div:nth-of-type(2) > button:nth-of-type(1)
+      BUTTON text='← BACK' role=button aria='' stab=medium box=[154, 513, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+  [S4 click Continue] rc=0 0.5s ｜cdp click：选择器 "#octane-quiz-wrapper > div:nth-of-type(2) > button:nth-of-type(1)" 命中 1 个元素，点的是第 1 个 —— <button> "Continue" [129,254,101,41]（可点）
+
+########## S5  ★账本-3 第2步 li3 ##########
+  [S5] wrap=True ul=1 CONTINUE=False BACK=True 账本-3判据=False email框=0 scrollY=64
+      quiz 里印着：How often do you feel overwhelmed? | Daily | Daily | Daily | Often | Often | Often | Every now and then | Every now and then | Every now and then | Rarely | Rarely | Rarely | ← BACK
+      UL 1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)
+         ul.attrs={"id": "oct-multiple-choice-answers-root-ec5be9979811aa88f954dd2e7072b016089008fc", "class": "c4813031ec989a99cc909092474d3860ae86dc280", "role": "radiogroup", "aria-labelledby": "oct-q-title-ec5be997 题面='How often do you feel overwhelmed?'
+         li#1  aria='Daily'                  role=radio  checked=false text='Daily/Daily/Daily'                            vis=True box=[60, 280, 240, 45]
+              attrs={"id": "7b72d5ef9a296e3b4eef6a886950e64221b48c7a", "data-option-id": "7b72d5ef9a296e3b4eef6a886950e64221b48c7a", "data-option-index": "0", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Daily", "div.c172cbd0c2bf205570696c4924:Daily", "div.c172cbd0c2bf205570696c4924:Daily", "div.cbff65efbebad7d334749c6b6f:(无字)"]
+         li#2  aria='Often'                  role=radio  checked=false text='Often/Often/Often'                            vis=True box=[60, 345, 240, 45]
+              attrs={"id": "a10a64d5354c69c6411b43799d30bfc5e4b75ac4", "data-option-id": "a10a64d5354c69c6411b43799d30bfc5e4b75ac4", "data-option-index": "1", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Often", "div.c172cbd0c2bf205570696c4924:Often", "div.c172cbd0c2bf205570696c4924:Often", "div.cbff65efbebad7d334749c6b6f:(无字)"]
+         li#3  aria='Every now and then'     role=radio  checked=false text='Every now and then/Every now and then/Every now and then' vis=True box=[60, 410, 240, 45]
+              attrs={"id": "7839b8cdd46f6d3ea3a761912c6efc71726effca", "data-option-id": "7839b8cdd46f6d3ea3a761912c6efc71726effca", "data-option-index": "2", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Every now and then", "div.c172cbd0c2bf205570696c4924:Every now and then", "div.c172cbd0c2bf205570696c4924:Every now and then", "div.cbff65efbebad7d334749c6b6f:(无字)"]
+         li#4  aria='Rarely'                 role=radio  checked=false text='Rarely/Rarely/Rarely'                         vis=True box=[60, 476, 240, 45]
+              attrs={"id": "e79c31210324861ad83f9b27b5bfdd89cbb5141b", "data-option-id": "e79c31210324861ad83f9b27b5bfdd89cbb5141b", "data-option-index": "3", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Rarely", "div.c172cbd0c2bf205570696c4924:Rarely", "div.c172cbd0c2bf205570696c4924:Rarely", "div.cbff65efbebad7d334749c6b6f:(无字)"]
+      BUTTON text='← BACK' disabled=False aria-disabled=None vis=True box=[154, 611, 52, 19] attrs={"class": "c98cbcdcbbaa899a677d2ad2116038757fdc3025c", "tabindex": "0", "title": "Back"}
+  [observe S5] actions=45 quiz里=5（li 4）diag=0 obstructions=1；li 里 text 与 aria 都空=0
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1) text='DailyDailyDaily' aria='Daily' role=radio stab=low near=['OftenOftenOften', 'How often do you feel overwhelmed?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2) text='OftenOftenOften' aria='Often' role=radio stab=low near=['DailyDailyDaily', 'Every now and thenEvery now and thenEver', 'How often do you feel overwhelmed?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3) text='Every now and thenEvery now and thenEvery now and ' aria='Every now and then' role=radio stab=low near=['OftenOftenOften', 'DailyDailyDaily', 'RarelyRarelyRarely', 'How often do you feel overwhelmed?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4) text='RarelyRarelyRarely' aria='Rarely' role=radio stab=low near=['Every now and thenEvery now and thenEver', 'OftenOftenOften', 'How often do you feel overwhelmed?']
+      BUTTON text='← BACK' role=button aria='' stab=medium box=[154, 611, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+  [S5 scroll li3] rc=0 0.2s 
+  [S5 click li3] rc=0 0.5s ｜cdp click：选择器 "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3)" 命中 1 个元素，点的是第 1 个 —— <li> "Every now and thenEvery now and " aria-label="Every now and then" [60,463,240,45]（可点）
+
+########## S6  ★账本-3 第3步 li4 ##########
+  [S6] wrap=True ul=1 CONTINUE=False BACK=True 账本-3判据=False email框=0 scrollY=64
+      quiz 里印着：How are you sleeping lately? | Struggle to fall asleep | Struggle to fall asleep | Struggle to fall asleep | Wake during the night | Wake during the night | Wake during the night | Poor quality sleep | Poor quality sleep | Poor quality sleep | Generally sleep well | Generally sleep well | Generally 
+      UL 1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)
+         ul.attrs={"id": "oct-multiple-choice-answers-root-7433dcf59ee4b3c187ab34a87cd61dec0af4fa71", "class": "c85a407960cf10ce528b4102c3e19d8b052985c9f", "role": "radiogroup", "aria-labelledby": "oct-q-title-7433dcf5 题面='How are you sleeping lately?'
+         li#1  aria='Struggle to fall asleep' role=radio  checked=false text='Struggle to fall asleep/Struggle to fall asleep/Struggle to fall asleep' vis=True box=[60, 280, 240, 45]
+              attrs={"id": "d37bcdbde16f782b746b6dc8f95ff3f919f89225", "data-option-id": "d37bcdbde16f782b746b6dc8f95ff3f919f89225", "data-option-index": "0", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Struggle to fall asleep", "div.c7575f52ab41a0c96f26d47566:Struggle to fall asleep", "div.c7575f52ab41a0c96f26d47566:Struggle to fall asleep", "div.cf74285cc1197dc8bd368fe2f5:(无字)"]
+         li#2  aria='Wake during the night'  role=radio  checked=false text='Wake during the night/Wake during the night/Wake during the night' vis=True box=[60, 345, 240, 45]
+              attrs={"id": "1b9581f6c03076ed1521f0695f1fd56804c3a0c3", "data-option-id": "1b9581f6c03076ed1521f0695f1fd56804c3a0c3", "data-option-index": "1", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Wake during the night", "div.c7575f52ab41a0c96f26d47566:Wake during the night", "div.c7575f52ab41a0c96f26d47566:Wake during the night", "div.cf74285cc1197dc8bd368fe2f5:(无字)"]
+         li#3  aria='Poor quality sleep'     role=radio  checked=false text='Poor quality sleep/Poor quality sleep/Poor quality sleep' vis=True box=[60, 410, 240, 45]
+              attrs={"id": "fd63056aa1b17ebfe62b516932047ecc47310525", "data-option-id": "fd63056aa1b17ebfe62b516932047ecc47310525", "data-option-index": "2", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Poor quality sleep", "div.c7575f52ab41a0c96f26d47566:Poor quality sleep", "div.c7575f52ab41a0c96f26d47566:Poor quality sleep", "div.cf74285cc1197dc8bd368fe2f5:(无字)"]
+         li#4  aria='Generally sleep well'   role=radio  checked=false text='Generally sleep well/Generally sleep well/Generally sleep well' vis=True box=[60, 473, 240, 45]
+              attrs={"id": "378c8d8e15b10dae9f8922aa9e2db394eb2d24fc", "data-option-id": "378c8d8e15b10dae9f8922aa9e2db394eb2d24fc", "data-option-index": "3", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Generally sleep well", "div.c7575f52ab41a0c96f26d47566:Generally sleep well", "div.c7575f52ab41a0c96f26d47566:Generally sleep well", "div.cf74285cc1197dc8bd368fe2f5:(无字)"]
+      BUTTON text='← BACK' disabled=False aria-disabled=None vis=True box=[154, 611, 52, 19] attrs={"class": "c9d230a8b9f5fc7c0d0d0d3fe967191b44ac25f40", "tabindex": "0", "title": "Back"}
+  [observe S6] actions=45 quiz里=5（li 4）diag=0 obstructions=1；li 里 text 与 aria 都空=0
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1) text='Struggle to fall asleepStruggle to fall asleepStru' aria='Struggle to fall asleep' role=radio stab=low near=['Wake during the nightWake during the nig', 'How are you sleeping lately?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2) text='Wake during the nightWake during the nightWake dur' aria='Wake during the night' role=radio stab=low near=['Struggle to fall asleepStruggle to fall ', 'Poor quality sleepPoor quality sleepPoor', 'How are you sleeping lately?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(3) text='Poor quality sleepPoor quality sleepPoor quality s' aria='Poor quality sleep' role=radio stab=low near=['Wake during the nightWake during the nig', 'Struggle to fall asleepStruggle to fall ', 'Generally sleep wellGenerally sleep well', 'How are you sleeping lately?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4) text='Generally sleep wellGenerally sleep wellGenerally ' aria='Generally sleep well' role=radio stab=low near=['Poor quality sleepPoor quality sleepPoor', 'Wake during the nightWake during the nig', 'How are you sleeping lately?']
+      BUTTON text='← BACK' role=button aria='' stab=medium box=[154, 611, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+  [S6 scroll li4] rc=0 0.2s 
+  [S6 click li4] rc=0 0.7s ｜cdp click：选择器 "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(4)" 命中 1 个元素，点的是第 1 个 —— <li> "Generally sleep wellGenerally sl" aria-label="Generally sleep well" [60,459,240,45]（可点）
+
+########## S7  ★账本-3 第4步 li1 ##########
+  [S7] wrap=True ul=1 CONTINUE=False BACK=True 账本-3判据=False email框=0 scrollY=64
+      quiz 里印着：How would you describe your diet? | Anything goes | Anything goes | Anything goes | Vegetarian | Vegetarian | Vegetarian | ← BACK
+      UL 1) > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1)
+         ul.attrs={"id": "oct-multiple-choice-answers-root-00c026c9fab77cc65cd77e50c2fb2acc7a9b1581", "class": "cd0996c549de0b71122a22cddff8b17a9e1543d79", "role": "radiogroup", "aria-labelledby": "oct-q-title-00c026c9 题面='How would you describe your diet?'
+         li#1  aria='Anything goes'          role=radio  checked=false text='Anything goes/Anything goes/Anything goes'    vis=True box=[60, 280, 240, 45]
+              attrs={"id": "784a7aa1965da12f39c8defb108c9ea4e43a6c7e", "data-option-id": "784a7aa1965da12f39c8defb108c9ea4e43a6c7e", "data-option-index": "0", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Anything goes", "div.c405f221013e5ede7cede2754d:Anything goes", "div.c405f221013e5ede7cede2754d:Anything goes", "div.c15c3ceb2fc658459dcc587ad2:(无字)"]
+         li#2  aria='Vegetarian'             role=radio  checked=false text='Vegetarian/Vegetarian/Vegetarian'             vis=True box=[60, 345, 240, 45]
+              attrs={"id": "bc03ef09d0c412890c851319b2bfe4783362a4a5", "data-option-id": "bc03ef09d0c412890c851319b2bfe4783362a4a5", "data-option-index": "1", "class": "oct-quiz-multiple-choice-options__option", "tabindex": "0", "role": "radio", "ari
+              子元素=["div:Vegetarian", "div.c405f221013e5ede7cede2754d:Vegetarian", "div.c405f221013e5ede7cede2754d:Vegetarian", "div.c15c3ceb2fc658459dcc587ad2:(无字)"]
+      BUTTON text='← BACK' disabled=False aria-disabled=None vis=True box=[154, 477, 52, 19] attrs={"class": "c00b70aadc16e778d792adb77ee9c7d8cdf30e14b", "tabindex": "0", "title": "Back"}
+  [observe S7] actions=43 quiz里=3（li 2）diag=0 obstructions=1；li 里 text 与 aria 都空=0
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1) text='Anything goesAnything goesAnything goes' aria='Anything goes' role=radio stab=low near=['VegetarianVegetarianVegetarian', 'How would you describe your diet?']
+      LI sel=(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(2) text='VegetarianVegetarianVegetarian' aria='Vegetarian' role=radio stab=low near=['Anything goesAnything goesAnything goes', 'How would you describe your diet?']
+      BUTTON text='← BACK' role=button aria='' stab=medium box=[154, 477, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+  [S7 scroll li1] rc=0 0.2s 
+  [S7 click li1] rc=0 0.4s ｜cdp click：选择器 "#octane-quiz-wrapper > div:nth-of-type(1) > div:nth-of-type(3) > ul:nth-of-type(1) > li:nth-of-type(1)" 命中 1 个元素，点的是第 1 个 —— <li> "Anything goesAnything goesAnythi" aria-label="Anything goes" [60,344,240,45]（可点）
+
+########## S8  继续往下 li1 ##########
+  [S8] wrap=True ul=0 CONTINUE=False BACK=True 账本-3判据=False email框=1 scrollY=64
+      quiz 里印着： Receive a code for 50% off your first 3 months* | We will send your personalised recommendations and discount straight to your inbox | * Our 50% off for 3 months offer is valid for new customers only | SUBMIT | Skip | ← BACK
+      BUTTON text='SUBMIT' disabled=True aria-disabled=true vis=True box=[138, 498, 85, 41] attrs={"class": "caf09d187d026abb605feb6f74f5139282053f70c", "tabindex": "0", "title": "Submit", "disabled": "", "aria-disabled": "true"
+      BUTTON text='Skip' disabled=False aria-disabled=None vis=True box=[166, 584, 28, 17] attrs={"class": "c773f0e4b596489c7a56f3c54d53590c351cb0775", "tabindex": "0", "title": "Skip"}
+      BUTTON text='← BACK' disabled=False aria-disabled=None vis=True box=[154, 676, 52, 19] attrs={"class": "cd02412e7d79b3fe54972b07d128ab931992f76e9", "tabindex": "0", "title": "Back"}
+  ★ 出现 email 输入框 —— 到填表那一步，**停**（不填不提交）
+  [observe S8-email前] actions=44 quiz里=3（li 0）diag=0 obstructions=1；li 里 text 与 aria 都空=0
+      BUTTON text='SUBMIT' role=button aria='' stab=medium box=[138, 498, 85, 41] sel=#octane-quiz-wrapper > div:nth-of-type(2) > button:nth-of-type(1)
+      BUTTON text='Skip' role=button aria='' stab=medium box=[166, 584, 28, 17] sel=#octane-quiz-wrapper > div:nth-of-type(3) > button:nth-of-type(1)
+      BUTTON text='← BACK' role=button aria='' stab=medium box=[154, 676, 52, 19] sel=#octane-quiz-wrapper > button:nth-of-type(1)
+
+★ 走完（没填邮箱、没提交）
+
+窗口收尾：
+  关窗：确认已关
+窗口已关：True

@@ -46,9 +46,19 @@ export SITEFORGE_CDP_BIN=/company/siteforge/tools/cdp/cdp
 ⇒ 分类器按 **DOM 家族**推荐 **japansdates / 101**。这和「后端现在把这两页挂在哪」不一致；
 **没有**自动改这两行（`--apply` 没跑）。要不要把它们改到 101，由人看过再决定。
 
+## 2026-10-22 17:23 `--apply` 端到端（cupidfeel）
+
+用户给的新 landing：`https://cupidfeel.com/land/sp/df41954d/`（后端原本没有这一行）。
+
+- 分类：japansdates / 101（high；证据同 soulmatemeets）。
+- 第一次 `--apply` 回 **HTTP 500**，回读确认**没有半写**。原因：后端审计表
+  `form_config_site_log` 没建（提交 `df4938d` 自己写明「需手工建表」），控制器把写映射与
+  写审计放在同一事务 ⇒ 缺表回滚。
+- 建表后重跑：**`created=true`**，回读 `cupidfeel.com/land/sp/df41954d → config 101, status 1`。
+  其它 cupidfeel 行未动（697c1214→142、ef697977→66、cupidfeel.com→148）。
+
 ## 还没验到的
 
 - **delachat**：当前指纹（`terms__button`）在抽到的 config-142 站上没有命中——那页是
   `step-content-item-*` 变体，被归到 japansdates 了。真正的 `terms__button` 页还没遇到；
   这条指纹暂时保留为**未真站验证**。
-- `--apply` 端到端：等 `formConfig/link` 部署。

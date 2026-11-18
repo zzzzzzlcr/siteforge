@@ -1,0 +1,15 @@
+{
+ "key": "try.atticus.com/ssd/benefits",
+ "local_sha256": "229af4a25b4680e1551ea4022a5233a5e70bfb96dc8833c51f3085fc2feed53f",
+ "before_sha256": "1475f39b01d150ce773324981f1b8db6c31be0d7347e006a3f8f50237fee99b6",
+ "backend_sha256": "229af4a25b4680e1551ea4022a5233a5e70bfb96dc8833c51f3085fc2feed53f",
+ "readback_sha256": "229af4a25b4680e1551ea4022a5233a5e70bfb96dc8833c51f3085fc2feed53f",
+ "created": false,
+ "sites": [
+  {
+   "site": "try.atticus.com/ssd/benefits",
+   "config_id": 162,
+   "status": 1
+  }
+ ]
+}

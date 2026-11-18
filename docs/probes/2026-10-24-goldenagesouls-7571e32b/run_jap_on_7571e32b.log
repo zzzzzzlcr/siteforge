@@ -1,0 +1,17 @@
+2026-10-24 14:14:08,154 INFO [sm101probe_1792822445] japansdates: Alex alexprobe8978@outlook.com
+2026-10-24 14:14:10,540 INFO [sm101probe_1792822445] step 1 [step-content-item-Basic+step-content-item-AgeLegalText+step-content-item-ChooseAge] Sign In Let's make the most of your dating exp -> (文本) 35-44
+2026-10-24 14:14:14,376 INFO [sm101probe_1792822445] step 2 [step-content-item-Preferences] 1 2 3 4 Your profile Preferences Finish up Wha -> option-start-relations
+2026-10-24 14:14:15,764 INFO [sm101probe_1792822445] step 3 [step-content-item-ChoosePrefGender] 1 2 3 4 Your profile Preferences Finish up Who -> pref-gender-male
+2026-10-24 14:14:17,505 INFO [sm101probe_1792822445] step 4 [step-content-item-ChooseGender] 1 2 3 4 Choose your sex Man Woman About Us Ter -> gender-female
+2026-10-24 14:14:19,697 INFO [sm101probe_1792822445] step 5 [step-content-item-InputNameAutofill]: filled firstname
+2026-10-24 14:14:21,666 INFO [sm101probe_1792822445] step 6 [step-content-item-InputNameAutofill] continue (1 2 3 4 How can men call you? CLEAR Name can b)
+2026-10-24 14:14:24,824 INFO [sm101probe_1792822445] step 7 [step-content-item-InputEmail+step-content-item-DynamicComponent]: filled email
+2026-10-24 14:14:27,079 INFO [sm101probe_1792822445] step 8 [step-content-item-InputEmail+step-content-item-DynamicComponent] continue (1 2 3 4 Write email to select your partner CLE)
+2026-10-24 14:14:29,111 INFO [sm101probe_1792822445] step 9 [step-content-item-InputEmail+step-content-item-DynamicComponent] continue (1 2 3 4 Write email to select your partner CLE)
+2026-10-24 14:14:31,655 INFO [sm101probe_1792822445] step 10 [step-content-item-InputPassword]: filled password
+2026-10-24 14:14:33,389 INFO [sm101probe_1792822445] step 11 [step-content-item-InputPassword] continue (1 2 3 4 Create your password to meet users! SH)
+2026-10-24 14:14:35,755 WARNING [sm101probe_1792822445] 卡住诊断 step=step-content-item-CheckboxTerms next=False legal=False options=[] labels=[] inputs=[] url=step8|https://goldenagesouls.com/land/sp/7571e32b/?id_vi
+2026-10-24 14:14:35,755 INFO [sm101probe_1792822445] step 12: nothing actionable (1, 0s) 1 2 3 4 Thanks for your answers! I Accept By clicking "I Acc
+2026-10-24 14:14:38,127 INFO [sm101probe_1792822445] step 13: nothing actionable (2, 2s) 1 2 3 4 Thanks for your answers! I Accept By clicking "I Acc
+2026-10-24 14:14:40,041 INFO [sm101probe_1792822445] step 14: nothing actionable (3, 4s) 1 2 3 4 Thanks for your answers! I Accept By clicking "I Acc
+2026-10-24 14:14:41,671 INFO [sm101probe_1792822445] SUCCESS: https://goldenagesouls.com/land/sp/7571e32b/?id_visit_prev=997ebbb9-8739-4f61-9b（站点状态 wizard1）
