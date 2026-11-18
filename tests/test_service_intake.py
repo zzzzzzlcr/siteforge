@@ -38,6 +38,7 @@ import json
 import pathlib
 import sys
 import typing
+import types
 
 import pytest
 from pydantic import BaseModel
@@ -154,7 +155,8 @@ def test_no_payload_entry_can_take_the_console_down(tmp_path):
         ("/run evidence", "evidence", "formLog #12" + BAD),
         ("/run site", "site", SITE + BAD),
         ("/run ws_url", "ws_url", WS_URL + BAD),
-        ("/run form_file", "form_file", "/tmp/form" + BAD + ".json"),
+        #: ⚠️ `form_file` 不在这张表里（★ 2026-11-18）：门口现在会查「那条路径在不在盘上」，
+        #: 带坏字节的路径照样**不在** ⇒ 400（这一趟根本没开跑）。它的消毒在下面单独量。
         ("/run out_dir", "out_dir", "/tmp/out" + BAD),
         ("/run entry_url", "entry_url", URL + BAD),
         ("/run hints", "hints", ["人说过的话" + BAD]),
@@ -162,6 +164,12 @@ def test_no_payload_entry_can_take_the_console_down(tmp_path):
         ("/run env", "env", {"ua": "Mozilla" + BAD}),
         ("/run platform", "platform", {"guess": "datewhirl" + BAD}),
     ]
+    #: ★ 2026-11-18：`form_file` 那一格现在**在门口就被拦下**（文件不在盘上 ⇒ 400）——
+    #: 走不到「开跑」，所以单独判：400 的正文照样不许带坏字节，也不许 500。
+    client = _client(graph_factory=_factory(FakeGraph(steps=[])), window=StubWindow(alive=True))
+    got = _raw(client, "POST", "/run", _brief(tmp_path, form_file="/tmp/form" + BAD + ".json"))
+    assert got.status_code == 400, got.text
+    assert not _has_lone_surrogate(got.json()), got.text
     for label, field, value in cases:
         tmp_path.mkdir(exist_ok=True)
         client, job_id = _gateful(tmp_path, **{field: value})
@@ -328,10 +336,18 @@ def _payload_models() -> list:
 
 
 def _text_shape(annotation):
-    """这个标注是不是**文本形状**（`str` / `list` / `dict`，`Optional` 剥掉）。"""
-    args = [a for a in typing.get_args(annotation) if a is not type(None)]
-    inner = args[0] if args else annotation
-    return typing.get_origin(inner) or inner
+    """这个标注是不是**文本形状**（`str` / `list` / `dict`，`Optional` 剥掉）。
+
+    ⚠️ **只剥 `Optional` / `X | None` 那一层**（★ 2026-11-18）：旧写法不管三七二十一把
+    `get_args` 的第一个参数当内层，于是 `list[str]`（**非** Optional 的列表）被读成 `str`
+    —— 给 `evidence_images` 这类字段塞的是字符串，pydantic 当场 validation error。
+    """
+    origin = typing.get_origin(annotation)
+    if origin is typing.Union or origin is types.UnionType:
+        args = [a for a in typing.get_args(annotation) if a is not type(None)]
+        annotation = args[0] if args else annotation
+        origin = typing.get_origin(annotation)
+    return origin or annotation
 
 
 def _bad_value(annotation):
