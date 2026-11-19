@@ -3527,10 +3527,36 @@ class Filler:
                 return got
         #: ★ P0-2：自测（`--no-report`）且未命中显式规则/资料时，优先复现探路已验证 `sample`，
         #: 避免自测随机盲盒把脚本带进未探索过的拒单分支；生产运行（`no_report=False`）照旧走拟人随机。
+        #: ⚠️ 豁免唯一身份字段（email / phone / username）：探路刚提交过该身份，自测若原样复用会被站方判重拦截；
+        #: 跳过原样锁定后，`phone` 会自然落到下方 `_shaped_like`（保留已验证国家/格式但随机尾号），
+        #: `email` 会自然落到随机池生成新邮箱。
         raw_sample = str(fill.get("sample") or "").strip()
         if getattr(self, "no_report", False) and raw_sample:
-            self._value_from = "**自测锁定探路已验证样本**"
-            return raw_sample
+            _raw_meta = " ".join(str(fill.get(k) or "") for k in ("source", "name", "label"))
+            _tokens = set(re.findall(
+                r"[a-z]+",
+                re.sub(r"([a-z])([A-Z])", r"\1 \2", _raw_meta).lower().replace("e-mail", "email"),
+            ))
+            _fb_randoms = {
+                str(c.get("random") or "").strip().lower()
+                for c in (fill.get("fallback") or [])
+                if isinstance(c, dict)
+            }
+            _is_email = (
+                "email" in _fb_randoms
+                or "email" in _tokens
+                or bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", raw_sample))
+            )
+            _is_unique = _is_email or bool(
+                (_fb_randoms & {"phone", "username"})
+                or (_tokens & {"phone", "mobile", "tel", "cell", "username"})
+            )
+            if not _is_unique:
+                self._value_from = "**自测锁定探路已验证样本**"
+                return raw_sample
+            if _is_email and "email" not in _fb_randoms:
+                self._value_from = "**随机池**「email」（自测避开探路邮箱判重）"
+                return self._random_value("email")
         #: ★ 2026-10-13：**没取到任务资料，就先照「真站收过的那个值」的形状编一个** ——
         #: 排在随机池**前面**。为什么（真事 `job-a5f74744a7f9` · healthinsurancewatch.com.au）：
         #: 探路那趟在真站上填的是 `0412345678`（澳洲手机，页面认了），重放时那一格走了随机池，

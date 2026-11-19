@@ -6030,6 +6030,61 @@ def test_no_report_locks_verified_sample_while_production_stays_random(sandbox, 
     assert filled_selftest == ["85000"]
 
 
+def test_no_report_does_not_lock_unique_identity_fields_like_email_and_phone(sandbox, tmp_path):
+    """P0-2 回归：自测（`no_report=True`）豁免 email / phone 等唯一身份字段，避免复投探路刚交过的邮箱触发判重。"""
+    ff = tmp_path / "empty_form.json"
+    ff.write_text("{}", encoding="utf-8")
+    fills = [
+        {
+            "name": "email", "source": "email", "kind": "value", "label": "email",
+            "sample": "alex.carter.film@gmail.com",
+            "target": {"text": None, "label": "email", "role": None, "near": None,
+                       "selectors": ["input#email"]},
+            "fallback": [{"random": "email"}],
+        },
+        {
+            "name": "contact_mail", "source": "contactEmail", "kind": "value", "label": "Work Email",
+            "sample": "explore.only@example.org",
+            "target": {"text": None, "label": "Work Email", "role": None, "near": None,
+                       "selectors": ["input#email2"]},
+            "fallback": ["explore.only@example.org"],
+        },
+        {
+            "name": "phone", "source": "phone", "kind": "value", "label": "Phone",
+            "sample": "0412345678",
+            "target": {"text": None, "label": "Phone", "role": None, "near": None,
+                       "selectors": ["input#phone"]},
+            "fallback": [{"random": "phone"}],
+        },
+        {
+            "name": "income", "source": "income", "kind": "value", "label": "Annual Income",
+            "sample": "85000",
+            "target": {"text": None, "label": "Annual Income", "role": None, "near": None,
+                       "selectors": ["input#income"]},
+            "fallback": ["50000"],
+        },
+    ]
+    steps = [
+        {"action": "form", "fill": "email", "note": "填邮箱"},
+        {"action": "form", "fill": "contact_mail", "note": "填工作邮箱"},
+        {"action": "form", "fill": "phone", "note": "填手机"},
+        {"action": "form", "fill": "income", "note": "填收入"},
+    ]
+    prod = template.render("example-unique-identity", "Thank you",
+                           [{"name": "walk", "when": None, "steps": steps}], fills,
+                           SAMPLE_PROVENANCE)
+    module, _ = _load("run_unique_identity", prod, sandbox)
+    common = _stub(sandbox, diff={"actionable": True},
+                   observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common.STATE.texts = ["Walk", "Walk", "Walk", "Walk", "Thank you"]
+    assert module.Filler(WS, str(ff), "cid_1", "task_1", delay=(0, 0), no_report=True).run() is True
+    filled = {a[1]: a[2] for a in common.STATE.actions if a[0] == "form"}
+    assert filled["input#email"] != "alex.carter.film@gmail.com" and "@" in filled["input#email"]
+    assert filled["input#email2"] != "explore.only@example.org" and "@" in filled["input#email2"]
+    assert filled["input#phone"].startswith("04") and len(filled["input#phone"]) == 10
+    assert filled["input#income"] == "85000"
+
+
 def test_form_read_back_empty_triggers_set_value_events_and_select_fallback(sandbox, tmp_path):
     """P1-1：`cdp form` 后读回 DOM `.value` 为空时触发 `_set_value_events`；`<select>` 精确名未命中时从 `<option>` 回退。"""
     ff = tmp_path / "empty_form.json"
