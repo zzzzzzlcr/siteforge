@@ -72,6 +72,13 @@ def _norm_text(text) -> str:
     return " ".join(str(text or "").split()).lower()
 
 
+def _norm_alnum(text) -> str:
+    """只留字母数字的紧凑归一（让 `First Name` 与 `first_name` 对得上号）。"""
+    import re as _re
+    got = _re.sub(r"[^a-z0-9]+", "", str(text or "").lower())
+    return got if len(got) >= 3 else ""
+
+
 def _norm_sel(sel) -> str:
     """比选择器前的归一：只去空白（大小写与空白是同一件事，别的**不许动**）。"""
     return "".join(str(sel or "").split())
@@ -110,8 +117,9 @@ def _step_covers(field: dict, steps: list) -> bool:
 
 def _field_handles(field: dict) -> tuple:
     """这一格身上能拿来认它的两样东西：`(选择器, 名字集合)`。"""
-    return (_norm_sel(field.get("selector")),
-            {_norm_text(field.get(k)) for k in ("label", "hint")} - {""})
+    base = {_norm_text(field.get(k)) for k in ("label", "hint", "placeholder")} - {""}
+    alnum = {_norm_alnum(field.get(k)) for k in ("label", "hint", "placeholder")} - {""}
+    return (_norm_sel(field.get("selector")), base | alnum)
 
 
 def _correlatable(row: dict) -> bool:
@@ -138,8 +146,10 @@ def _step_handles(step: dict) -> tuple:
     """
     target = step.get("target") or {}
     raw = list(target.get("selectors") or [])
-    said = {_norm_text(target.get("name")), _norm_text(target.get("label")),
-            _norm_text(step.get("fill"))} - {""}
+    raw_names = [target.get("name"), target.get("label"), target.get("hint"),
+                 target.get("placeholder"), step.get("fill")]
+    said = {_norm_text(x) for x in raw_names} - {""}
+    said |= {_norm_alnum(x) for x in raw_names} - {""}
     said |= {_norm_text(s) for s in raw} - {""}
     return [_norm_sel(s) for s in raw], said
 
@@ -262,42 +272,87 @@ def uncovered_required(states: list, journey) -> list:
     return out
 
 
-def repair_required(states: list, journey) -> tuple:
+def repair_required(states: list, journey, *, fills: dict | None = None) -> tuple:
     """账本里**真填过**的必填格，产物里没有一步在填 ⇒ **把它补回产物**，而不是拦。
 
+    当调用方把产物 `fills` 表一并交进来（`fills=...`）时，若某必填格在探路时漏填、
+    但 `observe` 已记录其明确选择器与可识别语义（如 `Town/City`、`Email`、必填勾选框），
+    一并从观测证据合成 `FILLS` 条目与 `form` 步骤，避免带着必死缺口进入自测。
+
     返回 `(新 states, 补回去的名字, notes)`。`notes` 是人话（哪一格、补到哪一组、凭什么）。
-
-    ★ 2026-10-07（用户：「探路不是探出来了吗？不能自己修正？」）：这就是 `graph` 里
-    `FILLS` 那一格的同一句话 —— **能补就补，补不了才拦**。补的是**账本里那一格**
-    （选择器与值都照抄，不编一个）；补不了（账本里也没填过 —— 迪士尼那趟
-    `Town/City` 认不出来、没动它）⇒ 那一格**原样留着**，交给 `_field_problems` 去拦。
-    「尽量能出脚本」不许变成「缺了也照样出」。
-
-    ⚠️ 原样那一份**一个字节都不动**（补出来的是新的一份）：调用方可能还要拿旧的对账。
     """
     fixed = [dict(st) for st in (states or [])]
     by_name = {str(st.get("name") or ""): st for st in fixed}
     try:
-        fills = dict(journey.fills() or {})
+        ledger_fills = dict(journey.fills() or {})
     except Exception:                                  # noqa: BLE001
-        fills = {}
+        ledger_fills = {}
     restored: list = []
     notes: list = []
     for where, row, name in uncovered_required(states, journey):
         st = by_name.get(str(where))
-        if not name or st is None or name not in fills:
-            continue                       # 补不了 / 那一组不在产物里 ⇒ 不硬塞，留给闸
-        info = dict(fills.get(name) or {})
-        st["steps"] = list(st.get("steps") or []) + [
-            {"action": "form", "fill": name,
-             "note": "从账本补回来的：这一步探路时真填过（%s）"
-                     % (row.get("label") or row.get("hint") or row.get("selector") or "？"),
-             "target": dict(info.get("target") or {})}]
-        restored.append(name)
-        notes.append("「%s」（%s 那一组）产物里没有一步在填，而账本里**真填过**（`%s`）"
-                     "⇒ 照账本把那一步补回去。" % (
-                         row.get("label") or row.get("hint") or row.get("selector") or "？",
-                         where, name))
+        if st is None:
+            continue
+        if name and name in ledger_fills:
+            info = dict(ledger_fills.get(name) or {})
+            st["steps"] = list(st.get("steps") or []) + [
+                {"action": "form", "fill": name,
+                 "note": "从账本补回来的：这一步探路时真填过（%s）"
+                         % (row.get("label") or row.get("hint") or row.get("selector") or "？"),
+                 "target": dict(info.get("target") or {})}]
+            restored.append(name)
+            notes.append("「%s」（%s 那一组）产物里没有一步在填，而账本里**真填过**（`%s`）"
+                         "⇒ 照账本把那一步补回去。" % (
+                             row.get("label") or row.get("hint") or row.get("selector") or "？",
+                             where, name))
+            continue
+        if fills is None:
+            continue
+        sel = str(row.get("selector") or "").strip()
+        if not sel:
+            continue
+        from agent import browser_agent                # noqa: PLC0415
+        label = str(row.get("label") or row.get("hint") or row.get("placeholder") or "").strip()
+        ftype = str(row.get("type") or "").strip().lower()
+        if ftype == "checkbox":
+            kind = "check"
+            stem = browser_agent._snake(label) or "agree"
+            fallback = ["true"]
+        else:
+            semantic = browser_agent._field_kind(label, row)
+            if not semantic:
+                continue
+            kind = "value"
+            stem = semantic
+            fallback = [{"random": semantic}]
+        syn_name = stem
+        idx = 2
+        while syn_name in fills or syn_name in ledger_fills or syn_name in restored:
+            syn_name = f"{stem}-{idx}"
+            idx += 1
+        frame_id = browser_agent._frame_id_of_path(row.get("frame_path")) or ""
+        target = browser_agent._target_of(row, "form", sel, frame_id)
+        fills[syn_name] = {
+            "source": syn_name,
+            "kind": kind,
+            "label": label or syn_name,
+            "target": target,
+            "fallback": fallback,
+        }
+        new_step = {
+            "action": "form",
+            "fill": syn_name,
+            "note": "从观测补齐的必填格（%s）" % (label or sel),
+            "target": dict(target),
+        }
+        cur_steps = list(st.get("steps") or [])
+        if cur_steps and str((cur_steps[-1] or {}).get("action") or "") == "click":
+            st["steps"] = cur_steps[:-1] + [new_step, cur_steps[-1]]
+        else:
+            st["steps"] = cur_steps + [new_step]
+        restored.append(syn_name)
+        notes.append("「%s」（%s 那一组）是页面标明的必填格、探路漏填 ⇒ 按观测语义（`%s`）自动补齐。"
+                     % (label or sel, where, syn_name))
     return fixed, restored, notes
 
 

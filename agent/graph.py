@@ -1342,12 +1342,18 @@ def _can_loop(journey, funnel, state) -> bool:
     ⚠️ 这一格同时是**提示词里那一格 `loop` 出不出现在表上的判据**：表上有 `loop` = 换得成
     （那个「改稿那双手」据此写 `{"shape": "loop"}`）—— 两边必须是**同一条判据**，
     不然它会照着一个表上没给的口子写（然后我们这边拒绝，白跑一轮）。
+    ★ P2-2：首版仍以 `success_urls` 为主；当首版固定步骤表自测失败进入修复轮（`diagnoses > 0`）
+    且存在 `success_text` 时，也允许切入 `loop`（`render_loop` 本身支持正文判据）。
     """
     if not _loop_enabled():
         return False
+    has_criterion = bool(str(state.get("success_urls") or "").strip()) or (
+        int(state.get("diagnoses") or 0) > 0
+        and bool(str(state.get("success_text") or "").strip())
+    )
     return (journey is not None and funnel is not None
             and bool(str(funnel.get("url") or "").strip())
-            and bool(str(state.get("success_urls") or "").strip()))
+            and has_criterion)
 
 
 def _why_no_loop(journey, funnel, state) -> str:
@@ -1603,14 +1609,17 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
                                reply_chars=r.get("reply_chars"),
                                reply_sha256=r.get("reply_sha256"))
                 for r in _protocol])
-        spec["states"], _reverted = _keep_step_sequences(_spec_before_write.get("states") or [],
-                                                         spec.get("states") or [])
+        _scope = (feedback.get("diagnosis") or {}).get("局部修复") or {}
+        spec["states"], _reverted = _keep_step_sequences(
+            _spec_before_write.get("states") or [],
+            spec.get("states") or [],
+            allow_state=str(_scope.get("state") or ""),
+        )
         #: 空列表也要落（不是只在退回时才写）—— 读它的人（统计、面板）不必再判「这一格在不在」。
         out["steps_reverted"] = _reverted
         #: ★ 2026-10-13（用户裁定「先局部修复再按吧」）：**有锚就只许改那一处**。
         #: 锚来自诊断（`_repair_scope`：`failed_step` 映射回「哪一组、组内第几步」）；
         #: 没有锚（比如「步都做了就是没走到成功」）⇒ 整版重写，一个字节不钉。
-        _scope = (feedback.get("diagnosis") or {}).get("局部修复") or {}
         spec["states"], _pinned = _keep_repair_local(_spec_before_write.get("states") or [],
                                                      spec.get("states") or [], _scope)
         if _pinned:
@@ -1646,8 +1655,13 @@ def _draft(state, deps: Deps, caps: Caps) -> dict:
     #: ⚠️ 顺序不能反：补进来的那一步会引用一个 `FILLS` 键，正好由下面那段一起补上。
     #: ⚠️ 补不了（账本里也没填过 —— 迪士尼那趟「Town/City 认不出来、没动它」）⇒ 原样留着，
     #: 交给下面 `ir` 那道闸拦：「尽量能出脚本」不许变成「缺了也照样出」。
+    if isinstance(spec.get("fills"), list):
+        spec["fills"] = {str(f.get("name") or ""): dict(f)
+                         for f in spec["fills"] if isinstance(f, dict) and f.get("name")}
+    elif not isinstance(spec.get("fills"), dict):
+        spec["fills"] = {}
     _fixed_states, _required_restored, _required_notes = ir_mod.repair_required(
-        spec.get("states") or [], journey)
+        spec.get("states") or [], journey, fills=spec["fills"])
     if _required_restored:
         spec["states"] = _fixed_states
         out["required_restored"] = _required_restored
@@ -2181,7 +2195,19 @@ def _seq_of(state: dict) -> list:
             for s in ((state or {}).get("steps") or [])]
 
 
-def _keep_step_sequences(before: list, after: list) -> tuple:
+def _core_seq_of(state: dict) -> list:
+    """剔除 `soft` / `auxiliary` / `wait` / `scroll` 辅助步后的核心业务序列。"""
+    out = []
+    for s in ((state or {}).get("steps") or []):
+        s = s or {}
+        act = str(s.get("action") or "")
+        if s.get("soft") or s.get("auxiliary") or act in ("wait", "scroll"):
+            continue
+        out.append((act, str(s.get("fill") or "")))
+    return out
+
+
+def _keep_step_sequences(before: list, after: list, *, allow_state: str = "") -> tuple:
     """把「**步骤序列**」按 `before`（= 账本的事实）钉回去，返回 `(新的 states, 被退回的组名)`。
 
     ★ 2026-09-30（用户那一问点破的）：「**有没有可能他直接弹出来 SIGN IN 了。你找 Buy now
@@ -2193,6 +2219,8 @@ def _keep_step_sequences(before: list, after: list) -> tuple:
     （加步、删步、挪步、把一组里的步搬去另一组）。判据是 `(action, fill)` 逐位相同 ——
     不同就把**那一组的步骤**原样退回（别的组、别的东西一个字节不动），并记进
     `steps_reverted`（**退回了什么要说出来**，不是静默改）。
+    ★ P3-1：对诊断锚定要修的那一组（`allow_state`），若核心承重步序列未变（仅插入了
+    `soft`/`auxiliary`/`wait`/`scroll` 辅助排障步），允许保留。
     """
     was = {str(st.get("name") or ""): st for st in (before or []) if isinstance(st, dict)}
     reverted: list = []
@@ -2208,6 +2236,9 @@ def _keep_step_sequences(before: list, after: list) -> tuple:
             out.append(st)
             continue
         if _seq_of(st) != _seq_of(src):
+            if allow_state and name == allow_state and _core_seq_of(st) == _core_seq_of(src):
+                out.append(st)
+                continue
             fixed = dict(st)
             fixed["steps"] = src.get("steps") or []
             out.append(fixed)
@@ -2261,12 +2292,27 @@ def _keep_repair_local(before: list, after: list, scope: dict) -> tuple:
 
     返回 `(states, 退回说明)`；`scope` 空 ⇒ `(after, [])`（整版重写，一个字节不动）。
     退回说明是**人话一句**（进 `steps_reverted` 旁边的 `repair_local` 那格，闸上看得见）。
+    ★ P3-1（因果滑动窗口 `[failed_step - 1, failed_step]`）：
+      · 当锚点落在组内第 `i > 0` 步且第 `i` 步本身未动而只修了紧邻前一步 `i - 1` 时，允许保留 `i - 1` 的改动；
+      · 当锚点落在组首（`i == 0`）且本组步骤未动而只修了紧邻前一组末步（跨页推进点击）时，允许保留前一组末步改动。
     """
     if not scope or not isinstance(scope, dict):
         return after, []
     want_state = str(scope.get("state") or "")
     want_index = scope.get("index")
+    before_names = [str(st.get("name") or "") for st in (before or []) if isinstance(st, dict)]
+    prev_state = ""
+    if want_state in before_names:
+        pos = before_names.index(want_state)
+        if pos > 0:
+            prev_state = before_names[pos - 1]
     was = {str(st.get("name") or ""): st for st in (before or []) if isinstance(st, dict)}
+    now_map = {str(st.get("name") or ""): st for st in (after or []) if isinstance(st, dict)}
+    want_unchanged = (
+        want_state in was
+        and want_state in now_map
+        and not _steps_differ(was[want_state], now_map[want_state])
+    )
     out: list = []
     pinned: list = []
     for st in (after or []):
@@ -2276,15 +2322,37 @@ def _keep_repair_local(before: list, after: list, scope: dict) -> tuple:
         name = str(st.get("name") or "")
         src = was.get(name)
         if src is None or name != want_state:
+            if (
+                src is not None
+                and name == prev_state
+                and int(want_index or 0) == 0
+                and want_unchanged
+                and _steps_differ(src, st)
+            ):
+                old_prev = list(src.get("steps") or [])
+                new_prev = list(st.get("steps") or [])
+                if len(old_prev) == len(new_prev) and len(old_prev) >= 1 and old_prev[:-1] == new_prev[:-1]:
+                    merged_prev = dict(st)
+                    merged_prev["steps"] = old_prev[:-1] + new_prev[-1:]
+                    out.append(merged_prev)
+                    continue
             #: 别的组：整组按被测的那一版钉回去（新版对它的任何改动一律不要）
             if src is not None and _steps_differ(src, st):
                 pinned.append(name)
             out.append(src if src is not None else st)
             continue
-        #: 就是出错的那一组：**从锚点往后**取新版（锚点之前同样钉回去）
+        #: 就是出错的那一组：**从锚点往后**取新版（若第 i 步未改而只修了紧邻前一步 i-1，则保留 i-1）
         old_steps = list(src.get("steps") or [])
         new_steps = list(st.get("steps") or [])
         i = int(want_index or 0)
+        if (
+            i > 0
+            and len(old_steps) == len(new_steps)
+            and old_steps[i:] == new_steps[i:]
+            and old_steps[: i - 1] == new_steps[: i - 1]
+            and old_steps[i - 1] != new_steps[i - 1]
+        ):
+            i = i - 1
         head_changed = old_steps[:i] != new_steps[:i]
         merged = dict(st)
         merged["steps"] = old_steps[:i] + new_steps[i:]
@@ -2546,8 +2614,11 @@ def _diagnose(state, deps: Deps, caps: Caps) -> dict:
     scope = _repair_scope(state, evidence.get("failed_step"))
     defect, defect_why = _defect_class(evidence, state, scope, family)
     #: ★ 2026-10-19：失败页也命中**别的组**的正文判据 ⇒ 先把那一组收紧（见 `_tighten_state_when`）。
-    tightened, tightened_names = _tighten_state_when(state.get("fix_states"),
-                                                     state.get("report"))
+    #: ★ P3-1：同时覆盖 build 模式的 `state["states"]` 与 fix 模式的 `state["fix_states"]`。
+    tightened, tightened_names = _tighten_state_when(
+        state.get("states") or state.get("fix_states"),
+        state.get("report"),
+    )
     #: ⚠️ 判「同一处」用的是 **`repair_fingerprint`**，不是 `diagnosis`：后者是回灌给 draft
     #: 的证据、draft 收下就清掉（`_draft` 里那两处 `"diagnosis": None`）—— 拿它判会**永远
     #: 判不到**（2026-10-13 实测：`same` 恒为 False，照样烧到 `selftest_cap`）。
@@ -2585,7 +2656,9 @@ def _diagnose(state, deps: Deps, caps: Caps) -> dict:
     if _held(out):
         return out
     if tightened_names:
-        out["fix_states"] = tightened
+        out["states"] = tightened
+        if state.get("fix_states") is not None:
+            out["fix_states"] = tightened
         out.setdefault("facts", {})["自动收紧判据"] = tightened_names
     out["diagnosis"] = dict(evidence, family=family, defect=defect,
                             defect_why=defect_why, 局部修复=scope)

@@ -1347,6 +1347,26 @@ def test_without_a_failed_step_the_scene_takes_the_last_executed_row_not_a_skipp
     assert "真正执行过" in scene["为什么是这一步"], scene
 
 
+def test_scene_of_includes_predecessor_step_context(tmp_path):
+    """P3-1：`scene_of` 在失败步之前存在已执行步骤时，附带「上一步」因果上下文（选择器、推进状态与网址）。"""
+    rows = [
+        {"step": 1, "action": "click", "ok": True, "target": "Continue",
+         "selector_used": "div.btn-wrap", "progress": False,
+         "url": "https://example.test/step-1", "page_sig": "Step 1",
+         "note": "点了「Continue」；页面没有变化"},
+        {"step": 2, "action": "form", "ok": False, "target": "email",
+         "selector_used": "", "progress": False,
+         "url": "https://example.test/step-1", "page_sig": "Step 1",
+         "note": "页面上没找到「email」"},
+    ]
+    scene = selftest.scene_of(_run_pointing_at(tmp_path, rows, failed_step=2))
+    assert scene["哪一步"] == 2
+    assert scene.get("上一步") is not None
+    assert scene["上一步"]["哪一步"] == 1
+    assert scene["上一步"]["实际用的选择器"] == "div.btn-wrap"
+    assert scene["上一步"]["这一步往前推了没有"] is False
+
+
 def test_a_run_that_never_wrote_a_trace_is_still_a_failure(env):
     """产物起来就崩（退出码非 0、trace 都没有）→ 挂，并带上它最后说了什么。"""
     bad = _Script(rc=1, trace=False, stderr="ModuleNotFoundError: common")

@@ -4553,3 +4553,30 @@ def test_provenance_without_rules_has_no_rules_key():
 
     prov = graph._provenance({"mode": "build"}, D(), report=None)
     assert "rules" not in prov
+
+
+def test_can_loop_allows_text_only_criterion_on_repair_rounds():
+    """P2-2：首版无 `success_urls` 时保持固定步骤表；自测失败进入修复轮（`diagnoses > 0`）时允许凭 `success_text` 切入 `loop`。"""
+    from agent import graph
+    funnel = {"url": "https://funnel.test/quiz", "states": ["q1", "q2", "q3"]}
+    assert graph._can_loop(object(), funnel, {"success_urls": "", "success_text": "Thank you", "diagnoses": 0}) is False
+    assert graph._can_loop(object(), funnel, {"success_urls": "", "success_text": "Thank you", "diagnoses": 1}) is True
+
+
+def test_causal_repair_window_allows_predecessor_step_and_helper_insertion():
+    """P3-1：局部修复允许在目标组插入 `soft`/`wait` 辅助步，且当第 `i` 步失败是因为紧邻前一步 `i-1` 未推进时允许修 `i-1`。"""
+    from agent import graph
+    before = _two_group_spec()["states"]
+    after_helper = copy.deepcopy(before)
+    after_helper[1]["steps"].insert(1, {"action": "click", "soft": True, "note": "关弹窗",
+                                        "target": {"text": "Close", "selectors": ["#close"]}})
+    kept, reverted = graph._keep_step_sequences(before, after_helper, allow_state="two")
+    assert reverted == []
+    assert len(kept[1]["steps"]) == 3
+
+    after_prev = copy.deepcopy(before)
+    after_prev[1]["steps"][0]["target"]["selectors"] = ["#c-fixed"]
+    merged, pinned = graph._keep_repair_local(before, after_prev, {"state": "two", "index": 1, "global": 4})
+    assert merged[1]["steps"][0]["target"]["selectors"] == ["#c-fixed"]
+    assert pinned == []
+

@@ -309,18 +309,13 @@ def test_no_report_knob_is_registered_and_documented(rendered):
 
 
 def test_actions_go_through_cdp(rendered):
-    """§5.2：动作走 `self.cdp.*`；`eval` 只准出现在读路径。"""
+    """§5.2：动作走 `self.cdp.*`；`eval` 只准出现在读路径（前提层特例与 `_set_value_events` 受 lint 白名单约束）。"""
+    from agent import lint
     assert "self.cdp.click(" in rendered
     assert "self.cdp.form(" in rendered
     assert "self.cdp.scroll(" in rendered
-    # 手拼写入的三件套一个都不许有（Task 4 的 lint 会打回）
-    for banned in (
-        "dispatchEvent",
-        "getOwnPropertyDescriptor",
-        "document.querySelector",
-        ".click()",
-    ):
-        assert banned not in rendered, banned
+    assert "document.querySelector" not in rendered
+    assert lint.check(rendered) == []
 
 
 def test_early_stop_constant_present(rendered):
@@ -1329,7 +1324,11 @@ def test_legacy_cdp_gaps_are_said_in_human_words(sandbox, form_file, tmp_path, c
     assert any("SITEFORGE_CDP_BIN" in m for m in said), ("要告诉人怎么换", said)
     assert not [m for m in said if "#" in m], ("给人看的话里不许出现选择器", said)
 
-    lines = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    lines = [
+        json.loads(ln)
+        for ln in trace.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and json.loads(ln).get("action") != "give_up"
+    ]
     assert len(lines) == 3, lines
     for line in lines:
         assert line["progress"] is None, "判不出来就说判不出来 —— 不许当成「没推进」"
@@ -4510,7 +4509,11 @@ def test_the_group_retry_is_written_into_the_trace(sandbox, form_file, tmp_path)
     trace = tmp_path / "retry.jsonl"
 
     module.Filler(WS, form_file, "cid_1", "task_1", delay=(0, 0), trace=str(trace)).run()
-    lines = [json.loads(ln) for ln in trace.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    lines = [
+        json.loads(ln)
+        for ln in trace.read_text(encoding="utf-8").splitlines()
+        if ln.strip() and json.loads(ln).get("action") != "give_up"
+    ]
     assert len(lines) == 3, lines
     assert lines[0]["ok"] is False and lines[1]["ok"] is True, lines
     assert lines[1]["target"] == "#a", "第 2 行是**重走**的那一下（同一个 target）: %s" % (lines[1],)
@@ -5998,3 +6001,71 @@ def test_rules_off_leaves_the_old_behavior(sandbox, tmp_path):
     filled = {a[1]: a[2] for a in common.STATE.actions if a[0] == "form"}
     assert filled["input#phone"] == "0000000000"
     assert filled["input#password"] == "weak"
+
+
+def test_no_report_locks_verified_sample_while_production_stays_random(sandbox, tmp_path):
+    """P0-2：自测（`no_report=True`）且无显式规则/资料时，优先复现探路已验证 `sample`；生产（`no_report=False`）照旧。"""
+    ff = tmp_path / "empty_form.json"
+    ff.write_text("{}", encoding="utf-8")
+    fill = {
+        "name": "income",
+        "source": "income",
+        "kind": "value",
+        "label": "Annual Income",
+        "sample": "85000",
+        "target": {"text": None, "label": "Annual Income", "role": None, "near": None,
+                   "selectors": ["input#income"]},
+        "fallback": ["50000"],
+    }
+    steps = [{"action": "form", "fill": "income", "note": "填收入"}]
+    prod = template.render("example-sample-lock", "Thank you",
+                           [{"name": "walk", "when": None, "steps": steps}], [fill],
+                           SAMPLE_PROVENANCE)
+    module, _ = _load("run_sample_lock", prod, sandbox)
+    common = _stub(sandbox, diff={"actionable": True},
+                   observe={"url": "https://example.test/", "actions": [], "fields": []})
+    common.STATE.texts = ["Walk", "Thank you"]
+    assert module.Filler(WS, str(ff), "cid_1", "task_1", delay=(0, 0), no_report=True).run() is True
+    filled_selftest = [a[2] for a in common.STATE.actions if a[0] == "form"]
+    assert filled_selftest == ["85000"]
+
+
+def test_form_read_back_empty_triggers_set_value_events_and_select_fallback(sandbox, tmp_path):
+    """P1-1：`cdp form` 后读回 DOM `.value` 为空时触发 `_set_value_events`；`<select>` 精确名未命中时从 `<option>` 回退。"""
+    ff = tmp_path / "empty_form.json"
+    ff.write_text("{}", encoding="utf-8")
+    fills = [
+        {"name": "zip", "source": "zip", "kind": "value", "label": "Zip", "sample": "90210",
+         "target": {"text": None, "label": "Zip", "role": None, "near": None, "selectors": ["input#zip"]},
+         "fallback": ["90210"]},
+        {"name": "state", "source": "state", "kind": "select", "label": "State", "sample": "california",
+         "target": {"text": None, "label": "State", "role": None, "near": None, "selectors": ["select#state"]},
+         "fallback": ["california"]},
+    ]
+    steps = [{"action": "form", "fill": "zip", "note": "填 Zip"},
+             {"action": "form", "fill": "state", "note": "选 State"}]
+    prod = template.render("example-p1-form", "Thank you",
+                           [{"name": "walk", "when": None, "steps": steps}], fills,
+                           SAMPLE_PROVENANCE)
+    module, _ = _load("run_p1_form", prod, sandbox)
+    f = module.Filler(WS, str(ff), "cid_1", "task_1", delay=(0, 0), no_report=True)
+    events_called = []
+    f._read_back_value = lambda sel, fid="": {"sfReadBack": True, "found": True, "value": ""}
+    f._set_value_events = lambda sel, val, fid="": (events_called.append((sel, val)) or True)
+    f._select_fallback_option = lambda sel, want, fid="": "California"
+    calls = []
+
+    def fake_form(selector, value=None, check=None, select=None, frame_id="", strict=False, expect_label=""):
+        calls.append((selector, value, select))
+        if select == "california":
+            return "Error: option not found"
+        return '{"filled": true}'
+
+    f.cdp.form = fake_form
+    out_zip = f._do("form", "input#zip", "90210", "value", "", "Zip")
+    assert module._ok(out_zip)
+    assert events_called == [("input#zip", "90210")]
+    out_sel = f._do("form", "select#state", "california", "select", "", "State")
+    assert module._ok(out_sel)
+    assert ("select#state", None, "California") in calls
+

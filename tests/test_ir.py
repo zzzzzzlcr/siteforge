@@ -365,6 +365,15 @@ def test_a_required_field_the_ledger_did_fill_is_put_back_instead_of_blocking():
     assert restored2 == [] and fixed2 == states
     assert [p.code for p in ir.validate(empty)] == ["trace_incomplete.required_field_without_step"]
 
+    #: ★ P0-1：当调用方交进产物 `fills` 表时，若必填格具备明确选择器与可识别语义（Email），
+    #: 自动合成 `FILLS` 条目并在末尾 click 前补入 `form` 步骤。
+    syn_fills: dict = {}
+    fixed3, restored3, notes3 = ir.repair_required(states, empty, fills=syn_fills)
+    assert restored3 == ["email"], (restored3, notes3)
+    assert "email" in syn_fills and syn_fills["email"]["kind"] == "value", syn_fills
+    assert [s["action"] for s in fixed3[0]["steps"]] == ["form", "click"], fixed3[0]["steps"]
+    assert ir.validate(empty, states=fixed3) == []
+
 
 def test_a_fill_the_ledger_recorded_but_no_step_references_is_an_ir_problem():
     """★ 账本里**真填成功过**的那一格，步骤表里一步都没引用 = 那一步被弄丢了。

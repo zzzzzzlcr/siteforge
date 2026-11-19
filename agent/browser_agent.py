@@ -1573,10 +1573,21 @@ def explore(url: str, goal: str, budget: Budget | int | dict | None = None, *,
                 journey.steps, success_text, success_urls) is None:
             room = min(CONTINUE_ROUNDS, max(0, int(limits.max_rounds or 0)))
             if room > 0:
+                try:
+                    from agent import ir as _ir_mod  # noqa: PLC0415
+                    _missing_req = [
+                        str(r.get("label") or r.get("hint") or r.get("selector") or "")
+                        for _, r, _ in _ir_mod.uncovered_required(journey.states(), journey)
+                        if str(r.get("label") or r.get("hint") or r.get("selector") or "").strip()
+                    ]
+                except Exception:  # noqa: BLE001
+                    _missing_req = []
                 journey.note("还没见到成功文案，而页面还在漏斗里 ⇒ **就地接着走**"
                              "（最多再 %d 轮；不重开窗口、不重交表单）" % room)
                 rounds2 = llm.run_tool_loop(
-                    _SYSTEM, _unfinished_brief(success_text, success_urls), specs, dispatch,
+                    _SYSTEM, _unfinished_brief(success_text, success_urls,
+                                               missing_fields=_missing_req),
+                    specs, dispatch,
                     max_rounds=room, max_tokens=MAX_TOKENS, steer=steer, _client=gate,
                 )
                 if rounds2:
@@ -1816,7 +1827,8 @@ _FINAL_LOOK_SYSTEM = (
 CONTINUE_ROUNDS = 6
 
 
-def _unfinished_brief(success_text: str, success_urls: str = "") -> str:
+def _unfinished_brief(success_text: str, success_urls: str = "",
+                      missing_fields: list | None = None) -> str:
     """「还没走到，接着走」那句（只在这种时候发，见 `CONTINUE_ROUNDS`）。
 
     两句话是**这一手的关键**，都不能省：
@@ -1833,13 +1845,18 @@ def _unfinished_brief(success_text: str, success_urls: str = "") -> str:
     if urls:
         shown = ("%s；或者网址里出现「%s」" % (shown, "」、「".join(urls))
                  if shown else "网址里出现「%s」" % "」、「".join(urls))
-    return ("你刚才收工了，但这一趟**还没走到**：页面上**还没有**出现"
-            "「%s」。⚠️ 「把表单交出去了」不等于「走到了」—— 交完之后回来的那一屏\n"
-            "常常**还在漏斗里**（上面还有没答的问题、没点完的按钮）。\n"
-            "就在**当前这一页**上接着做（不要导航回入口、不要重点提交按钮）：\n"
-            "先把页面上还没答的问题答完、该点的按钮点掉，一步一步往下走，\n"
-            "直到页面上**真的出现**那串字为止。确实走不下去（元素找不到 / 页面报错 /\n"
-            "卡住了）就照实说走不下去，别硬凑。" % shown)
+    msg = ("你刚才收工了，但这一趟**还没走到**：页面上**还没有**出现"
+           "「%s」。⚠️ 「把表单交出去了」不等于「走到了」—— 交完之后回来的那一屏\n"
+           "常常**还在漏斗里**（上面还有没答的问题、没点完的按钮）。\n"
+           "就在**当前这一页**上接着做（不要导航回入口、不要重点提交按钮）：\n"
+           "先把页面上还没答的问题答完、该点的按钮点掉，一步一步往下走，\n"
+           "直到页面上**真的出现**那串字为止。确实走不下去（元素找不到 / 页面报错 /\n"
+           "卡住了）就照实说走不下去，别硬凑。" % shown)
+    if missing_fields:
+        msg += ("\n另外，观测发现页面上还有这些**必填格**没填：%s —— "
+                "请先用 `form` 把它们填上再提交。"
+                % "、".join("「%s」" % f for f in missing_fields[:6]))
+    return msg
 
 
 def _frames_used(journey) -> list:

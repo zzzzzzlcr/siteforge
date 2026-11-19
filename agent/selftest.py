@@ -621,7 +621,21 @@ def scene_of(run) -> Optional[dict]:
     if row is None:
         return None
     scene = row.get("scene") if isinstance(row.get("scene"), dict) else None
-    return {
+    prev_row = None
+    try:
+        idx = rows.index(row)
+        prev_row = next(
+            (
+                r for r in reversed(rows[:idx])
+                if r.get("ok") is not None
+                and r.get("step") != row.get("step")
+                and _has_scene_material(r)
+            ),
+            None,
+        )
+    except ValueError:
+        prev_row = None
+    out = {
         "为什么是这一步": why,
         "哪一步": row.get("step"),
         "动作": row.get("action"),
@@ -646,6 +660,17 @@ def scene_of(run) -> Optional[dict]:
             "可疑特征": scene.get("trouble"),
         }),
     }
+    if prev_row is not None:
+        out["上一步"] = {
+            "哪一步": prev_row.get("step"),
+            "动作": prev_row.get("action"),
+            "这一步的目标": prev_row.get("target"),
+            "实际用的选择器": prev_row.get("selector_used"),
+            "这一步往前推了没有": prev_row.get("progress"),
+            "当时网址": prev_row.get("url"),
+            "脚本自己那句话": prev_row.get("note"),
+        }
+    return out
 
 
 #: 脚本自己那套读页面的 JS（`READ_PAGE_JS = r"""…"""`）—— 拿来**现读一遍**它看到了什么。

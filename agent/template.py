@@ -462,7 +462,10 @@ def render(site, success_text, states, fills, provenance, success_urls=None, *,
 #: 窄口径：目标是 `<select>` + 盖着的是 `<label>` + class 带 select/dropdown 才算
 #: 这一格自己的控件；别的 label 照旧算遮挡。
 _COVER_JS = (
-    "var all=document.getElementsByTagName('*'), el=null;"
+    "var roots=[document],ri=0,all=[],el=null;"
+    "while(ri<roots.length){var rt=roots[ri++];"
+    "var els=(rt.getElementsByTagName?rt.getElementsByTagName('*'):(rt.querySelectorAll?rt.querySelectorAll('*'):[]));"
+    "for(var m=0;m<els.length;m++){all.push(els[m]);if(els[m].shadowRoot)roots.push(els[m].shadowRoot);}}"
     "for(var i=0;i<all.length;i++){try{if(all[i].matches(%s)){el=all[i];break;}}catch(e){}}"
     "if(!el) return '';"
     "var r=el.getBoundingClientRect();"
@@ -473,7 +476,7 @@ _COVER_JS = (
     "for(var k=0;k<stack.length;k++){var h=stack[k];var pe='';"
     "try{pe=getComputedStyle(h).pointerEvents||'';}catch(e){}"
     "if(pe==='none') continue;"
-    "if(h===el||el.contains(h)||h.contains(el)) return '';"
+    "if(h===el||el.contains(h)||h.contains(el)||(h.shadowRoot&&h.shadowRoot.contains&&h.shadowRoot.contains(el))) return '';"
     "var labs=(el.labels||[]);"
     "for(var j=0;j<labs.length;j++){if(labs[j]===h||labs[j].contains(h)) return '';}"
     "var htag=String(h.tagName||'').toUpperCase(), etag=String(el.tagName||'').toUpperCase();"
@@ -488,7 +491,10 @@ _COVER_JS = (
 #: ⚠️ 它**自带** `(function(){…})()` 壳（本来就那样，一个字符都没动）——
 #: 别顺手「统一」成裸语句：统一就是改判据。
 _RECENTER_JS = (
-    "(function(){var all=document.getElementsByTagName('*');"
+    "(function(){var roots=[document],ri=0,all=[];"
+    "while(ri<roots.length){var rt=roots[ri++];"
+    "var els=(rt.getElementsByTagName?rt.getElementsByTagName('*'):(rt.querySelectorAll?rt.querySelectorAll('*'):[]));"
+    "for(var m=0;m<els.length;m++){all.push(els[m]);if(els[m].shadowRoot)roots.push(els[m].shadowRoot);}}"
     "for(var i=0;i<all.length;i++){try{if(all[i].matches(%s)){"
     "all[i].scrollIntoView({block:'center'});return 'ok';}}catch(e){}}"
     "return '';})()"
@@ -1625,6 +1631,15 @@ COVER_POLL_SECONDS = 0.4
 #: 也就是「多滚两下」，不是「放开遮挡判据」。
 RECENTER_TRIES = 2
 
+#: 非加载蒙版类的静态遮挡物在尝试挪到视口正中后仍未消失时，快速收敛的等待上限（秒）。
+STATIC_COVER_FAST_SECONDS = 4.0
+_LOADER_COVER_RE = re.compile(
+    r"(loader|loading|spinner|preloader|skeleton|mask|backdrop|progress|wait)", re.I
+)
+
+#: 整趟运行的总时间预算（秒）：在自测/生产 600 秒硬超时前预留余量主动收摊留存 trace。
+RUN_BUDGET_SECONDS = 540.0
+
 #: ★ 2026-10-12：声明里那根地址**没找到**时，先等多久（秒）再试**同一根地址**。
 #:
 #: 为什么要这一格（真事 `job-d57366d0cf35` · ic.com 的选国家抽屉，读数在
@@ -1944,17 +1959,45 @@ PROVENANCE = $provenance
 SKELETON_SHA = "$skeleton_sha"
 
 
+def _infer_country_from_fills():
+    """当 `proxy_country` 未给时，从 `FILLS` 里的探路已验证 `sample` 推断站点国家。"""
+    fills = globals().get("FILLS")
+    if not isinstance(fills, dict):
+        return ""
+    for info in fills.values():
+        if not isinstance(info, dict):
+            continue
+        s = str(info.get("sample") or "").strip()
+        if not s:
+            continue
+        if re.fullmatch(r"04\d{8}", s) or s.startswith("+61"):
+            return "AU"
+        if re.fullmatch(r"[A-Za-z]\d[A-Za-z]\s*\d[A-Za-z]\d", s):
+            return "CA"
+        if (re.fullmatch(r"[A-Za-z]{1,2}\d[A-Za-z\d]?\s*\d[A-Za-z]{2}", s)
+                or s.startswith("+44")
+                or re.fullmatch(r"0(?:20|1\d|7\d)\d{8}", s)):
+            return "GB"
+        label = " ".join(str(info.get(k) or "") for k in ("source", "label")).lower()
+        if s.startswith("+1") or (
+                re.fullmatch(r"\d{5}(?:-\d{4})?", s)
+                and any(w in label for w in ("zip", "post", "postal"))):
+            return "US"
+    return ""
+
+
 def _site_country():
     """这个站属于哪一档随机池 —— `PROVENANCE["env"]["proxy_country"]` 里那个两字母码。
 
-    只认**已经有**的那一处信号（见 `COUNTRY_POOLS` 上面那段）；拿不到 / 认不出来
-    一律给空串 = **「不知道」** —— 由 `Filler._say_country()` 出声，这里不猜。
+    若未给 `proxy_country`，再看 `FILLS` 里探路已验证的 `sample` 能否唯一定位国家；
+    都拿不到 / 认不出来一律给空串 = **「不知道」** —— 由 `Filler._say_country()` 出声，这里不猜。
     """
     env = PROVENANCE.get("env") if isinstance(PROVENANCE, dict) else None
-    if not isinstance(env, dict):
-        return ""
-    code = str(env.get("proxy_country") or "").strip().upper()
-    return code if code in COUNTRY_POOLS else ""
+    if isinstance(env, dict):
+        code = str(env.get("proxy_country") or "").strip().upper()
+        if code in COUNTRY_POOLS:
+            return code
+    return _infer_country_from_fills()
 
 
 # ── 怎么走 ────────────────────────────────────────────────
@@ -2449,10 +2492,12 @@ class Filler:
     #: 类默认值同上：`object.__new__(Filler)` 那种实例也要够得着（它是 `_run_step` 读的）。
     retry_why = None
     group_retries = 0
+    _run_deadline = None
 
     def __init__(self, ws_url, form_file, correlation_id, task_id="",
                  trace=None, stop_at=None, shots="failed", delay=DELAY_RANGE,
                  no_report=False):
+        self._run_deadline = time.monotonic() + RUN_BUDGET_SECONDS
         self.cdp = CDPHelper(ws_url)
         with open(form_file) as f:
             self.form_data = json.load(f)
@@ -2554,6 +2599,12 @@ class Filler:
         lo, hi = self.delay if low is None else (low, high)
         if hi and hi > 0:
             time.sleep(random.uniform(lo, hi))
+
+    def _cap_until(self, until):
+        if until is None:
+            return None
+        dl = getattr(self, "_run_deadline", None)
+        return min(until, dl) if dl is not None else until
 
     def _ev(self, js, frame_id=""):
         """读路径的 eval（规格 §5.2：动作一律走 cdp 的 click / form / scroll，不手拼 JS）。
@@ -3205,6 +3256,95 @@ class Filler:
 
     # ── 动作 ────────────────────────────────────────────────
 
+    def _read_back_value(self, selector, frame_id=""):
+        """读回输入框当前 DOM `.value`（真浏览器返 dict，桩返 None）。"""
+        js = (
+            "/* sfReadBack */"
+            "var roots=[document],ri=0,el=null;"
+            "while(ri<roots.length&&!el){var rt=roots[ri++];"
+            "var els=(rt.getElementsByTagName?rt.getElementsByTagName('*'):(rt.querySelectorAll?rt.querySelectorAll('*'):[]));"
+            "for(var i=0;i<els.length;i++){try{if(els[i].matches(%s)){el=els[i];break;}}catch(e){}"
+            "if(els[i].shadowRoot)roots.push(els[i].shadowRoot);}}"
+            "if(!el)return '';"
+            "return JSON.stringify({sfReadBack:true,found:true,value:String(el.value||'')});"
+        ) % json.dumps(str(selector or ""))
+        try:
+            raw = str(self._ev(js, frame_id) or "").strip()
+            if not raw or "sfReadBack" not in raw:
+                return None
+            data = json.loads(raw)
+            return data if isinstance(data, dict) and data.get("sfReadBack") else None
+        except Exception:
+            return None
+
+    def _set_value_events(self, selector, value, frame_id="") -> bool:
+        """原生 value setter + 全套键盘/输入事件写值（React 受控输入兜底，与循环型同源）。"""
+        js = (
+            "/* sfSetValueEvents */"
+            "var roots=[document],ri=0,e=null,value=%s;"
+            "while(ri<roots.length&&!e){var rt=roots[ri++];"
+            "var els=(rt.getElementsByTagName?rt.getElementsByTagName('*'):(rt.querySelectorAll?rt.querySelectorAll('*'):[]));"
+            "for(var i=0;i<els.length;i++){try{if(els[i].matches(%s)){e=els[i];break;}}catch(err){}"
+            "if(els[i].shadowRoot)roots.push(els[i].shadowRoot);}}"
+            "if(!e)return '';"
+            "try{e.focus();}catch(err){}"
+            "\nif(e.tagName==='SELECT'){e.value=value;}\n"
+            "else{var proto=e.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:"
+            "window.HTMLInputElement.prototype;\n"
+            "var d=Object.getOwnPropertyDescriptor(proto,'value');\n"
+            "if(d&&d.set)d.set.call(e,value);else e.value=value;}\n"
+            "['keydown','keypress','input','keyup','change','blur'].forEach(function(t){"
+            "e.dispatchEvent(t==='input'||t==='change'?new Event(t,{bubbles:true}):"
+            "new KeyboardEvent(t,{bubbles:true,key:'1',keyCode:49}));});"
+            "return JSON.stringify({ok:true,value:String(e.value||'')});"
+        ) % (json.dumps(str(value or "")), json.dumps(str(selector or "")))
+        try:
+            raw = str(self._ev(js, frame_id) or "").strip()
+            if not raw:
+                return False
+            data = json.loads(raw)
+            return bool(isinstance(data, dict) and data.get("ok"))
+        except Exception:
+            return False
+
+    def _select_fallback_option(self, selector, want, frame_id="") -> str:
+        """当 `<select>` 精确选项名未命中时，在真 DOM `<option>` 中按大小写/子串/首项有效值匹配。"""
+        js = (
+            "/* sfSelectOpts */"
+            "var roots=[document],ri=0,el=null;"
+            "while(ri<roots.length&&!el){var rt=roots[ri++];"
+            "var els=(rt.getElementsByTagName?rt.getElementsByTagName('*'):(rt.querySelectorAll?rt.querySelectorAll('*'):[]));"
+            "for(var i=0;i<els.length;i++){try{if(els[i].matches(%s)){el=els[i];break;}}catch(e){}"
+            "if(els[i].shadowRoot)roots.push(els[i].shadowRoot);}}"
+            "if(!el||String(el.tagName||'').toUpperCase()!=='SELECT'||!el.options)return '';"
+            "var opts=[];for(var j=0;j<el.options.length;j++){var o=el.options[j];"
+            "if(o.disabled)continue;"
+            "opts.push({v:String(o.value||'').trim(),t:String(o.text||'').trim()});}"
+            "return JSON.stringify({sfSelectOpts:true,opts:opts});"
+        ) % json.dumps(str(selector or ""))
+        try:
+            raw = str(self._ev(js, frame_id) or "").strip()
+            if not raw or "sfSelectOpts" not in raw:
+                return ""
+            data = json.loads(raw)
+            opts = (data.get("opts") if isinstance(data, dict) else None) or []
+        except Exception:
+            return ""
+        w = str(want or "").strip().lower()
+        valid = []
+        for o in opts:
+            v = str((o or {}).get("v") or "").strip()
+            t = str((o or {}).get("t") or "").strip()
+            if not v and not t:
+                continue
+            low_t = t.lower()
+            if any(p in low_t for p in ("select", "choose", "--", "please", "请选择")):
+                continue
+            valid.append((v, t))
+            if w and (w == v.lower() or w == low_t or w in low_t or low_t in w):
+                return t or v
+        return (valid[0][1] or valid[0][0]) if valid else ""
+
     def _do(self, action, selector, value=None, kind="value", frame_id="", label=""):
         """一个动作只走这一条路：cdp 命令（规格 §5.2：动作一律走 cdp，不手拼 JS）。
 
@@ -3253,11 +3393,30 @@ class Filler:
                     self.log.warning(
                         "[%s] cdp form 的严格闸在这个字段上报了假错（%s）—— 选择器**唯一命中**，"
                         "退回非严格再填一次", self.cid, str(out)[:80])
-                    return self.cdp.form(selector, **base, **{"frame_id": frame_id or ""})
-                self.log.warning(
-                    "[%s] cdp form 的严格闸报「%s」，而这个选择器命中 %s 个 —— "
-                    "不退回非严格（那会静默挑第一个）", self.cid, str(out)[:80],
-                    "数不出来" if count is None else count)
+                    out = self.cdp.form(selector, **base, **{"frame_id": frame_id or ""})
+                else:
+                    self.log.warning(
+                        "[%s] cdp form 的严格闸报「%s」，而这个选择器命中 %s 个 —— "
+                        "不退回非严格（那会静默挑第一个）", self.cid, str(out)[:80],
+                        "数不出来" if count is None else count)
+            #: ★ P1-1（`<select>` 选项匹配回退）：下拉框的候选项文案因大小写/空白/地区微调未命中时，
+            #: 在真 DOM `<option>` 中按大小写/子串/首项有效值匹配重试。
+            if kind == "select" and not _ok(out) and "element not found" not in str(out).lower():
+                alt_opt = self._select_fallback_option(selector, value, frame_id)
+                if alt_opt and alt_opt != str(value or ""):
+                    self.log.info(
+                        "[%s] 下拉框选项 %r 未精确命中，改用页面有效选项 %r 重试",
+                        self.cid, value, alt_opt)
+                    out = self.cdp.form(selector, select=alt_opt, frame_id=frame_id or "")
+            #: ★ P1-1（React/Vue 受控输入读回校验 + 原生 setter/事件流兜底）：
+            #: 当 `cdp form` 回 ok，但读回真 DOM `.value` 仍为空时，用 `_set_value_events` 补写。
+            if kind == "value" and _ok(out) and str(value or "").strip():
+                rb = self._read_back_value(selector, frame_id)
+                if isinstance(rb, dict) and rb.get("found") and not str(rb.get("value") or "").strip():
+                    if self._set_value_events(selector, value, frame_id):
+                        self.log.info(
+                            "[%s] `cdp form` 后读回 `.value` 为空（受控组件），已用原生 setter+事件流补写",
+                            self.cid)
             return out
         if action == "scroll":
             # ⚠️ 位置参数**是选择器**（CLI：`cdp scroll [selector]`）—— 把像素数字塞进
@@ -3366,6 +3525,12 @@ class Filler:
                 self._value_from = "任务资料「%s」拆出（%r → %s）" % (
                     _SPLIT_FROM[source], whole, source)
                 return got
+        #: ★ P0-2：自测（`--no-report`）且未命中显式规则/资料时，优先复现探路已验证 `sample`，
+        #: 避免自测随机盲盒把脚本带进未探索过的拒单分支；生产运行（`no_report=False`）照旧走拟人随机。
+        raw_sample = str(fill.get("sample") or "").strip()
+        if getattr(self, "no_report", False) and raw_sample:
+            self._value_from = "**自测锁定探路已验证样本**"
+            return raw_sample
         #: ★ 2026-10-13：**没取到任务资料，就先照「真站收过的那个值」的形状编一个** ——
         #: 排在随机池**前面**。为什么（真事 `job-a5f74744a7f9` · healthinsurancewatch.com.au）：
         #: 探路那趟在真站上填的是 `0412345678`（澳洲手机，页面认了），重放时那一格走了随机池，
@@ -3558,6 +3723,7 @@ class Filler:
         """
         waited = 0.0
         announced = False
+        until = self._cap_until(until)
         while True:
             left = until - time.monotonic()
             if left <= 0:
@@ -3740,10 +3906,12 @@ class Filler:
         "/* sfLanding */"
         "var t=(document.title||'').toLowerCase();"
         "var txt=document.body?(document.body.innerText||''):'';"
-        "var links=0,as=document.querySelectorAll('a');"
+        "var links=0,as=document.getElementsByTagName('a');"
         "for(var i=0;i<as.length;i++){var r=as[i].getBoundingClientRect();"
         "if(r.width>0&&r.height>0)links++;}"
-        "var fields=document.querySelectorAll('input,textarea,select').length;"
+        "var fields=document.getElementsByTagName('input').length+"
+        "document.getElementsByTagName('textarea').length+"
+        "document.getElementsByTagName('select').length;"
         "var shell=/just a moment|attention required|checking your browser|"
         "verify you are human|simple page|请稍候|正在加载/.test(t);"
         "return JSON.stringify({rs:document.readyState,shell:shell,"
@@ -4158,6 +4326,7 @@ class Filler:
         `until` 是单调时钟的截止点（`None` = 只量一次，不等）。
         """
         waited = False
+        until = self._cap_until(until)
         while True:
             got = str(self._ev(_PAGE_LOADER_JS) or "").strip()
             # ⚠️ **只认带前缀的答复**（`LOADER|` / `READY|`，见那两个常量的注释）：
@@ -4360,6 +4529,8 @@ class Filler:
         """
         waited = False
         recentered = 0
+        until = self._cap_until(until)
+        started = time.monotonic()
         while True:
             cover = self._cover_once(selector, frame_id)
             # 「没盖着」与「量不出来」都是空串 —— 两种都**不拦**，直接放行。
@@ -4370,7 +4541,14 @@ class Filler:
             # 十来步就是一分多钟的空等。
             if cover in self._stuck_covers:
                 return cover
-            if until is None or time.monotonic() >= until:
+            now = time.monotonic()
+            static_fast = (
+                waited
+                and recentered >= RECENTER_TRIES
+                and not _LOADER_COVER_RE.search(cover)
+                and (now - started) >= min(STATIC_COVER_FAST_SECONDS, COVER_WAIT_SECONDS)
+            )
+            if until is None or now >= until or static_fast:
                 if waited:
                     # 等过还没走 —— 它已经不是「还没好」，是「挡住了」。记下来（上面那条），
                     # 并把这件事说出来：别让读日志的人以为我们压根没等。
@@ -4380,7 +4558,7 @@ class Filler:
                     self._stuck_covers = self._stuck_covers | {cover}
                     self.log.info("[%s] 等了 %.1f 秒，%s 还盖着这个元素 —— "
                                   "不等了（它这一趟里已经不是加载蒙版了）",
-                                  self.cid, COVER_WAIT_SECONDS, cover)
+                                  self.cid, max(0.1, now - started), cover)
                 return cover
             if not waited:
                 waited = True
@@ -4910,7 +5088,54 @@ class Filler:
             return False
         return url_ok or self._url_drift_ok(when)
 
-    def _applies(self, when):
+    def _first_step_target_present(self, when, steps) -> bool:
+        """P2-1（弹性锚点回退）：当 URL 判据已命中但 `text_contains` 因动态文案/A/B 变体未命中时，
+        探测本状态首个动作目标选择器是否在当前页唯一可见；若唯一可见则放行该组。"""
+        if not isinstance(when, dict) or not steps:
+            return False
+        want_exact = str(when.get("url_equals") or "")
+        if want_exact:
+            exact = [(u or "").split("#")[0].split("?")[0].rstrip("/") for u in self._urls()]
+            if want_exact not in exact:
+                return False
+        want_url = str(when.get("url_contains") or "")
+        if not want_exact and not want_url:
+            return False
+        if want_url and not (any(want_url in url for url in self._urls()) or self._url_drift_ok(when)):
+            return False
+        for step in (steps or []):
+            if not isinstance(step, dict):
+                continue
+            act = str(step.get("action") or "").strip()
+            if act not in ("click", "form"):
+                continue
+            target = step.get("target") or {}
+            if act == "form":
+                fill = (FILLS or {}).get(step.get("fill") or "") or {}
+                target = fill.get("target") or target
+            frame = str((target or {}).get("frame_id") or "")
+            sels = [str(s) for s in ((target or {}).get("selectors") or []) if str(s or "").strip()]
+            for sel in sels:
+                js = (
+                    "/* sfAnchorProbe */"
+                    "var roots=[document],ri=0,cnt=0;"
+                    "while(ri<roots.length){var rt=roots[ri++];"
+                    "var els=(rt.getElementsByTagName?rt.getElementsByTagName('*'):(rt.querySelectorAll?rt.querySelectorAll('*'):[]));"
+                    "for(var i=0;i<els.length;i++){try{if(els[i].matches(%s)){"
+                    "var r=els[i].getBoundingClientRect();"
+                    "if(r&&r.width>0&&r.height>0)cnt++;}}catch(e){}"
+                    "if(els[i].shadowRoot)roots.push(els[i].shadowRoot);}}"
+                    "return cnt===1?'1':'';"
+                ) % json.dumps(sel)
+                try:
+                    if str(self._ev(js, frame) or "").strip() == "1":
+                        return True
+                except Exception:
+                    continue
+            break
+        return False
+
+    def _applies(self, when, steps=None):
         """这一页看着像不像这个状态（防 A/B 变体、防步骤增减）。
 
         URL 与正文都按**这一页的每一帧**判（`_urls` / `page_signature`）：判据是从
@@ -4947,6 +5172,10 @@ class Filler:
             if self._follow_tab_matching(when):
                 self._wait_when(when, timeout=WAIT_WHEN_SECONDS)
                 ok = self._matches(when)
+        if not ok and self._first_step_target_present(when, steps):
+            self.log.info("[%s] 正文判据未逐字命中，但地址对上了且本组首步目标元素已在当前页唯一可见 —— 按锚点放行",
+                          self.cid)
+            ok = True
         #: ⚠️ why 必须在**判的这一刻**算死，不许事后重算 ——
         #: 事后再看一眼时页面已经变了，说出来的话就跟结论打架。
         self._when_why_cache = "" if ok else self._when_why(when)
@@ -5289,12 +5518,12 @@ class Filler:
                 if not steps:
                     continue
                 name = state.get("name") or SITE
-                applies = self._applies(state.get("when"))
+                applies = self._applies(state.get("when"), steps)
                 if not applies and self._verify_the_hit(state.get("when"), name):
                     # ★ 2026-09-29（交接 §8）：判据不成立 ≠ 这一页不是那个状态 ——
                     # 也可能是**刚才那一击**没落地（新 tab 2.26 秒才冒出来、先空地址）。
                     # 复核动过之后重判一次；成立就照常走这一组，不跳过。
-                    applies = self._applies(state.get("when"))
+                    applies = self._applies(state.get("when"), steps)
                     if applies:
                         self.log.info("[%s] 复核之后这一页**就是**「%s」那个状态 —— "
                                       "刚才那一击是落地了的（不复核就会整组跳过）", self.cid, name)
@@ -5313,6 +5542,13 @@ class Filler:
                     step = steps[cursor]
                     index += 1
                     self.step = index
+                    if getattr(self, "_run_deadline", None) is not None and time.monotonic() >= self._run_deadline:
+                        why = "整趟运行已达时间预算上限（%.0f 秒），主动收摊留存现场" % RUN_BUDGET_SECONDS
+                        self.log.error("[%s] %s", self.cid, why)
+                        self._stop(index, "give_up", why,
+                                   target=_label(step.get("target") or {}, step))
+                        self._rpt("timeout")
+                        return False
                     if not applies:
                         # **跳过必须出声**（2026-09-17 加，与「没做成不许说做成」同一条规矩）：
                         # 「`when` 不成立就整组静默跳过」是这套产物最贵的一类失败 ——

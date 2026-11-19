@@ -799,6 +799,11 @@ COOKIE_GONE_JS = r"""(function(){__DEEP__
 COVER_WAIT_SECONDS = 35.0
 COVER_POLL_SECONDS = 0.4
 RECENTER_TRIES = 2
+STATIC_COVER_FAST_SECONDS = 4.0
+_LOADER_COVER_RE = re.compile(
+    r"(loader|loading|spinner|preloader|skeleton|mask|backdrop|progress|wait)", re.I
+)
+RUN_BUDGET_SECONDS = 540.0
 
 #: ★ 2026-10-16：那两段 JS 是**模块级源字符串**（`agent/template.py` 里同名的那两份 ——
 #: 表那套在用，这边**同一把尺子**：判据只写一份，改一次两套都变）。
@@ -889,8 +894,11 @@ def _looks_street_address(value):
 
 
 class Filler:
+    _run_deadline = None
+
     def __init__(self, ws_url, form_file, correlation_id, task_id="",
                  trace_path="", no_report=False, stop_at=0):
+        self._run_deadline = time.monotonic() + RUN_BUDGET_SECONDS
         self.cdp = CDPHelper(ws_url)
         with open(form_file) as f:
             self.form_data = json.load(f)
@@ -920,6 +928,12 @@ class Filler:
         self.stop_at = int(stop_at or 0)
     def _dly(self, a=0.6, b=1.8):
         time.sleep(random.uniform(a, b))
+
+    def _cap_until(self, until):
+        if until is None:
+            return None
+        dl = getattr(self, "_run_deadline", None)
+        return min(until, dl) if dl is not None else until
 
     def _rpt(self, step, reason=""):
         if self.no_report:
@@ -1213,13 +1227,28 @@ class Filler:
                                     % (type(exc).__name__, str(exc)[:40]))
             return False
 
-    def read(self):
-        """读这一屏。**读不到返回 None** —— 那是「看不见」，不是「做完了」。
+    def _child_frame_ids(self) -> list:
+        """收集账本绑定与 FILLS 中记录过的子帧 frame_id。"""
+        out = []
+        active = str(getattr(self, "_active_frame", "") or "").strip()
+        if active:
+            out.append(active)
+        for b in (BINDINGS or []):
+            if not isinstance(b, dict):
+                continue
+            fid = str(b.get("frame_id") or ((b.get("target") or {}).get("frame_id")) or "").strip()
+            if fid and fid not in out:
+                out.append(fid)
+        for spec in (FILLS or {}).values() if isinstance(FILLS, dict) else []:
+            if not isinstance(spec, dict):
+                continue
+            fid = str(spec.get("frame_id") or ((spec.get("target") or {}).get("frame_id")) or "").strip()
+            if fid and fid not in out:
+                out.append(fid)
+        return out
 
-        ⚠️ `None` 是一等值（`docs/执行事实契约-2026-09-18.md` 第 ② 条）：`datewhirl.py:175`
-        就是把「什么都没看见」判成「做完了」，连瞎三周、日志里成功 0 次。
-        """
-        raw = (self.cdp.eval(READ_PAGE_JS, "") or "").strip()
+    def _parse_read(self, raw):
+        raw = (raw or "").strip()
         if not raw:
             return None
         try:
@@ -1232,6 +1261,32 @@ class Filler:
             except ValueError:
                 return None
         return data if isinstance(data, dict) else None
+
+    def read(self):
+        """读这一屏。**读不到返回 None** —— 那是「看不见」，不是「做完了」。
+
+        ⚠️ `None` 是一等值（`docs/执行事实契约-2026-09-18.md` 第 ② 条）：`datewhirl.py:175`
+        就是把「什么都没看见」判成「做完了」，连瞎三周、日志里成功 0 次。
+        ★ P1-2：主帧没有可见输入/选项/下一步按钮时，探测已记录的子帧 `frame_id`（Typeform/LeadQuizzes 等内嵌问卷）。
+        """
+        data = self._parse_read(self.cdp.eval(READ_PAGE_JS, ""))
+        if isinstance(data, dict) and (
+            data.get("inputs") or data.get("options") or data.get("nextVisible")
+        ):
+            return data
+        for fid in self._child_frame_ids():
+            try:
+                sub = self._parse_read(self.cdp.eval(READ_PAGE_JS, fid))
+            except Exception:
+                sub = None
+            if isinstance(sub, dict) and (
+                sub.get("inputs") or sub.get("options") or sub.get("nextVisible")
+            ):
+                self._active_frame = fid
+                if isinstance(data, dict) and not sub.get("url") and data.get("url"):
+                    sub["url"] = data["url"]
+                return sub
+        return data
 
     def is_success(self, url):
         low = (url or "").lower()
@@ -2037,12 +2092,32 @@ class Filler:
                         got = self._profile_value(p, name, kind)
                         if got:
                             return str(got)
+                        if getattr(self, "no_report", False):
+                            for key in (name, kind):
+                                got_ex = EXAMPLES.get(key)
+                                if got_ex:
+                                    self._value_from = "自测锁定账本示例「%s」" % key
+                                    return str(got_ex)
+                            sample = str(spec.get("sample") or "").strip()
+                            if sample:
+                                self._value_from = "自测锁定账本 sample"
+                                return sample
                     self._value_from = "随机池「%s」" % name
                     return self._pool(name, _p) or self._pool(kind, _p)
                 if self._is_age(name, kind):
                     got = self._profile_value(p, name, kind)
                     if got:
                         return str(got)
+                    if getattr(self, "no_report", False):
+                        for key in (name, kind):
+                            got_ex = EXAMPLES.get(key)
+                            if got_ex:
+                                self._value_from = "自测锁定账本示例「%s」" % key
+                                return str(got_ex)
+                        sample = str(spec.get("sample") or "").strip()
+                        if sample:
+                            self._value_from = "自测锁定账本 sample"
+                            return sample
                     self._value_from = "现取年龄（50–64）"
                     return str(random.randint(50, 64))
                 got = self._profile_value(p, name, kind)
@@ -2517,6 +2592,8 @@ class Filler:
         """
         waited = False
         recentered = 0
+        until = self._cap_until(until)
+        started = time.monotonic()
         while True:
             cover = self._cover_once(selector, frame_id)
             # 「没盖着」与「量不出来」都是空串 —— 两种都**不拦**，直接放行。
@@ -2527,7 +2604,14 @@ class Filler:
             # 十来步就是一分多钟的空等。
             if cover in self._stuck_covers:
                 return cover
-            if until is None or time.monotonic() >= until:
+            now = time.monotonic()
+            static_fast = (
+                waited
+                and recentered >= RECENTER_TRIES
+                and not _LOADER_COVER_RE.search(cover)
+                and (now - started) >= min(STATIC_COVER_FAST_SECONDS, COVER_WAIT_SECONDS)
+            )
+            if until is None or now >= until or static_fast:
                 if waited:
                     # 等过还没走 —— 它已经不是「还没好」，是「挡住了」。记下来（上面那条），
                     # 并把这件事说出来：别让读日志的人以为我们压根没等。
@@ -2537,7 +2621,7 @@ class Filler:
                     self._stuck_covers = self._stuck_covers | {cover}
                     self.log.info("[%s] 等了 %.1f 秒，%s 还盖着这个元素 —— "
                                   "不等了（它这一趟里已经不是加载蒙版了）",
-                                  self.cid, COVER_WAIT_SECONDS, cover)
+                                  self.cid, max(0.1, now - started), cover)
                 return cover
             if not waited:
                 waited = True
